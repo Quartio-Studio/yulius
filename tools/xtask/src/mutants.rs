@@ -27,6 +27,8 @@ pub struct Settings {
     pub jobs: u32,
     /// A nextest filter for the `yulius` package's tests in place of the changed ones.
     pub tests: Option<String>,
+    /// The bound in seconds in place of `minutes` (tests).
+    pub seconds: Option<u64>,
 }
 
 impl Settings {
@@ -41,6 +43,7 @@ impl Settings {
             mutant_seconds: 300,
             jobs: 2,
             tests: None,
+            seconds: None,
         };
         let mut args = args.iter();
         while let Some(option) = args.next() {
@@ -64,10 +67,18 @@ impl Settings {
         }
         Ok(settings)
     }
+
+    /// The bound on the whole run.
+    #[must_use]
+    pub fn bound(&self) -> Duration {
+        Duration::from_secs(self.seconds.unwrap_or(self.minutes * 60))
+    }
 }
 
 /// The names of the test functions a diff adds or changes in the product's test binary
-/// (`crates/yulius/tests/`): a `fn name(` on an added line there.
+/// (`crates/yulius/tests/`): every `fn name(` in a hunk there. With `git diff -W` a hunk is the
+/// whole function a change is in, so a test whose body alone changed is named too (review round
+/// 1 of fix 8).
 #[must_use]
 pub fn changed_tests(diff: &str) -> Vec<String> {
     let mut names = BTreeSet::new();
@@ -79,7 +90,7 @@ pub fn changed_tests(diff: &str) -> Vec<String> {
                 .starts_with("crates/yulius/tests/");
             continue;
         }
-        let Some(added) = line.strip_prefix('+') else {
+        let Some(added) = line.strip_prefix(['+', ' ']) else {
             continue;
         };
         if !in_tests {
@@ -98,16 +109,17 @@ pub fn changed_tests(diff: &str) -> Vec<String> {
     names.into_iter().collect()
 }
 
-/// The nextest filter each mutant is tested with: every package's tests but the product's, and
-/// of the product's those named by `tests` (a filter of the caller's) or the `changed` ones.
+/// The nextest filter each mutant is tested with: every package's tests, the product's own unit
+/// tests too, and of the product's integration tests (its slow binary) those named by `tests`
+/// (a filter of the caller's) or the `changed` ones (review round 1 of fix 8).
 #[must_use]
 pub fn test_filter(tests: Option<&str>, changed: &[String]) -> String {
     let product = match (tests, changed) {
         (Some(filter), _) => filter.to_owned(),
         (None, []) => "none()".to_owned(),
-        (None, names) => format!("test(/({})$/)", names.join("|")),
+        (None, names) => format!("test(/(^|::)({})$/)", names.join("|")),
     };
-    format!("not package(yulius) | (package(yulius) & ({product}))")
+    format!("not package(yulius) | (package(yulius) & (not kind(test) | {product}))")
 }
 
 /// What became of the mutants listed.
@@ -176,15 +188,16 @@ impl Outcomes {
 
     /// The summary line for the Evidence.
     #[must_use]
-    pub fn summary(&self, listed: usize, minutes: u64, took: Duration) -> String {
+    pub fn summary(&self, listed: usize, bound: Duration, took: Duration) -> String {
         format!(
             "mutants: {listed} listed, {} caught, {} missed, {} timed out, {} unviable, {} not \
-             reached (bound {minutes} min, took {} s)",
+             reached (bound {} min, took {} s)",
             self.caught.len(),
             self.missed.len(),
             self.timeout.len(),
             self.unviable.len(),
             self.unreached.len(),
+            bound.as_secs().div_ceil(60),
             took.as_secs()
         )
     }
@@ -203,11 +216,30 @@ fn git(root: &Path, args: &[&str]) -> io::Result<String> {
 }
 
 /// The cargo-mutants arguments that choose the mutants: those in `diff`, outside [`EXCLUDED`].
+/// A cargo-mutants command in `root`, in an environment of its own: no shared target directory
+/// (with more than one job, copies writing one target directory test each other's builds and
+/// report mutants caught or missed wrongly; review round 1 of fix 8) and none of an outer
+/// nextest's settings (a profile the tree may not have).
+fn mutants_command(cargo: &str, root: &Path) -> Command {
+    let mut command = Command::new(cargo);
+    command
+        .current_dir(root)
+        .env_remove("CARGO_TARGET_DIR")
+        .env_remove("CARGO_BUILD_TARGET_DIR");
+    for (name, _) in std::env::vars_os() {
+        if name.to_string_lossy().starts_with("NEXTEST") {
+            command.env_remove(name);
+        }
+    }
+    command
+}
+
 fn selection(diff: &Path) -> Vec<String> {
     let mut args = vec![
         "mutants".to_owned(),
         "--in-diff".to_owned(),
         diff.display().to_string(),
+        "--all-features".to_owned(),
     ];
     for glob in EXCLUDED {
         args.extend(["--exclude".to_owned(), glob.to_owned()]);
@@ -222,7 +254,32 @@ fn selection(diff: &Path) -> Vec<String> {
 /// Git or cargo-mutants could not be run.
 pub fn run(root: &Path, cargo: &str, settings: &Settings) -> io::Result<Option<Outcomes>> {
     let base = git(root, &["merge-base", &settings.base, "HEAD"])?;
-    let diff = git(root, &["diff", base.trim(), "HEAD", "--", "*.rs"])?;
+    // Read as Git itself writes it, whatever the configuration says (no external diff, no
+    // colour, the usual prefixes): `--in-diff` and the test names parse it.
+    let plain = [
+        "diff",
+        "--no-ext-diff",
+        "--no-textconv",
+        "--no-color",
+        "--src-prefix=a/",
+        "--dst-prefix=b/",
+    ];
+    let diff = git(
+        root,
+        &[&plain[..], &[base.trim(), "HEAD", "--", "*.rs"]].concat(),
+    )?;
+    let functions = git(
+        root,
+        &[&plain[..], &["-W", base.trim(), "HEAD", "--", "*.rs"]].concat(),
+    )?;
+    if !git(root, &["status", "--porcelain", "--", "*.rs"])?
+        .trim()
+        .is_empty()
+    {
+        println!(
+            "Uncommitted Rust changes are not in the diff: commit them first, or line numbers drift."
+        );
+    }
     if diff.trim().is_empty() {
         println!(
             "No Rust code changed against {}: nothing to mutate.",
@@ -235,8 +292,7 @@ pub fn run(root: &Path, cargo: &str, settings: &Settings) -> io::Result<Option<O
     let diff_file = dir.join("branch.diff");
     std::fs::write(&diff_file, &diff)?;
     let listed: Vec<String> = {
-        let out = Command::new(cargo)
-            .current_dir(root)
+        let out = mutants_command(cargo, root)
             .args(selection(&diff_file))
             .arg("--list")
             .output()?;
@@ -265,7 +321,7 @@ pub fn run(root: &Path, cargo: &str, settings: &Settings) -> io::Result<Option<O
     let filter = root
         .join("crates/yulius/Cargo.toml")
         .exists()
-        .then(|| test_filter(settings.tests.as_deref(), &changed_tests(&diff)));
+        .then(|| test_filter(settings.tests.as_deref(), &changed_tests(&functions)));
     println!(
         "{} mutants in the changed lines; each tested with nextest ({}), {} at once, \
          {} s each at most, {} min in all.",
@@ -276,9 +332,8 @@ pub fn run(root: &Path, cargo: &str, settings: &Settings) -> io::Result<Option<O
         settings.minutes
     );
     let started = Instant::now();
-    let mut command = Command::new(cargo);
+    let mut command = mutants_command(cargo, root);
     command
-        .current_dir(root)
         .args(selection(&diff_file))
         .args([
             "--test-tool",
@@ -295,24 +350,37 @@ pub fn run(root: &Path, cargo: &str, settings: &Settings) -> io::Result<Option<O
                 .iter()
                 .flat_map(|filter| ["--", "-E", filter.as_str()]),
         );
-    #[cfg(unix)]
-    std::os::unix::process::CommandExt::process_group(&mut command, 0);
     let mut child = command.spawn()?;
-    let bound = Duration::from_secs(settings.minutes * 60);
-    while child.try_wait()?.is_none() {
+    let bound = settings.bound();
+    let mut bounded = false;
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
         if started.elapsed() >= bound {
             println!(
-                "The bound of {} min is reached: the run ends here.",
-                settings.minutes
+                "The bound of {} s is reached: the run ends here.",
+                bound.as_secs()
             );
-            // The whole group: cargo-mutants and the builds and tests it started.
+            bounded = true;
+            // cargo-mutants stops the builds and tests it started when it is asked to end.
+            #[cfg(unix)]
             let _ = Command::new("kill")
-                .args(["-TERM", &format!("-{}", child.id())])
+                .args(["-TERM", &child.id().to_string()])
                 .status();
-            let _ = child.wait();
-            break;
+            #[cfg(not(unix))]
+            let _ = child.kill();
+            break child.wait()?;
         }
-        std::thread::sleep(Duration::from_secs(1));
+        std::thread::sleep(Duration::from_millis(200));
+    };
+    // 0: all caught; 2: some missed; 3: some timed out. Anything else, unless the bound ended
+    // it, is cargo-mutants' own failure (a baseline that does not pass), not mutants unreached.
+    if !bounded && !matches!(status.code(), Some(0 | 2 | 3)) {
+        return Err(io::Error::other(format!(
+            "cargo-mutants failed ({status}); its log: {}",
+            dir.join("mutants.out/debug.log").display()
+        )));
     }
     let read = |kind: &str| {
         std::fs::read_to_string(dir.join("mutants.out").join(format!("{kind}.txt")))
@@ -339,7 +407,7 @@ pub fn run(root: &Path, cargo: &str, settings: &Settings) -> io::Result<Option<O
     }
     println!(
         "{}",
-        outcomes.summary(listed.len(), settings.minutes, started.elapsed())
+        outcomes.summary(listed.len(), settings.bound(), started.elapsed())
     );
     Ok(Some(outcomes))
 }
@@ -366,21 +434,31 @@ mod tests {
                     +    fn a_cut_off_reviewer(second: bool) -> TestResult {\n\
                     +async fn a_tight_round() -> TestResult {\n\
                     + let x = some_fn(1);\n\
+                    @@ -10,4 +10,4 @@\n\
+                    \x20fn body_only() -> TestResult {\n\
+                    -    assert!(x);\n\
+                    +    assert!(y);\n\
                     +++ b/crates/yulius-app/src/review.rs\n\
                     +fn not_a_test() {}\n";
         let changed = changed_tests(diff);
-        assert_eq!(changed, ["a_cut_off_reviewer", "a_tight_round"]);
+        // A test whose body alone changed is named by its hunk (`git diff -W`).
         assert_eq!(
-            test_filter(None, &changed),
-            "not package(yulius) | (package(yulius) & (test(/(a_cut_off_reviewer|a_tight_round)$/)))"
+            changed,
+            ["a_cut_off_reviewer", "a_tight_round", "body_only"]
         );
         assert_eq!(
+            test_filter(None, &changed[..2]),
+            "not package(yulius) | (package(yulius) & (not kind(test) | \
+             test(/(^|::)(a_cut_off_reviewer|a_tight_round)$/)))"
+        );
+        // The product's own unit tests always run (review round 1 of fix 8).
+        assert_eq!(
             test_filter(None, &[]),
-            "not package(yulius) | (package(yulius) & (none()))"
+            "not package(yulius) | (package(yulius) & (not kind(test) | none()))"
         );
         assert_eq!(
             test_filter(Some("test(/review_rounds::/)"), &changed),
-            "not package(yulius) | (package(yulius) & (test(/review_rounds::/)))"
+            "not package(yulius) | (package(yulius) & (not kind(test) | test(/review_rounds::/)))"
         );
     }
 
@@ -414,15 +492,15 @@ mod tests {
         assert!(!partial.held());
         assert_eq!(partial.unreached, ["a.rs:4:1: m4"]);
         assert_eq!(
-            partial.summary(4, 30, Duration::from_secs(95)),
+            partial.summary(4, Duration::from_secs(1_800), Duration::from_secs(95)),
             "mutants: 4 listed, 1 caught, 1 missed, 1 timed out, 0 unviable, 1 not reached \
              (bound 30 min, took 95 s)"
         );
     }
 
-    /// A fixture crate in a Git repository of its own, its first commit the base; `None` when
-    /// the pinned cargo-mutants is not on `PATH` (run through `scripts/dev`, which puts
-    /// `.tools/bin` there).
+    /// A fixture crate in a Git repository of its own, its first commit the base. The tests
+    /// that use it need the pinned cargo-mutants on `PATH` (`scripts/dev` puts `.tools/bin`
+    /// there).
     fn fixture(name: &str) -> Result<(std::path::PathBuf, String), Box<dyn std::error::Error>> {
         let dir = std::env::temp_dir().join(format!("xtask-mutants-{}-{name}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -492,6 +570,7 @@ mod tests {
             mutant_seconds: 120,
             jobs: 1,
             tests: None,
+            seconds: None,
         };
         let lib = "pub fn one() -> u32 {\n    1\n}\n\npub fn two() -> u32 {\n    2\n}\n\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn one_is_one() {\n        assert_eq!(super::one(), 1);\n    }\n";
         let (dir, base) = fixture("missed")?;
@@ -513,7 +592,42 @@ mod tests {
         assert_eq!(run(&docs, "cargo", &settings(&docs_base))?, None);
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&docs);
+        // The bound ends a run and names the mutants it did not reach (review round 1 of fix 8).
+        let (slow, slow_base) = fixture("bound")?;
+        let mut lib = String::from("pub fn one() -> u32 {\n    1\n}\n");
+        let mut tests = String::from("#[cfg(test)]\nmod tests {\n");
+        for n in 2..8 {
+            lib.push_str(&format!("pub fn f{n}() -> u32 {{\n    {n}\n}}\n"));
+            tests.push_str(&format!(
+                "    #[test]\n    fn f{n}_is() {{\n        std::thread::sleep(std::time::Duration::from_secs(1));\n        assert_eq!(super::f{n}(), {n});\n    }}\n"
+            ));
+        }
+        commit(&slow, "src/lib.rs", &format!("{lib}\n{tests}}}\n"))?;
+        let bounded = Settings {
+            seconds: Some(3),
+            ..settings(&slow_base)
+        };
+        let outcomes = run(&slow, "cargo", &bounded)?.ok_or("nothing mutated")?;
+        assert!(!outcomes.unreached.is_empty(), "{outcomes:?}");
+        assert!(!outcomes.held());
+        let _ = std::fs::remove_dir_all(&slow);
         Ok(())
+    }
+
+    /// Review round 1 of fix 8: cargo-mutants runs with no shared target directory and none of
+    /// an outer nextest's settings, whatever the caller's environment holds.
+    #[test]
+    fn cargo_mutants_runs_with_a_target_directory_of_its_own() {
+        let command = mutants_command("cargo", Path::new("."));
+        let removed: Vec<String> = command
+            .get_envs()
+            .filter(|(_, value)| value.is_none())
+            .map(|(name, _)| name.to_string_lossy().into_owned())
+            .collect();
+        for name in ["CARGO_TARGET_DIR", "CARGO_BUILD_TARGET_DIR"] {
+            assert!(removed.iter().any(|r| r == name), "{name}: {removed:?}");
+        }
+        assert!(selection(Path::new("d")).contains(&"--all-features".to_owned()));
     }
 
     #[test]

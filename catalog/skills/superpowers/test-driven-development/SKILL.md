@@ -90,4 +90,4 @@ spirit, not the ritual"; "this case is different". Each means: delete the code, 
 
 Then apply `verification-before-completion` before claiming anything.
 
-Mutation testing runs once per pull request: on the head you ask the review for, run the project's mutation command and put its summary line in the spec's Evidence; a project without one undoes by hand the few lines its new tests are meant to hold and says what failed. The reviewer reads that result, may undo a single line it doubts, and runs no campaign of its own. Nobody writes a mutation script by hand. A test that cannot fail is still fixed in the same pull request (ADR-0141).
+Mutation testing runs once per pull request: on the first head you ask a review for, run the project's mutation command and put its summary line in the spec's Evidence; a project without one undoes by hand the few lines its new tests are meant to hold and says what failed. The reviewer reads that result, may undo a single line it doubts, and runs no campaign of its own. Nobody writes a mutation script by hand. A test that cannot fail is still fixed in the same pull request (ADR-0141).

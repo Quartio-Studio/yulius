@@ -20,20 +20,26 @@ No one command existed.
   - It runs the pinned `cargo-mutants` (`.config/tools.toml`, 27.1.0) on the Rust lines the
     branch changed against the integration branch (`--in-diff`). The test tool (`tools/`) and
     test folders get no mutants.
-  - Each mutant is tested with nextest across the workspace. The product's test binary is
-    narrowed to the tests the branch added or changed, the ones meant to hold its lines; it is
-    the slowest by far, about 9 minutes whole. `--tests` gives another filter.
+  - Each mutant is tested with nextest across the workspace, `--all-features`, the product's
+    own unit tests included. Its integration test binary, the slowest by far (about 9 minutes
+    whole), is narrowed to the tests the branch added or changed (every function a hunk of
+    `git diff -W` is in), the ones meant to hold its lines; `--tests` gives another filter.
+  - cargo-mutants runs with no shared target directory and none of an outer nextest's
+    settings: copies building into one target directory report mutants caught or missed
+    wrongly.
   - Bounds: 30 minutes for the whole run (`--minutes`) and 300 s per mutant
     (`--mutant-seconds`), with 2 jobs (`--jobs`). The run ends at the bound and names the
     mutants it did not reach.
   - The last line is the summary for the spec's Evidence. The exit code is non-zero when a
     mutant was missed, timed out or not reached.
-- **Once per pull request, by the author**: on the head the review is asked for, with the
+- **Once per pull request, by the author**: on the first head a review is asked for, with the
   summary in the Evidence. A project without such a command undoes by hand the few lines its new
   tests are meant to hold, and says what failed.
 - **The reviewer reads the result**, may undo a single line it doubts, and runs no campaign. A
   test that cannot fail is still fixed in the same pull request (ADR-0141). The rule is stated
-  the same way in the skills, the workflows and this repository's documents, and a test holds it.
+  the same way in the skills and this repository's documents, and a test holds it; the Feature
+  and Fix workflows, whose instructions have no byte to spare, reach it through
+  `delivery-pipeline`.
 
 ## Alternatives
 

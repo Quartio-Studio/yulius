@@ -1275,12 +1275,12 @@ mod tests {
     }
 
     /// SPEC-493 MUT-002 (AC-12): mutation testing once per pull request, the same everywhere
-    /// tests and reviews are described; this repository names its command; the workflows say
-    /// the short form.
+    /// tests and reviews are described; this repository names its command; the workflows send
+    /// the agent to `delivery-pipeline`, which states it.
     #[test]
     fn every_place_says_mutation_testing_once_per_pull_request() -> TestResult {
-        const RULE: &str = "mutation testing runs once per pull request: on the head you ask the \
-            review for, run the project's mutation command and put its summary line in the \
+        const RULE: &str = "mutation testing runs once per pull request: on the first head you ask \
+            a review for, run the project's mutation command and put its summary line in the \
             spec's evidence; a project without one undoes by hand the few lines its new tests are \
             meant to hold and says what failed. the reviewer reads that result, may undo a single \
             line it doubts, and runs no campaign of its own. nobody writes a mutation script by \
@@ -1317,10 +1317,12 @@ mod tests {
                 "{rel} does not state the rule with this repository's command"
             );
         }
+        // The workflows' instructions have no byte to spare (1,444 with their heading, #555):
+        // they reach the rule through `delivery-pipeline`, which each tells the agent to follow.
         for rel in ["catalog/workflows/feature.md", "catalog/workflows/fix.md"] {
             assert!(
-                read(rel)?.contains("mutation testing once per pull request"),
-                "{rel} does not say the short form"
+                read(rel)?.contains("follow `delivery-pipeline`"),
+                "{rel} does not send the agent to the rule"
             );
         }
         Ok(())

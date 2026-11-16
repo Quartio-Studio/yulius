@@ -33,4 +33,3 @@ Follow `delivery-pipeline`; nobody accepts the result for you; the whole gate is
   issues, saying why they are outside the change.
 - Finish with `om-check-and-commit` and `verification-before-completion`, then deliver: merge on
   green, clean up (`git-hygiene`), deploy dev only if asked (`cd_deploy`); production is a person's.
-- Mutation testing once per pull request: the project's command on the head under review, its summary in the Evidence (`delivery-pipeline`).

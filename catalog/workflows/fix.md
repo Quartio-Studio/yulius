@@ -34,4 +34,3 @@ Follow `delivery-pipeline`; a fix is one concern; the whole gate is Yulius CI's.
   left at the round limit become issues, saying why they are outside the change. Then
   `om-check-and-commit` and deliver: merge on green, clean up (`git-hygiene`), deploy dev only if
   asked (`cd_deploy`); production is a person's.
-- Mutation testing once per pull request: the project's command on the head under review, its summary in the Evidence (`delivery-pipeline`).

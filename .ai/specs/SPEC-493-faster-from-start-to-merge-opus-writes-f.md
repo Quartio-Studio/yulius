@@ -343,10 +343,10 @@ person's decision is read as holding after an approval).
   binds. A limit of the session's own model family moves or pauses the session as today.
 - **RLM-002** A limit that cut a reviewer off (REV-004: `cut off`) moves the session to a
   subscription that can run the reviewer's model, at once when the session's thread is idle (the
-  turn its failed task notification wakes ends at once) and else at its next turn's end, also when the limit binds another model family than the
-  session's. The process that continues the session is told to resume that reviewer by its id
-  with `SendMessage`, and not to start a new one. With no such subscription, the agent is told
-  that the round can run on Opus 5.5 (REV-007).
+  turn its failed task notification wakes ends at once) and else at its next turn's end, also when
+  the limit binds another model family than the session's. The process that continues the session is
+  told to resume that reviewer by its id with `SendMessage`, and not to start a new one. With no
+  such subscription, the agent is told that the round can run on Opus 5.5 (REV-007).
 - **RLM-003** A review round does not start on a subscription about to run out: one with less
   than 5 points of room (`Tier::Tight`) in a window binding the reviewer's model, while another
   subscription has that room. The session moves first, as in REV-007.
