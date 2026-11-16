@@ -17,7 +17,8 @@ cargo_bin = Path.home() / ".cargo/bin"
 cache = Path(os.environ.get("YULIUS_TOOLS_CACHE") or (Path.home() / ".cache/yulius-tools"))
 # Two runs sharing a home (Yulius CI's lanes) must not install into ~/.rustup at once: the second found
 # a half-installed toolchain and failed (run ee7c4491, 2026-11-07). One waits, then finds it installed.
-with exclusive(cache / ".rustup.lock"):
+# The lock follows the home rustup installs into, not a moved tools cache.
+with exclusive(Path.home() / ".cache/yulius-tools/.rustup.lock"):
     rustup = shutil.which("rustup") or shutil.which("rustup", path=str(cargo_bin))
     unattended = bool(os.environ.get("CI")) or not sys.stdin.isatty()
     if not rustup and ("--install-rustup" in sys.argv[1:] or unattended):

@@ -1,4 +1,7 @@
+import contextlib
+import io
 import multiprocessing
+import os
 import tempfile
 import threading
 import time
@@ -14,6 +17,7 @@ def hold(path, ready, release):
         release.wait(30)
 
 
+@unittest.skipIf(os.name == "nt", "flock is POSIX only; exclusive holds nothing on Windows")
 class HomeLockTests(unittest.TestCase):
     def test_second_holder_waits_until_the_first_leaves(self):
         with tempfile.TemporaryDirectory() as scratch:
@@ -26,9 +30,11 @@ class HomeLockTests(unittest.TestCase):
                 # The clock starts before the timer, so a loaded host only makes `waited` longer.
                 started = time.monotonic()
                 threading.Timer(1, release.set).start()
-                with exclusive(path):
+                said = io.StringIO()
+                with contextlib.redirect_stdout(said), exclusive(path):
                     waited = time.monotonic() - started
                 self.assertGreaterEqual(waited, 0.8)
+                self.assertIn(f"waiting for {path}", said.getvalue())
             finally:
                 release.set()
                 holder.join(10)
@@ -36,11 +42,14 @@ class HomeLockTests(unittest.TestCase):
     def test_lock_is_released_when_the_body_fails(self):
         with tempfile.TemporaryDirectory() as scratch:
             path = Path(scratch) / ".l"
-            with self.assertRaises(RuntimeError):
+            said = io.StringIO()
+            with self.assertRaises(RuntimeError), contextlib.redirect_stdout(said):
                 with exclusive(path):
                     raise RuntimeError("install failed")
-            with exclusive(path):
-                pass
+            self.assertEqual(said.getvalue(), "", "a free lock is taken without a word")
+            import fcntl
+            with open(path, "a") as again:
+                fcntl.flock(again, fcntl.LOCK_EX | fcntl.LOCK_NB)  # raises if still held
 
 
 if __name__ == "__main__":

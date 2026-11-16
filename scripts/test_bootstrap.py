@@ -30,6 +30,13 @@ sys.exit(3)
 @unittest.skipIf(os.name == "nt", "flock is POSIX only; bootstrap holds no lock on Windows")
 class BootstrapRustupLock(unittest.TestCase):
     def test_the_toolchain_install_runs_under_the_homes_rustup_lock(self):
+        # rustup installs into the home whatever the tools cache: two runs sharing a home but not
+        # a cache must still take one lock.
+        for moved_cache in (False, True):
+            with self.subTest(moved_cache=moved_cache):
+                self.bootstrap_holds_the_home_lock(moved_cache)
+
+    def bootstrap_holds_the_home_lock(self, moved_cache):
         with tempfile.TemporaryDirectory() as scratch:
             scratch = Path(scratch)
             home, bin_dir, record = scratch / "home", scratch / "bin", scratch / "record"
@@ -42,6 +49,8 @@ class BootstrapRustupLock(unittest.TestCase):
             env = {key: value for key, value in os.environ.items() if key != "YULIUS_TOOLS_CACHE"}
             env.update(HOME=str(home), PATH=str(bin_dir) + os.pathsep + env.get("PATH", ""),
                        STAND_IN_LOCK=str(lock), STAND_IN_RECORD=str(record))
+            if moved_cache:
+                env["YULIUS_TOOLS_CACHE"] = str(scratch / "elsewhere")
             lock.parent.mkdir(parents=True)
 
             run = subprocess.run([sys.executable, str(BOOTSTRAP), "--install-rustup"], env=env,
@@ -49,9 +58,6 @@ class BootstrapRustupLock(unittest.TestCase):
 
             self.assertNotEqual(run.returncode, 0, "the stand-in's `rustup which` fails the run")
             self.assertEqual(record.read_text(), "held\n", run.stderr)
-            with open(lock, "a") as again:
-                import fcntl
-                fcntl.flock(again, fcntl.LOCK_EX | fcntl.LOCK_NB)  # released once bootstrap ends
 
 
 if __name__ == "__main__":

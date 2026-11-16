@@ -7,10 +7,14 @@ import os
 @contextmanager
 def exclusive(path):
     """Holds an exclusive `flock` on `path` (its folder is created) until the block ends, also when it
-    fails; a second holder waits. Without `fcntl` (Windows) it holds nothing."""
+    fails; a second holder says it waits, then waits. Without `fcntl` (Windows) it holds nothing."""
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w") as lock:
         if os.name != "nt":
             import fcntl
-            fcntl.flock(lock, fcntl.LOCK_EX)
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                print(f"waiting for {path}: another run holds it", flush=True)
+                fcntl.flock(lock, fcntl.LOCK_EX)
         yield
