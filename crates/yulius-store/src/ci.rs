@@ -387,6 +387,19 @@ impl CiStore for SqliteStore {
         .await
     }
 
+    async fn set_queued_ci_job_reason(&self, id: &str, reason: Option<&str>) -> AppResult<()> {
+        let (id, reason) = (id.to_owned(), reason.map(str::to_owned));
+        self.call(move |c| {
+            c.execute(
+                "UPDATE ci_jobs SET reason = ?2 WHERE id = ?1 AND state = 'queued'",
+                params![id, reason],
+            )
+            .map_err(db)?;
+            Ok(())
+        })
+        .await
+    }
+
     async fn set_ci_job_output(&self, id: &str, output: &str) -> AppResult<()> {
         let (id, output) = (id.to_owned(), output.to_owned());
         self.call(move |c| {

@@ -286,9 +286,10 @@ pub struct CiState {
     slots: OnceLock<Arc<slots::JobSlots>>,
     /// The CPUs and MiB of memory CI jobs share, sized from the sandbox capacity at the first
     /// job (SPEC-082 RES-003).
-    pub(crate) budget: OnceLock<crate::resources::CiPools>,
-    /// CI jobs running per sandbox (SPEC-362 CSW-002), told to the isolation ([`JobWeight`]).
-    running_jobs: Mutex<HashMap<SandboxId, u32>>,
+    pub(crate) budget: OnceLock<Arc<crate::resources::CiAdmission>>,
+    /// CI jobs running per sandbox and the CPUs they hold (SPEC-362 CSW-002, SPEC-497 HBA-004),
+    /// told to the isolation ([`JobWeight`]).
+    running_jobs: Mutex<HashMap<SandboxId, (u32, u32)>>,
     /// Executing runs: their cancellation (the reason, once cancelled).
     executing: Mutex<HashMap<String, watch::Sender<Option<String>>>>,
     /// Production deploys waiting for the dev deploy and drill that prove their rollback
@@ -361,21 +362,23 @@ fn forget_idle_turn(turns: &mut HashMap<String, Arc<tokio::sync::Mutex<()>>>, ke
 pub(crate) struct JobWeight {
     app: Arc<App>,
     sandbox: SandboxId,
+    cpus: u32,
 }
 
 impl JobWeight {
-    pub(crate) fn new(app: Arc<App>, sandbox: &SandboxId) -> Self {
-        app.ci_weigh(sandbox, true);
+    pub(crate) fn new(app: Arc<App>, sandbox: &SandboxId, cpus: u32) -> Self {
+        app.ci_weigh(sandbox, cpus, true);
         Self {
             app,
             sandbox: sandbox.clone(),
+            cpus,
         }
     }
 }
 
 impl Drop for JobWeight {
     fn drop(&mut self) {
-        self.app.ci_weigh(&self.sandbox, false);
+        self.app.ci_weigh(&self.sandbox, self.cpus, false);
     }
 }
 
@@ -571,25 +574,38 @@ impl App {
     /// isolation the new count, under the lock so the last count told is the current one. The
     /// isolation writes one cgroup file there and may wait for a preparation of the sandbox's
     /// groups (moving at most 4096 processes): bounded, and other jobs' starts and ends wait.
-    fn ci_weigh(&self, sandbox: &SandboxId, started: bool) {
+    fn ci_weigh(&self, sandbox: &SandboxId, cpus: u32, started: bool) {
         let mut running = self
             .ci
             .running_jobs
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let count = running.entry(sandbox.clone()).or_insert(0);
-        *count = if started {
-            count.saturating_add(1)
+        let (jobs, held) = running.entry(sandbox.clone()).or_insert((0, 0));
+        if started {
+            *jobs = jobs.saturating_add(1);
+            *held = held.saturating_add(cpus);
         } else {
-            count.saturating_sub(1)
-        };
-        let jobs = *count;
+            *jobs = jobs.saturating_sub(1);
+            *held = held.saturating_sub(cpus);
+        }
+        let (jobs, held) = (*jobs, *held);
         if jobs == 0 {
             running.remove(sandbox);
         }
         if let Some(isolation) = self.isolation.get() {
-            isolation.ci_jobs_running(sandbox, jobs);
+            isolation.ci_jobs_running(sandbox, jobs, held);
         }
+    }
+
+    /// The sandboxes with CI jobs running now.
+    pub(crate) fn ci_sandboxes_running(&self) -> Vec<SandboxId> {
+        self.ci
+            .running_jobs
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .keys()
+            .cloned()
+            .collect()
     }
 
     pub(crate) fn ci_dir(&self, sandbox: &SandboxId) -> PathBuf {
@@ -1458,6 +1474,8 @@ impl App {
     /// Starts the oldest queued runs of every sandbox, as many as it has free lanes
     /// ([`CiSettings::lanes`]); the instance-wide job slots still bound the machine's load.
     pub async fn ci_dispatch(self: &Arc<Self>) {
+        // A reading of what CI uses at each pass keeps the measuring bases recent (SPEC-497).
+        let _ = self.ci_measured();
         // A merge armed on a run that passed when it was queued happens now (SPEC-011).
         let ended: Vec<SandboxId> = self
             .ci

@@ -863,7 +863,8 @@ Cleanup request = {"items": [{"kind", "name"}] (empty: every safe item), "force"
   integration branch's configuration cannot be read, no pull request is tested; a playground
   task's merge that brings a readable one is, with it. A newer head cancels the active run of the same reference ("superseded
   by …"). Up to `YULIUS_CI_LANES` runs of one sandbox (host-sized, 2 below 32 CPUs) execute at once, each in its own job
-  checkouts; their jobs share the instance's job slots (`YULIUS_CI_MAX_JOBS`).
+  checkouts; their jobs share the instance's job slots (`YULIUS_CI_MAX_JOBS`) and its CI budget
+  (ADR-0350): a queued job's `reason` says what it waits for while it waits.
 - **Commit status** `yulius/ci` on the commit: `pending` (queued, running), `success`, `failure`
   (names the failed job and exit code), `error` (errors and cancellations), linking to
   `/s/<slug>/ci?run=<id>`. It needs the App's "Commit statuses: Read and write"; without it `status`

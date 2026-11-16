@@ -72,7 +72,17 @@ Weights only compare siblings, so the sandboxes' own groups are weighed too. Whi
 a sandbox runs, its group weighs 500 among the sandboxes (100 with none), however many jobs run.
 On a loaded host its CI then also out-weighs the agents' local builds in the other sandboxes.
 With CI and agents building in one sandbox and agents building in two others, CI gets 4/7 of what
-the sandboxes get instead of 4/15, and each other sandbox keeps 1/7. The CI executor counts a job
+the sandboxes get instead of 4/15, and each other sandbox keeps 1/7. Since SPEC-497 the weight
+follows the CPUs the sandbox's running jobs hold: 100 plus 100 per CPU, at least 500, at most
+10,000, so a sandbox holding 30 CPUs gets about 45 of 64 against four sandboxes whose agents build
+([decision 0350](decisions/0350-ci-jobs-are-admitted-by-what-ci-really-holds-on-the-host.md)).
+`ci/slots.rs` counts the jobs; `resources.rs` (`CiAdmission`) admits them from one CI budget for the
+whole instance, the capacity less an eighth for the server and the agents: a job starts when its
+reservation fits beside the larger of the running jobs' reservations and what the `ci` and
+`engine` groups of the sandboxes running them were measured to use (`Delegation::ci_use`: CPU time
+over at least 5 s, read at each job's start, each dispatcher pass and each look of a waiting job,
+under the admission's lock; anonymous memory), so containers and tools that use more than the job declared
+hold the next job back. The CI executor counts a job
 from its slot to its reap (`JobWeight`). The isolation adapter writes the weight, every
 preparation keeps it, and every start and stop of the server writes 100 again
 ([SPEC-362](../.ai/specs/SPEC-362-ci-slots-per-job-configurable-per-projec.md),
@@ -3523,7 +3533,11 @@ tree reuse never carries a paths skip into a branch's run.
 A job waits before it starts, in `App::ci_job` (`crates/yulius-app/src/ci/exec.rs`): an
 `exclusive` job first for its turn (one run of it per sandbox at a time, a process-local
 `tokio::sync::Mutex` per `<sandbox>/<job name>` in `CiState`, taken in the order the runs asked),
-then every job for a job slot and its CPU and memory budget. Both waits are the job's `wait` stage;
+then for room in its sandbox's Docker engine (at least 32 more networks of what its pools hold,
+read from its `/info`; networks no container used for 10 minutes are pruned first), then for a job slot and its CPU and
+memory budget out of the host's CI budget (SPEC-497, decision 0350). While it waits its reason says
+for what ("waits for the host's CI budget: CI holds 50 of the host's 56 CPUs for CI (32 reserved,
+50 measured); this job needs 16"). All waits are the job's `wait` stage;
 a cancellation ends them. The job records how long it waited (`ci_jobs.waited_ms`) with its start.
 Its time limit, its own `timeout_minutes` or else `YULIUS_CI_JOB_TIMEOUT_MIN`, starts when its
 process starts (`ci_watch`), so no wait counts; a job that runs out of it is killed and errors
@@ -3534,8 +3548,9 @@ process starts (`ci_watch`), so no wait counts; a job that runs out of it is kil
 ```mermaid
 flowchart LR
   Q["job queued (run started)"] -->|"exclusive"| T["its turn: the earlier run of it ended"]
-  Q -->|"not exclusive"| S
-  T --> S["a job slot and its budget"]
+  Q -->|"not exclusive"| N
+  T --> N["Docker networks: 32 left in its engine"]
+  N --> S["a job slot and its budget: reserved or measured CI use fits"]
   S -->|"waited_ms recorded"| R["process starts: the limit starts"]
   R -->|"ends within timeout_minutes or the instance's"| E["its exit decides its state"]
   R -->|"runs out of it"| X["killed: error, says ran and waited"]
