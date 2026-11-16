@@ -8022,3 +8022,89 @@ async fn the_superagent_restarts_its_sandboxs_docker_or_hears_why_not() -> TestR
     );
     Ok(())
 }
+
+/// A sandbox Docker whose fronts report events for the instance's measures.
+struct EventfulDocker {
+    events: std::sync::Mutex<Vec<yulius_app::ports::isolation::DockerEvent>>,
+}
+
+#[async_trait::async_trait]
+impl yulius_app::ports::isolation::SandboxIsolation for EventfulDocker {
+    async fn prepare(
+        &self,
+        _: &yulius_app::ports::isolation::SandboxRef,
+    ) -> yulius_app::error::AppResult<Option<yulius_app::ports::isolation::SandboxJoin>> {
+        Ok(None)
+    }
+
+    fn release(&self, _: &yulius_domain::ids::SandboxId) {}
+
+    fn take_docker_events(&self) -> Vec<yulius_app::ports::isolation::DockerEvent> {
+        self.events
+            .lock()
+            .map(|mut events| std::mem::take(&mut *events))
+            .unwrap_or_default()
+    }
+}
+
+/// SPEC-494 DFJ-013: front restarts, connections that gave way and Needs you naming the
+/// sandbox's Docker are counted per week and read on the instance.
+#[tokio::test]
+async fn the_instance_counts_docker_restarts_give_ways_and_needs_you_per_week() -> TestResult {
+    use yulius_app::ports::isolation::DockerEvent;
+    use yulius_app::ports::store::{AuditStore as _, UserStore as _};
+    let f = fixture().await?;
+    let event = |sandbox: &str, kind: &str, count: u64| DockerEvent {
+        sandbox: sandbox.to_owned(),
+        kind: kind.to_owned(),
+        count,
+        detail: "it stayed full".to_owned(),
+    };
+    let docker = std::sync::Arc::new(EventfulDocker {
+        events: std::sync::Mutex::new(vec![
+            event(sid().as_str(), "gave_way", 3),
+            event(sid().as_str(), "restarted", 1),
+            event(sid().as_str(), "gave_way", 2),
+            event(&format!("{}.prod", sid().as_str()), "restarted", 1),
+            event("unknown-sandbox", "restarted", 1),
+        ]),
+    });
+    assert!(f.h.app.set_isolation(docker));
+    f.h.app.record_docker_events().await;
+    let task = support::seed_task(
+        &f.h,
+        "t-docker",
+        sid().as_str(),
+        "u-alice",
+        yulius_domain::task::TaskStatus::Running,
+        None,
+    )
+    .await?;
+    f.h.store
+        .audit(
+            f.h.app.now(),
+            "agent",
+            yulius_app::needs_you::DOCKER_NEEDS_YOU,
+            Some(task.id.as_str()),
+            Some("Restart Docker"),
+        )
+        .await?;
+    let alice = yulius_domain::ids::UserId::parse("u-alice")?;
+    let ctx = yulius_app::auth::AuthContext {
+        user: f.h.store.user(&alice).await?.ok_or("alice")?,
+        csrf_token: Some("csrf".into()),
+        session_hash: None,
+        token: None,
+    };
+    let seen =
+        f.h.app
+            .analytics_docker(&ctx, Some(sid().as_str()), None, None)
+            .await?;
+    assert_eq!(
+        (seen.restarts, seen.gave_way, seen.needs_you),
+        (2, 5, 1),
+        "{seen:?}"
+    );
+    assert_eq!(seen.weeks.len(), 1, "{seen:?}");
+    Ok(())
+}

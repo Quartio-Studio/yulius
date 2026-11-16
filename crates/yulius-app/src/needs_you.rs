@@ -52,6 +52,9 @@ pub struct NeedsYouRecord {
     pub cause: Option<String>,
 }
 
+/// The audit action of a request naming the sandbox's Docker (SPEC-494 DFJ-013).
+pub const DOCKER_NEEDS_YOU: &str = "task.needs_you.docker";
+
 /// The sandbox-level causes a request may name: `docker`, the sandbox's Docker does not answer.
 pub const CAUSES: &[&str] = &["docker"];
 
@@ -225,6 +228,10 @@ impl App {
             .await?;
         self.publish_task(&ctx.task.id).await;
         self.needs_you_audit(ctx, "task.needs_you", &action).await;
+        if cause.as_deref() == Some("docker") {
+            // Counted per week on the instance (SPEC-494 DFJ-013).
+            self.needs_you_audit(ctx, DOCKER_NEEDS_YOU, &action).await;
+        }
         let next = match cause.as_deref() {
             Some(cause) => format!(
                 "People see the tasks of this sandbox that name cause {cause} under one shared \"Needs you\" card; a person's answer to one of them, the end of the sandbox's Docker trouble, or a restart of its Docker asked through the Superagent closes yours too, and you are told so here. Print the request in the session as it is; go on with other work."
@@ -312,8 +319,11 @@ impl App {
         };
         let mut oldest = at;
         for other in others {
+            // A stopping task shows its request no more than a stopped one (review round 3).
             let resting = match self.deps.store.task(&other).await {
-                Ok(Some(t)) => t.status.is_resting(),
+                Ok(Some(t)) => {
+                    t.status.is_resting() || t.status == yulius_domain::task::TaskStatus::Stopping
+                }
                 _ => true,
             };
             if resting {

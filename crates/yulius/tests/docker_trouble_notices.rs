@@ -243,8 +243,27 @@ fn requests_naming_the_sandboxs_docker_are_answered_together() -> TestResult {
                 Ok::<_, Box<dyn std::error::Error>>(summary.needs_you.and_then(|n| n.episode))
             }
         };
+        // A stopping task's older request is no longer shown: it names no episode (review
+        // round 1 of slices 5 to 7).
+        let stopping = {
+            let mut record = app.deps.store.task(&first).await?.ok_or("first")?;
+            record.id = yulius_domain::ids::TaskId::parse("t-stopping")?;
+            record.number = 0;
+            record.branch = None;
+            record.worktree_path = None;
+            record.status = yulius_domain::task::TaskStatus::Stopping;
+            app.deps.store.insert_task(&record).await?.id
+        };
+        ask(&stopping, now - 5_000, Some("docker")).await?;
         let first_episode = episode(&first).await?;
-        assert!(first_episode.is_some());
+        let first_asked = {
+            let task = app.deps.store.task(&first).await?.ok_or("first")?;
+            app.task_summary(&task)
+                .await?
+                .needs_you
+                .map(|request| request.at)
+        };
+        assert_eq!(first_episode, first_asked, "the oldest shown request");
         assert_eq!(episode(&second).await?, first_episode);
         assert_eq!(episode(&other).await?, None, "no cause, no episode");
 
