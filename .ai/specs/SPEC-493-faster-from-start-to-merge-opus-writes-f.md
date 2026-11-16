@@ -1690,6 +1690,10 @@ Both are checked on current `dev` first and fixed test-first if they still hold.
     bound; the mutations named).
   - Nits: `selection` has its doc again; the opening line names the bound in seconds; a missed
     mutant's list says that only the tests the branch changed ran and `--tests` widens them.
-    Answered in words: off Unix the bound kills cargo-mutants only (its builds end with it, its
-    temporary copies may stay); a failed real-tool test leaves its `/tmp/xtask-mutants-*`
+    Answered in words: off Unix the bound kills cargo-mutants only, and its builds and tests,
+    which it stops with a plain kill and no job object, may keep running there (fix 9's delta
+    review corrected this sentence); a failed real-tool test leaves its `/tmp/xtask-mutants-*`
     fixtures for a look, and a pass removes them.
+  - The delta review (Opus 5.5) approved `2533a0f48`, which merged as #1346. Its two nits are in
+    fix 9's pull request: the off-Unix sentence above is corrected, and the `--tests` hint is
+    printed only where the product's tests were narrowed (`filter.is_some()`).
