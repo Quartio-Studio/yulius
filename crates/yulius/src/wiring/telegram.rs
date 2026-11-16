@@ -29,6 +29,8 @@ const MAX_ANSWER_BYTES: usize = 1 << 20;
 /// characters with at most 100 entities, so 20 fit [`MAX_ANSWER_BYTES`] with room to spare; an
 /// answer over it anyway is asked again one update at a time (review round 1).
 const POLL_LIMIT: u64 = 20;
+/// How much of an answer over the bound is kept, to read the first update's id.
+const HEAD_BYTES: usize = 4096;
 /// Longest token accepted (Telegram's are about 46 characters).
 const MAX_TOKEN_CHARS: usize = 200;
 
@@ -125,8 +127,8 @@ impl std::fmt::Debug for TelegramBot {
 
 /// Why a call gave no result.
 enum CallFailure {
-    /// The answer is longer than [`MAX_ANSWER_BYTES`].
-    TooLarge,
+    /// The answer is longer than [`MAX_ANSWER_BYTES`]; its first bytes.
+    TooLarge(Vec<u8>),
     /// Any other failure.
     Channel(ChannelError),
 }
@@ -142,7 +144,7 @@ impl TelegramBot {
         self.call_bounded(method, body, deadline)
             .await
             .map_err(|failure| match failure {
-                CallFailure::TooLarge => ChannelError::Invalid,
+                CallFailure::TooLarge(_) => ChannelError::Invalid,
                 CallFailure::Channel(err) => err,
             })
     }
@@ -176,7 +178,9 @@ impl TelegramBot {
             .map_err(|_| Channel(ChannelError::Unavailable))?
         {
             if bytes.len() + chunk.len() > MAX_ANSWER_BYTES {
-                return Err(CallFailure::TooLarge);
+                bytes.extend_from_slice(&chunk);
+                bytes.truncate(HEAD_BYTES);
+                return Err(CallFailure::TooLarge(bytes));
             }
             bytes.extend_from_slice(&chunk);
         }
@@ -209,6 +213,22 @@ impl TelegramBot {
         let deadline = Duration::from_secs(wait) + CALL_DEADLINE;
         self.call_bounded("getUpdates", &body, deadline).await
     }
+}
+
+/// The first `update_id` in the head of an answer cut at the bound.
+fn first_update_id(head: &[u8]) -> Option<i64> {
+    const KEY: &[u8] = b"\"update_id\"";
+    let at = head.windows(KEY.len()).position(|w| w == KEY)? + KEY.len();
+    let rest = std::str::from_utf8(&head[at..]).ok().or_else(|| {
+        // A cut inside a multi-byte character ends the head: read what is whole.
+        let valid = std::str::from_utf8(&head[at..]).err()?.valid_up_to();
+        std::str::from_utf8(&head[at..at + valid]).ok()
+    })?;
+    let digits = rest.trim_start().strip_prefix(':')?.trim_start();
+    let end = digits
+        .find(|c: char| !c.is_ascii_digit())
+        .unwrap_or(digits.len());
+    digits[..end].parse().ok()
 }
 
 /// The messages of a `getUpdates` result and the next offset.
@@ -281,29 +301,28 @@ impl NotificationChannel for TelegramBot {
     async fn receive(&self, cursor: Option<&str>) -> Result<Received, ChannelError> {
         let offset = cursor.and_then(|c| c.parse::<i64>().ok());
         let failed = |failure| match failure {
-            CallFailure::TooLarge => ChannelError::Invalid,
+            CallFailure::TooLarge(_) => ChannelError::Invalid,
             CallFailure::Channel(err) => err,
         };
         match self.updates(offset, POLL_LIMIT, self.poll_seconds).await {
-            Err(CallFailure::TooLarge) => {}
+            Err(CallFailure::TooLarge(_)) => {}
             answer => return parse_updates(&answer.map_err(failed)?),
         }
         // Over the bound: the same updates one at a time (they wait already, so no long poll).
-        match self.updates(offset, 1, 0).await {
-            Err(CallFailure::TooLarge) => {}
+        let head = match self.updates(offset, 1, 0).await {
+            Err(CallFailure::TooLarge(head)) => head,
             answer => return parse_updates(&answer.map_err(failed)?),
-        }
-        // One update alone is over it: stepped past (update ids follow each other), or the poll
-        // would ask for it forever.
-        let Some(offset) = offset else {
-            return Err(ChannelError::Invalid);
         };
+        // One update alone is over it: stepped past by the id its answer starts with (ids may
+        // jump, and a first poll has no offset), or the poll would ask for it forever. Without a
+        // readable id it is an error, so the poll backs off (review round 2).
+        let id = first_update_id(&head).ok_or(ChannelError::Invalid)?;
         tracing::warn!(
-            update = offset,
+            update = id,
             "a Telegram update over the answer bound was skipped"
         );
         Ok(Received {
-            cursor: Some((offset + 1).to_string()),
+            cursor: Some((id + 1).to_string()),
             messages: Vec::new(),
         })
     }
@@ -330,13 +349,19 @@ mod tests {
         bodies: Mutex<Vec<(String, Value)>>,
     }
 
+    /// An answer of one update over the bound, its fields after `{` starting with `lead`.
+    fn oversized(lead: &str) -> String {
+        let text = "x".repeat(MAX_ANSWER_BYTES);
+        format!(r#"{{"ok":true,"result":[{{{lead}"message":{{"text":"{text}"}}}}]}}"#)
+    }
+
     async fn answer(
         State(fake): State<Arc<Fake>>,
         Path((bot, method)): Path<(String, String)>,
         Json(body): Json<Value>,
-    ) -> (StatusCode, Json<Value>) {
+    ) -> (StatusCode, String) {
         if bot != format!("bot{TOKEN}") {
-            return (StatusCode::UNAUTHORIZED, Json(json!({"ok": false})));
+            return (StatusCode::UNAUTHORIZED, json!({"ok": false}).to_string());
         }
         let blocked = body["chat_id"] == json!(403);
         let (offset, limit) = (body["offset"].clone(), body["limit"].clone());
@@ -346,27 +371,31 @@ mod tests {
         let result = match method.as_str() {
             "getMe" => json!({"id": 1000, "is_bot": true, "username": "yulius_test_bot"}),
             // From offset 100 the backlog is over the bound unless asked one at a time; at 200
-            // one update alone is.
-            "getUpdates" if offset == json!(100) || offset == json!(200) => {
-                let alone = limit == json!(1) && offset == json!(100);
-                if alone {
-                    json!([{"update_id": 100, "message": {"chat": {"id": 42, "type": "private"}, "text": "/stop"}}])
-                } else {
-                    json!([{"update_id": 100, "message": {"text": "x".repeat(MAX_ANSWER_BYTES)}}])
-                }
+            // one update alone is, and its id is 205 (ids may jump); at 300 no id can be read.
+            "getUpdates" if offset == json!(100) && limit == json!(1) => {
+                json!([{"update_id": 100, "message": {"chat": {"id": 42, "type": "private"}, "text": "/stop"}}])
             }
+            // Written as Telegram orders it (`update_id` first); `json!` would sort the keys.
+            "getUpdates" if offset == json!(100) || offset == json!(200) => {
+                let id = if offset == json!(100) { 100 } else { 205 };
+                return (StatusCode::OK, oversized(&format!("\"update_id\":{id},")));
+            }
+            "getUpdates" if offset == json!(300) => return (StatusCode::OK, oversized("")),
             "getUpdates" => json!([
                 {"update_id": 7, "message": {"chat": {"id": 42, "type": "private"}, "text": "/start abc"}},
                 {"update_id": 8, "message": {"chat": {"id": -5, "type": "group"}, "text": "hi"}},
                 {"update_id": 9, "edited_message": {}},
             ]),
             "sendMessage" if blocked => {
-                return (StatusCode::FORBIDDEN, Json(json!({"ok": false})));
+                return (StatusCode::FORBIDDEN, json!({"ok": false}).to_string());
             }
             "sendMessage" => json!({"message_id": 1}),
-            _ => return (StatusCode::NOT_FOUND, Json(json!({"ok": false}))),
+            _ => return (StatusCode::NOT_FOUND, json!({"ok": false}).to_string()),
         };
-        (StatusCode::OK, Json(json!({"ok": true, "result": result})))
+        (
+            StatusCode::OK,
+            json!({"ok": true, "result": result}).to_string(),
+        )
     }
 
     async fn fake() -> Result<(String, Arc<Fake>), Box<dyn std::error::Error>> {
@@ -457,11 +486,14 @@ mod tests {
         assert_eq!(received.cursor.as_deref(), Some("101"));
         assert_eq!(received.messages.len(), 1);
         assert_eq!(received.messages[0].text, "/stop");
+        // Stepped past by the id the answer starts with (review round 2), not the offset.
         let skipped = bot.receive(Some("200")).await.map_err(|e| e.as_str())?;
-        assert_eq!(skipped.cursor.as_deref(), Some("201"));
+        assert_eq!(skipped.cursor.as_deref(), Some("206"));
         assert!(skipped.messages.is_empty());
+        // No id to read: an error, so the poll backs off rather than asking at once again.
+        assert_eq!(bot.receive(Some("300")).await, Err(ChannelError::Invalid));
         let polls = fake.bodies.lock().map(|b| b.len()).unwrap_or(0);
-        assert_eq!(polls, 4, "two tries each");
+        assert_eq!(polls, 6, "two tries each");
         Ok(())
     }
 
@@ -483,6 +515,23 @@ mod tests {
         };
         assert!(!format!("{client:?}").contains("synthetic"));
         Ok(())
+    }
+
+    #[test]
+    fn the_first_update_id_is_read_from_a_cut_head() {
+        assert_eq!(
+            first_update_id(br#"{"ok":true,"result":[{"update_id": 42,"message":{"text":"x"#),
+            Some(42)
+        );
+        assert_eq!(first_update_id(br#"{"ok":true,"result":[{"message""#), None);
+        assert_eq!(first_update_id(br#"{"update_id":"#), None);
+        let mut cut = br#"{"update_id":7,"message":{"text":""#.to_vec();
+        cut.extend_from_slice(&"\u{6f22}".as_bytes()[..2]);
+        assert_eq!(
+            first_update_id(&cut),
+            Some(7),
+            "a cut character ends the head"
+        );
     }
 
     #[test]

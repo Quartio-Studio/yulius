@@ -5324,7 +5324,8 @@ route('POST', '/api/admin/jev/test', ({ db }) => {
 // The personal Telegram channel (SPEC-498): the bot (instance administrators) and the person's chat.
 function telegramBotView(db) {
   const t = db.telegram;
-  return { configured: Boolean(t.bot), bot_username: t.bot, set_at: t.setAt, set_by: t.setBy, state: t.bot ? 'polling' : 'off', last_error: null, linked: t.linkedAt ? 1 : 0 };
+  const state = t.bot ? (t.starting ? 'starting' : 'polling') : 'off';
+  return { configured: Boolean(t.bot), bot_username: t.bot, set_at: t.setAt, set_by: t.setBy, state, last_error: null, linked: t.linkedAt ? 1 : 0 };
 }
 function myTelegramView(db) {
   const t = db.telegram;
@@ -5332,13 +5333,14 @@ function myTelegramView(db) {
   return { available: Boolean(t.bot), bot_username: t.bot, linked, linked_at: linked ? t.linkedAt : null, choices: linked ? { ...t.choices } : { needs_you: true, done: false, failed: false, account: false }, account_choice: isAdmin(db) };
 }
 const instanceAdminOnly = (db) => { if (!isAdmin(db)) fail(403, 'forbidden', 'instance administrators only'); };
-route('GET', '/api/admin/telegram', ({ db }) => { instanceAdminOnly(db); return telegramBotView(db); });
+// A saved bot reads `starting` until the next read, as if Telegram's first poll answered then.
+route('GET', '/api/admin/telegram', ({ db }) => { instanceAdminOnly(db); const view = telegramBotView(db); db.telegram.starting = false; return view; });
 route('PUT', '/api/admin/telegram', ({ db, body }) => {
   instanceAdminOnly(db);
   const token = String(body.token || '').trim();
   if (!/^\d+:[A-Za-z0-9_-]+$/.test(token)) fail(422, 'invalid', 'this is not a Telegram bot token (it looks like 123456789:ABC…, from @BotFather)');
   if (token.includes('refused')) fail(422, 'invalid', 'Telegram refused this token. Copy it again from @BotFather.');
-  Object.assign(db.telegram, { bot: 'yulius_mock_bot', setAt: new Date().toISOString(), setBy: db.me.user.login });
+  Object.assign(db.telegram, { bot: 'yulius_mock_bot', setAt: new Date().toISOString(), setBy: db.me.user.login, starting: true });
   return telegramBotView(db);
 });
 route('DELETE', '/api/admin/telegram', ({ db }) => {

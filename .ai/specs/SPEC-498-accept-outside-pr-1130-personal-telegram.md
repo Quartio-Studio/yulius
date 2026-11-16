@@ -63,8 +63,11 @@ any inbound port.
   after a successful poll); the admin state shows `starting` until a poll was answered, then
   `polling`, and `retrying` with the last error's kind. A poll asks
   for at most 20 updates, so an answer fits the client's 1 MiB bound; one over it anyway is asked
-  again one update at a time, and a single update over it is stepped past with a log (review round
-  1: 100 long messages, Telegram's default batch, stopped every `/start` for good).
+  again one update at a time, and a single update over it is stepped past by the `update_id` its
+  answer starts with, with a log; without a readable id it is an error and the poll backs off
+  (review rounds 1 and 2: 100 long messages, Telegram's default batch, stopped every `/start` for
+  good). While the bot is `starting` or `retrying` its Settings card reads the state again every
+  2 s.
 - TGC-004: the Telegram Bot API base URL is configurable (`YULIUS_TELEGRAM_API_URL`, default
   `https://api.telegram.org`); a non-HTTPS URL is accepted only for a loopback host (tests run a
   fake server). The token never appears in a log line, an error or an API answer.
@@ -103,8 +106,8 @@ any inbound port.
   task number and title, the `needs_you` action/problem (or "Decide"), and a link
   `{PUBLIC_URL}/s/{slug}/t/{n}`. What is the case when a bot becomes active (a start of the
   server, a bot set in Settings) is read into the notifier's memory first (every task, its
-  sandbox-wide episode and request for control, every subscription), and remembered while nobody
-  is linked too, so only a change after it is told, whatever moved (a status, a chain blocked, a
+  sandbox-wide episode and request for control, every subscription) by the notifier's own task
+  while events wait for it, and remembered while nobody is linked too, so only a change after it is told, whatever moved (a status, a chain blocked, a
   pull request's checks). (#1130 judged a task first seen after the start by its state time, which
   a blocked chain or a pull request's checks do not move: such news was dropped for good; review
   round 1.)
@@ -160,7 +163,15 @@ taken-back control and a stalled pull request.
 ### Known limits (accepted for part 1)
 
 - The notifier follows the bus like an event stream but cannot resync: if it falls more than 1024
-  events behind, the missed notices are logged and lost. It skips all work while nobody is linked.
+  events behind, the missed notices are logged and lost. It reads and remembers while a bot is
+  active even when nobody is linked, and does nothing while no bot is.
+- The seed runs on the notifier's own task, before the events waiting behind it, and replaces the
+  memory in one step; tasks and subscriptions in it are bounded by the store. Episodes and
+  requests for control told are bounded at 20,000: past that the memory of them starts again, and
+  one still open may be told once more.
+- At a start the seed reads the tasks before the pull-request watch and the adoption of shells
+  have run, so a finished task whose reading depends on them (its pull request's checks, a
+  background shell) may be told once when they arrive (not reproduced; review round 2).
 - The poll's update offset lives in memory: after a restart or a new bot, the last batch Telegram
   had not yet confirmed is handled again (a `/stop` answered twice, a used code called invalid).
 - Telegram's 429 answer is not retried with its `retry_after`; the message is dropped with a log.
@@ -183,7 +194,7 @@ taken-back control and a stalled pull request.
 - [x] Review round 1 minors: stalled PR decision, poll state, relink keeps choices, label test, mutants
 - [x] Independent review round 2 run (request changes: answered by the items below)
 - [x] The notifier seeds itself in order with events, outside the memory's bound, and a restart is tested
-- [ ] Round 2 minors: an oversized update skipped by its id, the bot card refreshes while starting
+- [x] Round 2 minors: an oversized update skipped by its id, the bot card refreshes while starting
 - [ ] Independent review of the fixes approved
 
 The contributor's own plan (all done on their fork): spec, ADR and the channel port; the sealed
@@ -296,6 +307,34 @@ and a two-round independent review.
   key" for the instance key, as for task #478 earlier today. Neither passed nor failed; the pull
   request's CI `security` job reports what it gets.
 - The whole gate is Yulius CI's on the pull request head.
+
+### Review round 2 (Fable 5.2, head `4aa7e1dd2`): request changes, answered
+
+- Major 1 (the seed wrote through the bounded memory: past 20,000 subjects it re-armed its own
+  reseed on every event; a reseed in front of an event swallowed its notice): the seed now runs on
+  the notifier's own task (`App::activate_seeded` asks it and waits; a `biased` select runs it
+  before the events waiting behind it, which are held while `seed_due`), and replaces the memory
+  in one step. Tasks and subscriptions are no longer bounded in it (the store bounds them); only
+  episodes and requests for control are, at 20,000, with no reseed
+  (`notify::tests::the_once_memory_is_bounded`).
+- Major 2 (no test of the start path): `telegram::a_start_with_a_saved_bot_tells_only_later_changes`
+  saves a bot, links and state before `start_channel`, then blocks a chain after it. With the
+  start's seed removed it failed (chat 100 was told the older Needs you); with it, it passes.
+- Minor 3 (a state entered while the seed runs): answered by major 1's design: events wait for
+  the seed and are compared against it. The unverified start-order concern is recorded under
+  Known limits.
+- Minor 4: the bot card reads the state again every 2 s while `starting` or `retrying` (the status
+  line only); `telegram.e2e.ts` expects "is starting" after a save, then "is receiving" (it failed
+  before: 2 of 4 tests).
+- Minor 5: an oversized update is stepped past by the `update_id` its answer starts with
+  (`first_update_id`), or is an error so the poll backs off;
+  `a_batch_over_the_bound_is_read_one_at_a_time_or_skipped` (id 205 at offset 200, no id at 300)
+  failed before (`Some("201")`), passes; `the_first_update_id_is_read_from_a_cut_head`. The fake
+  writes oversized answers in Telegram's field order (`json!` sorts keys).
+- Nit 6: the stale Known limits sentence is replaced. Nit 7: the fake holds its polls while the
+  test reads `starting`, then releases them.
+- After the fixes: 43 Telegram, notifier, store and domain tests pass; `--stress-count 10` of the
+  15 Telegram integration tests: 10/10; `scripts/dev lint` exit 0; e2e `telegram.e2e.ts` 4/4.
 
 ### Review round 1 (Fable 5.2, head `22ca704d4`): request changes, answered
 

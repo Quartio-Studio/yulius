@@ -28,6 +28,8 @@ export function telegramBotCard(ctx) {
     h('div', { class: 'settings-head' }, icon('bell', { size: 16 }), h('h2', { id: 'telegram-bot-title' }, 'Telegram bot'), h('span', { class: 'muted small' }, 'notifications on people’s phones')),
     body);
   let state = null;
+  let statusBox = null;
+  let refresh = null;
 
   function statusText() {
     if (!state.configured) return 'No bot: nobody can link a Telegram chat.';
@@ -66,13 +68,33 @@ export function telegramBotCard(ctx) {
     const remove = state.configured
       ? h('button', { type: 'button', class: 'btn btn-sm btn-danger', onClick: () => removeBot() }, 'Remove')
       : null;
-    const on = state.configured && state.state === 'polling';
+    statusBox = h('div');
     setChildren(body,
       h('p', { class: 'text-2' }, 'One bot serves the whole instance. Each person links their own chat in Settings → Notifications and chooses what reaches it. The server asks Telegram for messages, so no inbound port or public URL is needed. Create a bot with @BotFather and paste its token here.'),
-      h('div', { class: ['jev-status', on ? 'jev-on' : 'jev-off'] }, icon(on ? 'check' : 'key', { size: 14 }), h('span', { role: 'status' }, statusText())),
+      statusBox,
       remove ? h('div', { class: 'row' }, remove) : null,
       form,
       h('p', { class: 'muted xs', id: 'settings-telegram-hint' }, 'Checked with Telegram, stored encrypted on this server and never shown again. Another bot’s token unlinks every chat.'));
+    showStatus();
+  }
+
+  // The status line alone, so a token being typed stays. While the bot starts or retries, the
+  // state is read again every 2 s until it settles or the card is gone (review round 2).
+  function showStatus() {
+    const on = state.configured && state.state === 'polling';
+    statusBox.className = ['jev-status', on ? 'jev-on' : 'jev-off'].join(' ');
+    setChildren(statusBox, icon(on ? 'check' : 'key', { size: 14 }), h('span', { role: 'status' }, statusText()));
+    clearTimeout(refresh);
+    if (!['starting', 'retrying'].includes(state.state)) return;
+    refresh = setTimeout(async () => {
+      if (!card.isConnected) return;
+      try {
+        state = await ctx.api.get('/api/admin/telegram');
+      } catch {
+        // Read again at the next turn.
+      }
+      if (card.isConnected) showStatus();
+    }, 2000);
   }
 
   async function removeBot() {

@@ -24,6 +24,9 @@ test('an instance administrator sets and removes the Telegram bot', async ({ app
   await expect(screen.getByText(/Telegram refused this token/)).toBeVisible();
   await browser.locator('#settings-telegram-token').fill('12345:a-good-token');
   await card.getByRole('button', 'Save').click();
+  // Until Telegram's first answer the card says it is starting, then reads the state again by
+  // itself (review round 2: it said "starting" until a reload).
+  await expect(card.getByText(/@yulius_mock_bot is starting: waiting for Telegram's first answer/)).toBeVisible();
   await expect(card.getByText(/@yulius_mock_bot is receiving\. Set by mkarp/)).toBeVisible();
   // The token is never shown again.
   expect(await browser.evaluate(() => document.body.innerText)).not.toMatch(/a-good-token/);

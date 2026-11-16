@@ -49,6 +49,9 @@ struct FakeTelegram {
     sent_changed: tokio::sync::Notify,
     polls: AtomicUsize,
     fail_polls: AtomicUsize,
+    /// While set, no poll is answered (released with `release`).
+    hold_polls: std::sync::atomic::AtomicBool,
+    released: tokio::sync::Notify,
 }
 
 impl FakeTelegram {
@@ -123,6 +126,13 @@ async fn bot_api(
             json!({"message_id": 1})
         }
         "getUpdates" => {
+            loop {
+                let released = fake.released.notified();
+                if !fake.hold_polls.load(Ordering::SeqCst) {
+                    break;
+                }
+                released.await;
+            }
             if fake
                 .fail_polls
                 .try_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
@@ -356,6 +366,7 @@ async fn an_instance_administrator_sets_and_removes_the_bot() -> TestResult {
     assert!(w.h.store.chat_bot().await?.is_none(), "nothing saved");
 
     // An instance administrator who is not the superadmin sets it.
+    w.fake.hold_polls.store(true, Ordering::SeqCst);
     let r = api(
         &w,
         Method::PUT,
@@ -368,9 +379,12 @@ async fn an_instance_administrator_sets_and_removes_the_bot() -> TestResult {
     assert_eq!(r.body["configured"], true);
     assert_eq!(r.body["bot_username"], "yulius_a_bot");
     assert_eq!(r.body["set_by"], "alice");
-    // Nothing answered yet: the fake's first long poll waits a second with nothing to send
-    // (review round 1: "polling" claimed it was receiving before any poll succeeded).
+    // No poll answered yet (the fake holds them): it is starting (review round 1: "polling"
+    // claimed it was receiving before any poll succeeded).
     assert_eq!(r.body["state"], "starting", "{}", r.body);
+    assert_eq!(wait_state(&w, "starting").await?["state"], "starting");
+    w.fake.hold_polls.store(false, Ordering::SeqCst);
+    w.fake.released.notify_waiters();
     let stored = w.h.store.chat_bot().await?.ok_or("stored")?;
     assert!(
         !String::from_utf8_lossy(&stored.sealed.0).contains("synthetic"),
