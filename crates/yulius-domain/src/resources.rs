@@ -35,6 +35,11 @@ pub const MAX_DECLARED_MEMORY_GB: u64 = 4096;
 /// The default agent budget is the capacity divided by this: three agents running their tests or
 /// builds at once fill the sandbox (SPEC-082 RES-005).
 pub const AGENT_SHARE: u32 = 3;
+/// A CI job that declares no `cpus` gets at most this fraction of the capacity it is shared from
+/// (SPEC-497: autoresearch's one-job `gate` reserved all 64 CPUs for a 0.1 s run).
+pub const DEFAULT_SHARE_MAX: u32 = 4;
+/// The largest overcommit factor of `YULIUS_CI_OVERCOMMIT` (SPEC-497).
+pub const MAX_OVERCOMMIT: u32 = 8;
 /// The default agent budget is never below this many CPUs (when the sandbox has them).
 pub const AGENT_MIN_CPUS: u32 = 2;
 /// Variables never set from `[resources.env]`: what Yulius sets itself, and what changes how the
@@ -148,8 +153,10 @@ impl Capacity {
     }
 
     /// The budget of one CI job of a run of `jobs` jobs: what it declares, else an equal share of
-    /// the capacity among the run's jobs (at least one CPU); memory not declared follows the
-    /// CPUs. Never more than the capacity, so a job that asks for more runs alone.
+    /// the capacity among the run's jobs, at most a [`DEFAULT_SHARE_MAX`]th of it (SPEC-497: a
+    /// one-job run reserved the whole host and used a fraction), at least one CPU; memory not
+    /// declared follows the CPUs. Never more than the capacity, so a job that asks for more runs
+    /// alone.
     ///
     /// # Examples
     /// ```
@@ -157,8 +164,9 @@ impl Capacity {
     /// let sandbox = Capacity::new(12, 48 * 1024);
     /// assert_eq!(
     ///     sandbox.ci_job(Need::default(), 2),
-    ///     Budget { cpus: 6, memory_mb: 24 * 1024 }
+    ///     Budget { cpus: 3, memory_mb: 12 * 1024 }
     /// );
+    /// assert_eq!(sandbox.ci_job(Need::default(), 6).cpus, 2);
     /// let declared = Need { cpus: Some(4), memory_mb: None };
     /// assert_eq!(declared.cpus, Some(4));
     /// assert_eq!(sandbox.ci_job(declared, 2), Budget { cpus: 4, memory_mb: 16 * 1024 });
@@ -166,7 +174,10 @@ impl Capacity {
     #[must_use]
     pub fn ci_job(&self, need: Need, jobs: usize) -> Budget {
         let share = u32::try_from(jobs.max(1)).unwrap_or(u32::MAX);
-        let cpus = need.cpus.unwrap_or(self.cpus / share).clamp(1, self.cpus);
+        let cpus = need
+            .cpus
+            .unwrap_or((self.cpus / share).min(self.cpus / DEFAULT_SHARE_MAX))
+            .clamp(1, self.cpus);
         let memory_mb = need
             .memory_mb
             .unwrap_or_else(|| self.memory_for(cpus))
@@ -340,16 +351,21 @@ impl fmt::Display for Admission {
 /// let reserved = Budget { cpus: 32, memory_mb: 64 * 1024 };
 /// // The two running jobs reserved 32 CPUs but use 50: a third does not fit.
 /// let held = Held { jobs: 2, reserved, measured: Some(Budget { cpus: 50, memory_mb: 1024 }) };
-/// assert!(matches!(admit(budget, &held, need), Admission::Wait { held: 50, .. }));
+/// assert!(matches!(admit(budget, &held, need, 1), Admission::Wait { held: 50, .. }));
 /// // Measured below their reservation, the reservation counts: 32 + 16 fit.
 /// let held = Held { jobs: 2, reserved, measured: Some(Budget { cpus: 20, memory_mb: 1024 }) };
-/// assert_eq!(admit(budget, &held, need), Admission::Now);
+/// assert_eq!(admit(budget, &held, need, 1), Admission::Now);
 /// ```
 #[must_use]
-pub fn admit(budget: Capacity, held: &Held, need: Budget) -> Admission {
+pub fn admit(budget: Capacity, held: &Held, need: Budget, overcommit: u32) -> Admission {
     if held.jobs == 0 {
         return Admission::Now;
     }
+    // Reservations count at 1/overcommit (`YULIUS_CI_OVERCOMMIT`, the production hotfix of
+    // 16 Nov 2026 carried forward): what jobs declare is about four times what they use, and
+    // measured use, at face value, still guards the host.
+    let factor = u64::from(overcommit.clamp(1, MAX_OVERCOMMIT));
+    let scaled = |n: u64| n.div_ceil(factor);
     let measured = held.measured;
     let checks = [
         (
@@ -368,7 +384,8 @@ pub fn admit(budget: Capacity, held: &Held, need: Budget) -> Admission {
         ),
     ];
     for (short, reserved, measured, need, budget) in checks {
-        let need = need.min(budget);
+        let need = scaled(need.min(budget));
+        let reserved = scaled(reserved);
         let held = reserved.max(measured.unwrap_or(0));
         if held.saturating_add(need) > budget {
             return Admission::Wait {
@@ -556,9 +573,9 @@ mod tests {
             }),
         };
         // Four 16-CPU jobs by their declarations would take 64; the budget is 56.
-        assert_eq!(admit(budget, &held(2, 32, None), need), Admission::Now);
+        assert_eq!(admit(budget, &held(2, 32, None), need, 1), Admission::Now);
         assert!(matches!(
-            admit(budget, &held(3, 48, None), need),
+            admit(budget, &held(3, 48, None), need, 1),
             Admission::Wait {
                 short: Short::Cpu,
                 held: 48,
@@ -566,7 +583,7 @@ mod tests {
             }
         ));
         // What two jobs really use decides when it is more than they reserved.
-        let measured = admit(budget, &held(2, 32, Some(45)), need);
+        let measured = admit(budget, &held(2, 32, Some(45)), need, 1);
         assert!(
             matches!(
                 measured,
@@ -582,7 +599,10 @@ mod tests {
             measured.to_string(),
             "CI holds 45 of the host's 56 CPUs for CI (32 reserved, 45 measured); this job needs 16"
         );
-        assert_eq!(admit(budget, &held(2, 32, Some(40)), need), Admission::Now);
+        assert_eq!(
+            admit(budget, &held(2, 32, Some(40)), need, 1),
+            Admission::Now
+        );
         // Memory too.
         let big = Held {
             jobs: 1,
@@ -602,6 +622,7 @@ mod tests {
                 cpus: 1,
                 memory_mb: 16 * 1024,
             },
+            1,
         );
         assert!(
             matches!(
@@ -618,11 +639,64 @@ mod tests {
             cpus: 200,
             memory_mb: 1024,
         };
-        assert_eq!(admit(budget, &held(0, 0, Some(64)), huge), Admission::Now);
+        assert_eq!(
+            admit(budget, &held(0, 0, Some(64)), huge, 1),
+            Admission::Now
+        );
         assert!(matches!(
-            admit(budget, &held(1, 1, None), huge),
+            admit(budget, &held(1, 1, None), huge, 1),
             Admission::Wait { need: 56, .. }
         ));
+    }
+
+    /// SPEC-497 (the production hotfix carried forward): with an overcommit factor of 2, idle
+    /// reservations block half as much, the need counts at half, and measured use still at face
+    /// value; the factor is at most 8.
+    #[test]
+    fn reservations_count_at_one_over_the_overcommit_factor() {
+        let budget = Capacity::new(64, 512 * 1024).ci_budget();
+        let need = Budget {
+            cpus: 21,
+            memory_mb: 1,
+        };
+        let held = |reserved: u32, measured: Option<u32>| Held {
+            jobs: 3,
+            reserved: Budget {
+                cpus: reserved,
+                memory_mb: 1,
+            },
+            measured: measured.map(|cpus| Budget { cpus, memory_mb: 1 }),
+        };
+        // 63 reserved by three idle jobs: nothing more by reservations alone.
+        assert!(matches!(
+            admit(budget, &held(63, Some(10)), need, 1),
+            Admission::Wait { .. }
+        ));
+        // At 2: 32 + 11 of 56.
+        assert_eq!(admit(budget, &held(63, Some(10)), need, 2), Admission::Now);
+        // Measured use still guards the host: 50 measured + 11 > 56.
+        let wait = admit(budget, &held(63, Some(50)), need, 2);
+        assert!(
+            matches!(
+                wait,
+                Admission::Wait {
+                    held: 50,
+                    need: 11,
+                    reserved: 32,
+                    ..
+                }
+            ),
+            "{wait:?}"
+        );
+        // 0 counts as 1, and more than 8 as 8.
+        assert_eq!(
+            admit(budget, &held(63, Some(10)), need, 0),
+            admit(budget, &held(63, Some(10)), need, 1)
+        );
+        assert_eq!(
+            admit(budget, &held(440, Some(1)), need, 100),
+            admit(budget, &held(440, Some(1)), need, 8)
+        );
     }
 
     /// SPEC-497 (review round 1): a run's default shares are of the CI budget, so they start
@@ -634,7 +708,11 @@ mod tests {
             let share = budget.ci_job(Need::default(), jobs);
             let mut held = Held::default();
             for _ in 0..jobs {
-                assert_eq!(admit(budget, &held, share), Admission::Now, "{jobs} jobs");
+                assert_eq!(
+                    admit(budget, &held, share, 1),
+                    Admission::Now,
+                    "{jobs} jobs"
+                );
                 held.jobs += 1;
                 held.reserved.cpus += share.cpus;
                 held.reserved.memory_mb += share.memory_mb;
@@ -646,17 +724,17 @@ mod tests {
     fn ci_jobs_share_the_capacity_unless_they_declare_their_need() {
         let sandbox = Capacity::new(10, 38 * 1024);
         assert_eq!(
-            sandbox.ci_job(Need::default(), 2),
+            sandbox.ci_job(Need::default(), 5),
             Budget {
-                cpus: 5,
-                memory_mb: 19 * 1024
+                cpus: 2,
+                memory_mb: 38 * 1024 / 5
             },
-            "two jobs share it equally"
+            "five jobs share it equally"
         );
         assert_eq!(
             sandbox.ci_job(Need::default(), 0).cpus,
-            10,
-            "one job takes it"
+            2,
+            "one job takes a quarter at most (SPEC-497)"
         );
         assert_eq!(
             sandbox.ci_job(Need::default(), 40).cpus,

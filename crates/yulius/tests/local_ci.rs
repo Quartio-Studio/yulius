@@ -3205,7 +3205,11 @@ async fn a_tests_failure_is_never_taken_for_the_infrastructure() -> TestResult {
     f.settle().await?;
     let job = pull_job(&f).await?;
     assert_eq!(job["state"], "failed", "{job}");
-    assert_eq!(attempts_of(&f)?, [1, 1], "no second run after a test's failure");
+    assert_eq!(
+        attempts_of(&f)?,
+        [1, 1],
+        "no second run after a test's failure"
+    );
 
     let f = fixture_with(false, |data| {
         attempts(data, NO_POOL, "echo \"test x ... FAILED\"; exit 101")

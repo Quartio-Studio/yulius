@@ -672,7 +672,7 @@ impl App {
             };
             self.ci_network_room(&run.sandbox_id, &job.id).await;
             let slot = slots.acquire().await?;
-            let reservation = self.ci_reserve(&job.id, budget).await?;
+            let reservation = self.ci_reserve(&run.sandbox_id, &job.id, budget).await?;
             Some((turn, slot, reservation))
         };
         let permit = tokio::select! {

@@ -114,6 +114,9 @@ pub struct CiSettings {
     pub poll: Duration,
     /// Bytes a CD or environment run's files and cache may use (SPEC-300, ADR-0216).
     pub run_disk_max: u64,
+    /// `YULIUS_CI_OVERCOMMIT`, 1 to 8: CI reservations count at 1/factor against the host's CI
+    /// budget, measured use at face value (SPEC-497, the production hotfix of 16 Nov 2026).
+    pub overcommit: u32,
 }
 
 impl Default for CiSettings {
@@ -125,6 +128,7 @@ impl Default for CiSettings {
             job_timeout: Duration::from_secs(30 * 60),
             poll: Duration::from_secs(60),
             run_disk_max: 20_000_000_000,
+            overcommit: 1,
         }
     }
 }
