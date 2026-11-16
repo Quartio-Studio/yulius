@@ -80,6 +80,7 @@ links (#1149).
 - [x] The task search shows its results in Safari (same rule, found on current dev)
 - [x] Measured in real WebKit and Chromium before and after
 - [x] Independent review of the Safari fix
+- [x] CI's pool_supervision race: two tests wait for Running (found by this PR's CI)
 - [ ] README links yulius.dev on line 12 and in the diagram (contributor's commit plus line 47)
 - [ ] Independent review of the README links
 
@@ -158,6 +159,17 @@ Part 1, the dialog fix (#1142), on `dev` `c7348d044` with the branch's commits (
   default workers and with `--workers 1`. In WebKit 26.0 the new geometry check fails with
   `dev`'s stylesheet (the first row's bottom is 238 against the list's 200) and passes with the
   branch's.
+- Yulius CI run `095f9add` at `d7fa854b2` failed in `quality` on
+  `pool_supervision::a_chosen_subscription_that_filled_up_while_waiting_is_given_up`
+  (`left: (Starting, Some("a-first"))`, `right: (Running, …)`): a race in an older test, not in
+  this change. The supervisor marks a run's attempt `Live`, then moves its task to `Running` in
+  a second write; the test waited only for the first. A probe of 300 ms between the two writes
+  fails it every time, and also `a_refused_subscription_moves_the_task_to_a_working_one`, which
+  waits the same way; the rest of `pool_supervision` passes with the probe. Both waits now also
+  wait for `Running`. With the probe: 31 of 31 passed. Without it: 31 of 31 passed, and the two
+  tests passed `--stress-count 20`. `cargo fmt --all --check` and `cargo clippy -p yulius
+  --all-features --tests -- -D warnings` are clean. No open issue or pull request covered it. It
+  is fixed here because it blocked this pull request's merge, in its own commit.
 - Full e2e suite (`npx e2e run`), before that test fix: 1064 passed, 1 skipped (87 files, 5 min).
 - `python3 scripts/check_repository.py`: "Repository contracts passed".
 - `yulius security-scan`: exit 2, not run: Vidoc refused the instance's key (HTTP 401). Only CSS
