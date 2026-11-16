@@ -1286,3 +1286,47 @@ async fn a_dropped_save_never_brings_a_removed_bot_back() -> TestResult {
     );
     Ok(())
 }
+
+/// TGC-002 (review round 5): a Remove whose request goes away while it waits for the switch lock
+/// still stops the bot and is audited.
+#[tokio::test]
+async fn a_dropped_remove_is_still_audited() -> TestResult {
+    let w = world().await?;
+    let hold = Arc::clone(&w.seeds).write_owned().await;
+    {
+        let save = set_bot(&w, TOKEN_A);
+        tokio::pin!(save);
+        let saved = async {
+            while w.h.store.chat_bot().await.ok().flatten().is_none() {
+                tokio::task::yield_now().await;
+            }
+        };
+        tokio::select! {
+            done = &mut save => return Err(format!("the save ended under a held seed: {:?}", done.map(|r| r.body)).into()),
+            () = saved => {}
+            () = tokio::time::sleep(Duration::from_secs(10)) => return Err("the bot was never saved".into()),
+        }
+    }
+    {
+        // The remove waits behind the save's switch, then its request goes away.
+        let remove = api(&w, Method::DELETE, "/api/admin/telegram", None, &w.admin);
+        tokio::pin!(remove);
+        let early = tokio::time::timeout(Duration::from_millis(500), &mut remove).await;
+        assert!(early.is_err(), "the remove overtook the save's switch");
+    }
+    drop(hold);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    while audits(&w, "telegram", "telegram.bot_removed")
+        .await?
+        .is_empty()
+    {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the dropped remove was never audited"
+        );
+        tokio::task::yield_now().await;
+    }
+    assert!(w.h.store.chat_bot().await?.is_none());
+    assert!(!w.h.app.telegram_polling(), "the removed bot polls");
+    Ok(())
+}

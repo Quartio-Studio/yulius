@@ -1,11 +1,11 @@
 ---
 yulius-task: 3198a378-db24-4c80-afc4-c1e74e43df48
-status: in-progress
+status: done
 ---
 
 # SPEC-498: A personal Telegram channel for notifications (part 1 of #1107)
 
-Status: in-progress
+Status: done
 Date: 2026-11-16 (contributor's spec of 2026-11-07, brought onto current `dev`)
 Owner: Yulius task #480, accepting outside pull request #1130 by studenciak00owl (accepted by
 MrFishPL). The contributor wrote it as SPEC-444 with ADR-0287 and migration 0050 on their fork;
@@ -200,7 +200,7 @@ taken-back control and a stalled pull request.
 - [x] Round 3: the notifier activates the bot after its seed; the e2e flake, the card's late read and id overflow fixed
 - [x] Independent review round 4 run (request changes: answered by the item below)
 - [x] Round 4: a Save whose request goes away still finishes its switch, so a Remove is never overtaken
-- [ ] Independent review of the fixes approved
+- [x] Independent review of the fixes approved
 
 The contributor's own plan (all done on their fork): spec, ADR and the channel port; the sealed
 bot token; long polling with backoff; link codes, `/start` and `/stop`; notifications classified,
@@ -312,6 +312,20 @@ and a two-round independent review.
   key" for the instance key, as for task #478 earlier today. Neither passed nor failed; the pull
   request's CI `security` job reports what it gets.
 - The whole gate is Yulius CI's on the pull request head.
+
+### Review round 5 (Opus 5.5, head `9fe785b6e`): approve
+
+- Approved round 4's answers (nothing before the spawn writes state, no deadlock, the JoinError
+  mapping, the `seed_hold` placement, the 500 ms bound as a fair negative check) and that the dev
+  merge left every product file's diff unchanged.
+- Minor 1, fixed after the approval within the 20-line allowance (`telegram.rs` 18/18): a Remove
+  whose request goes away while it waits behind a Save's switch now still writes its
+  `telegram.bot_removed` audit (the audit moved into the spawned task).
+  `telegram::a_dropped_remove_is_still_audited` failed before ("the dropped remove was never
+  audited"), passes; the Telegram integration tests `--stress-count 3`: 3/3.
+- Nits left as they are, said here: a panic in a switch reaches the panic hook's log, not a
+  `tracing` line (2); a Save that waited behind a Remove keeps the time it was asked at (3); the
+  `seed_hold` doc says "no seed runs" where a seed already past the read keeps running (4).
 
 ### Review round 4 (Opus 5.5, head `28f7a62db`): request changes, answered
 

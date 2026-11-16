@@ -570,34 +570,34 @@ impl App {
     ) -> AppResult<TelegramBotView> {
         self.require_instance_admin(ctx)?;
         let now = self.now();
-        // On its own task, like a set: a request that goes away still stops the bot and unlinks.
+        let login = self.login_of(&ctx.user.id).await;
+        // On its own task, like a set: a request that goes away still stops the bot, unlinks
+        // and is audited.
         let app = Arc::clone(self);
-        let (had, unlinked) = tokio::spawn(async move {
+        tokio::spawn(async move {
             let services = app.channel_services()?;
             let _switching = services.switching.lock().await;
             let had = app.deps.store.chat_bot().await?.is_some();
             app.activate(None);
             app.deps.store.set_chat_bot(None, now).await?;
             let unlinked = app.deps.store.clear_chat_links().await?;
-            AppResult::Ok((had, unlinked))
+            if had {
+                app.deps
+                    .store
+                    .audit(
+                        now,
+                        &login,
+                        "telegram.bot_removed",
+                        Some(AUDIT_TARGET),
+                        Some(&format!("unlinked {unlinked}")),
+                    )
+                    .await?;
+                tracing::info!("the Telegram channel is off (bot removed)");
+            }
+            AppResult::Ok(())
         })
         .await
         .map_err(|_| AppError::Internal("the Telegram bot could not be removed".into()))??;
-        if !had {
-            return self.telegram_bot_view(ctx).await;
-        }
-        let login = self.login_of(&ctx.user.id).await;
-        self.deps
-            .store
-            .audit(
-                now,
-                &login,
-                "telegram.bot_removed",
-                Some(AUDIT_TARGET),
-                Some(&format!("unlinked {unlinked}")),
-            )
-            .await?;
-        tracing::info!("the Telegram channel is off (bot removed)");
         self.telegram_bot_view(ctx).await
     }
 
