@@ -1,10 +1,12 @@
 //! Pull requests, checks, merges, fast-forwards and comparisons (GIT-001/002, DLV).
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use reqwest::Method;
+use tokio::time::Instant;
 
 use crate::client::{GitHubClient, decode};
+use crate::config::RetryPolicy;
 use crate::error::GitHubError;
 use crate::http::{Call, backoff, upstream_message};
 use crate::secret::Secret;
@@ -27,6 +29,29 @@ pub const MERGE_ATTEMPTS: u32 = 4;
 
 /// Most reads of a pull request per wait for GitHub to compute its mergeability (MRG-001).
 const MERGEABILITY_READS: u32 = 6;
+
+/// Longest a merge waits for GitHub, in all its sleeps (MRG-002): well below the 30 s after
+/// which the CD page gives up on a deploy request, whatever the client's retry budget.
+const MERGE_WAIT: Duration = Duration::from_secs(12);
+
+/// The budget of one merge's waits: the client's retry budget, at most [`MERGE_WAIT`].
+fn merge_budget(policy: &RetryPolicy) -> Duration {
+    policy.max_total.min(MERGE_WAIT)
+}
+
+/// Whether a pull request GitHub refused with a transient 405 is worth merging again: open, not
+/// a draft, mergeable, and not blocked by branch protection or behind its base (MRG-002).
+fn worth_retrying(pull: Option<&WireMergeability>) -> bool {
+    pull.is_some_and(|p| {
+        p.state == "open"
+            && p.mergeable == Some(true)
+            && p.draft != Some(true)
+            && !matches!(
+                p.mergeable_state.as_deref(),
+                Some("blocked" | "behind" | "dirty" | "draft")
+            )
+    })
+}
 
 /// GitHub's 405 for a merge it could not judge yet: right after the pull request was opened or
 /// its base moved, while `mergeable` is still being computed.
@@ -65,7 +90,10 @@ fn refusal(
                     p.base()
                 )),
                 _ if transient => {
-                    Some(format!("GitHub still refused it after {attempts} attempts"))
+                    let plural = if attempts == 1 { "" } else { "s" };
+                    Some(format!(
+                        "GitHub still refused it after {attempts} attempt{plural}"
+                    ))
                 }
                 _ => None,
             }
@@ -313,8 +341,9 @@ impl GitHubClient {
     /// or its base moved GitHub answers "Base branch was modified" while it computes the
     /// mergeability. The pull request is read until GitHub has computed it, and a merge GitHub
     /// then reports possible is sent again, with doubling backoff, at most [`MERGE_ATTEMPTS`]
-    /// merge requests in all and within the retry policy's `max_total`. A merge that succeeds at
-    /// once sends one request.
+    /// merge requests in all. Its sleeps end within the retry policy's `max_total`, at most 12 s;
+    /// each request has its own timeout (and each read its GET retries) on top. A merge that
+    /// succeeds at once sends one request.
     ///
     /// # Errors
     /// [`GitHubError::Conflict`] when the head moved, [`GitHubError::NotMergeable`] (405) when
@@ -335,7 +364,7 @@ impl GitHubClient {
         let number = number.to_string();
         let url = self.api_url(&["repos", owner, repo, "pulls", &number, "merge"])?;
         let policy = self.inner.config.retry;
-        let deadline = Instant::now() + policy.max_total;
+        let deadline = Instant::now() + merge_budget(&policy);
         let mut attempt = 0_u32;
         loop {
             attempt += 1;
@@ -361,12 +390,9 @@ impl GitHubClient {
                 None => (None, false),
             };
             let transient = computing || is_base_modified(&github);
-            let mergeable = pull.is_some_and(|p| {
-                p.state == "open" && p.mergeable == Some(true) && p.draft != Some(true)
-            });
             let delay = backoff(policy.base_delay, attempt);
             if transient
-                && mergeable
+                && worth_retrying(pull)
                 && attempt < MERGE_ATTEMPTS
                 && Instant::now() + delay < deadline
             {
@@ -491,7 +517,11 @@ impl GitHubClient {
 
 #[cfg(test)]
 mod tests {
-    use super::{WireMergeability, is_base_modified, refusal};
+    use std::time::Duration;
+
+    use super::{
+        MERGE_WAIT, WireMergeability, is_base_modified, merge_budget, refusal, worth_retrying,
+    };
 
     fn pull(fields: serde_json::Value) -> WireMergeability {
         let mut value = serde_json::json!({
@@ -552,12 +582,56 @@ mod tests {
             ),
             "GitHub still refused it after 4 attempts (GitHub: Base branch was modified.)"
         );
+        // One attempt is one attempt.
+        assert_eq!(
+            refusal(
+                Some(&pull(serde_json::json!({}))),
+                "Base branch was modified.",
+                1,
+                true
+            ),
+            "GitHub still refused it after 1 attempt (GitHub: Base branch was modified.)"
+        );
         // No reason to add: GitHub's words alone.
         assert_eq!(
             refusal(Some(&pull(serde_json::json!({}))), github, 1, false),
             github
         );
         assert_eq!(refusal(None, github, 1, true), github);
+    }
+
+    /// A transient 405 is retried only on a pull request GitHub reports open, mergeable and
+    /// not blocked (MRG-002): a blocked, behind, draft or conflicting one is a real refusal.
+    #[test]
+    fn only_a_mergeable_pull_request_is_merged_again() {
+        assert!(worth_retrying(Some(&pull(serde_json::json!({})))));
+        assert!(worth_retrying(Some(&pull(
+            serde_json::json!({"mergeable_state": "unstable"})
+        ))));
+        for fields in [
+            serde_json::json!({"mergeable_state": "blocked"}),
+            serde_json::json!({"mergeable_state": "behind"}),
+            serde_json::json!({"draft": true}),
+            serde_json::json!({"mergeable": false, "mergeable_state": "dirty"}),
+            serde_json::json!({"mergeable": null, "mergeable_state": "unknown"}),
+            serde_json::json!({"state": "closed"}),
+        ] {
+            assert!(!worth_retrying(Some(&pull(fields.clone()))), "{fields}");
+        }
+        assert!(!worth_retrying(None));
+    }
+
+    /// The merge's waits end well before the CD page gives up on its request (30 s), whatever
+    /// the client's retry budget (MRG-002).
+    #[test]
+    fn the_merge_wait_is_capped_below_the_client_budget() {
+        let policy = |secs| crate::config::RetryPolicy {
+            max_total: Duration::from_secs(secs),
+            ..crate::config::RetryPolicy::default()
+        };
+        assert_eq!(merge_budget(&policy(30)), MERGE_WAIT);
+        assert_eq!(merge_budget(&policy(5)), Duration::from_secs(5));
+        assert!(MERGE_WAIT <= Duration::from_secs(12));
     }
 
     #[test]

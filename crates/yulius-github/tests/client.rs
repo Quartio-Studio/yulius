@@ -1059,7 +1059,11 @@ async fn a_merge_waits_until_github_has_computed_the_mergeability() -> TestResul
         fake.count("PUT", &format!("/repos/acme/app/pulls/{number}/merge")),
         2
     );
-    assert!(fake.count("GET", &format!("/repos/acme/app/pulls/{number}")) >= 3);
+    // Three reads while GitHub computes, the fourth with its answer.
+    assert_eq!(
+        fake.count("GET", &format!("/repos/acme/app/pulls/{number}")),
+        4
+    );
     Ok(())
 }
 
@@ -1107,6 +1111,7 @@ async fn a_branch_protection_refusal_is_not_retried() -> TestResult {
 #[tokio::test]
 async fn a_transient_405_that_never_clears_stops_after_four_merge_requests() -> TestResult {
     let (fake, client, token, number, head) = fresh_pull().await?;
+    let root = fake.branch_sha("acme", "app", "dev").ok_or("dev")?;
     let merge = format!("/repos/acme/app/pulls/{number}/merge");
     fake.inject_fault(FakeFault::new("PUT", merge.clone(), 405, 100).message(BASE_MODIFIED));
     let refused = client
@@ -1118,7 +1123,11 @@ async fn a_transient_405_that_never_clears_stops_after_four_merge_requests() -> 
     assert!(message.contains("after 4 attempts"), "{message}");
     assert!(message.contains("Base branch was modified"), "{message}");
     assert_eq!(fake.count("PUT", &merge), 4);
-    assert_eq!(fake.branch_sha("acme", "app", "task/x"), Some(head));
+    assert_eq!(
+        fake.branch_sha("acme", "app", "dev"),
+        Some(root),
+        "nothing merged"
+    );
     Ok(())
 }
 
@@ -1141,6 +1150,82 @@ async fn a_mergeability_github_never_computes_ends_the_merge_saying_so() -> Test
     assert_eq!(
         fake.count("PUT", &format!("/repos/acme/app/pulls/{number}/merge")),
         1
+    );
+    // MERGEABILITY_READS (6) reads, well within the fake's 5 s budget.
+    assert_eq!(
+        fake.count("GET", &format!("/repos/acme/app/pulls/{number}")),
+        6
+    );
+    Ok(())
+}
+
+/// SPEC-495 MRG-002: a 405 in other words is transient too while GitHub is still computing the
+/// mergeability: the merge waits and goes through.
+#[tokio::test]
+async fn any_405_while_github_computes_the_mergeability_is_retried() -> TestResult {
+    let (fake, client, token, number, head) = fresh_pull().await?;
+    let merge = format!("/repos/acme/app/pulls/{number}/merge");
+    fake.set_pull_computing("acme", "app", number, 2);
+    fake.inject_fault(
+        FakeFault::new("PUT", merge.clone(), 405, 1).message("Pull Request is not mergeable"),
+    );
+    let merged = client
+        .merge_pull(&token, "acme", "app", number, MergeMethod::Merge, &head)
+        .await?;
+    assert_eq!(fake.branch_sha("acme", "app", "dev"), Some(merged.sha));
+    assert_eq!(fake.count("PUT", &merge), 2);
+    Ok(())
+}
+
+/// A client whose retry budget is 1 s with a 400 ms first delay: 400 ms then 800 ms cannot both
+/// fit (as in `retry_budget_bounds_total_time`).
+fn tight_budget(fake: &FakeGitHub) -> Result<GitHubClient, Box<dyn Error>> {
+    Ok(GitHubClient::new(GitHubConfig {
+        retry: RetryPolicy {
+            max_attempts: 3,
+            max_total: Duration::from_millis(1000),
+            base_delay: Duration::from_millis(400),
+        },
+        ..fake.config()
+    })?)
+}
+
+/// SPEC-495 MRG-002: the retries stay within the retry budget, not only within their counts.
+#[tokio::test]
+async fn merge_retries_stop_at_the_retry_budget() -> TestResult {
+    let (fake, _, token, number, head) = fresh_pull().await?;
+    let client = tight_budget(&fake)?;
+    let merge = format!("/repos/acme/app/pulls/{number}/merge");
+    fake.inject_fault(FakeFault::new("PUT", merge.clone(), 405, 100).message(BASE_MODIFIED));
+    let started = Instant::now();
+    let refused = client
+        .merge_pull(&token, "acme", "app", number, MergeMethod::Merge, &head)
+        .await;
+    let Err(GitHubError::NotMergeable { message }) = refused else {
+        return Err(format!("{refused:?}").into());
+    };
+    assert!(message.contains("after 2 attempts"), "{message}");
+    assert_eq!(fake.count("PUT", &merge), 2);
+    assert!(started.elapsed() < Duration::from_secs(3));
+    Ok(())
+}
+
+/// SPEC-495 MRG-001: the wait for GitHub's mergeability stays within the retry budget.
+#[tokio::test]
+async fn the_wait_for_mergeability_stops_at_the_retry_budget() -> TestResult {
+    let (fake, _, token, number, head) = fresh_pull().await?;
+    let client = tight_budget(&fake)?;
+    fake.set_pull_computing("acme", "app", number, 1000);
+    let refused = client
+        .merge_pull(&token, "acme", "app", number, MergeMethod::Merge, &head)
+        .await;
+    let Err(GitHubError::NotMergeable { message }) = refused else {
+        return Err(format!("{refused:?}").into());
+    };
+    assert!(message.contains("had not finished checking"), "{message}");
+    assert_eq!(
+        fake.count("GET", &format!("/repos/acme/app/pulls/{number}")),
+        2
     );
     Ok(())
 }
