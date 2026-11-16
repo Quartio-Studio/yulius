@@ -2007,6 +2007,9 @@ impl App {
             contained: self.config.contained,
             mcp,
             credential,
+            // A Codex run's home and CLI come with Codex tasks (SPEC-503 slice C1).
+            codex_home: None,
+            codex_program: None,
         })?;
         if let Some(session_id) = &stepped_back {
             self.step_back_transcript(&task.sandbox_id, &home, &worktree, session_id)
@@ -2991,6 +2994,22 @@ impl App {
                 worktree,
                 session_id,
             ),
+            Harness::Codex => self.codex_rollout(&sandbox.id, session_id),
+        }
+    }
+
+    /// The sandbox's Codex sessions, shared by its Codex homes (SPEC-503 CDX-003).
+    pub(crate) fn codex_sessions(&self, sandbox: &SandboxId) -> PathBuf {
+        self.sandbox_dir(sandbox).join("codex").join("sessions")
+    }
+
+    /// The rollout of the Codex session `session_id` in the sandbox's sessions, or where none is
+    /// yet (Codex writes it at the session's first turn).
+    pub(crate) fn codex_rollout(&self, sandbox: &SandboxId, session_id: &str) -> PathBuf {
+        let sessions = self.codex_sessions(sandbox);
+        match self.deps.harness.find_codex_rollout(&sessions, session_id) {
+            Ok(Some(path)) => path,
+            Ok(None) | Err(_) => sessions.join(format!("missing-{session_id}.jsonl")),
         }
     }
 
@@ -5613,6 +5632,12 @@ impl App {
             // In the order of the lines: the count is ahead of nothing the watcher applied.
             Observation::Queue(change, at) => runtime.with_queue(|queue| queue.record(change, at)),
             Observation::Session { .. } => {}
+            // The account's windows as Codex saw them on its last response (SPEC-503 CDX-004).
+            Observation::RateLimits(usage) => {
+                if let Some(account) = &attempt.account_id {
+                    self.rollout_usage(account, &usage).await;
+                }
+            }
         }
         runtime.with_queue(|queue| queue.work_seen(worked));
     }

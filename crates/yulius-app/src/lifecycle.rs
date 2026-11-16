@@ -58,9 +58,13 @@ pub struct NewTask {
 }
 
 fn parse_harness(text: &str) -> AppResult<Harness> {
-    Harness::parse(text).map_err(|_| {
-        AppError::Invalid("harness must be claude (Yulius runs Claude Code only)".into())
-    })
+    // The adapter knows Codex already; a task takes it once Codex tasks run (SPEC-503 slice C1).
+    match Harness::parse(text) {
+        Ok(Harness::ClaudeCode) => Ok(Harness::ClaudeCode),
+        Ok(Harness::Codex) | Err(_) => Err(AppError::Invalid(
+            "harness must be claude (Yulius runs Claude Code only)".into(),
+        )),
+    }
 }
 
 /// A prepared task has one way to start (SPEC-105 PRP-001).

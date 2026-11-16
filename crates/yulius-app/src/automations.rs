@@ -311,9 +311,13 @@ fn validate_prompt(prompt: &str) -> AppResult<String> {
 }
 
 fn validate_harness(text: &str) -> AppResult<Harness> {
-    Harness::parse(text).map_err(|_| {
-        AppError::Invalid("harness must be claude (Yulius runs Claude Code only)".into())
-    })
+    // As for a task (`lifecycle::parse_harness`): Codex arrives with SPEC-503 slice C1.
+    match Harness::parse(text) {
+        Ok(Harness::ClaudeCode) => Ok(Harness::ClaudeCode),
+        Ok(Harness::Codex) | Err(_) => Err(AppError::Invalid(
+            "harness must be claude (Yulius runs Claude Code only)".into(),
+        )),
+    }
 }
 
 fn input_start(input: &Automation) -> AppResult<StartInput> {

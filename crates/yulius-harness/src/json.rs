@@ -52,9 +52,42 @@ pub(crate) fn truncate_utf8(text: &str, max_bytes: usize) -> &str {
     &text[..end]
 }
 
+/// TOML basic string (for Codex `-c key=value` overrides and its `config.toml`).
+pub(crate) fn toml_string(text: &str) -> String {
+    let mut out = String::with_capacity(text.len() + 2);
+    out.push('"');
+    for c in text.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\t' => out.push_str("\\t"),
+            '\r' => out.push_str("\\r"),
+            c if c.is_control() => out.push_str(&format!("\\u{:04X}", u32::from(c))),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
+/// TOML array of basic strings.
+pub(crate) fn toml_string_array<S: AsRef<str>>(items: &[S]) -> String {
+    let inner: Vec<String> = items.iter().map(|s| toml_string(s.as_ref())).collect();
+    format!("[{}]", inner.join(","))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn toml_escaping() {
+        assert_eq!(toml_string("plain"), "\"plain\"");
+        assert_eq!(toml_string("a\"b\\c\nd\u{1}"), "\"a\\\"b\\\\c\\nd\\u0001\"");
+        assert_eq!(toml_string_array(&["-y", "x y"]), "[\"-y\",\"x y\"]");
+        assert_eq!(toml_string_array::<&str>(&[]), "[]");
+    }
 
     #[test]
     fn shorten_respects_utf8() {
