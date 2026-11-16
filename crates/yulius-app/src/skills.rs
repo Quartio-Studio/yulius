@@ -1328,6 +1328,41 @@ mod tests {
         Ok(())
     }
 
+    /// SPEC-493 SCO-003 (AC-12): what to do on an overlapping claim, the same where claims are
+    /// described; the briefing, which has a budget, says its short form.
+    #[test]
+    fn every_place_says_what_to_do_on_an_overlap() -> TestResult {
+        const RULE: &str = "on an overlap both tasks are told: wait for the other's pull request \
+            to merge and merge the integration branch before editing those files, or agree who \
+            changes what by a note on the claim.";
+        let normal = |text: &str| {
+            text.replace("\\\n", " ")
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+                .to_lowercase()
+        };
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        for rel in [
+            "catalog/skills/yulius/delivery-pipeline/SKILL.md",
+            "crates/yulius-app/src/mcp.rs",
+        ] {
+            let text = normal(&fs::read_to_string(root.join(rel))?);
+            assert!(
+                text.contains(&normal(RULE)),
+                "{rel} does not state the rule"
+            );
+        }
+        let briefing = normal(&fs::read_to_string(
+            root.join("crates/yulius-domain/src/briefing.rs"),
+        )?);
+        assert!(
+            briefing.contains("on an overlap, wait for the other's pr or agree by claim note"),
+            "the briefing does not say the short form"
+        );
+        Ok(())
+    }
+
     /// Hostile repositories: special files and links leaving the repository are ignored.
     #[test]
     fn hostile_repository_files_are_ignored() -> TestResult {

@@ -520,7 +520,7 @@ pub fn tool_descriptors() -> Vec<ToolDescriptor> {
         },
         ToolDescriptor {
             name: "scope_claim".into(),
-            description: "Claim repository paths this task is about to change, so parallel tasks avoid conflicts: path globs relative to the repository (* within a segment, ** across segments, a trailing / claims a directory, e.g. \"src/api/\", \"docs/**/*.md\"). Claims are advisory and never block files. Overlaps with other live tasks' claims are returned to you; nobody else is told.".into(),
+            description: "Claim repository paths this task is about to change, so parallel tasks avoid conflicts: path globs relative to the repository (* within a segment, ** across segments, a trailing / claims a directory, e.g. \"src/api/\", \"docs/**/*.md\"). Claims are advisory and never block files. Overlaps with other live tasks' claims are returned to you, with what that task changes and where its pull request stands, and that task is told too. On an overlap both tasks are told: wait for the other's pull request to merge and merge the integration branch before editing those files, or agree who changes what by a note on the claim.".into(),
             input_schema: schema(json!({
                 "pattern": {"type": "string", "description": "One path glob"},
                 "patterns": {"type": "array", "items": {"type": "string"}, "maxItems": crate::scopes::MAX_PATTERNS_PER_CLAIM, "description": "Several path globs"},

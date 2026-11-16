@@ -144,7 +144,11 @@ impl App {
                 .collect::<Vec<_>>()
                 .join(",")
         );
-        if !self.scope_told.lock().is_ok_and(|mut told| told.insert(key.clone())) {
+        if !self
+            .scope_told
+            .lock()
+            .is_ok_and(|mut told| told.insert(key.clone()))
+        {
             return;
         }
         let paths = sorted
@@ -289,7 +293,10 @@ impl App {
             let Some(holder) = live.task(theirs) else {
                 continue;
             };
-            let pair = (claim.pattern.as_str().to_owned(), theirs.pattern.as_str().to_owned());
+            let pair = (
+                claim.pattern.as_str().to_owned(),
+                theirs.pattern.as_str().to_owned(),
+            );
             match by_holder.iter_mut().find(|(task, _)| task.id == holder.id) {
                 Some((_, pairs)) => pairs.push(pair),
                 None => by_holder.push((holder, vec![pair])),
