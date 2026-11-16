@@ -117,8 +117,8 @@ Five pull requests, each merged into `dev` on green before the next begins.
 - [x] Slice A: Codex launch plan, homes, session paths and sign-in helpers in yulius-harness
 - [x] Slice A: review round 1 findings fixed test-first
 - [ ] Slice A: later review findings answered and the slice delivered
-- [ ] Slice B: Codex CLI 0.169.0 checked against the integration and pinned
-- [ ] Slice B: Yulius installs the pinned Codex CLI into its data directory
+- [x] Slice B: Codex CLI 0.169.0 checked against the integration and pinned
+- [x] Slice B: Yulius installs the pinned Codex CLI into its data directory
 - [ ] Slice B: review findings fixed and the slice delivered
 - [ ] Slice C1: a Codex task runs in the supervisor (homes, session id, hooks, write-back, rotation)
 - [ ] Slice C1: the fake agent speaks Codex and integration tests cover a Codex task
@@ -307,4 +307,31 @@ Five pull requests, each merged into `dev` on green before the next begins.
   Codex account's rollouts carry one window is for slice C2 to see with Codex runs. Noted for slice
   C1: dev's notification text "Failed (no Claude account)" (`yulius-domain/src/notify.rs`) is to
   name a Codex task's provider once Codex tasks exist.
+
+### Slice B (the pinned Codex CLI)
+
+- **The pin is 0.169.0**: `the_pinned_codex_release_has_linux_packages` expects 0.169.0's tarball
+  path, install name and both registry sha512s (`npm view @openai/codex@0.169.0-linux-x64
+  dist.integrity` `sha512-o05NyAOC…GFXVbVww==`, `…-linux-arm64` `sha512-NZ/DaQUp…G/xFg==`) and
+  failed on 0.167.0 first. Both tarballs were downloaded and matched those sha512s; each has 45
+  entries, all regular files; `bin/codex` is ELF machine 62 (x86-64) and 183 (aarch64).
+  Compatibility with the integration: Evidence of slice A (flags, generated files, `mcp list`,
+  `login status`, hooks library and `auth.json` schema unchanged since 0.167.0, a real rollout and
+  real hook payloads read).
+- **Installer** (`wiring/codex_cli.rs`, the contribution's, unchanged but for 0.169.0 and
+  `UpdateError::new`): `codex_cli::` 7 passed against a local registry stub (installed once as
+  its own tree, concurrent callers, a refused tarball installs nothing, a failed install is not
+  retried by every start, an earlier release goes once nothing runs it, open to sandbox users
+  whatever the umask, an unsupported platform's reason, the provided CLI or a reason for a run);
+  the read-only bind of a contained run comes with Codex tasks (slice C1); the opt-in live test
+  `codex_cli::the_real_pinned_release_installs_from_npm` (`--run-ignored only`) installed the real
+  0.169.0 from `registry.npmjs.org` and `bin/codex --version` printed `codex-cli 0.169.0`.
+- **Wiring**: `HarnessPort::provide_codex` (default: none), the adapter's `with_codex_cli` with the
+  host's `codex` as fallback, the server's `codex_cli` and `warm_codex_cli` (installs at start only
+  when an `openai` account exists, so nothing is downloaded before slice C2 lets one exist);
+  `codex-cli` is left out of a host move (`instance::walk`). Slice A's last two wording nits
+  (a comment's citation, the fixtures README's `world_state` phrase) are fixed here.
+- `cargo fmt --check`, `cargo clippy --workspace --all-targets -D warnings` clean; `cargo nextest`
+  for `yulius-domain`, `yulius-harness`, the `yulius` lib and `codex_cli`, `claude_updates`,
+  `cockpit`, `accounts`: 1523 passed, 0 failed.
 

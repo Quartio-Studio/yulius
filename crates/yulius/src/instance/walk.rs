@@ -20,9 +20,10 @@ use super::archive::{Entry, Kind};
 /// Top-level names the new host makes its own (EXP-006): the sandbox base (a copy of this host's
 /// system), live processes' runtime files, the update helper's request and the move helper's
 /// (SPEC-470: what was asked of this host's root is never asked of another's), SQLite's
-/// shared-memory index, the filesystem's own `lost+found`, and the Claude Code builds for this
-/// host's platform (SPEC-421: the new host downloads its own within the hour).
-pub const LEFT_OUT: [&str; 7] = [
+/// shared-memory index, the filesystem's own `lost+found`, the Claude Code builds for this host's
+/// platform (SPEC-421: the new host downloads its own within the hour) and the Codex CLI's
+/// (SPEC-503: the new host installs its own at the first Codex use).
+pub const LEFT_OUT: [&str; 8] = [
     "system",
     "runtime",
     "update",
@@ -30,6 +31,7 @@ pub const LEFT_OUT: [&str; 7] = [
     "yulius.db-shm",
     "lost+found",
     "claude-code",
+    "codex-cli",
 ];
 
 /// The import's own mark at the top (SPEC-459 HSL-005). Every import writes a new one, so the
