@@ -14,8 +14,8 @@ use yulius_contracts::api::tasks::TaskSummary;
 use yulius_contracts::events::UiEvent;
 use yulius_domain::ids::{TaskId, UserId};
 use yulius_domain::notify::{
-    AskedOf, NoticeKind, TaskNotice, Throttle, account_problem, account_text, task_notice,
-    task_signature,
+    AskedOf, NoticeKind, TaskNotice, Throttle, account_problem, account_text, shared_cause,
+    task_notice, task_signature,
 };
 use yulius_domain::time::Timestamp;
 
@@ -184,6 +184,24 @@ impl App {
                 return Ok(None);
             }
         }
+        // A request about a problem of the whole sandbox (SPEC-494) is told once per episode, the
+        // one the notification center names by its oldest open request, whichever task asked
+        // (TGC-026).
+        let shared = asked
+            .as_ref()
+            .and_then(|a| a.cause.as_deref().map(|cause| (cause, a.at)))
+            .and_then(|(cause, at)| shared_cause(cause).map(|words| (cause, at, words)));
+        if let Some((cause, at, _)) = shared {
+            let episode = self.shared_episode(&id, cause, at).await;
+            let subject = format!("shared:{}:{cause}:{episode}", task.sandbox_id);
+            if services
+                .notifier
+                .remember(subject, "told".into())
+                .is_some()
+            {
+                return Ok(None);
+            }
+        }
         let Some(sandbox) = store.sandbox(&task.sandbox_id).await? else {
             return Ok(None);
         };
@@ -204,6 +222,7 @@ impl App {
                 problem: a.problem.as_deref(),
                 decision: a.decision,
             }),
+            shared: shared.map(|(_, _, words)| words),
             link: &link,
         };
         // The same redaction as the sandbox's transcripts (TGC-023).

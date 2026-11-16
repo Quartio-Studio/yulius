@@ -278,6 +278,11 @@ async fn user_id(w: &World, login: &str) -> Result<String, Box<dyn std::error::E
 
 /// The task's agent asks a person (`needs_you`), and the change is published.
 async fn ask(w: &World, task: &str, problem: &str) -> TestResult {
+    ask_about(w, task, problem, None).await
+}
+
+/// [`ask`] naming a problem of the whole sandbox (`cause`, SPEC-494).
+async fn ask_about(w: &World, task: &str, problem: &str, cause: Option<&str>) -> TestResult {
     let id = TaskId::parse(task)?;
     let request = NeedsYouRecord {
         action: "Add the payment key".into(),
@@ -285,7 +290,7 @@ async fn ask(w: &World, task: &str, problem: &str) -> TestResult {
         problem: Some(problem.into()),
         decision: false,
         link: None,
-        cause: None,
+        cause: cause.map(str::to_owned),
         at: w.h.app.now().0,
     };
     w.h.store
@@ -883,5 +888,52 @@ async fn a_subscription_switch_is_no_news() -> TestResult {
     let sent = w.fake.wait_sent(100, 3).await?;
     assert!(sent[2].contains("the key is missing"), "{sent:?}");
     assert_eq!(w.fake.sent_to(100).len(), 3, "{sent:?}");
+    Ok(())
+}
+
+/// TGC-026: tasks asking about their sandbox's Docker (SPEC-494) send one message per episode,
+/// as the notification center shows one entry, not one per task; a new episode is told again.
+#[tokio::test]
+async fn a_sandbox_wide_docker_needs_you_is_told_once_per_episode() -> TestResult {
+    let w = world().await?;
+    set_bot(&w, TOKEN_A).await?;
+    link(&w, &w.alice, 100).await?;
+    link(&w, &w.carol, 300).await?;
+    let alice = user_id(&w, "alice").await?;
+    let first = seed_task(&w.h, "t1", "s1", &alice, TaskStatus::Running, None).await?;
+    seed_task(&w.h, "t2", "s1", &alice, TaskStatus::Running, None).await?;
+    ask_about(&w, "t1", "Docker does not answer", Some("docker")).await?;
+    let sent = w.fake.wait_sent(100, 2).await?;
+    let text = &sent[1];
+    assert!(
+        text.starts_with("Needs you · app: its Docker needs you\n"),
+        "{text}"
+    );
+    assert!(
+        text.contains(&format!("Asked by #{} task t1", first.number)),
+        "{text}"
+    );
+    assert!(text.contains("To do: Add the payment key"), "{text}");
+    w.h.clock.0.fetch_add(1_000, Ordering::SeqCst);
+    ask_about(&w, "t2", "Docker does not answer", Some("docker")).await?;
+    barrier(&w, "c1").await?;
+    assert_eq!(w.fake.sent_to(100).len(), 2, "{:?}", w.fake.sent_to(100));
+
+    // Both are answered; Docker fails again later: a new episode.
+    for task in ["t1", "t2"] {
+        let id = TaskId::parse(task)?;
+        w.h.store
+            .set_task_needs_you(&id, None, w.h.app.now())
+            .await?;
+        w.h.app.publish_task(&id).await;
+    }
+    barrier(&w, "c2").await?;
+    w.h.clock.0.fetch_add(1_000, Ordering::SeqCst);
+    ask_about(&w, "t2", "Docker does not answer", Some("docker")).await?;
+    let sent = w.fake.wait_sent(100, 3).await?;
+    assert!(
+        sent[2].starts_with("Needs you · app: its Docker needs you\n"),
+        "{sent:?}"
+    );
     Ok(())
 }

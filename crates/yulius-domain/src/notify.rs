@@ -124,6 +124,17 @@ pub struct AskedOf<'a> {
     pub decision: bool,
 }
 
+/// The words for a problem of a whole sandbox that a `needs_you` request names (its `cause`,
+/// SPEC-494), as the notification center says them; `None` for a task's own request. Such
+/// requests are told once per episode of the sandbox, not once per task (TGC-026).
+#[must_use]
+pub fn shared_cause(cause: &str) -> Option<&'static str> {
+    match cause {
+        "docker" => Some("its Docker needs you"),
+        _ => None,
+    }
+}
+
 /// One task's notification, before redaction.
 #[derive(Debug, Clone, Copy)]
 pub struct TaskNotice<'a> {
@@ -139,6 +150,9 @@ pub struct TaskNotice<'a> {
     pub title: &'a str,
     /// The open `needs_you` request, if any.
     pub asked: Option<AskedOf<'a>>,
+    /// The words of the sandbox-wide problem the request names ([`shared_cause`]): the message
+    /// speaks of the sandbox, naming this task as one that asked.
+    pub shared: Option<&'a str>,
     /// `{PUBLIC_URL}/s/{slug}/t/{n}`.
     pub link: &'a str,
 }
@@ -159,9 +173,13 @@ impl TaskNotice<'_> {
         }
     }
 
-    /// One line for a summary: "Needs you · #12 Title (sandbox)".
+    /// One line for a summary: "Needs you · #12 Title (sandbox)", or for a sandbox-wide
+    /// problem "Needs you · sandbox: its Docker needs you".
     #[must_use]
     pub fn headline(&self) -> String {
+        if let Some(shared) = self.shared {
+            return format!("{} · {}: {shared}", self.state(), one_line(self.sandbox));
+        }
         format!(
             "{} · #{} {} ({})",
             self.state(),
@@ -174,10 +192,20 @@ impl TaskNotice<'_> {
     /// The message: state and sandbox, the task, what was asked, the link.
     #[must_use]
     pub fn text(&self) -> String {
-        let mut lines = vec![
-            format!("{} · {}", self.state(), one_line(self.sandbox)),
-            format!("#{} {}", self.number, one_line(self.title)),
-        ];
+        let mut lines = match self.shared {
+            Some(_) => vec![
+                self.headline(),
+                format!(
+                    "Asked by #{} {} and any other task of it that shares the problem",
+                    self.number,
+                    one_line(self.title)
+                ),
+            ],
+            None => vec![
+                format!("{} · {}", self.state(), one_line(self.sandbox)),
+                format!("#{} {}", self.number, one_line(self.title)),
+            ],
+        };
         if let Some(asked) = self.asked
             && self.kind == NoticeKind::NeedsYou
         {
@@ -421,6 +449,7 @@ mod tests {
                 problem: Some("Payments fail"),
                 decision: false,
             }),
+            shared: None,
             link: "https://y.example/s/shop/t/12",
         };
         assert_eq!(
@@ -449,9 +478,35 @@ mod tests {
             number: 3,
             title: "T",
             asked: None,
+            shared: None,
             link: "L",
         };
         assert_eq!(notice.text(), "Stopped (crashed) · Shop\n#3 T\nL");
+    }
+
+    #[test]
+    fn a_sandbox_wide_problem_speaks_of_the_sandbox() {
+        assert_eq!(shared_cause("docker"), Some("its Docker needs you"));
+        assert_eq!(shared_cause("disk"), None);
+        let notice = TaskNotice {
+            kind: NoticeKind::NeedsYou,
+            status: TaskStatus::Running,
+            sandbox: "Shop",
+            number: 4,
+            title: "Build",
+            asked: Some(AskedOf {
+                action: "Restart Docker",
+                problem: None,
+                decision: false,
+            }),
+            shared: shared_cause("docker"),
+            link: "L",
+        };
+        assert_eq!(notice.headline(), "Needs you · Shop: its Docker needs you");
+        assert_eq!(
+            notice.text(),
+            "Needs you · Shop: its Docker needs you\nAsked by #4 Build and any other task of it that shares the problem\nTo do: Restart Docker\nL"
+        );
     }
 
     #[test]

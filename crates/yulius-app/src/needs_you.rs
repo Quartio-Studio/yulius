@@ -310,7 +310,7 @@ impl App {
     /// When the episode of `task`'s request about `cause` (asked at `at`) began: the oldest open
     /// request naming it among the sandbox's tasks that do not rest (an ended task's stored
     /// request is not shown, SPEC-494 DFJ-011).
-    async fn shared_episode(&self, task: &TaskId, cause: &str, at: i64) -> i64 {
+    pub(crate) async fn shared_episode(&self, task: &TaskId, cause: &str, at: i64) -> i64 {
         let Ok(Some(record)) = self.deps.store.task(task).await else {
             return at;
         };

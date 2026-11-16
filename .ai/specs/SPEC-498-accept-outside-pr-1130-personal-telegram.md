@@ -163,7 +163,7 @@ the notification center would show:
 - [x] Spec SPEC-498 and ADR-0351 adapted to current dev
 - [x] Brought Telegram tests pass on current dev
 - [x] A subscription switch sends no Telegram notice, as in the notification center
-- [ ] A sandbox-wide Docker Needs you reaches a chat once per episode
+- [x] A sandbox-wide Docker Needs you reaches a chat once per episode
 - [ ] A request for control of a task reaches its owner's chat
 - [ ] Docs, lint, e2e and security scan green on current dev
 - [ ] Independent review approved
