@@ -248,6 +248,9 @@ pub struct CiJobUpdate {
     pub usage: Option<yulius_domain::stages::ResourceUse>,
     /// How long it waited before it started, with its start (SPEC-435).
     pub waited_ms: Option<i64>,
+    /// With its end, after an infrastructure failure (SPEC-497 OFC-001): its kind
+    /// ([`yulius_domain::ci::infra::Infra::as_str`]) and the milliseconds of the run thrown away.
+    pub infra: Option<(&'static str, i64)>,
 }
 
 /// The CI configuration of a sandbox as last read.

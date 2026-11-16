@@ -739,7 +739,9 @@ mod tests {
         let admission = Arc::new(CiAdmission::new(Capacity::new(9, 9 * 1024)));
         let measured = Measured::NOTHING;
         let a = admission.enqueue();
-        let held = admission.try_admit(&a, need(6), measured, Instant::now()).ok();
+        let held = admission
+            .try_admit(&a, need(6), measured, Instant::now())
+            .ok();
         assert!(held.is_some());
         let large = admission.enqueue();
         let small = admission.enqueue();
@@ -748,13 +750,17 @@ mod tests {
             Err(Wait::Budget(_))
         ));
         assert_eq!(
-            admission.try_admit(&small, need(1), measured, Instant::now()).err(),
+            admission
+                .try_admit(&small, need(1), measured, Instant::now())
+                .err(),
             Some(Wait::Behind),
             "the small one would fit but waits its turn"
         );
         // The large one leaves (its job was cancelled): the small one is next and fits.
         drop(large);
-        let small_held = admission.try_admit(&small, need(1), measured, Instant::now()).ok();
+        let small_held = admission
+            .try_admit(&small, need(1), measured, Instant::now())
+            .ok();
         assert!(small_held.is_some());
         // While a job runs, a reading that only became a new base holds the next one back.
         let next = admission.enqueue();
@@ -764,12 +770,16 @@ mod tests {
             as_of: None,
         };
         assert_eq!(
-            admission.try_admit(&next, need(1), unsettled, Instant::now()).err(),
+            admission
+                .try_admit(&next, need(1), unsettled, Instant::now())
+                .err(),
             Some(Wait::Measuring)
         );
         drop((held, small_held));
         assert!(
-            admission.try_admit(&next, need(1), unsettled, Instant::now()).is_ok(),
+            admission
+                .try_admit(&next, need(1), unsettled, Instant::now())
+                .is_ok(),
             "no job runs"
         );
     }

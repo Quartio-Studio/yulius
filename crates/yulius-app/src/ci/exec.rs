@@ -27,6 +27,7 @@ use nix::unistd::{UnlinkatFlags, unlinkat};
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tokio::sync::watch;
 use yulius_domain::ci::failures::FailureScanner;
+use yulius_domain::ci::infra::{Infra, JobEnd, infrastructure};
 use yulius_domain::ci::{self as dom, Gate, GateSource, RunState};
 use yulius_domain::ids::SandboxId;
 use yulius_domain::resources::{Budget, budget_env};
@@ -735,22 +736,71 @@ impl App {
             "[yulius] budget: {budget} (YULIUS_CPUS={}, YULIUS_MEMORY_MB={})\n",
             budget.cpus, budget.memory_mb
         ));
-        // Its failing tests' output, from all it prints (SPEC-145): the ring keeps only the end.
-        let mut failures = FailureScanner::default();
-        let (ended, usage) = match self
-            .ci_job_process(
-                sandbox,
-                run,
-                job,
-                budget,
-                checkout,
-                (&mut ring, &mut stages, &mut failures),
-                &mut cancel,
-            )
-            .await
-        {
-            Ok((ended, usage)) => (Ok(ended), usage),
-            Err(reason) => (Err(reason), None),
+        // A run that ended for an infrastructure reason runs again once by itself (SPEC-497
+        // OFC-001): the reason and the time the first run took.
+        let mut thrown: Option<(Infra, i64)> = None;
+        let (ended, usage, failures, infra) = loop {
+            let attempt = tokio::time::Instant::now();
+            let oom_before = self.ci_oom_kills(&run.sandbox_id).await;
+            // Its failing tests' output, from all it prints (SPEC-145): the ring keeps only the
+            // end.
+            let mut failures = FailureScanner::default();
+            let (ended, usage) = match self
+                .ci_job_process(
+                    sandbox,
+                    run,
+                    job,
+                    budget,
+                    checkout,
+                    (&mut ring, &mut stages, &mut failures),
+                    &mut cancel,
+                )
+                .await
+            {
+                Ok((ended, usage)) => (Ok(ended), usage),
+                Err(reason) => (Err(reason), None),
+            };
+            let failures = failures.finish();
+            let infra = match &ended {
+                Ok(ended) if cancel.borrow().is_none() => {
+                    self.ci_infrastructure(
+                        &run.sandbox_id,
+                        ended,
+                        &ring,
+                        failures.as_deref(),
+                        oom_before,
+                    )
+                    .await
+                }
+                _ => None,
+            };
+            let took = i64::try_from(attempt.elapsed().as_millis()).unwrap_or(i64::MAX);
+            match (infra, thrown) {
+                (Some(kind), None) => {
+                    ring.push_str(&format!(
+                        "\n[yulius] {}: an infrastructure failure, not the change; the job runs \
+                         again once by itself (SPEC-497)\n",
+                        kind.describe()
+                    ));
+                    thrown = Some((kind, took));
+                }
+                (Some(kind), Some((_, first))) => {
+                    break (
+                        ended,
+                        usage,
+                        failures,
+                        Some((kind, first.saturating_add(took), true)),
+                    );
+                }
+                (None, thrown) => {
+                    break (
+                        ended,
+                        usage,
+                        failures,
+                        thrown.map(|(kind, ms)| (kind, ms, false)),
+                    );
+                }
+            }
         };
         drop(weight);
         let no_disk = matches!(ended, Ok(Ended::NoDisk(_)));
@@ -802,6 +852,26 @@ impl App {
                 (RunState::Error, None, Some(reason))
             }
         };
+        // After an infrastructure failure the job says so: passed when run again, or an error when
+        // it met one again (never a failure of the change).
+        let (state, reason) = match infra {
+            Some((kind, _, true)) => (
+                RunState::Error,
+                Some(format!(
+                    "{}, again when it was run again: an infrastructure failure, not the change",
+                    kind.describe()
+                )),
+            ),
+            Some((kind, _, false)) if state == RunState::Passed => (
+                state,
+                Some(format!(
+                    "passed when run again: its first run ended for an infrastructure failure \
+                     ({})",
+                    kind.describe()
+                )),
+            ),
+            _ => (state, reason),
+        };
         if let Some(reason) = &reason {
             ring.push_str(&format!("\n[yulius] {reason}\n"));
         }
@@ -809,11 +879,12 @@ impl App {
             reason,
             exit_code,
             output: Some(ring.text()),
-            failures: failures.finish(),
+            failures,
             started_at: None,
             ended_at: Some(self.now()),
             usage,
             waited_ms: None,
+            infra: infra.map(|(kind, ms, _)| (kind.as_str(), ms)),
         };
         if let Err(err) = store
             .transition_ci_job(&job.id, &[RunState::Running], state, &end)
@@ -822,6 +893,56 @@ impl App {
             tracing::warn!(job = %job.id, error = %err, "recording a CI job's end failed");
         }
         no_disk
+    }
+
+    /// Processes of `sandbox` the kernel killed for memory so far, where that is counted.
+    async fn ci_oom_kills(&self, sandbox: &SandboxId) -> Option<u64> {
+        self.limit_counters(sandbox)
+            .await
+            .map(|counters| counters.oom_kills)
+    }
+
+    /// Why a job of `sandbox` that `ended` (printing what `ring` kept and the failing tests'
+    /// blocks `failures`) failed for the infrastructure, if it did (SPEC-497 OFC-001): only a
+    /// failed or lost job is asked, and a kill for memory needs the sandbox's OOM count to have
+    /// grown since `oom_before`.
+    async fn ci_infrastructure(
+        &self,
+        sandbox: &SandboxId,
+        ended: &Ended,
+        ring: &OutputRing,
+        failures: Option<&str>,
+        oom_before: Option<u64>,
+    ) -> Option<Infra> {
+        let end = match ended {
+            Ended::Exit(exit) if exit.spawn_failed || exit.is_clean() => return None,
+            Ended::Exit(exit)
+                if exit.signal.is_none()
+                    && matches!(
+                        exit.code,
+                        Some(dom::SKIP_EXIT_CODE | dom::INCOMPLETE_EXIT_CODE)
+                    ) =>
+            {
+                return None;
+            }
+            Ended::Exit(exit) => match (exit.signal, exit.code) {
+                (Some(signal), _) => JobEnd::Signalled(signal),
+                (None, Some(code)) => JobEnd::Exited(code),
+                (None, None) => return None,
+            },
+            Ended::Lost => JobEnd::Lost,
+            _ => return None,
+        };
+        let oom = match (oom_before, self.ci_oom_kills(sandbox).await) {
+            (Some(before), Some(after)) => after > before,
+            _ => false,
+        };
+        let mut text = ring.text();
+        if let Some(failures) = failures {
+            text.push('\n');
+            text.push_str(failures);
+        }
+        infrastructure(end, &text, oom)
     }
 
     /// The job's environment: no secret; its budget and what the checkout's `[resources.env]`

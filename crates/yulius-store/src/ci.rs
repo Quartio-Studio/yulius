@@ -357,9 +357,10 @@ impl CiStore for SqliteStore {
                  failures = COALESCE(?8, failures), cpu_ms = COALESCE(?9, cpu_ms), \
                  memory_peak_mb = COALESCE(?10, memory_peak_mb), \
                  disk_written_mb = COALESCE(?11, disk_written_mb), \
-                 waited_ms = COALESCE(?12, waited_ms) \
+                 waited_ms = COALESCE(?12, waited_ms), infra = COALESCE(?13, infra), \
+                 infra_ms = COALESCE(?14, infra_ms) \
                  WHERE id = ?7 AND state IN ({})",
-                placeholders(13, from.len())
+                placeholders(15, from.len())
             );
             let mut args: Vec<Box<dyn rusqlite::ToSql>> = vec![
                 Box::new(to.as_str().to_owned()),
@@ -374,6 +375,8 @@ impl CiStore for SqliteStore {
                 Box::new(update.usage.map(|u| u.memory_peak_mb)),
                 Box::new(update.usage.and_then(|u| u.disk_written_mb)),
                 Box::new(update.waited_ms),
+                Box::new(update.infra.map(|(kind, _)| kind.to_owned())),
+                Box::new(update.infra.map(|(_, ms)| ms)),
             ];
             args.extend(
                 from.into_iter()
@@ -428,7 +431,8 @@ impl CiStore for SqliteStore {
                 tx.execute(
                     "UPDATE ci_jobs SET state = 'queued', started_at = NULL, ended_at = NULL, \
                      reason = NULL, exit_code = NULL, output = ?2, failures = NULL, cpu_ms = NULL, \
-                     memory_peak_mb = NULL, disk_written_mb = NULL, waited_ms = NULL \
+                     memory_peak_mb = NULL, disk_written_mb = NULL, waited_ms = NULL, infra = NULL, \
+                     infra_ms = NULL \
                      WHERE run_id = ?1 AND NOT (state = 'skipped' \
                        AND substr(COALESCE(reason, ''), 1, length(?3)) = ?3)",
                     [&id, &note, &yulius_domain::ci::PATHS_SKIP_REASON.to_owned()],

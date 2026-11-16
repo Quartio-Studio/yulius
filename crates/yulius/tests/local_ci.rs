@@ -22,7 +22,8 @@ use yulius_app::error::{AppError, AppResult};
 use yulius_app::model::SandboxRecord;
 use yulius_app::ports::github::GhPull;
 use yulius_app::ports::isolation::{
-    CiUse, DiskUsage, EngineNetworks, SandboxIsolation, SandboxJoin, SandboxLimits, SandboxRef,
+    CiUse, DiskUsage, EngineNetworks, LimitCounters, SandboxIsolation, SandboxJoin, SandboxLimits,
+    SandboxRef,
 };
 use yulius_app::ports::store_ext::{AutomationStore as _, CiStore as _};
 use yulius_domain::ci::{GateResult, RunState};
@@ -3049,6 +3050,146 @@ async fn a_job_weighs_by_the_cpus_it_holds() -> TestResult {
         assert_eq!(*cpus, jobs * 2, "{cpus} CPUs for {jobs} jobs");
     }
     assert_eq!(cpus.last(), Some(&0));
+    Ok(())
+}
+
+/// A job command that counts its attempts per checkout in `<data>/attempts-<checkout>` and
+/// runs `first` on the first one, `again` on the later ones.
+fn attempts(data: &Path, first: &str, again: &str) -> String {
+    format!(
+        "[[ci.jobs]]\nname = \"build\"\ncommand = 'm=\"{}/attempts-$(echo \"$PWD\" | cksum | cut -d\" \" -f1)\"; \
+         echo x >> \"$m\"; if [ \"$(wc -l < \"$m\")\" -eq 1 ]; then {first}; else {again}; fi'\n",
+        data.display()
+    )
+}
+
+/// How many times each checkout's job ran.
+fn attempts_of(f: &Fixture) -> BoxResult<Vec<usize>> {
+    let mut counts = Vec::new();
+    for entry in std::fs::read_dir(&f.data)? {
+        let entry = entry?;
+        if entry.file_name().to_string_lossy().starts_with("attempts-") {
+            counts.push(std::fs::read_to_string(entry.path())?.lines().count());
+        }
+    }
+    counts.sort_unstable();
+    Ok(counts)
+}
+
+/// The pull request's run's only job, from its detail.
+async fn pull_job(f: &Fixture) -> BoxResult<Value> {
+    let overview = f.get("/api/sandboxes/s1/ci").await?;
+    for run in overview["runs"].as_array().ok_or("runs")? {
+        if run["reference"] == "pr/1" {
+            let jobs = run_jobs(f, run).await?;
+            return jobs.into_iter().next().ok_or_else(|| "no job".into());
+        }
+    }
+    Err(format!("no run of the pull request: {overview}").into())
+}
+
+const NO_POOL: &str = "echo \"Error response from daemon: could not find an available, \
+                       non-overlapping IPv4 address pool among the defaults to assign to the \
+                       network\"; exit 1";
+
+/// SPEC-497 OFC-001: a job that met an infrastructure failure runs again once by itself and
+/// passes, saying so in its output and its reason; its run passes.
+#[tokio::test]
+async fn an_infrastructure_failure_runs_the_job_again_once() -> TestResult {
+    let f = fixture_with(false, |data| attempts(data, NO_POOL, "echo ok")).await?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    let job = pull_job(&f).await?;
+    assert_eq!(job["state"], "passed", "{job}");
+    assert_eq!(
+        job["reason"],
+        "passed when run again: its first run ended for an infrastructure failure (Docker had \
+         no free address pool for a new network)"
+    );
+    let output = job["output"].as_str().unwrap_or_default();
+    assert!(
+        output.contains(
+            "[yulius] Docker had no free address pool for a new network: an infrastructure \
+             failure, not the change; the job runs again once by itself (SPEC-497)"
+        ) && output.contains(
+            "[yulius] passed when run again: its first run ended for an infrastructure failure \
+             (Docker had no free address pool for a new network)"
+        ),
+        "{output}"
+    );
+    // dev's run and the pull request's: twice each.
+    assert_eq!(attempts_of(&f)?, [2, 2]);
+    Ok(())
+}
+
+/// SPEC-497 OFC-001: a second infrastructure failure ends the job as an error saying so, never
+/// a third run; a test's failure is never run again.
+#[tokio::test]
+async fn a_job_runs_again_once_and_only_for_the_infrastructure() -> TestResult {
+    let f = fixture_with(false, |data| attempts(data, NO_POOL, NO_POOL)).await?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    let job = pull_job(&f).await?;
+    assert_eq!(job["state"], "error", "{job}");
+    assert_eq!(
+        job["reason"],
+        "Docker had no free address pool for a new network, again when it was run again: an \
+         infrastructure failure, not the change"
+    );
+    assert_eq!(attempts_of(&f)?, [2, 2]);
+
+    let f = fixture_with(false, |data| {
+        attempts(data, "echo \"test x ... FAILED\"; exit 101", "echo ok")
+    })
+    .await?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    let job = pull_job(&f).await?;
+    assert_eq!(job["state"], "failed", "{job}");
+    assert!(job["reason"].is_null(), "{job}");
+    assert_eq!(
+        attempts_of(&f)?,
+        [1, 1],
+        "a test's failure is never run again"
+    );
+    Ok(())
+}
+
+/// A sandbox whose OOM count grows at every look (SPEC-497 OFC-001).
+#[derive(Default)]
+struct Oomy {
+    looks: AtomicU64,
+}
+
+#[async_trait::async_trait]
+impl SandboxIsolation for Oomy {
+    async fn prepare(&self, _: &SandboxRef) -> AppResult<Option<SandboxJoin>> {
+        Ok(None)
+    }
+    fn release(&self, _: &SandboxId) {}
+    async fn limit_counters(&self, _: &SandboxId) -> Option<LimitCounters> {
+        Some(LimitCounters {
+            task_limit_hits: 0,
+            oom_kills: self.looks.fetch_add(1, Ordering::SeqCst),
+        })
+    }
+}
+
+/// SPEC-497 OFC-001: a job killed (SIGKILL) while the kernel killed for memory in its sandbox
+/// runs again once.
+#[tokio::test]
+async fn a_job_killed_for_memory_runs_again_once() -> TestResult {
+    let f = fixture_with(false, |data| attempts(data, "kill -9 $$", "echo ok")).await?;
+    assert!(f.h.app.set_isolation(Arc::new(Oomy::default())));
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    let job = pull_job(&f).await?;
+    assert_eq!(job["state"], "passed", "{job}");
+    assert_eq!(
+        job["reason"],
+        "passed when run again: its first run ended for an infrastructure failure (a process of \
+         it was killed for memory)"
+    );
     Ok(())
 }
 
