@@ -1105,8 +1105,9 @@ from a sandbox, and no daemon needs to run on the host.
   person asks. A front kept across an update (it runs the replaced executable) is replaced at its
   first quiet moment, fronts from before ADR-0344 included: read just before, it holds no
   connection at its socket (accepted or waiting) and runs no engine (no child process); the
-  journal says `replaced the sandbox's Docker front with this build's`. A Docker call in the
-  moment until the new front is ready fails at once and can be run again. A busy one is journaled
+  journal says `replaced the sandbox's Docker front with this build's`. A Docker call that comes
+  between that read and the new front's `ready` fails at once (refused, or cut once the old front
+  accepted it) and can be run again. A busy one is journaled
   once a day ("runs an earlier build; it is replaced once it is quiet"). A front from before
   ADR-0344 writes no state, so it is never seen full: one that stays busy (connections it leaked
   keep it so) is restarted by hand, with `docker_restart` through the Superagent or `kill -TERM`

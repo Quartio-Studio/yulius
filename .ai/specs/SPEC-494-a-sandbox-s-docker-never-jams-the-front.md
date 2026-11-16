@@ -5,7 +5,7 @@ status: done
 
 # SPEC-494: A sandbox's Docker never jams: the front gives way and repairs itself
 
-Status: in progress
+Status: done
 Date: 2026-11-15
 Owner: Yulius task #476
 Scope authorization: task #476, the person's request of 2026-11-15 ("spawn a task in yulius so it
@@ -178,10 +178,13 @@ ever reaches it).
   itself once idle, ADR-0151) and no connection at its socket, accepted or still waiting
   (`/proc/<pid>/net/unix` lists those under the listener's path; no listener seen is a doubt,
   and a doubt is not quiet); a front that writes a state must say so there too. The table lists
-  the clients of the front's network namespace (every run, CI job and CD run of the sandbox); a
-  container's connection is covered by the engine, the front's child. Nothing is lost then,
-  short of a client that comes between that read and the new front's `ready` (it finds the
-  socket closed or missing); a busy one is kept and the journal says so once a day.
+  the clients of the front's network namespace (every run, CI job and CD run of the sandbox); an
+  engine front's containers are covered by its engine, the front's child. A relay front (a
+  legacy holder's, ADR-0158) has no such child: a client of it from another namespace is seen
+  only in its state, and before ADR-0344 not at all. Nothing is lost then, short of a Docker
+  call that comes between that read and the new front's `ready`: it fails at once (refused, or
+  cut once the old front accepted it) and can be run again. A busy one is kept and the journal
+  says so once a day.
 
 ### br_netfilter (slice 6)
 
@@ -224,6 +227,9 @@ ever reaches it).
 - [x] br_netfilter decided on a real host and applied
 - [x] Front restarts, give-ways and Docker Needs you are counted on the instance
 - [x] Slices 5 to 7 reviewed independently, findings fixed test-first
+- [x] Manager tests start a rewritten fake front without a race (#1339)
+- [x] The texts state the relay-front limit and one window wording (#1341)
+- [x] The follow-up reviewed independently, findings fixed test-first
 
 ## Acceptance criteria
 
@@ -596,12 +602,12 @@ Reviewer (Fable 5.2) at 56602da9d; Yulius CI of that head passed.
 
 ### Slices 5 to 7, review round 2 (approve; its notes fixed in a follow-up)
 
-PR #1338 was approved at 0c3f8feec (round 2, Fable 5.2). Yulius CI run 24871c45 passed: quality
-and e2e passed, and security was skipped because Vidoc is off for this project. The PR merged
-into dev at that head. The reviewer confirmed on this host that the sandbox's production front
-is listed in `/proc/net/unix` under `state_dir/docker/docker.sock`. A connection made through it
-shows as one non-listening row there and disappears when closed. The new tests passed 30
-sequential runs and 270 loaded ones. Its notes, own code, fixed in the follow-up:
+PR #1338 was approved at 0c3f8feec (round 2, Fable 5.2). Yulius CI run 24871c45 passed: quality and
+e2e passed, and security was skipped because Vidoc is off for this project or the whole instance.
+The PR merged into dev at that head. The reviewer confirmed on this host that the sandbox's
+production front is listed in `/proc/net/unix` under `state_dir/docker/docker.sock`. A connection
+made through it shows as one non-listening row there and disappears when closed. The new tests
+passed 30 sequential runs and 270 loaded ones. Its notes, own code, fixed in the follow-up:
 
 - The table lists only clients in the front's network namespace, because the kernel creates the
   accepted socket in the client's namespace. DFJ-010, ADR-0344 and the code comment now say so,
@@ -614,6 +620,18 @@ sequential runs and 270 loaded ones. Its notes, own code, fixed in the follow-up
 - Pre-existing: two manager tests that rewrite the fake front's executable and start it at once
   failed twice in 240 loaded runs. That is issue #1339, outside this change. Their lines come
   from slice 3.
+
+### Follow-up: the last review's leftovers (#1339, #1341)
+
+- #1339, own code (slice 3's tests). Reproduced 5 times in 120 runs of `manager::` with 32
+  threads. A probe printed `Text file busy (os error 26)` from `start_front`: another test forked
+  while this process held the fake front's file open for writing, and the child kept it open
+  until its exec. `put_executable` now has `sh` write a staged file, which the test process
+  renames into place. After the fix, 0 of 300 runs failed under the same load.
+- #1341, texts. The relay-front limit is stated in `connections_on`, DFJ-010 and ADR-0344. The
+  window wording is the same in DFJ-010, ADR-0344, operations.md and the `quiet` and manager
+  comments, and covers a call that is cut after it was accepted. The body says `Status: done`.
+  The test pins the reason: `connections_on` is `Some(1)` for an accepted connection.
 
 ### Not tested here
 

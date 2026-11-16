@@ -1009,8 +1009,9 @@ impl Manager {
             self.docker_restarts.fetch_add(1, Ordering::Relaxed);
             self.docker_event(sandbox, "restarted", 1, why.says().to_owned());
             if why == crate::front_repair::Why::Outdated {
-                // Quiet when read: no engine ran; only a client that came between that read and
-                // the new front's start (DFJ-010) met a closed or missing socket.
+                // Quiet when read: no engine ran; only a Docker call that came between that read
+                // and the new front's `ready` failed at once (refused, or cut once the old front
+                // accepted it) and can be run again (DFJ-010).
                 tracing::info!(
                     sandbox,
                     why = why.says(),
@@ -2653,6 +2654,30 @@ while True:
     c.close()
 "#;
 
+    /// Writes the executable `path` (mode 755) with `content`, as a server's update does: a
+    /// staged file moved into place. The file is written by a child process, never by this one:
+    /// other tests fork all the time, a fork made while this process holds the file open for
+    /// writing keeps it open until its exec, and starting the file then fails with "Text file
+    /// busy" (#1339: 5 in 120 loaded runs of these tests).
+    fn put_executable(path: &Path, content: &str) -> std::io::Result<()> {
+        use std::io::Write as _;
+        let staged = path.with_extension("staged");
+        let mut writer = std::process::Command::new("sh")
+            .args(["-c", "cat > \"$1\" && chmod 755 \"$1\"", "sh"])
+            .arg(&staged)
+            .stdin(std::process::Stdio::piped())
+            .spawn()?;
+        if let Some(mut stdin) = writer.stdin.take() {
+            stdin.write_all(content.as_bytes())?;
+        }
+        if !writer.wait()?.success() {
+            return Err(std::io::Error::other(
+                "the staged executable was not written",
+            ));
+        }
+        std::fs::rename(&staged, path)
+    }
+
     /// A manager with Docker possible (or not, `docker`) whose executable is [`FAKE_FRONT`],
     /// and an adopted "holder" that is this test process (its namespaces are alive). Never
     /// stop that holder: it is this process.
@@ -2671,11 +2696,10 @@ while True:
         docker: Result<(), String>,
         engine: bool,
     ) -> Result<Arc<Manager>, Box<dyn std::error::Error>> {
-        use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+        use std::os::unix::fs::MetadataExt as _;
         let exe = data.join("fake-yulius");
         if !exe.exists() {
-            std::fs::write(&exe, FAKE_FRONT)?;
-            std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755))?;
+            put_executable(&exe, FAKE_FRONT)?;
         }
         let mut config = config(data, 1 << 40);
         config.exe = exe.clone();
@@ -2973,21 +2997,21 @@ while True:
             manager.watch_front("s1", &mut guard);
         }
         // The next front cannot start: its executable no longer says ready.
-        std::fs::write(data.path().join("fake-yulius"), "#!/bin/sh\necho broken\n")?;
+        put_executable(&data.path().join("fake-yulius"), "#!/bin/sh\necho broken\n")?;
         let asked = manager.restart_docker("s1").await;
         assert!(asked.is_err_and(|why| why.contains("did not start again")));
         assert_eq!(manager.config.health.troubles().len(), 1, "still open");
         assert_eq!(manager.docker_restarts(), 0);
         // Review round 3: the executable works again, and a person asks before the next tick:
         // one stop and one new front are one restart, counted once.
-        std::fs::write(data.path().join("fake-yulius"), FAKE_FRONT)?;
+        put_executable(&data.path().join("fake-yulius"), FAKE_FRONT)?;
         manager.restart_docker("s1").await?;
         assert_eq!(manager.docker_restarts(), 1, "counted once");
         assert_eq!(manager.take_docker_events().len(), 1);
         // Or the next tick starts it: the pending restart is counted then.
-        std::fs::write(data.path().join("fake-yulius"), "#!/bin/sh\necho broken\n")?;
+        put_executable(&data.path().join("fake-yulius"), "#!/bin/sh\necho broken\n")?;
         assert!(manager.restart_docker("s1").await.is_err());
-        std::fs::write(data.path().join("fake-yulius"), FAKE_FRONT)?;
+        put_executable(&data.path().join("fake-yulius"), FAKE_FRONT)?;
         {
             let entry = manager.entry("s1");
             let mut guard = entry.lock().await;
@@ -3017,11 +3041,11 @@ while True:
         let data = tempfile::tempdir()?;
         let manager = adopting(data.path(), Ok(()), false)?;
         // No front can start from the beginning.
-        std::fs::write(data.path().join("fake-yulius"), "#!/bin/sh\necho broken\n")?;
+        put_executable(&data.path().join("fake-yulius"), "#!/bin/sh\necho broken\n")?;
         assert_eq!(manager.adopt().await, 1);
         assert!(front_of(&manager).await.is_none());
         assert!(manager.restart_docker("s1").await.is_err());
-        std::fs::write(data.path().join("fake-yulius"), FAKE_FRONT)?;
+        put_executable(&data.path().join("fake-yulius"), FAKE_FRONT)?;
         {
             let entry = manager.entry("s1");
             let mut guard = entry.lock().await;
