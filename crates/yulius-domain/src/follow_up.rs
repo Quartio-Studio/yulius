@@ -40,11 +40,16 @@ impl ProductRule {
 }
 
 /// Whether `path` is a test file: in a `tests/`, `test/`, `e2e/`, `__tests__/` or `fixtures/`
-/// folder, or named `*_test.*`, `test_*.*`, `*.test.*`, `*.spec.*` or `*.e2e.*`.
+/// folder, or named `*_test.*`, `test_*.*`, `*.test.*`, `*.spec.*` or `*.e2e.*`. A Rust file
+/// under a `src/` folder never is: there a module of any name is built into the crate, and
+/// only its `#[cfg(test)]` modules are tests (review round 5 of SPEC-493 fix 6).
 #[must_use]
 pub fn is_test_path(path: &str) -> bool {
     let mut parts: Vec<&str> = path.split('/').collect();
     let name = parts.pop().unwrap_or_default();
+    if name.ends_with(".rs") && parts.contains(&"src") {
+        return false;
+    }
     if parts.iter().any(|folder| TEST_FOLDERS.contains(folder)) {
         return true;
     }
@@ -430,6 +435,39 @@ pub struct FollowUp {
     pub includes: Vec<String>,
 }
 
+/// Words of a line that loads code from another file, in the languages a project may use: an
+/// import (`import`, `from … import`, `export … from`, `require`, `require_relative`), an
+/// inclusion (`include`, `include_str`, `include_bytes`, C's `#include`) or a path built for
+/// one (`concat`).
+const LOADING_WORDS: [&str; 7] = [
+    "import",
+    "require",
+    "require_relative",
+    "include",
+    "include_str",
+    "include_bytes",
+    "concat",
+];
+
+/// Whether a product line loads code from another file ([`LOADING_WORDS`], `export … from`,
+/// `#[path`, or a Rust `mod name;` declaration): with one, a test or document file the same
+/// follow-up changed may be built in, so it counts (review round 5 of SPEC-493 fix 6).
+fn loads_code(text: &str) -> bool {
+    let words: Vec<&str> = text
+        .split(|c: char| !(c.is_alphanumeric() || c == '_'))
+        .filter(|w| !w.is_empty())
+        .collect();
+    let tight: String = text.chars().filter(|c| !c.is_whitespace()).collect();
+    let item = ["pub(crate) ", "pub(super) ", "pub "]
+        .iter()
+        .find_map(|vis| text.trim().strip_prefix(vis))
+        .unwrap_or(text.trim());
+    words.iter().any(|w| LOADING_WORDS.contains(w))
+        || (words.contains(&"export") && words.contains(&"from"))
+        || tight.contains("#[path")
+        || (item.starts_with("mod ") && item.ends_with(';'))
+}
+
 /// How a product line names a file: its folder and its name without the extension
 /// (`fixtures/evil` for `crates/a/fixtures/evil.rs`, as `#[path]`, `include!` or an import
 /// writes it); a file at the top by its name alone.
@@ -446,10 +484,10 @@ fn reference_key(path: &str) -> Option<String> {
 }
 
 impl FollowUp {
-    /// Counts `changes` (every commit's files) under `rule`. A file the rule does not count
-    /// still counts when a product line the follow-up added names it (`fixtures/evil` in
-    /// `#[path = "../fixtures/evil.rs"]`, an import of `__tests__/x`): product code then
-    /// builds it in (review round 4 of SPEC-493 fix 6).
+    /// Counts `changes` (every commit's files) under `rule`. A test or document file still
+    /// counts when a product line the follow-up added names it (`fixtures/evil` in
+    /// `#[path = "../fixtures/evil.rs"]`, an import of `__tests__/x`; review round 4 of
+    /// SPEC-493 fix 6), and every one does when such a line loads code at all (round 5).
     #[must_use]
     pub fn count(changes: &[FileLines], rule: &ProductRule) -> Self {
         let product_text: Vec<&str> = changes
@@ -459,6 +497,15 @@ impl FollowUp {
             .collect();
         let named = |path: &str| {
             reference_key(path).is_some_and(|key| product_text.iter().any(|t| t.contains(&key)))
+        };
+        // A new line that loads code: every test and document file the follow-up changed may
+        // be what it loads (a module folder, an index file, a dotted import, a re-export), so
+        // they all count; files the project put in `not_product` stay out.
+        let loads = product_text.iter().any(|t| loads_code(t));
+        let loaded = |path: &str| {
+            loads
+                && (is_test_path(path) || is_documentation_path(path))
+                && !rule.not_product.iter().any(|p| pattern_matches(p, path))
         };
         let mut includes: Vec<String> = changes
             .iter()
@@ -478,7 +525,7 @@ impl FollowUp {
         let mut files: Vec<(String, u32)> = Vec::new();
         for change in changes
             .iter()
-            .filter(|c| rule.counts(&c.path) || named(&c.path))
+            .filter(|c| rule.counts(&c.path) || named(&c.path) || loaded(&c.path))
         {
             let n = change.product_lines();
             if n == 0 {
@@ -648,8 +695,9 @@ mod tests {
         );
     }
 
-    /// Review round 4 of SPEC-493 fix 6: a test or document file a new product line names
-    /// counts; a Rust product line that compiles a file in by its path is reported.
+    /// Review rounds 4 and 5 of SPEC-493 fix 6: a test or document file a new product line names
+    /// counts, and every one does once a new product line loads code; a Rust product line that
+    /// compiles a file in by its path is reported.
     #[test]
     fn a_file_product_code_names_counts() {
         let with_text = |path: &str, text: &[&str]| FileLines {
@@ -671,7 +719,8 @@ mod tests {
             ],
             &ProductRule::default(),
         );
-        assert_eq!(named.lines, 32, "{named:?}");
+        // `mod evil;` loads code, so the test file counts too (round 5).
+        assert_eq!(named.lines, 62, "{named:?}");
         assert_eq!(named.includes, ["crates/a/src/lib.rs"]);
         let js = FollowUp::count(
             &[
@@ -682,6 +731,73 @@ mod tests {
         );
         assert_eq!(js.lines, 26);
         assert!(js.includes.is_empty());
+        // Round 5's routes: each new loading line makes the changed test file count.
+        for (path, line, hidden) in [
+            ("src/lib.rs", "mod fixtures;", "tests/evil.rs"),
+            (
+                "src/lib.rs",
+                "mod hidden { use std::include as inc; inc!(concat!(\"tes\", \"ts/evil.rs\")); }",
+                "tests/evil.rs",
+            ),
+            ("app/run.py", "from tests.evil import run", "tests/evil.py"),
+            (
+                "web/app.js",
+                "import { x } from './__tests__';",
+                "web/__tests__/index.js",
+            ),
+            (
+                "web/app.js",
+                "export * from './__tests__/a';",
+                "web/__tests__/b.js",
+            ),
+            (
+                "lib/a.rb",
+                "require_relative '../test/evil'",
+                "test/evil.rb",
+            ),
+            ("src/main.c", "#include \"../tests/evil.h\"", "tests/evil.h"),
+            (
+                "src/lib.rs",
+                "const T: &str = include_str!(\"../README.md\");",
+                "README.md",
+            ),
+        ] {
+            let follow = FollowUp::count(
+                &[with_text(path, &[line]), with_text(hidden, &["x"; 30])],
+                &ProductRule::default(),
+            );
+            assert_eq!(follow.lines, 31, "{line}: {follow:?}");
+        }
+        // A plain product line keeps tests out; `not_product` keeps a loaded file out.
+        let plain = FollowUp::count(
+            &[
+                with_text("src/lib.rs", &["let important = 1;"]),
+                with_text("tests/it.rs", &["x"; 30]),
+            ],
+            &ProductRule::default(),
+        );
+        assert_eq!(plain.lines, 1);
+        let generated = ProductRule {
+            not_product: vec![Pattern::parse("gen/").unwrap_or_else(|_| unreachable!())],
+            ..ProductRule::default()
+        };
+        let regenerated = FollowUp::count(
+            &[
+                with_text("src/lib.rs", &["mod gen;"]),
+                with_text("gen/tests/x.rs", &["x"; 30]),
+            ],
+            &generated,
+        );
+        assert_eq!(regenerated.lines, 1);
+        // Under `src/`, a Rust file of any folder or name is product code.
+        for path in [
+            "crates/a/src/fixtures/mod.rs",
+            "src/tests/mod.rs",
+            "src/a_test.rs",
+        ] {
+            assert!(!is_test_path(path), "{path}");
+        }
+        assert!(is_test_path("crates/a/tests/it.rs"));
         // A product line that names nothing keeps tests out; a test module's line names nothing.
         let mut lib = with_text("crates/a/src/lib.rs", &["fn a() {}", "include_str!(\"x\")"]);
         lib.tests_new = vec![(2, 2)];

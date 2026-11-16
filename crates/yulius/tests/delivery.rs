@@ -2774,6 +2774,13 @@ async fn an_approval_carries_across_a_small_follow_up() -> TestResult {
     })
     .await?;
     assert!(refused && said.contains("26 product lines"), "{said}");
+    // A new line that loads code makes the test files changed beside it count (round 5).
+    let (refused, said, _) = deliver_after_follow_up(|_, wt| {
+        commit_file(wt, "tests/evil.py", &"x = 1\n".repeat(30), "Helper")?;
+        commit_file(wt, "app/run.py", "from tests.evil import run\n", "Use it")
+    })
+    .await?;
+    assert!(refused && said.contains("31 product lines"), "{said}");
     // A test module faked in a comment hides nothing (review round 2).
     let (refused, said, _) = deliver_after_follow_up(|_, wt| {
         let body = format!("/*\n#[cfg(test)]\nmod t {{\n*/\n{}", lines(30, "e"));
