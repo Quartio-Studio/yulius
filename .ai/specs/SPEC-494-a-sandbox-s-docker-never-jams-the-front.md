@@ -401,3 +401,14 @@ in slice 3's pull request.
   tick is counted and journaled then. The instance reads the counts in slice 7
   (`/api/analytics/docker`).
 - Wording: a relay or refuse front has no engine of its own to stop.
+
+### Slice 3, review round 3 (request changes; own code, fixed)
+
+- The pending restart's count had no test: `a_front_that_does_not_start_again_keeps_the_trouble_open`
+  now puts the executable back and shows one count for a person's restart asked before the next
+  tick (red before the fix: counted twice) and one for a pending restart that a later tick
+  starts.
+- `docs/operations.md` quotes the journal lines the code writes.
+- Accepted, not changed: an unanswered ping waits up to 5 s under the sandbox's upkeep lock (once
+  per tick, only beside a client of a running engine); bounded, and releasing the lock mid-tick
+  would let a run start between the reading and the repair.

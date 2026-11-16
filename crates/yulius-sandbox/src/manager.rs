@@ -930,6 +930,8 @@ impl Manager {
         .await;
         live.front = None;
         live.repair = crate::front_repair::RepairWatch::default();
+        // This restart takes over one still pending: one new front, one count (review round 3).
+        live.restart_pending = None;
         self.keep_front(sandbox, state).await;
         if state.live.as_ref().is_some_and(|live| live.front.is_some()) {
             self.docker_restarts.fetch_add(1, Ordering::Relaxed);
@@ -2873,6 +2875,23 @@ while True:
         assert!(asked.is_err_and(|why| why.contains("did not start again")));
         assert_eq!(manager.config.health.troubles().len(), 1, "still open");
         assert_eq!(manager.docker_restarts(), 0);
+        // Review round 3: the executable works again, and a person asks before the next tick:
+        // one stop and one new front are one restart, counted once.
+        std::fs::write(data.path().join("fake-yulius"), FAKE_FRONT)?;
+        manager.restart_docker("s1").await?;
+        assert_eq!(manager.docker_restarts(), 1, "counted once");
+        // Or the next tick starts it: the pending restart is counted then.
+        std::fs::write(data.path().join("fake-yulius"), "#!/bin/sh\necho broken\n")?;
+        assert!(manager.restart_docker("s1").await.is_err());
+        std::fs::write(data.path().join("fake-yulius"), FAKE_FRONT)?;
+        {
+            let entry = manager.entry("s1");
+            let mut guard = entry.lock().await;
+            manager.keep_front("s1", &mut guard).await;
+        }
+        let last = front_of(&manager).await.ok_or("no front after the tick")?;
+        kill(last.pid);
+        assert_eq!(manager.docker_restarts(), 2, "the late start is counted");
         Ok(())
     }
 
