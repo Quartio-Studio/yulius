@@ -146,6 +146,12 @@ impl App {
         let Some(task) = store.task(&id).await? else {
             return Ok(None);
         };
+        // A switch is under the hood (TGC-025, as the notification center: SPEC-468 CCF-008): it
+        // sends nothing and keeps what was told, so a task that reads afterwards as it did before
+        // is no news.
+        if task.status == yulius_domain::task::TaskStatus::Switching {
+            return Ok(None);
+        }
         let requested = self.browser_requests(&task.sandbox_id).await;
         let group = self.task_group(&task, &requested).await?;
         let kind = task_notice(group, task.status);

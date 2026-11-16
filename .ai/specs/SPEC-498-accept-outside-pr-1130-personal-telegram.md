@@ -114,8 +114,10 @@ the notification center would show:
 
 - TGC-025: while a task is switching (status `switching`, "Continuing": the session moves to
   another subscription or restarts on a newer Claude Code, SPEC-468 CCF-008) nothing is sent and
-  what was last told of the task is kept: a task that reads afterwards as it did before (it still
-  needs you for the same request) is not told again; one that reads differently is.
+  what was last told of the task is kept: a task that reads afterwards as it did before (its turn
+  ended with work left, "Your turn") is not told again; one that reads differently is. (An open
+  `needs_you` request keeps a switching task in Needs you already, so only the other cases read
+  "Working" meanwhile and were told twice on #1130's head.)
 - TGC-026: a Needs you whose request names a problem of the whole sandbox (`cause` `docker`,
   SPEC-494) is told once per episode of that sandbox ("<sandbox>: its Docker needs you", naming the
   task that asked and the episode the server names by its oldest open request), not once per task
@@ -158,9 +160,9 @@ the notification center would show:
 ## Plan
 
 - [x] Contributor's change brought onto current dev, renumbered (SPEC-498, ADR-0351, migration 0063) and compiling
-- [ ] Spec SPEC-498 and ADR-0351 adapted to current dev
-- [ ] Brought Telegram tests pass on current dev
-- [ ] A subscription switch sends no Telegram notice, as in the notification center
+- [x] Spec SPEC-498 and ADR-0351 adapted to current dev
+- [x] Brought Telegram tests pass on current dev
+- [x] A subscription switch sends no Telegram notice, as in the notification center
 - [ ] A sandbox-wide Docker Needs you reaches a chat once per episode
 - [ ] A request for control of a task reaches its owner's chat
 - [ ] Docs, lint, e2e and security scan green on current dev

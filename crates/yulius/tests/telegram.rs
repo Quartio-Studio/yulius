@@ -22,7 +22,7 @@ use support::{
 };
 use yulius_app::needs_you::NeedsYouRecord;
 use yulius_app::ports::notify::ChatLinkStore as _;
-use yulius_app::ports::store::{AuditStore as _, TaskStore as _, UserStore as _};
+use yulius_app::ports::store::{AuditStore as _, CoordinationStore as _, TaskStore as _, UserStore as _};
 use yulius_app::ports::store_ext::NeedsYouStore as _;
 use yulius_app::telegram::{ChannelServices, ChannelTuning, UNLINKED_REPLY};
 use yulius_domain::ids::TaskId;
@@ -816,5 +816,72 @@ async fn subscription_problems_reach_administrators_and_disabled_people_get_noth
         audits(&w, &alice, "telegram.unlinked").await?,
         vec!["relinked"]
     );
+    Ok(())
+}
+
+/// Moves task `id` to `status` with `activity` and publishes it.
+async fn move_to(
+    w: &World,
+    id: &str,
+    status: TaskStatus,
+    activity: Option<Activity>,
+) -> TestResult {
+    let id = TaskId::parse(id)?;
+    w.h.store
+        .transition_task(&id, None, status, activity, w.h.app.now())
+        .await?;
+    w.h.app.publish_task(&id).await;
+    Ok(())
+}
+
+/// TGC-025: a subscription switch ("Continuing") is under the hood, as in the notification center
+/// (SPEC-468 CCF-008): it sends nothing, and a task that reads afterwards as it did before (its
+/// turn ended with a step open: "Your turn") is not told again; one that reads differently is.
+#[tokio::test]
+async fn a_subscription_switch_is_no_news() -> TestResult {
+    let w = world().await?;
+    set_bot(&w, TOKEN_A).await?;
+    link(&w, &w.alice, 100).await?;
+    link(&w, &w.carol, 300).await?;
+    let alice = user_id(&w, "alice").await?;
+    let task = seed_task(&w.h, "t1", "s1", &alice, TaskStatus::Running, None).await?;
+    let now = w.h.app.now();
+    w.h.store
+        .replace_steps(
+            &task.id,
+            &[yulius_app::model::StepRecord {
+                id: yulius_domain::ids::StepId::parse("st-1")?,
+                task_id: task.id.clone(),
+                ordinal: 1,
+                title: "Ship it".into(),
+                status: "pending".into(),
+                note: None,
+                updated_by: Some("system".into()),
+                updated_at: Some(now),
+                effort: 1,
+            }],
+            "system",
+            now,
+        )
+        .await?;
+    move_to(&w, "t1", TaskStatus::Running, Some(Activity::Waiting)).await?;
+    let sent = w.fake.wait_sent(100, 2).await?;
+    assert!(sent[1].starts_with("Needs you · app\n"), "{sent:?}");
+
+    // The session moves to another subscription and its turn ends as before: no news.
+    move_to(&w, "t1", TaskStatus::Switching, None).await?;
+    barrier(&w, "c1").await?;
+    move_to(&w, "t1", TaskStatus::Running, Some(Activity::Waiting)).await?;
+    barrier(&w, "c2").await?;
+    assert_eq!(w.fake.sent_to(100).len(), 2, "{:?}", w.fake.sent_to(100));
+
+    // After another switch it asks a person: that reads differently, so it is told.
+    move_to(&w, "t1", TaskStatus::Switching, None).await?;
+    barrier(&w, "c3").await?;
+    move_to(&w, "t1", TaskStatus::Running, Some(Activity::Waiting)).await?;
+    ask(&w, "t1", "the key is missing").await?;
+    let sent = w.fake.wait_sent(100, 3).await?;
+    assert!(sent[2].contains("the key is missing"), "{sent:?}");
+    assert_eq!(w.fake.sent_to(100).len(), 3, "{sent:?}");
     Ok(())
 }
