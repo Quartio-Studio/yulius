@@ -263,7 +263,8 @@ async fn parallel_tasks_coordinate_through_yulius() -> TestResult {
         let rows = h.store.task_messages(&TaskId::parse(task)?, 50).await?;
         assert!(
             rows.is_empty(),
-            "MSR-002: the overlap messages nobody: {rows:?}"
+            "the overlap is no person's message (the holder hears it as Yulius's typed note, \
+             SPEC-493 SCO-001, `scope_overlaps`): {rows:?}"
         );
     }
     let (listed, _) = tool(&internal, "tok-other", "scopes_list", json!({})).await?;

@@ -743,6 +743,16 @@ async fn what_cannot_be_asked_is_refused_without_asking() -> TestResult {
             json!({"sandbox": "website", "prompt": "x", "colour": "red"}),
             "colour",
         ),
+        // `task_create`'s `paths` and `start_anyway` (SPEC-493 SCO-004) are not on the
+        // person's card, so they cannot be asked for here (review rounds 1 and 2 of fix 9).
+        (
+            json!({"sandbox": "website", "prompt": "x", "paths": ["crates/a/**"]}),
+            "paths",
+        ),
+        (
+            json!({"sandbox": "website", "prompt": "x", "start_anyway": true}),
+            "start_anyway",
+        ),
     ] {
         let refused = w.h.app.tool_sandbox_task_create(&caller, &args).await;
         let err = refused.err().ok_or_else(|| format!("{args} was asked"))?;

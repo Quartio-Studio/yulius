@@ -155,6 +155,25 @@ test('a task whose pull request stalled says so on the task list', async ({ app,
   await expect(browser.locator('.strip-status')).not.toHaveText(/PR stalled/);
 });
 
+// SPEC-493 SCO-002: another live task claims paths this one claims: the task's header and its row
+// on the list say which, until a claim is released.
+test('a task whose claims overlap those of another says so', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/t/12'));
+  await firstShown(screen.getByRole('heading', { level: 1 }), '#12 Checkout API');
+  await touchStudioTask(browser, 12, { activity: 'waiting' });
+  await touchStudioTask(browser, 12, { overlaps: [{ task_number: 11, task_title: '3D model viewer', patterns: ['crates/a/**'] }] });
+  await expect(browser.locator('.strip-status')).toHaveText(/· overlaps #11/);
+  await expect(browser.locator('.task-row .task-mark .glyph[aria-label*="overlaps #11"]')).toHaveCount(1);
+  // With a stalled pull request too, both are said, in its attention tone (review round 1).
+  await touchStudioTask(browser, 12, { pr_stalled: 'Pull request #12 has made no progress for 61 min.' });
+  await expect(browser.locator('.strip-status')).toHaveText(/overlaps #11 · PR stalled/);
+  await expect(browser.locator('.strip-status')).toHaveAttribute('data-tone', 'attention');
+  await touchStudioTask(browser, 12, { pr_stalled: null });
+  // Released: the mark is gone.
+  await touchStudioTask(browser, 12, { overlaps: [] });
+  await expect(browser.locator('.strip-status')).not.toHaveText(/overlaps/);
+});
+
 // SPEC-130 DMD-003 (#474, task #109 on 2026-10-14: "this is done but pr isnt purple"): its plan was
 // complete and its pull request's checks green, but its agent still waited in `yulius wait` for
 // the merge it had armed. Not Done before that merge: it goes on by itself.

@@ -1690,6 +1690,93 @@ Both are checked on current `dev` first and fixed test-first if they still hold.
     bound; the mutations named).
   - Nits: `selection` has its doc again; the opening line names the bound in seconds; a missed
     mutant's list says that only the tests the branch changed ran and `--tests` widens them.
-    Answered in words: off Unix the bound kills cargo-mutants only (its builds end with it, its
-    temporary copies may stay); a failed real-tool test leaves its `/tmp/xtask-mutants-*`
+    Answered in words: off Unix the bound kills cargo-mutants only, and its builds and tests,
+    which it stops with a plain kill and no job object, may keep running there (fix 9's delta
+    review corrected this sentence); a failed real-tool test leaves its `/tmp/xtask-mutants-*`
     fixtures for a look, and a pass removes them.
+  - The delta review (Opus 5.5) approved `2533a0f48`, which merged as #1346. Its two nits are in
+    fix 9's pull request: the off-Unix sentence above is corrected, and the `--tests` hint is
+    printed only where the product's tests were narrowed (`filter.is_some()`).
+
+### Fix 9: two tasks do not edit the same files unknowingly
+
+- SCO-001: each overlap in `scope_claim`'s answer now carries the holder's `their_step` (the
+  step in progress) and `their_pull_request` (number, stage, `merge_armed`; null without one)
+  (`App::holder_state`), beside its number, title, pattern and note. The advice is
+  `OVERLAP_ADVICE` (SCO-003).
+  - The holder is told by `App::tell_holder`: one typed Yulius note per holder, claimer and
+    sorted path pairs (`scope_told` on `App`). It retries for about two minutes while the
+    session does not take typed text, and a note never typed is tried again at the next claim.
+  - AC-21 with real fake-agent sessions: `scope_overlaps::an_overlapping_claim_is_told_to_both_tasks`.
+    Task B claims `crates/a/**` while A holds `crates/a/src/x.rs` with a note and a step in
+    progress: B's answer names them and no pull request; A's screen shows the note once, and a
+    second claim of the same paths types nothing more within 25 s, past one retry.
+  - `mcp_coordination`'s "MSR-002" assertion is reworded: no person's message, the note is
+    Yulius's.
+- SCO-002: `TaskSummary.overlaps` (`ClaimOverlap`: the other live task's number and title, this
+  task's patterns), built for live tasks (`App::claim_overlaps`); both tasks are published on a
+  claim and on a release.
+  - The web's `taskInfo` labels the task "… · overlaps #N", on its header, its row and the
+    sidebar; the mock carries `overlaps`.
+  - Tests: the same test asserts both views and that a release empties both; e2e
+    `task-done.e2e.ts` "a task whose claims overlap those of another says so" (removing the
+    label fails it).
+  - A task that stops being live drops out of the others' marks at their next publish or list
+    read, not at once.
+- SCO-003: the rule's sentence is in `scope_claim`'s description and `delivery-pipeline`; the
+  briefing's line is reworded in place to its short form ("on an overlap, wait for the other's PR
+  or agree by claim note"; the briefing's budget tests pass).
+  `skills::every_place_says_what_to_do_on_an_overlap` holds the three.
+- SCO-004: `task_create` takes `paths` (at most 50 globs, as `scope_claim` takes them) and
+  `start_anyway`.
+  - When a live or waiting task (not closed, stopped or failed) holds any of the paths and no `after_task` is
+    given, nothing is made: `created: false`, the overlaps, and the offer of `after_task: N` or
+    `start_anyway: true`. Otherwise the task is made and its paths claimed.
+  - Tests (AC-22, same test): an overlap is refused with the offer naming A; with `after_task`
+    the task is made `Chained` and holds its claim; `/etc` is refused.
+- Mutations, each fails the test: the step left out; the overlaps of a view emptied; the planned
+  overlaps never found; the new task's claims not written; the holder not told; the told-once
+  check skipped. The last survived a 5 s look and is caught by the 25 s one.
+- `scripts/dev mutants` on this head (MUT-002): "mutants: 71 listed, 35 caught, 0 missed, 0
+  timed out, 36 unviable, 0 not reached (bound 30 min, took 745 s)".
+- ADR-0348 (amends SPEC-012 MSG-002), api.md, changes. How to read it a week later: the share of
+  merged pull requests that hit a conflict, `audit_log` actions `delivery.conflict` per merged
+  pull request (baseline 29 of 60 in quartio-v2, 7 of 42 here).
+- Review round 1 (Opus 5.5, head `d66dfb6cc`; `d71043dac` adds only `cargo fmt`): request
+  changes, 3 majors and 5 minors in own code, answered test-first; the five mutations below each
+  fail a test.
+  - M1: ended tasks with claims they never released made `task_create` refuse, with an offer the
+    chain then refused. Now only tasks that are not resting (closed, stopped, failed) count; the
+    ADR, api.md and this Evidence say so. Test: the holder stopped, its claims are no overlap.
+    Mutation: counting all but closed.
+  - M2: a task title with an escape or a carriage return could end the paste early and type keys
+    into the holder's session. The note is built by `overlap_paste`, run through `clean_message`
+    and kept on one line. Unit `an_overlap_note_is_one_clean_paste` (escape, `\r`, `/clear`).
+    Mutation: the raw text.
+  - M3: `claim_overlaps` read the project's tasks again for each live row. It takes the list's
+    `project` now; the claims are one read a live row.
+  - m4: the overlap mark hid a stalled pull request's. Now it is added to the label and the stall
+    check still applies, and the detail names the overlaps when nothing else is said. The e2e
+    test has both marks at once. Mutation: returning early.
+  - m5: told-once keys were per whole set and never removed. Now one key a pair, and only new
+    pairs go in a message; a release forgets the task's keys. Tests: widened by a new pair, only
+    it is told; released and claimed again, told again. Mutations: per-set keys, no forgetting.
+  - m6: `sandbox_task_create` might pass `paths` and `start_anyway`, which the person's card does
+    not show. Round 2 found the round-1 answer (dropping them at the approval) held by no test:
+    the request refuses both before any card (its arguments deny unknown fields), so that code
+    was never reached and is removed; `what_cannot_be_asked_is_refused_without_asking` now asks
+    with each and is refused.
+  - m7: the holder's pull request carries `checks`, the state of Yulius CI's newest run of it
+    (`none` without one).
+  - m8: the old "claiming agent only" wording is gone from the module doc, SPEC-002 and
+    `mcp.rs`, and SPEC-012's MSG-002 row says it is amended. The rule test now refuses the old
+    sentences in five places.
+  - Nits: the holder's state is read once a holder; a claim that cannot be written after the task
+    is made is logged, not an error inviting a second task; `paths` are deduplicated; the
+    caller's own task is marked `mine`; `start_anyway` is always type-checked. Answered in words:
+    with `after_task` given the overlap check is skipped on purpose (the caller has chosen to
+    wait).
+- Review round 2 (Opus 5.5, head `0ac052200`): approve, with two minor test gaps in own code,
+  closed before the merge: the m6 line above, and the holder's `checks` now held by
+  `scope_overlaps` (A gets pull request #41 and a passed Yulius CI run: the answer says
+  `pr_open`, `passed`, not armed). Mutation: the lookup replaced by `"none"` fails it.

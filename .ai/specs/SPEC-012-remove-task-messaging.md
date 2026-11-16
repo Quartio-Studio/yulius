@@ -31,7 +31,7 @@ stay (no migration); old task-to-task rows may still show in a task's panel.
 | ID | Requirement | Evidence |
 | --- | --- | --- |
 | MSG-001 | `message_send` accepts only `to="people"`; a missing `to`, a task reference or `"all"` is an error naming `people`. Kind `scope` is gone. | `mcp_coordination.rs` |
-| MSG-002 | `scope_claim` reports overlaps only in the claiming agent's result; no message is sent to the other task and the advice to use `message_send` is gone. | `mcp_coordination.rs` |
+| MSG-002 | `scope_claim` reports overlaps only in the claiming agent's result; no message is sent to the other task and the advice to use `message_send` is gone. | `mcp_coordination.rs` (amended by SPEC-493 SCO-001, ADR-0348: the holding task is told once by a typed Yulius note) |
 | MSG-003 | The briefing, tool descriptions and server instructions describe `message_send` as for people and `messages_inbox` as notices from Yulius; the hook digest does not tell agents to reply to Yulius notices. | `briefing.rs`, `hooks.rs`, `agent_hooks.rs` |
 | MSG-004 | The Messages panel, sidebar badge and kind badges describe notices and agent messages to people; the mock holds no task-to-task messages. | web e2e |
 | MSG-005 | Notices from Yulius, `messages_inbox`, the digest and the idle wake-up behave as before. | `supervision.rs`, `agent_hooks.rs` |
