@@ -130,6 +130,9 @@ pub struct JobDef {
     pub timeout_minutes: Option<u32>,
     /// One run of each of its jobs at a time in the sandbox (`exclusive`, SPEC-435 JTL-001).
     pub exclusive: bool,
+    /// The files it tests (`paths`, SPEC-493 CJP-001): scope-claim globs, normalized. Empty:
+    /// every change.
+    pub paths: Vec<String>,
 }
 
 /// One job of a run, after matrix expansion.
@@ -151,6 +154,8 @@ pub struct Job {
     pub timeout_minutes: Option<u32>,
     /// One run of it at a time in the sandbox (SPEC-435 JTL-001).
     pub exclusive: bool,
+    /// Its definition's `paths` (SPEC-493 CJP-001).
+    pub paths: Vec<String>,
 }
 
 /// An invalid CI job configuration.
@@ -185,6 +190,11 @@ pub enum CiConfigError {
     /// More definitions or expanded jobs than allowed.
     #[error("CI may define at most 16 jobs and expand to at most 32")]
     TooManyJobs,
+    /// A `paths` list that is empty, too long, repeated or holds an invalid glob.
+    #[error(
+        "CI job '{0}': paths are 1 to 50 repository-relative globs (`*`, `?`, `**`, a trailing `/` for a folder), each once"
+    )]
+    InvalidPaths(String),
     /// Both `[commands] gate` and `[[ci.jobs]]`.
     #[error("use either [commands] gate (one job) or [[ci.jobs]] (several), not both")]
     GateAndJobs,
@@ -241,6 +251,76 @@ pub fn parse_secrets(job: &str, text: &str) -> Result<Vec<String>, CiConfigError
     }
 }
 
+/// Most `paths` a job may name (SPEC-493 CJP-001).
+pub const MAX_JOB_PATHS: usize = 50;
+
+/// The project file that defines the jobs: a change to it runs every job (SPEC-493 CJP-003).
+pub const JOBS_FILE: &str = "yulius.toml";
+
+/// How the reason of a job skipped for its `paths` begins (a requeue keeps that skip).
+pub const PATHS_SKIP_REASON: &str = "no file this job tests changed";
+
+/// A job's `paths` (`["crates/a/**", "docs/"]`), normalized as scope claims are.
+///
+/// # Errors
+/// [`CiConfigError::InvalidPaths`] naming `job`: none, more than [`MAX_JOB_PATHS`], a glob the
+/// scope claims refuse, or one given twice.
+pub fn parse_paths(job: &str, items: &[String]) -> Result<Vec<String>, CiConfigError> {
+    let invalid = || CiConfigError::InvalidPaths(job.to_owned());
+    if items.is_empty() || items.len() > MAX_JOB_PATHS {
+        return Err(invalid());
+    }
+    let mut out: Vec<String> = Vec::with_capacity(items.len());
+    for item in items {
+        let pattern = crate::scope::Pattern::parse(item.trim()).map_err(|_| invalid())?;
+        let text = pattern.as_str().to_owned();
+        if out.contains(&text) {
+            return Err(invalid());
+        }
+        out.push(text);
+    }
+    Ok(out)
+}
+
+/// Why a job with `paths` is skipped for a change of `changed` files (SPEC-493 CJP-002,
+/// CJP-003), or `None` when it runs: a job without `paths`, an unknown change (`None`), a change
+/// to [`JOBS_FILE`] and a change touching one of its paths all run it.
+#[must_use]
+pub fn paths_skip(paths: &[String], changed: Option<&[String]>) -> Option<String> {
+    let changed = changed?;
+    if paths.is_empty() || changed.iter().any(|file| file == JOBS_FILE) {
+        return None;
+    }
+    let mut patterns: Vec<crate::scope::Pattern> = Vec::with_capacity(paths.len() * 2);
+    for text in paths {
+        // A path that no longer parses tests everything: never skipped on doubt.
+        let Ok(pattern) = crate::scope::Pattern::parse(text) else {
+            return None;
+        };
+        // A name without a glob (`crates/web`) is the file and the folder of that name.
+        if !text.contains(['*', '?'])
+            && let Ok(folder) = crate::scope::Pattern::parse(&format!("{text}/"))
+        {
+            patterns.push(folder);
+        }
+        patterns.push(pattern);
+    }
+    // A changed path no pattern can be matched against (a backslash, a control character)
+    // could be one the job tests: it runs.
+    if changed
+        .iter()
+        .any(|file| crate::scope::Pattern::parse(file).is_err())
+    {
+        return None;
+    }
+    let touched = changed.iter().any(|file| {
+        patterns
+            .iter()
+            .any(|pattern| crate::scope::pattern_matches(pattern, file))
+    });
+    (!touched).then(|| format!("{PATHS_SKIP_REASON} (paths: {})", paths.join(", ")))
+}
+
 /// Validates job definitions and expands their matrices, in order.
 ///
 /// # Errors
@@ -272,6 +352,7 @@ pub fn expand_jobs(defs: &[JobDef]) -> Result<Vec<Job>, CiConfigError> {
                 secrets: def.secrets.clone(),
                 timeout_minutes: def.timeout_minutes,
                 exclusive: def.exclusive,
+                paths: def.paths.clone(),
             });
         } else {
             for value in &def.matrix {
@@ -284,6 +365,7 @@ pub fn expand_jobs(defs: &[JobDef]) -> Result<Vec<Job>, CiConfigError> {
                     secrets: def.secrets.clone(),
                     timeout_minutes: def.timeout_minutes,
                     exclusive: def.exclusive,
+                    paths: def.paths.clone(),
                 });
             }
         }
@@ -323,6 +405,7 @@ fn single_job(command: &str) -> Result<Job, GateError> {
         secrets: Vec::new(),
         timeout_minutes: None,
         exclusive: false,
+        paths: Vec::new(),
     })
 }
 
@@ -376,6 +459,7 @@ fn built_in_security_job() -> Job {
         secrets: vec![VIDOC_SECRET.to_owned()],
         timeout_minutes: None,
         exclusive: false,
+        paths: Vec::new(),
     }
 }
 
@@ -1074,6 +1158,38 @@ pub fn classify_worktree(owner: WorktreeOwner, prunable: bool) -> Option<StaleRe
 mod tests {
     use super::*;
 
+    /// SPEC-493 CJP-002, CJP-003 (AC-16): a job with `paths` is skipped, with the reason, only
+    /// for a known change that touches none of them and not `yulius.toml`.
+    #[test]
+    fn a_job_runs_only_for_a_change_to_its_paths() {
+        let paths = vec!["crates/a/**".to_owned(), "docs/*.md".to_owned()];
+        let skip = |changed: &[&str]| {
+            let changed: Vec<String> = changed.iter().map(|s| (*s).to_owned()).collect();
+            paths_skip(&paths, Some(&changed))
+        };
+        assert_eq!(
+            skip(&["web/x.js"]).as_deref(),
+            Some("no file this job tests changed (paths: crates/a/**, docs/*.md)")
+        );
+        assert_eq!(skip(&["web/x.js", "crates/a/src/lib.rs"]), None);
+        assert_eq!(skip(&["docs/x.md"]), None);
+        assert!(
+            skip(&["docs/sub/x.md"]).is_some(),
+            "`*` stays in its folder"
+        );
+        assert_eq!(skip(&["yulius.toml"]), None, "its own definition");
+        assert_eq!(paths_skip(&paths, None), None, "never skipped on doubt");
+        assert_eq!(paths_skip(&[], Some(&["web/x.js".to_owned()])), None);
+        assert!(skip(&[]).is_some(), "a change of no file touches none");
+        // A name without a glob is the folder of that name too.
+        let folder = vec!["crates/pomerado".to_owned()];
+        let touches = |file: &str| paths_skip(&folder, Some(&[file.to_owned()])).is_none();
+        assert!(touches("crates/pomerado/src/lib.rs") && touches("crates/pomerado"));
+        assert!(!touches("crates/pomerado2/src/lib.rs"));
+        // A changed path that cannot be matched runs the job.
+        assert_eq!(skip(&["web\\x.js"]), None);
+    }
+
     fn target(reference: CiRef, sha: &str) -> Target {
         Target {
             reference,
@@ -1126,6 +1242,7 @@ mod tests {
             secrets: Vec::new(),
             timeout_minutes: None,
             exclusive: false,
+            paths: Vec::new(),
         };
         let gate = |defs: &[JobDef]| -> Result<Gate, CiConfigError> {
             Ok(Gate {
@@ -1164,6 +1281,7 @@ mod tests {
             secrets: Vec::new(),
             timeout_minutes: None,
             exclusive: false,
+            paths: Vec::new(),
         };
         let gate = |source: GateSource, defs: &[JobDef]| -> Result<Gate, CiConfigError> {
             Ok(Gate {
@@ -1258,6 +1376,7 @@ mod tests {
             secrets: Vec::new(),
             timeout_minutes: None,
             exclusive: false,
+            paths: Vec::new(),
         };
         let jobs = expand_jobs(&[
             def("lint", "cargo clippy", ""),
@@ -1297,6 +1416,7 @@ mod tests {
             secrets: Vec::new(),
             timeout_minutes: None,
             exclusive: false,
+            paths: Vec::new(),
         };
         let mut defs = vec![
             wide.clone(),

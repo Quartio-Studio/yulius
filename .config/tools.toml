@@ -3,6 +3,8 @@
 cargo-nextest = "0.9.146"
 cargo-deny = "0.20.2"
 cargo-shear = "1.14.0"
+# `scripts/dev mutants` (SPEC-493 MUT-001); resolved on 2026-11-16.
+cargo-mutants = "27.1.0"
 
 # zig compiles the C that dependencies vendor (ring, SQLite) for the gate's macOS check on Linux
 # (ADR-0169; scripts/zig_macos.py). Official tarballs of ziglang.org/download and their SHA-256.

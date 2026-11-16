@@ -266,30 +266,146 @@ impl Git {
         integration: &str,
         limit: usize,
     ) -> Result<bool, GitError> {
+        // The follow-up walk with nothing to count (review round 1 of SPEC-493 fix 6).
+        Ok(self
+            .follow_up_since(worktree, reviewed, head, integration, limit)?
+            .is_some_and(|commits| commits.is_empty()))
+    }
+
+    /// The commits after `reviewed` on the way from `head` (first parents, newest first), when
+    /// every merge on that way is a clean merge of `integration` (SPEC-493 APR-001, APR-003):
+    /// `None` when `reviewed` is not reached within `limit` steps (it is not an ancestor of the
+    /// head), or a merge on the way resolved a conflict or merged something else.
+    pub fn follow_up_since(
+        &self,
+        worktree: &Path,
+        reviewed: &str,
+        head: &str,
+        integration: &str,
+        limit: usize,
+    ) -> Result<Option<Vec<String>>, GitError> {
         let Some(reviewed) = self.resolve_commit(worktree, reviewed)? else {
-            return Ok(false);
+            return Ok(None);
         };
         let mut current = self.rev_parse(worktree, head)?;
+        let mut commits = Vec::new();
         for _ in 0..=limit {
             if current == reviewed {
-                return Ok(true);
+                return Ok(Some(commits));
             }
             let parents = self.parents(worktree, &current)?;
-            let [first, second] = parents.as_slice() else {
-                return Ok(false);
-            };
-            if !self.is_ancestor(worktree, second, integration)? {
-                return Ok(false);
+            match parents.as_slice() {
+                [parent] => {
+                    commits.push(current.clone());
+                    current.clone_from(parent);
+                }
+                [first, second] => {
+                    if !self.is_ancestor(worktree, second, integration)? {
+                        return Ok(None);
+                    }
+                    let Some(merged) = self.merge_tree(worktree, first, second)? else {
+                        return Ok(None);
+                    };
+                    if self.tree_of(worktree, &current)?.as_deref() != Some(merged.as_str()) {
+                        return Ok(None);
+                    }
+                    current.clone_from(first);
+                }
+                _ => return Ok(None),
             }
-            let Some(merged) = self.merge_tree(worktree, first, second)? else {
-                return Ok(false);
-            };
-            if self.tree_of(worktree, &current)?.as_deref() != Some(merged.as_str()) {
-                return Ok(false);
-            }
-            current.clone_from(first);
         }
-        Ok(false)
+        Ok(None)
+    }
+
+    /// The lines `commit` (one parent) added and removed against its parent, per file, by line
+    /// number (SPEC-493 APR-001). Read with plumbing and `--text`, so no configuration of the
+    /// clone and no attribute changes what is counted (review round 1 of fix 6): `diff-tree
+    /// --numstat -z` gives each file's exact path and its counts, `diff-tree -p -U0` the line
+    /// numbers, and the two must agree (`--numstat` follows a `-diff` attribute and gives no
+    /// counts there; the patch does not). A file with a NUL byte or a line over
+    /// [`MAX_COUNTED_LINE_BYTES`] in its changed lines is opaque: no line count says what it
+    /// changed.
+    ///
+    /// # Errors
+    /// Git failures; a commit with another number of parents than one; a patch that does not
+    /// parse or disagrees with the counts.
+    pub fn commit_lines(
+        &self,
+        repo: &Path,
+        commit: &str,
+    ) -> Result<Vec<CommitFileLines>, GitError> {
+        let commit = self.rev_parse(repo, commit)?;
+        let parents = self.parents(repo, &commit)?;
+        let [parent] = parents.as_slice() else {
+            return Err(GitError::InvalidInput {
+                what: "commit",
+                reason: format!("{commit} has {} parents, not one", parents.len()),
+            });
+        };
+        let diff_tree = |extra: &[&str]| {
+            self.run_ok(
+                Invocation::new(self, "diff-tree", Some(repo))
+                    .env("GIT_ATTR_NOSYSTEM", "1")
+                    .args(["-c", "core.quotePath=false", "-c", "diff.orderFile="])
+                    .args([
+                        "diff-tree",
+                        "-r",
+                        "--no-renames",
+                        "--no-ext-diff",
+                        "--no-textconv",
+                        "--no-color",
+                        "--ignore-submodules=none",
+                        "--text",
+                    ])
+                    .args(extra)
+                    .args(["--end-of-options", parent.as_str(), commit.as_str(), "--"]),
+            )
+        };
+        let counts = parse_numstat_z(&diff_tree(&["--numstat", "-z"])?.stdout);
+        let patch = diff_tree(&["-p", "-U0", "--src-prefix=a/", "--dst-prefix=b/"])?;
+        let disagree = |why: &str| GitError::InvalidInput {
+            what: "commit lines",
+            reason: format!("what {commit} changed does not read back: {why}"),
+        };
+        let counts = counts.ok_or_else(|| disagree("its counts do not parse"))?;
+        let sections = parse_unified_zero(&patch.stdout)
+            .ok_or_else(|| disagree("its patch does not parse"))?;
+        // One record per file; a type change (a link become a file) is two sections of the
+        // patch, a deletion and an addition, and one record (review round 2 of fix 6).
+        let mut sections = sections.into_iter().peekable();
+        let mut files = Vec::with_capacity(counts.len());
+        let sizes = |s: &Section| (s.added.len(), s.removed.len());
+        for (path, numbers) in counts {
+            let mut section = sections
+                .next()
+                .ok_or_else(|| disagree("its patch and its counts name different files"))?;
+            if let Some(n) = numbers
+                && n != sizes(&section)
+                && section.added.is_empty()
+                && let Some(next) = sections.next_if(|next| {
+                    next.removed.is_empty() && n == (next.added.len(), section.removed.len())
+                })
+            {
+                section.added = next.added;
+                section.added_text = next.added_text;
+                section.opaque |= next.opaque;
+            }
+            // Git counts a file its attributes call binary as `-`: the patch (`--text`) says.
+            if numbers.is_some_and(|n| n != sizes(&section)) {
+                return Err(disagree(&format!("the counts of `{path}` differ")));
+            }
+            files.push(CommitFileLines {
+                path,
+                added: section.added,
+                added_text: section.added_text,
+                removed: section.removed,
+                opaque: section.opaque,
+            });
+        }
+        if sections.next().is_some() {
+            return Err(disagree("its patch and its counts name different files"));
+        }
+        Ok(files)
     }
 
     /// Keeps Yulius's block in `info/attributes` of the clone `repo` (read by every worktree of
@@ -410,5 +526,168 @@ mod tests {
         assert!(second.contains("/CHANGELOG.md merge=union") && !second.contains("docs/changes"));
         assert_eq!(with_managed_block(&second, &[]), "*.png binary\n");
         assert_eq!(with_managed_block("", &[]), "");
+    }
+}
+
+/// Longest changed line [`Git::commit_lines`] counts as one line.
+pub const MAX_COUNTED_LINE_BYTES: usize = 200;
+
+/// One file's section of a `-U0` patch.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct Section {
+    added: Vec<u32>,
+    added_text: Vec<String>,
+    removed: Vec<u32>,
+    opaque: bool,
+}
+
+/// One file of [`Git::commit_lines`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CommitFileLines {
+    /// Its path after the commit; a deleted file's before it.
+    pub path: String,
+    /// Line numbers it added (new file).
+    pub added: Vec<u32>,
+    /// The text of each added line (at most [`MAX_COUNTED_LINE_BYTES`] of it), as `added`.
+    pub added_text: Vec<String>,
+    /// Line numbers it removed (old file).
+    pub removed: Vec<u32>,
+    /// Whether a changed line holds a NUL byte or is longer than [`MAX_COUNTED_LINE_BYTES`]:
+    /// its line count does not say what it changed.
+    pub opaque: bool,
+}
+
+/// One file of `--numstat`: its path and its added and removed counts (`None`: binary to Git).
+type NumStat = (String, Option<(usize, usize)>);
+
+/// `diff-tree --numstat -z` output: each file's path and its added and removed counts
+/// (`None` for a binary file); `None` when it does not parse.
+fn parse_numstat_z(bytes: &[u8]) -> Option<Vec<NumStat>> {
+    let mut out = Vec::new();
+    for record in bytes.split(|&b| b == 0).filter(|r| !r.is_empty()) {
+        let text = String::from_utf8_lossy(record);
+        let mut parts = text.splitn(3, '\t');
+        let (plus, minus, path) = (parts.next()?, parts.next()?, parts.next()?);
+        let numbers = match (plus, minus) {
+            ("-", "-") => None,
+            (plus, minus) => Some((plus.parse().ok()?, minus.parse().ok()?)),
+        };
+        out.push((path.to_owned(), numbers));
+    }
+    Some(out)
+}
+
+/// `diff-tree -p -U0` output: each file's added and removed line numbers, in order, and whether
+/// a changed line is opaque. A file starts only at `diff --git`, and a hunk takes exactly the
+/// lines its header counts, so no content line is read as a header (review round 1 of fix 6).
+/// `None` when it does not parse.
+fn parse_unified_zero(bytes: &[u8]) -> Option<Vec<Section>> {
+    let mut files: Vec<Section> = Vec::new();
+    // In a hunk: the old and new lines still to take, and their next numbers.
+    let mut hunk: Option<(u32, u32, u32, u32)> = None;
+    let range = |spec: &str| -> Option<(u32, u32)> {
+        let (start, count) = spec.split_once(',').unwrap_or((spec, "1"));
+        Some((start.parse().ok()?, count.parse().ok()?))
+    };
+    for line in bytes.split(|&b| b == b'\n') {
+        if let Some((old_left, new_left, old_at, new_at)) = hunk.as_mut() {
+            let file = files.last_mut()?;
+            match line.first() {
+                Some(b'-') if *old_left > 0 => {
+                    file.removed.push(*old_at);
+                    *old_at += 1;
+                    *old_left -= 1;
+                }
+                Some(b'+') if *new_left > 0 => {
+                    file.added.push(*new_at);
+                    let text = &line[1..line.len().min(MAX_COUNTED_LINE_BYTES + 1)];
+                    file.added_text
+                        .push(String::from_utf8_lossy(text).into_owned());
+                    *new_at += 1;
+                    *new_left -= 1;
+                }
+                Some(b'\\') => continue,
+                _ => return None,
+            }
+            if line.contains(&0) || line.len() > MAX_COUNTED_LINE_BYTES + 1 {
+                file.opaque = true;
+            }
+            if *old_left == 0 && *new_left == 0 {
+                hunk = None;
+            }
+        } else if line.starts_with(b"diff --git ") {
+            files.push(Section::default());
+        } else if let Some(rest) = line.strip_prefix(b"@@ -") {
+            files.last()?;
+            let rest = std::str::from_utf8(rest).ok()?;
+            let (old, rest) = rest.split_once(" +")?;
+            let (new, _) = rest.split_once(" @@")?;
+            let ((old_at, old_left), (new_at, new_left)) = (range(old)?, range(new)?);
+            if old_left > 0 || new_left > 0 {
+                hunk = Some((old_left, new_left, old_at, new_at));
+            }
+        }
+    }
+    hunk.is_none().then_some(files)
+}
+
+#[cfg(test)]
+mod unified_tests {
+    use super::*;
+
+    #[test]
+    fn unified_zero_hunks_give_line_numbers() {
+        let text = "diff --git a/src/a.rs b/src/a.rs\n--- a/src/a.rs\n+++ b/src/a.rs\n\
+                    @@ -3 +3,2 @@ fn a\n-x\n+y\n+z\n@@ -10,2 +11,0 @@\n-p\n-q\n\
+                    diff --git a/old.txt b/old.txt\n--- a/old.txt\n+++ /dev/null\n@@ -1,2 +0,0 @@\n-a\n-b\n";
+        let files = parse_unified_zero(text.as_bytes()).unwrap_or_default();
+        let lines: Vec<(Vec<u32>, Vec<u32>)> =
+            files.into_iter().map(|f| (f.added, f.removed)).collect();
+        assert_eq!(lines, [(vec![3, 4], vec![3, 10, 11]), (vec![], vec![1, 2])]);
+    }
+
+    /// Review round 1 of SPEC-493 fix 6: a content line that looks like a header stays content,
+    /// a missing newline's marker is no line, a new file and a mode change parse, and a hunk
+    /// shorter than its header is refused.
+    #[test]
+    fn a_patch_is_read_by_its_hunk_counts() {
+        let text = "diff --git a/src/lib.rs b/src/lib.rs\n--- a/src/lib.rs\n+++ b/src/lib.rs\n\
+                    @@ -1,0 +2,2 @@\n++ b/docs/x.md\n+--- a/docs/x.md\n@@ -9 +10,3 @@\n-old\n\
+                    \\ No newline at end of file\n+a\n+b\n+c\n\\ No newline at end of file\n\
+                    diff --git a/new.rs b/new.rs\nnew file mode 100644\n--- /dev/null\n+++ b/new.rs\n\
+                    @@ -0,0 +1 @@\n+fn n() {}\n\
+                    diff --git a/run.sh b/run.sh\nold mode 100644\nnew mode 100755\n";
+        let files = parse_unified_zero(text.as_bytes()).unwrap_or_default();
+        assert!(files.iter().all(|f| !f.opaque));
+        let lines: Vec<(Vec<u32>, Vec<u32>)> =
+            files.into_iter().map(|f| (f.added, f.removed)).collect();
+        assert_eq!(
+            lines,
+            [
+                (vec![2, 3, 10, 11, 12], vec![9]),
+                (vec![1], vec![]),
+                (vec![], vec![])
+            ]
+        );
+        assert!(parse_unified_zero(b"diff --git a/x b/x\n@@ -1,2 +1 @@\n-a\n+b\n").is_none());
+        assert!(parse_unified_zero(b"@@ -1 +1 @@\n-a\n+b\n").is_none());
+        // A NUL byte or a line over the bound: opaque.
+        let long = format!("diff --git a/x b/x\n@@ -0,0 +1 @@\n+{}\n", "x".repeat(201));
+        for patch in [
+            long.as_bytes(),
+            b"diff --git a/x b/x\n@@ -0,0 +1 @@\n+a\0b\n",
+        ] {
+            let files = parse_unified_zero(patch).unwrap_or_default();
+            assert!(files.len() == 1 && files[0].opaque);
+        }
+        let edge = format!("diff --git a/x b/x\n@@ -0,0 +1 @@\n+{}\n", "x".repeat(200));
+        assert!(!parse_unified_zero(edge.as_bytes()).unwrap_or_default()[0].opaque);
+        assert_eq!(
+            parse_numstat_z(b"3\t1\tsrc/a b.rs\0-\t-\tlogo.png\0"),
+            Some(vec![
+                ("src/a b.rs".to_owned(), Some((3, 1))),
+                ("logo.png".to_owned(), None)
+            ])
+        );
     }
 }

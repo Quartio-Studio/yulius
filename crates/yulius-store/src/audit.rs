@@ -58,6 +58,70 @@ impl AuditStore for SqliteStore {
         .await
     }
 
+    async fn audit_of_sandbox(
+        &self,
+        slug: &str,
+        also: &[String],
+        actions: &[&str],
+        from: Option<Timestamp>,
+        to: Option<Timestamp>,
+        limit: u32,
+    ) -> AppResult<Vec<(String, AuditEntry)>> {
+        if actions.is_empty() {
+            return Ok(Vec::new());
+        }
+        let slug = slug.to_owned();
+        let also = also.to_vec();
+        let actions: Vec<String> = actions.iter().map(|a| (*a).to_owned()).collect();
+        let (from, to) = (from.map_or(i64::MIN, |t| t.0), to.map_or(i64::MAX, |t| t.0));
+        self.call(move |c| {
+            // ?1 the slug, ?2 and ?3 the range, ?4 the limit, then the actions and the other
+            // targets. `<slug>#…` as a range of the target index ('$' follows '#').
+            let numbered = |from: usize, n: usize| {
+                (0..n)
+                    .map(|i| format!("?{}", i + from))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            };
+            let marks = numbered(5, actions.len());
+            let others = if also.is_empty() {
+                String::new()
+            } else {
+                format!(
+                    " OR target IN ({})",
+                    numbered(5 + actions.len(), also.len())
+                )
+            };
+            let sql = format!(
+                "SELECT target, at, actor, action, detail FROM ( \
+                   SELECT id, target, at, actor, action, detail FROM audit_log \
+                   WHERE (target = ?1 OR (target >= ?1 || '#' AND target < ?1 || '$'){others}) \
+                   AND at >= ?2 AND at < ?3 AND action IN ({marks}) \
+                   ORDER BY at DESC, id DESC LIMIT ?4) ORDER BY at, id"
+            );
+            let mut stmt = c.prepare(&sql).map_err(db)?;
+            let mut values: Vec<rusqlite::types::Value> =
+                vec![slug.into(), from.into(), to.into(), i64::from(limit).into()];
+            values.extend(actions.into_iter().map(rusqlite::types::Value::from));
+            values.extend(also.into_iter().map(rusqlite::types::Value::from));
+            let rows = stmt
+                .query_map(rusqlite::params_from_iter(values), |r| {
+                    Ok((
+                        r.get::<_, String>(0)?,
+                        AuditEntry {
+                            at: Timestamp(r.get(1)?),
+                            actor: r.get(2)?,
+                            action: r.get(3)?,
+                            detail: r.get(4)?,
+                        },
+                    ))
+                })
+                .map_err(db)?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(db)
+        })
+        .await
+    }
+
     async fn last_audit(
         &self,
         target: &str,

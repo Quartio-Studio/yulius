@@ -415,6 +415,7 @@ mod tests {
             decision: false,
             link: None,
             at: 800,
+            cause: None,
         };
         store
             .set_task_needs_you(&task, Some(&request), Timestamp(800))

@@ -489,6 +489,92 @@ pub(super) fn resume(
     Ok(true)
 }
 
+/// `/reviewer-limit <kind>`: the Agent tool starts reviewer `kind` (its `PreToolUse`, then
+/// `SubagentStart` for the agent the answer runs), the reviewer answers once on Fable 5.2, and
+/// then its own transcript gets the refusal of its model's usage credits, as at `/credits-out`.
+/// No `SubagentStop` follows, as with Claude Code 2.1.325 (SPEC-493 RLM-002).
+pub(super) fn reviewer_cut_off(
+    options: &Options,
+    line: &str,
+    transcript: Option<&Arc<Mutex<Transcript>>>,
+    hooks: Option<&Hooks>,
+) -> io::Result<()> {
+    // `/reviewer-limit-turn <kind>`: the same inside a turn of the session's thread, which
+    // ends with its Stop hook.
+    let in_turn = line.starts_with("/reviewer-limit-turn ");
+    let kind = line
+        .split_once(' ')
+        .map(|(_, kind)| kind)
+        .unwrap_or_default()
+        .trim();
+    if in_turn && let Some(reason) = hooks.and_then(|h| h.prompt(line)) {
+        return say(&format!("PROMPT BLOCKED: {reason}"));
+    }
+    if in_turn && let Some(t) = transcript {
+        t.lock()
+            .map_err(|_| io::Error::other("transcript lock"))?
+            .begin(line)?;
+    }
+    let Some((path, session)) = transcript.and_then(|t| {
+        t.lock()
+            .ok()
+            .map(|t| (t.path.clone(), t.session_id.clone()))
+    }) else {
+        return say("REVIEWER NEEDS A TRANSCRIPT");
+    };
+    let agent = format!("arev{:x}", now_ms());
+    if let Some(hooks) = hooks {
+        let answer: Value = serde_json::from_str(hooks.agent(kind).trim()).unwrap_or_default();
+        let runs = answer["hookSpecificOutput"]["updatedInput"]["subagent_type"]
+            .as_str()
+            .unwrap_or(kind)
+            .to_owned();
+        hooks.subagent_start(&agent, &runs);
+    }
+    let file = Layout::of(&path)
+        .session
+        .join("subagents")
+        .join(format!("agent-{agent}.jsonl"));
+    let message = json!({
+        "id": format!("msg_fake_{agent}"), "type": "message", "role": "assistant",
+        "model": REVIEWER_MODEL, "content": [{"type": "text", "text": "Reading the diff."}],
+        "stop_reason": "end_turn",
+        "usage": {"input_tokens": 7, "cache_creation_input_tokens": 0,
+            "cache_read_input_tokens": 0, "output_tokens": 3},
+    });
+    // `/reviewer-limit-first <kind>`: refused at its first request, before any answer.
+    if !line.starts_with("/reviewer-limit-first ") {
+        append(&file, &[agent_record(&session, &agent, &message)])?;
+    }
+    // `/reviewer-limit-all <kind>`: the subscription's five-hour limit, as at `/limit`.
+    let mut side = Transcript::open(file, &session)?;
+    if line.starts_with("/reviewer-limit-all ") {
+        side.limit()?;
+    } else {
+        side.credits_out(options.credits_reset_s)?;
+    }
+    say(&format!("REVIEWER {agent} CUT OFF"))?;
+    if in_turn {
+        if let Some(t) = transcript {
+            t.lock()
+                .map_err(|_| io::Error::other("transcript lock"))?
+                .answer(line, "Waiting for the reviewer.")?;
+        }
+        if let Some(hooks) = hooks {
+            hooks.stop()?;
+        }
+        if let Some(t) = transcript {
+            t.lock()
+                .map_err(|_| io::Error::other("transcript lock"))?
+                .close_turn(10, 0)?;
+        }
+    }
+    Ok(())
+}
+
+/// The model the reviewer of `/reviewer-limit` answers on.
+const REVIEWER_MODEL: &str = "claude-fable-5-2";
+
 #[cfg(test)]
 mod tests {
     use super::*;

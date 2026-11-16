@@ -2,6 +2,8 @@
 
 use std::{env, io, path::Path, process::Command, process::ExitCode};
 
+mod mutants;
+
 const HELP: &str = "Yulius engineering commands (scripts/dev <command>)
   doctor    Verify pinned compiler and repository-local tool versions
   check     Validate repository contracts and compile every target
@@ -13,7 +15,11 @@ const HELP: &str = "Yulius engineering commands (scripts/dev <command>)
   ci        Run all required gates, failing on the first failed command
   security  Scan the branch's changes with Vidoc (vidoc-1), failing on open critical or high findings
             and on open medium ones in the changed lines;
-            --all scans the whole repository (needs a Vidoc key; not in ci)";
+            --all scans the whole repository (needs a Vidoc key; not in ci)
+  mutants   Mutation-test the Rust lines the branch changed, once per pull request (SPEC-493):
+            --base REF (origin/<integration branch>), --minutes N (30), --mutant-seconds N
+            (300), --jobs N (2), --tests FILTER (the product's tests to run in place of those
+            the branch changed); the last line is the summary for the spec's Evidence";
 
 /// The line that names a stage of a Yulius CI job (SPEC-137): Yulius times the stage from when
 /// it reads this line until the next one or the job's end.
@@ -207,9 +213,9 @@ fn main() -> ExitCode {
         println!("{HELP}");
         return ExitCode::SUCCESS;
     }
-    if (args.len() != 1 && args[0] != "security")
+    if (args.len() != 1 && args[0] != "security" && args[0] != "mutants")
         || ![
-            "doctor", "check", "fmt", "lint", "macos", "test", "deps", "ci", "security",
+            "doctor", "check", "fmt", "lint", "macos", "test", "deps", "ci", "security", "mutants",
         ]
         .contains(&args[0].as_str())
     {
@@ -224,6 +230,24 @@ fn main() -> ExitCode {
                 eprintln!("Gate failed: {error}");
                 ExitCode::FAILURE
             });
+    }
+    if args[0] == "mutants" {
+        let integration = env::var("YULIUS_INTEGRATION_BRANCH").unwrap_or_else(|_| "dev".into());
+        let settings = match mutants::Settings::parse(&args[1..], &integration) {
+            Ok(settings) => settings,
+            Err(error) => {
+                eprintln!("{error}\n{HELP}");
+                return ExitCode::from(2);
+            }
+        };
+        let cargo = env::var("CARGO").unwrap_or_else(|_| "cargo".into());
+        return match mutants::run(&root, &cargo, &settings) {
+            Ok(outcomes) => mutants::exit_code(outcomes.as_ref()),
+            Err(error) => {
+                eprintln!("Mutants failed: {error}");
+                ExitCode::FAILURE
+            }
+        };
     }
     if let Err(error) = env::set_current_dir(root).and_then(|()| execute(&args[0])) {
         eprintln!("Gate failed: {error}");

@@ -614,6 +614,17 @@ impl Delegation {
         sandbox_weight(jobs.get(sandbox).copied().unwrap_or(0))
     }
 
+    /// CI jobs of `sandbox` running now ([`Delegation::set_ci_jobs`]).
+    #[must_use]
+    pub fn ci_jobs_of(&self, sandbox: &str) -> u32 {
+        self.ci_jobs
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(sandbox)
+            .copied()
+            .unwrap_or(0)
+    }
+
     /// Records that `jobs` CI jobs of `sandbox` run now and writes its group's `cpu.weight`
     /// ([`sandbox_weight`], SPEC-362 CSW-002). Returns whether it was written: not without the
     /// `cpu` controller, nor once the server stops, nor before the sandbox's group exists (its

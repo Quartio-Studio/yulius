@@ -129,6 +129,11 @@ pub struct TaskRuntime {
     pub last_input_ms: AtomicI64,
     /// Proactive switch requested at the next turn boundary.
     pub proactive_switch: AtomicBool,
+    /// A review round's reviewer a usage limit cut off, not yet resumed: a relaunch tells the
+    /// session to resume it (SPEC-493 RLM-002).
+    pub(crate) cut_off_reviewer: Mutex<Option<crate::review::CutOffReviewer>>,
+    /// The session moves for its cut-off reviewer at its next turn's end (RLM-002).
+    pub(crate) reviewer_move: AtomicBool,
     /// The current run called a Yulius hook: its Stop hook is the turn boundary that decides
     /// switches and pauses, not the transcript (SPEC-002 §7.5).
     pub(crate) hooks_seen: AtomicBool,
@@ -555,6 +560,8 @@ impl TaskRuntime {
             watcher_generation: AtomicU64::new(0),
             last_input_ms: AtomicI64::new(0),
             proactive_switch: AtomicBool::new(false),
+            cut_off_reviewer: Mutex::new(None),
+            reviewer_move: AtomicBool::new(false),
             hooks_seen: AtomicBool::new(false),
             at_limit: AtomicBool::new(false),
             workflows: Mutex::new(crate::dynamic_workflow::Unfinished::default()),
@@ -1843,18 +1850,48 @@ impl App {
                 Vec::new()
             }
         };
-        let resumes = |prompt: Option<&str>| {
-            Some(crate::dynamic_workflow::resume_prompt(prompt, &unfinished))
+        // A reviewer a usage limit cut off is resumed in the new process, not started again
+        // (SPEC-493 RLM-002).
+        // Only while its round is still open; a session that starts afresh has none (review
+        // round 1 of fix 7).
+        let reviewer = match (&start, &previous) {
+            (RunStart::Resume { .. } | RunStart::AfterLimit, Some(_)) => {
+                let cut = self
+                    .runtime(&task.id)
+                    .cut_off_reviewer
+                    .lock()
+                    .ok()
+                    .and_then(|cut| cut.clone());
+                match cut {
+                    Some(cut) => self.open_round_reviewer(&task.id, &cut.agent_id).await,
+                    None => None,
+                }
+            }
+            _ => None,
         };
+        if reviewer.is_none() {
+            self.forget_cut_off_reviewer(&task.id);
+        }
+        let resumes = |prompt: Option<&str>| {
+            let prompt = if unfinished.is_empty() {
+                prompt.map(str::to_owned)
+            } else {
+                Some(crate::dynamic_workflow::resume_prompt(prompt, &unfinished))
+            };
+            match &reviewer {
+                Some(reviewer) => Some(crate::review::reviewer_resume_prompt(
+                    prompt.as_deref(),
+                    reviewer,
+                )),
+                None => prompt,
+            }
+        };
+        let told = !unfinished.is_empty() || reviewer.is_some();
         let (mode, launch_kind) = match (&start, &previous) {
             (RunStart::Resume { prompt }, Some(prev)) => (
                 SessionMode::Resume {
                     session_id: prev.session_id.clone(),
-                    prompt: if unfinished.is_empty() {
-                        prompt.clone()
-                    } else {
-                        resumes(prompt.as_deref())
-                    },
+                    prompt: resumes(prompt.as_deref()),
                     continue_interrupted: false,
                 },
                 LaunchKind::Resume,
@@ -1862,8 +1899,8 @@ impl App {
             (RunStart::AfterLimit, Some(prev)) => (
                 SessionMode::Resume {
                     session_id: prev.session_id.clone(),
-                    prompt: (!unfinished.is_empty()).then(|| resumes(None)).flatten(),
-                    continue_interrupted: unfinished.is_empty(),
+                    prompt: told.then(|| resumes(None)).flatten(),
+                    continue_interrupted: !told,
                 },
                 LaunchKind::Resume,
             ),
@@ -5309,8 +5346,21 @@ impl App {
                     }
                 }
             } else {
+                // A limit that cut off a subagent of the session's thread is the session's news
+                // as a workflow agent's is (SPEC-493 RLM-001), read live only, and after the
+                // thread's own lines of this read: a turn they start is under way by then, so a
+                // move for a reviewer waits for its end (review round 1 of fix 7).
+                let cut_offs: Vec<Observation> = observations
+                    .iter()
+                    .filter(|o| matches!(o, Observation::SubagentCutOff { .. }))
+                    .cloned()
+                    .collect();
                 for observation in observations {
                     self.on_observation(&task_id, &attempt, observation).await;
+                }
+                for observation in &cut_offs {
+                    self.subagent_limit(&task_id, &attempt, family, observation)
+                        .await;
                 }
             }
             // Live metrics (#31): the dashboard counts a run while it goes, saved after each turn
@@ -5565,6 +5615,77 @@ impl App {
             Observation::Session { .. } => {}
         }
         runtime.with_queue(|queue| queue.work_seen(worked));
+    }
+
+    /// A usage limit that cut off a subagent of `task_id`'s thread (SPEC-493 RLM-001, RLM-002):
+    /// the subscription's reading keeps it, for the model family it binds. One that binds the
+    /// session's own model (`family`, or the subscription) moves or pauses the session as any
+    /// limit does; one of another model leaves the session where it is, unless the subagent is
+    /// a review round's reviewer, whose model the session then moves for. Either way a relaunch
+    /// tells the session to resume that reviewer.
+    async fn subagent_limit(
+        self: &Arc<Self>,
+        task_id: &TaskId,
+        attempt: &AttemptRecord,
+        family: ModelFamily,
+        observation: &Observation,
+    ) {
+        let Observation::SubagentCutOff {
+            agent_id,
+            at,
+            resets_at,
+            message,
+            window_minutes,
+            scope,
+        } = observation
+        else {
+            return;
+        };
+        use yulius_domain::usage::LimitScope;
+        // A limit of "the model that ran" of a review round's reviewer is of its round's model,
+        // also when no answer of it was read yet (refused at its first request, or resumed in a
+        // new process); one of a subagent whose model cannot be told is no one's (review round
+        // 1 of fix 7): it is never taken for the session's.
+        let reviewer = self.open_round_reviewer(task_id, agent_id).await;
+        let scope = match (*scope, &reviewer) {
+            (LimitScope::Model(None), Some(reviewer)) => {
+                match ModelFamily::of(Some(&reviewer.model)) {
+                    ModelFamily::Any => LimitScope::Model(None),
+                    named => LimitScope::Model(Some(named)),
+                }
+            }
+            (scope, _) => scope,
+        };
+        if scope == LimitScope::Model(None) {
+            tracing::info!(task = %task_id, %message, "a usage limit of a subagent whose model is not known: not the session's");
+            return;
+        }
+        let limit = ReportedLimit {
+            scope,
+            window_minutes: *window_minutes,
+            resets_at: *resets_at,
+        };
+        let binds_session = !matches!(
+            scope,
+            LimitScope::Model(Some(other)) if other != family
+        );
+        tracing::info!(task = %task_id, %message, ?scope, binds_session, "usage limit reached by a subagent");
+        if binds_session {
+            // Known before the relaunch the limit leads to, whose prompt names the reviewer.
+            if let Some(reviewer) = reviewer {
+                self.reviewer_cut_off(task_id, reviewer, false).await;
+            }
+            self.limit_met(task_id, attempt, limit, *at).await;
+            return;
+        }
+        // Recorded before the move is decided: where the session is reads as unable to run the
+        // reviewer's model only then (review round 1 of fix 7).
+        if let Some(account) = &attempt.account_id {
+            self.record_limit(account, limit, family).await;
+        }
+        if let Some(reviewer) = reviewer {
+            self.reviewer_cut_off(task_id, reviewer, true).await;
+        }
     }
 
     /// The session of `task_id` is at the usage limit `limit`, recorded at `at`: its turn is
@@ -5891,7 +6012,9 @@ fn keeps_subscription(reason: &str) -> bool {
 /// no further: its own thread's when the limit cut its turn, and whatever its thread was doing
 /// when the limit refused a workflow's agents (its next request would be refused, SPEC-486).
 fn interrupts_first(reason: &str) -> bool {
-    matches!(reason, "manual" | "handover" | "removed") || reason == crate::review::MOVE_FOR_FABLE
+    matches!(reason, "manual" | "handover" | "removed")
+        || reason == crate::review::MOVE_FOR_FABLE
+        || reason == crate::review::MOVE_FOR_ROOM
 }
 
 #[cfg(test)]
@@ -6071,6 +6194,8 @@ mod tests {
         assert!(super::interrupts_first("handover"));
         // SPEC-493 REV-007: the agent goes on after its reviewer was refused for the move.
         assert!(super::interrupts_first(crate::review::MOVE_FOR_FABLE));
+        assert!(super::interrupts_first(crate::review::MOVE_FOR_ROOM));
+        assert!(!super::interrupts_first(crate::review::REVIEW_RESUME));
         for reason in ["rotation", "limit", "context_full", "proactive"] {
             assert!(!super::interrupts_first(reason), "{reason}");
         }

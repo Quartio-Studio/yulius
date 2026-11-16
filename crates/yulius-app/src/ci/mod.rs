@@ -310,6 +310,9 @@ pub struct CiState {
     /// One CI sync of a sandbox at a time (the 60 s loop, a person's sync, a review's start):
     /// each reads the runs before it queues, so two at once would queue one head twice.
     sync_locks: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    /// Sandboxes with a run that passed when it was queued (every job skipped for its
+    /// `paths`): the dispatcher starts their merge pass, as a run's end does.
+    passed_when_queued: Mutex<Vec<SandboxId>>,
     wake: Arc<Notify>,
     started: AtomicBool,
     last_prune: Mutex<i64>,
@@ -818,36 +821,114 @@ impl App {
             started_at: None,
             ended_at: None,
         };
+        // A job naming the files it tests is skipped, with the reason, for a change touching none
+        // of them (SPEC-493 CJP-002); the branches' own runs and an unknown change run it.
+        let changed = if gate.jobs.iter().any(|job| !job.paths.is_empty()) {
+            self.ci_changed_paths(sandbox, &run.reference, sha).await
+        } else {
+            None
+        };
         let jobs: Vec<CiJobRecord> = gate
             .jobs
             .iter()
             .enumerate()
-            .map(|(index, job)| CiJobRecord {
-                id: self.deps.crypto.new_id(),
-                run_id: run.id.clone(),
-                ordinal: u32::try_from(index).unwrap_or(u32::MAX),
-                name: job.name.clone(),
-                key: job.key.clone(),
-                command: job.command.clone(),
-                matrix: job.matrix.clone(),
-                state: RunState::Queued,
-                reason: None,
-                exit_code: None,
-                output: String::new(),
-                failures: None,
-                started_at: None,
-                ended_at: None,
-                need: job.need,
-                timeout_minutes: job.timeout_minutes,
-                exclusive: job.exclusive,
-                waited_ms: None,
+            .map(|(index, job)| {
+                let skip = yulius_domain::ci::paths_skip(&job.paths, changed.as_deref());
+                CiJobRecord {
+                    id: self.deps.crypto.new_id(),
+                    run_id: run.id.clone(),
+                    ordinal: u32::try_from(index).unwrap_or(u32::MAX),
+                    name: job.name.clone(),
+                    key: job.key.clone(),
+                    command: job.command.clone(),
+                    matrix: job.matrix.clone(),
+                    state: if skip.is_some() {
+                        RunState::Skipped
+                    } else {
+                        RunState::Queued
+                    },
+                    reason: skip.clone(),
+                    exit_code: skip.as_ref().map(|_| dom::SKIP_EXIT_CODE),
+                    output: skip
+                        .as_ref()
+                        .map_or_else(String::new, |why| format!("{why}.\n")),
+                    failures: None,
+                    // Set below, so the job's span is recorded as any job's is.
+                    started_at: None,
+                    ended_at: None,
+                    need: job.need,
+                    timeout_minutes: job.timeout_minutes,
+                    exclusive: job.exclusive,
+                    waited_ms: None,
+                }
             })
             .collect();
+        // Every job skipped for its paths: nothing to run, so the run takes no lane and passes now.
+        let run = if !jobs.is_empty() && jobs.iter().all(|job| job.state == RunState::Skipped) {
+            CiRunRecord {
+                state: RunState::Passed,
+                reason: Some("every job was skipped: no file they test changed".to_owned()),
+                started_at: Some(self.now()),
+                ended_at: Some(self.now()),
+                ..run
+            }
+        } else {
+            run
+        };
         self.deps.store.insert_ci_run(&run, &jobs).await?;
+        // A skipped job's start and end, one after the other: its span reads as a job that was
+        // skipped (the stages count runs against skips).
+        for job in jobs.iter().filter(|job| job.state == RunState::Skipped) {
+            for update in [
+                CiJobUpdate {
+                    started_at: Some(queued_at),
+                    ..CiJobUpdate::default()
+                },
+                CiJobUpdate {
+                    ended_at: Some(queued_at),
+                    ..CiJobUpdate::default()
+                },
+            ] {
+                self.deps
+                    .store
+                    .transition_ci_job(&job.id, &[RunState::Skipped], RunState::Skipped, &update)
+                    .await?;
+            }
+        }
         tracing::info!(sandbox = %sandbox.slug, run = %run.id, sha = %short(sha), reference = %run.reference.key(), jobs = jobs.len(), "CI run queued");
+        // A run that passed here ends without the executor, which starts the merge pass at a
+        // run's end: the dispatcher, woken below, starts it instead.
+        if run.state == RunState::Passed
+            && let Ok(mut ended) = self.ci.passed_when_queued.lock()
+        {
+            ended.push(sandbox.id.clone());
+        }
         self.ci_publish(&run.id).await;
         self.ci_wake();
         Ok(run)
+    }
+
+    /// The files the change of a run at `sha` touches (SPEC-493 CJP-002): a pull request's head,
+    /// a merge candidate and a playground task's head against their merge base with the
+    /// integration branch (a candidate is built on it, so that is its members' changes). `None`
+    /// for the branches' own runs (every job tests every merged state, CJP-003) and when the
+    /// files cannot be told.
+    async fn ci_changed_paths(
+        &self,
+        sandbox: &SandboxRecord,
+        reference: &CiRef,
+        sha: &str,
+    ) -> Option<Vec<String>> {
+        if matches!(reference, CiRef::Branch(_)) {
+            return None;
+        }
+        let integration = format!("origin/{}", delivery_profile(sandbox).integration_branch);
+        self.deps
+            .git
+            .changed_paths(&self.sandbox_repo(&sandbox.id), &integration, sha)
+            .await
+            .ok()
+            .flatten()
     }
 
     /// One scheduling round for a sandbox: fetch, read the heads, queue and supersede.
@@ -1023,24 +1104,37 @@ impl App {
         let Some(tree) = self.deps.git.tree_of(&repo, &target.sha).await? else {
             return Ok(false);
         };
-        let mut source = None;
         // A merge train's verdict for a pull request it merged before the last one covers a tree
         // no run tested (SPEC-084 TRN-005): never a source.
+        // A branch's own run runs every job (SPEC-493 CJP-003): a source that skipped a job for
+        // its `paths` never ran it, so it is no source there, and an earlier one may be.
+        let branch = matches!(target.reference, CiRef::Branch(_));
+        let mut found = None;
         for run in runs.iter().filter(|r| {
             r.state == RunState::Passed
                 && r.sha != target.sha
                 && r.requested_by != crate::merge_train::TRAIN_VERDICT_BY
         }) {
-            if self.deps.git.tree_of(&repo, &run.sha).await?.as_deref() == Some(tree.as_str()) {
-                source = Some(run);
-                break;
+            if self.deps.git.tree_of(&repo, &run.sha).await?.as_deref() != Some(tree.as_str()) {
+                continue;
             }
+            let jobs = self.deps.store.ci_jobs(&run.id, false).await?;
+            let skipped_a_paths_job = gate.jobs.iter().any(|job| {
+                !job.paths.is_empty()
+                    && jobs.iter().any(|t| {
+                        t.key == job.key && t.matrix == job.matrix && t.state == RunState::Skipped
+                    })
+            });
+            if branch && skipped_a_paths_job {
+                continue;
+            }
+            found = Some((run, jobs));
+            break;
         }
-        let Some(source) = source else {
+        let Some((source, tested)) = found else {
             return Ok(false);
         };
         // Its jobs keep the verdict they had there: a skipped one stays skipped (SPEC-162).
-        let tested = self.deps.store.ci_jobs(&source.id, false).await?;
         let now = self.now();
         let note = format!(
             "not run again: {} has the same tree as {} ({}), which passed",
@@ -1364,6 +1458,17 @@ impl App {
     /// Starts the oldest queued runs of every sandbox, as many as it has free lanes
     /// ([`CiSettings::lanes`]); the instance-wide job slots still bound the machine's load.
     pub async fn ci_dispatch(self: &Arc<Self>) {
+        // A merge armed on a run that passed when it was queued happens now (SPEC-011).
+        let ended: Vec<SandboxId> = self
+            .ci
+            .passed_when_queued
+            .lock()
+            .map(|mut ended| std::mem::take(&mut *ended))
+            .unwrap_or_default();
+        for sandbox in ended {
+            let app = Arc::clone(self);
+            tokio::spawn(async move { app.merge_armed(&sandbox).await });
+        }
         let Ok(active) = self.deps.store.active_ci_runs().await else {
             return;
         };

@@ -69,6 +69,10 @@ change, and whether it is **own code** (code or tests the change added or modifi
 or **pre-existing** (on dev before the change). Report no findings if none were
 discovered, plus validation scope and gaps.
 
+After an approval, fix the remaining nits within 20 product lines and merge without
+another round: `delivery_merge` with the approved head counts them (tests and documents do
+not count). More than that, or a file leaving the change, needs a new round. A usage limit can cut a reviewer off before its report: resume that same reviewer with SendMessage to its agent id, never start a new one for the same round. A reviewer runs at high effort, never max.
+
 Findings in the change's own code are fixed, never deferred
 ([ADR-0141](../decisions/0141-review-findings-in-the-change-s-own-code-are-fixed-before-merge.md)):
 

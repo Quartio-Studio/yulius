@@ -1197,6 +1197,137 @@ mod tests {
         Ok(())
     }
 
+    /// SPEC-493 APR-005 (AC-12): the rule for a follow-up after an approval, stated the same way
+    /// wherever reviews and merges are described.
+    #[test]
+    fn every_place_states_the_follow_up_bound() -> TestResult {
+        const RULE: &str = "after an approval, fix the remaining nits within 20 product lines and \
+            merge without another round: `delivery_merge` with the approved head counts them \
+            (tests and documents do not count). more than that, or a file leaving the change, \
+            needs a new round.";
+        let normal = |text: &str| {
+            text.replace("\\\n", " ")
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+                .to_lowercase()
+        };
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        for rel in [
+            "catalog/skills/yulius/delivery-pipeline/SKILL.md",
+            "catalog/skills/open-mercato/om-code-review/SKILL.md",
+            "catalog/skills/yulius/git-hygiene/SKILL.md",
+            ".apm/skills/yulius-review/SKILL.md",
+            ".apm/skills/yulius-git/SKILL.md",
+            "docs/engineering/workflow.md",
+            "docs/engineering/git.md",
+            "AGENTS.md",
+        ] {
+            let text = normal(&fs::read_to_string(root.join(rel))?);
+            assert!(
+                text.contains(&normal(RULE)),
+                "{rel} does not state the rule"
+            );
+        }
+        let tool = normal(&fs::read_to_string(
+            root.join("crates/yulius-app/src/mcp.rs"),
+        )?);
+        assert!(
+            tool.contains("across at most 20 product lines after it"),
+            "delivery_merge does not say the bound"
+        );
+        Ok(())
+    }
+
+    /// SPEC-493 RLM-004 (AC-12): resume a cut-off reviewer, never start a new one for the same
+    /// round; a reviewer runs at high effort, never max: the same everywhere reviews are
+    /// described.
+    #[test]
+    fn every_place_says_resume_a_cut_off_reviewer() -> TestResult {
+        const RULE: &str = "a usage limit can cut a reviewer off before its report: resume that \
+            same reviewer with sendmessage to its agent id, never start a new one for the same \
+            round. a reviewer runs at high effort, never max.";
+        let normal = |text: &str| {
+            text.split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+                .to_lowercase()
+        };
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        for rel in [
+            "catalog/skills/yulius/delivery-pipeline/SKILL.md",
+            "catalog/skills/open-mercato/om-code-review/SKILL.md",
+            ".apm/skills/yulius-review/SKILL.md",
+            ".apm/skills/yulius-git/SKILL.md",
+            "docs/engineering/workflow.md",
+            "docs/engineering/git.md",
+            "AGENTS.md",
+        ] {
+            let text = normal(&fs::read_to_string(root.join(rel))?);
+            assert!(
+                text.contains(&normal(RULE)),
+                "{rel} does not state the rule"
+            );
+        }
+        // The reviewer agents Yulius defines run at that effort.
+        assert_eq!(yulius_domain::review::REVIEWER_EFFORT, "high");
+        Ok(())
+    }
+
+    /// SPEC-493 MUT-002 (AC-12): mutation testing once per pull request, the same everywhere
+    /// tests and reviews are described; this repository names its command; the workflows send
+    /// the agent to `delivery-pipeline`, which states it.
+    #[test]
+    fn every_place_says_mutation_testing_once_per_pull_request() -> TestResult {
+        const RULE: &str = "mutation testing runs once per pull request: on the first head you ask \
+            a review for, run the project's mutation command and put its summary line in the \
+            spec's evidence; a project without one undoes by hand the few lines its new tests are \
+            meant to hold and says what failed. the reviewer reads that result, may undo a single \
+            line it doubts, and runs no campaign of its own. nobody writes a mutation script by \
+            hand. a test that cannot fail is still fixed in the same pull request (adr-0141).";
+        const HERE: &str = "here the command is `scripts/dev mutants`.";
+        let normal = |text: &str| {
+            text.split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+                .to_lowercase()
+        };
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let read = |rel: &str| -> Result<String, Box<dyn std::error::Error>> {
+            Ok(normal(&fs::read_to_string(root.join(rel))?))
+        };
+        for rel in [
+            "catalog/skills/open-mercato/om-code-review/SKILL.md",
+            "catalog/skills/yulius/delivery-pipeline/SKILL.md",
+            "catalog/skills/superpowers/test-driven-development/SKILL.md",
+        ] {
+            assert!(
+                read(rel)?.contains(&normal(RULE)),
+                "{rel} does not state the rule"
+            );
+        }
+        for rel in [
+            ".apm/skills/yulius-verify/SKILL.md",
+            ".apm/skills/yulius-review/SKILL.md",
+            "docs/engineering/development.md",
+        ] {
+            let text = read(rel)?;
+            assert!(
+                text.contains(&normal(&format!("{RULE} {HERE}"))),
+                "{rel} does not state the rule with this repository's command"
+            );
+        }
+        // The workflows' instructions have no byte to spare (1,444 with their heading, #555):
+        // they reach the rule through `delivery-pipeline`, which each tells the agent to follow.
+        for rel in ["catalog/workflows/feature.md", "catalog/workflows/fix.md"] {
+            assert!(
+                read(rel)?.contains("follow `delivery-pipeline`"),
+                "{rel} does not send the agent to the rule"
+            );
+        }
+        Ok(())
+    }
+
     /// Hostile repositories: special files and links leaving the repository are ignored.
     #[test]
     fn hostile_repository_files_are_ignored() -> TestResult {

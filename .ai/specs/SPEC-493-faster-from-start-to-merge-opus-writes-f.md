@@ -280,8 +280,9 @@ person's decision is read as holding after an approval).
   job waits for the members' own runs of it (one at a time), so the gain is what does not wait.
 - **MQC-005** Candidates formed, merged and dissolved (with why: a member left, bisected, base
   moved, errored, too long) are counted per day and read at
-  `GET /api/sandboxes/{sid}/analytics/merge-queue` (the CI/CD page shows the counts), with the
-  minutes from arming to merge.
+  `GET /api/analytics/merge-queue?sandbox&from&to` (the same window and access as the reviews
+  read; the Dashboard's Pipeline tab shows the counts beside the Review card), with the minutes
+  from arming to merge.
 
 ### Fix 5: a CI job can say which files it tests
 
@@ -309,12 +310,26 @@ person's decision is read as holding after an approval).
   Tests and documents do not count.
 - **APR-002** What counts: every file except documentation (`is_documentation_path`), test files
   (a `tests/`, `test/`, `e2e/`, `__tests__/` or `fixtures/` folder; `*_test.*`, `test_*.*`,
-  `*.test.*`, `*.spec.*`, `*.e2e.*`) and, in a Rust file, the lines from its first `#[cfg(test)]`
-  on. A project sets its own in `yulius.toml`: `[review] product = [globs]` (only these count) or
-  `not_product = [globs]` (these never count).
+  `*.test.*`, `*.spec.*`, `*.e2e.*`) and, in a Rust file, the lines of a `#[cfg(test)] mod name {`
+  to its closing brace, read as Rust tokens (comments and strings skipped), first attribute of
+  its item, among modules without attribute macros (`#[cfg(test)] mod tests;` or a single
+  test-only item is product code; a Rust file under `src/` is product code whatever its folder).
+  A test or document file the follow-up changed counts when a product line it added names it
+  (`fixtures/evil` in `#[path = "../fixtures/evil.rs"]`), and every one counts when a product
+  line it added loads code (`import`, `require`, `include`, `concat`, `export … from`,
+  `#[path]`, `mod name;`); an added Rust product line with `#[path]`, `include!`,
+  `include_str!` or `include_bytes!` needs a review. A
+  project sets its own in `yulius.toml`: `[review] product = [globs]` (only these count; tests and
+  documents still do not) or `not_product = [globs]` (these never count). Lines are read with
+  plumbing and `--text`, so the clone's configuration and attributes change nothing.
 - **APR-003** The rule does not hold, and the head needs its review, when a file of the reviewed
   change is no longer part of the pull request's change, when a merge after the reviewed commit
-  resolved a conflict, or when the reviewed commit is not an ancestor of the head.
+  resolved a conflict or merged anything but the integration branch (the commit its origin
+  names now, read from GitHub or a playground's own repository and then fetched, never a ref of
+  the clone: without it nothing carries), when the reviewed commit is not an ancestor of the
+  head, or when a product file's changed line has a NUL byte or is over 200 bytes (no line count
+  says what it changed). Commits are read as their objects say: no replace ref, graft or
+  commit-graph file of the clone counts.
 - **APR-004** The merge record says what was counted ("reviewed at X; since then N product lines
   in M files: …"), and so does the tool's answer; a refusal names the count and the files.
 - **APR-005** The review rules say, the same way everywhere: after an approval, fix the remaining
@@ -327,11 +342,11 @@ person's decision is read as holding after an approval).
   agent's is (SPEC-486): the harness reports it from the subagent's transcript, with the model it
   binds. A limit of the session's own model family moves or pauses the session as today.
 - **RLM-002** A limit that cut a reviewer off (REV-004: `cut off`) moves the session to a
-  subscription that can run the reviewer's model, at once when the session's thread is idle and
-  else at its next turn's end, also when the limit binds another model family than the
-  session's. The process that continues the session is told to resume that reviewer by its id
-  with `SendMessage`, and not to start a new one. With no such subscription, the agent is told
-  that the round can run on Opus 5.5 (REV-007).
+  subscription that can run the reviewer's model, at once when the session's thread is idle (the
+  turn its failed task notification wakes ends at once) and else at its next turn's end, also when
+  the limit binds another model family than the session's. The process that continues the session is
+  told to resume that reviewer by its id with `SendMessage`, and not to start a new one. With no
+  such subscription, the agent is told that the round can run on Opus 5.5 (REV-007).
 - **RLM-003** A review round does not start on a subscription about to run out: one with less
   than 5 points of room (`Tier::Tight`) in a window binding the reviewer's model, while another
   subscription has that room. The session moves first, as in REV-007.
@@ -346,9 +361,10 @@ person's decision is read as holding after an approval).
   summary line for the spec's Evidence. Its bound and cost are measured on real changes of this
   repository and stated.
 - **MUT-002** The rules say, in words that hold for any project (`om-code-review`,
-  `delivery-pipeline`, `test-driven-development`, the workflows) and for this one (`yulius-verify`,
-  `yulius-review`, `docs/engineering/development.md`): the author runs the project's mutation
-  command once, on the head it asks the review for, and puts the result in the Evidence; without
+  `delivery-pipeline`, `test-driven-development`; the workflows through `delivery-pipeline`, their
+  instructions having no byte to spare) and for this one (`yulius-verify`, `yulius-review`,
+  `docs/engineering/development.md`): the author runs the project's mutation command once, on the
+  first head it asks a review for, and puts the result in the Evidence; without
   such a command it undoes the few lines its tests are meant to hold; the reviewer reads the
   result and may check single mutants it doubts, and runs no campaign; nobody writes a mutation
   script by hand. A test that cannot fail is still fixed in the same pull request (ADR-0141).
@@ -408,9 +424,11 @@ Both are checked on current `dev` first and fixed test-first if they still hold.
 - [ ] Fix 5's independent review answered test-first
 - [ ] Fix 6: delivery_merge keeps an approval across at most 20 product lines and records what it counted (APR-001 to APR-004)
 - [ ] Fix 6: the review rules state the bound; a project sets what counts as product code; the decision amending the reviewed-head rule (APR-002, APR-005)
+- [ ] Fix 6's review rounds 1 and 2 answered test-first: plumbing reads, Rust-token test spans, the integration commit from its origin
 - [ ] Fix 6's independent review answered test-first
 - [ ] Fix 7: a limit that cuts a subagent off is the session's news, and a cut-off reviewer is resumed after the move (RLM-001, RLM-002)
 - [ ] Fix 7: a review does not start on a subscription about to run out; the rules say resume, never restart, high effort (RLM-003, RLM-004)
+- [ ] Fix 7's review round 1 answered test-first: a reviewer's limit is its model's, its state ends with its round, the turn's end moves
 - [ ] Fix 7's independent review answered test-first
 - [ ] Fix 8: scripts/dev mutants, one bounded mutation run on the changed lines, measured (MUT-001)
 - [ ] Fix 8: the rules: once per pull request, the result in the Evidence, no campaign by the reviewer (MUT-002)
@@ -610,7 +628,7 @@ Both are checked on current `dev` first and fixed test-first if they still hold.
   - Fix 3: minutes from the last approval to the merge, and local whole-gate runs per pull
     request: the Pipeline tab's `wait/merge_armed` spans (baseline: Yulius CI started at the
     arming and took 9 min here, 31 min in quartio-v2 with nothing else happening).
-  - Fix 4 and fix 5: `GET /api/sandboxes/{sid}/analytics/merge-queue` (candidates formed, merged,
+  - Fix 4 and fix 5: `GET /api/analytics/merge-queue?sandbox=<id>` (candidates formed, merged,
     dissolved; minutes from arming to merge; baseline quartio-v2: 127 min with a candidate, 17
     without) and the CI page's job list (a job's runs and skips per day).
   - Fix 6 and fix 7: the analytics read's rounds per pull request and its share of first rounds
@@ -1072,3 +1090,606 @@ Both are checked on current `dev` first and fixed test-first if they still hold.
     (race point `CiSyncPlanned`). Before the lock: 2 runs at one head; with it, 1.
   - Minor: the readiness look in the hook is bounded (1.5 s). A late look says nothing, and the
     delivery checks again. Nit: `dlv_check_spec`'s doc comment is back on it.
+
+### Fix 4: one CI cycle for an armed pull request whose base moved
+
+- MQC-001: `form_train` takes an armed pull request behind its base whose own run passed **or is
+  still queued or running**. `drive_train` merges a member only once its own run passed: a
+  passed candidate waits for it, within the two-hour test limit, not GitHub's 15 minutes.
+  - `merge_train::a_candidate_runs_beside_its_members_own_runs`: two armed pull requests behind
+    the base with their own runs queued. Their candidate's run is queued at once beside them,
+    nothing is merged into them, and both merge after 2 own runs and 1 candidate run.
+  - `merge_train::a_passed_candidate_waits_for_its_members_own_runs`: the own run is held
+    running and the candidate passes first. Three passes merge nothing ("merged before its own
+    run passed" without the wait: mutation caught). Once the own run passed, it merges.
+  - `a_moving_base_never_restarts_a_pre_check` now expects the candidate beside the pre-check;
+    the pre-check is still never restarted or cancelled.
+- MQC-002: `member_left` dissolves a candidate whose member's own run ended failed, errored or
+  cancelled ("#N's own run … ended failed: it leaves the candidate"). The next pass forms it
+  again from the others, and the member's armed merge ends in the one-by-one flow with its run
+  named. A failed candidate waits for its members' own runs before it is bisected, so a member
+  that explains the red result leaves instead of halving the candidate.
+  `merge_train::a_member_whose_own_run_fails_leaves_the_candidate`: #1 merges, #2's armed merge
+  ends with "failed", and the dissolve reads "#2's own run". Before the wait it was bisected
+  instead.
+- MQC-003: every merge-train test stays green (32 of 32), among them the red candidate bisected,
+  three green in sequence with no run cancelled, and the restart.
+- MQC-004: an `exclusive` job takes one turn per sandbox (SPEC-435 `job_turn`), so a
+  candidate's run of it waits for the members' own runs of it. Code read; no test of its own.
+- MQC-005: each dissolve's audit line ends with `(why: <kind>)` (`dissolved_why`, unit
+  `the_why_of_each_dissolve`). `merge_queue::queue_numbers` counts per UTC day and the median
+  minutes from a merge's last arming to it (unit tests). `AuditStore::audit_of_sandbox` reads a
+  sandbox's entries and its tasks'. `GET /api/analytics/merge-queue`
+  (`analytics::the_merge_queue_read_counts_candidates_from_the_audit_log`: 2 formed, 1 merged, 1
+  dissolved because a member left, 180 min to merge, another sandbox's entry counted only for
+  the admin, a hidden sandbox 404). The Pipeline tab's Merge queue card
+  (`pipeline.e2e.ts`: the figures, and the tab without the card when the read fails).
+- ADR-0285 amended ("Pre-check beside the candidate"); architecture and its diagram, api.md,
+  changes.
+- How to read it a week later: `GET /api/analytics/merge-queue?sandbox=<id>&from=&to=` for
+  quartio-v2 and this repository, against 12-13 Nov: the median minutes from arming to merge
+  (127 there for pull requests that needed a candidate), and candidates dissolved by why.
+- **Review round 1** (Opus 5.5, Fable out until 21:10 UTC; head `a52293766`). Request
+  changes. Answered (all own code):
+  - Major: a slow or stuck own run held every member behind it, and the candidate formed again
+    every two hours with that member in it. A passed candidate that outlasts its test limit
+    while waiting for a member's own run now holds that member back (`held_back`, until armed
+    again). The others form a candidate without it, and it goes one by one once its run passed.
+    A failed candidate waits for own runs for at most the wait limit (15 min) from the start of
+    its wait, then is bisected as before.
+    `merge_train::a_stuck_own_run_holds_its_member_back_not_the_others` and
+    `a_failed_candidate_waits_for_own_runs_within_the_wait_limit` (clock-driven, both caps).
+  - Major: the 20 s pass fired while a candidate waited for a member's own run. The train records
+    the wait (`own_wait`). `train_run_ended` is false within its bound, and `decidable_in` leaves
+    a train's members to the train. Both tests assert `!decidable_in`. The own run's end starts
+    a pass by itself, as before.
+  - Major: person-armed merges (audited under the task id) and armings from before the range
+    were missing from the minutes. The read takes the sandbox's task ids (mapped to
+    `<slug>#<n>`), and armings from 30 days before the range. The analytics test has a person's
+    arming, and an arming before the range: 3 merges, median 180 min.
+  - Minors: `dissolved_why` names "moved on" and "the own run of #… ended" as a member leaving
+    (unit test). A member whose own run is cancelled leaves
+    (`a_member_whose_own_run_is_cancelled_leaves_the_candidate`). The audit read uses the target
+    index (a `<slug>#` range, not `substr`) and keeps the newest entries within its limit.
+    `yulius wait` says when the candidate waits for a member's own run (the stuck test reads it).
+    The spec's route is corrected.
+  - Nits: the doc comments are back on their functions, and ADR-0285's three-in-sequence
+    sentence is back in its consequence.
+
+### Fix 5: a CI job can say which files it tests
+
+- Fix 4's round-2 minors first:
+  - `merge_queue::queue_numbers` takes the range's start: a merge before it uses up its arming
+    without being counted (domain test).
+  - `analytics::the_audit_read_of_a_sandbox_keeps_the_newest_entries` holds the newest-first
+    limit (oldest-first fails it), `<slug>2#n` left out and task ids read.
+- CJP-001: `paths` on `[[ci.jobs]]` (`ci::parse_paths`: 1-50 scope-claim globs, normalized,
+  each once), rendered back by `render_yulius_toml`.
+  `config::tests::ci_jobs_name_the_files_they_test`: matrix jobs inherit them, a round trip,
+  and an empty list, `..`, an absolute path, `a/**b` and a repeat are each a configuration error
+  naming the job.
+- CJP-002, CJP-003: `ci::paths_skip` (unit `a_job_runs_only_for_a_change_to_its_paths`: skipped
+  with "no file this job tests changed (paths: …)"; a touched path, `yulius.toml` and an unknown
+  change run it; `*` stays in its folder). `GitPort::changed_paths` (`base...head`, NUL-separated;
+  `None` past 20,000 files or a non-UTF-8 path; an adapter without it says `None`).
+  `ci_queue_placed` decides at queueing: a job is created `skipped` with its reason, output and
+  skip code. The executor starts only the queued jobs. A run whose every job is skipped passes
+  at queueing and takes no lane.
+  `local_ci::a_job_with_paths_runs_only_for_a_change_to_them`, real Git and real jobs:
+  - the pull request touching `feature.txt` passes with `web` skipped, its reason in its output
+    and nothing run, and its status reads "1 skipped";
+  - the integration branch's own run runs `web`;
+  - a change to `crates/a/src/lib.rs` runs it.
+- CJP-004: the jobs in force are `ci_gate_for_head`'s, as before; `paths` only decide run or
+  skipped for each. A rerun goes through `ci_queue_placed` again, and a copied verdict keeps a
+  skipped job skipped (`copied_job_verdict`, SPEC-162). A merge candidate is decided by the
+  same rule on its commit (built on the integration branch, so its members' changes); no test
+  of a candidate of its own.
+- `ci_status` shows a skipped job's output, which now holds the reason (SPEC-162's view).
+- ADR-0343, architecture, api.md, the `yulius.toml` reference in `config.rs`, changes.
+- How to read it a week later: in quartio-v2 once it sets `paths` on `websites`, that job's
+  runs against skips per day (the Pipeline tab's job stages), and the median minutes to merge
+  of pull requests that do not touch it.
+- **Review round 1** (Opus 5.5: the Fable 5.2 reviewer was cut off at its start by Fable's
+  weekly limit, which resets 17 Nov 04:00 UTC; head `b0234dc7a`). Request changes. Answered
+  (all own code):
+  - Major: tree reuse carried a paths skip into the integration branch's own run, because a
+    squash-merged pull request gives dev the tree its run tested. `ci_reuse_tree` no longer
+    reuses into a branch's run a source that skipped a `paths` job.
+    `local_ci::the_integration_branch_runs_a_paths_job_a_merged_tree_skipped` (reproduced first:
+    `web` copied as skipped).
+  - Major: the executor sent pre-skipped jobs through `ci_job`, where they waited for an
+    `exclusive` turn and a slot and took a budget share. It now starts only the queued jobs, and
+    a run of skipped jobs passes at queueing.
+    `local_ci::a_skipped_exclusive_job_does_not_wait_for_its_turn` (3 lanes, a CPU each: the pull
+    request's run ends while dev's `web` holds its turn). Without the fix it ran until dev's
+    ended. The run of skipped jobs passing at queueing is
+    `local_ci::a_run_of_skipped_jobs_passes_when_it_is_queued` (added in round 2).
+  - Major: `--name-only` listed a rename by its new path only, so a file moved out of `paths`
+    did not count. `--no-renames` lists both. Tested at the adapter:
+    `git_ops::changed_paths_list_renames_deletions_and_stop_at_the_limit`, with the rename, a
+    deletion, the base's own later commit left out, and `None` past the limit.
+  - Minors:
+    - A requeue (restart, disk quota) keeps a paths skip, while a job's own skip runs again
+      (`local_ci::a_requeued_run_keeps_its_paths_skip`).
+    - A skipped job gets its start and end after insertion, so its `job` span is recorded with
+      outcome `skipped` (asserted in the paths test).
+    - A path without a glob is the folder of that name too, and a changed path no glob can
+      match runs the job (unit).
+  - Nits: the skip code is 78 as for any skipped job. `paths` before `name` names the job
+    (config test). The train note replacing the reason stays: a copied verdict says where it
+    comes from.
+- **Review round 2** (Opus 5.5, Fable out until 17 Nov 04:00 UTC; head `f9a060195`). Request
+  changes. It confirmed each round-1 answer by mutation. Answered (all own code):
+  - Major: the run of skipped jobs passing at queueing had no test.
+    `local_ci::a_run_of_skipped_jobs_passes_when_it_is_queued`, with no dispatch: passed with
+    its reason, both jobs skipped, the status success "2 skipped", the gate's answer Passed.
+    Turning it off fails the test.
+  - Minor: such a run never reached the executor, which starts the merge pass at a run's end.
+    It records its sandbox (`passed_when_queued`), and the dispatcher, woken at once, starts the
+    pass (tested in round 3).
+  - Nits: tree reuse into a branch's run goes on past a same-tree source that skipped a `paths`
+    job, to an earlier one that ran it. A run passing at queueing records the current time.
+- **Review round 3** (Opus 5.5; head `375dd4dce`). Request changes: two answers of round 2 had no
+  test. Answered with tests, each caught by its mutation:
+  - `merge_train::a_merge_armed_on_a_run_of_skipped_jobs_happens_at_once`: dev's own run ends
+    first, then the armed pull request's run passes at queueing. The dispatcher alone merges it.
+    Without the drain's merge pass it waits ("the armed merge waited for another pass").
+  - `local_ci::a_branch_reuses_a_same_tree_run_that_ran_its_paths_job`: an older passed run of
+    another commit with the same tree ran `web`; the integration branch's run reuses it, not the
+    newer pull request's run that skipped `web`. With `return` instead of `continue` it runs
+    again.
+
+### Fix 6: an approval survives a small follow-up
+
+- APR-001, APR-003: `Git::follow_up_since` walks the first parents from the head to the reviewed
+  commit (at most 64 commits). A merge passes only when its second parent is on the integration
+  branch and its tree is what `merge-tree` gives; any other merge, or a reviewed commit off that
+  way, is `None` (refused). Every other commit is counted by `Git::commit_lines` (`git show -U0
+  --no-renames --first-parent`; unit `unified_zero_hunks_give_line_numbers`).
+  `App::follow_up_since_review` then refuses a file of the reviewed change that left the pull
+  request's change (`changed_paths` of the reviewed commit and the head).
+- APR-002: `follow_up::ProductRule` (unit `product_code_is_every_file_but_tests_and_documents`)
+  and `FileLines::product_lines` (unit `a_follow_up_counts_product_lines_commit_by_commit`: a
+  Rust file's lines from its first `#[cfg(test)]` on do not count; the bound is 20, 21 is over).
+  `[review] product` / `not_product` in `yulius.toml` (`parse_yulius_toml_review`; unit
+  `the_review_table_sets_what_counts_as_product_code`: unknown keys, an empty list, `/etc`, `..`
+  and `[[review]]` are errors, in the whole contract too). The integration branch's table is
+  read, so a pull request does not loosen its own count; one that does not parse refuses.
+- APR-004: the summary and the armed merge's audit entry end with "[reviewed at X; since then N
+  product lines in M files: a 12, b 3]"; a refusal says the count and the files, or the reason.
+- AC-17: `delivery::an_approval_carries_across_a_small_follow_up`, real Git through the agent's
+  MCP `delivery_merge`:
+  - 20 product lines plus 150 test and 50 document lines: armed, "since then 20 product lines in
+    1 file: src/extra.rs 20" recorded;
+  - 21 lines and two commits of 12 (24): refused with the count;
+  - 40 lines in a Rust test module plus 3 lines: accepted, 3 counted;
+  - `src/feature.rs` of the reviewed change removed: refused naming it;
+  - a clean merge of `dev` plus 5 lines: accepted;
+  - a conflicted merge, a clean merge that changed another file too, and a merge of a side
+    branch: refused;
+  - dev's `[review] not_product = ["src/gen/"]`: 25 lines there do not count; a `[review]`
+    that does not parse refuses, naming it.
+- Mutation checks (each restored after): dropping the left-the-change check, the test-module
+  line, the tree check, the second parent's ancestor check, the bound, the configured rule (the
+  default instead) or the parse refusal fails the test, each one. The tree and ancestor checks
+  survived the first version of the test (a conflicted merge is refused by `merge-tree` alone);
+  the clean merge that changed more and the side-branch merge were added for them.
+- APR-005: the rule's sentence in `delivery-pipeline`, `om-code-review`, `git-hygiene`,
+  `yulius-review`, `yulius-git`, the workflow, git.md and AGENTS.md, and the bound in
+  `delivery_merge`'s description; `skills::every_place_states_the_follow_up_bound` holds them
+  (dropping it from AGENTS.md fails it). The briefing has no byte to spare and says nothing new.
+- ADR-0345 (amends ADR-0066 point 3), api.md's `[review]`, the `yulius.toml` reference in
+  `config.rs`, changes.
+- `delivery::a_review_carries_over_clean_merges_of_the_integration_branch` (SPEC-083) refused a
+  one-line commit after the review; under APR-001 that line keeps the approval, so its new work
+  is now 22 lines (21 added, 1 removed), still refused.
+- Local runs: `cargo test -p yulius --test main` 1705 passed, 1 failed:
+  `pool_supervision::a_reattached_run_at_a_limit_is_restarted_past_it`, the known load flake
+  #1286 (passes alone, 3 of 3). `cargo test -p yulius-git`: one `git_ops` test at a time fails
+  `ETXTBSY` on a fake git script under load (a different test in different runs; filed as #1332,
+  present on dev, not touched here). Domain 529, app 576, clippy and fmt clean.
+- How to read it a week later: `SELECT at, detail FROM audit_log WHERE action IN
+  ('delivery.agent.merge', 'delivery.agent.merge_armed') AND detail LIKE '%since then%product
+  line%'` lists the merges that used the bound, with their counts; the analytics read's rounds
+  per pull request (fix 1's) says whether rounds fell.
+- Review round 1 (Opus 5.5 while Fable's weekly limit held, head `de8377238`): request changes,
+  1 blocker and 5 majors in own code, each answered test-first. All seven mutations below fail a
+  test, and each is restored after.
+  1. Blocker: `git show` follows the clone's settings (`color.diff=always` → 0 lines; `-diff`
+     in `info/attributes` or a committed `.gitattributes` → "Binary files differ").
+     - The fix: `commit_lines` reads `git diff-tree -r -p -U0 --text --no-color --src-prefix=a/
+       --dst-prefix=b/` with `GIT_ATTR_NOSYSTEM=1`, `core.quotePath=false` and an empty
+       `diff.orderFile`. `diff-tree --numstat -z` gives the exact paths, and its counts must
+       agree with the patch. `--numstat` gives `-` for a `-diff` file; the patch, with
+       `--text`, does not, and decides.
+     - A changed line with a NUL byte or over 1,000 bytes makes its file opaque, and product
+       code that is opaque refuses.
+     - Tests: `git_ops::a_commits_lines_ignore_the_clones_settings` (real Git: colour, no
+       prefix, `-diff` everywhere, a binary file, a path with a space and `ü.rs`), and the
+       delivery cases "the clone's settings do not hide lines" and the NUL byte. Dropping
+       `--text`, or the opaque refusal, fails them.
+  2. Major: the stateless parser.
+     - The fix: `parse_unified_zero` starts a file only at `diff --git` and gives a hunk
+       exactly the lines its header counts; `None` (refused) when a hunk ends short.
+     - Test: unit `a_patch_is_read_by_its_hunk_counts` (a `++ b/docs/x.md` content line, `\ No
+       newline` markers, a new file, a mode change, a short hunk, NUL and long lines).
+  3. Major: the first `#[cfg(test)]` ended the count.
+     - The fix: `follow_up::test_module_spans` excludes only a `#[cfg(test)] mod name {` to the
+       first `}` at its indentation. A module never closed, `mod tests;` and a single item are
+       counted. APR-002 and the ADR are amended.
+     - Tests: unit `only_test_modules_are_test_spans`; the delivery case
+       `#[cfg(test)]\nmod tests;` + 30 lines is refused (32). Marking every line a test fails it.
+  4. Major: the answer lacked the count, and the test read it from the audit.
+     - The fix: an accepted answer has `review: "reviewed at X; since then …"`.
+     - Test: `deliver_after_follow_up` returns the answer and the audit entries apart, and each
+       accepted case asserts both. Dropping the field fails it.
+  5. Major: the merge record (`delivery.review.models`) used only the clean-merge rule.
+     - The fix: it also accepts a follow-up within the bound, judged against the merge's base.
+     - Test: `a_merge_commit_merge_judges_the_head_against_the_branch_before_it` adds a small
+       follow-up, merged three ways, which is not flagged; the side branch still is. Dropping
+       the call fails it.
+  6. Major: `origin/<branch>` resolves a tag or a local branch of that name first.
+     - The fix: the integration branch is `refs/remotes/origin/<branch>` here and in
+       `review_covers_against` (on dev before this change; fixed here because the follow-up
+       relies on it). A failed refresh now refuses in both, where it only warned.
+     - Tests: the side-branch merge with a tag and with a local branch `origin/dev`; and the
+       origin moved away, which refuses with "could not be refreshed". The short name fails the
+       first, keeping the warning fails the second.
+  7. Minor: a Git error is logged and said ("Git could not walk the commits …"), not read as a
+     conflict.
+  8. Minor: the playground's merged and armed audit entries end with the count too.
+  9. Minor: `product` globs no longer make tests or documents count (unit
+     `product_code_is_every_file_but_tests_and_documents`).
+  10. Minor (design), answered in words: shipped instruction files (`SKILL.md`, `AGENTS.md`)
+      are documents by the repository's own rule (`is_documentation_path`, the one the spec
+      check uses). The person decided that documents do not count. A project that wants them
+      counted can drop them with `not_product`, which only removes paths, or narrow `product`.
+      The bound is per follow-up after an approval, and every such merge's record names the
+      files. Not changed.
+  11. Nits:
+      - `only_clean_merges_since` is now the follow-up walk with nothing counted.
+      - The left-the-change check uses a set.
+      - The second refresh in `delivery_merge` (once for the clean-merge rule, once for the
+        count) stays: it is a local fetch, and only when the head moved past the review.
+- Review round 2 (Opus 5.5, head `c6829dfec`): request changes, 1 blocker and 2 majors in own
+  code. Round 1's findings 1, 2 and 4 to 11 are closed (the reviewer's probes against the real
+  `commit_lines`); 3 was closed only in part. Answered test-first; all six mutations below fail
+  a test.
+  - A. Blocker: `git replace` (and grafts, or a forged commit-graph) made a commit look
+    different to every read.
+    - The fix: every Git command of Yulius now runs with `GIT_NO_REPLACE_OBJECTS=1`,
+      `GIT_GRAFT_FILE=/dev/null` and `core.commitGraph=false` (`runner.rs`, pinned by the
+      runner's test). This also covers the clean-merge walk, which was exposed on dev before.
+    - Test: `git_ops::a_follow_up_is_read_from_the_commits_themselves` (a 200-line commit
+      replaced by a 1-line one, plus a graft that skips it). Dropping either variable fails it.
+    - The commit-graph setting has no test of its own: a forged graph file is not something the
+      test can write.
+  - B. Major: test-module spans were read as lines of text.
+    - The fix: `test_module_spans` reads Rust tokens. `code_only` blanks line, nested block
+      and doc comments, strings, raw strings and character literals (lifetimes stay code); a
+      `#[cfg(test)]` whose next item, after further attributes and a visibility, is `mod name {`
+      spans to its matching brace. Anything that does not lex gives no span.
+    - Tests: unit `test_spans_are_read_from_rust_tokens` (a fake module in a block comment, in
+      a string, in a raw string; braces in a char, a string, a comment and `'\u{7D}'`; an
+      unformatted close; nested comments; unclosed ones; spaced attributes). Unit
+      `real_files_have_their_test_module_and_nothing_else`: four of this crate's own files,
+      whose tests hold these tricks, each have exactly their test module. The delivery case of
+      a comment-borne module is refused (34). Lexing nothing, or never closing, fails them.
+  - C. Major: the integration branch was read back from the clone after the fetch.
+    - The fix: `App::integration_head` reads the commit from GitHub's branch (a playground: its
+      own repository on the server) before the fetch, and every check takes that commit. Here
+      and in `review_covers_against` (whose ref reading was on dev before).
+    - Tests: in the delivery fixture, a ref moved right after every fetch
+      (`forged_after_fetch`), with a merged side branch, is refused; a failed fetch and an
+      origin that cannot be read refuse, each with its reason. Reading the ref again fails the
+      first.
+  - D. Minor: a type change (a link become a file) is one record and two patch sections; they
+    are paired now (in the `git_ops` test above). Dropping the pairing fails it.
+  - E. Minor, answered in words: when a fetch fails, the armed merge is dropped (fail closed).
+    The message the agent gets says the branch moved and asks for a review of the new head. It
+    makes no claim about clean merges, so it is not wrong; the agent re-arms once the fetch
+    works.
+  - F. Nit, taken: an opaque line is now one over 200 bytes (formatters wrap at 80-120), not
+    1,000.
+  - `git_ops` wrappers that find the subcommand by its place (`${31}`) now look two places
+    later, for the new `-c` pair.
+- Review round 3 (Opus 5.5, head `43a0246b9`): request changes, 1 major in own code. Round 2's
+  A to D and F are closed (the reviewer also tried swapping a commit's loose object: Git
+  refuses it, "hash mismatch"); E stays answered in words. Answered test-first; all three
+  mutations below fail a test.
+  - G. Major: a macro can keep a fake test module's body and drop its attribute (`keep! {
+    #[cfg(test)] mod t { … } }`).
+    - The fix: `test_module_spans` keeps a stack of the open delimiters. A span counts only
+      when every one around it is a module's brace (the top of the file or `mod name {`), so
+      not in a macro's input of any bracket kind, a function or an `impl`; and only when
+      `#[cfg(test)]` is its item's first outer attribute, so no attribute macro sees the
+      module first.
+    - Test: `test_spans_are_read_from_rust_tokens` holds six hidden shapes and one nested
+      module after an inner attribute. Dropping either rule fails it.
+  - H. Minor: `GIT_GRAFT_FILE=/dev/null` made Git print the graft deprecation hint on every
+    command.
+    - The fix: the variable now names a file that does not exist, so no grafts are read and
+      nothing is printed.
+    - Test: `git_ops::reading_no_grafts_prints_no_hint` captures the stderr of real commands.
+      `/dev/null` fails it.
+  - I. Minor, no change (the reviewer's own advice): `core.commitGraph=false` costs generation
+    numbers in ancestry queries; nothing in Yulius relies on commit-graphs. If large
+    repositories slow down, it moves to the walk and the count only.
+  - J. Nit, answered in words: the 200-byte bound refuses long lines in non-Rust product files
+    (SQL, YAML) back to a review round, which is safe; `not_product` takes such files out.
+  - The reviewer's open gap, whether agents can write a playground's origin: they cannot. It is
+    `<data>/playgrounds/<id>.git`, outside the sandbox (ADR-0081, `playground_origin`).
+- Review round 4 (Opus 5.5, head `8abd2259d`): request changes, 1 major and 1 minor in own
+  code. Round 3's G and H are closed (the reviewer's probes: lifetimes, `'\u{7d}'`, a
+  `macro_rules!` body and a raw identifier give no span; a doc comment or an inner attribute
+  before a real module keeps it). Answered test-first; all three mutations below fail a test.
+  - K. Major: a test- or document-classified file counts as such even when new product code
+    builds it in (`#[path = "../fixtures/evil.rs"] mod evil;`, `include!`, an import from
+    `__tests__/`).
+    - The fix: `FollowUp::count` counts any changed file that the text of an added product
+      line names by its folder and stem (`fixtures/evil`, `__tests__/helper`). An added Rust
+      product line with `#[path`, `include!(`, `include_str!(` or `include_bytes!(` (spaces
+      ignored) is reported in `includes`, and the carry refuses, naming the file.
+    - Tests: unit `a_file_product_code_names_counts` (`#[path]`, a JS import, a line inside a
+      test module that names nothing, the keys); the delivery cases of a `#[path]` fixture
+      (refused, naming `src/extra.rs`) and a JS import (26 counted). Dropping either rule fails
+      them.
+    - What is left (the person's rule; written into ADR-0345's consequences): a test or
+      document file that product code built in before the review is not counted when it
+      changes.
+  - L. Minor: an attribute macro on an enclosing module could strip `#[cfg(test)]` from its
+    input.
+    - The fix: a module brace counts as a module only when the item's outer attributes are
+      built-ins (`cfg`, `allow`, `warn`, `deny`, `forbid`, `expect`, `doc`, `path`, `rustfmt`,
+      `clippy`, `macro_use`). `cfg_attr` is excluded: it can apply any attribute.
+    - Test: two more hidden shapes (`#[keep] mod x { … }` and `#[cfg_attr(not(test), keep)]`),
+      and a nested module after `#[allow]` and `#[rustfmt::skip]` keeps its span. Dropping the
+      rule fails it.
+- Review round 5 (Opus 5.5, head `c1df65dbb`): request changes. L is closed. K is still open:
+  five routes load a changed test file with no name in the line (`mod fixtures;`, an aliased
+  `include` with `concat!`, `from tests.evil import`, a folder's `index.js`, a re-export). Also
+  one minor, M: the ADR claimed more than was closed. Answered test-first; all three mutations
+  below fail a test.
+  - K. The reviewer's coarse rule, taken:
+    - When any product line the follow-up added loads code (the words `import`, `require`,
+      `require_relative`, `include`, `include_str`, `include_bytes`, `concat`, or `export …
+      from`, `#[path`, a `mod name;` declaration), every test and document file it changed
+      counts, except what `not_product` names.
+    - A Rust file under `src/` is never a test file by folder or name.
+    - Tests: unit `a_file_product_code_names_counts` holds the five routes plus Ruby's
+      `require_relative`, C's `#include` and an `include_str!` of `README.md`. A plain line
+      (`important`, which is not the word `import`) keeps tests out; `not_product` keeps a
+      loaded file out; `src/fixtures/mod.rs` is product code. The delivery case `from
+      tests.evil import run` counts 31 and refuses. Dropping the rule, or the `src/` rule, fails
+      them.
+  - M. ADR-0345's Consequences now list what the count catches and what it does not, without
+    the claim. What it does not catch: a file built in before the review, and what one line
+    does, which no line count can say and which is the review's to find.
+- Review round 6 (Opus 5.5, head `f6123feff`): the code is approvable. K is closed for every
+  round-5 route (each hidden file counted, through the real `FollowUp::count`), and the ADR's
+  limits are stated honestly. The verdict was request changes only because the head had no
+  Yulius CI run yet; the reviewer's condition is approve once one exists. The minors are fixed
+  first, as ADR-0141 asks; both mutations below fail a test.
+  - N1. Minor: a Cargo path dependency (`evil = { path = "tests/evil" }`) and
+    `importlib.import_module` / `__import__` had no loading word.
+    - The fix: a loading word now matches inside a word, in any case (`import`, `require`,
+      `include`, `concat`), and a manifest line with `path =` or `file:` loads.
+    - Tests: the four cases in `a_file_product_code_names_counts`. Exact matching, or dropping
+      `path =`, fails them.
+  - N2. Nit, answered in words: words like `concat` or `include` in lines that load nothing
+    also make tests count. That errs towards a review round, which the ADR now says.
+  - N3. Nit, taken: ADR-0345's wording ("can grow freely … as long as no added product line has
+    a loading word"; "has a loading word … whether or not it loads anything").
+
+### Fix 7: a review survives a usage limit
+
+- RLM-001: `Observation::SubagentCutOff` carries the limit (reset, window, what it binds); a
+  limit of "the model that ran" names the family of the model that answered the subagent (unit
+  `a_subagents_model_and_its_cut_off_are_read_from_its_transcript`: a five-hour refusal binds the
+  subscription, a credits refusal after Fable 5.2 answers binds Fable). The watcher
+  (`App::subagent_limit`, live lines only) records it on the subscription for that family; one
+  that binds the session's model goes through `limit_met`, as any limit.
+- RLM-002: `App::reviewer_cut_off` keeps an open round's cut-off reviewer on the run
+  (`cut_off_reviewer`); a limit of another family than the session's moves the session
+  (the Stop hook at a turn's end, after reading the turn's lines while a round is open; an idle
+  session's turn is the one the reviewer's failed task notification wakes; see review round 2). `move_to_also_run` picks the subscription; background work or a
+  queued prompt puts the move off to a later turn's end. The relaunch's prompt
+  (`reviewer_resume_prompt`, also after a limit of the session's own model) names the reviewer's
+  id and `SendMessage`, and says not to start a new one; `SubagentStart` or `SubagentStop` of that
+  id forgets it. With no subscription that runs the model, the session is told to start the
+  review again, which runs on Opus 5.5 (typed when the session takes text, about two minutes of
+  tries).
+  - AC-18, real processes (`review_rounds::real`, the fake agent's `/reviewer-limit` and
+    `/reviewer-limit-turn`: a `SubagentStart`, one answer on Fable 5.2 and the credits refusal
+    `/credits-out` writes, in the reviewer's own transcript, no `SubagentStop`):
+    `a_cut_off_reviewer_moves_the_session_and_is_resumed_there` (moved to the second
+    subscription, switch `review_resume`, the first's Fable window at 100 %, the new process's
+    prompt names `SendMessage to `arev…``), `a_reviewer_cut_off_in_a_turn_moves_the_session_at_its_end`
+    (the Stop hook's path) and `a_cut_off_reviewer_nobody_can_run_is_told_to_go_on_on_opus`
+    (nothing moves; the note is typed).
+  - Mutations, each fails a test: the family of the answered model, the reviewer noted, the
+    limit recorded for another family, the reviewer named at the relaunch, the move itself, the
+    Stop hook's move.
+  - With the real CLI: the facts the fake agent copies were measured on Claude Code 2.1.325
+    (2026-11-15, `$HOME/.cache/yulius-task-472/probe`: no `SubagentStop` at a limit, the refusal
+    in the subagent's transcript, `SendMessage` resumes on the same model after `--resume`). The
+    whole flow was not run against the real CLI: its limit needs a subscription that runs out.
+- RLM-003: `rotation::move_with_room_for` (unit `a_review_moves_only_to_room_for_its_reviewer`);
+  `start_review_round` refuses a reviewer on a subscription `Tier::Tight` for its model when
+  another has known room, and the session moves (`MOVE_FOR_ROOM`, `review_room`, it interrupts
+  like the Fable move). The Fable move and this one share `decide_move`. AC-19:
+  `a_round_about_to_run_out_moves_the_session_first` (real processes: 3 points left for Fable,
+  moved, asked to start again), `a_tight_round_with_nowhere_roomier_starts_where_it_is`,
+  `a_tight_round_with_work_running_starts_where_it_is`. Three mutations, each fails one.
+- RLM-004: the rule's sentence in `delivery-pipeline`, `om-code-review`, `yulius-review`,
+  `yulius-git`, the workflow, git.md and AGENTS.md; `skills::every_place_says_resume_a_cut_off_reviewer`
+  holds them and `REVIEWER_EFFORT` (high, set by fix 1b's agent definitions).
+- ADR-0346, changes. How to read it a week later: the analytics read's share of first rounds
+  with no report (baseline 14 of 86 at high effort) and its rounds per pull request; `SELECT
+  reason, count(*) FROM switch_decisions WHERE reason IN ('review_resume', 'review_room') GROUP
+  BY reason` counts the moves.
+- Fix 6's round-7 nit is in: the decisions index lists 0343 before 0344.
+- Review round 1 (Opus 5.5 while Fable's weekly limit holds, head `a5b584050`): request changes,
+  3 majors and 3 minors in own code, each answered test-first. The mutations below each fail a
+  test, unless the item says otherwise.
+  - M1. Major: a credits refusal before any answer of the subagent (refused at its first
+    request, or resumed in a new run) read as the session's limit.
+    - The fix: a limit of "the model that ran" of an open round's reviewer is of its round's
+      model (`open_round_reviewer`). One of a subagent whose model cannot be told is no one's:
+      `subagent_limit` records nothing and moves nothing.
+    - Tests: `a_reviewer_refused_before_any_answer_meets_its_own_models_limit` (fake
+      `/reviewer-limit-first`: Fable recorded, Opus not, the first subscription not limited),
+      and the unknown-subagent case of `a_superseded_reviewer_and_an_unknown_subagent_change_nothing_else`
+      (nothing moves, nothing limited).
+  - M2. Major: the cut-off reviewer state outlived its round.
+    - The fix: `forget_cut_off_reviewer` runs at every reviewer start (so a superseded reviewer
+      is never named, also after a Fable or room move), and at a launch whose reviewer's round
+      is no longer open or that starts afresh (the launch checks the round).
+    - A successful move takes the due flag, so no second move follows. The check "stay where
+      the reviewer's model can run" the reviewer suggested is therefore not added: nothing can
+      reach it.
+    - Test: the superseded case (the new start moves for Fable, and its prompt names no
+      reviewer to resume).
+  - M3. Major: the idle path could cut a session about to work.
+    - The fix: with hooks the move is the Stop hook's alone. Claude Code wakes the thread with
+      the reviewer's failed task notification (probe), and that turn's Stop decides it with the
+      gate's answer and the hold. Cut-offs are read after the thread's own lines of the same
+      read, so a turn they start is under way.
+    - Without hooks: `move_for_reviewer`, idle as `move_idle_session` reads it (prompt mode,
+      Running, Waiting, no goal of its person's, no turn), tried again every
+      `reviewer_move_retry_ms` (5 s) for about ten minutes while due. This path has no real-
+      process test (the fake agent runs with hooks); the "Waiting" condition's mutation
+      survives for that reason.
+    - Tests: every cut-off test now moves at a turn's end, with retries set beyond the run.
+      Dropping the Stop hook's move fails them.
+  - m1. The texts' line continuations, lost in writing, are back. Unit
+    `a_cut_off_reviewer_is_told_in_whole_sentences` holds both texts as whole sentences with
+    no run of spaces.
+  - m2. The resume prompt claims nothing of the subscription: "a new process (a move to
+    another Claude subscription or a restart)".
+  - m3. Tests:
+    - the idle variants wait for a real turn's end;
+    - a five-hour limit in the reviewer's transcript (`/reviewer-limit-all`) moves as any limit,
+      with the first subscription limited;
+    - `a_hand_over_interrupts_like_a_persons_switch` now holds `MOVE_FOR_ROOM` (interrupts)
+      and `REVIEW_RESUME` (does not);
+    - no test of background work or a queued prompt putting the move off: that is the same
+      check as the Stop hook's own switch, tested there.
+  - n1. A failed switch for a reviewer is due again (both paths).
+  - A race found on the way: the limit is now recorded before the reviewer's move is decided.
+    Otherwise the session's subscription could still read as running Fable.
+  - p1, answered in words: pre-existing on dev since fix 1d (REV-007's "Do nothing else now"
+    when the live run changed before the spawned switch). The room move inherits it; it is
+    left as it is in this change.
+- Review round 2 (Opus 5.5, head `24b419d71`): request changes. Every round-1 finding is closed
+  in the code, and the reviewer accepts M2's answer and p1. Two new findings, both answered:
+  - Major (tests): nothing held "with hooks, never move outside a turn's end". The cut-off test
+    now looks for 6 s, longer than a watcher poll and the background check, while the session
+    waits and nothing is typed: no switch, one run. Only then does a turn end, and the
+    `review_resume` move follows. An injected move at the cut-off fails it.
+  - Minor (the no-hooks idle path untested): the path is unreachable and is removed. A review
+    round exists only with hooks: its start is the `PreToolUse` of the Agent tool, and its
+    subagent is linked by `SubagentStart`. So a cut-off reviewer is always one of a session
+    with hooks, whose thread Claude Code wakes with the failed task notification.
+    - Removed: `move_for_reviewer` and its retries, `reviewer_session_idle`, the
+      `reviewer_move_retry_ms` setting and `turn_ended`'s branch.
+    - The Stop hook is the only path that moves, and ADR-0346 says so. RLM-002's "at once when
+      idle" is that woken turn's end.
+
+### Fix 8: mutation testing once per pull request
+
+- MUT-001: `scripts/dev mutants` (`tools/xtask/src/mutants.rs`) with the pinned
+  `cargo-mutants = "27.1.0"` (`.config/tools.toml`, installed by `bootstrap.py` like the other
+  tools, so the quality job has it).
+  - It mutates the Rust lines changed since the merge base with `--base` (default
+    `origin/<integration>`), without `tools/**` and `crates/*/tests/**`.
+  - Each mutant runs nextest across the workspace, `--all-features`. The `yulius` package's
+    own unit tests always run; its integration binary runs only the test functions a hunk of
+    `git diff -W` is in (the ones the branch added or changed), or `--tests FILTER`, and only
+    where that package exists. (As first reviewed: only added `fn` lines; see round 1.)
+  - Bounds: `--minutes` (30) for the whole run, at which cargo-mutants is asked to end (SIGTERM;
+    it stops its builds and tests) and the mutants not reached are named; `--mutant-seconds`
+    (300); `--jobs` (2).
+  - The last line is `mutants: N listed, C caught, M missed, T timed out, U unviable, R not
+    reached (bound X min, took S s)`. The exit code is non-zero when M, T or R is not zero.
+  - Unit tests: `each_mutant_runs_the_tests_the_branch_wrote`,
+    `a_run_passes_only_when_every_mutant_was_caught` and `the_settings_take_their_options`.
+  - AC-20, with the real tool: `a_real_run_finds_the_line_no_test_holds`. On a fixture crate,
+    an added function no test holds is missed and the run fails; with its test the run holds; a
+    branch that changes only a document has nothing to mutate.
+  - Measured on 2026-11-16 (`/usr/bin/time`), on fix 7's change against its base with the work
+    merged since, 2 jobs and a 25-minute bound:
+    - 248 listed; 84 tested: 59 caught, 25 unviable, 0 missed;
+    - 164 named as not reached;
+    - 1,501 s wall, 5.6 GB peak memory: about 18 s a mutant.
+    - This was measured before round 1 added the product's unit tests and `--all-features` to
+      each mutant's run, which make a mutant slower; the figure is a lower bound.
+  - On this pull request's own head: "No mutant in the Rust lines changed against
+    origin/dev." Its Rust lines are the test tool's (`tools/`) and test code.
+- MUT-002: the rule's sentence is in `om-code-review`, `delivery-pipeline` and
+  `test-driven-development`; with "Here the command is `scripts/dev mutants`." it is in
+  `yulius-verify`, `yulius-review` and docs/engineering/development.md (also its commands
+  table). The Feature and Fix workflows reach it through `delivery-pipeline` (round 1).
+  `skills::every_place_says_mutation_testing_once_per_pull_request` holds them.
+- ADR-0347, changes. How to read it a week later: the share of blocking review rounds whose
+  findings are about test strength only, from the rounds' reports (fix 1's records), and each
+  spec's `mutants:` line.
+- Fix 7's round-3 nits are in: RLM-002's requirement and Evidence lines say the turn's end, and
+  the doubled 2026-11-16 heading in changes.md is merged.
+- Review round 1 (Opus 5.5, head `af510168e`): request changes. 1 blocker, 2 majors, 3 minors
+  and nits, all in own code. Answered test-first; each of these mutations fails a test: keeping
+  `CARGO_TARGET_DIR`, dropping `not kind(test)`, reading only added lines for test names,
+  ignoring cargo-mutants' exit status, never ending the run at the bound.
+  - Blocker: doctor asked `cargo-mutants --version`, which the tool refuses, so every gate
+    failed. Fixed in `7867a8333`: doctor and bootstrap ask a tool that runs only as a cargo
+    subcommand as `cargo-<x> <x> --version` (unittest `test_a_tool_that_runs_only_as_a_cargo_subcommand_is_asked_as_one`).
+  - Major: a shared `CARGO_TARGET_DIR` made parallel copies test each other's builds (the
+    reviewer reproduced wrong "caught" and "missed").
+    - The fix: cargo-mutants now runs without `CARGO_TARGET_DIR`, `CARGO_BUILD_TARGET_DIR` and
+      an outer nextest's `NEXTEST*` variables (`mutants_command`, unit
+      `cargo_mutants_runs_with_a_target_directory_of_its_own`).
+    - The measured run above had neither set: it was started from a shell with no
+      `CARGO_TARGET_DIR`.
+    - The gate itself had shown the outer-nextest case: the fixture inherited
+      `NEXTEST_PROFILE=ci`.
+  - Major: the test filter missed the tests that hold the lines.
+    - The fix: the product's own unit tests always run (`not kind(test)`). The changed tests
+      are every function a hunk of `git diff -W` is in, so a test whose body alone changed is
+      named. The regex is anchored (`(^|::)name$`).
+    - Test: unit `each_mutant_runs_the_tests_the_branch_wrote`.
+  - Minor: the bound had no automated test. The bound is a `Duration` now (`seconds` for
+    tests), and the real-tool test ends a run of slow tests at 3 s with mutants named not
+    reached.
+  - Minor: cargo-mutants' own failure (a baseline that does not pass) read as mutants not
+    reached. Now an exit other than 0, 2 or 3, without the bound, is an error that names its
+    log; the real-tool test has a fixture whose test fails.
+  - Minor: the diff is read with `--no-ext-diff --no-textconv --no-color` and fixed prefixes,
+    and uncommitted Rust changes are warned about.
+  - Nits, all fixed:
+    - the kill comment is right now (cargo-mutants stops its children on SIGTERM), and off Unix
+      the child is killed;
+    - the fixture's doc is corrected;
+    - `--all-features` is passed;
+    - the rule says "on the first head you ask a review for" (and ADR-0347 too);
+    - the long RLM-002 line is rewrapped.
+    - The `tools.toml` pin rode in a docs commit (`d9b3ff15c`); it stays there, being pushed.
+  - Found at the gate: the Feature and Fix workflows' instructions are held to 1,444 bytes with
+    their heading (`workflows::catalog::tests`, #555), with 3 and 1 bytes left. Their short form
+    is taken out again, and they reach the rule through `delivery-pipeline`, which each tells the
+    agent to follow; the rule test holds that.
+- Review round 2 (Opus 5.5, head `57e8a0de1`): approve, with two minors and nits; the local gate
+  passed at that head (4612 tests). The minors are fixed before the merge (ADR-0141), with a
+  delta review:
+  - `mutants_command` removed every `NEXTEST*` variable, `NEXTEST_TEST_THREADS` (the sandbox's
+    CPU budget) too. Now only what an outer nextest run sets goes (`outer_nextest`: `NEXTEST`,
+    `NEXTEST_PROFILE`, `NEXTEST_RUN_ID`, `NEXTEST_EXECUTION_MODE`, `NEXTEST_BIN_EXE_*`); the unit
+    test holds both sides.
+  - This spec's MUT-002 and its Evidence now say what the code does (the workflows reach the rule
+    through `delivery-pipeline`; the filter; the bound's SIGTERM; the measurement as a lower
+    bound; the mutations named).
+  - Nits: `selection` has its doc again; the opening line names the bound in seconds; a missed
+    mutant's list says that only the tests the branch changed ran and `--tests` widens them.
+    Answered in words: off Unix the bound kills cargo-mutants only (its builds end with it, its
+    temporary copies may stay); a failed real-tool test leaves its `/tmp/xtask-mutants-*`
+    fixtures for a look, and a pass removes them.

@@ -493,9 +493,32 @@ impl Fixture {
         }
     }
 
+    /// [`Self::settle`], leaving run `held` running (a test holds it).
+    async fn settle_but(&self, app: &Arc<App>, held: &str) -> TestResult {
+        loop {
+            app.ci_dispatch().await;
+            let runs = self.runs(app).await?;
+            let busy = runs.iter().filter(|r| r.id != held).any(|r| {
+                r.state.is_active() || (r.status_for != Some(r.state) && r.status_note.is_none())
+            });
+            if !busy {
+                return Ok(());
+            }
+            if tokio::time::Instant::now() > self.deadline {
+                return Err(format!("CI did not settle: {runs:?}").into());
+            }
+            tokio::time::sleep(Duration::from_millis(150)).await;
+        }
+    }
+
     /// Commits `file` on the integration branch of the origin, as another merged pull request
     /// would.
     fn advance_dev(&self, file: &str) -> TestResult {
+        self.advance_dev_with(file, "other\n")
+    }
+
+    /// [`Self::advance_dev`] with `contents` in `file`.
+    fn advance_dev_with(&self, file: &str, contents: &str) -> TestResult {
         let other = tempfile::tempdir()?;
         let clone = other.path().join("c");
         git(
@@ -509,7 +532,7 @@ impl Fixture {
                 clone.to_str().ok_or("path")?,
             ],
         )?;
-        std::fs::write(clone.join(file), "other\n")?;
+        std::fs::write(clone.join(file), contents)?;
         git(&clone, &["add", "-A"])?;
         git(&clone, &["commit", "-q", "-m", file])?;
         git(
@@ -1226,8 +1249,8 @@ async fn a_merge_train_survives_a_restart() -> TestResult {
 
 /// SPEC-441 MQ-001: the integration branch moving while an armed pull request's own run (its
 /// pre-check) is queued or running changes nothing: Yulius does not merge the base into it, so
-/// the run is not superseded. Once that run passed, the pull request lands on top of the moved
-/// base.
+/// the run is not superseded. Its merge candidate runs beside it (SPEC-493 MQC-001), and once
+/// both passed the pull request lands on top of the moved base.
 #[tokio::test]
 async fn a_moving_base_never_restarts_a_pre_check() -> TestResult {
     let f = fixture().await?;
@@ -1252,18 +1275,10 @@ async fn a_moving_base_never_restarts_a_pre_check() -> TestResult {
     assert_eq!(pre_check.len(), 1, "{runs:?}");
     assert_eq!(pre_check[0].sha, head);
     assert!(pre_check[0].state.is_active(), "{runs:?}");
-    assert!(
-        f.train_runs(&app).await?.is_empty(),
-        "no merge candidate before its pre-check passed"
-    );
+    // Its candidate goes beside the pre-check (SPEC-493 MQC-001); nothing is merged into it.
+    assert_eq!(f.train_runs(&app).await?.len(), 1, "{runs:?}");
     let state = f.wait(1, &worktree).await?;
     assert_eq!(state["merge_armed"], true);
-    assert!(
-        state["merge_train"]
-            .as_str()
-            .is_some_and(|n| n.starts_with("Pull request #1 waits for its own Yulius CI run")),
-        "{state}"
-    );
 
     // The pre-check finishes, then the pull request lands on top of the moved base.
     f.settle(&app).await?;
@@ -1287,6 +1302,445 @@ async fn a_moving_base_never_restarts_a_pre_check() -> TestResult {
     assert_eq!(first.state, RunState::Passed, "{first:?}");
     let dev = git(&f.origin, &["show", "dev:other.txt"])?;
     assert_eq!(dev, "other");
+    Ok(())
+}
+
+/// SPEC-493 MQC-001 (AC-13): two armed pull requests behind their base whose own runs are still
+/// queued: their merge candidate forms at once and its run goes beside their own runs, nothing is
+/// merged into them meanwhile, and both merge once the candidate and their own runs passed: one CI
+/// cycle, not an own run and then a candidate.
+#[tokio::test]
+async fn a_candidate_runs_beside_its_members_own_runs() -> TestResult {
+    let f = fixture().await?;
+    let app = f.h.app.clone();
+    let sandbox = app.deps.store.sandbox(&f.sandbox).await?.ok_or("s1")?;
+    let one = f.task(1, &[("a.txt", "x\n")]).await?;
+    let two = f.task(2, &[("b.txt", "x\n")]).await?;
+    app.ci_sync_sandbox(&sandbox).await?;
+    f.arm(1, &one).await?;
+    f.arm(2, &two).await?;
+    let heads = [
+        git(&one, &["rev-parse", "HEAD"])?,
+        git(&two, &["rev-parse", "HEAD"])?,
+    ];
+    f.advance_dev("other.txt")?;
+    app.ci_sync_sandbox(&sandbox).await?;
+    app.merge_armed(&f.sandbox).await;
+    let trains = f.train_runs(&app).await?;
+    assert_eq!(
+        trains.len(),
+        1,
+        "a candidate beside the own runs: {trains:?}"
+    );
+    let runs = f.runs(&app).await?;
+    for (n, head) in (1..).zip(&heads) {
+        let own: Vec<&CiRunRecord> = runs
+            .iter()
+            .filter(|r| r.reference == CiRef::PullRequest(n))
+            .collect();
+        assert_eq!(own.len(), 1, "{runs:?}");
+        assert!(own[0].state.is_active() && &own[0].sha == head, "{own:?}");
+    }
+    assert_eq!(
+        git(&one, &["rev-parse", "HEAD"])?,
+        heads[0],
+        "nothing merged into it"
+    );
+    f.decide_until(&app, || async {
+        app.ci_sync_sandbox(&sandbox).await?;
+        f.settle(&app).await?;
+        Ok(f.merged(&app, 1).await? && f.merged(&app, 2).await?)
+    })
+    .await?;
+    let executed = f.executed(&app).await?;
+    let own = executed
+        .iter()
+        .filter(|r| matches!(r.reference, CiRef::PullRequest(_)))
+        .count();
+    let candidates = executed
+        .iter()
+        .filter(|r| matches!(r.reference, CiRef::Train(_)))
+        .count();
+    assert_eq!((own, candidates), (2, 1), "{executed:#?}");
+    // Each merged only once its own run had passed too.
+    let runs = f.runs(&app).await?;
+    for (n, head) in (1..).zip(&heads) {
+        assert!(
+            runs.iter().any(|r| r.reference == CiRef::PullRequest(n)
+                && &r.sha == head
+                && r.state == RunState::Passed),
+            "#{n}'s own run: {runs:#?}"
+        );
+    }
+    Ok(())
+}
+
+/// SPEC-493 MQC-001: a candidate that passed while a member's own run still runs merges nothing
+/// yet: the member waits for its own run, then merges on both. The own run is held running (no
+/// process takes it), so only the candidate's run executes first.
+#[tokio::test]
+async fn a_passed_candidate_waits_for_its_members_own_runs() -> TestResult {
+    use yulius_app::ci::CiRunUpdate;
+    let f = fixture().await?;
+    let app = f.h.app.clone();
+    let sandbox = app.deps.store.sandbox(&f.sandbox).await?.ok_or("s1")?;
+    let one = f.task(1, &[("a.txt", "x\n")]).await?;
+    app.ci_sync_sandbox(&sandbox).await?;
+    f.arm(1, &one).await?;
+    let head = git(&one, &["rev-parse", "HEAD"])?;
+    let own = f
+        .runs(&app)
+        .await?
+        .into_iter()
+        .find(|r| r.reference == CiRef::PullRequest(1))
+        .ok_or("own run")?;
+    let started = CiRunUpdate {
+        started_at: Some(app.now()),
+        ..CiRunUpdate::default()
+    };
+    assert!(
+        app.deps
+            .store
+            .transition_ci_run(&own.id, &[RunState::Queued], RunState::Running, &started)
+            .await?
+    );
+    f.advance_dev("other.txt")?;
+    app.ci_sync_sandbox(&sandbox).await?;
+    app.merge_armed(&f.sandbox).await;
+    let train = f
+        .train_runs(&app)
+        .await?
+        .into_iter()
+        .next()
+        .ok_or("no candidate")?;
+    loop {
+        app.ci_dispatch().await;
+        let run = app.deps.store.ci_run(&train.id).await?.ok_or("run")?;
+        if !run.state.is_active() {
+            assert_eq!(run.state, RunState::Passed, "{run:?}");
+            break;
+        }
+        if tokio::time::Instant::now() > f.deadline {
+            return Err("the candidate did not end".into());
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    for _ in 0..3 {
+        app.merge_armed(&f.sandbox).await;
+    }
+    assert!(
+        !f.merged(&app, 1).await?,
+        "merged before its own run passed"
+    );
+    // The own run passes: the pull request merges on both.
+    let ended = CiRunUpdate {
+        ended_at: Some(app.now()),
+        ..CiRunUpdate::default()
+    };
+    assert!(
+        app.deps
+            .store
+            .transition_ci_run(&own.id, &[RunState::Running], RunState::Passed, &ended)
+            .await?
+    );
+    app.ci_retry_statuses().await;
+    assert_eq!(f.status_of(&head).as_deref(), Some("success"));
+    f.decide_until(&app, || async {
+        app.ci_sync_sandbox(&sandbox).await?;
+        f.settle(&app).await?;
+        f.merged(&app, 1).await
+    })
+    .await?;
+    Ok(())
+}
+
+/// Holds pull request `n`'s own run running, as if a job of it took long: no process takes it.
+async fn hold_own_run(f: &Fixture, app: &App, n: u64) -> BoxResult<String> {
+    use yulius_app::ci::CiRunUpdate;
+    let own = f
+        .runs(app)
+        .await?
+        .into_iter()
+        .find(|r| r.reference == CiRef::PullRequest(n))
+        .ok_or("own run")?;
+    let started = CiRunUpdate {
+        started_at: Some(app.now()),
+        ..CiRunUpdate::default()
+    };
+    assert!(
+        app.deps
+            .store
+            .transition_ci_run(&own.id, &[RunState::Queued], RunState::Running, &started)
+            .await?
+    );
+    Ok(own.id)
+}
+
+/// Ends a held own run in `state`, with its status published.
+async fn end_own_run(app: &App, id: &str, state: RunState) -> TestResult {
+    use yulius_app::ci::CiRunUpdate;
+    let ended = CiRunUpdate {
+        ended_at: Some(app.now()),
+        ..CiRunUpdate::default()
+    };
+    assert!(
+        app.deps
+            .store
+            .transition_ci_run(id, &[RunState::Running], state, &ended)
+            .await?
+    );
+    app.ci_retry_statuses().await;
+    Ok(())
+}
+
+/// Dispatches CI until the merge candidate's run `id` ended, and returns how.
+async fn run_candidate(f: &Fixture, app: &Arc<App>, id: &str) -> BoxResult<RunState> {
+    loop {
+        app.ci_dispatch().await;
+        let run = app.deps.store.ci_run(id).await?.ok_or("run")?;
+        if !run.state.is_active() {
+            return Ok(run.state);
+        }
+        if tokio::time::Instant::now() > f.deadline {
+            return Err("the candidate did not end".into());
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+async fn dissolved(app: &App) -> BoxResult<Vec<String>> {
+    Ok(yulius_app::ports::store::AuditStore::audit_details(
+        app.deps.store.as_ref(),
+        "app",
+        "delivery.train.dissolved",
+        20,
+    )
+    .await?)
+}
+
+/// Review round 1 of SPEC-493 fix 4: a passed candidate waiting for a member's own run is no work
+/// for the 20 s pass; past the test limit the member whose own run still runs is held back, and
+/// the others merge without it on a candidate of their own. The held one merges once its run
+/// passed.
+#[tokio::test]
+async fn a_stuck_own_run_holds_its_member_back_not_the_others() -> TestResult {
+    let f = fixture().await?;
+    let app = f.h.app.clone();
+    let sandbox = app.deps.store.sandbox(&f.sandbox).await?.ok_or("s1")?;
+    let one = f.task(1, &[("a.txt", "x\n")]).await?;
+    let two = f.task(2, &[("b.txt", "x\n")]).await?;
+    app.ci_sync_sandbox(&sandbox).await?;
+    f.arm(1, &one).await?;
+    f.arm(2, &two).await?;
+    let stuck = hold_own_run(&f, &app, 1).await?;
+    f.advance_dev("other.txt")?;
+    app.ci_sync_sandbox(&sandbox).await?;
+    app.merge_armed(&f.sandbox).await;
+    let train = f
+        .train_runs(&app)
+        .await?
+        .into_iter()
+        .next()
+        .ok_or("no candidate")?;
+    assert_eq!(run_candidate(&f, &app, &train.id).await?, RunState::Passed);
+    f.settle_but(&app, &stuck).await?;
+    app.merge_armed(&f.sandbox).await;
+    assert!(!f.merged(&app, 2).await?, "#2 waits behind #1");
+    assert!(
+        !app.decidable_in(&sandbox).await,
+        "a wait is no work for the fast pass"
+    );
+    let note = f.wait(1, &one).await?["merge_train"]
+        .as_str()
+        .unwrap_or_default()
+        .to_owned();
+    assert!(note.contains("own Yulius CI run"), "{note}");
+    // Past the test limit: #1 is held back, and #2 goes on without it.
+    f.h.clock.0.fetch_add(
+        yulius_app::merge_train::TEST_LIMIT_MS + 1000,
+        Ordering::SeqCst,
+    );
+    f.decide_until(&app, || async {
+        app.ci_sync_sandbox(&sandbox).await?;
+        f.settle_but(&app, &stuck).await?;
+        f.merged(&app, 2).await
+    })
+    .await?;
+    assert!(!f.merged(&app, 1).await?);
+    assert!(
+        dissolved(&app)
+            .await?
+            .iter()
+            .any(|d| d.contains("(why: too_long)")),
+        "{:?}",
+        dissolved(&app).await?
+    );
+    // Its own run passes: #1 merges after all.
+    end_own_run(&app, &stuck, RunState::Passed).await?;
+    f.decide_until(&app, || async {
+        app.ci_sync_sandbox(&sandbox).await?;
+        f.settle(&app).await?;
+        f.merged(&app, 1).await
+    })
+    .await?;
+    Ok(())
+}
+
+/// Review round 1 of SPEC-493 fix 4: a member whose own run is cancelled (a new push superseded
+/// it) while it is in a candidate leaves it, as one whose run failed.
+#[tokio::test]
+async fn a_member_whose_own_run_is_cancelled_leaves_the_candidate() -> TestResult {
+    let f = fixture().await?;
+    let app = f.h.app.clone();
+    let sandbox = app.deps.store.sandbox(&f.sandbox).await?.ok_or("s1")?;
+    let one = f.task(1, &[("a.txt", "x\n")]).await?;
+    app.ci_sync_sandbox(&sandbox).await?;
+    f.arm(1, &one).await?;
+    let held = hold_own_run(&f, &app, 1).await?;
+    f.advance_dev("other.txt")?;
+    app.ci_sync_sandbox(&sandbox).await?;
+    app.merge_armed(&f.sandbox).await;
+    assert_eq!(f.train_runs(&app).await?.len(), 1);
+    end_own_run(&app, &held, RunState::Cancelled).await?;
+    app.merge_armed(&f.sandbox).await;
+    let gone = dissolved(&app).await?;
+    assert!(
+        gone.iter()
+            .any(|d| d.contains("ended cancelled: it leaves") && d.contains("(why: member_left)")),
+        "{gone:?}"
+    );
+    Ok(())
+}
+
+/// Review round 1 of SPEC-493 fix 4: a failed candidate waits for a member's own run that still
+/// goes (it may say why) for at most the wait limit, then it is bisected as before.
+#[tokio::test]
+async fn a_failed_candidate_waits_for_own_runs_within_the_wait_limit() -> TestResult {
+    let f = fixture().await?;
+    let app = f.h.app.clone();
+    let sandbox = app.deps.store.sandbox(&f.sandbox).await?.ok_or("s1")?;
+    // Each passes alone; together they fail the check.
+    let one = f.task(1, &[("clash-1", "x\n")]).await?;
+    let two = f.task(2, &[("clash-2", "x\n")]).await?;
+    app.ci_sync_sandbox(&sandbox).await?;
+    f.arm(1, &one).await?;
+    f.arm(2, &two).await?;
+    let held = hold_own_run(&f, &app, 2).await?;
+    f.advance_dev("other.txt")?;
+    app.ci_sync_sandbox(&sandbox).await?;
+    app.merge_armed(&f.sandbox).await;
+    let train = f
+        .train_runs(&app)
+        .await?
+        .into_iter()
+        .next()
+        .ok_or("no candidate")?;
+    assert_eq!(run_candidate(&f, &app, &train.id).await?, RunState::Failed);
+    f.settle_but(&app, &held).await?;
+    app.merge_armed(&f.sandbox).await;
+    assert!(
+        dissolved(&app).await?.is_empty(),
+        "it waits for #2's own run"
+    );
+    assert!(!app.decidable_in(&sandbox).await);
+    f.h.clock.0.fetch_add(
+        yulius_app::merge_train::WAIT_LIMIT_MS + 1000,
+        Ordering::SeqCst,
+    );
+    app.merge_armed(&f.sandbox).await;
+    let gone = dissolved(&app).await?;
+    assert!(
+        gone.iter().any(|d| d.contains("(why: bisected)")),
+        "{gone:?}"
+    );
+    end_own_run(&app, &held, RunState::Passed).await?;
+    Ok(())
+}
+
+/// Review round 3 of SPEC-493 fix 5: a run that passed when it was queued (every job skipped
+/// for its `paths`) never reaches the executor, whose run end starts the merge pass: the
+/// dispatcher starts it, so a merge armed before the run merges at once, with no other pass.
+#[tokio::test]
+async fn a_merge_armed_on_a_run_of_skipped_jobs_happens_at_once() -> TestResult {
+    let f = fixture().await?;
+    let app = f.h.app.clone();
+    let sandbox = app.deps.store.sandbox(&f.sandbox).await?.ok_or("s1")?;
+    f.advance_dev_with(
+        "yulius.toml",
+        "[[ci.jobs]]\nname = \"check\"\ncommand = \"true\"\npaths = [\"never/**\"]\n",
+    )?;
+    // The integration branch's own run ends first: no other run's end starts a pass below.
+    app.ci_sync_sandbox(&sandbox).await?;
+    f.settle(&app).await?;
+    let one = f.task(1, &[("a.txt", "x\n")]).await?;
+    f.arm(1, &one).await?;
+    app.ci_sync_sandbox(&sandbox).await?;
+    let head = git(&one, &["rev-parse", "HEAD"])?;
+    let runs = f.runs(&app).await?;
+    assert!(
+        runs.iter()
+            .any(|r| r.sha == head && r.state == RunState::Passed),
+        "passed when queued: {runs:?}"
+    );
+    assert!(
+        !runs.iter().any(|r| r.state.is_active()),
+        "no other run whose end would start a pass: {runs:?}"
+    );
+    // The dispatcher alone: no merge pass is called by the test.
+    app.ci_dispatch().await;
+    let mut merged = false;
+    for _ in 0..200 {
+        if f.merged(&app, 1).await? {
+            merged = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(merged, "the armed merge waited for another pass");
+    Ok(())
+}
+
+/// SPEC-493 MQC-002 (AC-13): a member whose own run fails leaves the candidate: the candidate is
+/// formed again from the other, which merges, and the failed member's armed merge ends with its
+/// run named, as a failed own run ends it outside a candidate.
+#[tokio::test]
+async fn a_member_whose_own_run_fails_leaves_the_candidate() -> TestResult {
+    let f = fixture().await?;
+    let app = f.h.app.clone();
+    let sandbox = app.deps.store.sandbox(&f.sandbox).await?.ok_or("s1")?;
+    let one = f.task(1, &[("a.txt", "x\n")]).await?;
+    // Its own change fails the check alone.
+    let two = f.task(2, &[("clash-1", "x\n"), ("clash-2", "x\n")]).await?;
+    app.ci_sync_sandbox(&sandbox).await?;
+    f.arm(1, &one).await?;
+    f.arm(2, &two).await?;
+    f.advance_dev("other.txt")?;
+    app.ci_sync_sandbox(&sandbox).await?;
+    app.merge_armed(&f.sandbox).await;
+    assert_eq!(f.train_runs(&app).await?.len(), 1);
+    f.decide_until(&app, || async {
+        app.ci_sync_sandbox(&sandbox).await?;
+        f.settle(&app).await?;
+        Ok(f.merged(&app, 1).await? && f.wait(2, &two).await?["merge_armed"] == false)
+    })
+    .await?;
+    assert!(!f.merged(&app, 2).await?);
+    let outcome = f.wait(2, &two).await?["merge_outcome"]
+        .as_str()
+        .unwrap_or_default()
+        .to_owned();
+    assert!(outcome.contains("failed"), "{outcome}");
+    let dissolved = yulius_app::ports::store::AuditStore::audit_details(
+        app.deps.store.as_ref(),
+        "app",
+        "delivery.train.dissolved",
+        10,
+    )
+    .await?;
+    assert!(
+        dissolved.iter().any(|d| d.contains("#2's own run")),
+        "{dissolved:?}"
+    );
     Ok(())
 }
 

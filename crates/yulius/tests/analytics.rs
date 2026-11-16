@@ -926,3 +926,275 @@ async fn the_reviews_read_counts_only_visible_sandboxes() -> TestResult {
     assert_eq!(read(&alice, "&sandbox=s1").await?.body["pull_requests"], 1);
     Ok(())
 }
+
+/// SPEC-493 MQC-005 (AC-15): the merge-queue read counts the candidates formed, merged and
+/// dissolved by why, per day, from the audit entries of the sandboxes the caller sees, and the
+/// minutes from arming a merge to it; a hidden sandbox is not found.
+#[tokio::test]
+async fn the_merge_queue_read_counts_candidates_from_the_audit_log() -> TestResult {
+    use yulius_app::ports::store::{AuditStore as _, SandboxStore as _};
+    use yulius_domain::merge_queue as mq;
+    let h = harness()?;
+    let (admin, alice) = base(&h).await?;
+    let s1 = h
+        .store
+        .sandbox(&SandboxId::parse("s1")?)
+        .await?
+        .ok_or("s1")?;
+    let s2 = h
+        .store
+        .sandbox(&SandboxId::parse("s2")?)
+        .await?
+        .ok_or("s2")?;
+    let entry = |at: i64, target: String, action: &'static str, detail: &'static str| {
+        let store = h.store.clone();
+        async move {
+            store
+                .audit(Timestamp(at), "yulius", action, Some(&target), Some(detail))
+                .await
+        }
+    };
+    let (one, two) = (s1.slug.clone(), format!("{}#7", s1.slug));
+    entry(OCT1 + HOUR, one.clone(), mq::FORMED, "merge train #7, #8").await?;
+    entry(
+        OCT1 + 2 * HOUR,
+        one.clone(),
+        mq::DISSOLVED,
+        "merge train #7, #8 (run r): #8's own run at abc ended failed: it leaves the candidate; \
+         its pull requests merge one by one (why: member_left)",
+    )
+    .await?;
+    entry(
+        OCT1 + 2 * HOUR + 1,
+        one.clone(),
+        mq::FORMED,
+        "merge train #7",
+    )
+    .await?;
+    entry(
+        OCT1 + 3 * HOUR,
+        one.clone(),
+        mq::MERGED,
+        "merge train #7 merged",
+    )
+    .await?;
+    entry(OCT1, two.clone(), "delivery.agent.merge_armed", "armed").await?;
+    entry(OCT1 + 3 * HOUR, two, "delivery.agent.merge", "merged").await?;
+    // A person's armed merge names the task by its id, and its merge by `<slug>#<n>`; another one
+    // was armed before the range and merged in it.
+    for (id, armed_at) in [("t-person", OCT1 + HOUR), ("t-early", OCT1 - 2 * HOUR)] {
+        task(
+            &h,
+            TaskSpec {
+                id,
+                sandbox: "s1",
+                title: id,
+                harness: Harness::ClaudeCode,
+                status: TaskStatus::Running,
+                created: OCT1 - 3 * HOUR,
+                closed: None,
+            },
+        )
+        .await?;
+        let number = h.store.task(&TaskId::parse(id)?).await?.ok_or(id)?.number;
+        entry(armed_at, id.to_owned(), "delivery.person.merge_armed", "{}").await?;
+        entry(
+            OCT1 + 4 * HOUR,
+            format!("{}#{number}", s1.slug),
+            "delivery.person.merge",
+            "merged",
+        )
+        .await?;
+    }
+    // Another sandbox's candidate, and an entry outside the range.
+    entry(OCT1 + HOUR, s2.slug.clone(), mq::FORMED, "merge train #1").await?;
+    entry(OCT1 - 30 * 24 * HOUR, one, mq::FORMED, "long ago").await?;
+    let read = |who: &Creds, query: &str| {
+        let (router, who, uri) = (
+            h.router.clone(),
+            who.clone(),
+            format!("/api/analytics/merge-queue?from=2026-10-01&to=2026-10-07{query}"),
+        );
+        async move { call(&router, Method::GET, &uri, None, &who).await }
+    };
+    let seen = read(&alice, "").await?;
+    assert_eq!(seen.status, StatusCode::OK, "{}", seen.body);
+    let body = &seen.body;
+    assert_eq!(
+        (&body["formed"], &body["merged"], &body["dissolved"]),
+        (&json!(2), &json!(1), &json!(1)),
+        "{body}"
+    );
+    assert_eq!(body["dissolved_by"]["member_left"], 1, "{body}");
+    assert_eq!(body["days"][0]["day"], "2026-10-01", "{body}");
+    // 180, 180 and 360 minutes.
+    assert_eq!(body["merges"], 3, "{body}");
+    assert_eq!(body["median_arm_to_merge_minutes"], 180.0);
+    assert_eq!(read(&admin, "").await?.body["formed"], 3);
+    let hidden = read(&alice, "&sandbox=s2").await?;
+    assert_eq!(hidden.status, StatusCode::NOT_FOUND, "{}", hidden.body);
+    Ok(())
+}
+
+/// Review round 2 of SPEC-493 fix 4: the merge queue's audit read keeps the newest entries
+/// within its limit (oldest first), reads `<slug>` and `<slug>#<n>` but not `<slug>2#<n>`, and the
+/// task ids it is given.
+#[tokio::test]
+async fn the_audit_read_of_a_sandbox_keeps_the_newest_entries() -> TestResult {
+    use yulius_app::ports::store::AuditStore as _;
+    let h = harness()?;
+    for (at, target) in [
+        (1, "app"),
+        (2, "app#3"),
+        (3, "t-person"),
+        (4, "app2#1"),
+        (5, "app#4"),
+    ] {
+        h.store
+            .audit(
+                Timestamp(at),
+                "yulius",
+                "delivery.train.formed",
+                Some(target),
+                Some("x"),
+            )
+            .await?;
+    }
+    let read = |limit: u32| {
+        let store = h.store.clone();
+        async move {
+            store
+                .audit_of_sandbox(
+                    "app",
+                    &["t-person".to_owned()],
+                    &["delivery.train.formed"],
+                    None,
+                    None,
+                    limit,
+                )
+                .await
+        }
+    };
+    let all: Vec<(String, i64)> = read(10)
+        .await?
+        .into_iter()
+        .map(|(target, entry)| (target, entry.at.0))
+        .collect();
+    assert_eq!(
+        all,
+        [
+            ("app".to_owned(), 1),
+            ("app#3".to_owned(), 2),
+            ("t-person".to_owned(), 3),
+            ("app#4".to_owned(), 5)
+        ]
+    );
+    let newest: Vec<i64> = read(2).await?.into_iter().map(|(_, e)| e.at.0).collect();
+    assert_eq!(newest, [3, 5], "the newest two, oldest first");
+    Ok(())
+}
+
+/// SPEC-494 DFJ-013 (review round 1 of slices 5 to 7): the Docker read counts front restarts,
+/// connections that gave way and Docker Needs you per week (named by its Monday) over HTTP,
+/// from the audit entries of the sandboxes the caller sees and their tasks, within the range;
+/// a hidden sandbox is not found and a reversed range is refused.
+#[tokio::test]
+async fn the_docker_read_counts_restarts_give_ways_and_needs_you_per_week() -> TestResult {
+    use yulius_app::docker_trouble::{DOCKER_GAVE_WAY, DOCKER_RESTARTED};
+    use yulius_app::needs_you::DOCKER_NEEDS_YOU;
+    use yulius_app::ports::store::{AuditStore as _, SandboxStore as _};
+    let h = harness()?;
+    let (admin, alice) = base(&h).await?;
+    let slug = |id: &'static str| {
+        let store = h.store.clone();
+        async move {
+            Ok::<_, Box<dyn std::error::Error>>(
+                store.sandbox(&SandboxId::parse(id)?).await?.ok_or(id)?.slug,
+            )
+        }
+    };
+    let (one, two) = (slug("s1").await?, slug("s2").await?);
+    let entry = |at: i64, target: String, action: &'static str, detail: &'static str| {
+        let store = h.store.clone();
+        async move {
+            store
+                .audit(Timestamp(at), "yulius", action, Some(&target), Some(detail))
+                .await
+        }
+    };
+    task(
+        &h,
+        TaskSpec {
+            id: "t-docker",
+            sandbox: "s1",
+            title: "t-docker",
+            harness: Harness::ClaudeCode,
+            status: TaskStatus::Running,
+            created: OCT1 - 3 * HOUR,
+            closed: None,
+        },
+    )
+    .await?;
+    // 2026-10-01 is a Thursday: week 2026-09-28; 2026-10-08 is in week 2026-10-05.
+    entry(OCT1 + HOUR, one.clone(), DOCKER_RESTARTED, "it stayed full").await?;
+    entry(OCT1 + 2 * HOUR, one.clone(), DOCKER_GAVE_WAY, "3").await?;
+    entry(OCT1 + 7 * 24 * HOUR, one.clone(), DOCKER_GAVE_WAY, "2").await?;
+    entry(
+        OCT1 + 8 * 24 * HOUR,
+        "t-docker".to_owned(),
+        DOCKER_NEEDS_YOU,
+        "Restart Docker",
+    )
+    .await?;
+    // Another sandbox's restart, and one outside the range.
+    entry(OCT1 + HOUR, two, DOCKER_RESTARTED, "a person asked").await?;
+    entry(OCT1 - 30 * 24 * HOUR, one, DOCKER_RESTARTED, "long ago").await?;
+    let read = |who: &Creds, query: &'static str| {
+        let (router, who, uri) = (
+            h.router.clone(),
+            who.clone(),
+            format!("/api/analytics/docker?from=2026-10-01&to=2026-10-14{query}"),
+        );
+        async move { call(&router, Method::GET, &uri, None, &who).await }
+    };
+    let seen = read(&alice, "").await?;
+    assert_eq!(seen.status, StatusCode::OK, "{}", seen.body);
+    assert_eq!(
+        seen.body["weeks"],
+        json!([
+            {"week": "2026-09-28", "restarts": 1, "gave_way": 3, "needs_you": 0},
+            {"week": "2026-10-05", "restarts": 0, "gave_way": 2, "needs_you": 1},
+        ]),
+        "{}",
+        seen.body
+    );
+    assert_eq!(
+        (
+            &seen.body["restarts"],
+            &seen.body["gave_way"],
+            &seen.body["needs_you"]
+        ),
+        (&json!(1), &json!(5), &json!(1)),
+        "{}",
+        seen.body
+    );
+    assert_eq!(read(&admin, "").await?.body["restarts"], 2);
+    assert_eq!(read(&alice, "&sandbox=s1").await?.body["restarts"], 1);
+    let hidden = read(&alice, "&sandbox=s2").await?;
+    assert_eq!(hidden.status, StatusCode::NOT_FOUND, "{}", hidden.body);
+    let reversed = call(
+        &h.router,
+        Method::GET,
+        "/api/analytics/docker?from=2026-10-14&to=2026-10-01",
+        None,
+        &alice,
+    )
+    .await?;
+    assert_eq!(
+        reversed.status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "{}",
+        reversed.body
+    );
+    Ok(())
+}

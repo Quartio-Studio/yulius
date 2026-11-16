@@ -32,7 +32,7 @@ fn schema(properties: Value, required: &[&str]) -> Value {
 /// stop a task in another of their sandboxes (SPEC-335, ADR-0227, SPEC-442, ADR-0286), and doing
 /// for its person what they do on the project's pages (`crate::person_tools`, SPEC-487,
 /// ADR-0330). What it is not served, the ability table of SPEC-487 says why.
-pub const COCKPIT_TOOLS: [&str; 83] = [
+pub const COCKPIT_TOOLS: [&str; 84] = [
     "tasks_list",
     "task_get",
     "task_create",
@@ -96,6 +96,7 @@ pub const COCKPIT_TOOLS: [&str; 83] = [
     "task_model",
     "instance",
     "instance_update",
+    "docker_restart",
     "ci_runs",
     "ci_run",
     "ci_rerun",
@@ -605,9 +606,9 @@ pub fn tool_descriptors() -> Vec<ToolDescriptor> {
         },
         ToolDescriptor {
             name: "delivery_merge".into(),
-            description: "Merge this task's pull request on green (the one delivery pipeline: you deliver your own work, no person accepts it). It delivers the finished part of your plan: steps still ahead stay open, and their work goes out with a later delivery_merge of this task, begun once this merge is done (a commit on the branch drops an armed merge); a playground squashes a task once, when every step is finished. Refused unless the checks passed on the exact head (Yulius CI), the spec is valid when the task needs one, a step of the plan is finished (and none is in progress when the call has a new head to deliver), the head is current and an independent review in a fresh session (agent `yulius-reviewer`; Yulius picks its model) approved exactly this head: pass that commit as reviewed_head (and a one-line review_summary). The call first pushes the head and opens the pull request when the task has none, or pushes new commits to it, as the end of a turn does once every step is finished; when the head cannot be delivered yet (a step in progress, no finished step, no plan for a task that needs a spec, an invalid spec, uncommitted work) it is refused with why. A review stays valid across clean merges of the integration branch made after it (no conflict resolved, nothing else changed). While the checks at that head still run, the call arms the merge instead: Yulius merges exactly that head as soon as they pass (start `yulius wait` with run_in_background and end your turn: it says how the merge ended; never poll). Acts with the authority of the task's owner and is audited.".into(),
+            description: "Merge this task's pull request on green (the one delivery pipeline: you deliver your own work, no person accepts it). It delivers the finished part of your plan: steps still ahead stay open, and their work goes out with a later delivery_merge of this task, begun once this merge is done (a commit on the branch drops an armed merge); a playground squashes a task once, when every step is finished. Refused unless the checks passed on the exact head (Yulius CI), the spec is valid when the task needs one, a step of the plan is finished (and none is in progress when the call has a new head to deliver), the head is current and an independent review in a fresh session (agent `yulius-reviewer`; Yulius picks its model) approved exactly this head: pass that commit as reviewed_head (and a one-line review_summary). The call first pushes the head and opens the pull request when the task has none, or pushes new commits to it, as the end of a turn does once every step is finished; when the head cannot be delivered yet (a step in progress, no finished step, no plan for a task that needs a spec, an invalid spec, uncommitted work) it is refused with why. A review stays valid across clean merges of the integration branch made after it (no conflict resolved, nothing else changed) and across at most 20 product lines after it (tests and documents do not count; no file of the reviewed change may leave it): fix the remaining nits within them and merge without another round; the answer says what was counted. While the checks at that head still run, the call arms the merge instead: Yulius merges exactly that head as soon as they pass (start `yulius wait` with run_in_background and end your turn: it says how the merge ended; never poll). Acts with the authority of the task's owner and is audited.".into(),
             input_schema: schema(json!({
-                "reviewed_head": {"type": "string", "description": "The commit SHA the independent reviewer approved: the branch head, or an earlier head followed only by clean merges of the integration branch"},
+                "reviewed_head": {"type": "string", "description": "The commit SHA the independent reviewer approved: the branch head, or an earlier head followed only by clean merges of the integration branch and at most 20 product lines"},
                 "review_summary": {"type": "string", "description": "One line: the reviewer's verdict and what it checked"}
             }), &["reviewed_head"]),
         },
@@ -655,7 +656,8 @@ pub fn tool_descriptors() -> Vec<ToolDescriptor> {
                 "action": {"type": "string", "description": "To do: what the person should do (or decide, with decision: true), imperative, one line (at most 200 characters), e.g. 'Add DEV_SSH_KEY on the Secrets page'"},
                 "decision": {"type": "boolean", "description": "true: the person chooses (name the options in action) rather than does something"},
                 "link": {"type": "string", "description": "Where to do it: a Yulius page URL"},
-                "resolved": {"type": "boolean", "description": "true: your request is done (no action needed)"}
+                "resolved": {"type": "boolean", "description": "true: your request is done (no action needed)"},
+                "cause": {"type": "string", "enum": crate::needs_you::CAUSES, "description": "A problem of the whole sandbox, shared by its tasks: docker (the sandbox's Docker does not answer). Every task naming it shows under one card and is answered together: by a person's answer to one, the end of the sandbox's Docker trouble, or a restart asked through the Superagent"}
             }), &[]),
         },
         ToolDescriptor {
@@ -1662,6 +1664,7 @@ mod tests {
             "task_model",
             "instance",
             "instance_update",
+            "docker_restart",
             "task_delivery",
             "ci_runs",
             "ci_run",

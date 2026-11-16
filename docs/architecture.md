@@ -155,6 +155,22 @@ superseding [0140](decisions/0140-isolated-sandboxes-have-no-container-engine-ag
   without it get the directory moved into their mount namespace at the next upkeep (`yulius sandbox-host
   bind-docker`: `open_tree` in the holder's namespace, `move_mount` in the run's). Without an
   engine (a missing prerequisite) the front answers a Docker-API error naming the reason.
+- **The front's places** ([decision 0344](decisions/0344-the-docker-front-gives-way-and-ends-connections-whose-client-is-gone.md)).
+  Every mode admits through one table of 256 places: at the limit the connection idle longest
+  past 300 s gives way, else the call gets a Docker-API 503 saying so (from slice 3 of SPEC-494, that Yulius repairs it). A connection
+  whose client hung up ends within about two seconds, one whose engine side ended gives the client 30 s. The
+  front logs these once a minute per kind and writes `docker-front-state.json`, which the upkeep
+  reads each tick, journals and reports: a full or refusing front is its sandbox's `docker`
+  connection trouble (the panel's pill, once), and the sandbox's live tasks are told once in
+  their session, and again when it is no longer full. A front full for 2 minutes, or whose
+  running engine does not answer pings through it, is restarted by the upkeep once no CI job of
+  the sandbox runs (at most 10 minutes later); the Superagent's `docker_restart` does it at once.
+  Tasks asking a person about it name `cause: docker` in `needs_you`: they are grouped under one
+  card in the sidebar's Needs you group, the notification center holds one entry per episode,
+  and their requests end together (a person's answer to one, the trouble's end, or
+  `docker_restart`), each task told.
+  Restarts, give-ways and Docker Needs you are audited and counted per week
+  (`/api/analytics/docker`, the Pipeline tab).
 - **Start on demand.** The first connection starts the engine: `yulius sandbox-exec --engine`
   joins `sandboxes/<sandbox>/engine/inside` (the engine's limits stay on `engine`, out of its
   view, ADR-0339) and execs `bwrap`, then `yulius sandbox-host engine`
@@ -1305,19 +1321,26 @@ restart; once the run ended (the task was closed, stopped or failed) the next pa
 says so (a pull request merged meanwhile is said to be merged), and Yulius leaves the pull
 request as it is:
 
-- a pull request's own run (its pre-check) always finishes: until it passed, Yulius neither
-  merges the integration branch into it nor puts it in a candidate, so a moving base never
-  supersedes it;
+- a pull request's own run (its pre-check) always finishes: until it passed, Yulius never merges
+  the integration branch into it, so a moving base never supersedes it;
 - green and up to date: merged now;
-- green and behind: into the next merge candidate (`merge_train.rs`), the integration branch with
-  up to 8 such pull requests merged in, in arm order, tested by one run (`train/<n>+…`); on green
-  the members are brought up to date in their worktrees, the verdict recorded at each pushed head,
-  and merged in order;
+- green, or its own run still queued or running, and behind: into the next merge candidate
+  (`merge_train.rs`), the integration branch with up to 8 such pull requests merged in, in arm
+  order, tested by one run (`train/<n>+…`) beside the members' own runs (SPEC-493 MQC-001); once
+  the candidate and a member's own run passed, the members are brought up to date in their
+  worktrees, the verdict recorded at each pushed head, and merged in order; a member whose own
+  run fails, errors or is cancelled leaves, and the candidate is formed again from the others
+  (MQC-002); a failed candidate waits for its members' own runs before it is bisected;
 - a red candidate of n ≥ 2 is formed again from its first ⌈n/2⌉; a red one of one ends that armed
   merge with the reason; a member busy at its turn is waited for (15 minutes at most); an errored
   or cancelled one, a member that cannot merge for a reason of its own, a candidate that cannot
   be built, a pull request that conflicts with the base alone, and projects without Yulius CI,
   with rebase merges or automatic promotion go one by one (DLV-203 after the pre-check).
+
+The queue writes `delivery.train.formed`, `.merged` and `.dissolved` (`(why: member_left |
+bisected | base_moved | errored | too_long)`); `GET /api/analytics/merge-queue` reads them per
+day with the minutes from arming to merge (`merge_queue::queue_numbers`; the Pipeline tab's Merge
+queue card).
 
 Each kept decision leaves a sentence in the armed slot (`ArmedSlot::note`), which `yulius wait`
 (`merge_train`), `delivery_status` and the task page show. `delivery_merge` for an armed head
@@ -1327,13 +1350,15 @@ so.
 
 ```mermaid
 flowchart TD
-    A[armed head] --> P{own run passed?}
-    P -- running --> W[wait: the run finishes, never restarted]
+    A[armed head] --> P{own run?}
     P -- failed --> D[dropped: fix it]
+    P -- running, current --> W[wait: the run finishes, never restarted]
     P -- passed --> U{contains the integration branch?}
+    P -- running, behind --> C
     U -- yes --> M[merged now]
-    U -- no --> C[merge candidate: base + green pull requests, one run]
-    C -- passed --> L[each brought up to date, verdict recorded, merged in order]
+    U -- no --> C[merge candidate: base + armed pull requests, one run beside their own]
+    C -- a member's own run fails --> C
+    C -- passed, own runs passed --> L[each brought up to date, verdict recorded, merged in order]
     C -- failed, n >= 2 --> H[first half again]
     C -- failed, alone --> X[dropped: fails on the current base]
     H --> C
@@ -3477,6 +3502,15 @@ that failed early in a long job stays diagnosable
 [decision 0119](decisions/0119-ci-keeps-failing-tests-output-from-the-whole-job.md)).
 
 ## CI job waits and time limits
+
+A job's `paths` (SPEC-493 CJP, [decision 0343](decisions/0343-a-ci-job-names-the-files-it-tests-and-is-never-skipped-on-doubt.md))
+are decided before any wait, when the run is queued (`ci_queue_placed`): for a pull request, a
+merge candidate or a playground task, `GitPort::changed_paths` lists the head's files against its
+merge base with `origin/<integration>`, and `ci::paths_skip` ends each job that matches none of
+them skipped with its reason (exit 78). The executor starts only the queued jobs, so a skipped
+one takes no turn, slot or budget share, and a run of skipped jobs passes at queueing. The
+branches' own runs, a change to `yulius.toml` and a change that cannot be told run every job, and
+tree reuse never carries a paths skip into a branch's run.
 
 A job waits before it starts, in `App::ci_job` (`crates/yulius-app/src/ci/exec.rs`): an
 `exclusive` job first for its turn (one run of it per sandbox at a time, a process-local

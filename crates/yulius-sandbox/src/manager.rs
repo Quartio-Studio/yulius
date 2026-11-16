@@ -352,6 +352,14 @@ struct Live {
     front: Option<DockerFrontRecord>,
     /// Mount namespaces of its runs: attempts to bind the Docker directory, or [`BIND_DONE`].
     bound: HashMap<u64, u8>,
+    /// What the journal said of its front's state (SPEC-494 DFJ-005).
+    front_watch: crate::front_gate::StateWatch,
+    /// When its front is restarted by itself (SPEC-494 DFJ-008).
+    repair: crate::front_repair::RepairWatch,
+    /// A restart whose new front did not start: counted and journaled once one starts.
+    restart_pending: Option<crate::front_repair::Why>,
+    /// When the journal last said that its front runs an earlier build and stays busy.
+    outdated_said: Option<Instant>,
 }
 
 impl Live {
@@ -361,6 +369,10 @@ impl Live {
             relays,
             front: None,
             bound: HashMap::new(),
+            front_watch: crate::front_gate::StateWatch::default(),
+            repair: crate::front_repair::RepairWatch::default(),
+            restart_pending: None,
+            outdated_said: None,
         }
     }
 
@@ -471,6 +483,27 @@ pub struct Manager {
     /// The disk quota in force (bytes; 0: none): the configuration's until
     /// [`Manager::set_disk_quota`] changes it.
     disk_max: AtomicU64,
+    /// Fronts restarted since the server started, by repair or on request (SPEC-494).
+    docker_restarts: AtomicU64,
+    /// Events of the sandboxes' fronts for the instance's measures, until the app takes them
+    /// (SPEC-494 DFJ-013); bounded by [`DOCKER_EVENTS_MAX`].
+    docker_events: Mutex<std::collections::VecDeque<DockerEvent>>,
+}
+
+/// Most front events kept until the app takes them (it does every few seconds).
+pub const DOCKER_EVENTS_MAX: usize = 4096;
+
+/// An event of a sandbox's front the instance counts (SPEC-494 DFJ-013).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DockerEvent {
+    /// The sandbox (a production holder's name for its production engine).
+    pub sandbox: String,
+    /// `restarted` (the front and engine, by a repair, a request or an update) or `gave_way`.
+    pub kind: &'static str,
+    /// How many (give-ways since the last tick; 1 for a restart).
+    pub count: u64,
+    /// Why, for a restart.
+    pub detail: String,
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -537,6 +570,8 @@ impl Manager {
         Arc::new(Self {
             bases: Bases::new(&config.data_dir),
             disk_max: AtomicU64::new(config.disk_max.unwrap_or(0)),
+            docker_restarts: AtomicU64::new(0),
+            docker_events: Mutex::new(std::collections::VecDeque::new()),
             config,
             sandboxes: Mutex::new(HashMap::new()),
             build: Mutex::new(BuildState::default()),
@@ -791,12 +826,254 @@ impl Manager {
         {
             Ok(front) => {
                 tracing::info!(sandbox, mode = %front.mode, pid = front.pid, "sandbox Docker front serving");
+                live.front_watch.started(front.pid);
+                // A new front starts its own count toward a repair (review round 2 of slice 3).
+                live.repair = crate::front_repair::RepairWatch::default();
+                if let Some(why) = live.restart_pending.take() {
+                    self.docker_restarts.fetch_add(1, Ordering::Relaxed);
+                    self.docker_event(sandbox, "restarted", 1, why.says().to_owned());
+                    tracing::warn!(
+                        sandbox,
+                        why = why.says(),
+                        "restarted the sandbox's Docker front, which started at a later tick"
+                    );
+                }
                 live.front = Some(front);
             }
             Err(error) => {
                 tracing::warn!(sandbox, %error, "cannot start the sandbox's Docker front");
             }
         }
+    }
+
+    /// Journals what grew in the state of `sandbox`'s front since the last tick, each kind at most
+    /// once a minute (SPEC-494 DFJ-005), and reports a full or refusing front as the sandbox's
+    /// Docker trouble (DFJ-006). A state file of an earlier front is ignored.
+    /// Returns the state read, for the repair.
+    fn watch_front(
+        &self,
+        sandbox: &str,
+        state: &mut SandboxState,
+    ) -> Option<crate::front_repair::Reading> {
+        let live = state.live.as_mut()?;
+        let front = live.front.as_ref()?;
+        let paths = StatePaths::new(self.state_dir(sandbox));
+        let seen = crate::front_gate::read_state(&paths.docker_state(), front.pid)?;
+        let grown = live.front_watch.observe(&seen, Instant::now());
+        let gave_way = live.front_watch.new_gave_way(&seen);
+        if gave_way > 0 {
+            self.docker_event(sandbox, "gave_way", gave_way, String::new());
+        }
+        // A production holder's front (SPEC-279) serves CD deploys, which fail and say so; its
+        // name is no sandbox the panel knows, so it is journaled only.
+        let jammed = if production_sandbox(sandbox).is_none() {
+            live.front_watch.report(&seen, sandbox, &self.config.health)
+        } else {
+            let jammed = live.front_watch.jammed(&seen);
+            live.front_watch.counted(&seen);
+            jammed
+        };
+        for grew in grown {
+            tracing::warn!(
+                sandbox,
+                new = grew.new,
+                total = grew.total,
+                held = seen.held,
+                max = seen.max,
+                "the sandbox's Docker front: {}",
+                grew.what
+            );
+        }
+        Some(crate::front_repair::Reading {
+            jammed,
+            engine_running: seen.engine_running,
+            engine_busy: seen.engine_busy,
+            held: seen.held,
+        })
+    }
+
+    /// Restarts `sandbox`'s front when a repair is due and the moment is right (SPEC-494
+    /// DFJ-008, [`crate::front_repair`]), after a tick's `reading` of its state. The engine is
+    /// pinged through the front only beside a client ([`crate::front_repair::should_ping`]). A
+    /// production holder's front (SPEC-279) is journaled only: its one user is a production CD
+    /// run, which a restart would cut.
+    async fn repair_front(
+        &self,
+        sandbox: &str,
+        state: &mut SandboxState,
+        reading: Option<crate::front_repair::Reading>,
+    ) {
+        let Some(reading) = reading else {
+            // No state of this front (none written yet, or another front's): its count starts
+            // over, so a successor is not restarted for its predecessor's jam.
+            if let Some(live) = state.live.as_mut() {
+                live.repair = crate::front_repair::RepairWatch::default();
+            }
+            return;
+        };
+        if production_sandbox(sandbox).is_some() {
+            return;
+        }
+        let ping = if crate::front_repair::should_ping(&reading) {
+            let socket = StatePaths::new(self.state_dir(sandbox)).docker_socket();
+            crate::front_repair::ping(&socket).await
+        } else {
+            None
+        };
+        let ci_jobs = self
+            .config
+            .delegation
+            .as_ref()
+            .map_or(0, |delegation| delegation.ci_jobs_of(sandbox));
+        let Some(live) = state.live.as_mut() else {
+            return;
+        };
+        let now = Instant::now();
+        live.repair.observe(reading.jammed, ping, now);
+        if let Some(why) = live.repair.decide(ci_jobs, now) {
+            let _ = self.restart_front(sandbox, state, why).await;
+        }
+    }
+
+    /// Replaces `sandbox`'s front when it runs another build than this server (it was kept
+    /// across an update) and is quiet: no connection held, no engine running (SPEC-494
+    /// DFJ-010). A busy one is kept, said once a day.
+    async fn replace_outdated_front(&self, sandbox: &str, state: &mut SandboxState) {
+        let Some(live) = state.live.as_mut() else {
+            return;
+        };
+        let Some(front) = live.front.clone() else {
+            return;
+        };
+        if crate::front_repair::runs_another_build(front.pid, &self.config.exe) != Some(true) {
+            return;
+        }
+        let paths = StatePaths::new(self.state_dir(sandbox));
+        let seen = crate::front_gate::read_state(&paths.docker_state(), front.pid);
+        if !crate::front_repair::quiet(seen.as_ref(), front.pid, &paths.docker_socket()) {
+            if live
+                .outdated_said
+                .is_none_or(|at| at.elapsed() >= crate::front_repair::STALE_SAID_EVERY)
+            {
+                live.outdated_said = Some(Instant::now());
+                tracing::info!(
+                    sandbox,
+                    pid = front.pid,
+                    "the sandbox's Docker front runs an earlier build; it is replaced once it is quiet"
+                );
+            }
+            return;
+        }
+        let _ = self
+            .restart_front(sandbox, state, crate::front_repair::Why::Outdated)
+            .await;
+    }
+
+    /// Stops `sandbox`'s front (and its engine: running containers stop, volumes stay) and
+    /// starts a new one at once, as was done by hand on 2026-11-15 (SPEC-494 DFJ-008).
+    ///
+    /// # Errors
+    /// No live holder, or no front could be started again (the next tick tries again).
+    async fn restart_front(
+        &self,
+        sandbox: &str,
+        state: &mut SandboxState,
+        why: crate::front_repair::Why,
+    ) -> Result<(), String> {
+        let live = state
+            .live
+            .as_mut()
+            .ok_or("the sandbox has no running holder: its next run starts Docker afresh")?;
+        let net_ns = live.record.net_ns;
+        // Only a front that was stopped makes a restart: one that never ran is merely started.
+        let stopped = live.front.is_some();
+        let paths = StatePaths::new(self.state_dir(sandbox));
+        let _ = tokio::task::spawn_blocking(move || {
+            crate::docker_front::stop(&paths, net_ns);
+        })
+        .await;
+        live.front = None;
+        live.repair = crate::front_repair::RepairWatch::default();
+        // This restart takes over one still pending: one new front, one count (review round 3).
+        let stopped = stopped || live.restart_pending.take().is_some();
+        self.keep_front(sandbox, state).await;
+        if !stopped {
+            // Nothing was stopped: a front that starts is no restart.
+            return if state.live.as_ref().is_some_and(|live| live.front.is_some()) {
+                Ok(())
+            } else {
+                Err("the sandbox's Docker front did not start; the upkeep tries again".into())
+            };
+        }
+        if state.live.as_ref().is_some_and(|live| live.front.is_some()) {
+            self.docker_restarts.fetch_add(1, Ordering::Relaxed);
+            self.docker_event(sandbox, "restarted", 1, why.says().to_owned());
+            if why == crate::front_repair::Why::Outdated {
+                // Quiet when read: no engine ran; besides the relay front's limit (DFJ-010), only a
+                // Docker call that came between that read and the new front's `ready` failed at
+                // once (its socket missing or refused, or cut once it had connected, accepted or
+                // still waiting) and can be run again (DFJ-010).
+                tracing::info!(
+                    sandbox,
+                    why = why.says(),
+                    "replaced the sandbox's Docker front with this build's"
+                );
+            } else {
+                tracing::warn!(
+                    sandbox,
+                    why = why.says(),
+                    "restarted the sandbox's Docker front: an engine it ran stopped with it (containers stopped, volumes stay) and starts at its next call"
+                );
+            }
+            Ok(())
+        } else {
+            if let Some(live) = state.live.as_mut() {
+                live.restart_pending = Some(why);
+            }
+            tracing::warn!(
+                sandbox,
+                why = why.says(),
+                "stopped the sandbox's Docker front, which did not start again; the upkeep tries again"
+            );
+            Err("the sandbox's Docker front did not start again; the upkeep tries again".into())
+        }
+    }
+
+    /// Restarts `sandbox`'s Docker front and engine now (the Superagent's
+    /// `docker_restart`, SPEC-494 DFJ-009).
+    ///
+    /// # Errors
+    /// Why it could not: no live holder, or the new front did not start.
+    pub async fn restart_docker(&self, sandbox: &str) -> Result<(), String> {
+        let entry = self.entry(sandbox);
+        let mut state = entry.lock().await;
+        self.restart_front(sandbox, &mut state, crate::front_repair::Why::Asked)
+            .await
+    }
+
+    /// Keeps an event for the instance's measures, dropping the oldest past the bound.
+    fn docker_event(&self, sandbox: &str, kind: &'static str, count: u64, detail: String) {
+        let mut events = lock(&self.docker_events);
+        if events.len() >= DOCKER_EVENTS_MAX {
+            events.pop_front();
+        }
+        events.push_back(DockerEvent {
+            sandbox: sandbox.to_owned(),
+            kind,
+            count,
+            detail,
+        });
+    }
+
+    /// The front events kept since the last call, oldest first.
+    pub fn take_docker_events(&self) -> Vec<DockerEvent> {
+        lock(&self.docker_events).drain(..).collect()
+    }
+
+    /// Fronts restarted since the server started, by repair or on request.
+    #[must_use]
+    pub fn docker_restarts(&self) -> u64 {
+        self.docker_restarts.load(Ordering::Relaxed)
     }
 
     /// Starts `sandbox`'s front beside the holder of `record` and waits until it serves.
@@ -1519,6 +1796,13 @@ impl Manager {
     }
 
     async fn stop_holder(&self, sandbox: &str, record: &HolderRecord) {
+        // Its front goes with it: no Docker trouble of it is left open (SPEC-494), on every path
+        // that drops a holder.
+        self.config.health.held(
+            yulius_domain::connection_health::Limit::Docker,
+            Some(sandbox),
+            0,
+        );
         let state = StatePaths::new(self.state_dir(sandbox));
         let record = record.clone();
         let _ = tokio::task::spawn_blocking(move || crate::holder::stop(&state, &record)).await;
@@ -1653,6 +1937,9 @@ impl Manager {
                         }
                     }
                     self.keep_front(&sandbox, &mut state).await;
+                    let reading = self.watch_front(&sandbox, &mut state);
+                    self.repair_front(&sandbox, &mut state, reading).await;
+                    self.replace_outdated_front(&sandbox, &mut state).await;
                     self.bind_docker_dirs(&sandbox, &mut state).await;
                     let front = state.live.as_ref().map_or(0, Live::front_pid);
                     let runs = tokio::task::spawn_blocking(move || {
@@ -2284,6 +2571,66 @@ mod tests {
         }
     }
 
+    /// SPEC-494 DFJ-005/006 (review round 2): the upkeep reads the state file of the front it
+    /// knows and reports it full as the sandbox's Docker trouble; another front's file is not
+    /// read.
+    #[tokio::test]
+    async fn the_upkeep_reports_its_fronts_state_as_the_sandboxs_docker_trouble()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use yulius_contracts::sandbox::DockerFrontState;
+        use yulius_domain::connection_health::Limit;
+        let data = tempfile::tempdir()?;
+        let config = config(data.path(), 1);
+        let health = Arc::clone(&config.health);
+        let manager = Manager::new(config);
+        let paths = StatePaths::new(manager.state_dir("s1"));
+        std::fs::create_dir_all(&paths.dir)?;
+        let full = |pid| DockerFrontState {
+            pid,
+            held: 256,
+            max: 256,
+            gave_way: 0,
+            refused: 2,
+            hung_up: 0,
+            closed_after_grace: 0,
+            at_limit_since_ms: Some(1),
+            engine_running: true,
+            engine_busy: false,
+        };
+        let mut live = Live::new(live_record(true), Vec::new());
+        // This server started it: its refusals are all new.
+        live.front_watch.started(77);
+        live.front = Some(DockerFrontRecord {
+            pid: 77,
+            mode: "engine".into(),
+            reason: None,
+            started_at_ms: 0,
+        });
+        let mut state = SandboxState {
+            live: Some(live),
+            ..SandboxState::default()
+        };
+        crate::holder::write_json(&paths.docker_state(), &full(78))?;
+        manager.watch_front("s1", &mut state);
+        assert!(
+            health.troubles().is_empty(),
+            "another front's state was read"
+        );
+        crate::holder::write_json(&paths.docker_state(), &full(77))?;
+        manager.watch_front("s1", &mut state);
+        let open = health.troubles();
+        assert_eq!(open.len(), 1, "{open:?}");
+        assert_eq!(
+            (open[0].limit, open[0].sandbox.as_deref(), open[0].refused),
+            (Limit::Docker, Some("s1"), 2)
+        );
+        // A holder dropped, by any path, leaves no Docker trouble of its sandbox (its boot id
+        // is not this host's: nothing is signalled).
+        manager.stop_holder("s1", &live_record(true)).await;
+        assert!(health.troubles().is_empty(), "{:?}", health.troubles());
+        Ok(())
+    }
+
     /// Stands in for `yulius sandbox-host docker`: serves the spec's socket, answering every
     /// connection with its mode (and reason), until killed. `bind-docker` does nothing.
     const FAKE_FRONT: &str = r#"#!/usr/bin/env python3
@@ -2308,6 +2655,34 @@ while True:
     c.close()
 "#;
 
+    /// Writes the executable `path` (mode 755) with `content`, as a server's update does: a
+    /// staged file moved into place. The file is written by a child process, never by this one:
+    /// other tests fork all the time, a fork made while this process holds the file open for
+    /// writing keeps it open until its exec, and starting the file then fails with "Text file
+    /// busy" (#1339: 5 in 120 loaded runs of these tests).
+    fn put_executable(path: &Path, content: &str) -> std::io::Result<()> {
+        use std::io::Write as _;
+        let staged = path.with_extension("staged");
+        let mut writer = std::process::Command::new("sh")
+            .args(["-c", "cat > \"$1\" && chmod 755 \"$1\"", "sh"])
+            .arg(&staged)
+            .stdin(std::process::Stdio::piped())
+            .spawn()?;
+        // The writer is reaped whatever the write did; its error is told after.
+        let written = writer
+            .stdin
+            .take()
+            .map_or(Ok(()), |mut stdin| stdin.write_all(content.as_bytes()));
+        let status = writer.wait()?;
+        written?;
+        if !status.success() {
+            return Err(std::io::Error::other(
+                "the staged executable was not written",
+            ));
+        }
+        std::fs::rename(&staged, path)
+    }
+
     /// A manager with Docker possible (or not, `docker`) whose executable is [`FAKE_FRONT`],
     /// and an adopted "holder" that is this test process (its namespaces are alive). Never
     /// stop that holder: it is this process.
@@ -2326,11 +2701,10 @@ while True:
         docker: Result<(), String>,
         engine: bool,
     ) -> Result<Arc<Manager>, Box<dyn std::error::Error>> {
-        use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+        use std::os::unix::fs::MetadataExt as _;
         let exe = data.join("fake-yulius");
         if !exe.exists() {
-            std::fs::write(&exe, FAKE_FRONT)?;
-            std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755))?;
+            put_executable(&exe, FAKE_FRONT)?;
         }
         let mut config = config(data, 1 << 40);
         config.exe = exe.clone();
@@ -2437,6 +2811,516 @@ while True:
             "{mode}: the engine's root and group are back"
         );
         kill(front.pid);
+        Ok(())
+    }
+
+    /// SPEC-494 AC-6 (DFJ-008): a front that stayed full is restarted by the upkeep once no CI
+    /// job of the sandbox runs (one running holds it), and the restart is counted.
+    #[tokio::test]
+    async fn a_front_full_for_long_is_restarted_when_no_ci_job_runs()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let data = tempfile::tempdir()?;
+        let manager = adopting(data.path(), Ok(()), false)?;
+        assert_eq!(manager.adopt().await, 1);
+        let first = front_of(&manager).await.ok_or("no front")?;
+        let long_ago = Instant::now()
+            .checked_sub(crate::front_repair::REPAIR_AFTER * 2)
+            .ok_or("the clock is too young")?;
+        let delegation = manager.config.delegation.clone().ok_or("no delegation")?;
+        let _ = delegation.set_ci_jobs("s1", 1);
+        let jammed = crate::front_repair::Reading {
+            jammed: true,
+            ..crate::front_repair::Reading::default()
+        };
+        {
+            let entry = manager.entry("s1");
+            let mut guard = entry.lock().await;
+            if let Some(live) = guard.live.as_mut() {
+                live.repair.observe(true, None, long_ago);
+            }
+            manager.repair_front("s1", &mut guard, Some(jammed)).await;
+        }
+        assert_eq!(
+            front_of(&manager).await.map(|f| f.pid),
+            Some(first.pid),
+            "a CI job runs"
+        );
+        assert_eq!(manager.docker_restarts(), 0);
+        let _ = delegation.set_ci_jobs("s1", 0);
+        {
+            let entry = manager.entry("s1");
+            let mut guard = entry.lock().await;
+            manager.repair_front("s1", &mut guard, Some(jammed)).await;
+        }
+        let second = front_of(&manager)
+            .await
+            .ok_or("no front after the repair")?;
+        // The next tick starts over: the new front is not restarted for the old one's jam.
+        {
+            let entry = manager.entry("s1");
+            let mut guard = entry.lock().await;
+            manager.repair_front("s1", &mut guard, Some(jammed)).await;
+        }
+        let kept = front_of(&manager).await.map(|f| f.pid);
+        kill(second.pid);
+        assert_ne!(second.pid, first.pid, "restarted");
+        assert_eq!(kept, Some(second.pid), "the repair starts over");
+        assert_eq!(manager.docker_restarts(), 1);
+        Ok(())
+    }
+
+    /// Slice 3 review round 2: the upkeep never pings a front with no client, an engine starting
+    /// or stopping, or no engine (a ping would keep it from idling or start it); beside a client
+    /// of a settled engine it does, and three unanswered pings in a row restart the front.
+    #[tokio::test]
+    async fn the_upkeep_pings_only_beside_a_client_and_restarts_an_unanswered_engine()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use crate::front_repair::Reading;
+        let data = tempfile::tempdir()?;
+        let manager = adopting(data.path(), Ok(()), false)?;
+        assert_eq!(manager.adopt().await, 1);
+        let first = front_of(&manager).await.ok_or("no front")?;
+        // The front's socket, answered by the test: every ping is seen, and refused (503).
+        let socket = StatePaths::new(manager.state_dir("s1")).docker_socket();
+        std::fs::remove_file(&socket)?;
+        let listener = tokio::net::UnixListener::bind(&socket)?;
+        let pings = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let seen = Arc::clone(&pings);
+        let server = tokio::spawn(async move {
+            use tokio::io::AsyncWriteExt as _;
+            while let Ok((mut stream, _)) = listener.accept().await {
+                seen.fetch_add(1, Ordering::SeqCst);
+                let _ = stream
+                    .write_all(b"HTTP/1.1 503 Service Unavailable\r\n\r\n")
+                    .await;
+            }
+        });
+        let tick = |reading: Reading| {
+            let manager = Arc::clone(&manager);
+            async move {
+                let entry = manager.entry("s1");
+                let mut guard = entry.lock().await;
+                manager.repair_front("s1", &mut guard, Some(reading)).await;
+            }
+        };
+        let settled = Reading {
+            jammed: false,
+            engine_running: true,
+            engine_busy: false,
+            held: 1,
+        };
+        for quiet in [
+            Reading { held: 0, ..settled },
+            Reading {
+                engine_busy: true,
+                ..settled
+            },
+            Reading {
+                engine_running: false,
+                ..settled
+            },
+        ] {
+            for _ in 0..3 {
+                tick(quiet).await;
+            }
+        }
+        assert_eq!(pings.load(Ordering::SeqCst), 0, "pinged without a client");
+        assert_eq!(front_of(&manager).await.map(|f| f.pid), Some(first.pid));
+        for _ in 0..3 {
+            tick(settled).await;
+        }
+        let second = front_of(&manager)
+            .await
+            .ok_or("no front after the restart")?;
+        server.abort();
+        kill(second.pid);
+        assert_eq!(pings.load(Ordering::SeqCst), 3);
+        assert_ne!(second.pid, first.pid, "an unanswered engine is restarted");
+        assert_eq!(manager.docker_restarts(), 1);
+        Ok(())
+    }
+
+    /// Slice 3 review round 2: a tick without a reading of the front (a successor that wrote
+    /// none yet) starts the count over, so the successor is not restarted for an old jam.
+    #[tokio::test]
+    async fn a_successor_front_is_not_restarted_for_its_predecessors_jam()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let data = tempfile::tempdir()?;
+        let manager = adopting(data.path(), Ok(()), false)?;
+        assert_eq!(manager.adopt().await, 1);
+        let first = front_of(&manager).await.ok_or("no front")?;
+        let long_ago = Instant::now()
+            .checked_sub(crate::front_repair::REPAIR_AFTER * 2)
+            .ok_or("the clock is too young")?;
+        let jammed = crate::front_repair::Reading {
+            jammed: true,
+            ..crate::front_repair::Reading::default()
+        };
+        {
+            let entry = manager.entry("s1");
+            let mut guard = entry.lock().await;
+            if let Some(live) = guard.live.as_mut() {
+                live.repair.observe(true, None, long_ago);
+            }
+            manager.repair_front("s1", &mut guard, None).await;
+            manager.repair_front("s1", &mut guard, Some(jammed)).await;
+        }
+        let kept = front_of(&manager).await.map(|f| f.pid);
+        kill(first.pid);
+        assert_eq!(kept, Some(first.pid));
+        assert_eq!(manager.docker_restarts(), 0);
+        Ok(())
+    }
+
+    /// Slice 3 review round 1: a front that does not start again leaves the trouble open (no
+    /// "no longer full" while Docker is down), counts no restart, and the asked restart says why.
+    #[tokio::test]
+    async fn a_front_that_does_not_start_again_keeps_the_trouble_open()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use yulius_contracts::sandbox::DockerFrontState;
+        let data = tempfile::tempdir()?;
+        let manager = adopting(data.path(), Ok(()), false)?;
+        assert_eq!(manager.adopt().await, 1);
+        let first = front_of(&manager).await.ok_or("no front")?;
+        let paths = StatePaths::new(manager.state_dir("s1"));
+        let full = DockerFrontState {
+            pid: first.pid,
+            held: 256,
+            max: 256,
+            gave_way: 0,
+            refused: 0,
+            hung_up: 0,
+            closed_after_grace: 0,
+            at_limit_since_ms: None,
+            engine_running: true,
+            engine_busy: false,
+        };
+        write_json(&paths.docker_state(), &full)?;
+        {
+            let entry = manager.entry("s1");
+            let mut guard = entry.lock().await;
+            manager.watch_front("s1", &mut guard);
+        }
+        // The next front cannot start: its executable no longer says ready.
+        put_executable(&data.path().join("fake-yulius"), "#!/bin/sh\necho broken\n")?;
+        let asked = manager.restart_docker("s1").await;
+        assert!(asked.is_err_and(|why| why.contains("did not start again")));
+        assert_eq!(manager.config.health.troubles().len(), 1, "still open");
+        assert_eq!(manager.docker_restarts(), 0);
+        // Review round 3: the executable works again, and a person asks before the next tick:
+        // one stop and one new front are one restart, counted once.
+        put_executable(&data.path().join("fake-yulius"), FAKE_FRONT)?;
+        manager.restart_docker("s1").await?;
+        assert_eq!(manager.docker_restarts(), 1, "counted once");
+        assert_eq!(manager.take_docker_events().len(), 1);
+        // Or the next tick starts it: the pending restart is counted then.
+        put_executable(&data.path().join("fake-yulius"), "#!/bin/sh\necho broken\n")?;
+        assert!(manager.restart_docker("s1").await.is_err());
+        put_executable(&data.path().join("fake-yulius"), FAKE_FRONT)?;
+        {
+            let entry = manager.entry("s1");
+            let mut guard = entry.lock().await;
+            manager.keep_front("s1", &mut guard).await;
+        }
+        let last = front_of(&manager).await.ok_or("no front after the tick")?;
+        kill(last.pid);
+        assert_eq!(manager.docker_restarts(), 2, "the late start is counted");
+        // And the instance's measure counts it too (review round 1 of slices 5 to 7).
+        let events = manager.take_docker_events();
+        assert_eq!(
+            events
+                .iter()
+                .map(|e| (e.kind, e.count, e.detail.as_str()))
+                .collect::<Vec<_>>(),
+            vec![("restarted", 1, crate::front_repair::Why::Asked.says())],
+            "{events:?}"
+        );
+        Ok(())
+    }
+
+    /// Slice 3 review round 4: a restart asked while no front runs stopped nothing: a front
+    /// started at a later tick is no restart and is not counted.
+    #[tokio::test]
+    async fn an_asked_restart_that_stopped_nothing_is_not_counted_later()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let data = tempfile::tempdir()?;
+        let manager = adopting(data.path(), Ok(()), false)?;
+        // No front can start from the beginning.
+        put_executable(&data.path().join("fake-yulius"), "#!/bin/sh\necho broken\n")?;
+        assert_eq!(manager.adopt().await, 1);
+        assert!(front_of(&manager).await.is_none());
+        assert!(manager.restart_docker("s1").await.is_err());
+        put_executable(&data.path().join("fake-yulius"), FAKE_FRONT)?;
+        {
+            let entry = manager.entry("s1");
+            let mut guard = entry.lock().await;
+            manager.keep_front("s1", &mut guard).await;
+        }
+        let front = front_of(&manager).await.ok_or("no front after the tick")?;
+        assert_eq!(
+            manager.docker_restarts(),
+            0,
+            "a late start of nothing stopped"
+        );
+        // Asked with no front to stop, a start that works is no restart either.
+        kill(front.pid);
+        {
+            let entry = manager.entry("s1");
+            let mut guard = entry.lock().await;
+            if let Some(live) = guard.live.as_mut() {
+                live.front = None;
+            }
+        }
+        manager.restart_docker("s1").await?;
+        let started = front_of(&manager).await.ok_or("no front after the ask")?;
+        kill(started.pid);
+        assert_eq!(manager.docker_restarts(), 0);
+        Ok(())
+    }
+
+    /// Slice 3 review round 1: a production holder's front is journaled, never restarted by the
+    /// upkeep (a production CD run is its one user).
+    #[tokio::test]
+    async fn a_production_front_is_never_restarted_by_the_upkeep()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let data = tempfile::tempdir()?;
+        let name = production_holder("s1");
+        let manager = adopting_as(data.path(), &name, Ok(()), false)?;
+        assert_eq!(manager.adopt().await, 1);
+        let long_ago = Instant::now()
+            .checked_sub(crate::front_repair::REPAIR_AFTER * 2)
+            .ok_or("the clock is too young")?;
+        let jammed = crate::front_repair::Reading {
+            jammed: true,
+            ..crate::front_repair::Reading::default()
+        };
+        let entry = manager.entry(&name);
+        let mut guard = entry.lock().await;
+        let before = guard.live.as_ref().and_then(|live| live.front.clone());
+        if let Some(live) = guard.live.as_mut() {
+            live.repair.observe(true, None, long_ago);
+        }
+        manager.repair_front(&name, &mut guard, Some(jammed)).await;
+        let after = guard.live.as_ref().and_then(|live| live.front.clone());
+        if let Some(front) = &after {
+            kill(front.pid);
+        }
+        assert_eq!(before.map(|f| f.pid), after.map(|f| f.pid));
+        assert_eq!(manager.docker_restarts(), 0);
+        Ok(())
+    }
+
+    /// SPEC-494 DFJ-009: a restart asked for (the Superagent's tool) runs at once and ends the
+    /// sandbox's Docker trouble once the new front's state is read.
+    #[tokio::test]
+    async fn an_asked_restart_starts_a_new_front_and_ends_the_trouble()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use yulius_contracts::sandbox::DockerFrontState;
+        let data = tempfile::tempdir()?;
+        let manager = adopting(data.path(), Ok(()), false)?;
+        assert_eq!(manager.adopt().await, 1);
+        let first = front_of(&manager).await.ok_or("no front")?;
+        let paths = StatePaths::new(manager.state_dir("s1"));
+        let state = |pid, held| DockerFrontState {
+            pid,
+            held,
+            max: 256,
+            gave_way: 0,
+            refused: 0,
+            hung_up: 0,
+            closed_after_grace: 0,
+            at_limit_since_ms: None,
+            engine_running: true,
+            engine_busy: false,
+        };
+        write_json(&paths.docker_state(), &state(first.pid, 256))?;
+        {
+            let entry = manager.entry("s1");
+            let mut guard = entry.lock().await;
+            manager.watch_front("s1", &mut guard);
+        }
+        assert_eq!(manager.config.health.troubles().len(), 1);
+        manager.restart_docker("s1").await?;
+        let second = front_of(&manager)
+            .await
+            .ok_or("no front after the restart")?;
+        // The instance counts the restart (SPEC-494 DFJ-013), once.
+        let events = manager.take_docker_events();
+        assert_eq!(
+            events.iter().map(|e| (e.kind, e.count)).collect::<Vec<_>>(),
+            vec![("restarted", 1)],
+            "{events:?}"
+        );
+        assert!(manager.take_docker_events().is_empty(), "taken once");
+        write_json(&paths.docker_state(), &state(second.pid, 0))?;
+        {
+            let entry = manager.entry("s1");
+            let mut guard = entry.lock().await;
+            manager.watch_front("s1", &mut guard);
+        }
+        kill(second.pid);
+        assert_ne!(second.pid, first.pid);
+        assert!(
+            manager.config.health.troubles().is_empty(),
+            "{:?}",
+            manager.config.health.troubles()
+        );
+        assert_eq!(manager.docker_restarts(), 1);
+        Ok(())
+    }
+
+    /// SPEC-494 AC-8 (DFJ-010): a front kept from another build (the fake front's file is not
+    /// the server's executable) is replaced at a tick once it is quiet, and kept while it holds
+    /// a connection.
+    #[tokio::test]
+    async fn an_outdated_front_is_replaced_once_it_is_quiet()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use yulius_contracts::sandbox::DockerFrontState;
+        let data = tempfile::tempdir()?;
+        let manager = adopting(data.path(), Ok(()), false)?;
+        assert_eq!(manager.adopt().await, 1);
+        let first = front_of(&manager).await.ok_or("no front")?;
+        let busy = DockerFrontState {
+            pid: first.pid,
+            held: 2,
+            max: 256,
+            gave_way: 0,
+            refused: 0,
+            hung_up: 0,
+            closed_after_grace: 0,
+            at_limit_since_ms: None,
+            engine_running: false,
+            engine_busy: false,
+        };
+        let paths = StatePaths::new(manager.state_dir("s1"));
+        write_json(&paths.docker_state(), &busy)?;
+        let replace = || async {
+            let entry = manager.entry("s1");
+            let mut guard = entry.lock().await;
+            manager.replace_outdated_front("s1", &mut guard).await;
+        };
+        replace().await;
+        assert_eq!(
+            front_of(&manager).await.map(|f| f.pid),
+            Some(first.pid),
+            "busy: kept"
+        );
+        // Review round 1 of slices 5 to 7: the state says held 0, but a client connected since
+        // it was written (the front, stopped, has not accepted it): kept.
+        write_json(&paths.docker_state(), &DockerFrontState { held: 0, ..busy })?;
+        crate::holder::signal(first.pid, nix::sys::signal::Signal::SIGSTOP);
+        let waiting = std::os::unix::net::UnixStream::connect(paths.docker_socket());
+        replace().await;
+        let kept = front_of(&manager).await.map(|f| f.pid);
+        crate::holder::signal(first.pid, nix::sys::signal::Signal::SIGCONT);
+        let mut waiting = waiting?;
+        {
+            use std::io::Read as _;
+            let mut answer = String::new();
+            waiting.read_to_string(&mut answer)?;
+            assert!(answer.starts_with("mode:engine"), "{answer}");
+        }
+        assert_eq!(kept, Some(first.pid), "a waiting client: kept");
+        assert!(manager.take_docker_events().is_empty());
+        // A front from before ADR-0344 writes no state: quiet when it runs no engine and holds
+        // no connection, however many sockets it holds besides.
+        std::fs::remove_file(paths.docker_state())?;
+        replace().await;
+        let second = front_of(&manager)
+            .await
+            .ok_or("no front after the replacement")?;
+        kill(second.pid);
+        assert_ne!(second.pid, first.pid, "quiet: replaced");
+        assert_eq!(manager.docker_restarts(), 1);
+        let events = manager.take_docker_events();
+        assert_eq!(
+            events
+                .iter()
+                .map(|e| (e.kind, e.count, e.detail.as_str()))
+                .collect::<Vec<_>>(),
+            vec![("restarted", 1, crate::front_repair::Why::Outdated.says())],
+            "{events:?}"
+        );
+        Ok(())
+    }
+
+    /// SPEC-494 slice 2 review round 2: a front this server starts counts its refusals as new
+    /// (one adopted after a restart would take them as its baseline).
+    #[tokio::test]
+    async fn a_front_this_server_starts_reports_its_refusals_as_new()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use yulius_contracts::sandbox::DockerFrontState;
+        let data = tempfile::tempdir()?;
+        let manager = adopting(data.path(), Ok(()), false)?;
+        assert_eq!(manager.adopt().await, 1);
+        let front = front_of(&manager).await.ok_or("no front")?;
+        let state = DockerFrontState {
+            pid: front.pid,
+            held: 10,
+            max: 256,
+            gave_way: 0,
+            refused: 2,
+            hung_up: 0,
+            closed_after_grace: 0,
+            at_limit_since_ms: None,
+            engine_running: true,
+            engine_busy: false,
+        };
+        write_json(
+            &StatePaths::new(manager.state_dir("s1")).docker_state(),
+            &state,
+        )?;
+        {
+            let entry = manager.entry("s1");
+            let mut guard = entry.lock().await;
+            manager.watch_front("s1", &mut guard);
+        }
+        let open = manager.config.health.troubles();
+        kill(front.pid);
+        assert_eq!(open.len(), 1, "{open:?}");
+        assert_eq!(open[0].refused, 2);
+        Ok(())
+    }
+
+    /// SPEC-494 slice 2 review round 2: a production holder's full front is journaled, not a
+    /// trouble under a name no sandbox has.
+    #[test]
+    fn a_production_fronts_state_is_no_panel_trouble() -> Result<(), Box<dyn std::error::Error>> {
+        use yulius_contracts::sandbox::DockerFrontState;
+        let data = tempfile::tempdir()?;
+        let config = config(data.path(), 1);
+        let health = Arc::clone(&config.health);
+        let manager = Manager::new(config);
+        let name = production_holder("s1");
+        let paths = StatePaths::new(manager.state_dir(&name));
+        std::fs::create_dir_all(&paths.dir)?;
+        let mut live = Live::new(live_record(true), Vec::new());
+        live.front_watch.started(77);
+        live.front = Some(DockerFrontRecord {
+            pid: 77,
+            mode: "engine".into(),
+            reason: None,
+            started_at_ms: 0,
+        });
+        let mut state = SandboxState {
+            live: Some(live),
+            ..SandboxState::default()
+        };
+        let full = DockerFrontState {
+            pid: 77,
+            held: 256,
+            max: 256,
+            gave_way: 0,
+            refused: 2,
+            hung_up: 0,
+            closed_after_grace: 0,
+            at_limit_since_ms: Some(1),
+            engine_running: true,
+            engine_busy: false,
+        };
+        crate::holder::write_json(&paths.docker_state(), &full)?;
+        manager.watch_front(&name, &mut state);
+        assert!(health.troubles().is_empty(), "{:?}", health.troubles());
         Ok(())
     }
 

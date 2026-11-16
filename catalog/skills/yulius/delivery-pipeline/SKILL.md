@@ -80,6 +80,9 @@ commit.
 - Every finding is checked on its merits (is it true here?), then fixed test-first: a test that
   shows the problem, then the fix. Answer each finding in the pull request.
 - Re-review after fixes, up to 3 rounds.
+- After an approval, fix the remaining nits within 20 product lines and merge without another round:
+  `delivery_merge` with the approved head counts them (tests and documents do not count). More than
+  that, or a file leaving the change, needs a new round. A usage limit can cut a reviewer off before its report: resume that same reviewer with SendMessage to its agent id, never start a new one for the same round. A reviewer runs at high effort, never max.
 
 **Findings in the change's own code are fixed, never deferred.**
 
@@ -186,8 +189,10 @@ to the changes log.
 | Size | about 400 changed lines outside tests and generated files, or a recorded reason | you and the review |
 | Tests | a behavior change changes a test; a bug fix starts with a failing test | you and the review |
 | CI | the project gate passed on the exact head, on our own machines | `delivery_merge` |
-| Review | an independent approval exists for the exact head, with no later changes requested | `delivery_merge` (`reviewed_head`) |
+| Review | an independent approval exists for the exact head, or for one followed by at most 20 product lines, with no later changes requested | `delivery_merge` (`reviewed_head`) |
 | Fresh | the branch is up to date with the integration branch | `delivery_merge` |
 
 What we leave out on purpose: human approvals, paid GitHub rulesets and Actions minutes, module
 locks (claim paths and talk to the other task instead), and metrics dashboards.
+
+Mutation testing runs once per pull request: on the first head you ask a review for, run the project's mutation command and put its summary line in the spec's Evidence; a project without one undoes by hand the few lines its new tests are meant to hold and says what failed. The reviewer reads that result, may undo a single line it doubts, and runs no campaign of its own. Nobody writes a mutation script by hand. A test that cannot fail is still fixed in the same pull request (ADR-0141).

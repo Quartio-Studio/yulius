@@ -380,7 +380,7 @@ TaskSummary = {
   "start_at": "2026-10-15T09:00:00Z|null",
   "after": ChainLink|null, "next": [ChainLink],
   "held_prompt": {"id","class":"new_scope|drops_scope|redirect","excerpt","percent","typed_by|null","created_at"}|null,
-  "needs_you": {"action","happened|null","problem|null","decision","link|null","at"}|null,   // SPEC-134, SPEC-327: what the agent asked a person (`needs_you`)
+  "needs_you": {"action","happened|null","problem|null","decision","link|null","at","cause|null","episode|null"}|null,   // SPEC-134, SPEC-327: what the agent asked a person (`needs_you`); `cause` `docker`: a problem of the whole sandbox (SPEC-494), shown under one card with the other tasks naming it; `episode`, with a cause, is when the oldest open request of the sandbox's working tasks naming it was asked (one notification per episode)
   "attention": {"kind":"terminal|yulius","problem|null","action|null","link|null"}|null,   // SPEC-472: why `activity` is `needs_attention`
   "background_shells": "0|1|…|null",
   "spec_unfinished": false,
@@ -783,6 +783,11 @@ timeout_minutes = 120       # optional (1-360): its own time limit, counted from
 exclusive = true            # optional: one run of it (each matrix value apart) at a time in the
                             #   sandbox; a later run's job waits for its turn, outside its limit,
                             #   holding no slot (ADR-0279)
+paths = ["crates/web/**"]   # optional: 1-50 globs of the files it tests (scope-claim form); a pull
+                            #   request or merge candidate touching none of them (from its merge
+                            #   base with the integration branch) gets it skipped with "no file this
+                            #   job tests changed (paths: …)"; the branches' own runs, a change to
+                            #   yulius.toml and an unknown change run it (ADR-0343)
 # or, for one job: [commands] gate = "…"   (not both)
 # [commands] test, lint, build = "…": for agents to read; Yulius only reads whether test and
 #                            lint are set (the briefing says so when one is missing)
@@ -792,6 +797,11 @@ CARGO_BUILD_JOBS = "{cpus}" # placeholders {cpus}, {memory_mb}, {memory_gb}; at 
                             # not what Yulius sets or what changes how the agent CLI, Git, TLS,
                             # proxies, shells or interpreters run (PATH, HOME, CI, YULIUS_*, GIT_*,
                             # ANTHROPIC_*, CLAUDE_*, NODE_*, PYTHON*, *_PROXY, LD_* and similar)
+
+[review]                    # optional: what counts as product code in a follow-up after an
+product = ["crates/"]       #   approval (at most 20 such lines keep it, ADR-0345): `product` (1-50
+not_product = ["crates/gen/"] # globs) counts only these, `not_product` never these; default: every
+                            #   file but tests and documents; the integration branch's table counts
 ```
 
 Jobs name their stages with `::yulius-stage <name>` lines ("Stages" below). Jobs get `CI=true`, `HOME` (persistent, shared by the sandbox's lanes), `YULIUS_CI_CACHE` (persistent, the job checkout's own: never shared with a job running at the same time), `YULIUS_CI_RUN`,
@@ -1475,7 +1485,7 @@ resolves to nothing, the run gets the server without that variable or token.
     remote MCP serves with `project`): `task_delivery`, `task_restart`, `task_pause`,
     `task_unpause`, `task_start_now`, `task_edit`, `task_close`, `tasks_reorder`, `tasks_bulk`,
     `task_question_dismiss`, `task_held_prompt`, `task_merge`, `merge_queue`, `subscriptions`,
-    `task_switch`, `task_model`, `instance`, `instance_update`, `ci_runs`, `ci_run`, `ci_rerun`, `ci_cancel`, `ci_prioritize`, `cd_status`, `cd_deploy`, `cd_rollback` and `variables_list`
+    `task_switch`, `task_model`, `instance`, `instance_update`, `docker_restart`, `ci_runs`, `ci_run`, `ci_rerun`, `ci_cancel`, `ci_prioritize`, `cd_status`, `cd_deploy`, `cd_rollback` and `variables_list`
     (`COCKPIT_TOOLS`), acting
     for its owner (SPEC-066); on an uncontained server Claude Code asks the person before every
     tool that is not read-only, on a contained one it bypasses approvals (SPEC-208).
@@ -1543,7 +1553,7 @@ resolves to nothing, the run gets the server without that variable or token.
     409 when there is none (read-only access everywhere), else as `POST …/cockpit` (409 without a
     Claude subscription, 429 while none has capacity). Its terminal is
     `WS /api/shells/{id}/terminal`, written by the caller alone (SPEC-430); it is never in a
-    sandbox's `GET …/shells`. `change_merge` is withheld too, and so is `task_merge` (SPEC-487 MRG-005); `instance_update` is the sandbox Superagent's only (INS-004).
+    sandbox's `GET …/shells`. `change_merge` is withheld too, and so is `task_merge` (SPEC-487 MRG-005); `instance_update` and `docker_restart` (SPEC-494: restart the sandbox's Docker front and engine now; running containers stop, volumes stay; 409 with why on a server without sandbox Docker or without a running holder) are the sandbox Superagent's only (INS-004).
   - `POST /api/superagent/attachments?name` (signed in), raw body → 201 `UploadedFile`: an image
     pasted into (or dropped on) the caller's running Global Superagent (SPEC-433, ADR-0277), stored
     as other attachments (streamed, the upload limit, a free safe name) in its own folder,
@@ -1601,10 +1611,12 @@ resolves to nothing, the run gets the server without that variable or token.
 | POST | `/api/admin/instance/migration` | superadmin | `{"action": "plan"\|"move"\|"abort", "target", "ssh_port" (22), "public_url"\|null, "data_disks": […], "confirm"}` → 202 `MigrationView`: writes the request for the root helper (`<data>/migrate/request.json`), which runs `yulius instance migrate --no-sign-in`: its plan, the move (`--yes`) or `--abort`, reaching the new host with the move's one-time key alone, never as root signs in. 422 for a value outside the rules (`target` is `root@host` or `host` as ssh takes it, `ssh_port` 1–65535, `public_url` `https://host` with nothing after it, at most two different `data_disks` under `/dev/`; an abort names none of them) and for a `move` whose `confirm` is not the target's host; 409 without the helper, while an update or restart runs, while a request waits or a run is in flight (an `abort` may arrive during a plan or a move: it stops it), for a `move` unless the helper's last run was a plan of the same values that ended without a failed line and without a key to add at most an hour ago (or a move of the same values that stopped: it is continued), and for an `abort` with nothing recorded. Audited `migration.planned`, `migration.started`, `migration.aborted` (the actor, the host, the request's id and values) before the request is written, and `migration.unwritten` when it then cannot be. Asks are taken one at a time. While a request waits or a run is in flight, `POST /api/admin/update` and `/api/admin/restart` answer 409 |
 | GET | `/api/analytics/summary?sandbox&from&to` | read | → `AnalyticsSummary` |
 | GET | `/api/analytics/reviews?sandbox&from&to` | read | → `{"range","pull_requests","first_rounds_requesting_changes","first_rounds_without_report","median_rounds":2.0\|null,"rounds_by_model":[{"model","rounds"}],"no_fable_rounds"}`: the independent review of the pull requests of the visible sandboxes (or `sandbox`) merged in `[from, to]` (UTC days; SPEC-493 REV-006). A pull request's first round asked for changes when its (last) report said so; it had no report when every reviewer of it was cut off; the rounds of a pull request are its highest round number; a round's model is the one that answered, else the one asked for; a pull request is its merge (a playground's merges have no number). At most the 20,000 rounds of the newest merges are read. 422 for `from` after `to`, 404 for a sandbox the caller cannot see |
+| GET | `/api/analytics/merge-queue?sandbox&from&to` | read | → `{"range","days":[{"day","formed","merged","dissolved":{"<why>":n}}],"formed","merged","dissolved","dissolved_by":{"member_left"\|"bisected"\|"base_moved"\|"errored"\|"too_long":n},"merges","median_arm_to_merge_minutes":31.5\|null}`: the merge queue of the visible sandboxes (or `sandbox`) in `[from, to]` (UTC days; SPEC-493 MQC-005), read from the audit log (`delivery.train.formed`, `.merged`, `.dissolved` with its `(why: …)`; an older dissolve without one counts as `errored`). The minutes run from a pull request's last armed merge to its merge. At most 20,000 entries a sandbox are read. 422 for `from` after `to`, 404 for a sandbox the caller cannot see |
+| GET | `/api/analytics/docker?sandbox&from&to` | read | → `{"range","weeks":[{"week","restarts","gave_way","needs_you"}],"restarts","gave_way","needs_you"}`: what the visible sandboxes' (or `sandbox`'s) Docker fronts needed in `[from, to]` (UTC days; SPEC-494 DFJ-013), read from the audit log (`sandbox.docker.restarted`, `sandbox.docker.gave_way` with how many, `task.needs_you.docker`); a week is named by its Monday. At most 20,000 entries a sandbox are read. 422 for `from` after `to`, 404 for a sandbox the caller cannot see |
 | GET | `/api/analytics/tasks?format=json|csv&sandbox&from&to` | read | → `[TaskRow]` or CSV |
 | GET | `/api/status` | signed in | → `Status` |
 | GET | `/api/disk` | signed in | → `{"level":"ok|low|critical","used"|null,"total"|null}`: how full the server's data disk is (low from 85 %, critical from 95 %), for the warning every page shows (SPEC-276) |
-| GET | `/api/connections` | signed in | → `{"troubles":[{"id","limit":"share|relay|proxy","sandbox_id"|null,"sandbox_name"|null,"since_ms","held","max","refused","holders":[…]}]}`, oldest first: the open connection troubles of the sandboxes the person can view and of the egress proxy itself (SPEC-361, ADR-0246) |
+| GET | `/api/connections` | signed in | → `{"troubles":[{"id","limit":"share|relay|proxy|docker","sandbox_id"|null,"sandbox_name"|null,"since_ms","held","max","refused","holders":[…]}]}`, oldest first: the open connection troubles of the sandboxes the person can view and of the egress proxy itself (SPEC-361, ADR-0246); `docker` is a sandbox's full or refusing Docker front, without holders (SPEC-494, ADR-0344) |
 | GET | `/api/update` | signed in | → `UpdateView` (below): the build and a running update's `phase` for everyone; the offered update, the last check, whether the helper is installed and the current or last run for the superadmin (OPS-006..OPS-009, SPEC-002 ADR-18) |
 | POST | `/api/admin/update/check` | superadmin | reads `main` now (a check younger than 30 s is reused, also one that ended while this one waited for it) → `UpdateView` |
 | POST | `/api/admin/update` | superadmin | `{"commit","confirm":true}` → 202 `UpdateView`: installs exactly that commit, which must be the offered head of `main`; 422 without `confirm` or for a malformed commit, 409 without an installed helper, while an update runs, for any other commit, or where the server's unit would not start again while sessions run ("… would not start again: …; nothing was stopped", SPEC-458: nothing is built and no task pauses) |

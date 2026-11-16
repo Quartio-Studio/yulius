@@ -42,6 +42,16 @@
 //!                                        # default: the instance's (SPEC-435)
 //! exclusive = true                       # one run of it at a time in the sandbox; a later
 //!                                        # run's job waits, outside its limit (SPEC-435)
+//! paths = ["crates/web/**", "docs/"]     # the files it tests (1-50 globs): a pull request or
+//!                                        # merge candidate touching none of them skips it,
+//!                                        # with the reason; the integration and production
+//!                                        # branches, a change to yulius.toml and an unknown
+//!                                        # change run it (SPEC-493 CJP)
+//!
+//! [review]                             # what counts as product code in a follow-up after an
+//! not_product = ["crates/gen/"]          # approval (SPEC-493 APR-002): `product` globs count
+//!                                        # only these, `not_product` never these; default:
+//!                                        # every file but tests and documents
 //!
 //! [resources.env]                       # the budget in this repository's tools' terms
 //! CARGO_BUILD_JOBS = "{cpus}"            # also {memory_mb}, {memory_gb}; with YULIUS_CPUS and
@@ -93,10 +103,12 @@ use super::{Commands, DecisionsLocation, DocsLayout, ProjectConfig};
 use crate::ci::{
     CiConfigError, JobDef, MAX_JOB_TIMEOUT_MINUTES, parse_matrix, parse_secrets, project_jobs,
 };
+use crate::follow_up::ProductRule;
 use crate::resources::{
     EnvTemplate, EnvTemplateError, MAX_DECLARED_CPUS, MAX_DECLARED_MEMORY_GB, MAX_ENV_ENTRIES,
     Need, check_env_template,
 };
+use crate::scope::Pattern;
 
 /// Largest accepted `yulius.toml`.
 pub const MAX_CONFIG_BYTES: usize = 64 * 1024;
@@ -274,6 +286,7 @@ struct Document {
     commands: Option<Table>,
     delivery: Option<Table>,
     disk: Option<Table>,
+    review: Option<Table>,
     branch_policy: Option<Table>,
     environments: Vec<Table>,
     ci_jobs: Vec<Table>,
@@ -288,6 +301,7 @@ enum Target {
     Commands,
     Delivery,
     Disk,
+    Review,
     BranchPolicy,
     Environment,
     CiJob,
@@ -299,11 +313,14 @@ const DOCS_KEYS: &str = "product, architecture, decisions, specs_dir, changes, a
 const COMMAND_KEYS: &str = "test, lint, build, gate";
 const DELIVERY_KEYS: &str = "preset, integration_branch, production_branch, merge, promote, auto_promote, require_checks, environments";
 const DISK_KEYS: &str = "caches";
+const REVIEW_KEYS: &str = "product, not_product";
+/// Most globs in one `[review]` key.
+const MAX_REVIEW_GLOBS: usize = 50;
 const BRANCH_POLICY_KEYS: &str = "preset, types";
 const POLICY_TYPES: &str = "1-20 space-separated types of 1-20 lowercase letters including feat (Yulius's task branches), like \"feat fix docs\"";
 const ENVIRONMENT_KEYS: &str = "name, after, command, verify";
 const CI_JOB_KEYS: &str =
-    "name, command, matrix, cpus, memory_gb, secrets, timeout_minutes, exclusive";
+    "name, command, matrix, cpus, memory_gb, secrets, timeout_minutes, exclusive, paths";
 const CD_DEV_KEYS: &str =
     "stage, deploy, verify, secrets, states, variables, about, rollback, migrations, parts";
 const CD_PROD_KEYS: &str = "stage, deploy, verify, secrets, states, variables, about, promote, \
@@ -503,7 +520,8 @@ fn parse_document(text: &str) -> Result<Document, FormatError> {
             };
             target = match (name.as_str(), array) {
                 (
-                    "docs" | "commands" | "delivery" | "disk" | "branch_policy" | "resources.env",
+                    "docs" | "commands" | "delivery" | "disk" | "review" | "branch_policy"
+                    | "resources.env",
                     true,
                 ) => {
                     return Err(err(line, ConfigProblem::NotAnArrayTable(name)));
@@ -546,11 +564,16 @@ fn parse_document(text: &str) -> Result<Document, FormatError> {
                     document.ci_jobs.push(fresh);
                     Target::CiJob
                 }
-                (known @ ("docs" | "commands" | "delivery" | "disk" | "branch_policy"), false) => {
+                (
+                    known
+                    @ ("docs" | "commands" | "delivery" | "disk" | "review" | "branch_policy"),
+                    false,
+                ) => {
                     let (slot, target) = match known {
                         "docs" => (&mut document.docs, Target::Docs),
                         "commands" => (&mut document.commands, Target::Commands),
                         "disk" => (&mut document.disk, Target::Disk),
+                        "review" => (&mut document.review, Target::Review),
                         "branch_policy" => (&mut document.branch_policy, Target::BranchPolicy),
                         _ => (&mut document.delivery, Target::Delivery),
                     };
@@ -570,6 +593,7 @@ fn parse_document(text: &str) -> Result<Document, FormatError> {
             Target::Commands => document.commands.as_mut(),
             Target::Delivery => document.delivery.as_mut(),
             Target::Disk => document.disk.as_mut(),
+            Target::Review => document.review.as_mut(),
             Target::BranchPolicy => document.branch_policy.as_mut(),
             Target::Environment => document.environments.last_mut(),
             Target::CiJob => document.ci_jobs.last_mut(),
@@ -769,6 +793,7 @@ fn ci_job(table: &Table) -> Result<JobDef, FormatError> {
     let (mut name, mut command_text, mut matrix) = (None, None, Vec::new());
     let (mut need, mut secrets) = (Need::default(), Vec::new());
     let (mut timeout_minutes, mut exclusive) = (None, false);
+    let mut paths_entry = None;
     for entry in &table.entries {
         match entry.key.as_str() {
             "name" => name = Some(string_value(entry)?.to_owned()),
@@ -795,9 +820,23 @@ fn ci_job(table: &Table) -> Result<JobDef, FormatError> {
                 timeout_minutes = Some(u32::try_from(minutes).unwrap_or(u32::MAX));
             }
             "exclusive" => exclusive = bool_value(entry)?,
+            // Read once the name is known, wherever it stands in the entry.
+            "paths" => paths_entry = Some(entry),
             _ => return Err(unknown("[ci.jobs]", entry, CI_JOB_KEYS)),
         }
     }
+    let paths = match paths_entry {
+        Some(entry) => {
+            let items: Vec<String> = match &entry.value {
+                Value::Array(items) => items.clone(),
+                Value::Str(text) => text.split_whitespace().map(str::to_owned).collect(),
+                _ => Vec::new(),
+            };
+            crate::ci::parse_paths(name.as_deref().unwrap_or("?"), &items)
+                .map_err(|e| err(entry.line, ConfigProblem::Ci(e)))?
+        }
+        None => Vec::new(),
+    };
     Ok(JobDef {
         name: name.ok_or_else(|| err(table.line, ConfigProblem::MissingKey("name")))?,
         command: command_text
@@ -807,6 +846,7 @@ fn ci_job(table: &Table) -> Result<JobDef, FormatError> {
         secrets,
         timeout_minutes,
         exclusive,
+        paths,
     })
 }
 
@@ -951,6 +991,7 @@ pub fn parse_yulius_toml(text: &str) -> Result<ProjectConfig, FormatError> {
     let commands = commands(document.commands.as_ref())?;
     let ci = ci_jobs(&document, &commands)?;
     branch_policy_of(&document)?;
+    review_of(&document)?;
     resources_env(&document)?;
     cd_of(&document)?;
     Ok(ProjectConfig {
@@ -1287,6 +1328,63 @@ pub fn parse_yulius_toml_caches(text: &str) -> Result<Vec<String>, FormatError> 
     Ok(caches)
 }
 
+/// `[review]`'s rule of what counts as product code (SPEC-493 APR-002).
+fn review_of(document: &Document) -> Result<ProductRule, FormatError> {
+    let mut rule = ProductRule::default();
+    for entry in document
+        .review
+        .as_ref()
+        .map(|t| t.entries.as_slice())
+        .unwrap_or_default()
+    {
+        let slot = match entry.key.as_str() {
+            "product" => &mut rule.product,
+            "not_product" => &mut rule.not_product,
+            _ => return Err(unknown("review", entry, REVIEW_KEYS)),
+        };
+        let items: Vec<String> = match &entry.value {
+            Value::Array(items) => items.clone(),
+            Value::Str(text) => text.split_whitespace().map(str::to_owned).collect(),
+            _ => Vec::new(),
+        };
+        let invalid = |value: &str| {
+            err(
+                entry.line,
+                ConfigProblem::InvalidValue {
+                    key: entry.key.clone(),
+                    value: clip(value),
+                    allowed: "1 to 50 repository path globs, as scope claims take them",
+                },
+            )
+        };
+        if items.is_empty() || items.len() > MAX_REVIEW_GLOBS {
+            return Err(invalid(&items.join(" ")));
+        }
+        for item in &items {
+            slot.push(Pattern::parse(item.trim()).map_err(|_| invalid(item))?);
+        }
+    }
+    Ok(rule)
+}
+
+/// What counts as product code in a follow-up after an approval: `[review]` of `yulius.toml`
+/// (SPEC-493 APR-002), the default (every file but tests and documents) without it.
+///
+/// # Errors
+/// A syntax error of the file or an invalid `[review]` entry.
+///
+/// # Examples
+/// ```
+/// use yulius_domain::spec_format::parse_yulius_toml_review;
+/// let rule = parse_yulius_toml_review("[review]\nnot_product = [\"crates/gen/\"]\n")?;
+/// assert!(!rule.counts("crates/gen/x.rs"));
+/// assert!(rule.counts("crates/a/src/lib.rs"));
+/// # Ok::<(), yulius_domain::spec_format::FormatError>(())
+/// ```
+pub fn parse_yulius_toml_review(text: &str) -> Result<ProductRule, FormatError> {
+    parse_document(text).and_then(|document| review_of(&document))
+}
+
 /// The repository's `[resources.env]` (SPEC-082 RES-004): the variables its tools read, as
 /// templates of the budget Yulius gives each process. Only this table is checked, so one wrong
 /// key elsewhere does not take the budget away from every session.
@@ -1396,6 +1494,10 @@ pub fn render_yulius_toml(config: &ProjectConfig) -> String {
         }
         if job.exclusive {
             out.push_str("exclusive = true\n");
+        }
+        if !job.paths.is_empty() {
+            let items: Vec<String> = job.paths.iter().map(|p| quote(p)).collect();
+            out.push_str(&format!("paths = [{}]\n", items.join(", ")));
         }
     }
     let profile = &config.delivery;
@@ -2082,6 +2184,7 @@ mod tests {
                         secrets: Vec::new(),
                         timeout_minutes: None,
                         exclusive: false,
+                        paths: Vec::new(),
                     },
                     JobDef {
                         name: "test".to_owned(),
@@ -2094,6 +2197,7 @@ mod tests {
                         secrets: vec!["VIDOC_API_KEY".to_owned()],
                         timeout_minutes: Some(120),
                         exclusive: true,
+                        paths: Vec::new(),
                     },
                 ],
                 ..ProjectConfig::default()
@@ -2195,6 +2299,57 @@ mod tests {
             Some((4, ConfigProblem::ExpectedBool("exclusive".to_owned())))
         );
         assert!(parse_yulius_toml(&job("timeout_minutes = 360\nexclusive = false")).is_ok());
+        Ok(())
+    }
+
+    /// SPEC-493 CJP-001 (AC-16): a job names the files it tests, as scope-claim globs (a folder's
+    /// trailing `/` normalized), its matrix jobs inherit them, they render back, and a bad list
+    /// is a configuration error naming the job.
+    #[test]
+    fn ci_jobs_name_the_files_they_test() -> TestResult {
+        let text = "[[ci.jobs]]\nname = \"websites\"\ncommand = \"scripts/gate websites\"\n\
+                    matrix = \"a b\"\npaths = [\"crates/pomerado/\", \"connectors/**/*.rs\"]\n";
+        let config = parse_yulius_toml(text)?;
+        let jobs = crate::ci::project_jobs(None, &config.ci)?;
+        assert!(
+            jobs.iter()
+                .all(|j| j.paths == ["crates/pomerado/**", "connectors/**/*.rs"]),
+            "{jobs:?}"
+        );
+        let rendered = render_yulius_toml(&config);
+        assert!(
+            rendered.contains("paths = [\"crates/pomerado/**\", \"connectors/**/*.rs\"]"),
+            "{rendered}"
+        );
+        assert_eq!(parse_yulius_toml(&rendered)?, config);
+        let job = |extra: &str| format!("[[ci.jobs]]\nname = \"x\"\ncommand = \"y\"\n{extra}\n");
+        for extra in [
+            "paths = []",
+            "paths = [\"../up\"]",
+            "paths = [\"/abs\"]",
+            "paths = [\"a/**b\"]",
+            "paths = [\"a\", \"a\"]",
+        ] {
+            // Named even when `paths` comes before `name`.
+            assert_eq!(
+                problem(&format!(
+                    "[[ci.jobs]]\n{extra}\nname = \"x\"\ncommand = \"y\"\n"
+                )),
+                Some((
+                    2,
+                    ConfigProblem::Ci(CiConfigError::InvalidPaths("x".to_owned()))
+                )),
+                "{extra} first"
+            );
+            assert_eq!(
+                problem(&job(extra)),
+                Some((
+                    4,
+                    ConfigProblem::Ci(CiConfigError::InvalidPaths("x".to_owned()))
+                )),
+                "{extra}"
+            );
+        }
         Ok(())
     }
 
@@ -2354,6 +2509,31 @@ mod tests {
         assert!(parse_yulius_toml_caches("[disk]\nother = \"x\"\n").is_err());
         // The rest of the contract still parses with the table present.
         assert!(parse_yulius_toml("[disk]\ncaches = \"target\"\n").is_ok());
+        Ok(())
+    }
+
+    /// SPEC-493 APR-002: `[review]` sets what counts as product code; its keys and globs are
+    /// strict, and the whole contract checks them.
+    #[test]
+    fn the_review_table_sets_what_counts_as_product_code() -> TestResult {
+        assert_eq!(parse_yulius_toml_review("")?, ProductRule::default());
+        let rule = parse_yulius_toml_review(
+            "[review]\nproduct = [\"crates/\", \"web/**\"]\nnot_product = \"crates/gen/\"\n",
+        )?;
+        assert!(rule.counts("crates/a/src/lib.rs"));
+        assert!(rule.counts("web/app.js"));
+        assert!(!rule.counts("crates/gen/x.rs"));
+        assert!(!rule.counts("scripts/dev"));
+        for bad in [
+            "[review]\nproducts = [\"a\"]\n",
+            "[review]\nproduct = []\n",
+            "[review]\nproduct = [\"/etc\"]\n",
+            "[review]\nnot_product = [\"a/../b\"]\n",
+            "[[review]]\nproduct = [\"a\"]\n",
+        ] {
+            assert!(parse_yulius_toml_review(bad).is_err(), "{bad}");
+            assert!(parse_yulius_toml(bad).is_err(), "{bad}");
+        }
         Ok(())
     }
 

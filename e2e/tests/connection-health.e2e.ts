@@ -105,3 +105,15 @@ test('a full egress proxy and a full relay say what is full', async ({ app, brow
   expect(title).toContain('studio’s relay toward');
   await expect.poll(() => notified(browser)).toEqual([[`connections:${RELAY.id}`, false], ['connections:1-0', false]]);
 });
+
+test('a full Docker front says the sandbox’s Docker is full and that its tasks were told (SPEC-494 DFJ-006)', async ({ app, browser, screen }) => {
+  const DOCKER = { id: '1730370060000-2', limit: 'docker', sandbox_id: 'studio', sandbox_name: 'studio', since_ms: 1730370060000, held: 256, max: 256, refused: 4, holders: [] };
+  await app.open(mock('/'));
+  await set(browser, [DOCKER]);
+  await expect(screen.getByText('Docker full: studio')).toBeVisible();
+  const title = await browser.locator('.connection-alert .update-text').getAttribute('title');
+  expect(title).toContain('studio’s Docker front holds 256 of its 256 connections');
+  expect(title).toContain('Its running tasks are told once');
+  expect(title).toContain('restarts the sandbox’s Docker by itself');
+  await expect.poll(() => notified(browser)).toEqual([[`connections:${DOCKER.id}`, false]]);
+});

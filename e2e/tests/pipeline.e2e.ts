@@ -18,6 +18,15 @@ test('the Pipeline shows its stages without the Review card when the review read
   await expect(screen.getByRole('region', 'Review')).toHaveCount(0);
 });
 
+test('the Pipeline shows its stages without the Merge queue card when its read fails (SPEC-493 MQC-005)', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/dashboard'));
+  await browser.evaluate(() => { (window as unknown as { __yuliusMock: { failMergeQueue?: boolean } }).__yuliusMock.failMergeQueue = true; });
+  await browser.evaluate(() => { location.hash = '#/s/studio/dashboard?section=pipeline'; });
+  await expect(screen.getByRole('region', 'Stages')).toBeVisible();
+  await expect(screen.getByRole('region', 'Review')).toBeVisible();
+  await expect(screen.getByRole('region', 'Merge queue')).toHaveCount(0);
+});
+
 test('the Pipeline shows delivery figures, a stage trend with p50 and p90, and the stage table', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/dashboard?section=pipeline'));
   await firstShown(screen.getByRole('heading', { level: 1 }), 'Dashboard');
@@ -36,6 +45,12 @@ test('the Pipeline shows delivery figures, a stage trend with p50 and p90, and t
   await expect(review).toContainText(/Rounds per pull request\s*2\s*median/);
   await expect(review).toContainText(/First review cut off\s*8%/);
   await expect(review).toContainText(/Rounds by model\s*Fable 5\.2 21 · Opus 5\.5 6\s*2 on Opus for want of Fable/);
+  // SPEC-493 MQC-005: the merge queue's candidates in the range.
+  const mergeQueue = screen.getByRole('region', 'Merge queue');
+  await expect(mergeQueue).toContainText(/Candidates formed\s*9/);
+  await expect(mergeQueue).toContainText(/Merged\s*6/);
+  await expect(mergeQueue).toContainText(/Dissolved\s*3\s*a member left 2 · bisected 1/);
+  await expect(mergeQueue).toContainText(/Arming to merge\s*32 min\s*median of 14 armed merges/);
 
   // The CI run's trend by default: two lines, labelled and in a legend, and a table of every day.
   const trend = screen.getByRole('region', 'Trend: CI · Run');
@@ -582,4 +597,14 @@ test('a tab left behind and the page left stop their refreshes', async ({ app, b
   await expect(screen.getByRole('heading', { level: 1 })).toHaveText('Tasks');
   await expect.poll(() => live(30_000)).toBe(0);
   await expect.poll(() => live(300_000)).toBe(0);
+});
+
+test('the Pipeline counts what the sandbox’s Docker needed, per week (SPEC-494 DFJ-013)', async ({ app, screen }) => {
+  await app.open(mock('/s/studio/dashboard?section=pipeline'));
+  await firstShown(screen.getByRole('heading', { level: 1 }), 'Dashboard');
+  const docker = screen.getByRole('region', 'Docker');
+  // The 30 days shown are 4.3 weeks.
+  await expect(docker).toContainText(/Front restarts\s*3\s*0\.7 a week/);
+  await expect(docker).toContainText(/Connections that gave way\s*41\s*9\.6 a week/);
+  await expect(docker).toContainText(/Docker Needs you\s*2\s*0\.5 a week/);
 });

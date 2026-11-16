@@ -1086,6 +1086,32 @@ export function createSidebar(ctx) {
 
   const rowInfo = (task) => taskInfo(task, ctx.store.state.actionRequests, ctx.store.pullsOf(task.sandbox_id).get(task.id));
 
+  // One Needs you card per sandbox-level problem (SPEC-494): the tasks whose request names the
+  // same cause are grouped under one card that names them all, first asker first; each keeps
+  // its own row (its link, menu and place in the counts).
+  const CAUSES = { docker: 'This project’s Docker' };
+  const causeOf = (task) => (task.needs_you && Object.hasOwn(CAUSES, task.needs_you.cause || '') ? task.needs_you.cause : null);
+  const askedAt = (task) => Date.parse(task.needs_you.at) || 0;
+  const sharedCards = new Map();
+
+  /** The card of `cause` over its asking `tasks` (oldest request first), kept across repaints. */
+  function sharedCard(cause, tasks) {
+    const key = JSON.stringify([cause, tasks.map((t) => [t.number, t.title, t.needs_you.action]), sandbox.slug]);
+    let card = sharedCards.get(cause);
+    if (card && card.key === key) return card.el;
+    const links = tasks.map((t) => {
+      const path = `/s/${encodeURIComponent(sandbox.slug)}/t/${t.number}`;
+      return h('a', { href: href(path), dataset: { route: path }, title: `Task #${t.number} ${t.title || ''}`.trim() }, `#${t.number}`);
+    });
+    const list = links.flatMap((link, at) => (at ? [', ', link] : [link]));
+    const el = h('div', { class: 'task-shared', role: 'listitem', title: `${CAUSES[cause]}: ${tasks.length} tasks asked a person about it. A person’s answer to one of them, the end of the Docker trouble, or a restart asked through the Superagent answers them all.` },
+      statusMark({ icon: 'st-attention', tone: 'attention' }, 16),
+      h('span', { class: 'task-shared-text' }, `${CAUSES[cause]} · asked by `, ...list));
+    card = { key, el };
+    sharedCards.set(cause, card);
+    return el;
+  }
+
   function rowFor(task) {
     let row = rows.get(task.id);
     if (!row) {
@@ -1269,9 +1295,29 @@ export function createSidebar(ctx) {
       const row = rowFor(task);
       grouped.get(row.info.group).push(row);
     }
+    // The Needs you group: each shared problem's card, then its tasks by the age of their
+    // request, then the rest in their order.
+    const needs = grouped.get('needs');
+    const sharing = new Map();
+    for (const r of needs) {
+      const cause = causeOf(r.task);
+      if (cause) sharing.set(cause, [...(sharing.get(cause) || []), r]);
+    }
+    const shared = [...sharing].filter(([, rs]) => rs.length > 1);
+    for (const cause of [...sharedCards.keys()]) if (!shared.some(([c]) => c === cause)) sharedCards.delete(cause);
+    const inShared = new Set(shared.flatMap(([, rs]) => rs));
+    const needsItems = [
+      ...shared.flatMap(([cause, rs]) => {
+        const ordered = [...rs].sort((a, b) => askedAt(a.task) - askedAt(b.task) || a.task.number - b.task.number);
+        return [{ shared: sharedCard(cause, ordered.map((r) => r.task)), cause }, ...ordered];
+      }),
+      ...needs.filter((r) => !inShared.has(r)),
+    ];
+    const itemsOf = (g) => (g.id === 'needs' ? needsItems : grouped.get(g.id));
+    const itemId = (item) => (item.shared ? `shared:${item.cause}:${sharedCards.get(item.cause).key}` : item.task.id);
     for (const id of [...rows.keys()]) if (!seen.has(id)) rows.delete(id);
     // Rebuild only when the grouping or order changed, so focus is not lost on every update.
-    const next = `${sandbox.access}|${GROUPS.map((g) => `${g.id}:${g.id === 'ended' && !endedOpen ? 'closed' : ''}:${grouped.get(g.id).map((r) => r.task.id).join(',')}`).join('|')}`;
+    const next = `${sandbox.access}|${GROUPS.map((g) => `${g.id}:${g.id === 'ended' && !endedOpen ? 'closed' : ''}:${itemsOf(g).map(itemId).join(',')}`).join('|')}`;
     if (next === shape) return;
     shape = next;
     // The keyboard stays in the list across a rebuild (SPEC-062): on the same control (a group's
@@ -1283,7 +1329,7 @@ export function createSidebar(ctx) {
     const neighbours = row ? [row.nextElementSibling, row.previousElementSibling].map((el) => el && el.querySelector('.task-link')) : [];
     setChildren(list, GROUPS.filter((g) => grouped.get(g.id).length).map((g) => h('section', { class: ['task-group', `group-${g.id}`], 'aria-label': g.name },
       groupHead(g, grouped.get(g.id)),
-      g.id === 'ended' && !endedOpen ? null : h('div', { role: 'list' }, grouped.get(g.id).map((r) => r.el)))));
+      g.id === 'ended' && !endedOpen ? null : h('div', { role: 'list' }, itemsOf(g).map((item) => (item.shared ? item.shared : item.el))))));
     if (focused && document.activeElement !== focused) {
       const target = [control && list.querySelector(control), focused, ...neighbours].find((el) => el && list.contains(el))
         || list.querySelector('a.task-link, button.task-group-head');

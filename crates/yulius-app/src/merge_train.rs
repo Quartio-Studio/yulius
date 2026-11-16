@@ -1,12 +1,14 @@
 //! Merge trains (SPEC-084, ADR-0067), the merge candidates of the merge queue (SPEC-441,
-//! ADR-0285): armed pull requests whose own run passed but whose base moved since are tested
-//! together on top of the integration branch and merged one after another on that one verdict.
+//! ADR-0285): armed pull requests whose base moved since are tested together on top of the
+//! integration branch and merged one after another on that one verdict, each once its own run
+//! passed too (SPEC-493 MQC-001: the candidate's run goes beside the members' own runs).
 //!
 //! Under a strict "up to date" rule a pull request merges only with its base in its head. Moving
 //! the head of one whose own run still goes restarts that run (F 2026-11-07: with 45 to 60 minute
-//! runs, most runs were thrown away), so a pull request joins a train only once its own run (its
-//! pre-check) passed, and only when it is behind its base: a green one that is up to date merges
-//! alone, at once.
+//! runs, most runs were thrown away), so Yulius never merges the base into a pull request before
+//! its own run (its pre-check) passed. It joins a train while that run is still queued or running
+//! or once it passed, and only when it is behind its base: a green one that is up to date merges
+//! alone, at once. A member whose own run fails leaves (MQC-002).
 //!
 //! A train (1 to [`MAX_MEMBERS`] members, in arm order) is built in Yulius's clone, exactly as the
 //! merges will happen: the integration branch is merged into each armed head in arm order (the
@@ -126,6 +128,10 @@ struct Train {
     /// When it was formed (ms; 0 when unknown).
     #[serde(default)]
     formed_at: i64,
+    /// The member whose own run its run ended waiting for, and since when (SPEC-493 MQC-001):
+    /// the 20 s pass has nothing to decide meanwhile, and `yulius wait` says so.
+    #[serde(default)]
+    own_wait: Option<(u64, i64)>,
 }
 
 /// A pull request in a train.
@@ -230,7 +236,13 @@ fn note_of(train: &Train, task: &str) -> Option<String> {
             prs.len(),
             listed(&prs)
         );
-        return Some(if train.merging {
+        return Some(if let Some((pr, _)) = train.own_wait {
+            format!(
+                "{place}: their combined result was tested (run {}); Yulius waits for pull \
+                 request #{pr}'s own Yulius CI run before it merges or tests them further.",
+                train.run
+            )
+        } else if train.merging {
             format!("{place}: their combined result passed; Yulius merges them in this order.")
         } else {
             format!(
@@ -360,10 +372,22 @@ impl App {
 
     /// Whether `sandbox`'s merge train has a run that is no longer queued or running: the next
     /// pass merges its members or dissolves it.
+    /// A train waiting for a member's own run within its bound has nothing to decide: the end of
+    /// that run starts a pass by itself.
     pub(crate) async fn train_run_ended(&self, sandbox: &SandboxRecord) -> bool {
         let Some(train) = self.read_trains(&sandbox.id).train else {
             return false;
         };
+        if let Some((_, since)) = train.own_wait {
+            let until = if train.merging {
+                train.formed_at.saturating_add(TEST_LIMIT_MS)
+            } else {
+                since.saturating_add(WAIT_LIMIT_MS)
+            };
+            if self.now().0 <= until {
+                return false;
+            }
+        }
         !matches!(
             self.deps.store.ci_run(&train.run).await,
             Ok(Some(run)) if run.state.is_active()
@@ -453,11 +477,12 @@ impl App {
         tracing::info!(sandbox = %sandbox.slug, run = %train.run, reason, "merge train dissolved");
         self.train_audit(
             sandbox,
-            "delivery.train.dissolved",
+            yulius_domain::merge_queue::DISSOLVED,
             &format!(
-                "merge train {} (run {}): {reason}; its pull requests merge one by one",
+                "merge train {} (run {}): {reason}; its pull requests merge one by one (why: {})",
                 listed(&numbers(&train.members)),
-                train.run
+                train.run,
+                dissolved_why(reason).as_str()
             ),
         )
         .await;
@@ -469,6 +494,12 @@ impl App {
         state: &mut SandboxTrains,
         train: Train,
     ) -> Option<Train> {
+        // A member whose own run did not pass leaves, whatever the candidate's run says: the
+        // others form a candidate again without it (SPEC-493 MQC-002).
+        if let Some(reason) = self.member_left(sandbox, &train).await {
+            self.dissolve(sandbox, &train, &reason).await;
+            return None;
+        }
         let run = match self.deps.store.ci_run(&train.run).await {
             Ok(Some(run)) => run,
             Ok(None) => {
@@ -495,6 +526,23 @@ impl App {
                 self.drive_train(sandbox, state, train).await
             }
             RunState::Failed => {
+                // A member's own run that still goes may say why: it is waited for (within the
+                // test limit), and a member whose own run fails then leaves instead of the
+                // candidate being halved (SPEC-493 MQC-002).
+                let mut going = None;
+                for index in 0..train.members.len() {
+                    if going.is_none() && self.own_run_going(sandbox, &train, index).await {
+                        going = Some(train.members[index].pr);
+                    }
+                }
+                let mut train = train;
+                if let Some(pr) = going {
+                    let since = train.own_wait.map_or(self.now().0, |(_, since)| since);
+                    if self.now().0 - since <= WAIT_LIMIT_MS {
+                        train.own_wait = Some((pr, since));
+                        return Some(train);
+                    }
+                }
                 self.bisect(sandbox, state, &train).await;
                 None
             }
@@ -514,6 +562,47 @@ impl App {
                 None
             }
         }
+    }
+
+    /// Why a member leaves `train` (SPEC-493 MQC-002): its own run at the head it was armed with
+    /// ended failed, errored or cancelled. A merged member, and one whose own run passed or still
+    /// goes, stays.
+    async fn member_left(&self, sandbox: &SandboxRecord, train: &Train) -> Option<String> {
+        for member in &train.members {
+            let Ok(task) = TaskId::parse(&member.task) else {
+                continue;
+            };
+            if matches!(
+                self.deps.store.delivery(&task).await,
+                Ok(Some(record)) if past_merge(&record.stage)
+            ) {
+                continue;
+            }
+            if let GateResult::Run(Some(state)) = self.ci_gate_result(sandbox, &member.head).await
+                && matches!(
+                    state,
+                    RunState::Failed | RunState::Error | RunState::Cancelled
+                )
+            {
+                return Some(format!(
+                    "#{}'s own run at {} ended {}: it leaves the candidate",
+                    member.pr,
+                    short(&member.head),
+                    state.as_str()
+                ));
+            }
+        }
+        None
+    }
+
+    /// Whether member `index`'s own run at its armed head still goes: it merges only once that
+    /// run passed too (SPEC-493 MQC-001).
+    async fn own_run_going(&self, sandbox: &SandboxRecord, train: &Train, index: usize) -> bool {
+        matches!(
+            self.ci_gate_result(sandbox, &train.members[index].head)
+                .await,
+            GateResult::Run(Some(RunState::Queued | RunState::Running))
+        )
     }
 
     /// A train whose run failed (SPEC-441 MQ-004): of two or more members, the next train takes
@@ -670,6 +759,23 @@ impl App {
                 self.dissolve(sandbox, &train, &reason).await;
                 return None;
             }
+            // Its own run still goes: the train waits for it, within the time a candidate's own
+            // run may take, not the time GitHub may take to show a head.
+            if self.own_run_going(sandbox, &train, index).await {
+                if train.formed_at > 0 && self.now().0 - train.formed_at > TEST_LIMIT_MS {
+                    // Held back until armed again: the others form a candidate without it, and
+                    // it goes one by one once its own run passed.
+                    let member = &train.members[index];
+                    state.held_back.push((member.task.clone(), member.armed_at));
+                    let reason = format!("#{}'s own run took too long", member.pr);
+                    self.dissolve(sandbox, &train, &reason).await;
+                    return None;
+                }
+                let since = train.own_wait.map_or(self.now().0, |(_, since)| since);
+                train.own_wait = Some((train.members[index].pr, since));
+                return Some(train);
+            }
+            train.own_wait = None;
             match self.train_step(sandbox, &train, index).await {
                 Step::Merged => train.waiting_since = None,
                 Step::Wait => return self.train_waits(sandbox, train).await,
@@ -706,7 +812,7 @@ impl App {
                 train.run
             )
         };
-        self.train_audit(sandbox, "delivery.train.merged", &detail)
+        self.train_audit(sandbox, yulius_domain::merge_queue::MERGED, &detail)
             .await;
         None
     }
@@ -1183,9 +1289,13 @@ impl App {
             if up_to_date && passed {
                 return None;
             }
-            // Only one whose own run passed (its pre-check finishes first, SPEC-441 MQ-001) and
-            // is behind its base.
-            if !passed
+            // One whose own run passed or still goes (SPEC-493 MQC-001: the candidate's run goes
+            // beside it, and the member merges once both passed), behind its base.
+            let going = matches!(
+                checks,
+                GateResult::Run(Some(RunState::Queued | RunState::Running))
+            );
+            if !(passed || going)
                 || up_to_date
                 || state
                     .held_back
@@ -1322,7 +1432,7 @@ impl App {
         let left: Vec<u64> = left_out.iter().map(|l| l.pr).collect();
         self.train_audit(
             sandbox,
-            "delivery.train.formed",
+            yulius_domain::merge_queue::FORMED,
             &format!(
                 "merge train {} on {} at {}: run {} tests {}{}",
                 listed(&prs),
@@ -1349,6 +1459,7 @@ impl App {
             merging: false,
             waiting_since: None,
             formed_at: self.now().0,
+            own_wait: None,
         })
     }
 
@@ -1406,6 +1517,32 @@ impl App {
     }
 }
 
+/// Why a train was dissolved, from the reason this module gives (SPEC-493 MQC-005).
+fn dissolved_why(reason: &str) -> yulius_domain::merge_queue::Dissolved {
+    use yulius_domain::merge_queue::Dissolved;
+    let has = |words: &[&str]| words.iter().any(|w| reason.contains(w));
+    if has(&["too long"]) {
+        Dissolved::TooLong
+    } else if has(&[
+        "leaves the candidate",
+        "was armed again",
+        "is no longer armed",
+        "merged before the ones ahead",
+        "cannot be read",
+        "has no worktree",
+        "moved on",
+        "the own run of #",
+    ]) {
+        Dissolved::MemberLeft
+    } else if has(&["its CI run failed"]) {
+        Dissolved::Bisected
+    } else if has(&["did not predict", "the train predicted"]) {
+        Dissolved::BaseMoved
+    } else {
+        Dissolved::Errored
+    }
+}
+
 /// Every sandbox's trains; none when the file is missing or unreadable.
 fn read_all(path: &Path) -> BTreeMap<String, SandboxTrains> {
     std::fs::read(path)
@@ -1447,6 +1584,42 @@ mod tests {
             merging: false,
             waiting_since: None,
             formed_at: 1,
+            own_wait: None,
+        }
+    }
+
+    /// SPEC-493 MQC-005: each reason this module dissolves a train for names its why.
+    #[test]
+    fn the_why_of_each_dissolve() {
+        use yulius_domain::merge_queue::Dissolved;
+        for (reason, why) in [
+            (
+                "#2's own run at abc ended failed: it leaves the candidate",
+                Dissolved::MemberLeft,
+            ),
+            ("#3 was armed again", Dissolved::MemberLeft),
+            ("#3 is no longer armed", Dissolved::MemberLeft),
+            ("its CI run failed", Dissolved::Bisected),
+            (
+                "`dev` moved to a state the train did not predict",
+                Dissolved::BaseMoved,
+            ),
+            (
+                "`dev` is not in the state the train predicted before #4",
+                Dissolved::BaseMoved,
+            ),
+            ("its CI run took too long", Dissolved::TooLong),
+            ("it waited too long to merge", Dissolved::TooLong),
+            ("its CI run ended cancelled", Dissolved::Errored),
+            ("its CI run is gone", Dissolved::Errored),
+            ("#1's own run took too long", Dissolved::TooLong),
+            ("#4 moved on", Dissolved::MemberLeft),
+            (
+                "the own run of #2 at abc ended failed",
+                Dissolved::MemberLeft,
+            ),
+        ] {
+            assert_eq!(dissolved_why(reason), why, "{reason}");
         }
     }
 

@@ -4,8 +4,75 @@ Notable changes, newest first. Per-change detail lives in the merged pull reques
 evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-architecture.md)
 (sections 14 and 15).
 
+## 2026-11-16
+
+- Mutation testing once per pull request (SPEC-493 fix 8, task #472,
+  [ADR-0347](decisions/0347-mutation-testing-runs-once-per-pull-request.md)): `scripts/dev
+  mutants` runs the pinned cargo-mutants on the Rust lines the branch changed, bounded, naming
+  the mutants it did not reach, with a summary line for the Evidence; the rules say the author
+  runs it once on the head under review and the reviewer runs no campaign.
+- The instance counts what sandboxes' Docker needed (SPEC-494 slice 7, task #476, ADR-0344): front
+  restarts, connections that gave way and Docker Needs you per week, in
+  `GET /api/analytics/docker` and a Docker card on the Dashboard's Pipeline tab.
+- Network creates that restrict inter-container traffic no longer fail in sandboxes (SPEC-494
+  slice 6, task #476, ADR-0344): engines run with `DOCKER_IGNORE_BR_NETFILTER_ERROR=1` instead of
+  the host loading `br_netfilter`; ICC is not enforced inside one sandbox's engine.
+- A sandbox's Docker front kept across an update no longer runs the old build for days (SPEC-494
+  slice 5, task #476, ADR-0344): the upkeep replaces a front whose executable an update replaced
+  at its first quiet moment (no connection, no engine running), fronts from before the change
+  included.
+- One shared Docker problem, one Needs you (SPEC-494 slice 4, task #476, ADR-0344): a task's
+  `needs_you` may name `cause: docker`; the tasks of a sandbox naming it are grouped under one card
+  in the sidebar's Needs you group ("This project's Docker · asked by #12, #4", over their own
+  rows), the notification center holds one entry for it, and a person's answer to one, the end of
+  the Docker trouble or `docker_restart` ends them all, each task told.
+- Yulius restarts a jammed sandbox Docker itself (SPEC-494 slice 3, task #476, ADR-0344): a
+  front full for 2 minutes, or whose running engine does not answer through it, is restarted
+  (front and engine; running containers stop, volumes stay) once no CI job of the sandbox runs,
+  at most 10 minutes later, journaled and counted; the tasks told hear that it is no longer
+  full. The sandbox's Superagent has `docker_restart` to do it at once.
+- A review survives a usage limit (SPEC-493 fix 7, task #472,
+  [ADR-0346](decisions/0346-a-cut-off-reviewer-is-resumed-after-its-session-moves.md)): a limit
+  in a subagent's transcript is the session's news, recorded for the model it binds; a review
+  round's cut-off reviewer moves the session to a subscription that runs its model, and the new
+  process is told to resume it with `SendMessage`, not to start a new one (with none, the round
+  runs on Opus 5.5); a round does not start where its reviewer's model has under 5 points of room
+  while another subscription has room. The rules say: resume, never restart; high effort, never
+  max.
+
 ## 2026-11-15
 
+- An approval carries across a small follow-up (SPEC-493 fix 6, task #472,
+  [ADR-0345](decisions/0345-an-approval-carries-across-a-follow-up-of-at-most-20-product-lines.md)):
+  `delivery_merge` with the approved head takes a head at most 20 product lines past it (counted
+  commit by commit with plumbing; tests, documents and Rust test modules do not count unless a
+  new product line names them or loads code; `[review]` in `yulius.toml` sets what counts) and
+  records "since then N product lines in M files: …"; more, a file leaving the change, a
+  conflicted merge or a new `#[path]`/`include!` needs a new round. Every Git command of Yulius
+  now ignores the clone's replace refs, grafts and commit-graph.
+- A full Docker front is seen once (SPEC-494 slice 2, task #476, ADR-0344): it is its sandbox's
+  `docker` connection trouble ("Docker full: <sandbox>" in the tab row, one notification), and
+  each running task of the sandbox is told once in its session not to ask a person (unless it
+  lasts more than 15 minutes), then told once it is no longer full. The front's log lines carry
+  their UTC time.
+- A sandbox's Docker front no longer jams (SPEC-494 slice 1, task #476,
+  [ADR-0344](decisions/0344-the-docker-front-gives-way-and-ends-connections-whose-client-is-gone.md)):
+  at its 256-connection limit it closes the longest-idle connection for a new call, or answers a
+  Docker error saying it is full, instead of dropping calls without a word; a connection
+  whose client hung up ends within about two seconds (the leak that jammed quartio-v2: an exec the engine never
+  ends), and one whose engine side ended closes after 30 s. Events go to `docker-front.log` and
+  the journal once a minute per kind; the front's state to `docker-front-state.json`.
+- A CI job can name the files it tests (SPEC-493 fix 5, task #472,
+  [ADR-0343](decisions/0343-a-ci-job-names-the-files-it-tests-and-is-never-skipped-on-doubt.md)):
+  `paths = [...]` on a `[[ci.jobs]]` entry skips it, with the reason, for a pull request or merge
+  candidate that touches none of them; the integration and production branches, a change to
+  `yulius.toml` and an unknown change still run it.
+- An armed pull request whose base moved waits about one CI run, not two (SPEC-493 fix 4, task
+  #472, [ADR-0285](decisions/0285-armed-pull-requests-merge-through-a-queue-that-never-restarts-a-run.md)
+  amended): its merge candidate runs beside its own run, and it merges once both passed; a member
+  whose own run fails leaves the candidate, which is formed again from the others. The Pipeline
+  tab's Merge queue card counts candidates formed, merged and dissolved (by why) and the minutes
+  from arming to merge (`GET /api/analytics/merge-queue`).
 - Yulius CI tests a head while its review runs (SPEC-493 fix 3, task #472,
   [ADR-0342](decisions/0342-yulius-ci-runs-the-whole-gate-while-the-review-reads.md)): starting
   the reviewer pushes the committed head, opens the pull request and queues its run at once. One

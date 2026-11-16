@@ -4082,6 +4082,28 @@ route('GET', '/api/analytics/reviews', ({ db, query }) => {
   };
 });
 
+// GET /api/analytics/merge-queue (SPEC-493 MQC-005): `db.mergeQueue` replaces the mock's
+// figures, and `db.failMergeQueue` fails the read.
+route('GET', '/api/analytics/merge-queue', ({ db, query }) => {
+  if (db.failMergeQueue) fail(500, 'internal', 'the mock failed this read');
+  if (query.get('sandbox') && !db.sandboxes.some((s) => s.id === query.get('sandbox'))) fail(404, 'not_found', 'not found');
+  return db.mergeQueue || {
+    range: { sandbox: query.get('sandbox'), from: query.get('from'), to: query.get('to') },
+    days: [], formed: 9, merged: 6, dissolved: 3, dissolved_by: { member_left: 2, bisected: 1 },
+    merges: 14, median_arm_to_merge_minutes: 31.5,
+  };
+});
+
+// GET /api/analytics/docker (SPEC-494 DFJ-013): `db.dockerAnalytics` replaces the mock's figures.
+route('GET', '/api/analytics/docker', ({ db, query }) => {
+  if (query.get('sandbox') && !db.sandboxes.some((s) => s.id === query.get('sandbox'))) fail(404, 'not_found', 'not found');
+  return db.dockerAnalytics || {
+    range: { sandbox: query.get('sandbox'), from: query.get('from'), to: query.get('to') },
+    weeks: [{ week: '2026-11-09', restarts: 2, gave_way: 38, needs_you: 2 }, { week: '2026-11-16', restarts: 1, gave_way: 3, needs_you: 0 }],
+    restarts: 3, gave_way: 41, needs_you: 2,
+  };
+});
+
 route('GET', '/api/analytics/summary', ({ db, query }) => {
   if (query.get('sandbox') && !db.sandboxes.some((s) => s.id === query.get('sandbox'))) fail(404, 'not_found', 'not found');
   const fromDay = query.get('from');

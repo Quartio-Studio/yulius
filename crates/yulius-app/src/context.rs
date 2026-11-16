@@ -338,6 +338,8 @@ pub struct App {
     pub(crate) connection_health: Arc<yulius_domain::connection_health::ConnectionHealth>,
     /// GitHub's last answer about the instance's sign-in callback (SPEC-466).
     pub(crate) github_callback: crate::github_callback::CallbackKept,
+    /// What the tasks were told of their sandbox's Docker trouble (SPEC-494 DFJ-007).
+    pub(crate) docker_told: crate::docker_trouble::DockerTold,
 }
 
 impl App {
@@ -405,6 +407,7 @@ impl App {
             upkeeps: Mutex::default(),
             connection_health,
             github_callback: crate::github_callback::CallbackKept::default(),
+            docker_told: crate::docker_trouble::DockerTold::default(),
         })
     }
 

@@ -1,7 +1,7 @@
 // Connection troubles (SPEC-361, ADR-0246): a warning pill in the tab row while the egress proxy
-// refuses a sandbox at its share, a sandbox's relay toward Yulius is full, or the proxy itself is
-// full, for the people who can view that sandbox (the proxy's own for everyone). Read from
-// GET /api/connections at start, on `connections.updated`, on `resync` (events were lost) and when
+// refuses a sandbox at its share, a sandbox's relay toward Yulius or its Docker front is full,
+// or the proxy itself is full, for the people who can view that sandbox (the proxy's own for
+// everyone). Read from GET /api/connections at start, on `connections.updated`, on `resync` (events were lost) and when
 // the event stream reconnects. Its title gives the reason, since when, and whose the connections
 // are; with one trouble whose busiest holder is a task, it leads there. Each trouble lands once in
 // the notification center: the ids already notified are kept apart from its list, so clearing the
@@ -43,6 +43,13 @@ function describe(trouble) {
     return {
       text: `Relay full: ${sandbox}`,
       title: `${sandbox}’s relay toward ${BRAND.name} is full (${trouble.held} of ${trouble.max} connections): its runs’ calls to ${BRAND.name} (tools, hooks) and downloads fail. End leftover processes in the sandbox.`,
+      route: null,
+    };
+  }
+  if (trouble.limit === 'docker') {
+    return {
+      text: `Docker full: ${sandbox}`,
+      title: `${sandbox}’s Docker front holds ${trouble.held} of its ${trouble.max} connections: its runs’ Docker calls and its CI jobs’ containers fail while none gives way. Its running tasks are told once, so they need not ask. If it stays full for two minutes, ${BRAND.name} restarts the sandbox’s Docker by itself (once no CI job runs, at most ten minutes later): running containers stop, volumes stay.`,
       route: null,
     };
   }

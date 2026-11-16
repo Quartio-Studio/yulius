@@ -484,6 +484,23 @@ impl SandboxIsolation for NamespaceIsolation {
         self.manager.probe_link(sandbox.as_str(), port).await
     }
 
+    fn take_docker_events(&self) -> Vec<yulius_app::ports::isolation::DockerEvent> {
+        self.manager
+            .take_docker_events()
+            .into_iter()
+            .map(|event| yulius_app::ports::isolation::DockerEvent {
+                sandbox: event.sandbox,
+                kind: event.kind.to_owned(),
+                count: event.count,
+                detail: event.detail,
+            })
+            .collect()
+    }
+
+    async fn restart_docker(&self, sandbox: &SandboxId) -> Result<(), String> {
+        self.manager.restart_docker(sandbox.as_str()).await
+    }
+
     async fn remove_owned_tree(&self, path: &std::path::Path) -> Result<(), String> {
         self.manager.remove_owned_tree(path).await
     }

@@ -3,7 +3,7 @@ from pathlib import Path
 import tempfile
 import re
 import unittest
-from check_repository import delivery_instruction_errors, instruction_files, STYLESHEET, TOKENS, ROOT, INDEX, BRAND, brand_errors, conflict_marker_errors, decision_errors, module_errors, preload_errors, startup_modules, brand_name_errors, inline_style_errors, control_height_errors, contrast_errors, copy_errors, contrast_ratio, theme_tokens, _resolve, dependency_errors, integration_test_errors, link_errors, manifest_errors, skill_deployment_errors, skill_errors, style_errors, zig_pin_error
+from check_repository import delivery_instruction_errors, instruction_files, STYLESHEET, TOKENS, ROOT, INDEX, BRAND, brand_errors, conflict_marker_errors, decision_errors, module_errors, preload_errors, startup_modules, brand_name_errors, inline_style_errors, control_height_errors, contrast_errors, copy_errors, contrast_ratio, theme_tokens, _resolve, dependency_errors, integration_test_errors, link_errors, manifest_errors, skill_deployment_errors, skill_errors, style_errors, zig_pin_error, tool_version
 
 
 def package(name, layer, dependencies=()):
@@ -189,6 +189,20 @@ class RepositoryContracts(unittest.TestCase):
             (decisions / "README.md").write_text("- [0006](0006-first.md): First\n- [0007](0007-second.md): Second\n")
             self.assertEqual(decision_errors(decisions), [])
 
+
+
+class ToolVersionTests(unittest.TestCase):
+    def test_a_tool_that_runs_only_as_a_cargo_subcommand_is_asked_as_one(self):
+        # cargo-mutants refuses a bare `--version` (SPEC-493 fix 8).
+        with tempfile.TemporaryDirectory() as tmp:
+            tool = Path(tmp) / "cargo-x"
+            tool.write_text('#!/bin/sh\n[ "$1" = x ] && echo "cargo-x 1.2.3" && exit 0\nexit 1\n')
+            tool.chmod(0o755)
+            self.assertEqual(tool_version(tool, "cargo-x"), "cargo-x 1.2.3")
+            plain = Path(tmp) / "cargo-y"
+            plain.write_text('#!/bin/sh\necho "cargo-y 4.5.6"\n')
+            plain.chmod(0o755)
+            self.assertEqual(tool_version(plain, "cargo-y"), "cargo-y 4.5.6")
 
 
 class StyleContracts(unittest.TestCase):
