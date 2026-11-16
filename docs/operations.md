@@ -1537,9 +1537,10 @@ involved.
   default share (no `cpus`) is an equal share of that budget among its run's jobs: what it may use
   at once, not what it holds.
 - Each sandbox's Docker engine makes /24 networks from Docker's own ranges (172.17.0.0/16 to
-  172.31.0.0/16 and 192.168.0.0/16): 4,096 networks from its next start, instead of 31. The first
-  network a project makes is 172.17.1.0/24 (`docker0` stays 172.17.0.1), not 172.18.0.0/16, and
-  a network takes at most 253 containers: a project that needs another range or more sets its
+  172.31.0.0/16 and 192.168.0.0/16): 4,096 networks from its next start, instead of 31. Once the
+  sandbox started again the first network a project makes is 172.17.1.0/24 (`docker0` is
+  172.17.0.1), not 172.18.0.0/16 (172.18.0.0/24 while a sandbox that kept running keeps its old
+  `docker0`), and a network takes at most 253 containers: a project that needs another range or more sets its
   own `subnet`. A CI job waits while its engine can make fewer than 32 more; networks no container
   used for 10 minutes are pruned first.
 - `YULIUS_CI_LANES` (host-sized, a [resource limit](#resource-limits); 2 below 32 CPUs) runs of one sandbox take a checkout at once; the CI budget, not the lanes, decides how many of their jobs run. Each lane past the first

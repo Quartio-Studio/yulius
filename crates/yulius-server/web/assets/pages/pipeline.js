@@ -249,7 +249,21 @@ export function mountPipelineSection(ctx, sandbox, route, section, actions) {
         tile('Candidates formed', int(q.formed || 0), 'in this range'),
         tile('Merged', int(q.merged || 0), 'every member merged on one run'),
         tile('Dissolved', int(q.dissolved || 0), dissolved || 'none'),
-        tile('Arming to merge', minutes, `median of ${int(q.merges || 0)} armed ${q.merges === 1 ? 'merge' : 'merges'}`)));
+        tile('Arming to merge', minutes, `median of ${int(q.merges || 0)} armed ${q.merges === 1 ? 'merge' : 'merges'}`),
+        ...ciMinutesTiles(q.ci_minutes)));
+  }
+
+  /** CI minutes by how the runs ended (SPEC-497 OFC-003): wasted is failed outside the change or
+   * cancelled, against the target of 15 %; nothing when the server sends none. */
+  function ciMinutesTiles(m) {
+    if (!m) return [];
+    const total = (m.passed || 0) + (m.failed || 0) + (m.failed_outside || 0) + (m.cancelled || 0);
+    const wasted = Number.isFinite(m.outside_share) ? `${Math.round(m.outside_share * 100)}%` : '—';
+    return [
+      tile('CI minutes', int(Math.round(total)), `${int(Math.round(m.passed || 0))} passed · ${int(Math.round(m.failed || 0))} failed`),
+      tile('Outside the change', wasted,
+        `${int(Math.round(m.failed_outside || 0))} min failed for the infrastructure · ${int(Math.round(m.cancelled || 0))} min cancelled · ${int(Math.round(m.rerun || 0))} min run again; target 15%`),
+    ];
   }
 
   /** What the sandbox's Docker front needed in the range (SPEC-494): totals and per week. */

@@ -19,10 +19,11 @@ use tokio::sync::Notify;
 use tokio::time::Instant;
 use yulius_domain::ids::SandboxId;
 use yulius_domain::resources::{
-    Admission, Budget, Capacity, CiPriority, EnvTemplate, Held, admit, budget_env,
-    default_templates, network_reserve,
+    Admission, Budget, Capacity, CiPriority, EnvTemplate, Held, LoadMinute, admit, budget_env,
+    busy_permille, default_templates, network_reserve,
 };
 use yulius_domain::spec_format::{MAX_CONFIG_BYTES, parse_yulius_toml_resources_table};
+use yulius_domain::time::Timestamp;
 
 use crate::context::App;
 
@@ -618,6 +619,48 @@ impl App {
         }
         if told {
             self.ci_job_waits(job, None).await;
+        }
+    }
+
+    /// Keeps one reading a minute of the host for CI (SPEC-497): its CPUs busy since the last
+    /// reading, the CPUs running jobs reserved and measured, and the jobs waiting to start; the
+    /// readings of 30 days are kept. The first reading after a start has no busy figure.
+    pub(crate) async fn ci_record_load(&self) {
+        const MINUTE: i64 = 60_000;
+        const KEEP: i64 = 30 * 24 * 60 * MINUTE;
+        let now = self.now().0;
+        let minute = now - now.rem_euclid(MINUTE);
+        let ticks = self.deps.system.cpu_ticks();
+        let before = {
+            let Ok(mut last) = self.ci.load.lock() else {
+                return;
+            };
+            if last.is_some_and(|(at, _)| at == minute) {
+                return;
+            }
+            last.replace((minute, ticks))
+        };
+        let busy = match (before.and_then(|(_, ticks)| ticks), ticks) {
+            (Some(before), Some(after)) => busy_permille(before, after),
+            _ => None,
+        };
+        let measured = self.ci_measured().used.map(|used| used.cpus);
+        let held = self.ci_admission().lock().held.reserved.cpus;
+        let waiting = self.deps.store.ci_jobs_waiting().await.unwrap_or(0);
+        let reading = LoadMinute {
+            at: Timestamp(minute),
+            busy_permille: busy,
+            held_cpus: held,
+            measured_cpus: measured,
+            waiting_jobs: waiting,
+        };
+        if let Err(err) = self
+            .deps
+            .store
+            .record_ci_load(reading, Timestamp(now - KEEP))
+            .await
+        {
+            tracing::warn!(error = %err, "recording the host's CI load failed");
         }
     }
 

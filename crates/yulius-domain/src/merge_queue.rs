@@ -164,9 +164,75 @@ pub fn queue_numbers(events: &[QueueEvent], from: Option<Timestamp>) -> QueueNum
     }
 }
 
+/// CI minutes by how the runs ended (SPEC-497 OFC-003).
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct Minutes {
+    /// Of runs that passed.
+    pub passed: f64,
+    /// Of runs that failed for the change (or for a reason not told apart).
+    pub failed: f64,
+    /// Of runs that failed only for the infrastructure.
+    pub failed_outside: f64,
+    /// Of runs that were cancelled.
+    pub cancelled: f64,
+    /// Of job runs an infrastructure failure threw away, within any run (job minutes).
+    pub rerun: f64,
+}
+
+impl Minutes {
+    /// The share of the runs' minutes that went to runs failed outside the change or cancelled
+    /// (the target: at most 15 %); `None` without any minutes.
+    #[must_use]
+    pub fn outside_share(&self) -> Option<f64> {
+        let total = self.passed + self.failed + self.failed_outside + self.cancelled;
+        (total > 0.0).then(|| (self.failed_outside + self.cancelled) / total)
+    }
+
+    /// Adds `run_ms` of runs that ended `outcome` (`passed`, `failed`, `failed_outside`,
+    /// `cancelled`; another counts as failed) and `rerun_ms` of thrown-away job time.
+    pub fn add(&mut self, outcome: &str, run_ms: i64, rerun_ms: i64) {
+        #[expect(clippy::cast_precision_loss, reason = "minutes of runs fit")]
+        let (minutes, rerun) = (
+            run_ms.max(0) as f64 / 60_000.0,
+            rerun_ms.max(0) as f64 / 60_000.0,
+        );
+        match outcome {
+            "passed" => self.passed += minutes,
+            "failed_outside" => self.failed_outside += minutes,
+            "cancelled" => self.cancelled += minutes,
+            _ => self.failed += minutes,
+        }
+        self.rerun += rerun;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// SPEC-497 OFC-003: minutes by outcome, the rerun time apart, and the share outside the
+    /// change (failed only for the infrastructure, or cancelled).
+    #[test]
+    fn ci_minutes_are_counted_by_how_runs_ended() {
+        let mut total = Minutes::default();
+        total.add("passed", 10 * MIN, 2 * MIN);
+        total.add("failed", 6 * MIN, 0);
+        total.add("failed_outside", 3 * MIN, 3 * MIN);
+        total.add("cancelled", MIN, 0);
+        total.add("unknown", MIN, 0);
+        assert_eq!(
+            total,
+            Minutes {
+                passed: 10.0,
+                failed: 7.0,
+                failed_outside: 3.0,
+                cancelled: 1.0,
+                rerun: 5.0,
+            }
+        );
+        assert!((total.outside_share().unwrap_or_default() - 4.0 / 21.0).abs() < 1e-9);
+        assert_eq!(Minutes::default().outside_share(), None);
+    }
 
     const DAY: i64 = 86_400_000;
     const MIN: i64 = 60_000;
