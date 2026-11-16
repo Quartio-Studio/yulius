@@ -1528,3 +1528,55 @@ Both are checked on current `dev` first and fixed test-first if they still hold.
   reason, count(*) FROM switch_decisions WHERE reason IN ('review_resume', 'review_room') GROUP
   BY reason` counts the moves.
 - Fix 6's round-7 nit is in: the decisions index lists 0343 before 0344.
+- Review round 1 (Opus 5.5 while Fable's weekly limit holds, head `a5b584050`): request changes,
+  3 majors and 3 minors in own code, each answered test-first. The mutations below each fail a
+  test, unless the item says otherwise.
+  - M1. Major: a credits refusal before any answer of the subagent (refused at its first
+    request, or resumed in a new run) read as the session's limit.
+    - The fix: a limit of "the model that ran" of an open round's reviewer is of its round's
+      model (`open_round_reviewer`). One of a subagent whose model cannot be told is no one's:
+      `subagent_limit` records nothing and moves nothing.
+    - Tests: `a_reviewer_refused_before_any_answer_meets_its_own_models_limit` (fake
+      `/reviewer-limit-first`: Fable recorded, Opus not, the first subscription not limited),
+      and the unknown-subagent case of `a_superseded_reviewer_and_an_unknown_subagent_change_nothing_else`
+      (nothing moves, nothing limited).
+  - M2. Major: the cut-off reviewer state outlived its round.
+    - The fix: `forget_cut_off_reviewer` runs at every reviewer start (so a superseded reviewer
+      is never named, also after a Fable or room move), and at a launch whose reviewer's round
+      is no longer open or that starts afresh (the launch checks the round).
+    - A successful move takes the due flag, so no second move follows. The check "stay where
+      the reviewer's model can run" the reviewer suggested is therefore not added: nothing can
+      reach it.
+    - Test: the superseded case (the new start moves for Fable, and its prompt names no
+      reviewer to resume).
+  - M3. Major: the idle path could cut a session about to work.
+    - The fix: with hooks the move is the Stop hook's alone. Claude Code wakes the thread with
+      the reviewer's failed task notification (probe), and that turn's Stop decides it with the
+      gate's answer and the hold. Cut-offs are read after the thread's own lines of the same
+      read, so a turn they start is under way.
+    - Without hooks: `move_for_reviewer`, idle as `move_idle_session` reads it (prompt mode,
+      Running, Waiting, no goal of its person's, no turn), tried again every
+      `reviewer_move_retry_ms` (5 s) for about ten minutes while due. This path has no real-
+      process test (the fake agent runs with hooks); the "Waiting" condition's mutation
+      survives for that reason.
+    - Tests: every cut-off test now moves at a turn's end, with retries set beyond the run.
+      Dropping the Stop hook's move fails them.
+  - m1. The texts' line continuations, lost in writing, are back. Unit
+    `a_cut_off_reviewer_is_told_in_whole_sentences` holds both texts as whole sentences with
+    no run of spaces.
+  - m2. The resume prompt claims nothing of the subscription: "a new process (a move to
+    another Claude subscription or a restart)".
+  - m3. Tests:
+    - the idle variants wait for a real turn's end;
+    - a five-hour limit in the reviewer's transcript (`/reviewer-limit-all`) moves as any limit,
+      with the first subscription limited;
+    - `a_hand_over_interrupts_like_a_persons_switch` now holds `MOVE_FOR_ROOM` (interrupts)
+      and `REVIEW_RESUME` (does not);
+    - no test of background work or a queued prompt putting the move off: that is the same
+      check as the Stop hook's own switch, tested there.
+  - n1. A failed switch for a reviewer is due again (both paths).
+  - A race found on the way: the limit is now recorded before the reviewer's move is decided.
+    Otherwise the session's subscription could still read as running Fable.
+  - p1, answered in words: pre-existing on dev since fix 1d (REV-007's "Do nothing else now"
+    when the live run changed before the spawned switch). The room move inherits it; it is
+    left as it is in this change.
