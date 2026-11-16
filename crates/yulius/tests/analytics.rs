@@ -1093,3 +1093,108 @@ async fn the_audit_read_of_a_sandbox_keeps_the_newest_entries() -> TestResult {
     assert_eq!(newest, [3, 5], "the newest two, oldest first");
     Ok(())
 }
+
+/// SPEC-494 DFJ-013 (review round 1 of slices 5 to 7): the Docker read counts front restarts,
+/// connections that gave way and Docker Needs you per week (named by its Monday) over HTTP,
+/// from the audit entries of the sandboxes the caller sees and their tasks, within the range;
+/// a hidden sandbox is not found and a reversed range is refused.
+#[tokio::test]
+async fn the_docker_read_counts_restarts_give_ways_and_needs_you_per_week() -> TestResult {
+    use yulius_app::docker_trouble::{DOCKER_GAVE_WAY, DOCKER_RESTARTED};
+    use yulius_app::needs_you::DOCKER_NEEDS_YOU;
+    use yulius_app::ports::store::{AuditStore as _, SandboxStore as _};
+    let h = harness()?;
+    let (admin, alice) = base(&h).await?;
+    let slug = |id: &'static str| {
+        let store = h.store.clone();
+        async move {
+            Ok::<_, Box<dyn std::error::Error>>(
+                store.sandbox(&SandboxId::parse(id)?).await?.ok_or(id)?.slug,
+            )
+        }
+    };
+    let (one, two) = (slug("s1").await?, slug("s2").await?);
+    let entry = |at: i64, target: String, action: &'static str, detail: &'static str| {
+        let store = h.store.clone();
+        async move {
+            store
+                .audit(Timestamp(at), "yulius", action, Some(&target), Some(detail))
+                .await
+        }
+    };
+    task(
+        &h,
+        TaskSpec {
+            id: "t-docker",
+            sandbox: "s1",
+            title: "t-docker",
+            harness: Harness::ClaudeCode,
+            status: TaskStatus::Running,
+            created: OCT1 - 3 * HOUR,
+            closed: None,
+        },
+    )
+    .await?;
+    // 2026-10-01 is a Thursday: week 2026-09-28; 2026-10-08 is in week 2026-10-05.
+    entry(OCT1 + HOUR, one.clone(), DOCKER_RESTARTED, "it stayed full").await?;
+    entry(OCT1 + 2 * HOUR, one.clone(), DOCKER_GAVE_WAY, "3").await?;
+    entry(OCT1 + 7 * 24 * HOUR, one.clone(), DOCKER_GAVE_WAY, "2").await?;
+    entry(
+        OCT1 + 8 * 24 * HOUR,
+        "t-docker".to_owned(),
+        DOCKER_NEEDS_YOU,
+        "Restart Docker",
+    )
+    .await?;
+    // Another sandbox's restart, and one outside the range.
+    entry(OCT1 + HOUR, two, DOCKER_RESTARTED, "a person asked").await?;
+    entry(OCT1 - 30 * 24 * HOUR, one, DOCKER_RESTARTED, "long ago").await?;
+    let read = |who: &Creds, query: &'static str| {
+        let (router, who, uri) = (
+            h.router.clone(),
+            who.clone(),
+            format!("/api/analytics/docker?from=2026-10-01&to=2026-10-14{query}"),
+        );
+        async move { call(&router, Method::GET, &uri, None, &who).await }
+    };
+    let seen = read(&alice, "").await?;
+    assert_eq!(seen.status, StatusCode::OK, "{}", seen.body);
+    assert_eq!(
+        seen.body["weeks"],
+        json!([
+            {"week": "2026-09-28", "restarts": 1, "gave_way": 3, "needs_you": 0},
+            {"week": "2026-10-05", "restarts": 0, "gave_way": 2, "needs_you": 1},
+        ]),
+        "{}",
+        seen.body
+    );
+    assert_eq!(
+        (
+            &seen.body["restarts"],
+            &seen.body["gave_way"],
+            &seen.body["needs_you"]
+        ),
+        (&json!(1), &json!(5), &json!(1)),
+        "{}",
+        seen.body
+    );
+    assert_eq!(read(&admin, "").await?.body["restarts"], 2);
+    assert_eq!(read(&alice, "&sandbox=s1").await?.body["restarts"], 1);
+    let hidden = read(&alice, "&sandbox=s2").await?;
+    assert_eq!(hidden.status, StatusCode::NOT_FOUND, "{}", hidden.body);
+    let reversed = call(
+        &h.router,
+        Method::GET,
+        "/api/analytics/docker?from=2026-10-14&to=2026-10-01",
+        None,
+        &alice,
+    )
+    .await?;
+    assert_eq!(
+        reversed.status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "{}",
+        reversed.body
+    );
+    Ok(())
+}

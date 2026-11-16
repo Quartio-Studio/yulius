@@ -1151,6 +1151,19 @@ async fn a_needs_you_request_reads_what_happened_problem_and_to_do() -> TestResu
         "the open request keeps no link: {kept}"
     );
     assert_eq!(kept["problem"], "the free plan has 2 runners", "{kept}");
+    // SPEC-494 DFJ-013: the instance counts Docker Needs you; none so far.
+    let docker_needs_you = || async {
+        let read = call(
+            &f.h.router,
+            Method::GET,
+            "/api/analytics/docker?sandbox=s1",
+            None,
+            &f.alice,
+        )
+        .await?;
+        Ok::<_, Box<dyn std::error::Error>>(read.body["needs_you"].clone())
+    };
+    assert_eq!(docker_needs_you().await?, 0);
     // SPEC-494 DFJ-011: a request about the sandbox's Docker names its cause; it is shown, and
     // the answer says it is shared; a cause Yulius does not know is refused.
     let shared = tool(
@@ -1175,6 +1188,8 @@ async fn a_needs_you_request_reads_what_happened_problem_and_to_do() -> TestResu
         "docker",
         "unchanged by the refusal"
     );
+    // Counted once, by the request itself (review round 1 of slices 5 to 7).
+    assert_eq!(docker_needs_you().await?, 1);
 
     Ok(())
 }
