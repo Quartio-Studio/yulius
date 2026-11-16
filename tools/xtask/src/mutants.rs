@@ -230,12 +230,18 @@ fn outer_nextest(name: &str) -> bool {
 /// (with more than one job, copies writing one target directory test each other's builds and
 /// report mutants caught or missed wrongly; review round 1 of fix 8) and nothing an outer
 /// nextest run set ([`outer_nextest`]).
-fn mutants_command(cargo: &str, root: &Path) -> Command {
+fn mutants_command(cargo: &str, root: &Path, head: &str) -> Command {
     let mut command = Command::new(cargo);
     command
         .current_dir(root)
         .env_remove("CARGO_TARGET_DIR")
         .env_remove("CARGO_BUILD_TARGET_DIR");
+    // cargo-mutants builds in a copy without `.git`, where `crates/yulius/build.rs` finds no
+    // commit: it is given the checkout's, as a build of the checkout gets it, unless the
+    // caller names one.
+    if std::env::var_os("YULIUS_BUILD_COMMIT").is_none() {
+        command.env("YULIUS_BUILD_COMMIT", head);
+    }
     for (name, _) in std::env::vars_os() {
         if outer_nextest(&name.to_string_lossy()) {
             command.env_remove(name);
@@ -265,6 +271,7 @@ fn selection(diff: &Path) -> Vec<String> {
 /// Git or cargo-mutants could not be run.
 pub fn run(root: &Path, cargo: &str, settings: &Settings) -> io::Result<Option<Outcomes>> {
     let base = git(root, &["merge-base", &settings.base, "HEAD"])?;
+    let head = git(root, &["rev-parse", "HEAD"])?.trim().to_owned();
     // Read as Git itself writes it, whatever the configuration says (no external diff, no
     // colour, the usual prefixes): `--in-diff` and the test names parse it.
     let plain = [
@@ -303,7 +310,7 @@ pub fn run(root: &Path, cargo: &str, settings: &Settings) -> io::Result<Option<O
     let diff_file = dir.join("branch.diff");
     std::fs::write(&diff_file, &diff)?;
     let listed: Vec<String> = {
-        let out = mutants_command(cargo, root)
+        let out = mutants_command(cargo, root, &head)
             .args(selection(&diff_file))
             .arg("--list")
             .output()?;
@@ -343,7 +350,7 @@ pub fn run(root: &Path, cargo: &str, settings: &Settings) -> io::Result<Option<O
         settings.bound().as_secs()
     );
     let started = Instant::now();
-    let mut command = mutants_command(cargo, root);
+    let mut command = mutants_command(cargo, root, &head);
     command
         .args(selection(&diff_file))
         .args([
@@ -651,7 +658,18 @@ mod tests {
     /// an outer nextest's settings, whatever the caller's environment holds.
     #[test]
     fn cargo_mutants_runs_with_a_target_directory_of_its_own() {
-        let command = mutants_command("cargo", Path::new("."));
+        let head = "0123456789abcdef0123456789abcdef01234567";
+        let command = mutants_command("cargo", Path::new("."), head);
+        // The copy cargo-mutants builds in has no `.git`: its build reports the checkout's
+        // commit, as the gate's does, or the `yulius` crate's own tests that compare it fail
+        // in the unmutated tree (SPEC-493 fix 10b's run).
+        let commit = command
+            .get_envs()
+            .find(|(name, _)| *name == "YULIUS_BUILD_COMMIT")
+            .and_then(|(_, value)| value.map(|v| v.to_string_lossy().into_owned()));
+        if std::env::var_os("YULIUS_BUILD_COMMIT").is_none() {
+            assert_eq!(commit.as_deref(), Some(head));
+        }
         let removed: Vec<String> = command
             .get_envs()
             .filter(|(_, value)| value.is_none())
