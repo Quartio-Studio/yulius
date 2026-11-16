@@ -123,19 +123,25 @@ ever reaches it).
   server restart) are no new trouble; every path that drops a holder ends its trouble. A
   production holder's front (SPEC-279, CD deploys) is journaled only: its name is no sandbox of
   the panel and no task runs there. The refusal's message says the same to the
-  calls that hit it. (Slice 3 adds that Yulius repairs it.)
+  calls that hit it. Since slice 3 both say that Yulius restarts it by itself and nobody needs
+  to be asked.
 
 ### Yulius repairs it itself (slice 3)
 
 - **DFJ-008** Yulius restarts the front and its engine (as the hand repair did: stop the front,
-  start it again at the next upkeep) when the front has been at its limit, or has refused, for
-  `REPAIR_AFTER` (2 min), or when its engine runs and a `GET /_ping` through the front failed on
-  three ticks in a row. It waits for the moment that loses the least: no CI job of the sandbox
-  runs, or at most `REPAIR_WAIT` (10 min) after the repair was due. Volumes stay (the engine's
-  storage is kept); running containers stop. Each repair is logged and counted.
-- **DFJ-009** Once the restarted front answers, the tasks told in DFJ-007 are told that Docker
-  works again and they can rerun. The Superagent gets `sandbox_docker_restart`, which does the
-  same repair at once; tasks do not get it.
+  then start a new one at once) when the front has been full, or refusing, at every upkeep tick
+  for `REPAIR_AFTER` (2 min), or when its engine runs and a `GET /_ping` through the front got
+  no answer within 5 s on three ticks in a row (asked only while the front is not jammed). It
+  waits for the moment that loses the least: no CI job of the sandbox runs (a job's containers
+  would stop under it), or at most `REPAIR_WAIT` (10 min) after the repair was due, since a
+  jammed front fails the jobs anyway. Volumes and images stay (the engine's storage is kept);
+  running containers stop. Each restart is journaled with why and counted.
+- **DFJ-009** The restarted front's state ends the sandbox's trouble, and the tasks told in
+  DFJ-007 hear that it is no longer full (and that containers that ran stopped), so they rerun.
+  The Superagent gets `docker_restart` (a person's tool, `Work` on the project, the sandbox
+  Superagent's only), which restarts it at once; task agents do not get it: a task restarting
+  Docker would stop the containers of every other task and CI job of the sandbox, and Yulius
+  already does it at the right moment.
 
 ### One shared problem, one Needs you (slice 4)
 
@@ -172,9 +178,9 @@ ever reaches it).
 - [x] Slice 1's round-2 review notes fixed test-first
 - [x] A jammed front is a sandbox trouble on the panel
 - [x] The sandbox's tasks are told once per trouble
-- [ ] Slice 2 reviewed independently, findings fixed test-first
-- [ ] Yulius restarts a jammed front at a quiet moment and tells the tasks
-- [ ] The Superagent restarts its sandbox's Docker
+- [x] Slice 2 reviewed independently, findings fixed test-first
+- [x] Yulius restarts a jammed front at a quiet moment and tells the tasks
+- [x] The Superagent restarts its sandbox's Docker
 - [ ] Slice 3 reviewed independently, findings fixed test-first
 - [ ] Needs you of one sandbox-level cause show as one card
 - [ ] Slice 4 reviewed independently, findings fixed test-first
@@ -325,3 +331,24 @@ a container start in the sandbox failing a parallel e2e job's page loads, is com
   upkeep): red with `started` removed from `keep_front`, green with it.
 - A production holder's front is journaled only (`a_production_fronts_state_is_no_panel_trouble`).
 - `BACK_AFTER` is 5 passes (75 s, past two upkeep ticks); stale "works again" wording updated.
+
+### Slice 2, review round 3 (approve)
+
+PR #1333 approved at 3e206c557 (round 3, Opus 5.5); its notes (the ADR's "three passes" and
+"nobody needs to be asked" wording, two stale comments in `docker_trouble_notices.rs`) are fixed
+in slice 3's pull request.
+
+### Slice 3 (Yulius repairs it itself)
+
+- `front_repair::tests`: a front full for two minutes is restarted once no CI job runs, waits
+  while one runs at most ten minutes after it was due; room again cancels; three unanswered
+  pings in a row make a repair due; the ping reads an engine's answer and fails within its
+  bound.
+- `a_front_full_for_long_is_restarted_when_no_ci_job_runs` (manager, a fake front): held while
+  a CI job runs, restarted (a new front, counted) once none does;
+  `an_asked_restart_starts_a_new_front_and_ends_the_trouble`: the restart asked for ends the
+  sandbox's trouble once the new front's state is read.
+- `the_superagent_restarts_its_sandboxs_docker_or_hears_why_not` (Cockpit MCP) and
+  `the_cockpit_asks_before_every_changing_tool` (`docker_restart` asks first); a task agent is
+  never served it (`mcp::tests`).
+- The pill says Yulius restarts it (`connection-health.e2e.ts`, 4 passed).

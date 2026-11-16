@@ -7933,3 +7933,23 @@ async fn a_superagents_call_whose_client_went_away_still_ends_with_its_audit() -
     assert!(f.h.store.person_pause(&running.id).await?.is_some());
     Ok(())
 }
+
+/// SPEC-494 DFJ-009: the Superagent restarts its sandbox's Docker through `docker_restart`;
+/// a server that runs no sandbox Docker (this fixture) says so.
+#[tokio::test]
+async fn the_superagent_restarts_its_sandboxs_docker_or_hears_why_not() -> TestResult {
+    let f = fixture().await?;
+    cockpit_id(&f, &f.alice).await?;
+    let alice = yulius_domain::ids::UserId::parse("u-alice")?;
+    let token = f.h.app.cockpit_mcp_token(&alice, &sid()).ok_or("token")?;
+    let (refused, is_error) = cockpit_tool(&f, &token, "docker_restart", json!({})).await?;
+    assert!(is_error, "{refused}");
+    assert!(
+        refused.to_string().contains("runs no sandbox Docker"),
+        "{refused}"
+    );
+    let (refused, is_error) =
+        cockpit_tool(&f, &token, "docker_restart", json!({"sandbox": "other"})).await?;
+    assert!(is_error, "takes no arguments: {refused}");
+    Ok(())
+}

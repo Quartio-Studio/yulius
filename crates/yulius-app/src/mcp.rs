@@ -32,7 +32,7 @@ fn schema(properties: Value, required: &[&str]) -> Value {
 /// stop a task in another of their sandboxes (SPEC-335, ADR-0227, SPEC-442, ADR-0286), and doing
 /// for its person what they do on the project's pages (`crate::person_tools`, SPEC-487,
 /// ADR-0330). What it is not served, the ability table of SPEC-487 says why.
-pub const COCKPIT_TOOLS: [&str; 83] = [
+pub const COCKPIT_TOOLS: [&str; 84] = [
     "tasks_list",
     "task_get",
     "task_create",
@@ -96,6 +96,7 @@ pub const COCKPIT_TOOLS: [&str; 83] = [
     "task_model",
     "instance",
     "instance_update",
+    "docker_restart",
     "ci_runs",
     "ci_run",
     "ci_rerun",
@@ -1662,6 +1663,7 @@ mod tests {
             "task_model",
             "instance",
             "instance_update",
+            "docker_restart",
             "task_delivery",
             "ci_runs",
             "ci_run",

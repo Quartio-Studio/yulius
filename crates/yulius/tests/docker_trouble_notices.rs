@@ -88,7 +88,6 @@ fn a_sandboxs_tasks_hear_of_its_docker_trouble_once_and_of_its_end() -> TestResu
             .store
             .set_task_needs_you(&id, None, yulius_domain::time::Timestamp(2))
             .await?;
-        // A session still starting takes no typed text either: a later pass tells it.
         let typed = until_typed(&app).await?;
         assert_eq!(typed, vec![(id.clone(), DOCKER_FULL)]);
         wait_for("the notice echoed", Duration::from_secs(30), || {
@@ -105,9 +104,8 @@ fn a_sandboxs_tasks_hear_of_its_docker_trouble_once_and_of_its_end() -> TestResu
         health.refused_times(full(sandbox.as_str()), 1, 4);
         assert!(app.tell_docker_troubles().await.is_empty());
         // Room again: after the trouble stayed ended for BACK_AFTER passes, the task told hears
-        // it once (here, once its Needs you is answered).
-        // A person must act first (an open Needs you): nothing is typed, the paste would
-        // answer it; the task hears it at a later pass, once it is answered.
+        // it once, and not while a person must act first (an open Needs you): the paste would
+        // answer it, so it hears it once that is answered.
         let asking = yulius_app::needs_you::NeedsYouRecord {
             action: "Answer the question".into(),
             happened: None,

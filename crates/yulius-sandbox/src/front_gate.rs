@@ -45,8 +45,8 @@ const WARN_EVERY: Duration = Duration::from_secs(60);
 /// The refusal at the limit, for the calls that meet it (DFJ-001, DFJ-007).
 pub const AT_LIMIT: &str = "the sandbox's Docker front holds all of its connections and none \
      has been idle long enough to give way: retry in a minute. Yulius shows this to the \
-     sandbox's people and tells its tasks: do not raise a Needs you about it unless it lasts \
-     more than 15 minutes";
+     sandbox's people, tells its tasks and restarts the sandbox's Docker by itself if it stays \
+     full: do not raise a Needs you about it";
 
 /// What ended a connection, besides both sides closing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -578,10 +578,16 @@ impl StateWatch {
     /// [`StateWatch::observe`] took it: a front that refused since the last report, or holds its
     /// whole limit, begins or keeps the trouble; one that holds at most seven eighths of its
     /// limit and refused nothing since ends it.
-    pub fn report(&mut self, state: &DockerFrontState, sandbox: &str, health: &ConnectionHealth) {
-        let new = state.refused.saturating_sub(self.reported_refused);
-        self.reported_refused = state.refused;
-        if new > 0 || state.held >= state.max {
+    /// Returns whether the front is jammed now: full, or refused since the last report.
+    pub fn report(
+        &mut self,
+        state: &DockerFrontState,
+        sandbox: &str,
+        health: &ConnectionHealth,
+    ) -> bool {
+        let jammed = self.jammed(state);
+        if jammed {
+            let new = state.refused.saturating_sub(self.reported_refused);
             let refusal = Refusal {
                 limit: Limit::Docker,
                 sandbox: Some(sandbox.to_owned()),
@@ -593,6 +599,19 @@ impl StateWatch {
         } else if health.open(Limit::Docker, Some(sandbox)) {
             health.held(Limit::Docker, Some(sandbox), state.held);
         }
+        self.reported_refused = state.refused;
+        jammed
+    }
+
+    /// Counts `state`'s refusals as reported without reporting them (a front journaled only).
+    pub fn counted(&mut self, state: &DockerFrontState) {
+        self.reported_refused = state.refused;
+    }
+
+    /// Whether `state` is jammed: full, or refused since the last report (not counted yet).
+    #[must_use]
+    pub fn jammed(&self, state: &DockerFrontState) -> bool {
+        state.refused > self.reported_refused || state.held >= state.max
     }
 }
 

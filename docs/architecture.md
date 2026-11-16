@@ -162,7 +162,9 @@ superseding [0140](decisions/0140-isolated-sandboxes-have-no-container-engine-ag
   front logs these once a minute per kind and writes `docker-front-state.json`, which the upkeep
   reads each tick, journals and reports: a full or refusing front is its sandbox's `docker`
   connection trouble (the panel's pill, once), and the sandbox's live tasks are told once in
-  their session, and again when Docker works.
+  their session, and again when it is no longer full. A front full for 2 minutes, or whose
+  running engine does not answer pings through it, is restarted by the upkeep once no CI job of
+  the sandbox runs (at most 10 minutes later); the Superagent's `docker_restart` does it at once.
 - **Start on demand.** The first connection starts the engine: `yulius sandbox-exec --engine`
   joins `sandboxes/<sandbox>/engine/inside` (the engine's limits stay on `engine`, out of its
   view, ADR-0339) and execs `bwrap`, then `yulius sandbox-host engine`
