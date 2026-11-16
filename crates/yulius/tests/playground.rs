@@ -610,8 +610,8 @@ async fn a_playgrounds_task_merges_into_its_local_dev() -> TestResult {
 }
 
 /// SPEC-493 REV-005 (review round 2 of fix 1c): a playground merge records whether a review
-/// round approved the head it merged: a commit of the task's own after the approval is not
-/// covered; a clean merge of the integration branch after it is, judged against the integration
+/// round approved the head it merged: a commit of the task's own after the approval past the
+/// follow-up bound (SPEC-493 APR-001) is not covered; a clean merge of the integration branch after it is, judged against the integration
 /// branch as it was before this merge.
 #[tokio::test]
 async fn a_playground_merge_records_whether_the_merged_head_was_approved() -> TestResult {
@@ -664,12 +664,12 @@ async fn a_playground_merge_records_whether_the_merged_head_was_approved() -> Te
             Ok::<_, Box<dyn std::error::Error>>(details.pop().unwrap_or_default())
         }
     };
-    // Approved at its head, then a commit of its own: not covered.
+    // Approved at its head, then a commit of its own past the bound: not covered.
     let first = playground_task(&h, &made.body, "t1", &[("one.txt", "1\n")], &["done"]).await?;
     // Started before t1 merges, so the integration branch moves under it.
     let second = playground_task(&h, &made.body, "t2", &[("two.txt", "2\n")], &["done"]).await?;
     approve("t1", git(&first, &["rev-parse", "HEAD"])?.trim().to_owned()).await?;
-    std::fs::write(first.join("more.txt"), "unreviewed\n")?;
+    std::fs::write(first.join("more.txt"), "unreviewed\n".repeat(21))?;
     git(&first, &["add", "-A"])?;
     git(&first, &["commit", "-q", "-m", "after the review"])?;
     let merged = merge(&h, &owner, "t1").await?;

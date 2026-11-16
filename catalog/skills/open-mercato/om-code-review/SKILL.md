@@ -72,6 +72,9 @@ The verdict is mechanical: any blocker (pre-existing or not, a failing gate incl
 in the change's own code, or any own-code finding the author deferred to an issue means **request
 changes**; only minors, nits and pre-existing majors filed as issues with the evidence means
 **approve** (list them; the author still fixes those in its own code).
+After an approval, fix the remaining nits within 20 product lines and merge without another round:
+`delivery_merge` with the approved head counts them (tests and documents do not count). More than
+that, or a file leaving the change, needs a new round.
 
 ## Own code or pre-existing
 

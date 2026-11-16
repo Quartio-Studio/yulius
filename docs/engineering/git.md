@@ -193,6 +193,9 @@ branches or use forced ref updates to refresh a checked-out branch.
 - The independent review in a fresh session approves the exact head before `delivery_merge`;
   GitHub requires no approvals, code-owner approval or last-push approval. Resolve actionable
   comments if present; do not fabricate a second reviewer identity.
+- After an approval, fix the remaining nits within 20 product lines and merge without
+  another round: `delivery_merge` with the approved head counts them (tests and documents do
+  not count). More than that, or a file leaving the change, needs a new round.
 
 ## Enforcement and maintenance
 

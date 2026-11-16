@@ -310,12 +310,26 @@ person's decision is read as holding after an approval).
   Tests and documents do not count.
 - **APR-002** What counts: every file except documentation (`is_documentation_path`), test files
   (a `tests/`, `test/`, `e2e/`, `__tests__/` or `fixtures/` folder; `*_test.*`, `test_*.*`,
-  `*.test.*`, `*.spec.*`, `*.e2e.*`) and, in a Rust file, the lines from its first `#[cfg(test)]`
-  on. A project sets its own in `yulius.toml`: `[review] product = [globs]` (only these count) or
-  `not_product = [globs]` (these never count).
+  `*.test.*`, `*.spec.*`, `*.e2e.*`) and, in a Rust file, the lines of a `#[cfg(test)] mod name {`
+  to its closing brace, read as Rust tokens (comments and strings skipped), first attribute of
+  its item, among modules without attribute macros (`#[cfg(test)] mod tests;` or a single
+  test-only item is product code; a Rust file under `src/` is product code whatever its folder).
+  A test or document file the follow-up changed counts when a product line it added names it
+  (`fixtures/evil` in `#[path = "../fixtures/evil.rs"]`), and every one counts when a product
+  line it added loads code (`import`, `require`, `include`, `concat`, `export … from`,
+  `#[path]`, `mod name;`); an added Rust product line with `#[path]`, `include!`,
+  `include_str!` or `include_bytes!` needs a review. A
+  project sets its own in `yulius.toml`: `[review] product = [globs]` (only these count; tests and
+  documents still do not) or `not_product = [globs]` (these never count). Lines are read with
+  plumbing and `--text`, so the clone's configuration and attributes change nothing.
 - **APR-003** The rule does not hold, and the head needs its review, when a file of the reviewed
   change is no longer part of the pull request's change, when a merge after the reviewed commit
-  resolved a conflict, or when the reviewed commit is not an ancestor of the head.
+  resolved a conflict or merged anything but the integration branch (the commit its origin
+  names now, read from GitHub or a playground's own repository and then fetched, never a ref of
+  the clone: without it nothing carries), when the reviewed commit is not an ancestor of the
+  head, or when a product file's changed line has a NUL byte or is over 200 bytes (no line count
+  says what it changed). Commits are read as their objects say: no replace ref, graft or
+  commit-graph file of the clone counts.
 - **APR-004** The merge record says what was counted ("reviewed at X; since then N product lines
   in M files: …"), and so does the tool's answer; a refusal names the count and the files.
 - **APR-005** The review rules say, the same way everywhere: after an approval, fix the remaining
@@ -409,6 +423,7 @@ Both are checked on current `dev` first and fixed test-first if they still hold.
 - [ ] Fix 5's independent review answered test-first
 - [ ] Fix 6: delivery_merge keeps an approval across at most 20 product lines and records what it counted (APR-001 to APR-004)
 - [ ] Fix 6: the review rules state the bound; a project sets what counts as product code; the decision amending the reviewed-head rule (APR-002, APR-005)
+- [ ] Fix 6's review rounds 1 and 2 answered test-first: plumbing reads, Rust-token test spans, the integration commit from its origin
 - [ ] Fix 6's independent review answered test-first
 - [ ] Fix 7: a limit that cuts a subagent off is the session's news, and a cut-off reviewer is resumed after the move (RLM-001, RLM-002)
 - [ ] Fix 7: a review does not start on a subscription about to run out; the rules say resume, never restart, high effort (RLM-003, RLM-004)
@@ -1222,3 +1237,245 @@ Both are checked on current `dev` first and fixed test-first if they still hold.
     another commit with the same tree ran `web`; the integration branch's run reuses it, not the
     newer pull request's run that skipped `web`. With `return` instead of `continue` it runs
     again.
+
+### Fix 6: an approval survives a small follow-up
+
+- APR-001, APR-003: `Git::follow_up_since` walks the first parents from the head to the reviewed
+  commit (at most 64 commits). A merge passes only when its second parent is on the integration
+  branch and its tree is what `merge-tree` gives; any other merge, or a reviewed commit off that
+  way, is `None` (refused). Every other commit is counted by `Git::commit_lines` (`git show -U0
+  --no-renames --first-parent`; unit `unified_zero_hunks_give_line_numbers`).
+  `App::follow_up_since_review` then refuses a file of the reviewed change that left the pull
+  request's change (`changed_paths` of the reviewed commit and the head).
+- APR-002: `follow_up::ProductRule` (unit `product_code_is_every_file_but_tests_and_documents`)
+  and `FileLines::product_lines` (unit `a_follow_up_counts_product_lines_commit_by_commit`: a
+  Rust file's lines from its first `#[cfg(test)]` on do not count; the bound is 20, 21 is over).
+  `[review] product` / `not_product` in `yulius.toml` (`parse_yulius_toml_review`; unit
+  `the_review_table_sets_what_counts_as_product_code`: unknown keys, an empty list, `/etc`, `..`
+  and `[[review]]` are errors, in the whole contract too). The integration branch's table is
+  read, so a pull request does not loosen its own count; one that does not parse refuses.
+- APR-004: the summary and the armed merge's audit entry end with "[reviewed at X; since then N
+  product lines in M files: a 12, b 3]"; a refusal says the count and the files, or the reason.
+- AC-17: `delivery::an_approval_carries_across_a_small_follow_up`, real Git through the agent's
+  MCP `delivery_merge`:
+  - 20 product lines plus 150 test and 50 document lines: armed, "since then 20 product lines in
+    1 file: src/extra.rs 20" recorded;
+  - 21 lines and two commits of 12 (24): refused with the count;
+  - 40 lines in a Rust test module plus 3 lines: accepted, 3 counted;
+  - `src/feature.rs` of the reviewed change removed: refused naming it;
+  - a clean merge of `dev` plus 5 lines: accepted;
+  - a conflicted merge, a clean merge that changed another file too, and a merge of a side
+    branch: refused;
+  - dev's `[review] not_product = ["src/gen/"]`: 25 lines there do not count; a `[review]`
+    that does not parse refuses, naming it.
+- Mutation checks (each restored after): dropping the left-the-change check, the test-module
+  line, the tree check, the second parent's ancestor check, the bound, the configured rule (the
+  default instead) or the parse refusal fails the test, each one. The tree and ancestor checks
+  survived the first version of the test (a conflicted merge is refused by `merge-tree` alone);
+  the clean merge that changed more and the side-branch merge were added for them.
+- APR-005: the rule's sentence in `delivery-pipeline`, `om-code-review`, `git-hygiene`,
+  `yulius-review`, `yulius-git`, the workflow, git.md and AGENTS.md, and the bound in
+  `delivery_merge`'s description; `skills::every_place_states_the_follow_up_bound` holds them
+  (dropping it from AGENTS.md fails it). The briefing has no byte to spare and says nothing new.
+- ADR-0345 (amends ADR-0066 point 3), api.md's `[review]`, the `yulius.toml` reference in
+  `config.rs`, changes.
+- `delivery::a_review_carries_over_clean_merges_of_the_integration_branch` (SPEC-083) refused a
+  one-line commit after the review; under APR-001 that line keeps the approval, so its new work
+  is now 22 lines (21 added, 1 removed), still refused.
+- Local runs: `cargo test -p yulius --test main` 1705 passed, 1 failed:
+  `pool_supervision::a_reattached_run_at_a_limit_is_restarted_past_it`, the known load flake
+  #1286 (passes alone, 3 of 3). `cargo test -p yulius-git`: one `git_ops` test at a time fails
+  `ETXTBSY` on a fake git script under load (a different test in different runs; filed as #1332,
+  present on dev, not touched here). Domain 529, app 576, clippy and fmt clean.
+- How to read it a week later: `SELECT at, detail FROM audit_log WHERE action IN
+  ('delivery.agent.merge', 'delivery.agent.merge_armed') AND detail LIKE '%since then%product
+  line%'` lists the merges that used the bound, with their counts; the analytics read's rounds
+  per pull request (fix 1's) says whether rounds fell.
+- Review round 1 (Opus 5.5 while Fable's weekly limit held, head `de8377238`): request changes,
+  1 blocker and 5 majors in own code, each answered test-first. All seven mutations below fail a
+  test, and each is restored after.
+  1. Blocker: `git show` follows the clone's settings (`color.diff=always` → 0 lines; `-diff`
+     in `info/attributes` or a committed `.gitattributes` → "Binary files differ").
+     - The fix: `commit_lines` reads `git diff-tree -r -p -U0 --text --no-color --src-prefix=a/
+       --dst-prefix=b/` with `GIT_ATTR_NOSYSTEM=1`, `core.quotePath=false` and an empty
+       `diff.orderFile`. `diff-tree --numstat -z` gives the exact paths, and its counts must
+       agree with the patch. `--numstat` gives `-` for a `-diff` file; the patch, with
+       `--text`, does not, and decides.
+     - A changed line with a NUL byte or over 1,000 bytes makes its file opaque, and product
+       code that is opaque refuses.
+     - Tests: `git_ops::a_commits_lines_ignore_the_clones_settings` (real Git: colour, no
+       prefix, `-diff` everywhere, a binary file, a path with a space and `ü.rs`), and the
+       delivery cases "the clone's settings do not hide lines" and the NUL byte. Dropping
+       `--text`, or the opaque refusal, fails them.
+  2. Major: the stateless parser.
+     - The fix: `parse_unified_zero` starts a file only at `diff --git` and gives a hunk
+       exactly the lines its header counts; `None` (refused) when a hunk ends short.
+     - Test: unit `a_patch_is_read_by_its_hunk_counts` (a `++ b/docs/x.md` content line, `\ No
+       newline` markers, a new file, a mode change, a short hunk, NUL and long lines).
+  3. Major: the first `#[cfg(test)]` ended the count.
+     - The fix: `follow_up::test_module_spans` excludes only a `#[cfg(test)] mod name {` to the
+       first `}` at its indentation. A module never closed, `mod tests;` and a single item are
+       counted. APR-002 and the ADR are amended.
+     - Tests: unit `only_test_modules_are_test_spans`; the delivery case
+       `#[cfg(test)]\nmod tests;` + 30 lines is refused (32). Marking every line a test fails it.
+  4. Major: the answer lacked the count, and the test read it from the audit.
+     - The fix: an accepted answer has `review: "reviewed at X; since then …"`.
+     - Test: `deliver_after_follow_up` returns the answer and the audit entries apart, and each
+       accepted case asserts both. Dropping the field fails it.
+  5. Major: the merge record (`delivery.review.models`) used only the clean-merge rule.
+     - The fix: it also accepts a follow-up within the bound, judged against the merge's base.
+     - Test: `a_merge_commit_merge_judges_the_head_against_the_branch_before_it` adds a small
+       follow-up, merged three ways, which is not flagged; the side branch still is. Dropping
+       the call fails it.
+  6. Major: `origin/<branch>` resolves a tag or a local branch of that name first.
+     - The fix: the integration branch is `refs/remotes/origin/<branch>` here and in
+       `review_covers_against` (on dev before this change; fixed here because the follow-up
+       relies on it). A failed refresh now refuses in both, where it only warned.
+     - Tests: the side-branch merge with a tag and with a local branch `origin/dev`; and the
+       origin moved away, which refuses with "could not be refreshed". The short name fails the
+       first, keeping the warning fails the second.
+  7. Minor: a Git error is logged and said ("Git could not walk the commits …"), not read as a
+     conflict.
+  8. Minor: the playground's merged and armed audit entries end with the count too.
+  9. Minor: `product` globs no longer make tests or documents count (unit
+     `product_code_is_every_file_but_tests_and_documents`).
+  10. Minor (design), answered in words: shipped instruction files (`SKILL.md`, `AGENTS.md`)
+      are documents by the repository's own rule (`is_documentation_path`, the one the spec
+      check uses). The person decided that documents do not count. A project that wants them
+      counted can drop them with `not_product`, which only removes paths, or narrow `product`.
+      The bound is per follow-up after an approval, and every such merge's record names the
+      files. Not changed.
+  11. Nits:
+      - `only_clean_merges_since` is now the follow-up walk with nothing counted.
+      - The left-the-change check uses a set.
+      - The second refresh in `delivery_merge` (once for the clean-merge rule, once for the
+        count) stays: it is a local fetch, and only when the head moved past the review.
+- Review round 2 (Opus 5.5, head `c6829dfec`): request changes, 1 blocker and 2 majors in own
+  code. Round 1's findings 1, 2 and 4 to 11 are closed (the reviewer's probes against the real
+  `commit_lines`); 3 was closed only in part. Answered test-first; all six mutations below fail
+  a test.
+  - A. Blocker: `git replace` (and grafts, or a forged commit-graph) made a commit look
+    different to every read.
+    - The fix: every Git command of Yulius now runs with `GIT_NO_REPLACE_OBJECTS=1`,
+      `GIT_GRAFT_FILE=/dev/null` and `core.commitGraph=false` (`runner.rs`, pinned by the
+      runner's test). This also covers the clean-merge walk, which was exposed on dev before.
+    - Test: `git_ops::a_follow_up_is_read_from_the_commits_themselves` (a 200-line commit
+      replaced by a 1-line one, plus a graft that skips it). Dropping either variable fails it.
+    - The commit-graph setting has no test of its own: a forged graph file is not something the
+      test can write.
+  - B. Major: test-module spans were read as lines of text.
+    - The fix: `test_module_spans` reads Rust tokens. `code_only` blanks line, nested block
+      and doc comments, strings, raw strings and character literals (lifetimes stay code); a
+      `#[cfg(test)]` whose next item, after further attributes and a visibility, is `mod name {`
+      spans to its matching brace. Anything that does not lex gives no span.
+    - Tests: unit `test_spans_are_read_from_rust_tokens` (a fake module in a block comment, in
+      a string, in a raw string; braces in a char, a string, a comment and `'\u{7D}'`; an
+      unformatted close; nested comments; unclosed ones; spaced attributes). Unit
+      `real_files_have_their_test_module_and_nothing_else`: four of this crate's own files,
+      whose tests hold these tricks, each have exactly their test module. The delivery case of
+      a comment-borne module is refused (34). Lexing nothing, or never closing, fails them.
+  - C. Major: the integration branch was read back from the clone after the fetch.
+    - The fix: `App::integration_head` reads the commit from GitHub's branch (a playground: its
+      own repository on the server) before the fetch, and every check takes that commit. Here
+      and in `review_covers_against` (whose ref reading was on dev before).
+    - Tests: in the delivery fixture, a ref moved right after every fetch
+      (`forged_after_fetch`), with a merged side branch, is refused; a failed fetch and an
+      origin that cannot be read refuse, each with its reason. Reading the ref again fails the
+      first.
+  - D. Minor: a type change (a link become a file) is one record and two patch sections; they
+    are paired now (in the `git_ops` test above). Dropping the pairing fails it.
+  - E. Minor, answered in words: when a fetch fails, the armed merge is dropped (fail closed).
+    The message the agent gets says the branch moved and asks for a review of the new head. It
+    makes no claim about clean merges, so it is not wrong; the agent re-arms once the fetch
+    works.
+  - F. Nit, taken: an opaque line is now one over 200 bytes (formatters wrap at 80-120), not
+    1,000.
+  - `git_ops` wrappers that find the subcommand by its place (`${31}`) now look two places
+    later, for the new `-c` pair.
+- Review round 3 (Opus 5.5, head `43a0246b9`): request changes, 1 major in own code. Round 2's
+  A to D and F are closed (the reviewer also tried swapping a commit's loose object: Git
+  refuses it, "hash mismatch"); E stays answered in words. Answered test-first; all three
+  mutations below fail a test.
+  - G. Major: a macro can keep a fake test module's body and drop its attribute (`keep! {
+    #[cfg(test)] mod t { … } }`).
+    - The fix: `test_module_spans` keeps a stack of the open delimiters. A span counts only
+      when every one around it is a module's brace (the top of the file or `mod name {`), so
+      not in a macro's input of any bracket kind, a function or an `impl`; and only when
+      `#[cfg(test)]` is its item's first outer attribute, so no attribute macro sees the
+      module first.
+    - Test: `test_spans_are_read_from_rust_tokens` holds six hidden shapes and one nested
+      module after an inner attribute. Dropping either rule fails it.
+  - H. Minor: `GIT_GRAFT_FILE=/dev/null` made Git print the graft deprecation hint on every
+    command.
+    - The fix: the variable now names a file that does not exist, so no grafts are read and
+      nothing is printed.
+    - Test: `git_ops::reading_no_grafts_prints_no_hint` captures the stderr of real commands.
+      `/dev/null` fails it.
+  - I. Minor, no change (the reviewer's own advice): `core.commitGraph=false` costs generation
+    numbers in ancestry queries; nothing in Yulius relies on commit-graphs. If large
+    repositories slow down, it moves to the walk and the count only.
+  - J. Nit, answered in words: the 200-byte bound refuses long lines in non-Rust product files
+    (SQL, YAML) back to a review round, which is safe; `not_product` takes such files out.
+  - The reviewer's open gap, whether agents can write a playground's origin: they cannot. It is
+    `<data>/playgrounds/<id>.git`, outside the sandbox (ADR-0081, `playground_origin`).
+- Review round 4 (Opus 5.5, head `8abd2259d`): request changes, 1 major and 1 minor in own
+  code. Round 3's G and H are closed (the reviewer's probes: lifetimes, `'\u{7d}'`, a
+  `macro_rules!` body and a raw identifier give no span; a doc comment or an inner attribute
+  before a real module keeps it). Answered test-first; all three mutations below fail a test.
+  - K. Major: a test- or document-classified file counts as such even when new product code
+    builds it in (`#[path = "../fixtures/evil.rs"] mod evil;`, `include!`, an import from
+    `__tests__/`).
+    - The fix: `FollowUp::count` counts any changed file that the text of an added product
+      line names by its folder and stem (`fixtures/evil`, `__tests__/helper`). An added Rust
+      product line with `#[path`, `include!(`, `include_str!(` or `include_bytes!(` (spaces
+      ignored) is reported in `includes`, and the carry refuses, naming the file.
+    - Tests: unit `a_file_product_code_names_counts` (`#[path]`, a JS import, a line inside a
+      test module that names nothing, the keys); the delivery cases of a `#[path]` fixture
+      (refused, naming `src/extra.rs`) and a JS import (26 counted). Dropping either rule fails
+      them.
+    - What is left (the person's rule; written into ADR-0345's consequences): a test or
+      document file that product code built in before the review is not counted when it
+      changes.
+  - L. Minor: an attribute macro on an enclosing module could strip `#[cfg(test)]` from its
+    input.
+    - The fix: a module brace counts as a module only when the item's outer attributes are
+      built-ins (`cfg`, `allow`, `warn`, `deny`, `forbid`, `expect`, `doc`, `path`, `rustfmt`,
+      `clippy`, `macro_use`). `cfg_attr` is excluded: it can apply any attribute.
+    - Test: two more hidden shapes (`#[keep] mod x { … }` and `#[cfg_attr(not(test), keep)]`),
+      and a nested module after `#[allow]` and `#[rustfmt::skip]` keeps its span. Dropping the
+      rule fails it.
+- Review round 5 (Opus 5.5, head `c1df65dbb`): request changes. L is closed. K is still open:
+  five routes load a changed test file with no name in the line (`mod fixtures;`, an aliased
+  `include` with `concat!`, `from tests.evil import`, a folder's `index.js`, a re-export). Also
+  one minor, M: the ADR claimed more than was closed. Answered test-first; all three mutations
+  below fail a test.
+  - K. The reviewer's coarse rule, taken:
+    - When any product line the follow-up added loads code (the words `import`, `require`,
+      `require_relative`, `include`, `include_str`, `include_bytes`, `concat`, or `export …
+      from`, `#[path`, a `mod name;` declaration), every test and document file it changed
+      counts, except what `not_product` names.
+    - A Rust file under `src/` is never a test file by folder or name.
+    - Tests: unit `a_file_product_code_names_counts` holds the five routes plus Ruby's
+      `require_relative`, C's `#include` and an `include_str!` of `README.md`. A plain line
+      (`important`, which is not the word `import`) keeps tests out; `not_product` keeps a
+      loaded file out; `src/fixtures/mod.rs` is product code. The delivery case `from
+      tests.evil import run` counts 31 and refuses. Dropping the rule, or the `src/` rule, fails
+      them.
+  - M. ADR-0345's Consequences now list what the count catches and what it does not, without
+    the claim. What it does not catch: a file built in before the review, and what one line
+    does, which no line count can say and which is the review's to find.
+- Review round 6 (Opus 5.5, head `f6123feff`): the code is approvable. K is closed for every
+  round-5 route (each hidden file counted, through the real `FollowUp::count`), and the ADR's
+  limits are stated honestly. The verdict was request changes only because the head had no
+  Yulius CI run yet; the reviewer's condition is approve once one exists. The minors are fixed
+  first, as ADR-0141 asks; both mutations below fail a test.
+  - N1. Minor: a Cargo path dependency (`evil = { path = "tests/evil" }`) and
+    `importlib.import_module` / `__import__` had no loading word.
+    - The fix: a loading word now matches inside a word, in any case (`import`, `require`,
+      `include`, `concat`), and a manifest line with `path =` or `file:` loads.
+    - Tests: the four cases in `a_file_product_code_names_counts`. Exact matching, or dropping
+      `path =`, fails them.
+  - N2. Nit, answered in words: words like `concat` or `include` in lines that load nothing
+    also make tests count. That errs towards a review round, which the ADR now says.
+  - N3. Nit, taken: ADR-0345's wording ("can grow freely … as long as no added product line has
+    a loading word"; "has a loading word … whether or not it loads anything").

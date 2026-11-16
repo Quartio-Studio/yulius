@@ -797,6 +797,11 @@ CARGO_BUILD_JOBS = "{cpus}" # placeholders {cpus}, {memory_mb}, {memory_gb}; at 
                             # not what Yulius sets or what changes how the agent CLI, Git, TLS,
                             # proxies, shells or interpreters run (PATH, HOME, CI, YULIUS_*, GIT_*,
                             # ANTHROPIC_*, CLAUDE_*, NODE_*, PYTHON*, *_PROXY, LD_* and similar)
+
+[review]                    # optional: what counts as product code in a follow-up after an
+product = ["crates/"]       #   approval (at most 20 such lines keep it, ADR-0345): `product` (1-50
+not_product = ["crates/gen/"] # globs) counts only these, `not_product` never these; default: every
+                            #   file but tests and documents; the integration branch's table counts
 ```
 
 Jobs name their stages with `::yulius-stage <name>` lines ("Stages" below). Jobs get `CI=true`, `HOME` (persistent, shared by the sandbox's lanes), `YULIUS_CI_CACHE` (persistent, the job checkout's own: never shared with a job running at the same time), `YULIUS_CI_RUN`,

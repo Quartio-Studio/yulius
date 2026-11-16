@@ -1571,12 +1571,12 @@ fn a_bundle_growing_past_its_limit_is_killed_while_written() -> TestResult {
     let repo = fx.path("repo.git");
     fs::create_dir(&repo)?;
     let (script, pids) = (fx.path("bundling-git"), fx.path("pids"));
-    // Its arguments: thirty hardening `-c` words, `bundle create --quiet`, then the bundle's
+    // Its arguments: thirty-two hardening `-c` words, `bundle create --quiet`, then the bundle's
     // path.
     write_hook(
         &script,
         &format!(
-            "#!/bin/sh\necho $$ > '{p}'\nhead -c 3000000 /dev/zero > \"${{34}}.lock\"\nsleep 30 &\n\
+            "#!/bin/sh\necho $$ > '{p}'\nhead -c 3000000 /dev/zero > \"${{36}}.lock\"\nsleep 30 &\n\
              echo $! >> '{p}'\nwait\n",
             p = pids.display()
         ),
@@ -2510,7 +2510,7 @@ fn a_clone_configuration_swapped_for_a_link_during_the_scrub_is_never_written_th
     fs::write(
         &swapper,
         format!(
-            "#!/bin/sh\nif [ \"${{31}}\" = config ] && [ ! -e '{mark}' ]; then\n  : > '{mark}'\n  \
+            "#!/bin/sh\nif [ \"${{33}}\" = config ] && [ ! -e '{mark}' ]; then\n  : > '{mark}'\n  \
              mv '{config}' '{config}.aside' && ln -s '{outside}' '{config}'\nfi\nexec git \"$@\"\n",
             mark = fx.path("swapped").display(),
             config = config.display(),
@@ -2537,7 +2537,7 @@ fn a_clone_configuration_swapped_for_a_link_during_the_scrub_is_never_written_th
     Ok(())
 }
 
-/// A `git` at `path` that runs `script` (sh, `${31}` is the subcommand after the fifteen fixed
+/// A `git` at `path` that runs `script` (sh, `${33}` is the subcommand after the sixteen fixed
 /// `-c` pairs) before the real Git.
 fn wrapped_git(fx: &Fixture, path: &Path, script: &str) -> Result<Git, Box<dyn Error>> {
     use std::os::unix::fs::PermissionsExt as _;
@@ -2590,7 +2590,7 @@ fn a_clone_configuration_swapped_for_a_fifo_is_refused_without_blocking() -> Tes
         &fx,
         &fx.path("fifo-git"),
         &format!(
-            "if [ \"${{31}}\" = config ] && [ ! -p '{file}' ]; then rm '{file}' && mkfifo '{file}'; fi",
+            "if [ \"${{33}}\" = config ] && [ ! -p '{file}' ]; then rm '{file}' && mkfifo '{file}'; fi",
             file = worktree_config.display()
         ),
     )?;
@@ -2642,5 +2642,133 @@ fn list_dir_lists_the_root_when_no_directory_is_named() -> TestResult {
         fx.git.list_dir(&repo, "HEAD", "docs")?,
         vec!["docs/a.md".to_owned()]
     );
+    Ok(())
+}
+
+/// Review round 1 of SPEC-493 fix 6: what a commit changed is read the same whatever the clone's
+/// configuration and attributes say: coloured or prefix-less diffs, `-diff` in `info/attributes`
+/// or a committed `.gitattributes` still count every line; a binary file is opaque; a path with a
+/// space or a non-ASCII name comes back exact.
+#[test]
+fn a_commits_lines_ignore_the_clones_settings() -> TestResult {
+    let fx = Fixture::new()?;
+    let (_remote, repo) = fx.repo_with_remote()?;
+    let lines = |n: usize| -> String { (1..=n).map(|i| format!("pub fn f{i}() {{}}\n")).collect() };
+    fs::create_dir_all(repo.join("src"))?;
+    fs::write(repo.join("src/lib.rs"), lines(3))?;
+    fs::write(repo.join(".gitattributes"), "src/*.rs -diff\n")?;
+    fs::write(repo.join("logo.png"), [0u8, 159, 146, 150, 0, 1])?;
+    fs::write(repo.join("src/a b.rs"), lines(2))?;
+    fs::write(repo.join("src/\u{fc}.rs"), lines(4))?;
+    fx.git.commit_all(&repo, "Follow-up", &author())?;
+    fs::create_dir_all(repo.join(".git/info"))?;
+    fs::write(repo.join(".git/info/attributes"), "* -diff\n")?;
+    for (key, value) in [
+        ("color.diff", "always"),
+        ("color.ui", "always"),
+        ("diff.noprefix", "true"),
+        ("diff.mnemonicPrefix", "true"),
+        ("core.quotePath", "true"),
+    ] {
+        fx.raw(&repo, &["config", key, value])?;
+    }
+    let mut files = fx.git.commit_lines(&repo, "HEAD")?;
+    files.sort_by(|a, b| a.path.cmp(&b.path));
+    let seen: Vec<(&str, usize, bool)> = files
+        .iter()
+        .map(|f| (f.path.as_str(), f.added.len(), f.opaque))
+        .collect();
+    assert_eq!(
+        seen,
+        [
+            (".gitattributes", 1, false),
+            ("logo.png", 1, true),
+            ("src/a b.rs", 2, false),
+            ("src/lib.rs", 3, false),
+            ("src/\u{fc}.rs", 4, false),
+        ]
+    );
+    assert_eq!(files[3].added, [1, 2, 3]);
+    // A merge is not one commit's change.
+    assert!(fx.git.commit_lines(&repo, "HEAD~1^{tree}").is_err());
+    Ok(())
+}
+
+/// Review round 2 of SPEC-493 fix 6: a commit is what its object says. A replace ref, a graft
+/// file or the clone's commit-graph change neither what `commit_lines` counts nor the commits
+/// `follow_up_since` walks; a type change (a link become a file) reads as one file.
+#[cfg(unix)]
+#[test]
+fn a_follow_up_is_read_from_the_commits_themselves() -> TestResult {
+    let fx = Fixture::new()?;
+    let (_remote, repo) = fx.repo_with_remote()?;
+    let lines = |n: usize| -> String { (1..=n).map(|i| format!("pub fn f{i}() {{}}\n")).collect() };
+    let reviewed = fx.git.rev_parse(&repo, "HEAD")?;
+    fs::write(repo.join("big.rs"), lines(200))?;
+    fx.git.commit_all(&repo, "Big", &author())?;
+    let big = fx.git.rev_parse(&repo, "HEAD")?;
+    fs::write(repo.join("small.rs"), lines(1))?;
+    fx.git.commit_all(&repo, "Small", &author())?;
+    let small = fx.git.rev_parse(&repo, "HEAD")?;
+    // A commit that adds one line, put in place of the big one, and the small one grafted
+    // straight onto the reviewed commit.
+    fx.raw(&repo, &["checkout", "-q", "--detach", &reviewed])?;
+    fs::write(repo.join("big.rs"), lines(1))?;
+    fx.git.commit_all(&repo, "Fake", &author())?;
+    let fake = fx.git.rev_parse(&repo, "HEAD")?;
+    fx.raw(&repo, &["checkout", "-q", "main"])?;
+    fx.raw(&repo, &["replace", &big, &fake])?;
+    fs::write(
+        repo.join(".git/info/grafts"),
+        format!("{small} {reviewed}\n"),
+    )?;
+    fx.raw(&repo, &["commit-graph", "write", "--reachable"])?;
+    assert_eq!(
+        fx.raw(&repo, &["show", "-s", "--format=%P", &small])?,
+        reviewed
+    );
+    let files = fx.git.commit_lines(&repo, &big)?;
+    assert_eq!(files.len(), 1);
+    assert_eq!(files[0].added.len(), 200);
+    assert_eq!(
+        fx.git
+            .follow_up_since(&repo, &reviewed, &small, "refs/heads/main", 10)?,
+        Some(vec![small.clone(), big.clone()])
+    );
+    // A link become a file: one file, its old line removed and its new ones added.
+    fs::remove_file(repo.join(".git/info/grafts"))?;
+    std::os::unix::fs::symlink("target", repo.join("link"))?;
+    fx.git.commit_all(&repo, "Link", &author())?;
+    fs::remove_file(repo.join("link"))?;
+    fs::write(repo.join("link"), "a\nb\n")?;
+    fx.git.commit_all(&repo, "File", &author())?;
+    let files = fx.git.commit_lines(&repo, "HEAD")?;
+    assert_eq!(files.len(), 1, "{files:?}");
+    assert_eq!((files[0].added.len(), files[0].removed.len()), (2, 1));
+    Ok(())
+}
+
+/// Review round 3 of SPEC-493 fix 6: reading no grafts makes Git say nothing about them: no
+/// command's error output starts with the graft file's deprecation hint.
+#[cfg(unix)]
+#[test]
+fn reading_no_grafts_prints_no_hint() -> TestResult {
+    use std::os::unix::fs::PermissionsExt as _;
+    let fx = Fixture::new()?;
+    let (_remote, repo) = fx.repo_with_remote()?;
+    let said = fx.path("stderr.log");
+    let wrapper = fx.path("stderr-git");
+    fs::write(
+        &wrapper,
+        format!("#!/bin/sh\nexec git \"$@\" 2>>'{}'\n", said.display()),
+    )?;
+    fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o755))?;
+    let git = isolated(Git::new(&wrapper), &fx.home);
+    fs::write(repo.join("a.txt"), "changed\n")?;
+    git.commit_all(&repo, "Change", &author())?;
+    git.commit_lines(&repo, "HEAD")?;
+    git.log(&repo, "HEAD", 5)?;
+    let stderr = fs::read_to_string(&said).unwrap_or_default();
+    assert!(!stderr.contains("grafts"), "{stderr}");
     Ok(())
 }

@@ -64,7 +64,8 @@ const INHERITED_ENV: &[&str] = &[
 /// pushed the submodule by its own configuration, with its own command for the other side.
 /// No helper is asked for a password (an empty value clears every one read before it; the
 /// server's token is a header), no bundle is downloaded before a fetch (`fetch.bundleURI`
-/// connects by itself, whatever transports are allowed) and no push fetches first.
+/// connects by itself, whatever transports are allowed) and no push fetches first. No
+/// commit-graph file of the clone says a commit's parents (see [`FIXED_ENV`]).
 const FIXED_CONFIG: &[&str] = &[
     "-c",
     "protocol.ext.allow=never",
@@ -96,7 +97,14 @@ const FIXED_CONFIG: &[&str] = &[
     "fetch.bundleURI=",
     "-c",
     "push.negotiate=false",
+    "-c",
+    "core.commitGraph=false",
 ];
+
+/// A graft file that does not exist: Git then reads no grafts and says nothing (an existing empty
+/// one, such as `/dev/null`, prints the deprecation hint on every command; review round 3 of
+/// SPEC-493 fix 6).
+const NO_GRAFT_FILE: &str = "/nonexistent/yulius-reads-no-grafts";
 
 /// The environment of every command, after the adapter's own. Constant.
 ///
@@ -107,12 +115,18 @@ const FIXED_CONFIG: &[&str] = &[
 /// - A missing object is missing: Git does not fetch it from a "promisor" remote, which a
 ///   clone's configuration names, with a command for the other side that the shell of a local
 ///   transfer would run.
+/// - A commit is what its object says: no replace ref, graft file or commit-graph file of the
+///   clone (all the agents' to write) changes its parents, its tree or what it changed, which
+///   the follow-up count and the clean-merge walk read (review round 2 of SPEC-493 fix 6). A
+///   push never carries them, so Yulius reads what a pull request holds.
 const FIXED_ENV: &[(&str, &str)] = &[
     ("GIT_EDITOR", ":"),
     ("GIT_TERMINAL_PROMPT", "0"),
     ("GIT_ASKPASS", ""),
     ("GCM_INTERACTIVE", "never"),
     ("GIT_NO_LAZY_FETCH", "1"),
+    ("GIT_NO_REPLACE_OBJECTS", "1"),
+    ("GIT_GRAFT_FILE", NO_GRAFT_FILE),
     ("LC_ALL", "C"),
 ];
 
@@ -1029,6 +1043,7 @@ mod tests {
             "submodule.recurse=false",
             "credential.helper=",
             "fetch.bundleURI=",
+            "core.commitGraph=false",
             "push.negotiate=false",
             "core.fsmonitor=false",
             "core.hooksPath=/dev/null",
@@ -1039,13 +1054,16 @@ mod tests {
             );
         }
         // No editor, nobody asked for a password (an empty program is none, and comes before
-        // the clone's `core.askPass`), no object fetched from a remote the clone names.
+        // the clone's `core.askPass`), no object fetched from a remote the clone names, and no
+        // replace ref or graft of the clone's.
         let command = git.command(&Invocation::new(&git, "x", None).arg("commit"));
         for (name, wanted) in [
             ("GIT_EDITOR", ":"),
             ("GIT_ASKPASS", ""),
             ("GIT_TERMINAL_PROMPT", "0"),
             ("GIT_NO_LAZY_FETCH", "1"),
+            ("GIT_NO_REPLACE_OBJECTS", "1"),
+            ("GIT_GRAFT_FILE", NO_GRAFT_FILE),
         ] {
             assert!(
                 command.get_envs().any(

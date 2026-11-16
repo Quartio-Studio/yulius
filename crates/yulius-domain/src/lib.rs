@@ -23,6 +23,7 @@ pub mod context_full;
 pub mod cron;
 pub mod delivery;
 pub mod disk;
+pub mod follow_up;
 pub mod harness;
 pub mod ids;
 pub mod intake;

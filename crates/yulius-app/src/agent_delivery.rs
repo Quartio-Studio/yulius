@@ -143,6 +143,26 @@ impl App {
     /// `Invalid` arguments; `Conflict` while the review does not cover the head or the checks
     /// have not passed; every refusal of the delivery path (`merge_task_pr`).
     pub async fn tool_delivery_merge(&self, ctx: &AgentContext, args: &Value) -> AppResult<Value> {
+        let mut since = String::new();
+        let mut answer = self.delivery_merge_answer(ctx, args, &mut since).await?;
+        // An accepted call past the reviewed head says what it counted (SPEC-493 APR-004).
+        if let Some(map) = answer.as_object_mut()
+            && !since.is_empty()
+        {
+            let said = since.trim().trim_start_matches('[').trim_end_matches(']');
+            map.insert("review".to_owned(), Value::String(said.to_owned()));
+        }
+        Ok(answer)
+    }
+
+    /// [`App::tool_delivery_merge`]'s answer; `since` gets what changed after the reviewed head
+    /// when it is not this one.
+    async fn delivery_merge_answer(
+        &self,
+        ctx: &AgentContext,
+        args: &Value,
+        since: &mut String,
+    ) -> AppResult<Value> {
         let reviewed = str_arg(args, "reviewed_head")?;
         let mut summary: String = args
             .get("review_summary")
@@ -167,22 +187,41 @@ impl App {
             .next()
             .map(|c| c.sha)
             .ok_or_else(|| AppError::Conflict("the task branch has no commit".into()))?;
+        // What changed since the reviewed head, when it is not this one: recorded with the
+        // summary, in the audit entries and in the answer (SPEC-493 APR-004).
         if !same_commit(reviewed, &head) {
             // Git's own merges of the integration branch keep the review (SPEC-083 REV-001).
-            if !self
-                .review_covers(&ctx.task, std::path::Path::new(worktree), reviewed, &head)
+            let worktree_path = std::path::Path::new(worktree);
+            if self
+                .review_covers(&ctx.task, worktree_path, reviewed, &head)
                 .await
             {
-                return Err(AppError::Conflict(format!(
-                    "the independent review covered {reviewed}, but the branch is at {head}, \
-                     which adds more than clean merges of the integration branch; review the new \
-                     head in a fresh session first"
-                )));
+                *since = format!(
+                    " [reviewed at {reviewed}; since then only clean merges of the integration \
+                     branch]"
+                );
+            } else {
+                // A small follow-up keeps the approval (SPEC-493 APR-001 to APR-004).
+                match self
+                    .follow_up_since_review(&ctx.task, worktree_path, reviewed, &head, None)
+                    .await
+                {
+                    Ok(follow) => {
+                        *since = format!(
+                            " [reviewed at {reviewed}; since then {}]",
+                            follow.describe()
+                        );
+                    }
+                    Err(why) => {
+                        return Err(AppError::Conflict(format!(
+                            "the independent review covered {reviewed}, but the branch is at \
+                             {head}: {why}; review the new head in a fresh session first"
+                        )));
+                    }
+                }
             }
-            summary.push_str(&format!(
-                " [reviewed at {reviewed}; since then only clean merges of the integration branch]"
-            ));
         }
+        summary.push_str(since);
         // The call delivers the finished part of the plan: the steps still ahead stay open for a
         // later pull request, and the answer names them (SPEC-484 PLN-002, PLN-003). While the
         // merge is armed their work waits: a commit on the branch drops it.
@@ -216,7 +255,9 @@ impl App {
                         ctx,
                         "delivery.agent.merge",
                         &target,
-                        &format!("playground: squashed at head {head} reviewed independently"),
+                        &format!(
+                            "playground: squashed at head {head} reviewed independently{since}"
+                        ),
                     )
                     .await;
                     // A playground squashes a task once, with its whole plan: nothing is ahead.
@@ -229,7 +270,8 @@ impl App {
                         "delivery.agent.merge_armed",
                         &target,
                         &format!(
-                            "playground: armed at head {head} (checks {}); reviewed independently",
+                            "playground: armed at head {head} (checks {}); reviewed \
+                             independently{since}",
                             state.as_str()
                         ),
                     )
@@ -381,7 +423,9 @@ impl App {
                     ctx,
                     "delivery.agent.merge_armed",
                     &format!("{}#{}", sandbox.slug, ctx.task.number),
-                    &format!("armed at head {head} (checks {other}); reviewed independently"),
+                    &format!(
+                        "armed at head {head} (checks {other}); reviewed independently{since}"
+                    ),
                 )
                 .await;
                 return Ok(json!({
@@ -409,7 +453,7 @@ impl App {
                     "delivery.agent.merge_armed",
                     &format!("{}#{}", sandbox.slug, ctx.task.number),
                     &format!(
-                        "armed at head {head} (checks {checks}; {}); reviewed independently",
+                        "armed at head {head} (checks {checks}; {}); reviewed independently{since}",
                         err.public_message()
                     ),
                 )
