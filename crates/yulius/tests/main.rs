@@ -90,6 +90,7 @@ mod restart;
 mod review_rounds;
 mod run_metrics;
 mod sandbox_docker;
+mod scope_overlaps;
 mod secrets;
 mod secrets_copy;
 mod secrets_create;
