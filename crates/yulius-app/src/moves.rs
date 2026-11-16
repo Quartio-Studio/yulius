@@ -218,6 +218,7 @@ impl App {
             decision: false,
             link: Some(crate::account_gate::CONNECT_PATH.into()),
             at: self.now().0,
+            cause: None,
         };
         match store
             .set_task_needs_you(task_id, Some(&request), self.now())
@@ -272,6 +273,7 @@ impl App {
                 decision: false,
                 link: Some(crate::account_gate::CONNECT_PATH.into()),
                 at: now.0,
+                cause: None,
             };
             if let Err(err) = store
                 .set_task_needs_you(&task.id, Some(&request), now)

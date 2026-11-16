@@ -70,6 +70,7 @@ fn a_sandboxs_tasks_hear_of_its_docker_trouble_once_and_of_its_end() -> TestResu
             decision: false,
             link: None,
             at: 1,
+            cause: None,
         };
         app.deps
             .store
@@ -113,6 +114,7 @@ fn a_sandboxs_tasks_hear_of_its_docker_trouble_once_and_of_its_end() -> TestResu
             decision: false,
             link: None,
             at: 1,
+            cause: None,
         };
         app.deps
             .store
@@ -141,6 +143,273 @@ fn a_sandboxs_tasks_hear_of_its_docker_trouble_once_and_of_its_end() -> TestResu
         })
         .await?;
         stop(&app, &id).await?;
+        Ok(())
+    })
+}
+
+/// AC-7 (DFJ-011): requests about the sandbox's Docker are one shared problem. A person's
+/// answer to one task (a message through the Superagent) answers the others asked before and
+/// tells them so; the end of the Docker trouble (Yulius's repair) answers those asked before its
+/// end, and they hear that Docker works again. A request without the cause, and one asked after
+/// the end, stay open.
+#[test]
+fn requests_naming_the_sandboxs_docker_are_answered_together() -> TestResult {
+    use yulius_app::docker_trouble::DOCKER_ANSWERED;
+    use yulius_ptyhost::test_support::locate_fake_agent;
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = temp()?;
+    let agent = crate::support::agents::FakeAgentOptions {
+        transcript: true,
+        answers_first_message: true,
+        ..crate::support::agents::FakeAgentOptions::default()
+    };
+    let rt = runtime()?;
+    rt.block_on(async {
+        let app = build_tuned(&data, &fake, agent, |config| config.goal_ready_ms = 2_000)?;
+        let (sandbox, user) = seed(&app, &data, &["a-only"]).await?;
+        let first = new_task(&app, &sandbox, &user, "First").await?;
+        let second = new_task(&app, &sandbox, &user, "Second").await?;
+        let other = new_task(&app, &sandbox, &user, "Other").await?;
+        for (id, title) in [(&first, "First"), (&second, "Second"), (&other, "Other")] {
+            wait_for("the first answer", Duration::from_secs(30), || {
+                let shown = screen(&app, id);
+                let expected = format!("ECHO: {title}: answer with an echo");
+                async move { shown.contains(&expected) }
+            })
+            .await?;
+        }
+        let request =
+            |action: &str, at: i64, cause: Option<&str>| yulius_app::needs_you::NeedsYouRecord {
+                action: action.into(),
+                happened: None,
+                problem: None,
+                decision: false,
+                link: None,
+                at,
+                cause: cause.map(str::to_owned),
+            };
+        let ask = |id: &yulius_domain::ids::TaskId, at: i64, cause: Option<&'static str>| {
+            let app = std::sync::Arc::clone(&app);
+            let id = id.clone();
+            async move {
+                app.deps
+                    .store
+                    .set_task_needs_you(
+                        &id,
+                        Some(&request("Restart Docker", at, cause)),
+                        yulius_domain::time::Timestamp(at),
+                    )
+                    .await
+            }
+        };
+        let open = |id: &yulius_domain::ids::TaskId| {
+            let app = std::sync::Arc::clone(&app);
+            let id = id.clone();
+            async move {
+                app.deps
+                    .store
+                    .task_needs_you(&id)
+                    .await
+                    .map(|r| r.is_some())
+            }
+        };
+        // Passes until each of `ids` heard `text` once (sessions in their start window or behind
+        // a request of their own are told at a later pass).
+        let hear = |ids: Vec<yulius_domain::ids::TaskId>, text: &'static str| {
+            let app = std::sync::Arc::clone(&app);
+            async move {
+                let deadline = std::time::Instant::now() + Duration::from_secs(30);
+                let mut heard = Vec::new();
+                while ids.iter().any(|id| !heard.contains(&(id.clone(), text)))
+                    && std::time::Instant::now() < deadline
+                {
+                    heard.extend(app.tell_docker_troubles().await);
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+                }
+                heard
+            }
+        };
+        let now = app.now().0;
+        ask(&first, now - 2_000, Some("docker")).await?;
+        ask(&second, now - 1_000, Some("docker")).await?;
+        ask(&other, now - 1_000, None).await?;
+        // One episode for both, named by the oldest request (one notification, SPEC-494).
+        let episode = |id: &yulius_domain::ids::TaskId| {
+            let app = std::sync::Arc::clone(&app);
+            let id = id.clone();
+            async move {
+                let task = app.deps.store.task(&id).await?.ok_or("task")?;
+                let summary = app.task_summary(&task).await?;
+                Ok::<_, Box<dyn std::error::Error>>(summary.needs_you.and_then(|n| n.episode))
+            }
+        };
+        let first_episode = episode(&first).await?;
+        assert!(first_episode.is_some());
+        assert_eq!(episode(&second).await?, first_episode);
+        assert_eq!(episode(&other).await?, None, "no cause, no episode");
+
+        // A person answers the first through the Superagent: the second is answered and told.
+        let caller = yulius_app::coordination::ProjectCaller {
+            sandbox: sandbox.clone(),
+            user: user.clone(),
+            task: None,
+            channel: yulius_app::coordination::Channel::Superagent,
+            actor: "cockpit:admin".into(),
+            detail: serde_json::json!({"via": "cockpit"}),
+        };
+        // A session in its start window takes no message yet: sent again until it does.
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        let sent = loop {
+            match app
+                .tool_task_message(
+                    &caller,
+                    &serde_json::json!({"task_id": first.as_str(), "text": "Docker is fine now"}),
+                )
+                .await
+            {
+                Ok(sent) => break sent,
+                Err(yulius_app::error::AppError::Conflict(_))
+                    if std::time::Instant::now() < deadline =>
+                {
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+                }
+                Err(err) => return Err(err.into()),
+            }
+        };
+        assert_eq!(sent["delivered"], "sent", "{sent}");
+        assert!(
+            !open(&first).await? && !open(&second).await?,
+            "both answered"
+        );
+        assert!(open(&other).await?, "a request without the cause stays");
+        // The request ended through another is audited with its source; the one answered
+        // directly is not.
+        let audited = |id: &yulius_domain::ids::TaskId| {
+            let app = std::sync::Arc::clone(&app);
+            let id = id.clone();
+            async move {
+                app.deps
+                    .store
+                    .audit_details(id.as_str(), "task.needs_you.answered_shared", 10)
+                    .await
+            }
+        };
+        let rows = audited(&second).await?;
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert!(
+            rows[0].starts_with("docker: a person's answer to task #"),
+            "{rows:?}"
+        );
+        assert!(audited(&first).await?.is_empty());
+
+        let heard = hear(vec![second.clone()], DOCKER_ANSWERED).await;
+        assert_eq!(
+            heard.iter().filter(|(id, _)| *id == second).count(),
+            1,
+            "{heard:?}"
+        );
+        // Asked again; the sandbox's Docker trouble begins and ends (a repair): both are answered
+        // and hear that Docker works again; a request asked after the end stays.
+        let now = app.now().0;
+        ask(&first, now - 2_000, Some("docker")).await?;
+        ask(&second, now - 1_000, Some("docker")).await?;
+        let health = app.connection_health();
+        health.refused_times(
+            Refusal {
+                limit: Limit::Docker,
+                sandbox: Some(sandbox.as_str().to_owned()),
+                held: 256,
+                max: 256,
+                holders: Vec::new(),
+            },
+            1,
+            5,
+        );
+        app.tell_docker_troubles().await;
+        health.held(Limit::Docker, Some(sandbox.as_str()), 0);
+        app.tell_docker_troubles().await;
+        ask(&other, app.now().0 + 60_000, Some("docker")).await?;
+        let heard = hear(vec![first.clone(), second.clone()], DOCKER_BACK).await;
+        assert!(
+            !open(&first).await? && !open(&second).await?,
+            "the repair answered both"
+        );
+        assert!(open(&other).await?, "asked after the end: stays");
+        let back: Vec<_> = heard
+            .iter()
+            .filter(|(_, text)| *text == DOCKER_BACK)
+            .map(|(id, _)| id.clone())
+            .collect();
+        assert!(
+            back.contains(&first) && back.contains(&second) && back.len() == 2,
+            "{heard:?}"
+        );
+        stop(&app, &first).await?;
+        stop(&app, &second).await?;
+        stop(&app, &other).await?;
+        Ok(())
+    })
+}
+
+/// Slice 4 review round 2: a person continuing a stopped task whose stored request names the
+/// sandbox's Docker answers no other task's request: that request was not shown.
+#[test]
+fn continuing_a_stopped_task_answers_no_other_tasks_request() -> TestResult {
+    use yulius_ptyhost::test_support::locate_fake_agent;
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = temp()?;
+    let agent = crate::support::agents::FakeAgentOptions {
+        transcript: true,
+        answers_first_message: true,
+        ..crate::support::agents::FakeAgentOptions::default()
+    };
+    let rt = runtime()?;
+    rt.block_on(async {
+        let app = build_tuned(&data, &fake, agent, |config| config.goal_ready_ms = 2_000)?;
+        let (sandbox, user) = seed(&app, &data, &["a-only"]).await?;
+        let stopped = new_task(&app, &sandbox, &user, "Stopped").await?;
+        let working = new_task(&app, &sandbox, &user, "Working").await?;
+        for (id, title) in [(&stopped, "Stopped"), (&working, "Working")] {
+            wait_for("the first answer", Duration::from_secs(30), || {
+                let shown = screen(&app, id);
+                let expected = format!("ECHO: {title}: answer with an echo");
+                async move { shown.contains(&expected) }
+            })
+            .await?;
+        }
+        stop(&app, &stopped).await?;
+        let docker = |at: i64| yulius_app::needs_you::NeedsYouRecord {
+            action: "Restart Docker".into(),
+            happened: None,
+            problem: None,
+            decision: false,
+            link: None,
+            at,
+            cause: Some("docker".into()),
+        };
+        let now = app.now().0;
+        for (id, at) in [(&stopped, now - 2_000), (&working, now - 1_000)] {
+            app.deps
+                .store
+                .set_task_needs_you(id, Some(&docker(at)), yulius_domain::time::Timestamp(at))
+                .await?;
+        }
+        let ctx = yulius_app::auth::AuthContext {
+            user: app.deps.store.user(&user).await?.ok_or("user")?,
+            csrf_token: Some("csrf".into()),
+            session_hash: None,
+            token: None,
+        };
+        let req: yulius_contracts::api::tasks::ContinueTask =
+            serde_json::from_value(serde_json::json!({}))?;
+        app.continue_task(&ctx, stopped.as_str(), &req).await?;
+        assert!(app.deps.store.task_needs_you(&stopped).await?.is_none());
+        assert!(
+            app.deps.store.task_needs_you(&working).await?.is_some(),
+            "a stopped task's old request answers no other"
+        );
+        stop(&app, &stopped).await?;
+        stop(&app, &working).await?;
         Ok(())
     })
 }

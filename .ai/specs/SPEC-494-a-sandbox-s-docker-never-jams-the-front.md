@@ -152,9 +152,21 @@ ever reaches it).
 
 ### One shared problem, one Needs you (slice 4)
 
-- **DFJ-011** `needs_you` takes an optional `cause` naming a sandbox-level problem (`docker`).
-  Needs you of one sandbox with the same open cause show as one card naming its tasks; answering
-  it answers them all, and Yulius's repair of that cause answers them all too.
+- **DFJ-011** `needs_you` takes an optional `cause` naming a sandbox-level problem; the one cause
+  now is `docker` (the sandbox's Docker does not answer), and another value is refused. The agent
+  names the cause (Yulius cannot tell from free text that seven requests are the same problem;
+  the tool's description says when). In the sidebar's Needs you group, the tasks of a sandbox
+  naming the same cause are grouped under one card that names them (each a link, first asker
+  first), with their own rows under it; the notification center holds one entry per such problem
+  (from its oldest open request), not one per task; the Superagent's task list says the request
+  is a shared problem. A person's answer to one of them (a prompt or message to a running task
+  whose request is shown) ends the requests of the sandbox's other tasks naming that cause and
+  asked before, and those tasks are told so in their session; the end of the sandbox's Docker
+  trouble and the Superagent's `docker_restart` end the requests asked before them, and their
+  tasks hear that Docker works again. A request replaced meanwhile stays; each request ended
+  this way is audited (`task.needs_you.answered_shared`). Counts (the Home card, the tab's
+  "need you", the group's count) stay per task: they count tasks that wait, and the card shows
+  they wait for one thing.
 
 ### Fronts do not run old code for days (slice 5)
 
@@ -188,8 +200,8 @@ ever reaches it).
 - [x] Slice 2 reviewed independently, findings fixed test-first
 - [x] Yulius restarts a jammed front at a quiet moment and tells the tasks
 - [x] The Superagent restarts its sandbox's Docker
-- [ ] Slice 3 reviewed independently, findings fixed test-first
-- [ ] Needs you of one sandbox-level cause show as one card
+- [x] Slice 3 reviewed independently, findings fixed test-first
+- [x] Needs you of one sandbox-level cause show as one card
 - [ ] Slice 4 reviewed independently, findings fixed test-first
 - [ ] An adopted front from another build is replaced when quiet
 - [ ] br_netfilter decided on a real host and applied
@@ -412,3 +424,59 @@ in slice 3's pull request.
 - Accepted, not changed: an unanswered ping waits up to 5 s under the sandbox's upkeep lock (once
   per tick, only beside a client of a running engine); bounded, and releasing the lock mid-tick
   would let a run start between the reading and the repair.
+### Slice 4 (one shared problem, one Needs you)
+
+- `requests_naming_the_sandboxs_docker_are_answered_together` (fake agents, two tasks): a person
+  answering one ends both; the end of the Docker trouble ends both, and both hear that it is no
+  longer full, each once.
+- `npx e2e run tests/shared-needs-you.e2e.ts`: two tasks naming `docker` show as one row naming
+  #4 and #12, and each on its own row once answered: failed before (no such row), passes after;
+  `attention.e2e.ts`, `navigation.e2e.ts` still pass (22 passed).
+
+### Slice 3, review round 4 (approve; its two nits fixed in the next pull request)
+
+PR #1335 approved at 3714d7af1 (round 4, Opus 5.5). Its nits, own code: a restart that stopped no
+front (none ran) is no restart, now or when a later tick starts one
+(`an_asked_restart_that_stopped_nothing_is_not_counted_later`: red before, counted 1); the
+operations line is wrapped.
+
+### Slice 4, review round 1 (request changes; every finding own code, fixed)
+
+- The end pass answered requests asked after the trouble ended: requests are answered only if
+  asked before the end (or the restart), through `end_task_needs_you_asking` (a request replaced
+  meanwhile stays). In `requests_naming_the_sandboxs_docker_are_answered_together`: a request
+  asked after the end stays (red with the cutoff removed).
+- A person's answer to one task dropped the others without a word: it spreads only from a
+  running task's shown request, and the tasks answered through it are told (`DOCKER_ANSWERED`,
+  typed with the usual guards); the test answers through the Superagent's `task_message`, and a
+  request without the cause stays (red with the cause filter removed).
+- The sidebar no longer hides rows: the shared tasks are grouped under one card naming them
+  (links, first asker first) with their own rows, so keyboard, menus, ownership and counts are
+  unchanged (`shared-needs-you.e2e.ts`: the card, its links' order, both rows, focus kept on an
+  activity change, one notification entry).
+- Tests: the tool's `cause` (accepted, shown, refused for an unknown one; `cd.rs`), the
+  Superagent's `docker_restart` answering a request (`cockpit.rs`), the Superagent's task text
+  naming the shared problem (`mcp_text`).
+- The Evidence of slices 5 to 7 leaves this pull request with their code.
+
+### Slice 4, review round 2 (request changes; every finding own code, fixed)
+
+- The bell's one entry depended on the browser having loaded that sandbox's task list (6 of 10
+  e2e runs failed): the server now names each shared request's episode (`NeedsYouView.episode`,
+  the oldest open request naming the cause among the sandbox's working tasks; a resting task's
+  stored request does not count), and the entry is keyed by it and names the project.
+  `shared-needs-you.e2e.ts`: one entry also when another project is open; 10 of 10 runs passed.
+  The integration test asserts both tasks share one episode and a task without the cause has
+  none.
+- A Continue of a stopped task with a stored Docker request answers no other
+  (`continuing_a_stopped_task_answers_no_other_tasks_request`: red with the running check
+  removed).
+- The audit row names its source ("a person's answer to task #N", "the end of the sandbox's
+  Docker trouble", "a restart asked through the Superagent") and is asserted for the task
+  answered through another, not for the one answered directly.
+- An entry created only by an answer or a restart no longer gets an "end" 75 s later: only an
+  entry that saw a trouble, or a restart (whose own time is the cutoff), ends requests and tells
+  that Docker works again.
+- The texts say what answers a shared request (a person's answer, the trouble's end, a restart
+  through the Superagent), not "Yulius's own repair" in general: an upkeep restart for an
+  unanswered engine opens no trouble.

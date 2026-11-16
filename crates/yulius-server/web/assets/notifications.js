@@ -219,6 +219,9 @@ export function createNotificationCenter(ctx) {
     toast(title, { kind: 'info', action: route ? { label: 'Open', run: () => ctx.navigate(route) } : undefined });
   });
 
+  // The sandbox-level problems a Needs you may name (SPEC-494): their tasks share one entry.
+  const SHARED_CAUSES = { docker: 'its Docker needs you' };
+
   watch('task', (task) => {
     // The rule every view uses (status.js taskInfo): a tested pull request is Done, failing checks
     // need the user.
@@ -232,6 +235,20 @@ export function createNotificationCenter(ctx) {
     taskTones.set(task.id, info.tone);
     if (previous === info.tone || !(info.tone in TASK_TONES) || watching(task.id)) return;
     const sandbox = sandboxOf(task.sandbox_id);
+    // A problem of the whole sandbox several tasks ask about (SPEC-494): one entry per episode
+    // (the server names it by its oldest open request), not one per task, wherever the person is.
+    const cause = task.needs_you && Object.hasOwn(SHARED_CAUSES, task.needs_you.cause || '') ? task.needs_you.cause : null;
+    if (cause && info.tone === 'attention' && task.needs_you.episode) {
+      add({
+        kind: TASK_TONES[info.tone],
+        title: `${sandbox ? sandbox.name : 'A project'}: ${SHARED_CAUSES[cause]}`,
+        detail: `Needs you, asked by #${task.number} and any other task of it that shares the problem`,
+        route: taskRoute(task),
+        key: `needs-you:${task.sandbox_id}:${cause}:${task.needs_you.episode}`,
+        once: true,
+      });
+      return;
+    }
     add({
       kind: TASK_TONES[info.tone],
       title: `#${task.number} ${task.title || 'Task'}`,

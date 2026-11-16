@@ -1151,6 +1151,31 @@ async fn a_needs_you_request_reads_what_happened_problem_and_to_do() -> TestResu
         "the open request keeps no link: {kept}"
     );
     assert_eq!(kept["problem"], "the free plan has 2 runners", "{kept}");
+    // SPEC-494 DFJ-011: a request about the sandbox's Docker names its cause; it is shown, and
+    // the answer says it is shared; a cause Yulius does not know is refused.
+    let shared = tool(
+        "needs_you",
+        json!({"action": "Restart the sandbox's Docker", "cause": "docker"}),
+    )
+    .await?;
+    assert_eq!(shared["isError"], false, "{shared}");
+    let said = support::tool_text(&shared);
+    assert_eq!(said["cause"], "docker", "{said}");
+    assert!(
+        said["next"]
+            .as_str()
+            .is_some_and(|next| next.contains("one shared")),
+        "{said}"
+    );
+    assert_eq!(summary().await?["cause"], "docker");
+    let unknown = tool("needs_you", json!({"action": "x", "cause": "disk"})).await?;
+    assert_eq!(unknown["isError"], true, "{unknown}");
+    assert_eq!(
+        summary().await?["cause"],
+        "docker",
+        "unchanged by the refusal"
+    );
+
     Ok(())
 }
 

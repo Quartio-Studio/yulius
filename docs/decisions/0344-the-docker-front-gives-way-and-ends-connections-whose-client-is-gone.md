@@ -60,6 +60,15 @@ whether the client half-closed or hung up entirely.
   counted. The Superagent's `docker_restart` does it at once when the person asks; task agents
   do not get it, since it would stop every other task's and CI job's containers.
 
+- **One shared problem, one Needs you** (SPEC-494 slice 4). `needs_you` takes `cause: docker`
+  for a problem of the whole sandbox. The tasks of a sandbox naming it are grouped under one card
+  in the sidebar's Needs you group, and the notification center holds one entry for it. A
+  person's answer to one running task's request, the end of the Docker trouble or
+  `docker_restart` ends the requests asked before it, audited, and their tasks are told. Anyone
+  who may write to one of those tasks answers them all: the problem is the sandbox's, not one
+  owner's. The agent names the cause: Yulius cannot tell from free text that requests are the
+  same.
+
 ## Alternatives
 
 - **A larger limit**: delays the jam by the same leak's rate; does not end it.
@@ -71,6 +80,8 @@ whether the client half-closed or hung up entirely.
   which run made a call; every live task of the sandbox shares the one Docker, so all are told.
 - **Waiting for a moment with no container running at all**: a sandbox's long-lived dev
   containers would hold the repair off for good while every Docker call fails.
+- **Recognising a shared problem from the request's words**: wordings differ by task and would
+  merge unrelated requests; a named cause is exact, and an unknown one is refused.
 - **Letting tasks restart Docker**: seven tasks would restart it under each other's containers;
   Yulius knows when, and a Superagent acts for its person.
 - **A socket from the front to the server for its events**: the front outlives server restarts

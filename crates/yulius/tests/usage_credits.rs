@@ -1094,6 +1094,7 @@ fn a_request_open_at_a_limit_nothing_says_the_end_of_is_kept() -> TestResult {
             decision: false,
             link: None,
             at: 1,
+            cause: None,
         };
         let RefusedTwice { app, id, .. } = refused_twice(&data, &fake, None, Some(&own)).await?;
         assert_eq!(

@@ -37,10 +37,17 @@ pub const DOCKER_FULL: &str = "Yulius: this sandbox's Docker front is full, so D
      Docker work for later; you are told here when it is no longer full (if nothing comes \
      within 30 minutes, retry).";
 
-/// Told to the tasks that heard [`DOCKER_FULL`] once the trouble stayed ended.
-pub const DOCKER_BACK: &str = "Yulius: this sandbox's Docker front is no longer full (if Yulius \
-     restarted it, the containers that ran stopped; volumes stayed). Rerun the Docker calls or \
-     tests that failed while it was full.";
+/// Told to the tasks that heard [`DOCKER_FULL`] once the trouble stayed ended, and to those
+/// whose Docker request the repair answered.
+pub const DOCKER_BACK: &str = "Yulius: this sandbox's Docker works again: its front is no longer \
+     full, or Yulius restarted it (the containers that ran stopped; volumes stayed). Rerun the \
+     Docker calls or tests that failed.";
+
+/// Told to a task whose request about the sandbox's Docker a person answered through another task
+/// that shares it (SPEC-494 DFJ-011).
+pub const DOCKER_ANSWERED: &str = "Yulius: a person answered this sandbox's shared Docker request \
+     through another task that asked it too, so yours is answered as well. If Docker still \
+     fails here, call needs_you again with cause docker.";
 
 /// What was told of one sandbox's trouble.
 #[derive(Debug, Default)]
@@ -49,12 +56,32 @@ pub struct Told {
     tasks: BTreeSet<TaskId>,
     /// Passes in a row that found it ended.
     ended_passes: u32,
+    /// When a pass first found it ended (ms): requests asked later are not answered by its end.
+    ended_at_ms: Option<i64>,
+    /// Tasks whose shared request a person answered through another, to be told so.
+    answered: BTreeSet<TaskId>,
+    /// It saw an open trouble, or a restart (whose time is `ended_at_ms`): only then does its
+    /// end answer requests and tell "works again" (review round 2 of slice 4).
+    saw_trouble: bool,
 }
 
 /// What was told, by sandbox id.
 pub type DockerTold = std::sync::Mutex<HashMap<String, Told>>;
 
 impl App {
+    /// Has `tasks` hear that a person answered their shared Docker request through another task
+    /// of `sandbox` (SPEC-494 DFJ-011).
+    pub(crate) fn tell_docker_answered(&self, sandbox: &str, tasks: Vec<TaskId>) {
+        if tasks.is_empty() {
+            return;
+        }
+        self.docker_told()
+            .entry(sandbox.to_owned())
+            .or_default()
+            .answered
+            .extend(tasks);
+    }
+
     /// The Superagent's `docker_restart` (SPEC-494 DFJ-009): restarts the sandbox's
     /// Docker front and engine now.
     ///
@@ -73,10 +100,26 @@ impl App {
             .restart_docker(sandbox)
             .await
             .map_err(AppError::Conflict)?;
+        // The repair answers the sandbox's shared Docker requests asked before it; their tasks are
+        // told once the trouble (if any) has stayed ended (SPEC-494 DFJ-011).
+        let now = self.now().0;
+        self.answer_docker_requests(
+            sandbox.as_str(),
+            now,
+            "a restart asked through the Superagent",
+        )
+        .await;
+        {
+            // The restart's time is the end, also with no trouble open.
+            let mut told = self.docker_told();
+            let entry = told.entry(sandbox.as_str().to_owned()).or_default();
+            entry.saw_trouble = true;
+            entry.ended_at_ms.get_or_insert(now);
+        }
         tracing::info!(sandbox = %sandbox, "the sandbox's Docker was restarted at a person's ask");
         Ok(serde_json::json!({
             "restarted": true,
-            "said": "The sandbox's Docker front was restarted: an engine it ran stopped with it (its running containers stopped; volumes and images stay) and starts again at the next Docker call. Its tasks hear that it is no longer full once the trouble has ended."
+            "said": "The sandbox's Docker front was restarted (or started, if none ran): an engine it ran stopped with it (its running containers stopped; volumes and images stay) and starts again at the next Docker call. The sandbox's Docker requests asked before are answered, and their tasks are told."
         }))
     }
 
@@ -110,21 +153,31 @@ impl App {
             .filter(|t| t.limit == Limit::Docker)
             .filter_map(|t| t.sandbox)
             .collect();
-        // What each sandbox's tasks hear this pass: the notice, or "no longer full".
-        let due: Vec<(String, bool)> = {
+        // What each sandbox's tasks hear this pass: the notice (`Some(false)`), "no longer full"
+        // (`Some(true)`), or only that a shared request was answered (`None`).
+        let now = self.now().0;
+        let due: Vec<(String, Option<bool>, Option<i64>)> = {
             let mut told = self.docker_told();
             for sandbox in &open {
                 // A trouble that ends and begins again before its tasks heard that Docker works
                 // goes on as the same one for them: nothing more is said.
-                told.entry(sandbox.clone()).or_default().ended_passes = 0;
+                let entry = told.entry(sandbox.clone()).or_default();
+                entry.ended_passes = 0;
+                entry.ended_at_ms = None;
+                entry.saw_trouble = true;
             }
             told.iter_mut()
                 .filter_map(|(sandbox, entry)| {
                     if open.contains(sandbox) {
-                        return Some((sandbox.clone(), false));
+                        return Some((sandbox.clone(), Some(false), None));
                     }
                     entry.ended_passes = entry.ended_passes.saturating_add(1);
-                    (entry.ended_passes >= BACK_AFTER).then(|| (sandbox.clone(), true))
+                    let ended_at = *entry.ended_at_ms.get_or_insert(now);
+                    if entry.saw_trouble && entry.ended_passes >= BACK_AFTER {
+                        Some((sandbox.clone(), Some(true), Some(ended_at)))
+                    } else {
+                        (!entry.answered.is_empty()).then(|| (sandbox.clone(), None, None))
+                    }
                 })
                 .collect()
         };
@@ -148,16 +201,28 @@ impl App {
         }
         let held = self.update_holds_starts();
         let mut typed = Vec::new();
-        for (sandbox, back) in due {
-            let told_tasks = self
+        for (sandbox, phase, ended_at) in due {
+            let back = phase == Some(true);
+            if let Some(ended_at) = ended_at {
+                // The trouble's end answers the sandbox's shared Docker requests asked before it;
+                // their tasks hear it with the others (SPEC-494 DFJ-011).
+                self.answer_docker_requests(
+                    &sandbox,
+                    ended_at,
+                    "the end of the sandbox's Docker trouble",
+                )
+                .await;
+            }
+            let (told_tasks, answered) = self
                 .docker_told()
                 .get(&sandbox)
-                .map(|t| t.tasks.clone())
+                .map(|t| (t.tasks.clone(), t.answered.clone()))
                 .unwrap_or_default();
             for task in live.iter().filter(|t| t.sandbox_id.as_str() == sandbox) {
-                let text = match (back, told_tasks.contains(&task.id)) {
-                    (true, true) => DOCKER_BACK,
-                    (false, false) => DOCKER_FULL,
+                let text = match (phase, told_tasks.contains(&task.id)) {
+                    (Some(true), true) => DOCKER_BACK,
+                    (Some(false), false) => DOCKER_FULL,
+                    _ if answered.contains(&task.id) => DOCKER_ANSWERED,
                     _ => continue,
                 };
                 // Read again right before typing: earlier notices of this pass took time, and a
@@ -182,10 +247,17 @@ impl App {
                     Ok(()) => {
                         tracing::info!(task = %task.id, sandbox, back, "told the task of its sandbox's Docker trouble");
                         if let Some(entry) = self.docker_told().get_mut(&sandbox) {
-                            if back {
-                                entry.tasks.remove(&task.id);
-                            } else {
-                                entry.tasks.insert(task.id.clone());
+                            match text {
+                                DOCKER_BACK => {
+                                    entry.tasks.remove(&task.id);
+                                    entry.answered.remove(&task.id);
+                                }
+                                DOCKER_FULL => {
+                                    entry.tasks.insert(task.id.clone());
+                                }
+                                _ => {
+                                    entry.answered.remove(&task.id);
+                                }
                             }
                         }
                         typed.push((task.id.clone(), text));
@@ -198,24 +270,42 @@ impl App {
                     }
                 }
             }
-            if back {
+            if phase != Some(false) {
                 self.forget_rested(&sandbox).await;
             }
         }
         typed
     }
 
+    /// Ends the requests of `sandbox`'s tasks that name the `docker` cause and were asked by
+    /// `asked_until_ms`, and has those tasks hear that Docker works again with the ones told of
+    /// the trouble.
+    async fn answer_docker_requests(&self, sandbox: &str, asked_until_ms: i64, source: &str) {
+        let Ok(id) = yulius_domain::ids::SandboxId::parse(sandbox) else {
+            return;
+        };
+        let ended = self
+            .end_shared_needs_you(&id, "docker", asked_until_ms, source)
+            .await;
+        if ended.is_empty() {
+            return;
+        }
+        let mut told = self.docker_told();
+        let entry = told.entry(sandbox.to_owned()).or_default();
+        entry.tasks.extend(ended);
+    }
+
     /// Drops the told tasks of `sandbox`'s ended trouble that rest now (or are gone), and the
     /// sandbox once none is left. A task between runs (a capacity pause, a switch) keeps
     /// waiting for "no longer full".
     async fn forget_rested(&self, sandbox: &str) {
-        let told_tasks = self
+        let waiting: BTreeSet<TaskId> = self
             .docker_told()
             .get(sandbox)
-            .map(|t| t.tasks.clone())
+            .map(|t| t.tasks.union(&t.answered).cloned().collect())
             .unwrap_or_default();
         let mut rested = Vec::new();
-        for id in told_tasks {
+        for id in waiting {
             match self.deps.store.task(&id).await {
                 Ok(task) if !keeps_waiting(task.as_ref().map(|t| t.status)) => rested.push(id),
                 // Waiting still, or unreadable now: kept for the next pass.
@@ -226,8 +316,9 @@ impl App {
         if let Some(entry) = told.get_mut(sandbox) {
             for id in &rested {
                 entry.tasks.remove(id);
+                entry.answered.remove(id);
             }
-            if entry.tasks.is_empty() {
+            if entry.tasks.is_empty() && entry.answered.is_empty() {
                 told.remove(sandbox);
             }
         }

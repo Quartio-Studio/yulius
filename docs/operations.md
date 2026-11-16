@@ -1099,7 +1099,8 @@ from a sandbox, and no daemon needs to run on the host.
   person; they hear again once it has room. Yulius restarts a front that stays full for 2
   minutes (or whose running engine does not answer `GET /_ping` through it on three ticks) by
   itself, once no CI job of the sandbox runs and at most 10 minutes later: the journal says
-  `restarted the sandbox's Docker front` with why (or `… which started at a later tick`); running containers stop, volumes
+  `restarted the sandbox's Docker front` with why (or `… which started at a later tick`);
+  running containers stop, volumes
   and images stay. The sandbox's Superagent restarts it at once with `docker_restart` when its
   person asks. A front started by an
   earlier Yulius keeps its old behavior until it starts again: `kill -TERM` the pid in

@@ -6855,6 +6855,7 @@ async fn the_superagent_sees_why_tasks_need_its_person_and_answers_for_them() ->
         decision: true,
         link: None,
         at: now.0,
+        cause: None,
     };
     store
         .set_task_needs_you(
@@ -6996,6 +6997,7 @@ async fn the_superagent_sees_why_tasks_need_its_person_and_answers_for_them() ->
         decision: false,
         link: None,
         at: now.0,
+        cause: None,
     };
     store
         .set_task_needs_you(&carols.id, Some(&old_row), now)
@@ -7975,10 +7977,43 @@ async fn the_superagent_restarts_its_sandboxs_docker_or_hears_why_not() -> TestR
         refused.to_string().contains("runs no sandbox Docker"),
         "{refused}"
     );
+    // A task of the sandbox asked a person about its Docker (SPEC-494 DFJ-011): the restart
+    // answers it.
+    let task = support::seed_task(
+        &f.h,
+        "t-asks",
+        sid().as_str(),
+        "u-alice",
+        yulius_domain::task::TaskStatus::Running,
+        None,
+    )
+    .await?;
+    {
+        use yulius_app::ports::store_ext::NeedsYouStore as _;
+        let asked = yulius_app::needs_you::NeedsYouRecord {
+            action: "Restart Docker".into(),
+            happened: None,
+            problem: None,
+            decision: false,
+            link: None,
+            at: f.h.app.now().0 - 1_000,
+            cause: Some("docker".into()),
+        };
+        f.h.store
+            .set_task_needs_you(&task.id, Some(&asked), f.h.app.now())
+            .await?;
+    }
     let docker = std::sync::Arc::new(RecordingDocker::default());
     assert!(f.h.app.set_isolation(docker.clone()));
     let (done, is_error) = cockpit_tool(&f, &token, "docker_restart", json!({})).await?;
     assert!(!is_error, "{done}");
+    {
+        use yulius_app::ports::store_ext::NeedsYouStore as _;
+        assert!(
+            f.h.store.task_needs_you(&task.id).await?.is_none(),
+            "the restart answers the sandbox's Docker requests"
+        );
+    }
     assert_eq!(done["restarted"], true, "{done}");
     assert_eq!(
         *docker.restarted.lock().map_err(|_| "poisoned")?,
