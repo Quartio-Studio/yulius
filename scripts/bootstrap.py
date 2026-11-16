@@ -51,6 +51,10 @@ for name, version in tools.items():
     executable = bin_dir / exe_name
     if executable.exists():
         found = subprocess.run([str(executable), "--version"], capture_output=True, text=True)
+        if found.returncode != 0:
+            # A tool that runs only as a cargo subcommand (cargo-mutants).
+            found = subprocess.run([str(executable), name.removeprefix("cargo-"), "--version"],
+                                   capture_output=True, text=True)
         if found.returncode == 0 and version in found.stdout.split():
             print(f"{name} {version} already installed", flush=True)
             continue

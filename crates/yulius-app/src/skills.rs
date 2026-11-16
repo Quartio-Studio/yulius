@@ -1274,6 +1274,60 @@ mod tests {
         Ok(())
     }
 
+    /// SPEC-493 MUT-002 (AC-12): mutation testing once per pull request, the same everywhere
+    /// tests and reviews are described; this repository names its command; the workflows send
+    /// the agent to `delivery-pipeline`, which states it.
+    #[test]
+    fn every_place_says_mutation_testing_once_per_pull_request() -> TestResult {
+        const RULE: &str = "mutation testing runs once per pull request: on the first head you ask \
+            a review for, run the project's mutation command and put its summary line in the \
+            spec's evidence; a project without one undoes by hand the few lines its new tests are \
+            meant to hold and says what failed. the reviewer reads that result, may undo a single \
+            line it doubts, and runs no campaign of its own. nobody writes a mutation script by \
+            hand. a test that cannot fail is still fixed in the same pull request (adr-0141).";
+        const HERE: &str = "here the command is `scripts/dev mutants`.";
+        let normal = |text: &str| {
+            text.split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+                .to_lowercase()
+        };
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let read = |rel: &str| -> Result<String, Box<dyn std::error::Error>> {
+            Ok(normal(&fs::read_to_string(root.join(rel))?))
+        };
+        for rel in [
+            "catalog/skills/open-mercato/om-code-review/SKILL.md",
+            "catalog/skills/yulius/delivery-pipeline/SKILL.md",
+            "catalog/skills/superpowers/test-driven-development/SKILL.md",
+        ] {
+            assert!(
+                read(rel)?.contains(&normal(RULE)),
+                "{rel} does not state the rule"
+            );
+        }
+        for rel in [
+            ".apm/skills/yulius-verify/SKILL.md",
+            ".apm/skills/yulius-review/SKILL.md",
+            "docs/engineering/development.md",
+        ] {
+            let text = read(rel)?;
+            assert!(
+                text.contains(&normal(&format!("{RULE} {HERE}"))),
+                "{rel} does not state the rule with this repository's command"
+            );
+        }
+        // The workflows' instructions have no byte to spare (1,444 with their heading, #555):
+        // they reach the rule through `delivery-pipeline`, which each tells the agent to follow.
+        for rel in ["catalog/workflows/feature.md", "catalog/workflows/fix.md"] {
+            assert!(
+                read(rel)?.contains("follow `delivery-pipeline`"),
+                "{rel} does not send the agent to the rule"
+            );
+        }
+        Ok(())
+    }
+
     /// Hostile repositories: special files and links leaving the repository are ignored.
     #[test]
     fn hostile_repository_files_are_ignored() -> TestResult {
