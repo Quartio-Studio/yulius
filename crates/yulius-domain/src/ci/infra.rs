@@ -149,7 +149,7 @@ pub fn infrastructure(
         _ => {}
     }
     let tests = failures
-        .map(|kept| crate::ci::failures::failed_test_names(kept))
+        .map(crate::ci::failures::failed_test_names)
         .unwrap_or_default();
     if let Some(kept) = failures.filter(|_| !tests.is_empty()) {
         // Each kept block starts at its header and ends at a blank line.
