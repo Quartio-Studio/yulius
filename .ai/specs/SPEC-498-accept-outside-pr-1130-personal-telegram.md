@@ -180,7 +180,7 @@ taken-back control and a stalled pull request.
 - [x] Independent review round 1 run (request changes: answered by the items below)
 - [x] The notifier remembers every task when a bot becomes active, so a state entered later is told
 - [x] An oversized getUpdates batch can no longer stop linking
-- [ ] Review round 1 minors: stalled PR decision, poll state, relink keeps choices, label test, mutants
+- [x] Review round 1 minors: stalled PR decision, poll state, relink keeps choices, label test, mutants
 - [ ] Independent review of the fixes approved
 
 The contributor's own plan (all done on their fork): spec, ADR and the channel port; the sealed
@@ -293,6 +293,31 @@ and a two-round independent review.
   key" for the instance key, as for task #478 earlier today. Neither passed nor failed; the pull
   request's CI `security` job reports what it gets.
 - The whole gate is Yulius CI's on the pull request head.
+
+### Review round 1 (Fable 5.2, head `22ca704d4`): request changes, answered
+
+- Major 1 (a state entered after the start dropped when its status and activity are older, e.g. a
+  chain blocked later): `a_state_entered_before_the_start_is_not_told` now creates the state
+  before the bot is active, then blocks the chain and limits the subscription after it; it failed
+  on `22ca704d4` (`left: 3, right: 1`: older states told), passes with the seeding
+  (`App::seed_notices`). `a_state_entered_before_anyone_linked_is_not_told_later` (minor 5) failed
+  (`left: 2`), passes. `notify::tests::a_full_memory_is_seeded_again` covers the `TOLD_MAX` clear.
+- Major 2 (an oversized `getUpdates` batch stops linking): `a_backlog_of_long_messages_does_not_stop_linking`
+  (100 messages of 4096 CJK characters, the fake honouring `limit`) failed (`chat 100 got 0 of
+  1`), passes with `limit` 20; `wiring::telegram::tests::a_batch_over_the_bound_is_read_one_at_a_time_or_skipped`.
+- Minor 3: a stalled pull request is not sent, recorded under Decisions. Minor 4: mutation run
+  below. Minor 6: the state reads `starting` until a poll was answered (the integration test
+  asserts it after setting the bot). Nit 7: the label test also reads every end from `status.js`.
+  Nit 8: the same chat linked again keeps its choices (store test failed before, passes). Nit 9
+  (no reason line for a blocked chain or a Yulius flag): left as it is, as optional; the bell's
+  entry is as short.
+- `scripts/dev mutants`: `mutants: 484 listed, 99 caught, 0 missed, 0 timed out, 40 unviable, 345
+  not reached (bound 30 min, took 1802 s)`. Not reached: `yulius-store` `telegram.rs` (76),
+  `yulius-server` `routes/telegram.rs` (91), `yulius-domain` `notify.rs` (96), `yulius-app`
+  `telegram.rs` (75), and 7 in routes and ports.
+- After the fixes: `cargo nextest run -p yulius -E '(binary_id(yulius::main) & test(/^telegram::/))
+  | (binary_id(yulius) & test(/telegram/))'` 20/20; store and domain Telegram/notify tests pass;
+  `scripts/dev lint` exit 0; e2e `telegram.e2e.ts` 4/4.
 
 ### The contributor's evidence (their fork, 2026-11-07, before #1130 was brought onto `dev`)
 
