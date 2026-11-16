@@ -1795,3 +1795,59 @@ Both are checked on current `dev` first and fixed test-first if they still hold.
   closed before the merge: the m6 line above, and the holder's `checks` now held by
   `scope_overlaps` (A gets pull request #41 and a passed Yulius CI run: the answer says
   `pr_open`, `passed`, not armed). Mutation: the lookup replaced by `"none"` fails it.
+
+### Fix 10a: a notification never taken out keeps a blocked turn's session for one Stop
+
+- DEF-001 held on `dev` (9c6c86bcd). A Stop a hook blocks writes `stop_hook_summary` and no
+  `turn_duration`: this sandbox's transcripts hold 2,692 summary-after-summary pairs. So
+  `Queue::turn_closed` never ran between such Stops, and an entry Claude Code never takes out
+  kept the session at every blocked Stop of a goal run.
+- Real records (a script over every transcript in `$HOME/.claude/projects`, structure only):
+  - 16 of the 21 entries never removed are `<task-notification>`s. The other 5 are prompts,
+    lost to killed processes.
+  - Notifications leave the queue at tool results: 1,297 `remove` records, 762 of them at the
+    first tool result after their `enqueue`. Stuck ones waited through 0 to 476 tool results.
+  - With 2.1.322, a blocked Stop releases nothing (task #452's probe run-7). A waiting prompt
+    is taken in at the next tool result, or handed on at the Stop that ends the turn.
+- The rule (`Queue::stop_seen`, `QueueChange::{Notice, NoticeTaken, ToolResult}`): a
+  notification of Claude Code's own that waited at a Stop, then through a tool result written
+  after that Stop, and still waits at the next Stop, is left. A leave whose kind is not known
+  takes a marked notice first. The Stop hook tells the queue at every Stop, after reading the
+  turn's lines when a move may be made there.
+- Tests:
+  - Unit `a_notice_that_waited_through_a_blocked_stops_tool_result_is_left` covers:
+    - the notice that is left;
+    - no tool result after the Stop, or one without a time;
+    - a prompt in its place;
+    - a notice taken in while a prompt waits;
+    - an unknown leave;
+    - a closing record between the two Stops.
+  - Harness: `enqueue` and `remove` of a notification are told apart, and a session's own tool
+    result is the take-in point while a sub-agent's is not. `claude_goal_mode_records` now
+    expects that record.
+  - Integration `a_notice_never_taken_out_keeps_a_blocked_turn_for_one_stop` (AC-23): the gate
+    blocks, the fake agent's `/stuck` entry is a `<task-notification>`, and `--stop-tool` gives
+    the continuation a tool call and its result. The first run prints `STOP BLOCKED` once, then
+    the session moves to the second subscription.
+- Mutations, each failing a test:
+  - no `stop_seen` at the Stop;
+  - every tool result counted;
+  - the Stop's time not compared;
+  - a notice's `enqueue` read as a prompt;
+  - `HandedOn` not taking a marked notice;
+  - `NoticeTaken` not taking one (killed by the case added for it).
+  Two are equivalent: marking every waiting entry (`record` clamps the marks to the notices),
+  and `turn_closed` keeping the marks (it marks all that wait itself).
+- Suites:
+  - fake-agent 34 passed;
+  - yulius-harness all passed;
+  - yulius-app lib 584 passed;
+  - `claude_code_moves` 59 passed.
+  - `queue restart goal` 174 of 175: `pool_supervision::a_reattached_run_at_a_limit_is_restarted_past_it`
+    times out in that group on `dev`'s tree too and passes alone 3 of 3 (open issue #1286,
+    outside this change).
+- Local gate (`scripts/dev ci`) at c5d2e4729: exit 0, 4617 passed, 18 skipped.
+- `scripts/dev mutants`: 27 listed, 19 caught, 0 missed, 0 timed out, 8 unviable (333 s, at c5d2e4729).
+- A week later: see Decisions (fix 10a's log lines).
+- Not testable here: the real Claude Code in a goal run with a stuck notification. Its pieces
+  are taken from the real transcripts and probe runs above, not from a live run of the whole.
