@@ -115,7 +115,8 @@ Five pull requests, each merged into `dev` on green before the next begins.
 - [x] Slice A: the domain knows Codex and OpenAI while the API still refuses them
 - [x] Slice A: a Codex rollout is observed and counted, checked on a rollout real Codex 0.169.0 wrote
 - [x] Slice A: Codex launch plan, homes, session paths and sign-in helpers in yulius-harness
-- [ ] Slice A: review findings fixed and the slice delivered
+- [x] Slice A: review round 1 findings fixed test-first
+- [ ] Slice A: later review findings answered and the slice delivered
 - [ ] Slice B: Codex CLI 0.169.0 checked against the integration and pinned
 - [ ] Slice B: Yulius installs the pinned Codex CLI into its data directory
 - [ ] Slice B: review findings fixed and the slice delivered
@@ -260,4 +261,33 @@ Five pull requests, each merged into `dev` on green before the next begins.
   clean; `cargo nextest` for every crate's unit tests and the `yulius` integration files
   `accounts`, `account_token`, `account_usage`, `automations`, `task_delete`, `cockpit`,
   `supervision`, `session_docs`, `imports`, `usage_credits`: 2227 passed, 0 failed.
+- **Review round 1** (Fable 5.2, `9bfa82ec5`, request changes: 4 major, 7 minor, 4 nits, all own
+  code), answered in `34f784fe3`, each test failing first:
+  - a resumed run counted the run before's last response (Codex repeats `token_count` at a limit):
+    usage now comes from `token_usage_record` by `response_id`
+    (`observe::a_resumed_codex_run_counts_no_response_of_the_run_before`, on the real fixture);
+  - a blocking Stop hook's `<hook_prompt>` read as a typed prompt: 0.169's provenance decides, more
+    prefixes for 0.167 (`observe::a_stop_hooks_continuation_is_not_a_typed_prompt`, on a second
+    real 0.169.0 rollout `exec-0.169.0-stop-block.jsonl`);
+  - a rollout's `cli_version` became the run's Claude Code version: Codex's `SessionMeta` carries
+    none (`cli_version() == None` in the resumed-run test);
+  - rate limits were written outside the usage lock: `App::rollout_usage` goes through
+    `change_account_usage` and `rollout_reading` drops an older reading
+    (`capacity::tests::a_rollout_reading_replaces_only_an_older_one`);
+  - minors: cache writes counted once (`observe::codex_cache_writes_are_counted_once`); a Codex
+    prompt always follows `--`, also after `resume <id>` (real 0.169.0 took `resume <id> --
+    completion` as a prompt; `launch::a_codex_prompt_that_is_a_subcommand_word_stays_a_prompt`);
+    a write-back needs a whole sign-in, and what the rule cannot tell apart is in ADR-0353's
+    Consequences (`login::only_a_genuine_refresh_replaces_the_stored_codex_credential`); a run's
+    session started since the run (`wiring::harness::tests::a_codex_session_is_the_first_rollout_of_the_worktree`);
+    a sign-in's `auth.json` is read within its bound and scrubbed
+    (`accounts::tests::a_codex_sign_ins_file_is_read_within_its_bound`); the `codex` PreToolUse
+    guard moves to slice C1, where Codex hooks reach Yulius and can be tested end to end;
+  - nits: comments, ADR "first rollout", the spec's word on SPEC-001. `codex_rollout`'s
+    synchronous walk is placed with slice C1, which calls it on a run's paths.
+- `scripts/dev mutants` (on `34f784fe3`): `mutants: 308 listed, 119 caught, 0 missed, 0 timed
+  out, 82 unviable, 107 not reached (bound 30 min, took 1802 s)`.
+- After the fixes: `cargo fmt --check` and `cargo clippy --workspace --all-targets -D warnings`
+  clean; the same `cargo nextest` set plus `metrics_recount`: 2235 passed, 0 failed. Yulius CI
+  passed on `9bfa82ec5`.
 
