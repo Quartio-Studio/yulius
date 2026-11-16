@@ -1,6 +1,6 @@
 ---
 yulius-task: 839be374-cbd1-4e24-82d1-1c18faed4c18
-status: in-progress
+status: done
 ---
 
 # SPEC-493: faster from a task's start to its merge
@@ -408,41 +408,41 @@ Both are checked on current `dev` first and fixed test-first if they still hold.
 - [x] Fix 1b's independent review answered test-first
 - [x] Fix 1c: a round's record gets the model that answered, the verdict and a cut-off from the reviewer's transcript (REV-004)
 - [x] Fix 1c: the merge record, the delivery view and one analytics read name who wrote and who reviewed (REV-005, REV-006)
-- [ ] Fix 1c's independent review answered test-first
-- [ ] Fix 1d: a first or second round moves the session to a subscription that can run Fable 5.2, or runs on Opus 5.5 and says so (REV-007)
-- [ ] Fix 1d: a merge found on GitHub is judged against its merge commit's first parent, as `delivery_merge`'s is (REV-005)
-- [ ] Fix 1d's independent review answered test-first
-- [ ] Fix 2: the unreachable-server tests ask a port nothing can take (FLK-001)
-- [ ] Fix 2: the notes reload e2e test reproduced and fixed; the two tests fixed on dev since are checked under their probes (FLK-002, FLK-003)
-- [ ] Fix 2's independent review answered test-first
-- [ ] Fix 3: starting the review pushes the head and opens the pull request, and its CI run is queued at once (CIR-001 to CIR-003)
-- [ ] Fix 3: one rule for local checks everywhere, held by a test; the decision amending the whole-gate-before-handoff step (CIR-004)
-- [ ] Fix 3's independent review answered test-first
-- [ ] Fix 4: a merge candidate forms beside its members' own runs, and a member whose own run fails leaves it (MQC-001 to MQC-004)
-- [ ] Fix 4: candidates formed, merged and dissolved are counted and shown; ADR-0285 amended (MQC-005)
-- [ ] Fix 4's independent review answered test-first
-- [ ] Fix 5: a CI job names the files it tests, and a change that touches none of them leaves it skipped with the reason (CJP-001 to CJP-004)
-- [ ] Fix 5's documents and the decision: when such a job runs regardless
-- [ ] Fix 5's independent review answered test-first
-- [ ] Fix 6: delivery_merge keeps an approval across at most 20 product lines and records what it counted (APR-001 to APR-004)
-- [ ] Fix 6: the review rules state the bound; a project sets what counts as product code; the decision amending the reviewed-head rule (APR-002, APR-005)
-- [ ] Fix 6's review rounds 1 and 2 answered test-first: plumbing reads, Rust-token test spans, the integration commit from its origin
-- [ ] Fix 6's independent review answered test-first
-- [ ] Fix 7: a limit that cuts a subagent off is the session's news, and a cut-off reviewer is resumed after the move (RLM-001, RLM-002)
-- [ ] Fix 7: a review does not start on a subscription about to run out; the rules say resume, never restart, high effort (RLM-003, RLM-004)
-- [ ] Fix 7's review round 1 answered test-first: a reviewer's limit is its model's, its state ends with its round, the turn's end moves
-- [ ] Fix 7's independent review answered test-first
-- [ ] Fix 8: scripts/dev mutants, one bounded mutation run on the changed lines, measured (MUT-001)
-- [ ] Fix 8: the rules: once per pull request, the result in the Evidence, no campaign by the reviewer (MUT-002)
-- [ ] Fix 8's independent review answered test-first
-- [ ] Fix 9: an overlapping claim is told to both tasks, with the holder's change and pull request (SCO-001, SCO-003)
-- [ ] Fix 9: the overlap shows on both tasks and in the list (SCO-002)
-- [ ] Fix 9: a task created with paths another task holds is offered to run after it (SCO-004)
-- [ ] Fix 9's independent review answered test-first
-- [ ] Fix 10a: a queue entry never taken out holds a goal run's move for one turn's end (DEF-001)
-- [ ] Fix 10a's independent review answered test-first
-- [ ] Fix 10b: viewers' input waits until no earlier native file chooser can be on the display (DEF-002)
-- [ ] Fix 10b's independent review answered test-first
+- [x] Fix 1c's independent review answered test-first
+- [x] Fix 1d: a first or second round moves the session to a subscription that can run Fable 5.2, or runs on Opus 5.5 and says so (REV-007)
+- [x] Fix 1d: a merge found on GitHub is judged against its merge commit's first parent, as `delivery_merge`'s is (REV-005)
+- [x] Fix 1d's independent review answered test-first
+- [x] Fix 2: the unreachable-server tests ask a port nothing can take (FLK-001)
+- [x] Fix 2: the notes reload e2e test reproduced and fixed; the two tests fixed on dev since are checked under their probes (FLK-002, FLK-003)
+- [x] Fix 2's independent review answered test-first
+- [x] Fix 3: starting the review pushes the head and opens the pull request, and its CI run is queued at once (CIR-001 to CIR-003)
+- [x] Fix 3: one rule for local checks everywhere, held by a test; the decision amending the whole-gate-before-handoff step (CIR-004)
+- [x] Fix 3's independent review answered test-first
+- [x] Fix 4: a merge candidate forms beside its members' own runs, and a member whose own run fails leaves it (MQC-001 to MQC-004)
+- [x] Fix 4: candidates formed, merged and dissolved are counted and shown; ADR-0285 amended (MQC-005)
+- [x] Fix 4's independent review answered test-first
+- [x] Fix 5: a CI job names the files it tests, and a change that touches none of them leaves it skipped with the reason (CJP-001 to CJP-004)
+- [x] Fix 5's documents and the decision: when such a job runs regardless
+- [x] Fix 5's independent review answered test-first
+- [x] Fix 6: delivery_merge keeps an approval across at most 20 product lines and records what it counted (APR-001 to APR-004)
+- [x] Fix 6: the review rules state the bound; a project sets what counts as product code; the decision amending the reviewed-head rule (APR-002, APR-005)
+- [x] Fix 6's review rounds 1 and 2 answered test-first: plumbing reads, Rust-token test spans, the integration commit from its origin
+- [x] Fix 6's independent review answered test-first
+- [x] Fix 7: a limit that cuts a subagent off is the session's news, and a cut-off reviewer is resumed after the move (RLM-001, RLM-002)
+- [x] Fix 7: a review does not start on a subscription about to run out; the rules say resume, never restart, high effort (RLM-003, RLM-004)
+- [x] Fix 7's review round 1 answered test-first: a reviewer's limit is its model's, its state ends with its round, the turn's end moves
+- [x] Fix 7's independent review answered test-first
+- [x] Fix 8: scripts/dev mutants, one bounded mutation run on the changed lines, measured (MUT-001)
+- [x] Fix 8: the rules: once per pull request, the result in the Evidence, no campaign by the reviewer (MUT-002)
+- [x] Fix 8's independent review answered test-first
+- [x] Fix 9: an overlapping claim is told to both tasks, with the holder's change and pull request (SCO-001, SCO-003)
+- [x] Fix 9: the overlap shows on both tasks and in the list (SCO-002)
+- [x] Fix 9: a task created with paths another task holds is offered to run after it (SCO-004)
+- [x] Fix 9's independent review answered test-first
+- [x] Fix 10a: a queue entry never taken out holds a goal run's move for one turn's end (DEF-001)
+- [x] Fix 10a's independent review answered test-first
+- [x] Fix 10b: viewers' input waits until no earlier native file chooser can be on the display (DEF-002)
+- [x] Fix 10b's independent review answered test-first
 
 ## Acceptance criteria
 
@@ -646,6 +646,19 @@ Both are checked on current `dev` first and fixed test-first if they still hold.
     end: a prompt waits in Claude Code's queue" lines, by task and day (`journalctl -u yulius
     --since -7d | grep -c`); a task with more than two of them in a row in one turn is this
     defect. The week before the merge is the baseline.
+  - Fix 10b: the server log's "viewers' clicks and keys stay refused until the browser
+    restarts" lines a week (`journalctl -u yulius --since -7d | grep -c`): how often a browser
+    met the case, and so whether a restart offered on the page is worth building. There is no
+    baseline; the case was not told before.
+- **Fix 10b: a browser an agent drove before the policy keeps viewers' input off until it
+  restarts.** Chrome closes no open window when its policy appears, and nothing tells Yulius
+  that a native chooser closed (DevTools sees `<input type=file>` choosers of attached tabs
+  only, ADR-0318's Alternatives). Only the agents' tools give input while the policy is off
+  (viewers' presses are refused then), so a click or a typed Enter from one, while the last
+  answer was not "in force", marks the browser. Restarting the browser at once was rejected:
+  it would cut the agent's tabs mid-task. Refusing every browser that ever ran without the
+  policy was rejected too: one no agent drove has no chooser open, and the earlier test says
+  it takes input at once. ADR-0318 is amended in place, as its own rule.
 - **Fix 10a: a blocked Stop's left-over notification is told by kind and tool result.** A Stop
   a hook blocks writes no `turn_duration`, so SWQ-002's rule never ran in a goal run. Counting
   every entry that waited at two Stops would lose a real prompt whose continuation called no
@@ -1853,7 +1866,7 @@ Both are checked on current `dev` first and fixed test-first if they still hold.
 - A week later: see Decisions (fix 10a's log lines).
 - Not testable here: the real Claude Code in a goal run with a stuck notification. Its pieces
   are taken from the real transcripts and probe runs above, not from a live run of the whole.
-- Review round 1 (Opus 5.5, head `fe4e8b27f`): approve, with two minors and four nits; both
+- Review round 1 (Opus 5.5, head `fe4e8b27f`): approve, with two minors, three nits and one pre-existing note; both
   minors closed before the merge.
   - Minor 1: a Stop at which no move is decided told the queue without reading the lines first.
     A tool result could be read before the `remove` that took the notice in at it (in 754 of
@@ -1874,3 +1887,77 @@ Both are checked on current `dev` first and fixed test-first if they still hold.
       the unit test, where its mutation fails.
     - The reviewer's replay of the rule over all 5,824 real Stops lost no entry, and 9 Stops
       changed from staying to moving.
+
+### Fix 10b: a browser an agent drove before the policy keeps viewers' input off until it restarts
+
+- DEF-002 held on `dev`: `viewer_input_allowed` asked only whether the policy was in force now,
+  so a running browser was unlocked as soon as the policy appeared (SPEC-483 AC-36).
+- Real Chrome (Google Chrome 157 on Xvfb, a throwaway opt-in probe beside
+  `real_chromium::a_viewers_click_on_a_file_input_opens_no_file_chooser`, not committed):
+  - with no policy, the agent's `tool_click` (CDP `Input.dispatchMouseEvent`) on a page's
+    `<input type=file>` opened GTK's "Open File" over the whole display (1280x800);
+  - after `managed_policy()` was written to `/etc/opt/chrome/policies/managed/yulius.json`, the
+    probe tab answered "in force" and the dialog was still on the display;
+  - the viewer's press was refused with `InputLockedUntilRestart`'s message. Before this fix it
+    would have reached the dialog.
+  The policy file was removed after the probe.
+- The rule (`BrowserInstance::agent_input`, `chooser_may_be_open`, `input_locked`,
+  `BrowserError::InputLockedUntilRestart`, code `input_locked`): an agent's click or typed text
+  on a browser with a display, while the last policy answer was not "in force", marks the
+  browser. A marked browser refuses viewers' presses and keys even with the policy in force,
+  with its own reason, until it restarts (a new instance is unmarked).
+- Tests (fake Chrome and display):
+  - `browser::a_file_chooser_opened_before_the_policy_keeps_input_off_until_a_restart` (the
+    agent's click) and `browser::an_enter_typed_before_the_policy_keeps_input_off_until_a_restart`
+    (the agent's `\n`). In both, the policy appears and input stays off with the restart reason.
+    After a stop and reconnect, input is taken, and the agent's input under the policy locks
+    nothing.
+  - `browser::viewer_clicks_and_keys_wait_for_the_hosts_browser_policy` is unchanged and passes:
+    a browser no agent drove takes input once the policy appears.
+- Mutations, each failing a test: no chooser check; the click not marked; the typing not marked;
+  marked under the policy too; the old message for the new case.
+- Suites: `browser` 40 passed (4 opt-in real-Chromium ones ignored); yulius-browser all passed.
+- Local gate (`scripts/dev ci`) at 9aab0711a: 4620 run, 4619 passed. The one failure,
+  `http_auth::event_streams_follow_revoked_access_and_close_for_disabled_users`, read the
+  stream's heartbeat as a leaked event under load (33 s against 2 s alone). It passes alone 3
+  of 3, touches nothing of this change, and is filed as #1351.
+- `scripts/dev mutants` stopped at its unmutated baseline the first time: this is the first
+  change in the `yulius` crate's own code, and cargo-mutants' copy (no `.git`) built a binary
+  with no commit, so 24 `instance::migrate` flow tests failed there. Fix 8's command now gives
+  the copy's build the checkout's commit (`YULIUS_BUILD_COMMIT`, unless the caller sets one),
+  held by `cargo_mutants_runs_with_a_target_directory_of_its_own`; with the line removed it
+  fails. Then: 26 listed, 20 caught, 0 missed, 0 timed out, 6 unviable (403 s, at 89d6f3fcc).
+- A week later: see Decisions (fix 10b's log line).
+- Not covered: a browser whose policy is taken away while it runs and an agent clicks within the
+  five minutes a "yes" stands (ADR-0318 accepts that window for viewers too).
+- Review round 1 (Opus 5.5, head `e79d8c809`, PR #1352, its CI passed): request changes, one
+  major, one minor and two nits, all in own code, answered test-first.
+  - Major: the policy was asked only at a viewer's press, so an agent that clicked or typed
+    first on a host set up from the start found "never asked", marked the browser, and the
+    viewer it handed over to (a captcha, a sign-in) was locked out until a restart, with a
+    false reason. `agent_input` now asks the policy as a viewer's press does (it probes when
+    the answer no longer stands or was never had; no answer counts as "no") and marks only on
+    a "no". `browser::an_agent_first_on_a_host_with_the_policy_keeps_viewers_input` (click and
+    typed Enter) failed on the head and passes; the AC-24 tests still pass.
+  - Minor: an agent read a "yes" of any age. The same change re-asks it after five minutes, so
+    the gap is the five minutes the line above names.
+  - Nit: the viewer's toast for `input_locked` came at most once a minute and could hide the
+    new reason. It now shows at once when the reason changed. e2e "a new reason why clicks and
+    keys are off is shown at once" (the mock's `browserLockMessage`); with the change undone it
+    fails.
+  - Nit: the restart wording now says when the browser restarts: after 30 minutes in which no
+    page shows it and no agent uses it, or with the server (`reap_idle`). Changed in the
+    message, ADR-0318 and the operations guide.
+  - Suites: `browser` 41 passed (4 opt-in ignored); e2e `browser.e2e.ts` lock tests 2 passed.
+- Review round 2 (Opus 5.5, head `99c2c2ffa`, its CI run passed): approve, with two minors and a
+  nit in own code, closed after the approval within fix 6's bound (18 product lines):
+  - Minor: the agent's look at the policy came after the click's target was found (a look can
+    take seconds, the page can move), and a marked browser still looked at every input. The
+    look now comes first and a marked browser asks nothing. No test can tell the order with the
+    fake page; the 43 `browser` tests pass.
+  - Minor: one failed look during an agent's input marked a browser on a host with the policy.
+    A failed look is now made once more before it counts as "no".
+    `browser::a_look_at_the_policy_that_fails_once_is_asked_again` (the probe's tab fails
+    once) failed before and passes.
+  - Nit: the reviewer's probe is committed as
+    `browser::an_agent_first_without_the_policy_keeps_input_off_until_a_restart`.

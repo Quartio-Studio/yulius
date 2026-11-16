@@ -5,7 +5,10 @@
 Accepted. Specified in [SPEC-483](../../.ai/specs/SPEC-483-deep-security-and-quality-audit-fix-ever.md)
 (slice 6); task #465. Narrows [0008](0008-streamed-sandbox-browser.md) (viewers' real input on
 the virtual display); extends what `yulius host setup` keeps on a host
-([0162](0162-one-host-setup-command-brings-and-keeps-docker-in-sandboxes.md)).
+([0162](0162-one-host-setup-command-brings-and-keeps-docker-in-sandboxes.md)). Amended by
+[SPEC-493](../../.ai/specs/SPEC-493-faster-from-start-to-merge-opus-writes-f.md) DEF-002 (fix
+10b, 2026-11-16): a browser an agent clicked or typed in before the policy keeps viewers'
+input off until it restarts (see Consequences).
 
 ## Context
 
@@ -89,6 +92,12 @@ browser with.
 
 ## Consequences
 
+- The policy closes no window that is open. A native file chooser an agent's click or typed
+  Enter opened while the policy was not in force stays on the display, so such a browser does
+  not take viewers' clicks and keys when the policy appears: they come back when it restarts
+  (a new browser after 30 minutes in which no page shows it and no agent uses it, or with the server), and the page says
+  so. Nothing tells Yulius that the chooser closed (DevTools sees only some of Chrome's
+  windows, above). A browser no agent drove meanwhile takes input at once (SPEC-493 DEF-002).
 - After the update that brings this, a host shows its sandbox browsers but takes no clicks and
   keys in them until `sudo yulius host setup` ran once: the update helper's unit is read-only
   outside the paths it lists, so it can neither create the policy directories nor, with a unit

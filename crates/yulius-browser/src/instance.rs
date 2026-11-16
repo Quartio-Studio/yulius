@@ -1174,6 +1174,11 @@ pub struct BrowserInstance {
     policy: Mutex<PolicyCheck>,
     /// One probe at a time.
     policy_lock: tokio::sync::Mutex<()>,
+    /// An agent's click or key reached this browser on its display while the host's policy was
+    /// not known to be in force: a native file chooser it opened may still be there, and the
+    /// policy closes no window. Viewers' input stays off until the browser restarts (a new
+    /// instance; SPEC-493 DEF-002).
+    chooser_may_be_open: std::sync::atomic::AtomicBool,
 }
 
 /// A policy probe's wait for the id of its tab. Dropping it ends the wait: the id (when Chrome
@@ -1446,6 +1451,7 @@ impl BrowserInstance {
             deny: Mutex::new(UrlDenyList::default()),
             policy: Mutex::new(PolicyCheck::default()),
             policy_lock: tokio::sync::Mutex::new(()),
+            chooser_may_be_open: std::sync::atomic::AtomicBool::new(false),
         });
         if let Err(error) = instance.resync().await {
             if let Some(display) = &instance.display {
@@ -2357,6 +2363,45 @@ impl BrowserInstance {
         if self.display.is_none() {
             return true;
         }
+        self.policy_in_force().await && !self.chooser_may_be_open()
+    }
+
+    /// Whether an agent's input before the policy may have left a native file chooser on the
+    /// display (SPEC-493 DEF-002).
+    fn chooser_may_be_open(&self) -> bool {
+        self.chooser_may_be_open
+            .load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// What a viewer's refused click or key is answered with.
+    fn input_locked(&self) -> BrowserError {
+        if self.chooser_may_be_open() && lock(&self.policy).in_force {
+            BrowserError::InputLockedUntilRestart
+        } else {
+            BrowserError::InputLocked
+        }
+    }
+
+    /// An agent's click or key goes to this browser: on a display, while the policy is not in
+    /// force, it may open a native file chooser that stays when the policy comes (SPEC-493
+    /// DEF-002). The policy is asked as for a viewer's press (again once its answer no longer
+    /// stands, or for the first time): a browser that was never asked is not taken to run
+    /// without it, and a "yes" from long ago is not taken to stand (review round 1 of fix
+    /// 10b). An answer that cannot be had counts as "no".
+    async fn agent_input(&self) {
+        // A marked browser stays so until its restart: nothing to ask.
+        if self.display.is_none() || self.chooser_may_be_open() {
+            return;
+        }
+        if !self.policy_in_force().await {
+            self.chooser_may_be_open
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    /// Whether the host's managed policy is in force in this browser, asked again when its
+    /// last answer no longer stands.
+    async fn policy_in_force(&self) -> bool {
         let fresh = |check: PolicyCheck| {
             let stands = if check.in_force {
                 POLICY_CONFIRM
@@ -2374,7 +2419,13 @@ impl BrowserInstance {
         if fresh(known) {
             return known.in_force;
         }
-        let in_force = match self.probe_policy().await {
+        // A look that fails (Chrome busy) is made once more before it counts as "no": an
+        // agent's input would mark the browser for it (review round 2 of fix 10b).
+        let looked = match self.probe_policy().await {
+            Err(_) => self.probe_policy().await,
+            answer => answer,
+        };
+        let in_force = match looked {
             Ok(in_force) => in_force,
             Err(error) => {
                 warn!(sandbox = %self.sandbox, %error, "the browser's policy could not be asked");
@@ -2383,6 +2434,8 @@ impl BrowserInstance {
         };
         if !in_force {
             warn!(sandbox = %self.sandbox, "the host's browser policy is not in force: viewers' clicks and keys are refused (run `yulius host setup`)");
+        } else if self.chooser_may_be_open() {
+            warn!(sandbox = %self.sandbox, "the host's browser policy is in force, but an agent's input before it may have opened a file dialog that is still on the browser's display: viewers' clicks and keys stay refused until the browser restarts");
         }
         *lock(&self.policy) = PolicyCheck {
             in_force,
@@ -2501,7 +2554,7 @@ impl BrowserInstance {
             // (ADR-0318); moving and scrolling open none, and a release always passes, as a
             // key's does.
             if input.event == MouseEventKind::Down && !self.viewer_input_allowed().await {
-                return Err(BrowserError::InputLocked);
+                return Err(self.input_locked());
             }
             return self.display_mouse(display, input).await;
         }
@@ -2749,7 +2802,7 @@ impl BrowserInstance {
         if let Some(display) = &self.display {
             // A release always passes: a key held when the answer changed must not stay down.
             if input.event != KeyEventKind::Up && !self.viewer_input_allowed().await {
-                return Err(BrowserError::InputLocked);
+                return Err(self.input_locked());
             }
             return self.display_key(display, input).await;
         }
@@ -3032,6 +3085,9 @@ impl BrowserInstance {
         self.touch();
         let target = params.target()?;
         let session = self.session(&params.tab_id).await?;
+        // Before the target is found: a look at the policy may take seconds, in which the page
+        // can move.
+        self.agent_input().await;
         let (x, y) = match &target {
             ClickTarget::Point { x, y } => {
                 check_coordinate("x", *x)?;
@@ -3128,6 +3184,8 @@ impl BrowserInstance {
         self.touch();
         params.validate()?;
         let session = self.session(&params.tab_id).await?;
+        // A typed Enter on a focused file input opens the chooser too.
+        self.agent_input().await;
         let focus = || async {
             if let Some(selector) = &params.selector {
                 let value = self
