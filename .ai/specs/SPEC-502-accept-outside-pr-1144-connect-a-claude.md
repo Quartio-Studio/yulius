@@ -86,7 +86,7 @@ requests later). What changed under it since:
 - [x] A paste a sign-in does not let go of is refused with 409
 - [x] The paste dialogs pass e2e on the current Subscriptions page, focus back on the card
 - [x] Docs on current dev: api.md, architecture, product, changes, ADR-0352
-- [ ] Review round 1 findings fixed test-first, mutants run on the head
+- [x] Review round 1 findings fixed test-first, mutants run on the head
 - [ ] Independent review in a fresh session of the final head
 
 ## Acceptance criteria
@@ -210,6 +210,11 @@ From `dev` at c7348d04, 2026-11-16, Rust 1.99.0, Node 24.21.0.
     new e2e test failed before the fix); the Plan names the work before the review.
   - e2e after the fixes: `subscriptions`, `claude-connect`, `onboarding-flow`,
     `subscription-names`, `consistency`: 104 passed.
+- `scripts/dev mutants` (ADR-0347) at c87538ea4, the code of this head (only documents changed
+  after it): `mutants: 94 listed, 18 caught, 0 missed, 0 timed out, 76 unviable, 0 not reached
+  (bound 30 min, took 629 s)`.
+- Yulius CI at 270fac55 (the head of review round 1): `quality` failed only on `fixture_hygiene`
+  (the blocker above, fixed since), `e2e` passed, `security` skipped (Vidoc key refused).
 - `yulius security-scan`: exit 2, not run: Vidoc refused the instance key (HTTP 401); no pass is claimed, Yulius CI runs its own scan on the pull request.
 
 ### In the contributor's fork (as SPEC-450, 2026-11-10)
