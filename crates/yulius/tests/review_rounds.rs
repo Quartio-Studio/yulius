@@ -1004,6 +1004,18 @@ mod real {
     /// `SendMessage`, not to start a new one.
     #[test]
     fn a_cut_off_reviewer_moves_the_session_and_is_resumed_there() -> TestResult {
+        a_cut_off_reviewer(true)
+    }
+
+    /// RLM-002 with no subscription that can run Fable: nothing moves, and the session is told
+    /// to start the review again, which then runs on Opus 5.5 (REV-007).
+    #[test]
+    fn a_cut_off_reviewer_nobody_can_run_is_told_to_go_on_on_opus() -> TestResult {
+        a_cut_off_reviewer(false)
+    }
+
+    /// Both RLM-002 tests: the second subscription runs Fable or does not.
+    fn a_cut_off_reviewer(second_runs_fable: bool) -> TestResult {
         let fake =
             locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
         let (_dir, data) = temp()?;
@@ -1021,34 +1033,44 @@ mod real {
             .await?;
             let (sandbox, user) = seed(&app, &data, &["a-first", "b-second"]).await?;
             probe.set("a-first", usage(5.0, 4 * HOUR, 10.0, 100));
-            probe.set("b-second", usage(40.0, 4 * HOUR, 50.0, 100));
+            let mut second = usage(40.0, 4 * HOUR, 50.0, 100);
+            if !second_runs_fable {
+                second.weekly_fable = Some(UsageWindow {
+                    used_percent: Some(100.0),
+                    window_minutes: Some(10_080),
+                    resets_at: second.secondary.as_ref().and_then(|w| w.resets_at),
+                });
+            }
+            probe.set("b-second", second);
             refresh(&app, &user, "a-first").await?;
             refresh(&app, &user, "b-second").await?;
             let id = new_task(&app, &sandbox, &user, "Review it", TaskMode::Prompt).await?;
             ready(&app, &id).await?;
             assert_eq!(run_accounts(&app, &id).await, [Some("a-first".to_owned())]);
-            let person = app.deps.store.task(&id).await?.ok_or("task")?.created_by;
-            let ctx = yulius_app::auth::AuthContext {
-                user: app.deps.store.user(&person).await?.ok_or("user")?,
-                csrf_token: None,
-                session_hash: None,
-                token: None,
-            };
-            let attach = app
-                .terminal_open(&ctx, id.as_str(), Some((120, 40)))
+            // Sent as the agent works, not typed by a person (whose typing holds Yulius back).
+            app.send_input(&id, b"/reviewer-limit yulius-reviewer\r")
                 .await?;
-            app.terminal_input(&ctx, &attach, b"/reviewer-limit yulius-reviewer", false)
-                .await?;
-            app.terminal_input(&ctx, &attach, b"\r", false).await?;
             let cut = wait_for("the cut-off reviewer", Duration::from_secs(30), || async {
                 screen(&app, &id).contains("CUT OFF")
             })
             .await;
             assert!(cut.is_ok(), "{}", screen(&app, &id));
             // A turn's end, should the cut-off have come while one ran.
-            app.terminal_input(&ctx, &attach, b"carry on", false)
-                .await?;
-            app.terminal_input(&ctx, &attach, b"\r", false).await?;
+            app.send_input(&id, b"carry on\r").await?;
+            if !second_runs_fable {
+                // Nowhere to move: the session stays and is told the round runs on Opus.
+                let told = wait_for("the Opus note", Duration::from_secs(30), || async {
+                    let seen = screen(&app, &id);
+                    seen.contains("no Claude subscription can run Fable 5.2 now")
+                        && seen.contains("this round then runs on Opus 5.5")
+                })
+                .await;
+                assert!(told.is_ok(), "{}", screen(&app, &id));
+                assert!(app.deps.store.switches(&id).await?.is_empty());
+                assert_eq!(run_accounts(&app, &id).await, [Some("a-first".to_owned())]);
+                stop(&app, &id).await?;
+                return Ok::<_, Box<dyn std::error::Error>>(());
+            }
             live_run(&app, &id, 2).await?;
             assert_eq!(
                 run_accounts(&app, &id).await,

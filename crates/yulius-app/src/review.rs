@@ -97,6 +97,11 @@ pub(crate) fn reviewer_resume_prompt(after: Option<&str>, reviewer: &CutOffRevie
     }
 }
 
+/// How often, and how far apart, a session is offered [`reviewer_nowhere`] while it does not take
+/// typed text: about two minutes in all.
+const NOWHERE_TRIES: u32 = 12;
+const NOWHERE_RETRY: std::time::Duration = std::time::Duration::from_secs(10);
+
 /// What a session is told whose cut-off reviewer no subscription can run now (RLM-002, REV-007).
 fn reviewer_nowhere(reviewer: &CutOffReviewer) -> String {
     format!(
@@ -484,16 +489,24 @@ impl App {
         let app = Arc::clone(self);
         let task = task.clone();
         tokio::spawn(async move {
-            if let Err(err) = app
-                .type_into_session(
-                    &task,
-                    paste.as_bytes(),
-                    crate::task_message::Typed::Prompt,
-                    crate::task_message::Sender::Yulius,
-                )
-                .await
-            {
-                tracing::warn!(error = %err, task = %task.id, "the session was not told its reviewer cannot go on");
+            // The session may not take typed text yet (a person's draft, text typed moments
+            // ago): it is told once it does, within a bound.
+            for attempt in 1..=NOWHERE_TRIES {
+                match app
+                    .type_into_session(
+                        &task,
+                        paste.as_bytes(),
+                        crate::task_message::Typed::Prompt,
+                        crate::task_message::Sender::Yulius,
+                    )
+                    .await
+                {
+                    Ok(()) => return,
+                    Err(err) if attempt == NOWHERE_TRIES => {
+                        tracing::warn!(error = %err, task = %task.id, "the session was not told its reviewer cannot go on");
+                    }
+                    Err(_) => tokio::time::sleep(NOWHERE_RETRY).await,
+                }
             }
         });
         ReviewerMove::Nothing
