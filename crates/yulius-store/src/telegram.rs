@@ -161,8 +161,15 @@ impl ChatLinkStore for SqliteStore {
             tx.execute(
                 "INSERT INTO telegram_links (user_id, chat_id, linked_at) VALUES (?1, ?2, ?3) \
                  ON CONFLICT(user_id) DO UPDATE SET chat_id = excluded.chat_id, \
-                 linked_at = excluded.linked_at, notify_needs_you = 1, notify_done = 0, \
-                 notify_failed = 0, notify_account = 0",
+                 linked_at = excluded.linked_at, \
+                 notify_needs_you = CASE WHEN telegram_links.chat_id = excluded.chat_id \
+                 THEN telegram_links.notify_needs_you ELSE 1 END, \
+                 notify_done = CASE WHEN telegram_links.chat_id = excluded.chat_id \
+                 THEN telegram_links.notify_done ELSE 0 END, \
+                 notify_failed = CASE WHEN telegram_links.chat_id = excluded.chat_id \
+                 THEN telegram_links.notify_failed ELSE 0 END, \
+                 notify_account = CASE WHEN telegram_links.chat_id = excluded.chat_id \
+                 THEN telegram_links.notify_account ELSE 0 END",
                 params![user, chat, at.0],
             )
             .map_err(db)?;
@@ -349,6 +356,12 @@ mod tests {
             ..NotifyChoices::default()
         };
         assert!(store.set_chat_choices(&anna, &choices).await?);
+        assert_eq!(
+            store.chat_link(&anna).await?.ok_or("link")?.choices,
+            choices
+        );
+        // The same chat linked again with a new code keeps her choices (review round 1).
+        assert_eq!(store.link_chat(&anna, "100", Timestamp(2)).await?, None);
         assert_eq!(
             store.chat_link(&anna).await?.ok_or("link")?.choices,
             choices

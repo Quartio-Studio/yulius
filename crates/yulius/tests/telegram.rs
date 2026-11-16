@@ -362,6 +362,9 @@ async fn an_instance_administrator_sets_and_removes_the_bot() -> TestResult {
     assert_eq!(r.body["configured"], true);
     assert_eq!(r.body["bot_username"], "yulius_a_bot");
     assert_eq!(r.body["set_by"], "alice");
+    // Nothing answered yet: the fake's first long poll waits a second with nothing to send
+    // (review round 1: "polling" claimed it was receiving before any poll succeeded).
+    assert_eq!(r.body["state"], "starting", "{}", r.body);
     let stored = w.h.store.chat_bot().await?.ok_or("stored")?;
     assert!(
         !String::from_utf8_lossy(&stored.sealed.0).contains("synthetic"),

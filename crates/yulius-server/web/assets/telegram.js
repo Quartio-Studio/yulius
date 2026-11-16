@@ -35,6 +35,7 @@ export function telegramBotCard(ctx) {
     const when = state.set_at ? ` ${relLong(state.set_at)}` : '';
     const linked = `${state.linked} ${state.linked === 1 ? 'person' : 'people'} linked`;
     if (state.state === 'off') return `@${state.bot_username} is saved but not running: save its token again.`;
+    if (state.state === 'starting') return `@${state.bot_username} is starting: waiting for Telegram's first answer. Set${who}${when}, ${linked}.`;
     if (state.state === 'retrying') return `@${state.bot_username} cannot reach Telegram (${state.last_error || 'error'}); retrying. Set${who}${when}, ${linked}.`;
     return `@${state.bot_username} is receiving. Set${who}${when}, ${linked}.`;
   }

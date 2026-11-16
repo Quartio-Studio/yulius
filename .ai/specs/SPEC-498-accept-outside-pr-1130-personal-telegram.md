@@ -60,7 +60,8 @@ any inbound port.
   unlinks every chat; setting the same bot's token again keeps them.
 - TGC-003: the server long-polls `getUpdates` (no webhook, no inbound port). After an error from
   Telegram or the network it retries with exponential backoff (1 s doubling to at most 60 s, reset
-  after a successful poll); the admin state shows `retrying` with the last error's kind. A poll asks
+  after a successful poll); the admin state shows `starting` until a poll was answered, then
+  `polling`, and `retrying` with the last error's kind. A poll asks
   for at most 20 updates, so an answer fits the client's 1 MiB bound; one over it anyway is asked
   again one update at a time, and a single update over it is stepped past with a log (review round
   1: 100 long messages, Telegram's default batch, stopped every `/start` for good).
@@ -80,7 +81,8 @@ any inbound port.
 - TGC-012: the bot binds the private chat that sends `/start <code>` with a valid, unexpired,
   unused code to that code's person and consumes the code. A person has at most one chat and a
   chat at most one person: the person's previous chat, or the chat's previous person, is unlinked.
-  Audited `telegram.linked`. Group chats never link.
+  Audited `telegram.linked`. Group chats never link. The same chat linked again with a new code
+  keeps the person's choices; another chat starts from the defaults (review round 1).
 - TGC-013: unlink from Settings (`DELETE /api/me/telegram`) or by sending `/stop` in the linked
   chat. Audited `telegram.unlinked` with where it came from (`settings`, `telegram`).
 - TGC-014: a chat that is not linked gets one fixed reply (how to link) and nothing else: nothing
@@ -117,8 +119,9 @@ any inbound port.
 ### Brought onto current `dev` (task #480)
 
 `dev` moved about 130 pull requests past #1130's base. Its notification center
-(`notifications.js`) learned three things since; the chat follows it so that a chat still gets what
-the notification center would show:
+(`notifications.js`) learned five things since: three the chat now follows (TGC-025..027), so that
+a chat still gets what the notification center would show; two it does not send (Decisions): a
+taken-back control and a stalled pull request.
 
 - TGC-025: while a task is switching (status `switching`, "Continuing": the session moves to
   another subscription or restarts on a newer Claude Code, SPEC-468 CCF-008) nothing is sent and
@@ -245,6 +248,11 @@ and a two-round independent review.
 - Of the notification center's news since #1130, a taken-back control (SPEC-490 OWN-010) is not
   sent: it asks nothing of the person and matches none of the four choices; it is left with part
   2's choices (TGC-104).
+- Nor is a stalled pull request (SPEC-444 PRN-009, `pr_stalled`, the bell's "· PR stalled"; review
+  round 1): it is what Yulius typed into the task's own session, so its agent acts on it first; when
+  that leaves the person something to do, the task's turn ends in Needs you or Your turn, which the
+  chat sends. Like CI failing on the person's pull request, it belongs with part 2's choices
+  (TGC-104).
 - The change is larger than the ~400-line guideline: the issue's part 1 acceptance criteria are
   one vertical slice (a bot nobody can link, or links that send nothing, are not shippable).
 

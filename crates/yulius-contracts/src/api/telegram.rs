@@ -14,7 +14,8 @@ pub struct TelegramBotView {
     pub set_at: Option<String>,
     /// Who set it (login).
     pub set_by: Option<String>,
-    /// `off` (no bot), `polling` (receiving) or `retrying` (after an error, with backoff).
+    /// `off` (no bot), `starting` (no poll answered yet), `polling` (receiving) or `retrying`
+    /// (after an error, with backoff).
     pub state: String,
     /// The last error's kind while `retrying`: `refused`, `unreachable`, `conflict`, `invalid`.
     pub last_error: Option<String>,

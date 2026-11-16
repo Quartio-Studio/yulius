@@ -575,6 +575,27 @@ mod tests {
                 "status.js: {name}"
             );
         }
+        // And every end `status.js` words has the same words here (review round 1: the list
+        // above is written by hand).
+        let labels = web
+            .lines()
+            .filter_map(|line| line.trim().strip_suffix("',"))
+            .filter_map(|line| line.split_once(": '"))
+            .filter(|(name, _)| name.starts_with("stopped_") || name.starts_with("failed_"));
+        let mut seen = 0;
+        for (name, words) in labels {
+            let status = TaskStatus::parse(name).unwrap_or(TaskStatus::Queued);
+            assert_eq!(status.as_str(), name, "status.js names an unknown end");
+            if name != "stopped_cancelled" {
+                assert_eq!(ended_label(status), words, "{name}");
+            }
+            seen += 1;
+        }
+        assert_eq!(
+            seen,
+            ends.len() + 1,
+            "status.js's ends (with a person's stop)"
+        );
     }
 
     #[test]

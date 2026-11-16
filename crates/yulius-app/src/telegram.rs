@@ -436,10 +436,12 @@ impl App {
             .map(|p| (p.polling, p.last_error))
             .unwrap_or((false, None));
         let active = services.active().is_some();
+        // `polling` once a poll was answered; before that `starting` (review round 1).
         let state = match (active, polling, last_error) {
             (false, _, _) => "off",
             (true, _, Some(_)) => "retrying",
-            (true, _, None) => "polling",
+            (true, true, None) => "polling",
+            (true, false, None) => "starting",
         };
         Ok(TelegramBotView {
             configured: saved.is_some(),
