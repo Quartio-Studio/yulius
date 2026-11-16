@@ -229,6 +229,22 @@ pub struct CiRunUpdate {
     pub ended_at: Option<Timestamp>,
 }
 
+/// An ended CI run, for its minutes (SPEC-497 OFC-003).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CiRunEnded {
+    /// Its start.
+    pub started_at: Timestamp,
+    /// Its end.
+    pub ended_at: Timestamp,
+    /// How it ended.
+    pub state: RunState,
+    /// Every job of it that failed or errored did so only for the infrastructure (and at least
+    /// one did).
+    pub outside: bool,
+    /// Job time its jobs spent on runs thrown away for the infrastructure.
+    pub rerun_ms: i64,
+}
+
 /// Fields set with a job transition.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct CiJobUpdate {

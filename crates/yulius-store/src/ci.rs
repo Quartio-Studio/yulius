@@ -2,7 +2,9 @@
 
 use async_trait::async_trait;
 use rusqlite::{OptionalExtension, Row, params, params_from_iter};
-use yulius_app::ci::{CiJobRecord, CiJobUpdate, CiRunRecord, CiRunUpdate, FiledFinding};
+use yulius_app::ci::{
+    CiJobRecord, CiJobUpdate, CiRunEnded, CiRunRecord, CiRunUpdate, FiledFinding,
+};
 use yulius_app::error::{AppError, AppResult};
 use yulius_app::ports::store_ext::CiStore;
 use yulius_domain::ci::{CiRef, GateSource, RunState};
@@ -390,6 +392,61 @@ impl CiStore for SqliteStore {
         .await
     }
 
+    async fn ci_runs_ended(
+        &self,
+        sandbox: &SandboxId,
+        from: Option<Timestamp>,
+        to: Option<Timestamp>,
+    ) -> AppResult<Vec<CiRunEnded>> {
+        let (sandbox, from, to) = (
+            sandbox.as_str().to_owned(),
+            from.map_or(i64::MIN, |at| at.0),
+            to.map_or(i64::MAX, |at| at.0),
+        );
+        self.call(move |c| {
+            // Queued at most a day before the range (the index), started within it.
+            let mut statement = c
+                .prepare(
+                    "SELECT r.started_at, r.ended_at, r.state, \
+                       EXISTS (SELECT 1 FROM ci_jobs j WHERE j.run_id = r.id \
+                               AND j.state IN ('failed', 'error')) \
+                       AND NOT EXISTS (SELECT 1 FROM ci_jobs j WHERE j.run_id = r.id \
+                               AND j.state IN ('failed', 'error') AND j.infra IS NULL) AS outside, \
+                       COALESCE((SELECT SUM(j.infra_ms) FROM ci_jobs j WHERE j.run_id = r.id), 0) \
+                     FROM ci_runs r \
+                     WHERE r.sandbox_id = ?1 AND r.queued_at >= ?2 - 86400000 AND r.queued_at < ?3 \
+                       AND r.started_at >= ?2 AND r.started_at < ?3 AND r.ended_at IS NOT NULL \
+                       AND r.state IN ('passed', 'failed', 'error', 'cancelled')",
+                )
+                .map_err(db)?;
+            let rows = statement
+                .query_map(params![sandbox, from, to], |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, bool>(3)?,
+                        row.get::<_, i64>(4)?,
+                    ))
+                })
+                .map_err(db)?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(db)?;
+            rows.into_iter()
+                .map(|(started, ended, ended_as, outside, rerun_ms)| {
+                    Ok(CiRunEnded {
+                        started_at: Timestamp(started),
+                        ended_at: Timestamp(ended),
+                        state: state(&ended_as).map_err(db)?,
+                        outside,
+                        rerun_ms,
+                    })
+                })
+                .collect()
+        })
+        .await
+    }
+
     async fn set_queued_ci_job_reason(&self, id: &str, reason: Option<&str>) -> AppResult<()> {
         let (id, reason) = (id.to_owned(), reason.map(str::to_owned));
         self.call(move |c| {
@@ -715,6 +772,98 @@ mod tests {
             exclusive: false,
             waited_ms: None,
         }
+    }
+
+    /// SPEC-497 OFC-001, OFC-003: a job's infrastructure failure is kept, and the ended runs
+    /// say whether every failed job failed only for the infrastructure and
+    /// how long their thrown-away runs took; runs outside the range are left out.
+    #[tokio::test]
+    async fn ended_runs_say_how_they_ended() -> TestResult {
+        let store = SqliteStore::open_in_memory()?;
+        let min = 60_000;
+        // (run, its end, the job's end, the job's infrastructure failure)
+        let cases = [
+            (
+                "passed",
+                RunState::Passed,
+                RunState::Passed,
+                Some(("address_pool", 2 * min)),
+            ),
+            ("failed", RunState::Failed, RunState::Failed, None),
+            (
+                "outside",
+                RunState::Error,
+                RunState::Error,
+                Some(("docker_socket", 3 * min)),
+            ),
+            ("cancelled", RunState::Cancelled, RunState::Cancelled, None),
+        ];
+        for (n, (id, run_end, job_end, infra)) in (0_i64..).zip(cases) {
+            let job_id = format!("{id}-job");
+            store
+                .insert_ci_run(&run(id, id, n * min)?, &[job(&job_id, id, 0)])
+                .await?;
+            let started = CiRunUpdate {
+                started_at: Some(Timestamp(n * min)),
+                ..CiRunUpdate::default()
+            };
+            store
+                .transition_ci_run(id, &[RunState::Queued], RunState::Running, &started)
+                .await?;
+            let job_started = CiJobUpdate {
+                started_at: Some(Timestamp(n * min)),
+                ..CiJobUpdate::default()
+            };
+            store
+                .transition_ci_job(
+                    &job_id,
+                    &[RunState::Queued],
+                    RunState::Running,
+                    &job_started,
+                )
+                .await?;
+            let job_ended = CiJobUpdate {
+                ended_at: Some(Timestamp(n * min + 10 * min)),
+                infra,
+                ..CiJobUpdate::default()
+            };
+            store
+                .transition_ci_job(&job_id, &[RunState::Running], job_end, &job_ended)
+                .await?;
+            let ended = CiRunUpdate {
+                ended_at: Some(Timestamp(n * min + 10 * min)),
+                ..CiRunUpdate::default()
+            };
+            store
+                .transition_ci_run(id, &[RunState::Running], run_end, &ended)
+                .await?;
+        }
+        let sandbox = SandboxId::parse("s1")?;
+        let ended = store.ci_runs_ended(&sandbox, None, None).await?;
+        let seen: Vec<(RunState, bool, i64)> = ended
+            .iter()
+            .map(|run| (run.state, run.outside, run.rerun_ms))
+            .collect();
+        assert_eq!(
+            seen,
+            [
+                (RunState::Passed, false, 2 * min),
+                (RunState::Failed, false, 0),
+                (RunState::Error, true, 3 * min),
+                (RunState::Cancelled, false, 0),
+            ]
+        );
+        assert!(
+            ended
+                .iter()
+                .all(|run| run.ended_at.0 - run.started_at.0 == 10 * min)
+        );
+        // The range: runs started in [min, 3 min).
+        let window = store
+            .ci_runs_ended(&sandbox, Some(Timestamp(min)), Some(Timestamp(3 * min)))
+            .await?;
+        assert_eq!(window.len(), 2);
+        Ok(())
     }
 
     #[tokio::test]

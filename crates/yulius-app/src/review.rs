@@ -787,7 +787,7 @@ impl App {
         from: Option<&str>,
         to: Option<&str>,
     ) -> AppResult<yulius_contracts::api::analytics::MergeQueueAnalytics> {
-        use yulius_contracts::api::analytics::{MergeQueueAnalytics, MergeQueueDay};
+        use yulius_contracts::api::analytics::{CiMinutesDay, MergeQueueAnalytics, MergeQueueDay};
         use yulius_domain::merge_queue as mq;
         let (sandboxes, from_at, to_at, range) =
             self.analytics_window(ctx, sandbox, from, to).await?;
@@ -823,11 +823,37 @@ impl App {
                 detail: entry.detail.unwrap_or_default(),
             }));
         }
+        // CI minutes by how the runs ended (SPEC-497 OFC-003).
+        let mut runs = Vec::new();
+        for id in &sandboxes {
+            for run in self.deps.store.ci_runs_ended(id, from_at, to_at).await? {
+                runs.push(mq::RunMinutes {
+                    started: run.started_at,
+                    ms: run.ended_at.millis_since(run.started_at),
+                    outcome: match run.state {
+                        yulius_domain::ci::RunState::Passed => mq::RunOutcome::Passed,
+                        yulius_domain::ci::RunState::Cancelled => mq::RunOutcome::Cancelled,
+                        _ if run.outside => mq::RunOutcome::FailedOutside,
+                        _ => mq::RunOutcome::Failed,
+                    },
+                    rerun_ms: run.rerun_ms,
+                });
+            }
+        }
+        let (minute_days, minutes) = mq::minutes_by_day(&runs);
         let numbers = mq::queue_numbers(&events, from_at);
         let mut totals = MergeQueueAnalytics {
             range,
             merges: numbers.merges,
             median_arm_to_merge_minutes: numbers.median_arm_to_merge_minutes,
+            ci_minutes: ci_minutes(minutes),
+            ci_minutes_by_day: minute_days
+                .into_iter()
+                .map(|(day, minutes)| CiMinutesDay {
+                    day,
+                    minutes: ci_minutes(minutes),
+                })
+                .collect(),
             ..MergeQueueAnalytics::default()
         };
         for day in numbers.days {
@@ -1069,6 +1095,23 @@ fn round_view(r: ReviewRoundRecord) -> yulius_contracts::api::git::ReviewRoundVi
         verdict: r.verdict,
         reported: r.ended_at.is_some(),
         cut_off: r.cut_off,
+    }
+}
+
+/// The contract's form of [`yulius_domain::merge_queue::Minutes`], rounded to tenths.
+fn ci_minutes(
+    minutes: yulius_domain::merge_queue::Minutes,
+) -> yulius_contracts::api::analytics::CiMinutes {
+    let tenth = |m: f64| (m * 10.0).round() / 10.0;
+    yulius_contracts::api::analytics::CiMinutes {
+        passed: tenth(minutes.passed),
+        failed: tenth(minutes.failed),
+        failed_outside: tenth(minutes.failed_outside),
+        cancelled: tenth(minutes.cancelled),
+        rerun: tenth(minutes.rerun),
+        outside_share: minutes
+            .outside_share()
+            .map(|share| (share * 1000.0).round() / 1000.0),
     }
 }
 

@@ -164,9 +164,128 @@ pub fn queue_numbers(events: &[QueueEvent], from: Option<Timestamp>) -> QueueNum
     }
 }
 
+/// How a CI run ended, for its minutes (SPEC-497 OFC-003).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunOutcome {
+    /// It passed.
+    Passed,
+    /// It failed or errored, not only for the infrastructure.
+    Failed,
+    /// It failed or errored only for the infrastructure (every such job met one again).
+    FailedOutside,
+    /// It was cancelled (superseded, its candidate dissolved, `dev` moved).
+    Cancelled,
+}
+
+/// One ended CI run: when it started, how long it took, how it ended, and the milliseconds its
+/// jobs spent on runs an infrastructure failure threw away (SPEC-497 OFC-001).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RunMinutes {
+    /// Its start.
+    pub started: Timestamp,
+    /// From its start to its end.
+    pub ms: i64,
+    /// How it ended.
+    pub outcome: RunOutcome,
+    /// Job time on runs thrown away for the infrastructure.
+    pub rerun_ms: i64,
+}
+
+/// CI minutes by how the runs ended (SPEC-497 OFC-003).
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct Minutes {
+    /// Of runs that passed.
+    pub passed: f64,
+    /// Of runs that failed for the change (or for a reason not told apart).
+    pub failed: f64,
+    /// Of runs that failed only for the infrastructure.
+    pub failed_outside: f64,
+    /// Of runs that were cancelled.
+    pub cancelled: f64,
+    /// Of job runs an infrastructure failure threw away, within any run (job minutes).
+    pub rerun: f64,
+}
+
+impl Minutes {
+    /// The share of the runs' minutes that went to runs failed outside the change or cancelled
+    /// (the target: at most 15 %); `None` without any minutes.
+    #[must_use]
+    pub fn outside_share(&self) -> Option<f64> {
+        let total = self.passed + self.failed + self.failed_outside + self.cancelled;
+        (total > 0.0).then(|| (self.failed_outside + self.cancelled) / total)
+    }
+
+    fn add(&mut self, run: &RunMinutes) {
+        #[expect(clippy::cast_precision_loss, reason = "minutes of a run fit")]
+        let (minutes, rerun) = (
+            run.ms.max(0) as f64 / 60_000.0,
+            run.rerun_ms.max(0) as f64 / 60_000.0,
+        );
+        match run.outcome {
+            RunOutcome::Passed => self.passed += minutes,
+            RunOutcome::Failed => self.failed += minutes,
+            RunOutcome::FailedOutside => self.failed_outside += minutes,
+            RunOutcome::Cancelled => self.cancelled += minutes,
+        }
+        self.rerun += rerun;
+    }
+}
+
+/// The minutes of `runs`, per UTC day of their start (oldest first) and in all.
+#[must_use]
+pub fn minutes_by_day(runs: &[RunMinutes]) -> (Vec<(String, Minutes)>, Minutes) {
+    let mut days: BTreeMap<String, Minutes> = BTreeMap::new();
+    let mut total = Minutes::default();
+    for run in runs {
+        let day = format_rfc3339(run.started)
+            .chars()
+            .take(10)
+            .collect::<String>();
+        days.entry(day).or_default().add(run);
+        total.add(run);
+    }
+    (days.into_iter().collect(), total)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// SPEC-497 OFC-003: minutes by outcome per day and in all, the rerun time apart, and the
+    /// share outside the change (failed only for the infrastructure, or cancelled).
+    #[test]
+    fn ci_minutes_are_counted_by_how_runs_ended() {
+        let run = |at: i64, minutes: i64, outcome, rerun: i64| RunMinutes {
+            started: Timestamp(at),
+            ms: minutes * MIN,
+            outcome,
+            rerun_ms: rerun * MIN,
+        };
+        let runs = [
+            run(0, 10, RunOutcome::Passed, 2),
+            run(MIN, 6, RunOutcome::Failed, 0),
+            run(2 * MIN, 3, RunOutcome::FailedOutside, 3),
+            run(DAY, 1, RunOutcome::Cancelled, 0),
+        ];
+        let (days, total) = minutes_by_day(&runs);
+        assert_eq!(
+            days.iter().map(|(day, _)| day.as_str()).collect::<Vec<_>>(),
+            ["1970-01-01", "1970-01-02"]
+        );
+        assert_eq!(
+            total,
+            Minutes {
+                passed: 10.0,
+                failed: 6.0,
+                failed_outside: 3.0,
+                cancelled: 1.0,
+                rerun: 5.0,
+            }
+        );
+        assert_eq!(total.outside_share(), Some(0.2));
+        assert_eq!(days[1].1.cancelled, 1.0);
+        assert_eq!(Minutes::default().outside_share(), None);
+    }
 
     const DAY: i64 = 86_400_000;
     const MIN: i64 = 60_000;

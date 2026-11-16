@@ -1036,6 +1036,129 @@ async fn the_merge_queue_read_counts_candidates_from_the_audit_log() -> TestResu
     Ok(())
 }
 
+/// SPEC-497 OFC-003: the merge queue's read counts CI minutes by how the runs ended: passed,
+/// failed only for the infrastructure, cancelled, the thrown-away runs apart, and the share
+/// outside the change; another sandbox's run only for the admin.
+#[tokio::test]
+async fn the_merge_queue_read_counts_ci_minutes_by_outcome() -> TestResult {
+    use yulius_app::ci::{CiJobRecord, CiJobUpdate, CiRunRecord, CiRunUpdate};
+    use yulius_app::ports::store_ext::CiStore as _;
+    use yulius_domain::ci::{CiRef, GateSource, RunState};
+    let h = harness()?;
+    let (admin, alice) = base(&h).await?;
+    let min = 60_000;
+    let cases = [
+        ("s1", "p", RunState::Passed, Some(("address_pool", 3 * min))),
+        ("s1", "o", RunState::Error, Some(("docker_socket", 2 * min))),
+        ("s1", "c", RunState::Cancelled, None),
+        ("s2", "q", RunState::Failed, None),
+    ];
+    for (n, (sandbox, id, end, infra)) in (0_i64..).zip(cases) {
+        let at = OCT1 + HOUR + n * HOUR;
+        let run = CiRunRecord {
+            id: id.into(),
+            sandbox_id: SandboxId::parse(sandbox)?,
+            reference: CiRef::PullRequest(1),
+            sha: id.into(),
+            source: GateSource::ProjectConfig,
+            state: RunState::Queued,
+            reason: None,
+            requested_by: "yulius".into(),
+            status_for: None,
+            status_note: None,
+            status_attempts: 0,
+            queued_at: Timestamp(at),
+            started_at: None,
+            ended_at: None,
+        };
+        let job = CiJobRecord {
+            id: format!("{id}-job"),
+            run_id: id.into(),
+            ordinal: 0,
+            name: "quality".into(),
+            key: "quality".into(),
+            command: "true".into(),
+            matrix: None,
+            state: RunState::Queued,
+            reason: None,
+            exit_code: None,
+            output: String::new(),
+            failures: None,
+            started_at: None,
+            ended_at: None,
+            need: yulius_domain::resources::Need::default(),
+            timeout_minutes: None,
+            exclusive: false,
+            waited_ms: None,
+        };
+        h.store.insert_ci_run(&run, &[job]).await?;
+        let start = CiRunUpdate {
+            started_at: Some(Timestamp(at)),
+            ..CiRunUpdate::default()
+        };
+        h.store
+            .transition_ci_run(id, &[RunState::Queued], RunState::Running, &start)
+            .await?;
+        let job_id = format!("{id}-job");
+        h.store
+            .transition_ci_job(
+                &job_id,
+                &[RunState::Queued],
+                RunState::Running,
+                &CiJobUpdate {
+                    started_at: Some(Timestamp(at)),
+                    ..CiJobUpdate::default()
+                },
+            )
+            .await?;
+        h.store
+            .transition_ci_job(
+                &job_id,
+                &[RunState::Running],
+                end,
+                &CiJobUpdate {
+                    ended_at: Some(Timestamp(at + 10 * min)),
+                    infra,
+                    ..CiJobUpdate::default()
+                },
+            )
+            .await?;
+        let ended = CiRunUpdate {
+            ended_at: Some(Timestamp(at + 10 * min)),
+            ..CiRunUpdate::default()
+        };
+        h.store
+            .transition_ci_run(id, &[RunState::Running], end, &ended)
+            .await?;
+    }
+    let read = |who: &Creds| {
+        let (router, who) = (h.router.clone(), who.clone());
+        async move {
+            call(
+                &router,
+                Method::GET,
+                "/api/analytics/merge-queue?from=2026-10-01&to=2026-10-07",
+                None,
+                &who,
+            )
+            .await
+        }
+    };
+    let seen = read(&alice).await?;
+    assert_eq!(seen.status, StatusCode::OK, "{}", seen.body);
+    assert_eq!(
+        seen.body["ci_minutes"],
+        json!({"passed": 10.0, "failed": 0.0, "failed_outside": 10.0, "cancelled": 10.0,
+               "rerun": 5.0, "outside_share": 0.667}),
+        "{}",
+        seen.body
+    );
+    assert_eq!(seen.body["ci_minutes_by_day"][0]["day"], "2026-10-01");
+    // The admin sees the other sandbox's failed run too.
+    assert_eq!(read(&admin).await?.body["ci_minutes"]["failed"], 10.0);
+    Ok(())
+}
+
 /// Review round 2 of SPEC-493 fix 4: the merge queue's audit read keeps the newest entries
 /// within its limit (oldest first), reads `<slug>` and `<slug>#<n>` but not `<slug>2#<n>`, and the
 /// task ids it is given.

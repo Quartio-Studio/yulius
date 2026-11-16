@@ -327,6 +327,40 @@ pub struct MergeQueueAnalytics {
     pub merges: u32,
     /// The median minutes from a merge's last arming to the merge; `null` without any.
     pub median_arm_to_merge_minutes: Option<f64>,
+    /// CI minutes over the range by how the runs ended (SPEC-497 OFC-003).
+    #[serde(default)]
+    pub ci_minutes: CiMinutes,
+    /// The same per UTC day of the runs' start, oldest first; days with no run are left out.
+    #[serde(default)]
+    pub ci_minutes_by_day: Vec<CiMinutesDay>,
+}
+
+/// CI minutes by how the runs ended (SPEC-497 OFC-003): run minutes (start to end) of runs that
+/// passed, failed, failed only for the infrastructure and were cancelled; and job minutes thrown
+/// away by infrastructure failures that were run again.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct CiMinutes {
+    /// Runs that passed.
+    pub passed: f64,
+    /// Runs that failed for the change (or a reason not told apart).
+    pub failed: f64,
+    /// Runs that failed only for the infrastructure.
+    pub failed_outside: f64,
+    /// Runs that were cancelled.
+    pub cancelled: f64,
+    /// Job minutes of runs thrown away for the infrastructure (inside runs of any outcome).
+    pub rerun: f64,
+    /// `(failed_outside + cancelled) / all four`; `null` without any run. The target: 0.15.
+    pub outside_share: Option<f64>,
+}
+
+/// One day's [`CiMinutes`].
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct CiMinutesDay {
+    /// `YYYY-MM-DD` (UTC).
+    pub day: String,
+    /// Its minutes.
+    pub minutes: CiMinutes,
 }
 
 /// `GET /api/analytics/docker`: what the sandboxes' Docker fronts needed over the range, per week

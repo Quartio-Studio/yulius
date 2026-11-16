@@ -141,11 +141,12 @@ mode.
 - [x] Slice A: Docker networks per engine in the budget, larger address pools
 - [x] Slice A: a sandbox's weight follows the CPUs its jobs hold
 - [x] Slice A: documents and ADR
-- [ ] Slice A: review rounds answered
-- [ ] Slice B: infrastructure failures rerun once by themselves
-- [ ] Slice B: flaky tests quarantined with an issue, the project told
+- [x] Slice A: review rounds answered
+- [x] Slice B: infrastructure failures rerun once by themselves
 - [ ] Slice B: CI minutes by outcome read and shown
-- [ ] Slice B: documents, ADR and review
+- [ ] Slice B: documents, ADR and review of the reruns and minutes
+- [ ] Slice B: flaky tests quarantined with an issue, the project told
+- [ ] Slice B: quarantine documents, ADR and review
 - [ ] Slice C: a failed member leaves without cancelling the candidate
 - [ ] Slice C: a passed candidate merges while own runs go
 - [ ] Slice C: derived-file conflicts handled without a wasted cycle

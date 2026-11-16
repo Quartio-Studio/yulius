@@ -4131,6 +4131,8 @@ route('GET', '/api/analytics/merge-queue', ({ db, query }) => {
     range: { sandbox: query.get('sandbox'), from: query.get('from'), to: query.get('to') },
     days: [], formed: 9, merged: 6, dissolved: 3, dissolved_by: { member_left: 2, bisected: 1 },
     merges: 14, median_arm_to_merge_minutes: 31.5,
+    ci_minutes: { passed: 588, failed: 120, failed_outside: 406, cancelled: 114, rerun: 12, outside_share: 0.423 },
+    ci_minutes_by_day: [],
   };
 });
 
