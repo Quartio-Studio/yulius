@@ -169,6 +169,13 @@ struct World {
 /// An instance with the channel wired to the fake; alice (an instance administrator) may write
 /// in `s1` (`acme/app`), bob sees nothing, carol reads `s2` (`acme/other`) only.
 async fn world() -> Result<World, Box<dyn std::error::Error>> {
+    let w = world_unstarted().await?;
+    w.h.app.start_channel().await;
+    Ok(w)
+}
+
+/// [`world`] before its channel starts, as a server is before `start_channel`.
+async fn world_unstarted() -> Result<World, Box<dyn std::error::Error>> {
     let h = harness()?;
     let admin = setup_superadmin_creds(&h).await?;
     configure_github_app(&h).await?;
@@ -197,7 +204,6 @@ async fn world() -> Result<World, Box<dyn std::error::Error>> {
             flush_every: Duration::from_millis(50),
         },
     ));
-    h.app.start_channel().await;
     Ok(World {
         h,
         fake,
@@ -1151,5 +1157,69 @@ async fn a_backlog_of_long_messages_does_not_stop_linking() -> TestResult {
     w.fake.message(100, true, &format!("/start {code}"));
     let sent = w.fake.wait_sent(100, 1).await?;
     assert!(sent[0].starts_with("Linked"), "{sent:?}");
+    Ok(())
+}
+
+/// TGC-022 (review round 2): at a start with a saved bot, what is already the case is read before
+/// anything is told: older states are not news, a later change is.
+#[tokio::test]
+async fn a_start_with_a_saved_bot_tells_only_later_changes() -> TestResult {
+    use yulius_app::ports::notify::ChannelIdentity;
+    use yulius_app::ports::store_ext::IntakeStore as _;
+    let w = world_unstarted().await?;
+    let alice = user_id(&w, "alice").await?;
+    let carol = user_id(&w, "carol").await?;
+    // Saved before the start: the bot, alice's and carol's chats, t1 needing alice, t2 after t1.
+    let sealed = w.h.app.deps.crypto.seal(TOKEN_A.as_bytes())?;
+    let identity = ChannelIdentity {
+        id: 1000,
+        username: "yulius_a_bot".into(),
+    };
+    w.h.store
+        .set_chat_bot(Some((&sealed, &identity, "admin")), w.h.app.now())
+        .await?;
+    w.h.store
+        .link_chat(
+            &yulius_domain::ids::UserId::parse(&alice)?,
+            "100",
+            w.h.app.now(),
+        )
+        .await?;
+    w.h.store
+        .link_chat(
+            &yulius_domain::ids::UserId::parse(&carol)?,
+            "300",
+            w.h.app.now(),
+        )
+        .await?;
+    let first = seed_task(&w.h, "t1", "s1", &alice, TaskStatus::Running, None).await?;
+    ask(&w, "t1", "asked before the start").await?;
+    seed_task(&w.h, "t2", "s1", &alice, TaskStatus::Chained, None).await?;
+    let t2 = TaskId::parse("t2")?;
+    w.h.store
+        .insert_chain(&yulius_app::intake::ChainRecord {
+            task_id: t2.clone(),
+            after_task_id: Some(first.id.clone()),
+            after_number: first.number,
+            blocked_reason: None,
+            created_at: w.h.app.now(),
+            rule: None,
+        })
+        .await?;
+
+    w.h.app.start_channel().await;
+    w.h.app.publish_task(&first.id).await;
+    barrier(&w, "c1").await?;
+    assert!(w.fake.sent_to(100).is_empty(), "{:?}", w.fake.sent_to(100));
+
+    w.h.store
+        .set_chain_blocked(&t2, Some("#1 crashed. Start this task now or cancel it."))
+        .await?;
+    w.h.app.publish_task(&t2).await;
+    let sent = w.fake.wait_sent(100, 1).await?;
+    assert!(
+        sent[0].starts_with(&format!("Needs you · app\n#{} task t2\n", first.number + 1)),
+        "{sent:?}"
+    );
     Ok(())
 }
