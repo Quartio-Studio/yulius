@@ -94,6 +94,9 @@ pub struct CiUse {
     pub cpu_usec: u64,
     /// Anonymous memory now, in bytes.
     pub anon_bytes: u64,
+    /// Thousandths of the last 10 seconds for which the CI jobs' processes waited for a CPU;
+    /// `None` where it is not measured.
+    pub cpu_pressure: Option<u32>,
 }
 
 /// What a sandbox's Docker engine's networks take of its address pools (SPEC-497 HBA-003).
