@@ -271,14 +271,18 @@ impl Queue {
         self.through_tool = self.through_tool.saturating_sub(1);
     }
 
-    /// A Stop came at `now`, with the lines written before it read when it can tell. A Stop a
+    /// A Stop came at `now`; `read` says the lines written before it were read first. A Stop a
     /// hook blocks writes no closing record ([`Self::turn_closed`]): what is left by such
     /// Stops is the notifications of Claude Code's own that waited at the last one, then
     /// through a tool result written after it, and still wait. A notification Claude Code
     /// would take in is taken at a tool result; a prompt, a slash command or a `!` line is
-    /// never marked this way (SPEC-493 DEF-001).
-    pub fn stop_seen(&mut self, now: Timestamp) {
-        self.left_over = self.left_over.max(self.through_tool).min(self.waiting);
+    /// never marked this way (SPEC-493 DEF-001). A Stop whose lines were not read leaves
+    /// nothing: the record that took a notice in at the tool result may not be read yet
+    /// (review round 1 of fix 10a). It marks what waits for the next Stop all the same.
+    pub fn stop_seen(&mut self, now: Timestamp, read: bool) {
+        if read {
+            self.left_over = self.left_over.max(self.through_tool).min(self.waiting);
+        }
         self.at_stop = self.notices;
         self.through_tool = 0;
         self.stop_at = Some(now);
@@ -1045,14 +1049,14 @@ mod tests {
         let counts = |queue: &Queue| (queue.waiting(), queue.left_over());
         let mut queue = Queue::default();
         queue.record(QueueChange::Notice, at(100));
-        queue.stop_seen(Timestamp(200));
+        queue.stop_seen(Timestamp(200), true);
         assert!(
             queue.hands_on(),
             "the first Stop: nothing says yet that it stays"
         );
         // The continuation's tool result, then the next Stop: no closing record between them.
         queue.record(QueueChange::ToolResult, at(300));
-        queue.stop_seen(Timestamp(400));
+        queue.stop_seen(Timestamp(400), true);
         assert_eq!(counts(&queue), (1, 1));
         assert!(!queue.hands_on());
         assert!(queue.holds(), "the restart's rule still counts it");
@@ -1061,10 +1065,10 @@ mod tests {
         // handed on at the Stop that ends the turn.
         let mut queue = Queue::default();
         queue.record(QueueChange::Notice, at(100));
-        queue.stop_seen(Timestamp(200));
+        queue.stop_seen(Timestamp(200), true);
         queue.record(QueueChange::ToolResult, at(150));
         queue.record(QueueChange::ToolResult, None);
-        queue.stop_seen(Timestamp(400));
+        queue.stop_seen(Timestamp(400), true);
         assert_eq!(
             counts(&queue),
             (1, 0),
@@ -1072,15 +1076,15 @@ mod tests {
         );
         // The next tool result after that Stop does it.
         queue.record(QueueChange::ToolResult, at(500));
-        queue.stop_seen(Timestamp(600));
+        queue.stop_seen(Timestamp(600), true);
         assert_eq!(counts(&queue), (1, 1));
 
         // A prompt is taken in at a tool result or handed on at the turn's end: never left.
         let mut queue = Queue::default();
         queue.record(QueueChange::Added, at(100));
-        queue.stop_seen(Timestamp(200));
+        queue.stop_seen(Timestamp(200), true);
         queue.record(QueueChange::ToolResult, at(300));
-        queue.stop_seen(Timestamp(400));
+        queue.stop_seen(Timestamp(400), true);
         assert_eq!(counts(&queue), (1, 0));
         assert!(queue.hands_on());
 
@@ -1088,41 +1092,60 @@ mod tests {
         // Stop is not marked by it.
         let mut queue = Queue::default();
         queue.record(QueueChange::Notice, at(100));
-        queue.stop_seen(Timestamp(200));
+        queue.stop_seen(Timestamp(200), true);
         queue.record(QueueChange::NoticeTaken, at(300));
         queue.record(QueueChange::ToolResult, at(300));
         queue.record(QueueChange::Notice, at(350));
-        queue.stop_seen(Timestamp(400));
+        queue.stop_seen(Timestamp(400), true);
         assert_eq!(counts(&queue), (1, 0));
         // A notice taken in while a prompt waits: what is left waiting is the prompt.
         let mut queue = Queue::default();
         queue.record(QueueChange::Notice, at(100));
         queue.record(QueueChange::Added, at(110));
-        queue.stop_seen(Timestamp(200));
+        queue.stop_seen(Timestamp(200), true);
         queue.record(QueueChange::NoticeTaken, at(300));
         queue.record(QueueChange::ToolResult, at(300));
-        queue.stop_seen(Timestamp(400));
+        queue.stop_seen(Timestamp(400), true);
         assert_eq!(counts(&queue), (1, 0), "the prompt is never left");
         // A leave whose kind is not known takes a marked notice first.
         let mut queue = Queue::default();
         queue.record(QueueChange::Notice, at(100));
         queue.record(QueueChange::Added, at(110));
-        queue.stop_seen(Timestamp(200));
+        queue.stop_seen(Timestamp(200), true);
         queue.record(QueueChange::ToolResult, at(300));
         queue.record(QueueChange::HandedOn, at(310));
-        queue.stop_seen(Timestamp(400));
+        queue.stop_seen(Timestamp(400), true);
         assert_eq!(counts(&queue), (1, 0), "the one left may be the prompt");
 
+        // Review round 1: a Stop whose lines were not read first marks nothing. The tool
+        // result was read, the `remove` that took the notice in at it not yet: counting the
+        // notice then would leave the mark on the prompt once the `remove` is read.
+        let mut queue = Queue::default();
+        queue.record(QueueChange::Notice, at(100));
+        queue.record(QueueChange::Added, at(110));
+        queue.stop_seen(Timestamp(200), true);
+        queue.record(QueueChange::ToolResult, at(300));
+        queue.stop_seen(Timestamp(400), false);
+        queue.record(QueueChange::NoticeTaken, at(301));
+        assert_eq!(counts(&queue), (1, 0), "the prompt is never left");
+        assert!(queue.hands_on());
+        // The next Stop that was read decides from what was marked at the unread one.
+        let mut queue = Queue::default();
+        queue.record(QueueChange::Notice, at(100));
+        queue.stop_seen(Timestamp(200), false);
+        queue.record(QueueChange::ToolResult, at(300));
+        queue.stop_seen(Timestamp(400), true);
+        assert_eq!(counts(&queue), (1, 1));
         // A closing record between the two Stops decides by itself, as before.
         let mut queue = Queue::default();
         queue.record(QueueChange::Notice, at(100));
-        queue.stop_seen(Timestamp(200));
+        queue.stop_seen(Timestamp(200), true);
         queue.turn_closed();
         assert_eq!(counts(&queue), (1, 1));
         queue.record(QueueChange::Taken, at(250));
         queue.record(QueueChange::Notice, at(260));
         queue.record(QueueChange::ToolResult, at(300));
-        queue.stop_seen(Timestamp(400));
+        queue.stop_seen(Timestamp(400), true);
         assert_eq!(
             counts(&queue),
             (1, 0),

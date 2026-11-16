@@ -3298,6 +3298,60 @@ mod moves {
         Ok(())
     }
 
+    /// SPEC-493 DEF-001 (AC-23, review round 1 of fix 10a): a prompt in the notice's place,
+    /// in the same blocked turn with the same tool results, is never left: the session stays
+    /// through the blocked Stops, the prompt is answered in that run, and only then does the
+    /// session move. (The fake agent takes nothing in at a tool result; Claude Code would.)
+    #[test]
+    fn a_prompt_in_a_blocked_turn_with_tool_results_keeps_the_session() -> TestResult {
+        let (_dir, data) = data_dir()?;
+        let version = data.join("claude-version");
+        let may_end = data.join("turn-may-end");
+        let rt = runtime()?;
+        rt.block_on(async {
+            let options = FakeAgentOptions {
+                stop_tool: true,
+                ..queueing(&may_end)
+            };
+            let s = server(&data, &version, options, TaskMode::Prompt, "2.1.311").await?;
+            add_account(&s.app, "b-second").await?;
+            change_code(&s).await?;
+            s.app.send_input(&s.id, b"one\r").await?;
+            says(&s, "TURN HELD").await?;
+            s.app.send_input(&s.id, b"a prompt\r").await?;
+            says(&s, "QUEUED: a prompt").await?;
+            waits_in_the_queue(&s).await?;
+            s.probe.set("a-first", usage(100.0, 4 * HOUR, 30.0, 100));
+            refresh(&s.app, &s.user, "a-first").await?;
+            let mut watch = s.app.runtime(&s.id).hub.subscribe().rx;
+            std::fs::write(&may_end, "")?;
+            let mut shown = String::new();
+            wait_for(
+                "the waiting prompt's answer, or the move",
+                Duration::from_secs(90),
+                || {
+                    shown.push_str(&printed(&mut watch));
+                    let (answered, s) = (shown.contains("ECHO: a prompt"), &s);
+                    async move { answered || runs(s).await > 1 }
+                },
+            )
+            .await?;
+            assert_eq!(
+                runs(&s).await,
+                1,
+                "the session moved with a prompt in its queue: {shown}"
+            );
+            assert!(
+                shown.matches("STOP BLOCKED").count() >= 2,
+                "it stayed through blocked Stops: {shown}"
+            );
+            run_live(&s, 2).await?;
+            stop(&s.app, &s.id).await
+        })?;
+        rt.shutdown_timeout(Duration::from_secs(5));
+        Ok(())
+    }
+
     /// SPEC-479 SWQ-002 (AC9, review round 1): Claude Code hands on an entry of its own (a
     /// notification of finished background work, a slash command, a `!` line) alone, and a
     /// prompt that waits behind it stays in the queue through that turn's closing record,

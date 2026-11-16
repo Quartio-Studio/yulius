@@ -70,7 +70,9 @@ it would run into its limit each time.
   blocked without a tool call keeps a real prompt waiting through any number of them; a person
   who writes at every turn would be cut off by a count.
 - **Tell a notification from a prompt by its text.** A `dequeue` names no entry, so the text of
-  what still waits is not known.
+  what still waits is not known. (SPEC-493 DEF-001 does use the text where records give it, for
+  the blocked Stops' marks only: an `enqueue` or `remove` names its text, and a `dequeue` is
+  taken to take a marked notice, so a wrong guess keeps the session.)
 - **A leave takes a left-over entry first.** Every notification taken in during a turn would
   then make an old left-over entry count again, and such a session would stay at each turn's
   end.

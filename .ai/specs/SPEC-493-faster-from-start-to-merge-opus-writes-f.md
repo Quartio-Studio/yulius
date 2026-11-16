@@ -389,7 +389,9 @@ person's decision is read as holding after an approval).
 ### Fix 10: two defects found on the way
 
 - **DEF-001** A queue entry Claude Code never takes out holds a session on its subscription for
-  one turn's end only, also in a goal run whose Stop is blocked (SPEC-479's promise).
+  one turn's end only, also in a goal run whose Stop is blocked (SPEC-479's promise). At
+  blocked Stops "one" is one Stop and the next after a tool result: only there would Claude
+  Code have taken a notification in (see Decisions).
 - **DEF-002** A running sandbox browser is unlocked for viewers' input only when no native file
   chooser opened before the policy appeared can still be on the display (SPEC-483 AC-36).
 
@@ -1851,3 +1853,24 @@ Both are checked on current `dev` first and fixed test-first if they still hold.
 - A week later: see Decisions (fix 10a's log lines).
 - Not testable here: the real Claude Code in a goal run with a stuck notification. Its pieces
   are taken from the real transcripts and probe runs above, not from a live run of the whole.
+- Review round 1 (Opus 5.5, head `fe4e8b27f`): approve, with two minors and four nits; both
+  minors closed before the merge.
+  - Minor 1: a Stop at which no move is decided told the queue without reading the lines first.
+    A tool result could be read before the `remove` that took the notice in at it (in 754 of
+    1,301 real cases the `remove` follows the result directly), and that notice's mark would
+    then move onto a waiting prompt. Now `stop_seen(now, read)` leaves nothing at an unread
+    Stop; it still marks for the next one. Unit cases cover that order and an unread Stop
+    followed by a read one. Mutation: `read` ignored.
+  - Minor 2: "a prompt in its place keeps the session" now has its integration test,
+    `a_prompt_in_a_blocked_turn_with_tool_results_keeps_the_session` (the reviewer's probe): the
+    session stays through the blocked Stops, the prompt is answered in run 1, then it moves.
+    Mutation: every `enqueue` read as a notice.
+  - Nits:
+    - ADR-0310's Alternatives say where the text is used now, and DEF-001 says what "one" means
+      at blocked Stops.
+    - Answered in words: an absorbed entry taking a mark errs toward keeping the session (the
+      kind of a `dequeue` is not known).
+    - Answered in words: the integration test's fixed clock leaves the Stop-time comparison to
+      the unit test, where its mutation fails.
+    - The reviewer's replay of the rule over all 5,824 real Stops lost no entry, and 9 Stops
+      changed from staying to moving.
