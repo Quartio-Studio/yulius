@@ -16,6 +16,20 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   (`POST /api/admin/accounts` with `token`, `PUT /api/admin/accounts/{id}/token`). A new token is a
   new sign-in like the terminal's: it keeps a typed email and drops the old sign-in's model limits.
 
+- CI no longer takes more than the host has (SPEC-497 slice A, task #479,
+  [ADR-0350](decisions/0350-ci-jobs-are-admitted-by-what-ci-really-holds-on-the-host.md)): every
+  project's jobs come out of one budget, the host less an eighth for the server and agents, and a
+  job starts only when it fits beside what CI's groups were measured to use, not only what jobs
+  declared, and a job's default share is of that budget; each sandbox's Docker engine has 4,096
+  /24 networks instead of 31 from its next start (the first is 172.17.1.0/24, not
+  172.18.0.0/16) and a job waits, saying so, while fewer than 32 are left; a sandbox's weight follows the CPUs its jobs hold, so agents'
+  local builds take what CI does not. A waiting job's reason says what it waits for.
+- An idle Superagent's leftover processes count their two hours from when the probe that found
+  them was asked, not from when its answer was read (SPEC-501, task #483, #1110; outside pull
+  request #1143 by studenciak00owl). Under the gate's load
+  `cockpit::an_idle_superagents_strays_are_reaped_after_the_bound` moved its clock between the
+  two, the strays were first seen two hours late, and they were never reaped; a regression test
+  moves the clock inside the probe.
 - Bootstrap tolerates a concurrent run in the shared CI home (SPEC-499, task #481, outside pull
   request #1131 by studenciak00owl). The two CI lanes of a sandbox no longer race the rustup
   installer and `rustup toolchain install` in the shared `~/.rustup` (a run failed on a
