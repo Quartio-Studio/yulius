@@ -1506,7 +1506,7 @@ involved.
 - CI jobs of every sandbox come out of one budget: the host's CPUs and memory less an eighth for
   the server and the agents. A job starts when it fits beside the larger of what the running
   jobs reserved and what their sandboxes' CI and Docker engine were measured to use; a waiting
-  job's reason in `ci_status` and on the CI page says what it waits for, CPUs, memory or Docker
+  job's reason in `ci_status` (and the run's API) says what it waits for, CPUs, memory or Docker
   networks ([ADR-0350](decisions/0350-ci-jobs-are-admitted-by-what-ci-really-holds-on-the-host.md)).
   A job's default share (no `cpus`) is an equal share of that budget among its run's jobs.
 - Each sandbox's Docker engine makes /24 networks from Docker's own ranges (172.17.0.0/16 to

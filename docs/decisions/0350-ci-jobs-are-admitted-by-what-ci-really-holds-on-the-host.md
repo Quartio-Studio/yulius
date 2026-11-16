@@ -49,7 +49,7 @@ sandboxes' agents built. Each sandbox's Docker engine had Docker's default pools
   job held by one engine holds nothing the other sandboxes need.
 - **The wait says why**: a queued job's reason is what it waits for ("waits for the host's CI
   budget: CI holds 50 of the host's 56 CPUs for CI (32 reserved, 50 measured); this job needs
-  16", or the Docker networks), cleared when it starts; `ci_status` and the CI page show it.
+  16", or the Docker networks), cleared when it starts; `ci_status` and the run's API (`reason` of a queued job) show it.
 - **Agents' heavy commands take what CI does not hold**: a sandbox's weight among sandboxes is
   100 plus 100 for each CPU its running jobs hold (at least 500, at most 10,000), so against `n`
   sandboxes whose agents build it gets `(1 + c) / (1 + c + n)` of the host: 30 held CPUs get 45
@@ -91,3 +91,14 @@ sandboxes' agents built. Each sandbox's Docker engine had Docker's default pools
   own `subnet` in its compose file.
 - A sandbox running agents' Docker containers beside its CI counts them as CI's: its next job
   waits a little more. Containers of sandboxes running no CI job are not counted.
+- Jobs that arrive within one window (a run's jobs arrive together) are each checked against the
+  same reading, so the excess of jobs already running over their reservations is counted once,
+  not once per new job: on a budget of 56, one job reserving 16 and measured at 40 lets five
+  8-CPU jobs start together. Counting the reservations made since the last reading was left for
+  later: the reading of the next window holds the job after them back.
+- A project that declares `cpus` above half the budget runs one such job at a time: quartio-v2's
+  `cpus = 30` twice is 60 of 56. It is told so (SPEC-497 slice E); 28 fits twice.
+- An engine restarted with networks made under Docker's old pools counts each of them as one of
+  its 4,096 /24s, though a /16 covers 256 of them: the free count is then too high until those
+  networks are removed (`docker compose down`, or the prune once they are unused for 10
+  minutes).

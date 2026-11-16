@@ -199,11 +199,12 @@ mode.
   "CI holds 45 of the host's 56 CPUs for CI (32 reserved, 45 measured); this job needs 16"; memory
   too; a job larger than the budget alone). `App::ci_reserve` (`CiAdmission`, first come first
   served, a ticket left on cancellation), `App::ci_measured` (the `ci` and `engine` groups of the
-  sandboxes running jobs, a first reading at each job's start, a rate over at least 5 s), and
+  sandboxes running jobs, read under the admission's lock at each job's start, each dispatcher
+  pass and each look of a waiting job, a rate over 5 to 30 s), and
   `Delegation::ci_use` (unit `cgroup::tests::ci_use_adds_the_ci_and_engine_groups`: `usage_usec`
   and `anon` of both groups, not the agents', none without the `cpu` split).
   `local_ci::a_job_waits_while_ci_uses_more_than_it_reserved` (real Git and jobs, a fake isolation
-  measured at 3 CPUs): dev's new job fits beside the running pull request's 1 reserved CPU but
+  measured at 2.5 CPUs): dev's new job fits beside the running pull request's 1 reserved CPU but
   waits with "waits for the host's CI budget: CI holds 3 of the host's 3 CPUs for CI (1 reserved,
   3 measured); this job needs 1", and starts once the use drops while the first job still runs;
   its reason is then cleared. Mutation: admitting by the reservations alone (`held = reserved`)
@@ -211,11 +212,12 @@ mode.
 - HBA-003: `engine::ADDRESS_POOLS` in `dockerd_argv` (the argv test checks the five pools and
   that they add up to 4,096 /24 networks); `engine::networks` and `prune_networks` (unit
   `the_engines_networks_are_counted_and_pruned`: `host` and `none` not counted, a GET and a POST,
-  a refusal an error); `SandboxManager::engine_networks_free`, `prune_engine_networks` (only a
-  running engine, never through the sandbox's socket). `local_ci::a_job_waits_for_docker_networks`:
-  10 free, the unused networks pruned first (no job of the sandbox ran), the job waits with "waits
-  for Docker networks: its sandbox's engine can make 10 more, and a job starts with at least 32
-  free", and passes once there is room.
+  a refusal an error, the capacity from `/info`); `SandboxManager::engine_networks`,
+  `prune_engine_networks` (only a running engine, never through the sandbox's socket).
+  `local_ci::a_job_waits_for_docker_networks`: 10 free of 4,096, the networks unused for 10
+  minutes pruned first, the job waits with "waits for Docker networks: its sandbox's engine can
+  make 10 more of 4096, and a job starts with at least 32 free", passes once there is room, and
+  its reason is cleared.
 - HBA-004: `cgroup::sandbox_weight(jobs, cpus)`;
   `cgroup::tests::ci_gets_about_the_cpus_its_jobs_hold`: 30 held CPUs get at least 30 of 64 with
   their sandbox's agents and four other sandboxes' agents building (28 with the flat 500), and the
@@ -274,3 +276,24 @@ mode.
     no slot or budget the other sandboxes need. Said in the doc comment and the ADR.
 - Security scan: `yulius security-scan` exited 2, not run (Vidoc refused the key, HTTP 401);
   CI's `security` job ends skipped. Task #478 issues a new key.
+- **Review round 2** (Fable 5.2, head `7d0b6b2f2`). Request changes, all own code. Answered:
+  - Major: the default-share fix had no test that failed without it.
+    `local_ci::a_runs_default_shares_run_together` (4 CPUs, a budget of 3): the pull request's
+    two jobs without `cpus` run at once, each told "[yulius] budget: 1 CPU, 2048 MiB". With
+    the shares of the capacity (`exec.rs` reverted) it fails: the second job waits.
+  - Minor: "not settled" reached only the caller that re-based. A re-based sample keeps
+    `rebased` until a rate is computed, so every caller sees it (the unit test reads again at
+    61 s: still not settled).
+  - Minor: ADR-0350 and `operations.md` said the CI page shows a waiting job's reason; it is
+    `ci_status` and the run's API. Corrected.
+  - Minor: the weight test could not tell CPUs from jobs. `local_ci::a_job_weighs_by_the_cpus_it_holds`
+    (a 2-CPU job: the isolation hears 2 per job).
+  - Minor: the network test now asserts the reason is cleared once the job ran.
+  - Minor: networks made under Docker's old pools count as one /24 each; stated in ADR-0350's
+    Consequences, with what clears them.
+  - Direction (jobs arriving within one window are checked against the same reading; `cpus = 30`
+    twice no longer fits 56): both are now in ADR-0350's Consequences; quartio-v2 is told in
+    slice E.
+  - Nits: the clock and the running list are read under the lock; a prune logs at info only when
+    it removed something; the memory reserve is at most half the capacity (a 2 GiB host keeps
+    1 GiB for CI: doctest); the Evidence above describes this head's code.
