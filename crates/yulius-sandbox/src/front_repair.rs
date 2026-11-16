@@ -141,14 +141,15 @@ pub fn runs_another_build(pid: u32, exe: &Path) -> Option<bool> {
     Some((running.dev(), running.ino()) != (current.dev(), current.ino()))
 }
 
-/// Whether a front is quiet, so replacing it now cuts no connection (SPEC-494 DFJ-010): its
-/// state, if it writes one, says it holds no connection and runs no engine, and, read live just
-/// before the decision, it has no child process (its engine) and no connection at its `socket`,
-/// accepted or still waiting. The state alone is up to [`crate::front_gate`]'s write interval
-/// old, and a front from before ADR-0344 writes none; how many sockets a front holds besides
-/// says nothing (an idle one holds four). Review round 1 of slices 5 to 7. Only the moment after
-/// the read is not covered: a Docker call that comes between it and the new front's `ready`
-/// fails at once (refused, or cut once the old front accepted it) and can be run again.
+/// Whether a front is quiet, so replacing it now cuts no connection of an engine front's clients
+/// (SPEC-494 DFJ-010): its state, if it writes one, says it holds no connection and runs no engine,
+/// and, read live just before the decision, it has no child process (its engine) and no connection
+/// at its `socket`, accepted or still waiting. The state alone is up to [`crate::front_gate`]'s
+/// write interval old, and a front from before ADR-0344 writes none; how many sockets a front holds
+/// besides says nothing (an idle one holds four). Review round 1 of slices 5 to 7. Besides the
+/// relay front's limit (see `connections_on`), only the moment after the read is not covered: a
+/// Docker call that comes between it and the new front's `ready` fails at once (its socket missing
+/// or refused, or cut once the old front accepted it) and can be run again.
 #[must_use]
 pub fn quiet(
     state: Option<&yulius_contracts::sandbox::DockerFrontState>,

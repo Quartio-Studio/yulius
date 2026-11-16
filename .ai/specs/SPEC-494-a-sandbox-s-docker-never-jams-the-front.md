@@ -170,21 +170,20 @@ ever reaches it).
 
 ### Fronts do not run old code for days (slice 5)
 
-- **DFJ-010** At each upkeep tick a front that runs another build than the server is replaced
-  at its first quiet moment. Another build: the file the front process runs
-  (`/proc/<pid>/exe`) is not the server's executable (an update replaced it), by device and
-  inode; no record is needed, so fronts started before this change are recognised too. Quiet,
-  read live just before the stop: the front has no child process (its engine, which stops by
-  itself once idle, ADR-0151) and no connection at its socket, accepted or still waiting
-  (`/proc/<pid>/net/unix` lists those under the listener's path; no listener seen is a doubt,
-  and a doubt is not quiet); a front that writes a state must say so there too. The table lists
-  the clients of the front's network namespace (every run, CI job and CD run of the sandbox); an
-  engine front's containers are covered by its engine, the front's child. A relay front (a
-  legacy holder's, ADR-0158) has no such child: a client of it from another namespace is seen
-  only in its state, and before ADR-0344 not at all. Nothing is lost then, short of a Docker
-  call that comes between that read and the new front's `ready`: it fails at once (refused, or
-  cut once the old front accepted it) and can be run again. A busy one is kept and the journal
-  says so once a day.
+- **DFJ-010** At each upkeep tick a front that runs another build than the server is replaced at its
+  first quiet moment. Another build: the file the front process runs (`/proc/<pid>/exe`) is not the
+  server's executable (an update replaced it), by device and inode; no record is needed, so fronts
+  started before this change are recognised too. Quiet, read live just before the stop: the front
+  has no child process (its engine, which stops by itself once idle, ADR-0151) and no connection at
+  its socket, accepted or still waiting (`/proc/<pid>/net/unix` lists those under the listener's
+  path; no listener seen is a doubt, and a doubt is not quiet); a front that writes a state must say
+  so there too. The table lists the clients of the front's network namespace (every run, CI job and
+  CD run of the sandbox); an engine front's containers are covered by its engine, the front's child.
+  A relay front (a legacy holder's, ADR-0158) has no such child: a client of it from another
+  namespace is seen only in its state, and before ADR-0344 not at all. Besides that, nothing is lost
+  then, short of a Docker call that comes between that read and the new front's `ready`: it fails at
+  once (its socket missing or refused, or cut once the old front accepted it) and can be run again.
+  A busy one is kept and the journal says so once a day.
 
 ### br_netfilter (slice 6)
 
@@ -230,6 +229,8 @@ ever reaches it).
 - [x] Manager tests start a rewritten fake front without a race (#1339)
 - [x] The texts state the relay-front limit and one window wording (#1341)
 - [x] The follow-up reviewed independently, findings fixed test-first
+- [x] The quiet texts name the relay limit; the fake front's writer is always reaped
+- [x] The last notes' fix reviewed independently
 
 ## Acceptance criteria
 
@@ -613,8 +614,8 @@ passed 30 sequential runs and 270 loaded ones. Its notes, own code, fixed in the
   accepted socket in the client's namespace. DFJ-010, ADR-0344 and the code comment now say so,
   and that the engine covers a container's connection, since the engine is the front's child.
 - The window runs until the new front is `ready`, not only until the stop: a call that comes in
-  that time finds the socket closed or missing. DFJ-010, ADR-0344, operations.md and the
-  journal's comment now say so.
+  that time fails at once. DFJ-010, ADR-0344, operations.md and the journal's comment now say
+  so (each case named since the last follow-up).
 - `a_quiet_front_holds_no_connection_and_runs_no_engine` now also holds a connection the front
   has accepted, with its state saying 0, and the front is not quiet.
 - Pre-existing: two manager tests that rewrite the fake front's executable and start it at once
@@ -632,6 +633,27 @@ passed 30 sequential runs and 270 loaded ones. Its notes, own code, fixed in the
   window wording is the same in DFJ-010, ADR-0344, operations.md and the `quiet` and manager
   comments, and covers a call that is cut after it was accepted. The body says `Status: done`.
   The test pins the reason: `connections_on` is `Some(1)` for an accepted connection.
+
+### Follow-up: the last review's notes
+
+PR #1342 was approved at 6ac2c4d16, Yulius CI run 0b52dea0 passed, and it merged at that head.
+#1339 and #1341 are closed with their evidence. The reviewer's own load loop showed 0 failures
+in 2240 runs at that head and 13 in 640 with the binary from before the fix. Its notes, own code:
+
+- The `quiet` doc and DFJ-010 now name the relay-front limit beside the window.
+- The window says what a call meets: its socket missing or refused, or cut once the old front
+  accepted it. This wording is in DFJ-010, ADR-0344, operations.md and both code comments.
+- `put_executable` reaps its writer whatever the write did, and only then reports the write's
+  error.
+- Round 2's record no longer quotes the earlier wording as current.
+
+### On the instance
+
+The instance runs main a040c3b5b (`/internal/version`), from before slice 1. Promoting dev to
+main is a person's, so the task asks for it with `needs_you`: promote, update, then read the
+Docker card and the journal's replacement of the kept fronts. Until then the measures are read
+on dev's build in the tests named above: the HTTP read, the Cockpit read and the e2e Pipeline
+card.
 
 ### Not tested here
 

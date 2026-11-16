@@ -70,19 +70,18 @@ whether the client half-closed or hung up entirely.
   same.
 
 - **A front from an earlier build is replaced when quiet** (SPEC-494 slice 5). The upkeep compares
-  the file a front process runs (`/proc/<pid>/exe`) with the server's executable; when they
-  differ (an update replaced it) and the front is quiet, it is restarted. Quiet is read live just
-  before: no child process (its engine) and no connection at its socket, accepted or waiting
-  (`/proc/<pid>/net/unix` lists those of the front's network namespace, every run, CI job and
-  CD run of the sandbox, under the listener's path; an engine front's containers are covered by
-  its engine, the front's child), and, when the front writes a state, the state agrees. A relay
-  front (a legacy holder's, ADR-0158) has no engine child: a client of it from another namespace
-  is seen only in its state, and before this change not at all. A Docker call that comes
-  between that read and the new front's `ready` fails at once (refused, or cut once the old
-  front accepted it) and can be run again. A state alone is up to 5 s old, and a front from
-  before this change writes none and holds four sockets when idle, so neither the state nor a
-  socket count decides (review round 1 of slices 5 to 7). A busy one is kept and journaled once
-  a day.
+  the file a front process runs (`/proc/<pid>/exe`) with the server's executable; when they differ
+  (an update replaced it) and the front is quiet, it is restarted. Quiet is read live just before:
+  no child process (its engine) and no connection at its socket, accepted or waiting
+  (`/proc/<pid>/net/unix` lists those of the front's network namespace, every run, CI job and CD run
+  of the sandbox, under the listener's path; an engine front's containers are covered by its engine,
+  the front's child), and, when the front writes a state, the state agrees. A relay front (a legacy
+  holder's, ADR-0158) has no engine child: a client of it from another namespace is seen only in its
+  state, and before this change not at all. A Docker call that comes between that read and the new
+  front's `ready` fails at once (its socket missing or refused, or cut once the old front accepted
+  it) and can be run again. A state alone is up to 5 s old, and a front from before this change
+  writes none and holds four sockets when idle, so neither the state nor a socket count decides
+  (review round 1 of slices 5 to 7). A busy one is kept and journaled once a day.
 
 - **Engines do not ask for `br_netfilter`** (SPEC-494 slice 6). A sandbox's engine runs with
   `DOCKER_IGNORE_BR_NETFILTER_ERROR=1`: networks with `enable_icc=false` are created, without
