@@ -1917,6 +1917,16 @@ Both are checked on current `dev` first and fixed test-first if they still hold.
 - Mutations, each failing a test: no chooser check; the click not marked; the typing not marked;
   marked under the policy too; the old message for the new case.
 - Suites: `browser` 40 passed (4 opt-in real-Chromium ones ignored); yulius-browser all passed.
+- Local gate (`scripts/dev ci`) at 9aab0711a: 4620 run, 4619 passed. The one failure,
+  `http_auth::event_streams_follow_revoked_access_and_close_for_disabled_users`, read the
+  stream's heartbeat as a leaked event under load (33 s against 2 s alone). It passes alone 3
+  of 3, touches nothing of this change, and is filed as #1351.
+- `scripts/dev mutants` stopped at its unmutated baseline the first time: this is the first
+  change in the `yulius` crate's own code, and cargo-mutants' copy (no `.git`) built a binary
+  with no commit, so 24 `instance::migrate` flow tests failed there. Fix 8's command now gives
+  the copy's build the checkout's commit (`YULIUS_BUILD_COMMIT`, unless the caller sets one),
+  held by `cargo_mutants_runs_with_a_target_directory_of_its_own`; with the line removed it
+  fails. Then: 26 listed, 20 caught, 0 missed, 0 timed out, 6 unviable (403 s, at 89d6f3fcc).
 - A week later: see Decisions (fix 10b's log line).
 - Not covered: a browser whose policy is taken away while it runs and an agent clicks within the
   five minutes a "yes" stands (ADR-0318 accepts that window for viewers too).
