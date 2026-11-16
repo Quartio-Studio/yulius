@@ -37,8 +37,9 @@ the owner can make it on their laptop; Yulius had no way to take it.
 - **The UI warns** that a token is a credential that should not be sent through chats in clear
   text.
 
-- **A sign-in that does not let go is not overtaken.** The paste cancels a running sign-in and
-  waits for it at most 15 s; one still running then is a 409 and nothing is stored, since it could
+- **A sign-in that does not let go is not overtaken.** The paste cancels every running sign-in
+  of the subscription ("Sign in again" replaces one without waiting, so two may run) and waits
+  for them at most 15 s in all; one still running then is a 409 and nothing is stored, since it could
   still store a token it captured over the pasted one.
 
 Proposed by studenciak00owl in outside pull request #1144 (as their ADR-0289 and SPEC-450) and

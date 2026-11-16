@@ -68,11 +68,11 @@ requests later). What changed under it since:
 | ID | Requirement |
 | --- | --- |
 | TKP-001 | `POST /api/admin/accounts {"provider":"anthropic","label","token"}` (instance administrator) creates the subscription signed in with that token and answers 201 `{"account": Account}` with `status: "ok"` and no `login_id`; no login terminal, process or temporary directory is started. Without `token` (or `token: null`) the request behaves as today (`pending_login` and a `login_id`). |
-| TKP-002 | `PUT /api/admin/accounts/{id}/token {"token"}` (instance administrator) replaces the subscription's credential with the token and answers 200 `Account` with `status: "ok"`, `last_error: null` and the email read again (a typed email stays, TKP-005); a running sign-in of that subscription is cancelled and waited for (at most 15 s) first, and one that has not ended by then is 409 with nothing changed, so a token it captured can never overwrite the pasted one. 404 for an unknown subscription. It repairs a `relogin`, `error` or `pending_login` subscription and re-signs a working one. |
+| TKP-002 | `PUT /api/admin/accounts/{id}/token {"token"}` (instance administrator) replaces the subscription's credential with the token and answers 200 `Account` with `status: "ok"`, `last_error: null` and the email read again (a typed email stays, TKP-005); every running sign-in of that subscription (a "Sign in again" replaces one without waiting, so two may run) is cancelled and waited for (at most 15 s in all) first, and one that has not ended by then, or one started meanwhile, is 409 with nothing changed, so a token it captured can never overwrite the pasted one. 404 for an unknown subscription. It repairs a `relogin`, `error` or `pending_login` subscription and re-signs a working one. |
 | TKP-003 | The token is accepted only in the shape `claude setup-token` prints: after trimming surrounding whitespace, `sk-ant-oat01-` followed by 20 or more of `A-Z a-z 0-9 - _`, at most 512 characters in all. Anything else is 422 `invalid` with one sentence saying what a token looks like and how to make one; nothing is created or changed. |
 | TKP-004 | Before anything is stored, Yulius asks Claude's profile once with the token. A refusal (HTTP 401) is 422 `invalid` "Claude did not accept this token…" and nothing is created or changed. Every other answer accepts the token: an email is stored as the subscription's email, a refusal to read the profile (HTTP 403, normal for a `setup-token`) is stored as "no email", and no answer for now leaves the email to the background round (SPEC-244 SUB-004). |
 | TKP-005 | The token is sealed and stored exactly like a token the login terminal captured (`Crypto::seal`; status `ok`; `last_error`, email and its check cleared), the pool is told at once so waiting tasks may continue on it (ROT-010), its usage is read in the background, and `account.updated` is published. As for every new sign-in on current `dev`, a replaced credential drops the model limits Claude reported to the previous one (SPEC-464 UCL-004), written under the subscription's state lock, and an email a person typed stays (SPEC-463 EML-004); only an email read from Claude is cleared. |
-| TKP-006 | The token never leaves the request in clear: it is never in a response, an error message, an event, the audit log or a log line, the request types' `Debug` prints it redacted, and the plaintext copy is zeroed once sealed. |
+| TKP-006 | The token never leaves the request in clear: it is never in a response, an error message, an event, the audit log or a log line, the request types' `Debug` prints it redacted, and the plaintext copy is zeroed once sealed, and also when the request is dropped before (a client that goes away). A body of another shape is 422 `invalid` with a fixed sentence: serde's message, which quotes what it could not take, is never sent. |
 | TKP-007 | Each paste is audited without the token: a new subscription as `account.created` with detail `provider=anthropic label="<label>" via=token` (the label quoted, as `update_account` quotes it, so a name holding ` via=token` cannot pass for a paste), a replaced token as `account.token_replaced` (no detail). A refused paste is not audited. |
 | TKP-008 | The Subscriptions page's Add subscription dialog offers a choice of **Sign in here** (today's terminal, the default) and **Paste token**. Paste token shows a Token field and one hint: run `claude setup-token` on any computer signed in to the subscription and paste what it prints; do not send it through chats or email in clear text. An empty or malformed token, or one the server refuses, is shown under the field (`invalid()`); success closes the dialog and a toast says the subscription is connected. |
 | TKP-009 | Every subscription card has **Paste a new token**, a dialog with the same field and hint that calls TKP-002; success says so in a toast, a refusal under the field. Both dialogs pass the e2e accessibility (axe) check. |
@@ -86,7 +86,8 @@ requests later). What changed under it since:
 - [x] A paste a sign-in does not let go of is refused with 409
 - [x] The paste dialogs pass e2e on the current Subscriptions page, focus back on the card
 - [x] Docs on current dev: api.md, architecture, product, changes, ADR-0352
-- [ ] Independent review approves the branch head
+- [ ] Review round 1 findings fixed test-first, mutants run on the head
+- [ ] Independent review in a fresh session of the final head
 
 ## Acceptance criteria
 
@@ -111,6 +112,14 @@ requests later). What changed under it since:
   that gives another email.
 - AC-8 (TKP-011): a sign-in that ignores its stop and whose process host does not return keeps
   `PUT …/token` waiting 15 s, then answers 409; the credential, status and audit are unchanged.
+- AC-9 (TKP-002): with two sign-ins of one subscription running, the first holding a captured
+  token and slow to stop, `PUT …/token` answers only once both ended, and the pasted token is the
+  one stored.
+- AC-10 (TKP-006): a bare JSON string holding a token, or the token in a field of the wrong type
+  or name, sent to either route is 422 `invalid` and the answer holds no token.
+- AC-11 (TKP-005): a task waiting for capacity, whose resume loop sleeps its 5-minute recheck,
+  starts on a pasted subscription within seconds; a pasted token's usage is read right after it
+  is stored, a new subscription's and a replaced one's.
 - AC-6 (TKP-008, TKP-009): in the mock UI, Paste token connects a subscription, a malformed token
   is refused under the field, Paste a new token repairs a card, and axe finds no violations in
   either dialog.
@@ -127,7 +136,11 @@ requests later). What changed under it since:
   (`a_new_token_drops_the_old_model_limits_and_keeps_a_typed_email`) and AC-8
   (`a_paste_a_sign_in_does_not_let_go_of_is_refused`: a sign-in that ignores its stop and a kill
   that hangs in `block_in_place`, so the 15 s wait is real time on a multi-thread runtime).
-- e2e (`e2e/tests/subscriptions.e2e.ts`, mock mode): AC-6.
+- e2e (`e2e/tests/subscriptions.e2e.ts`, mock mode): AC-6, focus back on the card after a
+  paste, and switching between the two ways clearing the other way's failure.
+- Review round 1 (same file): AC-9 `a_paste_waits_out_every_running_sign_in`, AC-10
+  `a_malformed_body_never_echoes_the_token`, AC-11 `a_pasted_token_has_its_usage_read_at_once`
+  and `usage_credits::a_task_waiting_for_capacity_starts_on_a_pasted_subscription_at_once`.
 
 ## Decisions
 
@@ -182,6 +195,21 @@ From `dev` at c7348d04, 2026-11-16, Rust 1.99.0, Node 24.21.0.
   `subscription-names`, `loading-shapes`, `subscription-touch`: 117 passed.
 - `python3 scripts/check_repository.py`: passed.
 - The 409 branch the fork left untested (below) is AC-8 now.
+- Review round 1 (Fable 5.2, request changes at 270fac55): answered on this branch.
+  - Blocker, `fixture_hygiene` refused two token-shaped literals in `account_token.rs`: built
+    from parts; `fixture_hygiene` and `account_token::` pass.
+  - A paste waited for one running sign-in only: AC-9 failed three runs of three before the fix
+    ("the first sign-in ended before the paste was stored"), passes after it.
+  - A malformed body echoed the token (axum's rejection quotes serde): AC-10 failed before the
+    fix (plain-text body, no `invalid` code), passes after it.
+  - TKP-005's wake and usage read had no test: AC-11's two tests; removing `capacity_changed()`
+    made the capacity test fail (61 s, the task never resumed), removing the background
+    `read_account_usage` made the usage test fail ("the new subscription's usage was not read").
+  - Nits: the pasted copy is held in a zeroing guard (`PastedToken`); the audit quotes the label
+    (the test was changed first and failed); switching ways clears the other way's failure (the
+    new e2e test failed before the fix); the Plan names the work before the review.
+  - e2e after the fixes: `subscriptions`, `claude-connect`, `onboarding-flow`,
+    `subscription-names`, `consistency`: 104 passed.
 - `yulius security-scan`: exit 2, not run: Vidoc refused the instance key (HTTP 401); no pass is claimed, Yulius CI runs its own scan on the pull request.
 
 ### In the contributor's fork (as SPEC-450, 2026-11-10)
