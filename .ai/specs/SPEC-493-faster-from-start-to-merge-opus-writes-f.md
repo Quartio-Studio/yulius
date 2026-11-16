@@ -1464,3 +1464,18 @@ Both are checked on current `dev` first and fixed test-first if they still hold.
   - M. ADR-0345's Consequences now list what the count catches and what it does not, without
     the claim. What it does not catch: a file built in before the review, and what one line
     does, which no line count can say and which is the review's to find.
+- Review round 6 (Opus 5.5, head `f6123feff`): the code is approvable. K is closed for every
+  round-5 route (each hidden file counted, through the real `FollowUp::count`), and the ADR's
+  limits are stated honestly. The verdict was request changes only because the head had no
+  Yulius CI run yet; the reviewer's condition is approve once one exists. The minors are fixed
+  first, as ADR-0141 asks; both mutations below fail a test.
+  - N1. Minor: a Cargo path dependency (`evil = { path = "tests/evil" }`) and
+    `importlib.import_module` / `__import__` had no loading word.
+    - The fix: a loading word now matches inside a word, in any case (`import`, `require`,
+      `include`, `concat`), and a manifest line with `path =` or `file:` loads.
+    - Tests: the four cases in `a_file_product_code_names_counts`. Exact matching, or dropping
+      `path =`, fails them.
+  - N2. Nit, answered in words: words like `concat` or `include` in lines that load nothing
+    also make tests count. That errs towards a review round, which the ADR now says.
+  - N3. Nit, taken: ADR-0345's wording ("can grow freely … as long as no added product line has
+    a loading word"; "has a loading word … whether or not it loads anything").
