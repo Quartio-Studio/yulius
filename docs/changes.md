@@ -6,6 +6,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-16
 
+- An idle Superagent's leftover processes count their two hours from when the probe that found
+  them was asked, not from when its answer was read (SPEC-501, task #483, #1110; outside pull
+  request #1143 by studenciak00owl). Under the gate's load
+  `cockpit::an_idle_superagents_strays_are_reaped_after_the_bound` moved its clock between the
+  two, the strays were first seen two hours late, and they were never reaped; a regression test
+  moves the clock inside the probe.
 - Bootstrap tolerates a concurrent run in the shared CI home (SPEC-499, task #481, outside pull
   request #1131 by studenciak00owl). The two CI lanes of a sandbox no longer race the rustup
   installer and `rustup toolchain install` in the shared `~/.rustup` (a run failed on a
