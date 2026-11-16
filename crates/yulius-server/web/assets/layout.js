@@ -1096,7 +1096,7 @@ export function createSidebar(ctx) {
 
   /** The card of `cause` over its asking `tasks` (oldest request first), kept across repaints. */
   function sharedCard(cause, tasks) {
-    const key = JSON.stringify([cause, tasks.map((t) => [t.number, t.needs_you.action]), sandbox.slug]);
+    const key = JSON.stringify([cause, tasks.map((t) => [t.number, t.title, t.needs_you.action]), sandbox.slug]);
     let card = sharedCards.get(cause);
     if (card && card.key === key) return card.el;
     const links = tasks.map((t) => {

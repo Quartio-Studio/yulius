@@ -261,6 +261,10 @@ pub struct NeedsYouView {
     /// that name it: one card shows them all (SPEC-494 DFJ-011).
     #[serde(default)]
     pub cause: Option<String>,
+    /// With a `cause`: when the oldest open request of the sandbox's working tasks naming it was
+    /// asked (RFC 3339), the same for all of them: one notification per such episode.
+    #[serde(default)]
+    pub episode: Option<String>,
 }
 
 /// Why a task was flagged `needs_attention` (SPEC-472, ADR-0306).

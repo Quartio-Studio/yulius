@@ -60,6 +60,9 @@ pub struct Told {
     ended_at_ms: Option<i64>,
     /// Tasks whose shared request a person answered through another, to be told so.
     answered: BTreeSet<TaskId>,
+    /// It saw an open trouble, or a restart (whose time is `ended_at_ms`): only then does its
+    /// end answer requests and tell "works again" (review round 2 of slice 4).
+    saw_trouble: bool,
 }
 
 /// What was told, by sandbox id.
@@ -99,12 +102,24 @@ impl App {
             .map_err(AppError::Conflict)?;
         // The repair answers the sandbox's shared Docker requests asked before it; their tasks are
         // told once the trouble (if any) has stayed ended (SPEC-494 DFJ-011).
-        self.answer_docker_requests(sandbox.as_str(), self.now().0)
-            .await;
+        let now = self.now().0;
+        self.answer_docker_requests(
+            sandbox.as_str(),
+            now,
+            "a restart asked through the Superagent",
+        )
+        .await;
+        {
+            // The restart's time is the end, also with no trouble open.
+            let mut told = self.docker_told();
+            let entry = told.entry(sandbox.as_str().to_owned()).or_default();
+            entry.saw_trouble = true;
+            entry.ended_at_ms.get_or_insert(now);
+        }
         tracing::info!(sandbox = %sandbox, "the sandbox's Docker was restarted at a person's ask");
         Ok(serde_json::json!({
             "restarted": true,
-            "said": "The sandbox's Docker front was restarted: an engine it ran stopped with it (its running containers stopped; volumes and images stay) and starts again at the next Docker call. Its tasks hear that it is no longer full once the trouble has ended."
+            "said": "The sandbox's Docker front was restarted (or started, if none ran): an engine it ran stopped with it (its running containers stopped; volumes and images stay) and starts again at the next Docker call. The sandbox's Docker requests asked before are answered, and their tasks are told."
         }))
     }
 
@@ -149,6 +164,7 @@ impl App {
                 let entry = told.entry(sandbox.clone()).or_default();
                 entry.ended_passes = 0;
                 entry.ended_at_ms = None;
+                entry.saw_trouble = true;
             }
             told.iter_mut()
                 .filter_map(|(sandbox, entry)| {
@@ -157,7 +173,7 @@ impl App {
                     }
                     entry.ended_passes = entry.ended_passes.saturating_add(1);
                     let ended_at = *entry.ended_at_ms.get_or_insert(now);
-                    if entry.ended_passes >= BACK_AFTER {
+                    if entry.saw_trouble && entry.ended_passes >= BACK_AFTER {
                         Some((sandbox.clone(), Some(true), Some(ended_at)))
                     } else {
                         (!entry.answered.is_empty()).then(|| (sandbox.clone(), None, None))
@@ -190,7 +206,12 @@ impl App {
             if let Some(ended_at) = ended_at {
                 // The trouble's end answers the sandbox's shared Docker requests asked before it;
                 // their tasks hear it with the others (SPEC-494 DFJ-011).
-                self.answer_docker_requests(&sandbox, ended_at).await;
+                self.answer_docker_requests(
+                    &sandbox,
+                    ended_at,
+                    "the end of the sandbox's Docker trouble",
+                )
+                .await;
             }
             let (told_tasks, answered) = self
                 .docker_told()
@@ -259,12 +280,12 @@ impl App {
     /// Ends the requests of `sandbox`'s tasks that name the `docker` cause and were asked by
     /// `asked_until_ms`, and has those tasks hear that Docker works again with the ones told of
     /// the trouble.
-    async fn answer_docker_requests(&self, sandbox: &str, asked_until_ms: i64) {
+    async fn answer_docker_requests(&self, sandbox: &str, asked_until_ms: i64, source: &str) {
         let Ok(id) = yulius_domain::ids::SandboxId::parse(sandbox) else {
             return;
         };
         let ended = self
-            .end_shared_needs_you(&id, "docker", asked_until_ms)
+            .end_shared_needs_you(&id, "docker", asked_until_ms, source)
             .await;
         if ended.is_empty() {
             return;

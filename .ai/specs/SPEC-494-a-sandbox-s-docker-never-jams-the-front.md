@@ -458,3 +458,25 @@ operations line is wrapped.
   Superagent's `docker_restart` answering a request (`cockpit.rs`), the Superagent's task text
   naming the shared problem (`mcp_text`).
 - The Evidence of slices 5 to 7 leaves this pull request with their code.
+
+### Slice 4, review round 2 (request changes; every finding own code, fixed)
+
+- The bell's one entry depended on the browser having loaded that sandbox's task list (6 of 10
+  e2e runs failed): the server now names each shared request's episode (`NeedsYouView.episode`,
+  the oldest open request naming the cause among the sandbox's working tasks; a resting task's
+  stored request does not count), and the entry is keyed by it and names the project.
+  `shared-needs-you.e2e.ts`: one entry also when another project is open; 10 of 10 runs passed.
+  The integration test asserts both tasks share one episode and a task without the cause has
+  none.
+- A Continue of a stopped task with a stored Docker request answers no other
+  (`continuing_a_stopped_task_answers_no_other_tasks_request`: red with the running check
+  removed).
+- The audit row names its source ("a person's answer to task #N", "the end of the sandbox's
+  Docker trouble", "a restart asked through the Superagent") and is asserted for the task
+  answered through another, not for the one answered directly.
+- An entry created only by an answer or a restart no longer gets an "end" 75 s later: only an
+  entry that saw a trouble, or a restart (whose own time is the cutoff), ends requests and tells
+  that Docker works again.
+- The texts say what answers a shared request (a person's answer, the trouble's end, a restart
+  through the Superagent), not "Yulius's own repair" in general: an upkeep restart for an
+  unanswered engine opens no trouble.

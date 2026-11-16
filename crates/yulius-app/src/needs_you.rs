@@ -67,6 +67,7 @@ impl NeedsYouRecord {
             link: self.link.clone(),
             at: rfc3339(Timestamp(self.at)),
             cause: self.cause.clone(),
+            episode: None,
         }
     }
 
@@ -226,7 +227,7 @@ impl App {
         self.needs_you_audit(ctx, "task.needs_you", &action).await;
         let next = match cause.as_deref() {
             Some(cause) => format!(
-                "People see the tasks of this sandbox that name cause {cause} under one shared \"Needs you\" card; a person's answer to one of them, or Yulius's own repair of the sandbox's Docker, closes yours too, and you are told so here. Print the request in the session as it is; go on with other work."
+                "People see the tasks of this sandbox that name cause {cause} under one shared \"Needs you\" card; a person's answer to one of them, the end of the sandbox's Docker trouble, or a restart of its Docker asked through the Superagent closes yours too, and you are told so here. Print the request in the session as it is; go on with other work."
             ),
             None => "People see \"Needs you\" on this task. Print the request (print, and the link) in the session as it is so whoever opens it knows what to do; go on with other work. It closes when someone writes to this task, or call needs_you with resolved: true once you see it done.".to_owned(),
         };
@@ -270,8 +271,9 @@ impl App {
             && let Ok(Some(record)) = self.deps.store.task(task).await
             && record.status == yulius_domain::task::TaskStatus::Running
         {
+            let source = format!("a person's answer to task #{}", record.number);
             let others = self
-                .end_shared_needs_you(&record.sandbox_id, &cause, self.now().0)
+                .end_shared_needs_you(&record.sandbox_id, &cause, self.now().0, &source)
                 .await;
             if cause == "docker" {
                 self.tell_docker_answered(record.sandbox_id.as_str(), others);
@@ -298,6 +300,34 @@ impl App {
         }
     }
 
+    /// When the episode of `task`'s request about `cause` (asked at `at`) began: the oldest open
+    /// request naming it among the sandbox's tasks that do not rest (an ended task's stored
+    /// request is not shown, SPEC-494 DFJ-011).
+    async fn shared_episode(&self, task: &TaskId, cause: &str, at: i64) -> i64 {
+        let Ok(Some(record)) = self.deps.store.task(task).await else {
+            return at;
+        };
+        let Ok(others) = self.deps.store.needs_you_tasks(&record.sandbox_id).await else {
+            return at;
+        };
+        let mut oldest = at;
+        for other in others {
+            let resting = match self.deps.store.task(&other).await {
+                Ok(Some(t)) => t.status.is_resting(),
+                _ => true,
+            };
+            if resting {
+                continue;
+            }
+            if let Ok(Some(request)) = self.deps.store.task_needs_you(&other).await
+                && request.cause.as_deref() == Some(cause)
+            {
+                oldest = oldest.min(request.at);
+            }
+        }
+        oldest
+    }
+
     /// Ends the requests of `sandbox`'s tasks that name `cause` and were asked by
     /// `asked_until_ms` (a person answered the shared card, or Yulius repaired the cause); a
     /// request replaced meanwhile stays (`end_task_needs_you_asking`). Returns the tasks whose
@@ -307,6 +337,7 @@ impl App {
         sandbox: &yulius_domain::ids::SandboxId,
         cause: &str,
         asked_until_ms: i64,
+        source: &str,
     ) -> Vec<TaskId> {
         let Ok(tasks) = self.deps.store.needs_you_tasks(sandbox).await else {
             return Vec::new();
@@ -337,7 +368,7 @@ impl App {
                             "yulius",
                             "task.needs_you.answered_shared",
                             Some(task.as_str()),
-                            Some(cause),
+                            Some(&format!("{cause}: {source}")),
                         )
                         .await
                     {
@@ -360,7 +391,16 @@ impl App {
     /// The task's open request, for its summary.
     pub(crate) async fn needs_you_view(&self, task: &TaskId) -> Option<NeedsYouView> {
         match self.deps.store.task_needs_you(task).await {
-            Ok(request) => request.map(|r| r.view()),
+            Ok(Some(request)) => {
+                let mut view = request.view();
+                if let Some(cause) = &request.cause {
+                    view.episode = Some(rfc3339(Timestamp(
+                        self.shared_episode(task, cause, request.at).await,
+                    )));
+                }
+                Some(view)
+            }
+            Ok(None) => None,
             Err(err) => {
                 tracing::warn!(task = %task, error = %err, "reading a needs_you request failed");
                 None

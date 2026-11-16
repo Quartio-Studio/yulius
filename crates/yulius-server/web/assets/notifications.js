@@ -220,7 +220,7 @@ export function createNotificationCenter(ctx) {
   });
 
   // The sandbox-level problems a Needs you may name (SPEC-494): their tasks share one entry.
-  const SHARED_CAUSES = { docker: 'This project’s Docker needs you' };
+  const SHARED_CAUSES = { docker: 'its Docker needs you' };
 
   watch('task', (task) => {
     // The rule every view uses (status.js taskInfo): a tested pull request is Done, failing checks
@@ -235,20 +235,16 @@ export function createNotificationCenter(ctx) {
     taskTones.set(task.id, info.tone);
     if (previous === info.tone || !(info.tone in TASK_TONES) || watching(task.id)) return;
     const sandbox = sandboxOf(task.sandbox_id);
-    // A problem of the whole sandbox several tasks ask about (SPEC-494): one entry per episode,
-    // named by its oldest open request, not one per task.
+    // A problem of the whole sandbox several tasks ask about (SPEC-494): one entry per episode
+    // (the server names it by its oldest open request), not one per task, wherever the person is.
     const cause = task.needs_you && Object.hasOwn(SHARED_CAUSES, task.needs_you.cause || '') ? task.needs_you.cause : null;
-    if (cause && info.tone === 'attention') {
-      const asking = (ctx.store.tasksOf(task.sandbox_id) || [])
-        .filter((t) => t.needs_you && t.needs_you.cause === cause)
-        .sort((a, b) => (Date.parse(a.needs_you.at) || 0) - (Date.parse(b.needs_you.at) || 0) || a.number - b.number);
-      const first = asking[0] || task;
+    if (cause && info.tone === 'attention' && task.needs_you.episode) {
       add({
         kind: TASK_TONES[info.tone],
-        title: SHARED_CAUSES[cause],
-        detail: `Needs you, asked by ${asking.map((t) => `#${t.number}`).join(', ') || `#${task.number}`}${sandbox ? ` · ${sandbox.name}` : ''}`,
-        route: taskRoute(first),
-        key: `needs-you:${task.sandbox_id}:${cause}:${first.needs_you ? first.needs_you.at : ''}`,
+        title: `${sandbox ? sandbox.name : 'A project'}: ${SHARED_CAUSES[cause]}`,
+        detail: `Needs you, asked by #${task.number} and any other task of it that shares the problem`,
+        route: taskRoute(task),
+        key: `needs-you:${task.sandbox_id}:${cause}:${task.needs_you.episode}`,
         once: true,
       });
       return;

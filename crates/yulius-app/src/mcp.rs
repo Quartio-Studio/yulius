@@ -657,7 +657,7 @@ pub fn tool_descriptors() -> Vec<ToolDescriptor> {
                 "decision": {"type": "boolean", "description": "true: the person chooses (name the options in action) rather than does something"},
                 "link": {"type": "string", "description": "Where to do it: a Yulius page URL"},
                 "resolved": {"type": "boolean", "description": "true: your request is done (no action needed)"},
-                "cause": {"type": "string", "enum": crate::needs_you::CAUSES, "description": "A problem of the whole sandbox, shared by its tasks: docker (the sandbox's Docker does not answer). Every task naming it shows as one card, answered together, and Yulius's own repair answers it"}
+                "cause": {"type": "string", "enum": crate::needs_you::CAUSES, "description": "A problem of the whole sandbox, shared by its tasks: docker (the sandbox's Docker does not answer). Every task naming it shows under one card and is answered together: by a person's answer to one, the end of the sandbox's Docker trouble, or a restart asked through the Superagent"}
             }), &[]),
         },
         ToolDescriptor {

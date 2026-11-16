@@ -7,9 +7,10 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 ## 2026-11-16
 
 - One shared Docker problem, one Needs you (SPEC-494 slice 4, task #476, ADR-0344): a task's
-  `needs_you` may name `cause: docker`; the requests of a sandbox naming it show as one row in the
-  sidebar's Needs you group ("This project's Docker: #4, #12"), and a person's answer to one, the
-  end of the Docker trouble or `docker_restart` ends them all.
+  `needs_you` may name `cause: docker`; the tasks of a sandbox naming it are grouped under one card
+  in the sidebar's Needs you group ("This project's Docker · asked by #12, #4", over their own
+  rows), the notification center holds one entry for it, and a person's answer to one, the end of
+  the Docker trouble or `docker_restart` ends them all, each task told.
 - Yulius restarts a jammed sandbox Docker itself (SPEC-494 slice 3, task #476, ADR-0344): a
   front full for 2 minutes, or whose running engine does not answer through it, is restarted
   (front and engine; running containers stop, volumes stay) once no CI job of the sandbox runs,
