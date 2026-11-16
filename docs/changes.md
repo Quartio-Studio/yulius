@@ -12,6 +12,17 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   at most 10 minutes later, journaled and counted; the tasks told hear that it is no longer
   full. The sandbox's Superagent has `docker_restart` to do it at once.
 
+## 2026-11-16
+
+- A review survives a usage limit (SPEC-493 fix 7, task #472,
+  [ADR-0346](decisions/0346-a-cut-off-reviewer-is-resumed-after-its-session-moves.md)): a limit
+  in a subagent's transcript is the session's news, recorded for the model it binds; a review
+  round's cut-off reviewer moves the session to a subscription that runs its model, and the new
+  process is told to resume it with `SendMessage`, not to start a new one (with none, the round
+  runs on Opus 5.5); a round does not start where its reviewer's model has under 5 points of room
+  while another subscription has room. The rules say: resume, never restart; high effort, never
+  max.
+
 ## 2026-11-15
 
 - An approval carries across a small follow-up (SPEC-493 fix 6, task #472,

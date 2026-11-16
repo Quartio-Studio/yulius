@@ -1479,3 +1479,52 @@ Both are checked on current `dev` first and fixed test-first if they still hold.
     also make tests count. That errs towards a review round, which the ADR now says.
   - N3. Nit, taken: ADR-0345's wording ("can grow freely … as long as no added product line has
     a loading word"; "has a loading word … whether or not it loads anything").
+
+### Fix 7: a review survives a usage limit
+
+- RLM-001: `Observation::SubagentCutOff` carries the limit (reset, window, what it binds); a
+  limit of "the model that ran" names the family of the model that answered the subagent (unit
+  `a_subagents_model_and_its_cut_off_are_read_from_its_transcript`: a five-hour refusal binds the
+  subscription, a credits refusal after Fable 5.2 answers binds Fable). The watcher
+  (`App::subagent_limit`, live lines only) records it on the subscription for that family; one
+  that binds the session's model goes through `limit_met`, as any limit.
+- RLM-002: `App::reviewer_cut_off` keeps an open round's cut-off reviewer on the run
+  (`cut_off_reviewer`); a limit of another family than the session's moves the session
+  (`move_for_reviewer` when idle, else the Stop hook at the turn's end, after reading the turn's
+  lines while a round is open). `move_to_also_run` picks the subscription; background work or a
+  queued prompt puts the move off to a later turn's end. The relaunch's prompt
+  (`reviewer_resume_prompt`, also after a limit of the session's own model) names the reviewer's
+  id and `SendMessage`, and says not to start a new one; `SubagentStart` or `SubagentStop` of that
+  id forgets it. With no subscription that runs the model, the session is told to start the
+  review again, which runs on Opus 5.5 (typed when the session takes text, about two minutes of
+  tries).
+  - AC-18, real processes (`review_rounds::real`, the fake agent's `/reviewer-limit` and
+    `/reviewer-limit-turn`: a `SubagentStart`, one answer on Fable 5.2 and the credits refusal
+    `/credits-out` writes, in the reviewer's own transcript, no `SubagentStop`):
+    `a_cut_off_reviewer_moves_the_session_and_is_resumed_there` (moved to the second
+    subscription, switch `review_resume`, the first's Fable window at 100 %, the new process's
+    prompt names `SendMessage to `arev…``), `a_reviewer_cut_off_in_a_turn_moves_the_session_at_its_end`
+    (the Stop hook's path) and `a_cut_off_reviewer_nobody_can_run_is_told_to_go_on_on_opus`
+    (nothing moves; the note is typed).
+  - Mutations, each fails a test: the family of the answered model, the reviewer noted, the
+    limit recorded for another family, the reviewer named at the relaunch, the move itself, the
+    Stop hook's move.
+  - With the real CLI: the facts the fake agent copies were measured on Claude Code 2.1.325
+    (2026-11-15, `$HOME/.cache/yulius-task-472/probe`: no `SubagentStop` at a limit, the refusal
+    in the subagent's transcript, `SendMessage` resumes on the same model after `--resume`). The
+    whole flow was not run against the real CLI: its limit needs a subscription that runs out.
+- RLM-003: `rotation::move_with_room_for` (unit `a_review_moves_only_to_room_for_its_reviewer`);
+  `start_review_round` refuses a reviewer on a subscription `Tier::Tight` for its model when
+  another has known room, and the session moves (`MOVE_FOR_ROOM`, `review_room`, it interrupts
+  like the Fable move). The Fable move and this one share `decide_move`. AC-19:
+  `a_round_about_to_run_out_moves_the_session_first` (real processes: 3 points left for Fable,
+  moved, asked to start again), `a_tight_round_with_nowhere_roomier_starts_where_it_is`,
+  `a_tight_round_with_work_running_starts_where_it_is`. Three mutations, each fails one.
+- RLM-004: the rule's sentence in `delivery-pipeline`, `om-code-review`, `yulius-review`,
+  `yulius-git`, the workflow, git.md and AGENTS.md; `skills::every_place_says_resume_a_cut_off_reviewer`
+  holds them and `REVIEWER_EFFORT` (high, set by fix 1b's agent definitions).
+- ADR-0346, changes. How to read it a week later: the analytics read's share of first rounds
+  with no report (baseline 14 of 86 at high effort) and its rounds per pull request; `SELECT
+  reason, count(*) FROM switch_decisions WHERE reason IN ('review_resume', 'review_room') GROUP
+  BY reason` counts the moves.
+- Fix 6's round-7 nit is in: the decisions index lists 0343 before 0344.
