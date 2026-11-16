@@ -29,19 +29,33 @@ and fixed, or quarantined with an issue).
     refused, "cannot connect to the Docker daemon").
   - A `SIGKILL` (or exit 137) while the kernel's OOM count of the job's sandbox grew.
   - A job whose process host was lost.
-  The job's kept output end and its failing tests' blocks are read; a test's own failure is not
-  one of these.
+  Only the run's own output counts (what it printed after the line that started it again): if
+  it kept failing tests' blocks, every one of them must name the infrastructure; if it kept none,
+  the words must be in its last 20 lines with no test's failure after them. A Docker error a job
+  went on from, followed by its own failing test, is the change's.
 - **Run again once, by itself**: the job, not its run, starts again in its checkout with its slot
   and budget, its output saying why ("Docker had no free address pool for a new network: an
   infrastructure failure, not the change; the job runs again once by itself"). If it then passes,
   its reason says it passed when run again and why; if it meets the infrastructure again, it ends
   **error** saying so, never failed. A second run is never made after a test's failure.
-- **Counted**: the job keeps the kind and the milliseconds the thrown-away run took
-  (`ci_jobs.infra`, `infra_ms`, migration 0064). The merge queue's read
+- **Before the second run** after a full address pool, the job waits for room in its engine as
+  any job does; the second run has its own time limit (a job can hold its slot up to twice its
+  limit), and the first run's measured use is not kept.
+- **Counted**: the job keeps the kind, the milliseconds the thrown-away run took and whether its
+  end itself was the infrastructure's (`ci_jobs.infra`, `infra_ms`, `infra_end`, migration 0064).
+  When a run that started ends, its minutes are added to its sandbox's tally for the day
+  (`ci_minutes`): runs are pruned to the newest few per sandbox, the tally stays. The merge
+  queue's read
   (`GET /api/analytics/merge-queue`) and the Pipeline tab's Merge queue card count CI minutes by
   how runs ended: passed, failed, failed only for the infrastructure, cancelled, and the job
   minutes run again; the share outside the change is (failed outside + cancelled) / all, the
-  target 15 %.
+  target 15 %. A run counts as failed outside the change only when every job of it that failed
+  ended for the infrastructure (`infra_end`).
+- **The host's CI load** is kept once a minute (`ci_load`, 30 days): the host's CPUs busy (from
+  `/proc/stat`), the CPUs running jobs reserved and measured, and the jobs waiting to start.
+  `GET /api/analytics/ci-load` reads it by hour and the Pipeline tab's CI load card shows the
+  job-minutes waited, the busiest hour and the host's busy share, so admission (ADR-0353) is
+  measured before and after a change.
 
 ## Alternatives
 

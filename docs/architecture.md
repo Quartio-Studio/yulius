@@ -3634,7 +3634,9 @@ or a refused start is error. Before that, a failed or lost job is asked whether 
 infrastructure (`yulius_domain::ci::infra`: Docker's words for a full address pool, a
 `docker.sock` connection that ended, a `SIGKILL` while its sandbox's OOM count grew, a lost
 host): it then runs again once by itself in the same slot, saying so; a second such failure ends
-it error, and the thrown-away run's kind and time are kept for the CI minutes
+it error, and the thrown-away run's kind and time are kept for the CI minutes (a per-day tally
+written when a run ends, `ci_minutes`; the dispatcher also keeps the host's CI load once a
+minute, `ci_load`, read by hour at `GET /api/analytics/ci-load`)
 ([decision 0354](decisions/0354-a-job-that-fails-for-the-infrastructure-runs-again-once-by-itself.md)).
 A failed job cancels the run's other jobs (fail-fast), except that the
 `security` job neither cancels nor is cancelled by them (SPEC-273). `yulius_domain::ci::aggregate` makes the run's

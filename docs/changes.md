@@ -17,7 +17,8 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   failure is never run again. The Pipeline tab's Merge queue card and
   `GET /api/analytics/merge-queue` count CI minutes by how runs ended and the share that went to
   runs failed outside the change or cancelled (target 15 %).
-  CI admission (slice A) also counts the jobs admitted after a reading on top of it.
+  The Pipeline tab's CI load card shows, per hour, the job-minutes CI jobs waited to start, the
+  host's CPUs busy and the CPUs CI held and used.
 - Notifications reach a person's own Telegram chat (SPEC-498, task #480,
   [ADR-0351](decisions/0351-a-personal-telegram-channel-behind-a-notification-channel-port.md),
   part 1 of #1107, from outside pull request #1130 by studenciak00owl).
