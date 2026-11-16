@@ -6,6 +6,9 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-16
 
+- Network creates that restrict inter-container traffic no longer fail in sandboxes (SPEC-494
+  slice 6, task #476, ADR-0344): engines run with `DOCKER_IGNORE_BR_NETFILTER_ERROR=1` instead of
+  the host loading `br_netfilter`; ICC is not enforced inside one sandbox's engine.
 - A sandbox's Docker front kept across an update no longer runs the old build for days (SPEC-494
   slice 5, task #476, ADR-0344): the upkeep replaces a front whose executable an update replaced
   at its first quiet moment (no connection, no engine running), fronts from before the change

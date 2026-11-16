@@ -181,10 +181,13 @@ ever reaches it).
 
 ### br_netfilter (slice 6)
 
-- **DFJ-012** Decided in slice 6 after checking a real host: either the host setup loads
-  `br_netfilter` with the host namespace's `bridge-nf-call-*` set to 0 (bridged traffic of the
-  host unchanged, a sandbox's network namespace keeps the kernel's default 1), or the engines run
-  with `DOCKER_IGNORE_BR_NETFILTER_ERROR=1`.
+- **DFJ-012** The engines stop asking for `br_netfilter`: a sandbox's engine runs with
+  `DOCKER_IGNORE_BR_NETFILTER_ERROR=1`, the switch the engine's own error names ("set environment
+  variable DOCKER_IGNORE_BR_NETFILTER_ERROR=1 to ignore"). A network that restricts
+  inter-container traffic (`enable_icc=false`) is then created, and its containers can still
+  reach each other inside the sandbox; the sandbox's network namespace is the boundary Yulius
+  keeps, not ICC. The host loads nothing new. It reaches an engine when its front starts again
+  (slice 5 replaces kept fronts when quiet).
 
 ### Measures (slice 7)
 
@@ -208,7 +211,7 @@ ever reaches it).
 - [x] Needs you of one sandbox-level cause show as one card
 - [ ] Slice 4 reviewed independently, findings fixed test-first
 - [x] An adopted front from another build is replaced when quiet
-- [ ] br_netfilter decided on a real host and applied
+- [x] br_netfilter decided on a real host and applied
 - [ ] Front restarts, give-ways and Docker Needs you are counted on the instance
 - [ ] Slices 5 to 7 reviewed independently, findings fixed test-first
 
@@ -243,7 +246,8 @@ ever reaches it).
   the repair and its notice, the shared Needs you card (AC-5 to AC-7).
 - Probe against the real engine in this sandbox (`target/t476/exec_probe.py`, and a local front
   relaying to it): an exec whose client is killed frees its place.
-- Real host (QEMU guest, Ubuntu 26.04) for `br_netfilter` (DFJ-012).
+- `br_netfilter` (DFJ-012): the engine's environment, asserted in the engine's argv test; the
+  error that names the switch is the sandbox engine's own (reproduced here).
 
 ## Decisions
 
@@ -257,6 +261,13 @@ ever reaches it).
 - "Hung up" is the peer's close (`POLLHUP`), not a half-close: the Docker CLI half-closes after
   stdin's EOF and still reads.
 - Slices are separate pull requests of this task (one concern each, ~400 lines).
+- `br_netfilter` (DFJ-012): the engines stop asking for it rather than the host loading it.
+  Loaded on the host, the module sends every bridged frame of the host through iptables
+  (`bridge-nf-call-iptables` defaults to 1), so a host whose FORWARD policy drops (ufw's
+  default) would cut its own bridged guests, and pinning the host namespace's switch to 0 needs
+  a sysctl drop-in ordered after the module's load on every boot. ICC restriction inside one
+  sandbox's engine protects containers of one tenant from each other, which Yulius does not
+  promise; the sandbox's own network namespace is the boundary.
 
 ## Evidence
 

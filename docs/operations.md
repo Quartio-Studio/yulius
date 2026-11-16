@@ -1104,7 +1104,11 @@ from a sandbox, and no daemon needs to run on the host.
   and images stay. The sandbox's Superagent restarts it at once with `docker_restart` when its
   person asks. A front kept across an update (it runs the replaced executable) is replaced at its
   first quiet moment (no connection, no engine running); a busy one is journaled once a day
-  ("runs an earlier build; it is replaced once it is quiet"). A front started by an
+  ("runs an earlier build; it is replaced once it is quiet").
+- **Networks that restrict inter-container traffic** (SPEC-494, ADR-0344). The host does not
+  load `br_netfilter`; a sandbox's engine runs with `DOCKER_IGNORE_BR_NETFILTER_ERROR=1`, so
+  `docker network create -o com.docker.network.bridge.enable_icc=false` (and Compose networks
+  asking for it) succeeds, and its containers can still reach each other inside the sandbox. A front started by an
   earlier Yulius keeps its old behavior until it starts again: `kill -TERM` the pid in
   `docker-front.json` and the upkeep starts a new one within a tick (its engine and running
   containers stop; volumes stay).

@@ -75,6 +75,10 @@ whether the client half-closed or hung up entirely.
   or for a front from before this change no child and no socket but its listener), it is
   restarted. A busy one is kept and journaled once a day.
 
+- **Engines do not ask for `br_netfilter`** (SPEC-494 slice 6). A sandbox's engine runs with
+  `DOCKER_IGNORE_BR_NETFILTER_ERROR=1`: networks with `enable_icc=false` are created, without
+  enforcing ICC inside the sandbox; the host loads no module.
+
 ## Alternatives
 
 - **A larger limit**: delays the jam by the same leak's rate; does not end it.
@@ -90,6 +94,10 @@ whether the client half-closed or hung up entirely.
   merge unrelated requests; a named cause is exact, and an unknown one is refused.
 - **Recording the build in the front's record**: fronts started before the change have none,
   and the incident's front was one of them; the executable's file tells every front apart.
+- **Loading `br_netfilter` on the host**: every bridged frame of the host would go through
+  iptables, cutting bridged guests on a host whose FORWARD policy drops, unless a boot-ordered
+  sysctl pinned it off again; for an isolation inside one tenant's engine that Yulius does not
+  promise.
 - **Letting tasks restart Docker**: seven tasks would restart it under each other's containers;
   Yulius knows when, and a Superagent acts for its person.
 - **A socket from the front to the server for its events**: the front outlives server restarts
