@@ -537,6 +537,8 @@ function summary(task) {
     pause: (task.status === 'running' || task.status === 'switching') && task.pause ? { ...task.pause } : null,
     // Its open pull request made no progress for an hour (SPEC-444 PRN-009).
     pr_stalled: task.status === 'running' ? task.pr_stalled ?? null : null,
+    // Other live tasks whose scope claims overlap this one's (SPEC-493 SCO-002).
+    overlaps: task.status === 'running' ? (task.overlaps ?? []).map((o) => ({ ...o })) : [],
   };
 }
 

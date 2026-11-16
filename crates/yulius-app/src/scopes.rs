@@ -101,6 +101,52 @@ const TELL_TRIES: u32 = 12;
 const TELL_RETRY: std::time::Duration = std::time::Duration::from_secs(10);
 
 impl App {
+    /// The other live tasks of `task`'s sandbox whose claims overlap its claims, with its
+    /// patterns that overlap them (SPEC-493 SCO-002). A store that cannot be read shows none.
+    pub(crate) async fn claim_overlaps(
+        &self,
+        task: &TaskRecord,
+    ) -> Vec<yulius_contracts::api::tasks::ClaimOverlap> {
+        let store = &self.deps.store;
+        let (Ok(tasks), Ok(records)) = (
+            store.tasks(&task.sandbox_id, false).await,
+            store.active_claims(&task.sandbox_id).await,
+        ) else {
+            return Vec::new();
+        };
+        let live: Vec<&TaskRecord> = tasks.iter().filter(|t| t.status.is_live()).collect();
+        let claims: Vec<ScopeClaim> = records
+            .into_iter()
+            .filter(|r| live.iter().any(|t| t.id == r.task_id))
+            .filter_map(|r| {
+                let pattern = Pattern::parse(&r.pattern).ok()?;
+                ScopeClaim::new(r.task_id, pattern, r.note.as_deref().unwrap_or("")).ok()
+            })
+            .collect();
+        let mut out: Vec<yulius_contracts::api::tasks::ClaimOverlap> = Vec::new();
+        for mine in claims.iter().filter(|c| c.task == task.id) {
+            for theirs in conflicts(mine, &claims) {
+                let Some(other) = live.iter().find(|t| t.id == theirs.task) else {
+                    continue;
+                };
+                let pattern = mine.pattern.as_str().to_owned();
+                match out.iter_mut().find(|o| o.task_number == other.number) {
+                    Some(entry) if !entry.patterns.contains(&pattern) => {
+                        entry.patterns.push(pattern)
+                    }
+                    Some(_) => {}
+                    None => out.push(yulius_contracts::api::tasks::ClaimOverlap {
+                        task_number: other.number,
+                        task_title: other.title.clone(),
+                        patterns: vec![pattern],
+                    }),
+                }
+            }
+        }
+        out.sort_by_key(|o| o.task_number);
+        out
+    }
+
     /// What a holding task is changing and where its pull request stands (SCO-001): its step in
     /// progress, and its pull request's stage, number and whether a merge is armed.
     async fn holder_state(&self, holder: &TaskRecord) -> (Option<String>, Value) {
@@ -304,7 +350,10 @@ impl App {
         }
         for (holder, pairs) in by_holder {
             self.tell_holder(holder, &ctx.task, &pairs);
+            // Its page and the list show the overlap now (SCO-002).
+            self.publish_task(&holder.id).await;
         }
+        self.publish_task(&ctx.task.id).await;
         let advice = if reported.is_empty() {
             "No overlap with other tasks. Claims are advisory; release them with scope_release when that work is done."
         } else {
@@ -333,6 +382,8 @@ impl App {
                 ));
             }
         };
+        // The tasks it overlapped before: their pages and the list lose the mark (SCO-002).
+        let before = self.claim_overlaps(&ctx.task).await;
         let released = match requested {
             None => {
                 self.deps
@@ -352,6 +403,17 @@ impl App {
                 released
             }
         };
+        if released > 0 {
+            self.publish_task(&ctx.task.id).await;
+            if let Ok(tasks) = self.deps.store.tasks(&ctx.task.sandbox_id, false).await {
+                for task in tasks
+                    .iter()
+                    .filter(|t| before.iter().any(|o| o.task_number == t.number))
+                {
+                    self.publish_task(&task.id).await;
+                }
+            }
+        }
         Ok(json!({"released": released}))
     }
 

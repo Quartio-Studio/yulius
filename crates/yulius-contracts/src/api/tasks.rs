@@ -179,6 +179,21 @@ pub struct TaskSummary {
     /// PRN-009): what Yulius told the task, in one sentence. Null otherwise.
     #[serde(default)]
     pub pr_stalled: Option<String>,
+    /// The live tasks whose scope claims overlap this live task's (SPEC-493 SCO-002), until a
+    /// claim is released or a task is no longer live. Empty otherwise.
+    #[serde(default)]
+    pub overlaps: Vec<ClaimOverlap>,
+}
+
+/// Another live task whose claims overlap a task's (SPEC-493 SCO-002).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClaimOverlap {
+    /// Its number.
+    pub task_number: u32,
+    /// Its title.
+    pub task_title: String,
+    /// This task's patterns that overlap its claims.
+    pub patterns: Vec<String>,
 }
 
 /// Why a task's live run is paused (SPEC-191 PAU-001).

@@ -307,6 +307,11 @@ impl App {
             pr_stalled: (task.status == TaskStatus::Running)
                 .then(|| self.pr_stalled(&task.id))
                 .flatten(),
+            overlaps: if task.status.is_live() {
+                self.claim_overlaps(task).await
+            } else {
+                Vec::new()
+            },
         })
     }
 

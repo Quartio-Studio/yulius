@@ -112,6 +112,33 @@ fn an_overlapping_claim_is_told_to_both_tasks() -> TestResult {
         })
         .await;
         assert!(again.is_err(), "told twice: {}", screen(&app, &a));
+        // SCO-002: both tasks' views (the page's and the list's) carry the overlap.
+        let b_number = app.deps.store.task(&b).await?.ok_or("b")?.number;
+        let view = |id: yulius_domain::ids::TaskId| {
+            let app = app.clone();
+            async move {
+                let task = app.deps.store.task(&id).await?.ok_or("task")?;
+                Ok::<_, Box<dyn std::error::Error>>(app.task_summary(&task).await?.overlaps)
+            }
+        };
+        let seen_by_a = view(a.clone()).await?;
+        assert_eq!(seen_by_a.len(), 1, "{seen_by_a:?}");
+        assert_eq!(
+            (seen_by_a[0].task_number, seen_by_a[0].task_title.as_str()),
+            (b_number, "Feature y")
+        );
+        assert_eq!(seen_by_a[0].patterns, ["crates/a/src/x.rs"]);
+        let seen_by_b = view(b.clone()).await?;
+        assert_eq!(
+            (seen_by_b.len(), seen_by_b[0].task_number),
+            (1, number),
+            "{seen_by_b:?}"
+        );
+        assert_eq!(seen_by_b[0].patterns, ["crates/a/**"]);
+        // Released: the mark is gone from both.
+        app.tool_scope_release(&holder, &json!({})).await?;
+        assert!(view(a.clone()).await?.is_empty());
+        assert!(view(b.clone()).await?.is_empty());
         stop(&app, &a).await?;
         stop(&app, &b).await?;
         Ok::<_, Box<dyn std::error::Error>>(())
