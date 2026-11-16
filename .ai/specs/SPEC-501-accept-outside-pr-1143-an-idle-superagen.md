@@ -1,11 +1,11 @@
 ---
 yulius-task: bf07c2f9-6e2f-4408-b169-bfc3b3b9d328
-status: in-progress
+status: done
 ---
 
 # SPEC-501: An idle Superagent's strays are dated by the probe that found them (#1110)
 
-Status: in-progress
+Status: done
 Date: 2026-11-16
 Owner: Yulius task #483
 Scope authorization: outside pull request #1143 by studenciak00owl, accepted by MrFishPL,
@@ -57,7 +57,8 @@ timeout) can no longer restart the bound.
   in production too (the next probe sees the strays). The fake counts the probe inside the
   blocking closure, so if the blocking pool started that closure more than 3 s late, the test
   could still move the clock before a sighting was kept. That needs a trivial closure to wait
-  3 s for a thread, far rarer than the window fixed here.
+  3 s for a thread, far rarer than the window fixed here. Confirmed with a probe delay and
+  tracked as #1361 (see Evidence).
 
 ## Requirements
 
@@ -73,7 +74,7 @@ timeout) can no longer restart the bound.
 - [x] Contributor's dating fix and regression test on current dev, author kept
 - [x] Race reproduced with a probe delay on dev, fix proven, cockpit tests under load
 - [x] Changelog entry and Evidence
-- [ ] Independent review of the change, findings answered
+- [x] Independent review of the change, findings answered
 
 ## Acceptance criteria
 
@@ -81,7 +82,7 @@ timeout) can no longer restart the bound.
   `an_idle_superagents_strays_are_reaped_after_the_bound` fails with #1110's signature; with the
   fix and the same delay it passes.
 - The regression test fails before the fix and passes after it.
-- `cockpit::` passes repeatedly while the machine runs a parallel load.
+- `cockpit::` passes 20 consecutive times while the machine runs a parallel load.
 
 ## Test plan
 
@@ -142,8 +143,31 @@ in the worktree's ignored `target/proof1110/`.
 - **Gates.** `cargo fmt --all --check`: exit 0. `cargo clippy --locked -p yulius-app -p yulius
   --all-targets --all-features -- -D warnings`: exit 0. The whole gate is Yulius CI's on the
   pull request head.
+- **Mutants.** `scripts/dev mutants --minutes 25`: `mutants: 1 listed, 1 caught, 0 missed, 0
+  timed out, 0 unviable, 0 not reached (bound 25 min, took 188 s)`.
+- **Known leftover confirmed (M4, not committed).** A throwaway 3.5 s
+  `std::thread::sleep` in `GatedHost::background_probe` on the first probe only, before its
+  count (the answer comes after `SHELL_PROBE_TIMEOUT` and is dropped, the probe counted): 0 of
+  3 stray tests passed, each timing out on its reap wait. Pre-existing (the fake and the
+  timeout are unchanged from `dev`); filed as #1361.
 - **Security.** `yulius security-scan`: exit 2, not run (Vidoc refused the key: HTTP 401); unrun,
   not passed. Yulius CI's security job scans the pull request head.
+
+### Review
+
+Round 1 (fresh session, `yulius-reviewer` on Fable 5.2) approved head 49d947e0f: no blocker or
+major. The reviewer reproduced M1 to M3 in their own copy. Its findings and the answers:
+
+- Minor, own: no `scripts/dev mutants` line in Evidence. Fixed: the Mutants line above.
+- Minor, pre-existing: a probe answer later than `SHELL_PROBE_TIMEOUT` is dropped after the
+  fake counted it. Confirmed (M4) and filed as #1361.
+- Nit, own: "repeatedly" in Acceptance criteria. Fixed: back to 20 consecutive times.
+- Nit, own: `fix(tests)` type on the commit and the title although the effective line is in
+  `cockpit.rs`. Kept: the commit is the contributor's, with their message, and the title has
+  no room left under the 100-character limit.
+- Nit, own: `asked` is a second clock read beside the watch's `now`; passing `now` in would
+  make them one instant. Kept as the contributor wrote it: no await lies between the two
+  reads, so they cannot differ by a test's clock move.
 
 ### In the contributor's fork (from #1143, on `dev` 91a0cec5)
 
