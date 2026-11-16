@@ -159,7 +159,7 @@ mode.
 - [x] Slice B: infrastructure failures rerun once by themselves
 - [x] Slice B: CI minutes by outcome read and shown
 - [x] Slice B: review round 1 answered: reruns tied to the failure, minutes kept per day
-- [ ] Slice A2: CI wait job-minutes per hour and host busy % measured and shown
+- [x] Slice A2: CI wait job-minutes per hour and host busy % measured and shown
 - [ ] Slice B: documents, ADR and review of the reruns and minutes
 - [ ] Slice B: flaky tests quarantined with an issue, the project told
 - [ ] Slice B: quarantine documents, ADR and review
@@ -435,3 +435,47 @@ mode.
   `ci_minutes.outside_share` (target at most 0.15; 16 Nov in quartio-v2: 114 cancelled and most
   of 526 failed of 1,228 minutes) and `ci_minutes.rerun`; the jobs whose reason starts "passed
   when run again".
+- Review round 1 of these (Fable 5.2, head 98481f5bb). Request changes, all own code. Answered
+  (the code came back on top of the operator's admission fix, ADR-0353, after it merged):
+  - Major: a failing test was run again when the output named a Docker error the job went on
+    from. The classifier reads only this run's own output: kept failing tests' blocks must all
+    name the infrastructure; without blocks, the words must be in the last 20 lines with no
+    test's failure after them. Unit cases (a survived Docker line, then a test's failure, in the
+    output and in the blocks; two blocks that both name it) and
+    `local_ci::a_tests_failure_is_never_taken_for_the_infrastructure` (first part: failed after
+    one run).
+  - Major: a test failure on the second run was reported as an infrastructure error (the first
+    run's words were read again). Only what follows the rerun line counts; the same test's second
+    part: failed, no reason, two runs.
+  - Major: a run that failed in the change counted as failed outside it. `ci_jobs.infra_end`
+    says whether the job's end itself was the infrastructure's; only then is a run
+    `failed_outside` (store unit `a_runs_end_adds_to_its_days_minutes`: a job that failed its
+    second run after a thrown-away first counts as failed).
+  - Major: the minutes were read from runs, which are pruned to 50 per sandbox. A run's end now
+    adds its minutes to a per-day tally (`ci_minutes`, written in `transition_ci_run`); the store
+    unit reads the same rows after `prune_ci_runs(0, …)`, and the analytics test reads the tally.
+  - Minor: a SIGKILL without an OOM kill: `local_ci::a_kill_without_a_kill_for_memory_is_not_run_again`
+    (failed, one run). The second run's own time limit and the first run's dropped use are in
+    ADR-0354. After a full address pool the second run waits for network room first.
+  - Minor: a job admitted before another sandbox's reading (the follow-up of slice A) is
+    superseded by ADR-0353's count of recent starts. Nits: "…when it was run again, after … in
+    its first run" names both kinds when they differ; the Plan's ticks.
+
+### Slice A2: CI wait job-minutes per hour and host busy %
+
+- `yulius_domain::resources::{LoadMinute, LoadHour, busy_permille, load_by_hour}` (doctest;
+  unit `the_hosts_minutes_add_up_by_hour`); `SystemProbe::cpu_ticks` (`/proc/stat`'s `cpu` line,
+  idle and iowait not busy; unit `cpu_ticks_are_read_from_proc_stat`); `App::ci_record_load`
+  once a minute from the dispatcher (busy since the last reading, CPUs reserved and measured,
+  `ci_jobs_waiting`), kept 30 days in `ci_load` (migration 0064);
+  `GET /api/analytics/ci-load` (`analytics::the_hosts_ci_load_is_kept_each_minute_and_read_by_hour`:
+  two readings in one minute make one, 30 % busy from the ticks, a reversed range 422); the
+  Pipeline tab's CI load card (`pipeline.e2e.ts`, 18 of 18).
+- Before (the person's measurement from production, 16 Nov 2026): 648 job-minutes waited in hour
+  18 and 904 in hour 19, the host 25-30 % busy while jobs held 50-56 CPUs. After: read
+  `GET /api/analytics/ci-load?from=&to=` a week later (hours, `wait_job_minutes`,
+  `busy_percent`, `held_cpus` against `measured_cpus`).
+- Checks run on this head: `cargo clippy --workspace --all-targets -D warnings`; the unit tests
+  of `yulius-domain`, `yulius-app`, `yulius-sandbox`, `yulius-store` (1,487 passed); `local_ci`,
+  `analytics`, `limits`, `merge_train` (149 passed, then 150 with the CI load test);
+  `pipeline.e2e.ts` (18 passed). Security scan: Vidoc refused the key (exit 2, not run).
