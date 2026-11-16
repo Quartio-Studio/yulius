@@ -96,6 +96,15 @@ pub struct CiUse {
     pub anon_bytes: u64,
 }
 
+/// What a sandbox's Docker engine's networks take of its address pools (SPEC-497 HBA-003).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EngineNetworks {
+    /// The networks its pools hold.
+    pub capacity: u32,
+    /// The networks it has that take a range.
+    pub used: u32,
+}
+
 /// A sandbox's disk against its soft quota.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DiskUsage {
@@ -217,14 +226,14 @@ pub trait SandboxIsolation: Send + Sync {
         None
     }
 
-    /// The networks `sandbox`'s running Docker engine can still make (SPEC-497 HBA-003); `None`
-    /// without a running engine or an answer (never starting one).
-    async fn engine_networks_free(&self, _sandbox: &SandboxId) -> Option<u32> {
+    /// What the networks of `sandbox`'s running Docker engine take of its address pools
+    /// (SPEC-497 HBA-003); `None` without a running engine or an answer (never starting one).
+    async fn engine_networks(&self, _sandbox: &SandboxId) -> Option<EngineNetworks> {
         None
     }
 
-    /// Removes the networks no container of `sandbox`'s running engine uses; how many, `None`
-    /// without a running engine or an answer.
+    /// Removes the networks of `sandbox`'s running engine that no container used for 10 minutes;
+    /// how many, `None` without a running engine or an answer.
     async fn prune_engine_networks(&self, _sandbox: &SandboxId) -> Option<u32> {
         None
     }

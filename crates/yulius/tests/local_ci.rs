@@ -22,7 +22,7 @@ use yulius_app::error::{AppError, AppResult};
 use yulius_app::model::SandboxRecord;
 use yulius_app::ports::github::GhPull;
 use yulius_app::ports::isolation::{
-    CiUse, DiskUsage, SandboxIsolation, SandboxJoin, SandboxLimits, SandboxRef,
+    CiUse, DiskUsage, EngineNetworks, SandboxIsolation, SandboxJoin, SandboxLimits, SandboxRef,
 };
 use yulius_app::ports::store_ext::{AutomationStore as _, CiStore as _};
 use yulius_domain::ci::{GateResult, RunState};
@@ -2690,6 +2690,8 @@ async fn a_job_cancelled_while_it_waits_for_a_slot_ends_its_wait_cancelled() -> 
 #[derive(Default)]
 struct Weighing {
     jobs: std::sync::Mutex<Vec<(String, u32)>>,
+    /// The CPUs held at each call (SPEC-497 HBA-004).
+    cpus: std::sync::Mutex<Vec<u32>>,
 }
 
 impl Weighing {
@@ -2710,9 +2712,12 @@ impl SandboxIsolation for Weighing {
     fn limits(&self) -> SandboxLimits {
         Limited.limits()
     }
-    fn ci_jobs_running(&self, sandbox: &SandboxId, jobs: u32, _cpus: u32) {
+    fn ci_jobs_running(&self, sandbox: &SandboxId, jobs: u32, cpus: u32) {
         if let Ok(mut seen) = self.jobs.lock() {
             seen.push((sandbox.as_str().to_owned(), jobs));
+        }
+        if let Ok(mut held) = self.cpus.lock() {
+            held.push(cpus);
         }
     }
 }
@@ -2781,6 +2786,9 @@ async fn running_ci_jobs_weigh_on_their_sandbox_until_they_end() -> TestResult {
     assert!(seen.iter().all(|(sandbox, _)| sandbox == "s1"), "{seen:?}");
     let history = weighing.history();
     assert_eq!(history.last(), Some(&0), "a job left counted: {history:?}");
+    // SPEC-497 HBA-004: the CPUs the jobs hold reach the isolation, one per 1-CPU job.
+    let cpus = weighing.cpus.lock().map_err(|_| "lock")?.clone();
+    assert_eq!(cpus, history, "{cpus:?} against {history:?}");
     assert!(history.iter().all(|n| *n <= 3), "{history:?}");
     // One call per start and one per end, each one job up or down from none.
     let mut previous = 0;
@@ -2791,20 +2799,21 @@ async fn running_ci_jobs_weigh_on_their_sandbox_until_they_end() -> TestResult {
     Ok(())
 }
 
-/// A sandbox limited to 4 CPUs (a CI budget of 3) whose CI and Docker engine use `rate` CPUs,
-/// and whose engine can make `networks` more networks (`u32::MAX`: no running engine) (SPEC-497).
+/// A sandbox limited to 4 CPUs (a CI budget of 3) whose CI and Docker engine use `millis`
+/// thousandths of a CPU, and whose engine of 4,096 networks has `networks` of them
+/// (`u32::MAX`: no running engine) (SPEC-497).
 struct Measured {
     used: std::sync::Mutex<(tokio::time::Instant, u64)>,
-    rate: AtomicU32,
+    millis: AtomicU32,
     networks: AtomicU32,
     pruned: AtomicU32,
 }
 
 impl Measured {
-    fn new(rate: u32, networks: u32) -> Arc<Self> {
+    fn new(millis: u32, networks: u32) -> Arc<Self> {
         Arc::new(Self {
             used: std::sync::Mutex::new((tokio::time::Instant::now(), 0)),
-            rate: AtomicU32::new(rate),
+            millis: AtomicU32::new(millis),
             networks: AtomicU32::new(networks),
             pruned: AtomicU32::new(0),
         })
@@ -2824,16 +2833,19 @@ impl SandboxIsolation for Measured {
         let mut used = self.used.lock().ok()?;
         let now = tokio::time::Instant::now();
         let micros = u64::try_from(now.duration_since(used.0).as_micros()).unwrap_or(u64::MAX);
-        used.1 += micros * u64::from(self.rate.load(Ordering::SeqCst));
+        used.1 += micros * u64::from(self.millis.load(Ordering::SeqCst)) / 1000;
         used.0 = now;
         Some(CiUse {
             cpu_usec: used.1,
             anon_bytes: 0,
         })
     }
-    async fn engine_networks_free(&self, _: &SandboxId) -> Option<u32> {
-        let free = self.networks.load(Ordering::SeqCst);
-        (free != u32::MAX).then_some(free)
+    async fn engine_networks(&self, _: &SandboxId) -> Option<EngineNetworks> {
+        let used = self.networks.load(Ordering::SeqCst);
+        (used != u32::MAX).then_some(EngineNetworks {
+            capacity: 4096,
+            used,
+        })
     }
     async fn prune_engine_networks(&self, _: &SandboxId) -> Option<u32> {
         self.pruned.fetch_add(1, Ordering::SeqCst);
@@ -2895,7 +2907,8 @@ async fn a_job_waits_while_ci_uses_more_than_it_reserved() -> TestResult {
         |config| config.ci.job_timeout = WAIT,
     )
     .await?;
-    let measured = Measured::new(3, u32::MAX);
+    // 2.5 CPUs: the measured 3 does not depend on the clocks of two readings (review round 1).
+    let measured = Measured::new(2500, u32::MAX);
     assert!(f.h.app.set_isolation(measured.clone()));
     f.h.app.ci_sync_sandbox(&f.sandbox).await?;
     // The pull request's job runs (dev's has nothing to wait for and passes).
@@ -2913,7 +2926,7 @@ async fn a_job_waits_while_ci_uses_more_than_it_reserved() -> TestResult {
          measured); this job needs 1"
     );
     // The use drops: it starts within the next window, the first job still running.
-    measured.rate.store(0, Ordering::SeqCst);
+    measured.millis.store(0, Ordering::SeqCst);
     let deadline = tokio::time::Instant::now() + WAIT;
     while only_job_state(&f, &later).await? != Some(RunState::Running) {
         f.h.app.ci_dispatch().await;
@@ -2939,26 +2952,26 @@ async fn a_job_waits_while_ci_uses_more_than_it_reserved() -> TestResult {
 }
 
 /// SPEC-497 HBA-003: a job of a sandbox whose engine can make fewer than 32 more networks waits,
-/// saying so, after its unused networks were pruned (none of its jobs ran), and starts once there
-/// is room.
+/// saying so, after the networks unused for 10 minutes were pruned, and starts once there is
+/// room.
 #[tokio::test]
 async fn a_job_waits_for_docker_networks() -> TestResult {
     let f = fixture_with(false, |_| {
         "[[ci.jobs]]\nname = \"build\"\ncommand = 'true'\n".to_owned()
     })
     .await?;
-    let measured = Measured::new(0, 10);
+    let measured = Measured::new(0, 4086);
     assert!(f.h.app.set_isolation(measured.clone()));
     f.h.app.ci_sync_sandbox(&f.sandbox).await?;
     let head = git(&f.work, &["rev-parse", "feat/one"])?;
     let reason = waits_with(&f, &head, "Docker networks").await?;
     assert_eq!(
         reason,
-        "waits for Docker networks: its sandbox's engine can make 10 more, and a job starts with \
-         at least 32 free"
+        "waits for Docker networks: its sandbox's engine can make 10 more of 4096, and a job \
+         starts with at least 32 free"
     );
     assert!(measured.pruned.load(Ordering::SeqCst) >= 1);
-    measured.networks.store(4096, Ordering::SeqCst);
+    measured.networks.store(1, Ordering::SeqCst);
     f.settle().await?;
     assert_eq!(only_job_state(&f, &head).await?, Some(RunState::Passed));
     Ok(())

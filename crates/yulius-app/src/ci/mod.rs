@@ -1474,6 +1474,8 @@ impl App {
     /// Starts the oldest queued runs of every sandbox, as many as it has free lanes
     /// ([`CiSettings::lanes`]); the instance-wide job slots still bound the machine's load.
     pub async fn ci_dispatch(self: &Arc<Self>) {
+        // A reading of what CI uses at each pass keeps the measuring bases recent (SPEC-497).
+        let _ = self.ci_measured();
         // A merge armed on a run that passed when it was queued happens now (SPEC-011).
         let ended: Vec<SandboxId> = self
             .ci

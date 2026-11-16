@@ -460,8 +460,15 @@ impl SandboxIsolation for NamespaceIsolation {
         })
     }
 
-    async fn engine_networks_free(&self, sandbox: &SandboxId) -> Option<u32> {
-        self.manager.engine_networks_free(sandbox.as_str()).await
+    async fn engine_networks(
+        &self,
+        sandbox: &SandboxId,
+    ) -> Option<yulius_app::ports::isolation::EngineNetworks> {
+        let networks = self.manager.engine_networks(sandbox.as_str()).await?;
+        Some(yulius_app::ports::isolation::EngineNetworks {
+            capacity: networks.capacity,
+            used: networks.used,
+        })
     }
 
     async fn prune_engine_networks(&self, sandbox: &SandboxId) -> Option<u32> {

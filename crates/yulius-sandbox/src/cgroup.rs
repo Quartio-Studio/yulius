@@ -68,8 +68,9 @@ const CI_WEIGHT: u32 = 400;
 /// What each CPU the sandbox's running CI jobs hold adds to its weight (SPEC-497 HBA-004): the
 /// weight of one sandbox that only runs agents. The CI budget admitted those CPUs and keeps an
 /// eighth of the host from CI, so a sandbox holding `c` of them gets `(1 + c) / (1 + c + n)` of
-/// the host against `n` sandboxes whose agents build: about its CPUs while `n` is small, and
-/// those agents keep a share each. Not per job (SPEC-362 review round 1): four 1-CPU jobs weigh
+/// the host against `n` sandboxes whose agents build: at least its CPUs while `n` is below about
+/// `(host - c)(1 + c) / c` (35 others for 30 of 64 CPUs), more when fewer build, and those agents
+/// keep a share each. Not per job (SPEC-362 review round 1): four 1-CPU jobs weigh
 /// what one 4-CPU job weighs.
 const CI_WEIGHT_PER_CPU: u32 = 100;
 /// The kernel's largest `cpu.weight`.

@@ -29,15 +29,24 @@ sandboxes' agents built. Each sandbox's Docker engine had Docker's default pools
   (`Capacity::ci_budget`).
 - **Admitted by what CI holds**: a job starts when its reservation fits beside the larger of the
   running jobs' reservations and what the `ci` and `engine` groups of the sandboxes running them
-  were measured to use (CPU time per second over at least 5 s, anonymous memory). The first
-  reading is taken at each job's start, so the next job measures over the time since. With no job
-  running anything starts; a job larger than the budget runs alone. Waiters keep their order
-  (`yulius_domain::resources::admit`, `App::ci_reserve`).
+  were measured to use (CPU time per second over at least 5 s, anonymous memory). Readings are
+  taken at each job's start, at every dispatcher pass and while a job waits, under the
+  admission's lock so they apply in order; a base older than 30 s is a new base and the next job
+  waits one look for a recent rate. With no job running anything starts; a job larger than the
+  budget runs alone. Waiters keep their order (`yulius_domain::resources::admit`,
+  `App::ci_reserve`).
+- **A job's default share is of the CI budget** (`cpus` not declared): an equal share of the
+  budget among its run's jobs, so a run's jobs start together on an idle host and `YULIUS_CPUS`
+  says what the job may use (18 CPUs each for three jobs on 64 CPUs, 21 before).
 - **Docker networks are part of the budget per engine**: each engine makes /24 networks out of
   Docker's own default ranges (4,096 instead of 31; the engine runs in the sandbox's network
-  namespace, so these ranges are as free there as Docker's defaults were). A job waits while its
-  sandbox's running engine can make fewer than 32 more; when none of that sandbox's jobs runs,
-  unused networks are pruned first. No engine running: no wait, and nothing starts one.
+  namespace, so these ranges are as free there as Docker's defaults were). The engine's own
+  `/info` says how many its pools hold, so one started before keeps 31 until its next start. A
+  job waits while its sandbox's running engine can make fewer than 32 more (a quarter of a
+  smaller engine's, 7 of 31); networks no container used for 10 minutes are pruned first, so a
+  network a job or an agent made a moment ago stays. No engine running: no wait, and nothing
+  starts one. The networks are looked at before the job waits for a slot and its budget, so a
+  job held by one engine holds nothing the other sandboxes need.
 - **The wait says why**: a queued job's reason is what it waits for ("waits for the host's CI
   budget: CI holds 50 of the host's 56 CPUs for CI (32 reserved, 50 measured); this job needs
   16", or the Docker networks), cleared when it starts; `ci_status` and the CI page show it.
@@ -45,7 +54,9 @@ sandboxes' agents built. Each sandbox's Docker engine had Docker's default pools
   100 plus 100 for each CPU its running jobs hold (at least 500, at most 10,000), so against `n`
   sandboxes whose agents build it gets `(1 + c) / (1 + c + n)` of the host: 30 held CPUs get 45
   of 64 against four building sandboxes (28 with the flat 500). Agents keep their own weight
-  and nice level, so idle CPUs still go to them.
+  and nice level, so idle CPUs still go to them. The price: while CI uses more than it reserved,
+  another sandbox's building agents keep about 2 of 64 CPUs (about 9 with the flat 500); CI's
+  runs are what everyone waits for.
 - **`YULIUS_CI_LANES` keeps its host-sized default** (one per 32 CPUs plus 2, at most 8) and
   only bounds how many runs of one sandbox take a checkout at once. It no longer sizes the load:
   four lanes of 16-CPU jobs now run as the budget allows, the others waiting with their reason.
@@ -73,6 +84,10 @@ sandboxes' agents built. Each sandbox's Docker engine had Docker's default pools
 - A waiting job looks again every 5 s and at each job's end; the reading of a few cgroup files
   per sandbox with running jobs costs nothing measurable.
 - Engines started before this change keep Docker's default pools until their next start; the
-  network wait still holds them back, with its reason, before a run fails for it.
+  network wait holds their jobs back at 7 free, with its reason, before a run fails for it.
+- A project's networks are /24s from its engine's next start: the first one a project makes is
+  172.17.1.0/24 (`docker0` keeps 172.17.0.1), not 172.18.0.0/16. A project that wrote a gateway
+  such as 172.18.0.1 into its files, or puts more than 253 containers on one network, sets its
+  own `subnet` in its compose file.
 - A sandbox running agents' Docker containers beside its CI counts them as CI's: its next job
   waits a little more. Containers of sandboxes running no CI job are not counted.

@@ -234,6 +234,22 @@ impl Capacity {
 /// meets an engine that has none left.
 pub const ENGINE_NETWORK_RESERVE: u32 = 32;
 
+/// The fewest free networks a job needs from an engine whose pools hold `capacity` (SPEC-497
+/// HBA-003): [`ENGINE_NETWORK_RESERVE`], or a quarter of a smaller engine's (one started with
+/// Docker's default pools, 31 networks, needs 7), at least one.
+///
+/// # Examples
+/// ```
+/// use yulius_domain::resources::network_reserve;
+/// assert_eq!(network_reserve(4096), 32);
+/// assert_eq!(network_reserve(31), 7);
+/// assert_eq!(network_reserve(2), 1);
+/// ```
+#[must_use]
+pub fn network_reserve(capacity: u32) -> u32 {
+    ENGINE_NETWORK_RESERVE.min(capacity / 4).max(1)
+}
+
 /// What CI holds when a job asks to start (SPEC-497 HBA-002).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Held {
@@ -603,6 +619,23 @@ mod tests {
             admit(budget, &held(1, 1, None), huge),
             Admission::Wait { need: 56, .. }
         ));
+    }
+
+    /// SPEC-497 (review round 1): a run's default shares are of the CI budget, so they start
+    /// together on an idle host; shares of the capacity added up to more than the budget.
+    #[test]
+    fn a_runs_default_shares_start_together() {
+        let budget = Capacity::new(64, 512 * 1024).ci_budget();
+        for jobs in 1..=8 {
+            let share = budget.ci_job(Need::default(), jobs);
+            let mut held = Held::default();
+            for _ in 0..jobs {
+                assert_eq!(admit(budget, &held, share), Admission::Now, "{jobs} jobs");
+                held.jobs += 1;
+                held.reserved.cpus += share.cpus;
+                held.reserved.memory_mb += share.memory_mb;
+            }
+        }
     }
 
     #[test]

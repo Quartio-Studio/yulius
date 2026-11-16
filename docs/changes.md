@@ -10,8 +10,9 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   [ADR-0350](decisions/0350-ci-jobs-are-admitted-by-what-ci-really-holds-on-the-host.md)): every
   project's jobs come out of one budget, the host less an eighth for the server and agents, and a
   job starts only when it fits beside what CI's groups were measured to use, not only what jobs
-  declared; each sandbox's Docker engine has 4,096 networks instead of 31 and a job waits, saying
-  so, while fewer than 32 are left; a sandbox's weight follows the CPUs its jobs hold, so agents'
+  declared, and a job's default share is of that budget; each sandbox's Docker engine has 4,096
+  /24 networks instead of 31 from its next start (the first is 172.17.1.0/24, not
+  172.18.0.0/16) and a job waits, saying so, while fewer than 32 are left; a sandbox's weight follows the CPUs its jobs hold, so agents'
   local builds take what CI does not. A waiting job's reason says what it waits for.
 - A production deploy no longer fails on a promotion pull request GitHub has not finished
   checking (SPEC-495, task #477,

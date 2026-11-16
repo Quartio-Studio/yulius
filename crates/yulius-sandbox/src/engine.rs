@@ -63,6 +63,49 @@ pub const ADDRESS_POOLS: [(&str, u32); 5] = [
 ];
 /// The networks an engine can make from [`ADDRESS_POOLS`] (its default `bridge` takes one).
 pub const ENGINE_NETWORKS: u32 = 4096;
+/// The networks an engine makes from Docker's own default pools (172.17-31.0.0/16 in /16s and
+/// 192.168.0.0/16 in /20s): an engine started before [`ADDRESS_POOLS`] (review round 1).
+pub const DOCKER_DEFAULT_NETWORKS: u32 = 31;
+
+/// The networks an engine's address pools hold, from its `/info` answer: its
+/// `DefaultAddressPools` (`Base` a CIDR, `Size` the prefix of each network), or Docker's own
+/// defaults when it names none.
+///
+/// # Examples
+/// ```
+/// use yulius_sandbox::engine::pool_networks;
+/// let info = serde_json::json!({"DefaultAddressPools": [
+///     {"Base": "172.17.0.0/16", "Size": 24}, {"Base": "192.168.0.0/16", "Size": 20}]});
+/// assert_eq!(pool_networks(&info), 256 + 16);
+/// assert_eq!(pool_networks(&serde_json::json!({})), 31);
+/// ```
+#[must_use]
+pub fn pool_networks(info: &serde_json::Value) -> u32 {
+    let Some(pools) = info["DefaultAddressPools"]
+        .as_array()
+        .filter(|pools| !pools.is_empty())
+    else {
+        return DOCKER_DEFAULT_NETWORKS;
+    };
+    pools
+        .iter()
+        .filter_map(|pool| {
+            let prefix: u32 = pool["Base"].as_str()?.rsplit_once('/')?.1.parse().ok()?;
+            let size = u32::try_from(pool["Size"].as_u64()?).ok()?;
+            let bits = size.checked_sub(prefix).filter(|bits| *bits < 32)?;
+            Some(1u32 << bits.min(24))
+        })
+        .fold(0, u32::saturating_add)
+}
+
+/// What an engine's networks take of its address pools.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Networks {
+    /// The networks its pools hold ([`pool_networks`]).
+    pub capacity: u32,
+    /// The networks it has that take a range (all but `host` and `none`).
+    pub used: u32,
+}
 
 /// `dockerd` and its arguments inside the engine: its control socket in the control directory
 /// (the sandbox's socket at [`ENGINE_SOCKET_IN_RUNS`] is the Docker front's), cgroupfs (no systemd
@@ -307,32 +350,45 @@ pub async fn prune_within(socket: &std::path::Path, limit: Duration) -> std::io:
 /// How long a count or prune of the engine's networks may take.
 pub const NETWORKS_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// The networks the engine behind `socket` has that take an address range (all but `host` and
-/// `none`), within [`NETWORKS_TIMEOUT`] (SPEC-497 HBA-003).
+/// The networks of the engine behind `socket` against its address pools ([`Networks`]), both
+/// read within [`NETWORKS_TIMEOUT`] (SPEC-497 HBA-003).
 ///
 /// # Errors
 /// The engine is not reachable, refused, answered something else or took too long.
-pub async fn networks(socket: &std::path::Path) -> std::io::Result<u32> {
-    let json = tokio::time::timeout(NETWORKS_TIMEOUT, request(socket, "GET", "/networks"))
+pub async fn networks(socket: &std::path::Path) -> std::io::Result<Networks> {
+    let read = async {
+        let info = request(socket, "GET", "/info").await?;
+        let list = request(socket, "GET", "/networks").await?;
+        Ok::<_, std::io::Error>((info, list))
+    };
+    let (info, list) = tokio::time::timeout(NETWORKS_TIMEOUT, read)
         .await
         .map_err(|_| std::io::Error::other("/networks timed out"))??;
-    let list = json
+    let list = list
         .as_array()
         .ok_or_else(|| std::io::Error::other("/networks: not a list"))?;
     let ranged = list
         .iter()
         .filter(|network| !matches!(network["Driver"].as_str(), Some("host" | "null")))
         .count();
-    Ok(u32::try_from(ranged).unwrap_or(u32::MAX))
+    Ok(Networks {
+        capacity: pool_networks(&info),
+        used: u32::try_from(ranged).unwrap_or(u32::MAX),
+    })
 }
 
-/// Removes the networks no container uses from the engine behind `socket`, within
-/// [`NETWORKS_TIMEOUT`]; how many it removed.
+/// `{"until":["10m"]}`: networks made at least 10 minutes ago.
+const PRUNE_UNTIL: &str = "%7B%22until%22%3A%5B%2210m%22%5D%7D";
+
+/// Removes the networks of the engine behind `socket` that no container uses and that were made
+/// at least 10 minutes ago (one a job or an agent made a moment ago, not attached yet, stays;
+/// review round 1), within [`NETWORKS_TIMEOUT`]; how many it removed.
 ///
 /// # Errors
 /// As [`networks`].
 pub async fn prune_networks(socket: &std::path::Path) -> std::io::Result<u32> {
-    let json = tokio::time::timeout(NETWORKS_TIMEOUT, request(socket, "POST", "/networks/prune"))
+    let path = format!("/networks/prune?filters={PRUNE_UNTIL}");
+    let json = tokio::time::timeout(NETWORKS_TIMEOUT, request(socket, "POST", &path))
         .await
         .map_err(|_| std::io::Error::other("/networks/prune timed out"))??;
     let deleted = json["NetworksDeleted"].as_array().map_or(0, Vec::len);
@@ -518,22 +574,61 @@ mod tests {
             socket.clone(),
             vec![
                 (
+                    "/info",
+                    200,
+                    r#"{"DefaultAddressPools":[{"Base":"172.17.0.0/16","Size":24},{"Base":"192.168.0.0/16","Size":24}]}"#,
+                ),
+                (
                     "/networks",
                     200,
                     r#"[{"Name":"bridge","Driver":"bridge"},{"Name":"host","Driver":"host"},{"Name":"none","Driver":"null"},{"Name":"t1","Driver":"bridge"},{"Name":"o","Driver":"overlay"}]"#,
                 ),
-                ("/networks/prune", 200, r#"{"NetworksDeleted":["t1","t2"]}"#),
+                (
+                    "/networks/prune?filters=%7B%22until%22%3A%5B%2210m%22%5D%7D",
+                    200,
+                    r#"{"NetworksDeleted":["t1","t2"]}"#,
+                ),
             ],
         )
         .await?;
-        assert_eq!(networks(&socket).await?, 3);
+        assert_eq!(
+            networks(&socket).await?,
+            Networks {
+                capacity: 512,
+                used: 3
+            }
+        );
         assert_eq!(prune_networks(&socket).await?, 2);
         let heads = heads.lock().map_err(|_| "poisoned")?.clone();
-        assert!(heads[0].starts_with("GET /networks "), "{heads:?}");
-        assert!(heads[1].starts_with("POST /networks/prune "), "{heads:?}");
+        assert!(heads[0].starts_with("GET /info "), "{heads:?}");
+        assert!(heads[1].starts_with("GET /networks "), "{heads:?}");
+        // Only networks made at least 10 minutes ago.
+        assert!(
+            heads[2]
+                .starts_with("POST /networks/prune?filters=%7B%22until%22%3A%5B%2210m%22%5D%7D "),
+            "{heads:?}"
+        );
+        server.abort();
+        // An engine with Docker's default pools (it names none) holds 31.
+        let old = dir.path().join("old.sock");
+        let (server, _) = fake_api(
+            old.clone(),
+            vec![
+                ("/info", 200, "{}"),
+                ("/networks", 200, r#"[{"Name":"bridge","Driver":"bridge"}]"#),
+            ],
+        )
+        .await?;
+        assert_eq!(
+            networks(&old).await?,
+            Networks {
+                capacity: 31,
+                used: 1
+            }
+        );
         server.abort();
         let refusing = dir.path().join("refusing.sock");
-        let (server, _) = fake_api(refusing.clone(), vec![("/networks", 500, "{}")]).await?;
+        let (server, _) = fake_api(refusing.clone(), vec![("/info", 500, "{}")]).await?;
         assert!(networks(&refusing).await.is_err());
         server.abort();
         Ok(())
@@ -826,6 +921,11 @@ mod tests {
             )
             .is_some()
         );
+        let configured = serde_json::json!({"DefaultAddressPools": ADDRESS_POOLS
+            .iter()
+            .map(|(base, _)| serde_json::json!({"Base": base, "Size": 24}))
+            .collect::<Vec<_>>()});
+        assert_eq!(pool_networks(&configured), ENGINE_NETWORKS);
         let total: u32 = ADDRESS_POOLS
             .iter()
             .map(|(base, networks)| {

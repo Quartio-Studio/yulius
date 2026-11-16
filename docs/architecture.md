@@ -80,7 +80,8 @@ follows the CPUs the sandbox's running jobs hold: 100 plus 100 per CPU, at least
 whole instance, the capacity less an eighth for the server and the agents: a job starts when its
 reservation fits beside the larger of the running jobs' reservations and what the `ci` and
 `engine` groups of the sandboxes running them were measured to use (`Delegation::ci_use`: CPU time
-over at least 5 s, anonymous memory), so containers and tools that use more than the job declared
+over at least 5 s, read at each job's start, each dispatcher pass and each look of a waiting job,
+under the admission's lock; anonymous memory), so containers and tools that use more than the job declared
 hold the next job back. The CI executor counts a job
 from its slot to its reap (`JobWeight`). The isolation adapter writes the weight, every
 preparation keeps it, and every start and stop of the server writes 100 again
@@ -3532,8 +3533,8 @@ tree reuse never carries a paths skip into a branch's run.
 A job waits before it starts, in `App::ci_job` (`crates/yulius-app/src/ci/exec.rs`): an
 `exclusive` job first for its turn (one run of it per sandbox at a time, a process-local
 `tokio::sync::Mutex` per `<sandbox>/<job name>` in `CiState`, taken in the order the runs asked),
-then for room in its sandbox's Docker engine (at least 32 more networks; with none of the
-sandbox's jobs running, unused networks are pruned first), then for a job slot and its CPU and
+then for room in its sandbox's Docker engine (at least 32 more networks of what its pools hold,
+read from its `/info`; networks no container used for 10 minutes are pruned first), then for a job slot and its CPU and
 memory budget out of the host's CI budget (SPEC-497, decision 0350). While it waits its reason says
 for what ("waits for the host's CI budget: CI holds 50 of the host's 56 CPUs for CI (32 reserved,
 50 measured); this job needs 16"). All waits are the job's `wait` stage;

@@ -610,7 +610,9 @@ impl App {
         // How long it waits is measured on the monotonic clock: a wall-clock step never makes it.
         let waiting_since = tokio::time::Instant::now();
         let slots = self.ci_slots();
-        let budget = self.capacity().ci_job(job.need, share);
+        // Its share is of the CI budget, so a run's default shares start together (review round
+        // 1 of SPEC-497: shares of the capacity added up to more than the budget).
+        let budget = self.capacity().ci_budget().ci_job(job.need, share);
         // Its wait for a slot and its budget is a stage from its start, open while it waits
         // (SPEC-385 WSL-001), and ends however the wait ends (WSL-002). `job` is its definition
         // (as the job span's, for the summaries), `name` the job as its run lists it ("a (1)").

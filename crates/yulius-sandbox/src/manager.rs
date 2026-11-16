@@ -2020,21 +2020,23 @@ impl Manager {
         )
     }
 
-    /// The networks `sandbox`'s running engine can still make (SPEC-497 HBA-003):
-    /// [`crate::engine::ENGINE_NETWORKS`] less those it has. `None` with no running engine or no
-    /// answer; never through the sandbox's socket, which would start a stopped engine.
-    pub async fn engine_networks_free(&self, sandbox: &str) -> Option<u32> {
+    /// What the networks of `sandbox`'s running engine take of its address pools (SPEC-497
+    /// HBA-003). `None` with no running engine or no answer (an engine stopped for idleness
+    /// refuses the connection: logged at debug, review round 1); never through the sandbox's
+    /// socket, which would start a stopped engine.
+    pub async fn engine_networks(&self, sandbox: &str) -> Option<crate::engine::Networks> {
         let socket = self.engine_socket(sandbox).await?;
         match crate::engine::networks(&socket).await {
-            Ok(used) => Some(crate::engine::ENGINE_NETWORKS.saturating_sub(used)),
+            Ok(networks) => Some(networks),
             Err(error) => {
-                tracing::warn!(sandbox, %error, "cannot count the Docker engine's networks");
+                tracing::debug!(sandbox, %error, "cannot count the Docker engine's networks");
                 None
             }
         }
     }
 
-    /// Removes the networks no container of `sandbox`'s running engine uses; how many.
+    /// Removes the networks of `sandbox`'s running engine that no container used for 10
+    /// minutes ([`crate::engine::prune_networks`]); how many.
     pub async fn prune_engine_networks(&self, sandbox: &str) -> Option<u32> {
         let socket = self.engine_socket(sandbox).await?;
         match crate::engine::prune_networks(&socket).await {
@@ -2047,7 +2049,7 @@ impl Manager {
                 Some(removed)
             }
             Err(error) => {
-                tracing::warn!(sandbox, %error, "cannot prune the Docker engine's networks");
+                tracing::debug!(sandbox, %error, "cannot prune the Docker engine's networks");
                 None
             }
         }
@@ -4009,6 +4011,9 @@ while True:
         let data = tempfile::tempdir()?;
         let manager = manager(data.path(), 1);
         assert_eq!(manager.prune_engine("s1").await, None, "no holder");
+        // SPEC-497 HBA-003: the networks are counted and pruned the same way (review round 1).
+        assert_eq!(manager.engine_networks("s1").await, None, "no holder");
+        assert_eq!(manager.prune_engine_networks("s1").await, None, "no holder");
         let state = StatePaths::new(manager.state_dir("s1"));
         std::fs::create_dir_all(state.engine_control())?;
         let (front, front_hits) = fake_api(tokio::net::UnixListener::bind(state.engine_socket())?);
@@ -4019,8 +4024,19 @@ while True:
             None,
             "a holder without an engine"
         );
+        assert_eq!(manager.engine_networks("s1").await, None, "no engine");
         entry.lock().await.live = Some(Live::new(live_record(true), Vec::new()));
         assert_eq!(manager.prune_engine("s1").await, None, "a stopped engine");
+        assert_eq!(
+            manager.engine_networks("s1").await,
+            None,
+            "a stopped engine"
+        );
+        assert_eq!(
+            manager.prune_engine_networks("s1").await,
+            None,
+            "a stopped engine"
+        );
         // A link the engine planted at its control socket is not followed.
         let decoy_path = data.path().join("decoy.sock");
         let (decoy, decoy_hits) = fake_api(tokio::net::UnixListener::bind(&decoy_path)?);
