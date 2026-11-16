@@ -1,6 +1,6 @@
 ---
 yulius-task: 839be374-cbd1-4e24-82d1-1c18faed4c18
-status: in-progress
+status: done
 ---
 
 # SPEC-493: faster from a task's start to its merge
@@ -408,41 +408,41 @@ Both are checked on current `dev` first and fixed test-first if they still hold.
 - [x] Fix 1b's independent review answered test-first
 - [x] Fix 1c: a round's record gets the model that answered, the verdict and a cut-off from the reviewer's transcript (REV-004)
 - [x] Fix 1c: the merge record, the delivery view and one analytics read name who wrote and who reviewed (REV-005, REV-006)
-- [ ] Fix 1c's independent review answered test-first
-- [ ] Fix 1d: a first or second round moves the session to a subscription that can run Fable 5.2, or runs on Opus 5.5 and says so (REV-007)
-- [ ] Fix 1d: a merge found on GitHub is judged against its merge commit's first parent, as `delivery_merge`'s is (REV-005)
-- [ ] Fix 1d's independent review answered test-first
-- [ ] Fix 2: the unreachable-server tests ask a port nothing can take (FLK-001)
-- [ ] Fix 2: the notes reload e2e test reproduced and fixed; the two tests fixed on dev since are checked under their probes (FLK-002, FLK-003)
-- [ ] Fix 2's independent review answered test-first
-- [ ] Fix 3: starting the review pushes the head and opens the pull request, and its CI run is queued at once (CIR-001 to CIR-003)
-- [ ] Fix 3: one rule for local checks everywhere, held by a test; the decision amending the whole-gate-before-handoff step (CIR-004)
-- [ ] Fix 3's independent review answered test-first
-- [ ] Fix 4: a merge candidate forms beside its members' own runs, and a member whose own run fails leaves it (MQC-001 to MQC-004)
-- [ ] Fix 4: candidates formed, merged and dissolved are counted and shown; ADR-0285 amended (MQC-005)
-- [ ] Fix 4's independent review answered test-first
-- [ ] Fix 5: a CI job names the files it tests, and a change that touches none of them leaves it skipped with the reason (CJP-001 to CJP-004)
-- [ ] Fix 5's documents and the decision: when such a job runs regardless
-- [ ] Fix 5's independent review answered test-first
-- [ ] Fix 6: delivery_merge keeps an approval across at most 20 product lines and records what it counted (APR-001 to APR-004)
-- [ ] Fix 6: the review rules state the bound; a project sets what counts as product code; the decision amending the reviewed-head rule (APR-002, APR-005)
-- [ ] Fix 6's review rounds 1 and 2 answered test-first: plumbing reads, Rust-token test spans, the integration commit from its origin
-- [ ] Fix 6's independent review answered test-first
-- [ ] Fix 7: a limit that cuts a subagent off is the session's news, and a cut-off reviewer is resumed after the move (RLM-001, RLM-002)
-- [ ] Fix 7: a review does not start on a subscription about to run out; the rules say resume, never restart, high effort (RLM-003, RLM-004)
-- [ ] Fix 7's review round 1 answered test-first: a reviewer's limit is its model's, its state ends with its round, the turn's end moves
-- [ ] Fix 7's independent review answered test-first
-- [ ] Fix 8: scripts/dev mutants, one bounded mutation run on the changed lines, measured (MUT-001)
-- [ ] Fix 8: the rules: once per pull request, the result in the Evidence, no campaign by the reviewer (MUT-002)
-- [ ] Fix 8's independent review answered test-first
-- [ ] Fix 9: an overlapping claim is told to both tasks, with the holder's change and pull request (SCO-001, SCO-003)
-- [ ] Fix 9: the overlap shows on both tasks and in the list (SCO-002)
-- [ ] Fix 9: a task created with paths another task holds is offered to run after it (SCO-004)
-- [ ] Fix 9's independent review answered test-first
-- [ ] Fix 10a: a queue entry never taken out holds a goal run's move for one turn's end (DEF-001)
-- [ ] Fix 10a's independent review answered test-first
-- [ ] Fix 10b: viewers' input waits until no earlier native file chooser can be on the display (DEF-002)
-- [ ] Fix 10b's independent review answered test-first
+- [x] Fix 1c's independent review answered test-first
+- [x] Fix 1d: a first or second round moves the session to a subscription that can run Fable 5.2, or runs on Opus 5.5 and says so (REV-007)
+- [x] Fix 1d: a merge found on GitHub is judged against its merge commit's first parent, as `delivery_merge`'s is (REV-005)
+- [x] Fix 1d's independent review answered test-first
+- [x] Fix 2: the unreachable-server tests ask a port nothing can take (FLK-001)
+- [x] Fix 2: the notes reload e2e test reproduced and fixed; the two tests fixed on dev since are checked under their probes (FLK-002, FLK-003)
+- [x] Fix 2's independent review answered test-first
+- [x] Fix 3: starting the review pushes the head and opens the pull request, and its CI run is queued at once (CIR-001 to CIR-003)
+- [x] Fix 3: one rule for local checks everywhere, held by a test; the decision amending the whole-gate-before-handoff step (CIR-004)
+- [x] Fix 3's independent review answered test-first
+- [x] Fix 4: a merge candidate forms beside its members' own runs, and a member whose own run fails leaves it (MQC-001 to MQC-004)
+- [x] Fix 4: candidates formed, merged and dissolved are counted and shown; ADR-0285 amended (MQC-005)
+- [x] Fix 4's independent review answered test-first
+- [x] Fix 5: a CI job names the files it tests, and a change that touches none of them leaves it skipped with the reason (CJP-001 to CJP-004)
+- [x] Fix 5's documents and the decision: when such a job runs regardless
+- [x] Fix 5's independent review answered test-first
+- [x] Fix 6: delivery_merge keeps an approval across at most 20 product lines and records what it counted (APR-001 to APR-004)
+- [x] Fix 6: the review rules state the bound; a project sets what counts as product code; the decision amending the reviewed-head rule (APR-002, APR-005)
+- [x] Fix 6's review rounds 1 and 2 answered test-first: plumbing reads, Rust-token test spans, the integration commit from its origin
+- [x] Fix 6's independent review answered test-first
+- [x] Fix 7: a limit that cuts a subagent off is the session's news, and a cut-off reviewer is resumed after the move (RLM-001, RLM-002)
+- [x] Fix 7: a review does not start on a subscription about to run out; the rules say resume, never restart, high effort (RLM-003, RLM-004)
+- [x] Fix 7's review round 1 answered test-first: a reviewer's limit is its model's, its state ends with its round, the turn's end moves
+- [x] Fix 7's independent review answered test-first
+- [x] Fix 8: scripts/dev mutants, one bounded mutation run on the changed lines, measured (MUT-001)
+- [x] Fix 8: the rules: once per pull request, the result in the Evidence, no campaign by the reviewer (MUT-002)
+- [x] Fix 8's independent review answered test-first
+- [x] Fix 9: an overlapping claim is told to both tasks, with the holder's change and pull request (SCO-001, SCO-003)
+- [x] Fix 9: the overlap shows on both tasks and in the list (SCO-002)
+- [x] Fix 9: a task created with paths another task holds is offered to run after it (SCO-004)
+- [x] Fix 9's independent review answered test-first
+- [x] Fix 10a: a queue entry never taken out holds a goal run's move for one turn's end (DEF-001)
+- [x] Fix 10a's independent review answered test-first
+- [x] Fix 10b: viewers' input waits until no earlier native file chooser can be on the display (DEF-002)
+- [x] Fix 10b's independent review answered test-first
 
 ## Acceptance criteria
 
