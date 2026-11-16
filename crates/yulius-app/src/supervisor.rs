@@ -5969,7 +5969,9 @@ fn keeps_subscription(reason: &str) -> bool {
 /// no further: its own thread's when the limit cut its turn, and whatever its thread was doing
 /// when the limit refused a workflow's agents (its next request would be refused, SPEC-486).
 fn interrupts_first(reason: &str) -> bool {
-    matches!(reason, "manual" | "handover" | "removed") || reason == crate::review::MOVE_FOR_FABLE
+    matches!(reason, "manual" | "handover" | "removed")
+        || reason == crate::review::MOVE_FOR_FABLE
+        || reason == crate::review::MOVE_FOR_ROOM
 }
 
 #[cfg(test)]

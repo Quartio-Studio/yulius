@@ -111,6 +111,54 @@ fn reviewer_nowhere(reviewer: &CutOffReviewer) -> String {
     )
 }
 
+/// The switch reason of a move before a round whose reviewer's model is about to run out where
+/// the session is (RLM-003); it interrupts the turn first, as [`MOVE_FOR_FABLE`] does.
+pub(crate) const MOVE_FOR_ROOM: &str = "review_room";
+
+/// Why a session moves before its review round starts.
+enum MovePurpose {
+    /// Its subscription cannot run Fable 5.2 (REV-007).
+    Fable,
+    /// Its subscription is about to run out for the reviewer's `model` (RLM-003); `agent` is
+    /// the reviewer asked for again there.
+    Room { model: String, agent: String },
+}
+
+impl MovePurpose {
+    fn reason(&self) -> &'static str {
+        match self {
+            Self::Fable => MOVE_FOR_FABLE,
+            Self::Room { .. } => MOVE_FOR_ROOM,
+        }
+    }
+
+    /// Why the reviewer did not start: the session moves.
+    fn moving(&self) -> String {
+        match self {
+            Self::Fable => MOVING_FOR_FABLE.to_owned(),
+            Self::Room { model, .. } => format!(
+                "Yulius moves this session to a Claude subscription with more room for {} for \
+                 this review round: the one it runs on is about to run out. Do nothing else now: \
+                 the session goes on there and is asked to start the review again.",
+                claude_model_name(model)
+            ),
+        }
+    }
+
+    /// The first prompt of the session moved.
+    fn prompt(&self) -> String {
+        match self {
+            Self::Fable => MOVED_FOR_FABLE_PROMPT.to_owned(),
+            Self::Room { model, agent } => format!(
+                "Yulius moved this session to a Claude subscription with room for {} for the \
+                 review round you asked for. Start the review again: the Agent tool with the \
+                 `{agent}` agent and the same prompt.",
+                claude_model_name(model)
+            ),
+        }
+    }
+}
+
 /// Where a session moves for its cut-off reviewer ([`App::reviewer_move_target`]).
 pub(crate) enum ReviewerMove {
     /// To this subscription.
@@ -185,7 +233,7 @@ impl App {
         // again there); else the round gets the Opus reviewer, which it can run, rather than a
         // reviewer refused at its first request (REV-007).
         if agent == REVIEWER_AGENT && !self.run_can_take_fable(ctx).await {
-            match self.move_for_fable(ctx).await {
+            match self.move_for(ctx, &MovePurpose::Fable).await {
                 FableMove::Refused(why) => return Ok(HookOutput::deny_tool(why)),
                 FableMove::Nowhere => {
                     agent = LATE_REVIEWER_AGENT.to_owned();
@@ -194,6 +242,17 @@ impl App {
             }
         }
         let model = reviewer_model(&agent).unwrap_or_default().to_owned();
+        // Nor does a round start where its reviewer's model is about to run out while another
+        // subscription has room for it: the session moves first (RLM-003).
+        if self.run_is_tight_for(ctx, &model).await {
+            let purpose = MovePurpose::Room {
+                model: model.clone(),
+                agent: agent.clone(),
+            };
+            if let FableMove::Refused(why) = self.move_for(ctx, &purpose).await {
+                return Ok(HookOutput::deny_tool(why));
+            }
+        }
         let head = match ctx.task.worktree_path.as_deref() {
             Some(worktree) => self
                 .deps
@@ -301,17 +360,17 @@ impl App {
     /// refused moments ago, no such subscription, a new session that could not start there, or
     /// looks that take longer than [`MOVE_DECISION`] leave the round to the Opus reviewer: a
     /// move is announced only once it can start.
-    async fn move_for_fable(self: &Arc<Self>, ctx: &AgentContext) -> FableMove {
+    async fn move_for(self: &Arc<Self>, ctx: &AgentContext, purpose: &MovePurpose) -> FableMove {
         if let Ok(decided) =
-            tokio::time::timeout(MOVE_DECISION, self.decide_move_for_fable(ctx)).await
+            tokio::time::timeout(MOVE_DECISION, self.decide_move(ctx, purpose)).await
         {
             return decided;
         }
-        tracing::info!(task = %ctx.task.id, "no move for a Fable reviewer: the looks took longer than the hook may wait");
+        tracing::info!(task = %ctx.task.id, "no move for a reviewer: the looks took longer than the hook may wait");
         FableMove::Nowhere
     }
 
-    async fn decide_move_for_fable(self: &Arc<Self>, ctx: &AgentContext) -> FableMove {
+    async fn decide_move(self: &Arc<Self>, ctx: &AgentContext, purpose: &MovePurpose) -> FableMove {
         let task = &ctx.task;
         if self.switch_cooling(&task.id) {
             return FableMove::Nowhere;
@@ -322,18 +381,34 @@ impl App {
         else {
             return FableMove::Nowhere;
         };
-        let fable = ModelFamily::of(Some(yulius_domain::harness::REVIEW_CLAUDE_MODEL));
-        let Some(account) = yulius_domain::rotation::move_to_also_run(&input, fable) else {
+        let target = match purpose {
+            MovePurpose::Fable => {
+                let fable = ModelFamily::of(Some(yulius_domain::harness::REVIEW_CLAUDE_MODEL));
+                yulius_domain::rotation::move_to_also_run(&input, fable)
+            }
+            MovePurpose::Room { model, .. } => {
+                yulius_domain::rotation::move_with_room_for(&input, ModelFamily::of(Some(model)))
+            }
+        };
+        let Some(account) = target else {
             return FableMove::Nowhere;
         };
         // A move ends the session's background shells, agents and monitors and what waits in
         // Claude Code's queue; a look that gives no answer counts as work running (SPEC-483).
         let prompts_before = self.prompts_passed(&task.id);
         self.await_transcript_read(&task.id).await;
+        // A move for room gives way to the work: the round starts where it is (RLM-003).
+        let room = matches!(purpose, MovePurpose::Room { .. });
         if self.background_or_wait_now(&task.id).await != Some(false) {
+            if room {
+                return FableMove::Nowhere;
+            }
             return FableMove::Refused(BUSY_FOR_FABLE.to_owned());
         }
         if self.prompt_waits_for_turns_end(&task.id, prompts_before) {
+            if room {
+                return FableMove::Nowhere;
+            }
             return FableMove::Refused(QUEUED_FOR_FABLE.to_owned());
         }
         // The new session must be able to start there before the move is announced (ROT-014).
@@ -347,7 +422,7 @@ impl App {
         match check.await {
             Ok(Ok(_)) => {}
             Ok(Err(err)) => {
-                tracing::info!(task = %task.id, error = %err, "no move for a Fable reviewer: the session could not start there");
+                tracing::info!(task = %task.id, error = %err, "no move for a reviewer: the session could not start there");
                 return FableMove::Nowhere;
             }
             Err(_) => return FableMove::Nowhere,
@@ -355,6 +430,7 @@ impl App {
         let app = Arc::clone(self);
         let task_id = task.id.clone();
         let run = ctx.attempt.id.clone();
+        let (purpose_reason, prompt) = (purpose.reason(), purpose.prompt());
         tokio::spawn(async move {
             // Only the run this was decided for moves: a later review start that outlasted an
             // earlier move must not restart the session it made.
@@ -366,15 +442,40 @@ impl App {
             if live.is_none_or(|live| live.id != run) {
                 return;
             }
-            let prompt = Some(MOVED_FOR_FABLE_PROMPT.to_owned());
+            let (reason, prompt) = (purpose_reason, Some(prompt));
             if let Err(err) = app
-                .switch_task_now(&task_id, Some(account), MOVE_FOR_FABLE, prompt)
+                .switch_task_now(&task_id, Some(account), reason, prompt)
                 .await
             {
-                tracing::warn!(error = %err, task = %task_id, "the move for a Fable reviewer failed");
+                tracing::warn!(error = %err, task = %task_id, "the move for a reviewer failed");
             }
         });
-        FableMove::Refused(MOVING_FOR_FABLE.to_owned())
+        FableMove::Refused(purpose.moving())
+    }
+
+    /// Whether the subscription the task's run is on is about to run out for `model`: known room
+    /// under [`yulius_domain::rotation::MIN_ROOM`] points in a window that binds it
+    /// ([`yulius_domain::rotation::Tier::Tight`], RLM-003). Unknown counts as no.
+    async fn run_is_tight_for(&self, ctx: &AgentContext, model: &str) -> bool {
+        let Some(account) = ctx.attempt.account_id.as_ref() else {
+            return false;
+        };
+        let Ok(views) = self.account_views().await else {
+            return false;
+        };
+        let family = ModelFamily::of(Some(model));
+        views
+            .iter()
+            .find(|view| &view.id == account)
+            .is_some_and(|view| {
+                yulius_domain::rotation::assess(
+                    view,
+                    self.now(),
+                    yulius_domain::rotation::THRESHOLD,
+                    family,
+                )
+                .is_some_and(|a| a.tier == yulius_domain::rotation::Tier::Tight)
+            })
     }
 
     /// Whether the subscription the task's run is on can run Fable now: below the pool's

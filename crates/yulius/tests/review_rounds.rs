@@ -658,6 +658,31 @@ async fn a_round_on_an_unknown_subscription_starts_as_asked() -> TestResult {
     Ok(())
 }
 
+/// SPEC-493 RLM-003 (AC-19): a round on a subscription with 3 points of room left for its
+/// reviewer's model, where no other subscription has more, starts as asked, where it is.
+#[tokio::test]
+async fn a_tight_round_with_nowhere_roomier_starts_where_it_is() -> TestResult {
+    let h = harness()?;
+    seed(&h).await?;
+    let tight = |used: f64| {
+        json!({"primary": {"used_percent": used, "window_minutes": 300,
+            "resets_at": 4_102_444_800_000_i64}})
+        .to_string()
+    };
+    let account = add_account(&h, "acc-1", Some(tight(95.0))).await?;
+    add_account(&h, "acc-2", Some(tight(96.0))).await?;
+    let task = running_task(&h, TaskMode::Prompt, &account).await?;
+    let (_, _, answer) = hook(&h.internal, "PreToolUse", agent_start("yulius-reviewer")).await?;
+    assert_ne!(
+        answer["hookSpecificOutput"]["permissionDecision"], "deny",
+        "{answer}"
+    );
+    let open = rounds(&h, &task, true).await?;
+    assert_eq!((open.len(), open[0].agent.as_str()), (1, "yulius-reviewer"));
+    assert!(h.store.switches(&task).await?.is_empty());
+    Ok(())
+}
+
 /// SPEC-493 REV-004: what the reviewer's transcript says is noted on its round: the model that
 /// answered (the latest), and that a usage limit cut it off, which its later report keeps.
 #[tokio::test]
@@ -1019,6 +1044,66 @@ mod real {
     #[test]
     fn a_reviewer_cut_off_in_a_turn_moves_the_session_at_its_end() -> TestResult {
         a_cut_off_reviewer(true, b"/reviewer-limit-turn yulius-reviewer\r")
+    }
+
+    /// SPEC-493 RLM-003 (AC-19) end to end: the session's subscription has room for Opus but 3
+    /// points left for Fable, another has room for both. The Fable reviewer's start is refused,
+    /// the session moves, and its first prompt there asks for the review again.
+    #[test]
+    fn a_round_about_to_run_out_moves_the_session_first() -> TestResult {
+        let fake =
+            locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+        let (_dir, data) = temp()?;
+        let rt = runtime()?;
+        rt.block_on(async {
+            let probe = Arc::new(ScriptedUsage::default());
+            let agent = FakeAgentOptions {
+                resume_prompts: true,
+                ..hooked()
+            };
+            let (app, _port) = start_with(&data, &fake, agent, 0, probe.clone(), |config| {
+                config.claude_code_queue_record_ms = 0;
+            })
+            .await?;
+            let (sandbox, user) = seed(&app, &data, &["a-first", "b-second"]).await?;
+            let mut first = usage(5.0, 4 * HOUR, 10.0, 100);
+            first.weekly_fable = Some(UsageWindow {
+                used_percent: Some(95.0),
+                window_minutes: Some(10_080),
+                resets_at: first.secondary.as_ref().and_then(|w| w.resets_at),
+            });
+            probe.set("a-first", first);
+            probe.set("b-second", usage(40.0, 4 * HOUR, 50.0, 100));
+            refresh(&app, &user, "a-first").await?;
+            refresh(&app, &user, "b-second").await?;
+            let id = new_task(&app, &sandbox, &user, "Review it", TaskMode::Prompt).await?;
+            ready(&app, &id).await?;
+            assert_eq!(run_accounts(&app, &id).await, [Some("a-first".to_owned())]);
+            app.send_input(&id, b"/agent yulius-reviewer\r").await?;
+            live_run(&app, &id, 2).await?;
+            assert_eq!(
+                run_accounts(&app, &id).await,
+                [Some("a-first".to_owned()), Some("b-second".to_owned())]
+            );
+            let asked = wait_for("the prompt", Duration::from_secs(30), || async {
+                screen(&app, &id).contains("with room for Fable 5.2 for the review round you asked")
+            })
+            .await;
+            assert!(asked.is_ok(), "{}", screen(&app, &id));
+            wait_for("the completed switch", Duration::from_secs(30), || async {
+                app.deps.store.switches(&id).await.is_ok_and(|switches| {
+                    switches.iter().any(|switch| switch.outcome == "completed")
+                })
+            })
+            .await?;
+            let switches = app.deps.store.switches(&id).await?;
+            assert_eq!(switches.len(), 1, "{switches:?}");
+            assert_eq!(switches[0].reason, "review_room");
+            stop(&app, &id).await?;
+            Ok::<_, Box<dyn std::error::Error>>(())
+        })?;
+        rt.shutdown_timeout(Duration::from_secs(5));
+        Ok(())
     }
 
     /// The RLM-002 tests: the second subscription runs Fable or does not; `command` cuts the
