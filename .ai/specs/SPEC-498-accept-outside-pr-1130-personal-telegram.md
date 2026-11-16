@@ -106,9 +106,10 @@ any inbound port.
   task number and title, the `needs_you` action/problem (or "Decide"), and a link
   `{PUBLIC_URL}/s/{slug}/t/{n}`. What is the case when a bot becomes active (a start of the
   server, a bot set in Settings) is read into the notifier's memory first (every task, its
-  sandbox-wide episode and request for control, every subscription) by the notifier's own task
-  while events wait for it, and remembered while nobody is linked too, so only a change after it is told, whatever moved (a status, a chain blocked, a
-  pull request's checks). (#1130 judged a task first seen after the start by its state time, which
+  sandbox-wide episode and request for control, every subscription) by the notifier's own task,
+  which then makes the bot the one in use, so the events published meanwhile are compared against
+  what it read; it is remembered while nobody is linked too, so only a change after it is told,
+  whatever moved (a status, a chain blocked, a pull request's checks). (#1130 judged a task first seen after the start by its state time, which
   a blocked chain or a pull request's checks do not move: such news was dropped for good; review
   round 1.)
 - TGC-023: every notification's text passes the same redaction as transcripts: a task's text
@@ -165,8 +166,8 @@ taken-back control and a stalled pull request.
 - The notifier follows the bus like an event stream but cannot resync: if it falls more than 1024
   events behind, the missed notices are logged and lost. It reads and remembers while a bot is
   active even when nobody is linked, and does nothing while no bot is.
-- The seed runs on the notifier's own task, before the events waiting behind it, and replaces the
-  memory in one step; tasks and subscriptions in it are bounded by the store. Episodes and
+- The seed runs on the notifier's own task, before the events waiting behind it, which then
+  activates the bot, and replaces the memory in one step; tasks and subscriptions in it are bounded by the store. Episodes and
   requests for control told are bounded at 20,000: past that the memory of them starts again, and
   one still open may be told once more.
 - At a start the seed reads the tasks before the pull-request watch and the adoption of shells
@@ -195,6 +196,8 @@ taken-back control and a stalled pull request.
 - [x] Independent review round 2 run (request changes: answered by the items below)
 - [x] The notifier seeds itself in order with events, outside the memory's bound, and a restart is tested
 - [x] Round 2 minors: an oversized update skipped by its id, the bot card refreshes while starting
+- [x] Independent review round 3 run (request changes: answered by the items below)
+- [x] Round 3: the notifier activates the bot after its seed; the e2e flake, the card's late read and id overflow fixed
 - [ ] Independent review of the fixes approved
 
 The contributor's own plan (all done on their fork): spec, ADR and the channel port; the sealed
@@ -307,6 +310,31 @@ and a two-round independent review.
   key" for the instance key, as for task #478 earlier today. Neither passed nor failed; the pull
   request's CI `security` job reports what it gets.
 - The whole gate is Yulius CI's on the pull request head.
+
+### Review round 3 (Opus 5.5, head `08eca23a2`): request changes, answered
+
+Round 3 confirmed every round-2 answer. Its findings were a flaky e2e test from #1130 and
+corner cases of this task's delta, not design, so they are fixed here and a fourth round looks only
+at that delta (the rule "after 3 rounds split or `needs_you`": splitting would move test fixes for
+this pull request's own code out of it).
+
+- Major 1 (`telegram.e2e.ts` "a person links…" flaky: it left the page before the mock had saved
+  the choice; the reviewer saw 2 failures in 4 runs): the test waits until the mock holds the
+  saved choice; then 5 runs of `npx e2e run tests/telegram.e2e.ts`: 5 × 4/4.
+- Minor 2: the mock answers `polling` at the first read after a save (it cleared `starting` after
+  building the answer).
+- Minor 3 (a refresh read answered after Remove brought "is receiving" back): a render counter
+  drops older answers. New e2e "a state read before the bot was removed does not come back after
+  it" (the mock's `telegram.holdRead` answers a read late, as the Claude Code card's does): failed
+  without the fix (1 of 5), passes with it (5/5).
+- Minor 4 (the `seed_due` early return had no test): the flag is gone. The notifier's task seeds
+  and then activates the bot itself, so no event meets an empty memory between the two. With the
+  seed removed from the notifier, `a_state_entered_before_the_start_is_not_told` and
+  `a_start_with_a_saved_bot_tells_only_later_changes` fail.
+- Nit 5: an `update_id` of `i64::MAX` is invalid instead of overflowing
+  (`the_last_update_id_is_invalid`).
+- After the fixes: clippy `-D warnings` clean; the Telegram integration, wiring and app tests
+  `--stress-count 5`: 5/5.
 
 ### Review round 2 (Fable 5.2, head `4aa7e1dd2`): request changes, answered
 
