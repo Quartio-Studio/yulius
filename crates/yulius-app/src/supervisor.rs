@@ -5635,7 +5635,7 @@ impl App {
             // The account's windows as Codex saw them on its last response (SPEC-503 CDX-004).
             Observation::RateLimits(usage) => {
                 if let Some(account) = &attempt.account_id {
-                    self.record_account_usage(account, &usage).await;
+                    self.rollout_usage(account, &usage).await;
                 }
             }
         }

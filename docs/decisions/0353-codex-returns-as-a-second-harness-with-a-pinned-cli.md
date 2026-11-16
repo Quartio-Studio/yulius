@@ -62,8 +62,10 @@ Claude's, a Codex subscription takes an API key or an `auth.json` in the same re
 - **Run.** `codex --no-daemon -C <worktree> -c …` with Yulius's MCP as the `yulius mcp` stdio
   bridge; a sandbox MCP server's renamed variables pass through a `sh -c` wrapper, since Codex
   hands a server only variables of their own names. Yulius takes the session id from the
-  SessionStart hook, else from the newest rollout of the worktree. A usage limit is the turn's
-  `usage_limit_exceeded`; the windows come from `token_count.rate_limits` and from
+  SessionStart hook, else from the first rollout of the worktree started since the run began. A
+  usage limit is the turn's `usage_limit_exceeded`; a response's tokens are its
+  `token_usage_record` (one per response, by `response_id`); the windows come from
+  `token_count.rate_limits` and from
   `chatgpt.com/backend-api/wham/usage`. A resume after a limit asks Codex to continue, which it
   does not do by itself. Codex takes `/goal` only typed: a Codex goal task gets its whole request
   and definition of done as its first message and is settled by its turns.
@@ -118,6 +120,10 @@ Claude's, a Codex subscription takes an API key or an `auth.json` in the same re
   images, the transcript step-back, the status line, sub-agent tails, session import and search of
   Codex sessions, and #1138's detection of a refused subscription (Codex's wording for it is not
   known; a refused Codex sign-in shows as a failed run).
+- The write-back rule tells sign-ins apart but cannot authenticate a file: an agent that keeps
+  its home's `account_id` and `id_token` and writes other tokens dated now replaces the stored
+  sign-in, which then needs a new sign-in. It can spoil the account it runs on, never reach
+  another one or learn a credential it did not already hold.
 - Two runs of one account in different sandboxes each refresh its tokens; Codex rotates refresh
   tokens, so one copy can go stale until written back (R-02, unverified live). An imported
   `auth.json` from a laptop that keeps using the same `CODEX_HOME` shares one refresh token with

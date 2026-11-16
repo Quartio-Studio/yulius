@@ -466,6 +466,14 @@ impl App {
         }
     }
 
+    /// A Codex run's reading of its subscription's windows, from its rollout (SPEC-503
+    /// CDX-004): stored under the lock every usage write takes, and only when it is not older
+    /// than what is stored ([`rollout_reading`]).
+    pub(crate) async fn rollout_usage(&self, account: &AccountId, reading: &AccountUsage) {
+        self.change_account_usage(account, |stored| rollout_reading(stored, reading))
+            .await;
+    }
+
     /// A running session's reading of its subscription's plan usage (Claude Code's status line:
     /// the rate-limit headers of its own API responses, ADR-17). The only usage a
     /// `claude setup-token` sign-in can see: the usage endpoint refuses it. The five-hour and
@@ -1152,9 +1160,91 @@ fn pool_view(pool: &PoolTokens) -> PoolTokensView {
     }
 }
 
+/// `stored` with a Codex rollout's `reading` (SPEC-503 CDX-004), `None` when the reading is older
+/// than what is stored: a watch that starts again reads its rollout from the start. The windows it
+/// carries replace the stored ones; a reached limit is recorded, and one it does not carry stays
+/// until its reset. It is a reading of the usage only when it carries both windows.
+fn rollout_reading(stored: AccountUsage, reading: &AccountUsage) -> Option<AccountUsage> {
+    if let (Some(read), Some(known)) = (reading.observed_at, stored.observed_at)
+        && read < known
+    {
+        return None;
+    }
+    let mut usage = stored;
+    usage.primary = reading.primary.or(usage.primary);
+    usage.secondary = reading.secondary.or(usage.secondary);
+    if reading.limit_reached {
+        usage.limit_reached = true;
+        usage.limit_resets_at = reading.limit_resets_at;
+    }
+    if reading.primary.is_some() && reading.secondary.is_some() {
+        usage.observed_at = reading.observed_at.or(usage.observed_at);
+    }
+    Some(usage)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// SPEC-503 CDX-004: a Codex rollout's windows replace the stored ones only when they are not
+    /// older than what is stored (a watch reads its rollout again from the start after a
+    /// restart); a reached limit is recorded, one a reading does not carry stays until its
+    /// reset, and the per-model caps are not the rollout's to change.
+    #[test]
+    fn a_rollout_reading_replaces_only_an_older_one() {
+        let window = |percent: f64| UsageWindow {
+            used_percent: Some(percent),
+            window_minutes: Some(300),
+            resets_at: Some(Timestamp(9_000)),
+        };
+        let stored = AccountUsage {
+            primary: Some(window(50.0)),
+            secondary: Some(window(20.0)),
+            weekly_opus: Some(window(10.0)),
+            observed_at: Some(Timestamp(2_000)),
+            ..AccountUsage::default()
+        };
+        let older = AccountUsage {
+            primary: Some(window(40.0)),
+            secondary: Some(window(15.0)),
+            observed_at: Some(Timestamp(1_000)),
+            ..AccountUsage::default()
+        };
+        assert_eq!(
+            rollout_reading(stored, &older),
+            None,
+            "an older reading is dropped"
+        );
+        let newer = AccountUsage {
+            primary: Some(window(60.0)),
+            secondary: None,
+            limit_reached: true,
+            limit_resets_at: Some(Timestamp(9_000)),
+            observed_at: Some(Timestamp(3_000)),
+            ..AccountUsage::default()
+        };
+        let merged = rollout_reading(stored, &newer).unwrap_or_default();
+        assert_eq!(merged.primary, Some(window(60.0)));
+        assert_eq!(
+            merged.secondary,
+            Some(window(20.0)),
+            "a window it did not carry stays"
+        );
+        assert_eq!(merged.weekly_opus, Some(window(10.0)));
+        assert!(merged.limit_reached);
+        assert_eq!(merged.limit_resets_at, Some(Timestamp(9_000)));
+        // One window is no reading of the usage: it keeps the stored date.
+        assert_eq!(merged.observed_at, Some(Timestamp(2_000)));
+        let both = AccountUsage {
+            secondary: Some(window(25.0)),
+            ..newer
+        };
+        assert_eq!(
+            rollout_reading(stored, &both).and_then(|u| u.observed_at),
+            Some(Timestamp(3_000))
+        );
+    }
 
     /// SPEC-482: a task of a Fable model falls back to Opus 5.5; a default task is an Opus task
     /// and has no fallback (SPEC-493 MDL-002). A run's family is that of the model its record

@@ -924,7 +924,11 @@ fn plan_codex(request: &LaunchRequest) -> Result<LaunchPlan, LaunchError> {
             (Some(session_id.clone()), prompt)
         }
     };
-    push_prompt(&mut argv, prompt.as_deref());
+    // Always after `--`: a prompt that is one of Codex's subcommand words (`completion`,
+    // `review`, …) would run that subcommand (0.169.0).
+    if let Some(prompt) = prompt.filter(|p| !p.is_empty()) {
+        argv.extend(["--".into(), prompt]);
+    }
 
     Ok(LaunchPlan {
         argv,

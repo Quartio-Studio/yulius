@@ -278,6 +278,46 @@ impl LoginTerminal {
 }
 
 /// Best-effort zeroing of a plaintext copy before it is freed.
+/// The largest `auth.json` a Codex sign-in may leave (`yulius_harness::login`'s bound).
+const CODEX_LOGIN_AUTH_MAX: usize = 1024 * 1024;
+
+/// The `auth.json` at `path` when it is a plain file within [`CODEX_LOGIN_AUTH_MAX`] and
+/// `problem` finds none in it; a refused copy is scrubbed (SPEC-503 CDX-005). The bound is
+/// checked before reading, and the read itself is bounded too: the sign-in's process writes it.
+fn read_codex_login_auth(
+    path: &Path,
+    problem: impl FnOnce(&[u8]) -> Option<String>,
+) -> Result<Vec<u8>, String> {
+    use std::io::Read as _;
+    let meta = std::fs::symlink_metadata(path)
+        .map_err(|_| "the Codex sign-in did not store credentials".to_owned())?;
+    let too_large = || "the Codex credentials file is too large".to_owned();
+    if !meta.is_file() {
+        return Err("the Codex credentials file is not usable".into());
+    }
+    if meta.len() > CODEX_LOGIN_AUTH_MAX as u64 {
+        return Err(too_large());
+    }
+    let mut bytes = Vec::new();
+    std::fs::File::open(path)
+        .and_then(|file| {
+            file.take(CODEX_LOGIN_AUTH_MAX as u64 + 1)
+                .read_to_end(&mut bytes)
+        })
+        .map_err(|_| "the Codex credentials file could not be read".to_owned())?;
+    if bytes.len() > CODEX_LOGIN_AUTH_MAX {
+        scrub(Some(bytes));
+        return Err(too_large());
+    }
+    match problem(&bytes) {
+        None => Ok(bytes),
+        Some(why) => {
+            scrub(Some(bytes));
+            Err(why)
+        }
+    }
+}
+
 fn scrub(bytes: Option<Vec<u8>>) {
     if let Some(mut bytes) = bytes {
         bytes.fill(0);
@@ -1953,28 +1993,22 @@ impl App {
                 held
             }
             // Codex writes its credentials to a file, not its output: the sign-in holds one
-            // once that file is a usable `auth.json`.
-            Provider::OpenAi => self.codex_login_auth(session).is_ok(),
+            // once that file is a usable `auth.json`. The copy read to check it is scrubbed.
+            Provider::OpenAi => match self.codex_login_auth(session) {
+                Ok(bytes) => {
+                    scrub(Some(bytes));
+                    true
+                }
+                Err(_) => false,
+            },
         }
     }
 
     /// The `auth.json` the Codex sign-in of `session` wrote, validated (SPEC-503 CDX-005).
     fn codex_login_auth(&self, session: &LoginSession) -> Result<Vec<u8>, String> {
-        let path = session.dir.join("codex").join("auth.json");
-        let meta = std::fs::symlink_metadata(&path)
-            .map_err(|_| "the Codex sign-in did not store credentials".to_owned())?;
-        if !meta.is_file() {
-            return Err("the Codex credentials file is not usable".into());
-        }
-        let bytes = std::fs::read(&path)
-            .map_err(|_| "the Codex credentials file could not be read".to_owned())?;
-        match self.deps.harness.codex_auth_problem(&bytes) {
-            None => Ok(bytes),
-            Some(problem) => {
-                scrub(Some(bytes));
-                Err(problem)
-            }
-        }
+        read_codex_login_auth(&session.dir.join("codex").join("auth.json"), |bytes| {
+            self.deps.harness.codex_auth_problem(bytes)
+        })
     }
 
     /// The credential in the whole raw output, which is wiped afterwards, with the temporary
@@ -2190,6 +2224,34 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// SPEC-503 CDX-005: the `auth.json` a Codex sign-in wrote is read only when it is a plain
+    /// file within the credential bound: a larger one, a link or a folder is refused unread.
+    #[test]
+    fn a_codex_sign_ins_file_is_read_within_its_bound() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let usable = |_: &[u8]| None;
+        let path = dir.path().join("auth.json");
+        std::fs::write(&path, br#"{"OPENAI_API_KEY":"sk-x"}"#)?;
+        assert_eq!(
+            read_codex_login_auth(&path, usable).as_deref(),
+            Ok(&br#"{"OPENAI_API_KEY":"sk-x"}"#[..])
+        );
+        let large = std::fs::File::create(&path)?;
+        large.set_len(u64::try_from(CODEX_LOGIN_AUTH_MAX)? + 1)?;
+        let read = Cell::new(false);
+        let watched = |_: &[u8]| {
+            read.set(true);
+            None
+        };
+        assert!(read_codex_login_auth(&path, watched).is_err());
+        assert!(!read.get(), "a file over the bound is not read");
+        let link = dir.path().join("link.json");
+        std::os::unix::fs::symlink(&path, &link)?;
+        assert!(read_codex_login_auth(&link, usable).is_err());
+        assert!(read_codex_login_auth(dir.path(), usable).is_err());
+        Ok(())
+    }
     use std::cell::Cell;
     use yulius_domain::time::Timestamp;
 

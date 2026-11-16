@@ -19,6 +19,8 @@ const CODEX_MALFORMED: &str = include_str!("fixtures/codex/malformed.jsonl");
 /// A rollout the real Codex CLI 0.169.0 wrote (`codex exec`, then `exec resume` that met a usage
 /// limit) against a local stub of the Responses API; paths and instructions left out.
 const CODEX_REAL_0_169: &str = include_str!("fixtures/codex/exec-0.169.0.jsonl");
+/// The real Codex CLI 0.169.0 again, with a Stop hook that blocked the first turn's end once.
+const CODEX_REAL_STOP_BLOCK: &str = include_str!("fixtures/codex/exec-0.169.0-stop-block.jsonl");
 const CODEX_SESSION_ID: &str = "019a6b2e-7c1d-7f00-9a3e-1b2c3d4e5f60";
 
 const CLAUDE_SESSION_ID: &str = "5b0d9c1e-2f4a-4c6b-9e7d-1a2b3c4d5e6f";
@@ -403,7 +405,7 @@ fn a_rollout_the_real_codex_0_169_wrote_is_observed() {
             session_id: "01a1e623-342a-7bc2-9ca9-5b5c3d0d70c0".into(),
             cwd: Some("/w/t1".into()),
             model: None,
-            version: Some("0.169.0".into()),
+            version: None,
         })
     );
     let prompts = all
@@ -467,6 +469,62 @@ fn a_rollout_the_real_codex_0_169_wrote_is_observed() {
     assert_eq!(acc.malformed_lines(), 0);
 }
 
+/// SPEC-503 CDX-004: a resumed run counts only its own responses. Codex writes the session's
+/// last usage again when the resumed run meets a usage limit before any response; counting that
+/// would bill the earlier run's response to this one. The real 0.169.0 rollout's resumed run had
+/// no response (its one request was refused), so it has no usage; the whole session has one.
+#[test]
+fn a_resumed_codex_run_counts_no_response_of_the_run_before()
+-> Result<(), Box<dyn std::error::Error>> {
+    let rollout = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/codex/exec-0.169.0.jsonl");
+    let resumed = yulius_domain::time::parse_rfc3339("2026-11-16T20:54:00Z");
+    let run = yulius_harness::recount::count_codex_run(&rollout, resumed, None)?
+        .ok_or("the rollout is counted")?;
+    assert_eq!(run.usage().output.unwrap_or(0), 0, "{:?}", run.usage());
+    assert_eq!(run.usage().input.unwrap_or(0), 0, "{:?}", run.usage());
+    let whole = yulius_harness::recount::count_codex_run(&rollout, None, None)?
+        .ok_or("the rollout is counted")?;
+    assert_eq!(whole.usage().output, Some(30));
+    // Its `session_meta` names the Codex CLI, which is no Claude Code version (SPEC-461).
+    assert_eq!(whole.cli_version(), None);
+    Ok(())
+}
+
+/// SPEC-503 CDX-004: the text a blocking Stop hook makes Codex go on with is a user-role message
+/// Codex writes itself (`<hook_prompt …>`, provenance `harness`): not a prompt a person typed.
+/// Yulius's own Stop gate blocks that way, so reading it as a prompt would start a turn of its own.
+#[test]
+fn a_stop_hooks_continuation_is_not_a_typed_prompt() {
+    let all_lines = observe_all(CODEX_REAL_STOP_BLOCK, codex::observe_line);
+    assert!(
+        CODEX_REAL_STOP_BLOCK.contains("<hook_prompt"),
+        "the fixture holds the hook's continuation"
+    );
+    let prompts = flat(&all_lines)
+        .iter()
+        .filter(|o| matches!(o, Observed::UserTurn { .. }))
+        .count();
+    assert_eq!(prompts, 1, "only Say hi was typed");
+}
+
+/// SPEC-503 CDX-004: Codex counts both cached and newly cached tokens inside `input_tokens`
+/// (`codex-api` `sse/responses.rs`: 100 = 40 cached + 60 written); each is counted once.
+#[test]
+fn codex_cache_writes_are_counted_once() {
+    let line = r#"{"timestamp":"2026-11-16T20:53:49.332Z","type":"token_usage_record","payload":{"response_id":"resp_cw","usage":{"input_tokens":100,"cached_input_tokens":40,"cache_write_input_tokens":60,"output_tokens":5,"total_tokens":105}}}"#;
+    let acc = accumulate(line, codex::observe_line);
+    assert_eq!(
+        acc.usage(),
+        TokenUsage {
+            input: Some(0),
+            output: Some(5),
+            cache_read: Some(40),
+            cache_write: Some(60),
+        }
+    );
+}
+
 /// SPEC-503 CDX-004: a Codex 0.167 rollout gives its session, typed turns, their ends, the model,
 /// each response's usage once and the account's rate limits.
 #[test]
@@ -479,7 +537,7 @@ fn codex_rollout_turns_usage_and_rate_limits() {
             session_id: CODEX_SESSION_ID.into(),
             cwd: Some("/work/demo".into()),
             model: None,
-            version: Some("0.167.0".into()),
+            version: None,
         })
     );
     let prompts: Vec<Option<Timestamp>> = all

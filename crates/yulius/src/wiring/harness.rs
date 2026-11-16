@@ -327,6 +327,10 @@ impl HarnessPort for HarnessAdapter {
             let mut first = String::new();
             let mut reader = std::io::BufReader::new(std::io::Read::take(file, 4 << 20));
             let _ = std::io::BufRead::read_line(&mut reader, &mut first);
+            // A session that started before the run is an earlier one still written to.
+            if codex::session_started_at(first.trim_end()).is_none_or(|started| started < since) {
+                continue;
+            }
             for observed in codex::observe_line(first.trim_end()) {
                 if let Observed::SessionMeta {
                     session_id,
@@ -394,7 +398,7 @@ impl HarnessPort for HarnessAdapter {
             harness,
             tail: tail::TranscriptTail::open(path, tail::DEFAULT_MAX_LINE_BYTES).map_err(io)?,
             since: LinesSince::new(since),
-            // Codex keeps no sub-agent transcripts beside its rollout.
+            // Codex keeps no sub-agent transcripts beside its rollout: for one, the tails find none.
             subagents: SubagentTails::new(path, since),
             acc: UsageAccumulator::new(),
             limits: WorkflowLimits::default(),
@@ -1708,8 +1712,8 @@ mod tests {
     }
 
     /// SPEC-503 CDX-003: without a hook, a Codex run's session is the first rollout of its
-    /// worktree since it started, never a later one (a `codex` the agent ran there), nor one of
-    /// another worktree.
+    /// worktree started since the run began, never a later one (a `codex` the agent ran there),
+    /// one of another worktree, or an older session of the worktree still being written.
     #[test]
     fn a_codex_session_is_the_first_rollout_of_the_worktree()
     -> Result<(), Box<dyn std::error::Error>> {
@@ -1717,44 +1721,57 @@ mod tests {
         let sessions = dir.path().join("sessions");
         let day = sessions.join("2026/11/09");
         std::fs::create_dir_all(&day)?;
-        let meta = |id: &str, cwd: &str| {
+        let since = SystemTime::now() - Duration::from_secs(60);
+        let since_ts = Timestamp(i64::try_from(
+            since.duration_since(UNIX_EPOCH)?.as_millis(),
+        )?);
+        // A session's `session_meta` says when it started (`payload.timestamp`).
+        let meta = |id: &str, cwd: &str, started: i64| {
+            let at = yulius_domain::time::format_rfc3339(Timestamp(since_ts.0 + started * 1000));
             format!(
-                "{{\"timestamp\":\"2026-11-09T10:00:00.000Z\",\"type\":\"session_meta\",\"payload\":{{\"id\":\"{id}\",\"cwd\":\"{cwd}\"}}}}\n"
+                "{{\"timestamp\":\"{at}\",\"type\":\"session_meta\",\"payload\":{{\"id\":\"{id}\",\"timestamp\":\"{at}\",\"cwd\":\"{cwd}\"}}}}\n"
             )
         };
-        let since = SystemTime::now() - Duration::from_secs(60);
         // The run's own rollout started first but is written to last (newest modification).
-        for (name, id, cwd, age) in [
+        for (name, id, cwd, started, age) in [
             (
                 "rollout-2026-11-09T10-00-00-first.jsonl",
                 "first",
                 "/w/t1",
+                1,
                 1,
             ),
             (
                 "rollout-2026-11-09T10-00-20-nested.jsonl",
                 "nested",
                 "/w/t1",
+                20,
                 10,
             ),
             (
                 "rollout-2026-11-09T09-59-59-other.jsonl",
                 "other",
                 "/w/t2",
+                1,
                 5,
+            ),
+            // An earlier session of the worktree (its run before), still written to.
+            (
+                "rollout-2026-11-09T09-00-00-earlier.jsonl",
+                "earlier",
+                "/w/t1",
+                -3_600,
+                0,
             ),
         ] {
             let path = day.join(name);
-            std::fs::write(&path, meta(id, cwd))?;
+            std::fs::write(&path, meta(id, cwd, started))?;
             std::fs::File::options()
                 .write(true)
                 .open(&path)?
                 .set_modified(SystemTime::now() - Duration::from_secs(age))?;
         }
         let adapter = HarnessAdapter::new(PathBuf::from("/bin/yulius"), "http://127.0.0.1:1");
-        let since_ts = Timestamp(i64::try_from(
-            since.duration_since(UNIX_EPOCH)?.as_millis(),
-        )?);
         let found = adapter.discover_codex_session(&sessions, Path::new("/w/t1"), since_ts)?;
         assert_eq!(found.map(|(id, _)| id).as_deref(), Some("first"));
         Ok(())

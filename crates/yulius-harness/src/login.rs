@@ -175,11 +175,14 @@ pub fn newer_codex_auth(a: &[u8], b: &[u8]) -> Ordering {
 pub const CODEX_REFRESH_SKEW_MS: i64 = 5 * 60 * 1000;
 
 /// Whether the `auth.json` a Codex run left (`fresh`) replaces the account's stored one: Codex
-/// refreshed the same ChatGPT sign-in (same `tokens.account_id`, a usable credential) at a
-/// `last_refresh` newer than the stored one and at most [`CODEX_REFRESH_SKEW_MS`] after `now`,
-/// of the same signed-in user when the stored `id_token` names one.
-/// The file lies in the agent's sandbox: one it wrote itself (another account, an API key, a date
-/// ahead so that real refreshes never win) is not taken. An API-key account is never replaced.
+/// refreshed the same ChatGPT sign-in (same `tokens.account_id`, a whole sign-in with its three
+/// tokens) at a `last_refresh` newer than the stored one and at most [`CODEX_REFRESH_SKEW_MS`]
+/// after `now`, of the same signed-in user when the stored `id_token` names one.
+/// The file lies in the agent's sandbox: one it wrote for another account or user, an API key, or
+/// a date ahead so that real refreshes never win is not taken. An API-key account is never
+/// replaced. The rule tells sign-ins apart; it cannot authenticate the tokens: an agent that keeps
+/// its home's `account_id` and `id_token` and writes other tokens dated now replaces the stored
+/// sign-in until it is signed in again (ADR-0353, Consequences).
 #[must_use]
 pub fn codex_auth_replaces(fresh: &[u8], stored: &[u8], now: Timestamp) -> bool {
     let account = |auth: &[u8]| -> Option<String> {
@@ -202,7 +205,8 @@ pub fn codex_auth_replaces(fresh: &[u8], stored: &[u8], now: Timestamp) -> bool 
         Some(user) => signed_in_user(fresh).as_deref() == Some(user.as_str()),
         None => true,
     };
-    validate_codex_auth(fresh).is_ok()
+    // A whole ChatGPT sign-in, as an import must be: a file missing a token is no refresh.
+    validate_codex_import(fresh).is_ok()
         && account(stored).is_some()
         && account(fresh) == account(stored)
         && user_matches

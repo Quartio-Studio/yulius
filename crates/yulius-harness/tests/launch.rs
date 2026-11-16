@@ -1440,6 +1440,7 @@ fn codex_resume_argv() -> TestResult {
             "--dangerously-bypass-hook-trust",
             "resume",
             CODEX_SESSION,
+            "--",
             "And the tests",
         ]
     );
@@ -1459,6 +1460,34 @@ fn codex_resume_argv() -> TestResult {
     assert_eq!(
         plan.argv.last().map(String::as_str),
         Some("Continue from where you left off.")
+    );
+    Ok(())
+}
+
+/// SPEC-503 CDX-002: a prompt that is one of Codex's subcommand words (`completion`, `review`,
+/// `login`, …) stays a prompt: Codex 0.169.0 runs the subcommand for a bare `completion`, and
+/// takes the word as a prompt after `--`, in a new session and after `resume <id>` alike.
+#[test]
+fn a_codex_prompt_that_is_a_subcommand_word_stays_a_prompt() -> TestResult {
+    let new = plan_launch(&codex_request(
+        LaunchMode::New {
+            session_id: None,
+            prompt: Some("completion".into()),
+        },
+        true,
+    ))?;
+    assert_eq!(new.argv[new.argv.len() - 2..], ["--", "completion"]);
+    let resumed = plan_launch(&codex_request(
+        LaunchMode::Resume {
+            session_id: CODEX_SESSION.into(),
+            prompt: Some("review".into()),
+            continue_interrupted: false,
+        },
+        true,
+    ))?;
+    assert_eq!(
+        resumed.argv[resumed.argv.len() - 4..],
+        ["resume", CODEX_SESSION, "--", "review"]
     );
     Ok(())
 }

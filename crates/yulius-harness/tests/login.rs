@@ -195,7 +195,7 @@ fn the_newer_codex_auth_wins() {
 
 fn chatgpt(account: &str, refreshed: &str) -> Vec<u8> {
     format!(
-        r#"{{"auth_mode":"chatgpt","tokens":{{"access_token":"a-{refreshed}","refresh_token":"r","account_id":"{account}"}},"last_refresh":"{refreshed}"}}"#
+        r#"{{"auth_mode":"chatgpt","tokens":{{"id_token":"h.e30.s","access_token":"a-{refreshed}","refresh_token":"r","account_id":"{account}"}},"last_refresh":"{refreshed}"}}"#
     )
     .into_bytes()
 }
@@ -249,6 +249,19 @@ fn only_a_genuine_refresh_replaces_the_stored_codex_credential() {
         now
     ));
     assert!(!codex_auth_replaces(b"{}", &stored, now));
+    // A refresh is a whole sign-in: a file of the same account and a fresh date but without one
+    // of its tokens is no refresh Codex wrote, and taking it would lose the sign-in.
+    for missing in ["id_token", "access_token", "refresh_token"] {
+        let mut file: serde_json::Value =
+            serde_json::from_slice(&chatgpt("acc-1", "2026-11-09T11:59:00Z")).unwrap_or_default();
+        if let Some(tokens) = file["tokens"].as_object_mut() {
+            tokens.remove(missing);
+        }
+        assert!(
+            !codex_auth_replaces(file.to_string().as_bytes(), &stored, now),
+            "without {missing}"
+        );
+    }
 }
 
 /// A ChatGPT `auth.json` whose `id_token` names the signed-in user `sub`.
