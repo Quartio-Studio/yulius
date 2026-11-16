@@ -342,8 +342,8 @@ person's decision is read as holding after an approval).
   agent's is (SPEC-486): the harness reports it from the subagent's transcript, with the model it
   binds. A limit of the session's own model family moves or pauses the session as today.
 - **RLM-002** A limit that cut a reviewer off (REV-004: `cut off`) moves the session to a
-  subscription that can run the reviewer's model, at once when the session's thread is idle and
-  else at its next turn's end, also when the limit binds another model family than the
+  subscription that can run the reviewer's model, at once when the session's thread is idle (the
+  turn its failed task notification wakes ends at once) and else at its next turn's end, also when the limit binds another model family than the
   session's. The process that continues the session is told to resume that reviewer by its id
   with `SendMessage`, and not to start a new one. With no such subscription, the agent is told
   that the round can run on Opus 5.5 (REV-007).
@@ -1491,8 +1491,8 @@ Both are checked on current `dev` first and fixed test-first if they still hold.
   that binds the session's model goes through `limit_met`, as any limit.
 - RLM-002: `App::reviewer_cut_off` keeps an open round's cut-off reviewer on the run
   (`cut_off_reviewer`); a limit of another family than the session's moves the session
-  (`move_for_reviewer` when idle, else the Stop hook at the turn's end, after reading the turn's
-  lines while a round is open). `move_to_also_run` picks the subscription; background work or a
+  (the Stop hook at a turn's end, after reading the turn's lines while a round is open; an idle
+  session's turn is the one the reviewer's failed task notification wakes; see review round 2). `move_to_also_run` picks the subscription; background work or a
   queued prompt puts the move off to a later turn's end. The relaunch's prompt
   (`reviewer_resume_prompt`, also after a limit of the session's own model) names the reviewer's
   id and `SendMessage`, and says not to start a new one; `SubagentStart` or `SubagentStop` of that

@@ -26,9 +26,6 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   (front and engine; running containers stop, volumes stay) once no CI job of the sandbox runs,
   at most 10 minutes later, journaled and counted; the tasks told hear that it is no longer
   full. The sandbox's Superagent has `docker_restart` to do it at once.
-
-## 2026-11-16
-
 - A review survives a usage limit (SPEC-493 fix 7, task #472,
   [ADR-0346](decisions/0346-a-cut-off-reviewer-is-resumed-after-its-session-moves.md)): a limit
   in a subagent's transcript is the session's news, recorded for the model it binds; a review
