@@ -6,6 +6,9 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-16
 
+- The instance counts what sandboxes' Docker needed (SPEC-494 slice 7, task #476, ADR-0344): front
+  restarts, connections that gave way and Docker Needs you per week, in
+  `GET /api/analytics/docker` and a Docker card on the Dashboard's Pipeline tab.
 - Network creates that restrict inter-container traffic no longer fail in sandboxes (SPEC-494
   slice 6, task #476, ADR-0344): engines run with `DOCKER_IGNORE_BR_NETFILTER_ERROR=1` instead of
   the host loading `br_netfilter`; ICC is not enforced inside one sandbox's engine.

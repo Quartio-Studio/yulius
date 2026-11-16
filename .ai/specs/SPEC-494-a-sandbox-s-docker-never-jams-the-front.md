@@ -191,8 +191,14 @@ ever reaches it).
 
 ### Measures (slice 7)
 
-- **DFJ-013** Front restarts (by repair, by update, ended), connections that gave way, and Needs
-  you with cause `docker`, per week, are readable on the instance.
+- **DFJ-013** Front restarts (by a repair, a person's ask or an update), connections that gave
+  way at a front's limit, and Needs you naming the sandbox's Docker are counted per week and
+  readable on the instance: `GET /api/analytics/docker?sandbox&from&to` (weeks from their
+  Monday, UTC, and totals) and a Docker card on the Dashboard's Pipeline tab (totals and how many
+  a week). The upkeep keeps the fronts' events (bounded, 4096) until the app takes them every
+  15 s and writes them to the audit log (`sandbox.docker.restarted` with why,
+  `sandbox.docker.gave_way` with how many, about the sandbox's slug); a request naming `docker`
+  is audited `task.needs_you.docker`. A production holder's events count for its sandbox.
 
 ## Plan
 
@@ -212,7 +218,7 @@ ever reaches it).
 - [ ] Slice 4 reviewed independently, findings fixed test-first
 - [x] An adopted front from another build is replaced when quiet
 - [x] br_netfilter decided on a real host and applied
-- [ ] Front restarts, give-ways and Docker Needs you are counted on the instance
+- [x] Front restarts, give-ways and Docker Needs you are counted on the instance
 - [ ] Slices 5 to 7 reviewed independently, findings fixed test-first
 
 ## Acceptance criteria
@@ -495,3 +501,25 @@ operations line is wrapped.
 - The texts say what answers a shared request (a person's answer, the trouble's end, a restart
   through the Superagent), not "Yulius's own repair" in general: an upkeep restart for an
   unanswered engine opens no trouble.
+- Reproduced the failure in this sandbox's engine: `docker network create -o
+  com.docker.network.bridge.enable_icc=false t476b` → "cannot restrict inter-container
+  communication or run without the userland proxy: stat /proc/sys/net/bridge/
+  bridge-nf-call-iptables: no such file or directory: set environment variable
+  DOCKER_IGNORE_BR_NETFILTER_ERROR=1 to ignore".
+- `engine::tests::the_engine_gets_its_own_namespaces_capabilities_and_environment` asserts the
+  variable in the engine's argv: failed before, passes after.
+- Not tested here: a network create on an engine started with the variable (this sandbox's
+  engine is started by the production server, not by this branch; it takes it once its front
+  starts again after the update).
+
+### Slice 7 (measures on the instance)
+
+- `give_ways_are_counted_once` (front_gate): each give-way counted once, an adopted front's
+  history not again; `an_asked_restart_starts_a_new_front_and_ends_the_trouble` takes one
+  `restarted` event, once.
+- `the_instance_counts_docker_restarts_give_ways_and_needs_you_per_week` (Cockpit fixture, an
+  isolation reporting events): restarts 2 (one of the production engine), give-ways 5, Docker
+  Needs you 1, in one week; an unknown sandbox's event is dropped.
+- `a_week_is_named_by_its_monday` (the week's Monday, UTC).
+- `npx e2e run tests/pipeline.e2e.ts`: the Docker card's totals and "a week" figures (failed
+  before: no card; 18 passed after).

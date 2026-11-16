@@ -79,6 +79,11 @@ whether the client half-closed or hung up entirely.
   `DOCKER_IGNORE_BR_NETFILTER_ERROR=1`: networks with `enable_icc=false` are created, without
   enforcing ICC inside the sandbox; the host loads no module.
 
+- **Measures on the instance** (SPEC-494 slice 7). Restarts and give-ways become audit entries
+  about the sandbox, written by the app from the upkeep's bounded event queue; a Needs you naming
+  `docker` is audited too. `GET /api/analytics/docker` and the Pipeline tab's Docker card read
+  them per week, like the merge queue's figures.
+
 ## Alternatives
 
 - **A larger limit**: delays the jam by the same leak's rate; does not end it.

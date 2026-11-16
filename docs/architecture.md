@@ -169,6 +169,8 @@ superseding [0140](decisions/0140-isolated-sandboxes-have-no-container-engine-ag
   card in the sidebar's Needs you group, the notification center holds one entry per episode,
   and their requests end together (a person's answer to one, the trouble's end, or
   `docker_restart`), each task told.
+  Restarts, give-ways and Docker Needs you are audited and counted per week
+  (`/api/analytics/docker`, the Pipeline tab).
 - **Start on demand.** The first connection starts the engine: `yulius sandbox-exec --engine`
   joins `sandboxes/<sandbox>/engine/inside` (the engine's limits stay on `engine`, out of its
   view, ADR-0339) and execs `bwrap`, then `yulius sandbox-host engine`
