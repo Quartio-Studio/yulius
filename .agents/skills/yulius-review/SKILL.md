@@ -43,3 +43,5 @@ After an approval, fix the remaining nits within 20 product lines and merge
 without another round: `delivery_merge` with the approved head counts them
 (tests and documents do not count). More than that, or a file leaving the
 change, needs a new round. A usage limit can cut a reviewer off before its report: resume that same reviewer with SendMessage to its agent id, never start a new one for the same round. A reviewer runs at high effort, never max.
+
+Mutation testing runs once per pull request: on the head you ask the review for, run the project's mutation command and put its summary line in the spec's Evidence; a project without one undoes by hand the few lines its new tests are meant to hold and says what failed. The reviewer reads that result, may undo a single line it doubts, and runs no campaign of its own. Nobody writes a mutation script by hand. A test that cannot fail is still fixed in the same pull request (ADR-0141). Here the command is `scripts/dev mutants`.

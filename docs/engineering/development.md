@@ -296,3 +296,7 @@ steps are skipped). [Git delivery](git.md) defines promotion checks and post-mer
 - Missing linker on macOS: install Xcode Command Line Tools; on Ubuntu install
   `build-essential`, `pkg-config` and `libssl-dev` if a tooling dependency needs them.
 - Deliberately skipped work: record the exact failed command and its prerequisite.
+
+## Mutation testing
+
+Mutation testing runs once per pull request: on the head you ask the review for, run the project's mutation command and put its summary line in the spec's Evidence; a project without one undoes by hand the few lines its new tests are meant to hold and says what failed. The reviewer reads that result, may undo a single line it doubts, and runs no campaign of its own. Nobody writes a mutation script by hand. A test that cannot fail is still fixed in the same pull request (ADR-0141). Here the command is `scripts/dev mutants`.
