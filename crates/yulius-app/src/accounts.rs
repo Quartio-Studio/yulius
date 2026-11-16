@@ -461,7 +461,17 @@ fn validate_typed_email(email: &str) -> AppResult<Option<String>> {
 
 /// The pasted token, trimmed, when it has the shape `claude setup-token` prints (SPEC-502
 /// TKP-003); `Invalid` otherwise, with a message that never holds the input.
-fn pasted_token(token: &str) -> AppResult<Secret> {
+/// A pasted token's working copy, zeroed when it is dropped: also when the request is dropped
+/// while Claude's profile is asked (a client that goes away).
+struct PastedToken(Secret);
+
+impl Drop for PastedToken {
+    fn drop(&mut self) {
+        self.0.0.zeroize();
+    }
+}
+
+fn pasted_token(token: &str) -> AppResult<PastedToken> {
     let token = token.trim();
     let shaped = token.len() <= PASTED_TOKEN_MAX
         && token.strip_prefix(CLAUDE_TOKEN_PREFIX).is_some_and(|body| {
@@ -471,7 +481,7 @@ fn pasted_token(token: &str) -> AppResult<Secret> {
                     .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
         });
     if shaped {
-        Ok(Secret(token.to_owned()))
+        Ok(PastedToken(Secret(token.to_owned())))
     } else {
         Err(AppError::Invalid(PASTED_TOKEN_SHAPE.into()))
     }
@@ -1113,16 +1123,16 @@ impl App {
         ctx: &AuthContext,
         provider: Provider,
         label: String,
-        mut secret: Secret,
+        secret: PastedToken,
     ) -> AppResult<AccountLoginStarted> {
-        let checked = self.check_pasted_token(provider, &secret).await;
+        let checked = self.check_pasted_token(provider, &secret.0).await;
         let sealed = checked.and_then(|email| {
             self.deps
                 .crypto
-                .seal(secret.expose().as_bytes())
+                .seal(secret.0.expose().as_bytes())
                 .map(|sealed| (email, sealed))
         });
-        secret.0.zeroize();
+        drop(secret);
         let (email, sealed) = sealed?;
         let store = &self.deps.store;
         let now = self.now();
@@ -1148,7 +1158,7 @@ impl App {
                 "account.created",
                 Some(account.id.as_str()),
                 Some(&format!(
-                    "provider={} label={label} via=token",
+                    "provider={} label={label:?} via=token",
                     provider.as_str()
                 )),
             )
@@ -1182,15 +1192,15 @@ impl App {
         let token = Zeroizing::new(std::mem::take(&mut req.token));
         self.require_instance_admin(ctx)?;
         let account = self.load_account(id).await?;
-        let mut secret = pasted_token(&token)?;
-        let checked = self.check_pasted_token(account.provider, &secret).await;
+        let secret = pasted_token(&token)?;
+        let checked = self.check_pasted_token(account.provider, &secret.0).await;
         let sealed = checked.and_then(|email| {
             self.deps
                 .crypto
-                .seal(secret.expose().as_bytes())
+                .seal(secret.0.expose().as_bytes())
                 .map(|sealed| (email, sealed))
         });
-        secret.0.zeroize();
+        drop(secret);
         let (email, sealed) = sealed?;
         // Every running sign-in of the account is cancelled and waited out, within one bound: a
         // "Sign in again" replaces a sign-in without waiting, so two may still run.
@@ -2230,7 +2240,9 @@ mod tests {
         let body = "SYNTHETICpaste0123456789-_abcdefXYZ";
         let good = format!("sk-ant-oat01-{body}");
         assert_eq!(
-            pasted_token(&format!("  {good}\n")).ok().map(|s| s.0),
+            pasted_token(&format!("  {good}\n"))
+                .ok()
+                .map(|s| s.0.expose().to_owned()),
             Some(good.clone())
         );
         let longest = format!("sk-ant-oat01-{}", "a".repeat(PASTED_TOKEN_MAX - 13));

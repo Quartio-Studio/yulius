@@ -368,7 +368,7 @@ async fn a_pasted_token_connects_a_subscription_at_once() -> TestResult {
         "no sign-in ran"
     );
     let audit = w.h.store.audit_details(&id, "account.created", 5).await?;
-    assert_eq!(audit, ["provider=anthropic label=laptop Max via=token"]);
+    assert_eq!(audit, ["provider=anthropic label=\"laptop Max\" via=token"]);
     // The UI hears of it at once.
     let published = tokio::time::timeout(Duration::from_secs(10), async {
         loop {
