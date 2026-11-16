@@ -398,6 +398,15 @@ def output(command):
     return subprocess.check_output(command, cwd=ROOT, text=True).strip()
 
 
+def tool_version(executable, name):
+    """A pinned cargo tool's `--version`; one that runs only as a cargo subcommand (cargo-mutants)
+    is asked as `cargo-<x> <x> --version`."""
+    try:
+        return output([str(executable), "--version"])
+    except subprocess.CalledProcessError:
+        return output([str(executable), name.removeprefix("cargo-"), "--version"])
+
+
 def zig_pin_error(machine, pins):
     """Why this Linux host has no pinned zig, named as bootstrap names it, or None when it has one."""
     from zig_install import host_key, host_name
@@ -416,7 +425,7 @@ def doctor():
     tools = tomllib.loads((ROOT / ".config/tools.toml").read_text())["tools"]
     for name, version in tools.items():
         executable = ROOT / ".tools/bin" / name
-        result = output([str(executable), "--version"])
+        result = tool_version(executable, name)
         if version not in result.split():
             raise ValueError(f"{name}: expected {version}, got {result}; rerun bootstrap")
         print(result)
