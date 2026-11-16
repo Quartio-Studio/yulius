@@ -79,7 +79,7 @@ links (#1149).
 - [x] e2e guard passes with the fix and fails without it
 - [x] The task search shows its results in Safari (same rule, found on current dev)
 - [x] Measured in real WebKit and Chromium before and after
-- [ ] Independent review of the Safari fix
+- [x] Independent review of the Safari fix
 - [ ] README links yulius.dev on line 12 and in the diagram (contributor's commit plus line 47)
 - [ ] Independent review of the README links
 
@@ -154,6 +154,10 @@ Part 1, the dialog fix (#1142), on `dev` `c7348d044` with the branch's commits (
   tasks load stays empty until the next key, in code this change does not touch. Reproduced
   (`target/evidence/search-race.mjs`: 0 task rows 2 s after the tasks arrive, 12 after one more
   key) and filed as #1363.
+- Review round 2 (Fable 5.2) approved `3208b5630`. Both guards passed 40 of 40 again, with
+  default workers and with `--workers 1`. In WebKit 26.0 the new geometry check fails with
+  `dev`'s stylesheet (the first row's bottom is 238 against the list's 200) and passes with the
+  branch's.
 - Full e2e suite (`npx e2e run`), before that test fix: 1064 passed, 1 skipped (87 files, 5 min).
 - `python3 scripts/check_repository.py`: "Repository contracts passed".
 - `yulius security-scan`: exit 2, not run: Vidoc refused the instance's key (HTTP 401). Only CSS
