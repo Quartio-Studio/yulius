@@ -484,6 +484,10 @@ impl SandboxIsolation for NamespaceIsolation {
         self.manager.probe_link(sandbox.as_str(), port).await
     }
 
+    async fn restart_docker(&self, sandbox: &SandboxId) -> Result<(), String> {
+        self.manager.restart_docker(sandbox.as_str()).await
+    }
+
     async fn remove_owned_tree(&self, path: &std::path::Path) -> Result<(), String> {
         self.manager.remove_owned_tree(path).await
     }

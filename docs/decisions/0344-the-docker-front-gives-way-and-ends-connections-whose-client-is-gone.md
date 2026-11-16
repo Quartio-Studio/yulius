@@ -46,10 +46,19 @@ whether the client half-closed or hung up entirely.
   the last read or holds its whole limit, and ends once it holds at most seven eighths and
   refused nothing since. The panel's pill and the notification center show it once. Every 15 s
   the tasks of that sandbox with a live session are told once, typed into their session, that
-  Docker is full and nobody needs to be asked; once the trouble has stayed ended for three
-  passes, the tasks told hear that it is no longer full. Nothing is typed where a person must
+  Docker is full and not to ask a person; once the trouble has stayed ended for five passes
+  (75 s), the tasks told hear that it is no longer full. Nothing is typed where a person must
   act or a task is paused; a task told waits for the end until it rests. An adopted front's
   past refusals are no new trouble. What was told lives in memory.
+
+- **Yulius restarts a jammed front itself** (SPEC-494 slice 3). A front full or refusing at
+  every tick for 2 minutes, or whose running engine got no answer to three pings in a row (asked
+  only beside a client: a ping is a client, and would keep an idle engine from stopping), is
+  restarted as the hand repair did: the front stops (its engine with it; running containers
+  stop, volumes and images stay) and a new one starts at once. It waits for no CI job of the
+  sandbox to run, at most 10 minutes after the repair was due. Each restart is journaled and
+  counted. The Superagent's `docker_restart` does it at once when the person asks; task agents
+  do not get it, since it would stop every other task's and CI job's containers.
 
 ## Alternatives
 
@@ -60,6 +69,10 @@ whether the client half-closed or hung up entirely.
   which half-close and then read the output for minutes.
 - **Telling only the tasks whose calls were refused**: the front sees bytes on a socket, not
   which run made a call; every live task of the sandbox shares the one Docker, so all are told.
+- **Waiting for a moment with no container running at all**: a sandbox's long-lived dev
+  containers would hold the repair off for good while every Docker call fails.
+- **Letting tasks restart Docker**: seven tasks would restart it under each other's containers;
+  Yulius knows when, and a Superagent acts for its person.
 - **A socket from the front to the server for its events**: the front outlives server restarts
   and would need reconnection; the upkeep already ticks for each sandbox and reads its files.
 

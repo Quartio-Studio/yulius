@@ -602,6 +602,7 @@ fn the_cockpit_asks_before_every_changing_tool() {
         "task_switch",
         "task_model",
         "instance_update",
+        "docker_restart",
         "ci_prioritize",
         "ci_rerun",
         "ci_cancel",

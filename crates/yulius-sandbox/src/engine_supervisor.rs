@@ -244,11 +244,20 @@ impl Supervisor {
     /// Whether the engine runs now, without waiting: a start or a stop in progress (which holds
     /// the engine's lock for up to a minute) counts as running.
     pub fn running_now(&self) -> bool {
+        self.engine_now().0
+    }
+
+    /// Whether the engine runs now, and whether a start or a stop holds it (it answers nothing
+    /// then), without waiting.
+    pub fn engine_now(&self) -> (bool, bool) {
         match self.running.try_lock() {
-            Ok(mut running) => running
-                .as_mut()
-                .is_some_and(|child| matches!(child.try_wait(), Ok(None))),
-            Err(_) => true,
+            Ok(mut running) => (
+                running
+                    .as_mut()
+                    .is_some_and(|child| matches!(child.try_wait(), Ok(None))),
+                false,
+            ),
+            Err(_) => (true, true),
         }
     }
 
@@ -550,8 +559,14 @@ open(stopped, "w").write("stopped")
         let f = Fixture::new()?;
         let supervisor = f.supervisor(f.fake(), Duration::from_secs(300), ok());
         assert!(!supervisor.running_now());
+        assert_eq!(supervisor.engine_now(), (false, false));
         let held = supervisor.running.lock().await;
         assert!(supervisor.running_now());
+        assert_eq!(
+            supervisor.engine_now(),
+            (true, true),
+            "a start in progress is busy"
+        );
         drop(held);
         assert!(!supervisor.running_now());
         Ok(())

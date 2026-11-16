@@ -47,6 +47,8 @@ pub(crate) const PERSON_TOOLS: &[(&str, Action)] = &[
     ("task_model", Action::Work),
     ("instance", Action::View),
     ("instance_update", Action::Work),
+    // A jammed sandbox Docker, restarted at the person's ask (SPEC-494 DFJ-009).
+    ("docker_restart", Action::Work),
     ("ci_runs", Action::View),
     ("ci_run", Action::View),
     ("ci_rerun", Action::Work),
@@ -69,7 +71,7 @@ pub(crate) const PERSON_TOOLS: &[(&str, Action)] = &[
 /// The person's tools the remote MCP does not serve (review of slice 7, F3): updating or
 /// restarting the instance is decided for a superadmin's Superagent (2026-11-13), not for a
 /// long-lived token's agent.
-pub(crate) const SUPERAGENT_ONLY: &[&str] = &["instance_update"];
+pub(crate) const SUPERAGENT_ONLY: &[&str] = &["instance_update", "docker_restart"];
 
 /// The action the person's project tool `name` needs, when it is one.
 pub(crate) fn action(name: &str) -> Option<Action> {
@@ -407,6 +409,12 @@ pub(crate) fn descriptors() -> Vec<ToolDescriptor> {
             &["do"],
         ),
         tool(
+            "docker_restart",
+            "Restart this project's Docker (its front and engine), as Yulius does by itself when the front stays full: running containers stop, volumes and images stay, and the engine starts again at the next Docker call. Use it when the person asks, or when Docker calls of this sandbox keep failing (\"holds all of its connections\", EOF, connection reset) and the person agrees: nobody else needs to be asked.",
+            json!({}),
+            &[],
+        ),
+        tool(
             "ci_runs",
             "The project's Yulius CI: the jobs in force and where they come from, and the latest runs (branch, pull request or merge train, commit, state, jobs).",
             json!({}),
@@ -554,6 +562,7 @@ impl App {
             "subscriptions" => record(&self.capacity_view(ctx).await?),
             // The instance (SPEC-487 INS-001 to INS-003).
             "instance" => self.instance_for_person(ctx).await,
+            "docker_restart" => self.restart_docker_for_person(&sandbox.id).await,
             "instance_update" => {
                 let action = args.get("do").and_then(Value::as_str).unwrap_or_default();
                 let commit = args.get("commit").and_then(Value::as_str);

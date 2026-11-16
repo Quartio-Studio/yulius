@@ -1480,7 +1480,7 @@ resolves to nothing, the run gets the server without that variable or token.
     remote MCP serves with `project`): `task_delivery`, `task_restart`, `task_pause`,
     `task_unpause`, `task_start_now`, `task_edit`, `task_close`, `tasks_reorder`, `tasks_bulk`,
     `task_question_dismiss`, `task_held_prompt`, `task_merge`, `merge_queue`, `subscriptions`,
-    `task_switch`, `task_model`, `instance`, `instance_update`, `ci_runs`, `ci_run`, `ci_rerun`, `ci_cancel`, `ci_prioritize`, `cd_status`, `cd_deploy`, `cd_rollback` and `variables_list`
+    `task_switch`, `task_model`, `instance`, `instance_update`, `docker_restart`, `ci_runs`, `ci_run`, `ci_rerun`, `ci_cancel`, `ci_prioritize`, `cd_status`, `cd_deploy`, `cd_rollback` and `variables_list`
     (`COCKPIT_TOOLS`), acting
     for its owner (SPEC-066); on an uncontained server Claude Code asks the person before every
     tool that is not read-only, on a contained one it bypasses approvals (SPEC-208).
@@ -1548,7 +1548,7 @@ resolves to nothing, the run gets the server without that variable or token.
     409 when there is none (read-only access everywhere), else as `POST …/cockpit` (409 without a
     Claude subscription, 429 while none has capacity). Its terminal is
     `WS /api/shells/{id}/terminal`, written by the caller alone (SPEC-430); it is never in a
-    sandbox's `GET …/shells`. `change_merge` is withheld too, and so is `task_merge` (SPEC-487 MRG-005); `instance_update` is the sandbox Superagent's only (INS-004).
+    sandbox's `GET …/shells`. `change_merge` is withheld too, and so is `task_merge` (SPEC-487 MRG-005); `instance_update` and `docker_restart` (SPEC-494: restart the sandbox's Docker front and engine now; running containers stop, volumes stay; 409 with why on a server without sandbox Docker or without a running holder) are the sandbox Superagent's only (INS-004).
   - `POST /api/superagent/attachments?name` (signed in), raw body → 201 `UploadedFile`: an image
     pasted into (or dropped on) the caller's running Global Superagent (SPEC-433, ADR-0277), stored
     as other attachments (streamed, the upload limit, a free safe name) in its own folder,

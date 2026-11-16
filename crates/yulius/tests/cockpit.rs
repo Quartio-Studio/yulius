@@ -1671,6 +1671,7 @@ async fn a_cockpit_manages_the_project_for_its_owner() -> TestResult {
             "ci_rerun",
             "ci_run",
             "ci_runs",
+            "docker_restart",
             "instance",
             "instance_update",
             "merge_queue",
@@ -7931,5 +7932,58 @@ async fn a_superagents_call_whose_client_went_away_still_ends_with_its_audit() -
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
     assert!(f.h.store.person_pause(&running.id).await?.is_some());
+    Ok(())
+}
+
+/// A sandbox Docker that records the restarts asked of it.
+#[derive(Default)]
+struct RecordingDocker {
+    restarted: std::sync::Mutex<Vec<String>>,
+}
+
+#[async_trait::async_trait]
+impl yulius_app::ports::isolation::SandboxIsolation for RecordingDocker {
+    async fn prepare(
+        &self,
+        _: &yulius_app::ports::isolation::SandboxRef,
+    ) -> yulius_app::error::AppResult<Option<yulius_app::ports::isolation::SandboxJoin>> {
+        Ok(None)
+    }
+
+    fn release(&self, _: &yulius_domain::ids::SandboxId) {}
+
+    async fn restart_docker(&self, sandbox: &yulius_domain::ids::SandboxId) -> Result<(), String> {
+        self.restarted
+            .lock()
+            .map_err(|_| "poisoned".to_owned())?
+            .push(sandbox.as_str().to_owned());
+        Ok(())
+    }
+}
+
+/// SPEC-494 DFJ-009: the Superagent restarts its own sandbox's Docker through `docker_restart`;
+/// a server that runs no sandbox Docker says so.
+#[tokio::test]
+async fn the_superagent_restarts_its_sandboxs_docker_or_hears_why_not() -> TestResult {
+    let f = fixture().await?;
+    cockpit_id(&f, &f.alice).await?;
+    let alice = yulius_domain::ids::UserId::parse("u-alice")?;
+    let token = f.h.app.cockpit_mcp_token(&alice, &sid()).ok_or("token")?;
+    let (refused, is_error) = cockpit_tool(&f, &token, "docker_restart", json!({})).await?;
+    assert!(is_error, "{refused}");
+    assert!(
+        refused.to_string().contains("runs no sandbox Docker"),
+        "{refused}"
+    );
+    let docker = std::sync::Arc::new(RecordingDocker::default());
+    assert!(f.h.app.set_isolation(docker.clone()));
+    let (done, is_error) = cockpit_tool(&f, &token, "docker_restart", json!({})).await?;
+    assert!(!is_error, "{done}");
+    assert_eq!(done["restarted"], true, "{done}");
+    assert_eq!(
+        *docker.restarted.lock().map_err(|_| "poisoned")?,
+        vec![sid().as_str().to_owned()],
+        "its own sandbox"
+    );
     Ok(())
 }
