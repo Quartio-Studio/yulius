@@ -53,8 +53,9 @@ links (#1149).
   containers with a `max-height` and no height (`.menu`, `.modal`, `.agent-requests`, `.lab`,
   `.spot`, `.needs-you-parts`, `.upload-errors`) finds no other child with a `0%` basis.
 - The collapse is WebKit 26.0's (Playwright 1.56.1, Safari 26.0). The WebKit 26.6 of Playwright
-  1.63.0, which this repository's e2e uses, already shows both bodies whole with the old rule,
-  so only browsers between those versions are affected; the fix is the same in all.
+  1.63.0, which this repository's e2e uses, already shows both bodies whole with the old rule.
+  Only these two WebKit versions were measured, nothing older than 26.0; the fix gives the same
+  layout in both and in Chromium.
 - The README links `juliusz.dev` on line 12 (the "Just found Yulius" note) and names it in the
   "From curious to first task" diagram on line 47; no other file of the repository names
   `juliusz.dev` (`grep -rn juliusz.dev`, 2026-11-16). #1149 changed line 12 only.
@@ -100,7 +101,9 @@ links (#1149).
   in Chromium only, where the old rule did not clip, so the guard checks the computed flex basis
   (the rule WebKit needs) besides the shown height. Run with the fix (passes) and with `dev`'s
   rule (fails). The same for the task search (`task-graph.e2e.ts`, "the task search shows its
-  results, also in Safari"): basis `auto` and at least its first result shown.
+  results, also in Safari"): it waits for the tasks, then checks basis `auto` and that the first
+  task row lies wholly inside the list's box. The dialog guard also checks that the body still
+  shrinks (`flex-shrink: 1`, DLG-002). Each guard is run 40 times in a row.
 - Real engines: a Playwright script (kept out of the repository) opens each dialog and the task
   search on the mock in WebKit 26.0 (the `playwright:v1.56.1-noble` image's server) and Chromium with `dev`'s stylesheet and with the branch's, at 1440 × 900 and at a short
   window, and prints shown / content heights.
@@ -140,11 +143,18 @@ Part 1, the dialog fix (#1142), on `dev` `c7348d044` with the branch's commits (
   scrolls, dialog 332 = the window less 48 px), the search 16 → 190 (dialog 284 = its limit),
   Add subscription 32 → 150; Chromium is 224, 224, 190 and 150 before and after; the sign-in dialog
   is 332 tall with a 320 px terminal in both engines, before and after.
-- e2e, the two guards (`npx e2e run tests/task-graph.e2e.ts tests/subscriptions.e2e.ts --grep
-  'also in Safari'`): 2 passed. The search guard failed before its fix (`expected "0%" to be
-  "auto"`); the dialog guard fails with `dev`'s `.modal-body { flex: 1 }` restored (`expected
-  "0%" to be "auto"`, 1 failed) and passes with the fix.
-- Full e2e suite (`npx e2e run`): 1064 passed, 1 skipped (87 files, 5 min).
+- e2e, the two guards (`npx e2e run tests/<file>.e2e.ts --grep 'also in Safari' --repeat-each
+  40`): 40 of 40 passed for each, at a host load average of about 28. The search guard fails with
+  `dev`'s `.spot-list { flex: 1 }` (`expected "0%" to be "auto"`); the dialog guard fails with
+  `dev`'s `.modal-body { flex: 1 }` (`expected "0%" to be "auto"`) and with `flex: none`
+  (`expected "0" to be "1"`).
+- Review round 1 (Fable 5.2) found the first version of the search guard flaky (36 of 120 runs
+  failed): it typed before the tasks loaded, and it compared the row's offset from the dialog
+  with the list's height. Both are fixed as above. It also found that a search typed in while the
+  tasks load stays empty until the next key, in code this change does not touch. Reproduced
+  (`target/evidence/search-race.mjs`: 0 task rows 2 s after the tasks arrive, 12 after one more
+  key) and filed as #1363.
+- Full e2e suite (`npx e2e run`), before that test fix: 1064 passed, 1 skipped (87 files, 5 min).
 - `python3 scripts/check_repository.py`: "Repository contracts passed".
 - `yulius security-scan`: exit 2, not run: Vidoc refused the instance's key (HTTP 401). Only CSS
   and e2e tests changed.
