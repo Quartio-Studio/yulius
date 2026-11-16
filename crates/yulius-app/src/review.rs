@@ -402,6 +402,16 @@ impl App {
             })
     }
 
+    /// Whether `task` has a review round that has not reported (a reviewer runs, or was cut
+    /// off).
+    pub(crate) async fn review_round_open(&self, task: &yulius_domain::ids::TaskId) -> bool {
+        self.deps
+            .store
+            .review_rounds(task, true)
+            .await
+            .is_ok_and(|rounds| rounds.iter().any(|r| r.ended_at.is_none()))
+    }
+
     /// The cut-off reviewer `agent_id` of `task` started again or reported: nothing is left to
     /// tell a relaunch, and no move is due for it (RLM-002).
     fn reviewer_went_on(&self, task: &yulius_domain::ids::TaskId, agent_id: &str) {

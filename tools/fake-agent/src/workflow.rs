@@ -499,10 +499,19 @@ pub(super) fn reviewer_cut_off(
     transcript: Option<&Arc<Mutex<Transcript>>>,
     hooks: Option<&Hooks>,
 ) -> io::Result<()> {
+    // `/reviewer-limit-turn <kind>`: the same inside a turn of the session's thread, which
+    // ends with its Stop hook.
+    let in_turn = line.starts_with("/reviewer-limit-turn ");
     let kind = line
-        .get("/reviewer-limit ".len()..)
+        .split_once(' ')
+        .map(|(_, kind)| kind)
         .unwrap_or_default()
         .trim();
+    if in_turn && let Some(t) = transcript {
+        t.lock()
+            .map_err(|_| io::Error::other("transcript lock"))?
+            .begin(line)?;
+    }
     let Some((path, session)) = transcript.and_then(|t| {
         t.lock()
             .ok()
@@ -532,7 +541,18 @@ pub(super) fn reviewer_cut_off(
     });
     append(&file, &[agent_record(&session, &agent, &message)])?;
     Transcript::open(file, &session)?.credits_out(options.credits_reset_s)?;
-    say(&format!("REVIEWER {agent} CUT OFF"))
+    say(&format!("REVIEWER {agent} CUT OFF"))?;
+    if in_turn {
+        if let Some(hooks) = hooks {
+            hooks.stop()?;
+        }
+        if let Some(t) = transcript {
+            t.lock()
+                .map_err(|_| io::Error::other("transcript lock"))?
+                .close_turn(10, 0)?;
+        }
+    }
+    Ok(())
 }
 
 /// The model the reviewer of `/reviewer-limit` answers on.

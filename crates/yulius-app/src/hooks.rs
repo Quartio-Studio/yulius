@@ -948,6 +948,10 @@ impl App {
         let decision = rotation::decide(&pool, Trigger::Proactive);
         // A reviewer a usage limit cut off moves the session to a subscription that can run
         // its model, at this turn's end, as a switch the pool decides would (SPEC-493 RLM-002).
+        // While a round is open its cut-off may be in this turn's lines: they are read first.
+        if matches!(decision.0, Decision::Stay) && self.review_round_open(&task.id).await {
+            self.await_transcript_read(&task.id).await;
+        }
         if matches!(decision.0, Decision::Stay)
             && self
                 .runtime(&task.id)

@@ -1004,18 +1004,26 @@ mod real {
     /// `SendMessage`, not to start a new one.
     #[test]
     fn a_cut_off_reviewer_moves_the_session_and_is_resumed_there() -> TestResult {
-        a_cut_off_reviewer(true)
+        a_cut_off_reviewer(true, b"/reviewer-limit yulius-reviewer\r")
     }
 
     /// RLM-002 with no subscription that can run Fable: nothing moves, and the session is told
     /// to start the review again, which then runs on Opus 5.5 (REV-007).
     #[test]
     fn a_cut_off_reviewer_nobody_can_run_is_told_to_go_on_on_opus() -> TestResult {
-        a_cut_off_reviewer(false)
+        a_cut_off_reviewer(false, b"/reviewer-limit yulius-reviewer\r")
     }
 
-    /// Both RLM-002 tests: the second subscription runs Fable or does not.
-    fn a_cut_off_reviewer(second_runs_fable: bool) -> TestResult {
+    /// RLM-002: a cut-off read in a turn of the session's thread moves it at that turn's end
+    /// (its Stop hook), not while it works.
+    #[test]
+    fn a_reviewer_cut_off_in_a_turn_moves_the_session_at_its_end() -> TestResult {
+        a_cut_off_reviewer(true, b"/reviewer-limit-turn yulius-reviewer\r")
+    }
+
+    /// The RLM-002 tests: the second subscription runs Fable or does not; `command` cuts the
+    /// reviewer off while the session is idle or inside a turn.
+    fn a_cut_off_reviewer(second_runs_fable: bool, command: &'static [u8]) -> TestResult {
         let fake =
             locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
         let (_dir, data) = temp()?;
@@ -1048,8 +1056,7 @@ mod real {
             ready(&app, &id).await?;
             assert_eq!(run_accounts(&app, &id).await, [Some("a-first".to_owned())]);
             // Sent as the agent works, not typed by a person (whose typing holds Yulius back).
-            app.send_input(&id, b"/reviewer-limit yulius-reviewer\r")
-                .await?;
+            app.send_input(&id, command).await?;
             let cut = wait_for("the cut-off reviewer", Duration::from_secs(30), || async {
                 screen(&app, &id).contains("CUT OFF")
             })
