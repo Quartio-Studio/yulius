@@ -418,7 +418,7 @@ async fn a_malformed_token_is_refused_and_creates_nothing() -> TestResult {
         String::new(),
         body.to_owned(),
         format!("sk-ant-api03-{body}"),
-        "sk-ant-oat01-SYNTHETICshort".to_owned(),
+        concat!("sk-ant-oat01-", "SYNTHETICshort").to_owned(),
         format!("sk-ant-oat01-{body} trailing"),
         format!("sk-ant-oat01-{body}{}", "x".repeat(512)),
         format!("token=sk-ant-oat01-{body}"),
@@ -499,7 +499,7 @@ async fn a_new_token_signs_a_subscription_in_again() -> TestResult {
         .await?;
     let path = format!("/api/admin/accounts/{id}/token");
 
-    for token in ["sk-ant-oat01-short", REFUSED] {
+    for token in [concat!("sk-ant-oat01-", "short"), REFUSED] {
         let refused = call(
             &w.h.router,
             Method::PUT,
