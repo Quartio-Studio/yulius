@@ -7,8 +7,10 @@
 //! (`CARGO_BUILD_JOBS = "{cpus}"`, `PYTEST_XDIST_AUTO_NUM_WORKERS = "{cpus}"`).
 //!
 //! - A CI job gets what its `[[ci.jobs]]` entry declares (`cpus`, `memory_gb`), else an equal share
-//!   of the capacity among its run's jobs; the app starts it only once that budget is free, so CI
-//!   jobs never ask for more than the machine has, whatever the number of lanes.
+//!   of the capacity among its run's jobs; the app starts it only once that budget fits in the
+//!   instance's CI budget beside what CI holds, reserved or measured ([`admit`], SPEC-497), so CI
+//!   jobs never take more than the machine has, whatever the number of lanes or their
+//!   declarations.
 //! - An agent session, terminal or Cockpit gets the agent budget: a third of the capacity by
 //!   default (three of them testing at once fill the sandbox), or what the operator configured.
 //!
