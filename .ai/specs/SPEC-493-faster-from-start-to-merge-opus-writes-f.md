@@ -1632,3 +1632,42 @@ Both are checked on current `dev` first and fixed test-first if they still hold.
   spec's `mutants:` line.
 - Fix 7's round-3 nits are in: RLM-002's requirement and Evidence lines say the turn's end, and
   the doubled 2026-11-16 heading in changes.md is merged.
+- Review round 1 (Opus 5.5, head `af510168e`): request changes. 1 blocker, 2 majors, 3 minors
+  and nits, all in own code. Answered test-first; all five mutations below fail a test.
+  - Blocker: doctor asked `cargo-mutants --version`, which the tool refuses, so every gate
+    failed. Fixed in `7867a8333`: doctor and bootstrap ask a tool that runs only as a cargo
+    subcommand as `cargo-<x> <x> --version` (unittest `test_a_tool_that_runs_only_as_a_cargo_subcommand_is_asked_as_one`).
+  - Major: a shared `CARGO_TARGET_DIR` made parallel copies test each other's builds (the
+    reviewer reproduced wrong "caught" and "missed").
+    - The fix: cargo-mutants now runs without `CARGO_TARGET_DIR`, `CARGO_BUILD_TARGET_DIR` and
+      an outer nextest's `NEXTEST*` variables (`mutants_command`, unit
+      `cargo_mutants_runs_with_a_target_directory_of_its_own`).
+    - The measured run above had neither set: it was started from a shell with no
+      `CARGO_TARGET_DIR`.
+    - The gate itself had shown the outer-nextest case: the fixture inherited
+      `NEXTEST_PROFILE=ci`.
+  - Major: the test filter missed the tests that hold the lines.
+    - The fix: the product's own unit tests always run (`not kind(test)`). The changed tests
+      are every function a hunk of `git diff -W` is in, so a test whose body alone changed is
+      named. The regex is anchored (`(^|::)name$`).
+    - Test: unit `each_mutant_runs_the_tests_the_branch_wrote`.
+  - Minor: the bound had no automated test. The bound is a `Duration` now (`seconds` for
+    tests), and the real-tool test ends a run of slow tests at 3 s with mutants named not
+    reached.
+  - Minor: cargo-mutants' own failure (a baseline that does not pass) read as mutants not
+    reached. Now an exit other than 0, 2 or 3, without the bound, is an error that names its
+    log; the real-tool test has a fixture whose test fails.
+  - Minor: the diff is read with `--no-ext-diff --no-textconv --no-color` and fixed prefixes,
+    and uncommitted Rust changes are warned about.
+  - Nits, all fixed:
+    - the kill comment is right now (cargo-mutants stops its children on SIGTERM), and off Unix
+      the child is killed;
+    - the fixture's doc is corrected;
+    - `--all-features` is passed;
+    - the rule says "on the first head you ask a review for" (and ADR-0347 too);
+    - the long RLM-002 line is rewrapped.
+    - The `tools.toml` pin rode in a docs commit (`d9b3ff15c`); it stays there, being pushed.
+  - Found at the gate: the Feature and Fix workflows' instructions are held to 1,444 bytes with
+    their heading (`workflows::catalog::tests`, #555), with 3 and 1 bytes left. Their short form
+    is taken out again, and they reach the rule through `delivery-pipeline`, which each tells the
+    agent to follow; the rule test holds that.
