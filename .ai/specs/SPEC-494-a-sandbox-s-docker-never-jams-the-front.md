@@ -170,10 +170,14 @@ ever reaches it).
 
 ### Fronts do not run old code for days (slice 5)
 
-- **DFJ-010** The front records the build it runs. At each upkeep tick a front from another
-  build is replaced at its first quiet moment: no connection held and its engine not running (the
-  engine stops by itself once idle, ADR-0151), so nothing is lost. A front that never gets quiet
-  for `STALE_AFTER` (24 h) is logged once a day.
+- **DFJ-010** At each upkeep tick a front that runs another build than the server is replaced
+  at its first quiet moment. Another build: the file the front process runs
+  (`/proc/<pid>/exe`) is not the server's executable (an update replaced it), by device and
+  inode; no record is needed, so fronts started before this change are recognised too. Quiet: its
+  state says it holds no connection and runs no engine (the engine stops by itself once idle,
+  ADR-0151); a front without a state file (from before ADR-0344) is quiet when it has no child
+  process (its engine) and no socket but its listener. Nothing is lost then; a busy one is kept
+  and the journal says so once a day.
 
 ### br_netfilter (slice 6)
 
@@ -203,7 +207,7 @@ ever reaches it).
 - [x] Slice 3 reviewed independently, findings fixed test-first
 - [x] Needs you of one sandbox-level cause show as one card
 - [ ] Slice 4 reviewed independently, findings fixed test-first
-- [ ] An adopted front from another build is replaced when quiet
+- [x] An adopted front from another build is replaced when quiet
 - [ ] br_netfilter decided on a real host and applied
 - [ ] Front restarts, give-ways and Docker Needs you are counted on the instance
 - [ ] Slices 5 to 7 reviewed independently, findings fixed test-first

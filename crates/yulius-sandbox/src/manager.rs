@@ -358,6 +358,8 @@ struct Live {
     repair: crate::front_repair::RepairWatch,
     /// A restart whose new front did not start: counted and journaled once one starts.
     restart_pending: Option<crate::front_repair::Why>,
+    /// When the journal last said that its front runs an earlier build and stays busy.
+    outdated_said: Option<Instant>,
 }
 
 impl Live {
@@ -370,6 +372,7 @@ impl Live {
             front_watch: crate::front_gate::StateWatch::default(),
             repair: crate::front_repair::RepairWatch::default(),
             restart_pending: None,
+            outdated_said: None,
         }
     }
 
@@ -905,6 +908,40 @@ impl Manager {
         if let Some(why) = live.repair.decide(ci_jobs, now) {
             let _ = self.restart_front(sandbox, state, why).await;
         }
+    }
+
+    /// Replaces `sandbox`'s front when it runs another build than this server (it was kept
+    /// across an update) and is quiet: no connection held, no engine running (SPEC-494
+    /// DFJ-010). A busy one is kept, said once a day.
+    async fn replace_outdated_front(&self, sandbox: &str, state: &mut SandboxState) {
+        let Some(live) = state.live.as_mut() else {
+            return;
+        };
+        let Some(front) = live.front.clone() else {
+            return;
+        };
+        if crate::front_repair::runs_another_build(front.pid, &self.config.exe) != Some(true) {
+            return;
+        }
+        let paths = StatePaths::new(self.state_dir(sandbox));
+        let seen = crate::front_gate::read_state(&paths.docker_state(), front.pid);
+        if !crate::front_repair::quiet(seen.as_ref(), front.pid) {
+            if live
+                .outdated_said
+                .is_none_or(|at| at.elapsed() >= crate::front_repair::STALE_SAID_EVERY)
+            {
+                live.outdated_said = Some(Instant::now());
+                tracing::info!(
+                    sandbox,
+                    pid = front.pid,
+                    "the sandbox's Docker front runs an earlier build; it is replaced once it is quiet"
+                );
+            }
+            return;
+        }
+        let _ = self
+            .restart_front(sandbox, state, crate::front_repair::Why::Outdated)
+            .await;
     }
 
     /// Stops `sandbox`'s front (and its engine: running containers stop, volumes stay) and
@@ -1845,6 +1882,7 @@ impl Manager {
                     self.keep_front(&sandbox, &mut state).await;
                     let reading = self.watch_front(&sandbox, &mut state);
                     self.repair_front(&sandbox, &mut state, reading).await;
+                    self.replace_outdated_front(&sandbox, &mut state).await;
                     self.bind_docker_dirs(&sandbox, &mut state).await;
                     let front = state.live.as_ref().map_or(0, Live::front_pid);
                     let runs = tokio::task::spawn_blocking(move || {
@@ -3024,6 +3062,52 @@ while True:
             "{:?}",
             manager.config.health.troubles()
         );
+        assert_eq!(manager.docker_restarts(), 1);
+        Ok(())
+    }
+
+    /// SPEC-494 AC-8 (DFJ-010): a front kept from another build (the fake front's file is not
+    /// the server's executable) is replaced at a tick once it is quiet, and kept while it holds
+    /// a connection.
+    #[tokio::test]
+    async fn an_outdated_front_is_replaced_once_it_is_quiet()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use yulius_contracts::sandbox::DockerFrontState;
+        let data = tempfile::tempdir()?;
+        let manager = adopting(data.path(), Ok(()), false)?;
+        assert_eq!(manager.adopt().await, 1);
+        let first = front_of(&manager).await.ok_or("no front")?;
+        let busy = DockerFrontState {
+            pid: first.pid,
+            held: 2,
+            max: 256,
+            gave_way: 0,
+            refused: 0,
+            hung_up: 0,
+            closed_after_grace: 0,
+            at_limit_since_ms: None,
+            engine_running: false,
+        };
+        let paths = StatePaths::new(manager.state_dir("s1"));
+        write_json(&paths.docker_state(), &busy)?;
+        let replace = || async {
+            let entry = manager.entry("s1");
+            let mut guard = entry.lock().await;
+            manager.replace_outdated_front("s1", &mut guard).await;
+        };
+        replace().await;
+        assert_eq!(
+            front_of(&manager).await.map(|f| f.pid),
+            Some(first.pid),
+            "busy: kept"
+        );
+        write_json(&paths.docker_state(), &DockerFrontState { held: 0, ..busy })?;
+        replace().await;
+        let second = front_of(&manager)
+            .await
+            .ok_or("no front after the replacement")?;
+        kill(second.pid);
+        assert_ne!(second.pid, first.pid, "quiet: replaced");
         assert_eq!(manager.docker_restarts(), 1);
         Ok(())
     }

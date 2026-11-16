@@ -69,6 +69,12 @@ whether the client half-closed or hung up entirely.
   owner's. The agent names the cause: Yulius cannot tell from free text that requests are the
   same.
 
+- **A front from an earlier build is replaced when quiet** (SPEC-494 slice 5). The upkeep compares
+  the file a front process runs (`/proc/<pid>/exe`) with the server's executable; when they
+  differ (an update replaced it) and the front holds no connection and runs no engine (its state,
+  or for a front from before this change no child and no socket but its listener), it is
+  restarted. A busy one is kept and journaled once a day.
+
 ## Alternatives
 
 - **A larger limit**: delays the jam by the same leak's rate; does not end it.
@@ -82,6 +88,8 @@ whether the client half-closed or hung up entirely.
   containers would hold the repair off for good while every Docker call fails.
 - **Recognising a shared problem from the request's words**: wordings differ by task and would
   merge unrelated requests; a named cause is exact, and an unknown one is refused.
+- **Recording the build in the front's record**: fronts started before the change have none,
+  and the incident's front was one of them; the executable's file tells every front apart.
 - **Letting tasks restart Docker**: seven tasks would restart it under each other's containers;
   Yulius knows when, and a Superagent acts for its person.
 - **A socket from the front to the server for its events**: the front outlives server restarts

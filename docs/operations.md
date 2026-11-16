@@ -1102,7 +1102,9 @@ from a sandbox, and no daemon needs to run on the host.
   `restarted the sandbox's Docker front` with why (or `… which started at a later tick`);
   running containers stop, volumes
   and images stay. The sandbox's Superagent restarts it at once with `docker_restart` when its
-  person asks. A front started by an
+  person asks. A front kept across an update (it runs the replaced executable) is replaced at its
+  first quiet moment (no connection, no engine running); a busy one is journaled once a day
+  ("runs an earlier build; it is replaced once it is quiet"). A front started by an
   earlier Yulius keeps its old behavior until it starts again: `kill -TERM` the pid in
   `docker-front.json` and the upkeep starts a new one within a tick (its engine and running
   containers stop; volumes stay).
