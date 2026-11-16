@@ -198,6 +198,8 @@ taken-back control and a stalled pull request.
 - [x] Round 2 minors: an oversized update skipped by its id, the bot card refreshes while starting
 - [x] Independent review round 3 run (request changes: answered by the items below)
 - [x] Round 3: the notifier activates the bot after its seed; the e2e flake, the card's late read and id overflow fixed
+- [x] Independent review round 4 run (request changes: answered by the item below)
+- [x] Round 4: a Save whose request goes away still finishes its switch, so a Remove is never overtaken
 - [ ] Independent review of the fixes approved
 
 The contributor's own plan (all done on their fork): spec, ADR and the channel port; the sealed
@@ -311,6 +313,21 @@ and a two-round independent review.
   request's CI `security` job reports what it gets.
 - The whole gate is Yulius CI's on the pull request head.
 
+### Review round 4 (Opus 5.5, head `28f7a62db`): request changes, answered
+
+- Major 1 (a Save whose request goes away while its bot waits for the seed released the switch
+  lock; a Remove then ran, and the notifier activated the removed bot after it): the locked part of
+  a set (`App::switch_bot`) and of a remove run on their own tasks, which the request awaits, so
+  the switch always finishes under the lock and is audited. New hold point for tests,
+  `ChannelServices::seed_hold` (every seed reads it; the server never writes it).
+  `telegram::a_dropped_save_never_brings_a_removed_bot_back` holds the seed, drops the save's
+  future once the bot is stored, and checks that a remove does not finish while the seed is
+  held, then stops the bot: it failed before ("the remove overtook the save's switch"), passes.
+- Nit 2: a notifier gone before it answered activates the bot from the caller (kept a clone).
+  Nit 3: the card's comment says what bumps the counter. Nit 4: the Evidence above says 6 of 6.
+- After the fixes: clippy `-D warnings` clean; Telegram integration, wiring and app tests
+  `--stress-count 5`: 5/5.
+
 ### Review round 3 (Opus 5.5, head `08eca23a2`): request changes, answered
 
 Round 3 confirmed every round-2 answer. Its findings were a flaky e2e test from #1130 and
@@ -325,8 +342,8 @@ this pull request's own code out of it).
   building the answer).
 - Minor 3 (a refresh read answered after Remove brought "is receiving" back): a render counter
   drops older answers. New e2e "a state read before the bot was removed does not come back after
-  it" (the mock's `telegram.holdRead` answers a read late, as the Claude Code card's does): failed
-  without the fix (1 of 5), passes with it (5/5).
+  it" (the mock's `telegram.holdRead` answers a read late, as the Claude Code card's does): it
+  failed without the fix (round 4's reviewer: 6 of 6 runs), passes with it (5/5).
 - Minor 4 (the `seed_due` early return had no test): the flag is gone. The notifier's task seeds
   and then activates the bot itself, so no event meets an empty memory between the two. With the
   seed removed from the notifier, `a_state_entered_before_the_start_is_not_told` and

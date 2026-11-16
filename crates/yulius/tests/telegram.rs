@@ -168,6 +168,8 @@ async fn bot_api(
 
 struct World {
     h: Harness,
+    /// Holds the notifier's seeds while written ([`ChannelServices::seed_hold`]).
+    seeds: Arc<tokio::sync::RwLock<()>>,
     fake: Arc<FakeTelegram>,
     admin: Creds,
     alice: Creds,
@@ -205,7 +207,7 @@ async fn world_unstarted() -> Result<World, Box<dyn std::error::Error>> {
     )
     .await?;
     let bots = yulius::wiring::telegram::TelegramBots::new(format!("http://{}", served.addr), 1);
-    h.app.set_channel(ChannelServices::new(
+    let services = ChannelServices::new(
         Arc::new(bots),
         ChannelTuning {
             backoff_min: Duration::from_millis(20),
@@ -213,9 +215,12 @@ async fn world_unstarted() -> Result<World, Box<dyn std::error::Error>> {
             window_ms: MINUTE_MS,
             flush_every: Duration::from_millis(50),
         },
-    ));
+    );
+    let seeds = services.seed_hold();
+    h.app.set_channel(services);
     Ok(World {
         h,
+        seeds,
         fake,
         admin,
         alice,
@@ -1234,6 +1239,50 @@ async fn a_start_with_a_saved_bot_tells_only_later_changes() -> TestResult {
     assert!(
         sent[0].starts_with(&format!("Needs you · app\n#{} task t2\n", first.number + 1)),
         "{sent:?}"
+    );
+    Ok(())
+}
+
+/// TGC-002 (review round 4): a Save whose request goes away while its bot waits for the seed
+/// still finishes under the switch lock, so a Remove after it is never overtaken by that bot's
+/// activation (a dropped request let the notifier activate a removed bot).
+#[tokio::test]
+async fn a_dropped_save_never_brings_a_removed_bot_back() -> TestResult {
+    let w = world().await?;
+    let hold = Arc::clone(&w.seeds).write_owned().await;
+    // The bot is saved and its activation waits for the held seed: then the request goes away
+    // (its future is dropped, as hyper drops a handler whose client left).
+    {
+        let save = set_bot(&w, TOKEN_A);
+        tokio::pin!(save);
+        let saved = async {
+            while w.h.store.chat_bot().await.ok().flatten().is_none() {
+                tokio::task::yield_now().await;
+            }
+        };
+        tokio::select! {
+            done = &mut save => return Err(format!("the save ended under a held seed: {:?}", done.map(|r| r.body)).into()),
+            () = saved => {}
+            () = tokio::time::sleep(Duration::from_secs(10)) => return Err("the bot was never saved".into()),
+        }
+    }
+    // A remove meanwhile waits for the switch the save began (it must not overtake it): with the
+    // seed held it does not finish.
+    let remove = api(&w, Method::DELETE, "/api/admin/telegram", None, &w.admin);
+    tokio::pin!(remove);
+    let early = tokio::time::timeout(Duration::from_millis(500), &mut remove).await;
+    assert!(early.is_err(), "the remove overtook the save's switch");
+    drop(hold);
+    let removed = remove.await?;
+    assert_eq!(removed.status, StatusCode::OK, "{}", removed.body);
+    assert_eq!(removed.body["configured"], false, "{}", removed.body);
+    assert_eq!(removed.body["state"], "off", "{}", removed.body);
+    assert!(w.h.store.chat_bot().await?.is_none());
+    assert!(!w.h.app.telegram_polling(), "the removed bot polls again");
+    assert_eq!(
+        audits(&w, "telegram", "telegram.bot_set").await?.len(),
+        1,
+        "the dropped save is audited"
     );
     Ok(())
 }

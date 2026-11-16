@@ -121,6 +121,9 @@ impl App {
                     // it, against what it read (review rounds 2 and 3).
                     biased;
                     Some((bot, done)) = seed_rx.recv() => {
+                        if let Ok(services) = app.channel_services() {
+                            let _hold = services.seeds.read().await;
+                        }
                         app.seed_notices().await;
                         app.activate(Some(bot));
                         let _ = done.send(());
@@ -266,7 +269,8 @@ impl App {
 
     /// Makes `bot` the one in use from what is the case now (TGC-022): the notifier's own task
     /// seeds its memory and then activates the bot, and this returns once it did (a bounded store
-    /// read). Without a notifier the bot is activated here (nothing is told then).
+    /// read). Without a notifier (or one gone meanwhile) the bot is activated here, and nothing is
+    /// told.
     pub(crate) async fn activate_seeded(self: &Arc<Self>, bot: crate::telegram::ActiveBot) {
         let Ok(services) = self.channel_services() else {
             return;
@@ -276,11 +280,11 @@ impl App {
             self.activate(Some(bot));
             return;
         };
-        if let Err(refused) = tx.send((bot, done)).await {
-            self.activate(Some(refused.0.0));
-            return;
+        // Kept for a notifier that is gone before it took or answered the request.
+        let fallback = bot.clone();
+        if tx.send((bot, done)).await.is_err() || seeded.await.is_err() {
+            self.activate(Some(fallback));
         }
-        let _ = seeded.await;
     }
 
     /// Seeds the notifier's memory with what is the case now: every task's reading, its

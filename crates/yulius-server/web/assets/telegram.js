@@ -30,8 +30,9 @@ export function telegramBotCard(ctx) {
   let state = null;
   let statusBox = null;
   let refresh = null;
-  // Each render and save is a generation: a refresh read started before one is dropped (review
-  // round 3: a read answered after Remove brought "is receiving" back).
+  // Each render (also the one after a Save or a Remove) is a generation: a refresh read started
+  // before it is dropped (review round 3: a read answered after Remove brought "is receiving"
+  // back).
   let generation = 0;
 
   function statusText() {

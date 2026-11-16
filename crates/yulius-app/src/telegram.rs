@@ -103,6 +103,8 @@ pub struct ChannelServices {
     /// Serializes set and remove, so the stored and the active bot agree.
     switching: tokio::sync::Mutex<()>,
     pub(crate) notifier: crate::notify::NotifierState,
+    /// Read by every seed; only a test writes it, to hold seeds ([`ChannelServices::seed_hold`]).
+    pub(crate) seeds: Arc<tokio::sync::RwLock<()>>,
 }
 
 impl ChannelServices {
@@ -119,7 +121,15 @@ impl ChannelServices {
             outbox: OnceLock::new(),
             switching: tokio::sync::Mutex::new(()),
             notifier: crate::notify::NotifierState::default(),
+            seeds: Arc::new(tokio::sync::RwLock::new(())),
         }
+    }
+
+    /// For tests: while its write guard is held, no seed of the notifier runs (a hold point, so
+    /// a test can act while a bot's activation waits for its seed). The server never writes it.
+    #[must_use]
+    pub fn seed_hold(&self) -> Arc<tokio::sync::RwLock<()>> {
+        Arc::clone(&self.seeds)
     }
 
     pub(crate) fn active(&self) -> Option<ActiveBot> {
@@ -493,6 +503,27 @@ impl App {
         let sealed = self.deps.crypto.seal(token.expose().as_bytes())?;
         let login = self.login_of(&ctx.user.id).await;
         let now = self.now();
+        // The switch runs on its own task, so a request that goes away (hyper drops its handler)
+        // never leaves it half done: the lock is held until the bot is active and audited, and
+        // a remove after it is never overtaken (review round 4).
+        let app = Arc::clone(self);
+        let bot = ActiveBot { channel, identity };
+        tokio::spawn(async move { app.switch_bot(bot, sealed, login, now).await })
+            .await
+            .map_err(|_| AppError::Internal("the Telegram bot could not be switched".into()))??;
+        self.telegram_bot_view(ctx).await
+    }
+
+    /// Saves `bot` and makes it the one in use, under the switch lock (TGC-001, TGC-002).
+    async fn switch_bot(
+        self: Arc<Self>,
+        bot: ActiveBot,
+        sealed: crate::model::Sealed,
+        login: String,
+        now: yulius_domain::time::Timestamp,
+    ) -> AppResult<()> {
+        let services = self.channel_services()?;
+        let identity = bot.identity.clone();
         let _switching = services.switching.lock().await;
         let earlier = self.deps.store.chat_bot().await?;
         let unlinked = if earlier.is_some_and(|e| e.identity.id == identity.id) {
@@ -509,7 +540,6 @@ impl App {
         let detail = format!("@{} (unlinked {unlinked})", identity.username);
         // A bot that becomes active starts from what is the case now (TGC-022); the same bot set
         // again keeps the memory it has.
-        let bot = ActiveBot { channel, identity };
         if services.active().is_none() {
             self.activate_seeded(bot).await;
         } else {
@@ -526,8 +556,7 @@ impl App {
             )
             .await?;
         tracing::info!("the Telegram channel is on (bot set in settings)");
-        drop(_switching);
-        self.telegram_bot_view(ctx).await
+        Ok(())
     }
 
     /// `DELETE /api/admin/telegram` (instance administrators): stops the channel at once and
@@ -540,14 +569,20 @@ impl App {
         ctx: &AuthContext,
     ) -> AppResult<TelegramBotView> {
         self.require_instance_admin(ctx)?;
-        let services = self.channel_services()?;
         let now = self.now();
-        let switching = services.switching.lock().await;
-        let had = self.deps.store.chat_bot().await?.is_some();
-        self.activate(None);
-        self.deps.store.set_chat_bot(None, now).await?;
-        let unlinked = self.deps.store.clear_chat_links().await?;
-        drop(switching);
+        // On its own task, like a set: a request that goes away still stops the bot and unlinks.
+        let app = Arc::clone(self);
+        let (had, unlinked) = tokio::spawn(async move {
+            let services = app.channel_services()?;
+            let _switching = services.switching.lock().await;
+            let had = app.deps.store.chat_bot().await?.is_some();
+            app.activate(None);
+            app.deps.store.set_chat_bot(None, now).await?;
+            let unlinked = app.deps.store.clear_chat_links().await?;
+            AppResult::Ok((had, unlinked))
+        })
+        .await
+        .map_err(|_| AppError::Internal("the Telegram bot could not be removed".into()))??;
         if !had {
             return self.telegram_bot_view(ctx).await;
         }
