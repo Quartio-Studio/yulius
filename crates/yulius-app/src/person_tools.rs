@@ -410,7 +410,7 @@ pub(crate) fn descriptors() -> Vec<ToolDescriptor> {
         ),
         tool(
             "docker_restart",
-            "Restart this project's Docker (its front and engine), as Yulius does by itself when the front stays full: running containers stop, volumes and images stay, and Docker answers again within seconds. Use it when the person asks, or when Docker calls of this sandbox keep failing (\"holds all of its connections\", EOF, connection reset) and the person agrees: nobody else needs to be asked.",
+            "Restart this project's Docker (its front and engine), as Yulius does by itself when the front stays full: running containers stop, volumes and images stay, and the engine starts again at the next Docker call. Use it when the person asks, or when Docker calls of this sandbox keep failing (\"holds all of its connections\", EOF, connection reset) and the person agrees: nobody else needs to be asked.",
             json!({}),
             &[],
         ),

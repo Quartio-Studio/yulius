@@ -244,11 +244,20 @@ impl Supervisor {
     /// Whether the engine runs now, without waiting: a start or a stop in progress (which holds
     /// the engine's lock for up to a minute) counts as running.
     pub fn running_now(&self) -> bool {
+        self.engine_now().0
+    }
+
+    /// Whether the engine runs now, and whether a start or a stop holds it (it answers nothing
+    /// then), without waiting.
+    pub fn engine_now(&self) -> (bool, bool) {
         match self.running.try_lock() {
-            Ok(mut running) => running
-                .as_mut()
-                .is_some_and(|child| matches!(child.try_wait(), Ok(None))),
-            Err(_) => true,
+            Ok(mut running) => (
+                running
+                    .as_mut()
+                    .is_some_and(|child| matches!(child.try_wait(), Ok(None))),
+                false,
+            ),
+            Err(_) => (true, true),
         }
     }
 

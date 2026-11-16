@@ -52,7 +52,8 @@ whether the client half-closed or hung up entirely.
   past refusals are no new trouble. What was told lives in memory.
 
 - **Yulius restarts a jammed front itself** (SPEC-494 slice 3). A front full or refusing at
-  every tick for 2 minutes, or whose running engine got no answer to three pings in a row, is
+  every tick for 2 minutes, or whose running engine got no answer to three pings in a row (asked
+  only beside a client: a ping is a client, and would keep an idle engine from stopping), is
   restarted as the hand repair did: the front stops (its engine with it; running containers
   stop, volumes and images stay) and a new one starts at once. It waits for no CI job of the
   sandbox to run, at most 10 minutes after the repair was due. Each restart is journaled and

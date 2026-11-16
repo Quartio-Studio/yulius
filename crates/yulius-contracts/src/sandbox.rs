@@ -450,6 +450,9 @@ pub struct DockerFrontState {
     /// Whether its engine runs (engine mode).
     #[serde(default)]
     pub engine_running: bool,
+    /// Whether its engine is starting or stopping now (engine mode): it answers nothing then.
+    #[serde(default)]
+    pub engine_busy: bool,
 }
 
 /// A running holder (`host.json`), written once it is ready.
