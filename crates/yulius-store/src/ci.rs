@@ -9,7 +9,7 @@ use yulius_app::error::{AppError, AppResult};
 use yulius_app::ports::store_ext::CiStore;
 use yulius_domain::ci::{CiRef, GateSource, RunState};
 use yulius_domain::ids::SandboxId;
-use yulius_domain::resources::Need;
+use yulius_domain::resources::{LoadMinute, Need};
 use yulius_domain::time::Timestamp;
 
 use crate::{SqliteStore, bad_column, db, to_u32};
@@ -460,6 +460,76 @@ impl CiStore for SqliteStore {
                         runs: row.get(2)?,
                         run_ms: row.get(3)?,
                         rerun_ms: row.get(4)?,
+                    })
+                })
+                .map_err(db)?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(db)?;
+            Ok(rows)
+        })
+        .await
+    }
+
+    async fn ci_jobs_waiting(&self) -> AppResult<u32> {
+        self.call(|c| {
+            let waiting: i64 = c
+                .query_row(
+                    "SELECT COUNT(*) FROM ci_jobs j JOIN ci_runs r ON r.id = j.run_id \
+                     WHERE r.state = 'running' AND j.state = 'queued'",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(db)?;
+            Ok(u32::try_from(waiting).unwrap_or(u32::MAX))
+        })
+        .await
+    }
+
+    async fn record_ci_load(&self, minute: LoadMinute, forget_before: Timestamp) -> AppResult<()> {
+        self.call(move |c| {
+            c.execute(
+                "INSERT OR REPLACE INTO ci_load (at, busy_permille, held_cpus, measured_cpus, \
+                 waiting_jobs) VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![
+                    minute.at.0,
+                    minute.busy_permille,
+                    minute.held_cpus,
+                    minute.measured_cpus,
+                    minute.waiting_jobs
+                ],
+            )
+            .map_err(db)?;
+            c.execute(
+                "DELETE FROM ci_load WHERE at < ?1",
+                params![forget_before.0],
+            )
+            .map_err(db)?;
+            Ok(())
+        })
+        .await
+    }
+
+    async fn ci_load(
+        &self,
+        from: Option<Timestamp>,
+        to: Option<Timestamp>,
+    ) -> AppResult<Vec<LoadMinute>> {
+        let (from, to) = (from.map_or(i64::MIN, |t| t.0), to.map_or(i64::MAX, |t| t.0));
+        self.call(move |c| {
+            let mut statement = c
+                .prepare(
+                    "SELECT at, busy_permille, held_cpus, measured_cpus, waiting_jobs FROM ci_load \
+                     WHERE at >= ?1 AND at < ?2 ORDER BY at",
+                )
+                .map_err(db)?;
+            let rows = statement
+                .query_map(params![from, to], |row| {
+                    Ok(LoadMinute {
+                        at: Timestamp(row.get(0)?),
+                        busy_permille: row.get(1)?,
+                        held_cpus: row.get(2)?,
+                        measured_cpus: row.get(3)?,
+                        waiting_jobs: row.get(4)?,
                     })
                 })
                 .map_err(db)?

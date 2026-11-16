@@ -873,6 +873,45 @@ impl App {
         Ok(totals)
     }
 
+    /// `GET /api/analytics/ci-load` (SPEC-497): the host's load from CI per hour over `[from,
+    /// to]`, for any signed-in person (the host's figures, no project's).
+    ///
+    /// # Errors
+    /// A malformed or reversed range.
+    pub async fn analytics_ci_load(
+        &self,
+        ctx: &crate::auth::AuthContext,
+        from: Option<&str>,
+        to: Option<&str>,
+    ) -> AppResult<yulius_contracts::api::analytics::CiLoadAnalytics> {
+        use yulius_contracts::api::analytics::{CiLoadAnalytics, CiLoadHour};
+        let (_, from_at, to_at, range) = self.analytics_window(ctx, None, from, to).await?;
+        let minutes = self.deps.store.ci_load(from_at, to_at).await?;
+        let hours = yulius_domain::resources::load_by_hour(&minutes);
+        let tenth = |v: f64| (v * 10.0).round() / 10.0;
+        let busy: Vec<f64> = hours.iter().filter_map(|h| h.busy_percent).collect();
+        #[expect(clippy::cast_precision_loss, reason = "hours in a range")]
+        let busy_percent =
+            (!busy.is_empty()).then(|| tenth(busy.iter().sum::<f64>() / busy.len() as f64));
+        Ok(CiLoadAnalytics {
+            range,
+            wait_job_minutes: hours.iter().map(|h| h.wait_job_minutes).sum(),
+            peak_wait_job_minutes: hours.iter().map(|h| h.wait_job_minutes).max().unwrap_or(0),
+            busy_percent,
+            hours: hours
+                .into_iter()
+                .map(|h| CiLoadHour {
+                    hour: h.hour,
+                    minutes: h.minutes,
+                    wait_job_minutes: h.wait_job_minutes,
+                    busy_percent: h.busy_percent.map(tenth),
+                    held_cpus: tenth(h.held_cpus),
+                    measured_cpus: h.measured_cpus.map(tenth),
+                })
+                .collect(),
+        })
+    }
+
     /// The rounds of `task`'s open pull request, as the delivery view shows them. A failed read
     /// shows none.
     pub(crate) async fn review_round_views(

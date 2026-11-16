@@ -354,6 +354,39 @@ pub struct CiMinutes {
     pub outside_share: Option<f64>,
 }
 
+/// `GET /api/analytics/ci-load`: the host's load from CI per UTC hour (SPEC-497): job-minutes CI
+/// jobs waited to start, the host's CPUs busy, and the CPUs running jobs reserved and measured.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct CiLoadAnalytics {
+    /// The range read.
+    pub range: AnalyticsRange,
+    /// Per hour, oldest first; hours with no reading are left out.
+    pub hours: Vec<CiLoadHour>,
+    /// Job-minutes waited over the range.
+    pub wait_job_minutes: u32,
+    /// The most job-minutes waited in one hour.
+    pub peak_wait_job_minutes: u32,
+    /// The host's CPUs busy, percent, averaged over the hours; `null` without a reading.
+    pub busy_percent: Option<f64>,
+}
+
+/// One hour of [`CiLoadAnalytics`].
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct CiLoadHour {
+    /// `YYYY-MM-DDTHH` (UTC).
+    pub hour: String,
+    /// Minutes read.
+    pub minutes: u32,
+    /// Job-minutes CI jobs waited to start.
+    pub wait_job_minutes: u32,
+    /// The host's CPUs busy, percent; `null` when not read.
+    pub busy_percent: Option<f64>,
+    /// CPUs the running CI jobs reserved, averaged.
+    pub held_cpus: f64,
+    /// CPUs their sandboxes' CI and engine groups used, averaged; `null` when not measured.
+    pub measured_cpus: Option<f64>,
+}
+
 /// One day's [`CiMinutes`].
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct CiMinutesDay {

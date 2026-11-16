@@ -16,3 +16,12 @@ CREATE TABLE IF NOT EXISTS ci_minutes (
     rerun_ms INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (sandbox_id, day, outcome)
 );
+-- One row a minute: the host's CPUs busy (per mille), the CPUs running CI jobs reserved and
+-- measured, and the CI jobs waiting to start (SPEC-497); kept 30 days.
+CREATE TABLE IF NOT EXISTS ci_load (
+    at INTEGER PRIMARY KEY,
+    busy_permille INTEGER,
+    held_cpus INTEGER NOT NULL,
+    measured_cpus INTEGER,
+    waiting_jobs INTEGER NOT NULL
+);

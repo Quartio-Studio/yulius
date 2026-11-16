@@ -342,6 +342,8 @@ pub struct CiState {
     wake: Arc<Notify>,
     started: AtomicBool,
     last_prune: Mutex<i64>,
+    /// The minute of the last reading of the host for CI and its CPU ticks then (SPEC-497).
+    pub(crate) load: Mutex<Option<(i64, Option<(u64, u64)>)>>,
     /// Sandboxes whose runs wait for disk (SPEC-059 CI-301).
     disk_waits: Mutex<HashMap<String, disk_wait::DiskWait>>,
     /// One pass deciding a sandbox's armed merges (and its merge train) at a time (SPEC-084
@@ -1499,8 +1501,10 @@ impl App {
     /// Starts the oldest queued runs of every sandbox, as many as it has free lanes
     /// ([`CiSettings::lanes`]); the instance-wide job slots still bound the machine's load.
     pub async fn ci_dispatch(self: &Arc<Self>) {
-        // A reading of what CI uses at each pass keeps the measuring bases recent (SPEC-497).
+        // A reading of what CI uses at each pass keeps the measuring bases recent, and once a
+        // minute the host's load is kept (SPEC-497).
         let _ = self.ci_measured();
+        self.ci_record_load().await;
         // A merge armed on a run that passed when it was queued happens now (SPEC-011).
         let ended: Vec<SandboxId> = self
             .ci
