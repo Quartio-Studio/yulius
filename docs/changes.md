@@ -6,6 +6,11 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-16
 
+- Two tasks no longer edit the same files unknowingly (SPEC-493 fix 9, task #472,
+  [ADR-0348](decisions/0348-an-overlapping-claim-is-told-to-both-tasks.md)): an overlapping
+  `scope_claim` names the holding task's note, step in progress and pull request, and the holder
+  is told once in its session; both tasks and the list show "overlaps #N" until a claim is
+  released; `task_create` takes `paths` and offers to run the new task after one that holds them.
 - Mutation testing once per pull request (SPEC-493 fix 8, task #472,
   [ADR-0347](decisions/0347-mutation-testing-runs-once-per-pull-request.md)): `scripts/dev
   mutants` runs the pinned cargo-mutants on the Rust lines the branch changed, bounded, naming
