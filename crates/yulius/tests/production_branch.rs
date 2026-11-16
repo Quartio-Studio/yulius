@@ -9,7 +9,7 @@ use yulius_app::model::Secret;
 use yulius_app::ports::github::{GitHubAppConfig, GitHubPort, NewPull};
 use yulius_app::projects::rulesets_for;
 use yulius_domain::delivery::DeliveryProfile;
-use yulius_github::fake::FakeGitHub;
+use yulius_github::fake::{FakeFault, FakeGitHub};
 use yulius_github::{GitHubPermissions, OwnerKind};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -177,6 +177,121 @@ async fn without_the_ruleset_the_agents_token_could_write_production() -> TestRe
         .merge_pull(&agent, "acme", "app", number, "merge", &w.dev)
         .await?;
     assert_ne!(w.main(), Some(w.root.clone()));
+    Ok(())
+}
+
+/// SPEC-495 (task #477, MRG-005): a person's production deploy opens the dev → main promotion
+/// pull request and merges it at once, through the production adapter. GitHub answers that first
+/// merge "405 Base branch was modified" while it computes the new pull request's mergeability;
+/// the merge waits and goes through, so the deploy goes on. A promotion with a real conflict still
+/// stops, saying it conflicts with `main`.
+#[tokio::test]
+async fn a_promotion_merged_at_once_waits_for_github_and_a_conflict_still_stops() -> TestResult {
+    let w = world().await?;
+    let number = w.promotion(&w.admin).await?;
+    w.fake.set_pull_computing("acme", "app", number, 2);
+    let promoted = w
+        .adapter
+        .merge_pull(&w.admin, "acme", "app", number, "merge", &w.dev)
+        .await?;
+    assert_eq!(w.main(), Some(promoted.clone()), "promoted");
+    let merges = format!("/repos/acme/app/pulls/{number}/merge");
+    assert_eq!(w.fake.count("PUT", &merges), 2, "the 405, then the merge");
+
+    let next = w.fake.add_commit("acme", "app", &[&w.dev]);
+    w.fake.set_branch("acme", "app", "dev", &next);
+    let number = w.promotion(&w.admin).await?;
+    w.fake.set_pull_mergeable("acme", "app", number, false);
+    let refused = w
+        .adapter
+        .merge_pull(&w.admin, "acme", "app", number, "merge", &next)
+        .await;
+    let Err(yulius_app::error::AppError::Conflict(message)) = refused else {
+        return Err(format!("{refused:?}").into());
+    };
+    assert!(message.contains("it conflicts with 'main'"), "{message}");
+    assert_eq!(w.main(), Some(promoted), "nothing moved");
+    assert_eq!(
+        w.fake
+            .count("PUT", &format!("/repos/acme/app/pulls/{number}/merge")),
+        1,
+        "a real refusal is not retried"
+    );
+    Ok(())
+}
+
+/// SPEC-495 review round 2: under the production ruleset Yulius gives a new project, GitHub reads
+/// the promotion pull request `blocked` even for the repository admin who may bypass it. The
+/// admin's promotion, opened and merged at once, still goes through GitHub's transient 405.
+#[tokio::test]
+async fn an_admins_promotion_past_the_production_ruleset_goes_through_the_transient_405()
+-> TestResult {
+    let w = world().await?;
+    for ruleset in rulesets_for(&DeliveryProfile::standard()) {
+        w.adapter
+            .create_ruleset(&w.admin, "acme", "app", &ruleset)
+            .await?;
+    }
+    let number = w.promotion(&w.admin).await?;
+    w.fake.set_pull_computing("acme", "app", number, 2);
+    let promoted = w
+        .adapter
+        .merge_pull(&w.admin, "acme", "app", number, "merge", &w.dev)
+        .await?;
+    assert_eq!(w.main(), Some(promoted), "promoted");
+    assert_eq!(
+        w.fake
+            .count("PUT", &format!("/repos/acme/app/pulls/{number}/merge")),
+        2,
+        "the 405, then the merge"
+    );
+    Ok(())
+}
+
+/// SPEC-495 review round 3: under the production ruleset, a transient 405 that never clears ends
+/// the admin's promotion saying GitHub kept refusing, not blaming the rule the admin bypasses;
+/// the agent's merge, which the rule really refuses, ends at its next 405 with the rule's reason.
+#[tokio::test]
+async fn under_the_production_ruleset_each_refusal_names_its_own_reason() -> TestResult {
+    let w = world().await?;
+    for ruleset in rulesets_for(&DeliveryProfile::standard()) {
+        w.adapter
+            .create_ruleset(&w.admin, "acme", "app", &ruleset)
+            .await?;
+    }
+    let agent = w.agent_token().await?;
+    let number = w.promotion(&agent).await?;
+    let merges = format!("/repos/acme/app/pulls/{number}/merge");
+
+    w.fake.set_pull_computing("acme", "app", number, 2);
+    let refused = w
+        .adapter
+        .merge_pull(&agent, "acme", "app", number, "merge", &w.dev)
+        .await;
+    let Err(yulius_app::error::AppError::Conflict(message)) = refused else {
+        return Err(format!("{refused:?}").into());
+    };
+    assert!(message.contains("ruleset blocks it"), "{message}");
+    assert_eq!(
+        w.fake.count("PUT", &merges),
+        2,
+        "retried once, then the rule"
+    );
+
+    w.fake.inject_fault(
+        FakeFault::new("PUT", merges.clone(), 405, 100)
+            .message("Base branch was modified. Review and try the merge again."),
+    );
+    let refused = w
+        .adapter
+        .merge_pull(&w.admin, "acme", "app", number, "merge", &w.dev)
+        .await;
+    let Err(yulius_app::error::AppError::Conflict(message)) = refused else {
+        return Err(format!("{refused:?}").into());
+    };
+    assert!(message.contains("after 4 attempts"), "{message}");
+    assert!(!message.contains("ruleset blocks it"), "{message}");
+    assert_eq!(w.main(), Some(w.root.clone()), "main never moved");
     Ok(())
 }
 

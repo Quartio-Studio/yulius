@@ -268,7 +268,7 @@ fn server_wait(headers: &HeaderMap, now: Timestamp) -> Option<Duration> {
     None
 }
 
-fn backoff(base: Duration, attempt: u32) -> Duration {
+pub(crate) fn backoff(base: Duration, attempt: u32) -> Duration {
     base.saturating_mul(2_u32.saturating_pow(attempt.saturating_sub(1)))
 }
 

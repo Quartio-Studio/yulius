@@ -142,6 +142,31 @@ pub(crate) struct WireRefRepo {
     id: u64,
 }
 
+/// What a single read of a pull request says about whether, and why not, it merges
+/// (SPEC-495): `mergeable` is `null` while GitHub is still computing it.
+#[derive(Debug, Deserialize)]
+pub(crate) struct WireMergeability {
+    pub(crate) state: String,
+    #[serde(default)]
+    pub(crate) merged: Option<bool>,
+    #[serde(default)]
+    pub(crate) merged_at: Option<String>,
+    #[serde(default)]
+    pub(crate) draft: Option<bool>,
+    #[serde(default)]
+    pub(crate) mergeable: Option<bool>,
+    #[serde(default)]
+    pub(crate) mergeable_state: Option<String>,
+    base: WireRef,
+}
+
+impl WireMergeability {
+    /// The base branch's name.
+    pub(crate) fn base(&self) -> &str {
+        &self.base.name
+    }
+}
+
 #[derive(Debug, Deserialize)]
 pub(crate) struct WirePull {
     number: u64,

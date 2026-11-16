@@ -6,6 +6,13 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-16
 
+- A production deploy no longer fails on a promotion pull request GitHub has not finished
+  checking (SPEC-495, task #477,
+  [ADR-0349](decisions/0349-a-merge-waits-out-githubs-unsettled-mergeability.md)): after GitHub's
+  405 "Base branch was modified" a merge reads the pull request until GitHub has computed its
+  mergeability and merges again (at most 4 tries, 12 s of waits); `delivery_merge` and
+  the merge train get the same. A real refusal says which: a conflict, branch protection, behind
+  the base branch, a draft.
 - A sandbox browser that an agent clicked or typed in before the host's browser policy was in
   force keeps viewers' clicks and keys off when the policy appears, until it restarts: a native
   file dialog opened then may still be on its display (SPEC-493 fix 10b, task #472, ADR-0318

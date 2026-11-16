@@ -1271,6 +1271,14 @@ base against the branch policy of `yulius.toml` `[branch_policy]` at the integra
 a violation is refused with the rule in words, also for promotion pull requests
 ([SPEC-069](../.ai/specs/SPEC-069-fix-223-yulius-s-merge-gate-enforces-the.md),
 [decision 0051](decisions/0051-the-merge-gate-enforces-the-branch-policy.md)).
+Every merge Yulius makes (`delivery_merge`, the merge train, the promotion of a production deploy,
+remote file edits) goes through the GitHub adapter's `merge_pull`. GitHub answers a merge of a
+pull request whose mergeability it is still computing (just opened, or its base just moved) with
+405 "Base branch was modified": the adapter then reads the pull request until GitHub has an
+answer and merges again, at most 4 merge requests and 12 s of waits; a real
+refusal ends the merge with its reason (a conflict, branch protection, behind the base, a draft)
+([SPEC-495](../.ai/specs/SPEC-495-a-production-deploy-never-fails-on-a-pro.md),
+[decision 0349](decisions/0349-a-merge-waits-out-githubs-unsettled-mergeability.md)).
 `delivery_merge` first delivers the head the way the end of a clean turn does
 (`try_auto_open_pr`): it pushes the branch and opens the pull request, or pushes new commits to
 it. Work committed after the task's pull request merged (on top of its head, more than clean
