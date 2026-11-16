@@ -61,11 +61,11 @@ message says which.
 
 ## Plan
 
-- [ ] Fake GitHub models a pull request whose mergeability is still computing
-- [ ] A merge retries GitHub's transient 405 after mergeability settles
-- [ ] A real merge refusal names its reason
-- [ ] A promotion over the production adapter merges through a transient 405
-- [ ] ADR-0349, docs and changes entry
+- [x] Fake GitHub models a pull request whose mergeability is still computing
+- [x] A merge retries GitHub's transient 405 after mergeability settles
+- [x] A real merge refusal names its reason
+- [x] A promotion over the production adapter merges through a transient 405
+- [x] ADR-0349, docs and changes entry
 - [ ] Independent review of the change
 
 ## Acceptance criteria
