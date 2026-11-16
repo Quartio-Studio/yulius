@@ -148,6 +148,28 @@ pub trait GitPort: Send + Sync {
     async fn set_identity(&self, worktree: &Path, name: &str, email: &str) -> AppResult<()>;
     /// Diff statistics between two revisions.
     async fn diff_stat(&self, repo: &Path, base: &str, head: &str) -> AppResult<DiffStat>;
+    /// The commits after `reviewed` on the first-parent way from `head`, newest first, when
+    /// every merge on it is a clean merge of `integration` (SPEC-493 APR-001, APR-003); `None`
+    /// when `reviewed` is not an ancestor of the head, a merge resolved a conflict, or this
+    /// adapter cannot tell: the approval then does not carry.
+    async fn follow_up_commits(
+        &self,
+        _worktree: &Path,
+        _reviewed: &str,
+        _head: &str,
+        _integration: &str,
+    ) -> AppResult<Option<Vec<String>>> {
+        Ok(None)
+    }
+    /// The lines `commit` added and removed against its first parent, per file (SPEC-493
+    /// APR-001); `None` when this adapter cannot tell.
+    async fn commit_lines(
+        &self,
+        _repo: &Path,
+        _commit: &str,
+    ) -> AppResult<Option<Vec<yulius_domain::follow_up::FileLines>>> {
+        Ok(None)
+    }
     /// The files `head` changed since its merge base with `base` (SPEC-493 CJP-002); `None`
     /// when that cannot be told (too many, a path that is not UTF-8, an adapter without it):
     /// every job then runs.

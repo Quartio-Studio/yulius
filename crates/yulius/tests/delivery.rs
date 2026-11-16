@@ -93,6 +93,11 @@ struct RealGit {
     ahead_behind_error: std::sync::Mutex<Option<String>>,
     /// While set, the remote's branches cannot be read (`ls-remote` fails, SPEC-139).
     remote_unreadable: std::sync::atomic::AtomicBool,
+    /// While set, a refresh of a clone fails (SPEC-493 fix 6).
+    fetch_fails: std::sync::atomic::AtomicBool,
+    /// Moved right after every refresh of a clone, as an agent racing it would: `(ref, commit)`
+    /// (review round 2 of SPEC-493 fix 6).
+    forged_after_fetch: std::sync::Mutex<Option<(String, String)>>,
 }
 
 /// An injected push failure, as GitHub's `! [remote rejected] … (failed)` (#366).
@@ -155,8 +160,15 @@ impl GitPort for RealGit {
     }
     async fn sync_clone(&self, _url: &str, dest: &Path, _token: &Secret) -> AppResult<()> {
         if dest.join(".git").exists() {
+            if self.fetch_fails.load(std::sync::atomic::Ordering::SeqCst) {
+                return Err(AppError::Conflict("the fetch failed (test)".into()));
+            }
             self.run(dest, &["fetch", "--prune", "--quiet", "origin"])
                 .await?;
+            let forged = self.forged_after_fetch.lock().ok().and_then(|f| f.clone());
+            if let Some((name, commit)) = forged {
+                self.run(dest, &["update-ref", &name, &commit]).await?;
+            }
         } else {
             let origin = self.origin.to_string_lossy().into_owned();
             let target = dest.to_string_lossy().into_owned();
@@ -485,6 +497,39 @@ impl GitPort for RealGit {
         Err(AppError::Upstream("not used".into()))
     }
     /// The branch policy is read from `yulius.toml` at the integration branch (SPEC-069).
+    async fn follow_up_commits(
+        &self,
+        worktree: &Path,
+        reviewed: &str,
+        head: &str,
+        integration: &str,
+    ) -> AppResult<Option<Vec<String>>> {
+        crate::support::confined_git()
+            .follow_up_commits(worktree, reviewed, head, integration)
+            .await
+    }
+
+    async fn commit_lines(
+        &self,
+        repo: &Path,
+        commit: &str,
+    ) -> AppResult<Option<Vec<yulius_domain::follow_up::FileLines>>> {
+        crate::support::confined_git()
+            .commit_lines(repo, commit)
+            .await
+    }
+
+    async fn changed_paths(
+        &self,
+        repo: &Path,
+        base: &str,
+        head: &str,
+    ) -> AppResult<Option<Vec<String>>> {
+        crate::support::confined_git()
+            .changed_paths(repo, base, head)
+            .await
+    }
+
     async fn show_file(&self, repo: &Path, rev: &str, path: &str) -> AppResult<Option<String>> {
         let object = format!("{rev}:{path}");
         if self.run(repo, &["cat-file", "-e", &object]).await.is_err() {
@@ -763,6 +808,8 @@ async fn fixture_with(
         push_failure: std::sync::Mutex::default(),
         ahead_behind_error: std::sync::Mutex::default(),
         remote_unreadable: std::sync::atomic::AtomicBool::default(),
+        fetch_fails: std::sync::atomic::AtomicBool::default(),
+        forged_after_fetch: std::sync::Mutex::default(),
     });
     // Environment runs go through the real process host, as in production (SPEC-219); its
     // sockets live at <data>/runs/env-<uuid>/pty.sock, so the data directory's path is short.
@@ -2089,7 +2136,8 @@ async fn stale_heads_are_refused() -> TestResult {
 /// not after it. A clean merge of the integration branch after the approval keeps it; a merged
 /// side branch nobody reviewed does not, though the merge put that branch into the integration
 /// branch. The same for a merge made on GitHub and found by Yulius afterwards (fix 1d), by the
-/// reconcile loop or by the sandbox's Git page: its merge commit says the base.
+/// reconcile loop or by the sandbox's Git page: its merge commit says the base. A follow-up within
+/// the bound after the approval keeps it too (SPEC-493 APR-001, review round 1 of fix 6).
 #[tokio::test]
 async fn a_merge_commit_merge_judges_the_head_against_the_branch_before_it() -> TestResult {
     #[derive(Debug, Clone, Copy, PartialEq)]
@@ -2101,9 +2149,11 @@ async fn a_merge_commit_merge_judges_the_head_against_the_branch_before_it() -> 
         /// Merged on GitHub, found when the sandbox's Git page is read.
         GitPage,
     }
-    for (side_branch, found) in [false, true].into_iter().flat_map(|side| {
-        [Found::Merged, Found::Reconciled, Found::GitPage].map(move |found| (side, found))
+    for (shape, found) in [0, 1, 2].into_iter().flat_map(|shape| {
+        [Found::Merged, Found::Reconciled, Found::GitPage].map(move |found| (shape, found))
     }) {
+        // 0: a clean merge of the integration branch; 1: a side branch; 2: a small follow-up.
+        let side_branch = shape == 1;
         let on_github = found != Found::Merged;
         let mut profile = DeliveryProfile::studio();
         profile.merge = yulius_domain::delivery::MergeMethod::Merge;
@@ -2119,6 +2169,8 @@ async fn a_merge_commit_merge_judges_the_head_against_the_branch_before_it() -> 
             commit_file(&wt, "side.txt", "unreviewed", "Side work")?;
             git(&wt, &["switch", "--quiet", "feat/1-landing"])?;
             git(&wt, &["merge", "--quiet", "--no-edit", "side"])?;
+        } else if shape == 2 {
+            commit_file(&wt, "nit.txt", "a nit fixed\n", "Nit")?;
         } else {
             // Another task's work reaches the integration branch; the task merges it in.
             let other = f
@@ -2207,7 +2259,7 @@ async fn a_merge_commit_merge_judges_the_head_against_the_branch_before_it() -> 
         assert_eq!(
             record[0].contains("; no recorded review round approved its head"),
             side_branch,
-            "side branch {side_branch}, {found:?}: {record:?}"
+            "shape {shape}, {found:?}: {record:?}"
         );
     }
     Ok(())
@@ -2396,6 +2448,356 @@ async fn two_ci_syncs_of_a_sandbox_queue_a_head_once() -> TestResult {
     second.await??;
     let runs = f.h.store.ci_runs_for_sha(&sandbox, &head).await?;
     assert_eq!(runs.len(), 1, "{runs:?}");
+    Ok(())
+}
+
+/// What `delivery_merge` answers for the reviewed head after `follow` changed the branch: whether
+/// it refused, its text, and the newest armed merge's audit entries. The task's pull request is open with `feature.rs` (30 lines) and its
+/// spec; the head at that point is the reviewed one; the checks are pending (an accepted call
+/// arms the merge).
+async fn deliver_after_follow_up(
+    follow: impl FnOnce(&Fixture, &Path) -> BoxResult<()>,
+) -> BoxResult<(bool, String, String)> {
+    let f = fixture(&DeliveryProfile::standard()).await?;
+    let wt = f
+        .add_task("t1", "Checkout API", "feat/1-checkout", "dev")
+        .await?;
+    let body: String = (1..=30).map(|n| format!("pub fn f{n}() {{}}\n")).collect();
+    commit_file(&wt, "src/feature.rs", &body, "Feature")?;
+    commit_file(&wt, SPEC_PATH, &valid_spec("t1"), "Spec")?;
+    set_steps(&f, "t1", &["done", "done"]).await?;
+    let opened = f
+        .req(Method::POST, "/api/tasks/t1/delivery/pr", None, &f.bob)
+        .await?;
+    assert_eq!(opened.status, StatusCode::OK, "{}", opened.body);
+    let reviewed = git(&wt, &["rev-parse", "HEAD"])?;
+    follow(&f, &wt)?;
+    let head = git(&wt, &["rev-parse", "HEAD"])?;
+    f.h.github.set_checks(&head, ChecksState::Pending);
+    f.h.store
+        .insert_attempt(&AttemptRecord {
+            id: AttemptId::parse("a1")?,
+            task_id: TaskId::parse("t1")?,
+            seq: 1,
+            harness: Harness::ClaudeCode,
+            account_id: None,
+            provider_session_id: None,
+            launch_kind: LaunchKind::New,
+            model: None,
+            state: AttemptState::Live,
+            run_dir: "/tmp/none".into(),
+            token_hash: f.h.app.deps.crypto.sha256_hex(b"tok-agent"),
+            host_token: Sealed(vec![0]),
+            ptyhost_pid: None,
+            child_pid: None,
+            started_at: Timestamp(1),
+            ended_at: None,
+            exit_code: None,
+            exit_reason: None,
+        })
+        .await?;
+    let internal = yulius_server::internal_router(f.h.app.clone())
+        .layer(MockConnectInfo(SocketAddr::from(([127, 0, 0, 1], 1))));
+    let agent = Creds {
+        bearer: Some("tok-agent".into()),
+        ..Creds::default()
+    };
+    let answer = call(
+        &internal,
+        Method::POST,
+        "/mcp",
+        Some(
+            json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {
+            "name": "delivery_merge",
+            "arguments": {"reviewed_head": reviewed, "review_summary": "approve"}}}),
+        ),
+        &agent,
+    )
+    .await?;
+    let refused = answer.body["result"]["isError"] == true;
+    let text = answer.body["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap_or_default()
+        .to_owned();
+    use yulius_app::ports::store::{AuditStore as _, TaskStore as _};
+    let task = f.h.store.task(&TaskId::parse("t1")?).await?.ok_or("t1")?;
+    let audited =
+        f.h.store
+            .audit_details(
+                &format!("shop#{}", task.number),
+                "delivery.agent.merge_armed",
+                5,
+            )
+            .await?
+            .join("\n");
+    Ok((refused, text, audited))
+}
+
+fn lines(n: u32, tag: &str) -> String {
+    (1..=n)
+        .map(|i| format!("pub fn {tag}{i}() {{}}\n"))
+        .collect()
+}
+
+/// SPEC-493 APR-001 to APR-004 (AC-17): an approval carries across a follow-up of at most 20
+/// product lines, counted commit by commit, with tests and documents not counted; more, a file of
+/// the reviewed change reverted out of it, or a conflicted merge, needs a new review. Accepted
+/// calls say what was counted.
+#[tokio::test]
+async fn an_approval_carries_across_a_small_follow_up() -> TestResult {
+    // Accepted: the answer and the armed merge's audit entry each say what was counted.
+    let accepted = |(refused, said, audited): (bool, String, String), counted: &str| {
+        assert!(!refused, "{said}");
+        assert!(said.contains(counted), "the answer: {said}");
+        assert!(audited.contains(counted), "the audit entry: {audited}");
+    };
+    // 20 product lines, and 200 lines of tests and documents.
+    accepted(
+        deliver_after_follow_up(|_, wt| {
+            commit_file(wt, "src/extra.rs", &lines(20, "e"), "Nits")?;
+            commit_file(wt, "tests/it.rs", &lines(150, "t"), "Tests")?;
+            commit_file(wt, "docs/x.md", &"line\n".repeat(50), "Docs")
+        })
+        .await?,
+        "since then 20 product lines in 1 file: src/extra.rs 20",
+    );
+    // 21: refused, with the count.
+    let (refused, said, _) =
+        deliver_after_follow_up(|_, wt| commit_file(wt, "src/extra.rs", &lines(21, "e"), "Nits"))
+            .await?;
+    assert!(refused, "{said}");
+    assert!(
+        said.contains("21 product lines in 1 file: src/extra.rs 21"),
+        "{said}"
+    );
+    // Two commits of 12: 24.
+    let (refused, said, _) = deliver_after_follow_up(|_, wt| {
+        commit_file(wt, "src/a.rs", &lines(12, "a"), "One")?;
+        commit_file(wt, "src/b.rs", &lines(12, "b"), "Two")
+    })
+    .await?;
+    assert!(refused && said.contains("24 product lines"), "{said}");
+    // A Rust file's test module does not count, its code before it does.
+    accepted(
+        deliver_after_follow_up(|_, wt| {
+            let tested = format!(
+                "{}#[cfg(test)]\nmod tests {{\n{}}}\n",
+                lines(30, "f"),
+                lines(40, "t")
+            );
+            commit_file(wt, "src/feature.rs", &tested, "Tests")?;
+            commit_file(wt, "src/extra.rs", &lines(3, "e"), "Nits")
+        })
+        .await?,
+        "since then 3 product lines in 1 file: src/extra.rs 3",
+    );
+    // A `#[cfg(test)]` that opens no test module hides nothing below it (review round 1).
+    let (refused, said, _) = deliver_after_follow_up(|_, wt| {
+        let body = format!("#[cfg(test)]\nmod tests;\n{}", lines(30, "e"));
+        commit_file(wt, "src/extra.rs", &body, "Nits")
+    })
+    .await?;
+    assert!(refused && said.contains("32 product lines"), "{said}");
+    // The clone's settings do not hide lines: coloured diffs, no prefixes, `-diff` for all.
+    let (refused, said, _) = deliver_after_follow_up(|_, wt| {
+        for (key, value) in [("color.diff", "always"), ("diff.noprefix", "true")] {
+            git(wt, &["config", key, value])?;
+        }
+        let common = git(
+            wt,
+            &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+        )?;
+        std::fs::create_dir_all(Path::new(&common).join("info"))?;
+        std::fs::write(Path::new(&common).join("info/attributes"), "* -diff\n")?;
+        commit_file(wt, "src/extra.rs", &lines(21, "e"), "Nits")
+    })
+    .await?;
+    assert!(refused && said.contains("21 product lines"), "{said}");
+    // A line no count can measure (a NUL byte) in product code: refused, naming it.
+    let (refused, said, _) =
+        deliver_after_follow_up(|_, wt| commit_file(wt, "src/blob.bin", "a\0b\n", "Blob")).await?;
+    assert!(
+        refused && said.contains("`src/blob.bin` changed a line no count can measure"),
+        "{said}"
+    );
+    // A file of the reviewed change reverted out of it.
+    let (refused, said, _) = deliver_after_follow_up(|_, wt| {
+        git(wt, &["rm", "-q", "src/feature.rs"])?;
+        git(wt, &["commit", "-q", "-m", "Not this after all"])?;
+        Ok(())
+    })
+    .await?;
+    assert!(
+        refused && said.contains("`src/feature.rs` of the reviewed change left"),
+        "{said}"
+    );
+    // A clean merge of the integration branch and 5 lines: accepted.
+    accepted(
+        deliver_after_follow_up(|f, wt| {
+            advance_base(f, "dev", "other.txt", "other\n")?;
+            git(wt, &["fetch", "-q", "origin"])?;
+            git(wt, &["merge", "-q", "--no-edit", "origin/dev"])?;
+            commit_file(wt, "src/extra.rs", &lines(5, "e"), "Nits")
+        })
+        .await?,
+        "since then 5 product lines in 1 file: src/extra.rs 5",
+    );
+    // A merge that resolved a conflict: refused.
+    let (refused, said, _) = deliver_after_follow_up(|f, wt| {
+        advance_base(f, "dev", "src/feature.rs", "pub fn other() {}\n")?;
+        git(wt, &["fetch", "-q", "origin"])?;
+        let _ = git(wt, &["merge", "-q", "--no-edit", "origin/dev"]);
+        std::fs::write(wt.join("src/feature.rs"), lines(30, "f"))?;
+        git(wt, &["add", "-A"])?;
+        git(wt, &["commit", "-q", "--no-edit"])?;
+        Ok(())
+    })
+    .await?;
+    assert!(refused && said.contains("resolved a conflict"), "{said}");
+    // A clean merge of the integration branch that changed more than Git's merge: refused.
+    let (refused, said, _) = deliver_after_follow_up(|f, wt| {
+        advance_base(f, "dev", "other.txt", "other\n")?;
+        git(wt, &["fetch", "-q", "origin"])?;
+        git(wt, &["merge", "-q", "--no-commit", "origin/dev"])?;
+        std::fs::write(wt.join("src/extra.rs"), lines(30, "e"))?;
+        git(wt, &["add", "src/extra.rs"])?;
+        git(wt, &["commit", "-q", "--no-edit"])?;
+        Ok(())
+    })
+    .await?;
+    assert!(refused && said.contains("resolved a conflict"), "{said}");
+    // A merge of a branch other than the integration branch: its lines are not walked past,
+    // also when a tag or a local branch named `origin/dev` points at it (review round 1).
+    for shadow in [None, Some("tag"), Some("branch")] {
+        let (refused, said, _) = deliver_after_follow_up(|_, wt| {
+            git(wt, &["checkout", "-q", "-b", "side"])?;
+            commit_file(wt, "src/side.rs", &lines(30, "s"), "Side")?;
+            git(wt, &["checkout", "-q", "-"])?;
+            match shadow {
+                Some("tag") => git(wt, &["tag", "origin/dev", "side"]).map(drop)?,
+                Some(_) => git(wt, &["branch", "origin/dev", "side"]).map(drop)?,
+                None => {}
+            }
+            git(wt, &["merge", "-q", "--no-ff", "--no-edit", "side"])?;
+            Ok(())
+        })
+        .await?;
+        assert!(
+            refused && said.contains("merged something other"),
+            "{shadow:?}: {said}"
+        );
+    }
+    // The integration branch's `[review] not_product` moves a path out of the count.
+    accepted(
+        deliver_after_follow_up(|f, wt| {
+            advance_base(
+                f,
+                "dev",
+                "yulius.toml",
+                "[review]\nnot_product = [\"src/gen/\"]\n",
+            )?;
+            commit_file(wt, "src/gen/x.rs", &lines(25, "g"), "Generated")?;
+            commit_file(wt, "src/extra.rs", &lines(2, "e"), "Nits")
+        })
+        .await?,
+        "since then 2 product lines in 1 file: src/extra.rs 2",
+    );
+    // Without a fresh fetch of the integration branch nothing is counted: refused.
+    let (refused, said, _) = deliver_after_follow_up(|f, wt| {
+        commit_file(wt, "src/extra.rs", &lines(2, "e"), "Nits")?;
+        f.git
+            .fetch_fails
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        Ok(())
+    })
+    .await?;
+    assert!(
+        refused && said.contains("could not be refreshed to read the integration branch"),
+        "{said}"
+    );
+    // Nor when origin cannot say where its integration branch is.
+    let (refused, said, _) = deliver_after_follow_up(|f, wt| {
+        commit_file(wt, "src/extra.rs", &lines(2, "e"), "Nits")?;
+        std::fs::rename(&f.origin, f.origin.with_extension("away"))?;
+        Ok(())
+    })
+    .await?;
+    assert!(
+        refused && said.contains("the integration branch `dev` cannot be read"),
+        "{said}"
+    );
+    // A remote-tracking ref moved right after the fetch (an agent racing it) passes nothing off
+    // as the integration branch: the commit origin names is the one compared.
+    let (refused, said, _) = deliver_after_follow_up(|f, wt| {
+        git(wt, &["checkout", "-q", "-b", "side"])?;
+        commit_file(wt, "src/side.rs", &lines(30, "s"), "Side")?;
+        let side = git(wt, &["rev-parse", "HEAD"])?;
+        git(wt, &["checkout", "-q", "-"])?;
+        git(wt, &["merge", "-q", "--no-ff", "--no-edit", "side"])?;
+        if let Ok(mut forged) = f.git.forged_after_fetch.lock() {
+            *forged = Some(("refs/remotes/origin/dev".to_owned(), side));
+        }
+        Ok(())
+    })
+    .await?;
+    assert!(refused && said.contains("merged something other"), "{said}");
+    // A fixture that product code now builds in by its path counts, and the line that does it
+    // refuses (review round 4).
+    let (refused, said, _) = deliver_after_follow_up(|_, wt| {
+        commit_file(wt, "src/fixtures/evil.rs", &lines(30, "x"), "Fixture")?;
+        commit_file(
+            wt,
+            "src/extra.rs",
+            "#[path = \"fixtures/evil.rs\"]\nmod evil;\n",
+            "Use it",
+        )
+    })
+    .await?;
+    assert!(
+        refused && said.contains("`src/extra.rs` adds a line that compiles a file in"),
+        "{said}"
+    );
+    // A test file a new import names counts as product code.
+    let (refused, said, _) = deliver_after_follow_up(|_, wt| {
+        commit_file(
+            wt,
+            "web/__tests__/helper.js",
+            &"export const x = 1;\n".repeat(25),
+            "Helper",
+        )?;
+        commit_file(
+            wt,
+            "web/app.js",
+            "import { x } from './__tests__/helper';\n",
+            "Use it",
+        )
+    })
+    .await?;
+    assert!(refused && said.contains("26 product lines"), "{said}");
+    // A new line that loads code makes the test files changed beside it count (round 5).
+    let (refused, said, _) = deliver_after_follow_up(|_, wt| {
+        commit_file(wt, "tests/evil.py", &"x = 1\n".repeat(30), "Helper")?;
+        commit_file(wt, "app/run.py", "from tests.evil import run\n", "Use it")
+    })
+    .await?;
+    assert!(refused && said.contains("31 product lines"), "{said}");
+    // A test module faked in a comment hides nothing (review round 2).
+    let (refused, said, _) = deliver_after_follow_up(|_, wt| {
+        let body = format!("/*\n#[cfg(test)]\nmod t {{\n*/\n{}", lines(30, "e"));
+        commit_file(wt, "src/extra.rs", &body, "Nits")
+    })
+    .await?;
+    assert!(refused && said.contains("34 product lines"), "{said}");
+    // A `[review]` table that does not parse refuses, naming it.
+    let (refused, said, _) = deliver_after_follow_up(|f, wt| {
+        advance_base(f, "dev", "yulius.toml", "[review]\nproducts = [\"src/\"]\n")?;
+        commit_file(wt, "src/extra.rs", &lines(2, "e"), "Nits")
+    })
+    .await?;
+    assert!(
+        refused && said.contains("`[review]` of yulius.toml"),
+        "{said}"
+    );
     Ok(())
 }
 
@@ -3216,7 +3618,7 @@ async fn a_spec_number_is_never_one_another_task_reserved() -> TestResult {
 
 /// SPEC-083 REV-001 (33 of 57 merges spent a review round on dev merges or renumbering,
 /// F 2026-10-13): the review of a head carries over Git's own merges of the integration branch
-/// into it; new work after it needs a new review.
+/// into it; new work after it past 20 product lines (SPEC-493 APR-001) needs a new review.
 #[tokio::test]
 async fn a_review_carries_over_clean_merges_of_the_integration_branch() -> TestResult {
     let t = ArmedTask::new().await?;
@@ -3242,7 +3644,7 @@ async fn a_review_carries_over_clean_merges_of_the_integration_branch() -> TestR
             .as_str()
             .is_some_and(|text| text.contains("review the new head"))
     };
-    commit_file(&t.wt, "landing.txt", "v2", "Landing v2")?;
+    commit_file(&t.wt, "landing.txt", &"v2\n".repeat(21), "Landing v2")?;
     let refused = t.merge_at(&t.head).await?;
     assert_eq!(refused["isError"], true, "{refused}");
     assert!(refused_text(&refused), "new work needs a review: {refused}");

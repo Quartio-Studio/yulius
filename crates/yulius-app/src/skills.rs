@@ -1197,6 +1197,48 @@ mod tests {
         Ok(())
     }
 
+    /// SPEC-493 APR-005 (AC-12): the rule for a follow-up after an approval, stated the same way
+    /// wherever reviews and merges are described.
+    #[test]
+    fn every_place_states_the_follow_up_bound() -> TestResult {
+        const RULE: &str = "after an approval, fix the remaining nits within 20 product lines and \
+            merge without another round: `delivery_merge` with the approved head counts them \
+            (tests and documents do not count). more than that, or a file leaving the change, \
+            needs a new round.";
+        let normal = |text: &str| {
+            text.replace("\\\n", " ")
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+                .to_lowercase()
+        };
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        for rel in [
+            "catalog/skills/yulius/delivery-pipeline/SKILL.md",
+            "catalog/skills/open-mercato/om-code-review/SKILL.md",
+            "catalog/skills/yulius/git-hygiene/SKILL.md",
+            ".apm/skills/yulius-review/SKILL.md",
+            ".apm/skills/yulius-git/SKILL.md",
+            "docs/engineering/workflow.md",
+            "docs/engineering/git.md",
+            "AGENTS.md",
+        ] {
+            let text = normal(&fs::read_to_string(root.join(rel))?);
+            assert!(
+                text.contains(&normal(RULE)),
+                "{rel} does not state the rule"
+            );
+        }
+        let tool = normal(&fs::read_to_string(
+            root.join("crates/yulius-app/src/mcp.rs"),
+        )?);
+        assert!(
+            tool.contains("across at most 20 product lines after it"),
+            "delivery_merge does not say the bound"
+        );
+        Ok(())
+    }
+
     /// Hostile repositories: special files and links leaving the repository are ignored.
     #[test]
     fn hostile_repository_files_are_ignored() -> TestResult {

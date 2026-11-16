@@ -137,20 +137,22 @@ impl App {
         let Ok(Some(sandbox)) = self.deps.store.sandbox(&task.sandbox_id).await else {
             return false;
         };
-        // What the integration branch contains is read from a fresh fetch, not from a
-        // remote-tracking ref a worktree could have moved.
+        // The integration branch is the commit origin names now, fetched; never a ref of the
+        // clone, which the agents can write (review round 2 of SPEC-493 fix 6).
+        let integration = match integration {
+            Some(given) => given.to_owned(),
+            None => match self.integration_head(&sandbox).await {
+                Ok(head) => head,
+                Err(err) => {
+                    tracing::warn!(task = %task.id, error = %err, "the integration branch could not be read before comparing a review");
+                    return false;
+                }
+            },
+        };
         if let Err(err) = self.dlv_refresh_clone(&sandbox).await {
             tracing::warn!(task = %task.id, error = %err, "the clone could not be refreshed before comparing a review");
+            return false;
         }
-        let integration = integration.map_or_else(
-            || {
-                format!(
-                    "origin/{}",
-                    crate::delivery::delivery_profile(&sandbox).integration_branch
-                )
-            },
-            str::to_owned,
-        );
         match self
             .deps
             .git
@@ -164,6 +166,205 @@ impl App {
             }
         }
     }
+}
+
+impl App {
+    /// What the commits after the reviewed one changed (SPEC-493 APR-001 to APR-003): `Ok` with
+    /// the count when the approval carries (at most [`FOLLOW_UP_LINES`] product lines, beside
+    /// clean merges of the integration branch), `Err` with why not: the reviewed commit is not
+    /// on the head's way, a merge after it resolved a conflict, a file of the reviewed change left
+    /// the pull request's change, more product lines, or what Git said cannot be read.
+    ///
+    /// [`FOLLOW_UP_LINES`]: yulius_domain::follow_up::FOLLOW_UP_LINES
+    pub(crate) async fn follow_up_since_review(
+        &self,
+        task: &TaskRecord,
+        worktree: &Path,
+        reviewed: &str,
+        head: &str,
+        integration: Option<&str>,
+    ) -> Result<yulius_domain::follow_up::FollowUp, String> {
+        use yulius_domain::follow_up::{FOLLOW_UP_LINES, FollowUp, ProductRule, test_module_spans};
+        let git = &self.deps.git;
+        let sandbox = self
+            .deps
+            .store
+            .sandbox(&task.sandbox_id)
+            .await
+            .ok()
+            .flatten()
+            .ok_or("the sandbox cannot be read")?;
+        // Counted against the commit origin names now, fetched: a ref of the clone (which the
+        // agents can write, also right after a fetch) could pass its own work off as the
+        // integration branch's (review rounds 1 and 2 of fix 6).
+        let integration = match integration {
+            Some(given) => given.to_owned(),
+            None => self.integration_head(&sandbox).await?,
+        };
+        if let Err(err) = self.dlv_refresh_clone(&sandbox).await {
+            tracing::warn!(task = %task.id, error = %err, "the clone could not be refreshed before counting a follow-up");
+            return Err(format!(
+                "the clone could not be refreshed to read the integration branch: {}",
+                err.public_message()
+            ));
+        }
+        let commits = match git
+            .follow_up_commits(worktree, reviewed, head, &integration)
+            .await
+        {
+            Ok(Some(commits)) => commits,
+            Ok(None) => {
+                return Err(
+                    "the reviewed commit is not on the head's way, or a merge after it resolved a \
+                     conflict or merged something other than the integration branch"
+                        .to_owned(),
+                );
+            }
+            Err(err) => {
+                tracing::warn!(task = %task.id, error = %err, "the commits after a review could not be walked");
+                return Err(format!(
+                    "Git could not walk the commits after the reviewed one: {}",
+                    err.public_message()
+                ));
+            }
+        };
+        // A file of the reviewed change that is no longer in the pull request's change: what was
+        // approved is not what merges (a pull request split anew).
+        let changed = |rev: String| {
+            let integration = integration.clone();
+            async move {
+                git.changed_paths(worktree, &integration, &rev)
+                    .await
+                    .ok()
+                    .flatten()
+            }
+        };
+        let (Some(was), Some(now)) = (
+            changed(reviewed.to_owned()).await,
+            changed(head.to_owned()).await,
+        ) else {
+            return Err("the files of the change cannot be read".to_owned());
+        };
+        let now: std::collections::HashSet<&String> = now.iter().collect();
+        let left: Vec<&String> = was.iter().filter(|file| !now.contains(file)).collect();
+        if !left.is_empty() {
+            let named: Vec<String> = left.iter().take(5).map(|f| format!("`{f}`")).collect();
+            return Err(format!(
+                "{} of the reviewed change left the pull request's change",
+                named.join(", ")
+            ));
+        }
+        let mut lines = Vec::new();
+        for commit in &commits {
+            let files = match git.commit_lines(worktree, commit).await {
+                Ok(Some(files)) => files,
+                Ok(None) => return Err(format!("what {} changed cannot be read", short(commit))),
+                Err(err) => {
+                    return Err(format!(
+                        "what {} changed cannot be read: {}",
+                        short(commit),
+                        err.public_message()
+                    ));
+                }
+            };
+            for mut file in files {
+                if Path::new(&file.path)
+                    .extension()
+                    .is_some_and(|ext| ext == "rs")
+                {
+                    let spans = |rev: String| {
+                        let path = file.path.clone();
+                        async move {
+                            git.show_file(worktree, &rev, &path)
+                                .await
+                                .ok()
+                                .flatten()
+                                .map(|text| test_module_spans(&text))
+                                .unwrap_or_default()
+                        }
+                    };
+                    file.tests_new = spans(commit.clone()).await;
+                    file.tests_old = spans(format!("{commit}^")).await;
+                }
+                lines.push(file);
+            }
+        }
+        // What counts as product code: the integration branch's `[review]`, so a pull request
+        // does not loosen its own count; a table that does not parse refuses (APR-002).
+        let rule = match git.show_file(worktree, &integration, "yulius.toml").await {
+            Ok(Some(text)) => yulius_domain::spec_format::parse_yulius_toml_review(&text)
+                .map_err(|err| format!("`[review]` of yulius.toml on {integration}: {err}"))?,
+            Ok(None) => ProductRule::default(),
+            Err(_) => return Err(format!("yulius.toml on {integration} cannot be read")),
+        };
+        // A line Yulius cannot count (a NUL byte, a very long line) in product code: the count
+        // would not say what changed.
+        if let Some(opaque) = lines.iter().find(|f| f.opaque && rule.counts(&f.path)) {
+            return Err(format!(
+                "`{}` changed a line no count can measure (a NUL byte or a line over {} bytes)",
+                opaque.path,
+                yulius_domain::follow_up::MAX_COUNTED_LINE_BYTES
+            ));
+        }
+        let follow = FollowUp::count(&lines, &rule);
+        // A product line that compiles a file in by its path: no count says what it brings in
+        // (review round 4 of fix 6).
+        if let Some(file) = follow.includes.first() {
+            return Err(format!(
+                "`{file}` adds a line that compiles a file in by its path (`#[path]`, `include!`, \
+                 `include_str!` or `include_bytes!`)"
+            ));
+        }
+        if follow.within_bound() {
+            Ok(follow)
+        } else {
+            Err(format!(
+                "{}, more than the {FOLLOW_UP_LINES} a follow-up may change",
+                follow.describe()
+            ))
+        }
+    }
+}
+
+impl App {
+    /// The commit the integration branch of `sandbox` is at, as its origin says now: GitHub's
+    /// branch, or a playground's own repository on this server; never a ref of the clone
+    /// (review round 2 of SPEC-493 fix 6). Read before the clone is refreshed, so the fetch
+    /// brings its objects.
+    async fn integration_head(
+        &self,
+        sandbox: &crate::model::SandboxRecord,
+    ) -> Result<String, String> {
+        let branch = crate::delivery::delivery_profile(sandbox).integration_branch;
+        let unreadable =
+            |why: String| format!("the integration branch `{branch}` cannot be read: {why}");
+        let head = if sandbox.is_playground() {
+            let origin = self.playground_origin(&sandbox.id);
+            self.deps
+                .git
+                .resolve_commit(&origin, &format!("refs/heads/{branch}"))
+                .await
+        } else {
+            match self.dlv_installation_token(sandbox).await {
+                Ok(token) => {
+                    self.deps
+                        .github
+                        .branch_sha(&token, &sandbox.repo_owner, &sandbox.repo_name, &branch)
+                        .await
+                }
+                Err(err) => Err(err),
+            }
+        };
+        match head {
+            Ok(Some(sha)) => Ok(sha),
+            Ok(None) => Err(unreadable("it does not exist".to_owned())),
+            Err(err) => Err(unreadable(err.public_message())),
+        }
+    }
+}
+
+fn short(sha: &str) -> &str {
+    sha.get(..9).unwrap_or(sha)
 }
 
 #[cfg(test)]
