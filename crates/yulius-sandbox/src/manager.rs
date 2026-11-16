@@ -1010,8 +1010,8 @@ impl Manager {
             self.docker_event(sandbox, "restarted", 1, why.says().to_owned());
             if why == crate::front_repair::Why::Outdated {
                 // Quiet when read: no engine ran; only a Docker call that came between that read
-                // and the new front's `ready` failed at once (refused, or cut once the old front
-                // accepted it) and can be run again (DFJ-010).
+                // and the new front's `ready` failed at once (its socket missing or refused, or
+                // cut once the old front accepted it) and can be run again (DFJ-010).
                 tracing::info!(
                     sandbox,
                     why = why.says(),
@@ -2667,10 +2667,14 @@ while True:
             .arg(&staged)
             .stdin(std::process::Stdio::piped())
             .spawn()?;
-        if let Some(mut stdin) = writer.stdin.take() {
-            stdin.write_all(content.as_bytes())?;
-        }
-        if !writer.wait()?.success() {
+        // The writer is reaped whatever the write did; its error is told after.
+        let written = writer
+            .stdin
+            .take()
+            .map_or(Ok(()), |mut stdin| stdin.write_all(content.as_bytes()));
+        let status = writer.wait()?;
+        written?;
+        if !status.success() {
             return Err(std::io::Error::other(
                 "the staged executable was not written",
             ));
