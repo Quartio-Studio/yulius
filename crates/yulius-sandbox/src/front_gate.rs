@@ -1274,8 +1274,8 @@ mod tests {
     #[test]
     fn log_lines_carry_their_time_in_utc() {
         assert_eq!(utc(0), "1970-01-01T00:00:00Z");
-        // The incident's repair, 2026-11-15 22:08:00 UTC.
         assert_eq!(utc(1_763_244_480_000), "2025-11-15T22:08:00Z");
+        // The incident's repair, 2026-11-15 22:08:00 UTC.
         assert_eq!(utc(1_794_780_480_999), "2026-11-15T22:08:00Z");
         assert_eq!(utc(951_782_400_000), "2000-02-29T00:00:00Z");
     }

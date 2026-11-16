@@ -818,7 +818,11 @@ impl Manager {
             return;
         };
         let grown = live.front_watch.observe(&seen, Instant::now());
-        live.front_watch.report(&seen, sandbox, &self.config.health);
+        // A production holder's front (SPEC-279) serves CD deploys, which fail and say so; its
+        // name is no sandbox the panel knows, so it is journaled only.
+        if production_sandbox(sandbox).is_none() {
+            live.front_watch.report(&seen, sandbox, &self.config.health);
+        }
         for grew in grown {
             tracing::warn!(
                 sandbox,
@@ -2537,6 +2541,84 @@ while True:
             "{mode}: the engine's root and group are back"
         );
         kill(front.pid);
+        Ok(())
+    }
+
+    /// SPEC-494 slice 2 review round 2: a front this server starts counts its refusals as new
+    /// (one adopted after a restart would take them as its baseline).
+    #[tokio::test]
+    async fn a_front_this_server_starts_reports_its_refusals_as_new()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use yulius_contracts::sandbox::DockerFrontState;
+        let data = tempfile::tempdir()?;
+        let manager = adopting(data.path(), Ok(()), false)?;
+        assert_eq!(manager.adopt().await, 1);
+        let front = front_of(&manager).await.ok_or("no front")?;
+        let state = DockerFrontState {
+            pid: front.pid,
+            held: 10,
+            max: 256,
+            gave_way: 0,
+            refused: 2,
+            hung_up: 0,
+            closed_after_grace: 0,
+            at_limit_since_ms: None,
+            engine_running: true,
+        };
+        write_json(
+            &StatePaths::new(manager.state_dir("s1")).docker_state(),
+            &state,
+        )?;
+        {
+            let entry = manager.entry("s1");
+            let mut guard = entry.lock().await;
+            manager.watch_front("s1", &mut guard);
+        }
+        let open = manager.config.health.troubles();
+        kill(front.pid);
+        assert_eq!(open.len(), 1, "{open:?}");
+        assert_eq!(open[0].refused, 2);
+        Ok(())
+    }
+
+    /// SPEC-494 slice 2 review round 2: a production holder's full front is journaled, not a
+    /// trouble under a name no sandbox has.
+    #[test]
+    fn a_production_fronts_state_is_no_panel_trouble() -> Result<(), Box<dyn std::error::Error>> {
+        use yulius_contracts::sandbox::DockerFrontState;
+        let data = tempfile::tempdir()?;
+        let config = config(data.path(), 1);
+        let health = Arc::clone(&config.health);
+        let manager = Manager::new(config);
+        let name = production_holder("s1");
+        let paths = StatePaths::new(manager.state_dir(&name));
+        std::fs::create_dir_all(&paths.dir)?;
+        let mut live = Live::new(live_record(true), Vec::new());
+        live.front_watch.started(77);
+        live.front = Some(DockerFrontRecord {
+            pid: 77,
+            mode: "engine".into(),
+            reason: None,
+            started_at_ms: 0,
+        });
+        let mut state = SandboxState {
+            live: Some(live),
+            ..SandboxState::default()
+        };
+        let full = DockerFrontState {
+            pid: 77,
+            held: 256,
+            max: 256,
+            gave_way: 0,
+            refused: 2,
+            hung_up: 0,
+            closed_after_grace: 0,
+            at_limit_since_ms: Some(1),
+            engine_running: true,
+        };
+        crate::holder::write_json(&paths.docker_state(), &full)?;
+        manager.watch_front(&name, &mut state);
+        assert!(health.troubles().is_empty(), "{:?}", health.troubles());
         Ok(())
     }
 

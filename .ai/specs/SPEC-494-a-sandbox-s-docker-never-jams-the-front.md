@@ -115,12 +115,14 @@ ever reaches it).
 - **DFJ-007** The tasks of the sandbox with a live session are told once per trouble, in their
   session (a pass every 15 s; a session that takes no typed text now is told at a later pass),
   that the sandbox's Docker is full and that they should not ask a person (unless it lasts more
-  than 15 minutes, until slice 3 repairs it); once the trouble has stayed ended for three
-  passes, the tasks told hear that Docker works again. A trouble that ends and begins again
+  than 15 minutes, until slice 3 repairs it); once the trouble has stayed ended for five
+  passes (75 s), the tasks told hear that Docker works again. A trouble that ends and begins again
   before they heard it goes on as one for them. Nothing is typed into a session where a person
   must act (a prompt on screen, an open Needs you), one paused or held by an update; a task told
   keeps waiting for "works again" until it rests. An adopted front's past refusals (after a
-  server restart) are no new trouble; every path that drops a holder ends its trouble. The refusal's message says the same to the
+  server restart) are no new trouble; every path that drops a holder ends its trouble. A
+  production holder's front (SPEC-279, CD deploys) is journaled only: its name is no sandbox of
+  the panel and no task runs there. The refusal's message says the same to the
   calls that hit it. (Slice 3 adds that Yulius repairs it.)
 
 ### Yulius repairs it itself (slice 3)
@@ -309,3 +311,17 @@ a container start in the sandbox failing a parallel e2e job's page loads, is com
   cite no Yulius path and say to raise a Needs you only past 15 minutes, until slice 3.
 - Pre-existing, outside the change: the subscriptions e2e test that fails before midnight
   (issue #1334).
+
+### Slice 2, review round 2 (request changes; every finding own code, all fixed)
+
+- The notice-direction Needs-you check now holds the Needs you open for 3 s of passes after the
+  session's start window (deterministic): red with the Needs-you clause removed ("typed over a
+  Needs you" at the notice), green with it.
+- Kept-until-rest and the four blocking reasons are pure functions with unit tests
+  (`a_told_task_waits_for_the_end_until_it_rests`,
+  `a_prompt_a_needs_you_a_pause_or_an_update_hold_each_block_typing`); the task is read again
+  right before each paste.
+- `a_front_this_server_starts_reports_its_refusals_as_new` (a fake front started by the
+  upkeep): red with `started` removed from `keep_front`, green with it.
+- A production holder's front is journaled only (`a_production_fronts_state_is_no_panel_trouble`).
+- `BACK_AFTER` is 5 passes (75 s, past two upkeep ticks); stale "works again" wording updated.

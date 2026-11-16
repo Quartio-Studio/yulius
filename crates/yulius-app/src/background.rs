@@ -87,7 +87,7 @@ impl App {
             app.start_mcp_watch(outage.started);
             // Tasks hear what happens to their pull request (SPEC-444 PRN-001).
             app.start_pr_watch();
-            // Tasks hear once that their sandbox's Docker is full, and when it works again
+            // Tasks hear once that their sandbox's Docker is full, and when it no longer is
             // (SPEC-494 DFJ-007).
             app.start_docker_watch();
             // Merges armed before the restart stay armed (DLV-205), and one whose checks passed
