@@ -2838,6 +2838,7 @@ impl SandboxIsolation for Measured {
         Some(CiUse {
             cpu_usec: used.1,
             anon_bytes: 0,
+            cpu_pressure: None,
         })
     }
     async fn engine_networks(&self, _: &SandboxId) -> Option<EngineNetworks> {
@@ -2889,8 +2890,8 @@ async fn only_job_state(f: &Fixture, sha: &str) -> BoxResult<Option<RunState>> {
 }
 
 /// SPEC-497 HBA-002, HBA-005: a job that fits beside the running job's reservation still waits
-/// while what CI really uses leaves no room, says so, and starts once the use drops, while the
-/// first job still runs. Before, the declared CPUs alone decided and it started at once.
+/// while what CI really uses, with what the job that just started may still bring, leaves no
+/// room, says so, and starts once the use drops, while the first job still runs.
 #[tokio::test]
 async fn a_job_waits_while_ci_uses_more_than_it_reserved() -> TestResult {
     let f = fixture_tuned(
@@ -2922,8 +2923,8 @@ async fn a_job_waits_while_ci_uses_more_than_it_reserved() -> TestResult {
     let reason = waits_with(&f, &later, "CI budget").await?;
     assert_eq!(
         reason,
-        "waits for the host's CI budget: CI holds 3 of the host's 3 CPUs for CI (1 reserved, 3 \
-         measured); this job needs 1"
+        "waits for the host's CI budget: CI uses 3 of the host's 3 CPUs for CI and jobs that just \
+         started may bring 1 more; this job starts with 1"
     );
     // The use drops: it starts within the next window, the first job still running.
     measured.millis.store(0, Ordering::SeqCst);

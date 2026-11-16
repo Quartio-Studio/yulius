@@ -78,12 +78,17 @@ follows the CPUs the sandbox's running jobs hold: 100 plus 100 per CPU, at least
 10,000, so a sandbox holding 30 CPUs gets about 45 of 64 against four sandboxes whose agents build
 ([decision 0350](decisions/0350-ci-jobs-are-admitted-by-what-ci-really-holds-on-the-host.md)).
 `ci/slots.rs` counts the jobs; `resources.rs` (`CiAdmission`) admits them from one CI budget for the
-whole instance, the capacity less an eighth for the server and the agents: a job starts when its
-reservation fits beside the larger of the running jobs' reservations and what the `ci` and
-`engine` groups of the sandboxes running them were measured to use (`Delegation::ci_use`: CPU time
-over at least 5 s, read at each job's start, each dispatcher pass and each look of a waiting job,
-under the admission's lock; anonymous memory), so containers and tools that use more than the job declared
-hold the next job back. The CI executor counts a job
+whole instance, the capacity less an eighth for the server and the agents. A job starts when:
+- its sandboxes' `ci` groups' CPU pressure is at most 10 %;
+- the running jobs' budgets with its own stay within twice the budget;
+- the measured use of the `ci` and `engine` groups of the sandboxes running jobs, what jobs
+  started in the last minute may still bring, and its own start fit (`Delegation::ci_use`: CPU
+  time over at least 5 s, read at each job's start, each dispatcher pass and each look of a
+  waiting job, under the admission's lock; anonymous memory; `cpu.pressure` `some avg10`).
+
+Waiting jobs start by priority (merge trains', pull requests', branches') and age; one that cannot
+start lets the others pass for 10 minutes at most, and a job takes its slot once admitted
+([decision 0353](decisions/0353-ci-jobs-start-by-what-ci-uses-within-a-bounded-worst-case.md)). The CI executor counts a job
 from its slot to its reap (`JobWeight`). The isolation adapter writes the weight, every
 preparation keeps it, and every start and stop of the server writes 100 again
 ([SPEC-362](../.ai/specs/SPEC-362-ci-slots-per-job-configurable-per-projec.md),

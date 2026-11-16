@@ -29,7 +29,7 @@ use tokio::sync::watch;
 use yulius_domain::ci::failures::FailureScanner;
 use yulius_domain::ci::{self as dom, Gate, GateSource, RunState};
 use yulius_domain::ids::SandboxId;
-use yulius_domain::resources::{Budget, budget_env};
+use yulius_domain::resources::{Budget, CiPriority, budget_env};
 use yulius_domain::vault::{SecretName, placeholder};
 
 use super::{
@@ -666,8 +666,12 @@ impl App {
                 None => None,
             };
             self.ci_network_room(&run.sandbox_id, &job.id).await;
+            // Admitted first, then its slot, which admission kept free: a waiting job holds no
+            // slot another job could start in (SPEC-497 HBA-002).
+            let reservation = self
+                .ci_reserve(&job.id, budget, CiPriority::of(&run.reference))
+                .await?;
             let slot = slots.acquire().await?;
-            let reservation = self.ci_reserve(&job.id, budget).await?;
             Some((turn, slot, reservation))
         };
         let permit = tokio::select! {

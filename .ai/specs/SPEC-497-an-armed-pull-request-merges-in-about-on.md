@@ -84,13 +84,22 @@ mode.
 - **HBA-001** One CI budget for the whole instance: CPU and memory of the host, less a reserve
   for the server and agent sessions (an eighth of each, at least 1 CPU and 2 GiB). Every
   sandbox's jobs are admitted from it.
-- **HBA-002** A job is admitted when its reservation fits beside what CI holds now, where CI
-  holds the larger of the running jobs' reservations and what every sandbox's `ci` and `engine`
-  groups were measured to use over the last sampling window (CPU time per second; anonymous
-  memory). A job that uses more than it declared, or Docker containers it starts, therefore
-  hold the host back from the next job. Waiters are served first come, first served; a job
-  larger than the budget runs alone. A job's default share (no `cpus`) is a share of the CI
-  budget, so a run's jobs start together on an idle host.
+- **HBA-002** (amended 16 Nov 2026, [ADR-0353](../../docs/decisions/0353-ci-jobs-start-by-what-ci-uses-within-a-bounded-worst-case.md))
+  A job starts when, with no CI job running, at once; otherwise when all of these hold:
+  - **No contention.** CI's processes waited for a CPU at most 10 % of the last 10 seconds (the
+    sandboxes' `ci` groups' `cpu.pressure`).
+  - **Bounded worst case.** The running jobs' budgets with its own are at most twice the CI
+    budget's CPUs.
+  - **Room.** The sum of these fits in the CI budget, in CPUs and memory: what every sandbox's
+    `ci` and `engine` groups were measured to use over the last window, what jobs started in the
+    last minute may still bring, and its own start. A starting job counts as its budget, at most
+    a quarter of the CI budget. Where nothing is measured, the reservations decide.
+  - **A free slot.** The job takes it when it is admitted.
+
+  Waiting jobs are ordered: merge trains' and playground merges' jobs first, then pull requests',
+  then branches', and in each the longest waiting. A job that cannot start lets the ones behind it
+  that can; one that waited 10 minutes holds them back until it starts. A job's default share (no
+  `cpus`) is a share of the CI budget, so a run's jobs start together on an idle host.
 - **HBA-003** Docker networks are part of the budget per engine. Each engine gets address
   pools of /24 networks within Docker's own default ranges (4,096 networks instead of 31), read
   back from the engine's `/info` (an engine started before keeps 31). A job of a sandbox whose
@@ -177,6 +186,19 @@ mode.
 
 ## Decisions
 
+- **What CI uses decides; declarations bound the worst case** (16 Nov 2026, amending the next
+  decision; [ADR-0353](../../docs/decisions/0353-ci-jobs-start-by-what-ci-uses-within-a-bounded-worst-case.md)).
+  Measured on production the same evening:
+  - Reservations held 50–56 of 64 CPUs while the host was 25–30 % busy. Jobs waited a median
+    10–11 min to start, against 5 min of work.
+  - A one-job run (autoresearch `gate`, 12 s of work) asked for the whole host. Served first in
+    line, it kept every job waiting 7–37 min after each push.
+  - Pools at twice the host ran five jobs instead of two at ~68 % busy, but CI's processes waited
+    for a CPU 10–25 % of 10-second windows at compile peaks.
+
+  Hence measured use plus starting jobs for room, twice the budget for the worst case, the
+  kernel's CPU pressure against contention, and jobs that fit passing one that does not, within
+  10 minutes.
 - **The budget counts measured use, not only declarations** (slice A): a job's `cpus` is a
   promise the job does not keep (its tools and containers use what is free), so admitting by
   declarations let four 16-CPU jobs take 18.8 min each. Measuring per job would need each

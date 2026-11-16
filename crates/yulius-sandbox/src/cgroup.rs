@@ -108,6 +108,29 @@ pub struct CiUse {
     /// Anonymous memory now, in bytes (`memory.stat` `anon`): not the page cache, which the
     /// kernel gives back.
     pub anon_bytes: u64,
+    /// Thousandths of the last 10 seconds for which processes of the `ci` group waited for a CPU
+    /// (`cpu.pressure` `some avg10`); `None` without the file.
+    pub cpu_pressure: Option<u32>,
+}
+
+/// The `some avg10` of a `cpu.pressure` file, in thousandths of the last 10 seconds.
+fn some_avg10(text: &str) -> Option<u32> {
+    let line = text.lines().find(|line| line.starts_with("some "))?;
+    let percent: f64 = line
+        .split_whitespace()
+        .find_map(|field| field.strip_prefix("avg10="))?
+        .parse()
+        .ok()?;
+    if !percent.is_finite() || percent < 0.0 {
+        return None;
+    }
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "a percentage between 0 and 100, in thousandths"
+    )]
+    let thousandths = (percent * 10.0).round().min(1000.0) as u32;
+    Some(thousandths)
 }
 
 /// Writes the default weight to every sandbox group under `sandboxes` that has one: a starting
@@ -663,6 +686,12 @@ impl Delegation {
             let sum: &mut CiUse = used.get_or_insert_with(CiUse::default);
             sum.cpu_usec = sum.cpu_usec.saturating_add(keyed(&cpu, "usage_usec"));
             sum.anon_bytes = sum.anon_bytes.saturating_add(anon);
+        }
+        if let Some(used) = used.as_mut() {
+            used.cpu_pressure = std::fs::read_to_string(groups.ci.join("cpu.pressure"))
+                .ok()
+                .as_deref()
+                .and_then(some_avg10);
         }
         used
     }
@@ -1781,8 +1810,23 @@ mod tests {
             delegation.ci_use("s1"),
             Some(CiUse {
                 cpu_usec: 2000,
-                anon_bytes: 5120
+                anon_bytes: 5120,
+                cpu_pressure: None
             })
+        );
+        // The `ci` group's pressure (SPEC-497 HBA-002), not the engine's.
+        std::fs::write(
+            groups.ci.join("cpu.pressure"),
+            "some avg10=24.49 avg60=11.59 avg300=4.29 total=2608214434\n\
+             full avg10=0.00 avg60=0.00 avg300=0.00 total=0\n",
+        )?;
+        std::fs::write(
+            groups.engine.join("cpu.pressure"),
+            "some avg10=90.00 avg60=0.00 avg300=0.00 total=1\n",
+        )?;
+        assert_eq!(
+            delegation.ci_use("s1").and_then(|used| used.cpu_pressure),
+            Some(245)
         );
         assert_eq!(delegation.ci_use("nobody"), None);
         let (_root, single, _dir) = fake_sandbox("memory pids\n")?;

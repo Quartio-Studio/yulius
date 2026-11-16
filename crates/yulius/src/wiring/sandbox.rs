@@ -457,6 +457,7 @@ impl SandboxIsolation for NamespaceIsolation {
         Some(yulius_app::ports::isolation::CiUse {
             cpu_usec: used.cpu_usec,
             anon_bytes: used.anon_bytes,
+            cpu_pressure: used.cpu_pressure,
         })
     }
 

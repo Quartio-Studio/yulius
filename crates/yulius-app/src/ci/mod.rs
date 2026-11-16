@@ -560,7 +560,7 @@ impl App {
             .clone()
     }
 
-    fn ci_job_slots(&self) -> usize {
+    pub(crate) fn ci_job_slots(&self) -> usize {
         usize::try_from(self.ci_max_jobs()).unwrap_or(1)
     }
 
