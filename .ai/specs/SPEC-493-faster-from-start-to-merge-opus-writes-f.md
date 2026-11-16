@@ -1595,3 +1595,40 @@ Both are checked on current `dev` first and fixed test-first if they still hold.
       `reviewer_move_retry_ms` setting and `turn_ended`'s branch.
     - The Stop hook is the only path that moves, and ADR-0346 says so. RLM-002's "at once when
       idle" is that woken turn's end.
+
+### Fix 8: mutation testing once per pull request
+
+- MUT-001: `scripts/dev mutants` (`tools/xtask/src/mutants.rs`) with the pinned
+  `cargo-mutants = "27.1.0"` (`.config/tools.toml`, installed by `bootstrap.py` like the other
+  tools, so the quality job has it).
+  - It mutates the Rust lines changed since the merge base with `--base` (default
+    `origin/<integration>`), without `tools/**` and `crates/*/tests/**`.
+  - Each mutant runs nextest across the workspace. The `yulius` package runs only the test
+    functions the branch added or changed in `crates/yulius/tests/`, or `--tests FILTER`, and
+    only where that package exists.
+  - Bounds: `--minutes` (30) for the whole run, which kills the process group and names the
+    mutants not reached; `--mutant-seconds` (300); `--jobs` (2).
+  - The last line is `mutants: N listed, C caught, M missed, T timed out, U unviable, R not
+    reached (bound X min, took S s)`. The exit code is non-zero when M, T or R is not zero.
+  - Unit tests: `each_mutant_runs_the_tests_the_branch_wrote`,
+    `a_run_passes_only_when_every_mutant_was_caught` and `the_settings_take_their_options`.
+  - AC-20, with the real tool: `a_real_run_finds_the_line_no_test_holds`. On a fixture crate,
+    an added function no test holds is missed and the run fails; with its test the run holds; a
+    branch that changes only a document has nothing to mutate.
+  - Measured on 2026-11-16 (`/usr/bin/time`), on fix 7's change against its base with the work
+    merged since, 2 jobs and a 25-minute bound:
+    - 248 listed; 84 tested: 59 caught, 25 unviable, 0 missed;
+    - 164 named as not reached;
+    - 1,501 s wall, 5.6 GB peak memory: about 18 s a mutant.
+  - On this pull request's own head: "No mutant in the Rust lines changed against
+    origin/dev." Its Rust lines are the test tool's (`tools/`) and test code.
+- MUT-002: the rule's sentence is in `om-code-review`, `delivery-pipeline` and
+  `test-driven-development`; with "Here the command is `scripts/dev mutants`." it is in
+  `yulius-verify`, `yulius-review` and docs/engineering/development.md (also its commands
+  table); the short form is in the Feature and Fix workflows.
+  `skills::every_place_says_mutation_testing_once_per_pull_request` holds them.
+- ADR-0347, changes. How to read it a week later: the share of blocking review rounds whose
+  findings are about test strength only, from the rounds' reports (fix 1's records), and each
+  spec's `mutants:` line.
+- Fix 7's round-3 nits are in: RLM-002's requirement and Evidence lines say the turn's end, and
+  the doubled 2026-11-16 heading in changes.md is merged.
