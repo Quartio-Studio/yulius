@@ -1,11 +1,11 @@
 ---
 yulius-task: b2f3a052-2ae1-41a5-9ed9-c5d34e897ae7
-status: in-progress
+status: done
 ---
 
 # SPEC-502: Connect a Claude subscription by pasting a token made elsewhere
 
-Status: in progress
+Status: done
 Date: 2026-11-10 (proposed), 2026-11-16 (brought onto current dev)
 Owner: Yulius task #484, from outside pull request #1144 by studenciak00owl (written as SPEC-450 in
 their fork's task #6), accepted by MrFishPL
@@ -88,7 +88,7 @@ requests later). What changed under it since:
 - [x] Docs on current dev: api.md, architecture, product, changes, ADR-0352
 - [x] Review round 1 findings fixed test-first, mutants run on the head
 - [x] Review round 2 findings fixed test-first, each mutant line undone by hand
-- [ ] Independent review in a fresh session of the final head
+- [x] Independent review in a fresh session of the final head
 
 ## Acceptance criteria
 
