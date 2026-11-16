@@ -9,9 +9,11 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 - An approval carries across a small follow-up (SPEC-493 fix 6, task #472,
   [ADR-0345](decisions/0345-an-approval-carries-across-a-follow-up-of-at-most-20-product-lines.md)):
   `delivery_merge` with the approved head takes a head at most 20 product lines past it (counted
-  commit by commit; tests and documents do not count; `[review]` in `yulius.toml` sets what
-  counts) and records "since then N product lines in M files: …"; more, a file leaving the
-  change or a conflicted merge needs a new round.
+  commit by commit with plumbing; tests, documents and Rust test modules do not count unless a
+  new product line names them or loads code; `[review]` in `yulius.toml` sets what counts) and
+  records "since then N product lines in M files: …"; more, a file leaving the change, a
+  conflicted merge or a new `#[path]`/`include!` needs a new round. Every Git command of Yulius
+  now ignores the clone's replace refs, grafts and commit-graph.
 - A full Docker front is seen once (SPEC-494 slice 2, task #476, ADR-0344): it is its sandbox's
   `docker` connection trouble ("Docker full: <sandbox>" in the tab row, one notification), and
   each running task of the sandbox is told once in its session not to ask a person (unless it
