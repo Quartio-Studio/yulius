@@ -1342,3 +1342,45 @@ Both are checked on current `dev` first and fixed test-first if they still hold.
       - The left-the-change check uses a set.
       - The second refresh in `delivery_merge` (once for the clean-merge rule, once for the
         count) stays: it is a local fetch, and only when the head moved past the review.
+- Review round 2 (Opus 5.5, head `c6829dfec`): request changes, 1 blocker and 2 majors in own
+  code. Round 1's findings 1, 2 and 4 to 11 are closed (the reviewer's probes against the real
+  `commit_lines`); 3 was closed only in part. Answered test-first; all six mutations below fail
+  a test.
+  - A. Blocker: `git replace` (and grafts, or a forged commit-graph) made a commit look
+    different to every read.
+    - The fix: every Git command of Yulius now runs with `GIT_NO_REPLACE_OBJECTS=1`,
+      `GIT_GRAFT_FILE=/dev/null` and `core.commitGraph=false` (`runner.rs`, pinned by the
+      runner's test). This also covers the clean-merge walk, which was exposed on dev before.
+    - Test: `git_ops::a_follow_up_is_read_from_the_commits_themselves` (a 200-line commit
+      replaced by a 1-line one, plus a graft that skips it). Dropping either variable fails it.
+    - The commit-graph setting has no test of its own: a forged graph file is not something the
+      test can write.
+  - B. Major: test-module spans were read as lines of text.
+    - The fix: `test_module_spans` reads Rust tokens. `code_only` blanks line, nested block
+      and doc comments, strings, raw strings and character literals (lifetimes stay code); a
+      `#[cfg(test)]` whose next item, after further attributes and a visibility, is `mod name {`
+      spans to its matching brace. Anything that does not lex gives no span.
+    - Tests: unit `test_spans_are_read_from_rust_tokens` (a fake module in a block comment, in
+      a string, in a raw string; braces in a char, a string, a comment and `'\u{7D}'`; an
+      unformatted close; nested comments; unclosed ones; spaced attributes). Unit
+      `real_files_have_their_test_module_and_nothing_else`: four of this crate's own files,
+      whose tests hold these tricks, each have exactly their test module. The delivery case of
+      a comment-borne module is refused (34). Lexing nothing, or never closing, fails them.
+  - C. Major: the integration branch was read back from the clone after the fetch.
+    - The fix: `App::integration_head` reads the commit from GitHub's branch (a playground: its
+      own repository on the server) before the fetch, and every check takes that commit. Here
+      and in `review_covers_against` (whose ref reading was on dev before).
+    - Tests: in the delivery fixture, a ref moved right after every fetch
+      (`forged_after_fetch`), with a merged side branch, is refused; a failed fetch and an
+      origin that cannot be read refuse, each with its reason. Reading the ref again fails the
+      first.
+  - D. Minor: a type change (a link become a file) is one record and two patch sections; they
+    are paired now (in the `git_ops` test above). Dropping the pairing fails it.
+  - E. Minor, answered in words: when a fetch fails, the armed merge is dropped (fail closed).
+    The message the agent gets says the branch moved and asks for a review of the new head. It
+    makes no claim about clean merges, so it is not wrong; the agent re-arms once the fetch
+    works.
+  - F. Nit, taken: an opaque line is now one over 200 bytes (formatters wrap at 80-120), not
+    1,000.
+  - `git_ops` wrappers that find the subcommand by its place (`${31}`) now look two places
+    later, for the new `-c` pair.
