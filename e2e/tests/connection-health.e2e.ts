@@ -114,5 +114,6 @@ test('a full Docker front says the sandbox’s Docker is full and that its tasks
   const title = await browser.locator('.connection-alert .update-text').getAttribute('title');
   expect(title).toContain('studio’s Docker front holds 256 of its 256 connections');
   expect(title).toContain('Its running tasks are told once');
+  expect(title).toContain('restarts the sandbox’s Docker by itself');
   await expect.poll(() => notified(browser)).toEqual([[`connections:${DOCKER.id}`, false]]);
 });

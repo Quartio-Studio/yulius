@@ -4,6 +4,14 @@ Notable changes, newest first. Per-change detail lives in the merged pull reques
 evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-architecture.md)
 (sections 14 and 15).
 
+## 2026-11-16
+
+- Yulius restarts a jammed sandbox Docker itself (SPEC-494 slice 3, task #476, ADR-0344): a
+  front full for 2 minutes, or whose running engine does not answer through it, is restarted
+  (front and engine; running containers stop, volumes stay) once no CI job of the sandbox runs,
+  at most 10 minutes later, journaled and counted; the tasks told hear that it is no longer
+  full. The sandbox's Superagent has `docker_restart` to do it at once.
+
 ## 2026-11-15
 
 - An approval carries across a small follow-up (SPEC-493 fix 6, task #472,

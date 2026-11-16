@@ -161,8 +161,10 @@ impl Front {
         tasks.push(tokio::spawn(Arc::clone(&gate).keep_state(
             paths.docker_state(),
             move || {
-                let running = engine.as_ref().is_some_and(|engine| engine.running_now());
-                async move { running }
+                let now = engine
+                    .as_ref()
+                    .map_or((false, false), |engine| engine.engine_now());
+                async move { now }
             },
         )));
         Ok(Self {

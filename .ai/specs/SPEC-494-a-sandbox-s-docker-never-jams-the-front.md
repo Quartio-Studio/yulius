@@ -123,19 +123,32 @@ ever reaches it).
   server restart) are no new trouble; every path that drops a holder ends its trouble. A
   production holder's front (SPEC-279, CD deploys) is journaled only: its name is no sandbox of
   the panel and no task runs there. The refusal's message says the same to the
-  calls that hit it. (Slice 3 adds that Yulius repairs it.)
+  calls that hit it. Since slice 3 both say that Yulius restarts it by itself and nobody needs
+  to be asked.
 
 ### Yulius repairs it itself (slice 3)
 
 - **DFJ-008** Yulius restarts the front and its engine (as the hand repair did: stop the front,
-  start it again at the next upkeep) when the front has been at its limit, or has refused, for
-  `REPAIR_AFTER` (2 min), or when its engine runs and a `GET /_ping` through the front failed on
-  three ticks in a row. It waits for the moment that loses the least: no CI job of the sandbox
-  runs, or at most `REPAIR_WAIT` (10 min) after the repair was due. Volumes stay (the engine's
-  storage is kept); running containers stop. Each repair is logged and counted.
-- **DFJ-009** Once the restarted front answers, the tasks told in DFJ-007 are told that Docker
-  works again and they can rerun. The Superagent gets `sandbox_docker_restart`, which does the
-  same repair at once; tasks do not get it.
+  then start a new one at once) when the front has been full, or refusing, at every upkeep tick
+  for `REPAIR_AFTER` (2 min), or when a `GET /_ping` through the front (connected without
+  following a link, as the engine's control socket is) got no answer within 5 s, connecting
+  included,
+  on three ticks in a row. The ping is asked only while a client holds a connection, the engine
+  runs and is not starting or stopping, and the front is not jammed: a ping is itself a client
+  of the engine, and asked at other times it would keep an idle engine from stopping
+  (ADR-0151) or start a stopped one. A tick that does not ask starts the count again; a socket
+  the server may not connect to is no answer either way. A production holder's front (SPEC-279)
+  is never restarted by the upkeep: its one user is a production CD run. It
+  waits for the moment that loses the least: no CI job of the sandbox runs (a job's containers
+  would stop under it), or at most `REPAIR_WAIT` (10 min) after the repair was due, since a
+  jammed front fails the jobs anyway. Volumes and images stay (the engine's storage is kept);
+  running containers stop. Each restart is journaled with why and counted.
+- **DFJ-009** The restarted front's state ends the sandbox's trouble, and the tasks told in
+  DFJ-007 hear that it is no longer full (and that containers that ran stopped), so they rerun.
+  The Superagent gets `docker_restart` (a person's tool, `Work` on the project, the sandbox
+  Superagent's only), which restarts it at once; task agents do not get it: a task restarting
+  Docker would stop the containers of every other task and CI job of the sandbox, and Yulius
+  already does it at the right moment.
 
 ### One shared problem, one Needs you (slice 4)
 
@@ -172,9 +185,9 @@ ever reaches it).
 - [x] Slice 1's round-2 review notes fixed test-first
 - [x] A jammed front is a sandbox trouble on the panel
 - [x] The sandbox's tasks are told once per trouble
-- [ ] Slice 2 reviewed independently, findings fixed test-first
-- [ ] Yulius restarts a jammed front at a quiet moment and tells the tasks
-- [ ] The Superagent restarts its sandbox's Docker
+- [x] Slice 2 reviewed independently, findings fixed test-first
+- [x] Yulius restarts a jammed front at a quiet moment and tells the tasks
+- [x] The Superagent restarts its sandbox's Docker
 - [ ] Slice 3 reviewed independently, findings fixed test-first
 - [ ] Needs you of one sandbox-level cause show as one card
 - [ ] Slice 4 reviewed independently, findings fixed test-first
@@ -325,3 +338,77 @@ a container start in the sandbox failing a parallel e2e job's page loads, is com
   upkeep): red with `started` removed from `keep_front`, green with it.
 - A production holder's front is journaled only (`a_production_fronts_state_is_no_panel_trouble`).
 - `BACK_AFTER` is 5 passes (75 s, past two upkeep ticks); stale "works again" wording updated.
+
+### Slice 2, review round 3 (approve)
+
+PR #1333 approved at 3e206c557 (round 3, Opus 5.5); its notes (the ADR's "three passes" and
+"nobody needs to be asked" wording, two stale comments in `docker_trouble_notices.rs`) are fixed
+in slice 3's pull request.
+
+### Slice 3 (Yulius repairs it itself)
+
+- `front_repair::tests`: a front full for two minutes is restarted once no CI job runs, waits
+  while one runs at most ten minutes after it was due; room again cancels; three unanswered
+  pings in a row make a repair due; the ping reads an engine's answer and fails within its
+  bound.
+- `a_front_full_for_long_is_restarted_when_no_ci_job_runs` (manager, a fake front): held while
+  a CI job runs, restarted (a new front, counted) once none does;
+  `an_asked_restart_starts_a_new_front_and_ends_the_trouble`: the restart asked for ends the
+  sandbox's trouble once the new front's state is read.
+- `the_superagent_restarts_its_sandboxs_docker_or_hears_why_not` (Cockpit MCP) and
+  `the_cockpit_asks_before_every_changing_tool` (`docker_restart` asks first); a task agent is
+  never served it (`mcp::tests`).
+- The pill says Yulius restarts it (`connection-health.e2e.ts`, 4 passed).
+
+### Slice 3, review round 1 (request changes; every finding own code, all fixed)
+
+- The upkeep's ping kept every engine from idling out (it is a client): it is now asked only
+  beside a client, with the engine settled (`should_ping`,
+  `a_ping_is_asked_only_beside_a_client_of_a_settled_engine`); the front's state says whether a
+  start or stop holds the engine (`engine_busy`).
+- "Three in a row": a tick that does not ask starts the count again
+  (`three_unanswered_pings_in_a_row_make_a_repair_due`); a refusal (503) or silence is no answer
+  and the ping is bounded (`a_refusal_or_silence_is_no_answer`); a socket the server may not
+  connect to (`PermissionDenied`) is no answer either way.
+- Production holders are never restarted by the upkeep
+  (`a_production_front_is_never_restarted_by_the_upkeep`).
+- A front that does not start again keeps the trouble open, counts nothing and the asked restart
+  says why (`a_front_that_does_not_start_again_keeps_the_trouble_open`); a restart is counted
+  and journaled only once the new front serves; the repair starts over after a restart (second
+  tick in `a_front_full_for_long_is_restarted_when_no_ci_job_runs`).
+- `docker_restart` reaches the port with the caller's own sandbox and answers its success
+  (`the_superagent_restarts_its_sandboxs_docker_or_hears_why_not`, a recording isolation).
+- Not tested here: the server connecting to a real front's socket from the host (a QEMU guest
+  would show it); by reading, the socket is the service user's own 0660 path socket in its
+  state directory; a connect refused for permission is no answer either way, while a missing or
+  refusing socket counts as unanswered.
+- A repair after unanswered pings, or an asked restart with no trouble open, tells no task (no
+  task was told of a trouble); the Superagent's answer says what stopped.
+
+### Slice 3, review round 2 (request changes; every finding own code, all fixed)
+
+- The ping followed a link planted at the front's socket (its directory is writable from the
+  sandbox): it now connects through `connect_control` (`O_PATH | O_NOFOLLOW`, must be a socket)
+  within one 5 s bound (`a_link_at_the_fronts_socket_is_never_followed`: the decoy behind the link
+  sees no request).
+- The ping rule is pinned at its call site:
+  `the_upkeep_pings_only_beside_a_client_and_restarts_an_unanswered_engine` (a socket answered by
+  the test: no ping with no client, a busy or no engine over nine ticks; three 503s beside a
+  client restart the front, `Why::Unanswered`); `engine_now` is `(true, true)` while a start
+  holds the lock.
+- A successor front starts its own count (`a_successor_front_is_not_restarted_for_its_predecessors_jam`;
+  `keep_front` resets it when it starts a front); a restart whose front starts only at a later
+  tick is counted and journaled then. The instance reads the counts in slice 7
+  (`/api/analytics/docker`).
+- Wording: a relay or refuse front has no engine of its own to stop.
+
+### Slice 3, review round 3 (request changes; own code, fixed)
+
+- The pending restart's count had no test: `a_front_that_does_not_start_again_keeps_the_trouble_open`
+  now puts the executable back and shows one count for a person's restart asked before the next
+  tick (red before the fix: counted twice) and one for a pending restart that a later tick
+  starts.
+- `docs/operations.md` quotes the journal lines the code writes.
+- Accepted, not changed: an unanswered ping waits up to 5 s under the sandbox's upkeep lock (once
+  per tick, only beside a client of a running engine); bounded, and releasing the lock mid-tick
+  would let a run start between the reading and the repair.

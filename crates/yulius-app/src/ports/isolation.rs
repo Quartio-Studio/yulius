@@ -199,6 +199,12 @@ pub trait SandboxIsolation: Send + Sync {
         None
     }
 
+    /// Restarts `sandbox`'s Docker front and engine now (SPEC-494 DFJ-009): its running
+    /// containers stop, its volumes stay. `Err` says why not (no Docker here, no running holder).
+    async fn restart_docker(&self, _sandbox: &SandboxId) -> Result<(), String> {
+        Err("this server runs no sandbox Docker".into())
+    }
+
     /// Ends a lease of [`SandboxIsolation::prepare`] (may finish in the background).
     fn release(&self, sandbox: &SandboxId);
 

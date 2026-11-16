@@ -31,14 +31,16 @@ pub const BACK_AFTER: u32 = 5;
 
 /// Told once per trouble to each live task of the sandbox.
 pub const DOCKER_FULL: &str = "Yulius: this sandbox's Docker front is full, so Docker calls in \
-     this sandbox fail or are refused for now (\"holds all of its connections\"). Yulius sees it \
-     and shows it to the sandbox's people: do not raise a Needs you about it unless it lasts \
-     more than 15 minutes. Leave Docker work for later; you are told here when Docker works \
-     again (if nothing comes within 30 minutes, retry).";
+     this sandbox fail or are refused for now (\"holds all of its connections\"). Yulius sees it, \
+     shows it to the sandbox's people and restarts the sandbox's Docker by itself if it stays \
+     full (running containers stop, volumes stay): do not raise a Needs you about it. Leave \
+     Docker work for later; you are told here when it is no longer full (if nothing comes \
+     within 30 minutes, retry).";
 
 /// Told to the tasks that heard [`DOCKER_FULL`] once the trouble stayed ended.
-pub const DOCKER_BACK: &str = "Yulius: this sandbox's Docker front is no longer full. Rerun the \
-     Docker calls or tests that failed while it was full.";
+pub const DOCKER_BACK: &str = "Yulius: this sandbox's Docker front is no longer full (if Yulius \
+     restarted it, the containers that ran stopped; volumes stayed). Rerun the Docker calls or \
+     tests that failed while it was full.";
 
 /// What was told of one sandbox's trouble.
 #[derive(Debug, Default)]
@@ -53,6 +55,31 @@ pub struct Told {
 pub type DockerTold = std::sync::Mutex<HashMap<String, Told>>;
 
 impl App {
+    /// The Superagent's `docker_restart` (SPEC-494 DFJ-009): restarts the sandbox's
+    /// Docker front and engine now.
+    ///
+    /// # Errors
+    /// `Conflict` with why it could not (no Docker on this server, no running holder).
+    pub(crate) async fn restart_docker_for_person(
+        &self,
+        sandbox: &yulius_domain::ids::SandboxId,
+    ) -> crate::error::AppResult<serde_json::Value> {
+        let Some(isolation) = self.isolation.get() else {
+            return Err(AppError::Conflict(
+                "this server runs no sandbox Docker".into(),
+            ));
+        };
+        isolation
+            .restart_docker(sandbox)
+            .await
+            .map_err(AppError::Conflict)?;
+        tracing::info!(sandbox = %sandbox, "the sandbox's Docker was restarted at a person's ask");
+        Ok(serde_json::json!({
+            "restarted": true,
+            "said": "The sandbox's Docker front was restarted: an engine it ran stopped with it (its running containers stopped; volumes and images stay) and starts again at the next Docker call. Its tasks hear that it is no longer full once the trouble has ended."
+        }))
+    }
+
     /// Runs [`Self::tell_docker_troubles`] every [`TELL_EVERY`].
     pub fn start_docker_watch(self: &Arc<Self>) {
         let app = Arc::clone(self);

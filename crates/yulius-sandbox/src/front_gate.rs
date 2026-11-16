@@ -45,8 +45,8 @@ const WARN_EVERY: Duration = Duration::from_secs(60);
 /// The refusal at the limit, for the calls that meet it (DFJ-001, DFJ-007).
 pub const AT_LIMIT: &str = "the sandbox's Docker front holds all of its connections and none \
      has been idle long enough to give way: retry in a minute. Yulius shows this to the \
-     sandbox's people and tells its tasks: do not raise a Needs you about it unless it lasts \
-     more than 15 minutes";
+     sandbox's people, tells its tasks and restarts the sandbox's Docker by itself if it stays \
+     full: do not raise a Needs you about it";
 
 /// What ended a connection, besides both sides closing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -279,6 +279,7 @@ impl Gate {
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner),
             engine_running,
+            engine_busy: false,
         }
     }
 
@@ -313,18 +314,22 @@ impl Gate {
     }
 
     /// Writes the state to `path` at most every [`STATE_EVERY`], when it changed, until aborted;
-    /// `engine_running` is asked at each write.
-    pub async fn keep_state<R, F>(self: Arc<Self>, path: PathBuf, engine_running: R)
+    /// `engine` (whether it runs, whether a start or stop holds it) is asked at each write.
+    pub async fn keep_state<R, F>(self: Arc<Self>, path: PathBuf, engine: R)
     where
         R: Fn() -> F + Send + Sync,
-        F: Future<Output = bool> + Send,
+        F: Future<Output = (bool, bool)> + Send,
     {
         let mut every = tokio::time::interval(self.state_every);
         every.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         let mut written: Option<DockerFrontState> = None;
         loop {
             every.tick().await;
-            let state = self.state(engine_running().await);
+            let (running, busy) = engine().await;
+            let state = DockerFrontState {
+                engine_busy: busy,
+                ..self.state(running)
+            };
             if written.as_ref() != Some(&state) {
                 let file = path.clone();
                 let value = state.clone();
@@ -578,10 +583,16 @@ impl StateWatch {
     /// [`StateWatch::observe`] took it: a front that refused since the last report, or holds its
     /// whole limit, begins or keeps the trouble; one that holds at most seven eighths of its
     /// limit and refused nothing since ends it.
-    pub fn report(&mut self, state: &DockerFrontState, sandbox: &str, health: &ConnectionHealth) {
-        let new = state.refused.saturating_sub(self.reported_refused);
-        self.reported_refused = state.refused;
-        if new > 0 || state.held >= state.max {
+    /// Returns whether the front is jammed now: full, or refused since the last report.
+    pub fn report(
+        &mut self,
+        state: &DockerFrontState,
+        sandbox: &str,
+        health: &ConnectionHealth,
+    ) -> bool {
+        let jammed = self.jammed(state);
+        if jammed {
+            let new = state.refused.saturating_sub(self.reported_refused);
             let refusal = Refusal {
                 limit: Limit::Docker,
                 sandbox: Some(sandbox.to_owned()),
@@ -593,6 +604,19 @@ impl StateWatch {
         } else if health.open(Limit::Docker, Some(sandbox)) {
             health.held(Limit::Docker, Some(sandbox), state.held);
         }
+        self.reported_refused = state.refused;
+        jammed
+    }
+
+    /// Counts `state`'s refusals as reported without reporting them (a front journaled only).
+    pub fn counted(&mut self, state: &DockerFrontState) {
+        self.reported_refused = state.refused;
+    }
+
+    /// Whether `state` is jammed: full, or refused since the last report (not counted yet).
+    #[must_use]
+    pub fn jammed(&self, state: &DockerFrontState) -> bool {
+        state.refused > self.reported_refused || state.held >= state.max
     }
 }
 
@@ -1021,6 +1045,7 @@ mod tests {
             closed_after_grace: 0,
             at_limit_since_ms: None,
             engine_running: true,
+            engine_busy: false,
         }
     }
 
@@ -1240,7 +1265,8 @@ mod tests {
         let path = dir.path().join("docker-front-state.json");
         let gate = Gate::with(4, IDLE_FLOOR, HANGUP_CHECK, CLOSE_GRACE)
             .writing_every(Duration::from_millis(20));
-        let writer = tokio::spawn(Arc::clone(&gate).keep_state(path.clone(), || async { false }));
+        let writer =
+            tokio::spawn(Arc::clone(&gate).keep_state(path.clone(), || async { (false, false) }));
         until("written", || path.exists()).await?;
         let stamp = |path: &std::path::Path| -> io::Result<(u64, i64, i64)> {
             let meta = std::fs::metadata(path)?;

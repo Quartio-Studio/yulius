@@ -1096,7 +1096,12 @@ from a sandbox, and no daemon needs to run on the host.
   connections held now, the limit, the totals and since when it is full. While it is full, or
   refused since the last tick, the panel shows "Docker full: <sandbox>" (one notification per
   trouble) and each running task of the sandbox is told once, in its session, not to ask a
-  person; they hear again once it has room. A front started by an
+  person; they hear again once it has room. Yulius restarts a front that stays full for 2
+  minutes (or whose running engine does not answer `GET /_ping` through it on three ticks) by
+  itself, once no CI job of the sandbox runs and at most 10 minutes later: the journal says
+  `restarted the sandbox's Docker front` with why (or `… which started at a later tick`); running containers stop, volumes
+  and images stay. The sandbox's Superagent restarts it at once with `docker_restart` when its
+  person asks. A front started by an
   earlier Yulius keeps its old behavior until it starts again: `kill -TERM` the pid in
   `docker-front.json` and the upkeep starts a new one within a tick (its engine and running
   containers stop; volumes stay).
