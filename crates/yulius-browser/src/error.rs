@@ -130,6 +130,13 @@ pub enum BrowserError {
         "clicks and keys are off in this browser: the host's browser policy is not in force, so Chrome's own file dialogs and developer tools would reach the host's files. An administrator runs `sudo yulius host setup` on the host"
     )]
     InputLocked,
+    /// A viewer's click or key on a virtual display whose browser an agent drove while the
+    /// host's policy was not in force: a native file chooser it opened may still be there
+    /// (SPEC-493 DEF-002). Not delivered until the browser restarts.
+    #[error(
+        "clicks and keys are still off in this browser: it ran without the host's browser policy, and a file dialog an agent's click opened then may still be on its display, where it reaches the host's files. They come back once the browser restarts (it does after 30 idle minutes with no viewer, or with the server)"
+    )]
+    InputLockedUntilRestart,
     /// The tab's page, read with the input lock held, is not one the secret may be typed into
     /// (the tab went elsewhere since the caller looked): nothing was typed (SPEC-483 E3).
     #[error(
@@ -184,7 +191,7 @@ impl BrowserError {
             Self::UrlRefused(_) => ViewerErrorCode::UrlRefused,
             Self::TabNotFound(_) => ViewerErrorCode::NotFound,
             Self::TooManyTabs(_) | Self::InputBacklog => ViewerErrorCode::Capacity,
-            Self::InputLocked => ViewerErrorCode::InputLocked,
+            Self::InputLocked | Self::InputLockedUntilRestart => ViewerErrorCode::InputLocked,
             Self::InvalidInput(_)
             | Self::ToolParams(_)
             | Self::InvalidSelector(_)
