@@ -79,9 +79,9 @@ few lines rarely finds anything.
 - What is left by the person's rule ("tests and documents do not count"): a test or document
   file that product code already built in before the review (an `include_str!` of a document,
   a fixture a product module imports) changes behaviour when it changes, and is not counted.
-  The review that approved the inclusion saw it; a project that ships such files lists them
-  outside `[review] not_product`'s reach by naming its product code with `product`, or keeps
-  them out of test and document folders. Four review rounds (SPEC-493 fix 6) closed the routes
+  The review that approved the inclusion saw it; a project that ships such files keeps them out
+  of test folders and gives them a name that is not a document's (`[review]` can narrow what
+  counts, never widen it to tests and documents). Four review rounds (SPEC-493 fix 6) closed the routes
   that hid new code: the clone's settings and attributes, replace refs and grafts, a moved
   integration ref, fake test modules in comments, strings and macros, and new inclusions.
 - A week later: `SELECT detail FROM audit_log WHERE action IN ('delivery.agent.merge',
