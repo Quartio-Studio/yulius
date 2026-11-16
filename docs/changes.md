@@ -6,6 +6,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-16
 
+- An idle Superagent's leftover processes count their two hours from when the probe that found
+  them was asked, not from when its answer was read (SPEC-501, task #483, #1110; outside pull
+  request #1143 by studenciak00owl). Under the gate's load
+  `cockpit::an_idle_superagents_strays_are_reaped_after_the_bound` moved its clock between the
+  two, the strays were first seen two hours late, and they were never reaped; a regression test
+  moves the clock inside the probe.
 - A production deploy no longer fails on a promotion pull request GitHub has not finished
   checking (SPEC-495, task #477,
   [ADR-0349](decisions/0349-a-merge-waits-out-githubs-unsettled-mergeability.md)): after GitHub's

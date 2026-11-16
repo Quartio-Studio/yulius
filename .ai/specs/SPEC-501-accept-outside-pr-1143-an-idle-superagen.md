@@ -69,10 +69,10 @@ timeout) can no longer restart the bound.
 
 ## Plan
 
-- [ ] Spec SPEC-501 brought from the contributor's SPEC-449 onto dev
-- [ ] Contributor's dating fix and regression test on current dev, author kept
-- [ ] Race reproduced with a probe delay on dev, fix proven, cockpit tests under load
-- [ ] Changelog entry and Evidence
+- [x] Spec SPEC-501 brought from the contributor's SPEC-449 onto dev
+- [x] Contributor's dating fix and regression test on current dev, author kept
+- [x] Race reproduced with a probe delay on dev, fix proven, cockpit tests under load
+- [x] Changelog entry and Evidence
 - [ ] Independent review of the change, findings answered
 
 ## Acceptance criteria
@@ -113,4 +113,44 @@ timeout) can no longer restart the bound.
 
 ## Evidence
 
-To be filled when the work is done.
+### On current `dev` (this task)
+
+On `feat/483-accept-outside-pr-1143-an-idle-superagen` from `dev` c7348d04, a 64-CPU Linux
+sandbox shared with other tasks (load average 35–94 during the runs). Logs and the load script are
+in the worktree's ignored `target/proof1110/`.
+
+- **Cherry-pick.** `git cherry-pick -n bb33b431` (#1143's one commit) applied cleanly to
+  `cockpit.rs` and `tests/cockpit.rs` (offsets only); its spec file is this spec, its changelog
+  entry moved under 2026-11-16. Commit 5da234cc keeps studenciak00owl as author.
+- **Fix in place.** `cargo nextest run -p yulius -E 'binary_id(yulius::main) &
+  test(/^cockpit::.*strays/)'`: 3 of 3 passed (2.2–3.2 s).
+- **Regression test, old dating (mutation M1, not committed):** `asked` back to `self.now().0`:
+  `an_idle_superagents_strays_are_seen_when_their_probe_was_asked` failed, `timed out waiting for
+  the strays to be reaped` (20.2 s); the other two passed.
+- **Probe delay, old dating (M2, not committed):** M1 plus
+  `tokio::time::sleep(200 ms)` after the probe's answer, before `sort_strays`: 0 of 3 passed;
+  `an_idle_superagents_strays_are_reaped_after_the_bound` failed with #1110's signature
+  (`timed out waiting for the strays to be reaped`), the turn test with `timed out waiting for the
+  strays to be reaped after the turn`.
+- **Probe delay, with the fix (M3, not committed):** the same delay on the fixed dating: 3 of 3
+  passed. File restored with `git checkout` and touched.
+- **20 runs under load.** `target/proof1110/loaded20.sh`: 6 `sha256sum /dev/zero` burners pinned
+  to CPUs 0–3, and the `main` binary with `test(/^cockpit::/)` pinned to the same 4 CPUs, 20
+  times in a row: 20 of 20 passed, 75 of 75 tests each (12–14 s per run; host load average
+  35–79). This load did not reproduce #1110 by itself, so the probe delay above is the
+  deterministic proof; the series shows the fix breaks none of the Cockpit's tests under load.
+- **Gates.** `cargo fmt --all --check`: exit 0. `cargo clippy --locked -p yulius-app -p yulius
+  --all-targets --all-features -- -D warnings`: exit 0. The whole gate is Yulius CI's on the
+  pull request head.
+- **Security.** `yulius security-scan`: exit 2, not run (Vidoc refused the key: HTTP 401); unrun,
+  not passed. Yulius CI's security job scans the pull request head.
+
+### In the contributor's fork (from #1143, on `dev` 91a0cec5)
+
+Their SPEC-449 Evidence, summarized: with a throwaway 200 ms delay after the probe, 0 of 3 stray
+tests passed on the old dating and 3 of 3 with the fix; the regression test failed on the old
+dating (20.3 s) and passed with the fix; `cockpit::` passed 20 of 20 runs (51 tests each) under
+a `cargo build -j 3` loop plus 6 CPU burners on 6 CPUs (load average 9–15); fmt and clippy exit
+0. An earlier overloaded series (out of memory, load average 45) failed two other tests that
+touch no stray code. Their independent review approved after its findings on their own code
+were fixed; its pre-existing finding is the Known leftover in Context.
