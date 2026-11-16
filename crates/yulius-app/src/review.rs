@@ -87,7 +87,11 @@ pub(crate) struct CutOffReviewer {
 #[must_use]
 pub(crate) fn reviewer_resume_prompt(after: Option<&str>, reviewer: &CutOffReviewer) -> String {
     let told = format!(
-        "Yulius continued this session in a new process on a Claude subscription that can run          {model}, because a usage limit cut off your reviewer `{id}` in the middle of its review          round. Resume that reviewer now: SendMessage to `{id}`, asking it to continue its          review. Do not start a new reviewer for this round: the one you resume keeps what it          has read. Then continue the task where you left off.",
+        "Yulius continued this session in a new process (a move to another Claude subscription \
+         or a restart), and a usage limit had cut off your reviewer `{id}` ({model}) in the \
+         middle of its review round. Resume that reviewer now: SendMessage to `{id}`, asking it \
+         to continue its review. Do not start a new reviewer for this round: the one you resume \
+         keeps what it has read. Then continue the task where you left off.",
         model = claude_model_name(&reviewer.model),
         id = reviewer.agent_id,
     );
@@ -105,7 +109,10 @@ const NOWHERE_RETRY: std::time::Duration = std::time::Duration::from_secs(10);
 /// What a session is told whose cut-off reviewer no subscription can run now (RLM-002, REV-007).
 fn reviewer_nowhere(reviewer: &CutOffReviewer) -> String {
     format!(
-        "Yulius: a usage limit cut off your reviewer `{id}` in the middle of its review round, and          no Claude subscription can run {model} now. Start the review again (the Agent tool with          the `yulius-reviewer` agent and the same prompt): this round then runs on Opus 5.5,          which says so in its summary.",
+        "Yulius: a usage limit cut off your reviewer `{id}` in the middle of its review round, and \
+         no Claude subscription can run {model} now. Start the review again (the Agent tool with \
+         the `yulius-reviewer` agent and the same prompt): this round then runs on Opus 5.5, \
+         which says so in its summary.",
         model = claude_model_name(&reviewer.model),
         id = reviewer.agent_id,
     )
@@ -1088,5 +1095,37 @@ fn round_view(r: ReviewRoundRecord) -> yulius_contracts::api::git::ReviewRoundVi
         verdict: r.verdict,
         reported: r.ended_at.is_some(),
         cut_off: r.cut_off,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// SPEC-493 RLM-002 (review round 1 of fix 7): what a session is told of its cut-off
+    /// reviewer reads as whole sentences, and claims nothing of the subscription it is on.
+    #[test]
+    fn a_cut_off_reviewer_is_told_in_whole_sentences() {
+        let reviewer = CutOffReviewer {
+            agent_id: "arev1".to_owned(),
+            model: "claude-fable-5-2".to_owned(),
+        };
+        let resume = reviewer_resume_prompt(Some("Gate says: fix it."), &reviewer);
+        assert!(resume.starts_with("Gate says: fix it.\n\nYulius continued this session"));
+        assert!(resume.contains(
+            "a usage limit had cut off your reviewer `arev1` (Fable 5.2) in the middle of its \
+             review round. Resume that reviewer now: SendMessage to `arev1`, asking it to \
+             continue its review. Do not start a new reviewer for this round: the one you resume \
+             keeps what it has read."
+        ));
+        let nowhere = reviewer_nowhere(&reviewer);
+        assert!(nowhere.contains(
+            "no Claude subscription can run Fable 5.2 now. Start the review again (the Agent \
+             tool with the `yulius-reviewer` agent and the same prompt): this round then runs on \
+             Opus 5.5, which says so in its summary."
+        ));
+        for text in [resume, nowhere] {
+            assert!(!text.contains("  "), "{text}");
+        }
     }
 }
