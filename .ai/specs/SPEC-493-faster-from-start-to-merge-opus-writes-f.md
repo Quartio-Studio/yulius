@@ -389,7 +389,9 @@ person's decision is read as holding after an approval).
 ### Fix 10: two defects found on the way
 
 - **DEF-001** A queue entry Claude Code never takes out holds a session on its subscription for
-  one turn's end only, also in a goal run whose Stop is blocked (SPEC-479's promise).
+  one turn's end only, also in a goal run whose Stop is blocked (SPEC-479's promise). At
+  blocked Stops "one" is one Stop and the next after a tool result: only there would Claude
+  Code have taken a notification in (see Decisions).
 - **DEF-002** A running sandbox browser is unlocked for viewers' input only when no native file
   chooser opened before the policy appeared can still be on the display (SPEC-483 AC-36).
 
@@ -532,8 +534,10 @@ Both are checked on current `dev` first and fixed test-first if they still hold.
   of the same paths types nothing again; after A's release the mark is gone.
 - **AC-22** (SCO-004) `task_create` with `paths` overlapping a live task's claim answers the
   overlap and the offer; with `after` set to that task it is created queued behind it.
-- **AC-23** (DEF-001) A goal run with a queue entry never taken out: the first Stop stays for it,
-  the next Stop moves the session although no `turn_duration` was written between them.
+- **AC-23** (DEF-001) A turn whose Stops a hook blocks (a goal's or the gate's), with a
+  notification Claude Code never takes out: the first Stop stays for it, the next Stop after a
+  tool result moves the session although no `turn_duration` was written between them. A
+  prompt in its place keeps the session.
 - **AC-24** (DEF-002) A browser started before the policy, with a file chooser possibly open, is
   not unlocked when the policy appears until it was restarted or the chooser is known closed.
 
@@ -638,6 +642,19 @@ Both are checked on current `dev` first and fixed test-first if they still hold.
     records' reports. The command's own time is in each spec's Evidence.
   - Fix 9: the share of pull requests that hit a conflict: `audit_log` actions
     `delivery.conflict` per merged pull request (baseline 29 of 60 in quartio-v2, 7 of 42 here).
+  - Fix 10a: the server log's "the session is not moved to another subscription at this turn's
+    end: a prompt waits in Claude Code's queue" lines, by task and day (`journalctl -u yulius
+    --since -7d | grep -c`); a task with more than two of them in a row in one turn is this
+    defect. The week before the merge is the baseline.
+- **Fix 10a: a blocked Stop's left-over notification is told by kind and tool result.** A Stop
+  a hook blocks writes no `turn_duration`, so SWQ-002's rule never ran in a goal run. Counting
+  every entry that waited at two Stops would lose a real prompt whose continuation called no
+  tool (Claude Code hands it on at the Stop that ends the turn, probe run-7 of task #452). In
+  this sandbox's transcripts the entries never taken out are 16 notifications (5 prompts, lost
+  to killed processes); notifications leave at a tool result (1,297 `remove`, 762 at the first
+  one after their `enqueue`). So only a `<task-notification>` that waited at a Stop and through
+  a tool result written after it is left at the next Stop. ADR-0310 is amended in place: it is
+  that decision's rule, narrowed for one record Claude Code does not write.
 
 ## Evidence
 
@@ -1780,3 +1797,80 @@ Both are checked on current `dev` first and fixed test-first if they still hold.
   closed before the merge: the m6 line above, and the holder's `checks` now held by
   `scope_overlaps` (A gets pull request #41 and a passed Yulius CI run: the answer says
   `pr_open`, `passed`, not armed). Mutation: the lookup replaced by `"none"` fails it.
+
+### Fix 10a: a notification never taken out keeps a blocked turn's session for one Stop
+
+- DEF-001 held on `dev` (9c6c86bcd). A Stop a hook blocks writes `stop_hook_summary` and no
+  `turn_duration`: this sandbox's transcripts hold 2,692 summary-after-summary pairs. So
+  `Queue::turn_closed` never ran between such Stops, and an entry Claude Code never takes out
+  kept the session at every blocked Stop of a goal run.
+- Real records (a script over every transcript in `$HOME/.claude/projects`, structure only):
+  - 16 of the 21 entries never removed are `<task-notification>`s. The other 5 are prompts,
+    lost to killed processes.
+  - Notifications leave the queue at tool results: 1,297 `remove` records, 762 of them at the
+    first tool result after their `enqueue`. Stuck ones waited through 0 to 476 tool results.
+  - With 2.1.322, a blocked Stop releases nothing (task #452's probe run-7). A waiting prompt
+    is taken in at the next tool result, or handed on at the Stop that ends the turn.
+- The rule (`Queue::stop_seen`, `QueueChange::{Notice, NoticeTaken, ToolResult}`): a
+  notification of Claude Code's own that waited at a Stop, then through a tool result written
+  after that Stop, and still waits at the next Stop, is left. A leave whose kind is not known
+  takes a marked notice first. The Stop hook tells the queue at every Stop, after reading the
+  turn's lines when a move may be made there.
+- Tests:
+  - Unit `a_notice_that_waited_through_a_blocked_stops_tool_result_is_left` covers:
+    - the notice that is left;
+    - no tool result after the Stop, or one without a time;
+    - a prompt in its place;
+    - a notice taken in while a prompt waits;
+    - an unknown leave;
+    - a closing record between the two Stops.
+  - Harness: `enqueue` and `remove` of a notification are told apart, and a session's own tool
+    result is the take-in point while a sub-agent's is not. `claude_goal_mode_records` now
+    expects that record.
+  - Integration `a_notice_never_taken_out_keeps_a_blocked_turn_for_one_stop` (AC-23): the gate
+    blocks, the fake agent's `/stuck` entry is a `<task-notification>`, and `--stop-tool` gives
+    the continuation a tool call and its result. The first run prints `STOP BLOCKED` once, then
+    the session moves to the second subscription.
+- Mutations, each failing a test:
+  - no `stop_seen` at the Stop;
+  - every tool result counted;
+  - the Stop's time not compared;
+  - a notice's `enqueue` read as a prompt;
+  - `HandedOn` not taking a marked notice;
+  - `NoticeTaken` not taking one (killed by the case added for it).
+  Two are equivalent: marking every waiting entry (`record` clamps the marks to the notices),
+  and `turn_closed` keeping the marks (it marks all that wait itself).
+- Suites:
+  - fake-agent 34 passed;
+  - yulius-harness all passed;
+  - yulius-app lib 584 passed;
+  - `claude_code_moves` 59 passed.
+  - `queue restart goal` 174 of 175: `pool_supervision::a_reattached_run_at_a_limit_is_restarted_past_it`
+    times out in that group on `dev`'s tree too and passes alone 3 of 3 (open issue #1286,
+    outside this change).
+- Local gate (`scripts/dev ci`) at c5d2e4729: exit 0, 4617 passed, 18 skipped.
+- `scripts/dev mutants`: 27 listed, 19 caught, 0 missed, 0 timed out, 8 unviable (333 s, at c5d2e4729).
+- A week later: see Decisions (fix 10a's log lines).
+- Not testable here: the real Claude Code in a goal run with a stuck notification. Its pieces
+  are taken from the real transcripts and probe runs above, not from a live run of the whole.
+- Review round 1 (Opus 5.5, head `fe4e8b27f`): approve, with two minors and four nits; both
+  minors closed before the merge.
+  - Minor 1: a Stop at which no move is decided told the queue without reading the lines first.
+    A tool result could be read before the `remove` that took the notice in at it (in 754 of
+    1,301 real cases the `remove` follows the result directly), and that notice's mark would
+    then move onto a waiting prompt. Now `stop_seen(now, read)` leaves nothing at an unread
+    Stop; it still marks for the next one. Unit cases cover that order and an unread Stop
+    followed by a read one. Mutation: `read` ignored.
+  - Minor 2: "a prompt in its place keeps the session" now has its integration test,
+    `a_prompt_in_a_blocked_turn_with_tool_results_keeps_the_session` (the reviewer's probe): the
+    session stays through the blocked Stops, the prompt is answered in run 1, then it moves.
+    Mutation: every `enqueue` read as a notice.
+  - Nits:
+    - ADR-0310's Alternatives say where the text is used now, and DEF-001 says what "one" means
+      at blocked Stops.
+    - Answered in words: an absorbed entry taking a mark errs toward keeping the session (the
+      kind of a `dequeue` is not known).
+    - Answered in words: the integration test's fixed clock leaves the Stop-time comparison to
+      the unit test, where its mutation fails.
+    - The reviewer's replay of the rule over all 5,824 real Stops lost no entry, and 9 Stops
+      changed from staying to moving.

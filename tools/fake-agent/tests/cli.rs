@@ -913,7 +913,7 @@ fn a_stuck_entry_is_recorded_and_never_handed_on() -> TestResult {
         shapes(&path),
         [
             "user - first",
-            "enqueue a notification",
+            "enqueue <task-notification>\n<summary>a notification</summary>\n</task-notification>",
             "enqueue second",
             "assistant",
             // One hand-over, of the prompt: the stuck entry stays.

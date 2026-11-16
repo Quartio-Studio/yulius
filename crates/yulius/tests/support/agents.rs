@@ -170,6 +170,9 @@ pub struct FakeAgentOptions {
     /// `enqueue` record, nothing released by a blocked Stop, and one turn for all that wait
     /// after the Stop that ends the turn.
     pub queue_prompts: bool,
+    /// A Stop a hook blocks continues with a tool call and its result before the answer
+    /// (`--stop-tool`, SPEC-493 DEF-001).
+    pub stop_tool: bool,
     /// A waiting line's `enqueue` record is written only once this file exists
     /// (`--queue-record-file`).
     pub queue_record_file: Option<PathBuf>,
@@ -291,6 +294,9 @@ impl HarnessPort for FakeAgentHarness {
             if let Some(path) = path {
                 argv.extend([flag.into(), path.to_string_lossy().into_owned()]);
             }
+        }
+        if self.options.stop_tool {
+            argv.push("--stop-tool".into());
         }
         if self.options.queue_prompts {
             argv.push("--queue-prompts".into());

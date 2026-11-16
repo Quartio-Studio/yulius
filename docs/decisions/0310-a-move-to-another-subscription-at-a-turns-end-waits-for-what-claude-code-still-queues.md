@@ -8,7 +8,10 @@ issue #1194. Beside [ADR-0063](0063-background-work-and-goal-verdict-from-the-tr
 (a move at a turn's end waits for background work) and
 [ADR-0293](0293-claude-code-follows-latest-and-must-know-the-default-model.md) as amended by
 SPEC-471 (the restart on a newer Claude Code waits for the queue). A default that can be
-reversed: see Alternatives.
+reversed: see Alternatives. Amended by
+[SPEC-493](../../.ai/specs/SPEC-493-faster-from-start-to-merge-opus-writes-f.md) DEF-001 (fix
+10a, 2026-11-16): a Stop a hook blocks writes no closing record, so what such Stops leave is
+told by a rule of its own (see Consequences).
 
 ## Context
 
@@ -67,7 +70,9 @@ it would run into its limit each time.
   blocked without a tool call keeps a real prompt waiting through any number of them; a person
   who writes at every turn would be cut off by a count.
 - **Tell a notification from a prompt by its text.** A `dequeue` names no entry, so the text of
-  what still waits is not known.
+  what still waits is not known. (SPEC-493 DEF-001 does use the text where records give it, for
+  the blocked Stops' marks only: an `enqueue` or `remove` names its text, and a `dequeue` is
+  taken to take a marked notice, so a wrong guess keeps the session.)
 - **A leave takes a left-over entry first.** Every notification taken in during a turn would
   then make an old left-over entry count again, and such a session would stay at each turn's
   end.
@@ -78,7 +83,13 @@ it would run into its limit each time.
   the rest of a turn the gate sent on). At its limit that turn is cut and redone after the
   move.
 - A session that holds an entry Claude Code never takes out stays until a turn's end hands
-  nothing on (usually the one at which the entry is first seen) and moves at the next.
+  nothing on (usually the one at which the entry is first seen) and moves at the next. A Stop a
+  hook blocks (the gate's, a goal's) writes no closing record: there a notification of Claude
+  Code's own (`<task-notification>`) is left once it waited at one Stop, then through a tool
+  result written after it (where Claude Code takes a notification it would hand on into the
+  turn), and still waits at the next Stop (SPEC-493 DEF-001). A prompt, a slash command or a
+  `!` line is never left that way, so a turn whose continuation calls no tool keeps the session
+  until it does.
 - When a left-over entry leaves the queue alone while a prompt waits (a notification
   delivered to a sub-agent: once in this instance's 412 sessions with queue records), that
   prompt counts as left over, and a move at that turn's end loses it as before.

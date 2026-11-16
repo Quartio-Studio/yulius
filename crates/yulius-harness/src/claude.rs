@@ -263,10 +263,15 @@ pub fn record_time(line: &str) -> Option<Timestamp> {
 /// `version`: it is written to the session's own file only. An operation not known here is
 /// read as nothing.
 fn observe_queue(record: &Map<String, Value>) -> Vec<Observed> {
-    let change = match str_of(record, "operation") {
-        Some("enqueue") => QueueChange::Added,
-        Some("dequeue") => QueueChange::HandedOn,
-        Some("remove" | "popAll" | "popOne") => QueueChange::Taken,
+    // A notification of Claude Code's own: some it never takes out (SPEC-493 DEF-001).
+    let notice = str_of(record, "content")
+        .is_some_and(|text| text.trim_start().starts_with("<task-notification>"));
+    let change = match (str_of(record, "operation"), notice) {
+        (Some("enqueue"), false) => QueueChange::Added,
+        (Some("enqueue"), true) => QueueChange::Notice,
+        (Some("dequeue"), _) => QueueChange::HandedOn,
+        (Some("remove" | "popAll" | "popOne"), false) => QueueChange::Taken,
+        (Some("remove" | "popAll" | "popOne"), true) => QueueChange::NoticeTaken,
         _ => return Vec::new(),
     };
     let at = str_of(record, "timestamp").and_then(parse_rfc3339);
@@ -395,7 +400,19 @@ fn observe_user(record: &Map<String, Value>) -> Vec<Observed> {
         return Vec::new();
     }
     if !is_prompt(message) {
-        return background_started(record, message);
+        let mut out = background_started(record, message);
+        // Where Claude Code takes what waits in its queue into the turn (SPEC-493 DEF-001).
+        if let Some(Value::Array(blocks)) = message.get("content")
+            && blocks
+                .iter()
+                .any(|b| b.get("type").and_then(Value::as_str) == Some("tool_result"))
+        {
+            out.push(Observed::Queue {
+                change: QueueChange::ToolResult,
+                at: str_of(record, "timestamp").and_then(parse_rfc3339),
+            });
+        }
+        return out;
     }
     if compact_failed(message) {
         return vec![Observed::CompactFailed];
@@ -1145,6 +1162,10 @@ mod tests {
             observe_line(&format!(
                 r#"{{"type":"user","isSidechain":false,"timestamp":"2026-11-13T16:27:57.749Z","message":{{"role":"user","content":[{{"tool_use_id":"toolu_1","type":"tool_result","content":"Workflow launched in background. Task ID: wtx0s195j\nSummary: Three agents in a row"}}]}},"toolUseResult":{tur}}}"#
             ))
+            .into_iter()
+            // The tool result as the queue reads it is told elsewhere.
+            .filter(|o| !matches!(o, Observed::Queue { change: QueueChange::ToolResult, .. }))
+            .collect::<Vec<_>>()
         };
         let started = Observed::BackgroundStarted {
             id: "wtx0s195j".into(),
@@ -1295,6 +1316,10 @@ mod tests {
             observe_line(&format!(
                 r#"{{"type":"user","isSidechain":{sidechain},"timestamp":"2026-10-10T05:38:01.385Z","message":{{"role":"user","content":[{{"tool_use_id":"toolu_1","type":"tool_result","content":"Monitor started (task bppf4z917, expires in 15m unless the source ends first)"}}]}},"toolUseResult":{tur}}}"#
             ))
+            .into_iter()
+            // The tool result as the queue reads it is told elsewhere.
+            .filter(|o| !matches!(o, Observed::Queue { change: QueueChange::ToolResult, .. }))
+            .collect::<Vec<_>>()
         };
         assert_eq!(
             result(
@@ -1344,7 +1369,13 @@ mod tests {
         let other = observe_line(
             r#"{"type":"user","isSidechain":false,"message":{"role":"user","content":[{"tool_use_id":"t","type":"tool_result","content":"Scheduled."}]},"toolUseResult":{"taskId":"b4","timeoutMs":1000}}"#,
         );
-        assert!(other.is_empty());
+        assert_eq!(
+            other,
+            [Observed::Queue {
+                change: QueueChange::ToolResult,
+                at: None
+            }]
+        );
         // A foreground agent's result, a plain tool result and a sub-agent's launch are none.
         assert!(result(r#"{"status":"completed","agentId":"a1"}"#, false).is_empty());
         assert!(result(r#"{"stdout":"","stderr":""}"#, false).is_empty());
@@ -2084,6 +2115,35 @@ mod tests {
             change(r#"{"type":"queue-operation","operation":"popOne","content":"x"}"#),
             one(QueueChange::Taken)
         );
+        // A notification of Claude Code's own is told apart, in and out (SPEC-493 DEF-001).
+        assert_eq!(
+            change(
+                r#"{"type":"queue-operation","operation":"enqueue","sessionId":"s","content":"<task-notification>\n<task-id>b1</task-id>\n</task-notification>"}"#
+            ),
+            one(QueueChange::Notice)
+        );
+        assert_eq!(
+            change(
+                r#"{"type":"queue-operation","operation":"remove","sessionId":"s","content":"<task-notification>\n<task-id>b1</task-id>\n</task-notification>","reason":"absorbed_mid_turn"}"#
+            ),
+            one(QueueChange::NoticeTaken)
+        );
+        // A tool result of the session's own is where it takes what waits into the turn; a
+        // sub-agent's is not, nor a prompt.
+        let result = |sidechain: bool| {
+            format!(
+                r#"{{"type":"user","isSidechain":{sidechain},"timestamp":"2026-11-12T05:56:55.452Z","message":{{"role":"user","content":[{{"tool_use_id":"t","type":"tool_result","content":"ok"}}]}},"toolUseResult":{{"stdout":"ok"}}}}"#
+            )
+        };
+        assert_eq!(change(&result(false)), one(QueueChange::ToolResult));
+        assert_eq!(
+            observe_line(&result(false)),
+            vec![Observed::Queue {
+                change: QueueChange::ToolResult,
+                at: parse_rfc3339("2026-11-12T05:56:55.452Z"),
+            }]
+        );
+        assert!(observe_line(&result(true)).is_empty());
         // An enqueue of something that is no text (an image) has no content.
         assert_eq!(
             change(r#"{"type":"queue-operation","operation":"enqueue","sessionId":"s"}"#),

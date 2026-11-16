@@ -348,6 +348,12 @@ fn claude_goal_mode_records() {
         relevant,
         vec![
             &goal(GoalOutcome::Set, 1_791_610_681_381),
+            // The tool result where Claude Code takes what waits into the turn (SPEC-493
+            // DEF-001).
+            &Observed::Queue {
+                change: yulius_domain::agent_cli::QueueChange::ToolResult,
+                at: Some(Timestamp(1_791_610_684_362))
+            },
             // The `/goal` command's echo starts no turn: the model's work after it does
             // (SPEC-085 STT-001).
             &Observed::TurnComplete {

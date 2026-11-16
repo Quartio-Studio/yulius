@@ -6,6 +6,10 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-16
 
+- A notification Claude Code never takes out of its queue no longer keeps a session on its
+  subscription at every Stop of a goal run (SPEC-493 fix 10a, task #472, ADR-0310 amended): a
+  Stop a hook blocks writes no closing record, so such a notification that waited at one Stop
+  and through a tool result after it is left at the next Stop, and the session moves there.
 - Two tasks no longer edit the same files unknowingly (SPEC-493 fix 9, task #472,
   [ADR-0348](decisions/0348-an-overlapping-claim-is-told-to-both-tasks.md)): an overlapping
   `scope_claim` names the holding task's note, step in progress and pull request, and the holder
