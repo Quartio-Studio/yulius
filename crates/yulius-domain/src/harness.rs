@@ -85,7 +85,7 @@ pub fn is_compact_command(text: &str) -> bool {
 }
 
 /// A coding-agent CLI Yulius can run as a task (SPEC-001 TSK-003). Claude Code, and Codex
-/// again (SPEC-503, ADR-0353: F 2026-11-16 reverses the Codex part of F 2026-10-08). A new
+/// again (SPEC-503, ADR-0355: F 2026-11-16 reverses the Codex part of F 2026-10-08). A new
 /// harness needs a variant here and an adapter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Harness {

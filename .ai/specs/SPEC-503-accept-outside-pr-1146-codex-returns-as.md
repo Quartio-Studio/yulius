@@ -18,7 +18,7 @@ supersedes `F 2026-10-08` for Codex only. The contributor's fork owner asked for
 CLI) as a second harness in this fork, working the same way Claude Code does: Codex accounts in
 the subscription pool, login from the UI, a task can be created with harness Codex, the native
 Codex session runs in the task terminal, observation of its transcript, usage windows, resume after
-restart." ADR: [0353](../../docs/decisions/0353-codex-returns-as-a-second-harness-with-a-pinned-cli.md).
+restart." ADR: [0355](../../docs/decisions/0355-codex-returns-as-a-second-harness-with-a-pinned-cli.md).
 
 ## Goal
 
@@ -67,7 +67,7 @@ refreshes during a run, and provides the pinned Codex CLI itself, so a Codex tas
     RFC 3339 reader** (#1296, `yulius_domain::time::parse_rfc3339`): each is fitted where the
     Codex code meets it; all of them stay Claude-only.
   - **Numbers**: SPEC-451 and ADR-0290 are other documents on `dev`, so this is SPEC-503 and
-    ADR-0353. No migration.
+    ADR-0355. No migration.
 - **The Codex CLI.** The newest release on 2026-11-16 is 0.169.0 (npm `@openai/codex`, tag
   `rust-v0.169.0`, 2026-11-13). Its help, `config.toml`, `hooks.json`, `-c` overrides,
   `auth.json` schema, rollout layout and hooks library were compared with 0.167.0 (Evidence), and
@@ -90,7 +90,7 @@ refreshes during a run, and provides the pinned Codex CLI itself, so a Codex tas
 | CDX-003 | Codex homes are per (sandbox, account) and share one `sessions` directory per sandbox, so a resumed session finds its rollout whichever account runs it. A session's rollout is found by its id; a new session's id is adopted from its SessionStart hook, else from the first rollout for the worktree created after the run started. | `tests/paths.rs`; `tests/codex.rs` |
 | CDX-004 | The rollout is observed: session meta, user turns (not injected context), turn completion, token usage (per response, so a resumed run counts only its own), rate-limit windows (recorded on the account) and a reached rate limit (a usage limit of the subscription: the task rotates or waits). Unknown types are ignored and malformed lines counted. | `yulius-harness/tests/observe.rs` with synthetic fixtures `tests/fixtures/codex/*`, and a rollout the real Codex 0.169.0 wrote |
 | CDX-005 | A Codex account signs in from the Subscriptions page by `codex login --device-auth` in a server-owned terminal (the device URL and code shown, credentials kept in `auth.json` of a temporary home) or by an OpenAI API key given in the UI; the credential is a validated `auth.json` sealed in the vault. | `yulius-harness/tests/login.rs`; `tests/accounts.rs` |
-| CDX-006 | After a Codex run ends, the run's `auth.json` replaces the stored one only as a genuine refresh (same ChatGPT account and `id_token` subject, newer `last_refresh` not dated ahead, all three tokens present; never an API-key account or a signed-out one), so a refreshed token is kept and a file of another account or user, or dated ahead, is not (a file keeping the account's own ids with other tokens is: ADR-0353, Consequences). A newer copy another run of the account left is kept at launch; the file is removed once no run of the account is left in the sandbox, also when a launch ends before its run is live (a failed spawn, a subscription removed just after it was chosen). | `yulius-harness/tests/login.rs`; `tests/codex.rs`; `supervisor.rs` unit tests |
+| CDX-006 | After a Codex run ends, the run's `auth.json` replaces the stored one only as a genuine refresh (same ChatGPT account and `id_token` subject, newer `last_refresh` not dated ahead, all three tokens present; never an API-key account or a signed-out one), so a refreshed token is kept and a file of another account or user, or dated ahead, is not (a file keeping the account's own ids with other tokens is: ADR-0355, Consequences). A newer copy another run of the account left is kept at launch; the file is removed once no run of the account is left in the sandbox, also when a launch ends before its run is live (a failed spawn, a subscription removed just after it was chosen). | `yulius-harness/tests/login.rs`; `tests/codex.rs`; `supervisor.rs` unit tests |
 | CDX-007 | Codex hooks reach Yulius as Claude Code's do (`yulius hook codex <event>`): SessionStart (briefing, session id), UserPromptSubmit, Stop (turn boundary, gate, holds) and PreToolUse; a hook of another harness than the run's is refused. | `tests/agent_hooks.rs` |
 | CDX-008 | A Codex account's usage windows come from `chatgpt.com/backend-api/wham/usage` (read-only) and from the rate limits in its runs' rollouts; an API-key account has no windows. Codex reports no limit of one model's family, so a refresh asks it nothing about one. | `wiring/usage.rs` tests |
 | CDX-009 | Rotation picks only accounts of the task's provider; a Codex task at its limit moves to another Codex account by native resume, and waits when none has capacity. A task never switches harness. | `yulius-domain` rotation tests; `tests/codex.rs` |
@@ -111,7 +111,7 @@ refreshes during a run, and provides the pinned Codex CLI itself, so a Codex tas
 
 Five pull requests, each merged into `dev` on green before the next begins.
 
-- [x] Slice A: SPEC-503, ADR-0353 and the decision of 2026-11-16 recorded
+- [x] Slice A: SPEC-503, ADR-0355 and the decision of 2026-11-16 recorded
 - [x] Slice A: the domain knows Codex and OpenAI while the API still refuses them
 - [x] Slice A: a Codex rollout is observed and counted, checked on a rollout real Codex 0.169.0 wrote
 - [x] Slice A: Codex launch plan, homes, session paths and sign-in helpers in yulius-harness
@@ -213,7 +213,7 @@ Five pull requests, each merged into `dev` on green before the next begins.
   chosen silently. The import endpoint refuses a malformed body without echoing it, as the token
   routes do (SPEC-502 TKP-006).
 - **The Codex CLI is pinned** by version and sha512 in the source instead of followed on a channel
-  (ADR-0353): the harness is checked against one release, and a bump is a code change. The
+  (ADR-0355): the harness is checked against one release, and a bump is a code change. The
   contribution pinned 0.167.0; 0.169.0 was the newest release on 2026-11-16 and passed the same
   checks, so it is the one pinned.
 - **SPEC-447 integration (CDX-013).** The domain already refused a person's choice of another
@@ -277,7 +277,7 @@ Five pull requests, each merged into `dev` on green before the next begins.
   - minors: cache writes counted once (`observe::codex_cache_writes_are_counted_once`); a Codex
     prompt always follows `--`, also after `resume <id>` (real 0.169.0 took `resume <id> --
     completion` as a prompt; `launch::a_codex_prompt_that_is_a_subcommand_word_stays_a_prompt`);
-    a write-back needs a whole sign-in, and what the rule cannot tell apart is in ADR-0353's
+    a write-back needs a whole sign-in, and what the rule cannot tell apart is in ADR-0355's
     Consequences (`login::only_a_genuine_refresh_replaces_the_stored_codex_credential`); a run's
     session started since the run (`wiring::harness::tests::a_codex_session_is_the_first_rollout_of_the_worktree`);
     a sign-in's `auth.json` is read within its bound and scrubbed
@@ -290,4 +290,9 @@ Five pull requests, each merged into `dev` on green before the next begins.
 - After the fixes: `cargo fmt --check` and `cargo clippy --workspace --all-targets -D warnings`
   clean; the same `cargo nextest` set plus `metrics_recount`: 2235 passed, 0 failed. Yulius CI
   passed on `9bfa82ec5`.
+- **Review round 2** (Fable 5.2): approve of `ddc533f47`, with one minor (the fixtures README rows)
+  and four nits, all carried into slice B. Its merge candidate on `dev` failed the repository check
+  (run `cdfcd297`): `dev` had taken ADR number 0353 meanwhile (CI admission), so this decision is
+  ADR-0355; `origin/dev` merged cleanly, `python3 scripts/check_repository.py` passed, clippy clean,
+  `cargo nextest` for `yulius-harness`, `yulius-domain`, `yulius-app`: 1350 passed.
 

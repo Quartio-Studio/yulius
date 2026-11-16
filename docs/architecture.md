@@ -4,7 +4,7 @@ One Rust binary, `yulius`, serves the web UI and API, supervises detached `ptyho
 that own Claude Code sessions inside per-sandbox containment, and talks to GitHub and
 Anthropic. Codex returns as a second harness
 ([SPEC-503](../.ai/specs/SPEC-503-accept-outside-pr-1146-codex-returns-as.md),
-[decision 0353](decisions/0353-codex-returns-as-a-second-harness-with-a-pinned-cli.md)): its
+[decision 0355](decisions/0355-codex-returns-as-a-second-harness-with-a-pinned-cli.md)): its
 adapter in `yulius-harness` plans a run, reads its rollout and checks its sign-ins; tasks take it
 once the supervisor runs it (later slices of SPEC-503). The detailed contracts are in
 [SPEC-002](../.ai/specs/SPEC-002-yulius-architecture.md); crate layering rules are in

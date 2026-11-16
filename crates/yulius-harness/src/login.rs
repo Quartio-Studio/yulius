@@ -182,7 +182,7 @@ pub const CODEX_REFRESH_SKEW_MS: i64 = 5 * 60 * 1000;
 /// a date ahead so that real refreshes never win is not taken. An API-key account is never
 /// replaced. The rule tells sign-ins apart; it cannot authenticate the tokens: an agent that keeps
 /// its home's `account_id` and `id_token` and writes other tokens dated now replaces the stored
-/// sign-in until it is signed in again (ADR-0353, Consequences).
+/// sign-in until it is signed in again (ADR-0355, Consequences).
 #[must_use]
 pub fn codex_auth_replaces(fresh: &[u8], stored: &[u8], now: Timestamp) -> bool {
     let account = |auth: &[u8]| -> Option<String> {

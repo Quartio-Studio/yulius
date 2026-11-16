@@ -1,6 +1,6 @@
 //! The Claude Code and Codex adapters: launch specifications, hooks and MCP configuration,
 //! transcript tailing, usage extraction and login flows (SPEC-002 §7.2). Codex is the second
-//! harness again (SPEC-503, ADR-0353; accepted 2026-11-16, reversing the Codex part of
+//! harness again (SPEC-503, ADR-0355; accepted 2026-11-16, reversing the Codex part of
 //! F 2026-10-08).
 //!
 //! Provider wire formats stay inside this crate. Parsers are written against the structure of
