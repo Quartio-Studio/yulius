@@ -135,6 +135,54 @@ fn an_overlapping_claim_is_told_to_both_tasks() -> TestResult {
             "{seen_by_b:?}"
         );
         assert_eq!(seen_by_b[0].patterns, ["crates/a/**"]);
+        // AC-22 (SCO-004): a task created with paths a live task holds is not made blind: the
+        // answer names the holder and offers to run it after that task; with `after_task` it
+        // is made, waiting behind it, holding its paths.
+        let caller = claimer.caller();
+        let refused = app
+            .tool_task_create(
+                &caller,
+                &json!({"prompt": "Tidy x", "paths": ["crates/a/src/x.rs"]}),
+            )
+            .await?;
+        assert_eq!(refused["created"], false, "{refused}");
+        assert_eq!(refused["overlaps"][0]["task_number"], number, "{refused}");
+        assert!(
+            refused["offer"]
+                .as_str()
+                .is_some_and(|o| o.contains(&format!("`after_task: {number}`"))),
+            "{refused}"
+        );
+        let made = app
+            .tool_task_create(
+                &caller,
+                &json!({"prompt": "Tidy x", "paths": ["crates/a/src/x.rs"], "after_task": number}),
+            )
+            .await?;
+        let new_number = made["task"]["number"].as_u64().ok_or("the new task")?;
+        let tasks = app.deps.store.tasks(&sandbox, false).await?;
+        let new = tasks
+            .iter()
+            .find(|t| u64::from(t.number) == new_number)
+            .ok_or("the new task")?;
+        assert_eq!(
+            new.status,
+            yulius_domain::task::TaskStatus::Chained,
+            "{made}"
+        );
+        let claims = app.deps.store.active_claims(&sandbox).await?;
+        assert!(
+            claims
+                .iter()
+                .any(|c| c.task_id == new.id && c.pattern == "crates/a/src/x.rs"),
+            "{claims:?}"
+        );
+        // Bad paths are refused.
+        assert!(
+            app.tool_task_create(&caller, &json!({"prompt": "x", "paths": ["/etc"]}))
+                .await
+                .is_err()
+        );
         // Released: the mark is gone from both.
         app.tool_scope_release(&holder, &json!({})).await?;
         assert!(view(a.clone()).await?.is_empty());

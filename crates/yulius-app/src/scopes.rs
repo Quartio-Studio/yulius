@@ -88,6 +88,34 @@ impl LiveClaims {
     }
 }
 
+/// `task_create`'s `paths` (SPEC-493 SCO-004): at most [`MAX_CLAIMS_PER_TASK`] globs, as
+/// `scope_claim` takes them.
+///
+/// # Errors
+/// `Invalid` when it is not a list of valid globs, or too long.
+pub(crate) fn paths_arg(args: &Value) -> AppResult<Vec<Pattern>> {
+    let Some(value) = args.get("paths").filter(|v| !v.is_null()) else {
+        return Ok(Vec::new());
+    };
+    let items = value
+        .as_array()
+        .ok_or_else(|| AppError::Invalid("`paths` is a list of path globs".into()))?;
+    if items.len() > MAX_CLAIMS_PER_TASK {
+        return Err(AppError::Invalid(format!(
+            "`paths` names at most {MAX_CLAIMS_PER_TASK} globs"
+        )));
+    }
+    items
+        .iter()
+        .map(|item| {
+            let text = item
+                .as_str()
+                .ok_or_else(|| AppError::Invalid("`paths` is a list of path globs".into()))?;
+            Pattern::parse(text).map_err(|err| AppError::Invalid(format!("`{text}`: {err}")))
+        })
+        .collect()
+}
+
 /// What a task told of an overlap does (SPEC-493 SCO-003): the same in the claim's answer and
 /// the holding task's message.
 pub(crate) const OVERLAP_ADVICE: &str = "These paths overlap another live task's claim, and that \
@@ -101,6 +129,68 @@ const TELL_TRIES: u32 = 12;
 const TELL_RETRY: std::time::Duration = std::time::Duration::from_secs(10);
 
 impl App {
+    /// The claims of live or waiting tasks of `sandbox` (every task not closed) that `paths`
+    /// overlap, as `task_create` answers them (SPEC-493 SCO-004).
+    ///
+    /// # Errors
+    /// Store failures.
+    pub(crate) async fn planned_overlaps(
+        &self,
+        sandbox: &yulius_domain::ids::SandboxId,
+        paths: &[Pattern],
+    ) -> AppResult<Vec<Value>> {
+        let store = &self.deps.store;
+        let tasks: Vec<TaskRecord> = store
+            .tasks(sandbox, false)
+            .await?
+            .into_iter()
+            .filter(|t| t.status != yulius_domain::task::TaskStatus::Closed)
+            .collect();
+        let mut out = Vec::new();
+        for record in store.active_claims(sandbox).await? {
+            let Some(task) = tasks.iter().find(|t| t.id == record.task_id) else {
+                continue;
+            };
+            let Ok(theirs) = Pattern::parse(&record.pattern) else {
+                continue;
+            };
+            for pattern in paths.iter().filter(|p| yulius_domain::scope::patterns_overlap(p, &theirs)) {
+                out.push(json!({
+                    "pattern": pattern.as_str(),
+                    "task_number": task.number,
+                    "task_title": task.title,
+                    "task_status": task.status.as_str(),
+                    "their_pattern": theirs.as_str(),
+                    "their_note": record.note,
+                }));
+            }
+        }
+        Ok(out)
+    }
+
+    /// Claims `paths` for a task just made (SPEC-493 SCO-004).
+    ///
+    /// # Errors
+    /// Store failures.
+    pub(crate) async fn claim_for_new_task(
+        &self,
+        task: &TaskRecord,
+        paths: &[Pattern],
+    ) -> AppResult<()> {
+        for pattern in paths {
+            let record = ScopeClaimRecord {
+                id: self.deps.crypto.new_id(),
+                task_id: task.id.clone(),
+                sandbox_id: task.sandbox_id.clone(),
+                pattern: pattern.as_str().to_owned(),
+                note: Some("the paths it was created with".to_owned()),
+                created_at: self.now(),
+            };
+            self.deps.store.insert_claim(&record).await?;
+        }
+        Ok(())
+    }
+
     /// The other live tasks of `task`'s sandbox whose claims overlap its claims, with its
     /// patterns that overlap them (SPEC-493 SCO-002). A store that cannot be read shows none.
     pub(crate) async fn claim_overlaps(
