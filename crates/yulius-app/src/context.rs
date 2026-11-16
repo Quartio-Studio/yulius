@@ -97,6 +97,9 @@ pub struct AppConfig {
     /// turn that ends sooner after its prompt moves one turn later. Tests whose agent ends a
     /// turn milliseconds after its prompt set it to none.
     pub claude_code_queue_record_ms: u64,
+    /// How far apart a move for a cut-off reviewer is tried again outside a turn's end, while it
+    /// stays due (SPEC-493 RLM-002). Tests of the turn's end set it far beyond their run.
+    pub reviewer_move_retry_ms: u64,
     /// How long the Superagent's request to start a task in another sandbox waits for its
     /// person's answer ([`crate::cross_sandbox::CROSS_REQUEST_WAIT`], SPEC-335 XSR-003). Tests
     /// shorten it.
@@ -171,6 +174,7 @@ impl AppConfig {
             claude_code_start_ms: 120_000,
             claude_code_decision_ms: 3_500,
             claude_code_queue_record_ms: 2_000,
+            reviewer_move_retry_ms: 5_000,
             cross_request_wait_ms: u64::try_from(
                 crate::cross_sandbox::CROSS_REQUEST_WAIT.as_millis(),
             )

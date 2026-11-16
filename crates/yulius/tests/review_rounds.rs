@@ -1145,6 +1145,114 @@ mod real {
         Ok(())
     }
 
+    /// Review round 1 of fix 7: a cut-off reviewer superseded by a new one is forgotten (here
+    /// the new start moves the session for Fable, REV-007, whose prompt asks for the review
+    /// again and names no reviewer to resume); a subagent that is no round's, refused before any
+    /// answer, is no one's limit: nothing moves.
+    #[test]
+    fn a_superseded_reviewer_and_an_unknown_subagent_change_nothing_else() -> TestResult {
+        for (superseded, cut_off) in [
+            (true, &b"/reviewer-limit yulius-reviewer\r"[..]),
+            (false, &b"/reviewer-limit-first Explore\r"[..]),
+        ] {
+            let fake =
+                locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+            let (_dir, data) = temp()?;
+            let rt = runtime()?;
+            rt.block_on(async {
+                let probe = Arc::new(ScriptedUsage::default());
+                let agent = FakeAgentOptions {
+                    resume_prompts: true,
+                    transcript: true,
+                    ..hooked()
+                };
+                let (app, _port) = start_with(&data, &fake, agent, 0, probe.clone(), |config| {
+                    config.claude_code_queue_record_ms = 0;
+                    config.reviewer_move_retry_ms = 600_000;
+                })
+                .await?;
+                let (sandbox, user) = seed(&app, &data, &["a-first", "b-second"]).await?;
+                probe.set("a-first", usage(5.0, 4 * HOUR, 10.0, 100));
+                probe.set("b-second", usage(40.0, 4 * HOUR, 50.0, 100));
+                refresh(&app, &user, "a-first").await?;
+                refresh(&app, &user, "b-second").await?;
+                let id = new_task(&app, &sandbox, &user, "Review it", TaskMode::Prompt).await?;
+                ready(&app, &id).await?;
+                // A first turn, read live: the transcript is followed from here on.
+                app.send_input(&id, b"hello\r").await?;
+                wait_for("the session waiting", Duration::from_secs(30), || async {
+                    app.deps.store.task(&id).await.is_ok_and(|task| {
+                        task.is_some_and(|task| {
+                            task.activity == Some(yulius_domain::task::Activity::Waiting)
+                        })
+                    })
+                })
+                .await?;
+                app.send_input(&id, cut_off).await?;
+                let cut = wait_for("the cut-off", Duration::from_secs(30), || async {
+                    screen(&app, &id).contains("CUT OFF")
+                })
+                .await;
+                assert!(cut.is_ok(), "{}", screen(&app, &id));
+                if superseded {
+                    // The cut-off is read: the first subscription is out of Fable.
+                    wait_for("Fable recorded", Duration::from_secs(30), || async {
+                        app.deps
+                            .store
+                            .account(
+                                &yulius_domain::ids::AccountId::parse("a-first")
+                                    .unwrap_or_else(|_| unreachable!()),
+                            )
+                            .await
+                            .ok()
+                            .flatten()
+                            .and_then(|a| a.usage_json)
+                            .is_some_and(|json| {
+                                yulius_app::usage_json::from_json(&json)
+                                    .weekly_fable
+                                    .and_then(|w| w.used_percent)
+                                    == Some(100.0)
+                            })
+                    })
+                    .await?;
+                    app.send_input(&id, b"/agent yulius-reviewer\r").await?;
+                    live_run(&app, &id, 2).await?;
+                    let asked = wait_for("the prompt", Duration::from_secs(30), || async {
+                        screen(&app, &id).contains("for the review round you asked for")
+                    })
+                    .await;
+                    let seen = screen(&app, &id);
+                    assert!(asked.is_ok(), "{seen}");
+                    assert!(!seen.contains("SendMessage to `arev"), "{seen}");
+                    let switches = app.deps.store.switches(&id).await?;
+                    assert_eq!(switches[0].reason, "review_fable", "{switches:?}");
+                } else {
+                    app.send_input(&id, b"carry on\r").await?;
+                    let moved = wait_for("no move", Duration::from_secs(10), || async {
+                        app.deps
+                            .store
+                            .attempts(&id)
+                            .await
+                            .is_ok_and(|a| a.len() > 1)
+                    })
+                    .await;
+                    assert!(moved.is_err(), "the session moved for a limit not its own");
+                    let first = app
+                        .deps
+                        .store
+                        .account(&yulius_domain::ids::AccountId::parse("a-first")?)
+                        .await?
+                        .ok_or("a-first")?;
+                    assert_ne!(first.status, yulius_app::model::AccountStatus::Limited);
+                }
+                stop(&app, &id).await?;
+                Ok::<_, Box<dyn std::error::Error>>(())
+            })?;
+            rt.shutdown_timeout(Duration::from_secs(5));
+        }
+        Ok(())
+    }
+
     /// The RLM-002 tests: the second subscription runs Fable or does not; `command` cuts the
     /// reviewer off while the session is idle or inside a turn.
     fn a_cut_off_reviewer(second_runs_fable: bool, command: &'static [u8]) -> TestResult {
@@ -1161,6 +1269,8 @@ mod real {
             };
             let (app, _port) = start_with(&data, &fake, agent, 0, probe.clone(), |config| {
                 config.claude_code_queue_record_ms = 0;
+                // Only the path each test names makes the move: no retry within the run.
+                config.reviewer_move_retry_ms = 600_000;
             })
             .await?;
             let (sandbox, user) = seed(&app, &data, &["a-first", "b-second"]).await?;
@@ -1197,6 +1307,11 @@ mod real {
             })
             .await;
             assert!(cut.is_ok(), "{}", screen(&app, &id));
+            // The turn Claude Code starts with the reviewer's failed task notification; its
+            // Stop hook makes the move (an in-turn cut-off ends its own turn).
+            if !command.starts_with(b"/reviewer-limit-turn ") {
+                app.send_input(&id, b"carry on\r").await?;
+            }
             if !second_runs_fable {
                 // Nowhere to move: the session stays and is told the round runs on Opus.
                 let told = wait_for("the Opus note", Duration::from_secs(30), || async {

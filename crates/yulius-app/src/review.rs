@@ -101,10 +101,9 @@ pub(crate) fn reviewer_resume_prompt(after: Option<&str>, reviewer: &CutOffRevie
     }
 }
 
-/// How often, and how far apart, a move for a cut-off reviewer is tried again outside a turn's
-/// end while it stays due: about ten minutes in all (review round 1 of fix 7).
+/// How often a move for a cut-off reviewer is tried again outside a turn's end while it stays
+/// due, `reviewer_move_retry_ms` apart: about ten minutes in all (review round 1 of fix 7).
 const REVIEWER_MOVE_TRIES: u32 = 120;
-const REVIEWER_MOVE_RETRY: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// How often, and how far apart, a session is offered [`reviewer_nowhere`] while it does not take
 /// typed text: about two minutes in all.
@@ -607,11 +606,16 @@ impl App {
         if !moves {
             return;
         }
-        // Due now: the turn's end makes it (the Stop hook), or the session once idle, whichever
-        // comes first; neither can drop it (review round 1 of fix 7).
+        // Due now. With hooks the turn's end makes it: Claude Code wakes the session's thread
+        // with the reviewer's failed task notification, and that turn's Stop hook decides,
+        // with the gate's answer (review round 1 of fix 7). Without hooks the session makes it
+        // once idle, at a turn's end the transcript shows or a later try.
         runtime
             .reviewer_move
             .store(true, std::sync::atomic::Ordering::SeqCst);
+        if runtime.hooks_seen.load(std::sync::atomic::Ordering::SeqCst) {
+            return;
+        }
         let app = Arc::clone(self);
         let task = task.clone();
         tokio::spawn(async move { app.move_for_reviewer(&task).await });
@@ -637,17 +641,6 @@ impl App {
             return ReviewerMove::Later;
         };
         let family = ModelFamily::of(Some(&reviewer.model));
-        // Where the session is can run the reviewer's model (it moved there already, or the
-        // limit ended): it stays, and the agent resumes the reviewer here (review round 1).
-        let here = input
-            .accounts
-            .iter()
-            .find(|a| Some(&a.id) == input.current.as_ref());
-        if here.is_some_and(|account| {
-            yulius_domain::rotation::assess(account, input.now, input.threshold, family).is_some()
-        }) {
-            return ReviewerMove::Nothing;
-        }
         if let Some(account) = yulius_domain::rotation::move_to_also_run(&input, family) {
             return ReviewerMove::To(account);
         }
@@ -689,7 +682,10 @@ impl App {
         let runtime = self.runtime(task_id);
         for attempt in 0..REVIEWER_MOVE_TRIES {
             if attempt > 0 {
-                tokio::time::sleep(REVIEWER_MOVE_RETRY).await;
+                tokio::time::sleep(std::time::Duration::from_millis(
+                    self.config.reviewer_move_retry_ms,
+                ))
+                .await;
             }
             // A turn's end took the move meanwhile, or nothing is due any more.
             if !runtime.reviewer_move.swap(false, Ordering::SeqCst) {

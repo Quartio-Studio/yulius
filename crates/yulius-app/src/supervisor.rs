@@ -5271,14 +5271,6 @@ impl App {
                     self.record_limit(account, limit, family).await;
                 }
             }
-            // A limit that cut off a subagent of the session's thread is the session's news as
-            // a workflow agent's is (SPEC-493 RLM-001), read live only.
-            if !catching_up {
-                for observation in &observations {
-                    self.subagent_limit(&task_id, &attempt, family, observation)
-                        .await;
-                }
-            }
             for observation in &observations {
                 facts.fold(observation);
             }
@@ -5354,8 +5346,21 @@ impl App {
                     }
                 }
             } else {
+                // A limit that cut off a subagent of the session's thread is the session's news
+                // as a workflow agent's is (SPEC-493 RLM-001), read live only, and after the
+                // thread's own lines of this read: a turn they start is under way by then, so a
+                // move for a reviewer waits for its end (review round 1 of fix 7).
+                let cut_offs: Vec<Observation> = observations
+                    .iter()
+                    .filter(|o| matches!(o, Observation::SubagentCutOff { .. }))
+                    .cloned()
+                    .collect();
                 for observation in observations {
                     self.on_observation(&task_id, &attempt, observation).await;
+                }
+                for observation in &cut_offs {
+                    self.subagent_limit(&task_id, &attempt, family, observation)
+                        .await;
                 }
             }
             // Live metrics (#31): the dashboard counts a run while it goes, saved after each turn

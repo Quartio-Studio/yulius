@@ -507,6 +507,9 @@ pub(super) fn reviewer_cut_off(
         .map(|(_, kind)| kind)
         .unwrap_or_default()
         .trim();
+    if in_turn && let Some(reason) = hooks.and_then(|h| h.prompt(line)) {
+        return say(&format!("PROMPT BLOCKED: {reason}"));
+    }
     if in_turn && let Some(t) = transcript {
         t.lock()
             .map_err(|_| io::Error::other("transcript lock"))?
