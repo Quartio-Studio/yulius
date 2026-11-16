@@ -137,13 +137,22 @@ impl App {
         let Ok(Some(sandbox)) = self.deps.store.sandbox(&task.sandbox_id).await else {
             return false;
         };
-        // What the integration branch contains is read from a fresh fetch, not from a
-        // remote-tracking ref a worktree could have moved: without one, nothing carries.
+        // The integration branch is the commit origin names now, fetched; never a ref of the
+        // clone, which the agents can write (review round 2 of SPEC-493 fix 6).
+        let integration = match integration {
+            Some(given) => given.to_owned(),
+            None => match self.integration_head(&sandbox).await {
+                Ok(head) => head,
+                Err(err) => {
+                    tracing::warn!(task = %task.id, error = %err, "the integration branch could not be read before comparing a review");
+                    return false;
+                }
+            },
+        };
         if let Err(err) = self.dlv_refresh_clone(&sandbox).await {
             tracing::warn!(task = %task.id, error = %err, "the clone could not be refreshed before comparing a review");
             return false;
         }
-        let integration = integration.map_or_else(|| integration_ref(&sandbox), str::to_owned);
         match self
             .deps
             .git
@@ -185,8 +194,13 @@ impl App {
             .ok()
             .flatten()
             .ok_or("the sandbox cannot be read")?;
-        // Counted against a fresh fetch only: a remote-tracking ref the worktree moved could
-        // pass its own work off as the integration branch's (review round 1 of fix 6).
+        // Counted against the commit origin names now, fetched: a ref of the clone (which the
+        // agents can write, also right after a fetch) could pass its own work off as the
+        // integration branch's (review rounds 1 and 2 of fix 6).
+        let integration = match integration {
+            Some(given) => given.to_owned(),
+            None => self.integration_head(&sandbox).await?,
+        };
         if let Err(err) = self.dlv_refresh_clone(&sandbox).await {
             tracing::warn!(task = %task.id, error = %err, "the clone could not be refreshed before counting a follow-up");
             return Err(format!(
@@ -194,7 +208,6 @@ impl App {
                 err.public_message()
             ));
         }
-        let integration = integration.map_or_else(|| integration_ref(&sandbox), str::to_owned);
         let commits = match git
             .follow_up_commits(worktree, reviewed, head, &integration)
             .await
@@ -305,13 +318,41 @@ impl App {
     }
 }
 
-/// The integration branch of `sandbox` as its full remote-tracking ref: a short `origin/<branch>`
-/// would resolve to a tag or a local branch of that name first (review round 1 of fix 6).
-fn integration_ref(sandbox: &crate::model::SandboxRecord) -> String {
-    format!(
-        "refs/remotes/origin/{}",
-        crate::delivery::delivery_profile(sandbox).integration_branch
-    )
+impl App {
+    /// The commit the integration branch of `sandbox` is at, as its origin says now: GitHub's
+    /// branch, or a playground's own repository on this server; never a ref of the clone
+    /// (review round 2 of SPEC-493 fix 6). Read before the clone is refreshed, so the fetch
+    /// brings its objects.
+    async fn integration_head(
+        &self,
+        sandbox: &crate::model::SandboxRecord,
+    ) -> Result<String, String> {
+        let branch = crate::delivery::delivery_profile(sandbox).integration_branch;
+        let unreadable =
+            |why: String| format!("the integration branch `{branch}` cannot be read: {why}");
+        let head = if sandbox.is_playground() {
+            let origin = self.playground_origin(&sandbox.id);
+            self.deps
+                .git
+                .resolve_commit(&origin, &format!("refs/heads/{branch}"))
+                .await
+        } else {
+            match self.dlv_installation_token(sandbox).await {
+                Ok(token) => {
+                    self.deps
+                        .github
+                        .branch_sha(&token, &sandbox.repo_owner, &sandbox.repo_name, &branch)
+                        .await
+                }
+                Err(err) => Err(err),
+            }
+        };
+        match head {
+            Ok(Some(sha)) => Ok(sha),
+            Ok(None) => Err(unreadable("it does not exist".to_owned())),
+            Err(err) => Err(unreadable(err.public_message())),
+        }
+    }
 }
 
 fn short(sha: &str) -> &str {

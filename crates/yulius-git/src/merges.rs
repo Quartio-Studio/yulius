@@ -528,7 +528,7 @@ mod tests {
 }
 
 /// Longest changed line [`Git::commit_lines`] counts as one line.
-pub const MAX_COUNTED_LINE_BYTES: usize = 1_000;
+pub const MAX_COUNTED_LINE_BYTES: usize = 200;
 
 /// One file's section of a `-U0` patch.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -664,10 +664,7 @@ mod unified_tests {
         assert!(parse_unified_zero(b"diff --git a/x b/x\n@@ -1,2 +1 @@\n-a\n+b\n").is_none());
         assert!(parse_unified_zero(b"@@ -1 +1 @@\n-a\n+b\n").is_none());
         // A NUL byte or a line over the bound: opaque.
-        let long = format!(
-            "diff --git a/x b/x\n@@ -0,0 +1 @@\n+{}\n",
-            "x".repeat(1_001)
-        );
+        let long = format!("diff --git a/x b/x\n@@ -0,0 +1 @@\n+{}\n", "x".repeat(201));
         for patch in [
             long.as_bytes(),
             b"diff --git a/x b/x\n@@ -0,0 +1 @@\n+a\0b\n",
@@ -675,10 +672,7 @@ mod unified_tests {
             let files = parse_unified_zero(patch).unwrap_or_default();
             assert!(files.len() == 1 && files[0].opaque);
         }
-        let edge = format!(
-            "diff --git a/x b/x\n@@ -0,0 +1 @@\n+{}\n",
-            "x".repeat(1_000)
-        );
+        let edge = format!("diff --git a/x b/x\n@@ -0,0 +1 @@\n+{}\n", "x".repeat(200));
         assert!(!parse_unified_zero(edge.as_bytes()).unwrap_or_default()[0].opaque);
         assert_eq!(
             parse_numstat_z(b"3\t1\tsrc/a b.rs\0-\t-\tlogo.png\0"),

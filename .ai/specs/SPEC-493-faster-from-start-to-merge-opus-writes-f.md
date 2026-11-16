@@ -311,16 +311,18 @@ person's decision is read as holding after an approval).
 - **APR-002** What counts: every file except documentation (`is_documentation_path`), test files
   (a `tests/`, `test/`, `e2e/`, `__tests__/` or `fixtures/` folder; `*_test.*`, `test_*.*`,
   `*.test.*`, `*.spec.*`, `*.e2e.*`) and, in a Rust file, the lines of a `#[cfg(test)] mod name {`
-  to its closing brace (`#[cfg(test)] mod tests;` or a single test-only item is product code). A
+  to its closing brace, read as Rust tokens (comments and strings skipped) (`#[cfg(test)] mod tests;` or a single test-only item is product code). A
   project sets its own in `yulius.toml`: `[review] product = [globs]` (only these count; tests and
   documents still do not) or `not_product = [globs]` (these never count). Lines are read with
   plumbing and `--text`, so the clone's configuration and attributes change nothing.
 - **APR-003** The rule does not hold, and the head needs its review, when a file of the reviewed
   change is no longer part of the pull request's change, when a merge after the reviewed commit
-  resolved a conflict or merged anything but the integration branch (its full remote-tracking
-  ref, freshly fetched: without the fetch nothing carries), when the reviewed commit is not an
-  ancestor of the head, or when a product file's changed line has a NUL byte or is over 1,000
-  bytes (no line count says what it changed).
+  resolved a conflict or merged anything but the integration branch (the commit its origin
+  names now, read from GitHub or a playground's own repository and then fetched, never a ref of
+  the clone: without it nothing carries), when the reviewed commit is not an ancestor of the
+  head, or when a product file's changed line has a NUL byte or is over 200 bytes (no line count
+  says what it changed). Commits are read as their objects say: no replace ref, graft or
+  commit-graph file of the clone counts.
 - **APR-004** The merge record says what was counted ("reviewed at X; since then N product lines
   in M files: …"), and so does the tool's answer; a refusal names the count and the files.
 - **APR-005** The review rules say, the same way everywhere: after an approval, fix the remaining

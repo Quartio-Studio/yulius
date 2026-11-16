@@ -2718,9 +2718,15 @@ fn a_follow_up_is_read_from_the_commits_themselves() -> TestResult {
     let fake = fx.git.rev_parse(&repo, "HEAD")?;
     fx.raw(&repo, &["checkout", "-q", "main"])?;
     fx.raw(&repo, &["replace", &big, &fake])?;
-    fs::write(repo.join(".git/info/grafts"), format!("{small} {reviewed}\n"))?;
+    fs::write(
+        repo.join(".git/info/grafts"),
+        format!("{small} {reviewed}\n"),
+    )?;
     fx.raw(&repo, &["commit-graph", "write", "--reachable"])?;
-    assert_eq!(fx.raw(&repo, &["show", "-s", "--format=%P", &small])?, reviewed);
+    assert_eq!(
+        fx.raw(&repo, &["show", "-s", "--format=%P", &small])?,
+        reviewed
+    );
     let files = fx.git.commit_lines(&repo, &big)?;
     assert_eq!(files.len(), 1);
     assert_eq!(files[0].added.len(), 200);

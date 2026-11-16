@@ -10,7 +10,7 @@ pub const FOLLOW_UP_LINES: u32 = 20;
 
 /// Longest changed line counted as one line; a longer one, or one with a NUL byte, makes its
 /// file opaque (review round 1 of SPEC-493 fix 6).
-pub const MAX_COUNTED_LINE_BYTES: usize = 1_000;
+pub const MAX_COUNTED_LINE_BYTES: usize = 200;
 
 /// Folders whose files are tests.
 const TEST_FOLDERS: [&str; 5] = ["tests", "test", "e2e", "__tests__", "fixtures"];
@@ -93,60 +93,243 @@ impl FileLines {
 }
 
 /// The test modules of a Rust file's `text`, as 1-based inclusive line spans: a `#[cfg(test)]`
-/// whose item (on its line or after further attributes) opens `mod name {`, to the first line
-/// after it that starts with `}` at the attribute's indentation. Anything else, such as
-/// `#[cfg(test)] mod tests;` or a single test-only item, is no span, and a module whose end is
-/// not found is none either: when in doubt, a line counts (review round 1 of SPEC-493 fix 6).
+/// attribute whose item, after any further attributes, is `mod name {`, to that module's
+/// closing brace. The text is read as Rust tokens: comments, strings (raw ones too) and
+/// character literals are skipped, so nothing in them opens or closes a span (review round 2 of
+/// SPEC-493 fix 6). Anything else, such as `#[cfg(test)] mod tests;` or a single test-only item,
+/// is no span, and a text that does not lex (an unclosed comment or string) has none: when in
+/// doubt, a line counts.
 #[must_use]
 pub fn test_module_spans(text: &str) -> Vec<(u32, u32)> {
-    let lines: Vec<&str> = text.lines().collect();
-    let indent_of = |line: &str| line.len() - line.trim_start().len();
+    let Some(code) = code_only(text) else {
+        return Vec::new();
+    };
+    let line_of = |at: usize| {
+        let line = code[..at].iter().filter(|&&(c, _)| c == '\n').count() + 1;
+        u32::try_from(line).unwrap_or(u32::MAX)
+    };
+    let tokens: Vec<usize> = (0..code.len())
+        .filter(|&k| !code[k].0.is_whitespace())
+        .collect();
+    let char_at = |t: usize| tokens.get(t).map(|&k| code[k].0);
+    // The token index after a balanced `[ … ]` starting at `t` (an attribute's body).
+    let after_brackets = |mut t: usize| {
+        let mut depth = 0usize;
+        while let Some(c) = char_at(t) {
+            t += 1;
+            match c {
+                '[' => depth += 1,
+                ']' => {
+                    depth = depth.checked_sub(1)?;
+                    if depth == 0 {
+                        return Some(t);
+                    }
+                }
+                _ => {}
+            }
+        }
+        None
+    };
+    let word_at = |t: usize| -> Option<(String, usize)> {
+        let start = *tokens.get(t)?;
+        let mut end = start;
+        while code
+            .get(end)
+            .is_some_and(|&(c, _)| c.is_alphanumeric() || c == '_')
+        {
+            end += 1;
+        }
+        let word: String = code[start..end].iter().map(|&(c, _)| c).collect();
+        let next = tokens.partition_point(|&k| k < end);
+        (!word.is_empty()).then_some((word, next))
+    };
     let mut spans = Vec::new();
-    let mut at = 0;
-    while at < lines.len() {
-        let line = lines[at];
-        let Some(rest) = line.trim_start().strip_prefix("#[cfg(test)]") else {
-            at += 1;
+    let mut t = 0;
+    while t < tokens.len() {
+        if char_at(t) != Some('#') || char_at(t + 1) != Some('[') {
+            t += 1;
+            continue;
+        }
+        let Some(after) = after_brackets(t + 1) else {
+            break;
+        };
+        let body: String = tokens[t + 2..after - 1]
+            .iter()
+            .map(|&k| code[k].0)
+            .collect();
+        if body != "cfg(test)" {
+            t = after;
+            continue;
+        }
+        // Further attributes, a visibility, then `mod name {`.
+        let mut item = after;
+        while char_at(item) == Some('#') && char_at(item + 1) == Some('[') {
+            match after_brackets(item + 1) {
+                Some(next) => item = next,
+                None => return spans,
+            }
+        }
+        if let Some((word, next)) = word_at(item)
+            && word == "pub"
+        {
+            item = next;
+            if char_at(item) == Some('(') {
+                while char_at(item).is_some_and(|c| c != ')') {
+                    item += 1;
+                }
+                item += 1;
+            }
+        }
+        let open = match word_at(item) {
+            Some((word, next)) if word == "mod" => word_at(next)
+                .filter(|(name, _)| !name.chars().next().is_some_and(char::is_numeric))
+                .and_then(|(_, next)| (char_at(next) == Some('{')).then_some(next)),
+            _ => None,
+        };
+        let Some(open) = open else {
+            t = after;
             continue;
         };
-        let indent = indent_of(line);
-        let mut item = rest.trim();
-        let mut item_at = at;
-        while item.is_empty() || (item.starts_with("#[") && item.ends_with(']')) {
-            item_at += 1;
-            let Some(next) = lines.get(item_at) else {
-                break;
-            };
-            item = next.trim();
-        }
-        let item = ["pub(crate) ", "pub(super) ", "pub "]
-            .iter()
-            .find_map(|vis| item.strip_prefix(vis))
-            .unwrap_or(item);
-        let opens = item
-            .strip_prefix("mod ")
-            .and_then(|rest| rest.strip_suffix('{'))
-            .is_some_and(|name| {
-                let name = name.trim();
-                !name.is_empty() && name.chars().all(|c| c.is_alphanumeric() || c == '_')
-            });
-        let end = opens
-            .then(|| {
-                (item_at + 1..lines.len()).find(|&k| {
-                    indent_of(lines[k]) == indent && lines[k].trim_start().starts_with('}')
-                })
-            })
-            .flatten();
-        match end {
-            Some(end) => {
-                let span = |n: usize| u32::try_from(n + 1).unwrap_or(u32::MAX);
-                spans.push((span(at), span(end)));
-                at = end + 1;
+        // The module's closing brace.
+        let mut depth = 0usize;
+        let mut close = None;
+        for (u, &k) in tokens.iter().enumerate().skip(open) {
+            match code[k].0 {
+                '{' => depth += 1,
+                '}' => {
+                    depth = depth.saturating_sub(1);
+                    if depth == 0 {
+                        close = Some(u);
+                        break;
+                    }
+                }
+                _ => {}
             }
-            None => at += 1,
         }
+        let Some(close) = close else {
+            return spans;
+        };
+        spans.push((line_of(tokens[t]), line_of(tokens[close])));
+        t = close + 1;
     }
     spans
+}
+
+/// `text` as `(char, true)` code with every comment, string and character literal blanked to
+/// spaces (line breaks kept), or `None` when one is not closed.
+fn code_only(text: &str) -> Option<Vec<(char, bool)>> {
+    let chars: Vec<char> = text.chars().collect();
+    let mut out: Vec<(char, bool)> = Vec::with_capacity(chars.len());
+    let blank = |c: char| {
+        if c == '\n' {
+            ('\n', false)
+        } else {
+            (' ', false)
+        }
+    };
+    let ident = |c: char| c.is_alphanumeric() || c == '_';
+    let mut at = 0;
+    while at < chars.len() {
+        let c = chars[at];
+        let next = chars.get(at + 1).copied();
+        let before_ident = at > 0 && ident(chars[at - 1]);
+        if c == '/' && next == Some('/') {
+            while at < chars.len() && chars[at] != '\n' {
+                out.push(blank(chars[at]));
+                at += 1;
+            }
+        } else if c == '/' && next == Some('*') {
+            let mut depth = 0usize;
+            loop {
+                match (chars.get(at), chars.get(at + 1)) {
+                    (Some('/'), Some('*')) => {
+                        depth += 1;
+                        out.extend([blank('/'), blank('*')]);
+                        at += 2;
+                    }
+                    (Some('*'), Some('/')) => {
+                        depth -= 1;
+                        out.extend([blank('*'), blank('/')]);
+                        at += 2;
+                        if depth == 0 {
+                            break;
+                        }
+                    }
+                    (Some(&ch), _) => {
+                        out.push(blank(ch));
+                        at += 1;
+                    }
+                    (None, _) => return None,
+                }
+            }
+        } else if !before_ident
+            && (c == 'r' || (c == 'b' && next == Some('r')) || (c == 'c' && next == Some('r')))
+            && {
+                let mut k = at + if c == 'r' { 1 } else { 2 };
+                while chars.get(k) == Some(&'#') {
+                    k += 1;
+                }
+                chars.get(k) == Some(&'"')
+            }
+        {
+            // A raw string: `r#"…"#`, closed by `"` and as many `#`.
+            let mut k = at + if c == 'r' { 1 } else { 2 };
+            let mut hashes = 0;
+            while chars.get(k) == Some(&'#') {
+                hashes += 1;
+                k += 1;
+            }
+            k += 1;
+            loop {
+                match chars.get(k) {
+                    None => return None,
+                    Some('"') if (1..=hashes).all(|h| chars.get(k + h) == Some(&'#')) => {
+                        k += 1 + hashes;
+                        break;
+                    }
+                    _ => k += 1,
+                }
+            }
+            out.extend(chars[at..k].iter().map(|&ch| blank(ch)));
+            at = k;
+        } else if c == '"' {
+            let mut k = at + 1;
+            loop {
+                match chars.get(k) {
+                    None => return None,
+                    Some('\\') => k += 2,
+                    Some('"') => {
+                        k += 1;
+                        break;
+                    }
+                    _ => k += 1,
+                }
+            }
+            out.extend(chars[at..k.min(chars.len())].iter().map(|&ch| blank(ch)));
+            at = k;
+        } else if c == '\'' {
+            // A character literal (`'a'`, `'\n'`, `'\u{1F600}'`), or else a lifetime's quote.
+            let close = match next {
+                Some('\\') => (at + 3..chars.len().min(at + 12)).find(|&k| chars[k] == '\''),
+                Some(_) if chars.get(at + 2) == Some(&'\'') => Some(at + 2),
+                _ => None,
+            };
+            match close {
+                Some(close) => {
+                    out.extend(chars[at..=close].iter().map(|&ch| blank(ch)));
+                    at = close + 1;
+                }
+                None => {
+                    out.push((c, true));
+                    at += 1;
+                }
+            }
+        } else {
+            out.push((c, true));
+            at += 1;
+        }
+    }
+    Some(out)
 }
 
 /// What a follow-up changed: its product lines in total and per file, most first.
@@ -325,6 +508,57 @@ mod tests {
                     #[cfg(test)]\nmod open {\n  fn x() {}\n";
         assert_eq!(test_module_spans(text), [(5, 10), (12, 14)]);
         assert!(test_module_spans("fn a() {}\n").is_empty());
-        assert!(test_module_spans("#[cfg(test)] mod t { fn a() {} }\nfn b() {}\n").is_empty());
+        assert_eq!(
+            test_module_spans("#[cfg(test)] mod t { fn a() {} }\nfn b() {}\n"),
+            [(1, 1)]
+        );
+    }
+
+    /// Real files read whole: each has one test module, from its `#[cfg(test)]` to its last
+    /// line, though their tests hold the tricks above in strings (and `briefing.rs` has a
+    /// single `#[cfg(test)]` constant before it).
+    #[test]
+    fn real_files_have_their_test_module_and_nothing_else() {
+        for text in [
+            include_str!("follow_up.rs"),
+            include_str!("briefing.rs"),
+            include_str!("spec_format/config.rs"),
+            include_str!("scope.rs"),
+        ] {
+            let lines: Vec<&str> = text.lines().collect();
+            let start = lines
+                .windows(2)
+                .position(|w| w == ["#[cfg(test)]", "mod tests {"])
+                .and_then(|n| u32::try_from(n + 1).ok());
+            let last = u32::try_from(lines.len()).unwrap_or(0);
+            assert_eq!(test_module_spans(text), [(start.unwrap_or(0), last)]);
+        }
+    }
+
+    /// Review round 2 of SPEC-493 fix 6: a span is read from Rust tokens. A `#[cfg(test)] mod`
+    /// in a comment or a string opens none; a brace in a comment, a string or a character
+    /// literal neither opens nor closes one; an unformatted closing brace ends it; an unclosed
+    /// comment or string leaves no span at all.
+    #[test]
+    fn test_spans_are_read_from_rust_tokens() {
+        let fake_in_comment = "/*\n#[cfg(test)]\nmod t {\n*/\npub fn evil() {\n}\n";
+        assert!(test_module_spans(fake_in_comment).is_empty());
+        let fake_in_string = "const S: &str = \"\n#[cfg(test)]\nmod t {\n\";\npub fn evil() {}\n";
+        assert!(test_module_spans(fake_in_string).is_empty());
+        let raw = "const S: &str = r#\"\n#[cfg(test)]\nmod t {\n\"#;\npub fn evil() {}\n";
+        assert!(test_module_spans(raw).is_empty());
+        let braces = "#[cfg(test)]\nmod tests {\n    const A: char = '}';\n    // }\n    \
+                      const B: &str = \"}\";\n    fn t<'a>(x: &'a str) {}\n    \
+                      const Q: char = '\\'';\n    const U: char = '\\u{7D}';\n}\n\
+                      pub fn after() {}\n";
+        assert_eq!(test_module_spans(braces), [(1, 9)]);
+        let unformatted = "#[cfg(test)]\nmod tests {\n    fn t() {} }\npub fn after() {}\n}\n";
+        assert_eq!(test_module_spans(unformatted), [(1, 3)]);
+        let nested = "#[cfg(test)]\nmod t {\n/* /* } */ } */\n}\nfn p() {}\n";
+        assert_eq!(test_module_spans(nested), [(1, 4)]);
+        assert!(test_module_spans("#[cfg(test)]\nmod t {\n/* open\n}\n").is_empty());
+        assert!(test_module_spans("#[cfg(test)]\nmod t {\n\"open\n}\n").is_empty());
+        let spaced = "#[ cfg( test ) ]\npub mod  t\n{\n}\n";
+        assert_eq!(test_module_spans(spaced), [(1, 4)]);
     }
 }

@@ -93,6 +93,11 @@ struct RealGit {
     ahead_behind_error: std::sync::Mutex<Option<String>>,
     /// While set, the remote's branches cannot be read (`ls-remote` fails, SPEC-139).
     remote_unreadable: std::sync::atomic::AtomicBool,
+    /// While set, a refresh of a clone fails (SPEC-493 fix 6).
+    fetch_fails: std::sync::atomic::AtomicBool,
+    /// Moved right after every refresh of a clone, as an agent racing it would: `(ref, commit)`
+    /// (review round 2 of SPEC-493 fix 6).
+    forged_after_fetch: std::sync::Mutex<Option<(String, String)>>,
 }
 
 /// An injected push failure, as GitHub's `! [remote rejected] … (failed)` (#366).
@@ -155,8 +160,15 @@ impl GitPort for RealGit {
     }
     async fn sync_clone(&self, _url: &str, dest: &Path, _token: &Secret) -> AppResult<()> {
         if dest.join(".git").exists() {
+            if self.fetch_fails.load(std::sync::atomic::Ordering::SeqCst) {
+                return Err(AppError::Conflict("the fetch failed (test)".into()));
+            }
             self.run(dest, &["fetch", "--prune", "--quiet", "origin"])
                 .await?;
+            let forged = self.forged_after_fetch.lock().ok().and_then(|f| f.clone());
+            if let Some((name, commit)) = forged {
+                self.run(dest, &["update-ref", &name, &commit]).await?;
+            }
         } else {
             let origin = self.origin.to_string_lossy().into_owned();
             let target = dest.to_string_lossy().into_owned();
@@ -796,6 +808,8 @@ async fn fixture_with(
         push_failure: std::sync::Mutex::default(),
         ahead_behind_error: std::sync::Mutex::default(),
         remote_unreadable: std::sync::atomic::AtomicBool::default(),
+        fetch_fails: std::sync::atomic::AtomicBool::default(),
+        forged_after_fetch: std::sync::Mutex::default(),
     });
     // Environment runs go through the real process host, as in production (SPEC-219); its
     // sockets live at <data>/runs/env-<uuid>/pty.sock, so the data directory's path is short.
@@ -2691,7 +2705,9 @@ async fn an_approval_carries_across_a_small_follow_up() -> TestResult {
     // Without a fresh fetch of the integration branch nothing is counted: refused.
     let (refused, said, _) = deliver_after_follow_up(|f, wt| {
         commit_file(wt, "src/extra.rs", &lines(2, "e"), "Nits")?;
-        std::fs::rename(&f.origin, f.origin.with_extension("away"))?;
+        f.git
+            .fetch_fails
+            .store(true, std::sync::atomic::Ordering::SeqCst);
         Ok(())
     })
     .await?;
@@ -2699,6 +2715,39 @@ async fn an_approval_carries_across_a_small_follow_up() -> TestResult {
         refused && said.contains("could not be refreshed to read the integration branch"),
         "{said}"
     );
+    // Nor when origin cannot say where its integration branch is.
+    let (refused, said, _) = deliver_after_follow_up(|f, wt| {
+        commit_file(wt, "src/extra.rs", &lines(2, "e"), "Nits")?;
+        std::fs::rename(&f.origin, f.origin.with_extension("away"))?;
+        Ok(())
+    })
+    .await?;
+    assert!(
+        refused && said.contains("the integration branch `dev` cannot be read"),
+        "{said}"
+    );
+    // A remote-tracking ref moved right after the fetch (an agent racing it) passes nothing off
+    // as the integration branch: the commit origin names is the one compared.
+    let (refused, said, _) = deliver_after_follow_up(|f, wt| {
+        git(wt, &["checkout", "-q", "-b", "side"])?;
+        commit_file(wt, "src/side.rs", &lines(30, "s"), "Side")?;
+        let side = git(wt, &["rev-parse", "HEAD"])?;
+        git(wt, &["checkout", "-q", "-"])?;
+        git(wt, &["merge", "-q", "--no-ff", "--no-edit", "side"])?;
+        if let Ok(mut forged) = f.git.forged_after_fetch.lock() {
+            *forged = Some(("refs/remotes/origin/dev".to_owned(), side));
+        }
+        Ok(())
+    })
+    .await?;
+    assert!(refused && said.contains("merged something other"), "{said}");
+    // A test module faked in a comment hides nothing (review round 2).
+    let (refused, said, _) = deliver_after_follow_up(|_, wt| {
+        let body = format!("/*\n#[cfg(test)]\nmod t {{\n*/\n{}", lines(30, "e"));
+        commit_file(wt, "src/extra.rs", &body, "Nits")
+    })
+    .await?;
+    assert!(refused && said.contains("34 product lines"), "{said}");
     // A `[review]` table that does not parse refuses, naming it.
     let (refused, said, _) = deliver_after_follow_up(|f, wt| {
         advance_base(f, "dev", "yulius.toml", "[review]\nproducts = [\"src/\"]\n")?;
