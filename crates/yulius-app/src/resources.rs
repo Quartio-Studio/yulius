@@ -38,7 +38,8 @@ const STALE_WINDOW: Duration = Duration::from_secs(30);
 /// HBA-002): a reading spans 5 to 30 seconds, so within a minute what it uses is in them.
 const START_WINDOW: Duration = Duration::from_secs(60);
 /// How long a waiting job lets later ones that fit start before it (SPEC-497 HBA-002). Past
-/// this, nothing behind it starts until it has, so it waits at most about one job's length more.
+/// this, nothing after it in the order (its priority and lower) starts until it has; a job of a
+/// higher priority still goes first.
 const OVERTAKE_LIMIT: Duration = Duration::from_secs(10 * 60);
 
 /// The CI budget of the whole instance and what CI holds of it (SPEC-082 RES-003, SPEC-497
@@ -193,7 +194,7 @@ impl CiAdmission {
     /// rate is computed once its last reading is [`SAMPLE_WINDOW`] old; one older than
     /// [`STALE_WINDOW`] is a new base, and what CI uses is then not settled until the next look
     /// (SPEC-497 HBA-002: the use over the last window, not since long ago). A counter that went
-    /// back (its groups were made again) starts over. Sandboxes no longer running jobs are
+    /// back (its groups were made again) is a new base too. Sandboxes no longer running jobs are
     /// forgotten.
     fn measure(
         &self,
@@ -208,6 +209,10 @@ impl CiAdmission {
         state.samples.retain(|sandbox, _| running.contains(sandbox));
         for sandbox in &running {
             let Some((cpu_usec, anon_bytes, pressure)) = read(sandbox) else {
+                // An old pressure must not hold jobs back (review of the CI admission fix).
+                if let Some(sample) = state.samples.get_mut(sandbox) {
+                    sample.pressure = None;
+                }
                 continue;
             };
             let fresh = Sample {
@@ -225,9 +230,10 @@ impl CiAdmission {
             sample.anon_bytes = anon_bytes;
             sample.pressure = pressure;
             let elapsed = now.saturating_duration_since(sample.at);
-            if cpu_usec < sample.cpu_usec {
-                *sample = fresh;
-            } else if elapsed > STALE_WINDOW {
+            if cpu_usec < sample.cpu_usec || elapsed > STALE_WINDOW {
+                // Its groups were made again, or its base is old: what it uses is not known
+                // until a window passed, and no job starts on its absence (review of the CI
+                // admission fix: a restarted engine read as 0 CPUs).
                 *sample = Sample {
                     rebased: true,
                     ..fresh
@@ -759,9 +765,17 @@ mod tests {
         // `b` no longer runs a job: only `a` counts.
         let alone = admission.measure(|| at(6), || one.to_vec(), readings(&[(&a, 10_000_001, 0)]));
         assert_eq!(alone.used.map(|u| u.cpus), Some(2));
-        // A counter that went back starts over: no rate until the next window.
+        // A counter that went back (its groups made again) is a new base: no rate, and not
+        // settled until a window passed (review of the CI admission fix: a restarted engine
+        // read as 0 CPUs).
         let again = admission.measure(|| at(11), || one.to_vec(), readings(&[(&a, 5, 0)]));
-        assert_eq!(again, Measured::NOTHING);
+        assert_eq!((again.used, again.settled), (None, false));
+        let settled =
+            admission.measure(|| at(16), || one.to_vec(), readings(&[(&a, 10_000_005, 0)]));
+        assert_eq!(
+            (settled.used.map(|u| u.cpus), settled.settled),
+            (Some(2), true)
+        );
         // A base older than the stale window: a new base, not settled, for whoever reads next
         // within the window too (review round 2).
         let stale = admission.measure(
@@ -804,6 +818,16 @@ mod tests {
             |_: &SandboxId| Some((0, 0, None)),
         );
         assert_eq!(unread.pressure, None);
+        // A failed read forgets the sandbox's old pressure (review of the CI admission fix).
+        let admission = CiAdmission::new(Capacity::new(64, 64 * 1024));
+        let high = admission.measure(
+            || now,
+            || both.to_vec(),
+            |_: &SandboxId| Some((0, 0, Some(900))),
+        );
+        assert_eq!(high.pressure, Some(900));
+        let failed = admission.measure(|| now, || both.to_vec(), |_: &SandboxId| None);
+        assert_eq!(failed.pressure, None);
     }
 
     /// SPEC-497 HBA-002: a job that cannot start lets a later one that can; one before it that
@@ -965,6 +989,32 @@ mod tests {
             admission
                 .try_admit(&fifth, reading(5, Some(20)), at(64), 12)
                 .is_ok()
+        );
+
+        // A job that ends within its first minute no longer counts as starting (review of the CI
+        // admission fix): of four 2-CPU starts one ends, and a fifth starts at once.
+        let admission = Arc::new(CiAdmission::new(Capacity::new(9, 9 * 1024)));
+        let mut running = Vec::new();
+        for secs in 0..4 {
+            let ticket = admission.enqueue(pr, need(2), at(secs));
+            running.push(
+                admission
+                    .try_admit(&ticket, reading(0, None), at(secs), 12)
+                    .ok(),
+            );
+        }
+        let fifth = admission.enqueue(pr, need(2), at(4));
+        assert!(
+            admission
+                .try_admit(&fifth, reading(0, None), at(4), 12)
+                .is_err()
+        );
+        drop(running.pop());
+        assert!(
+            admission
+                .try_admit(&fifth, reading(0, None), at(4), 12)
+                .is_ok(),
+            "the ended job's start is no longer counted"
         );
     }
 

@@ -263,7 +263,8 @@ pub fn network_reserve(capacity: u32) -> u32 {
 pub const CI_OVERSUBSCRIPTION: u32 = 2;
 /// A job that has just started counts, until the readings show it, as its budget but at most this
 /// fraction of the CI budget (SPEC-497 HBA-002): its checkout and set-up come first, and jobs
-/// starting together never take more than the budget between two readings.
+/// starting together are never counted as more than the budget between two readings (four
+/// starting at once may still use more until the next reading shows it).
 pub const CI_START_SHARE: u32 = 4;
 /// Thousandths of the last 10 seconds for which CI's processes waited for a CPU (`cpu.pressure`
 /// `some avg10` of the sandboxes' `ci` groups) above which no job starts (SPEC-497 HBA-002):
@@ -398,7 +399,7 @@ impl fmt::Display for Admission {
             Self::Now => f.write_str("it fits"),
             Self::Contended { pressure } => write!(
                 f,
-                "CI's jobs waited for a CPU {}.{} % of the last 10 seconds; a job starts below {} %",
+                "CI's jobs waited for a CPU {}.{} % of the last 10 seconds; a job starts at {} % or less",
                 pressure / 10,
                 pressure % 10,
                 CI_PRESSURE_LIMIT / 10
@@ -771,7 +772,7 @@ mod tests {
         );
         assert_eq!(
             Admission::Contended { pressure: 245 }.to_string(),
-            "CI's jobs waited for a CPU 24.5 % of the last 10 seconds; a job starts below 10 %"
+            "CI's jobs waited for a CPU 24.5 % of the last 10 seconds; a job starts at 10 % or less"
         );
         let at_limit = Held {
             pressure: Some(100),
