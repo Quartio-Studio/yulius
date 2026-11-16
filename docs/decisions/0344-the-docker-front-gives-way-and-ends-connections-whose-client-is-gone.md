@@ -73,8 +73,10 @@ whether the client half-closed or hung up entirely.
   the file a front process runs (`/proc/<pid>/exe`) with the server's executable; when they
   differ (an update replaced it) and the front is quiet, it is restarted. Quiet is read live just
   before: no child process (its engine) and no connection at its socket, accepted or waiting
-  (`/proc/<pid>/net/unix` lists those under the listener's path), and, when the front writes a
-  state, the state agrees. A state alone is up to 5 s old, and a front from before this change
+  (`/proc/<pid>/net/unix` lists those of the front's network namespace, every run, CI job and
+  CD run of the sandbox, under the listener's path; a container's connection is covered by the
+  engine, the front's child), and, when the front writes a state, the state agrees. A client
+  that comes between that read and the new front's start finds the socket closed or missing. A state alone is up to 5 s old, and a front from before this change
   writes none and holds four sockets when idle, so neither the state nor a socket count decides
   (review round 1 of slices 5 to 7). A busy one is kept and journaled once a day.
 

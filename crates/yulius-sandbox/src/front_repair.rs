@@ -159,7 +159,9 @@ pub fn quiet(
 
 /// How many connections the process `pid` holds or has waiting at the Unix socket it listens on
 /// at `socket`, read from its network namespace's `/proc/<pid>/net/unix`, where an accepted or
-/// queued connection carries its listener's path. `None` when that cannot be told: the table is
+/// queued connection carries its listener's path. Only clients in that namespace are listed (the
+/// kernel creates the accepted socket in the client's): every run, CI job and CD run of the
+/// sandbox; a container's connection is covered by the engine, a child of the front. `None` when that cannot be told: the table is
 /// unreadable or too long, or no listener of `pid`'s namespace is bound at `socket` (another
 /// path than the front's, an ended front), so a doubt never makes a front quiet.
 fn connections_on(pid: u32, socket: &Path) -> Option<usize> {
@@ -340,8 +342,9 @@ mod tests {
 
     /// A process like a front: it listens at `socket` and holds other sockets beside it (an idle
     /// real front holds four: its runtime's signal pair and duplicate, and the listener), with
-    /// stdin and stderr closed as the server starts a front. Answers nothing.
-    fn front_like(socket: &Path) -> std::io::Result<std::process::Child> {
+    /// stdin and stderr closed as the server starts a front. Answers nothing; with `accept`, it
+    /// accepts one connection, keeps it and prints `taken`.
+    fn front_like(socket: &Path, accept: bool) -> std::io::Result<std::process::Child> {
         let mut child = std::process::Command::new("python3")
             .args([
                 "-I",
@@ -349,9 +352,12 @@ mod tests {
                 "import os,socket,sys,time\nos.closerange(3,65536)\n\
                  l=socket.socket(socket.AF_UNIX)\nl.bind(sys.argv[1])\nl.listen(8)\n\
                  a,b=socket.socketpair()\nc=os.dup(a.fileno())\n\
-                 print('ready',flush=True)\ntime.sleep(30)",
+                 print('ready',flush=True)\n\
+                 if sys.argv[2]=='accept':\n k,_=l.accept()\n print('taken',flush=True)\n\
+                 time.sleep(30)",
             ])
             .arg(socket)
+            .arg(if accept { "accept" } else { "wait" })
             .stdin(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .stdout(std::process::Stdio::piped())
@@ -383,7 +389,8 @@ mod tests {
         };
         let dir = tempfile::tempdir()?;
         let socket = dir.path().join("docker.sock");
-        let mut front = front_like(&socket)?;
+        let socket_taken = dir.path().join("taken.sock");
+        let mut front = front_like(&socket, false)?;
         let pid = front.id();
         let idle = (
             quiet(None, pid, &socket),
@@ -402,6 +409,19 @@ mod tests {
         drop(client);
         front.kill()?;
         front.wait()?;
+        // Review round 2: a connection the front accepted and holds, its state still saying 0.
+        let mut taking = front_like(&socket_taken, true)?;
+        let client = std::os::unix::net::UnixStream::connect(&socket_taken)?;
+        if let Some(out) = taking.stdout.as_mut() {
+            use std::io::Read as _;
+            let mut line = [0u8; 6];
+            out.read_exact(&mut line)?;
+        }
+        let held = quiet(Some(&state(0, false)), taking.id(), &socket_taken);
+        drop(client);
+        taking.kill()?;
+        taking.wait()?;
+        assert!(!held, "an accepted connection keeps the front");
         assert_eq!(
             idle,
             (true, true, false, false, Some(4)),
@@ -422,7 +442,7 @@ mod tests {
         child.kill()?;
         child.wait()?;
         assert!(!with_child, "a process with a child has one");
-        let mut front = front_like(&socket)?;
+        let mut front = front_like(&socket, false)?;
         let pid = front.id();
         let elsewhere = quiet(None, pid, &dir.path().join("other.sock"));
         let counted = connections_on(pid, &socket);
