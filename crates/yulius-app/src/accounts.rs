@@ -459,18 +459,32 @@ fn validate_typed_email(email: &str) -> AppResult<Option<String>> {
     })
 }
 
-/// The pasted token, trimmed, when it has the shape `claude setup-token` prints (SPEC-502
-/// TKP-003); `Invalid` otherwise, with a message that never holds the input.
 /// A pasted token's working copy, zeroed when it is dropped: also when the request is dropped
 /// while Claude's profile is asked (a client that goes away).
 struct PastedToken(Secret);
 
-impl Drop for PastedToken {
-    fn drop(&mut self) {
+impl PastedToken {
+    fn wipe(&mut self) {
         self.0.0.zeroize();
+        #[cfg(test)]
+        PASTED_WIPES.with(|wipes| wipes.set(wipes.get() + 1));
     }
 }
 
+impl Drop for PastedToken {
+    fn drop(&mut self) {
+        self.wipe();
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Wipes of pasted tokens on this thread, so a test sees that dropping one wipes it.
+    static PASTED_WIPES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// The pasted token, trimmed, when it has the shape `claude setup-token` prints (SPEC-502
+/// TKP-003); `Invalid` otherwise, with a message that never holds the input.
 fn pasted_token(token: &str) -> AppResult<PastedToken> {
     let token = token.trim();
     let shaped = token.len() <= PASTED_TOKEN_MAX
@@ -2127,6 +2141,7 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::Cell;
     use yulius_domain::time::Timestamp;
 
     /// SPEC-110 TUS-004: a subscription's cost is of its runs started in the window that reported
@@ -2273,6 +2288,25 @@ mod tests {
                 "a".repeat(CLAUDE_TOKEN_MIN_BODY)
             ))
             .is_ok()
+        );
+    }
+
+    /// SPEC-502 TKP-006: a pasted token's working copy is wiped whenever it is dropped (also with
+    /// a request dropped while Claude's profile is asked), and a wipe leaves nothing of it.
+    #[test]
+    fn a_pasted_token_is_wiped_when_it_is_dropped() {
+        let good = format!("sk-ant-oat01-{}", "SYNTHETICwipe0123456789");
+        let mut token = pasted_token(&good)
+            .ok()
+            .expect("a token of the right shape");
+        token.wipe();
+        assert!(token.0.expose().is_empty());
+        let before = PASTED_WIPES.with(Cell::get);
+        drop(pasted_token(&good));
+        assert_eq!(
+            PASTED_WIPES.with(Cell::get),
+            before + 1,
+            "dropping it wipes it"
         );
     }
 
