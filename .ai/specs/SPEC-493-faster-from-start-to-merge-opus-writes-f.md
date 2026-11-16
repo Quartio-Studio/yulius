@@ -1385,3 +1385,29 @@ Both are checked on current `dev` first and fixed test-first if they still hold.
     1,000.
   - `git_ops` wrappers that find the subcommand by its place (`${31}`) now look two places
     later, for the new `-c` pair.
+- Review round 3 (Opus 5.5, head `43a0246b9`): request changes, 1 major in own code. Round 2's
+  A to D and F are closed (the reviewer also tried swapping a commit's loose object: Git
+  refuses it, "hash mismatch"); E stays answered in words. Answered test-first; all three
+  mutations below fail a test.
+  - G. Major: a macro can keep a fake test module's body and drop its attribute (`keep! {
+    #[cfg(test)] mod t { … } }`).
+    - The fix: `test_module_spans` keeps a stack of the open delimiters. A span counts only
+      when every one around it is a module's brace (the top of the file or `mod name {`), so
+      not in a macro's input of any bracket kind, a function or an `impl`; and only when
+      `#[cfg(test)]` is its item's first outer attribute, so no attribute macro sees the
+      module first.
+    - Test: `test_spans_are_read_from_rust_tokens` holds six hidden shapes and one nested
+      module after an inner attribute. Dropping either rule fails it.
+  - H. Minor: `GIT_GRAFT_FILE=/dev/null` made Git print the graft deprecation hint on every
+    command.
+    - The fix: the variable now names a file that does not exist, so no grafts are read and
+      nothing is printed.
+    - Test: `git_ops::reading_no_grafts_prints_no_hint` captures the stderr of real commands.
+      `/dev/null` fails it.
+  - I. Minor, no change (the reviewer's own advice): `core.commitGraph=false` costs generation
+    numbers in ancestry queries; nothing in Yulius relies on commit-graphs. If large
+    repositories slow down, it moves to the walk and the count only.
+  - J. Nit, answered in words: the 200-byte bound refuses long lines in non-Rust product files
+    (SQL, YAML) back to a review round, which is safe; `not_product` takes such files out.
+  - The reviewer's open gap, whether agents can write a playground's origin: they cannot. It is
+    `<data>/playgrounds/<id>.git`, outside the sandbox (ADR-0081, `playground_origin`).
