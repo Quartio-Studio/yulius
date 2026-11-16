@@ -141,15 +141,59 @@ pub fn runs_another_build(pid: u32, exe: &Path) -> Option<bool> {
     Some((running.dev(), running.ino()) != (current.dev(), current.ino()))
 }
 
-/// Whether a front is quiet, so replacing it loses nothing: its state says it holds no
-/// connection and runs no engine; a front without a state file (one from before ADR-0344) is
-/// quiet when it has no child process (its engine) and no socket but its listener.
+/// Whether a front is quiet, so replacing it now loses nothing (SPEC-494 DFJ-010): its state,
+/// if it writes one, says it holds no connection and runs no engine, and, read live just before
+/// the decision, it has no child process (its engine) and no connection at its `socket`,
+/// accepted or still waiting. The state alone is up to [`crate::front_gate`]'s write interval
+/// old, and a front from before ADR-0344 writes none; how many sockets a front holds besides
+/// says nothing (an idle one holds four). Review round 1 of slices 5 to 7.
 #[must_use]
-pub fn quiet(state: Option<&yulius_contracts::sandbox::DockerFrontState>, pid: u32) -> bool {
-    match state {
-        Some(state) => state.held == 0 && !state.engine_running,
-        None => no_children(pid) && sockets_of(pid).is_some_and(|sockets| sockets <= 1),
+pub fn quiet(
+    state: Option<&yulius_contracts::sandbox::DockerFrontState>,
+    pid: u32,
+    socket: &Path,
+) -> bool {
+    let said_quiet = state.is_none_or(|state| state.held == 0 && !state.engine_running);
+    said_quiet && no_children(pid) && connections_on(pid, socket) == Some(0)
+}
+
+/// How many connections the process `pid` holds or has waiting at the Unix socket it listens on
+/// at `socket`, read from its network namespace's `/proc/<pid>/net/unix`, where an accepted or
+/// queued connection carries its listener's path. `None` when that cannot be told: the table is
+/// unreadable or too long, or no listener of `pid`'s namespace is bound at `socket` (another
+/// path than the front's, an ended front), so a doubt never makes a front quiet.
+fn connections_on(pid: u32, socket: &Path) -> Option<usize> {
+    use std::io::Read as _;
+    /// Listening sockets carry `__SO_ACCEPTCON` in the table's flags.
+    const ACCEPTCON: u32 = 0x0001_0000;
+    /// More than any sandbox's namespace holds; a longer table is not read.
+    const TABLE_MAX: u64 = 16 * 1024 * 1024;
+    let mut table = String::new();
+    std::fs::File::open(format!("/proc/{pid}/net/unix"))
+        .ok()?
+        .take(TABLE_MAX + 1)
+        .read_to_string(&mut table)
+        .ok()?;
+    if table.len() as u64 > TABLE_MAX {
+        return None;
     }
+    let ending = format!(" {}", socket.to_str()?);
+    let (mut listening, mut connections) = (false, 0usize);
+    for line in table.lines().skip(1) {
+        if !line.ends_with(&ending) {
+            continue;
+        }
+        let flags = line
+            .split_whitespace()
+            .nth(3)
+            .and_then(|flags| u32::from_str_radix(flags, 16).ok())?;
+        if flags & ACCEPTCON == 0 {
+            connections += 1;
+        } else {
+            listening = true;
+        }
+    }
+    listening.then_some(connections)
 }
 
 /// Whether `pid` has no child process (reads every thread's `children`).
@@ -292,8 +336,34 @@ mod tests {
         Ok(())
     }
 
-    /// SPEC-494 DFJ-010: a front's state says whether it is quiet; without one, its children and
-    /// sockets do.
+    /// A process like a front: it listens at `socket` and holds other sockets beside it (an idle
+    /// real front holds four: its runtime's signal pair and duplicate, and the listener), with
+    /// stdin and stderr closed as the server starts a front. Answers nothing.
+    fn front_like(socket: &Path) -> std::io::Result<std::process::Child> {
+        let mut child = std::process::Command::new("python3")
+            .args([
+                "-I",
+                "-c",
+                "import os,socket,sys,time\nos.closerange(3,65536)\n\
+                 l=socket.socket(socket.AF_UNIX)\nl.bind(sys.argv[1])\nl.listen(8)\n\
+                 a,b=socket.socketpair()\nc=os.dup(a.fileno())\n\
+                 print('ready',flush=True)\ntime.sleep(30)",
+            ])
+            .arg(socket)
+            .stdin(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .spawn()?;
+        if let Some(out) = child.stdout.as_mut() {
+            use std::io::Read as _;
+            let mut line = [0u8; 6];
+            out.read_exact(&mut line)?;
+        }
+        Ok(child)
+    }
+
+    /// SPEC-494 DFJ-010: a front's state alone never makes it quiet: it is quiet when the state
+    /// (if any) says so and, read live, it runs no engine and holds no connection at its socket.
     #[test]
     fn a_quiet_front_holds_no_connection_and_runs_no_engine() -> std::io::Result<()> {
         use yulius_contracts::sandbox::DockerFrontState;
@@ -309,36 +379,55 @@ mod tests {
             engine_running,
             engine_busy: false,
         };
-        assert!(quiet(Some(&state(0, false)), 1));
-        assert!(!quiet(Some(&state(1, false)), 1));
-        assert!(!quiet(Some(&state(0, true)), 1));
-        // A process with a child is not quiet.
+        let dir = tempfile::tempdir()?;
+        let socket = dir.path().join("docker.sock");
+        let mut front = front_like(&socket)?;
+        let pid = front.id();
+        let idle = (
+            quiet(None, pid, &socket),
+            quiet(Some(&state(0, false)), pid, &socket),
+            quiet(Some(&state(1, false)), pid, &socket),
+            quiet(Some(&state(0, true)), pid, &socket),
+            sockets_of(pid),
+        );
+        // Review round 1 of slices 5 to 7: a client that connects after the front last wrote its
+        // state (held 0) is seen at once, accepted or not.
+        let client = std::os::unix::net::UnixStream::connect(&socket)?;
+        let busy = (
+            quiet(None, pid, &socket),
+            quiet(Some(&state(0, false)), pid, &socket),
+        );
+        drop(client);
+        front.kill()?;
+        front.wait()?;
+        assert_eq!(
+            idle,
+            (true, true, false, false, Some(4)),
+            "(no state, state quiet, held, engine, sockets): an idle front with four sockets is quiet"
+        );
+        assert_eq!(busy, (false, false), "a waiting client keeps the front");
+        Ok(())
+    }
+
+    /// SPEC-494 DFJ-010: a front running an engine (a child process) is not quiet, and one whose
+    /// socket is not seen listening (another path, an ended front) is not either.
+    #[test]
+    fn a_front_with_an_engine_or_no_listener_is_not_quiet() -> std::io::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let socket = dir.path().join("docker.sock");
         let mut child = std::process::Command::new("sleep").arg("30").spawn()?;
-        assert!(!quiet(None, std::process::id()));
+        let with_child = no_children(std::process::id());
         child.kill()?;
         child.wait()?;
-        // One with no child and no socket is (descriptors other tests leaked into it are
-        // closed before it says ready).
-        let mut quiet_one = std::process::Command::new("python3")
-            .args([
-                "-I",
-                "-c",
-                "import os,time\nos.closerange(3,65536)\nprint('ready',flush=True)\ntime.sleep(30)",
-            ])
-            // As the server starts a front: no stdin (a test's may be a socket).
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::piped())
-            .spawn()?;
-        if let Some(out) = quiet_one.stdout.as_mut() {
-            use std::io::Read as _;
-            let mut line = [0u8; 6];
-            out.read_exact(&mut line)?;
-        }
-        let pid = quiet_one.id();
-        let seen = (quiet(None, pid), no_children(pid), sockets_of(pid));
-        quiet_one.kill()?;
-        quiet_one.wait()?;
-        assert_eq!(seen, (true, true, Some(0)), "(quiet, no children, sockets)");
+        assert!(!with_child, "a process with a child has one");
+        let mut front = front_like(&socket)?;
+        let pid = front.id();
+        let elsewhere = quiet(None, pid, &dir.path().join("other.sock"));
+        let counted = connections_on(pid, &socket);
+        front.kill()?;
+        front.wait()?;
+        assert_eq!((elsewhere, counted), (false, Some(0)));
+        assert_eq!(connections_on(u32::MAX, &socket), None, "no such process");
         Ok(())
     }
 

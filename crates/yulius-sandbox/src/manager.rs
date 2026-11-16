@@ -831,6 +831,7 @@ impl Manager {
                 live.repair = crate::front_repair::RepairWatch::default();
                 if let Some(why) = live.restart_pending.take() {
                     self.docker_restarts.fetch_add(1, Ordering::Relaxed);
+                    self.docker_event(sandbox, "restarted", 1, why.says().to_owned());
                     tracing::warn!(
                         sandbox,
                         why = why.says(),
@@ -949,7 +950,7 @@ impl Manager {
         }
         let paths = StatePaths::new(self.state_dir(sandbox));
         let seen = crate::front_gate::read_state(&paths.docker_state(), front.pid);
-        if !crate::front_repair::quiet(seen.as_ref(), front.pid) {
+        if !crate::front_repair::quiet(seen.as_ref(), front.pid, &paths.docker_socket()) {
             if live
                 .outdated_said
                 .is_none_or(|at| at.elapsed() >= crate::front_repair::STALE_SAID_EVERY)
@@ -1007,11 +1008,20 @@ impl Manager {
         if state.live.as_ref().is_some_and(|live| live.front.is_some()) {
             self.docker_restarts.fetch_add(1, Ordering::Relaxed);
             self.docker_event(sandbox, "restarted", 1, why.says().to_owned());
-            tracing::warn!(
-                sandbox,
-                why = why.says(),
-                "restarted the sandbox's Docker front: an engine it ran stopped with it (containers stopped, volumes stay) and starts at its next call"
-            );
+            if why == crate::front_repair::Why::Outdated {
+                // Quiet by definition: no engine ran, nothing was cut.
+                tracing::info!(
+                    sandbox,
+                    why = why.says(),
+                    "replaced the sandbox's Docker front with this build's"
+                );
+            } else {
+                tracing::warn!(
+                    sandbox,
+                    why = why.says(),
+                    "restarted the sandbox's Docker front: an engine it ran stopped with it (containers stopped, volumes stay) and starts at its next call"
+                );
+            }
             Ok(())
         } else {
             if let Some(live) = state.live.as_mut() {
@@ -2972,6 +2982,7 @@ while True:
         std::fs::write(data.path().join("fake-yulius"), FAKE_FRONT)?;
         manager.restart_docker("s1").await?;
         assert_eq!(manager.docker_restarts(), 1, "counted once");
+        assert_eq!(manager.take_docker_events().len(), 1);
         // Or the next tick starts it: the pending restart is counted then.
         std::fs::write(data.path().join("fake-yulius"), "#!/bin/sh\necho broken\n")?;
         assert!(manager.restart_docker("s1").await.is_err());
@@ -2984,6 +2995,16 @@ while True:
         let last = front_of(&manager).await.ok_or("no front after the tick")?;
         kill(last.pid);
         assert_eq!(manager.docker_restarts(), 2, "the late start is counted");
+        // And the instance's measure counts it too (review round 1 of slices 5 to 7).
+        let events = manager.take_docker_events();
+        assert_eq!(
+            events
+                .iter()
+                .map(|e| (e.kind, e.count, e.detail.as_str()))
+                .collect::<Vec<_>>(),
+            vec![("restarted", 1, crate::front_repair::Why::Asked.says())],
+            "{events:?}"
+        );
         Ok(())
     }
 
@@ -3154,7 +3175,26 @@ while True:
             Some(first.pid),
             "busy: kept"
         );
+        // Review round 1 of slices 5 to 7: the state says held 0, but a client connected since
+        // it was written (the front, stopped, has not accepted it): kept.
         write_json(&paths.docker_state(), &DockerFrontState { held: 0, ..busy })?;
+        crate::holder::signal(first.pid, nix::sys::signal::Signal::SIGSTOP);
+        let waiting = std::os::unix::net::UnixStream::connect(paths.docker_socket());
+        replace().await;
+        let kept = front_of(&manager).await.map(|f| f.pid);
+        crate::holder::signal(first.pid, nix::sys::signal::Signal::SIGCONT);
+        let mut waiting = waiting?;
+        {
+            use std::io::Read as _;
+            let mut answer = String::new();
+            waiting.read_to_string(&mut answer)?;
+            assert!(answer.starts_with("mode:engine"), "{answer}");
+        }
+        assert_eq!(kept, Some(first.pid), "a waiting client: kept");
+        assert!(manager.take_docker_events().is_empty());
+        // A front from before ADR-0344 writes no state: quiet when it runs no engine and holds
+        // no connection, however many sockets it holds besides.
+        std::fs::remove_file(paths.docker_state())?;
         replace().await;
         let second = front_of(&manager)
             .await
@@ -3162,6 +3202,15 @@ while True:
         kill(second.pid);
         assert_ne!(second.pid, first.pid, "quiet: replaced");
         assert_eq!(manager.docker_restarts(), 1);
+        let events = manager.take_docker_events();
+        assert_eq!(
+            events
+                .iter()
+                .map(|e| (e.kind, e.count, e.detail.as_str()))
+                .collect::<Vec<_>>(),
+            vec![("restarted", 1, crate::front_repair::Why::Outdated.says())],
+            "{events:?}"
+        );
         Ok(())
     }
 
