@@ -301,6 +301,10 @@ impl Drop for CiClaim {
     }
 }
 
+/// The minute of a reading of the host for CI and the host's CPU ticks then, `(busy, total)`
+/// (SPEC-497).
+pub(crate) type LoadReading = (i64, Option<(u64, u64)>);
+
 /// Process-local CI state.
 #[derive(Default)]
 pub struct CiState {
@@ -339,7 +343,7 @@ pub struct CiState {
     started: AtomicBool,
     last_prune: Mutex<i64>,
     /// The minute of the last reading of the host for CI and its CPU ticks then (SPEC-497).
-    pub(crate) load: Mutex<Option<(i64, Option<(u64, u64)>)>>,
+    pub(crate) load: Mutex<Option<LoadReading>>,
     /// Sandboxes whose runs wait for disk (SPEC-059 CI-301).
     disk_waits: Mutex<HashMap<String, disk_wait::DiskWait>>,
     /// One pass deciding a sandbox's armed merges (and its merge train) at a time (SPEC-084
