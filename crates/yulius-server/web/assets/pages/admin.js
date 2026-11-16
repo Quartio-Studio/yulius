@@ -694,6 +694,9 @@ export function mountAccountsPage(ctx, route) {
       return true;
     } };
     function show(value) {
+      // The last attempt's failure was the other way's: the way chosen now has not been tried.
+      const failed = modal.dialog.querySelector('.modal-error');
+      if (failed) failed.hidden = true;
       hereNote.hidden = value !== 'here';
       pastePart.hidden = value !== 'paste';
       modal.setActions([{ label: 'Cancel', value: false }, value === 'paste' ? pasteToken : signInHere]);

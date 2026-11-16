@@ -1348,3 +1348,21 @@ test('a subscription is connected, or signed in again, by pasting a token made e
   });
   await expect.poll(focused).toBe('Paste a new token @ true');
 });
+
+test('switching how to connect a subscription clears the last attempt’s error (SPEC-502 TKP-008)', async ({ app, browser, screen }) => {
+  await app.open(mock('/admin/accounts', '&ambient=0&failpost=/api/admin/accounts'));
+  await screen.getByRole('button', 'Add subscription').first().click();
+  const add = screen.getByRole('dialog', 'Add a Claude subscription');
+  await add.getByRole('textbox', /^Name/).fill('laptop Max');
+  await add.getByRole('button', 'Continue to sign-in').click();
+  const error = browser.locator('.modal .modal-error');
+  await expect(error).toBeVisible();
+  // The failure was the terminal's; the paste has not been tried, so it says nothing yet.
+  await browser.locator('.modal .seg label:has-text("Paste token")').click();
+  await expect(error).toBeHidden();
+  await add.getByLabel(/^Token/).fill(`sk-ant-oat01-${'d'.repeat(40)}`);
+  await add.getByRole('button', 'Connect').click();
+  await expect(error).toBeVisible();
+  await browser.locator('.modal .seg label:has-text("Sign in here")').click();
+  await expect(error).toBeHidden();
+});
