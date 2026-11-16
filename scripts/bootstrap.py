@@ -66,11 +66,7 @@ for name, version in tools.items():
             continue
     shared_root = cache / f"{name}-{version}"
     shared = shared_root / "bin" / exe_name
-    cache.mkdir(parents=True, exist_ok=True)
-    with open(cache / f".{name}-{version}.lock", "w") as lock:
-        if os.name != "nt":
-            import fcntl
-            fcntl.flock(lock, fcntl.LOCK_EX)  # parallel tasks wait for one build
+    with exclusive(cache / f".{name}-{version}.lock"):  # parallel tasks wait for one build
         if not shared.exists():
             subprocess.run([rustup, "run", channel, "cargo", "install", "--locked", "--version", version,
                             "--root", str(shared_root), name], cwd=root, env=install_env, check=True)

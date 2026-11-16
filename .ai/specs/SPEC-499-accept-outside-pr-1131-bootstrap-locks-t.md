@@ -37,14 +37,14 @@ without breaking each other's rustup toolchain.
   waits and then finds the toolchain installed.
 - BSL-002: the lock is a small module, `scripts/home_lock.py`, with regression tests: a second
   holder waits, and the lock is released when the holder fails.
-- BSL-003: `bootstrap.py`'s per-tool build locks use the same helper (one lock implementation in
-  the script, same files and behavior as before).
+- BSL-003: `bootstrap.py`'s per-tool build locks and `zig_install.py`'s download lock use the same
+  helper (one lock implementation in `scripts/`, same lock files and behavior as before).
 
 ## Plan
 
 - [x] Spec SPEC-499 renumbered from the contributor's SPEC-445 and validated
 - [x] The contributor's lock on current dev: home_lock with its tests, bootstrap holds it around the rustup install
-- [ ] A bootstrap test proves the toolchain install runs under the lock; per-tool locks share the helper
+- [x] A bootstrap test proves the toolchain install runs under the lock; per-tool locks share the helper
 - [ ] Changelog entry at the top of docs/changes.md, spec Evidence
 - [ ] Independent review answered test-first
 
