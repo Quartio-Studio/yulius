@@ -260,7 +260,7 @@ p { margin: 0; }
 .modal-full { width: min(1100px, calc(100vw - 32px)); height: calc(100vh - 48px); }
 .modal-head { display: flex; align-items: center; gap: 8px; padding: 12px 12px 12px 16px; border-bottom: 1px solid var(--border); }
 .modal-title { flex: 1; font-family: var(--font-display); font-size: var(--fs-lg); line-height: var(--lh-lg); }
-.modal-body { padding: 16px 16px; overflow: auto; flex: 1; min-height: 0; }
+.modal-body { padding: 16px 16px; overflow: auto; flex: 1 1 auto; min-height: 0; }
 .modal-full .modal-body { display: flex; flex-direction: column; }
 .modal-actions { display: flex; justify-content: flex-end; gap: 8px; padding: 12px 16px; border-top: 1px solid var(--border); }
 
@@ -931,7 +931,7 @@ summary.gt-tree-row::-webkit-details-marker { display: none; }
 .spot-input { flex: 1; min-width: 0; height: 56px; padding: 0; border: 0; background: transparent; color: var(--text); font: inherit; font-size: var(--fs-lg); line-height: var(--lh-lg); }
 .spot-input:focus { outline: 2px solid transparent; }
 .spot-input::placeholder { color: var(--text-faint); }
-.spot-list { flex: 1; min-height: 0; margin: 0; padding: 8px; overflow-y: auto; list-style: none; }
+.spot-list { flex: 1 1 auto; min-height: 0; margin: 0; padding: 8px; overflow-y: auto; list-style: none; }
 .spot-item { display: grid; grid-template-columns: 20px minmax(0, 1fr) auto; align-items: center; gap: 12px; padding: 8px 12px; border-radius: var(--radius); cursor: pointer; }
 .spot-item[aria-selected="true"] { background: var(--accent-soft); }
 .spot-mark { display: inline-flex; color: var(--muted); }

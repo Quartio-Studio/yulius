@@ -6,6 +6,13 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-16
 
+- Dialogs show their whole content in Safari (SPEC-500, task #482, outside pull request #1142 by
+  studenciak00owl). In Safari 26.0 every dialog's body was 32 px tall (WebKit resolves the body's
+  `0%` flex basis to zero in an auto-height dialog), so Add subscription, Add sandbox, Import
+  repository and the rest showed one row and scrolled the rest, and the task search's results
+  were 16 px tall. Both now take their content's height up to the dialog's limit; Chrome is
+  unchanged.
+
 - A Claude subscription can be connected by pasting a token (SPEC-502, task #484,
   [ADR-0352](decisions/0352-a-subscription-can-be-connected-by-pasting-a-setup-token.md); from
   outside pull request #1144 by studenciak00owl). Its owner runs `claude setup-token` on any
