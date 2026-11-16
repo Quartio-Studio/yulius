@@ -307,6 +307,14 @@ impl App {
             ));
         }
         let follow = FollowUp::count(&lines, &rule);
+        // A product line that compiles a file in by its path: no count says what it brings in
+        // (review round 4 of fix 6).
+        if let Some(file) = follow.includes.first() {
+            return Err(format!(
+                "`{file}` adds a line that compiles a file in by its path (`#[path]`, `include!`, \
+                 `include_str!` or `include_bytes!`)"
+            ));
+        }
         if follow.within_bound() {
             Ok(follow)
         } else {

@@ -575,6 +575,7 @@ impl GitPort for GitAdapter {
                     path: file.path,
                     added: file.added,
                     removed: file.removed,
+                    added_text: file.added_text,
                     opaque: file.opaque,
                     ..yulius_domain::follow_up::FileLines::default()
                 })

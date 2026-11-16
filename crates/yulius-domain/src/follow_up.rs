@@ -66,6 +66,8 @@ pub struct FileLines {
     pub path: String,
     /// Added lines.
     pub added: Vec<u32>,
+    /// Their text, as `added` (empty when unknown).
+    pub added_text: Vec<String>,
     /// Removed lines.
     pub removed: Vec<u32>,
     /// In a Rust file, the test modules of the new file ([`test_module_spans`]).
@@ -90,12 +92,43 @@ impl FileLines {
         let n = outside(&self.added, &self.tests_new) + outside(&self.removed, &self.tests_old);
         u32::try_from(n).unwrap_or(u32::MAX)
     }
+
+    /// The text of the product lines it added (outside test modules).
+    fn product_text(&self) -> impl Iterator<Item = &str> {
+        self.added
+            .iter()
+            .zip(&self.added_text)
+            .filter(|&(line, _)| {
+                !self
+                    .tests_new
+                    .iter()
+                    .any(|&(from, to)| (from..=to).contains(line))
+            })
+            .map(|(_, text)| text.as_str())
+    }
 }
+
+/// Outer attributes no macro stands behind: a module that has only these is compiled as written
+/// (`cfg_attr` is not one: it can apply any attribute).
+const BUILT_IN_ATTRIBUTES: [&str; 11] = [
+    "cfg",
+    "allow",
+    "warn",
+    "deny",
+    "forbid",
+    "expect",
+    "doc",
+    "path",
+    "rustfmt",
+    "clippy",
+    "macro_use",
+];
 
 /// The test modules of a Rust file's `text`, as 1-based inclusive line spans: a `#[cfg(test)]`
 /// attribute, first of its item, whose item after any further attributes is `mod name {`, to
-/// that module's closing brace, at the top of the file or inside modules only (not in a macro's
-/// input, where the macro may drop the attribute and keep the body). The text is read as Rust tokens: comments, strings (raw ones too) and
+/// that module's closing brace, at the top of the file or inside modules with built-in
+/// attributes only (not in a macro's input, nor in a module an attribute macro rewrites, where
+/// the macro may drop the attribute and keep the body). The text is read as Rust tokens: comments, strings (raw ones too) and
 /// character literals are skipped, so nothing in them opens or closes a span (review round 2 of
 /// SPEC-493 fix 6). Anything else, such as `#[cfg(test)] mod tests;` or a single test-only item,
 /// is no span, and a text that does not lex (an unclosed comment or string) has none: when in
@@ -174,15 +207,21 @@ pub fn test_module_spans(text: &str) -> Vec<(u32, u32)> {
     // attribute macro before it sees the module (review round 3).
     let mut attribute_end = None;
     let mut t = 0;
+    // Whether an outer attribute other than a built-in one came since the last item boundary:
+    // a module it applies to may be rewritten by a macro, test modules and all (review round 4).
+    let mut foreign_attribute = false;
     while let Some(c) = char_at(t) {
         if c != '#' || char_at(t + 1) != Some('[') {
             match c {
-                '{' => enclosing.push(opens_module(t)),
+                '{' => enclosing.push(opens_module(t) && !foreign_attribute),
                 '(' | '[' => enclosing.push(false),
                 '}' | ')' | ']' => {
                     enclosing.pop();
                 }
                 _ => {}
+            }
+            if matches!(c, '{' | '}' | ';') {
+                foreign_attribute = false;
             }
             t += 1;
             continue;
@@ -196,6 +235,14 @@ pub fn test_module_spans(text: &str) -> Vec<(u32, u32)> {
             .iter()
             .map(|&k| code[k].0)
             .collect();
+        let name = body
+            .split(['(', '=', ':'])
+            .next()
+            .unwrap_or_default()
+            .to_owned();
+        if !BUILT_IN_ATTRIBUTES.contains(&name.as_str()) {
+            foreign_attribute = true;
+        }
         if body != "cfg(test)" || !first || !enclosing.iter().all(|&module| module) {
             t = after;
             continue;
@@ -378,14 +425,61 @@ pub struct FollowUp {
     pub lines: u32,
     /// Per file.
     pub files: Vec<(String, u32)>,
+    /// Rust files whose added product lines compile a file in by its path (`#[path]`,
+    /// `include!`, `include_str!`, `include_bytes!`): no count says what that brings in.
+    pub includes: Vec<String>,
+}
+
+/// How a product line names a file: its folder and its name without the extension
+/// (`fixtures/evil` for `crates/a/fixtures/evil.rs`, as `#[path]`, `include!` or an import
+/// writes it); a file at the top by its name alone.
+fn reference_key(path: &str) -> Option<String> {
+    let (folder, name) = path.rsplit_once('/').unwrap_or(("", path));
+    let stem = name.split('.').next().unwrap_or(name);
+    if stem.is_empty() {
+        return None;
+    }
+    match folder.rsplit('/').next().filter(|f| !f.is_empty()) {
+        Some(parent) => Some(format!("{parent}/{stem}")),
+        None => (stem.len() >= 3).then(|| stem.to_owned()),
+    }
 }
 
 impl FollowUp {
-    /// Counts `changes` (every commit's files) under `rule`.
+    /// Counts `changes` (every commit's files) under `rule`. A file the rule does not count
+    /// still counts when a product line the follow-up added names it (`fixtures/evil` in
+    /// `#[path = "../fixtures/evil.rs"]`, an import of `__tests__/x`): product code then
+    /// builds it in (review round 4 of SPEC-493 fix 6).
     #[must_use]
     pub fn count(changes: &[FileLines], rule: &ProductRule) -> Self {
+        let product_text: Vec<&str> = changes
+            .iter()
+            .filter(|c| rule.counts(&c.path))
+            .flat_map(FileLines::product_text)
+            .collect();
+        let named = |path: &str| {
+            reference_key(path).is_some_and(|key| product_text.iter().any(|t| t.contains(&key)))
+        };
+        let mut includes: Vec<String> = changes
+            .iter()
+            .filter(|c| rule.counts(&c.path) && c.path.ends_with(".rs"))
+            .filter(|c| {
+                c.product_text().any(|text| {
+                    let tight: String = text.chars().filter(|c| !c.is_whitespace()).collect();
+                    ["#[path", "include!(", "include_str!(", "include_bytes!("]
+                        .iter()
+                        .any(|mark| tight.contains(mark))
+                })
+            })
+            .map(|c| c.path.clone())
+            .collect();
+        includes.sort();
+        includes.dedup();
         let mut files: Vec<(String, u32)> = Vec::new();
-        for change in changes.iter().filter(|c| rule.counts(&c.path)) {
+        for change in changes
+            .iter()
+            .filter(|c| rule.counts(&c.path) || named(&c.path))
+        {
             let n = change.product_lines();
             if n == 0 {
                 continue;
@@ -399,6 +493,7 @@ impl FollowUp {
         Self {
             lines: files.iter().map(|(_, n)| n).sum(),
             files,
+            includes,
         }
     }
 
@@ -553,6 +648,54 @@ mod tests {
         );
     }
 
+    /// Review round 4 of SPEC-493 fix 6: a test or document file a new product line names
+    /// counts; a Rust product line that compiles a file in by its path is reported.
+    #[test]
+    fn a_file_product_code_names_counts() {
+        let with_text = |path: &str, text: &[&str]| FileLines {
+            path: path.to_owned(),
+            added: (1..=u32::try_from(text.len()).unwrap_or(0)).collect(),
+            added_text: text.iter().map(|t| (*t).to_owned()).collect(),
+            ..FileLines::default()
+        };
+        let fixture = with_text("crates/a/fixtures/evil.rs", &["fn evil() {}"; 30]);
+        let test = with_text("crates/a/tests/it.rs", &["#[test] fn t() {}"; 30]);
+        let named = FollowUp::count(
+            &[
+                with_text(
+                    "crates/a/src/lib.rs",
+                    &["#[path = \"../fixtures/evil.rs\"]", "mod evil;"],
+                ),
+                fixture.clone(),
+                test.clone(),
+            ],
+            &ProductRule::default(),
+        );
+        assert_eq!(named.lines, 32, "{named:?}");
+        assert_eq!(named.includes, ["crates/a/src/lib.rs"]);
+        let js = FollowUp::count(
+            &[
+                with_text("web/app.js", &["import { x } from './__tests__/helper';"]),
+                with_text("web/__tests__/helper.js", &["export const x = 1;"; 25]),
+            ],
+            &ProductRule::default(),
+        );
+        assert_eq!(js.lines, 26);
+        assert!(js.includes.is_empty());
+        // A product line that names nothing keeps tests out; a test module's line names nothing.
+        let mut lib = with_text("crates/a/src/lib.rs", &["fn a() {}", "include_str!(\"x\")"]);
+        lib.tests_new = vec![(2, 2)];
+        let plain = FollowUp::count(&[lib, fixture, test], &ProductRule::default());
+        assert_eq!((plain.lines, plain.includes.len()), (1, 0));
+        for (path, key) in [
+            ("crates/a/fixtures/evil.rs", Some("fixtures/evil")),
+            ("README.md", Some("README")),
+            ("x.rs", None),
+        ] {
+            assert_eq!(reference_key(path).as_deref(), key, "{path}");
+        }
+    }
+
     /// Real files read whole: each has one test module, from its `#[cfg(test)]` to its last
     /// line, though their tests hold the tricks above in strings (and `briefing.rs` has a
     /// single `#[cfg(test)]` constant before it).
@@ -609,11 +752,13 @@ mod tests {
             "fn f() {\n#[cfg(test)]\nmod t {\n}\n}\n",
             "impl A {\n#[cfg(test)]\nmod t {\n}\n}\n",
             "#[keep]\n#[cfg(test)]\nmod t {\n    pub fn evil() {}\n}\n",
+            "#[keep]\nmod x {\n    #[cfg(test)]\n    pub mod t {\n    }\n}\n",
+            "#[cfg_attr(not(test), keep)]\nmod x {\n    #[cfg(test)]\n    mod t {\n    }\n}\n",
         ] {
             assert!(test_module_spans(hidden).is_empty(), "{hidden}");
         }
-        let among_modules = "#![allow(dead_code)]\nmod a {\n    pub mod b {\n        #[cfg(test)]\n\
+        let among_modules = "#![allow(dead_code)]\n#[allow(x)]\n#[rustfmt::skip]\nmod a {\n    pub mod b {\n        #[cfg(test)]\n\
                              #[allow(x)]\n        mod t {\n        }\n    }\n}\n";
-        assert_eq!(test_module_spans(among_modules), [(4, 7)]);
+        assert_eq!(test_module_spans(among_modules), [(6, 9)]);
     }
 }

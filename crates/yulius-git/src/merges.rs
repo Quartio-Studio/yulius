@@ -387,6 +387,7 @@ impl Git {
                 })
             {
                 section.added = next.added;
+                section.added_text = next.added_text;
                 section.opaque |= next.opaque;
             }
             // Git counts a file its attributes call binary as `-`: the patch (`--text`) says.
@@ -396,6 +397,7 @@ impl Git {
             files.push(CommitFileLines {
                 path,
                 added: section.added,
+                added_text: section.added_text,
                 removed: section.removed,
                 opaque: section.opaque,
             });
@@ -534,6 +536,7 @@ pub const MAX_COUNTED_LINE_BYTES: usize = 200;
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct Section {
     added: Vec<u32>,
+    added_text: Vec<String>,
     removed: Vec<u32>,
     opaque: bool,
 }
@@ -545,6 +548,8 @@ pub struct CommitFileLines {
     pub path: String,
     /// Line numbers it added (new file).
     pub added: Vec<u32>,
+    /// The text of each added line (at most [`MAX_COUNTED_LINE_BYTES`] of it), as `added`.
+    pub added_text: Vec<String>,
     /// Line numbers it removed (old file).
     pub removed: Vec<u32>,
     /// Whether a changed line holds a NUL byte or is longer than [`MAX_COUNTED_LINE_BYTES`]:
@@ -595,6 +600,9 @@ fn parse_unified_zero(bytes: &[u8]) -> Option<Vec<Section>> {
                 }
                 Some(b'+') if *new_left > 0 => {
                     file.added.push(*new_at);
+                    let text = &line[1..line.len().min(MAX_COUNTED_LINE_BYTES + 1)];
+                    file.added_text
+                        .push(String::from_utf8_lossy(text).into_owned());
                     *new_at += 1;
                     *new_left -= 1;
                 }

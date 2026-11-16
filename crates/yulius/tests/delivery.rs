@@ -2741,6 +2741,39 @@ async fn an_approval_carries_across_a_small_follow_up() -> TestResult {
     })
     .await?;
     assert!(refused && said.contains("merged something other"), "{said}");
+    // A fixture that product code now builds in by its path counts, and the line that does it
+    // refuses (review round 4).
+    let (refused, said, _) = deliver_after_follow_up(|_, wt| {
+        commit_file(wt, "src/fixtures/evil.rs", &lines(30, "x"), "Fixture")?;
+        commit_file(
+            wt,
+            "src/extra.rs",
+            "#[path = \"fixtures/evil.rs\"]\nmod evil;\n",
+            "Use it",
+        )
+    })
+    .await?;
+    assert!(
+        refused && said.contains("`src/extra.rs` adds a line that compiles a file in"),
+        "{said}"
+    );
+    // A test file a new import names counts as product code.
+    let (refused, said, _) = deliver_after_follow_up(|_, wt| {
+        commit_file(
+            wt,
+            "web/__tests__/helper.js",
+            &"export const x = 1;\n".repeat(25),
+            "Helper",
+        )?;
+        commit_file(
+            wt,
+            "web/app.js",
+            "import { x } from './__tests__/helper';\n",
+            "Use it",
+        )
+    })
+    .await?;
+    assert!(refused && said.contains("26 product lines"), "{said}");
     // A test module faked in a comment hides nothing (review round 2).
     let (refused, said, _) = deliver_after_follow_up(|_, wt| {
         let body = format!("/*\n#[cfg(test)]\nmod t {{\n*/\n{}", lines(30, "e"));
