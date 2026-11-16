@@ -150,11 +150,15 @@ mode.
 - [x] Slice A: Docker networks per engine in the budget, larger address pools
 - [x] Slice A: a sandbox's weight follows the CPUs its jobs hold
 - [x] Slice A: documents and ADR
-- [ ] Slice A: review rounds answered
-- [ ] Slice B: infrastructure failures rerun once by themselves
+- [x] Slice A: review rounds answered
+- [ ] Slice A2: the operator's CI admission fix delivered to dev
+- [x] Slice B: infrastructure failures rerun once by themselves
+- [x] Slice B: CI minutes by outcome read and shown
+- [x] Slice B: review round 1 answered: reruns tied to the failure, minutes kept per day
+- [ ] Slice A2: CI wait job-minutes per hour and host busy % measured and shown
+- [ ] Slice B: documents, ADR and review of the reruns and minutes
 - [ ] Slice B: flaky tests quarantined with an issue, the project told
-- [ ] Slice B: CI minutes by outcome read and shown
-- [ ] Slice B: documents, ADR and review
+- [ ] Slice B: quarantine documents, ADR and review
 - [ ] Slice C: a failed member leaves without cancelling the candidate
 - [ ] Slice C: a passed candidate merges while own runs go
 - [ ] Slice C: derived-file conflicts handled without a wasted cycle
@@ -320,3 +324,17 @@ mode.
   - Nits: the clock and the running list are read under the lock; a prune logs at info only when
     it removed something; the memory reserve is at most half the capacity (a 2 GiB host keeps
     1 GiB for CI: doctest); the Evidence above describes this head's code.
+
+### Slice A2: the operator's CI admission fix (its own pull request, first)
+
+- The instance's operator built production 1d52db59 (16 Nov 2026, 21:57 UTC): main with #1357,
+  #1356 (slice A) and a fix to CI admission, because slice A's rule left the host 25-30 % busy
+  while jobs waited a median 10-11 min to start. The same commit on top of dev is applied here as
+  it came (`git am`, commit 94d4fc2fb, author the operator): HBA-002 amended, ADR-0353. It
+  replaces this task's own `YULIUS_CI_OVERCOMMIT` carry-forward, no-convoy rule and default-share
+  cap, which were never pushed (kept in this branch's history before b4447577f).
+- To deliver it alone, b4447577f sets the branch to `dev`'s tree (slice B's reruns, minutes and
+  CI-load work are held back); slice B comes back by reverting b4447577f once this is merged.
+- Checks run on this head: `cargo fmt --check`; `cargo clippy -D warnings` on `yulius-domain`,
+  `yulius-sandbox`, `yulius-app`, `yulius` (all targets); the resources, `ci::` and `cgroup`
+  unit tests (116 passed); the whole `local_ci::` suite (79 passed).
