@@ -1048,8 +1048,18 @@ async fn the_merge_queue_read_counts_ci_minutes_by_outcome() -> TestResult {
     let (admin, alice) = base(&h).await?;
     let min = 60_000;
     let cases = [
-        ("s1", "p", RunState::Passed, Some(("address_pool", 3 * min))),
-        ("s1", "o", RunState::Error, Some(("docker_socket", 2 * min))),
+        (
+            "s1",
+            "p",
+            RunState::Passed,
+            Some(("address_pool", 3 * min, false)),
+        ),
+        (
+            "s1",
+            "o",
+            RunState::Error,
+            Some(("docker_socket", 2 * min, true)),
+        ),
         ("s1", "c", RunState::Cancelled, None),
         ("s2", "q", RunState::Failed, None),
     ];

@@ -499,13 +499,13 @@ pub trait CiStore: Send + Sync {
     ) -> AppResult<bool>;
     /// Replaces the output of a running job.
     async fn set_ci_job_output(&self, id: &str, output: &str) -> AppResult<()>;
-    /// The runs of `sandbox` that started in `[from, to)` and ended (SPEC-497 OFC-003).
-    async fn ci_runs_ended(
+    /// `sandbox`'s tally of CI minutes for the UTC days of `[from, to)` (SPEC-497 OFC-003).
+    async fn ci_minutes(
         &self,
         sandbox: &SandboxId,
         from: Option<Timestamp>,
         to: Option<Timestamp>,
-    ) -> AppResult<Vec<crate::ci::CiRunEnded>>;
+    ) -> AppResult<Vec<crate::ci::CiMinutesRow>>;
     /// Sets or clears the reason of a `queued` job: what it waits for (SPEC-497 HBA-005).
     async fn set_queued_ci_job_reason(&self, id: &str, reason: Option<&str>) -> AppResult<()>;
     /// Puts a `running` run and all its jobs back to `queued` (after a server restart, or a job

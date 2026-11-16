@@ -145,7 +145,11 @@ mode.
 - [x] Slice A: documents and ADR
 - [x] Slice A: review rounds answered
 - [x] Slice B: infrastructure failures rerun once by themselves
-- [ ] Slice B: CI minutes by outcome read and shown
+- [x] Slice B: CI minutes by outcome read and shown
+- [ ] Slice B: review round 1 answered: reruns tied to the failure, minutes kept per day
+- [ ] Slice A2: the production overcommit factor carried forward in CI admission
+- [ ] Slice A2: no convoy, a capped default share
+- [ ] Slice A2: CI wait job-minutes per hour and host busy % measured and shown
 - [ ] Slice B: documents, ADR and review of the reruns and minutes
 - [ ] Slice B: flaky tests quarantined with an issue, the project told
 - [ ] Slice B: quarantine documents, ADR and review

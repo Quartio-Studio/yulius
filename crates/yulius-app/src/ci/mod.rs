@@ -229,19 +229,20 @@ pub struct CiRunUpdate {
     pub ended_at: Option<Timestamp>,
 }
 
-/// An ended CI run, for its minutes (SPEC-497 OFC-003).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct CiRunEnded {
-    /// Its start.
-    pub started_at: Timestamp,
-    /// Its end.
-    pub ended_at: Timestamp,
-    /// How it ended.
-    pub state: RunState,
-    /// Every job of it that failed or errored did so only for the infrastructure (and at least
-    /// one did).
-    pub outside: bool,
-    /// Job time its jobs spent on runs thrown away for the infrastructure.
+/// One line of a sandbox's tally of CI minutes (SPEC-497 OFC-003): a UTC day, how the runs
+/// ended (`passed`, `failed`, `failed_outside`, `cancelled`), how many, their minutes start to end
+/// and their jobs' time thrown away by infrastructure failures, in milliseconds.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CiMinutesRow {
+    /// `YYYY-MM-DD`.
+    pub day: String,
+    /// How the runs ended.
+    pub outcome: String,
+    /// Runs.
+    pub runs: i64,
+    /// Their time, start to end.
+    pub run_ms: i64,
+    /// Their jobs' thrown-away time.
     pub rerun_ms: i64,
 }
 
@@ -265,8 +266,9 @@ pub struct CiJobUpdate {
     /// How long it waited before it started, with its start (SPEC-435).
     pub waited_ms: Option<i64>,
     /// With its end, after an infrastructure failure (SPEC-497 OFC-001): its kind
-    /// ([`yulius_domain::ci::infra::Infra::as_str`]) and the milliseconds of the run thrown away.
-    pub infra: Option<(&'static str, i64)>,
+    /// ([`yulius_domain::ci::infra::Infra::as_str`]), the milliseconds of the runs thrown away,
+    /// and whether its end itself was the infrastructure's (it met one again).
+    pub infra: Option<(&'static str, i64, bool)>,
 }
 
 /// The CI configuration of a sandbox as last read.

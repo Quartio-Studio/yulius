@@ -156,6 +156,10 @@ pub(super) enum Ended {
     DiskLimit(String),
 }
 
+/// The end of the line a job's output gets when it runs again after an infrastructure failure
+/// (SPEC-497 OFC-001); what follows it is the second run's.
+const RERUN_NOTE: &str = "the job runs again once by itself (SPEC-497)\n";
+
 /// What a CD or environment run's files may use while it runs (SPEC-300, ADR-0216): the
 /// directories measured, each with its name in the reason, and the bound in bytes.
 pub(super) struct DiskBound {
@@ -778,18 +782,21 @@ impl App {
             match (infra, thrown) {
                 (Some(kind), None) => {
                     ring.push_str(&format!(
-                        "\n[yulius] {}: an infrastructure failure, not the change; the job runs \
-                         again once by itself (SPEC-497)\n",
+                        "\n[yulius] {}: an infrastructure failure, not the change; {RERUN_NOTE}",
                         kind.describe()
                     ));
                     thrown = Some((kind, took));
+                    // A full address pool is waited out before the second run (review round 1).
+                    if kind == Infra::AddressPool {
+                        self.ci_network_room(&run.sandbox_id, &job.id).await;
+                    }
                 }
-                (Some(kind), Some((_, first))) => {
+                (Some(again), Some((first, ms))) => {
                     break (
                         ended,
                         usage,
                         failures,
-                        Some((kind, first.saturating_add(took), true)),
+                        Some((first, ms.saturating_add(took), Some(again))),
                     );
                 }
                 (None, thrown) => {
@@ -797,7 +804,7 @@ impl App {
                         ended,
                         usage,
                         failures,
-                        thrown.map(|(kind, ms)| (kind, ms, false)),
+                        thrown.map(|(kind, ms)| (kind, ms, None)),
                     );
                 }
             }
@@ -855,14 +862,24 @@ impl App {
         // After an infrastructure failure the job says so: passed when run again, or an error when
         // it met one again (never a failure of the change).
         let (state, reason) = match infra {
-            Some((kind, _, true)) => (
+            Some((first, _, Some(again))) => (
                 RunState::Error,
-                Some(format!(
-                    "{}, again when it was run again: an infrastructure failure, not the change",
-                    kind.describe()
-                )),
+                Some(if first == again {
+                    format!(
+                        "{}, again when it was run again: an infrastructure failure, not the \
+                         change",
+                        again.describe()
+                    )
+                } else {
+                    format!(
+                        "{} when it was run again, after {} in its first run: infrastructure \
+                         failures, not the change",
+                        again.describe(),
+                        first.describe()
+                    )
+                }),
             ),
-            Some((kind, _, false)) if state == RunState::Passed => (
+            Some((kind, _, None)) if state == RunState::Passed => (
                 state,
                 Some(format!(
                     "passed when run again: its first run ended for an infrastructure failure \
@@ -884,7 +901,7 @@ impl App {
             ended_at: Some(self.now()),
             usage,
             waited_ms: None,
-            infra: infra.map(|(kind, ms, _)| (kind.as_str(), ms)),
+            infra: infra.map(|(kind, ms, again)| (kind.as_str(), ms, again.is_some())),
         };
         if let Err(err) = store
             .transition_ci_job(&job.id, &[RunState::Running], state, &end)
@@ -937,12 +954,13 @@ impl App {
             (Some(before), Some(after)) => after > before,
             _ => false,
         };
-        let mut text = ring.text();
-        if let Some(failures) = failures {
-            text.push('\n');
-            text.push_str(failures);
-        }
-        infrastructure(end, &text, oom)
+        // Only this run's output: after a second start, what the first printed is not read again
+        // (review round 1).
+        let text = ring.text();
+        let this_run = text
+            .rsplit_once(RERUN_NOTE)
+            .map_or(text.as_str(), |(_, after)| after);
+        infrastructure(end, this_run, failures, oom)
     }
 
     /// The job's environment: no secret; its budget and what the checkout's `[resources.env]`

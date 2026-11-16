@@ -823,24 +823,19 @@ impl App {
                 detail: entry.detail.unwrap_or_default(),
             }));
         }
-        // CI minutes by how the runs ended (SPEC-497 OFC-003).
-        let mut runs = Vec::new();
+        // CI minutes by how the runs ended, from each sandbox's daily tally (SPEC-497 OFC-003).
+        let mut minutes = mq::Minutes::default();
+        let mut minute_days: std::collections::BTreeMap<String, mq::Minutes> =
+            std::collections::BTreeMap::new();
         for id in &sandboxes {
-            for run in self.deps.store.ci_runs_ended(id, from_at, to_at).await? {
-                runs.push(mq::RunMinutes {
-                    started: run.started_at,
-                    ms: run.ended_at.millis_since(run.started_at),
-                    outcome: match run.state {
-                        yulius_domain::ci::RunState::Passed => mq::RunOutcome::Passed,
-                        yulius_domain::ci::RunState::Cancelled => mq::RunOutcome::Cancelled,
-                        _ if run.outside => mq::RunOutcome::FailedOutside,
-                        _ => mq::RunOutcome::Failed,
-                    },
-                    rerun_ms: run.rerun_ms,
-                });
+            for row in self.deps.store.ci_minutes(id, from_at, to_at).await? {
+                minutes.add(&row.outcome, row.run_ms, row.rerun_ms);
+                minute_days
+                    .entry(row.day)
+                    .or_default()
+                    .add(&row.outcome, row.run_ms, row.rerun_ms);
             }
         }
-        let (minute_days, minutes) = mq::minutes_by_day(&runs);
         let numbers = mq::queue_numbers(&events, from_at);
         let mut totals = MergeQueueAnalytics {
             range,

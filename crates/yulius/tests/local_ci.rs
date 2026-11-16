@@ -3193,6 +3193,64 @@ async fn a_job_killed_for_memory_runs_again_once() -> TestResult {
     Ok(())
 }
 
+/// SPEC-497 OFC-001 (review round 1): a Docker error the job went on from, then a test's
+/// failure, is the change's: no second run. A first run thrown away for the infrastructure and
+/// a second that fails a test is the change's failure, not an infrastructure error.
+#[tokio::test]
+async fn a_tests_failure_is_never_taken_for_the_infrastructure() -> TestResult {
+    let survived = "echo \"Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is \
+                    the docker daemon running?\"; echo \"test flaky ... FAILED\"; exit 101";
+    let f = fixture_with(false, |data| attempts(data, survived, "echo ok")).await?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    let job = pull_job(&f).await?;
+    assert_eq!(job["state"], "failed", "{job}");
+    assert_eq!(attempts_of(&f)?, [1, 1], "no second run after a test's failure");
+
+    let f = fixture_with(false, |data| {
+        attempts(data, NO_POOL, "echo \"test x ... FAILED\"; exit 101")
+    })
+    .await?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    let job = pull_job(&f).await?;
+    assert_eq!(job["state"], "failed", "{job}");
+    assert!(job["reason"].is_null(), "{job}");
+    assert_eq!(attempts_of(&f)?, [2, 2]);
+    Ok(())
+}
+
+/// A sandbox whose OOM count never grows (SPEC-497 OFC-001, review round 1).
+struct NoOom;
+
+#[async_trait::async_trait]
+impl SandboxIsolation for NoOom {
+    async fn prepare(&self, _: &SandboxRef) -> AppResult<Option<SandboxJoin>> {
+        Ok(None)
+    }
+    fn release(&self, _: &SandboxId) {}
+    async fn limit_counters(&self, _: &SandboxId) -> Option<LimitCounters> {
+        Some(LimitCounters {
+            task_limit_hits: 0,
+            oom_kills: 3,
+        })
+    }
+}
+
+/// SPEC-497 OFC-001 (review round 1): a SIGKILL while the kernel killed nothing for memory is
+/// the job's own failure: no second run.
+#[tokio::test]
+async fn a_kill_without_a_kill_for_memory_is_not_run_again() -> TestResult {
+    let f = fixture_with(false, |data| attempts(data, "kill -9 $$", "echo ok")).await?;
+    assert!(f.h.app.set_isolation(Arc::new(NoOom)));
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    let job = pull_job(&f).await?;
+    assert_eq!(job["state"], "failed", "{job}");
+    assert_eq!(attempts_of(&f)?, [1, 1]);
+    Ok(())
+}
+
 /// The jobs of `run`, from its detail, in order.
 async fn run_jobs(f: &Fixture, run: &Value) -> BoxResult<Vec<Value>> {
     let id = run["id"].as_str().ok_or("id")?;
