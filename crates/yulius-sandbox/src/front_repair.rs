@@ -307,6 +307,7 @@ mod tests {
             closed_after_grace: 0,
             at_limit_since_ms: None,
             engine_running,
+            engine_busy: false,
         };
         assert!(quiet(Some(&state(0, false)), 1));
         assert!(!quiet(Some(&state(1, false)), 1));

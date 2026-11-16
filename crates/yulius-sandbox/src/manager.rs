@@ -3087,6 +3087,7 @@ while True:
             closed_after_grace: 0,
             at_limit_since_ms: None,
             engine_running: false,
+            engine_busy: false,
         };
         let paths = StatePaths::new(manager.state_dir("s1"));
         write_json(&paths.docker_state(), &busy)?;
