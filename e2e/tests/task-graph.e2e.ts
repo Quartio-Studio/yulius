@@ -179,3 +179,19 @@ test('In the Graph, j / k move between tasks and the search shows its matches in
   await expect(browser.locator('.tl-row')).toHaveCount(1);
   await expect(screen.getByRole('radio', 'List')).toBeChecked();
 });
+
+test('the task search shows its results, also in Safari (SPEC-500 DLG-003)', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/tasks?view=graph', GRAPH));
+  await screen.getByRole('button', 'Search tasks').click();
+  await screen.getByRole('combobox', /Search tasks in studio/).fill('a');
+  await expect(browser.locator('dialog.spot[open] .spot-item').first()).toBeVisible();
+  const list = await browser.evaluate(() => {
+    const element = document.querySelector('dialog.spot[open] .spot-list') as HTMLElement;
+    const first = element.querySelector('.spot-item') as HTMLElement;
+    return { basis: getComputedStyle(element).flexBasis, shown: element.clientHeight, first: first.offsetTop + first.offsetHeight };
+  });
+  // WebKit 26.0 resolves a 0% basis to zero in the auto-height search dialog and the list shrinks
+  // to its padding; this suite runs Chromium only, so the rule WebKit needs is checked directly.
+  expect(list.basis).toBe('auto');
+  expect(list.shown).toBeGreaterThanOrEqual(list.first);
+});
