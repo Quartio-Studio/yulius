@@ -462,6 +462,38 @@ async fn a_malformed_token_is_refused_and_creates_nothing() -> TestResult {
 }
 
 /// AC-3 (TKP-004): a token Claude refuses (401) is 422 and creates nothing.
+/// TKP-006: a body that is not the request's shape is refused without quoting it, so a token sent
+/// as a bare string (or anywhere serde would quote it) never comes back in the answer.
+#[tokio::test]
+async fn a_malformed_body_never_echoes_the_token() -> TestResult {
+    let w = world().await?;
+    let (id, _) = signing_in(&w, "Claude #5").await?;
+    for (method, path) in [
+        (Method::POST, "/api/admin/accounts".to_owned()),
+        (Method::PUT, format!("/api/admin/accounts/{id}/token")),
+    ] {
+        for body in [
+            json!(PASTED),
+            json!({"token": [PASTED]}),
+            json!({"tokens": PASTED}),
+        ] {
+            let refused = call(&w.h.router, method.clone(), &path, Some(body), &w.admin).await?;
+            assert_eq!(
+                refused.status,
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "{method} {path}"
+            );
+            assert_eq!(refused.body["error"]["code"], "invalid", "{method} {path}");
+            assert_no_token(&refused.body);
+        }
+    }
+    assert!(
+        record(&w, &id).await?.credential.is_none(),
+        "nothing was stored"
+    );
+    Ok(())
+}
+
 #[tokio::test]
 async fn a_token_claude_refuses_creates_nothing() -> TestResult {
     let w = world().await?;

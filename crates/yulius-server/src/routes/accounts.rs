@@ -3,6 +3,7 @@
 use std::time::Duration;
 
 use axum::Json;
+use axum::extract::rejection::JsonRejection;
 use axum::extract::ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
@@ -33,11 +34,23 @@ pub async fn list(
     Ok(Json(app.list_accounts(&ctx).await?))
 }
 
+/// The body of a request that may carry a pasted token (SPEC-502 TKP-006). A body of another
+/// shape is refused with `shape`, never with serde's message, which quotes what it could not
+/// take: a token sent as a bare string would come back in the answer.
+fn token_body<T>(body: Result<Json<T>, JsonRejection>, shape: &str) -> Result<T, AppError> {
+    body.map(|Json(req)| req)
+        .map_err(|_| AppError::Invalid(format!("the body must be JSON like {shape}")))
+}
+
 pub async fn create(
     State(app): State<AppState>,
     Auth(ctx): Auth,
-    Json(req): Json<CreateAccount>,
+    body: Result<Json<CreateAccount>, JsonRejection>,
 ) -> ApiResult<(StatusCode, Json<AccountLoginStarted>)> {
+    let req = token_body(
+        body,
+        r#"{"provider": "anthropic", "label": "…"} with an optional "token""#,
+    )?;
     Ok((
         StatusCode::CREATED,
         Json(app.create_account(&ctx, req).await?),
@@ -76,8 +89,9 @@ pub async fn replace_token(
     State(app): State<AppState>,
     Auth(ctx): Auth,
     Path(id): Path<String>,
-    Json(req): Json<ReplaceAccountToken>,
+    body: Result<Json<ReplaceAccountToken>, JsonRejection>,
 ) -> ApiResult<Json<AccountView>> {
+    let req = token_body(body, r#"{"token": "…"}"#)?;
     Ok(Json(app.replace_account_token(&ctx, &id, req).await?))
 }
 
