@@ -438,13 +438,34 @@ impl SandboxIsolation for NamespaceIsolation {
         self.manager.processes(sandbox.as_str()).await
     }
 
-    fn ci_jobs_running(&self, sandbox: &SandboxId, jobs: u32) {
+    fn ci_jobs_running(&self, sandbox: &SandboxId, jobs: u32, cpus: u32) {
         let Some(delegation) = self.manager.config().delegation.as_ref() else {
             return;
         };
-        if let Err(error) = delegation.set_ci_jobs(sandbox.as_str(), jobs) {
+        if let Err(error) = delegation.set_ci_jobs(sandbox.as_str(), jobs, cpus) {
             tracing::warn!(sandbox = %sandbox, jobs, %error, "cannot weigh the sandbox by its CI jobs");
         }
+    }
+
+    fn ci_use(&self, sandbox: &SandboxId) -> Option<yulius_app::ports::isolation::CiUse> {
+        let used = self
+            .manager
+            .config()
+            .delegation
+            .as_ref()?
+            .ci_use(sandbox.as_str())?;
+        Some(yulius_app::ports::isolation::CiUse {
+            cpu_usec: used.cpu_usec,
+            anon_bytes: used.anon_bytes,
+        })
+    }
+
+    async fn engine_networks_free(&self, sandbox: &SandboxId) -> Option<u32> {
+        self.manager.engine_networks_free(sandbox.as_str()).await
+    }
+
+    async fn prune_engine_networks(&self, sandbox: &SandboxId) -> Option<u32> {
+        self.manager.prune_engine_networks(sandbox.as_str()).await
     }
 
     async fn limit_counters(&self, sandbox: &SandboxId) -> Option<LimitCounters> {

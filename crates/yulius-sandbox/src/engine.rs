@@ -49,12 +49,27 @@ pub struct EngineView {
     pub cgroup: String,
 }
 
+/// The engine's address pools for new networks (SPEC-497 HBA-003): Docker's own default ranges
+/// (172.17.0.0 to 172.31.255.255 and 192.168.0.0/16), cut into /24 networks instead of /16 and
+/// /20 ones. The engine runs in the sandbox's own network namespace, whose only other network is
+/// its link (10.0.2.0/24), so these ranges are free there as they were by default; Docker's
+/// default gave 31 networks, which four test runs creating networks at once used up.
+pub const ADDRESS_POOLS: [(&str, u32); 5] = [
+    ("172.17.0.0/16", 256),
+    ("172.18.0.0/15", 512),
+    ("172.20.0.0/14", 1024),
+    ("172.24.0.0/13", 2048),
+    ("192.168.0.0/16", 256),
+];
+/// The networks an engine can make from [`ADDRESS_POOLS`] (its default `bridge` takes one).
+pub const ENGINE_NETWORKS: u32 = 4096;
+
 /// `dockerd` and its arguments inside the engine: its control socket in the control directory
 /// (the sandbox's socket at [`ENGINE_SOCKET_IN_RUNS`] is the Docker front's), cgroupfs (no systemd
-/// inside), no IPv6 NAT (sandboxes have no IPv6 egress).
+/// inside), no IPv6 NAT (sandboxes have no IPv6 egress), and [`ADDRESS_POOLS`].
 #[must_use]
 pub fn dockerd_argv() -> Vec<String> {
-    [
+    let mut argv: Vec<String> = [
         "dockerd",
         "--host",
         &format!("unix://{ENGINE_CONTROL_IN_ENGINE}/docker.sock"),
@@ -71,7 +86,12 @@ pub fn dockerd_argv() -> Vec<String> {
         "warn",
     ]
     .map(str::to_owned)
-    .to_vec()
+    .to_vec();
+    for (base, _) in ADDRESS_POOLS {
+        argv.push("--default-address-pool".to_owned());
+        argv.push(format!("base={base},size=24"));
+    }
+    argv
 }
 
 /// The full `bwrap` argv that starts the engine (SPEC-187 DKR-003): new PID, IPC, UTS and cgroup
@@ -284,12 +304,57 @@ pub async fn prune_within(socket: &std::path::Path, limit: Duration) -> std::io:
     }
 }
 
+/// How long a count or prune of the engine's networks may take.
+pub const NETWORKS_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// The networks the engine behind `socket` has that take an address range (all but `host` and
+/// `none`), within [`NETWORKS_TIMEOUT`] (SPEC-497 HBA-003).
+///
+/// # Errors
+/// The engine is not reachable, refused, answered something else or took too long.
+pub async fn networks(socket: &std::path::Path) -> std::io::Result<u32> {
+    let json = tokio::time::timeout(NETWORKS_TIMEOUT, request(socket, "GET", "/networks"))
+        .await
+        .map_err(|_| std::io::Error::other("/networks timed out"))??;
+    let list = json
+        .as_array()
+        .ok_or_else(|| std::io::Error::other("/networks: not a list"))?;
+    let ranged = list
+        .iter()
+        .filter(|network| !matches!(network["Driver"].as_str(), Some("host" | "null")))
+        .count();
+    Ok(u32::try_from(ranged).unwrap_or(u32::MAX))
+}
+
+/// Removes the networks no container uses from the engine behind `socket`, within
+/// [`NETWORKS_TIMEOUT`]; how many it removed.
+///
+/// # Errors
+/// As [`networks`].
+pub async fn prune_networks(socket: &std::path::Path) -> std::io::Result<u32> {
+    let json = tokio::time::timeout(NETWORKS_TIMEOUT, request(socket, "POST", "/networks/prune"))
+        .await
+        .map_err(|_| std::io::Error::other("/networks/prune timed out"))??;
+    let deleted = json["NetworksDeleted"].as_array().map_or(0, Vec::len);
+    Ok(u32::try_from(deleted).unwrap_or(u32::MAX))
+}
+
 /// `POST path` over HTTP/1.0 (the engine closes the connection after its answer); the
 /// `SpaceReclaimed` of a 200 answer.
 async fn post(socket: &std::path::Path, path: &str) -> std::io::Result<u64> {
+    let json = request(socket, "POST", path).await?;
+    Ok(json["SpaceReclaimed"].as_u64().unwrap_or(0))
+}
+
+/// `method path` over HTTP/1.0; the JSON of a 200 answer (at most [`PRUNE_ANSWER_MAX`]).
+async fn request(
+    socket: &std::path::Path,
+    method: &str,
+    path: &str,
+) -> std::io::Result<serde_json::Value> {
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
     let mut stream = crate::engine_supervisor::connect_control(socket).await?;
-    let request = format!("POST {path} HTTP/1.0\r\nHost: docker\r\nContent-Length: 0\r\n\r\n");
+    let request = format!("{method} {path} HTTP/1.0\r\nHost: docker\r\nContent-Length: 0\r\n\r\n");
     stream.write_all(request.as_bytes()).await?;
     let mut answer = Vec::new();
     stream
@@ -307,9 +372,7 @@ async fn post(socket: &std::path::Path, path: &str) -> std::io::Result<u64> {
             body.chars().take(200).collect::<String>()
         )));
     }
-    let json: serde_json::Value =
-        serde_json::from_str(body.trim()).map_err(std::io::Error::other)?;
-    Ok(json["SpaceReclaimed"].as_u64().unwrap_or(0))
+    serde_json::from_str(body.trim()).map_err(std::io::Error::other)
 }
 
 #[cfg(test)]
@@ -442,6 +505,38 @@ mod tests {
             }
         });
         Ok((server, heads))
+    }
+
+    /// SPEC-497 HBA-003: the networks that take an address range are counted (not `host` and
+    /// `none`), and unused ones pruned with a GET and a POST; a refusal is an error.
+    #[tokio::test]
+    async fn the_engines_networks_are_counted_and_pruned() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let dir = tempfile::tempdir()?;
+        let socket = dir.path().join("docker.sock");
+        let (server, heads) = fake_api(
+            socket.clone(),
+            vec![
+                (
+                    "/networks",
+                    200,
+                    r#"[{"Name":"bridge","Driver":"bridge"},{"Name":"host","Driver":"host"},{"Name":"none","Driver":"null"},{"Name":"t1","Driver":"bridge"},{"Name":"o","Driver":"overlay"}]"#,
+                ),
+                ("/networks/prune", 200, r#"{"NetworksDeleted":["t1","t2"]}"#),
+            ],
+        )
+        .await?;
+        assert_eq!(networks(&socket).await?, 3);
+        assert_eq!(prune_networks(&socket).await?, 2);
+        let heads = heads.lock().map_err(|_| "poisoned")?.clone();
+        assert!(heads[0].starts_with("GET /networks "), "{heads:?}");
+        assert!(heads[1].starts_with("POST /networks/prune "), "{heads:?}");
+        server.abort();
+        let refusing = dir.path().join("refusing.sock");
+        let (server, _) = fake_api(refusing.clone(), vec![("/networks", 500, "{}")]).await?;
+        assert!(networks(&refusing).await.is_err());
+        server.abort();
+        Ok(())
     }
 
     const BUILD_PRUNE: &str = "/build/prune?all=1";
@@ -717,6 +812,33 @@ mod tests {
         );
         assert!(position(&dockerd, &["--data-root", "/var/lib/docker"]).is_some());
         assert!(position(&dockerd, &["--exec-opt", "native.cgroupdriver=cgroupfs"]).is_some());
+        // SPEC-497 HBA-003: /24 networks within Docker's own default ranges.
+        let pools: Vec<&String> = dockerd
+            .iter()
+            .skip_while(|a| *a != "--default-address-pool")
+            .step_by(2)
+            .collect();
+        assert_eq!(pools.len(), ADDRESS_POOLS.len(), "{dockerd:?}");
+        assert!(
+            position(
+                &dockerd,
+                &["--default-address-pool", "base=172.24.0.0/13,size=24"]
+            )
+            .is_some()
+        );
+        let total: u32 = ADDRESS_POOLS
+            .iter()
+            .map(|(base, networks)| {
+                let bits: u32 = base
+                    .rsplit('/')
+                    .next()
+                    .and_then(|b| b.parse().ok())
+                    .unwrap_or(0);
+                assert_eq!(1 << (24 - bits), *networks, "{base}");
+                networks
+            })
+            .sum();
+        assert_eq!(total, ENGINE_NETWORKS);
         assert!(
             !dockerd.iter().any(|a| a.contains("/run/docker.sock")),
             "{dockerd:?}"

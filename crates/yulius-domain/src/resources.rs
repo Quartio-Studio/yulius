@@ -103,10 +103,11 @@ pub struct Capacity {
     pub memory_mb: u64,
 }
 
-/// What one process group may use: the size it plans its parallelism for.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// What one process group may use: the size it plans its parallelism for (or, summed, what
+/// several hold: zero for none).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Budget {
-    /// Whole CPUs (at least 1).
+    /// Whole CPUs (at least 1 for one process group).
     pub cpus: u32,
     /// Memory in MiB (at least 1).
     pub memory_mb: u64,
@@ -193,6 +194,172 @@ impl Capacity {
             memory_mb: self.memory_for(cpus),
         }
     }
+}
+
+/// The share of the capacity CI never takes: the server and the agent sessions keep an eighth of
+/// the CPUs and memory (SPEC-497 HBA-001), at least [`CI_RESERVE_MIN_CPUS`] and
+/// [`CI_RESERVE_MIN_MB`].
+pub const CI_RESERVE_SHARE: u32 = 8;
+/// The fewest CPUs kept from CI.
+pub const CI_RESERVE_MIN_CPUS: u32 = 1;
+/// The least memory kept from CI, in MiB.
+pub const CI_RESERVE_MIN_MB: u64 = 2048;
+
+impl Capacity {
+    /// What the CI jobs of every sandbox may hold together (SPEC-497 HBA-001): the capacity less
+    /// the reserve of the server and the agent sessions ([`CI_RESERVE_SHARE`]), at least one CPU
+    /// and one MiB.
+    ///
+    /// # Examples
+    /// ```
+    /// use yulius_domain::resources::Capacity;
+    /// assert_eq!(Capacity::new(64, 512 * 1024).ci_budget(), Capacity::new(56, 448 * 1024));
+    /// assert_eq!(Capacity::new(4, 8192).ci_budget(), Capacity::new(3, 6144));
+    /// ```
+    #[must_use]
+    pub fn ci_budget(&self) -> Self {
+        let cpus = (self.cpus / CI_RESERVE_SHARE).max(CI_RESERVE_MIN_CPUS);
+        let memory = (self.memory_mb / u64::from(CI_RESERVE_SHARE)).max(CI_RESERVE_MIN_MB);
+        Self::new(
+            self.cpus.saturating_sub(cpus),
+            self.memory_mb.saturating_sub(memory),
+        )
+    }
+}
+
+/// The fewest networks a sandbox's Docker engine must still be able to make for a CI job of it
+/// to start (SPEC-497 HBA-003): a test run creating networks side by side with others never
+/// meets an engine that has none left.
+pub const ENGINE_NETWORK_RESERVE: u32 = 32;
+
+/// What CI holds when a job asks to start (SPEC-497 HBA-002).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Held {
+    /// CI jobs running now, in every sandbox.
+    pub jobs: u32,
+    /// The sum of their reservations.
+    pub reserved: Budget,
+    /// What the `ci` and `engine` groups of the sandboxes running them were measured to use (CPU
+    /// time per second, rounded up; anonymous memory); `None` when nothing was measured.
+    pub measured: Option<Budget>,
+}
+
+/// The part of the CI budget a job waits for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Short {
+    /// CPUs.
+    Cpu,
+    /// Memory.
+    Memory,
+}
+
+/// Whether a job starts now or waits, and for what (SPEC-497 HBA-002, HBA-005).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Admission {
+    /// It starts.
+    Now,
+    /// It waits: CI holds `held` (the larger of `reserved` and `measured`) of `budget`, and the
+    /// job needs `need`, all in CPUs or MiB.
+    Wait {
+        /// What is short.
+        short: Short,
+        /// What CI holds.
+        held: u64,
+        /// The running jobs' reservations.
+        reserved: u64,
+        /// What was measured, if anything.
+        measured: Option<u64>,
+        /// The job's need.
+        need: u64,
+        /// The CI budget.
+        budget: u64,
+    },
+}
+
+impl fmt::Display for Admission {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match *self {
+            Self::Now => f.write_str("it fits"),
+            Self::Wait {
+                short,
+                held,
+                reserved,
+                measured,
+                need,
+                budget,
+            } => {
+                let unit = match short {
+                    Short::Cpu => "CPUs",
+                    Short::Memory => "MiB of memory",
+                };
+                write!(
+                    f,
+                    "CI holds {held} of the host's {budget} {unit} for CI ({reserved} reserved"
+                )?;
+                if let Some(measured) = measured {
+                    write!(f, ", {measured} measured")?;
+                }
+                write!(f, "); this job needs {need}")
+            }
+        }
+    }
+}
+
+/// Whether a job needing `need` starts beside what CI holds (SPEC-497 HBA-002): it does when it
+/// fits in `budget` beside the larger of the running jobs' reservations and the measured use, in
+/// CPUs and in memory. A need larger than the budget counts as the whole budget, so such a job
+/// runs alone; with no CI job running anything starts (what is measured then is not CI's).
+///
+/// # Examples
+/// ```
+/// use yulius_domain::resources::{Admission, Budget, Capacity, Held, admit};
+/// let budget = Capacity::new(56, 448 * 1024);
+/// let need = Budget { cpus: 16, memory_mb: 32 * 1024 };
+/// let reserved = Budget { cpus: 32, memory_mb: 64 * 1024 };
+/// // The two running jobs reserved 32 CPUs but use 50: a third does not fit.
+/// let held = Held { jobs: 2, reserved, measured: Some(Budget { cpus: 50, memory_mb: 1024 }) };
+/// assert!(matches!(admit(budget, &held, need), Admission::Wait { held: 50, .. }));
+/// // Measured below their reservation, the reservation counts: 32 + 16 fit.
+/// let held = Held { jobs: 2, reserved, measured: Some(Budget { cpus: 20, memory_mb: 1024 }) };
+/// assert_eq!(admit(budget, &held, need), Admission::Now);
+/// ```
+#[must_use]
+pub fn admit(budget: Capacity, held: &Held, need: Budget) -> Admission {
+    if held.jobs == 0 {
+        return Admission::Now;
+    }
+    let measured = held.measured;
+    let checks = [
+        (
+            Short::Cpu,
+            u64::from(held.reserved.cpus),
+            measured.map(|m| u64::from(m.cpus)),
+            u64::from(need.cpus),
+            u64::from(budget.cpus),
+        ),
+        (
+            Short::Memory,
+            held.reserved.memory_mb,
+            measured.map(|m| m.memory_mb),
+            need.memory_mb,
+            budget.memory_mb,
+        ),
+    ];
+    for (short, reserved, measured, need, budget) in checks {
+        let need = need.min(budget);
+        let held = reserved.max(measured.unwrap_or(0));
+        if held.saturating_add(need) > budget {
+            return Admission::Wait {
+                short,
+                held,
+                reserved,
+                measured,
+                need,
+                budget,
+            };
+        }
+    }
+    Admission::Now
 }
 
 /// What a repository without a `[resources.env]` table gets (SPEC-268 PID-007): Cargo's build
@@ -344,6 +511,97 @@ pub fn budget_env(budget: Budget, templates: &[EnvTemplate]) -> Vec<(String, Str
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// SPEC-497 HBA-001, HBA-002: the reserve of the server and agents, the larger of reserved
+    /// and measured, memory as well as CPUs, and a job larger than the budget alone.
+    #[test]
+    fn ci_jobs_are_admitted_by_what_ci_really_holds() {
+        let budget = Capacity::new(64, 512 * 1024).ci_budget();
+        assert_eq!(budget, Capacity::new(56, 448 * 1024));
+        let need = Budget {
+            cpus: 16,
+            memory_mb: 1024,
+        };
+        let held = |jobs, reserved: u32, measured: Option<u32>| Held {
+            jobs,
+            reserved: Budget {
+                cpus: reserved,
+                memory_mb: 1024,
+            },
+            measured: measured.map(|cpus| Budget {
+                cpus,
+                memory_mb: 1024,
+            }),
+        };
+        // Four 16-CPU jobs by their declarations would take 64; the budget is 56.
+        assert_eq!(admit(budget, &held(2, 32, None), need), Admission::Now);
+        assert!(matches!(
+            admit(budget, &held(3, 48, None), need),
+            Admission::Wait {
+                short: Short::Cpu,
+                held: 48,
+                ..
+            }
+        ));
+        // What two jobs really use decides when it is more than they reserved.
+        let measured = admit(budget, &held(2, 32, Some(45)), need);
+        assert!(
+            matches!(
+                measured,
+                Admission::Wait {
+                    held: 45,
+                    measured: Some(45),
+                    ..
+                }
+            ),
+            "{measured:?}"
+        );
+        assert_eq!(
+            measured.to_string(),
+            "CI holds 45 of the host's 56 CPUs for CI (32 reserved, 45 measured); this job needs 16"
+        );
+        assert_eq!(admit(budget, &held(2, 32, Some(40)), need), Admission::Now);
+        // Memory too.
+        let big = Held {
+            jobs: 1,
+            reserved: Budget {
+                cpus: 1,
+                memory_mb: 1024,
+            },
+            measured: Some(Budget {
+                cpus: 1,
+                memory_mb: 440 * 1024,
+            }),
+        };
+        let wait = admit(
+            budget,
+            &big,
+            Budget {
+                cpus: 1,
+                memory_mb: 16 * 1024,
+            },
+        );
+        assert!(
+            matches!(
+                wait,
+                Admission::Wait {
+                    short: Short::Memory,
+                    ..
+                }
+            ),
+            "{wait:?}"
+        );
+        // A job larger than the budget runs alone, and nothing running admits anything.
+        let huge = Budget {
+            cpus: 200,
+            memory_mb: 1024,
+        };
+        assert_eq!(admit(budget, &held(0, 0, Some(64)), huge), Admission::Now);
+        assert!(matches!(
+            admit(budget, &held(1, 1, None), huge),
+            Admission::Wait { need: 56, .. }
+        ));
+    }
 
     #[test]
     fn ci_jobs_share_the_capacity_unless_they_declare_their_need() {

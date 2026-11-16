@@ -87,6 +87,15 @@ pub struct LimitCounters {
     pub oom_kills: u64,
 }
 
+/// What a sandbox's CI jobs and Docker engine used, as the adapter reads it (SPEC-497 HBA-002).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct CiUse {
+    /// CPU time so far, in microseconds: a counter that only grows while the groups live.
+    pub cpu_usec: u64,
+    /// Anonymous memory now, in bytes.
+    pub anon_bytes: u64,
+}
+
 /// A sandbox's disk against its soft quota.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DiskUsage {
@@ -197,9 +206,28 @@ pub trait SandboxIsolation: Send + Sync {
         0
     }
 
-    /// `jobs` CI jobs of `sandbox` run now (SPEC-362 CSW-002): the adapter weighs the sandbox on
-    /// the host by them. Nothing where nothing enforces limits.
-    fn ci_jobs_running(&self, _sandbox: &SandboxId, _jobs: u32) {}
+    /// `jobs` CI jobs of `sandbox` run now, holding `cpus` CPUs of the CI budget (SPEC-362
+    /// CSW-002, SPEC-497 HBA-004): the adapter weighs the sandbox on the host by them. Nothing
+    /// where nothing enforces limits.
+    fn ci_jobs_running(&self, _sandbox: &SandboxId, _jobs: u32, _cpus: u32) {}
+
+    /// What `sandbox`'s CI jobs and Docker engine use now (SPEC-497 HBA-002); `None` where
+    /// nothing measures it.
+    fn ci_use(&self, _sandbox: &SandboxId) -> Option<CiUse> {
+        None
+    }
+
+    /// The networks `sandbox`'s running Docker engine can still make (SPEC-497 HBA-003); `None`
+    /// without a running engine or an answer (never starting one).
+    async fn engine_networks_free(&self, _sandbox: &SandboxId) -> Option<u32> {
+        None
+    }
+
+    /// Removes the networks no container of `sandbox`'s running engine uses; how many, `None`
+    /// without a running engine or an answer.
+    async fn prune_engine_networks(&self, _sandbox: &SandboxId) -> Option<u32> {
+        None
+    }
 
     /// `sandbox`'s limit counters (SPEC-268 PID-004); `None` where nothing enforces limits.
     async fn limit_counters(&self, _sandbox: &SandboxId) -> Option<LimitCounters> {

@@ -663,8 +663,9 @@ impl App {
                 Some(turn) => Some(turn.lock_owned().await),
                 None => None,
             };
+            self.ci_network_room(&run.sandbox_id, &job.id).await;
             let slot = slots.acquire().await?;
-            let reservation = self.ci_reserve(budget).await?;
+            let reservation = self.ci_reserve(&job.id, budget).await?;
             Some((turn, slot, reservation))
         };
         let permit = tokio::select! {
@@ -687,7 +688,7 @@ impl App {
                 return false;
             }
         };
-        let Some(_permit) = permit else {
+        let Some(permit) = permit else {
             end_wait(self.now(), "error").await;
             return false;
         };
@@ -715,7 +716,10 @@ impl App {
         }
         end_wait(started_at, "started").await;
         // It weighs on its sandbox until its process ended (SPEC-362 CSW-002).
-        let weight = super::JobWeight::new(Arc::clone(&self), &run.sandbox_id);
+        let weight = super::JobWeight::new(Arc::clone(&self), &run.sandbox_id, permit.2.cpus());
+        // The first reading of its sandbox's use, so the next job's wait measures over the time
+        // since it started (SPEC-497 HBA-002).
+        let _ = self.ci_measured();
         // Its stages (SPEC-137): what its output names, under the job's span (the store opened
         // it with the start), after its wait for a slot (ended above).
         let mut stages = OutputStages::ci_job(

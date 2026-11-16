@@ -4,46 +4,212 @@
 //! isolation adapter's `cpu.max` and `memory.max`), else the host's CPUs and 2 GiB of memory
 //! per CPU. Yulius gives out budgets from it and says so in the environment
 //! ([`yulius_domain::resources::budget_env`]): CI jobs get their declared or default share and
-//! wait for it (`App::ci_reserve`); agent runs, terminals and the Cockpit get the agent budget
+//! wait until it fits beside what CI really holds on the host (`App::ci_reserve`, SPEC-497
+//! HBA-002); agent runs, terminals and the Cockpit get the agent budget
 //! ([`App::agent_resource_env`]). The repository maps the budget to its tools in
 //! `[resources.env]` of the `yulius.toml` where the process starts.
 
+use std::collections::{HashMap, VecDeque};
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
+use std::time::Duration;
 
-use tokio::sync::{OwnedSemaphorePermit, Semaphore};
-use yulius_domain::resources::{Budget, Capacity, EnvTemplate, budget_env, default_templates};
+use tokio::sync::Notify;
+use tokio::time::Instant;
+use yulius_domain::ids::SandboxId;
+use yulius_domain::resources::{
+    Admission, Budget, Capacity, ENGINE_NETWORK_RESERVE, EnvTemplate, Held, admit, budget_env,
+    default_templates,
+};
 use yulius_domain::spec_format::{MAX_CONFIG_BYTES, parse_yulius_toml_resources_table};
 
 use crate::context::App;
 
 /// Memory assumed per CPU when no limit says how much there is (development hosts).
 const MEMORY_PER_CPU_MB: u64 = 2048;
+/// The shortest time between two readings of a sandbox's CI and engine groups that gives their
+/// CPU rate (SPEC-497 HBA-002), and how often a waiting job looks again.
+pub(crate) const SAMPLE_WINDOW: Duration = Duration::from_secs(5);
 
-/// The CPUs and MiB of memory CI jobs share (SPEC-082 RES-003), sized once from the capacity.
-pub(crate) struct CiPools {
-    cpus: Arc<Semaphore>,
-    cpus_total: u32,
-    memory: Arc<Semaphore>,
-    memory_total: u32,
+/// The CI budget of the whole instance and what CI holds of it (SPEC-082 RES-003, SPEC-497
+/// HBA-001, HBA-002): one for every sandbox, sized once from the capacity.
+pub(crate) struct CiAdmission {
+    state: Mutex<AdmissionState>,
+    /// Told when a job ends or leaves the queue.
+    changed: Notify,
 }
 
-impl CiPools {
-    fn new(capacity: Capacity) -> Self {
-        let memory_total = u32::try_from(capacity.memory_mb).unwrap_or(u32::MAX);
-        Self {
-            cpus: Arc::new(Semaphore::new(capacity.cpus as usize)),
-            cpus_total: capacity.cpus,
-            memory: Arc::new(Semaphore::new(memory_total as usize)),
-            memory_total,
+struct AdmissionState {
+    budget: Capacity,
+    held: Held,
+    next_ticket: u64,
+    /// The waiting jobs' tickets, first come first served.
+    queue: VecDeque<u64>,
+    /// Each measured sandbox's last reading (when, CPU microseconds), its CPU rate over the
+    /// window before it (CPUs, once two readings were far enough apart) and its memory.
+    samples: HashMap<SandboxId, Sample>,
+}
+
+#[derive(Clone, Copy)]
+struct Sample {
+    at: Instant,
+    cpu_usec: u64,
+    rate: Option<f64>,
+    anon_bytes: u64,
+}
+
+/// What a CI job holds while it runs: its reservation out of the CI budget, given back when
+/// dropped.
+pub(crate) struct Reservation {
+    admission: Arc<CiAdmission>,
+    need: Budget,
+}
+
+impl Reservation {
+    /// The CPUs it holds.
+    pub(crate) fn cpus(&self) -> u32 {
+        self.need.cpus
+    }
+}
+
+impl Drop for Reservation {
+    fn drop(&mut self) {
+        let mut state = self.admission.lock();
+        state.held.jobs = state.held.jobs.saturating_sub(1);
+        state.held.reserved.cpus = state.held.reserved.cpus.saturating_sub(self.need.cpus);
+        state.held.reserved.memory_mb = state
+            .held
+            .reserved
+            .memory_mb
+            .saturating_sub(self.need.memory_mb);
+        drop(state);
+        self.admission.changed.notify_waiters();
+    }
+}
+
+/// A waiting job's place in the queue, left when dropped (a cancelled wait).
+struct Ticket {
+    admission: Arc<CiAdmission>,
+    id: u64,
+}
+
+impl Drop for Ticket {
+    fn drop(&mut self) {
+        let mut state = self.admission.lock();
+        let before = state.queue.len();
+        state.queue.retain(|ticket| *ticket != self.id);
+        let left = state.queue.len() != before;
+        drop(state);
+        if left {
+            self.admission.changed.notify_waiters();
         }
     }
 }
 
-/// What a CI job holds while it runs: its CPUs and memory out of the CI pools.
-pub(crate) struct Reservation {
-    _cpus: OwnedSemaphorePermit,
-    _memory: OwnedSemaphorePermit,
+impl CiAdmission {
+    fn new(capacity: Capacity) -> Self {
+        Self {
+            state: Mutex::new(AdmissionState {
+                budget: capacity.ci_budget(),
+                held: Held::default(),
+                next_ticket: 0,
+                queue: VecDeque::new(),
+                samples: HashMap::new(),
+            }),
+            changed: Notify::new(),
+        }
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, AdmissionState> {
+        self.state.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Takes the readings of the sandboxes running CI jobs (`readings`, taken at `now`): a
+    /// sandbox's rate is computed once its last reading is [`SAMPLE_WINDOW`] old; sandboxes no
+    /// longer running jobs are forgotten. Returns what they use together.
+    fn measure(&self, now: Instant, readings: Vec<(SandboxId, u64, u64)>) -> Option<Budget> {
+        let mut state = self.lock();
+        let running: Vec<&SandboxId> = readings.iter().map(|(sandbox, _, _)| sandbox).collect();
+        state
+            .samples
+            .retain(|sandbox, _| running.contains(&sandbox));
+        for (sandbox, cpu_usec, anon_bytes) in readings {
+            let fresh = Sample {
+                at: now,
+                cpu_usec,
+                rate: None,
+                anon_bytes,
+            };
+            let sample = state.samples.entry(sandbox).or_insert(fresh);
+            sample.anon_bytes = anon_bytes;
+            let elapsed = now.saturating_duration_since(sample.at);
+            if cpu_usec < sample.cpu_usec {
+                // Its groups were made again: start over.
+                *sample = fresh;
+            } else if elapsed >= SAMPLE_WINDOW {
+                #[allow(clippy::cast_precision_loss)]
+                let rate = (cpu_usec - sample.cpu_usec) as f64 / elapsed.as_micros() as f64;
+                *sample = Sample {
+                    rate: Some(rate),
+                    ..fresh
+                };
+            }
+        }
+        let rates: Vec<f64> = state.samples.values().filter_map(|s| s.rate).collect();
+        let anon: u64 = state
+            .samples
+            .values()
+            .fold(0, |sum, s| sum.saturating_add(s.anon_bytes));
+        if rates.is_empty() && anon == 0 {
+            return None;
+        }
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "a sum of CPU rates on a host, rounded up"
+        )]
+        let cpus = rates.iter().sum::<f64>().ceil().max(0.0) as u32;
+        Some(Budget {
+            cpus,
+            memory_mb: anon >> 20,
+        })
+    }
+
+    /// Admits the job holding `ticket` when it is first in the queue and `need` fits beside
+    /// what CI holds and `measured` ([`admit`]); otherwise what it waits for.
+    fn try_admit(
+        self: &Arc<Self>,
+        ticket: &Ticket,
+        need: Budget,
+        measured: Option<Budget>,
+    ) -> Result<Reservation, Option<Admission>> {
+        let mut state = self.lock();
+        if state.queue.front() != Some(&ticket.id) {
+            return Err(None);
+        }
+        state.held.measured = measured;
+        let need = Budget {
+            cpus: need.cpus.min(state.budget.cpus),
+            memory_mb: need.memory_mb.min(state.budget.memory_mb),
+        };
+        match admit(state.budget, &state.held, need) {
+            Admission::Now => {
+                state.queue.pop_front();
+                state.held.jobs += 1;
+                state.held.reserved.cpus = state.held.reserved.cpus.saturating_add(need.cpus);
+                state.held.reserved.memory_mb =
+                    state.held.reserved.memory_mb.saturating_add(need.memory_mb);
+                drop(state);
+                // The next one in line may fit too.
+                self.changed.notify_waiters();
+                Ok(Reservation {
+                    admission: Arc::clone(self),
+                    need,
+                })
+            }
+            wait => Err(Some(wait)),
+        }
+    }
 }
 
 /// Where a repository sets a default variable's knob itself, and the key it sets there: the
@@ -188,27 +354,116 @@ impl App {
         budget_env(self.agent_budget(), &repository_templates(dir))
     }
 
-    /// Waits until `budget` is free in the CI pools and holds it (SPEC-082 RES-003). Waiters are
-    /// served in order, so a large job is never overtaken for good. A budget larger than a pool
-    /// (the capacity grew since the pools were sized) takes the whole pool.
-    pub(crate) async fn ci_reserve(&self, budget: Budget) -> Option<Reservation> {
-        let pools = self.ci.budget.get_or_init(|| CiPools::new(self.capacity()));
-        let cpus = budget.cpus.clamp(1, pools.cpus_total);
-        let memory = u32::try_from(budget.memory_mb)
-            .unwrap_or(u32::MAX)
-            .clamp(1, pools.memory_total);
-        let cpus = Arc::clone(&pools.cpus)
-            .acquire_many_owned(cpus)
-            .await
-            .ok()?;
-        let memory = Arc::clone(&pools.memory)
-            .acquire_many_owned(memory)
-            .await
-            .ok()?;
-        Some(Reservation {
-            _cpus: cpus,
-            _memory: memory,
-        })
+    /// Says on the queued job `job` what it waits for, or nothing once it no longer waits.
+    pub(crate) async fn ci_job_waits(&self, job: &str, why: Option<&str>) {
+        if let Err(err) = self.deps.store.set_queued_ci_job_reason(job, why).await {
+            tracing::warn!(job, error = %err, "recording what a CI job waits for failed");
+        }
+    }
+
+    /// Waits while `sandbox`'s running Docker engine has fewer than
+    /// [`ENGINE_NETWORK_RESERVE`] networks left to make (SPEC-497 HBA-003), saying so on the
+    /// queued job `job`; with none of the sandbox's CI jobs running, its unused networks are
+    /// pruned first. No wait without a running engine (nothing starts one here).
+    pub(crate) async fn ci_network_room(&self, sandbox: &SandboxId, job: &str) {
+        let Some(isolation) = self.isolation.get() else {
+            return;
+        };
+        let mut told = false;
+        loop {
+            let Some(free) = isolation.engine_networks_free(sandbox).await else {
+                break;
+            };
+            if free >= ENGINE_NETWORK_RESERVE {
+                break;
+            }
+            if !self.ci_sandboxes_running().contains(sandbox)
+                && let Some(removed) = isolation.prune_engine_networks(sandbox).await
+                && removed > 0
+            {
+                continue;
+            }
+            if !told {
+                let why = format!(
+                    "waits for Docker networks: its sandbox's engine can make {free} more, and a \
+                     job starts with at least {ENGINE_NETWORK_RESERVE} free"
+                );
+                self.ci_job_waits(job, Some(&why)).await;
+                told = true;
+            }
+            tokio::time::sleep(SAMPLE_WINDOW).await;
+        }
+        if told {
+            self.ci_job_waits(job, None).await;
+        }
+    }
+
+    fn ci_admission(&self) -> Arc<CiAdmission> {
+        Arc::clone(
+            self.ci
+                .budget
+                .get_or_init(|| Arc::new(CiAdmission::new(self.capacity()))),
+        )
+    }
+
+    /// What the `ci` and `engine` groups of the sandboxes running CI jobs use now (SPEC-497
+    /// HBA-002), as the isolation reads them; `None` where nothing is measured.
+    pub(crate) fn ci_measured(&self) -> Option<Budget> {
+        let isolation = self.isolation.get()?;
+        let readings = self
+            .ci_sandboxes_running()
+            .into_iter()
+            .filter_map(|sandbox| {
+                let used = isolation.ci_use(&sandbox)?;
+                Some((sandbox, used.cpu_usec, used.anon_bytes))
+            })
+            .collect();
+        self.ci_admission().measure(Instant::now(), readings)
+    }
+
+    /// Waits until `budget` fits beside what CI holds on the whole host and holds it (SPEC-082
+    /// RES-003, SPEC-497 HBA-001, HBA-002): the larger of the running jobs' reservations and
+    /// their sandboxes' measured use. Waiters are served in order, so a large job is never
+    /// overtaken for good; a budget larger than the CI budget takes all of it. The queued job
+    /// `job` says what it waits for whenever that changes (HBA-005).
+    pub(crate) async fn ci_reserve(&self, job: &str, budget: Budget) -> Option<Reservation> {
+        let admission = self.ci_admission();
+        let ticket = {
+            let mut state = admission.lock();
+            let id = state.next_ticket;
+            state.next_ticket += 1;
+            state.queue.push_back(id);
+            Ticket {
+                admission: Arc::clone(&admission),
+                id,
+            }
+        };
+        let mut told: Option<String> = None;
+        loop {
+            let changed = admission.changed.notified();
+            match admission.try_admit(&ticket, budget, self.ci_measured()) {
+                Ok(reservation) => {
+                    if told.is_some() {
+                        self.ci_job_waits(job, None).await;
+                    }
+                    return Some(reservation);
+                }
+                Err(wait) => {
+                    let why = wait.map_or_else(
+                        || "waits for the CI jobs before it in line".to_owned(),
+                        |wait| format!("waits for the host's CI budget: {wait}"),
+                    );
+                    if told.as_deref() != Some(why.as_str()) {
+                        self.ci_job_waits(job, Some(&why)).await;
+                        told = Some(why);
+                    }
+                }
+            }
+            tokio::select! {
+                () = changed => {}
+                () = tokio::time::sleep(SAMPLE_WINDOW) => {}
+            }
+        }
     }
 }
 

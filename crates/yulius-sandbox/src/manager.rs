@@ -2006,6 +2006,53 @@ impl Manager {
         }
     }
 
+    /// The control socket of `sandbox`'s engine while its holder serves a running one.
+    async fn engine_socket(&self, sandbox: &str) -> Option<PathBuf> {
+        let entry = self.entry(sandbox);
+        let state = entry.lock().await;
+        if !state.live.as_ref()?.serves_engine() {
+            return None;
+        }
+        Some(
+            StatePaths::new(self.state_dir(sandbox))
+                .engine_control()
+                .join(yulius_contracts::sandbox::ENGINE_SOCKET),
+        )
+    }
+
+    /// The networks `sandbox`'s running engine can still make (SPEC-497 HBA-003):
+    /// [`crate::engine::ENGINE_NETWORKS`] less those it has. `None` with no running engine or no
+    /// answer; never through the sandbox's socket, which would start a stopped engine.
+    pub async fn engine_networks_free(&self, sandbox: &str) -> Option<u32> {
+        let socket = self.engine_socket(sandbox).await?;
+        match crate::engine::networks(&socket).await {
+            Ok(used) => Some(crate::engine::ENGINE_NETWORKS.saturating_sub(used)),
+            Err(error) => {
+                tracing::warn!(sandbox, %error, "cannot count the Docker engine's networks");
+                None
+            }
+        }
+    }
+
+    /// Removes the networks no container of `sandbox`'s running engine uses; how many.
+    pub async fn prune_engine_networks(&self, sandbox: &str) -> Option<u32> {
+        let socket = self.engine_socket(sandbox).await?;
+        match crate::engine::prune_networks(&socket).await {
+            Ok(removed) => {
+                tracing::info!(
+                    sandbox,
+                    removed,
+                    "pruned the Docker engine's unused networks"
+                );
+                Some(removed)
+            }
+            Err(error) => {
+                tracing::warn!(sandbox, %error, "cannot prune the Docker engine's networks");
+                None
+            }
+        }
+    }
+
     /// Prunes the running engine of the holder `name`, credited up to the consumer `label` of
     /// `measured_in`'s last measurement.
     async fn prune_one(&self, name: &str, measured_in: &str, label: &str) -> Option<u64> {
@@ -2827,7 +2874,7 @@ while True:
             .checked_sub(crate::front_repair::REPAIR_AFTER * 2)
             .ok_or("the clock is too young")?;
         let delegation = manager.config.delegation.clone().ok_or("no delegation")?;
-        let _ = delegation.set_ci_jobs("s1", 1);
+        let _ = delegation.set_ci_jobs("s1", 1, 1);
         let jammed = crate::front_repair::Reading {
             jammed: true,
             ..crate::front_repair::Reading::default()
@@ -2846,7 +2893,7 @@ while True:
             "a CI job runs"
         );
         assert_eq!(manager.docker_restarts(), 0);
-        let _ = delegation.set_ci_jobs("s1", 0);
+        let _ = delegation.set_ci_jobs("s1", 0, 0);
         {
             let entry = manager.entry("s1");
             let mut guard = entry.lock().await;
