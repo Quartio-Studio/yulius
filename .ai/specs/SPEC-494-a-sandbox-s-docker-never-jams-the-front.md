@@ -1,6 +1,6 @@
 ---
 yulius-task: e807d154-9d41-4466-bfed-481ba2d61e0e
-status: in-progress
+status: done
 ---
 
 # SPEC-494: A sandbox's Docker never jams: the front gives way and repairs itself
@@ -177,9 +177,11 @@ ever reaches it).
   read live just before the stop: the front has no child process (its engine, which stops by
   itself once idle, ADR-0151) and no connection at its socket, accepted or still waiting
   (`/proc/<pid>/net/unix` lists those under the listener's path; no listener seen is a doubt,
-  and a doubt is not quiet); a front that writes a state must say so there too. Nothing is lost
-  then, short of a client connecting between that read and the stop; a busy one is kept and the
-  journal says so once a day.
+  and a doubt is not quiet); a front that writes a state must say so there too. The table lists
+  the clients of the front's network namespace (every run, CI job and CD run of the sandbox); a
+  container's connection is covered by the engine, the front's child. Nothing is lost then,
+  short of a client that comes between that read and the new front's `ready` (it finds the
+  socket closed or missing); a busy one is kept and the journal says so once a day.
 
 ### br_netfilter (slice 6)
 
@@ -221,7 +223,7 @@ ever reaches it).
 - [x] An adopted front from another build is replaced when quiet
 - [x] br_netfilter decided on a real host and applied
 - [x] Front restarts, give-ways and Docker Needs you are counted on the instance
-- [ ] Slices 5 to 7 reviewed independently, findings fixed test-first
+- [x] Slices 5 to 7 reviewed independently, findings fixed test-first
 
 ## Acceptance criteria
 
@@ -591,3 +593,34 @@ Reviewer (Fable 5.2) at 56602da9d; Yulius CI of that head passed.
   and operations.md say so. "Front restarts" mixes reasons, and the audit detail keeps the reason
   for a split later. The engine-level network create with the variable is not run here; see
   slice 6.
+
+### Slices 5 to 7, review round 2 (approve; its notes fixed in a follow-up)
+
+PR #1338 was approved at 0c3f8feec (round 2, Fable 5.2). Yulius CI run 24871c45 passed: quality
+and e2e passed, and security was skipped because Vidoc is off for this project. The PR merged
+into dev at that head. The reviewer confirmed on this host that the sandbox's production front
+is listed in `/proc/net/unix` under `state_dir/docker/docker.sock`. A connection made through it
+shows as one non-listening row there and disappears when closed. The new tests passed 30
+sequential runs and 270 loaded ones. Its notes, own code, fixed in the follow-up:
+
+- The table lists only clients in the front's network namespace, because the kernel creates the
+  accepted socket in the client's namespace. DFJ-010, ADR-0344 and the code comment now say so,
+  and that the engine covers a container's connection, since the engine is the front's child.
+- The window runs until the new front is `ready`, not only until the stop: a call that comes in
+  that time finds the socket closed or missing. DFJ-010, ADR-0344, operations.md and the
+  journal's comment now say so.
+- `a_quiet_front_holds_no_connection_and_runs_no_engine` now also holds a connection the front
+  has accepted, with its state saying 0, and the front is not quiet.
+- Pre-existing: two manager tests that rewrite the fake front's executable and start it at once
+  failed twice in 240 loaded runs. That is issue #1339, outside this change. Their lines come
+  from slice 3.
+
+### Not tested here
+
+- A real front in another user namespace being read by the server: namespaces are refused in
+  this sandbox. The reviewer read the kernel source instead: `get_proc_task_net` has no ptrace
+  check. On this host, the production front of this sandbox was read as expected.
+- A network create with `enable_icc=false` on an engine started with the variable. See slice 6.
+- A real front restart on the instance (repair, request, or replacement after an update). The
+  manager tests use a fake front with the same contract (socket, `ready`, state file), and
+  fronts in this sandbox were never filled or restarted (task rule).
