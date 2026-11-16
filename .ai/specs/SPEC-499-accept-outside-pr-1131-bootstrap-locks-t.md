@@ -1,11 +1,11 @@
 ---
 yulius-task: 8831fd4a-2fd3-4d46-9bd7-a2733556fa41
-status: in-progress
+status: done
 ---
 
 # SPEC-499: Bootstrap tolerates a concurrent run in the shared CI home
 
-Status: in-progress
+Status: done
 Date: 2026-11-16
 Owner: Yulius task #481, from outside pull request #1131 by studenciak00owl (accepted by MrFishPL)
 Scope authorization: task #481 brings #1131 onto current `dev`. This spec is the contributor's
@@ -33,10 +33,11 @@ without breaking each other's rustup toolchain.
 ## Requirements
 
 - BSL-001: the rustup installer and `rustup toolchain install` run under one exclusive lock in the
-  tools cache (`$YULIUS_TOOLS_CACHE` or `~/.cache/yulius-tools`, `.rustup.lock`), so a second run
-  waits and then finds the toolchain installed.
+  home (`~/.cache/yulius-tools/.rustup.lock`, whatever `$YULIUS_TOOLS_CACHE` says), so a second
+  run says it waits, waits, and then finds the toolchain installed.
 - BSL-002: the lock is a small module, `scripts/home_lock.py`, with regression tests: a second
-  holder waits, and the lock is released when the holder fails.
+  holder prints `waiting for <lock>: another run holds it` and waits, and the lock is released
+  when the holder fails.
 - BSL-003: `bootstrap.py`'s per-tool build locks and `zig_install.py`'s download lock use the same
   helper (one lock implementation in `scripts/`, same lock files and behavior as before).
 
@@ -46,7 +47,7 @@ without breaking each other's rustup toolchain.
 - [x] The contributor's lock on current dev: home_lock with its tests, bootstrap holds it around the rustup install
 - [x] A bootstrap test proves the toolchain install runs under the lock; per-tool locks share the helper
 - [x] Changelog entry at the top of docs/changes.md, spec Evidence
-- [ ] Independent review answered test-first
+- [x] Independent review answered test-first
 
 ## Acceptance criteria
 
@@ -67,8 +68,10 @@ without breaking each other's rustup toolchain.
 
 - A file lock inside bootstrap, not `exclusive = true` on the job (the contributor's choice, kept):
   that would queue whole runs of the 10-minute job behind each other for a 1-minute install.
-- The lock lives in the tools cache next to the per-tool locks (kept), not in `~/.rustup`: rustup
-  owns that folder. Both lanes see the same cache because it is derived from the shared `HOME`.
+- The lock lives in `~/.cache/yulius-tools`, next to the per-tool locks, not in `~/.rustup`, which
+  rustup owns. It is derived from `HOME` alone (changed from the fork, review round 1): rustup
+  installs into the home, so two runs sharing a home but given different `$YULIUS_TOOLS_CACHE`
+  values must still meet on one lock. The tool builds keep their locks in the tools cache.
 - `rustup which` and the tool builds stay outside the rustup lock: they only read the installed
   toolchain, and the tool builds keep their own per-tool locks.
 - No ADR: a local serialisation detail of one script, recorded here.
@@ -108,6 +111,22 @@ Commands and results (2026-11-16, this sandbox):
 - `yulius security-scan`: exit 2, not run. Vidoc refused the instance's key (HTTP 401 "Missing
   or invalid API key"). The `security` job on the pull request reports the same until the key
   works.
+- Independent review round 1 (Fable 5.2, head 4cc27f8a5): approve, two minors and three nits,
+  all own code, answered test-first in 3b29f65fd:
+  - The rustup lock followed `$YULIUS_TOOLS_CACHE` rather than the home: now
+    `Path.home()`-derived. `test_bootstrap` gained a subtest with a moved cache; it failed with
+    `'free\n' != 'held\n'` before the fix.
+  - No test held the zig lock (BSL-003): `test_zig_install` now asks for the lock without waiting
+    during the download. A mutant that keeps the cache folder but drops the lock fails it
+    (`[False] != [True]`). The per-tool build lock has no such test, because running bootstrap's
+    tool loop would write into the worktree's `.tools/bin`; it is the same one-line call.
+  - The release check in `test_home_lock` asks without waiting, so a held lock fails instead of
+    hanging. `test_bootstrap` no longer checks the lock after its process ended (proof of
+    nothing). `test_home_lock` skips on Windows like `test_bootstrap`.
+  - A waiting run now prints `waiting for <lock>: another run holds it` (tested). Bootstrap still
+    creates the cache folder before its "Install rustup first" exit: harmless, kept.
+  - After the fixes: 161 script tests OK; race proof rounds 6 to 8 with the final script, both
+    lanes exit 0, the waiting lane printing the line above.
 - Not tested: Windows, where `home_lock` holds nothing (as the per-tool lock did before); the
   two lanes of a real Yulius CI starting at the same moment (the race proof above runs the same
   command in the same shared-home layout).
