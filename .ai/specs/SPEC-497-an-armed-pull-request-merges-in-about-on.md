@@ -152,7 +152,8 @@ mode.
 - [x] Slice A: a sandbox's weight follows the CPUs its jobs hold
 - [x] Slice A: documents and ADR
 - [x] Slice A: review rounds answered
-- [ ] Slice A2: the operator's CI admission fix delivered to dev
+- [x] Slice A2: the operator's CI admission fix applied, its first review answered
+- [ ] Slice A2: the admission fix's last review round
 - [x] Slice B: infrastructure failures rerun once by themselves
 - [x] Slice B: CI minutes by outcome read and shown
 - [x] Slice B: review round 1 answered: reruns tied to the failure, minutes kept per day
