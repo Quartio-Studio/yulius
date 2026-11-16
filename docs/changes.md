@@ -6,6 +6,14 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-16
 
+- A CI job that fails for the infrastructure runs again once by itself (SPEC-497 slice B, task
+  #479, [ADR-0354](decisions/0354-a-job-that-fails-for-the-infrastructure-runs-again-once-by-itself.md)):
+  Docker with no free address pool, a Docker socket that ended a connection, a kill for memory or
+  a lost process host; its output and reason say so, and a second one ends it error. A test's
+  failure is never run again. The Pipeline tab's Merge queue card and
+  `GET /api/analytics/merge-queue` count CI minutes by how runs ended and the share that went to
+  runs failed outside the change or cancelled (target 15 %).
+  CI admission (slice A) also counts the jobs admitted after a reading on top of it.
 - A Claude subscription can be connected by pasting a token (SPEC-502, task #484,
   [ADR-0352](decisions/0352-a-subscription-can-be-connected-by-pasting-a-setup-token.md); from
   outside pull request #1144 by studenciak00owl). Its owner runs `claude setup-token` on any

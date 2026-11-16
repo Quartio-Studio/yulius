@@ -113,7 +113,9 @@ mode.
   failure alone no longer fails a job, the job's output says so), files one issue in the
   project's repository and tells the project. It is never rerun until green.
 - **OFC-003** CI minutes are counted by outcome (passed, failed in the change, failed outside
-  it, cancelled) per project and day, and read with the merge queue's numbers.
+  it, cancelled) per project and day, and read with the merge queue's numbers
+  (`GET /api/analytics/merge-queue`, the Pipeline tab's Merge queue card), with the job minutes
+  thrown away by infrastructure failures and the share outside the change.
 
 ### Slice C: the merge queue does not throw work away
 
@@ -299,3 +301,47 @@ mode.
   - Nits: the clock and the running list are read under the lock; a prune logs at info only when
     it removed something; the memory reserve is at most half the capacity (a 2 GiB host keeps
     1 GiB for CI: doctest); the Evidence above describes this head's code.
+
+### Slice A follow-up (in slice B's pull request): round 3's minor and nit
+
+- Jobs admitted after a reading add to it: `CiAdmission` keeps each running job's admission
+  time, and CI holds the larger of the reservations and the measured use plus the reservations
+  admitted after the reading the rate ends at. Unit
+  `resources::tests::jobs_admitted_after_a_reading_count_on_top_of_it`: one job reserved 16 and
+  measured at 40, two of five 8-CPU jobs start (56 of 56), and a later reading does not count
+  them twice. Without the addition (the filter made empty) it fails: five start.
+- The first network is 172.17.1.0/24 only after the sandbox's next start: ADR-0350,
+  `operations.md` and `changes.md` say so.
+
+### Slice B (first pull request): failures outside the change, CI minutes
+
+- OFC-001: `yulius_domain::ci::infra::{infrastructure, Infra, JobEnd}` (doctests; unit
+  `only_the_infrastructures_own_words_count`: Docker's two address-pool sentences, a
+  `docker.sock` connection reset, refused or broken, a SIGKILL or 137 only with an OOM kill, a
+  lost host; a test's failure, a line naming the socket that says nothing ended, and a SIGKILL
+  without an OOM kill are not). `App::ci_job` runs the job again once in the same slot when
+  `ci_infrastructure` says so (the kept output end and the failing tests' blocks, the sandbox's
+  OOM count before and after), saying so in its output; passed then, its reason says why it ran
+  twice; the infrastructure again, it ends error saying so. Migration 0064 keeps `infra` and
+  `infra_ms`; a requeue clears them. `local_ci` with real jobs:
+  - `an_infrastructure_failure_runs_the_job_again_once`: Docker's address-pool words, then a
+    pass: passed, its reason and both output lines, two runs per checkout;
+  - `a_job_runs_again_once_and_only_for_the_infrastructure`: the words twice end error with
+    "…, again when it was run again: an infrastructure failure, not the change" after two runs;
+    a test's failure (`exit 101`) fails after one run;
+  - `a_job_killed_for_memory_runs_again_once`: `kill -9 $$` while the fake isolation's OOM
+    count grows: passed when run again.
+- OFC-003: `merge_queue::{RunMinutes, Minutes, minutes_by_day}` (unit
+  `ci_minutes_are_counted_by_how_runs_ended`: per day and in all, the rerun minutes apart, the
+  share 0.2 of 20 minutes); `CiStore::ci_runs_ended` (store unit
+  `ended_runs_say_how_they_ended`: passed with 2 min thrown away, failed, error only for the
+  infrastructure, cancelled; the range); `GET /api/analytics/merge-queue` gets `ci_minutes` and
+  `ci_minutes_by_day` (`analytics::the_merge_queue_read_counts_ci_minutes_by_outcome`: 10 min
+  each passed, failed outside and cancelled, 5 min run again, share 0.667, another sandbox's
+  failed run only for the admin). The Pipeline tab's Merge queue card shows "CI minutes" and
+  "Outside the change" against the 15 % target (`pipeline.e2e.ts`, 18 of 18 passed).
+- ADR-0354; architecture (CI job states), `api.md`, `changes.md`.
+- How to read it a week later: `GET /api/analytics/merge-queue?sandbox=<id>&from=&to=`,
+  `ci_minutes.outside_share` (target at most 0.15; 16 Nov in quartio-v2: 114 cancelled and most
+  of 526 failed of 1,228 minutes) and `ci_minutes.rerun`; the jobs whose reason starts "passed
+  when run again".
