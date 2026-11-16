@@ -6,6 +6,16 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-16
 
+- A Claude subscription can be connected by pasting a token (SPEC-502, task #484,
+  [ADR-0352](decisions/0352-a-subscription-can-be-connected-by-pasting-a-setup-token.md); from
+  outside pull request #1144 by studenciak00owl). Its owner runs `claude setup-token` on any
+  computer and the administrator pastes what it printed: Add subscription offers "Sign in here"
+  (the terminal, as before) or "Paste token", and every card has "Paste a new token" to sign one in
+  again. Only that token shape is taken, a token Claude refuses is said under the field, and the
+  token is sealed like a captured one and never echoed, logged or audited
+  (`POST /api/admin/accounts` with `token`, `PUT /api/admin/accounts/{id}/token`). A new token is a
+  new sign-in like the terminal's: it keeps a typed email and drops the old sign-in's model limits.
+
 - CI no longer takes more than the host has (SPEC-497 slice A, task #479,
   [ADR-0350](decisions/0350-ci-jobs-are-admitted-by-what-ci-really-holds-on-the-host.md)): every
   project's jobs come out of one budget, the host less an eighth for the server and agents, and a
