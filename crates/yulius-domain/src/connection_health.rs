@@ -1,6 +1,6 @@
-//! Connection troubles: a limit of the egress proxy or of a sandbox's relay toward Yulius that
-//! refuses connections (SPEC-361, ADR-0246). The proxy and the server's relays report each
-//! refusal and each freed place; the app reads the open troubles and is told when one begins or
+//! Connection troubles: a limit of the egress proxy, of a sandbox's relay toward Yulius or of its
+//! Docker front (SPEC-494) that refuses connections (SPEC-361, ADR-0246). The proxy and the
+//! server's relays report each refusal and each freed place, the server's upkeep a front's state; the app reads the open troubles and is told when one begins or
 //! ends, so the people of the sandbox see it once per trouble rather than once per refusal.
 
 use std::sync::{Mutex, OnceLock, PoisonError};
@@ -23,7 +23,7 @@ pub enum Limit {
 }
 
 impl Limit {
-    /// Its name on the wire: `share`, `relay` or `proxy`.
+    /// Its name on the wire: `share`, `relay`, `proxy` or `docker`.
     #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {

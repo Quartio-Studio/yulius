@@ -794,6 +794,7 @@ impl Manager {
         {
             Ok(front) => {
                 tracing::info!(sandbox, mode = %front.mode, pid = front.pid, "sandbox Docker front serving");
+                live.front_watch.started(front.pid);
                 live.front = Some(front);
             }
             Err(error) => {
@@ -1551,6 +1552,13 @@ impl Manager {
     }
 
     async fn stop_holder(&self, sandbox: &str, record: &HolderRecord) {
+        // Its front goes with it: no Docker trouble of it is left open (SPEC-494), on every path
+        // that drops a holder.
+        self.config.health.held(
+            yulius_domain::connection_health::Limit::Docker,
+            Some(sandbox),
+            0,
+        );
         let state = StatePaths::new(self.state_dir(sandbox));
         let record = record.clone();
         let _ = tokio::task::spawn_blocking(move || crate::holder::stop(&state, &record)).await;
@@ -1651,12 +1659,6 @@ impl Manager {
                         "sandbox holder ended; the next run starts a new one"
                     );
                     state.live = None;
-                    // Its front went with it: no Docker trouble is left open (SPEC-494).
-                    self.config.health.held(
-                        yulius_domain::connection_health::Limit::Docker,
-                        Some(&sandbox),
-                        0,
-                    );
                     self.stop_holder(&sandbox, &record).await;
                     state.stale = Some(record);
                 } else {
@@ -2326,8 +2328,8 @@ mod tests {
     /// SPEC-494 DFJ-005/006 (review round 2): the upkeep reads the state file of the front it
     /// knows and reports it full as the sandbox's Docker trouble; another front's file is not
     /// read.
-    #[test]
-    fn the_upkeep_reports_its_fronts_state_as_the_sandboxs_docker_trouble()
+    #[tokio::test]
+    async fn the_upkeep_reports_its_fronts_state_as_the_sandboxs_docker_trouble()
     -> Result<(), Box<dyn std::error::Error>> {
         use yulius_contracts::sandbox::DockerFrontState;
         use yulius_domain::connection_health::Limit;
@@ -2349,6 +2351,8 @@ mod tests {
             engine_running: true,
         };
         let mut live = Live::new(live_record(true), Vec::new());
+        // This server started it: its refusals are all new.
+        live.front_watch.started(77);
         live.front = Some(DockerFrontRecord {
             pid: 77,
             mode: "engine".into(),
@@ -2373,6 +2377,10 @@ mod tests {
             (open[0].limit, open[0].sandbox.as_deref(), open[0].refused),
             (Limit::Docker, Some("s1"), 2)
         );
+        // A holder dropped, by any path, leaves no Docker trouble of its sandbox (its boot id
+        // is not this host's: nothing is signalled).
+        manager.stop_holder("s1", &live_record(true)).await;
+        assert!(health.troubles().is_empty(), "{:?}", health.troubles());
         Ok(())
     }
 

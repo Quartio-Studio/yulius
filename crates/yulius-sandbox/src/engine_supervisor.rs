@@ -543,9 +543,6 @@ open(stopped, "w").write("stopped")
         Ok(())
     }
 
-    /// SPEC-494 review round 1: the engine's front gives way at its limit like the others, and
-    /// a connection that gave way stops counting as the engine's client (or the engine would
-    /// never idle).
     /// SPEC-494 review round 2: asked without waiting, an engine whose start or stop holds its
     /// lock counts as running; an engine that never started does not.
     #[tokio::test]
@@ -560,6 +557,9 @@ open(stopped, "w").write("stopped")
         Ok(())
     }
 
+    /// SPEC-494 review round 1: the engine's front gives way at its limit like the others, and
+    /// a connection that gave way stops counting as the engine's client (or the engine would
+    /// never idle).
     #[tokio::test]
     async fn a_full_engine_front_gives_way_and_stops_counting_the_closed_client() -> io::Result<()>
     {

@@ -114,9 +114,13 @@ ever reaches it).
   last read, and shows once on the panel and in the notification center like the other troubles.
 - **DFJ-007** The tasks of the sandbox with a live session are told once per trouble, in their
   session (a pass every 15 s; a session that takes no typed text now is told at a later pass),
-  that the sandbox's Docker is full and that they should not ask a person; once the trouble
-  ends, the tasks told hear that Docker works again. A trouble that ends and begins again
-  before they heard it goes on as one for them. The refusal's message says the same to the
+  that the sandbox's Docker is full and that they should not ask a person (unless it lasts more
+  than 15 minutes, until slice 3 repairs it); once the trouble has stayed ended for three
+  passes, the tasks told hear that Docker works again. A trouble that ends and begins again
+  before they heard it goes on as one for them. Nothing is typed into a session where a person
+  must act (a prompt on screen, an open Needs you), one paused or held by an update; a task told
+  keeps waiting for "works again" until it rests. An adopted front's past refusals (after a
+  server restart) are no new trouble; every path that drops a holder ends its trouble. The refusal's message says the same to the
   calls that hit it. (Slice 3 adds that Yulius repairs it.)
 
 ### Yulius repairs it itself (slice 3)
@@ -162,7 +166,7 @@ ever reaches it).
 - [x] The front admits through one table and gives way at its limit
 - [x] A connection whose client hung up or whose engine ended ends in bounded time
 - [x] The front logs its events and writes its state; the server journals them
-- [ ] Slice 1 reviewed independently, findings fixed test-first
+- [x] Slice 1 reviewed independently, findings fixed test-first
 - [x] Slice 1's round-2 review notes fixed test-first
 - [x] A jammed front is a sandbox trouble on the panel
 - [x] The sandbox's tasks are told once per trouble
@@ -284,3 +288,24 @@ a container start in the sandbox failing a parallel e2e job's page loads, is com
 - `cargo test -p yulius --test main -- docker_trouble_notices::` (fake agent): told once, nothing
   more within the trouble, told once that it works again; another sandbox's trouble says
   nothing: passed.
+
+### Slice 2, review round 1 (request changes; every finding own code, all fixed)
+
+- An adopted front's old refusals began a trouble after every restart:
+  `an_adopted_fronts_past_refusals_are_no_new_trouble` (a front first seen, not started by
+  this server, baselines its refusals; one it started counts from zero).
+- The pass typed into sessions where a person must act: it now skips an open Needs you, a
+  prompt on screen, an open pause and an update's hold. The integration test sets a Needs you
+  before "works again": nothing typed over it; red with the guard removed ("typed over a
+  Needs you"), green with it.
+- A told task not running at the end pass lost "works again": told tasks are kept until they
+  rest (closed, stopped, failed), as the pull-request watch keeps them.
+- Flapping: "works again" waits until the trouble stayed ended for three passes; a trouble that
+  ends and begins again before that goes on as one (both in the integration test).
+- Every path that drops a holder ends its trouble (`stop_holder`; tested in
+  `the_upkeep_reports_its_fronts_state_as_the_sandboxs_docker_trouble`). "Works again" became
+  "no longer full" (a holder that ended also ends the trouble). `docker` is documented as a
+  wire value (`docs/api.md`, the contract and domain docs). The at-limit answer and the notice
+  cite no Yulius path and say to raise a Needs you only past 15 minutes, until slice 3.
+- Pre-existing, outside the change: the subscriptions e2e test that fails before midnight
+  (issue #1334).

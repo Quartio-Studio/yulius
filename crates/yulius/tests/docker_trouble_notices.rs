@@ -62,7 +62,17 @@ fn a_sandboxs_tasks_hear_of_its_docker_trouble_once_and_of_its_end() -> TestResu
         health.refused_times(full("another"), 1, 1);
         assert!(app.tell_docker_troubles().await.is_empty());
         health.refused_times(full(sandbox.as_str()), 3, 2);
-        // A session still starting takes no typed text: a later pass tells it.
+        for _ in 0..3 {
+            assert!(
+                app.tell_docker_troubles().await.is_empty(),
+                "typed over a Needs you"
+            );
+        }
+        app.deps
+            .store
+            .set_task_needs_you(&id, None, yulius_domain::time::Timestamp(2))
+            .await?;
+        // A session still starting takes no typed text either: a later pass tells it.
         let typed = until_typed(&app).await?;
         assert_eq!(typed, vec![(id.clone(), DOCKER_FULL)]);
         wait_for("the notice echoed", Duration::from_secs(30), || {
@@ -73,14 +83,47 @@ fn a_sandboxs_tasks_hear_of_its_docker_trouble_once_and_of_its_end() -> TestResu
         // Within the same trouble, more refusals and passes tell nothing more.
         health.refused_times(full(sandbox.as_str()), 5, 3);
         assert!(app.tell_docker_troubles().await.is_empty());
-        // Room again: the trouble ends, and the task told hears it once.
+        // It ends and begins again before the task heard it ended: one trouble for the task.
         health.held(Limit::Docker, Some(sandbox.as_str()), 10);
-        let typed = app.tell_docker_troubles().await;
-        assert_eq!(typed, vec![(id.clone(), DOCKER_BACK)]);
+        assert!(app.tell_docker_troubles().await.is_empty());
+        health.refused_times(full(sandbox.as_str()), 1, 4);
+        assert!(app.tell_docker_troubles().await.is_empty());
+        // Room again: after the trouble stayed ended for BACK_AFTER passes, the task told hears
+        // it once (here, once its Needs you is answered).
+        // A person must act first (an open Needs you): nothing is typed, the paste would
+        // answer it; the task hears it at a later pass, once it is answered.
+        let asking = yulius_app::needs_you::NeedsYouRecord {
+            action: "Answer the question".into(),
+            happened: None,
+            problem: None,
+            decision: false,
+            link: None,
+            at: 1,
+        };
+        app.deps
+            .store
+            .set_task_needs_you(&id, Some(&asking), yulius_domain::time::Timestamp(1))
+            .await?;
+        health.held(Limit::Docker, Some(sandbox.as_str()), 10);
+        for _ in 0..=yulius_app::docker_trouble::BACK_AFTER {
+            assert!(
+                app.tell_docker_troubles().await.is_empty(),
+                "typed over a Needs you"
+            );
+        }
+        app.deps
+            .store
+            .set_task_needs_you(&id, None, yulius_domain::time::Timestamp(2))
+            .await?;
+        let mut heard = Vec::new();
+        for _ in 0..yulius_app::docker_trouble::BACK_AFTER {
+            heard.extend(app.tell_docker_troubles().await);
+        }
+        assert_eq!(heard, vec![(id.clone(), DOCKER_BACK)]);
         assert!(app.tell_docker_troubles().await.is_empty());
         wait_for("the end echoed", Duration::from_secs(30), || {
             let shown = screen(&app, &id);
-            async move { shown.contains("Docker works again") }
+            async move { shown.contains("no longer full") }
         })
         .await?;
         stop(&app, &id).await?;

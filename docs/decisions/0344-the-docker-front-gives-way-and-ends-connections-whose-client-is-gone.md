@@ -46,8 +46,10 @@ whether the client half-closed or hung up entirely.
   the last read or holds its whole limit, and ends once it holds at most seven eighths and
   refused nothing since. The panel's pill and the notification center show it once. Every 15 s
   the tasks of that sandbox with a live session are told once, typed into their session, that
-  Docker is full and nobody needs to be asked; once the trouble ends, the tasks told hear that
-  Docker works again. What was told lives in memory.
+  Docker is full and nobody needs to be asked; once the trouble has stayed ended for three
+  passes, the tasks told hear that it is no longer full. Nothing is typed where a person must
+  act or a task is paused; a task told waits for the end until it rests. An adopted front's
+  past refusals are no new trouble. What was told lives in memory.
 
 ## Alternatives
 

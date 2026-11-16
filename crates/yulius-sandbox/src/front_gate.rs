@@ -45,8 +45,8 @@ const WARN_EVERY: Duration = Duration::from_secs(60);
 /// The refusal at the limit, for the calls that meet it (DFJ-001, DFJ-007).
 pub const AT_LIMIT: &str = "the sandbox's Docker front holds all of its connections and none \
      has been idle long enough to give way: retry in a minute. Yulius shows this to the \
-     sandbox's people and tells its tasks, so do not raise a Needs you about it; if it stays so, \
-     restarting the front frees it (docs/operations.md, \"A full front\")";
+     sandbox's people and tells its tasks: do not raise a Needs you about it unless it lasts \
+     more than 15 minutes";
 
 /// What ended a connection, besides both sides closing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -510,15 +510,21 @@ pub struct Grew {
 }
 
 impl StateWatch {
-    /// Takes `state` (read at `now`) and returns what to journal. A state of another front
-    /// (another pid) counts from zero.
+    /// This server started the front `pid`: all of its events are new.
+    pub fn started(&mut self, pid: u32) {
+        self.front = Some(pid);
+        self.said = [(None, 0); 4];
+        self.reported_refused = 0;
+    }
+
+    /// Takes `state` (read at `now`) and returns what to journal. A front first seen here that
+    /// this server did not start (one adopted after a restart) has its history journaled once,
+    /// but its past refusals are no new trouble (review round 1 of slice 2).
     pub fn observe(&mut self, state: &DockerFrontState, now: Instant) -> Vec<Grew> {
         if self.front != Some(state.pid) {
-            // A front the server has not watched yet (a new one, or one adopted after the
-            // server's restart) counts from zero: its history is said once.
             self.front = Some(state.pid);
             self.said = [(None, 0); 4];
-            self.reported_refused = 0;
+            self.reported_refused = state.refused;
         }
         let after = counts(state);
         let mut grew = Vec::new();
@@ -1147,6 +1153,7 @@ mod tests {
             ));
         });
         let mut watch = StateWatch::default();
+        watch.started(7);
         let mut read = |state: DockerFrontState| {
             watch.observe(&state, Instant::now());
             watch.report(&state, "s1", &health);
@@ -1181,6 +1188,22 @@ mod tests {
         );
         // A refusal alone (the front below its limit) begins a new one.
         read(state_at(7, 10, 6));
+        assert_eq!(health.troubles().len(), 1);
+    }
+
+    /// Slice 2 review round 1: after a server restart, an adopted front's past refusals are no
+    /// new trouble; a refusal after that is.
+    #[test]
+    fn an_adopted_fronts_past_refusals_are_no_new_trouble() {
+        let health = ConnectionHealth::default();
+        let mut watch = StateWatch::default();
+        let mut read = |state: DockerFrontState| {
+            watch.observe(&state, Instant::now());
+            watch.report(&state, "s1", &health);
+        };
+        read(state_at(9, 3, 4));
+        assert!(health.troubles().is_empty(), "{:?}", health.troubles());
+        read(state_at(9, 3, 5));
         assert_eq!(health.troubles().len(), 1);
     }
 
