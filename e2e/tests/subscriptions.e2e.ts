@@ -1300,3 +1300,111 @@ test('a dialog shows its whole body, also in Safari (SPEC-500 DLG-001)', async (
   expect(body.shrink).toBe('1');
   expect(body.shown).toBe(body.content);
 });
+
+test('a subscription is connected, or signed in again, by pasting a token made elsewhere (SPEC-502 TKP-008, TKP-009)', async ({ app, browser, screen }) => {
+  await app.open(mock('/admin/accounts', '&ambient=0'));
+  await screen.getByRole('button', 'Add subscription').first().click();
+  const add = screen.getByRole('dialog', 'Add a Claude subscription');
+  await add.getByRole('textbox', /^Name/).fill('laptop Max');
+  // Signing in here stays the default; Paste token shows the field and its one hint.
+  await expect(add.getByRole('radio', 'Sign in here')).toBeChecked();
+  await expect(add.getByRole('button', 'Continue to sign-in')).toBeVisible();
+  await browser.locator('.modal .seg label:has-text("Paste token")').click();
+  await expect(add.getByRole('radio', 'Paste token')).toBeChecked();
+  await expect(add.getByRole('button', 'Continue to sign-in')).toBeHidden();
+  await expect(add.getByText(/^Run claude setup-token on any computer signed in to the subscription and paste the token it prints\. It is a password: don’t send it through chats or email in clear text\.$/)).toBeVisible();
+  const token = add.getByLabel(/^Token/);
+  // Masked and never remembered (a secure field: the runner may fill it, never read it).
+  const tokenInput = () => browser.evaluate(() => {
+    const input = document.querySelector('.modal label.field input[placeholder^="sk-ant-oat01"]') as HTMLInputElement;
+    return { type: input.type, autocomplete: input.autocomplete, invalid: input.getAttribute('aria-invalid') };
+  });
+  expect(await tokenInput()).toEqual({ type: 'password', autocomplete: 'off', invalid: null });
+  expect(await axeViolations(browser)).toEqual([]);
+
+  // A malformed token is said under the field before anything is sent.
+  await token.fill('my token');
+  await add.getByRole('button', 'Connect').click();
+  await expect(add.getByText('This is not a Claude token: it starts with sk-ant-oat01- and has no spaces.')).toBeVisible();
+  expect((await tokenInput()).invalid).toBe('true');
+  expect(await axeViolations(browser)).toEqual([]);
+  // A token Claude refuses (the mock's `-revoked`) is said there too, without echoing it.
+  await token.fill(`sk-ant-oat01-${'a'.repeat(40)}-revoked`);
+  await add.getByRole('button', 'Connect').click();
+  await expect(add.getByText(/^Claude did not accept this token; make a new one with claude setup-token/)).toBeVisible();
+  expect(await browser.evaluate(() => document.body.innerText.includes('aaaaaaaaaa'))).toBe(false);
+
+  await token.fill(`  sk-ant-oat01-${'b'.repeat(80)}  `);
+  await add.getByRole('button', 'Connect').click();
+  await expect(add).toBeHidden();
+  await expect(browser.locator('.toast-ok .toast-msg:has-text("laptop Max is connected. Tasks can use it now.")')).toBeVisible();
+  const created = browser.locator('main .grid-2 > .card:has-text("laptop Max")');
+  await expect(created).toBeVisible();
+  await expect(created.getByRole('button', 'Sign in again')).toHaveCount(0);
+
+  // A subscription Claude refused takes a new token from its card and is connected again.
+  const card = browser.locator('main .grid-2 > .card:has-text("Claude #3")');
+  await expect(card.getByRole('button', 'Sign in again')).toBeVisible();
+  await card.getByRole('button', 'Paste a new token').click();
+  const dialog = screen.getByRole('dialog', 'Paste a new token · Claude #3');
+  await expect(dialog.getByText(/don’t send it through chats or email in clear text/)).toBeVisible();
+  expect(await axeViolations(browser)).toEqual([]);
+  await dialog.getByRole('button', 'Save token').click();
+  await expect(dialog.getByText('Paste the token claude setup-token printed.')).toBeVisible();
+  await dialog.getByLabel(/^Token/).fill(`sk-ant-oat01-${'c'.repeat(80)}`);
+  await dialog.getByRole('button', 'Save token').click();
+  await expect(dialog).toBeHidden();
+  await expect(browser.locator('.toast-ok .toast-msg:has-text("New token saved: Claude #3 is connected. Tasks can use it now.")')).toBeVisible();
+  await expect(card.getByRole('button', 'Sign in again')).toHaveCount(0);
+  // The card drawn again without its Sign in again keeps the keyboard on Paste a new token, not
+  // on the control that moved into its place (Remove), as its neighbours do (SPEC-463).
+  const focused = () => browser.evaluate(() => {
+    const el = document.activeElement;
+    return `${(el?.textContent ?? '').trim()} @ ${el?.closest('.card')?.textContent?.includes('Claude #3') ?? false}`;
+  });
+  await expect.poll(focused).toBe('Paste a new token @ true');
+});
+
+test('switching how to connect a subscription clears the last attempt’s error (SPEC-502 TKP-008)', async ({ app, browser, screen }) => {
+  await app.open(mock('/admin/accounts', '&ambient=0&failpost=/api/admin/accounts'));
+  await screen.getByRole('button', 'Add subscription').first().click();
+  const add = screen.getByRole('dialog', 'Add a Claude subscription');
+  await add.getByRole('textbox', /^Name/).fill('laptop Max');
+  await add.getByRole('button', 'Continue to sign-in').click();
+  const error = browser.locator('.modal .modal-error');
+  await expect(error).toBeVisible();
+  // The failure was the terminal's; the paste has not been tried, so it says nothing yet.
+  await browser.locator('.modal .seg label:has-text("Paste token")').click();
+  await expect(error).toBeHidden();
+  await add.getByLabel(/^Token/).fill(`sk-ant-oat01-${'d'.repeat(40)}`);
+  await add.getByRole('button', 'Connect').click();
+  await expect(error).toBeVisible();
+  await browser.locator('.modal .seg label:has-text("Sign in here")').click();
+  await expect(error).toBeHidden();
+});
+
+test('a new token’s toast names no email a person typed (SPEC-502 TKP-009, SPEC-463 EML-006)', async ({ app, browser, screen }) => {
+  await app.open(mock('/admin/accounts', '&ambient=0'));
+  const card = browser.locator('main .grid-2 > .card:has-text("Claude #3")');
+  await expect(card).toBeVisible();
+  // An administrator typed this subscription's email: Claude never confirmed it.
+  await browser.evaluate(() => {
+    type Db = { accounts: { id: string; email: string | null; email_typed?: boolean }[]; eventSockets: Set<{ push: (data: string) => void }> };
+    const db = (window as unknown as { __yuliusMock: Db }).__yuliusMock;
+    const account = db.accounts.find((a) => a.id === 'acc_c3');
+    if (!account) throw new Error('no acc_c3');
+    Object.assign(account, { email: 'team@example.com', email_typed: true });
+    for (const socket of db.eventSockets) socket.push(JSON.stringify({ type: 'account.updated', account }));
+  });
+  await expect(browser.locator('main .grid-2 > .card:has-text("Claude #3"):has-text("team@example.com")')).toBeVisible();
+  await card.getByRole('button', 'Paste a new token').click();
+  const dialog = screen.getByRole('dialog', 'Paste a new token · Claude #3');
+  await dialog.getByLabel(/^Token/).fill(`sk-ant-oat01-${'e'.repeat(80)}`);
+  await dialog.getByRole('button', 'Save token').click();
+  await expect(dialog).toBeHidden();
+  const toast = browser.locator('.toast-ok .toast-msg:has-text("New token saved: Claude #3 is connected")');
+  await expect(toast).toBeVisible();
+  expect(await toast.textContent()).toBe('New token saved: Claude #3 is connected. Tasks can use it now.');
+  // The typed email stays on the card.
+  await expect(browser.locator('main .grid-2 > .card:has-text("Claude #3"):has-text("team@example.com")')).toBeVisible();
+});

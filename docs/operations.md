@@ -1503,7 +1503,19 @@ involved.
 - Agent sessions, terminals and the Cockpit plan for `YULIUS_AGENT_CPUS` CPUs (default a third
   of the sandbox's, at least 2) and the memory in proportion: three of them testing at once fill
   the sandbox.
-- `YULIUS_CI_LANES` (host-sized, a [resource limit](#resource-limits); 2 below 32 CPUs) runs of one sandbox execute at once. Each lane past the first
+- CI jobs of every sandbox come out of one budget: the host's CPUs and memory less an eighth for
+  the server and the agents. A job starts when it fits beside the larger of what the running
+  jobs reserved and what their sandboxes' CI and Docker engine were measured to use; a waiting
+  job's reason in `ci_status` (and the run's API) says what it waits for, CPUs, memory or Docker
+  networks ([ADR-0350](decisions/0350-ci-jobs-are-admitted-by-what-ci-really-holds-on-the-host.md)).
+  A job's default share (no `cpus`) is an equal share of that budget among its run's jobs.
+- Each sandbox's Docker engine makes /24 networks from Docker's own ranges (172.17.0.0/16 to
+  172.31.0.0/16 and 192.168.0.0/16): 4,096 networks from its next start, instead of 31. The first
+  network a project makes is 172.17.1.0/24 (`docker0` stays 172.17.0.1), not 172.18.0.0/16, and
+  a network takes at most 253 containers: a project that needs another range or more sets its
+  own `subnet`. A CI job waits while its engine can make fewer than 32 more; networks no container
+  used for 10 minutes are pruned first.
+- `YULIUS_CI_LANES` (host-sized, a [resource limit](#resource-limits); 2 below 32 CPUs) runs of one sandbox take a checkout at once; the CI budget, not the lanes, decides how many of their jobs run. Each lane past the first
   keeps its own job checkouts and caches (`ci/jobs/<job>[.<n>]@<lane>`, `ci/cache/<job>[.<n>]@<lane>`), so
   budget its disk too.
 
