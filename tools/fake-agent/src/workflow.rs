@@ -539,7 +539,10 @@ pub(super) fn reviewer_cut_off(
         "usage": {"input_tokens": 7, "cache_creation_input_tokens": 0,
             "cache_read_input_tokens": 0, "output_tokens": 3},
     });
-    append(&file, &[agent_record(&session, &agent, &message)])?;
+    // `/reviewer-limit-first <kind>`: refused at its first request, before any answer.
+    if !line.starts_with("/reviewer-limit-first ") {
+        append(&file, &[agent_record(&session, &agent, &message)])?;
+    }
     Transcript::open(file, &session)?.credits_out(options.credits_reset_s)?;
     say(&format!("REVIEWER {agent} CUT OFF"))?;
     if in_turn {

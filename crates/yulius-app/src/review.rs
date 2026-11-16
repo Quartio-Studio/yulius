@@ -503,6 +503,23 @@ impl App {
             })
     }
 
+    /// The reviewer `agent_id` of `task`'s open review round, with the model its round runs:
+    /// `None` when that subagent is no open round's.
+    pub(crate) async fn open_round_reviewer(
+        &self,
+        task: &yulius_domain::ids::TaskId,
+        agent_id: &str,
+    ) -> Option<CutOffReviewer> {
+        let rounds = self.deps.store.review_rounds(task, true).await.ok()?;
+        rounds
+            .iter()
+            .find(|r| r.ended_at.is_none() && r.subagent_id.as_deref() == Some(agent_id))
+            .map(|round| CutOffReviewer {
+                agent_id: agent_id.to_owned(),
+                model: round.model.clone(),
+            })
+    }
+
     /// Whether `task` has a review round that has not reported (a reviewer runs, or was cut
     /// off).
     pub(crate) async fn review_round_open(&self, task: &yulius_domain::ids::TaskId) -> bool {
@@ -537,24 +554,12 @@ impl App {
     pub(crate) async fn reviewer_cut_off(
         self: &Arc<Self>,
         task: &yulius_domain::ids::TaskId,
-        agent_id: &str,
+        reviewer: CutOffReviewer,
         moves: bool,
     ) {
-        let Ok(rounds) = self.deps.store.review_rounds(task, true).await else {
-            return;
-        };
-        let Some(round) = rounds
-            .iter()
-            .find(|r| r.ended_at.is_none() && r.subagent_id.as_deref() == Some(agent_id))
-        else {
-            return;
-        };
         let runtime = self.runtime(task);
         if let Ok(mut cut) = runtime.cut_off_reviewer.lock() {
-            *cut = Some(CutOffReviewer {
-                agent_id: agent_id.to_owned(),
-                model: round.model.clone(),
-            });
+            *cut = Some(reviewer);
         }
         if !moves {
             return;

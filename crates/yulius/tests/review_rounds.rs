@@ -1064,6 +1064,13 @@ mod real {
         a_cut_off_reviewer(false, b"/reviewer-limit yulius-reviewer\r")
     }
 
+    /// Review round 1 of fix 7: a reviewer refused at its first request, before any answer of
+    /// it is read, meets its round's model's limit, not the session's.
+    #[test]
+    fn a_reviewer_refused_before_any_answer_meets_its_own_models_limit() -> TestResult {
+        a_cut_off_reviewer(true, b"/reviewer-limit-first yulius-reviewer\r")
+    }
+
     /// RLM-002: a cut-off read in a turn of the session's thread moves it at that turn's end
     /// (its Stop hook), not while it works.
     #[test]
@@ -1224,6 +1231,14 @@ mod real {
                 "{:?}",
                 first.usage_json
             );
+            // Nor is it the session's: Opus is not out there (review round 1 of fix 7).
+            assert_ne!(
+                read.weekly_opus.and_then(|w| w.used_percent),
+                Some(100.0),
+                "{:?}",
+                first.usage_json
+            );
+            assert_ne!(first.status, yulius_app::model::AccountStatus::Limited);
             stop(&app, &id).await?;
             Ok::<_, Box<dyn std::error::Error>>(())
         })?;

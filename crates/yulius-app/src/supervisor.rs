@@ -5625,19 +5625,40 @@ impl App {
         else {
             return;
         };
+        use yulius_domain::usage::LimitScope;
+        // A limit of "the model that ran" of a review round's reviewer is of its round's model,
+        // also when no answer of it was read yet (refused at its first request, or resumed in a
+        // new process); one of a subagent whose model cannot be told is no one's (review round
+        // 1 of fix 7): it is never taken for the session's.
+        let reviewer = self.open_round_reviewer(task_id, agent_id).await;
+        let scope = match (*scope, &reviewer) {
+            (LimitScope::Model(None), Some(reviewer)) => {
+                match ModelFamily::of(Some(&reviewer.model)) {
+                    ModelFamily::Any => LimitScope::Model(None),
+                    named => LimitScope::Model(Some(named)),
+                }
+            }
+            (scope, _) => scope,
+        };
+        if scope == LimitScope::Model(None) {
+            tracing::info!(task = %task_id, %message, "a usage limit of a subagent whose model is not known: not the session's");
+            return;
+        }
         let limit = ReportedLimit {
-            scope: *scope,
+            scope,
             window_minutes: *window_minutes,
             resets_at: *resets_at,
         };
         let binds_session = !matches!(
             scope,
-            yulius_domain::usage::LimitScope::Model(Some(other)) if *other != family
+            LimitScope::Model(Some(other)) if other != family
         );
         tracing::info!(task = %task_id, %message, ?scope, binds_session, "usage limit reached by a subagent");
         // Known before any relaunch the limit leads to, whose prompt names the reviewer.
-        self.reviewer_cut_off(task_id, agent_id, !binds_session)
-            .await;
+        if let Some(reviewer) = reviewer {
+            self.reviewer_cut_off(task_id, reviewer, !binds_session)
+                .await;
+        }
         if binds_session {
             self.limit_met(task_id, attempt, limit, *at).await;
         } else if let Some(account) = &attempt.account_id {
