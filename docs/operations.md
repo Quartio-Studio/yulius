@@ -1503,7 +1503,13 @@ involved.
 - Agent sessions, terminals and the Cockpit plan for `YULIUS_AGENT_CPUS` CPUs (default a third
   of the sandbox's, at least 2) and the memory in proportion: three of them testing at once fill
   the sandbox.
-- `YULIUS_CI_LANES` (host-sized, a [resource limit](#resource-limits); 2 below 32 CPUs) runs of one sandbox execute at once. Each lane past the first
+- CI jobs of every sandbox come out of one budget: the host's CPUs and memory less an eighth for
+  the server and the agents. A job starts when it fits beside the larger of what the running
+  jobs reserved and what their sandboxes' CI and Docker engine were measured to use; a waiting
+  job's reason in `ci_status` and on the CI page says what it waits for, CPUs, memory or Docker
+  networks (each sandbox's engine makes 4,096 /24 networks from Docker's own ranges; a job waits
+  while fewer than 32 are left) ([ADR-0350](decisions/0350-ci-jobs-are-admitted-by-what-ci-really-holds-on-the-host.md)).
+- `YULIUS_CI_LANES` (host-sized, a [resource limit](#resource-limits); 2 below 32 CPUs) runs of one sandbox take a checkout at once; the CI budget, not the lanes, decides how many of their jobs run. Each lane past the first
   keeps its own job checkouts and caches (`ci/jobs/<job>[.<n>]@<lane>`, `ci/cache/<job>[.<n>]@<lane>`), so
   budget its disk too.
 
