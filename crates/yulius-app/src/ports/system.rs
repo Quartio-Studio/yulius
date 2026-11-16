@@ -37,11 +37,4 @@ pub trait SystemProbe: Send + Sync {
         let snapshot = self.snapshot(data_dir);
         Some((snapshot.disk_total?, snapshot.disk_used?))
     }
-
-    /// The host's CPU time counters since boot, `(busy, total)` in clock ticks, for the CI load
-    /// read every minute (SPEC-497); `None` where the host does not say. Leaves the status
-    /// panel's reading alone.
-    fn cpu_ticks(&self) -> Option<(u64, u64)> {
-        None
-    }
 }

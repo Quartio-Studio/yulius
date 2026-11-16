@@ -2,14 +2,12 @@
 
 use async_trait::async_trait;
 use rusqlite::{OptionalExtension, Row, params, params_from_iter};
-use yulius_app::ci::{
-    CiJobRecord, CiJobUpdate, CiMinutesRow, CiRunRecord, CiRunUpdate, FiledFinding,
-};
+use yulius_app::ci::{CiJobRecord, CiJobUpdate, CiRunRecord, CiRunUpdate, FiledFinding};
 use yulius_app::error::{AppError, AppResult};
 use yulius_app::ports::store_ext::CiStore;
 use yulius_domain::ci::{CiRef, GateSource, RunState};
 use yulius_domain::ids::SandboxId;
-use yulius_domain::resources::{LoadMinute, Need};
+use yulius_domain::resources::Need;
 use yulius_domain::time::Timestamp;
 
 use crate::{SqliteStore, bad_column, db, to_u32};
@@ -36,23 +34,6 @@ fn finding_from_row(row: &Row<'_>) -> rusqlite::Result<FiledFinding> {
 
 const JOB_COLS: &str = "id, run_id, ordinal, name, job_key, command, matrix, state, reason, \
     exit_code, started_at, ended_at, cpus, memory_mb, timeout_minutes, exclusive, waited_ms";
-
-/// Adds the run `?1`, once it started and ended, to its sandbox's tally of the UTC day it started
-/// (SPEC-497 OFC-003): `failed_outside` when every job of it that failed or errored ended for the
-/// infrastructure (`infra_end`), and the jobs' thrown-away time.
-const CI_MINUTES_ADD: &str = "INSERT INTO ci_minutes (sandbox_id, day, outcome, runs, run_ms, rerun_ms) \
-     SELECT r.sandbox_id, strftime('%Y-%m-%d', r.started_at / 1000, 'unixepoch'), \
-       CASE r.state WHEN 'passed' THEN 'passed' WHEN 'cancelled' THEN 'cancelled' \
-         ELSE CASE WHEN EXISTS (SELECT 1 FROM ci_jobs j WHERE j.run_id = r.id \
-                                AND j.state IN ('failed', 'error')) \
-                   AND NOT EXISTS (SELECT 1 FROM ci_jobs j WHERE j.run_id = r.id \
-                                AND j.state IN ('failed', 'error') AND COALESCE(j.infra_end, 0) = 0) \
-              THEN 'failed_outside' ELSE 'failed' END END, \
-       1, MAX(r.ended_at - r.started_at, 0), \
-       COALESCE((SELECT SUM(j.infra_ms) FROM ci_jobs j WHERE j.run_id = r.id), 0) \
-     FROM ci_runs r WHERE r.id = ?1 AND r.started_at IS NOT NULL AND r.ended_at IS NOT NULL \
-     ON CONFLICT (sandbox_id, day, outcome) DO UPDATE SET runs = runs + excluded.runs, \
-       run_ms = run_ms + excluded.run_ms, rerun_ms = rerun_ms + excluded.rerun_ms";
 
 fn state(text: &str) -> rusqlite::Result<RunState> {
     RunState::parse(text).ok_or_else(|| bad_column("CI state", text))
@@ -325,7 +306,6 @@ impl CiStore for SqliteStore {
         update: &CiRunUpdate,
     ) -> AppResult<bool> {
         let (id, from, update) = (id.to_owned(), states(from), update.clone());
-        let id_for_tally = id.clone();
         self.call(move |c| {
             // A reason before a run starts is a queue note (waiting for disk): it goes.
             let sql = format!(
@@ -346,29 +326,17 @@ impl CiStore for SqliteStore {
                 from.into_iter()
                     .map(|s| Box::new(s) as Box<dyn rusqlite::ToSql>),
             );
-            let changed = match c.execute(&sql, params_from_iter(args.iter().map(AsRef::as_ref))) {
-                Ok(changed) => changed == 1,
+            match c.execute(&sql, params_from_iter(args.iter().map(AsRef::as_ref))) {
+                Ok(changed) => Ok(changed == 1),
                 Err(rusqlite::Error::SqliteFailure(err, _))
                     if err.code == rusqlite::ErrorCode::ConstraintViolation =>
                 {
-                    return Err(AppError::Conflict(
+                    Err(AppError::Conflict(
                         "a constraint refused the CI run's new state".into(),
-                    ));
+                    ))
                 }
-                Err(err) => return Err(db(err)),
-            };
-            // A run that started and ended adds its minutes to its day's tally (SPEC-497
-            // OFC-003, review round 1: runs are pruned, the tally stays).
-            if changed
-                && matches!(
-                    to,
-                    RunState::Passed | RunState::Failed | RunState::Error | RunState::Cancelled
-                )
-            {
-                c.execute(CI_MINUTES_ADD, params![id_for_tally])
-                    .map_err(db)?;
+                Err(err) => Err(db(err)),
             }
-            Ok(changed)
         })
         .await
     }
@@ -389,10 +357,9 @@ impl CiStore for SqliteStore {
                  failures = COALESCE(?8, failures), cpu_ms = COALESCE(?9, cpu_ms), \
                  memory_peak_mb = COALESCE(?10, memory_peak_mb), \
                  disk_written_mb = COALESCE(?11, disk_written_mb), \
-                 waited_ms = COALESCE(?12, waited_ms), infra = COALESCE(?13, infra), \
-                 infra_ms = COALESCE(?14, infra_ms), infra_end = COALESCE(?15, infra_end) \
+                 waited_ms = COALESCE(?12, waited_ms) \
                  WHERE id = ?7 AND state IN ({})",
-                placeholders(16, from.len())
+                placeholders(13, from.len())
             );
             let mut args: Vec<Box<dyn rusqlite::ToSql>> = vec![
                 Box::new(to.as_str().to_owned()),
@@ -407,9 +374,6 @@ impl CiStore for SqliteStore {
                 Box::new(update.usage.map(|u| u.memory_peak_mb)),
                 Box::new(update.usage.and_then(|u| u.disk_written_mb)),
                 Box::new(update.waited_ms),
-                Box::new(update.infra.map(|(kind, _, _)| kind.to_owned())),
-                Box::new(update.infra.map(|(_, ms, _)| ms)),
-                Box::new(update.infra.map(|(_, _, end)| i64::from(end))),
             ];
             args.extend(
                 from.into_iter()
@@ -419,123 +383,6 @@ impl CiStore for SqliteStore {
                 .execute(&sql, params_from_iter(args.iter().map(AsRef::as_ref)))
                 .map_err(db)?;
             Ok(changed == 1)
-        })
-        .await
-    }
-
-    async fn ci_minutes(
-        &self,
-        sandbox: &SandboxId,
-        from: Option<Timestamp>,
-        to: Option<Timestamp>,
-    ) -> AppResult<Vec<CiMinutesRow>> {
-        let day = |at: Option<Timestamp>, or: &str| {
-            at.map_or_else(
-                || or.to_owned(),
-                |at| {
-                    yulius_domain::time::format_rfc3339(at)
-                        .chars()
-                        .take(10)
-                        .collect()
-                },
-            )
-        };
-        let (sandbox, from, to) = (
-            sandbox.as_str().to_owned(),
-            day(from, "0000-00-00"),
-            day(to, "9999-99-99"),
-        );
-        self.call(move |c| {
-            let mut statement = c
-                .prepare(
-                    "SELECT day, outcome, runs, run_ms, rerun_ms FROM ci_minutes \
-                     WHERE sandbox_id = ?1 AND day >= ?2 AND day < ?3 ORDER BY day, outcome",
-                )
-                .map_err(db)?;
-            let rows = statement
-                .query_map(params![sandbox, from, to], |row| {
-                    Ok(CiMinutesRow {
-                        day: row.get(0)?,
-                        outcome: row.get(1)?,
-                        runs: row.get(2)?,
-                        run_ms: row.get(3)?,
-                        rerun_ms: row.get(4)?,
-                    })
-                })
-                .map_err(db)?
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(db)?;
-            Ok(rows)
-        })
-        .await
-    }
-
-    async fn ci_jobs_waiting(&self) -> AppResult<u32> {
-        self.call(|c| {
-            let waiting: i64 = c
-                .query_row(
-                    "SELECT COUNT(*) FROM ci_jobs j JOIN ci_runs r ON r.id = j.run_id \
-                     WHERE r.state = 'running' AND j.state = 'queued'",
-                    [],
-                    |row| row.get(0),
-                )
-                .map_err(db)?;
-            Ok(u32::try_from(waiting).unwrap_or(u32::MAX))
-        })
-        .await
-    }
-
-    async fn record_ci_load(&self, minute: LoadMinute, forget_before: Timestamp) -> AppResult<()> {
-        self.call(move |c| {
-            c.execute(
-                "INSERT OR REPLACE INTO ci_load (at, busy_permille, held_cpus, measured_cpus, \
-                 waiting_jobs) VALUES (?1, ?2, ?3, ?4, ?5)",
-                params![
-                    minute.at.0,
-                    minute.busy_permille,
-                    minute.held_cpus,
-                    minute.measured_cpus,
-                    minute.waiting_jobs
-                ],
-            )
-            .map_err(db)?;
-            c.execute(
-                "DELETE FROM ci_load WHERE at < ?1",
-                params![forget_before.0],
-            )
-            .map_err(db)?;
-            Ok(())
-        })
-        .await
-    }
-
-    async fn ci_load(
-        &self,
-        from: Option<Timestamp>,
-        to: Option<Timestamp>,
-    ) -> AppResult<Vec<LoadMinute>> {
-        let (from, to) = (from.map_or(i64::MIN, |t| t.0), to.map_or(i64::MAX, |t| t.0));
-        self.call(move |c| {
-            let mut statement = c
-                .prepare(
-                    "SELECT at, busy_permille, held_cpus, measured_cpus, waiting_jobs FROM ci_load \
-                     WHERE at >= ?1 AND at < ?2 ORDER BY at",
-                )
-                .map_err(db)?;
-            let rows = statement
-                .query_map(params![from, to], |row| {
-                    Ok(LoadMinute {
-                        at: Timestamp(row.get(0)?),
-                        busy_permille: row.get(1)?,
-                        held_cpus: row.get(2)?,
-                        measured_cpus: row.get(3)?,
-                        waiting_jobs: row.get(4)?,
-                    })
-                })
-                .map_err(db)?
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(db)?;
-            Ok(rows)
         })
         .await
     }
@@ -581,8 +428,7 @@ impl CiStore for SqliteStore {
                 tx.execute(
                     "UPDATE ci_jobs SET state = 'queued', started_at = NULL, ended_at = NULL, \
                      reason = NULL, exit_code = NULL, output = ?2, failures = NULL, cpu_ms = NULL, \
-                     memory_peak_mb = NULL, disk_written_mb = NULL, waited_ms = NULL, infra = NULL, \
-                     infra_ms = NULL, infra_end = NULL \
+                     memory_peak_mb = NULL, disk_written_mb = NULL, waited_ms = NULL \
                      WHERE run_id = ?1 AND NOT (state = 'skipped' \
                        AND substr(COALESCE(reason, ''), 1, length(?3)) = ?3)",
                     [&id, &note, &yulius_domain::ci::PATHS_SKIP_REASON.to_owned()],
@@ -865,121 +711,6 @@ mod tests {
             exclusive: false,
             waited_ms: None,
         }
-    }
-
-    /// SPEC-497 OFC-001, OFC-003 (review round 1): a run that ends adds its minutes to its
-    /// day's tally by how it ended: `failed_outside` only when every failed job's end was the
-    /// infrastructure's (a job that failed its second run after a thrown-away first counts as
-    /// failed), the thrown-away time apart; the tally outlives the runs' prune.
-    #[tokio::test]
-    async fn a_runs_end_adds_to_its_days_minutes() -> TestResult {
-        let store = SqliteStore::open_in_memory()?;
-        let min = 60_000;
-        // (run, its end, the job's end, the job's infrastructure failure)
-        let cases = [
-            (
-                "passed",
-                RunState::Passed,
-                RunState::Passed,
-                Some(("address_pool", 2 * min, false)),
-            ),
-            (
-                "failed",
-                RunState::Failed,
-                RunState::Failed,
-                Some(("address_pool", min, false)),
-            ),
-            (
-                "outside",
-                RunState::Error,
-                RunState::Error,
-                Some(("docker_socket", 3 * min, true)),
-            ),
-            ("cancelled", RunState::Cancelled, RunState::Cancelled, None),
-            ("never", RunState::Cancelled, RunState::Cancelled, None),
-        ];
-        for (n, (id, run_end, job_end, infra)) in (0_i64..).zip(cases) {
-            let job_id = format!("{id}-job");
-            store
-                .insert_ci_run(&run(id, id, n * min)?, &[job(&job_id, id, 0)])
-                .await?;
-            if id == "never" {
-                // Cancelled before it started: no minutes.
-                store
-                    .transition_ci_run(id, &[RunState::Queued], run_end, &CiRunUpdate::default())
-                    .await?;
-                continue;
-            }
-            let started = CiRunUpdate {
-                started_at: Some(Timestamp(n * min)),
-                ..CiRunUpdate::default()
-            };
-            store
-                .transition_ci_run(id, &[RunState::Queued], RunState::Running, &started)
-                .await?;
-            let job_started = CiJobUpdate {
-                started_at: Some(Timestamp(n * min)),
-                ..CiJobUpdate::default()
-            };
-            store
-                .transition_ci_job(
-                    &job_id,
-                    &[RunState::Queued],
-                    RunState::Running,
-                    &job_started,
-                )
-                .await?;
-            let job_ended = CiJobUpdate {
-                ended_at: Some(Timestamp(n * min + 10 * min)),
-                infra,
-                ..CiJobUpdate::default()
-            };
-            store
-                .transition_ci_job(&job_id, &[RunState::Running], job_end, &job_ended)
-                .await?;
-            let ended = CiRunUpdate {
-                ended_at: Some(Timestamp(n * min + 10 * min)),
-                ..CiRunUpdate::default()
-            };
-            store
-                .transition_ci_run(id, &[RunState::Running], run_end, &ended)
-                .await?;
-        }
-        let sandbox = SandboxId::parse("s1")?;
-        let read = |store: SqliteStore| {
-            let sandbox = sandbox.clone();
-            async move {
-                let rows = store.ci_minutes(&sandbox, None, None).await?;
-                Ok::<_, AppError>(
-                    rows.into_iter()
-                        .map(|r| (r.day, r.outcome, r.runs, r.run_ms, r.rerun_ms))
-                        .collect::<Vec<_>>(),
-                )
-            }
-        };
-        let day = "1970-01-01".to_owned();
-        let expected = vec![
-            (day.clone(), "cancelled".to_owned(), 1, 10 * min, 0),
-            (day.clone(), "failed".to_owned(), 1, 10 * min, min),
-            (
-                day.clone(),
-                "failed_outside".to_owned(),
-                1,
-                10 * min,
-                3 * min,
-            ),
-            (day.clone(), "passed".to_owned(), 1, 10 * min, 2 * min),
-        ];
-        assert_eq!(read(store.clone()).await?, expected);
-        // The runs go; their minutes stay.
-        store.prune_ci_runs(0, Timestamp(i64::MAX)).await?;
-        assert_eq!(read(store.clone()).await?, expected);
-        // The days of the range.
-        let none = store
-            .ci_minutes(&sandbox, Some(Timestamp(86_400_000)), None)
-            .await?;
-        assert!(none.is_empty());
-        Ok(())
     }
 
     #[tokio::test]

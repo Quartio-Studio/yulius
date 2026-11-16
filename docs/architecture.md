@@ -3622,13 +3622,7 @@ A job's exit decides its state in `App::ci_job` (`crates/yulius-app/src/ci/exec.
 `YULIUS_CI_SKIP_CODE`) is skipped, the incomplete code `INCOMPLETE_EXIT_CODE` (75,
 `YULIUS_CI_INCOMPLETE_CODE`) is error with the reason `incomplete: <its ::yulius-incomplete
 line>` (ADR-0202), any other exit or a signal is failed; a timeout, the output limit, a lost host
-or a refused start is error. Before that, a failed or lost job is asked whether it failed for the
-infrastructure (`yulius_domain::ci::infra`: Docker's words for a full address pool, a
-`docker.sock` connection that ended, a `SIGKILL` while its sandbox's OOM count grew, a lost
-host): it then runs again once by itself in the same slot, saying so; a second such failure ends
-it error, and the thrown-away run's kind and time are kept for the CI minutes
-([decision 0354](decisions/0354-a-job-that-fails-for-the-infrastructure-runs-again-once-by-itself.md)).
-A failed job cancels the run's other jobs (fail-fast), except that the
+or a refused start is error. A failed job cancels the run's other jobs (fail-fast), except that the
 `security` job neither cancels nor is cancelled by them (SPEC-273). `yulius_domain::ci::aggregate` makes the run's
 state, where skipped counts like passed, so a run is never skipped and the merge gate stays one
 rule; the commit status counts the skipped jobs

@@ -182,11 +182,6 @@ pub struct ServeArgs {
     #[arg(long, env = "YULIUS_CI_LANES",
           value_parser = clap::value_parser!(u32).range(1..=8))]
     pub ci_lanes: Option<u32>,
-    /// How much the CI budget is overcommitted by reservations: they count at 1/factor, while
-    /// measured use counts at face value (SPEC-497; the production hotfix of 16 Nov 2026 set 2).
-    #[arg(long, env = "YULIUS_CI_OVERCOMMIT", default_value_t = 1,
-          value_parser = clap::value_parser!(u32).range(1..=8))]
-    pub ci_overcommit: u32,
     /// Wall-clock limit of one CI job, in minutes.
     #[arg(long, env = "YULIUS_CI_JOB_TIMEOUT_MIN", default_value_t = 30,
           value_parser = clap::value_parser!(u64).range(1..=360))]
@@ -529,7 +524,6 @@ pub fn build_app(
         lanes: args.ci_lanes.unwrap_or(fixed(Limit::CiLanes)),
         job_timeout: std::time::Duration::from_secs(args.ci_job_timeout_min * 60),
         poll: std::time::Duration::from_secs(args.ci_poll_secs),
-        overcommit: args.ci_overcommit,
         run_disk_max: args
             .cd_run_disk_gb
             .unwrap_or(Limit::CdRunDisk.fixed())

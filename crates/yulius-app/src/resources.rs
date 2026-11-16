@@ -18,11 +18,10 @@ use tokio::sync::Notify;
 use tokio::time::Instant;
 use yulius_domain::ids::SandboxId;
 use yulius_domain::resources::{
-    Admission, Budget, Capacity, EnvTemplate, Held, LoadMinute, admit, budget_env, busy_permille,
-    default_templates, network_reserve,
+    Admission, Budget, Capacity, EnvTemplate, Held, admit, budget_env, default_templates,
+    network_reserve,
 };
 use yulius_domain::spec_format::{MAX_CONFIG_BYTES, parse_yulius_toml_resources_table};
-use yulius_domain::time::Timestamp;
 
 use crate::context::App;
 
@@ -34,9 +33,6 @@ pub(crate) const SAMPLE_WINDOW: Duration = Duration::from_secs(5);
 /// A reading older than this is no base for a rate: what was used since is a new window. Twice
 /// the dispatcher's tick, which reads the sandboxes running jobs at each pass.
 const STALE_WINDOW: Duration = Duration::from_secs(30);
-/// How long a job that does not fit lets smaller jobs behind it start before it goes first: no
-/// convoy behind a large one, and no large one overtaken for good (SPEC-497).
-pub(crate) const PRIORITY_AFTER: Duration = Duration::from_secs(5 * 60);
 
 /// The CI budget of the whole instance and what CI holds of it (SPEC-082 RES-003, SPEC-497
 /// HBA-001, HBA-002): one for every sandbox, sized once from the capacity.
@@ -50,16 +46,11 @@ struct AdmissionState {
     budget: Capacity,
     held: Held,
     next_ticket: u64,
-    /// The waiting jobs' tickets and when each began to wait, in arrival order.
-    queue: VecDeque<(u64, Instant)>,
-    /// `YULIUS_CI_OVERCOMMIT`: reservations count at 1/factor ([`admit`]).
-    overcommit: u32,
+    /// The waiting jobs' tickets, first come first served.
+    queue: VecDeque<u64>,
     /// Each measured sandbox's last reading (when, CPU microseconds), its CPU rate over the
     /// window before it (CPUs, once two readings were far enough apart) and its memory.
     samples: HashMap<SandboxId, Sample>,
-    /// The running jobs' reservations with when each was admitted: those admitted after a
-    /// reading are not in it, and count on top of it (review round 3).
-    admitted: Vec<(u64, SandboxId, Instant, Budget)>,
 }
 
 #[derive(Clone, Copy)]
@@ -77,7 +68,6 @@ struct Sample {
 /// dropped.
 pub(crate) struct Reservation {
     admission: Arc<CiAdmission>,
-    id: u64,
     need: Budget,
 }
 
@@ -91,7 +81,6 @@ impl Reservation {
 impl Drop for Reservation {
     fn drop(&mut self) {
         let mut state = self.admission.lock();
-        state.admitted.retain(|(id, _, _, _)| *id != self.id);
         state.held.jobs = state.held.jobs.saturating_sub(1);
         state.held.reserved.cpus = state.held.reserved.cpus.saturating_sub(self.need.cpus);
         state.held.reserved.memory_mb = state
@@ -114,7 +103,7 @@ impl Drop for Ticket {
     fn drop(&mut self) {
         let mut state = self.admission.lock();
         let before = state.queue.len();
-        state.queue.retain(|(ticket, _)| *ticket != self.id);
+        state.queue.retain(|ticket| *ticket != self.id);
         let left = state.queue.len() != before;
         drop(state);
         if left {
@@ -124,16 +113,14 @@ impl Drop for Ticket {
 }
 
 impl CiAdmission {
-    fn new(capacity: Capacity, overcommit: u32) -> Self {
+    fn new(capacity: Capacity) -> Self {
         Self {
             state: Mutex::new(AdmissionState {
                 budget: capacity.ci_budget(),
                 held: Held::default(),
                 next_ticket: 0,
                 queue: VecDeque::new(),
-                overcommit,
                 samples: HashMap::new(),
-                admitted: Vec::new(),
             }),
             changed: Notify::new(),
         }
@@ -143,12 +130,12 @@ impl CiAdmission {
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// A place at the end of the queue, waiting since `now`.
-    fn enqueue(self: &Arc<Self>, now: Instant) -> Ticket {
+    /// A place at the end of the queue.
+    fn enqueue(self: &Arc<Self>) -> Ticket {
         let mut state = self.lock();
         let id = state.next_ticket;
         state.next_ticket += 1;
-        state.queue.push_back((id, now));
+        state.queue.push_back(id);
         Ticket {
             admission: Arc::clone(self),
             id,
@@ -210,13 +197,6 @@ impl CiAdmission {
             }
         }
         let settled = state.samples.values().all(|s| !s.rebased);
-        // Where each sandbox's rate ends: a job of it admitted after that is in no rate yet.
-        let rated = state
-            .samples
-            .iter()
-            .filter(|(_, s)| s.rate.is_some())
-            .map(|(sandbox, s)| (sandbox.clone(), s.at))
-            .collect();
         let rates: Vec<f64> = state.samples.values().filter_map(|s| s.rate).collect();
         let anon: u64 = state
             .samples
@@ -234,70 +214,33 @@ impl CiAdmission {
                 memory_mb: anon >> 20,
             }
         });
-        Measured {
-            used,
-            settled,
-            rated,
-        }
+        Measured { used, settled }
     }
 
-    /// Admits the job of `sandbox` holding `ticket` at `now` when what CI uses is settled and
-    /// `need` fits beside what CI holds ([`admit`]): the larger of the reservations and
-    /// `measured` plus the reservations admitted in each sandbox after its reading (several jobs
-    /// arriving within one window each add to it, review rounds 3 and 1); otherwise what it
-    /// waits for. A job before it in line that does not fit holds it back only once it has
-    /// waited [`PRIORITY_AFTER`]: until then a smaller job that fits starts (no convoy behind a
-    /// large one, SPEC-497), from then on the large one goes first.
+    /// Admits the job holding `ticket` when it is first in the queue, what CI uses is settled
+    /// and `need` fits beside what CI holds and `measured` ([`admit`]); otherwise what it waits
+    /// for.
     fn try_admit(
         self: &Arc<Self>,
         ticket: &Ticket,
-        sandbox: &SandboxId,
         need: Budget,
-        measured: &Measured,
-        now: Instant,
+        measured: Measured,
     ) -> Result<Reservation, Wait> {
         let mut state = self.lock();
-        let Some(place) = state.queue.iter().position(|(id, _)| *id == ticket.id) else {
-            return Err(Wait::Priority);
-        };
-        if state
-            .queue
-            .iter()
-            .take(place)
-            .any(|(_, since)| now.saturating_duration_since(*since) >= PRIORITY_AFTER)
-        {
-            return Err(Wait::Priority);
+        if state.queue.front() != Some(&ticket.id) {
+            return Err(Wait::Behind);
         }
         if !measured.settled && state.held.jobs > 0 {
             return Err(Wait::Measuring);
         }
-        state.held.measured = measured.used.map(|used| {
-            let since = state
-                .admitted
-                .iter()
-                .filter(|(_, admitted_in, at, _)| {
-                    !measured
-                        .rated
-                        .iter()
-                        .any(|(rated, until)| rated == admitted_in && until >= at)
-                })
-                .fold(Budget::default(), |sum, (_, _, _, need)| Budget {
-                    cpus: sum.cpus.saturating_add(need.cpus),
-                    memory_mb: sum.memory_mb.saturating_add(need.memory_mb),
-                });
-            Budget {
-                cpus: used.cpus.saturating_add(since.cpus),
-                memory_mb: used.memory_mb.saturating_add(since.memory_mb),
-            }
-        });
+        state.held.measured = measured.used;
         let need = Budget {
             cpus: need.cpus.min(state.budget.cpus),
             memory_mb: need.memory_mb.min(state.budget.memory_mb),
         };
-        match admit(state.budget, &state.held, need, state.overcommit) {
+        match admit(state.budget, &state.held, need) {
             Admission::Now => {
-                state.queue.remove(place);
-                state.admitted.push((ticket.id, sandbox.clone(), now, need));
+                state.queue.pop_front();
                 state.held.jobs += 1;
                 state.held.reserved.cpus = state.held.reserved.cpus.saturating_add(need.cpus);
                 state.held.reserved.memory_mb =
@@ -307,7 +250,6 @@ impl CiAdmission {
                 self.changed.notify_waiters();
                 Ok(Reservation {
                     admission: Arc::clone(self),
-                    id: ticket.id,
                     need,
                 })
             }
@@ -317,15 +259,13 @@ impl CiAdmission {
 }
 
 /// What the readings of the sandboxes running CI jobs say (SPEC-497 HBA-002).
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct Measured {
     /// What they use together, once anything was measured.
     used: Option<Budget>,
     /// Whether every reading had a recent base: a job is not admitted on a reading that only
     /// became a new base now.
     settled: bool,
-    /// Where each measured sandbox's rate ends.
-    rated: Vec<(SandboxId, Instant)>,
 }
 
 impl Measured {
@@ -333,15 +273,14 @@ impl Measured {
     const NOTHING: Self = Self {
         used: None,
         settled: true,
-        rated: Vec::new(),
     };
 }
 
 /// Why a job is not admitted now.
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Wait {
-    /// A job before it in line has waited [`PRIORITY_AFTER`] and goes first.
-    Priority,
+    /// A job before it in line still waits.
+    Behind,
     /// What CI uses is being measured again.
     Measuring,
     /// It does not fit.
@@ -351,10 +290,7 @@ enum Wait {
 impl std::fmt::Display for Wait {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Priority => f.write_str(
-                "waits for a larger CI job that has waited 5 minutes for the host's CI budget and \
-                 now goes first",
-            ),
+            Self::Behind => f.write_str("waits for the CI jobs before it in line"),
             Self::Measuring => f.write_str("waits for a reading of what CI uses now"),
             Self::Budget(wait) => write!(f, "waits for the host's CI budget: {wait}"),
         }
@@ -553,53 +489,11 @@ impl App {
         }
     }
 
-    /// Keeps one reading a minute of the host for CI (SPEC-497): its CPUs busy since the last
-    /// reading, the CPUs running jobs reserved and measured, and the jobs waiting to start; the
-    /// readings of 30 days are kept. The first reading after a start has no busy figure.
-    pub(crate) async fn ci_record_load(&self) {
-        const MINUTE: i64 = 60_000;
-        const KEEP: i64 = 30 * 24 * 60 * MINUTE;
-        let now = self.now().0;
-        let minute = now - now.rem_euclid(MINUTE);
-        let ticks = self.deps.system.cpu_ticks();
-        let before = {
-            let Ok(mut last) = self.ci.load.lock() else {
-                return;
-            };
-            if last.is_some_and(|(at, _)| at == minute) {
-                return;
-            }
-            last.replace((minute, ticks))
-        };
-        let busy = match (before.and_then(|(_, ticks)| ticks), ticks) {
-            (Some(before), Some(after)) => busy_permille(before, after),
-            _ => None,
-        };
-        let measured = self.ci_measured().used.map(|used| used.cpus);
-        let held = self.ci_admission().lock().held.reserved.cpus;
-        let waiting = self.deps.store.ci_jobs_waiting().await.unwrap_or(0);
-        let reading = LoadMinute {
-            at: Timestamp(minute),
-            busy_permille: busy,
-            held_cpus: held,
-            measured_cpus: measured,
-            waiting_jobs: waiting,
-        };
-        if let Err(err) = self
-            .deps
-            .store
-            .record_ci_load(reading, Timestamp(now - KEEP))
-            .await
-        {
-            tracing::warn!(error = %err, "recording the host's CI load failed");
-        }
-    }
-
     fn ci_admission(&self) -> Arc<CiAdmission> {
         Arc::clone(
-            self.ci.budget.get_or_init(|| {
-                Arc::new(CiAdmission::new(self.capacity(), self.config.ci.overcommit))
-            }),
+            self.ci
+                .budget
+                .get_or_init(|| Arc::new(CiAdmission::new(self.capacity()))),
         )
     }
 
@@ -625,19 +519,13 @@ impl App {
     /// their sandboxes' measured use. Waiters are served in order, so a large job is never
     /// overtaken for good; a budget larger than the CI budget takes all of it. The queued job
     /// `job` says what it waits for whenever that changes (HBA-005).
-    pub(crate) async fn ci_reserve(
-        &self,
-        sandbox: &SandboxId,
-        job: &str,
-        budget: Budget,
-    ) -> Option<Reservation> {
+    pub(crate) async fn ci_reserve(&self, job: &str, budget: Budget) -> Option<Reservation> {
         let admission = self.ci_admission();
-        let ticket = admission.enqueue(Instant::now());
+        let ticket = admission.enqueue();
         let mut told: Option<String> = None;
         loop {
             let changed = admission.changed.notified();
-            let measured = self.ci_measured();
-            match admission.try_admit(&ticket, sandbox, budget, &measured, Instant::now()) {
+            match admission.try_admit(&ticket, budget, self.ci_measured()) {
                 Ok(reservation) => {
                     if told.is_some() {
                         self.ci_job_waits(job, None).await;
@@ -678,7 +566,7 @@ mod tests {
     /// settled.
     #[test]
     fn what_ci_uses_is_measured_over_a_recent_window() {
-        let admission = CiAdmission::new(Capacity::new(64, 64 * 1024), 1);
+        let admission = CiAdmission::new(Capacity::new(64, 64 * 1024));
         let (a, b) = (sandbox("a"), sandbox("b"));
         let t0 = Instant::now();
         let at = |secs: u64| t0 + Duration::from_secs(secs);
@@ -714,20 +602,17 @@ mod tests {
             readings(&[(&a, 10_000_001, 3 << 20), (&b, 7_500_000, 1 << 20)]),
         );
         assert_eq!(
-            (used.used, used.settled),
-            (
-                Some(Budget {
+            used,
+            Measured {
+                used: Some(Budget {
                     cpus: 4,
                     memory_mb: 4
                 }),
-                true
-            )
+                settled: true
+            }
         );
-        let mut rated = used.rated.clone();
-        rated.sort();
-        assert_eq!(rated, [(a.clone(), at(5)), (b.clone(), at(5))]);
         // A rate of exactly 3 measured with clock noise stays 3.
-        let noisy = CiAdmission::new(Capacity::new(64, 64 * 1024), 1);
+        let noisy = CiAdmission::new(Capacity::new(64, 64 * 1024));
         let one = [a.clone()];
         let _ = noisy.measure(|| at(0), || one.to_vec(), readings(&[(&a, 0, 0)]));
         let three = noisy.measure(|| at(5), || one.to_vec(), readings(&[(&a, 15_000_001, 0)]));
@@ -761,156 +646,47 @@ mod tests {
         assert!(next.settled);
     }
 
-    /// SPEC-497 HBA-002 (review round 3 of slice A, round 1 of slice B): jobs admitted after a
-    /// reading add to it, each against its own sandbox's reading. One job of `a` reserved 16
-    /// CPUs and was measured at 40: of five 8-CPU jobs arriving together two start (56 of 56),
-    /// not five; a job of `b`, which has no rate yet, counts on top too; a later reading does
-    /// not count them twice.
+    /// SPEC-497 HBA-002 (review round 1): first come, first served; a later small job never
+    /// overtakes a waiting large one; a job leaving the queue lets the next one in; an unsettled
+    /// reading holds a job back only while CI runs.
     #[test]
-    fn jobs_admitted_after_a_reading_count_on_top_of_it() {
-        let admission = Arc::new(CiAdmission::new(Capacity::new(64, 512 * 1024), 1));
-        let (a, b) = (sandbox("a"), sandbox("b"));
-        let t0 = Instant::now();
-        let first = admission.enqueue(t0);
-        let running = admission.try_admit(&first, &a, need(16), &Measured::NOTHING, t0);
-        assert!(running.is_ok());
-        let reading = |rated: Vec<(SandboxId, Instant)>| Measured {
-            used: Some(Budget {
-                cpus: 40,
-                memory_mb: 1,
-            }),
-            settled: true,
-            rated,
-        };
-        let reading_at_5 = reading(vec![(a.clone(), t0 + Duration::from_secs(5))]);
-        let mut started = Vec::new();
-        for n in 1..=5 {
-            let at = t0 + Duration::from_secs(6) + Duration::from_millis(n);
-            let ticket = admission.enqueue(at);
-            match admission.try_admit(&ticket, &a, need(8), &reading_at_5, at) {
-                Ok(held) => started.push(held),
-                Err(wait) => {
-                    assert!(matches!(wait, Wait::Budget(_)), "{wait:?}");
-                    break;
-                }
-            }
-        }
-        assert_eq!(started.len(), 2);
-        drop(started);
-        // A job of `b`, admitted before `a`'s reading but in no rate of its own, counts too.
-        let early = t0 + Duration::from_secs(3);
-        let ticket = admission.enqueue(early);
-        let b_job = admission.try_admit(&ticket, &b, need(8), &Measured::NOTHING, early);
-        assert!(b_job.is_ok());
-        let late = t0 + Duration::from_secs(7);
-        let ticket = admission.enqueue(late);
-        let one = admission.try_admit(&ticket, &a, need(8), &reading_at_5, late);
-        assert!(one.is_ok(), "40 + 8 + 8 of 56");
-        let ticket = admission.enqueue(late);
-        assert!(
-            admission
-                .try_admit(&ticket, &a, need(8), &reading_at_5, late)
-                .is_err(),
-            "40 + 8 + 8 + 8 > 56"
-        );
-        drop(ticket);
-        // Readings of both after them count them in it.
-        let later = reading(vec![
-            (a.clone(), t0 + Duration::from_secs(60)),
-            (b.clone(), t0 + Duration::from_secs(60)),
-        ]);
-        let at = t0 + Duration::from_secs(61);
-        let ticket = admission.enqueue(at);
-        assert!(
-            admission
-                .try_admit(&ticket, &a, need(8), &later, at)
-                .is_ok(),
-            "16 + 8 + 8 reserved, 40 measured: 40 + 8 of 56"
-        );
-    }
-
-    /// SPEC-497 (production, 16 Nov 2026: a one-job run needing the whole host held 8 jobs
-    /// behind it): a job that does not fit lets smaller ones behind it start; once it has waited
-    /// 5 minutes it goes first and holds them; a job leaving the queue lets the next in; an
-    /// unsettled reading holds a job back only while CI runs.
-    #[test]
-    fn a_large_job_holds_no_convoy_and_goes_first_after_its_bound() {
+    fn the_queue_keeps_its_order() {
         // 9 CPUs: a CI budget of 8.
-        let admission = Arc::new(CiAdmission::new(Capacity::new(9, 9 * 1024), 1));
-        let s1 = sandbox("s1");
-        let t0 = Instant::now();
+        let admission = Arc::new(CiAdmission::new(Capacity::new(9, 9 * 1024)));
         let measured = Measured::NOTHING;
-        let a = admission.enqueue(t0);
-        let held = admission.try_admit(&a, &s1, need(6), &measured, t0).ok();
+        let a = admission.enqueue();
+        let held = admission.try_admit(&a, need(6), measured).ok();
         assert!(held.is_some());
-        let large = admission.enqueue(t0);
-        let small = admission.enqueue(t0);
+        let large = admission.enqueue();
+        let small = admission.enqueue();
         assert!(matches!(
-            admission.try_admit(&large, &s1, need(4), &measured, t0),
+            admission.try_admit(&large, need(4), measured),
             Err(Wait::Budget(_))
         ));
-        // Within the bound the small one starts beside it.
-        let small_held = admission
-            .try_admit(&small, &s1, need(1), &measured, t0)
-            .ok();
-        assert!(small_held.is_some(), "no convoy behind the large one");
-        // Past the bound the large one goes first: a small one behind it waits, though it fits.
-        let past = t0 + PRIORITY_AFTER;
-        let behind = admission.enqueue(past);
         assert_eq!(
-            admission
-                .try_admit(&behind, &s1, need(1), &measured, past)
-                .err(),
-            Some(Wait::Priority)
+            admission.try_admit(&small, need(1), measured).err(),
+            Some(Wait::Behind),
+            "the small one would fit but waits its turn"
         );
-        // It leaves (its job was cancelled): the small one starts.
+        // The large one leaves (its job was cancelled): the small one is next and fits.
         drop(large);
-        let behind_held = admission
-            .try_admit(&behind, &s1, need(1), &measured, past)
-            .ok();
-        assert!(behind_held.is_some());
+        let small_held = admission.try_admit(&small, need(1), measured).ok();
+        assert!(small_held.is_some());
         // While a job runs, a reading that only became a new base holds the next one back.
-        let next = admission.enqueue(past);
+        let next = admission.enqueue();
         let unsettled = Measured {
             used: None,
             settled: false,
-            rated: Vec::new(),
         };
         assert_eq!(
-            admission
-                .try_admit(&next, &s1, need(1), &unsettled, past)
-                .err(),
+            admission.try_admit(&next, need(1), unsettled).err(),
             Some(Wait::Measuring)
         );
-        drop((held, small_held, behind_held));
+        drop((held, small_held));
         assert!(
-            admission
-                .try_admit(&next, &s1, need(1), &unsettled, past)
-                .is_ok(),
+            admission.try_admit(&next, need(1), unsettled).is_ok(),
             "no job runs"
         );
-    }
-
-    /// SPEC-497 (the production hotfix carried forward): with `YULIUS_CI_OVERCOMMIT=2` idle
-    /// 21-CPU jobs count 11 each: four start in a budget of 56, against two at 1.
-    #[test]
-    fn the_overcommit_factor_counts_reservations_at_one_over_it() {
-        let s1 = sandbox("s1");
-        let t0 = Instant::now();
-        let started = |factor: u32| {
-            let admission = Arc::new(CiAdmission::new(Capacity::new(64, 512 * 1024), factor));
-            let mut held = Vec::new();
-            for _ in 0..4 {
-                let ticket = admission.enqueue(t0);
-                match admission.try_admit(&ticket, &s1, need(21), &Measured::NOTHING, t0) {
-                    Ok(reservation) => held.push(reservation),
-                    Err(_) => break,
-                }
-            }
-            held.len()
-        };
-        assert_eq!(started(1), 2, "42 of 56; a third would be 63");
-        assert_eq!(started(2), 4, "11 each: 44 of 56");
     }
 
     fn names(templates: &[EnvTemplate]) -> Vec<&str> {

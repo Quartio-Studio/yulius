@@ -35,11 +35,6 @@ pub const MAX_DECLARED_MEMORY_GB: u64 = 4096;
 /// The default agent budget is the capacity divided by this: three agents running their tests or
 /// builds at once fill the sandbox (SPEC-082 RES-005).
 pub const AGENT_SHARE: u32 = 3;
-/// A CI job that declares no `cpus` gets at most this fraction of the capacity it is shared from
-/// (SPEC-497: autoresearch's one-job `gate` reserved all 64 CPUs for a 0.1 s run).
-pub const DEFAULT_SHARE_MAX: u32 = 4;
-/// The largest overcommit factor of `YULIUS_CI_OVERCOMMIT` (SPEC-497).
-pub const MAX_OVERCOMMIT: u32 = 8;
 /// The default agent budget is never below this many CPUs (when the sandbox has them).
 pub const AGENT_MIN_CPUS: u32 = 2;
 /// Variables never set from `[resources.env]`: what Yulius sets itself, and what changes how the
@@ -153,10 +148,8 @@ impl Capacity {
     }
 
     /// The budget of one CI job of a run of `jobs` jobs: what it declares, else an equal share of
-    /// the capacity among the run's jobs, at most a [`DEFAULT_SHARE_MAX`]th of it (SPEC-497: a
-    /// one-job run reserved the whole host and used a fraction), at least one CPU; memory not
-    /// declared follows the CPUs. Never more than the capacity, so a job that asks for more runs
-    /// alone.
+    /// the capacity among the run's jobs (at least one CPU); memory not declared follows the
+    /// CPUs. Never more than the capacity, so a job that asks for more runs alone.
     ///
     /// # Examples
     /// ```
@@ -164,9 +157,8 @@ impl Capacity {
     /// let sandbox = Capacity::new(12, 48 * 1024);
     /// assert_eq!(
     ///     sandbox.ci_job(Need::default(), 2),
-    ///     Budget { cpus: 3, memory_mb: 12 * 1024 }
+    ///     Budget { cpus: 6, memory_mb: 24 * 1024 }
     /// );
-    /// assert_eq!(sandbox.ci_job(Need::default(), 6).cpus, 2);
     /// let declared = Need { cpus: Some(4), memory_mb: None };
     /// assert_eq!(declared.cpus, Some(4));
     /// assert_eq!(sandbox.ci_job(declared, 2), Budget { cpus: 4, memory_mb: 16 * 1024 });
@@ -174,10 +166,7 @@ impl Capacity {
     #[must_use]
     pub fn ci_job(&self, need: Need, jobs: usize) -> Budget {
         let share = u32::try_from(jobs.max(1)).unwrap_or(u32::MAX);
-        let cpus = need
-            .cpus
-            .unwrap_or((self.cpus / share).min(self.cpus / DEFAULT_SHARE_MAX))
-            .clamp(1, self.cpus);
+        let cpus = need.cpus.unwrap_or(self.cpus / share).clamp(1, self.cpus);
         let memory_mb = need
             .memory_mb
             .unwrap_or_else(|| self.memory_for(cpus))
@@ -351,21 +340,16 @@ impl fmt::Display for Admission {
 /// let reserved = Budget { cpus: 32, memory_mb: 64 * 1024 };
 /// // The two running jobs reserved 32 CPUs but use 50: a third does not fit.
 /// let held = Held { jobs: 2, reserved, measured: Some(Budget { cpus: 50, memory_mb: 1024 }) };
-/// assert!(matches!(admit(budget, &held, need, 1), Admission::Wait { held: 50, .. }));
+/// assert!(matches!(admit(budget, &held, need), Admission::Wait { held: 50, .. }));
 /// // Measured below their reservation, the reservation counts: 32 + 16 fit.
 /// let held = Held { jobs: 2, reserved, measured: Some(Budget { cpus: 20, memory_mb: 1024 }) };
-/// assert_eq!(admit(budget, &held, need, 1), Admission::Now);
+/// assert_eq!(admit(budget, &held, need), Admission::Now);
 /// ```
 #[must_use]
-pub fn admit(budget: Capacity, held: &Held, need: Budget, overcommit: u32) -> Admission {
+pub fn admit(budget: Capacity, held: &Held, need: Budget) -> Admission {
     if held.jobs == 0 {
         return Admission::Now;
     }
-    // Reservations count at 1/overcommit (`YULIUS_CI_OVERCOMMIT`, the production hotfix of
-    // 16 Nov 2026 carried forward): what jobs declare is about four times what they use, and
-    // measured use, at face value, still guards the host.
-    let factor = u64::from(overcommit.clamp(1, MAX_OVERCOMMIT));
-    let scaled = |n: u64| n.div_ceil(factor);
     let measured = held.measured;
     let checks = [
         (
@@ -384,8 +368,7 @@ pub fn admit(budget: Capacity, held: &Held, need: Budget, overcommit: u32) -> Ad
         ),
     ];
     for (short, reserved, measured, need, budget) in checks {
-        let need = scaled(need.min(budget));
-        let reserved = scaled(reserved);
+        let need = need.min(budget);
         let held = reserved.max(measured.unwrap_or(0));
         if held.saturating_add(need) > budget {
             return Admission::Wait {
@@ -399,100 +382,6 @@ pub fn admit(budget: Capacity, held: &Held, need: Budget, overcommit: u32) -> Ad
         }
     }
     Admission::Now
-}
-
-/// One minute's reading of the host for CI (SPEC-497): how busy its CPUs were over the minute
-/// (per mille), the CPUs running CI jobs reserved, what their sandboxes' CI and engine groups
-/// were measured to use, and how many CI jobs waited to start.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct LoadMinute {
-    /// The minute's start.
-    pub at: crate::time::Timestamp,
-    /// The host's CPUs busy over the minute, per mille; `None` where the host does not say.
-    pub busy_permille: Option<u32>,
-    /// CPUs the running CI jobs reserved.
-    pub held_cpus: u32,
-    /// CPUs their sandboxes' CI and engine groups used, when measured.
-    pub measured_cpus: Option<u32>,
-    /// CI jobs of running runs that had not started (waiting for a turn, networks, a slot or
-    /// the budget).
-    pub waiting_jobs: u32,
-}
-
-/// One hour of [`LoadMinute`]s.
-#[derive(Debug, Clone, PartialEq)]
-pub struct LoadHour {
-    /// `YYYY-MM-DDTHH` (UTC).
-    pub hour: String,
-    /// Minutes read.
-    pub minutes: u32,
-    /// Job-minutes CI jobs waited to start (each read minute's waiting jobs).
-    pub wait_job_minutes: u32,
-    /// The host's CPUs busy, in percent, averaged over the minutes that say.
-    pub busy_percent: Option<f64>,
-    /// CPUs reserved by running CI jobs, averaged.
-    pub held_cpus: f64,
-    /// CPUs measured, averaged over the minutes that say.
-    pub measured_cpus: Option<f64>,
-}
-
-/// The host's CPUs busy between two readings of `(busy, total)` time counters, per mille;
-/// `None` when the counters did not move forward.
-///
-/// # Examples
-/// ```
-/// use yulius_domain::resources::busy_permille;
-/// assert_eq!(busy_permille((100, 1000), (400, 2000)), Some(300));
-/// assert_eq!(busy_permille((100, 1000), (100, 1000)), None);
-/// ```
-#[must_use]
-pub fn busy_permille(before: (u64, u64), after: (u64, u64)) -> Option<u32> {
-    let total = after.1.checked_sub(before.1).filter(|t| *t > 0)?;
-    let busy = after.0.checked_sub(before.0)?.min(total);
-    u32::try_from(busy * 1000 / total).ok()
-}
-
-/// `minutes` by UTC hour, oldest first.
-#[must_use]
-pub fn load_by_hour(minutes: &[LoadMinute]) -> Vec<LoadHour> {
-    let mut hours: std::collections::BTreeMap<String, Vec<&LoadMinute>> =
-        std::collections::BTreeMap::new();
-    for minute in minutes {
-        let hour = crate::time::format_rfc3339(minute.at)
-            .chars()
-            .take(13)
-            .collect::<String>();
-        hours.entry(hour).or_default().push(minute);
-    }
-    let mean = |values: Vec<f64>| {
-        #[expect(clippy::cast_precision_loss, reason = "minutes in an hour")]
-        let n = values.len() as f64;
-        (!values.is_empty()).then(|| values.iter().sum::<f64>() / n)
-    };
-    hours
-        .into_iter()
-        .map(|(hour, minutes)| LoadHour {
-            hour,
-            minutes: u32::try_from(minutes.len()).unwrap_or(u32::MAX),
-            wait_job_minutes: minutes.iter().map(|m| m.waiting_jobs).sum(),
-            busy_percent: mean(
-                minutes
-                    .iter()
-                    .filter_map(|m| m.busy_permille)
-                    .map(|p| f64::from(p) / 10.0)
-                    .collect(),
-            ),
-            held_cpus: mean(minutes.iter().map(|m| f64::from(m.held_cpus)).collect())
-                .unwrap_or(0.0),
-            measured_cpus: mean(
-                minutes
-                    .iter()
-                    .filter_map(|m| m.measured_cpus)
-                    .map(f64::from)
-                    .collect(),
-            ),
-        })
-        .collect()
 }
 
 /// What a repository without a `[resources.env]` table gets (SPEC-268 PID-007): Cargo's build
@@ -667,9 +556,9 @@ mod tests {
             }),
         };
         // Four 16-CPU jobs by their declarations would take 64; the budget is 56.
-        assert_eq!(admit(budget, &held(2, 32, None), need, 1), Admission::Now);
+        assert_eq!(admit(budget, &held(2, 32, None), need), Admission::Now);
         assert!(matches!(
-            admit(budget, &held(3, 48, None), need, 1),
+            admit(budget, &held(3, 48, None), need),
             Admission::Wait {
                 short: Short::Cpu,
                 held: 48,
@@ -677,7 +566,7 @@ mod tests {
             }
         ));
         // What two jobs really use decides when it is more than they reserved.
-        let measured = admit(budget, &held(2, 32, Some(45)), need, 1);
+        let measured = admit(budget, &held(2, 32, Some(45)), need);
         assert!(
             matches!(
                 measured,
@@ -693,10 +582,7 @@ mod tests {
             measured.to_string(),
             "CI holds 45 of the host's 56 CPUs for CI (32 reserved, 45 measured); this job needs 16"
         );
-        assert_eq!(
-            admit(budget, &held(2, 32, Some(40)), need, 1),
-            Admission::Now
-        );
+        assert_eq!(admit(budget, &held(2, 32, Some(40)), need), Admission::Now);
         // Memory too.
         let big = Held {
             jobs: 1,
@@ -716,7 +602,6 @@ mod tests {
                 cpus: 1,
                 memory_mb: 16 * 1024,
             },
-            1,
         );
         assert!(
             matches!(
@@ -733,99 +618,11 @@ mod tests {
             cpus: 200,
             memory_mb: 1024,
         };
-        assert_eq!(
-            admit(budget, &held(0, 0, Some(64)), huge, 1),
-            Admission::Now
-        );
+        assert_eq!(admit(budget, &held(0, 0, Some(64)), huge), Admission::Now);
         assert!(matches!(
-            admit(budget, &held(1, 1, None), huge, 1),
+            admit(budget, &held(1, 1, None), huge),
             Admission::Wait { need: 56, .. }
         ));
-    }
-
-    /// SPEC-497: a host's minutes by hour: waiting job-minutes add up, busy and CPUs average
-    /// over the minutes that say.
-    #[test]
-    fn the_hosts_minutes_add_up_by_hour() {
-        let minute =
-            |at: i64, busy: Option<u32>, held: u32, measured: Option<u32>, waiting: u32| {
-                LoadMinute {
-                    at: crate::time::Timestamp(at * 60_000),
-                    busy_permille: busy,
-                    held_cpus: held,
-                    measured_cpus: measured,
-                    waiting_jobs: waiting,
-                }
-            };
-        let hours = load_by_hour(&[
-            minute(0, Some(250), 50, Some(16), 8),
-            minute(1, Some(350), 56, None, 10),
-            minute(2, None, 56, Some(20), 4),
-            minute(60, Some(100), 0, None, 0),
-        ]);
-        assert_eq!(hours.len(), 2);
-        assert_eq!(
-            hours[0],
-            LoadHour {
-                hour: "1970-01-01T00".to_owned(),
-                minutes: 3,
-                wait_job_minutes: 22,
-                busy_percent: Some(30.0),
-                held_cpus: 54.0,
-                measured_cpus: Some(18.0),
-            }
-        );
-        assert_eq!(hours[1].measured_cpus, None);
-    }
-
-    /// SPEC-497 (the production hotfix carried forward): with an overcommit factor of 2, idle
-    /// reservations block half as much, the need counts at half, and measured use still at face
-    /// value; the factor is at most 8.
-    #[test]
-    fn reservations_count_at_one_over_the_overcommit_factor() {
-        let budget = Capacity::new(64, 512 * 1024).ci_budget();
-        let need = Budget {
-            cpus: 21,
-            memory_mb: 1,
-        };
-        let held = |reserved: u32, measured: Option<u32>| Held {
-            jobs: 3,
-            reserved: Budget {
-                cpus: reserved,
-                memory_mb: 1,
-            },
-            measured: measured.map(|cpus| Budget { cpus, memory_mb: 1 }),
-        };
-        // 63 reserved by three idle jobs: nothing more by reservations alone.
-        assert!(matches!(
-            admit(budget, &held(63, Some(10)), need, 1),
-            Admission::Wait { .. }
-        ));
-        // At 2: 32 + 11 of 56.
-        assert_eq!(admit(budget, &held(63, Some(10)), need, 2), Admission::Now);
-        // Measured use still guards the host: 50 measured + 11 > 56.
-        let wait = admit(budget, &held(63, Some(50)), need, 2);
-        assert!(
-            matches!(
-                wait,
-                Admission::Wait {
-                    held: 50,
-                    need: 11,
-                    reserved: 32,
-                    ..
-                }
-            ),
-            "{wait:?}"
-        );
-        // 0 counts as 1, and more than 8 as 8.
-        assert_eq!(
-            admit(budget, &held(63, Some(10)), need, 0),
-            admit(budget, &held(63, Some(10)), need, 1)
-        );
-        assert_eq!(
-            admit(budget, &held(440, Some(1)), need, 100),
-            admit(budget, &held(440, Some(1)), need, 8)
-        );
     }
 
     /// SPEC-497 (review round 1): a run's default shares are of the CI budget, so they start
@@ -837,11 +634,7 @@ mod tests {
             let share = budget.ci_job(Need::default(), jobs);
             let mut held = Held::default();
             for _ in 0..jobs {
-                assert_eq!(
-                    admit(budget, &held, share, 1),
-                    Admission::Now,
-                    "{jobs} jobs"
-                );
+                assert_eq!(admit(budget, &held, share), Admission::Now, "{jobs} jobs");
                 held.jobs += 1;
                 held.reserved.cpus += share.cpus;
                 held.reserved.memory_mb += share.memory_mb;
@@ -853,17 +646,17 @@ mod tests {
     fn ci_jobs_share_the_capacity_unless_they_declare_their_need() {
         let sandbox = Capacity::new(10, 38 * 1024);
         assert_eq!(
-            sandbox.ci_job(Need::default(), 5),
+            sandbox.ci_job(Need::default(), 2),
             Budget {
-                cpus: 2,
-                memory_mb: 38 * 1024 / 5
+                cpus: 5,
+                memory_mb: 19 * 1024
             },
-            "five jobs share it equally"
+            "two jobs share it equally"
         );
         assert_eq!(
             sandbox.ci_job(Need::default(), 0).cpus,
-            2,
-            "one job takes a quarter at most (SPEC-497)"
+            10,
+            "one job takes it"
         );
         assert_eq!(
             sandbox.ci_job(Need::default(), 40).cpus,
