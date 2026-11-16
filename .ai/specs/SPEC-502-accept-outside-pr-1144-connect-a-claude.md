@@ -182,6 +182,7 @@ From `dev` at c7348d04, 2026-11-16, Rust 1.99.0, Node 24.21.0.
   `subscription-names`, `loading-shapes`, `subscription-touch`: 117 passed.
 - `python3 scripts/check_repository.py`: passed.
 - The 409 branch the fork left untested (below) is AC-8 now.
+- `yulius security-scan`: exit 2, not run: Vidoc refused the instance key (HTTP 401); no pass is claimed, Yulius CI runs its own scan on the pull request.
 
 ### In the contributor's fork (as SPEC-450, 2026-11-10)
 
