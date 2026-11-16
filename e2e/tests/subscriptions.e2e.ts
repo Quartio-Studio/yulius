@@ -1291,10 +1291,12 @@ test('a dialog shows its whole body, also in Safari (SPEC-500 DLG-001)', async (
   await expect(screen.getByRole('dialog', 'Add a Claude subscription')).toBeVisible();
   const body = await browser.evaluate(() => {
     const element = document.querySelector('dialog.modal[open] .modal-body') as HTMLElement;
-    return { basis: getComputedStyle(element).flexBasis, shown: element.clientHeight, content: element.scrollHeight };
+    return { basis: getComputedStyle(element).flexBasis, shrink: getComputedStyle(element).flexShrink, shown: element.clientHeight, content: element.scrollHeight };
   });
   // WebKit resolves a 0% basis to zero in an auto-height dialog and the body shrinks to its
   // padding; this suite runs Chromium only, so the rule WebKit needs is checked directly.
   expect(body.basis).toBe('auto');
+  // A body taller than the window still shrinks and scrolls (DLG-002).
+  expect(body.shrink).toBe('1');
   expect(body.shown).toBe(body.content);
 });
