@@ -44,6 +44,7 @@ Python's standard-library `tomllib` means Python 3.10 and older are unsupported.
 | `scripts/dev test` | nextest workspace tests with zero retries; doctests for eligible library targets |
 | `scripts/dev deps` | cargo-deny advisories/licenses/bans/sources and cargo-shear (unused crate and workspace dependencies) |
 | `scripts/dev ci` | doctor, check, lint, macos, test, deps, then rustdoc with warnings denied |
+| `scripts/dev mutants` | One bounded mutation run of the Rust lines the branch changed (pinned cargo-mutants; ADR-0347): 30 min in all, 300 s a mutant, 2 jobs by default; the product's tests narrowed to those the branch changed. Once per pull request, its summary line in the Evidence; not part of `ci` |
 | `scripts/dev security` | Vidoc's vidoc-1 scan of the files the branch's commits changed since `dev` (`--all`: the whole repository); fails on open medium findings in the changed lines and on open critical or high findings, exit 2 when it could not run, exit 3 when incomplete. Needs a key and the network; not part of `ci`, but Yulius CI runs it as the `security` job on pull request heads |
 
 Use `scripts/dev check`, `scripts/dev lint` or `scripts/dev test` during iteration.

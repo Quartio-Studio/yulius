@@ -6,6 +6,11 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-16
 
+- Mutation testing once per pull request (SPEC-493 fix 8, task #472,
+  [ADR-0347](decisions/0347-mutation-testing-runs-once-per-pull-request.md)): `scripts/dev
+  mutants` runs the pinned cargo-mutants on the Rust lines the branch changed, bounded, naming
+  the mutants it did not reach, with a summary line for the Evidence; the rules say the author
+  runs it once on the head under review and the reviewer runs no campaign.
 - The instance counts what sandboxes' Docker needed (SPEC-494 slice 7, task #476, ADR-0344): front
   restarts, connections that gave way and Docker Needs you per week, in
   `GET /api/analytics/docker` and a Docker card on the Dashboard's Pipeline tab.
