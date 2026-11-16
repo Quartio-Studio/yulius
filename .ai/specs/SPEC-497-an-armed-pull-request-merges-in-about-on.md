@@ -140,7 +140,8 @@ mode.
 - [x] Slice A: jobs admitted by the larger of reserved and measured use
 - [x] Slice A: Docker networks per engine in the budget, larger address pools
 - [x] Slice A: a sandbox's weight follows the CPUs its jobs hold
-- [ ] Slice A: documents, ADR and review
+- [x] Slice A: documents and ADR
+- [ ] Slice A: review rounds answered
 - [ ] Slice B: infrastructure failures rerun once by themselves
 - [ ] Slice B: flaky tests quarantined with an issue, the project told
 - [ ] Slice B: CI minutes by outcome read and shown
