@@ -36,8 +36,13 @@ few lines rarely finds anything.
 - **What counts**: every file but documentation, tests (a `tests/`, `test/`, `e2e/`,
   `__tests__/` or `fixtures/` folder; `*_test.*`, `test_*.*`, `*.test.*`, `*.spec.*`,
   `*.e2e.*`) and the lines of a Rust file's `#[cfg(test)] mod name {` to its closing brace,
-  read as Rust tokens so that comments and strings neither open nor close one (a
-  `mod tests;` declaration or a single test-only item counts). A project sets its own in
+  read as Rust tokens so that comments and strings neither open nor close one, only when
+  `#[cfg(test)]` is the item's first attribute and every enclosing delimiter is the brace of a
+  module without an attribute macro (a `mod tests;` declaration, a single test-only item, or a
+  module in a macro's input counts). A test or document file the follow-up changed counts when
+  a product line it added names it (its folder and name, as `#[path]`, `include!` or an import
+  write it); an added Rust product line with `#[path]`, `include!`, `include_str!` or
+  `include_bytes!` needs a review. A project sets its own in
   `yulius.toml`: `[review] product = [globs]` (only these count, tests and documents still not),
   `not_product = [globs]` (never these). The integration branch's table counts, so a pull
   request does not loosen its own count; a table that does not parse refuses.
@@ -71,6 +76,14 @@ few lines rarely finds anything.
   audit entry shows what went in unreviewed.
 - A reviewer's minors in product code are fixed within 20 lines or need a round; tests and
   documents can grow freely after an approval.
+- What is left by the person's rule ("tests and documents do not count"): a test or document
+  file that product code already built in before the review (an `include_str!` of a document,
+  a fixture a product module imports) changes behaviour when it changes, and is not counted.
+  The review that approved the inclusion saw it; a project that ships such files lists them
+  outside `[review] not_product`'s reach by naming its product code with `product`, or keeps
+  them out of test and document folders. Four review rounds (SPEC-493 fix 6) closed the routes
+  that hid new code: the clone's settings and attributes, replace refs and grafts, a moved
+  integration ref, fake test modules in comments, strings and macros, and new inclusions.
 - A week later: `SELECT detail FROM audit_log WHERE action IN ('delivery.agent.merge',
   'delivery.agent.merge_armed') AND detail LIKE '%since then%product line%'` lists the merges
   that used the bound, with their counts; the analytics read's rounds per pull request (fix 1)

@@ -311,7 +311,12 @@ person's decision is read as holding after an approval).
 - **APR-002** What counts: every file except documentation (`is_documentation_path`), test files
   (a `tests/`, `test/`, `e2e/`, `__tests__/` or `fixtures/` folder; `*_test.*`, `test_*.*`,
   `*.test.*`, `*.spec.*`, `*.e2e.*`) and, in a Rust file, the lines of a `#[cfg(test)] mod name {`
-  to its closing brace, read as Rust tokens (comments and strings skipped) (`#[cfg(test)] mod tests;` or a single test-only item is product code). A
+  to its closing brace, read as Rust tokens (comments and strings skipped), first attribute of
+  its item, among modules without attribute macros (`#[cfg(test)] mod tests;` or a single
+  test-only item is product code). A test or document file the follow-up changed counts when a
+  product line it added names it (`fixtures/evil` in `#[path = "../fixtures/evil.rs"]`), and an
+  added Rust product line with `#[path]`, `include!`, `include_str!` or `include_bytes!` needs
+  a review. A
   project sets its own in `yulius.toml`: `[review] product = [globs]` (only these count; tests and
   documents still do not) or `not_product = [globs]` (these never count). Lines are read with
   plumbing and `--text`, so the clone's configuration and attributes change nothing.
@@ -1411,3 +1416,29 @@ Both are checked on current `dev` first and fixed test-first if they still hold.
     (SQL, YAML) back to a review round, which is safe; `not_product` takes such files out.
   - The reviewer's open gap, whether agents can write a playground's origin: they cannot. It is
     `<data>/playgrounds/<id>.git`, outside the sandbox (ADR-0081, `playground_origin`).
+- Review round 4 (Opus 5.5, head `8abd2259d`): request changes, 1 major and 1 minor in own
+  code. Round 3's G and H are closed (the reviewer's probes: lifetimes, `'\u{7d}'`, a
+  `macro_rules!` body and a raw identifier give no span; a doc comment or an inner attribute
+  before a real module keeps it). Answered test-first; all three mutations below fail a test.
+  - K. Major: a test- or document-classified file counts as such even when new product code
+    builds it in (`#[path = "../fixtures/evil.rs"] mod evil;`, `include!`, an import from
+    `__tests__/`).
+    - The fix: `FollowUp::count` counts any changed file that the text of an added product
+      line names by its folder and stem (`fixtures/evil`, `__tests__/helper`). An added Rust
+      product line with `#[path`, `include!(`, `include_str!(` or `include_bytes!(` (spaces
+      ignored) is reported in `includes`, and the carry refuses, naming the file.
+    - Tests: unit `a_file_product_code_names_counts` (`#[path]`, a JS import, a line inside a
+      test module that names nothing, the keys); the delivery cases of a `#[path]` fixture
+      (refused, naming `src/extra.rs`) and a JS import (26 counted). Dropping either rule fails
+      them.
+    - What is left (the person's rule; written into ADR-0345's consequences): a test or
+      document file that product code built in before the review is not counted when it
+      changes.
+  - L. Minor: an attribute macro on an enclosing module could strip `#[cfg(test)]` from its
+    input.
+    - The fix: a module brace counts as a module only when the item's outer attributes are
+      built-ins (`cfg`, `allow`, `warn`, `deny`, `forbid`, `expect`, `doc`, `path`, `rustfmt`,
+      `clippy`, `macro_use`). `cfg_attr` is excluded: it can apply any attribute.
+    - Test: two more hidden shapes (`#[keep] mod x { … }` and `#[cfg_attr(not(test), keep)]`),
+      and a nested module after `#[allow]` and `#[rustfmt::skip]` keeps its span. Dropping the
+      rule fails it.
