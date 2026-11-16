@@ -9,6 +9,7 @@
 mod support;
 
 mod account_email;
+mod account_token;
 mod account_usage;
 mod accounts;
 mod agent_hooks;
@@ -117,6 +118,7 @@ mod task_ownership;
 mod task_pause;
 mod task_prompt;
 mod task_transcript;
+mod telegram;
 mod terminal_ws;
 mod trusted_proxy;
 mod ui_contract;

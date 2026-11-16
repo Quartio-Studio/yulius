@@ -217,6 +217,14 @@ function seed(params) {
     migration: migrationState(params.get('move') || ''),
     // The instance Vidoc key (SPEC-195): `vidoc=config` (YULIUS_VIDOC_API_KEY_FILE is set).
     protectPatchFail: params.get('protect_patch_fail') === '1',
+    // The personal Telegram channel (SPEC-498): `telegram=1` (a bot is set), `telegram=linked`
+    // (and the signed-in person's chat is linked). `__yuliusMock.telegramStart(text)` is a message
+    // the bot receives, as `/start <code>` from the person's chat.
+    telegram: {
+      bot: params.get('telegram') ? 'yulius_mock_bot' : null, setAt: params.get('telegram') ? '2026-11-07T08:00:00Z' : null, setBy: params.get('telegram') ? 'mkarp' : null,
+      linkedAt: params.get('telegram') === 'linked' ? '2026-11-07T09:00:00Z' : null, code: null,
+      choices: { needs_you: true, done: false, failed: false, account: false },
+    },
     vidoc: { key: null, setAt: null, setBy: null, config: params.get('vidoc') === 'config', offAt: params.get('vidoc_off') ? '2026-10-30T09:00:00Z' : null, offBy: params.get('vidoc_off') ? 'superadmin' : null, fail: params.get('vidoc_fail') === '1', repo: params.get('vidoc_repo'), patchFail: params.get('vidoc_patch_fail') === '1' },
     // fail=<path> answers 500 to GET requests of that exact path, to show how a view says a load
     // failed (in place, naming what failed, with Try again; #147). A test may set `failPath` later;
@@ -3959,11 +3967,38 @@ route('GET', '/api/admin/accounts', ({ db }) => {
   const totals = (k, runs) => ({ runs, tasks: Math.max(1, runs - 1), ...poolSpend(k) });
   return db.accounts.map((a, i) => (a.status === 'pending_login' ? a : { ...a, tokens_24h: totals(0.3 / (i + 1), 2), tokens_7d: totals(2 / (i + 1), 9) }));
 });
+/**
+ * A pasted token, as the server checks it (SPEC-502 TKP-003, TKP-004): the shape `claude
+ * setup-token` prints, and one Claude accepts (a token ending in `-revoked` stands for Claude's
+ * 401). The refusals never echo the token.
+ */
+function pastedToken(token) {
+  const value = typeof token === 'string' ? token.trim() : '';
+  if (value.length > 512 || !/^sk-ant-oat01-[A-Za-z0-9_-]{20,}$/.test(value)) fail(422, 'invalid', 'the token must be what claude setup-token prints: sk-ant-oat01- followed by letters, digits, - and _ (at most 512 characters)');
+  if (value.endsWith('-revoked')) fail(422, 'invalid', 'Claude did not accept this token; make a new one with claude setup-token and paste it again');
+  return value;
+}
+/** A subscription signed in with a pasted token: `ok` at once, its usage still unknown. */
+function signedInByPaste(db, account) {
+  db.unsignedAccounts.delete(account.id);
+  // An email a person typed stays (SPEC-463 EML-004); one Claude gave was the old sign-in's.
+  Object.assign(account, { status: 'ok', last_error: null, email: account.email_typed ? account.email : null });
+  emit(db, { type: 'account.updated', account });
+}
 // 201 {account, login_id}: the account waits in `pending_login` until the login terminal finishes.
+// With a pasted `token` it is `ok` at once and there is no `login_id` (SPEC-502 TKP-001).
 route('POST', '/api/admin/accounts', ({ db, body }) => {
   adminOnly(db);
   if (body.provider !== 'anthropic') fail(422, 'invalid', 'provider must be anthropic (Claude)');
   if (!body.label || body.label.length > 80) fail(422, 'invalid', 'label must be 1–80 characters');
+  if (body.token !== undefined && body.token !== null) {
+    pastedToken(body.token);
+    db.nextId += 1;
+    const account = { id: `acc_${db.nextId}`, provider: body.provider, label: body.label, email: null, email_typed: false, status: 'ok', usage: { primary: null, secondary: null, observed_at: null }, last_error: null, in_use_by: 0 };
+    db.accounts.push(account);
+    signedInByPaste(db, account);
+    return json(201, { account });
+  }
   db.nextId += 1;
   const account = { id: `acc_${db.nextId}`, provider: body.provider, label: body.label, email: null, status: 'pending_login', usage: { primary: null, secondary: null, observed_at: null }, last_error: null, in_use_by: 0 };
   db.accounts.push(account);
@@ -4051,6 +4086,17 @@ route('POST', `/api/admin/accounts/${ID}/relogin`, ({ db, p }) => {
   const account = db.accounts.find((a) => a.id === p[0]);
   if (!account) fail(404, 'not_found', 'not found');
   return { account, login_id: startLogin(db, account.id) };
+});
+// Signs a subscription in again with a pasted token (SPEC-502 TKP-002): its running sign-in is
+// cancelled first.
+route('PUT', `/api/admin/accounts/${ID}/token`, ({ db, p, body }) => {
+  adminOnly(db);
+  const account = db.accounts.find((a) => a.id === p[0]);
+  if (!account) fail(404, 'not_found', 'not found');
+  pastedToken(body.token);
+  for (const session of db.logins.values()) if (session.accountId === account.id && !session.done) session.end('cancelled', null);
+  signedInByPaste(db, account);
+  return account;
 });
 // Stops a running sign-in and says how it ended (SPEC-243 LGN-002); `loginCancels` records the
 // cancelled ids.
@@ -5311,6 +5357,60 @@ route('POST', '/api/admin/jev/test', ({ db }) => {
   if (!key) return { ok: false, result: 'none', message: 'No Jev key is set.', latency_ms: null };
   if (key.includes('bad')) return { ok: false, result: 'refused', message: 'Jev refused this key. Check it and save it again.', latency_ms: 210 };
   return { ok: true, result: 'ok', message: 'Jev answered: the key works.', latency_ms: 240 };
+});
+
+// The personal Telegram channel (SPEC-498): the bot (instance administrators) and the person's chat.
+function telegramBotView(db) {
+  const t = db.telegram;
+  const state = t.bot ? (t.starting ? 'starting' : 'polling') : 'off';
+  return { configured: Boolean(t.bot), bot_username: t.bot, set_at: t.setAt, set_by: t.setBy, state, last_error: null, linked: t.linkedAt ? 1 : 0 };
+}
+function myTelegramView(db) {
+  const t = db.telegram;
+  const linked = Boolean(t.bot && t.linkedAt);
+  return { available: Boolean(t.bot), bot_username: t.bot, linked, linked_at: linked ? t.linkedAt : null, choices: linked ? { ...t.choices } : { needs_you: true, done: false, failed: false, account: false }, account_choice: isAdmin(db) };
+}
+const instanceAdminOnly = (db) => { if (!isAdmin(db)) fail(403, 'forbidden', 'instance administrators only'); };
+// A saved bot reads `starting` until the next read, as if Telegram's first poll answered then.
+// A test can keep a read's answer back (`telegram.holdRead = promise`): it is read when asked and
+// answered when the promise resolves, as a slow answer; `readsHeld` counts those kept back now,
+// `lateAnswers` those answered after a hold.
+route('GET', '/api/admin/telegram', async ({ db }) => {
+  instanceAdminOnly(db);
+  db.telegram.starting = false;
+  const view = telegramBotView(db);
+  const hold = db.telegram.holdRead;
+  if (hold) {
+    db.telegram.readsHeld = (db.telegram.readsHeld || 0) + 1;
+    try { await hold; } finally { db.telegram.readsHeld -= 1; }
+    db.telegram.lateAnswers = (db.telegram.lateAnswers || 0) + 1;
+  }
+  return view;
+});
+route('PUT', '/api/admin/telegram', ({ db, body }) => {
+  instanceAdminOnly(db);
+  const token = String(body.token || '').trim();
+  if (!/^\d+:[A-Za-z0-9_-]+$/.test(token)) fail(422, 'invalid', 'this is not a Telegram bot token (it looks like 123456789:ABC…, from @BotFather)');
+  if (token.includes('refused')) fail(422, 'invalid', 'Telegram refused this token. Copy it again from @BotFather.');
+  Object.assign(db.telegram, { bot: 'yulius_mock_bot', setAt: new Date().toISOString(), setBy: db.me.user.login, starting: true });
+  return telegramBotView(db);
+});
+route('DELETE', '/api/admin/telegram', ({ db }) => {
+  instanceAdminOnly(db);
+  Object.assign(db.telegram, { bot: null, setAt: null, setBy: null, linkedAt: null, code: null });
+  return telegramBotView(db);
+});
+route('GET', '/api/me/telegram', ({ db }) => myTelegramView(db));
+route('POST', '/api/me/telegram/link', ({ db }) => {
+  if (!db.telegram.bot) fail(409, 'conflict', 'no Telegram bot is set up on this instance');
+  db.telegram.code = 'k7mq2xw9tz4hb8np';
+  return { code: db.telegram.code, link: `https://t.me/${db.telegram.bot}?start=${db.telegram.code}`, expires_at: new Date(Date.now() + 10 * MIN).toISOString() };
+});
+route('DELETE', '/api/me/telegram', ({ db }) => { db.telegram.linkedAt = null; return myTelegramView(db); });
+route('PUT', '/api/me/telegram/choices', ({ db, body }) => {
+  if (!db.telegram.linkedAt) fail(409, 'conflict', 'link a Telegram chat first');
+  db.telegram.choices = { needs_you: Boolean(body.needs_you), done: Boolean(body.done), failed: Boolean(body.failed), account: Boolean(body.account) && isAdmin(db) };
+  return myTelegramView(db);
 });
 
 // The instance Vidoc key (SPEC-195 VDK-002): the Jev key's routes, for Vidoc.
@@ -7001,6 +7101,14 @@ export function createMockTransport(params) {
     // Like the server, events reach only viewers of the sandbox (none without GitHub).
     if (db.noBrowserAsk || !db.sandboxes.some((s) => s.id === 'sb_studio')) return false;
     emit(db, { type: 'browser.action_requested', sandbox_id: 'sb_studio', tab_id: 'tab-aws', reason: 'Sign in to AWS so task #10 can deploy', task_id: 'tsk_studio_10' });
+    return true;
+  };
+  // The bot receives `text` from the person's chat (SPEC-498): `/start <code>` with the shown code
+  // links it, once. Says whether it linked.
+  db.telegramStart = (text) => {
+    const code = String(text).replace(/^\/start\s+/, '');
+    if (!db.telegram.bot || !db.telegram.code || code !== db.telegram.code) return false;
+    Object.assign(db.telegram, { code: null, linkedAt: new Date().toISOString() });
     return true;
   };
   // The person's Superagent in `source` asks to start a task in another sandbox (SPEC-335).

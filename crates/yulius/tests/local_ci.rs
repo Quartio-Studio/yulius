@@ -22,7 +22,7 @@ use yulius_app::error::{AppError, AppResult};
 use yulius_app::model::SandboxRecord;
 use yulius_app::ports::github::GhPull;
 use yulius_app::ports::isolation::{
-    DiskUsage, SandboxIsolation, SandboxJoin, SandboxLimits, SandboxRef,
+    CiUse, DiskUsage, EngineNetworks, SandboxIsolation, SandboxJoin, SandboxLimits, SandboxRef,
 };
 use yulius_app::ports::store_ext::{AutomationStore as _, CiStore as _};
 use yulius_domain::ci::{GateResult, RunState};
@@ -2690,6 +2690,8 @@ async fn a_job_cancelled_while_it_waits_for_a_slot_ends_its_wait_cancelled() -> 
 #[derive(Default)]
 struct Weighing {
     jobs: std::sync::Mutex<Vec<(String, u32)>>,
+    /// The CPUs held at each call (SPEC-497 HBA-004).
+    cpus: std::sync::Mutex<Vec<u32>>,
 }
 
 impl Weighing {
@@ -2710,9 +2712,12 @@ impl SandboxIsolation for Weighing {
     fn limits(&self) -> SandboxLimits {
         Limited.limits()
     }
-    fn ci_jobs_running(&self, sandbox: &SandboxId, jobs: u32) {
+    fn ci_jobs_running(&self, sandbox: &SandboxId, jobs: u32, cpus: u32) {
         if let Ok(mut seen) = self.jobs.lock() {
             seen.push((sandbox.as_str().to_owned(), jobs));
+        }
+        if let Ok(mut held) = self.cpus.lock() {
+            held.push(cpus);
         }
     }
 }
@@ -2781,6 +2786,9 @@ async fn running_ci_jobs_weigh_on_their_sandbox_until_they_end() -> TestResult {
     assert!(seen.iter().all(|(sandbox, _)| sandbox == "s1"), "{seen:?}");
     let history = weighing.history();
     assert_eq!(history.last(), Some(&0), "a job left counted: {history:?}");
+    // SPEC-497 HBA-004: the CPUs the jobs hold reach the isolation, one per 1-CPU job.
+    let cpus = weighing.cpus.lock().map_err(|_| "lock")?.clone();
+    assert_eq!(cpus, history, "{cpus:?} against {history:?}");
     assert!(history.iter().all(|n| *n <= 3), "{history:?}");
     // One call per start and one per end, each one job up or down from none.
     let mut previous = 0;
@@ -2788,6 +2796,366 @@ async fn running_ci_jobs_weigh_on_their_sandbox_until_they_end() -> TestResult {
         assert_eq!(n.abs_diff(previous), 1, "{history:?}");
         previous = *n;
     }
+    Ok(())
+}
+
+/// A sandbox limited to 4 CPUs (a CI budget of 3) whose CI and Docker engine use `millis`
+/// thousandths of a CPU, and whose engine of 4,096 networks has `networks` of them
+/// (`u32::MAX`: no running engine) (SPEC-497).
+struct Measured {
+    used: std::sync::Mutex<(tokio::time::Instant, u64)>,
+    millis: AtomicU32,
+    networks: AtomicU32,
+    pruned: AtomicU32,
+    /// The `ci` groups' CPU pressure in thousandths; `u32::MAX` for none.
+    pressure: AtomicU32,
+}
+
+impl Measured {
+    fn new(millis: u32, networks: u32) -> Arc<Self> {
+        Arc::new(Self {
+            used: std::sync::Mutex::new((tokio::time::Instant::now(), 0)),
+            millis: AtomicU32::new(millis),
+            networks: AtomicU32::new(networks),
+            pruned: AtomicU32::new(0),
+            pressure: AtomicU32::new(u32::MAX),
+        })
+    }
+}
+
+#[async_trait::async_trait]
+impl SandboxIsolation for Measured {
+    async fn prepare(&self, _: &SandboxRef) -> AppResult<Option<SandboxJoin>> {
+        Ok(None)
+    }
+    fn release(&self, _: &SandboxId) {}
+    fn limits(&self) -> SandboxLimits {
+        Limited.limits()
+    }
+    fn ci_use(&self, _: &SandboxId) -> Option<CiUse> {
+        let mut used = self.used.lock().ok()?;
+        let now = tokio::time::Instant::now();
+        let micros = u64::try_from(now.duration_since(used.0).as_micros()).unwrap_or(u64::MAX);
+        used.1 += micros * u64::from(self.millis.load(Ordering::SeqCst)) / 1000;
+        used.0 = now;
+        Some(CiUse {
+            cpu_usec: used.1,
+            anon_bytes: 0,
+            cpu_pressure: Some(self.pressure.load(Ordering::SeqCst)).filter(|p| *p != u32::MAX),
+        })
+    }
+    async fn engine_networks(&self, _: &SandboxId) -> Option<EngineNetworks> {
+        let used = self.networks.load(Ordering::SeqCst);
+        (used != u32::MAX).then_some(EngineNetworks {
+            capacity: 4096,
+            used,
+        })
+    }
+    async fn prune_engine_networks(&self, _: &SandboxId) -> Option<u32> {
+        self.pruned.fetch_add(1, Ordering::SeqCst);
+        Some(0)
+    }
+}
+
+/// The reason of `sha`'s queued job, once it says `words`.
+async fn waits_with(f: &Fixture, sha: &str, words: &str) -> BoxResult<String> {
+    let deadline = tokio::time::Instant::now() + WAIT;
+    loop {
+        f.h.app.ci_dispatch().await;
+        for run in f.h.store.ci_runs(&f.sandbox.id, 10).await? {
+            if run.sha != sha {
+                continue;
+            }
+            for job in f.h.store.ci_jobs(&run.id, false).await? {
+                if job.state == RunState::Queued
+                    && let Some(reason) = job.reason.filter(|r| r.contains(words))
+                {
+                    return Ok(reason);
+                }
+            }
+        }
+        if tokio::time::Instant::now() > deadline {
+            return Err(format!("no job of {sha} says {words:?}").into());
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+/// The state of `sha`'s only job.
+async fn only_job_state(f: &Fixture, sha: &str) -> BoxResult<Option<RunState>> {
+    for run in f.h.store.ci_runs(&f.sandbox.id, 10).await? {
+        if run.sha == sha {
+            let jobs = f.h.store.ci_jobs(&run.id, false).await?;
+            return Ok(jobs.first().map(|j| j.state));
+        }
+    }
+    Ok(None)
+}
+
+/// SPEC-497 HBA-002, HBA-005: a job that fits beside the running job's reservation still waits
+/// while what CI really uses, with what the job that just started may still bring, leaves no
+/// room, says so, and starts once the use drops, while the first job still runs.
+#[tokio::test]
+async fn a_job_waits_while_ci_uses_more_than_it_reserved() -> TestResult {
+    let f = fixture_tuned(
+        false,
+        |data| {
+            format!(
+                "[[ci.jobs]]\nname = \"build\"\ncpus = 1\ncommand = 'if [ -e feature.txt ] || \
+                 [ -e later.txt ]; then while [ ! -e \"{go}\" ]; do sleep 0.05; done; fi'\n",
+                go = data.join("go").display()
+            )
+        },
+        None,
+        // The pull request's job runs through two measuring windows.
+        |config| config.ci.job_timeout = WAIT,
+    )
+    .await?;
+    // 2.5 CPUs: the measured 3 does not depend on the clocks of two readings (review round 1).
+    let measured = Measured::new(2500, u32::MAX);
+    assert!(f.h.app.set_isolation(measured.clone()));
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    // The pull request's job runs (dev's has nothing to wait for and passes).
+    let pull = f.running("pr/1").await?;
+    let pull_sha = pull["sha"].as_str().ok_or("sha")?.to_owned();
+    // The measuring window: the use is the CPU time over at least this long since the job's
+    // start, not a wait for another task to get somewhere.
+    tokio::time::sleep(Duration::from_secs(6)).await;
+    let later = f.push_dev("later.txt", Some("later\n"))?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    let reason = waits_with(&f, &later, "CI budget").await?;
+    assert_eq!(
+        reason,
+        "waits for the host's CI budget: CI uses 3 of the host's 3 CPUs for CI and jobs that just \
+         started may bring 1 more; this job starts with 1"
+    );
+    // The use drops: it starts within the next window, the first job still running.
+    measured.millis.store(0, Ordering::SeqCst);
+    let deadline = tokio::time::Instant::now() + WAIT;
+    while only_job_state(&f, &later).await? != Some(RunState::Running) {
+        f.h.app.ci_dispatch().await;
+        if tokio::time::Instant::now() > deadline {
+            return Err("the job never started".into());
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(
+        only_job_state(&f, &pull_sha).await?,
+        Some(RunState::Running)
+    );
+    // Its wait is no longer its reason.
+    for run in f.h.store.ci_runs(&f.sandbox.id, 10).await? {
+        if run.sha == later {
+            let jobs = f.h.store.ci_jobs(&run.id, false).await?;
+            assert!(jobs.iter().all(|j| j.reason.is_none()), "{jobs:?}");
+        }
+    }
+    std::fs::write(f.data.join("go"), "")?;
+    f.settle().await?;
+    Ok(())
+}
+
+/// SPEC-497 HBA-003: a job of a sandbox whose engine can make fewer than 32 more networks waits,
+/// saying so, after the networks unused for 10 minutes were pruned, and starts once there is
+/// room.
+#[tokio::test]
+async fn a_job_waits_for_docker_networks() -> TestResult {
+    let f = fixture_with(false, |_| {
+        "[[ci.jobs]]\nname = \"build\"\ncommand = 'true'\n".to_owned()
+    })
+    .await?;
+    let measured = Measured::new(0, 4086);
+    assert!(f.h.app.set_isolation(measured.clone()));
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    let head = git(&f.work, &["rev-parse", "feat/one"])?;
+    let reason = waits_with(&f, &head, "Docker networks").await?;
+    assert_eq!(
+        reason,
+        "waits for Docker networks: its sandbox's engine can make 10 more of 4096, and a job \
+         starts with at least 32 free"
+    );
+    assert!(measured.pruned.load(Ordering::SeqCst) >= 1);
+    measured.networks.store(1, Ordering::SeqCst);
+    f.settle().await?;
+    assert_eq!(only_job_state(&f, &head).await?, Some(RunState::Passed));
+    // Its wait is no longer its reason (review round 2).
+    for run in f.h.store.ci_runs(&f.sandbox.id, 10).await? {
+        if run.sha == head {
+            let jobs = f.h.store.ci_jobs(&run.id, false).await?;
+            assert!(jobs.iter().all(|j| j.reason.is_none()), "{jobs:?}");
+        }
+    }
+    Ok(())
+}
+
+/// SPEC-497 (review rounds 1 and 2): a run's jobs that declare no `cpus` get shares of the CI
+/// budget, so they run at once on an idle host. 4 CPUs give a budget of 3: two jobs of 1 CPU
+/// each; shares of the capacity (2 each) would run one after the other.
+#[tokio::test]
+async fn a_runs_default_shares_run_together() -> TestResult {
+    let f = fixture_with(false, |data| {
+        format!(
+            "[[ci.jobs]]\nname = \"a\"\ncommand = '{hold}; echo \"cpus=$YULIUS_CPUS\"'\n\n\
+             [[ci.jobs]]\nname = \"b\"\ncommand = '{hold}; echo \"cpus=$YULIUS_CPUS\"'\n",
+            // Only the pull request's jobs hold (dev's end at once).
+            hold = format_args!(
+                "if [ -e feature.txt ]; then while [ ! -e \"{}\" ]; do sleep 0.05; done; fi",
+                data.join("go").display()
+            ),
+        )
+    })
+    .await?;
+    assert!(f.h.app.set_isolation(Arc::new(Limited)));
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    let pull = f.running("pr/1").await?;
+    let id = pull["id"].as_str().ok_or("id")?.to_owned();
+    let deadline = tokio::time::Instant::now() + WAIT;
+    loop {
+        f.h.app.ci_dispatch().await;
+        let jobs = f.h.store.ci_jobs(&id, false).await?;
+        if jobs.iter().all(|j| j.state == RunState::Running) {
+            break;
+        }
+        if tokio::time::Instant::now() > deadline {
+            return Err(format!("the run's two jobs never ran together: {jobs:?}").into());
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    std::fs::write(f.data.join("go"), "")?;
+    f.settle().await?;
+    let detail = f.get(&format!("/api/sandboxes/s1/ci/runs/{id}")).await?;
+    for job in detail["jobs"].as_array().ok_or("jobs")? {
+        let output = job["output"].as_str().unwrap_or_default();
+        assert!(
+            output.contains("[yulius] budget: 1 CPU, 2048 MiB") && output.contains("cpus=1"),
+            "{output}"
+        );
+    }
+    Ok(())
+}
+
+/// SPEC-497 HBA-004 (review round 2): the isolation hears the CPUs a job holds, not the number
+/// of jobs.
+#[tokio::test]
+async fn a_job_weighs_by_the_cpus_it_holds() -> TestResult {
+    let f = fixture_with(false, |_| {
+        "[[ci.jobs]]\nname = \"build\"\ncpus = 2\ncommand = 'true'\n".to_owned()
+    })
+    .await?;
+    let weighing = Arc::new(Weighing::default());
+    assert!(f.h.app.set_isolation(weighing.clone()));
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    let cpus = weighing.cpus.lock().map_err(|_| "lock")?.clone();
+    let history = weighing.history();
+    assert!(cpus.contains(&2), "{cpus:?}");
+    for (cpus, jobs) in cpus.iter().zip(&history) {
+        assert_eq!(*cpus, jobs * 2, "{cpus} CPUs for {jobs} jobs");
+    }
+    assert_eq!(cpus.last(), Some(&0));
+    Ok(())
+}
+
+/// ADR-0353 (review of the CI admission fix): a job takes its slot only once admitted, so one
+/// that cannot start holds none. Two slots, a CI budget of 3: `a` (2 CPUs) runs, `b` (3) cannot
+/// start, and `c` (1) runs beside `a` in the second slot. With the slot taken before the
+/// budget's wait, `b` held it and `c` never started.
+#[tokio::test]
+async fn a_job_that_cannot_start_holds_no_slot() -> TestResult {
+    let f = fixture_tuned(
+        false,
+        |data| {
+            let hold = format!(
+                "if [ -e feature.txt ]; then while [ ! -e \"{}\" ]; do sleep 0.05; done; fi",
+                data.join("go").display()
+            );
+            format!(
+                "[[ci.jobs]]\nname = \"a\"\ncpus = 2\ncommand = '{hold}'\n\n\
+                 [[ci.jobs]]\nname = \"b\"\ncpus = 3\ncommand = '{hold}'\n\n\
+                 [[ci.jobs]]\nname = \"c\"\ncpus = 1\ncommand = '{hold}'\n"
+            )
+        },
+        None,
+        |config| {
+            config.ci.max_jobs = 2;
+            config.ci.job_timeout = WAIT;
+        },
+    )
+    .await?;
+    assert!(f.h.app.set_isolation(Arc::new(Limited)));
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    let pull = f.running("pr/1").await?;
+    let id = pull["id"].as_str().ok_or("id")?.to_owned();
+    let deadline = tokio::time::Instant::now() + WAIT;
+    loop {
+        f.h.app.ci_dispatch().await;
+        let jobs = f.h.store.ci_jobs(&id, false).await?;
+        let state = |name: &str| jobs.iter().find(|j| j.name == name).map(|j| j.state);
+        if state("a") == Some(RunState::Running)
+            && state("c") == Some(RunState::Running)
+            && state("b") == Some(RunState::Queued)
+        {
+            break;
+        }
+        if tokio::time::Instant::now() > deadline {
+            return Err(format!("`c` never ran beside `a` while `b` waited: {jobs:?}").into());
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    std::fs::write(f.data.join("go"), "")?;
+    f.settle().await?;
+    Ok(())
+}
+
+/// ADR-0353 (review of the CI admission fix): while CI's processes wait for a CPU more than 10 %
+/// of the last 10 seconds, no further job starts, and the job says so; it starts once they no
+/// longer do.
+#[tokio::test]
+async fn a_job_waits_while_cis_processes_wait_for_cpus() -> TestResult {
+    let f = fixture_tuned(
+        false,
+        |data| {
+            format!(
+                "[[ci.jobs]]\nname = \"build\"\ncpus = 1\ncommand = 'if [ -e feature.txt ] || \
+                 [ -e later.txt ]; then while [ ! -e \"{go}\" ]; do sleep 0.05; done; fi'\n",
+                go = data.join("go").display()
+            )
+        },
+        None,
+        |config| config.ci.job_timeout = WAIT,
+    )
+    .await?;
+    let measured = Measured::new(0, u32::MAX);
+    measured.pressure.store(250, Ordering::SeqCst);
+    assert!(f.h.app.set_isolation(measured.clone()));
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    let pull = f.running("pr/1").await?;
+    let pull_sha = pull["sha"].as_str().ok_or("sha")?.to_owned();
+    let later = f.push_dev("later.txt", Some("later\n"))?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    let reason = waits_with(&f, &later, "waited for a CPU").await?;
+    assert!(
+        reason.ends_with(
+            "CI's jobs waited for a CPU 25.0 % of the last 10 seconds; a job starts at 10 % or \
+             less"
+        ),
+        "{reason}"
+    );
+    measured.pressure.store(50, Ordering::SeqCst);
+    let deadline = tokio::time::Instant::now() + WAIT;
+    while only_job_state(&f, &later).await? != Some(RunState::Running) {
+        f.h.app.ci_dispatch().await;
+        if tokio::time::Instant::now() > deadline {
+            return Err("the job never started".into());
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(
+        only_job_state(&f, &pull_sha).await?,
+        Some(RunState::Running)
+    );
+    std::fs::write(f.data.join("go"), "")?;
+    f.settle().await?;
     Ok(())
 }
 

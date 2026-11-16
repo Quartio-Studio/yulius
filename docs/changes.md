@@ -6,6 +6,73 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-16
 
+- The README links the Yulius website at https://www.yulius.dev/ (SPEC-500, task #482, outside
+  pull request #1149 by Damian Fajfer). The "Just found Yulius" note and the first-task diagram
+  named an old domain.
+
+- Notifications reach a person's own Telegram chat (SPEC-498, task #480,
+  [ADR-0351](decisions/0351-a-personal-telegram-channel-behind-a-notification-channel-port.md),
+  part 1 of #1107, from outside pull request #1130 by studenciak00owl).
+  An instance administrator sets one bot in Settings → Administration (checked with `getMe`, sealed,
+  removable, which stops polling and unlinks every chat). Each person links their private chat with
+  a single-use 10-minute code from a browser session (`t.me/<bot>?start=<code>`), unlinks in
+  Settings or with `/stop` (audited `telegram.linked` / `telegram.unlinked`), and chooses Needs you
+  (default), Done, failed or stopped, and (administrators) subscription problems. Only events their
+  event stream carries are sent, with the task's link, redacted like transcripts, at most five a
+  minute with the rest folded into one summary. The server long-polls Telegram (no inbound port,
+  backoff after errors; `YULIUS_TELEGRAM_API_URL` for a fake in tests), behind a
+  `NotificationChannel` port that part 2 (replies and new tasks) extends. Brought onto current
+  `dev`, the chat follows what the notification center learned since: a subscription switch is no
+  news, a project's Docker trouble is one message per episode, and a request for control of a task
+  reaches its owner.
+- Dialogs show their whole content in Safari (SPEC-500, task #482, outside pull request #1142 by
+  studenciak00owl). In Safari 26.0 every dialog's body was 32 px tall (WebKit resolves the body's
+  `0%` flex basis to zero in an auto-height dialog), so Add subscription, Add sandbox, Import
+  repository and the rest showed one row and scrolled the rest, and the task search's results
+  were 16 px tall. Both now take their content's height up to the dialog's limit; Chrome is
+  unchanged.
+
+- A Claude subscription can be connected by pasting a token (SPEC-502, task #484,
+  [ADR-0352](decisions/0352-a-subscription-can-be-connected-by-pasting-a-setup-token.md); from
+  outside pull request #1144 by studenciak00owl). Its owner runs `claude setup-token` on any
+  computer and the administrator pastes what it printed: Add subscription offers "Sign in here"
+  (the terminal, as before) or "Paste token", and every card has "Paste a new token" to sign one in
+  again. Only that token shape is taken, a token Claude refuses is said under the field, and the
+  token is sealed like a captured one and never echoed, logged or audited
+  (`POST /api/admin/accounts` with `token`, `PUT /api/admin/accounts/{id}/token`). A new token is a
+  new sign-in like the terminal's: it keeps a typed email and drops the old sign-in's model limits.
+
+- CI uses the host instead of queueing behind reservations
+  ([ADR-0353](decisions/0353-ci-jobs-start-by-what-ci-uses-within-a-bounded-worst-case.md),
+  SPEC-497 HBA-002 amended). On 16 Nov 2026, jobs held 50–56 of 64 CPUs by their declarations while
+  the host was 25–30 % busy, and waited a median 10–11 min to start. Now a job starts by:
+  - what CI was measured to use and what jobs started in the last minute may still bring;
+  - the running jobs' budgets staying within twice the CI budget;
+  - the kernel's CPU pressure of CI's processes staying at most 10 %.
+
+  Merge trains' jobs go first. A job that cannot start (such as a one-job run asking for the whole
+  host) no longer holds up every job behind it, and a waiting job holds no slot.
+- CI no longer takes more than the host has (SPEC-497 slice A, task #479,
+  [ADR-0350](decisions/0350-ci-jobs-are-admitted-by-what-ci-really-holds-on-the-host.md)): every
+  project's jobs come out of one budget, the host less an eighth for the server and agents, and a
+  job starts only when it fits beside what CI's groups were measured to use, not only what jobs
+  declared, and a job's default share is of that budget; each sandbox's Docker engine has 4,096
+  /24 networks instead of 31 from its next start (the first is 172.17.1.0/24, not
+  172.18.0.0/16) and a job waits, saying so, while fewer than 32 are left; a sandbox's weight follows the CPUs its jobs hold, so agents'
+  local builds take what CI does not. A waiting job's reason says what it waits for.
+- An idle Superagent's leftover processes count their two hours from when the probe that found
+  them was asked, not from when its answer was read (SPEC-501, task #483, #1110; outside pull
+  request #1143 by studenciak00owl). Under the gate's load
+  `cockpit::an_idle_superagents_strays_are_reaped_after_the_bound` moved its clock between the
+  two, the strays were first seen two hours late, and they were never reaped; a regression test
+  moves the clock inside the probe.
+- Bootstrap tolerates a concurrent run in the shared CI home (SPEC-499, task #481, outside pull
+  request #1131 by studenciak00owl). The two CI lanes of a sandbox no longer race the rustup
+  installer and `rustup toolchain install` in the shared `~/.rustup` (a run failed on a
+  half-installed toolchain): `scripts/bootstrap.py` holds a lock in the home
+  (`~/.cache/yulius-tools/.rustup.lock`) around them, and a second run says it waits, waits, and
+  then finds the toolchain installed. The pinned tool builds and the
+  zig download take their locks through the same helper, `scripts/home_lock.py`.
 - A production deploy no longer fails on a promotion pull request GitHub has not finished
   checking (SPEC-495, task #477,
   [ADR-0349](decisions/0349-a-merge-waits-out-githubs-unsettled-mergeability.md)): after GitHub's

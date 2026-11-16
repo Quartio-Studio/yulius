@@ -404,7 +404,10 @@ watching, steering and unblocking.
   is left, how fast it burns, the tokens it used and what they would cost at Claude API list
   prices, with a 7-day chart for each. Administrators rename each subscription in place ("work
   Max", "personal") and see the email of its Claude account wherever it is named; when Claude
-  does not share it, they type it in place under the name (SPEC-463). Connecting one
+  does not share it, they type it in place under the name (SPEC-463). A subscription is connected
+  with Claude's own sign-in in a terminal on the page, or by pasting the token
+  `claude setup-token` printed on any computer (its owner's laptop, say); a card's "Paste a new
+  token" signs one in again the same way (SPEC-502). Connecting one
   is the first step on a fresh instance: until a Claude account is usable, Home, the composer and
   the onboarding gate show Connect Claude, and every start a person asks for is refused at once
   with a link to Subscriptions; tasks started by a chain, a rule or an automation wait and say why
@@ -625,6 +628,17 @@ watching, steering and unblocking.
   (SPEC-458). A task session whose Yulius tools Claude
   Code dropped is reconnected by Yulius, and an agent can call any Yulius tool from its shell with
   `yulius tool` (SPEC-432).
+- **Notifications on a person's phone** (SPEC-498, ADR-0351, part 1 of #1107): an instance
+  administrator sets one Telegram bot for the instance in Settings → Administration (checked with
+  Telegram, stored encrypted, never shown again). Each person links their own chat in Settings →
+  Notifications with a single-use, 10-minute code (only from the browser, never with an API
+  token), chooses what reaches it (Needs you by default; Done; failed or stopped; subscription
+  problems for administrators) and unlinks there or with `/stop`. Only what their notification
+  center would show them is sent (a subscription switch is no news, a project's Docker trouble is
+  one message however many tasks ask, a request for control of their task reaches them under
+  Needs you), with a link to the task, agent secrets removed, at most five
+  messages a minute with the rest in one summary. The server asks Telegram for messages, so no
+  inbound port is needed. Replies and new tasks from Telegram are part 2.
 
 ## Principles
 

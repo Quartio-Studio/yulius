@@ -32,6 +32,7 @@ mod skills;
 mod stages;
 mod status;
 mod tasks;
+mod telegram;
 mod terminal;
 mod updates;
 mod uploads;
@@ -208,6 +209,10 @@ pub fn public() -> Router<AppState> {
         )
         .route("/api/admin/accounts/{id}/relogin", post(accounts::relogin))
         .route(
+            "/api/admin/accounts/{id}/token",
+            put(accounts::replace_token),
+        )
+        .route(
             "/api/admin/accounts/{id}/usage",
             post(accounts::refresh_usage),
         )
@@ -269,6 +274,13 @@ pub fn public() -> Router<AppState> {
         .route(
             "/api/admin/limits/{key}",
             put(limits::set).delete(limits::remove),
+        )
+        // The personal Telegram channel's bot (SPEC-498 TGC-001).
+        .route(
+            "/api/admin/telegram",
+            get(telegram::bot)
+                .put(telegram::set_bot)
+                .delete(telegram::remove_bot),
         )
         // The instance Vidoc key (SPEC-195 VDK-002).
         .route(
@@ -442,6 +454,13 @@ pub fn public() -> Router<AppState> {
             "/api/sandboxes/{sid}/notes/presence",
             put(notes::sandbox_presence),
         )
+        // The caller's own Telegram chat (SPEC-498 TGC-010..TGC-020).
+        .route(
+            "/api/me/telegram",
+            get(telegram::me).delete(telegram::unlink),
+        )
+        .route("/api/me/telegram/link", post(telegram::link))
+        .route("/api/me/telegram/choices", put(telegram::choices))
         // The caller's own notepad, the same in every sandbox (SPEC-103).
         .route(
             "/api/me/notes",

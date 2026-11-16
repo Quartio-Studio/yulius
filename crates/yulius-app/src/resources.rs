@@ -4,46 +4,429 @@
 //! isolation adapter's `cpu.max` and `memory.max`), else the host's CPUs and 2 GiB of memory
 //! per CPU. Yulius gives out budgets from it and says so in the environment
 //! ([`yulius_domain::resources::budget_env`]): CI jobs get their declared or default share and
-//! wait for it (`App::ci_reserve`); agent runs, terminals and the Cockpit get the agent budget
+//! start once the host has room for them by what CI was measured to use, merge candidates' jobs
+//! first and never behind a job that does not fit (`App::ci_reserve`, SPEC-497 HBA-002); agent
+//! runs, terminals and the Cockpit get the agent budget
 //! ([`App::agent_resource_env`]). The repository maps the budget to its tools in
 //! `[resources.env]` of the `yulius.toml` where the process starts.
 
+use std::collections::HashMap;
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
+use std::time::Duration;
 
-use tokio::sync::{OwnedSemaphorePermit, Semaphore};
-use yulius_domain::resources::{Budget, Capacity, EnvTemplate, budget_env, default_templates};
+use tokio::sync::Notify;
+use tokio::time::Instant;
+use yulius_domain::ids::SandboxId;
+use yulius_domain::resources::{
+    Admission, Budget, Capacity, CiPriority, EnvTemplate, Held, admit, budget_env,
+    default_templates, network_reserve,
+};
 use yulius_domain::spec_format::{MAX_CONFIG_BYTES, parse_yulius_toml_resources_table};
 
 use crate::context::App;
 
 /// Memory assumed per CPU when no limit says how much there is (development hosts).
 const MEMORY_PER_CPU_MB: u64 = 2048;
+/// The shortest time between two readings of a sandbox's CI and engine groups that gives their
+/// CPU rate (SPEC-497 HBA-002), and how often a waiting job looks again.
+pub(crate) const SAMPLE_WINDOW: Duration = Duration::from_secs(5);
+/// A reading older than this is no base for a rate: what was used since is a new window. Twice
+/// the dispatcher's tick, which reads the sandboxes running jobs at each pass.
+const STALE_WINDOW: Duration = Duration::from_secs(30);
+/// How long a started job counts with its start allowance beside the readings (SPEC-497
+/// HBA-002): a reading spans 5 to 30 seconds, so within a minute what it uses is in them.
+const START_WINDOW: Duration = Duration::from_secs(60);
+/// How long a waiting job lets later ones that fit start before it (SPEC-497 HBA-002). Past
+/// this, nothing after it in the order (its priority and lower) starts until it has; a job of a
+/// higher priority still goes first.
+const OVERTAKE_LIMIT: Duration = Duration::from_secs(10 * 60);
 
-/// The CPUs and MiB of memory CI jobs share (SPEC-082 RES-003), sized once from the capacity.
-pub(crate) struct CiPools {
-    cpus: Arc<Semaphore>,
-    cpus_total: u32,
-    memory: Arc<Semaphore>,
-    memory_total: u32,
+/// The CI budget of the whole instance and what CI holds of it (SPEC-082 RES-003, SPEC-497
+/// HBA-001, HBA-002): one for every sandbox, sized once from the capacity.
+pub(crate) struct CiAdmission {
+    state: Mutex<AdmissionState>,
+    /// Told when a job starts, ends or leaves the queue.
+    changed: Notify,
 }
 
-impl CiPools {
-    fn new(capacity: Capacity) -> Self {
-        let memory_total = u32::try_from(capacity.memory_mb).unwrap_or(u32::MAX);
-        Self {
-            cpus: Arc::new(Semaphore::new(capacity.cpus as usize)),
-            cpus_total: capacity.cpus,
-            memory: Arc::new(Semaphore::new(memory_total as usize)),
-            memory_total,
+struct AdmissionState {
+    budget: Capacity,
+    /// The running jobs and the sum of their budgets; what starts, is measured and waits for a
+    /// CPU is filled in at each decision.
+    held: Held,
+    next_ticket: u64,
+    /// The waiting jobs, in no order: [`Waiter::order`] orders them.
+    queue: Vec<Waiter>,
+    /// The running jobs' start allowances and when they started (SPEC-497 HBA-002).
+    started: Vec<Started>,
+    /// Each measured sandbox's last reading (when, CPU microseconds), its CPU rate over the
+    /// window before it (CPUs, once two readings were far enough apart) and its memory.
+    samples: HashMap<SandboxId, Sample>,
+}
+
+/// A waiting job.
+#[derive(Debug, Clone, Copy)]
+struct Waiter {
+    id: u64,
+    priority: CiPriority,
+    since: Instant,
+    need: Budget,
+}
+
+impl Waiter {
+    /// The order waiting jobs start in (SPEC-497 HBA-002): by priority, then the longest waiting.
+    fn order(&self) -> (CiPriority, Instant, u64) {
+        (self.priority, self.since, self.id)
+    }
+}
+
+/// A running job's start allowance and when it started (SPEC-497 HBA-002).
+#[derive(Debug, Clone, Copy)]
+struct Started {
+    id: u64,
+    at: Instant,
+    allowance: Budget,
+}
+
+#[derive(Clone, Copy)]
+struct Sample {
+    at: Instant,
+    cpu_usec: u64,
+    rate: Option<f64>,
+    anon_bytes: u64,
+    /// The `ci` group's `cpu.pressure` at the last reading, in thousandths.
+    pressure: Option<u32>,
+    /// A new base after a stale one, with no rate since: what CI uses is not settled for anyone
+    /// until a window passed (review round 2).
+    rebased: bool,
+}
+
+/// What a CI job holds while it runs: its reservation out of the CI budget, given back when
+/// dropped.
+pub(crate) struct Reservation {
+    admission: Arc<CiAdmission>,
+    id: u64,
+    need: Budget,
+}
+
+impl Reservation {
+    /// The CPUs it holds.
+    pub(crate) fn cpus(&self) -> u32 {
+        self.need.cpus
+    }
+}
+
+impl Drop for Reservation {
+    fn drop(&mut self) {
+        let mut state = self.admission.lock();
+        state.held.jobs = state.held.jobs.saturating_sub(1);
+        state.held.reserved.cpus = state.held.reserved.cpus.saturating_sub(self.need.cpus);
+        state.held.reserved.memory_mb = state
+            .held
+            .reserved
+            .memory_mb
+            .saturating_sub(self.need.memory_mb);
+        state.started.retain(|started| started.id != self.id);
+        drop(state);
+        self.admission.changed.notify_waiters();
+    }
+}
+
+/// A waiting job's place in the queue, left when dropped (a cancelled wait).
+struct Ticket {
+    admission: Arc<CiAdmission>,
+    id: u64,
+}
+
+impl Drop for Ticket {
+    fn drop(&mut self) {
+        let mut state = self.admission.lock();
+        let before = state.queue.len();
+        state.queue.retain(|waiter| waiter.id != self.id);
+        let left = state.queue.len() != before;
+        drop(state);
+        if left {
+            self.admission.changed.notify_waiters();
         }
     }
 }
 
-/// What a CI job holds while it runs: its CPUs and memory out of the CI pools.
-pub(crate) struct Reservation {
-    _cpus: OwnedSemaphorePermit,
-    _memory: OwnedSemaphorePermit,
+impl CiAdmission {
+    fn new(capacity: Capacity) -> Self {
+        Self {
+            state: Mutex::new(AdmissionState {
+                budget: capacity.ci_budget(),
+                held: Held::default(),
+                next_ticket: 0,
+                queue: Vec::new(),
+                started: Vec::new(),
+                samples: HashMap::new(),
+            }),
+            changed: Notify::new(),
+        }
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, AdmissionState> {
+        self.state.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// A place in the queue for a job of a run of `priority` needing `need`, waiting from `now`.
+    fn enqueue(self: &Arc<Self>, priority: CiPriority, need: Budget, now: Instant) -> Ticket {
+        let mut state = self.lock();
+        let id = state.next_ticket;
+        state.next_ticket += 1;
+        state.queue.push(Waiter {
+            id,
+            priority,
+            since: now,
+            need,
+        });
+        Ticket {
+            admission: Arc::clone(self),
+            id,
+        }
+    }
+
+    /// Reads the sandboxes running CI jobs (`running`) with `read` (CPU microseconds, anonymous
+    /// bytes, the `ci` group's CPU pressure) at `now`, under the lock, so readings are applied in the order they were taken
+    /// (review round 1: two waiters reading at once could reset a sandbox's rate). A sandbox's
+    /// rate is computed once its last reading is [`SAMPLE_WINDOW`] old; one older than
+    /// [`STALE_WINDOW`] is a new base, and what CI uses is then not settled until the next look
+    /// (SPEC-497 HBA-002: the use over the last window, not since long ago). A counter that went
+    /// back (its groups were made again) is a new base too. Sandboxes no longer running jobs are
+    /// forgotten.
+    fn measure(
+        &self,
+        now: impl FnOnce() -> Instant,
+        running: impl FnOnce() -> Vec<SandboxId>,
+        read: impl Fn(&SandboxId) -> Option<(u64, u64, Option<u32>)>,
+    ) -> Measured {
+        let mut state = self.lock();
+        // The clock and the list are read under the lock too: a caller with an older list must
+        // not drop a base a job's start just made (review round 2).
+        let (now, running) = (now(), running());
+        state.samples.retain(|sandbox, _| running.contains(sandbox));
+        for sandbox in &running {
+            let Some((cpu_usec, anon_bytes, pressure)) = read(sandbox) else {
+                // An old pressure must not hold jobs back (review of the CI admission fix).
+                if let Some(sample) = state.samples.get_mut(sandbox) {
+                    sample.pressure = None;
+                }
+                continue;
+            };
+            let fresh = Sample {
+                at: now,
+                cpu_usec,
+                rate: None,
+                anon_bytes,
+                pressure,
+                rebased: false,
+            };
+            let Some(sample) = state.samples.get_mut(sandbox) else {
+                state.samples.insert(sandbox.clone(), fresh);
+                continue;
+            };
+            sample.anon_bytes = anon_bytes;
+            sample.pressure = pressure;
+            let elapsed = now.saturating_duration_since(sample.at);
+            if cpu_usec < sample.cpu_usec || elapsed > STALE_WINDOW {
+                // Its groups were made again, or its base is old: what it uses is not known
+                // until a window passed, and no job starts on its absence (review of the CI
+                // admission fix: a restarted engine read as 0 CPUs).
+                *sample = Sample {
+                    rebased: true,
+                    ..fresh
+                };
+            } else if elapsed >= SAMPLE_WINDOW {
+                #[allow(clippy::cast_precision_loss, reason = "microseconds of CPU time")]
+                let rate = (cpu_usec - sample.cpu_usec) as f64 / elapsed.as_micros() as f64;
+                *sample = Sample {
+                    // A tenth of a CPU: the clocks of two readings differ by microseconds, which
+                    // must not round 3.0000002 CPUs up to 4 (review round 1).
+                    rate: Some((rate * 10.0).round() / 10.0),
+                    ..fresh
+                };
+            }
+        }
+        let settled = state.samples.values().all(|s| !s.rebased);
+        let rates: Vec<f64> = state.samples.values().filter_map(|s| s.rate).collect();
+        let anon: u64 = state
+            .samples
+            .values()
+            .fold(0, |sum, s| sum.saturating_add(s.anon_bytes));
+        let used = (!rates.is_empty() || anon > 0).then(|| {
+            #[allow(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "a sum of CPU rates on a host, rounded up"
+            )]
+            let cpus = rates.iter().sum::<f64>().ceil().max(0.0) as u32;
+            Budget {
+                cpus,
+                memory_mb: anon >> 20,
+            }
+        });
+        let pressure = state.samples.values().filter_map(|s| s.pressure).max();
+        Measured {
+            used,
+            settled,
+            pressure,
+        }
+    }
+
+    /// Admits the job holding `ticket` at `now` (SPEC-497 HBA-002) when no job before it in the
+    /// order ([`Waiter::order`]) has waited past [`OVERTAKE_LIMIT`] or could start now, and it
+    /// may start itself ([`AdmissionState::decide`], `slots` jobs at most); otherwise what it
+    /// waits for. A job that cannot start lets the ones behind it that can.
+    fn try_admit(
+        self: &Arc<Self>,
+        ticket: &Ticket,
+        measured: Measured,
+        now: Instant,
+        slots: usize,
+    ) -> Result<Reservation, Wait> {
+        let mut state = self.lock();
+        let Some(me) = state
+            .queue
+            .iter()
+            .find(|waiter| waiter.id == ticket.id)
+            .copied()
+        else {
+            return Err(Wait::Behind);
+        };
+        let mut before: Vec<Waiter> = state
+            .queue
+            .iter()
+            .filter(|waiter| waiter.order() < me.order())
+            .copied()
+            .collect();
+        before.sort_by_key(Waiter::order);
+        for waiter in &before {
+            if now.saturating_duration_since(waiter.since) >= OVERTAKE_LIMIT {
+                return Err(Wait::Overdue);
+            }
+            if state.decide(waiter.need, measured, now, slots).is_ok() {
+                return Err(Wait::Behind);
+            }
+        }
+        let need = state.decide(me.need, measured, now, slots)?;
+        state.queue.retain(|waiter| waiter.id != me.id);
+        state.held.jobs += 1;
+        state.held.reserved.cpus = state.held.reserved.cpus.saturating_add(need.cpus);
+        state.held.reserved.memory_mb =
+            state.held.reserved.memory_mb.saturating_add(need.memory_mb);
+        let allowance = state.budget.start_allowance(need);
+        state.started.push(Started {
+            id: me.id,
+            at: now,
+            allowance,
+        });
+        drop(state);
+        // The next one in line may start too.
+        self.changed.notify_waiters();
+        Ok(Reservation {
+            admission: Arc::clone(self),
+            id: me.id,
+            need,
+        })
+    }
+}
+
+impl AdmissionState {
+    /// Whether a job needing `need` may start at `now` beside what CI holds (SPEC-497 HBA-002):
+    /// fewer running jobs than `slots`, a settled reading while CI runs, and room in the budget
+    /// ([`admit`]: what CI's processes wait for, the worst case, what CI uses and what jobs
+    /// started in the last [`START_WINDOW`] may still bring). Its need, at most the CI budget,
+    /// when it may.
+    fn decide(
+        &self,
+        need: Budget,
+        measured: Measured,
+        now: Instant,
+        slots: usize,
+    ) -> Result<Budget, Wait> {
+        if usize::try_from(self.held.jobs).unwrap_or(usize::MAX) >= slots.max(1) {
+            return Err(Wait::Slots(slots));
+        }
+        if !measured.settled && self.held.jobs > 0 {
+            return Err(Wait::Measuring);
+        }
+        let need = Budget {
+            cpus: need.cpus.min(self.budget.cpus),
+            memory_mb: need.memory_mb.min(self.budget.memory_mb),
+        };
+        let starting = self
+            .started
+            .iter()
+            .filter(|started| now.saturating_duration_since(started.at) < START_WINDOW)
+            .fold(Budget::default(), |sum, started| Budget {
+                cpus: sum.cpus.saturating_add(started.allowance.cpus),
+                memory_mb: sum.memory_mb.saturating_add(started.allowance.memory_mb),
+            });
+        let held = Held {
+            starting,
+            measured: measured.used,
+            pressure: measured.pressure,
+            ..self.held
+        };
+        match admit(self.budget, &held, need) {
+            Admission::Now => Ok(need),
+            wait => Err(Wait::Budget(wait)),
+        }
+    }
+}
+
+/// What the readings of the sandboxes running CI jobs say (SPEC-497 HBA-002).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct Measured {
+    /// What they use together, once anything was measured.
+    used: Option<Budget>,
+    /// Whether every reading had a recent base: a job is not admitted on a reading that only
+    /// became a new base now.
+    settled: bool,
+    /// The most any of their `ci` groups' processes waited for a CPU over the last 10 seconds,
+    /// in thousandths.
+    pressure: Option<u32>,
+}
+
+impl Measured {
+    /// Nothing measured: where nothing measures sandboxes, the reservations decide.
+    const NOTHING: Self = Self {
+        used: None,
+        settled: true,
+        pressure: None,
+    };
+}
+
+/// Why a job is not admitted now.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Wait {
+    /// A job before it in the order can start now: it goes first.
+    Behind,
+    /// A job before it in the order has waited past [`OVERTAKE_LIMIT`]: nothing behind it
+    /// starts until it has.
+    Overdue,
+    /// As many jobs run as the instance has job slots.
+    Slots(usize),
+    /// What CI uses is being measured again.
+    Measuring,
+    /// It does not fit.
+    Budget(Admission),
+}
+
+impl std::fmt::Display for Wait {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Behind => f.write_str("waits for a CI job before it in line, which starts first"),
+            Self::Overdue => {
+                f.write_str("waits for a CI job that has waited 10 minutes to start before it")
+            }
+            Self::Slots(slots) => write!(f, "waits for one of the instance's {slots} CI job slots"),
+            Self::Measuring => f.write_str("waits for a reading of what CI uses now"),
+            Self::Budget(wait) => write!(f, "waits for the host's CI budget: {wait}"),
+        }
+    }
 }
 
 /// Where a repository sets a default variable's knob itself, and the key it sets there: the
@@ -188,33 +571,459 @@ impl App {
         budget_env(self.agent_budget(), &repository_templates(dir))
     }
 
-    /// Waits until `budget` is free in the CI pools and holds it (SPEC-082 RES-003). Waiters are
-    /// served in order, so a large job is never overtaken for good. A budget larger than a pool
-    /// (the capacity grew since the pools were sized) takes the whole pool.
-    pub(crate) async fn ci_reserve(&self, budget: Budget) -> Option<Reservation> {
-        let pools = self.ci.budget.get_or_init(|| CiPools::new(self.capacity()));
-        let cpus = budget.cpus.clamp(1, pools.cpus_total);
-        let memory = u32::try_from(budget.memory_mb)
-            .unwrap_or(u32::MAX)
-            .clamp(1, pools.memory_total);
-        let cpus = Arc::clone(&pools.cpus)
-            .acquire_many_owned(cpus)
-            .await
-            .ok()?;
-        let memory = Arc::clone(&pools.memory)
-            .acquire_many_owned(memory)
-            .await
-            .ok()?;
-        Some(Reservation {
-            _cpus: cpus,
-            _memory: memory,
-        })
+    /// Says on the queued job `job` what it waits for, or nothing once it no longer waits.
+    pub(crate) async fn ci_job_waits(&self, job: &str, why: Option<&str>) {
+        if let Err(err) = self.deps.store.set_queued_ci_job_reason(job, why).await {
+            tracing::warn!(job, error = %err, "recording what a CI job waits for failed");
+        }
+    }
+
+    /// Waits while `sandbox`'s running Docker engine has fewer networks left to make than a job
+    /// needs ([`network_reserve`]) (SPEC-497 HBA-003), saying so on the
+    /// queued job `job`; networks no container used for 10 minutes are pruned first (an agent's
+    /// or a job's network made a moment ago is kept). No wait without a running engine (nothing
+    /// starts one here). It is looked at before the job waits for a slot and its budget, so a
+    /// job held by one sandbox's engine holds nothing the others need (review round 1).
+    pub(crate) async fn ci_network_room(&self, sandbox: &SandboxId, job: &str) {
+        let Some(isolation) = self.isolation.get() else {
+            return;
+        };
+        let mut told = false;
+        loop {
+            let Some(networks) = isolation.engine_networks(sandbox).await else {
+                break;
+            };
+            let free = networks.capacity.saturating_sub(networks.used);
+            let reserve = network_reserve(networks.capacity);
+            if free >= reserve {
+                break;
+            }
+            if isolation
+                .prune_engine_networks(sandbox)
+                .await
+                .is_some_and(|removed| removed > 0)
+            {
+                continue;
+            }
+            if !told {
+                let why = format!(
+                    "waits for Docker networks: its sandbox's engine can make {free} more of {}, \
+                     and a job starts with at least {reserve} free",
+                    networks.capacity
+                );
+                self.ci_job_waits(job, Some(&why)).await;
+                told = true;
+            }
+            tokio::time::sleep(SAMPLE_WINDOW).await;
+        }
+        if told {
+            self.ci_job_waits(job, None).await;
+        }
+    }
+
+    /// Wakes the jobs waiting for admission: something they decide by changed.
+    pub(crate) fn ci_admission_changed(&self) {
+        if let Some(admission) = self.ci.budget.get() {
+            admission.changed.notify_waiters();
+        }
+    }
+
+    fn ci_admission(&self) -> Arc<CiAdmission> {
+        Arc::clone(
+            self.ci
+                .budget
+                .get_or_init(|| Arc::new(CiAdmission::new(self.capacity()))),
+        )
+    }
+
+    /// What the `ci` and `engine` groups of the sandboxes running CI jobs use now (SPEC-497
+    /// HBA-002), as the isolation reads them; nothing where nothing is measured. Also the
+    /// dispatcher's reading at each pass, which keeps the bases recent.
+    pub(crate) fn ci_measured(&self) -> Measured {
+        let Some(isolation) = self.isolation.get() else {
+            return Measured::NOTHING;
+        };
+        self.ci_admission().measure(
+            Instant::now,
+            || self.ci_sandboxes_running(),
+            |sandbox| {
+                let used = isolation.ci_use(sandbox)?;
+                Some((used.cpu_usec, used.anon_bytes, used.cpu_pressure))
+            },
+        )
+    }
+
+    /// Waits until the job `job` of a run of `priority` may start with `budget` beside what CI
+    /// holds on the whole host, and holds it (SPEC-082 RES-003, SPEC-497 HBA-001, HBA-002):
+    /// room by what CI was measured to use and what jobs that just started may still bring, CI's
+    /// processes not waiting for CPUs, the running jobs' budgets within twice the CI budget, and
+    /// a job slot free. Merge candidates' jobs go first, then the longest waiting; a job that
+    /// cannot start lets the ones behind it that can, for [`OVERTAKE_LIMIT`] at most. The queued
+    /// job says what it waits for whenever that changes (HBA-005).
+    pub(crate) async fn ci_reserve(
+        &self,
+        job: &str,
+        budget: Budget,
+        priority: CiPriority,
+    ) -> Option<Reservation> {
+        let admission = self.ci_admission();
+        let ticket = admission.enqueue(priority, budget, Instant::now());
+        let mut told: Option<String> = None;
+        loop {
+            let changed = admission.changed.notified();
+            match admission.try_admit(
+                &ticket,
+                self.ci_measured(),
+                Instant::now(),
+                self.ci_job_slots(),
+            ) {
+                Ok(reservation) => {
+                    if told.is_some() {
+                        self.ci_job_waits(job, None).await;
+                    }
+                    return Some(reservation);
+                }
+                Err(wait) => {
+                    let why = wait.to_string();
+                    if told.as_deref() != Some(why.as_str()) {
+                        self.ci_job_waits(job, Some(&why)).await;
+                        told = Some(why);
+                    }
+                }
+            }
+            tokio::select! {
+                () = changed => {}
+                () = tokio::time::sleep(SAMPLE_WINDOW) => {}
+            }
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn sandbox(name: &str) -> SandboxId {
+        SandboxId::parse(name).unwrap_or_else(|_| unreachable!())
+    }
+
+    fn need(cpus: u32) -> Budget {
+        Budget { cpus, memory_mb: 1 }
+    }
+
+    /// SPEC-497 HBA-002 (review round 1): no rate before a window passed; two sandboxes' rates
+    /// add up, rounded up after a tenth; memory in MiB; a counter that goes back starts over; a
+    /// sandbox no longer running is forgotten; a base older than the stale window is not
+    /// settled.
+    #[test]
+    fn what_ci_uses_is_measured_over_a_recent_window() {
+        let admission = CiAdmission::new(Capacity::new(64, 64 * 1024));
+        let (a, b) = (sandbox("a"), sandbox("b"));
+        let t0 = Instant::now();
+        let at = |secs: u64| t0 + Duration::from_secs(secs);
+        let readings = |values: &[(&SandboxId, u64, u64)]| {
+            let values: Vec<(SandboxId, u64, u64)> = values
+                .iter()
+                .map(|(s, cpu, anon)| ((*s).clone(), *cpu, *anon))
+                .collect();
+            move |s: &SandboxId| {
+                values
+                    .iter()
+                    .find(|(id, _, _)| id == s)
+                    .map(|(_, cpu, anon)| (*cpu, *anon, None))
+            }
+        };
+        let both = [a.clone(), b.clone()];
+        let first = admission.measure(
+            || at(0),
+            || both.to_vec(),
+            readings(&[(&a, 0, 0), (&b, 0, 0)]),
+        );
+        assert_eq!(first, Measured::NOTHING, "a base, no rate");
+        let early = admission.measure(
+            || at(2),
+            || both.to_vec(),
+            readings(&[(&a, 9_000_000, 0), (&b, 0, 0)]),
+        );
+        assert_eq!(early.used, None, "two seconds are no window");
+        // 2 CPUs and 1.5 CPUs over 5 s (with a microsecond more of the clock): 4 after a tenth.
+        let used = admission.measure(
+            || at(5),
+            || both.to_vec(),
+            readings(&[(&a, 10_000_001, 3 << 20), (&b, 7_500_000, 1 << 20)]),
+        );
+        assert_eq!(
+            used,
+            Measured {
+                used: Some(Budget {
+                    cpus: 4,
+                    memory_mb: 4
+                }),
+                settled: true,
+                pressure: None
+            }
+        );
+        // A rate of exactly 3 measured with clock noise stays 3.
+        let noisy = CiAdmission::new(Capacity::new(64, 64 * 1024));
+        let one = [a.clone()];
+        let _ = noisy.measure(|| at(0), || one.to_vec(), readings(&[(&a, 0, 0)]));
+        let three = noisy.measure(|| at(5), || one.to_vec(), readings(&[(&a, 15_000_001, 0)]));
+        assert_eq!(three.used.map(|u| u.cpus), Some(3));
+        // `b` no longer runs a job: only `a` counts.
+        let alone = admission.measure(|| at(6), || one.to_vec(), readings(&[(&a, 10_000_001, 0)]));
+        assert_eq!(alone.used.map(|u| u.cpus), Some(2));
+        // A counter that went back (its groups made again) is a new base: no rate, and not
+        // settled until a window passed (review of the CI admission fix: a restarted engine
+        // read as 0 CPUs).
+        let again = admission.measure(|| at(11), || one.to_vec(), readings(&[(&a, 5, 0)]));
+        assert_eq!((again.used, again.settled), (None, false));
+        let settled =
+            admission.measure(|| at(16), || one.to_vec(), readings(&[(&a, 10_000_005, 0)]));
+        assert_eq!(
+            (settled.used.map(|u| u.cpus), settled.settled),
+            (Some(2), true)
+        );
+        // A base older than the stale window: a new base, not settled, for whoever reads next
+        // within the window too (review round 2).
+        let stale = admission.measure(
+            || at(60),
+            || one.to_vec(),
+            readings(&[(&a, 500_000_000, 0)]),
+        );
+        assert!(!stale.settled, "{stale:?}");
+        let soon = admission.measure(
+            || at(61),
+            || one.to_vec(),
+            readings(&[(&a, 501_000_000, 0)]),
+        );
+        assert!(!soon.settled, "{soon:?}");
+        let next = admission.measure(
+            || at(65),
+            || one.to_vec(),
+            readings(&[(&a, 505_000_000, 0)]),
+        );
+        assert_eq!(next.used.map(|u| u.cpus), Some(1));
+        assert!(next.settled);
+    }
+
+    /// SPEC-497 HBA-002: CI's pressure is the most any running sandbox's CI processes waited for
+    /// a CPU; none where none is read.
+    #[test]
+    fn ci_pressure_is_the_most_any_sandbox_waited() {
+        let (a, b) = (sandbox("a"), sandbox("b"));
+        let both = [a.clone(), b.clone()];
+        let now = Instant::now();
+        let measured = CiAdmission::new(Capacity::new(64, 64 * 1024)).measure(
+            || now,
+            || both.to_vec(),
+            |s: &SandboxId| Some((0, 0, Some(if *s == a { 30 } else { 245 }))),
+        );
+        assert_eq!(measured.pressure, Some(245));
+        let unread = CiAdmission::new(Capacity::new(64, 64 * 1024)).measure(
+            || now,
+            || both.to_vec(),
+            |_: &SandboxId| Some((0, 0, None)),
+        );
+        assert_eq!(unread.pressure, None);
+        // A failed read forgets the sandbox's old pressure (review of the CI admission fix).
+        let admission = CiAdmission::new(Capacity::new(64, 64 * 1024));
+        let high = admission.measure(
+            || now,
+            || both.to_vec(),
+            |_: &SandboxId| Some((0, 0, Some(900))),
+        );
+        assert_eq!(high.pressure, Some(900));
+        let failed = admission.measure(|| now, || both.to_vec(), |_: &SandboxId| None);
+        assert_eq!(failed.pressure, None);
+    }
+
+    /// SPEC-497 HBA-002: a job that cannot start lets a later one that can; one before it that
+    /// can start goes first; merge candidates' jobs go before older pull requests'; a job that
+    /// waited past the overtaking limit holds back those behind it until it starts or leaves;
+    /// the job slots bound the running jobs; an unsettled reading holds a job back only while
+    /// CI runs.
+    #[test]
+    fn jobs_that_fit_pass_one_that_does_not() {
+        // 9 CPUs: a CI budget of 8. Nothing measured: the reservations decide.
+        let admission = Arc::new(CiAdmission::new(Capacity::new(9, 9 * 1024)));
+        let measured = Measured::NOTHING;
+        let t0 = Instant::now();
+        let at = |secs: u64| t0 + Duration::from_secs(secs);
+        let pr = CiPriority::PullRequest;
+        let first = admission.enqueue(pr, need(6), at(0));
+        let held = admission.try_admit(&first, measured, at(0), 12).ok();
+        assert!(held.is_some());
+        let large = admission.enqueue(pr, need(4), at(1));
+        let small = admission.enqueue(pr, need(1), at(2));
+        assert!(matches!(
+            admission.try_admit(&large, measured, at(3), 12),
+            Err(Wait::Budget(_))
+        ));
+        let small_held = admission.try_admit(&small, measured, at(3), 12).ok();
+        assert!(
+            small_held.is_some(),
+            "the small one fits and passes the large one"
+        );
+        // The first job ends: the large one fits now and goes before a later one.
+        drop(held);
+        let later = admission.enqueue(pr, need(1), at(4));
+        assert_eq!(
+            admission.try_admit(&later, measured, at(4), 12).err(),
+            Some(Wait::Behind)
+        );
+        let large_held = admission.try_admit(&large, measured, at(4), 12).ok();
+        assert!(large_held.is_some());
+        let later_held = admission.try_admit(&later, measured, at(4), 12).ok();
+        assert!(later_held.is_some());
+        drop((small_held, large_held, later_held));
+        // A merge candidate's job goes before an older pull request's.
+        let running = admission.enqueue(pr, need(7), at(10));
+        let running = admission.try_admit(&running, measured, at(10), 12).ok();
+        assert!(running.is_some());
+        let review = admission.enqueue(pr, need(1), at(11));
+        let merge = admission.enqueue(CiPriority::Merge, need(1), at(12));
+        assert_eq!(
+            admission.try_admit(&review, measured, at(12), 12).err(),
+            Some(Wait::Behind)
+        );
+        let merge_held = admission.try_admit(&merge, measured, at(12), 12).ok();
+        assert!(merge_held.is_some());
+        drop((merge_held, review));
+        // A job that waited past the overtaking limit holds back those behind it.
+        let big = admission.enqueue(pr, need(4), at(20));
+        let quick = admission.enqueue(pr, need(1), at(21));
+        let overdue = at(20) + OVERTAKE_LIMIT;
+        assert!(matches!(
+            admission.try_admit(&big, measured, overdue, 12),
+            Err(Wait::Budget(_))
+        ));
+        assert_eq!(
+            admission.try_admit(&quick, measured, overdue, 12).err(),
+            Some(Wait::Overdue)
+        );
+        assert_eq!(
+            Wait::Overdue.to_string(),
+            "waits for a CI job that has waited 10 minutes to start before it"
+        );
+        // It leaves (its run was cancelled): the next one starts.
+        drop(big);
+        let quick_held = admission.try_admit(&quick, measured, overdue, 12).ok();
+        assert!(quick_held.is_some());
+        drop((running, quick_held));
+        // Two job slots: a third job waits for one, holding none.
+        let x = admission.enqueue(pr, need(1), at(30));
+        let x = admission.try_admit(&x, measured, at(30), 2).ok();
+        let y = admission.enqueue(pr, need(1), at(30));
+        let y = admission.try_admit(&y, measured, at(30), 2).ok();
+        assert!(x.is_some() && y.is_some());
+        let z = admission.enqueue(pr, need(1), at(31));
+        assert_eq!(
+            admission.try_admit(&z, measured, at(31), 2).err(),
+            Some(Wait::Slots(2))
+        );
+        // While a job runs, a reading that only became a new base holds the next one back.
+        let unsettled = Measured {
+            used: None,
+            settled: false,
+            pressure: None,
+        };
+        assert_eq!(
+            admission.try_admit(&z, unsettled, at(31), 12).err(),
+            Some(Wait::Measuring)
+        );
+        drop((x, y));
+        assert!(
+            admission.try_admit(&z, unsettled, at(31), 12).is_ok(),
+            "no job runs"
+        );
+    }
+
+    /// SPEC-497 HBA-002: with readings, a job that just started counts with its start allowance
+    /// (a quarter of the budget at most) for a minute; then what is measured decides; CI's
+    /// processes waiting for CPUs hold new jobs back.
+    #[test]
+    fn a_started_job_counts_until_the_readings_show_it() {
+        // 9 CPUs: a CI budget of 8; a 2-CPU job starts with 2.
+        let admission = Arc::new(CiAdmission::new(Capacity::new(9, 9 * 1024)));
+        let t0 = Instant::now();
+        let at = |secs: u64| t0 + Duration::from_secs(secs);
+        let reading = |cpus: u32, pressure: Option<u32>| Measured {
+            used: Some(Budget { cpus, memory_mb: 0 }),
+            settled: true,
+            pressure,
+        };
+        let pr = CiPriority::PullRequest;
+        let mut running = Vec::new();
+        for secs in 0..4 {
+            let ticket = admission.enqueue(pr, need(2), at(secs));
+            running.push(
+                admission
+                    .try_admit(&ticket, reading(0, None), at(secs), 12)
+                    .ok(),
+            );
+        }
+        assert!(running.iter().all(Option::is_some));
+        let fifth = admission.enqueue(pr, need(2), at(4));
+        let wait = admission
+            .try_admit(&fifth, reading(0, None), at(4), 12)
+            .err();
+        assert!(
+            matches!(
+                wait,
+                Some(Wait::Budget(Admission::Load {
+                    used: 0,
+                    starting: 8,
+                    ..
+                }))
+            ),
+            "{wait:?}"
+        );
+        // A minute on, the readings decide: 7 used leaves no room for 2, 5 does, unless CI's
+        // processes wait for CPUs.
+        assert!(matches!(
+            admission.try_admit(&fifth, reading(7, None), at(64), 12),
+            Err(Wait::Budget(Admission::Load {
+                used: 7,
+                starting: 0,
+                ..
+            }))
+        ));
+        assert!(matches!(
+            admission.try_admit(&fifth, reading(5, Some(250)), at(64), 12),
+            Err(Wait::Budget(Admission::Contended { pressure: 250 }))
+        ));
+        assert!(
+            admission
+                .try_admit(&fifth, reading(5, Some(20)), at(64), 12)
+                .is_ok()
+        );
+
+        // A job that ends within its first minute no longer counts as starting (review of the CI
+        // admission fix): of four 2-CPU starts one ends, and a fifth starts at once.
+        let admission = Arc::new(CiAdmission::new(Capacity::new(9, 9 * 1024)));
+        let mut running = Vec::new();
+        for secs in 0..4 {
+            let ticket = admission.enqueue(pr, need(2), at(secs));
+            running.push(
+                admission
+                    .try_admit(&ticket, reading(0, None), at(secs), 12)
+                    .ok(),
+            );
+        }
+        let fifth = admission.enqueue(pr, need(2), at(4));
+        assert!(
+            admission
+                .try_admit(&fifth, reading(0, None), at(4), 12)
+                .is_err()
+        );
+        drop(running.pop());
+        assert!(
+            admission
+                .try_admit(&fifth, reading(0, None), at(4), 12)
+                .is_ok(),
+            "the ended job's start is no longer counted"
+        );
+    }
 
     fn names(templates: &[EnvTemplate]) -> Vec<&str> {
         templates.iter().map(|t| t.name.as_str()).collect()

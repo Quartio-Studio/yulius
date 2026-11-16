@@ -499,6 +499,8 @@ pub trait CiStore: Send + Sync {
     ) -> AppResult<bool>;
     /// Replaces the output of a running job.
     async fn set_ci_job_output(&self, id: &str, output: &str) -> AppResult<()>;
+    /// Sets or clears the reason of a `queued` job: what it waits for (SPEC-497 HBA-005).
+    async fn set_queued_ci_job_reason(&self, id: &str, reason: Option<&str>) -> AppResult<()>;
     /// Puts a `running` run and all its jobs back to `queued` (after a server restart, or a job
     /// refused over the disk quota), clearing times and replacing outputs with `note`; `false`
     /// when the run was not running.
@@ -758,6 +760,7 @@ pub trait ExtensionStores:
     + crate::ports::session_docs::SessionDocStore
     + NoteStore
     + SpanStore
+    + crate::ports::notify::ChatLinkStore
 {
 }
 
@@ -782,5 +785,6 @@ impl<T> ExtensionStores for T where
         + crate::ports::session_docs::SessionDocStore
         + NoteStore
         + SpanStore
+        + crate::ports::notify::ChatLinkStore
 {
 }
