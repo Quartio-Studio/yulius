@@ -8,6 +8,9 @@ import sys
 import tarfile
 import tempfile
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from home_lock import exclusive  # noqa: E402
+
 MACHINES = {"amd64": "x86_64", "arm64": "aarch64"}
 
 
@@ -64,10 +67,7 @@ def install(pins, cache, bin_dir, root, machine, opener):
                 "scripts/dev doctor and ci fail until one is pinned")
     name = f"zig-{host}-{version}"
     shared = cache / f"zig-{version}" / name
-    cache.mkdir(parents=True, exist_ok=True)
-    with open(cache / f".zig-{version}.lock", "w") as lock:
-        import fcntl
-        fcntl.flock(lock, fcntl.LOCK_EX)  # parallel tasks wait for one download
+    with exclusive(cache / f".zig-{version}.lock"):  # parallel tasks wait for one download
         if not (shared / "zig").exists():
             fetch(f"https://ziglang.org/download/{version}/{name}.tar.xz", pins[host], shared, cache, opener)
     for link, source in [("zig", shared / "zig"), ("macos-cc", root / "scripts/zig_macos.py"),
