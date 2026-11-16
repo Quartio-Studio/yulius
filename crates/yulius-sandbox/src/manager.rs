@@ -923,6 +923,8 @@ impl Manager {
             .as_mut()
             .ok_or("the sandbox has no running holder: its next run starts Docker afresh")?;
         let net_ns = live.record.net_ns;
+        // Only a front that was stopped makes a restart: one that never ran is merely started.
+        let stopped = live.front.is_some();
         let paths = StatePaths::new(self.state_dir(sandbox));
         let _ = tokio::task::spawn_blocking(move || {
             crate::docker_front::stop(&paths, net_ns);
@@ -931,8 +933,16 @@ impl Manager {
         live.front = None;
         live.repair = crate::front_repair::RepairWatch::default();
         // This restart takes over one still pending: one new front, one count (review round 3).
-        live.restart_pending = None;
+        let stopped = stopped || live.restart_pending.take().is_some();
         self.keep_front(sandbox, state).await;
+        if !stopped {
+            // Nothing was stopped: a front that starts is no restart.
+            return if state.live.as_ref().is_some_and(|live| live.front.is_some()) {
+                Ok(())
+            } else {
+                Err("the sandbox's Docker front did not start; the upkeep tries again".into())
+            };
+        }
         if state.live.as_ref().is_some_and(|live| live.front.is_some()) {
             self.docker_restarts.fetch_add(1, Ordering::Relaxed);
             tracing::warn!(
@@ -2892,6 +2902,46 @@ while True:
         let last = front_of(&manager).await.ok_or("no front after the tick")?;
         kill(last.pid);
         assert_eq!(manager.docker_restarts(), 2, "the late start is counted");
+        Ok(())
+    }
+
+    /// Slice 3 review round 4: a restart asked while no front runs stopped nothing: a front
+    /// started at a later tick is no restart and is not counted.
+    #[tokio::test]
+    async fn an_asked_restart_that_stopped_nothing_is_not_counted_later()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let data = tempfile::tempdir()?;
+        let manager = adopting(data.path(), Ok(()), false)?;
+        // No front can start from the beginning.
+        std::fs::write(data.path().join("fake-yulius"), "#!/bin/sh\necho broken\n")?;
+        assert_eq!(manager.adopt().await, 1);
+        assert!(front_of(&manager).await.is_none());
+        assert!(manager.restart_docker("s1").await.is_err());
+        std::fs::write(data.path().join("fake-yulius"), FAKE_FRONT)?;
+        {
+            let entry = manager.entry("s1");
+            let mut guard = entry.lock().await;
+            manager.keep_front("s1", &mut guard).await;
+        }
+        let front = front_of(&manager).await.ok_or("no front after the tick")?;
+        assert_eq!(
+            manager.docker_restarts(),
+            0,
+            "a late start of nothing stopped"
+        );
+        // Asked with no front to stop, a start that works is no restart either.
+        kill(front.pid);
+        {
+            let entry = manager.entry("s1");
+            let mut guard = entry.lock().await;
+            if let Some(live) = guard.live.as_mut() {
+                live.front = None;
+            }
+        }
+        manager.restart_docker("s1").await?;
+        let started = front_of(&manager).await.ok_or("no front after the ask")?;
+        kill(started.pid);
+        assert_eq!(manager.docker_restarts(), 0);
         Ok(())
     }
 

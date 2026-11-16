@@ -427,3 +427,46 @@ in slice 3's pull request.
 - `npx e2e run tests/shared-needs-you.e2e.ts`: two tasks naming `docker` show as one row naming
   #4 and #12, and each on its own row once answered: failed before (no such row), passes after;
   `attention.e2e.ts`, `navigation.e2e.ts` still pass (22 passed).
+
+### Slice 5 (fronts do not run old code for days)
+
+- `front_repair::tests`: `a_front_from_another_file_runs_another_build` (this test process
+  against its own executable and `/bin/sh`), `a_quiet_front_holds_no_connection_and_runs_no_engine`
+  (from a state file, and from `/proc` for a front without one: a child makes it busy).
+- `an_outdated_front_is_replaced_once_it_is_quiet` (manager, the fake front, whose file is not
+  the server's executable): kept while its state holds connections, replaced (counted) once it
+  holds none.
+- The quiet test first failed only under the shell tool here: its inherited stdin was a socket;
+  the server starts fronts with a null stdin, as the test now does.
+
+### Slice 6 (br_netfilter)
+
+- Reproduced the failure in this sandbox's engine: `docker network create -o
+  com.docker.network.bridge.enable_icc=false t476b` → "cannot restrict inter-container
+  communication or run without the userland proxy: stat /proc/sys/net/bridge/
+  bridge-nf-call-iptables: no such file or directory: set environment variable
+  DOCKER_IGNORE_BR_NETFILTER_ERROR=1 to ignore".
+- `engine::tests::the_engine_gets_its_own_namespaces_capabilities_and_environment` asserts the
+  variable in the engine's argv: failed before, passes after.
+- Not tested here: a network create on an engine started with the variable (this sandbox's
+  engine is started by the production server, not by this branch; it takes it once its front
+  starts again after the update).
+
+### Slice 7 (measures on the instance)
+
+- `give_ways_are_counted_once` (front_gate): each give-way counted once, an adopted front's
+  history not again; `an_asked_restart_starts_a_new_front_and_ends_the_trouble` takes one
+  `restarted` event, once.
+- `the_instance_counts_docker_restarts_give_ways_and_needs_you_per_week` (Cockpit fixture, an
+  isolation reporting events): restarts 2 (one of the production engine), give-ways 5, Docker
+  Needs you 1, in one week; an unknown sandbox's event is dropped.
+- `a_week_is_named_by_its_monday` (the week's Monday, UTC).
+- `npx e2e run tests/pipeline.e2e.ts`: the Docker card's totals and "a week" figures (failed
+  before: no card; 18 passed after).
+
+### Slice 3, review round 4 (approve; its two nits fixed in the next pull request)
+
+PR #1335 approved at 3714d7af1 (round 4, Opus 5.5). Its nits, own code: a restart that stopped no
+front (none ran) is no restart, now or when a later tick starts one
+(`an_asked_restart_that_stopped_nothing_is_not_counted_later`: red before, counted 1); the
+operations line is wrapped.
