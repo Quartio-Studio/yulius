@@ -109,8 +109,9 @@ mode.
   sandboxes grows with the CPUs its running jobs hold, so under contention its CI gets about its
   reservation; agent processes keep their own weight and nice level.
 - **HBA-005** `YULIUS_CI_LANES` stays the bound of runs at once per sandbox, with its host-sized
-  default; it no longer sizes the load, the budget does, so neither the lanes nor a project's
-  `cpus` can overload the host. The job's wait says which part of the budget it waits for.
+  default; it no longer sizes the load, the budget does: neither the lanes nor a project's `cpus`
+  take CI past twice the CI budget's CPUs (HBA-002 as amended), and contention measured by the
+  kernel stops further starts. The job's wait says which part of the budget it waits for.
 
 ### Slice B: a failure outside the change is handled as such
 
@@ -221,7 +222,8 @@ mode.
 ### Slice A: CI never takes more than the host has
 
 - HBA-001, HBA-002: `yulius_domain::resources::{Capacity::ci_budget, admit}`; unit
-  `resources::tests::ci_jobs_are_admitted_by_what_ci_really_holds` (64 CPUs give 56 for CI; four
+  `resources::tests::ci_jobs_are_admitted_by_what_ci_really_holds` (renamed by ADR-0353 to
+  `ci_jobs_are_admitted_by_what_ci_uses_within_a_bounded_worst_case`; 64 CPUs give 56 for CI; four
   16-CPU jobs no longer fit; two jobs that reserved 32 but use 45 hold a 16-CPU job back with
   "CI holds 45 of the host's 56 CPUs for CI (32 reserved, 45 measured); this job needs 16"; memory
   too; a job larger than the budget alone). `App::ci_reserve` (`CiAdmission`, first come first
@@ -338,3 +340,43 @@ mode.
 - Checks run on this head: `cargo fmt --check`; `cargo clippy -D warnings` on `yulius-domain`,
   `yulius-sandbox`, `yulius-app`, `yulius` (all targets); the resources, `ci::` and `cgroup`
   unit tests (116 passed); the whole `local_ci::` suite (79 passed).
+- Its review (Fable 5.2, head e092c94bb). Request changes, all in the patch. Answered:
+  - Major: the slot taken after admission had no test that failed without it.
+    `local_ci::a_job_that_cannot_start_holds_no_slot` (two slots, a CI budget of 3: `a` with 2
+    CPUs runs, `b` with 3 cannot start, `c` with 1 runs beside `a`). With the slot taken before
+    admission (the two lines swapped back) it fails: `b` holds the slot and `c` never starts.
+    The priority's own order is held by `jobs_that_fit_pass_one_that_does_not` and
+    `CiPriority::of`'s doctest; `exec.rs` passes `CiPriority::of(&run.reference)` (read, no test
+    of a merge train's job before a pull request's through the executor).
+  - Minor: the decision index listed 0352 twice, 0353 before 0350. Fixed.
+  - Minor: `architecture.md` described the old rule and wait text: the job waits section, its
+    diagram and the pressure line say what the code does.
+  - Minor: a job that ended in its first minute still counted as starting.
+    `a_started_job_counts_until_the_readings_show_it` drops one of four starts and a fifth starts
+    at once; without `started.retain` in `Reservation::drop` it fails.
+  - Minor: pressure was untested from the port to the decision.
+    `local_ci::a_job_waits_while_cis_processes_wait_for_cpus` (25.0 %: the job waits with "CI's
+    jobs waited for a CPU 25.0 % of the last 10 seconds; a job starts at 10 % or less", then
+    starts at 5 %); with `ci_measured` reading no pressure it fails. Unit
+    `cgroup::tests::cpu_pressure_reads_some_avg10`: no `some` line, `nan`, negative, no `avg10`,
+    over 100 %.
+  - Minor: a counter that went back read as 0 CPUs. It is now a new base, not settled until a
+    window passed (`what_ci_uses_is_measured_over_a_recent_window`).
+  - Minor: a failed read kept the old pressure. It is forgotten
+    (`ci_pressure_is_the_most_any_sandbox_waited`).
+  - Minor: the 10-minute bound holds back the jobs of its priority and lower, not every job: the
+    ADR and the constant's comment say so (the priority order is the decided design).
+  - Direction (memory): the worst-case bound is on CPUs; ADR-0353's consequences and
+    `operations.md` say that `memory_gb` counts at a job's start and measured memory after.
+  - Nits: "a job starts at 10 % or less"; the start allowance's comment; a raised job limit wakes
+    the waiting jobs at once (`ci_resize_slots`).
+  - HBA-005 says what the bounded worst case allows. `scripts/dev mutants` on this head: 87
+    listed, 78 caught, 0 missed, 0 timed out, 9 unviable, 0 not reached (1426 s).
+- HBA-002 as amended, clause by clause: no contention (`Admission::Contended`, unit
+  `ci_jobs_are_admitted_by_what_ci_uses_within_a_bounded_worst_case`,
+  `a_started_job_counts_until_the_readings_show_it`, `local_ci::a_job_waits_while_cis_processes_wait_for_cpus`);
+  the bounded worst case (the same domain unit); room beside measured use and recent starts
+  (`a_started_job_counts_until_the_readings_show_it`,
+  `local_ci::a_job_waits_while_ci_uses_more_than_it_reserved`); the slot after admission
+  (`local_ci::a_job_that_cannot_start_holds_no_slot`); the order and passing
+  (`jobs_that_fit_pass_one_that_does_not`).
