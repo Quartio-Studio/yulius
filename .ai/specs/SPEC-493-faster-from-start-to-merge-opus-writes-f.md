@@ -1697,3 +1697,48 @@ Both are checked on current `dev` first and fixed test-first if they still hold.
   - The delta review (Opus 5.5) approved `2533a0f48`, which merged as #1346. Its two nits are in
     fix 9's pull request: the off-Unix sentence above is corrected, and the `--tests` hint is
     printed only where the product's tests were narrowed (`filter.is_some()`).
+
+### Fix 9: two tasks do not edit the same files unknowingly
+
+- SCO-001: each overlap in `scope_claim`'s answer now carries the holder's `their_step` (the
+  step in progress) and `their_pull_request` (number, stage, `merge_armed`; null without one)
+  (`App::holder_state`), beside its number, title, pattern and note. The advice is
+  `OVERLAP_ADVICE` (SCO-003).
+  - The holder is told by `App::tell_holder`: one typed Yulius note per holder, claimer and
+    sorted path pairs (`scope_told` on `App`). It retries for about two minutes while the
+    session does not take typed text, and a note never typed is tried again at the next claim.
+  - AC-21 with real fake-agent sessions: `scope_overlaps::an_overlapping_claim_is_told_to_both_tasks`.
+    Task B claims `crates/a/**` while A holds `crates/a/src/x.rs` with a note and a step in
+    progress: B's answer names them and no pull request; A's screen shows the note once, and a
+    second claim of the same paths types nothing more within 25 s, past one retry.
+  - `mcp_coordination`'s "MSR-002" assertion is reworded: no person's message, the note is
+    Yulius's.
+- SCO-002: `TaskSummary.overlaps` (`ClaimOverlap`: the other live task's number and title, this
+  task's patterns), built for live tasks (`App::claim_overlaps`); both tasks are published on a
+  claim and on a release.
+  - The web's `taskInfo` labels the task "… · overlaps #N", on its header, its row and the
+    sidebar; the mock carries `overlaps`.
+  - Tests: the same test asserts both views and that a release empties both; e2e
+    `task-done.e2e.ts` "a task whose claims overlap those of another says so" (removing the
+    label fails it).
+  - A task that stops being live drops out of the others' marks at their next publish or list
+    read, not at once.
+- SCO-003: the rule's sentence is in `scope_claim`'s description and `delivery-pipeline`; the
+  briefing's line is reworded in place to its short form ("on an overlap, wait for the other's PR
+  or agree by claim note"; the briefing's budget tests pass).
+  `skills::every_place_says_what_to_do_on_an_overlap` holds the three.
+- SCO-004: `task_create` takes `paths` (at most 50 globs, as `scope_claim` takes them) and
+  `start_anyway`.
+  - When a live or waiting task (any not closed) holds any of the paths and no `after_task` is
+    given, nothing is made: `created: false`, the overlaps, and the offer of `after_task: N` or
+    `start_anyway: true`. Otherwise the task is made and its paths claimed.
+  - Tests (AC-22, same test): an overlap is refused with the offer naming A; with `after_task`
+    the task is made `Chained` and holds its claim; `/etc` is refused.
+- Mutations, each fails the test: the step left out; the overlaps of a view emptied; the planned
+  overlaps never found; the new task's claims not written; the holder not told; the told-once
+  check skipped. The last survived a 5 s look and is caught by the 25 s one.
+- `scripts/dev mutants` on this head (MUT-002): "mutants: 71 listed, 35 caught, 0 missed, 0
+  timed out, 36 unviable, 0 not reached (bound 30 min, took 745 s)".
+- ADR-0348 (amends SPEC-012 MSG-002), api.md, changes. How to read it a week later: the share of
+  merged pull requests that hit a conflict, `audit_log` actions `delivery.conflict` per merged
+  pull request (baseline 29 of 60 in quartio-v2, 7 of 42 here).
