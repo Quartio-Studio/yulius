@@ -1671,6 +1671,7 @@ async fn a_cockpit_manages_the_project_for_its_owner() -> TestResult {
             "ci_rerun",
             "ci_run",
             "ci_runs",
+            "docker_restart",
             "instance",
             "instance_update",
             "merge_queue",
