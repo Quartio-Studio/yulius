@@ -149,7 +149,7 @@ pub fn runs_another_build(pid: u32, exe: &Path) -> Option<bool> {
 /// besides says nothing (an idle one holds four). Review round 1 of slices 5 to 7. Besides the
 /// relay front's limit (see `connections_on`), only the moment after the read is not covered: a
 /// Docker call that comes between it and the new front's `ready` fails at once (its socket missing
-/// or refused, or cut once the old front accepted it) and can be run again.
+/// or refused, or cut once it had connected, accepted or still waiting) and can be run again.
 #[must_use]
 pub fn quiet(
     state: Option<&yulius_contracts::sandbox::DockerFrontState>,

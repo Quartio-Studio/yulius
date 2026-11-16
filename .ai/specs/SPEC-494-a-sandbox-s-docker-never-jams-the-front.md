@@ -182,8 +182,8 @@ ever reaches it).
   A relay front (a legacy holder's, ADR-0158) has no such child: a client of it from another
   namespace is seen only in its state, and before ADR-0344 not at all. Besides that, nothing is lost
   then, short of a Docker call that comes between that read and the new front's `ready`: it fails at
-  once (its socket missing or refused, or cut once the old front accepted it) and can be run again.
-  A busy one is kept and the journal says so once a day.
+  once (its socket missing or refused, or cut once it had connected, accepted or still waiting) and
+  can be run again. A busy one is kept and the journal says so once a day.
 
 ### br_netfilter (slice 6)
 
@@ -231,6 +231,7 @@ ever reaches it).
 - [x] The follow-up reviewed independently, findings fixed test-first
 - [x] The quiet texts name the relay limit; the fake front's writer is always reaped
 - [x] The last notes' fix reviewed independently
+- [x] The last wording nits fixed and reviewed
 
 ## Acceptance criteria
 
@@ -646,6 +647,11 @@ in 2240 runs at that head and 13 in 640 with the binary from before the fix. Its
 - `put_executable` reaps its writer whatever the write did, and only then reports the write's
   error.
 - Round 2's record no longer quotes the earlier wording as current.
+
+PR #1343 was approved at aee7eaa8b; its run 5b0e73d7 passed and it merged at that head. Its two
+wording nits are fixed. The window now also names a call still waiting in the backlog, which a
+probe showed cut with `Connection reset by peer`: "cut once it had connected, accepted or still
+waiting". The manager's comment names the relay front's limit too.
 
 ### On the instance
 
