@@ -68,6 +68,8 @@ const CAPTURED: &str = concat!(
 #[derive(Default)]
 struct Profile {
     asked: Mutex<Vec<String>>,
+    /// Usage readings asked for.
+    fetched: std::sync::atomic::AtomicUsize,
 }
 
 impl Profile {
@@ -79,6 +81,7 @@ impl Profile {
 #[async_trait]
 impl UsageProbe for Profile {
     async fn fetch(&self, _: Provider, _: &Secret) -> Result<AccountUsage, UsageFailure> {
+        self.fetched.fetch_add(1, Ordering::SeqCst);
         Err(UsageFailure::not_shared())
     }
 
@@ -491,6 +494,44 @@ async fn a_malformed_body_never_echoes_the_token() -> TestResult {
         record(&w, &id).await?.credential.is_none(),
         "nothing was stored"
     );
+    Ok(())
+}
+
+/// TKP-005: a pasted token's usage is read right after it is stored, a new subscription's and a
+/// replaced one's alike, as after a sign-in in the terminal.
+#[tokio::test]
+async fn a_pasted_token_has_its_usage_read_at_once() -> TestResult {
+    let w = world().await?;
+    let created = paste(&w, "read me", PASTED).await?;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
+    let read = || {
+        let n = w.profile.fetched.load(Ordering::SeqCst);
+        async move { n }
+    };
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while read().await < 1 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .map_err(|_| "the new subscription's usage was not read")?;
+    let id = created.body["account"]["id"].as_str().ok_or("id")?;
+    let replaced = call(
+        &w.h.router,
+        Method::PUT,
+        &format!("/api/admin/accounts/{id}/token"),
+        Some(json!({"token": WITH_EMAIL})),
+        &w.admin,
+    )
+    .await?;
+    assert_eq!(replaced.status, StatusCode::OK, "{}", replaced.body);
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while read().await < 2 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .map_err(|_| "the replaced token's usage was not read")?;
     Ok(())
 }
 
