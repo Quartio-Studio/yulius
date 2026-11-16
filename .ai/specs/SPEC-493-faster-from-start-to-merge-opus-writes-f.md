@@ -427,6 +427,7 @@ Both are checked on current `dev` first and fixed test-first if they still hold.
 - [ ] Fix 6's independent review answered test-first
 - [ ] Fix 7: a limit that cuts a subagent off is the session's news, and a cut-off reviewer is resumed after the move (RLM-001, RLM-002)
 - [ ] Fix 7: a review does not start on a subscription about to run out; the rules say resume, never restart, high effort (RLM-003, RLM-004)
+- [ ] Fix 7's review round 1 answered test-first: a reviewer's limit is its model's, its state ends with its round, the turn's end moves
 - [ ] Fix 7's independent review answered test-first
 - [ ] Fix 8: scripts/dev mutants, one bounded mutation run on the changed lines, measured (MUT-001)
 - [ ] Fix 8: the rules: once per pull request, the result in the Evidence, no campaign by the reviewer (MUT-002)
@@ -1479,3 +1480,118 @@ Both are checked on current `dev` first and fixed test-first if they still hold.
     also make tests count. That errs towards a review round, which the ADR now says.
   - N3. Nit, taken: ADR-0345's wording ("can grow freely … as long as no added product line has
     a loading word"; "has a loading word … whether or not it loads anything").
+
+### Fix 7: a review survives a usage limit
+
+- RLM-001: `Observation::SubagentCutOff` carries the limit (reset, window, what it binds); a
+  limit of "the model that ran" names the family of the model that answered the subagent (unit
+  `a_subagents_model_and_its_cut_off_are_read_from_its_transcript`: a five-hour refusal binds the
+  subscription, a credits refusal after Fable 5.2 answers binds Fable). The watcher
+  (`App::subagent_limit`, live lines only) records it on the subscription for that family; one
+  that binds the session's model goes through `limit_met`, as any limit.
+- RLM-002: `App::reviewer_cut_off` keeps an open round's cut-off reviewer on the run
+  (`cut_off_reviewer`); a limit of another family than the session's moves the session
+  (`move_for_reviewer` when idle, else the Stop hook at the turn's end, after reading the turn's
+  lines while a round is open). `move_to_also_run` picks the subscription; background work or a
+  queued prompt puts the move off to a later turn's end. The relaunch's prompt
+  (`reviewer_resume_prompt`, also after a limit of the session's own model) names the reviewer's
+  id and `SendMessage`, and says not to start a new one; `SubagentStart` or `SubagentStop` of that
+  id forgets it. With no subscription that runs the model, the session is told to start the
+  review again, which runs on Opus 5.5 (typed when the session takes text, about two minutes of
+  tries).
+  - AC-18, real processes (`review_rounds::real`, the fake agent's `/reviewer-limit` and
+    `/reviewer-limit-turn`: a `SubagentStart`, one answer on Fable 5.2 and the credits refusal
+    `/credits-out` writes, in the reviewer's own transcript, no `SubagentStop`):
+    `a_cut_off_reviewer_moves_the_session_and_is_resumed_there` (moved to the second
+    subscription, switch `review_resume`, the first's Fable window at 100 %, the new process's
+    prompt names `SendMessage to `arev…``), `a_reviewer_cut_off_in_a_turn_moves_the_session_at_its_end`
+    (the Stop hook's path) and `a_cut_off_reviewer_nobody_can_run_is_told_to_go_on_on_opus`
+    (nothing moves; the note is typed).
+  - Mutations, each fails a test: the family of the answered model, the reviewer noted, the
+    limit recorded for another family, the reviewer named at the relaunch, the move itself, the
+    Stop hook's move.
+  - With the real CLI: the facts the fake agent copies were measured on Claude Code 2.1.325
+    (2026-11-15, `$HOME/.cache/yulius-task-472/probe`: no `SubagentStop` at a limit, the refusal
+    in the subagent's transcript, `SendMessage` resumes on the same model after `--resume`). The
+    whole flow was not run against the real CLI: its limit needs a subscription that runs out.
+- RLM-003: `rotation::move_with_room_for` (unit `a_review_moves_only_to_room_for_its_reviewer`);
+  `start_review_round` refuses a reviewer on a subscription `Tier::Tight` for its model when
+  another has known room, and the session moves (`MOVE_FOR_ROOM`, `review_room`, it interrupts
+  like the Fable move). The Fable move and this one share `decide_move`. AC-19:
+  `a_round_about_to_run_out_moves_the_session_first` (real processes: 3 points left for Fable,
+  moved, asked to start again), `a_tight_round_with_nowhere_roomier_starts_where_it_is`,
+  `a_tight_round_with_work_running_starts_where_it_is`. Three mutations, each fails one.
+- RLM-004: the rule's sentence in `delivery-pipeline`, `om-code-review`, `yulius-review`,
+  `yulius-git`, the workflow, git.md and AGENTS.md; `skills::every_place_says_resume_a_cut_off_reviewer`
+  holds them and `REVIEWER_EFFORT` (high, set by fix 1b's agent definitions).
+- ADR-0346, changes. How to read it a week later: the analytics read's share of first rounds
+  with no report (baseline 14 of 86 at high effort) and its rounds per pull request; `SELECT
+  reason, count(*) FROM switch_decisions WHERE reason IN ('review_resume', 'review_room') GROUP
+  BY reason` counts the moves.
+- Fix 6's round-7 nit is in: the decisions index lists 0343 before 0344.
+- Review round 1 (Opus 5.5 while Fable's weekly limit holds, head `a5b584050`): request changes,
+  3 majors and 3 minors in own code, each answered test-first. The mutations below each fail a
+  test, unless the item says otherwise.
+  - M1. Major: a credits refusal before any answer of the subagent (refused at its first
+    request, or resumed in a new run) read as the session's limit.
+    - The fix: a limit of "the model that ran" of an open round's reviewer is of its round's
+      model (`open_round_reviewer`). One of a subagent whose model cannot be told is no one's:
+      `subagent_limit` records nothing and moves nothing.
+    - Tests: `a_reviewer_refused_before_any_answer_meets_its_own_models_limit` (fake
+      `/reviewer-limit-first`: Fable recorded, Opus not, the first subscription not limited),
+      and the unknown-subagent case of `a_superseded_reviewer_and_an_unknown_subagent_change_nothing_else`
+      (nothing moves, nothing limited).
+  - M2. Major: the cut-off reviewer state outlived its round.
+    - The fix: `forget_cut_off_reviewer` runs at every reviewer start (so a superseded reviewer
+      is never named, also after a Fable or room move), and at a launch whose reviewer's round
+      is no longer open or that starts afresh (the launch checks the round).
+    - A successful move takes the due flag, so no second move follows. The check "stay where
+      the reviewer's model can run" the reviewer suggested is therefore not added: nothing can
+      reach it.
+    - Test: the superseded case (the new start moves for Fable, and its prompt names no
+      reviewer to resume).
+  - M3. Major: the idle path could cut a session about to work.
+    - The fix: with hooks the move is the Stop hook's alone. Claude Code wakes the thread with
+      the reviewer's failed task notification (probe), and that turn's Stop decides it with the
+      gate's answer and the hold. Cut-offs are read after the thread's own lines of the same
+      read, so a turn they start is under way.
+    - Without hooks: `move_for_reviewer`, idle as `move_idle_session` reads it (prompt mode,
+      Running, Waiting, no goal of its person's, no turn), tried again every
+      `reviewer_move_retry_ms` (5 s) for about ten minutes while due. This path has no real-
+      process test (the fake agent runs with hooks); the "Waiting" condition's mutation
+      survives for that reason.
+    - Tests: every cut-off test now moves at a turn's end, with retries set beyond the run.
+      Dropping the Stop hook's move fails them.
+  - m1. The texts' line continuations, lost in writing, are back. Unit
+    `a_cut_off_reviewer_is_told_in_whole_sentences` holds both texts as whole sentences with
+    no run of spaces.
+  - m2. The resume prompt claims nothing of the subscription: "a new process (a move to
+    another Claude subscription or a restart)".
+  - m3. Tests:
+    - the idle variants wait for a real turn's end;
+    - a five-hour limit in the reviewer's transcript (`/reviewer-limit-all`) moves as any limit,
+      with the first subscription limited;
+    - `a_hand_over_interrupts_like_a_persons_switch` now holds `MOVE_FOR_ROOM` (interrupts)
+      and `REVIEW_RESUME` (does not);
+    - no test of background work or a queued prompt putting the move off: that is the same
+      check as the Stop hook's own switch, tested there.
+  - n1. A failed switch for a reviewer is due again (both paths).
+  - A race found on the way: the limit is now recorded before the reviewer's move is decided.
+    Otherwise the session's subscription could still read as running Fable.
+  - p1, answered in words: pre-existing on dev since fix 1d (REV-007's "Do nothing else now"
+    when the live run changed before the spawned switch). The room move inherits it; it is
+    left as it is in this change.
+- Review round 2 (Opus 5.5, head `24b419d71`): request changes. Every round-1 finding is closed
+  in the code, and the reviewer accepts M2's answer and p1. Two new findings, both answered:
+  - Major (tests): nothing held "with hooks, never move outside a turn's end". The cut-off test
+    now looks for 6 s, longer than a watcher poll and the background check, while the session
+    waits and nothing is typed: no switch, one run. Only then does a turn end, and the
+    `review_resume` move follows. An injected move at the cut-off fails it.
+  - Minor (the no-hooks idle path untested): the path is unreachable and is removed. A review
+    round exists only with hooks: its start is the `PreToolUse` of the Agent tool, and its
+    subagent is linked by `SubagentStart`. So a cut-off reviewer is always one of a session
+    with hooks, whose thread Claude Code wakes with the failed task notification.
+    - Removed: `move_for_reviewer` and its retries, `reviewer_session_idle`, the
+      `reviewer_move_retry_ms` setting and `turn_ended`'s branch.
+    - The Stop hook is the only path that moves, and ADR-0346 says so. RLM-002's "at once when
+      idle" is that woken turn's end.

@@ -658,6 +658,56 @@ async fn a_round_on_an_unknown_subscription_starts_as_asked() -> TestResult {
     Ok(())
 }
 
+/// SPEC-493 RLM-003 (AC-19): a round on a subscription with 3 points of room left for its
+/// reviewer's model, where no other subscription has more, starts as asked, where it is.
+#[tokio::test]
+async fn a_tight_round_with_nowhere_roomier_starts_where_it_is() -> TestResult {
+    let h = harness()?;
+    seed(&h).await?;
+    let tight = |used: f64| {
+        json!({"primary": {"used_percent": used, "window_minutes": 300,
+            "resets_at": 4_102_444_800_000_i64}})
+        .to_string()
+    };
+    let account = add_account(&h, "acc-1", Some(tight(95.0))).await?;
+    add_account(&h, "acc-2", Some(tight(96.0))).await?;
+    let task = running_task(&h, TaskMode::Prompt, &account).await?;
+    let (_, _, answer) = hook(&h.internal, "PreToolUse", agent_start("yulius-reviewer")).await?;
+    assert_ne!(
+        answer["hookSpecificOutput"]["permissionDecision"], "deny",
+        "{answer}"
+    );
+    let open = rounds(&h, &task, true).await?;
+    assert_eq!((open.len(), open[0].agent.as_str()), (1, "yulius-reviewer"));
+    assert!(h.store.switches(&task).await?.is_empty());
+    Ok(())
+}
+
+/// SPEC-493 RLM-003: a move for room gives way to the session's work: with background work
+/// running, the round starts where it is rather than being refused.
+#[tokio::test]
+async fn a_tight_round_with_work_running_starts_where_it_is() -> TestResult {
+    let h = harness()?;
+    seed(&h).await?;
+    let used = |percent: f64| {
+        json!({"primary": {"used_percent": percent, "window_minutes": 300,
+            "resets_at": 4_102_444_800_000_i64}})
+        .to_string()
+    };
+    let account = add_account(&h, "acc-1", Some(used(95.0))).await?;
+    add_account(&h, "acc-2", Some(used(20.0))).await?;
+    let task = running_task(&h, TaskMode::Prompt, &account).await?;
+    h.app.background_agents_observed(&task, 1).await;
+    let (_, _, answer) = hook(&h.internal, "PreToolUse", agent_start("yulius-reviewer")).await?;
+    assert_ne!(
+        answer["hookSpecificOutput"]["permissionDecision"], "deny",
+        "{answer}"
+    );
+    assert_eq!(rounds(&h, &task, true).await?.len(), 1);
+    assert!(h.store.switches(&task).await?.is_empty());
+    Ok(())
+}
+
 /// SPEC-493 REV-004: what the reviewer's transcript says is noted on its round: the model that
 /// answered (the latest), and that a usage limit cut it off, which its later report keeps.
 #[tokio::test]
@@ -990,6 +1040,365 @@ mod real {
             let switches = app.deps.store.switches(&id).await?;
             assert_eq!(switches.len(), 1, "{switches:?}");
             assert_eq!(switches[0].reason, "review_fable");
+            stop(&app, &id).await?;
+            Ok::<_, Box<dyn std::error::Error>>(())
+        })?;
+        rt.shutdown_timeout(Duration::from_secs(5));
+        Ok(())
+    }
+
+    /// SPEC-493 RLM-001, RLM-002 (AC-18) end to end: a real session on Opus runs its Fable
+    /// reviewer, which a refusal of Fable's credits cuts off in its own transcript. The limit is
+    /// recorded on the subscription for Fable, the session moves to the one that runs both
+    /// models, and its new process is told to resume that reviewer by its id with
+    /// `SendMessage`, not to start a new one.
+    #[test]
+    fn a_cut_off_reviewer_moves_the_session_and_is_resumed_there() -> TestResult {
+        a_cut_off_reviewer(true, b"/reviewer-limit yulius-reviewer\r")
+    }
+
+    /// RLM-002 with no subscription that can run Fable: nothing moves, and the session is told
+    /// to start the review again, which then runs on Opus 5.5 (REV-007).
+    #[test]
+    fn a_cut_off_reviewer_nobody_can_run_is_told_to_go_on_on_opus() -> TestResult {
+        a_cut_off_reviewer(false, b"/reviewer-limit yulius-reviewer\r")
+    }
+
+    /// Review round 1 of fix 7: a reviewer refused at its first request, before any answer of
+    /// it is read, meets its round's model's limit, not the session's.
+    #[test]
+    fn a_reviewer_refused_before_any_answer_meets_its_own_models_limit() -> TestResult {
+        a_cut_off_reviewer(true, b"/reviewer-limit-first yulius-reviewer\r")
+    }
+
+    /// RLM-001, RLM-002: a reviewer's limit of the whole subscription is the session's too: it
+    /// moves as at any limit, and the new process is told to resume its reviewer.
+    #[test]
+    fn a_reviewer_limit_of_the_subscription_moves_as_any_limit() -> TestResult {
+        a_cut_off_reviewer(true, b"/reviewer-limit-all yulius-reviewer\r")
+    }
+
+    /// RLM-002: a cut-off read in a turn of the session's thread moves it at that turn's end
+    /// (its Stop hook), not while it works.
+    #[test]
+    fn a_reviewer_cut_off_in_a_turn_moves_the_session_at_its_end() -> TestResult {
+        a_cut_off_reviewer(true, b"/reviewer-limit-turn yulius-reviewer\r")
+    }
+
+    /// SPEC-493 RLM-003 (AC-19) end to end: the session's subscription has room for Opus but 3
+    /// points left for Fable, another has room for both. The Fable reviewer's start is refused,
+    /// the session moves, and its first prompt there asks for the review again.
+    #[test]
+    fn a_round_about_to_run_out_moves_the_session_first() -> TestResult {
+        let fake =
+            locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+        let (_dir, data) = temp()?;
+        let rt = runtime()?;
+        rt.block_on(async {
+            let probe = Arc::new(ScriptedUsage::default());
+            let agent = FakeAgentOptions {
+                resume_prompts: true,
+                ..hooked()
+            };
+            let (app, _port) = start_with(&data, &fake, agent, 0, probe.clone(), |config| {
+                config.claude_code_queue_record_ms = 0;
+            })
+            .await?;
+            let (sandbox, user) = seed(&app, &data, &["a-first", "b-second"]).await?;
+            let mut first = usage(5.0, 4 * HOUR, 10.0, 100);
+            first.weekly_fable = Some(UsageWindow {
+                used_percent: Some(95.0),
+                window_minutes: Some(10_080),
+                resets_at: first.secondary.as_ref().and_then(|w| w.resets_at),
+            });
+            probe.set("a-first", first);
+            probe.set("b-second", usage(40.0, 4 * HOUR, 50.0, 100));
+            refresh(&app, &user, "a-first").await?;
+            refresh(&app, &user, "b-second").await?;
+            let id = new_task(&app, &sandbox, &user, "Review it", TaskMode::Prompt).await?;
+            ready(&app, &id).await?;
+            assert_eq!(run_accounts(&app, &id).await, [Some("a-first".to_owned())]);
+            app.send_input(&id, b"/agent yulius-reviewer\r").await?;
+            live_run(&app, &id, 2).await?;
+            assert_eq!(
+                run_accounts(&app, &id).await,
+                [Some("a-first".to_owned()), Some("b-second".to_owned())]
+            );
+            let asked = wait_for("the prompt", Duration::from_secs(30), || async {
+                screen(&app, &id).contains("with room for Fable 5.2 for the review round you asked")
+            })
+            .await;
+            assert!(asked.is_ok(), "{}", screen(&app, &id));
+            wait_for("the completed switch", Duration::from_secs(30), || async {
+                app.deps.store.switches(&id).await.is_ok_and(|switches| {
+                    switches.iter().any(|switch| switch.outcome == "completed")
+                })
+            })
+            .await?;
+            let switches = app.deps.store.switches(&id).await?;
+            assert_eq!(switches.len(), 1, "{switches:?}");
+            assert_eq!(switches[0].reason, "review_room");
+            stop(&app, &id).await?;
+            Ok::<_, Box<dyn std::error::Error>>(())
+        })?;
+        rt.shutdown_timeout(Duration::from_secs(5));
+        Ok(())
+    }
+
+    /// Review round 1 of fix 7: a cut-off reviewer superseded by a new one is forgotten (here
+    /// the new start moves the session for Fable, REV-007, whose prompt asks for the review
+    /// again and names no reviewer to resume); a subagent that is no round's, refused before any
+    /// answer, is no one's limit: nothing moves.
+    #[test]
+    fn a_superseded_reviewer_and_an_unknown_subagent_change_nothing_else() -> TestResult {
+        for (superseded, cut_off) in [
+            (true, &b"/reviewer-limit yulius-reviewer\r"[..]),
+            (false, &b"/reviewer-limit-first Explore\r"[..]),
+        ] {
+            let fake =
+                locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+            let (_dir, data) = temp()?;
+            let rt = runtime()?;
+            rt.block_on(async {
+                let probe = Arc::new(ScriptedUsage::default());
+                let agent = FakeAgentOptions {
+                    resume_prompts: true,
+                    transcript: true,
+                    ..hooked()
+                };
+                let (app, _port) = start_with(&data, &fake, agent, 0, probe.clone(), |config| {
+                    config.claude_code_queue_record_ms = 0;
+                })
+                .await?;
+                let (sandbox, user) = seed(&app, &data, &["a-first", "b-second"]).await?;
+                probe.set("a-first", usage(5.0, 4 * HOUR, 10.0, 100));
+                probe.set("b-second", usage(40.0, 4 * HOUR, 50.0, 100));
+                refresh(&app, &user, "a-first").await?;
+                refresh(&app, &user, "b-second").await?;
+                let id = new_task(&app, &sandbox, &user, "Review it", TaskMode::Prompt).await?;
+                ready(&app, &id).await?;
+                // A first turn, read live: the transcript is followed from here on.
+                app.send_input(&id, b"hello\r").await?;
+                wait_for("the session waiting", Duration::from_secs(30), || async {
+                    app.deps.store.task(&id).await.is_ok_and(|task| {
+                        task.is_some_and(|task| {
+                            task.activity == Some(yulius_domain::task::Activity::Waiting)
+                        })
+                    })
+                })
+                .await?;
+                app.send_input(&id, cut_off).await?;
+                let cut = wait_for("the cut-off", Duration::from_secs(30), || async {
+                    screen(&app, &id).contains("CUT OFF")
+                })
+                .await;
+                assert!(cut.is_ok(), "{}", screen(&app, &id));
+                if superseded {
+                    // The cut-off is read: the first subscription is out of Fable.
+                    wait_for("Fable recorded", Duration::from_secs(30), || async {
+                        app.deps
+                            .store
+                            .account(
+                                &yulius_domain::ids::AccountId::parse("a-first")
+                                    .unwrap_or_else(|_| unreachable!()),
+                            )
+                            .await
+                            .ok()
+                            .flatten()
+                            .and_then(|a| a.usage_json)
+                            .is_some_and(|json| {
+                                yulius_app::usage_json::from_json(&json)
+                                    .weekly_fable
+                                    .and_then(|w| w.used_percent)
+                                    == Some(100.0)
+                            })
+                    })
+                    .await?;
+                    app.send_input(&id, b"/agent yulius-reviewer\r").await?;
+                    live_run(&app, &id, 2).await?;
+                    let asked = wait_for("the prompt", Duration::from_secs(30), || async {
+                        screen(&app, &id).contains("for the review round you asked for")
+                    })
+                    .await;
+                    let seen = screen(&app, &id);
+                    assert!(asked.is_ok(), "{seen}");
+                    assert!(!seen.contains("SendMessage to `arev"), "{seen}");
+                    let switches = app.deps.store.switches(&id).await?;
+                    assert_eq!(switches[0].reason, "review_fable", "{switches:?}");
+                } else {
+                    app.send_input(&id, b"carry on\r").await?;
+                    let moved = wait_for("no move", Duration::from_secs(10), || async {
+                        app.deps
+                            .store
+                            .attempts(&id)
+                            .await
+                            .is_ok_and(|a| a.len() > 1)
+                    })
+                    .await;
+                    assert!(moved.is_err(), "the session moved for a limit not its own");
+                    let first = app
+                        .deps
+                        .store
+                        .account(&yulius_domain::ids::AccountId::parse("a-first")?)
+                        .await?
+                        .ok_or("a-first")?;
+                    assert_ne!(first.status, yulius_app::model::AccountStatus::Limited);
+                }
+                stop(&app, &id).await?;
+                Ok::<_, Box<dyn std::error::Error>>(())
+            })?;
+            rt.shutdown_timeout(Duration::from_secs(5));
+        }
+        Ok(())
+    }
+
+    /// Whether the task's second run was started.
+    async fn second_run_started(
+        app: &yulius_app::context::App,
+        id: &yulius_domain::ids::TaskId,
+    ) -> bool {
+        app.deps
+            .store
+            .attempts(id)
+            .await
+            .is_ok_and(|attempts| attempts.len() > 1)
+    }
+
+    /// The RLM-002 tests: the second subscription runs Fable or does not; `command` cuts the
+    /// reviewer off while the session is idle or inside a turn.
+    fn a_cut_off_reviewer(second_runs_fable: bool, command: &'static [u8]) -> TestResult {
+        let fake =
+            locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+        let (_dir, data) = temp()?;
+        let rt = runtime()?;
+        rt.block_on(async {
+            let probe = Arc::new(ScriptedUsage::default());
+            let agent = FakeAgentOptions {
+                resume_prompts: true,
+                transcript: true,
+                ..hooked()
+            };
+            let (app, _port) = start_with(&data, &fake, agent, 0, probe.clone(), |config| {
+                config.claude_code_queue_record_ms = 0;
+            })
+            .await?;
+            let (sandbox, user) = seed(&app, &data, &["a-first", "b-second"]).await?;
+            probe.set("a-first", usage(5.0, 4 * HOUR, 10.0, 100));
+            let mut second = usage(40.0, 4 * HOUR, 50.0, 100);
+            if !second_runs_fable {
+                second.weekly_fable = Some(UsageWindow {
+                    used_percent: Some(100.0),
+                    window_minutes: Some(10_080),
+                    resets_at: second.secondary.as_ref().and_then(|w| w.resets_at),
+                });
+            }
+            probe.set("b-second", second);
+            refresh(&app, &user, "a-first").await?;
+            refresh(&app, &user, "b-second").await?;
+            let id = new_task(&app, &sandbox, &user, "Review it", TaskMode::Prompt).await?;
+            ready(&app, &id).await?;
+            assert_eq!(run_accounts(&app, &id).await, [Some("a-first".to_owned())]);
+            // A first turn, after which the session waits for its person (idle), as a session
+            // does while its background reviewer reads.
+            app.send_input(&id, b"hello\r").await?;
+            wait_for("the session waiting", Duration::from_secs(30), || async {
+                app.deps.store.task(&id).await.is_ok_and(|task| {
+                    task.is_some_and(|task| {
+                        task.activity == Some(yulius_domain::task::Activity::Waiting)
+                    })
+                })
+            })
+            .await?;
+            // Sent as the agent works, not typed by a person (whose typing holds Yulius back).
+            app.send_input(&id, command).await?;
+            let cut = wait_for("the cut-off reviewer", Duration::from_secs(30), || async {
+                screen(&app, &id).contains("CUT OFF")
+            })
+            .await;
+            assert!(cut.is_ok(), "{}", screen(&app, &id));
+            // While the session waits, nothing moves: only a turn's end does (review round 2 of
+            // fix 7). Longer than a watcher poll and the background check.
+            if command == b"/reviewer-limit yulius-reviewer\r" && second_runs_fable {
+                let early = wait_for(
+                    "a move outside a turn's end",
+                    Duration::from_secs(6),
+                    || second_run_started(&app, &id),
+                )
+                .await;
+                assert!(early.is_err(), "the session moved while it waited");
+                assert!(app.deps.store.switches(&id).await?.is_empty());
+            }
+            // The turn Claude Code starts with the reviewer's failed task notification; its
+            // Stop hook makes the move (an in-turn cut-off ends its own turn).
+            if !command.starts_with(b"/reviewer-limit-turn ") {
+                app.send_input(&id, b"carry on\r").await?;
+            }
+            if !second_runs_fable {
+                // Nowhere to move: the session stays and is told the round runs on Opus.
+                let told = wait_for("the Opus note", Duration::from_secs(30), || async {
+                    let seen = screen(&app, &id);
+                    seen.contains("no Claude subscription can run Fable 5.2 now")
+                        && seen.contains("this round then runs on Opus 5.5")
+                })
+                .await;
+                assert!(told.is_ok(), "{}", screen(&app, &id));
+                assert!(app.deps.store.switches(&id).await?.is_empty());
+                assert_eq!(run_accounts(&app, &id).await, [Some("a-first".to_owned())]);
+                stop(&app, &id).await?;
+                return Ok::<_, Box<dyn std::error::Error>>(());
+            }
+            live_run(&app, &id, 2).await?;
+            assert_eq!(
+                run_accounts(&app, &id).await,
+                [Some("a-first".to_owned()), Some("b-second".to_owned())]
+            );
+            let told = wait_for("the resume prompt", Duration::from_secs(30), || async {
+                let seen = screen(&app, &id);
+                seen.contains("Resume that reviewer now: SendMessage to `arev")
+                    && seen.contains("Do not start a new reviewer for this round")
+            })
+            .await;
+            assert!(told.is_ok(), "{}", screen(&app, &id));
+            wait_for("the completed switch", Duration::from_secs(30), || async {
+                app.deps.store.switches(&id).await.is_ok_and(|switches| {
+                    switches.iter().any(|switch| switch.outcome == "completed")
+                })
+            })
+            .await?;
+            let switches = app.deps.store.switches(&id).await?;
+            assert_eq!(switches.len(), 1, "{switches:?}");
+            let first = app
+                .deps
+                .store
+                .account(&yulius_domain::ids::AccountId::parse("a-first")?)
+                .await?
+                .ok_or("a-first")?;
+            if command.starts_with(b"/reviewer-limit-all ") {
+                // The subscription's own limit: the session moved as at any limit, and is told
+                // to resume its reviewer all the same.
+                assert_ne!(switches[0].reason, "review_resume", "{switches:?}");
+                assert_eq!(first.status, yulius_app::model::AccountStatus::Limited);
+                stop(&app, &id).await?;
+                return Ok::<_, Box<dyn std::error::Error>>(());
+            }
+            assert_eq!(switches[0].reason, "review_resume");
+            // The limit is Fable's on the first subscription, which Opus may still use.
+            let read =
+                yulius_app::usage_json::from_json(first.usage_json.as_deref().unwrap_or("{}"));
+            assert_eq!(
+                read.weekly_fable.and_then(|w| w.used_percent),
+                Some(100.0),
+                "{:?}",
+                first.usage_json
+            );
+            // Nor is it the session's: Opus is not out there (review round 1 of fix 7).
+            assert_ne!(
+                read.weekly_opus.and_then(|w| w.used_percent),
+                Some(100.0),
+                "{:?}",
+                first.usage_json
+            );
+            assert_ne!(first.status, yulius_app::model::AccountStatus::Limited);
             stop(&app, &id).await?;
             Ok::<_, Box<dyn std::error::Error>>(())
         })?;

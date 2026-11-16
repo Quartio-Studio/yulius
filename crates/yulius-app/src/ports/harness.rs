@@ -213,12 +213,23 @@ pub enum Observation {
         model: String,
     },
     /// A usage limit refused a subagent of the session's own thread: Claude Code ends it with
-    /// no report (and no `SubagentStop`); a message to it resumes it (SPEC-493 REV-004).
+    /// no report (and no `SubagentStop`); a message to it resumes it (SPEC-493 REV-004). The
+    /// limit is the session's news as a workflow agent's is (SPEC-493 RLM-001).
     SubagentCutOff {
         /// Claude Code's id of the subagent.
         agent_id: String,
         /// When it was refused, if known.
         at: Option<Timestamp>,
+        /// When the limit resets, if the record says so.
+        resets_at: Option<Timestamp>,
+        /// What Claude Code said.
+        message: String,
+        /// The window the limit is of, in minutes, if known.
+        window_minutes: Option<u32>,
+        /// What it binds: the subscription, or one model family (that of the model that
+        /// answered the subagent when the record names none; `Model(None)` when that is not
+        /// known, which reads as the session's model).
+        scope: LimitScope,
     },
     /// The session launched a dynamic workflow (Claude Code's Workflow tool; SPEC-486 WFL-003),
     /// beside the [`Observation::BackgroundStarted`] of the same `task`.

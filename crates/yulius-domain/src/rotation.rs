@@ -322,6 +322,20 @@ fn ranked_for<'a>(
     candidates
 }
 
+/// Where a session moves before a review round whose reviewer runs `also` would start on a
+/// subscription with little room left for it (SPEC-493 RLM-003): the best candidate for the run
+/// placed now, other than the current subscription, with known room ([`Tier::Roomy`]) for
+/// `also`. `None` when no subscription has it.
+#[must_use]
+pub fn move_with_room_for(input: &RotationInput, also: ModelFamily) -> Option<AccountId> {
+    ranked(input, input.current.as_ref())
+        .into_iter()
+        .find(|(account, _)| {
+            assess(account, input.now, input.threshold, also).is_some_and(|a| a.tier == Tier::Roomy)
+        })
+        .map(|(account, _)| account.id.clone())
+}
+
 /// Where a session moves so that it can also run a subagent of `also` (SPEC-493 REV-007: a
 /// review round's Fable 5.2 reviewer runs on its session's subscription): the best candidate
 /// for the run placed now, other than the current subscription, that is a candidate for `also`
@@ -613,6 +627,27 @@ mod tests {
             .accounts
             .retain(|a| a.id.as_str() != "e" && a.id.as_str() != "d");
         assert_eq!(move_to_also_run(&rotation, ModelFamily::Fable), None);
+        Ok(())
+    }
+
+    /// SPEC-493 RLM-003: a review round about to start where its reviewer's model has under 5
+    /// points of room moves only to a subscription with known room for it; a tight one, or the
+    /// current one, is never the choice; with none, nowhere.
+    #[test]
+    fn a_review_moves_only_to_room_for_its_reviewer() -> Result<(), IdError> {
+        let mut rotation = input(
+            Some("a"),
+            vec![
+                account("a", usage(95.0, 10.0, Some(100)))?,
+                account("b", usage(96.0, 10.0, Some(100)))?,
+                account("c", usage(40.0, 50.0, Some(100)))?,
+            ],
+        )?;
+        rotation.family = ModelFamily::Opus;
+        let chosen = move_with_room_for(&rotation, ModelFamily::Opus);
+        assert_eq!(chosen.as_ref().map(AccountId::as_str), Some("c"));
+        rotation.accounts.retain(|a| a.id.as_str() != "c");
+        assert_eq!(move_with_room_for(&rotation, ModelFamily::Opus), None);
         Ok(())
     }
 
