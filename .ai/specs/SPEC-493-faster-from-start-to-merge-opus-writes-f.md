@@ -1761,8 +1761,11 @@ Both are checked on current `dev` first and fixed test-first if they still hold.
   - m5: told-once keys were per whole set and never removed. Now one key a pair, and only new
     pairs go in a message; a release forgets the task's keys. Tests: widened by a new pair, only
     it is told; released and claimed again, told again. Mutations: per-set keys, no forgetting.
-  - m6: `sandbox_task_create` passed `paths` and `start_anyway`, which the person's card did not
-    show; both are dropped there (unit `an_approved_create_drops_what_its_card_did_not_show`).
+  - m6: `sandbox_task_create` might pass `paths` and `start_anyway`, which the person's card does
+    not show. Round 2 found the round-1 answer (dropping them at the approval) held by no test:
+    the request refuses both before any card (its arguments deny unknown fields), so that code
+    was never reached and is removed; `what_cannot_be_asked_is_refused_without_asking` now asks
+    with each and is refused.
   - m7: the holder's pull request carries `checks`, the state of Yulius CI's newest run of it
     (`none` without one).
   - m8: the old "claiming agent only" wording is gone from the module doc, SPEC-002 and
@@ -1773,3 +1776,7 @@ Both are checked on current `dev` first and fixed test-first if they still hold.
     caller's own task is marked `mine`; `start_anyway` is always type-checked. Answered in words:
     with `after_task` given the overlap check is skipped on purpose (the caller has chosen to
     wait).
+- Review round 2 (Opus 5.5, head `0ac052200`): approve, with two minor test gaps in own code,
+  closed before the merge: the m6 line above, and the holder's `checks` now held by
+  `scope_overlaps` (A gets pull request #41 and a passed Yulius CI run: the answer says
+  `pr_open`, `passed`, not armed). Mutation: the lookup replaced by `"none"` fails it.

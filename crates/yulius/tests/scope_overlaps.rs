@@ -112,6 +112,44 @@ fn an_overlapping_claim_is_told_to_both_tasks() -> TestResult {
         })
         .await;
         assert!(again.is_err(), "told twice: {}", screen(&app, &a));
+        // Review round 2: once A has a pull request, the answer says its stage and the state of
+        // Yulius CI's newest run of it.
+        let open = yulius_app::delivery::DeliveryRecord {
+            task_id: a.clone(),
+            stage: yulius_domain::delivery::DeliveryStage::PrOpen,
+            pr_number: Some(41),
+            updated_at: app.now(),
+        };
+        app.deps
+            .store
+            .transition_delivery(&yulius_domain::delivery::DeliveryStage::None, &open)
+            .await?;
+        let at = yulius_domain::time::Timestamp(1);
+        let passed = yulius_app::ci::CiRunRecord {
+            id: "r41".into(),
+            sandbox_id: sandbox.clone(),
+            reference: yulius_domain::ci::CiRef::PullRequest(41),
+            sha: "0".repeat(40),
+            source: yulius_domain::ci::GateSource::ProjectConfig,
+            state: yulius_domain::ci::RunState::Passed,
+            reason: None,
+            requested_by: "yulius".into(),
+            status_for: None,
+            status_note: None,
+            status_attempts: 0,
+            queued_at: at,
+            started_at: Some(at),
+            ended_at: Some(at),
+        };
+        app.deps.store.insert_ci_run(&passed, &[]).await?;
+        let answer = app
+            .tool_scope_claim(&claimer, &json!({"pattern": "crates/a/**"}))
+            .await?;
+        let pull_request = &answer["conflicts"][0]["their_pull_request"];
+        assert_eq!(pull_request["number"], 41, "{answer}");
+        assert_eq!(pull_request["stage"], "pr_open", "{answer}");
+        assert_eq!(pull_request["checks"], "passed", "{answer}");
+        assert_eq!(pull_request["merge_armed"], false, "{answer}");
         // SCO-002: both tasks' views (the page's and the list's) carry the overlap.
         let b_number = app.deps.store.task(&b).await?.ok_or("b")?.number;
         let view = |id: yulius_domain::ids::TaskId| {

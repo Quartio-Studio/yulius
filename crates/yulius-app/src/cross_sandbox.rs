@@ -1148,11 +1148,8 @@ impl App {
         let slug = &request.target.slug;
         let args = &request.args;
         let (done, note) = match request.action {
-            // The person approved what the card showed: `paths` and `start_anyway` are not on
-            // it, so they are not passed (review round 1 of fix 9).
             CrossAction::Create => (
-                self.tool_task_create(caller, &without(args, &["paths", "start_anyway"]))
-                    .await?,
+                self.tool_task_create(caller, args).await?,
                 format!("The person approved: the task is on the Tasks page of {slug}."),
             ),
             CrossAction::Update => (
@@ -1660,28 +1657,8 @@ impl App {
     }
 }
 
-/// `args` without the keys `drop`.
-fn without(args: &Value, drop: &[&str]) -> Value {
-    let mut args = args.clone();
-    if let Some(map) = args.as_object_mut() {
-        for key in drop {
-            map.remove(*key);
-        }
-    }
-    args
-}
-
 #[cfg(test)]
 mod tests {
-
-    /// Review round 1 of SPEC-493 fix 9: a create the person approved gets what its card showed:
-    /// `paths` and `start_anyway` are not passed through.
-    #[test]
-    fn an_approved_create_drops_what_its_card_did_not_show() {
-        let args = serde_json::json!({"prompt": "x", "paths": ["a/"], "start_anyway": true});
-        let kept = super::without(&args, &["paths", "start_anyway"]);
-        assert_eq!(kept, serde_json::json!({"prompt": "x"}));
-    }
     use std::time::Duration;
 
     use serde_json::json;
