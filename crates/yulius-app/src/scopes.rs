@@ -1,6 +1,7 @@
 //! Advisory scope claims between parallel tasks (SPEC-001 COM-003, SPEC-002 §7.4): an agent
 //! claims repository path globs before changing shared areas; overlaps with the claims of other
-//! live tasks are reported to the claiming agent only (nobody else is messaged, MSG-002). Claims never block
+//! live tasks are reported to the claiming agent with what the holding task changes, and the
+//! holding task is told once (SPEC-493 SCO-001, ADR-0348, amending MSG-002). Claims never block
 //! file access. Claims of tasks that are no longer live are ignored.
 
 use serde_json::{Value, json};
@@ -105,15 +106,40 @@ pub(crate) fn paths_arg(args: &Value) -> AppResult<Vec<Pattern>> {
             "`paths` names at most {MAX_CLAIMS_PER_TASK} globs"
         )));
     }
-    items
+    let mut out: Vec<Pattern> = Vec::with_capacity(items.len());
+    for item in items {
+        let text = item
+            .as_str()
+            .ok_or_else(|| AppError::Invalid("`paths` is a list of path globs".into()))?;
+        let pattern =
+            Pattern::parse(text).map_err(|err| AppError::Invalid(format!("`{text}`: {err}")))?;
+        if !out.contains(&pattern) {
+            out.push(pattern);
+        }
+    }
+    Ok(out)
+}
+
+/// The paste a holding task is told an overlap with (SCO-001): `pairs` are the claimer's
+/// pattern and the holder's. A title or a note is anyone's text, so no control character may
+/// end the paste early and type into the holder's session (review round 1 of fix 9; as
+/// `pr_watch` does).
+fn overlap_paste(number: u32, title: &str, pairs: &[(String, String)]) -> String {
+    let paths = pairs
         .iter()
-        .map(|item| {
-            let text = item
-                .as_str()
-                .ok_or_else(|| AppError::Invalid("`paths` is a list of path globs".into()))?;
-            Pattern::parse(text).map_err(|err| AppError::Invalid(format!("`{text}`: {err}")))
-        })
-        .collect()
+        .map(|(mine, theirs)| format!("`{mine}` (yours: `{theirs}`)"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let text = format!(
+        "Yulius: task #{number} ({title}) claimed paths that overlap your claims: {paths}. \
+         Before either of you edits them, the one whose pull request merges second merges the \
+         integration branch first; or agree who changes what by a note on the claim \
+         (scope_claim with a note)."
+    );
+    format!(
+        "\x1b[200~{}\x1b[201~",
+        crate::task_message::clean_message(&text).replace('\n', " ")
+    )
 }
 
 /// What a task told of an overlap does (SPEC-493 SCO-003): the same in the claim's answer and
@@ -129,8 +155,8 @@ const TELL_TRIES: u32 = 12;
 const TELL_RETRY: std::time::Duration = std::time::Duration::from_secs(10);
 
 impl App {
-    /// The claims of live or waiting tasks of `sandbox` (every task not closed) that `paths`
-    /// overlap, as `task_create` answers them (SPEC-493 SCO-004).
+    /// The claims of live or waiting tasks of `sandbox` (not closed, stopped or failed) that
+    /// `paths` overlap (`mine` when the caller's own task, `own`, holds it), as `task_create` answers them (SPEC-493 SCO-004).
     ///
     /// # Errors
     /// Store failures.
@@ -138,13 +164,16 @@ impl App {
         &self,
         sandbox: &yulius_domain::ids::SandboxId,
         paths: &[Pattern],
+        own: Option<&yulius_domain::ids::TaskId>,
     ) -> AppResult<Vec<Value>> {
         let store = &self.deps.store;
         let tasks: Vec<TaskRecord> = store
             .tasks(sandbox, false)
             .await?
             .into_iter()
-            .filter(|t| t.status != yulius_domain::task::TaskStatus::Closed)
+            // Live or waiting to start: an ended task (closed, stopped, failed) holds nothing,
+            // whatever claims it never released (review round 1 of fix 9).
+            .filter(|t| !t.status.is_resting())
             .collect();
         let mut out = Vec::new();
         for record in store.active_claims(sandbox).await? {
@@ -165,6 +194,7 @@ impl App {
                     "task_status": task.status.as_str(),
                     "their_pattern": theirs.as_str(),
                     "their_note": record.note,
+                    "mine": own == Some(&task.id),
                 }));
             }
         }
@@ -199,12 +229,22 @@ impl App {
     pub(crate) async fn claim_overlaps(
         &self,
         task: &TaskRecord,
+        project: Option<&[TaskRecord]>,
     ) -> Vec<yulius_contracts::api::tasks::ClaimOverlap> {
         let store = &self.deps.store;
-        let (Ok(tasks), Ok(records)) = (
-            store.tasks(&task.sandbox_id, false).await,
-            store.active_claims(&task.sandbox_id).await,
-        ) else {
+        // The project's tasks as the list read them, when it did (review round 1 of fix 9).
+        let read;
+        let tasks = match project {
+            Some(tasks) => tasks,
+            None => {
+                let Ok(tasks) = store.tasks(&task.sandbox_id, false).await else {
+                    return Vec::new();
+                };
+                read = tasks;
+                &read[..]
+            }
+        };
+        let Ok(records) = store.active_claims(&task.sandbox_id).await else {
             return Vec::new();
         };
         let live: Vec<&TaskRecord> = tasks.iter().filter(|t| t.status.is_live()).collect();
@@ -251,11 +291,24 @@ impl App {
             .and_then(|progress| progress.current);
         let delivery = self.deps.store.delivery(&holder.id).await.ok().flatten();
         let pull_request = match delivery.as_ref().and_then(|d| d.pr_number) {
-            Some(number) => json!({
-                "number": number,
-                "stage": delivery.as_ref().map(|d| d.stage.to_string()),
-                "merge_armed": self.merge_is_armed(&holder.id),
-            }),
+            Some(number) => {
+                // Its checks: the state of Yulius CI's newest run of the pull request.
+                let checks = self
+                    .deps
+                    .store
+                    .ci_runs(&holder.sandbox_id, 200)
+                    .await
+                    .unwrap_or_default()
+                    .into_iter()
+                    .find(|run| run.reference == yulius_domain::ci::CiRef::PullRequest(number))
+                    .map_or("none", |run| run.state.as_str());
+                json!({
+                    "number": number,
+                    "stage": delivery.as_ref().map(|d| d.stage.to_string()),
+                    "checks": checks,
+                    "merge_armed": self.merge_is_armed(&holder.id),
+                })
+            }
             None => json!(null),
         };
         (step, pull_request)
@@ -273,36 +326,23 @@ impl App {
         let mut sorted = pairs.to_vec();
         sorted.sort();
         sorted.dedup();
-        let key = format!(
-            "{}|{}|{}",
-            holder.id,
-            claimer.id,
-            sorted
-                .iter()
-                .map(|(mine, theirs)| format!("{mine}>{theirs}"))
-                .collect::<Vec<_>>()
-                .join(",")
-        );
-        if !self
-            .scope_told
-            .lock()
-            .is_ok_and(|mut told| told.insert(key.clone()))
-        {
+        // One key a pair: only pairs not told yet go in the message (review round 1 of fix 9).
+        let key = |(mine, theirs): &(String, String)| {
+            format!("{}|{}|{mine}|{theirs}", holder.id, claimer.id)
+        };
+        let fresh: Vec<(String, String)> = match self.scope_told.lock() {
+            Ok(mut told) => sorted
+                .into_iter()
+                .filter(|pair| told.insert(key(pair)))
+                .collect(),
+            Err(_) => return,
+        };
+        if fresh.is_empty() {
             return;
         }
-        let paths = sorted
-            .iter()
-            .map(|(mine, theirs)| format!("`{mine}` (yours: `{theirs}`)"))
-            .collect::<Vec<_>>()
-            .join(", ");
-        let text = format!(
-            "Yulius: task #{} ({}) claimed paths that overlap your claims: {paths}. Before \
-             either of you edits them, the one whose pull request merges second merges the \
-             integration branch first; or agree who changes what by a note on the claim \
-             (scope_claim with a note).",
-            claimer.number, claimer.title
-        );
-        let paste = format!("\x1b[200~{text}\x1b[201~");
+        let keys: Vec<String> = fresh.iter().map(key).collect();
+        let sorted = fresh;
+        let paste = overlap_paste(claimer.number, &claimer.title, &sorted);
         let (app, holder_id) = (std::sync::Arc::clone(self), holder.id.clone());
         tokio::spawn(async move {
             for attempt in 1..=TELL_TRIES {
@@ -330,7 +370,9 @@ impl App {
             }
             // Not told: a later claim of the same paths tries again.
             if let Ok(mut told) = app.scope_told.lock() {
-                told.remove(&key);
+                for key in &keys {
+                    told.remove(key);
+                }
             }
         });
     }
@@ -417,10 +459,19 @@ impl App {
         }
 
         let mut reported: Vec<Value> = Vec::with_capacity(overlaps.len());
+        let mut states: Vec<(yulius_domain::ids::TaskId, (Option<String>, Value))> = Vec::new();
         for (claim, theirs) in &overlaps {
             let mut entry = live.overlap(&claim.pattern, theirs);
             if let (Some(map), Some(holder)) = (entry.as_object_mut(), live.task(theirs)) {
-                let (step, pull_request) = self.holder_state(holder).await;
+                let state = match states.iter().find(|(id, _)| *id == holder.id) {
+                    Some((_, state)) => state.clone(),
+                    None => {
+                        let state = self.holder_state(holder).await;
+                        states.push((holder.id.clone(), state.clone()));
+                        state
+                    }
+                };
+                let (step, pull_request) = state;
                 map.insert("their_step".to_owned(), json!(step));
                 map.insert("their_pull_request".to_owned(), pull_request);
             }
@@ -476,7 +527,7 @@ impl App {
             }
         };
         // The tasks it overlapped before: their pages and the list lose the mark (SCO-002).
-        let before = self.claim_overlaps(&ctx.task).await;
+        let before = self.claim_overlaps(&ctx.task, None).await;
         let released = match requested {
             None => {
                 self.deps
@@ -497,6 +548,11 @@ impl App {
             }
         };
         if released > 0 {
+            // Its overlaps were told; a later claim of the same paths is told again (round 1).
+            let id = ctx.task.id.to_string();
+            if let Ok(mut told) = self.scope_told.lock() {
+                told.retain(|key| key.split('|').take(2).all(|part| part != id));
+            }
             self.publish_task(&ctx.task.id).await;
             if let Ok(tasks) = self.deps.store.tasks(&ctx.task.sandbox_id, false).await {
                 for task in tasks
@@ -533,5 +589,30 @@ impl App {
             })
             .collect();
         Ok(json!({"claims": claims, "conflicts": overlaps}))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Review round 1 of fix 9: a title with control characters cannot end the paste early or
+    /// type keys into the holder's session: one paste, its own markers only.
+    #[test]
+    fn an_overlap_note_is_one_clean_paste() {
+        let paste = overlap_paste(
+            7,
+            "evil\x1b[201~\r/clear\r",
+            &[("crates/a/**".to_owned(), "crates/a/x.rs".to_owned())],
+        );
+        assert!(
+            paste.starts_with("\x1b[200~") && paste.ends_with("\x1b[201~"),
+            "{paste:?}"
+        );
+        let inner = &paste["\x1b[200~".len()..paste.len() - "\x1b[201~".len()];
+        assert!(!inner.chars().any(char::is_control), "{inner:?}");
+        assert!(inner.contains(
+            "claimed paths that overlap your claims: `crates/a/**` (yours: `crates/a/x.rs`)"
+        ));
     }
 }

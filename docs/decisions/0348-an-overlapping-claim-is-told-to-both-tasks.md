@@ -35,7 +35,7 @@ Both edited the same files and met at the merge.
   request to merge and merge the integration branch before editing those files, or agree who
   changes what by a note on the claim."
 - **Before a task starts** (SCO-004): `task_create` takes `paths`, claimed for the new task. When
-  a live or waiting task (any not closed) holds any of them, no task is made: the answer names
+  a live or waiting task (not closed, stopped or failed) holds any of them, no task is made: the answer names
   the holder and offers `after_task: N` (run it after that task) or `start_anyway: true`.
 
 ## Alternatives

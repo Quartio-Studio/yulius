@@ -1360,6 +1360,24 @@ mod tests {
             briefing.contains("on an overlap, wait for the other's pr or agree by claim note"),
             "the briefing does not say the short form"
         );
+        // None keeps the old rule (review round 1 of fix 9).
+        for rel in [
+            "crates/yulius-app/src/mcp.rs",
+            "crates/yulius-app/src/scopes.rs",
+            "crates/yulius-domain/src/briefing.rs",
+            "catalog/skills/yulius/delivery-pipeline/SKILL.md",
+            ".ai/specs/SPEC-002-yulius-architecture.md",
+        ] {
+            let text = normal(&fs::read_to_string(root.join(rel))?);
+            for old in [
+                "nobody else is told",
+                "overlaps are shown to you",
+                "to the claiming agent only",
+                "nobody else is messaged",
+            ] {
+                assert!(!text.contains(old), "{rel} keeps the old rule: {old}");
+            }
+        }
         Ok(())
     }
 

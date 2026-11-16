@@ -325,8 +325,10 @@ impl App {
         // or waiting task's claims is answered before it is made, with the offer to run it after
         // that task, unless it already waits for a task or the caller starts it anyway.
         let paths = crate::scopes::paths_arg(args)?;
-        if !paths.is_empty() && after_task_id.is_none() && !flag_arg(args, "start_anyway")? {
-            let overlaps = self.planned_overlaps(&caller.sandbox, &paths).await?;
+        let start_anyway = flag_arg(args, "start_anyway")?;
+        if !paths.is_empty() && after_task_id.is_none() && !start_anyway {
+            let own = caller.task.as_ref().map(|t| &t.id);
+            let overlaps = self.planned_overlaps(&caller.sandbox, &paths, own).await?;
             if let Some(first) = overlaps.first() {
                 return Ok(json!({
                     "created": false,
@@ -393,7 +395,11 @@ impl App {
             }
         };
         tracing::info!(task = %task.id, number = task.number, actor = %caller.actor, "task created by a tool");
-        self.claim_for_new_task(&task, &paths).await?;
+        // The task exists: a claim that cannot be written is said, not an error that invites
+        // a second task (review round 1 of fix 9).
+        if let Err(err) = self.claim_for_new_task(&task, &paths).await {
+            tracing::warn!(error = %err, task = %task.id, "the new task's paths were not claimed");
+        }
         Ok(json!({
             "task": self.task_brief(&task).await?,
             "note": match all_tasks {

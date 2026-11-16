@@ -1729,7 +1729,7 @@ Both are checked on current `dev` first and fixed test-first if they still hold.
   `skills::every_place_says_what_to_do_on_an_overlap` holds the three.
 - SCO-004: `task_create` takes `paths` (at most 50 globs, as `scope_claim` takes them) and
   `start_anyway`.
-  - When a live or waiting task (any not closed) holds any of the paths and no `after_task` is
+  - When a live or waiting task (not closed, stopped or failed) holds any of the paths and no `after_task` is
     given, nothing is made: `created: false`, the overlaps, and the offer of `after_task: N` or
     `start_anyway: true`. Otherwise the task is made and its paths claimed.
   - Tests (AC-22, same test): an overlap is refused with the offer naming A; with `after_task`

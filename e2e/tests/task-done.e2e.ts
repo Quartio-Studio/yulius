@@ -164,6 +164,11 @@ test('a task whose claims overlap those of another says so', async ({ app, brows
   await touchStudioTask(browser, 12, { overlaps: [{ task_number: 11, task_title: '3D model viewer', patterns: ['crates/a/**'] }] });
   await expect(browser.locator('.strip-status')).toHaveText(/· overlaps #11/);
   await expect(browser.locator('.task-row .task-mark .glyph[aria-label*="overlaps #11"]')).toHaveCount(1);
+  // With a stalled pull request too, both are said, in its attention tone (review round 1).
+  await touchStudioTask(browser, 12, { pr_stalled: 'Pull request #12 has made no progress for 61 min.' });
+  await expect(browser.locator('.strip-status')).toHaveText(/overlaps #11 · PR stalled/);
+  await expect(browser.locator('.strip-status')).toHaveAttribute('data-tone', 'attention');
+  await touchStudioTask(browser, 12, { pr_stalled: null });
   // Released: the mark is gone.
   await touchStudioTask(browser, 12, { overlaps: [] });
   await expect(browser.locator('.strip-status')).not.toHaveText(/overlaps/);

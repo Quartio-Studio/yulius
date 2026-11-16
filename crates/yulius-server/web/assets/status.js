@@ -353,16 +353,17 @@ export function supertaskLine(task) {
  * act.
  */
 export function taskInfo(task, actionRequests, pr) {
-  const info = taskInfoOf(task, actionRequests, pr);
-  // Its open pull request made no progress for an hour while its CI was idle (SPEC-444 PRN-009):
-  // Yulius told the task; the list shows it until the pull request moves. Its group stays.
-  // Another live task claims paths this one claims (SPEC-493 SCO-002).
+  let info = taskInfoOf(task, actionRequests, pr);
+  // Another live task claims paths this one claims (SPEC-493 SCO-002): said beside the rest, a
+  // stalled pull request's mark too; the detail names them when nothing else is said.
   const overlaps = (task.overlaps || []).filter((o) => o && o.task_number);
   if (overlaps.length && info.group !== 'ended') {
     const named = overlaps.map((o) => `#${o.task_number}`).join(', ');
     const detail = overlaps.map((o) => `#${o.task_number} ${o.task_title}: ${(o.patterns || []).join(', ')}`).join('; ');
-    return { ...info, label: `${info.label} · overlaps ${named}`, overlapDetail: `Claims overlap ${detail}` };
+    info = { ...info, label: `${info.label} · overlaps ${named}`, detail: info.detail || `Claims overlap ${detail}` };
   }
+  // Its open pull request made no progress for an hour while its CI was idle (SPEC-444 PRN-009):
+  // Yulius told the task; the list shows it until the pull request moves. Its group stays.
   if (task.pr_stalled && !info.paused && info.group !== 'ended') return { ...info, tone: 'attention', label: `${info.label} · PR stalled`, detail: task.pr_stalled, stalled: true };
   return info;
 }

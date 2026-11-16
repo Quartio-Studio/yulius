@@ -187,7 +187,54 @@ fn an_overlapping_claim_is_told_to_both_tasks() -> TestResult {
         app.tool_scope_release(&holder, &json!({})).await?;
         assert!(view(a.clone()).await?.is_empty());
         assert!(view(b.clone()).await?.is_empty());
+        // Review round 1: claimed again after the release, the holder is told again; a claim
+        // widened by a new pair tells only that pair.
+        let pastes = |app: &std::sync::Arc<yulius_app::context::App>| {
+            screen(app, &a).matches("200~Yulius: task #").count()
+        };
+        app.tool_scope_claim(&holder, &json!({"pattern": "crates/a/src/x.rs"}))
+            .await?;
+        app.tool_scope_claim(&claimer, &json!({"pattern": "crates/a/**"}))
+            .await?;
+        wait_for(
+            "told again after the release",
+            Duration::from_secs(40),
+            || {
+                let seen = pastes(&app);
+                async move { seen == 2 }
+            },
+        )
+        .await?;
+        app.tool_scope_claim(
+            &claimer,
+            &json!({"patterns": ["crates/a/**", "crates/a/src/*.rs"]}),
+        )
+        .await?;
+        wait_for("the new pair told", Duration::from_secs(40), || {
+            let shown = screen(&app, &a);
+            async move {
+                shown.contains(
+                    "overlap your claims: `crates/a/src/*.rs` (yours: `crates/a/src/x.rs`).",
+                )
+            }
+        })
+        .await?;
+        assert_eq!(pastes(&app), 3, "{}", screen(&app, &a));
+        // An ended holder holds nothing: its claims are no overlap for a new task (review
+        // round 1); B and the waiting task still hold those paths.
         stop(&app, &a).await?;
+        let answer = app
+            .tool_task_create(
+                &caller,
+                &json!({"prompt": "Tidy x again", "paths": ["crates/a/src/x.rs"]}),
+            )
+            .await?;
+        let holders: Vec<u64> = answer["overlaps"]
+            .as_array()
+            .map(|o| o.iter().filter_map(|e| e["task_number"].as_u64()).collect())
+            .unwrap_or_default();
+        assert!(!holders.contains(&u64::from(number)), "{answer}");
+        assert!(holders.contains(&u64::from(b_number)), "{answer}");
         stop(&app, &b).await?;
         Ok::<_, Box<dyn std::error::Error>>(())
     })?;
