@@ -986,6 +986,10 @@ impl App {
                                 .await
                             {
                                 tracing::warn!(error = %err, task = %task_id, "the move for a cut-off reviewer failed");
+                                // Due again at a later turn's end (review round 1 of fix 7).
+                                app.runtime(&task_id)
+                                    .reviewer_move
+                                    .store(true, Ordering::SeqCst);
                             }
                         });
                         return Ok(self.hold_for(&task.id));
@@ -1161,7 +1165,7 @@ impl App {
     ) {
         let runtime = self.runtime(task_id);
         // A move for a cut-off reviewer due at a turn's end (SPEC-493 RLM-002).
-        if runtime.reviewer_move.swap(false, Ordering::SeqCst) {
+        if runtime.reviewer_move.load(Ordering::SeqCst) {
             let app = Arc::clone(self);
             let task_id = task_id.clone();
             tokio::spawn(async move { app.move_for_reviewer(&task_id).await });

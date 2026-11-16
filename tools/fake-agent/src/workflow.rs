@@ -543,9 +543,20 @@ pub(super) fn reviewer_cut_off(
     if !line.starts_with("/reviewer-limit-first ") {
         append(&file, &[agent_record(&session, &agent, &message)])?;
     }
-    Transcript::open(file, &session)?.credits_out(options.credits_reset_s)?;
+    // `/reviewer-limit-all <kind>`: the subscription's five-hour limit, as at `/limit`.
+    let mut side = Transcript::open(file, &session)?;
+    if line.starts_with("/reviewer-limit-all ") {
+        side.limit()?;
+    } else {
+        side.credits_out(options.credits_reset_s)?;
+    }
     say(&format!("REVIEWER {agent} CUT OFF"))?;
     if in_turn {
+        if let Some(t) = transcript {
+            t.lock()
+                .map_err(|_| io::Error::other("transcript lock"))?
+                .answer(line, "Waiting for the reviewer.")?;
+        }
         if let Some(hooks) = hooks {
             hooks.stop()?;
         }

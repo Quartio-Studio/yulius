@@ -1071,6 +1071,13 @@ mod real {
         a_cut_off_reviewer(true, b"/reviewer-limit-first yulius-reviewer\r")
     }
 
+    /// RLM-001, RLM-002: a reviewer's limit of the whole subscription is the session's too: it
+    /// moves as at any limit, and the new process is told to resume its reviewer.
+    #[test]
+    fn a_reviewer_limit_of_the_subscription_moves_as_any_limit() -> TestResult {
+        a_cut_off_reviewer(true, b"/reviewer-limit-all yulius-reviewer\r")
+    }
+
     /// RLM-002: a cut-off read in a turn of the session's thread moves it at that turn's end
     /// (its Stop hook), not while it works.
     #[test]
@@ -1172,6 +1179,17 @@ mod real {
             let id = new_task(&app, &sandbox, &user, "Review it", TaskMode::Prompt).await?;
             ready(&app, &id).await?;
             assert_eq!(run_accounts(&app, &id).await, [Some("a-first".to_owned())]);
+            // A first turn, after which the session waits for its person (idle), as a session
+            // does while its background reviewer reads.
+            app.send_input(&id, b"hello\r").await?;
+            wait_for("the session waiting", Duration::from_secs(30), || async {
+                app.deps.store.task(&id).await.is_ok_and(|task| {
+                    task.is_some_and(|task| {
+                        task.activity == Some(yulius_domain::task::Activity::Waiting)
+                    })
+                })
+            })
+            .await?;
             // Sent as the agent works, not typed by a person (whose typing holds Yulius back).
             app.send_input(&id, command).await?;
             let cut = wait_for("the cut-off reviewer", Duration::from_secs(30), || async {
@@ -1179,8 +1197,6 @@ mod real {
             })
             .await;
             assert!(cut.is_ok(), "{}", screen(&app, &id));
-            // A turn's end, should the cut-off have come while one ran.
-            app.send_input(&id, b"carry on\r").await?;
             if !second_runs_fable {
                 // Nowhere to move: the session stays and is told the round runs on Opus.
                 let told = wait_for("the Opus note", Duration::from_secs(30), || async {
@@ -1215,14 +1231,22 @@ mod real {
             .await?;
             let switches = app.deps.store.switches(&id).await?;
             assert_eq!(switches.len(), 1, "{switches:?}");
-            assert_eq!(switches[0].reason, "review_resume");
-            // The limit is Fable's on the first subscription, which Opus may still use.
             let first = app
                 .deps
                 .store
                 .account(&yulius_domain::ids::AccountId::parse("a-first")?)
                 .await?
                 .ok_or("a-first")?;
+            if command.starts_with(b"/reviewer-limit-all ") {
+                // The subscription's own limit: the session moved as at any limit, and is told
+                // to resume its reviewer all the same.
+                assert_ne!(switches[0].reason, "review_resume", "{switches:?}");
+                assert_eq!(first.status, yulius_app::model::AccountStatus::Limited);
+                stop(&app, &id).await?;
+                return Ok::<_, Box<dyn std::error::Error>>(());
+            }
+            assert_eq!(switches[0].reason, "review_resume");
+            // The limit is Fable's on the first subscription, which Opus may still use.
             let read =
                 yulius_app::usage_json::from_json(first.usage_json.as_deref().unwrap_or("{}"));
             assert_eq!(

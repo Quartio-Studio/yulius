@@ -1852,15 +1852,26 @@ impl App {
         };
         // A reviewer a usage limit cut off is resumed in the new process, not started again
         // (SPEC-493 RLM-002).
+        // Only while its round is still open; a session that starts afresh has none (review
+        // round 1 of fix 7).
         let reviewer = match (&start, &previous) {
-            (RunStart::Resume { .. } | RunStart::AfterLimit, Some(_)) => self
-                .runtime(&task.id)
-                .cut_off_reviewer
-                .lock()
-                .ok()
-                .and_then(|cut| cut.clone()),
+            (RunStart::Resume { .. } | RunStart::AfterLimit, Some(_)) => {
+                let cut = self
+                    .runtime(&task.id)
+                    .cut_off_reviewer
+                    .lock()
+                    .ok()
+                    .and_then(|cut| cut.clone());
+                match cut {
+                    Some(cut) => self.open_round_reviewer(&task.id, &cut.agent_id).await,
+                    None => None,
+                }
+            }
             _ => None,
         };
+        if reviewer.is_none() {
+            self.forget_cut_off_reviewer(&task.id);
+        }
         let resumes = |prompt: Option<&str>| {
             let prompt = if unfinished.is_empty() {
                 prompt.map(str::to_owned)
@@ -5654,15 +5665,21 @@ impl App {
             LimitScope::Model(Some(other)) if other != family
         );
         tracing::info!(task = %task_id, %message, ?scope, binds_session, "usage limit reached by a subagent");
-        // Known before any relaunch the limit leads to, whose prompt names the reviewer.
-        if let Some(reviewer) = reviewer {
-            self.reviewer_cut_off(task_id, reviewer, !binds_session)
-                .await;
-        }
         if binds_session {
+            // Known before the relaunch the limit leads to, whose prompt names the reviewer.
+            if let Some(reviewer) = reviewer {
+                self.reviewer_cut_off(task_id, reviewer, false).await;
+            }
             self.limit_met(task_id, attempt, limit, *at).await;
-        } else if let Some(account) = &attempt.account_id {
+            return;
+        }
+        // Recorded before the move is decided: where the session is reads as unable to run the
+        // reviewer's model only then (review round 1 of fix 7).
+        if let Some(account) = &attempt.account_id {
             self.record_limit(account, limit, family).await;
+        }
+        if let Some(reviewer) = reviewer {
+            self.reviewer_cut_off(task_id, reviewer, true).await;
         }
     }
 
@@ -6172,6 +6189,8 @@ mod tests {
         assert!(super::interrupts_first("handover"));
         // SPEC-493 REV-007: the agent goes on after its reviewer was refused for the move.
         assert!(super::interrupts_first(crate::review::MOVE_FOR_FABLE));
+        assert!(super::interrupts_first(crate::review::MOVE_FOR_ROOM));
+        assert!(!super::interrupts_first(crate::review::REVIEW_RESUME));
         for reason in ["rotation", "limit", "context_full", "proactive"] {
             assert!(!super::interrupts_first(reason), "{reason}");
         }
