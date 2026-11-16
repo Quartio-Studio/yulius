@@ -1,14 +1,17 @@
 ---
-yulius-task: 49e3b24c-2853-4c54-9377-281144689c4f
-status: done
+yulius-task: b2f3a052-2ae1-41a5-9ed9-c5d34e897ae7
+status: in-progress
 ---
 
 # SPEC-502: Connect a Claude subscription by pasting a token made elsewhere
 
-Status: implemented
-Date: 2026-11-10
-Owner: Yulius task #6 (studenciak00owl/yulius), proposed upstream
-Scope authorization: the owner's request (2026-11-10): "Add to upstream Yulius a second way to
+Status: in progress
+Date: 2026-11-10 (proposed), 2026-11-16 (brought onto current dev)
+Owner: Yulius task #484, from outside pull request #1144 by studenciak00owl (written as SPEC-450 in
+their fork's task #6), accepted by MrFishPL
+Scope authorization: MrFishPL accepted #1144 (task #484: "Deliver it into `dev`, adjusted to the
+repository as it is now ... fit the paste flow into the current Add subscription dialog and
+account API"). The contributor's request (2026-11-10): "Add to upstream Yulius a second way to
 connect a Claude subscription: paste a long-lived token made with `claude setup-token` on another
 machine (`sk-ant-oat01-…`, valid about a year), next to the existing login terminal. Use case: the
 person (or a colleague with the subscription) runs `claude setup-token` on their laptop and pastes
@@ -25,7 +28,22 @@ the same token.
 
 ## Context
 
-Confirmed against upstream `dev` at 91a0cec5.
+Written against upstream `dev` at 91a0cec5; brought onto `dev` at c7348d04 (about 200 pull
+requests later). What changed under it since:
+
+- **A subscription's email is typed in place** (SPEC-463, #1193, ADR-0300): an email a person
+  typed stays through every new sign-in, and Claude's answer never replaces it
+  (`AccountStore::set_account_credential` and `set_account_email` keep it, EML-004). A paste is a
+  new sign-in like any other, so it keeps a typed email too; only an email read from Claude is the
+  old sign-in's and goes.
+- **A new sign-in drops the old one's model limits** (SPEC-464 UCL-004): `App::store_credential`
+  removes a model's window Claude reported to the previous credential before the new one is
+  stored, under the lock every write of a subscription's state takes (`usage_writes`). The
+  contributor's replace wrote the credential directly and kept them.
+- **A subscription that needs a sign-in stays out of the pool until one succeeds** (SPEC-483,
+  #1271): a paste that stores `ok` is that success; a refused paste changes nothing.
+- **The Subscriptions page** gained in-place email editing, refresh now (SPEC-473, #1230) and
+  `data-focus-key` on each card's buttons (SPEC-463), which a new card button follows.
 
 - **One way in today.** `POST /api/admin/accounts {"provider":"anthropic","label"}` creates the
   account in `pending_login` and starts `claude setup-token` in a server-owned PTY
@@ -50,26 +68,25 @@ Confirmed against upstream `dev` at 91a0cec5.
 | ID | Requirement |
 | --- | --- |
 | TKP-001 | `POST /api/admin/accounts {"provider":"anthropic","label","token"}` (instance administrator) creates the subscription signed in with that token and answers 201 `{"account": Account}` with `status: "ok"` and no `login_id`; no login terminal, process or temporary directory is started. Without `token` (or `token: null`) the request behaves as today (`pending_login` and a `login_id`). |
-| TKP-002 | `PUT /api/admin/accounts/{id}/token {"token"}` (instance administrator) replaces the subscription's credential with the token and answers 200 `Account` with `status: "ok"`, `last_error: null` and the email read again; a running sign-in of that subscription is cancelled and waited for (at most 15 s) first, and one that has not ended by then is 409 with nothing changed, so a token it captured can never overwrite the pasted one. 404 for an unknown subscription. It repairs a `relogin`, `error` or `pending_login` subscription and re-signs a working one. |
+| TKP-002 | `PUT /api/admin/accounts/{id}/token {"token"}` (instance administrator) replaces the subscription's credential with the token and answers 200 `Account` with `status: "ok"`, `last_error: null` and the email read again (a typed email stays, TKP-005); a running sign-in of that subscription is cancelled and waited for (at most 15 s) first, and one that has not ended by then is 409 with nothing changed, so a token it captured can never overwrite the pasted one. 404 for an unknown subscription. It repairs a `relogin`, `error` or `pending_login` subscription and re-signs a working one. |
 | TKP-003 | The token is accepted only in the shape `claude setup-token` prints: after trimming surrounding whitespace, `sk-ant-oat01-` followed by 20 or more of `A-Z a-z 0-9 - _`, at most 512 characters in all. Anything else is 422 `invalid` with one sentence saying what a token looks like and how to make one; nothing is created or changed. |
 | TKP-004 | Before anything is stored, Yulius asks Claude's profile once with the token. A refusal (HTTP 401) is 422 `invalid` "Claude did not accept this token…" and nothing is created or changed. Every other answer accepts the token: an email is stored as the subscription's email, a refusal to read the profile (HTTP 403, normal for a `setup-token`) is stored as "no email", and no answer for now leaves the email to the background round (SPEC-244 SUB-004). |
-| TKP-005 | The token is sealed and stored exactly like a token the login terminal captured (`Crypto::seal`; status `ok`; `last_error`, email and its check cleared), the pool is told at once so waiting tasks may continue on it (ROT-010), its usage is read in the background, and `account.updated` is published. |
+| TKP-005 | The token is sealed and stored exactly like a token the login terminal captured (`Crypto::seal`; status `ok`; `last_error`, email and its check cleared), the pool is told at once so waiting tasks may continue on it (ROT-010), its usage is read in the background, and `account.updated` is published. As for every new sign-in on current `dev`, a replaced credential drops the model limits Claude reported to the previous one (SPEC-464 UCL-004), written under the subscription's state lock, and an email a person typed stays (SPEC-463 EML-004); only an email read from Claude is cleared. |
 | TKP-006 | The token never leaves the request in clear: it is never in a response, an error message, an event, the audit log or a log line, the request types' `Debug` prints it redacted, and the plaintext copy is zeroed once sealed. |
 | TKP-007 | Each paste is audited without the token: a new subscription as `account.created` with detail `provider=anthropic label=<label> via=token`, a replaced token as `account.token_replaced` (no detail). A refused paste is not audited. |
 | TKP-008 | The Subscriptions page's Add subscription dialog offers a choice of **Sign in here** (today's terminal, the default) and **Paste token**. Paste token shows a Token field and one hint: run `claude setup-token` on any computer signed in to the subscription and paste what it prints; do not send it through chats or email in clear text. An empty or malformed token, or one the server refuses, is shown under the field (`invalid()`); success closes the dialog and a toast says the subscription is connected. |
 | TKP-009 | Every subscription card has **Paste a new token**, a dialog with the same field and hint that calls TKP-002; success says so in a toast, a refusal under the field. Both dialogs pass the e2e accessibility (axe) check. |
+| TKP-011 | When a running sign-in has not ended 15 s after the paste cancelled it, `PUT …/token` is 409 `conflict` and nothing is stored or audited; the paste can be sent again. |
 | TKP-010 | A subscription connected by paste is used like any other: a new task starts on it, and its run gets the pasted token as `CLAUDE_CODE_OAUTH_TOKEN`. |
 
 ## Plan
 
-- [x] Spec SPEC-502 and ADR-0352 on upstream dev
-- [x] API: a pasted token creates a subscription that is ok at once
-- [x] API: an existing subscription takes a new pasted token
-- [x] A task starts on a pasted-token subscription (fake agent)
-- [x] UI: Add subscription offers Sign in here or Paste token
-- [x] UI: the subscription card pastes a new token, e2e and axe
-- [x] Docs: api.md, product.md, architecture, changes
-- [x] Gates green, independent review, one squashed commit pushed
+- [x] Contributor's commit on current dev: conflicts resolved, spec and ADR renumbered
+- [ ] A pasted new token drops the old sign-in's model limits and keeps a typed email
+- [ ] A paste a sign-in does not let go of is refused with 409
+- [ ] The card's Paste a new token button keeps focus like its neighbours; e2e green
+- [ ] Docs on current dev: api.md, architecture, product, changes, ADR-0352
+- [ ] Independent review approves the branch head
 
 ## Acceptance criteria
 
@@ -88,6 +105,12 @@ Confirmed against upstream `dev` at 91a0cec5.
 - AC-5 (TKP-010): with the real process host and the fake agent, a new task on an instance whose
   only subscription was pasted starts on it and its run has `CLAUDE_CODE_OAUTH_TOKEN` of the
   pasted token's length.
+- AC-7 (TKP-005, SPEC-464, SPEC-463): a subscription whose stored usage holds a weekly model
+  limit and whose email was typed is signed in again with `PUT …/token`: the model windows are
+  gone, its other windows stay, and the typed email stays through a 403 profile and through one
+  that gives another email.
+- AC-8 (TKP-011): a sign-in that ignores its stop and whose process host does not return keeps
+  `PUT …/token` waiting 15 s, then answers 409; the credential, status and audit are unchanged.
 - AC-6 (TKP-008, TKP-009): in the mock UI, Paste token connects a subscription, a malformed token
   is refused under the field, Paste a new token repairs a card, and axe finds no violations in
   either dialog.

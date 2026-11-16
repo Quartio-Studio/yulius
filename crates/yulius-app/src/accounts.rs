@@ -1208,11 +1208,10 @@ impl App {
                 ));
             }
         }
+        // A new sign-in like the terminal's: the old one's model limits go (SPEC-464 UCL-004).
+        self.store_sealed_credential(&account.id, &sealed).await?;
         let store = &self.deps.store;
         let now = self.now();
-        store
-            .set_account_credential(&account.id, &sealed, AccountStatus::Ok, now)
-            .await?;
         store
             .audit(
                 now,
@@ -2027,6 +2026,12 @@ impl App {
 
     async fn store_credential(&self, account: &AccountId, secret: &Secret) -> AppResult<()> {
         let sealed = self.deps.crypto.seal(secret.expose().as_bytes())?;
+        self.store_sealed_credential(account, &sealed).await
+    }
+
+    /// Stores a new sign-in's sealed credential as `ok`, the terminal's or a pasted one
+    /// (SPEC-502 TKP-005), under the lock every write of a subscription's state takes.
+    async fn store_sealed_credential(&self, account: &AccountId, sealed: &Sealed) -> AppResult<()> {
         let store = &self.deps.store;
         let _writing = self.capacity.usage_writes.lock().await;
         let Some(record) = store.account(account).await? else {
@@ -2050,7 +2055,7 @@ impl App {
                 .await?;
         }
         store
-            .set_account_credential(account, &sealed, AccountStatus::Ok, self.now())
+            .set_account_credential(account, sealed, AccountStatus::Ok, self.now())
             .await
     }
 

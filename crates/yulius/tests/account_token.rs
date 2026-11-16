@@ -578,6 +578,78 @@ async fn a_new_token_signs_a_subscription_in_again() -> TestResult {
     Ok(())
 }
 
+/// AC-7 (TKP-005, SPEC-464 UCL-004, SPEC-463 EML-004): a new pasted token is a new sign-in as on
+/// the rest of `dev`: the weekly model limits Claude reported to the old one go (its other windows
+/// stay), and an email a person typed stays, whatever Claude's profile says of the new token.
+#[tokio::test]
+async fn a_new_token_drops_the_old_model_limits_and_keeps_a_typed_email() -> TestResult {
+    let w = world().await?;
+    let created = paste(&w, "team Max", PASTED).await?;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
+    let id = created.body["account"]["id"]
+        .as_str()
+        .ok_or("id")?
+        .to_owned();
+    let typed = call(
+        &w.h.router,
+        Method::PATCH,
+        &format!("/api/admin/accounts/{id}"),
+        Some(json!({"email": "team@example.com"})),
+        &w.admin,
+    )
+    .await?;
+    assert_eq!(typed.status, StatusCode::OK, "{}", typed.body);
+    assert_eq!(typed.body["email_typed"], true);
+    let stored = json!({
+        "secondary": {"used_percent": 61.0, "window_minutes": 10_080, "resets_at": 4_000_000_000_000_i64},
+        "weekly_opus": {"used_percent": 100.0, "window_minutes": 10_080, "resets_at": 4_100_000_000_000_i64},
+    });
+    w.h.store
+        .set_account_state(
+            &AccountId::parse(&id)?,
+            AccountStatus::Limited,
+            Some(&stored.to_string()),
+            None,
+            Timestamp(2),
+        )
+        .await?;
+
+    let path = format!("/api/admin/accounts/{id}/token");
+    // Claude's profile names another address for this token: the typed one stays.
+    let replaced = call(
+        &w.h.router,
+        Method::PUT,
+        &path,
+        Some(json!({"token": WITH_EMAIL})),
+        &w.admin,
+    )
+    .await?;
+    assert_eq!(replaced.status, StatusCode::OK, "{}", replaced.body);
+    assert_no_token(&replaced.body);
+    assert_eq!(replaced.body["status"], "ok");
+    assert_eq!(replaced.body["email"], "team@example.com");
+    assert_eq!(replaced.body["email_typed"], true);
+    let record = record(&w, &id).await?;
+    assert_eq!(opened(&w, &record)?, WITH_EMAIL);
+    let usage: Value = serde_json::from_str(record.usage_json.as_deref().ok_or("usage")?)?;
+    assert!(usage["weekly_opus"].is_null(), "{usage}");
+    assert_eq!(usage["secondary"]["used_percent"], 61.0, "{usage}");
+
+    // A profile that may not be read (a `setup-token`'s 403) keeps it as well.
+    let again = call(
+        &w.h.router,
+        Method::PUT,
+        &path,
+        Some(json!({"token": PASTED})),
+        &w.admin,
+    )
+    .await?;
+    assert_eq!(again.status, StatusCode::OK, "{}", again.body);
+    assert_eq!(again.body["email"], "team@example.com");
+    assert_eq!(again.body["email_typed"], true);
+    Ok(())
+}
+
 /// TKP-002: a sign-in in the terminal that has already captured a token, and is still running, is
 /// ended first: its token is sealed as it ends, and the pasted one is stored after it and stays.
 #[tokio::test]
