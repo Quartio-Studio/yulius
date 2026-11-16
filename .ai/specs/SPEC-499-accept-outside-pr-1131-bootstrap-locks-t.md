@@ -45,7 +45,7 @@ without breaking each other's rustup toolchain.
 - [x] Spec SPEC-499 renumbered from the contributor's SPEC-445 and validated
 - [x] The contributor's lock on current dev: home_lock with its tests, bootstrap holds it around the rustup install
 - [x] A bootstrap test proves the toolchain install runs under the lock; per-tool locks share the helper
-- [ ] Changelog entry at the top of docs/changes.md, spec Evidence
+- [x] Changelog entry at the top of docs/changes.md, spec Evidence
 - [ ] Independent review answered test-first
 
 ## Acceptance criteria
@@ -75,4 +75,39 @@ without breaking each other's rustup toolchain.
 
 ## Evidence
 
-(filled in when the change is complete)
+What of #1131 was kept, changed or dropped (it cherry-picked cleanly onto c7348d044; the
+contributor stays the author of that commit):
+
+- Kept: `scripts/home_lock.py`, its tests, and the lock around the rustup installer and
+  `rustup toolchain install` in `scripts/bootstrap.py`, unchanged.
+- Changed: the spec, SPEC-445 on the fork, is renumbered to this task's SPEC-499 (the frontmatter
+  names this task); the changelog entry moved from where the cherry-pick put it (under an older
+  date) to the top. `test_home_lock`'s timing test now reads the clock before it starts its
+  release timer, so a loaded host can only make the measured wait longer.
+- Added: `scripts/test_bootstrap.py`, which proves the bootstrap holds the lock (the fork only
+  tested the helper); the per-tool and zig locks now take the same helper (BSL-003).
+- Dropped: nothing. `dev` still had no lock: every CI job of a sandbox runs with
+  `HOME=<sandbox>/ci/home` and up to two lanes run at once.
+
+Commands and results (2026-11-16, this sandbox):
+
+- `python3 -m unittest discover -s scripts -p 'test_*.py'`: 160 tests OK (the command
+  `scripts/dev check` runs).
+- `test_bootstrap` against `dev`'s `scripts/bootstrap.py` (copied over the file, then
+  restored): fails with `AssertionError: 'free\n' != 'held\n'`; passes with the change.
+- `python3 scripts/check_repository.py`: passed.
+- The race itself, reproduced (the fork could not): `target/proof-481/race.sh` (not committed)
+  ran two `python3 scripts/bootstrap.py --install-rustup` at once in one fresh `HOME` with
+  `CI=true` and no rustup on `PATH`, the tools list emptied and zig unpinned so only the rustup
+  part ran. With `dev`'s script one lane failed in 4 of 4 rounds: `OSError: [Errno 26] Text file
+  busy: '<home>/.cargo/bin/rustup'` (rounds 1 and 4; one lane ran rustup while the other's
+  installer was writing it) and `component download failed ... could not rename 'downloaded'
+  file` in `~/.rustup/downloads`, after "recovering from a partially installed toolchain"
+  (rounds 2 and 3). With this branch's script both lanes exited 0 in 5 of 5 rounds, the waiting
+  one reporting `1.99.0-x86_64-unknown-linux-gnu unchanged`.
+- `yulius security-scan`: exit 2, not run. Vidoc refused the instance's key (HTTP 401 "Missing
+  or invalid API key"). The `security` job on the pull request reports the same until the key
+  works.
+- Not tested: Windows, where `home_lock` holds nothing (as the per-tool lock did before); the
+  two lanes of a real Yulius CI starting at the same moment (the race proof above runs the same
+  command in the same shared-home layout).
