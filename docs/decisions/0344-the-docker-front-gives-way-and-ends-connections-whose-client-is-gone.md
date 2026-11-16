@@ -60,6 +60,38 @@ whether the client half-closed or hung up entirely.
   counted. The Superagent's `docker_restart` does it at once when the person asks; task agents
   do not get it, since it would stop every other task's and CI job's containers.
 
+- **One shared problem, one Needs you** (SPEC-494 slice 4). `needs_you` takes `cause: docker`
+  for a problem of the whole sandbox. The tasks of a sandbox naming it are grouped under one card
+  in the sidebar's Needs you group, and the notification center holds one entry for it. A
+  person's answer to one running task's request, the end of the Docker trouble or
+  `docker_restart` ends the requests asked before it, audited, and their tasks are told. Anyone
+  who may write to one of those tasks answers them all: the problem is the sandbox's, not one
+  owner's. The agent names the cause: Yulius cannot tell from free text that requests are the
+  same.
+
+- **A front from an earlier build is replaced when quiet** (SPEC-494 slice 5). The upkeep compares
+  the file a front process runs (`/proc/<pid>/exe`) with the server's executable; when they differ
+  (an update replaced it) and the front is quiet, it is restarted. Quiet is read live just before:
+  no child process (its engine) and no connection at its socket, accepted or waiting
+  (`/proc/<pid>/net/unix` lists those of the front's network namespace, every run, CI job and CD run
+  of the sandbox, under the listener's path; an engine front's containers are covered by its engine,
+  the front's child), and, when the front writes a state, the state agrees. A relay front (a legacy
+  holder's, ADR-0158) has no engine child: a client of it from another namespace is seen only in its
+  state, and before this change not at all. A Docker call that comes between that read and the new
+  front's `ready` fails at once (its socket missing or refused, or cut once the old front accepted
+  it) and can be run again. A state alone is up to 5 s old, and a front from before this change
+  writes none and holds four sockets when idle, so neither the state nor a socket count decides
+  (review round 1 of slices 5 to 7). A busy one is kept and journaled once a day.
+
+- **Engines do not ask for `br_netfilter`** (SPEC-494 slice 6). A sandbox's engine runs with
+  `DOCKER_IGNORE_BR_NETFILTER_ERROR=1`: networks with `enable_icc=false` are created, without
+  enforcing ICC inside the sandbox; the host loads no module.
+
+- **Measures on the instance** (SPEC-494 slice 7). Restarts and give-ways become audit entries
+  about the sandbox, written by the app from the upkeep's bounded event queue; a Needs you naming
+  `docker` is audited too. `GET /api/analytics/docker` and the Pipeline tab's Docker card read
+  them per week, like the merge queue's figures.
+
 ## Alternatives
 
 - **A larger limit**: delays the jam by the same leak's rate; does not end it.
@@ -71,6 +103,14 @@ whether the client half-closed or hung up entirely.
   which run made a call; every live task of the sandbox shares the one Docker, so all are told.
 - **Waiting for a moment with no container running at all**: a sandbox's long-lived dev
   containers would hold the repair off for good while every Docker call fails.
+- **Recognising a shared problem from the request's words**: wordings differ by task and would
+  merge unrelated requests; a named cause is exact, and an unknown one is refused.
+- **Recording the build in the front's record**: fronts started before the change have none,
+  and the incident's front was one of them; the executable's file tells every front apart.
+- **Loading `br_netfilter` on the host**: every bridged frame of the host would go through
+  iptables, cutting bridged guests on a host whose FORWARD policy drops, unless a boot-ordered
+  sysctl pinned it off again; for an isolation inside one tenant's engine that Yulius does not
+  promise.
 - **Letting tasks restart Docker**: seven tasks would restart it under each other's containers;
   Yulius knows when, and a Superagent acts for its person.
 - **A socket from the front to the server for its events**: the front outlives server restarts

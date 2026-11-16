@@ -1,11 +1,11 @@
 ---
 yulius-task: e807d154-9d41-4466-bfed-481ba2d61e0e
-status: in-progress
+status: done
 ---
 
 # SPEC-494: A sandbox's Docker never jams: the front gives way and repairs itself
 
-Status: in progress
+Status: done
 Date: 2026-11-15
 Owner: Yulius task #476
 Scope authorization: task #476, the person's request of 2026-11-15 ("spawn a task in yulius so it
@@ -152,28 +152,59 @@ ever reaches it).
 
 ### One shared problem, one Needs you (slice 4)
 
-- **DFJ-011** `needs_you` takes an optional `cause` naming a sandbox-level problem (`docker`).
-  Needs you of one sandbox with the same open cause show as one card naming its tasks; answering
-  it answers them all, and Yulius's repair of that cause answers them all too.
+- **DFJ-011** `needs_you` takes an optional `cause` naming a sandbox-level problem; the one cause
+  now is `docker` (the sandbox's Docker does not answer), and another value is refused. The agent
+  names the cause (Yulius cannot tell from free text that seven requests are the same problem;
+  the tool's description says when). In the sidebar's Needs you group, the tasks of a sandbox
+  naming the same cause are grouped under one card that names them (each a link, first asker
+  first), with their own rows under it; the notification center holds one entry per such problem
+  (from its oldest open request), not one per task; the Superagent's task list says the request
+  is a shared problem. A person's answer to one of them (a prompt or message to a running task
+  whose request is shown) ends the requests of the sandbox's other tasks naming that cause and
+  asked before, and those tasks are told so in their session; the end of the sandbox's Docker
+  trouble and the Superagent's `docker_restart` end the requests asked before them, and their
+  tasks hear that Docker works again. A request replaced meanwhile stays; each request ended
+  this way is audited (`task.needs_you.answered_shared`). Counts (the Home card, the tab's
+  "need you", the group's count) stay per task: they count tasks that wait, and the card shows
+  they wait for one thing.
 
 ### Fronts do not run old code for days (slice 5)
 
-- **DFJ-010** The front records the build it runs. At each upkeep tick a front from another
-  build is replaced at its first quiet moment: no connection held and its engine not running (the
-  engine stops by itself once idle, ADR-0151), so nothing is lost. A front that never gets quiet
-  for `STALE_AFTER` (24 h) is logged once a day.
+- **DFJ-010** At each upkeep tick a front that runs another build than the server is replaced at its
+  first quiet moment. Another build: the file the front process runs (`/proc/<pid>/exe`) is not the
+  server's executable (an update replaced it), by device and inode; no record is needed, so fronts
+  started before this change are recognised too. Quiet, read live just before the stop: the front
+  has no child process (its engine, which stops by itself once idle, ADR-0151) and no connection at
+  its socket, accepted or still waiting (`/proc/<pid>/net/unix` lists those under the listener's
+  path; no listener seen is a doubt, and a doubt is not quiet); a front that writes a state must say
+  so there too. The table lists the clients of the front's network namespace (every run, CI job and
+  CD run of the sandbox); an engine front's containers are covered by its engine, the front's child.
+  A relay front (a legacy holder's, ADR-0158) has no such child: a client of it from another
+  namespace is seen only in its state, and before ADR-0344 not at all. Besides that, nothing is lost
+  then, short of a Docker call that comes between that read and the new front's `ready`: it fails at
+  once (its socket missing or refused, or cut once the old front accepted it) and can be run again.
+  A busy one is kept and the journal says so once a day.
 
 ### br_netfilter (slice 6)
 
-- **DFJ-012** Decided in slice 6 after checking a real host: either the host setup loads
-  `br_netfilter` with the host namespace's `bridge-nf-call-*` set to 0 (bridged traffic of the
-  host unchanged, a sandbox's network namespace keeps the kernel's default 1), or the engines run
-  with `DOCKER_IGNORE_BR_NETFILTER_ERROR=1`.
+- **DFJ-012** The engines stop asking for `br_netfilter`: a sandbox's engine runs with
+  `DOCKER_IGNORE_BR_NETFILTER_ERROR=1`, the switch the engine's own error names ("set environment
+  variable DOCKER_IGNORE_BR_NETFILTER_ERROR=1 to ignore"). A network that restricts
+  inter-container traffic (`enable_icc=false`) is then created, and its containers can still
+  reach each other inside the sandbox; the sandbox's network namespace is the boundary Yulius
+  keeps, not ICC. The host loads nothing new. It reaches an engine when its front starts again
+  (slice 5 replaces kept fronts when quiet).
 
 ### Measures (slice 7)
 
-- **DFJ-013** Front restarts (by repair, by update, ended), connections that gave way, and Needs
-  you with cause `docker`, per week, are readable on the instance.
+- **DFJ-013** Front restarts (by a repair, a person's ask or an update), connections that gave
+  way at a front's limit, and Needs you naming the sandbox's Docker are counted per week and
+  readable on the instance: `GET /api/analytics/docker?sandbox&from&to` (weeks from their
+  Monday, UTC, and totals) and a Docker card on the Dashboard's Pipeline tab (totals and how many
+  a week). The upkeep keeps the fronts' events (bounded, 4096) until the app takes them every
+  15 s and writes them to the audit log (`sandbox.docker.restarted` with why,
+  `sandbox.docker.gave_way` with how many, about the sandbox's slug); a request naming `docker`
+  is audited `task.needs_you.docker`. A production holder's events count for its sandbox.
 
 ## Plan
 
@@ -188,13 +219,18 @@ ever reaches it).
 - [x] Slice 2 reviewed independently, findings fixed test-first
 - [x] Yulius restarts a jammed front at a quiet moment and tells the tasks
 - [x] The Superagent restarts its sandbox's Docker
-- [ ] Slice 3 reviewed independently, findings fixed test-first
-- [ ] Needs you of one sandbox-level cause show as one card
-- [ ] Slice 4 reviewed independently, findings fixed test-first
-- [ ] An adopted front from another build is replaced when quiet
-- [ ] br_netfilter decided on a real host and applied
-- [ ] Front restarts, give-ways and Docker Needs you are counted on the instance
-- [ ] Slices 5 to 7 reviewed independently, findings fixed test-first
+- [x] Slice 3 reviewed independently, findings fixed test-first
+- [x] Needs you of one sandbox-level cause show as one card
+- [x] Slice 4 reviewed independently, findings fixed test-first
+- [x] An adopted front from another build is replaced when quiet
+- [x] br_netfilter decided on a real host and applied
+- [x] Front restarts, give-ways and Docker Needs you are counted on the instance
+- [x] Slices 5 to 7 reviewed independently, findings fixed test-first
+- [x] Manager tests start a rewritten fake front without a race (#1339)
+- [x] The texts state the relay-front limit and one window wording (#1341)
+- [x] The follow-up reviewed independently, findings fixed test-first
+- [x] The quiet texts name the relay limit; the fake front's writer is always reaped
+- [x] The last notes' fix reviewed independently
 
 ## Acceptance criteria
 
@@ -227,7 +263,8 @@ ever reaches it).
   the repair and its notice, the shared Needs you card (AC-5 to AC-7).
 - Probe against the real engine in this sandbox (`target/t476/exec_probe.py`, and a local front
   relaying to it): an exec whose client is killed frees its place.
-- Real host (QEMU guest, Ubuntu 26.04) for `br_netfilter` (DFJ-012).
+- `br_netfilter` (DFJ-012): the engine's environment, asserted in the engine's argv test; the
+  error that names the switch is the sandbox engine's own (reproduced here).
 
 ## Decisions
 
@@ -241,6 +278,13 @@ ever reaches it).
 - "Hung up" is the peer's close (`POLLHUP`), not a half-close: the Docker CLI half-closes after
   stdin's EOF and still reads.
 - Slices are separate pull requests of this task (one concern each, ~400 lines).
+- `br_netfilter` (DFJ-012): the engines stop asking for it rather than the host loading it.
+  Loaded on the host, the module sends every bridged frame of the host through iptables
+  (`bridge-nf-call-iptables` defaults to 1), so a host whose FORWARD policy drops (ufw's
+  default) would cut its own bridged guests, and pinning the host namespace's switch to 0 needs
+  a sysctl drop-in ordered after the module's load on every boot. ICC restriction inside one
+  sandbox's engine protects containers of one tenant from each other, which Yulius does not
+  promise; the sandbox's own network namespace is the boundary.
 
 ## Evidence
 
@@ -412,3 +456,211 @@ in slice 3's pull request.
 - Accepted, not changed: an unanswered ping waits up to 5 s under the sandbox's upkeep lock (once
   per tick, only beside a client of a running engine); bounded, and releasing the lock mid-tick
   would let a run start between the reading and the repair.
+### Slice 4 (one shared problem, one Needs you)
+
+- `requests_naming_the_sandboxs_docker_are_answered_together` (fake agents, two tasks): a person
+  answering one ends both; the end of the Docker trouble ends both, and both hear that it is no
+  longer full, each once.
+- `npx e2e run tests/shared-needs-you.e2e.ts`: two tasks naming `docker` show as one row naming
+  #4 and #12, and each on its own row once answered: failed before (no such row), passes after;
+  `attention.e2e.ts`, `navigation.e2e.ts` still pass (22 passed).
+
+### Slice 3, review round 4 (approve; its two nits fixed in the next pull request)
+
+PR #1335 approved at 3714d7af1 (round 4, Opus 5.5). Its nits, own code: a restart that stopped no
+front (none ran) is no restart, now or when a later tick starts one
+(`an_asked_restart_that_stopped_nothing_is_not_counted_later`: red before, counted 1); the
+operations line is wrapped.
+
+### Slice 4, review round 1 (request changes; every finding own code, fixed)
+
+- The end pass answered requests asked after the trouble ended: requests are answered only if
+  asked before the end (or the restart), through `end_task_needs_you_asking` (a request replaced
+  meanwhile stays). In `requests_naming_the_sandboxs_docker_are_answered_together`: a request
+  asked after the end stays (red with the cutoff removed).
+- A person's answer to one task dropped the others without a word: it spreads only from a
+  running task's shown request, and the tasks answered through it are told (`DOCKER_ANSWERED`,
+  typed with the usual guards); the test answers through the Superagent's `task_message`, and a
+  request without the cause stays (red with the cause filter removed).
+- The sidebar no longer hides rows: the shared tasks are grouped under one card naming them
+  (links, first asker first) with their own rows, so keyboard, menus, ownership and counts are
+  unchanged (`shared-needs-you.e2e.ts`: the card, its links' order, both rows, focus kept on an
+  activity change, one notification entry).
+- Tests: the tool's `cause` (accepted, shown, refused for an unknown one; `cd.rs`), the
+  Superagent's `docker_restart` answering a request (`cockpit.rs`), the Superagent's task text
+  naming the shared problem (`mcp_text`).
+- The Evidence of slices 5 to 7 leaves this pull request with their code.
+
+### Slice 4, review round 2 (request changes; every finding own code, fixed)
+
+- The bell's one entry depended on the browser having loaded that sandbox's task list (6 of 10
+  e2e runs failed): the server now names each shared request's episode (`NeedsYouView.episode`,
+  the oldest open request naming the cause among the sandbox's working tasks; a resting task's
+  stored request does not count), and the entry is keyed by it and names the project.
+  `shared-needs-you.e2e.ts`: one entry also when another project is open; 10 of 10 runs passed.
+  The integration test asserts both tasks share one episode and a task without the cause has
+  none.
+- A Continue of a stopped task with a stored Docker request answers no other
+  (`continuing_a_stopped_task_answers_no_other_tasks_request`: red with the running check
+  removed).
+- The audit row names its source ("a person's answer to task #N", "the end of the sandbox's
+  Docker trouble", "a restart asked through the Superagent") and is asserted for the task
+  answered through another, not for the one answered directly.
+- An entry created only by an answer or a restart no longer gets an "end" 75 s later: only an
+  entry that saw a trouble, or a restart (whose own time is the cutoff), ends requests and tells
+  that Docker works again.
+- The texts say what answers a shared request (a person's answer, the trouble's end, a restart
+  through the Superagent), not "Yulius's own repair" in general: an upkeep restart for an
+  unanswered engine opens no trouble.
+
+### Slice 5 (fronts do not run old code for days)
+
+- `front_repair::tests`: `a_front_from_another_file_runs_another_build` (this test process
+  against its own executable and `/bin/sh`), `a_quiet_front_holds_no_connection_and_runs_no_engine`
+  (from a state file, and from `/proc` for a front without one: a child makes it busy).
+- `an_outdated_front_is_replaced_once_it_is_quiet` (manager, the fake front, whose file is not
+  the server's executable): kept while its state holds connections, replaced (counted) once it
+  holds none. (Round 1 of the review changed how quiet is read; see below.)
+- The quiet test first failed only under the shell tool here: its inherited stdin was a socket;
+  the server starts fronts with a null stdin, as the test now does.
+
+### Slice 6 (br_netfilter)
+
+- Reproduced the failure in this sandbox's engine: `docker network create -o
+  com.docker.network.bridge.enable_icc=false t476b` → "cannot restrict inter-container
+  communication or run without the userland proxy: stat /proc/sys/net/bridge/
+  bridge-nf-call-iptables: no such file or directory: set environment variable
+  DOCKER_IGNORE_BR_NETFILTER_ERROR=1 to ignore".
+- `engine::tests::the_engine_gets_its_own_namespaces_capabilities_and_environment` asserts the
+  variable in the engine's argv: failed before, passes after.
+- Not tested here: a network create on an engine started with the variable (this sandbox's
+  engine is started by the production server, not by this branch; it takes it once its front
+  starts again after the update).
+
+### Slice 7 (measures on the instance)
+
+- `give_ways_are_counted_once` (front_gate): each give-way counted once, an adopted front's
+  history not again; `an_asked_restart_starts_a_new_front_and_ends_the_trouble` takes one
+  `restarted` event, once.
+- `the_instance_counts_docker_restarts_give_ways_and_needs_you_per_week` (Cockpit fixture, an
+  isolation reporting events): restarts 2 (one of the production engine), give-ways 5, Docker
+  Needs you 1, in one week; an unknown sandbox's event is dropped.
+- `a_week_is_named_by_its_monday` (the week's Monday, UTC).
+- `npx e2e run tests/pipeline.e2e.ts`: the Docker card's totals and "a week" figures (failed
+  before: no card; 18 passed after).
+
+### Slice 4, review round 3 (approve; its notes fixed in the next pull request)
+
+PR #1337 approved at 9b39c0590 (round 3, Opus 5.5). Its notes, own code: the shared card's
+tooltip names what answers the requests (a person's answer, the trouble's end, a restart through
+the Superagent), and a stopping task's request no longer opens an episode (it is not shown).
+
+### Slices 5 to 7, review round 1 (request changes; every finding own code, fixed)
+
+Reviewer (Fable 5.2) at 56602da9d; Yulius CI of that head passed.
+
+- Major: a front without a state file was never quiet. An idle real front holds four sockets
+  (its runtime's signal pair and duplicate, and the listener), so "no socket but its listener"
+  never held, and no front from before ADR-0344 would ever be replaced. Fixed: the socket count
+  no longer decides (it stays a test helper).
+- Major: the decision trusted a state up to 5 s old, so a client that connected after the last
+  write could be cut. Fixed: quiet is read live just before the stop. The front must have no child
+  and no connection at its socket, accepted or waiting, read from its namespace's
+  `/proc/<pid>/net/unix`, where such sockets carry the listener's path; a state, if written,
+  must agree. No listener seen at the path counts as a doubt, and a doubt is not quiet.
+  `front_repair::tests::a_quiet_front_holds_no_connection_and_runs_no_engine` uses a front-like
+  process with four sockets: idle is quiet, and a client waiting unaccepted is not. It failed
+  against the old decision (idle not quiet). `a_front_with_an_engine_or_no_listener_is_not_quiet`
+  covers a child, and a socket at another path. `an_outdated_front_is_replaced_once_it_is_quiet`
+  (manager) holds the fake front stopped (SIGSTOP) with a client waiting while its state says
+  held 0: kept. Without a state file it is replaced, and its `restarted` event says why.
+- Minor: a restart whose new front started at a later tick was not in the measures. Fixed: that
+  path emits its `restarted` event; `a_front_that_does_not_start_again_keeps_the_trouble_open`
+  asserts it (red before).
+- Minor: the Docker Needs you count was proven by a hand-written audit row. Now
+  `cd::a_needs_you_request_reads_what_happened_problem_and_to_do` reads
+  `GET /api/analytics/docker` before (0) and after (1) the real `needs_you` call with
+  `cause: docker`. Red with the production audit write removed.
+- Minor: the route had no HTTP test. Added
+  `analytics::the_docker_read_counts_restarts_give_ways_and_needs_you_per_week`: two weeks,
+  another sandbox's entry, one outside the range, a hidden sandbox (404) and a reversed range
+  (422).
+- Minor: the stopping-task rule had no test. Now
+  `docker_trouble_notices::requests_naming_the_sandboxs_docker_are_answered_together` adds a
+  stopping task with an older Docker request; the episode stays the first task's own request.
+  Red with the rule reverted.
+- Minor: a sentence in `docs/operations.md` sat in the networks bullet. It is moved, and it now
+  says which fronts still need a manual restart: one from before ADR-0344 that leaked
+  connections stays busy and writes no state, so it is never seen full.
+- Nits: a quiet replacement is journaled at info level as a replacement, no longer as a cut
+  engine. `record_docker_events` uses `production_sandbox`. `docs/api.md` states the 20,000-entry
+  bound. Slice 6's evidence is no longer duplicated under slice 4. Slice 4's review plan item is
+  ticked.
+- Direction notes, answered in words: ICC is not enforced inside one sandbox's engine; ADR-0344
+  and operations.md say so. "Front restarts" mixes reasons, and the audit detail keeps the reason
+  for a split later. The engine-level network create with the variable is not run here; see
+  slice 6.
+
+### Slices 5 to 7, review round 2 (approve; its notes fixed in a follow-up)
+
+PR #1338 was approved at 0c3f8feec (round 2, Fable 5.2). Yulius CI run 24871c45 passed: quality and
+e2e passed, and security was skipped because Vidoc is off for this project or the whole instance.
+The PR merged into dev at that head. The reviewer confirmed on this host that the sandbox's
+production front is listed in `/proc/net/unix` under `state_dir/docker/docker.sock`. A connection
+made through it shows as one non-listening row there and disappears when closed. The new tests
+passed 30 sequential runs and 270 loaded ones. Its notes, own code, fixed in the follow-up:
+
+- The table lists only clients in the front's network namespace, because the kernel creates the
+  accepted socket in the client's namespace. DFJ-010, ADR-0344 and the code comment now say so,
+  and that the engine covers a container's connection, since the engine is the front's child.
+- The window runs until the new front is `ready`, not only until the stop: a call that comes in
+  that time fails at once. DFJ-010, ADR-0344, operations.md and the journal's comment now say
+  so (each case named since the last follow-up).
+- `a_quiet_front_holds_no_connection_and_runs_no_engine` now also holds a connection the front
+  has accepted, with its state saying 0, and the front is not quiet.
+- Pre-existing: two manager tests that rewrite the fake front's executable and start it at once
+  failed twice in 240 loaded runs. That is issue #1339, outside this change. Their lines come
+  from slice 3.
+
+### Follow-up: the last review's leftovers (#1339, #1341)
+
+- #1339, own code (slice 3's tests). Reproduced 5 times in 120 runs of `manager::` with 32
+  threads. A probe printed `Text file busy (os error 26)` from `start_front`: another test forked
+  while this process held the fake front's file open for writing, and the child kept it open
+  until its exec. `put_executable` now has `sh` write a staged file, which the test process
+  renames into place. After the fix, 0 of 300 runs failed under the same load.
+- #1341, texts. The relay-front limit is stated in `connections_on`, DFJ-010 and ADR-0344. The
+  window wording is the same in DFJ-010, ADR-0344, operations.md and the `quiet` and manager
+  comments, and covers a call that is cut after it was accepted. The body says `Status: done`.
+  The test pins the reason: `connections_on` is `Some(1)` for an accepted connection.
+
+### Follow-up: the last review's notes
+
+PR #1342 was approved at 6ac2c4d16, Yulius CI run 0b52dea0 passed, and it merged at that head.
+#1339 and #1341 are closed with their evidence. The reviewer's own load loop showed 0 failures
+in 2240 runs at that head and 13 in 640 with the binary from before the fix. Its notes, own code:
+
+- The `quiet` doc and DFJ-010 now name the relay-front limit beside the window.
+- The window says what a call meets: its socket missing or refused, or cut once the old front
+  accepted it. This wording is in DFJ-010, ADR-0344, operations.md and both code comments.
+- `put_executable` reaps its writer whatever the write did, and only then reports the write's
+  error.
+- Round 2's record no longer quotes the earlier wording as current.
+
+### On the instance
+
+The instance runs main a040c3b5b (`/internal/version`), from before slice 1. Promoting dev to
+main is a person's, so the task asks for it with `needs_you`: promote, update, then read the
+Docker card and the journal's replacement of the kept fronts. Until then the measures are read
+on dev's build in the tests named above: the HTTP read, the Cockpit read and the e2e Pipeline
+card.
+
+### Not tested here
+
+- A real front in another user namespace being read by the server: namespaces are refused in
+  this sandbox. The reviewer read the kernel source instead: `get_proc_task_net` has no ptrace
+  check. On this host, the production front of this sandbox was read as expected.
+- A network create with `enable_icc=false` on an engine started with the variable. See slice 6.
+- A real front restart on the instance (repair, request, or replacement after an update). The
+  manager tests use a fake front with the same contract (socket, `ready`, state file), and
+  fronts in this sandbox were never filled or restarted (task rule).

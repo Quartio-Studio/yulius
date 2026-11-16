@@ -435,6 +435,11 @@ button.task-group-head:hover { color: var(--text); }
 .task-link:hover { text-decoration: none; }
 .task-link:focus-visible { border-radius: var(--radius); box-shadow: var(--focus-inset); }
 .task-row:hover .task-link, .task-row.active .task-link, .task-row:focus-within .task-link { color: var(--text); }
+/* One Needs you card for a problem several tasks share (SPEC-494): it names them, each a link;
+   their own rows follow it. */
+.task-shared { display: flex; align-items: center; gap: 12px; min-height: 36px; padding: 4px 12px; border-radius: var(--radius); background: var(--surface-3); color: var(--text-2); font-size: var(--fs-sm); line-height: var(--lh-sm); }
+.task-shared .task-shared-text { min-width: 0; overflow-wrap: anywhere; }
+.task-shared a:focus-visible { border-radius: var(--radius); box-shadow: var(--focus-inset); }
 .task-mark { display: inline-flex; flex: none; align-items: center; justify-content: center; width: 36px; color: var(--muted); }
 .task-num { flex: none; min-width: 4ch; margin-right: -4px; color: var(--muted); font-size: var(--fs-sm); line-height: var(--lh-sm); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .task-chips { display: inline-flex; flex: none; gap: 4px; }

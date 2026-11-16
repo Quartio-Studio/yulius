@@ -214,6 +214,7 @@ fn a_running_task_gets_the_message_typed_into_its_session() -> TestResult {
             decision: false,
             link: None,
             at: 1,
+            cause: None,
         };
         app.deps
             .store
@@ -271,6 +272,7 @@ fn a_remote_message_names_the_persons_own_agent() -> TestResult {
             decision: false,
             link: None,
             at: 1,
+            cause: None,
         };
         app.deps
             .store

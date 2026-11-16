@@ -101,6 +101,12 @@ pub fn bwrap_argv(view: &EngineView) -> Vec<String> {
         "--setenv",
         "HOME",
         "/root",
+        // Networks that restrict inter-container traffic (`enable_icc=false`) are created
+        // without the host's `br_netfilter`, as Docker offers; the sandbox's network namespace
+        // is its boundary, not ICC (SPEC-494 DFJ-012, ADR-0344).
+        "--setenv",
+        "DOCKER_IGNORE_BR_NETFILTER_ERROR",
+        "1",
         "--proc",
         "/proc",
         "--dev",
@@ -589,6 +595,16 @@ mod tests {
         assert!(!argv.contains(&"--cap-drop".to_owned()));
         assert!(position(&argv, &["--setenv", "PATH", ENGINE_PATH]).is_some());
         assert!(position(&argv, &["--setenv", "HOME", "/root"]).is_some());
+        // SPEC-494 DFJ-012: networks that restrict inter-container traffic are created without
+        // the host's `br_netfilter`.
+        assert!(
+            position(
+                &argv,
+                &["--setenv", "DOCKER_IGNORE_BR_NETFILTER_ERROR", "1"]
+            )
+            .is_some(),
+            "{argv:?}"
+        );
         assert!(position(&argv, &["--hostname", "fixture"]).is_some());
     }
 

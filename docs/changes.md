@@ -6,6 +6,21 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-16
 
+- The instance counts what sandboxes' Docker needed (SPEC-494 slice 7, task #476, ADR-0344): front
+  restarts, connections that gave way and Docker Needs you per week, in
+  `GET /api/analytics/docker` and a Docker card on the Dashboard's Pipeline tab.
+- Network creates that restrict inter-container traffic no longer fail in sandboxes (SPEC-494
+  slice 6, task #476, ADR-0344): engines run with `DOCKER_IGNORE_BR_NETFILTER_ERROR=1` instead of
+  the host loading `br_netfilter`; ICC is not enforced inside one sandbox's engine.
+- A sandbox's Docker front kept across an update no longer runs the old build for days (SPEC-494
+  slice 5, task #476, ADR-0344): the upkeep replaces a front whose executable an update replaced
+  at its first quiet moment (no connection, no engine running), fronts from before the change
+  included.
+- One shared Docker problem, one Needs you (SPEC-494 slice 4, task #476, ADR-0344): a task's
+  `needs_you` may name `cause: docker`; the tasks of a sandbox naming it are grouped under one card
+  in the sidebar's Needs you group ("This project's Docker · asked by #12, #4", over their own
+  rows), the notification center holds one entry for it, and a person's answer to one, the end of
+  the Docker trouble or `docker_restart` ends them all, each task told.
 - Yulius restarts a jammed sandbox Docker itself (SPEC-494 slice 3, task #476, ADR-0344): a
   front full for 2 minutes, or whose running engine does not answer through it, is restarted
   (front and engine; running containers stop, volumes stay) once no CI job of the sandbox runs,

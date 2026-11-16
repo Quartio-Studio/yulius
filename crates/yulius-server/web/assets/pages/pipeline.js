@@ -121,12 +121,15 @@ export function mountPipelineSection(ctx, sandbox, route, section, actions) {
     // The review's numbers (SPEC-493 REV-006) and the merge queue's (MQC-005) beside the
     // stages; the stages show without them.
     const range = new URLSearchParams({ sandbox: sandbox.id, from: p.from, to: p.to });
-    const [summary, reviews, queue] = await Promise.all([
+    const [summary, reviews, queue, docker] = await Promise.all([
       ctx.api.get(`${api}/stages/summary?${params()}`),
       ctx.api.get(`/api/analytics/reviews?${range}`).catch(() => null),
       ctx.api.get(`/api/analytics/merge-queue?${range}`).catch(() => null),
+      // What the sandbox's Docker front needed (SPEC-494): restarts, give-ways, Needs you.
+      ctx.api.get(`/api/analytics/docker?${range}`).catch(() => null),
     ]);
-    return { ...summary, reviews, queue };
+    const weeks = Math.max(1, (Date.parse(`${p.to}T00:00:00Z`) - Date.parse(`${p.from}T00:00:00Z`)) / 86400000 + 1) / 7;
+    return { ...summary, reviews, queue, docker: docker && { ...docker, rangeWeeks: weeks } };
   }, (summary) => {
     options = summary.options || options;
     renderFilters();
@@ -149,6 +152,7 @@ export function mountPipelineSection(ctx, sandbox, route, section, actions) {
       deliveryCard(summary.delivery || []),
       summary.reviews ? reviewCard(summary.reviews) : null,
       summary.queue ? queueCard(summary.queue) : null,
+      summary.docker ? dockerCard(summary.docker) : null,
       h('section', { class: 'card db-card', 'aria-label': `Trend: ${label}` },
         h('header', { class: 'db-card-head' },
           h('div', { class: 'db-card-titles' }, h('h2', { class: 'card-title' }, label),
@@ -246,6 +250,18 @@ export function mountPipelineSection(ctx, sandbox, route, section, actions) {
         tile('Merged', int(q.merged || 0), 'every member merged on one run'),
         tile('Dissolved', int(q.dissolved || 0), dissolved || 'none'),
         tile('Arming to merge', minutes, `median of ${int(q.merges || 0)} armed ${q.merges === 1 ? 'merge' : 'merges'}`)));
+  }
+
+  /** What the sandbox's Docker front needed in the range (SPEC-494): totals and per week. */
+  function dockerCard(d) {
+    const perWeek = (n) => `${Number((n / d.rangeWeeks).toFixed(1))} a week`;
+    return h('section', { class: 'card db-card', 'aria-label': 'Docker' },
+      h('header', { class: 'db-card-head' }, h('div', { class: 'db-card-titles' }, h('h2', { class: 'card-title' }, 'Docker'),
+        h('span', { class: 'db-card-sub' }, 'the sandbox’s Docker front: restarted by itself, on a person’s ask or after an update'))),
+      h('div', { class: 'db-kpis pl-kpis' },
+        tile('Front restarts', int(d.restarts || 0), perWeek(d.restarts || 0)),
+        tile('Connections that gave way', int(d.gave_way || 0), perWeek(d.gave_way || 0)),
+        tile('Docker Needs you', int(d.needs_you || 0), perWeek(d.needs_you || 0))));
   }
 
   function tile(label, value, sub) {

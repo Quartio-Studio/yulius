@@ -165,6 +165,12 @@ superseding [0140](decisions/0140-isolated-sandboxes-have-no-container-engine-ag
   their session, and again when it is no longer full. A front full for 2 minutes, or whose
   running engine does not answer pings through it, is restarted by the upkeep once no CI job of
   the sandbox runs (at most 10 minutes later); the Superagent's `docker_restart` does it at once.
+  Tasks asking a person about it name `cause: docker` in `needs_you`: they are grouped under one
+  card in the sidebar's Needs you group, the notification center holds one entry per episode,
+  and their requests end together (a person's answer to one, the trouble's end, or
+  `docker_restart`), each task told.
+  Restarts, give-ways and Docker Needs you are audited and counted per week
+  (`/api/analytics/docker`, the Pipeline tab).
 - **Start on demand.** The first connection starts the engine: `yulius sandbox-exec --engine`
   joins `sandboxes/<sandbox>/engine/inside` (the engine's limits stay on `engine`, out of its
   view, ADR-0339) and execs `bwrap`, then `yulius sandbox-host engine`

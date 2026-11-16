@@ -132,6 +132,7 @@ impl App {
                 decision: false,
                 link: None,
                 at: now.0,
+                cause: None,
             };
             if let Err(err) = store.set_task_needs_you(id, Some(&record), now).await {
                 tracing::warn!(task = %id, error = %err, "could not flag a task the move left stopped");

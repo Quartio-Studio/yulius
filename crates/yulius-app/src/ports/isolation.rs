@@ -132,6 +132,19 @@ pub struct SmokeCheck {
     pub detail: String,
 }
 
+/// An event of a sandbox's Docker front the instance counts (SPEC-494 DFJ-013).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DockerEvent {
+    /// The sandbox's id (a production holder's name `<id>.prod` for its production engine).
+    pub sandbox: String,
+    /// `restarted` or `gave_way`.
+    pub kind: String,
+    /// How many.
+    pub count: u64,
+    /// Why, for a restart.
+    pub detail: String,
+}
+
 /// See the module docs.
 #[async_trait]
 pub trait SandboxIsolation: Send + Sync {
@@ -197,6 +210,12 @@ pub trait SandboxIsolation: Send + Sync {
     /// when it cannot be told (no live holder, one started by an older Yulius, no isolation).
     async fn link(&self, _sandbox: &SandboxId) -> Option<bool> {
         None
+    }
+
+    /// The events of the sandboxes' Docker fronts since the last call, oldest first, for the
+    /// instance's measures (SPEC-494 DFJ-013). None where no sandbox runs Docker.
+    fn take_docker_events(&self) -> Vec<DockerEvent> {
+        Vec::new()
     }
 
     /// Restarts `sandbox`'s Docker front and engine now (SPEC-494 DFJ-009): its running

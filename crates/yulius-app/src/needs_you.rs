@@ -46,7 +46,17 @@ pub struct NeedsYouRecord {
     pub link: Option<String>,
     /// When it was asked (ms).
     pub at: i64,
+    /// The sandbox-level problem it is about ([`CAUSES`]), shared by the sandbox's tasks that
+    /// name it: they show as one card and are answered together (SPEC-494 DFJ-011).
+    #[serde(default)]
+    pub cause: Option<String>,
 }
+
+/// The audit action of a request naming the sandbox's Docker (SPEC-494 DFJ-013).
+pub const DOCKER_NEEDS_YOU: &str = "task.needs_you.docker";
+
+/// The sandbox-level causes a request may name: `docker`, the sandbox's Docker does not answer.
+pub const CAUSES: &[&str] = &["docker"];
 
 impl NeedsYouRecord {
     /// The API view.
@@ -59,6 +69,8 @@ impl NeedsYouRecord {
             decision: self.decision,
             link: self.link.clone(),
             at: rfc3339(Timestamp(self.at)),
+            cause: self.cause.clone(),
+            episode: None,
         }
     }
 
@@ -105,6 +117,8 @@ struct Args {
     link: Option<String>,
     #[serde(default)]
     resolved: bool,
+    #[serde(default)]
+    cause: Option<String>,
 }
 
 /// One line of at most `max` characters: control characters become spaces, characters that
@@ -188,6 +202,16 @@ impl App {
                 Some(link)
             }
         };
+        let cause = match args.cause.as_deref().map(str::trim) {
+            None | Some("") => None,
+            Some(cause) if CAUSES.contains(&cause) => Some(cause.to_owned()),
+            Some(other) => {
+                return Err(AppError::Invalid(format!(
+                    "cause is one of {} (a problem of the whole sandbox), not {other:?}",
+                    CAUSES.join(", ")
+                )));
+            }
+        };
         let record = NeedsYouRecord {
             action: action.clone(),
             happened,
@@ -195,6 +219,7 @@ impl App {
             decision: args.decision,
             link: link.clone(),
             at: self.now().0,
+            cause: cause.clone(),
         };
         // The request itself puts the task in Needs you (`AttentionFacts`, `taskInfo`), whatever the
         // agent does meanwhile; its activity is left to its turns.
@@ -203,11 +228,22 @@ impl App {
             .await?;
         self.publish_task(&ctx.task.id).await;
         self.needs_you_audit(ctx, "task.needs_you", &action).await;
+        if cause.as_deref() == Some("docker") {
+            // Counted per week on the instance (SPEC-494 DFJ-013).
+            self.needs_you_audit(ctx, DOCKER_NEEDS_YOU, &action).await;
+        }
+        let next = match cause.as_deref() {
+            Some(cause) => format!(
+                "People see the tasks of this sandbox that name cause {cause} under one shared \"Needs you\" card; a person's answer to one of them, the end of the sandbox's Docker trouble, or a restart of its Docker asked through the Superagent closes yours too, and you are told so here. Print the request in the session as it is; go on with other work."
+            ),
+            None => "People see \"Needs you\" on this task. Print the request (print, and the link) in the session as it is so whoever opens it knows what to do; go on with other work. It closes when someone writes to this task, or call needs_you with resolved: true once you see it done.".to_owned(),
+        };
         Ok(json!({
             "asked": action,
             "print": record.printed(),
             "link": link,
-            "next": "People see \"Needs you\" on this task. Print the request (print, and the link) in the session as it is so whoever opens it knows what to do; go on with other work. It closes when someone writes to this task, or call needs_you with resolved: true once you see it done.",
+            "cause": cause,
+            "next": next,
         }))
     }
 
@@ -228,26 +264,153 @@ impl App {
         }
     }
 
-    /// A prompt typed into the task ends its request: a person answered.
+    /// A prompt typed into the task ends its request: a person answered. A request about a
+    /// sandbox-level cause, shown on a live task, is answered for every task of the sandbox that
+    /// asked it before (one card, SPEC-494 DFJ-011); those tasks are told so. A resting task's
+    /// stored request (a Continue) answers no other.
     pub(crate) async fn end_needs_you(&self, task: &TaskId) {
+        let shared = match self.deps.store.task_needs_you(task).await {
+            Ok(Some(request)) => request.cause,
+            _ => None,
+        };
+        self.end_one_needs_you(task).await;
+        if let Some(cause) = shared
+            && let Ok(Some(record)) = self.deps.store.task(task).await
+            && record.status == yulius_domain::task::TaskStatus::Running
+        {
+            let source = format!("a person's answer to task #{}", record.number);
+            let others = self
+                .end_shared_needs_you(&record.sandbox_id, &cause, self.now().0, &source)
+                .await;
+            if cause == "docker" {
+                self.tell_docker_answered(record.sandbox_id.as_str(), others);
+            }
+        }
+    }
+
+    async fn end_one_needs_you(&self, task: &TaskId) -> bool {
         match self
             .deps
             .store
             .set_task_needs_you(task, None, self.now())
             .await
         {
-            Ok(true) => self.publish_task(task).await,
-            Ok(false) => {}
+            Ok(true) => {
+                self.publish_task(task).await;
+                true
+            }
+            Ok(false) => false,
             Err(err) => {
-                tracing::warn!(task = %task, error = %err, "ending a needs_you request failed")
+                tracing::warn!(task = %task, error = %err, "ending a needs_you request failed");
+                false
             }
         }
+    }
+
+    /// When the episode of `task`'s request about `cause` (asked at `at`) began: the oldest open
+    /// request naming it among the sandbox's tasks that do not rest (an ended task's stored
+    /// request is not shown, SPEC-494 DFJ-011).
+    async fn shared_episode(&self, task: &TaskId, cause: &str, at: i64) -> i64 {
+        let Ok(Some(record)) = self.deps.store.task(task).await else {
+            return at;
+        };
+        let Ok(others) = self.deps.store.needs_you_tasks(&record.sandbox_id).await else {
+            return at;
+        };
+        let mut oldest = at;
+        for other in others {
+            // A stopping task shows its request no more than a stopped one (review round 3).
+            let resting = match self.deps.store.task(&other).await {
+                Ok(Some(t)) => {
+                    t.status.is_resting() || t.status == yulius_domain::task::TaskStatus::Stopping
+                }
+                _ => true,
+            };
+            if resting {
+                continue;
+            }
+            if let Ok(Some(request)) = self.deps.store.task_needs_you(&other).await
+                && request.cause.as_deref() == Some(cause)
+            {
+                oldest = oldest.min(request.at);
+            }
+        }
+        oldest
+    }
+
+    /// Ends the requests of `sandbox`'s tasks that name `cause` and were asked by
+    /// `asked_until_ms` (a person answered the shared card, or Yulius repaired the cause); a
+    /// request replaced meanwhile stays (`end_task_needs_you_asking`). Returns the tasks whose
+    /// request ended.
+    pub(crate) async fn end_shared_needs_you(
+        &self,
+        sandbox: &yulius_domain::ids::SandboxId,
+        cause: &str,
+        asked_until_ms: i64,
+        source: &str,
+    ) -> Vec<TaskId> {
+        let Ok(tasks) = self.deps.store.needs_you_tasks(sandbox).await else {
+            return Vec::new();
+        };
+        let mut ended = Vec::new();
+        for task in tasks {
+            let Ok(Some(request)) = self.deps.store.task_needs_you(&task).await else {
+                continue;
+            };
+            if request.cause.as_deref() != Some(cause) || request.at > asked_until_ms {
+                continue;
+            }
+            match self
+                .deps
+                .store
+                .end_task_needs_you_asking(&task, &request.action, self.now())
+                .await
+            {
+                Ok(true) => {
+                    self.publish_task(&task).await;
+                    // Ended for another task's answer or a repair: said in the audit log, as a
+                    // person's dismissal is.
+                    if let Err(err) = self
+                        .deps
+                        .store
+                        .audit(
+                            self.now(),
+                            "yulius",
+                            "task.needs_you.answered_shared",
+                            Some(task.as_str()),
+                            Some(&format!("{cause}: {source}")),
+                        )
+                        .await
+                    {
+                        tracing::warn!(task = %task, error = %err, "auditing a shared answer failed");
+                    }
+                    ended.push(task);
+                }
+                Ok(false) => {}
+                Err(err) => {
+                    tracing::warn!(task = %task, error = %err, "ending a shared needs_you request failed");
+                }
+            }
+        }
+        if !ended.is_empty() {
+            tracing::info!(sandbox = %sandbox, cause, tasks = ended.len(), "a shared Needs you was answered");
+        }
+        ended
     }
 
     /// The task's open request, for its summary.
     pub(crate) async fn needs_you_view(&self, task: &TaskId) -> Option<NeedsYouView> {
         match self.deps.store.task_needs_you(task).await {
-            Ok(request) => request.map(|r| r.view()),
+            Ok(Some(request)) => {
+                let mut view = request.view();
+                if let Some(cause) = &request.cause {
+                    view.episode = Some(rfc3339(Timestamp(
+                        self.shared_episode(task, cause, request.at).await,
+                    )));
+                }
+                Some(view)
+            }
+            Ok(None) => None,
             Err(err) => {
                 tracing::warn!(task = %task, error = %err, "reading a needs_you request failed");
                 None
