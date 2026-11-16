@@ -215,11 +215,12 @@ fn selection(diff: &Path) -> Vec<String> {
     args
 }
 
-/// Runs the campaign in the repository at `root`.
+/// Runs the campaign in the repository at `root`: `None` when the branch changed no Rust code
+/// with a mutant in it.
 ///
 /// # Errors
 /// Git or cargo-mutants could not be run.
-pub fn run(root: &Path, cargo: &str, settings: &Settings) -> io::Result<ExitCode> {
+pub fn run(root: &Path, cargo: &str, settings: &Settings) -> io::Result<Option<Outcomes>> {
     let base = git(root, &["merge-base", &settings.base, "HEAD"])?;
     let diff = git(root, &["diff", base.trim(), "HEAD", "--", "*.rs"])?;
     if diff.trim().is_empty() {
@@ -227,7 +228,7 @@ pub fn run(root: &Path, cargo: &str, settings: &Settings) -> io::Result<ExitCode
             "No Rust code changed against {}: nothing to mutate.",
             settings.base
         );
-        return Ok(ExitCode::SUCCESS);
+        return Ok(None);
     }
     let dir = root.join("target/mutants");
     std::fs::create_dir_all(&dir)?;
@@ -257,13 +258,19 @@ pub fn run(root: &Path, cargo: &str, settings: &Settings) -> io::Result<ExitCode
             "No mutant in the Rust lines changed against {}.",
             settings.base
         );
-        return Ok(ExitCode::SUCCESS);
+        return Ok(None);
     }
-    let filter = test_filter(settings.tests.as_deref(), &changed_tests(&diff));
+    // The product's tests are narrowed where the product is: a filter naming a package the
+    // workspace does not have is refused by nextest.
+    let filter = root
+        .join("crates/yulius/Cargo.toml")
+        .exists()
+        .then(|| test_filter(settings.tests.as_deref(), &changed_tests(&diff)));
     println!(
-        "{} mutants in the changed lines; each tested with nextest ({filter}), {} at once, \
+        "{} mutants in the changed lines; each tested with nextest ({}), {} at once, \
          {} s each at most, {} min in all.",
         listed.len(),
+        filter.as_deref().unwrap_or("all tests"),
         settings.jobs,
         settings.mutant_seconds,
         settings.minutes
@@ -283,7 +290,11 @@ pub fn run(root: &Path, cargo: &str, settings: &Settings) -> io::Result<ExitCode
         .args(["--jobs", &settings.jobs.to_string()])
         .args(["--timeout", &settings.mutant_seconds.to_string()])
         .args(["--output", &dir.display().to_string()])
-        .args(["--", "-E", &filter]);
+        .args(
+            filter
+                .iter()
+                .flat_map(|filter| ["--", "-E", filter.as_str()]),
+        );
     #[cfg(unix)]
     std::os::unix::process::CommandExt::process_group(&mut command, 0);
     let mut child = command.spawn()?;
@@ -330,11 +341,17 @@ pub fn run(root: &Path, cargo: &str, settings: &Settings) -> io::Result<ExitCode
         "{}",
         outcomes.summary(listed.len(), settings.minutes, started.elapsed())
     );
-    Ok(if outcomes.held() {
+    Ok(Some(outcomes))
+}
+
+/// The exit code of a run: success when nothing was to mutate or every mutant was caught.
+#[must_use]
+pub fn exit_code(outcomes: Option<&Outcomes>) -> ExitCode {
+    if outcomes.is_none_or(Outcomes::held) {
         ExitCode::SUCCESS
     } else {
         ExitCode::FAILURE
-    })
+    }
 }
 
 #[cfg(test)]
@@ -401,6 +418,102 @@ mod tests {
             "mutants: 4 listed, 1 caught, 1 missed, 1 timed out, 0 unviable, 1 not reached \
              (bound 30 min, took 95 s)"
         );
+    }
+
+    /// A fixture crate in a Git repository of its own, its first commit the base; `None` when
+    /// the pinned cargo-mutants is not on `PATH` (run through `scripts/dev`, which puts
+    /// `.tools/bin` there).
+    fn fixture(name: &str) -> Result<(std::path::PathBuf, String), Box<dyn std::error::Error>> {
+        let dir = std::env::temp_dir().join(format!("xtask-mutants-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("src"))?;
+        std::fs::write(
+            dir.join("Cargo.toml"),
+            "[package]\nname = \"fixture\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[workspace]\n",
+        )?;
+        std::fs::write(
+            dir.join("src/lib.rs"),
+            "pub fn one() -> u32 {\n    1\n}\n\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn one_is_one() {\n        assert_eq!(super::one(), 1);\n    }\n}\n",
+        )?;
+        let git = |args: &[&str]| -> Result<String, Box<dyn std::error::Error>> {
+            Ok(super::git(&dir, args)?.trim().to_owned())
+        };
+        git(&["init", "-q", "-b", "main"])?;
+        git(&["-c", "user.name=t", "-c", "user.email=t@t", "add", "-A"])?;
+        git(&[
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "commit",
+            "-q",
+            "-m",
+            "base",
+        ])?;
+        let base = git(&["rev-parse", "HEAD"])?;
+        Ok((dir, base))
+    }
+
+    fn commit(dir: &Path, path: &str, text: &str) -> Result<(), Box<dyn std::error::Error>> {
+        std::fs::write(dir.join(path), text)?;
+        super::git(dir, &["add", "-A"])?;
+        super::git(
+            dir,
+            &[
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "commit",
+                "-q",
+                "-m",
+                "c",
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// AC-20 with the real cargo-mutants: a changed line no test holds is a missed mutant and
+    /// the run does not pass; with its test it passes; a branch that changes no Rust code has
+    /// nothing to mutate.
+    #[test]
+    fn a_real_run_finds_the_line_no_test_holds() -> Result<(), Box<dyn std::error::Error>> {
+        let available = Command::new("cargo")
+            .args(["mutants", "--version"])
+            .output()
+            .is_ok_and(|out| out.status.success());
+        assert!(
+            available,
+            "cargo-mutants is not on PATH: run the tests through scripts/dev after scripts/bootstrap.py"
+        );
+        let settings = |base: &str| Settings {
+            base: base.to_owned(),
+            minutes: 10,
+            mutant_seconds: 120,
+            jobs: 1,
+            tests: None,
+        };
+        let lib = "pub fn one() -> u32 {\n    1\n}\n\npub fn two() -> u32 {\n    2\n}\n\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn one_is_one() {\n        assert_eq!(super::one(), 1);\n    }\n";
+        let (dir, base) = fixture("missed")?;
+        commit(&dir, "src/lib.rs", &format!("{lib}}}\n"))?;
+        let outcomes = run(&dir, "cargo", &settings(&base))?.ok_or("nothing mutated")?;
+        assert!(
+            outcomes.missed.iter().any(|m| m.contains("two")),
+            "{outcomes:?}"
+        );
+        assert!(!outcomes.held());
+        let held = format!(
+            "{lib}\n    #[test]\n    fn two_is_two() {{\n        assert_eq!(super::two(), 2);\n    }}\n}}\n"
+        );
+        commit(&dir, "src/lib.rs", &held)?;
+        let outcomes = run(&dir, "cargo", &settings(&base))?.ok_or("nothing mutated")?;
+        assert!(outcomes.held(), "{outcomes:?}");
+        let (docs, docs_base) = fixture("docs")?;
+        commit(&docs, "README.md", "words\n")?;
+        assert_eq!(run(&docs, "cargo", &settings(&docs_base))?, None);
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&docs);
+        Ok(())
     }
 
     #[test]

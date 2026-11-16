@@ -241,10 +241,13 @@ fn main() -> ExitCode {
             }
         };
         let cargo = env::var("CARGO").unwrap_or_else(|_| "cargo".into());
-        return mutants::run(&root, &cargo, &settings).unwrap_or_else(|error| {
-            eprintln!("Mutants failed: {error}");
-            ExitCode::FAILURE
-        });
+        return match mutants::run(&root, &cargo, &settings) {
+            Ok(outcomes) => mutants::exit_code(outcomes.as_ref()),
+            Err(error) => {
+                eprintln!("Mutants failed: {error}");
+                ExitCode::FAILURE
+            }
+        };
     }
     if let Err(error) = env::set_current_dir(root).and_then(|()| execute(&args[0])) {
         eprintln!("Gate failed: {error}");
