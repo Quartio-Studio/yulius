@@ -3243,6 +3243,61 @@ mod moves {
         Ok(())
     }
 
+    /// SPEC-493 DEF-001 (AC-23): the same entry in a turn whose Stops a hook blocks (the
+    /// gate's here, a goal's alike). A blocked Stop writes no closing record, so the entry was
+    /// never marked left and the session stayed at every Stop. Now the first Stop keeps the
+    /// session; the continuation's tool result is where Claude Code would have taken a
+    /// notification in; the next Stop, still blocked and with no closing record between, moves
+    /// the session, and the resumed one gets the gate's reasons.
+    #[test]
+    fn a_notice_never_taken_out_keeps_a_blocked_turn_for_one_stop() -> TestResult {
+        let (_dir, data) = data_dir()?;
+        let version = data.join("claude-version");
+        let may_end = data.join("turn-may-end");
+        let rt = runtime()?;
+        rt.block_on(async {
+            let options = FakeAgentOptions {
+                stop_tool: true,
+                ..queueing(&may_end)
+            };
+            let s = server(&data, &version, options, TaskMode::Prompt, "2.1.311").await?;
+            add_account(&s.app, "b-second").await?;
+            change_code(&s).await?;
+            s.app.send_input(&s.id, b"one\r").await?;
+            says(&s, "TURN HELD").await?;
+            s.app.send_input(&s.id, b"/stuck a notification\r").await?;
+            says(&s, "QUEUED: a notification").await?;
+            waits_in_the_queue(&s).await?;
+            s.probe.set("a-first", usage(100.0, 4 * HOUR, 30.0, 100));
+            refresh(&s.app, &s.user, "a-first").await?;
+            let mut watch = s.app.runtime(&s.id).hub.subscribe().rx;
+            std::fs::write(&may_end, "")?;
+            // What the first run printed until the move: its gate blocks run out at the third
+            // Stop, and a turn that closes after that would move only at a later turn's end.
+            let mut shown = String::new();
+            wait_for("the move", Duration::from_secs(90), || {
+                shown.push_str(&printed(&mut watch));
+                let s = &s;
+                async move { runs(s).await > 1 }
+            })
+            .await?;
+            shown.push_str(&printed(&mut watch));
+            assert_eq!(
+                shown.matches("STOP BLOCKED").count(),
+                1,
+                "the first Stop stayed, the next one moved: {shown}"
+            );
+            run_live(&s, 2).await?;
+            assert_eq!(
+                subscriptions(&s).await,
+                [Some("a-first".to_owned()), Some("b-second".to_owned())]
+            );
+            stop(&s.app, &s.id).await
+        })?;
+        rt.shutdown_timeout(Duration::from_secs(5));
+        Ok(())
+    }
+
     /// SPEC-479 SWQ-002 (AC9, review round 1): Claude Code hands on an entry of its own (a
     /// notification of finished background work, a slash command, a `!` line) alone, and a
     /// prompt that waits behind it stays in the queue through that turn's closing record,
