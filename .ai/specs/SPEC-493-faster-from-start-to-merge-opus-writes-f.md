@@ -313,10 +313,12 @@ person's decision is read as holding after an approval).
   `*.test.*`, `*.spec.*`, `*.e2e.*`) and, in a Rust file, the lines of a `#[cfg(test)] mod name {`
   to its closing brace, read as Rust tokens (comments and strings skipped), first attribute of
   its item, among modules without attribute macros (`#[cfg(test)] mod tests;` or a single
-  test-only item is product code). A test or document file the follow-up changed counts when a
-  product line it added names it (`fixtures/evil` in `#[path = "../fixtures/evil.rs"]`), and an
-  added Rust product line with `#[path]`, `include!`, `include_str!` or `include_bytes!` needs
-  a review. A
+  test-only item is product code; a Rust file under `src/` is product code whatever its folder).
+  A test or document file the follow-up changed counts when a product line it added names it
+  (`fixtures/evil` in `#[path = "../fixtures/evil.rs"]`), and every one counts when a product
+  line it added loads code (`import`, `require`, `include`, `concat`, `export … from`,
+  `#[path]`, `mod name;`); an added Rust product line with `#[path]`, `include!`,
+  `include_str!` or `include_bytes!` needs a review. A
   project sets its own in `yulius.toml`: `[review] product = [globs]` (only these count; tests and
   documents still do not) or `not_product = [globs]` (these never count). Lines are read with
   plumbing and `--text`, so the clone's configuration and attributes change nothing.
@@ -1442,3 +1444,23 @@ Both are checked on current `dev` first and fixed test-first if they still hold.
     - Test: two more hidden shapes (`#[keep] mod x { … }` and `#[cfg_attr(not(test), keep)]`),
       and a nested module after `#[allow]` and `#[rustfmt::skip]` keeps its span. Dropping the
       rule fails it.
+- Review round 5 (Opus 5.5, head `c1df65dbb`): request changes. L is closed. K is still open:
+  five routes load a changed test file with no name in the line (`mod fixtures;`, an aliased
+  `include` with `concat!`, `from tests.evil import`, a folder's `index.js`, a re-export). Also
+  one minor, M: the ADR claimed more than was closed. Answered test-first; all three mutations
+  below fail a test.
+  - K. The reviewer's coarse rule, taken:
+    - When any product line the follow-up added loads code (the words `import`, `require`,
+      `require_relative`, `include`, `include_str`, `include_bytes`, `concat`, or `export …
+      from`, `#[path`, a `mod name;` declaration), every test and document file it changed
+      counts, except what `not_product` names.
+    - A Rust file under `src/` is never a test file by folder or name.
+    - Tests: unit `a_file_product_code_names_counts` holds the five routes plus Ruby's
+      `require_relative`, C's `#include` and an `include_str!` of `README.md`. A plain line
+      (`important`, which is not the word `import`) keeps tests out; `not_product` keeps a
+      loaded file out; `src/fixtures/mod.rs` is product code. The delivery case `from
+      tests.evil import run` counts 31 and refuses. Dropping the rule, or the `src/` rule, fails
+      them.
+  - M. ADR-0345's Consequences now list what the count catches and what it does not, without
+    the claim. What it does not catch: a file built in before the review, and what one line
+    does, which no line count can say and which is the review's to find.

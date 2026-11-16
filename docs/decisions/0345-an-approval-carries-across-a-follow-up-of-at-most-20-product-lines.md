@@ -76,14 +76,21 @@ few lines rarely finds anything.
   audit entry shows what went in unreviewed.
 - A reviewer's minors in product code are fixed within 20 lines or need a round; tests and
   documents can grow freely after an approval.
-- What is left by the person's rule ("tests and documents do not count"): a test or document
-  file that product code already built in before the review (an `include_str!` of a document,
-  a fixture a product module imports) changes behaviour when it changes, and is not counted.
+- What the count catches: the clone's settings, attributes, replace refs and grafts change
+  nothing; the integration branch is origin's commit; a fake test module (in a comment, a
+  string, a macro's input, a module an attribute macro rewrites) counts; a Rust file under
+  `src/` is product code whatever its folder; a test or document file the follow-up changed
+  counts when a new product line names it, and every one does when a new product line loads
+  code (`import`, `require`, `include`, `concat`, `export … from`, `#[path]`, `mod name;`); a
+  new Rust `#[path]` or `include!` refuses.
+- What it does not catch, by the person's rule ("tests and documents do not count"): a test or
+  document file that product code already built in before the review (an `include_str!` of a
+  document, a fixture a product module imports) changes behaviour when it changes, uncounted.
   The review that approved the inclusion saw it; a project that ships such files keeps them out
   of test folders and gives them a name that is not a document's (`[review]` can narrow what
-  counts, never widen it to tests and documents). Four review rounds (SPEC-493 fix 6) closed the routes
-  that hid new code: the clone's settings and attributes, replace refs and grafts, a moved
-  integration ref, fake test modules in comments, strings and macros, and new inclusions.
+  counts, never widen it to tests and documents). Nor does a line count say what one line
+  does: deliberate concealment by the author is the review's and the conduct rules' to find,
+  not a count's (SPEC-493 fix 6, five review rounds).
 - A week later: `SELECT detail FROM audit_log WHERE action IN ('delivery.agent.merge',
   'delivery.agent.merge_armed') AND detail LIKE '%since then%product line%'` lists the merges
   that used the bound, with their counts; the analytics read's rounds per pull request (fix 1)
