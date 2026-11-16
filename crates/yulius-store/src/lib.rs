@@ -437,6 +437,7 @@ mod tests {
                 include_str!("migrations/0061_capacity_window_indexes.sql"),
             ),
             (62, include_str!("migrations/0062_review_rounds.sql")),
+            (63, include_str!("migrations/0063_telegram_channel.sql")),
         ];
         for (version, sql) in pinned {
             assert_eq!(
@@ -445,7 +446,7 @@ mod tests {
                 "schema version {version}"
             );
         }
-        assert_eq!(MIGRATIONS.len(), 62, "a new migration is pinned here too");
+        assert_eq!(MIGRATIONS.len(), 63, "a new migration is pinned here too");
     }
 
     /// SPEC-483 slice 35 (QC1): the capacity and accounts views read the runs and pauses of

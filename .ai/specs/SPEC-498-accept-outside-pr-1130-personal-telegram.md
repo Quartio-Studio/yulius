@@ -1,17 +1,19 @@
 ---
-yulius-task: 7c918f4c-5e63-4317-b00e-274ed0147e65
-status: done
+yulius-task: 3198a378-db24-4c80-afc4-c1e74e43df48
+status: in-progress
 ---
 
 # SPEC-498: A personal Telegram channel for notifications (part 1 of #1107)
 
-Status: done
-Date: 2026-11-07
-Owner: Yulius task #2 (fork studenciak00owl/yulius, proposed upstream to Quartio-Studio/yulius `dev`)
-Scope authorization: upstream issue Quartio-Studio/yulius#1107 ("Personal Telegram channel"),
-direction agreed by an upstream maintainer on 2026-11-07; this task implements its part 1 only
-(instance setup, personal linking, outbound notifications, long polling, the channel interface).
-Intake (replies, new messages, `/status`, `/task`) is part 2 and recorded below as later.
+Status: in-progress
+Date: 2026-11-16 (contributor's spec of 2026-11-07, brought onto current `dev`)
+Owner: Yulius task #480, accepting outside pull request #1130 by studenciak00owl (accepted by
+MrFishPL). The contributor wrote it as SPEC-444 with ADR-0287 and migration 0050 on their fork;
+`dev` has since given those numbers to other records, so it is SPEC-498, ADR-0351 and migration
+0063 (schema version 63) here.
+Scope authorization: issue #1107 ("Personal Telegram channel"), part 1 only (instance setup,
+personal linking, outbound notifications, long polling, the channel interface). Intake (replies,
+new messages, `/status`, `/task`) is part 2, recorded below as later; #1107 stays open for it.
 
 ## Goal
 
@@ -104,6 +106,27 @@ any inbound port.
   most 20 lines kept, then a count), only to the chat still linked to that person while they are
   enabled. Sending is a bounded queue; a full queue drops with a log.
 
+### Brought onto current `dev` (task #480)
+
+`dev` moved about 130 pull requests past #1130's base. Its notification center
+(`notifications.js`) learned three things since; the chat follows it so that a chat still gets what
+the notification center would show:
+
+- TGC-025: while a task is switching (status `switching`, "Continuing": the session moves to
+  another subscription or restarts on a newer Claude Code, SPEC-468 CCF-008) nothing is sent and
+  what was last told of the task is kept: a task that reads afterwards as it did before (it still
+  needs you for the same request) is not told again; one that reads differently is.
+- TGC-026: a Needs you whose request names a problem of the whole sandbox (`cause` `docker`,
+  SPEC-494) is told once per episode of that sandbox ("<sandbox>: its Docker needs you", naming the
+  task that asked and the episode the server names by its oldest open request), not once per task
+  that shares it.
+- TGC-027: a person's request for control of a task (SPEC-490 OWN-008) reaches the task's owner's
+  chat, and nobody else's, once per request, under the Needs you choice ("@login asks for control
+  of #n Title", "It would act on GitHub as them", the task's link).
+- TGC-028: a failed or stopped task's words are those of `status.js` for every status `dev` has
+  (`failed_start_timeout` no longer exists): the domain matches the status itself, so a new status
+  fails to compile until it has words.
+
 ### Channel interface
 
 - TGC-030: a `NotificationChannel` port (identity check, `send`, `receive`) is the only thing the
@@ -134,13 +157,19 @@ any inbound port.
 
 ## Plan
 
-- [x] Spec, ADR and the channel port with Telegram's wire types
-- [x] Bot token stored sealed, checked with getMe, set and removed by instance admins
-- [x] Long polling with backoff against a fake Telegram, stopped when the token goes
-- [x] Link codes, /start and /stop binding, unlink from Settings, audited
-- [x] Notifications classified, filtered by the event stream's rule, redacted and rate bound
-- [x] Settings rows for the bot and for linking, with mock routes and an e2e test
-- [x] Docs, changes, gates green and an independent review in a fresh session
+- [x] Contributor's change brought onto current dev, renumbered (SPEC-498, ADR-0351, migration 0063) and compiling
+- [ ] Spec SPEC-498 and ADR-0351 adapted to current dev
+- [ ] Brought Telegram tests pass on current dev
+- [ ] A subscription switch sends no Telegram notice, as in the notification center
+- [ ] A sandbox-wide Docker Needs you reaches a chat once per episode
+- [ ] A request for control of a task reaches its owner's chat
+- [ ] Docs, lint, e2e and security scan green on current dev
+- [ ] Independent review approved
+
+The contributor's own plan (all done on their fork): spec, ADR and the channel port; the sealed
+bot token; long polling with backoff; link codes, `/start` and `/stop`; notifications classified,
+filtered, redacted and rate bound; the Settings rows with mock routes and an e2e test; docs, gates
+and a two-round independent review.
 
 ## Acceptance criteria
 
@@ -159,6 +188,12 @@ any inbound port.
   (TGC-020..022).
 - A `needs_you` whose text holds a known agent secret reaches Telegram redacted (TGC-023).
 - Seven notifications in one minute: five messages, then one summary of two (TGC-024).
+- A task that needs you, switches subscription and needs you again for the same request is told
+  once; switching itself sends nothing (TGC-025).
+- Two tasks of one sandbox asking about its Docker in one episode send one message; a new episode
+  sends another (TGC-026).
+- A request for control of a task sends its owner one message and its other viewers none; the
+  same request seen again sends nothing (TGC-027).
 
 ## Test plan
 
@@ -169,7 +204,10 @@ any inbound port.
 - Integration (`crates/yulius/tests/telegram.rs`): the whole server with a fake Telegram Bot API
   (axum on 127.0.0.1) through `YULIUS_TELEGRAM_API_URL`-equivalent wiring: every acceptance
   criterion above, waiting on conditions, never on sleeps.
-- Store: migration 0063 on an older database; links, codes and the token round-trip.
+- Store: migration 0063 on an older database (pinned as schema version 63); links, codes and the
+  token round-trip.
+- Integration for TGC-025..027 in `crates/yulius/tests/telegram.rs`, each failing on the
+  contributor's head before its change.
 - e2e (`e2e/tests/telegram.e2e.ts`, mock mode): the administrator sets and removes the bot; a
   person links (code and link shown), changes event choices and unlinks; no WCAG violations.
 
@@ -182,12 +220,23 @@ any inbound port.
 - Reversible defaults: 5 messages a minute and 20 summary lines; the unlinked reply at most every
   10 minutes; removing or changing the bot unlinks every chat (re-linking takes a minute, a stale
   chat of another bot would never receive anything).
+- Brought as the contributor's one commit (they stay its author), cherry-picked onto `dev` with its
+  conflicts (module lists, the admin routes, the migration list) resolved, then adapted in this
+  task's own commits; the squash commit credits them with `Co-authored-by`.
+- The bot stays in Settings → Administration for instance administrators, as the contributor
+  chose, rather than on Settings → Instance beside the Jev and Vidoc keys: that page is the
+  superadmin's, and an instance administrator also gets the subscription problems the bot sends.
+  The token is sealed in the `instance` row exactly like those keys (`dev` did not change how they
+  are stored; it added the `limits` and `claude_channel` columns beside them).
+- Of the notification center's news since #1130, a taken-back control (SPEC-490 OWN-010) is not
+  sent: it asks nothing of the person and matches none of the four choices; it is left with part
+  2's choices (TGC-104).
 - The change is larger than the ~400-line guideline: the issue's part 1 acceptance criteria are
   one vertical slice (a bot nobody can link, or links that send nothing, are not shippable).
 
 ## Evidence
 
-All commands were run in this worktree on 2026-11-07.
+### The contributor's evidence (their fork, 2026-11-07, before #1130 was brought onto `dev`)
 
 - `scripts/dev ci` at `019944a3`: exit 0. Repository check, script unit tests, `cargo check`,
   `fmt --check`, `clippy -D warnings` (Linux and macOS targets), `nextest`: 3228 tests passed,

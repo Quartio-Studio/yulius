@@ -2,8 +2,9 @@
 
 ## Status
 
-Accepted. Specified in [SPEC-498](../../.ai/specs/SPEC-498-accept-outside-pr-1130-personal-telegram.md)
-(part 1 of Quartio-Studio/yulius#1107). Builds on the instance service keys (SPEC-001 ADM-002,
+Accepted (2026-11-16). Specified in
+[SPEC-498](../../.ai/specs/SPEC-498-accept-outside-pr-1130-personal-telegram.md) (part 1 of
+#1107); task #480, from outside pull request #1130 by studenciak00owl, which numbered it 0287. Builds on the instance service keys (SPEC-001 ADM-002,
 SPEC-195) and the event stream's visibility rule (SPEC-002 §7.8).
 
 ## Context
@@ -34,7 +35,9 @@ it serves one person, polls every few seconds and keeps the bot token in a file.
   subscribes to the same bus as `WS /api/events` and decides who may see each envelope with the
   same function the stream uses (moved into the application layer), re-read per event. Task
   events are classified with the server's "needs you" rule (`AttentionFacts`), so the chat says
-  what the notification center says. Text passes the transcripts' redaction; at most 5 messages a
+  what the notification center says, including what it learned after #1130 was written: nothing
+  while a session switches, one message per sandbox-wide Docker episode, and a request for control
+  to the task's owner. Text passes the transcripts' redaction; at most 5 messages a
   minute per person, the rest folded into one summary.
 - **A `NotificationChannel` port** (`check`, `send`, `receive`) is the only thing Telegram
   implements. Classification, visibility, choices, redaction and the rate bound never name
