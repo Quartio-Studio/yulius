@@ -392,7 +392,8 @@ function pasteNewToken(ctx, account, onDone) {
       { label: 'Save token', kind: 'primary', run: async () => {
         const fresh = await sendToken(token.input, (value) => ctx.api.put(`/api/admin/accounts/${enc(account.id)}/token`, { token: value }));
         if (fresh === false) return false;
-        toast(`New token saved: ${account.label} is connected${fresh && fresh.email ? ` (${fresh.email})` : ''}. Tasks can use it now.`, { kind: 'ok' });
+        // Only an email Claude gave is named: a typed one was never confirmed (SPEC-463 EML-006).
+        toast(`New token saved: ${account.label} is connected${fresh && fresh.email && !fresh.email_typed ? ` (${fresh.email})` : ''}. Tasks can use it now.`, { kind: 'ok' });
         onDone();
         return true;
       } },

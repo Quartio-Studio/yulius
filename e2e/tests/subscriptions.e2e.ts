@@ -1366,3 +1366,29 @@ test('switching how to connect a subscription clears the last attempt’s error 
   await browser.locator('.modal .seg label:has-text("Sign in here")').click();
   await expect(error).toBeHidden();
 });
+
+test('a new token’s toast names no email a person typed (SPEC-502 TKP-009, SPEC-463 EML-006)', async ({ app, browser, screen }) => {
+  await app.open(mock('/admin/accounts', '&ambient=0'));
+  const card = browser.locator('main .grid-2 > .card:has-text("Claude #3")');
+  await expect(card).toBeVisible();
+  // An administrator typed this subscription's email: Claude never confirmed it.
+  await browser.evaluate(() => {
+    type Db = { accounts: { id: string; email: string | null; email_typed?: boolean }[]; eventSockets: Set<{ push: (data: string) => void }> };
+    const db = (window as unknown as { __yuliusMock: Db }).__yuliusMock;
+    const account = db.accounts.find((a) => a.id === 'acc_c3');
+    if (!account) throw new Error('no acc_c3');
+    Object.assign(account, { email: 'team@example.com', email_typed: true });
+    for (const socket of db.eventSockets) socket.push(JSON.stringify({ type: 'account.updated', account }));
+  });
+  await expect(browser.locator('main .grid-2 > .card:has-text("Claude #3"):has-text("team@example.com")')).toBeVisible();
+  await card.getByRole('button', 'Paste a new token').click();
+  const dialog = screen.getByRole('dialog', 'Paste a new token · Claude #3');
+  await dialog.getByLabel(/^Token/).fill(`sk-ant-oat01-${'e'.repeat(80)}`);
+  await dialog.getByRole('button', 'Save token').click();
+  await expect(dialog).toBeHidden();
+  const toast = browser.locator('.toast-ok .toast-msg:has-text("New token saved: Claude #3 is connected")');
+  await expect(toast).toBeVisible();
+  expect(await toast.textContent()).toBe('New token saved: Claude #3 is connected. Tasks can use it now.');
+  // The typed email stays on the card.
+  await expect(browser.locator('main .grid-2 > .card:has-text("Claude #3"):has-text("team@example.com")')).toBeVisible();
+});
