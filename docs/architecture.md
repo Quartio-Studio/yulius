@@ -1275,7 +1275,7 @@ Every merge Yulius makes (`delivery_merge`, the merge train, the promotion of a 
 remote file edits) goes through the GitHub adapter's `merge_pull`. GitHub answers a merge of a
 pull request whose mergeability it is still computing (just opened, or its base just moved) with
 405 "Base branch was modified": the adapter then reads the pull request until GitHub has an
-answer and merges again, at most 4 merge requests within the client's retry budget; a real
+answer and merges again, at most 4 merge requests and 12 s of waits; a real
 refusal ends the merge with its reason (a conflict, branch protection, behind the base, a draft)
 ([SPEC-495](../.ai/specs/SPEC-495-a-production-deploy-never-fails-on-a-pro.md),
 [decision 0349](decisions/0349-a-merge-waits-out-githubs-unsettled-mergeability.md)).

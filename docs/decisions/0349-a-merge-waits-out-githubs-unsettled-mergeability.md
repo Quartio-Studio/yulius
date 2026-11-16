@@ -26,10 +26,14 @@ deploy, `delivery_merge`, the merge train and remote file edits.
   pull request until GitHub has computed its mergeability (`mergeable` not `null`, at most 6
   reads with doubling backoff). A 405 is transient when GitHub's message says "Base branch was
   modified" or GitHub was still computing at that read; a transient 405 on a pull request GitHub
-  then reports open, not a draft and mergeable is sent again with doubling backoff.
-- **Bounded by the client's retry policy**: at most `MERGE_ATTEMPTS` (4) merge requests per call,
-  every wait within `RetryPolicy::max_total` (30 s by default) counted from the first request.
-  The future is cancelled by dropping it, as every adapter call is.
+  then reports open, not a draft, mergeable and neither blocked nor behind is sent again with
+  doubling backoff.
+- **Bounded**: at most `MERGE_ATTEMPTS` (4) merge requests and 6 reads per wait; all the sleeps
+  of one call end within the client's `RetryPolicy::max_total`, capped at 12 s (`MERGE_WAIT`),
+  counted from the first request. Each request has its own timeout (10 s) and each read its GET
+  retries on top, so against a GitHub that answers at once the call ends within about 12 s, well
+  before the CD page gives up on a deploy request (30 s). The future is cancelled by dropping it,
+  as every adapter call is.
 - **A real refusal ends the merge and says which**: `NotMergeable`'s message starts with the reason
   read from the pull request (it conflicts with the base branch, branch protection blocks it, it
   is behind the base branch it must contain, it is a draft, closed or already merged, GitHub had
@@ -54,7 +58,7 @@ deploy, `delivery_merge`, the merge train and remote file edits.
 - A production deploy whose promotion pull request GitHub has not finished checking merges and
   deploys instead of asking the person to press Deploy again; a merge of `delivery_merge` or the
   merge train in the same window goes through too.
-- A merge GitHub keeps refusing as transient waits at most the retry budget (30 s) before it
-  ends, inside the caller's request.
+- A merge GitHub keeps refusing as transient sleeps at most 12 s before it ends, inside the
+  caller's request; a slow GitHub adds its request timeouts.
 - The fake GitHub models a pull request whose mergeability is still computing
   (`FakeGitHub::set_pull_computing`) and reports `mergeable_state`.

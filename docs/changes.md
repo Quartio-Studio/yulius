@@ -10,7 +10,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   checking (SPEC-495, task #477,
   [ADR-0349](decisions/0349-a-merge-waits-out-githubs-unsettled-mergeability.md)): after GitHub's
   405 "Base branch was modified" a merge reads the pull request until GitHub has computed its
-  mergeability and merges again (at most 4 tries within the retry budget); `delivery_merge` and
+  mergeability and merges again (at most 4 tries, 12 s of waits); `delivery_merge` and
   the merge train get the same. A real refusal says which: a conflict, branch protection, behind
   the base branch, a draft.
 - A sandbox browser that an agent clicked or typed in before the host's browser policy was in

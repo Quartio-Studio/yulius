@@ -1,11 +1,11 @@
 ---
 yulius-task: cb360195-3dfd-4046-955a-6cc0492fee7b
-status: in-progress
+status: done
 ---
 
 # SPEC-495: A production deploy never fails on a promotion pull request GitHub has not finished checking
 
-Status: in-progress
+Status: done
 Date: 2026-11-16
 Owner: Yulius task #477
 Scope authorization: task #477, the person's report of 2026-11-16 (~12:51 UTC) on Pipeline → CD,
@@ -45,11 +45,13 @@ message says which.
 ## Requirements
 
 - MRG-001: After a `405` to a merge, the adapter reads the pull request until GitHub has computed
-  its mergeability (`mergeable` not `null`), within the client's retry budget.
+  its mergeability (`mergeable` not `null`), at most 6 reads, within the merge's wait budget.
 - MRG-002: A `405` is transient when GitHub's message says "Base branch was modified" or the pull
   request's mergeability was still being computed when Yulius read it. A transient 405 on a pull
-  request GitHub then reports mergeable and open is retried, with doubling backoff, at most
-  `MERGE_ATTEMPTS` (4) merge requests in all and within the retry budget (`max_total`).
+  request GitHub then reports open, mergeable, not a draft and neither blocked nor behind is
+  retried, with doubling backoff, at most `MERGE_ATTEMPTS` (4) merge requests in all. All the
+  sleeps of one merge end within the client's retry budget (`max_total`), capped at 12 s
+  (`MERGE_WAIT`), below the CD page's 30 s request timeout; each request keeps its own timeout.
 - MRG-003: Any other 405, or one GitHub still refuses after the bound, ends the merge with
   `GitHubError::NotMergeable` whose message names the reason: conflicts with the base branch,
   branch protection or required checks/reviews, behind the base branch, a draft, closed, or
@@ -66,7 +68,7 @@ message says which.
 - [x] A real merge refusal names its reason
 - [x] A promotion over the production adapter merges through a transient 405
 - [x] ADR-0349, docs and changes entry
-- [ ] Independent review of the change
+- [x] Independent review of the change
 
 ## Acceptance criteria
 
@@ -97,3 +99,37 @@ message says which.
 - The deploy-level proof runs the production `GitHubAdapter` over the HTTP fake GitHub (the
   promotion's open-then-merge at once). The CD tests' in-process `GitHubPort` fake bypasses the
   adapter, so a test there would not exercise the fix.
+
+## Evidence
+
+- `cargo test -p yulius-github --features fake`: 19 unit and 37 integration tests pass, among them
+  AC1 `a_merge_goes_through_githubs_transient_base_branch_was_modified` (2 merge requests), AC2
+  `a_merge_waits_until_github_has_computed_the_mergeability` (4 reads, 2 merge requests),
+  `any_405_while_github_computes_the_mergeability_is_retried`, AC3
+  `a_conflicting_pull_request_is_refused_at_once_with_the_reason` and
+  `a_branch_protection_refusal_is_not_retried` (1 merge request each), AC4
+  `a_transient_405_that_never_clears_stops_after_four_merge_requests`,
+  `a_mergeability_github_never_computes_ends_the_merge_saying_so` (6 reads),
+  `merge_retries_stop_at_the_retry_budget` and `the_wait_for_mergeability_stops_at_the_retry_budget`
+  (1 s budget: 2 merge requests, 2 reads), unit tests `a_refusal_names_its_reason`,
+  `only_a_mergeable_pull_request_is_merged_again`, `the_merge_wait_is_capped_below_the_client_budget`.
+- `cargo test -p yulius --test main -- github_ production_branch::`: 56 pass, among them MRG-005
+  `a_promotion_merged_at_once_waits_for_github_and_a_conflict_still_stops` (the production
+  `GitHubAdapter` over the HTTP fake GitHub: a promotion opened and merged at once goes through
+  the 405; a conflicting one is refused with "it conflicts with 'main'", one merge request).
+- Fail-first: the new client tests failed before the fix (4 of 5 in the first run; the conflict
+  test lacked the reason). Hand mutants: `MERGE_ATTEMPTS = 1` fails the promotion test; dropping
+  `computing ||`, the merge loop's deadline or the reads' deadline each fails its test.
+- `scripts/dev mutants`: 73 listed, 66 caught, 0 missed, 0 timed out, 7 unviable, 0 not reached
+  (bound 30 min, took 1092 s).
+- `cargo clippy -p yulius-github --features fake --all-targets -- -D warnings` and
+  `RUSTDOCFLAGS=-D warnings cargo doc -p yulius-github --no-deps --features fake`: clean.
+- Yulius CI at 15866fa61 (review round 1's head): quality and e2e passed; security (Vidoc)
+  skipped: Vidoc is disabled for this project, unrun, not passed.
+- Review round 1 (Fable 5.2): request changes, no product defect; answered: tests for the
+  computing trigger and both time budgets, exact read counts, the "nothing merged" assertion,
+  waits capped at 12 s below the CD page's 30 s request timeout, blocked or behind pull requests
+  not merged again, "1 attempt", tokio `Instant`, `RetryPolicy` doc and SPEC-002 limits row.
+- Not tested here: a real GitHub's 405 timing (the fake models it) and a full CD deploy through
+  the HTTP fake: the CD tests' in-process `GitHubPort` bypasses the adapter, so the deploy-level
+  proof is the production adapter's promotion test above.
