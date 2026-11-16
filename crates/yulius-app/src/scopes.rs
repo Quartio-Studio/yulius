@@ -154,7 +154,10 @@ impl App {
             let Ok(theirs) = Pattern::parse(&record.pattern) else {
                 continue;
             };
-            for pattern in paths.iter().filter(|p| yulius_domain::scope::patterns_overlap(p, &theirs)) {
+            for pattern in paths
+                .iter()
+                .filter(|p| yulius_domain::scope::patterns_overlap(p, &theirs))
+            {
                 out.push(json!({
                     "pattern": pattern.as_str(),
                     "task_number": task.number,
