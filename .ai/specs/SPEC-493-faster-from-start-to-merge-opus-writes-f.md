@@ -1742,3 +1742,34 @@ Both are checked on current `dev` first and fixed test-first if they still hold.
 - ADR-0348 (amends SPEC-012 MSG-002), api.md, changes. How to read it a week later: the share of
   merged pull requests that hit a conflict, `audit_log` actions `delivery.conflict` per merged
   pull request (baseline 29 of 60 in quartio-v2, 7 of 42 here).
+- Review round 1 (Opus 5.5, head `d66dfb6cc`; `d71043dac` adds only `cargo fmt`): request
+  changes, 3 majors and 5 minors in own code, answered test-first; the five mutations below each
+  fail a test.
+  - M1: ended tasks with claims they never released made `task_create` refuse, with an offer the
+    chain then refused. Now only tasks that are not resting (closed, stopped, failed) count; the
+    ADR, api.md and this Evidence say so. Test: the holder stopped, its claims are no overlap.
+    Mutation: counting all but closed.
+  - M2: a task title with an escape or a carriage return could end the paste early and type keys
+    into the holder's session. The note is built by `overlap_paste`, run through `clean_message`
+    and kept on one line. Unit `an_overlap_note_is_one_clean_paste` (escape, `\r`, `/clear`).
+    Mutation: the raw text.
+  - M3: `claim_overlaps` read the project's tasks again for each live row. It takes the list's
+    `project` now; the claims are one read a live row.
+  - m4: the overlap mark hid a stalled pull request's. Now it is added to the label and the stall
+    check still applies, and the detail names the overlaps when nothing else is said. The e2e
+    test has both marks at once. Mutation: returning early.
+  - m5: told-once keys were per whole set and never removed. Now one key a pair, and only new
+    pairs go in a message; a release forgets the task's keys. Tests: widened by a new pair, only
+    it is told; released and claimed again, told again. Mutations: per-set keys, no forgetting.
+  - m6: `sandbox_task_create` passed `paths` and `start_anyway`, which the person's card did not
+    show; both are dropped there (unit `an_approved_create_drops_what_its_card_did_not_show`).
+  - m7: the holder's pull request carries `checks`, the state of Yulius CI's newest run of it
+    (`none` without one).
+  - m8: the old "claiming agent only" wording is gone from the module doc, SPEC-002 and
+    `mcp.rs`, and SPEC-012's MSG-002 row says it is amended. The rule test now refuses the old
+    sentences in five places.
+  - Nits: the holder's state is read once a holder; a claim that cannot be written after the task
+    is made is logged, not an error inviting a second task; `paths` are deduplicated; the
+    caller's own task is marked `mine`; `start_anyway` is always type-checked. Answered in words:
+    with `after_task` given the overlap check is skipped on purpose (the caller has chosen to
+    wait).
