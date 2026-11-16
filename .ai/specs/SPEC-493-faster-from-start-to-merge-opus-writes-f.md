@@ -646,6 +646,19 @@ Both are checked on current `dev` first and fixed test-first if they still hold.
     end: a prompt waits in Claude Code's queue" lines, by task and day (`journalctl -u yulius
     --since -7d | grep -c`); a task with more than two of them in a row in one turn is this
     defect. The week before the merge is the baseline.
+  - Fix 10b: the server log's "viewers' clicks and keys stay refused until the browser
+    restarts" lines a week (`journalctl -u yulius --since -7d | grep -c`): how often a browser
+    met the case, and so whether a restart offered on the page is worth building. There is no
+    baseline; the case was not told before.
+- **Fix 10b: a browser an agent drove before the policy keeps viewers' input off until it
+  restarts.** Chrome closes no open window when its policy appears, and nothing tells Yulius
+  that a native chooser closed (DevTools sees `<input type=file>` choosers of attached tabs
+  only, ADR-0318's Alternatives). Only the agents' tools give input while the policy is off
+  (viewers' presses are refused then), so a click or a typed Enter from one, while the last
+  answer was not "in force", marks the browser. Restarting the browser at once was rejected:
+  it would cut the agent's tabs mid-task. Refusing every browser that ever ran without the
+  policy was rejected too: one no agent drove has no chooser open, and the earlier test says
+  it takes input at once. ADR-0318 is amended in place, as its own rule.
 - **Fix 10a: a blocked Stop's left-over notification is told by kind and tool result.** A Stop
   a hook blocks writes no `turn_duration`, so SWQ-002's rule never ran in a goal run. Counting
   every entry that waited at two Stops would lose a real prompt whose continuation called no
@@ -1853,7 +1866,7 @@ Both are checked on current `dev` first and fixed test-first if they still hold.
 - A week later: see Decisions (fix 10a's log lines).
 - Not testable here: the real Claude Code in a goal run with a stuck notification. Its pieces
   are taken from the real transcripts and probe runs above, not from a live run of the whole.
-- Review round 1 (Opus 5.5, head `fe4e8b27f`): approve, with two minors and four nits; both
+- Review round 1 (Opus 5.5, head `fe4e8b27f`): approve, with two minors, three nits and one pre-existing note; both
   minors closed before the merge.
   - Minor 1: a Stop at which no move is decided told the queue without reading the lines first.
     A tool result could be read before the `remove` that took the notice in at it (in 754 of
@@ -1874,3 +1887,36 @@ Both are checked on current `dev` first and fixed test-first if they still hold.
       the unit test, where its mutation fails.
     - The reviewer's replay of the rule over all 5,824 real Stops lost no entry, and 9 Stops
       changed from staying to moving.
+
+### Fix 10b: a browser an agent drove before the policy keeps viewers' input off until it restarts
+
+- DEF-002 held on `dev`: `viewer_input_allowed` asked only whether the policy was in force now,
+  so a running browser was unlocked as soon as the policy appeared (SPEC-483 AC-36).
+- Real Chrome (Google Chrome 157 on Xvfb, a throwaway opt-in probe beside
+  `real_chromium::a_viewers_click_on_a_file_input_opens_no_file_chooser`, not committed):
+  - with no policy, the agent's `tool_click` (CDP `Input.dispatchMouseEvent`) on a page's
+    `<input type=file>` opened GTK's "Open File" over the whole display (1280x800);
+  - after `managed_policy()` was written to `/etc/opt/chrome/policies/managed/yulius.json`, the
+    probe tab answered "in force" and the dialog was still on the display;
+  - the viewer's press was refused with `InputLockedUntilRestart`'s message. Before this fix it
+    would have reached the dialog.
+  The policy file was removed after the probe.
+- The rule (`BrowserInstance::agent_input`, `chooser_may_be_open`, `input_locked`,
+  `BrowserError::InputLockedUntilRestart`, code `input_locked`): an agent's click or typed text
+  on a browser with a display, while the last policy answer was not "in force", marks the
+  browser. A marked browser refuses viewers' presses and keys even with the policy in force,
+  with its own reason, until it restarts (a new instance is unmarked).
+- Tests (fake Chrome and display):
+  - `browser::a_file_chooser_opened_before_the_policy_keeps_input_off_until_a_restart` (the
+    agent's click) and `browser::an_enter_typed_before_the_policy_keeps_input_off_until_a_restart`
+    (the agent's `\n`). In both, the policy appears and input stays off with the restart reason.
+    After a stop and reconnect, input is taken, and the agent's input under the policy locks
+    nothing.
+  - `browser::viewer_clicks_and_keys_wait_for_the_hosts_browser_policy` is unchanged and passes:
+    a browser no agent drove takes input once the policy appears.
+- Mutations, each failing a test: no chooser check; the click not marked; the typing not marked;
+  marked under the policy too; the old message for the new case.
+- Suites: `browser` 40 passed (4 opt-in real-Chromium ones ignored); yulius-browser all passed.
+- A week later: see Decisions (fix 10b's log line).
+- Not covered: a browser whose policy is taken away while it runs and an agent clicks within the
+  five minutes a "yes" stands (ADR-0318 accepts that window for viewers too).

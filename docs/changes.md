@@ -6,6 +6,10 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-16
 
+- A sandbox browser that an agent clicked or typed in before the host's browser policy was in
+  force keeps viewers' clicks and keys off when the policy appears, until it restarts: a native
+  file dialog opened then may still be on its display (SPEC-493 fix 10b, task #472, ADR-0318
+  amended). One no agent drove meanwhile takes input at once, as before.
 - A notification Claude Code never takes out of its queue no longer keeps a session on its
   subscription at every Stop of a goal run (SPEC-493 fix 10a, task #472, ADR-0310 amended): a
   Stop a hook blocks writes no closing record, so such a notification that waited at one Stop
