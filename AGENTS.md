@@ -87,6 +87,7 @@ scripts/dev macos
 scripts/dev test
 scripts/dev deps
 scripts/dev ci
+scripts/dev checks
 scripts/dev security
 ```
 

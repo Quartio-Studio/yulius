@@ -3700,6 +3700,10 @@ it error, and the thrown-away run's kind and time are kept for the CI minutes (a
 written when a run ends, `ci_minutes`; the dispatcher also keeps the host's CI load once a
 minute, `ci_load`, read by hour at `GET /api/analytics/ci-load`)
 ([decision 0354](decisions/0354-a-job-that-fails-for-the-infrastructure-runs-again-once-by-itself.md)).
+The dispatcher keeps each lane's last run (`CiState::lane_runs`); a run takes the free lane whose
+checkouts last built what it builds on (`preferred_lanes`: a candidate's members' own runs, a pull
+request's previous run), and each job's output names it
+([decision 0358](decisions/0358-tests-run-in-shards-and-a-run-starts-from-the-build-it-builds-on.md)).
 A failed job's kept failing tests are recorded (`ci_test_failures`, with the run's commit); one
 that failed in the same job on two pull requests within 48 hours, at heads whose merge bases are
 all on the integration branch (`GitPort::merge_bases`), while the integration branch did not fail it

@@ -181,7 +181,7 @@ mode.
 - [x] Slice C: dissolve reasons shown; documents and ADR
 - [x] Slice C: review round 1 answered
 - [x] Slice C: review round 2 answered
-- [ ] Slice D: sharded jobs
+- [x] Slice D: sharded jobs
 - [ ] Slice D: a candidate reuses its members' builds; review
 - [ ] Slice E: numbers before and after, quartio-v2's part told
 
@@ -247,6 +247,13 @@ mode.
   would leave the integration branch at an untested tree. Derived files: Yulius cannot run a
   project's formatter or generator where it builds candidates, so it saves the cycle it can,
   telling the member that breaks a combination once the others pass without it.
+- **Shards are a matrix; a run picks its lane** (slice D,
+  [ADR-0358](../../docs/decisions/0358-tests-run-in-shards-and-a-run-starts-from-the-build-it-builds-on.md)):
+  `matrix = "i/n"` values already run side by side, each in its own checkout, so a project
+  splits its tests by the runner's own partition; a `shards` key would only rename it. A
+  candidate reuses its members' builds by taking the lane whose persistent checkouts built them:
+  a shared cache was relinked under a running job before (SPEC-351), and copying a `target/`
+  costs gigabytes per run.
 - **`YULIUS_CI_LANES` keeps its default** (slice A): it bounds checkouts per sandbox (each lane
   keeps its own job folders and caches, a disk cost), and the budget now decides the load, so a
   lower default would only make a small project's runs queue behind each other for nothing.
@@ -730,6 +737,31 @@ mode.
   e2e; security skipped, Vidoc 401). Its minor (a deterministic test of the read before each
   merge, with a pause point) and two nits (an assertion that races the background pass, one long
   ADR line) go into slice D's pull request, not after the approval.
+
+### Slice D: a CI run is shorter
+
+- SHR-001: `local_ci::a_sharded_job_runs_its_shards_side_by_side` (two shards of `matrix =
+  "1/2 2/2"` wait for each other's mark, bounded: each says it met the other, the run passes; a
+  failing shard fails the run). This repository's `yulius.toml`: `quality` runs
+  `scripts/dev checks`, `test` runs `scripts/dev test` in two shards; xtask `shard_of` (unit
+  `a_matrix_value_names_a_shard_of_the_tests`) turns `i/n` into `--partition hash:i/n`, the
+  doctests in shard 1. `YULIUS_CI_MATRIX=2/2 scripts/dev test`: 2,444 tests, no doctests.
+- Measured locally (64 CPUs, warm build, load 18): the tests took 161 s in one go (4,840
+  tests), 91 s for `hash:1/2` (2,396) and 91 s for `hash:2/2` (2,444). On the instance: the
+  run of #1381 took 12 min 35 s (`quality` 12 min 34 s with the tests in it) and #1378's
+  `quality` 18 min 7 s; the runs after this change are read in slice E.
+- SHR-002: `preferred_lanes`, `take_lane_preferring` (unit
+  `a_run_takes_the_lane_that_last_built_what_it_builds_on`: a pull request its own previous
+  lane, a candidate its last member's first, then a candidate sharing a member, else the first
+  free; a claimed sandbox none); `CiState::lane_runs` and the job's `[yulius] lane …` line;
+  `local_ci::a_run_takes_the_lane_that_last_built_its_pull_request` (two pull requests in lanes
+  0 and 1; the one in lane 1 pushes first, its run takes lane 1 and says "its checkouts last
+  built pr/N, which this run builds on"). Undone (no preference), it fails.
+- Slice C review round 2's minor and nits: the pause point `TrainMemberMerging` and
+  `merge_train::a_member_whose_own_run_fails_during_the_merges_is_not_merged` (#1 merges, #2's
+  own run fails at the point, #2 is not merged, `member_failed`); with only that read undone it
+  fails 3 of 3. The racing assertion is gone; ADR-0357's long line wrapped.
+- ADR-0358; architecture, operations (lanes, shards), development, AGENTS.md, `changes.md`.
 
 ### Slice A3: the operator's amendment to the admission (its own pull request, first)
 
