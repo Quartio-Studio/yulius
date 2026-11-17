@@ -159,8 +159,8 @@ product project's 21 jobs pinned to 3 CPUs are its `yulius.toml`.
 - [x] A reviewer approves a change whose only open point is CI
 - [x] The author proves each fix before asking for another round
 - [x] Review of the round rules (pull request 1) approved
-- [ ] Mutation runs use the session's CPUs, measured on a real change
-- [ ] Mutation testing runs beside the first review, then on each fix's lines
+- [x] Mutation runs use the session's CPUs, measured on a real change
+- [x] Mutation testing runs beside the first review, then on each fix's lines
 - [ ] Review of the mutation rules (pull request 2) approved
 - [ ] One quick command runs first in CI and before each published commit
 - [ ] Review of the quick checks (pull request 3) approved
@@ -232,4 +232,34 @@ product project's 21 jobs pinned to 3 CPUs are its `yulius.toml`.
 - Review round 2 (Fable 5.2) approved b4315ea8d: one minor (two notices' produced text untested)
   and four nits, all own code, fixed after it within ADR-0345's bound (test lines, the sentence
   "a review of the head", "Unless it merged already", the spec's and the index's wording).
+
+### Pull request 2 (FST-004, FST-005)
+
+`scripts/dev mutants --base 87c08e62a --minutes 15 --jobs N` at PR #1392's head 719bb8967 (260
+mutants in its Rust lines, the same order each run, `--no-shuffle`), this sandbox, 17 Nov 2026;
+CPU and peak memory from `/usr/bin/time -v`, load from `uptime` at the start and end:
+
+| Jobs | Host load (1 min) | Baseline | Tested in 15 min (caught + unviable) | CPUs used | CPU-s per mutant | Peak RSS of one process |
+|---|---|---|---|---|---|---|
+| 2 | 196 to 343 (busy) | 109 s | 25 (22 + 3) | 4.6 | 166 | 6.1 GB |
+| 2 | 63 to 148 | 62 s | 36 (28 + 8) | 5.1 | 128 | 6.1 GB |
+| 7 | 82 to 148 | 93 s | 145 (82 + 63) | 17.2 | 107 | 6.1 GB |
+| 8 | 71 to 196 | 101 s | 141 (78 + 63) | 17.9 | 115 | 6.2 GB |
+
+- 7 jobs test four times as many mutants as 2 at the same load; 8 adds nothing over 7. None was
+  missed or timed out in any run.
+- The CPU a mutant costs does not grow with jobs (107 to 166 CPU-seconds, lower with more jobs):
+  more jobs spend the same CPU sooner, they add no work. On a busy host the kernel's weights share
+  it (within a sandbox: agents 100, CI 400, engine 100), so CI keeps four times an agent's share.
+- This repository's mutation runs start no container: they never count as CI use for CI's
+  admission (ADR-0353 counts a sandbox's CI groups and its Docker engine). A project whose
+  mutation run starts browsers in its engine (quartio-v2) is counted; nothing caps the engine's
+  CPU but the sandbox's `cpu.max` and its weight (`crates/yulius-sandbox/src/cgroup.rs`).
+- PR 1's own run at 2 jobs: 8 mutants in 683 s; its fix's 14 in 836 s. A pull request of about 80
+  mutants took the whole 30-minute bound at 2 jobs (ADR-0347); at 7 it takes about 9 minutes, and
+  it now runs beside the review instead of before it.
+- `cargo nextest run -p xtask`: 15 passed (`the_jobs_follow_the_cpu_budget` among them);
+  `cargo nextest run -p yulius-app --lib -E 'test(every_place_) | test(no_typed)'`: 9 passed;
+  `every_place_says_mutation_testing_runs_beside_the_review` fails with the old wording in one
+  place (checked by hand).
 
