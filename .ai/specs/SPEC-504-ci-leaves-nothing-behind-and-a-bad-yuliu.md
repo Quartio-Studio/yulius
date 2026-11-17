@@ -102,13 +102,13 @@ ADR-0344), SPEC-497 HBA-003 (CI waits for Docker networks), SPEC-053/SPEC-268 (t
 - [x] ADR, architecture, operations and changes for pull request 1
 - [x] Review round 1 of pull request 1 answered
 - [x] Pull request 1 reviewed and approved
-- [ ] A pull request is judged by the integration branch's jobs (CFG-001)
-- [ ] An invalid yulius.toml fails its run with the parser's message (CFG-002)
-- [ ] The last valid gate runs while dev's file is invalid (CFG-003)
-- [ ] Config-blocked minutes are counted (CFG-004)
-- [ ] yulius.toml is read by a real TOML parser (CFG-005)
-- [ ] Runs on the last valid gate say so, and a fix is never refused for want of CI (CFG-006)
-- [ ] ADR, architecture and changes for pull request 2
+- [x] A pull request is judged by the integration branch's jobs (CFG-001)
+- [x] An invalid yulius.toml fails its run with the parser's message (CFG-002)
+- [x] The last valid gate runs while dev's file is invalid (CFG-003)
+- [x] Config-blocked minutes are counted (CFG-004)
+- [x] yulius.toml is read by a real TOML parser (CFG-005)
+- [x] Runs on the last valid gate say so, and a fix is never refused for want of CI (CFG-006)
+- [x] ADR, architecture and changes for pull request 2
 - [ ] Pull request 2 reviewed and approved
 
 ## Acceptance criteria
