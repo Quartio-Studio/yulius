@@ -734,11 +734,14 @@ impl App {
         use yulius_contracts::api::analytics::{ModelCount, ReviewAnalytics};
         let (sandboxes, from_at, to_at, range) =
             self.analytics_window(ctx, sandbox, from, to).await?;
-        let rounds = self
+        let mut rounds = self
             .deps
             .store
             .merged_review_rounds(&sandboxes, from_at, to_at)
             .await?;
+        // In the order the reports ended (stable: start order otherwise), so a round's last
+        // report is the one that ended last, also when a reviewer cut off was resumed.
+        rounds.sort_by_key(|r| r.ended_at);
         let facts: Vec<yulius_domain::review::RoundFact> = rounds
             .into_iter()
             .map(|r| yulius_domain::review::RoundFact {

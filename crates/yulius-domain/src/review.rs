@@ -197,18 +197,18 @@ pub fn review_numbers(rounds: &[RoundFact]) -> ReviewNumbers {
             numbers.first_rounds_requesting_changes += 1;
         }
         per_pull.push(facts.iter().map(|f| f.round).max().unwrap_or(0));
-        // Each round's verdict is the last one its reviewers reported (SPEC-506 FST-007).
-        let mut verdicts: BTreeMap<u32, Verdict> = BTreeMap::new();
+        // Each round's verdict is its last report's, as round 1's above (SPEC-506 FST-007): the
+        // facts come in the order the reports ended.
+        let mut verdicts: BTreeMap<u32, Option<Verdict>> = BTreeMap::new();
         for fact in facts.iter().filter(|f| f.reported) {
-            if let Some(verdict) = fact.verdict {
-                verdicts.insert(fact.round, verdict);
-            }
+            verdicts.insert(fact.round, fact.verdict);
         }
         for (&round, &verdict) in &verdicts {
+            let Some(verdict) = verdict else { continue };
             let asked = verdict == Verdict::RequestChanges;
             match round
                 .checked_sub(1)
-                .and_then(|before| verdicts.get(&before))
+                .and_then(|before| verdicts.get(&before).copied().flatten())
             {
                 Some(Verdict::RequestChanges) => {
                     numbers.re_reviews_after_changes += 1;
@@ -389,5 +389,32 @@ mod tests {
         assert_eq!(numbers.rounds_after_approval, 2);
         // t2 round 3.
         assert_eq!(numbers.rounds_after_approval_asking, 1);
+        // A round with two reports takes the last one's (review round 1 of pull request 4): round
+        // 2 asked, then its resumed reviewer approved; in the mirror case the last report has
+        // no verdict, so the round has none, as round 1's rule reads it.
+        let rounds = [
+            fact("t6", 1, no),
+            fact("t6", 2, no),
+            fact("t6", 2, ok),
+            fact("t6", 3, ok),
+            fact("t7", 1, ok),
+            fact("t7", 2, no),
+            RoundFact {
+                reported: true,
+                ..fact("t7", 2, None)
+            },
+            fact("t7", 3, ok),
+        ];
+        let numbers = review_numbers(&rounds);
+        assert_eq!(numbers.re_reviews_after_changes, 1, "t6 round 2");
+        assert_eq!(
+            numbers.re_reviews_asking_again, 0,
+            "t6 round 2 approved last"
+        );
+        assert_eq!(
+            numbers.rounds_after_approval, 1,
+            "t6 round 3 (t7 round 2 has no verdict)"
+        );
+        assert_eq!(numbers.rounds_after_approval_asking, 0, "{numbers:?}");
     }
 }
