@@ -11,6 +11,9 @@ use std::path::Path;
 use std::process::{Command, ExitCode};
 use std::time::{Duration, Instant};
 
+/// The most mutants tested at once by default: beyond it the measured gain was not looked at.
+const MOST_JOBS: u32 = 8;
+
 /// Code no mutant is made in: the test tool and test folders.
 const EXCLUDED: [&str; 2] = ["tools/**", "crates/*/tests/**"];
 
@@ -32,16 +35,37 @@ pub struct Settings {
 }
 
 impl Settings {
-    /// Parses `--base REF`, `--minutes N`, `--mutant-seconds N`, `--jobs N`, `--tests FILTER`.
+    /// Parses `--base REF`, `--minutes N`, `--mutant-seconds N`, `--jobs N`, `--tests FILTER`,
+    /// the jobs by default from the process's CPU budget (`YULIUS_CPUS`).
     ///
     /// # Errors
     /// An unknown option, a missing or malformed value.
     pub fn parse(args: &[String], integration: &str) -> Result<Self, String> {
+        let cpus = std::env::var("YULIUS_CPUS").ok();
+        Self::parse_with(args, integration, cpus.as_deref())
+    }
+
+    /// [`Self::parse`] with the CPU budget given (SPEC-506 FST-005): with no `--jobs`, a third of
+    /// `cpus` mutants run at once, 2 to [`MOST_JOBS`]; 2 with no budget. Each job builds and
+    /// tests in a copy of its own and used about 2.2 CPUs and 3 GB on this repository
+    /// (measured 2026-11-17); a third leaves the rest of the session's budget to the review and
+    /// CI that run beside it.
+    ///
+    /// # Errors
+    /// As [`Self::parse`].
+    pub fn parse_with(
+        args: &[String],
+        integration: &str,
+        cpus: Option<&str>,
+    ) -> Result<Self, String> {
+        let jobs = cpus
+            .and_then(|cpus| cpus.trim().parse::<u32>().ok())
+            .map_or(2, |cpus| (cpus / 3).clamp(2, MOST_JOBS));
         let mut settings = Self {
             base: format!("origin/{integration}"),
             minutes: 30,
             mutant_seconds: 300,
-            jobs: 2,
+            jobs,
             tests: None,
             seconds: None,
         };
@@ -717,6 +741,24 @@ mod tests {
         assert_eq!(Settings::parse(&[], "dev")?.base, "origin/dev");
         assert!(Settings::parse(&["--minutes".to_owned(), "0".to_owned()], "dev").is_err());
         assert!(Settings::parse(&["--other".to_owned(), "1".to_owned()], "dev").is_err());
+        Ok(())
+    }
+
+    /// SPEC-506 FST-005 (AC-3): with no `--jobs`, as many mutants run at once as the process's
+    /// CPU budget carries (a third of `YULIUS_CPUS`, 2 to 8); `--jobs` still decides; with no
+    /// budget it stays 2.
+    #[test]
+    fn the_jobs_follow_the_cpu_budget() -> Result<(), String> {
+        let jobs = |args: &[&str], cpus: Option<&str>| {
+            let args: Vec<String> = args.iter().map(|a| (*a).to_owned()).collect();
+            Settings::parse_with(&args, "dev", cpus).map(|s| s.jobs)
+        };
+        assert_eq!(jobs(&[], Some("22"))?, 7);
+        assert_eq!(jobs(&[], Some("64"))?, 8);
+        assert_eq!(jobs(&[], Some("4"))?, 2);
+        assert_eq!(jobs(&[], None)?, 2);
+        assert_eq!(jobs(&[], Some("lots"))?, 2);
+        assert_eq!(jobs(&["--jobs", "2"], Some("22"))?, 2);
         Ok(())
     }
 }
