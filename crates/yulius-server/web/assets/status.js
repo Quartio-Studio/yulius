@@ -16,6 +16,9 @@ const STOP_LABELS = {
   stopped_server_lost: 'Stopped (server restarted)',
 };
 
+/** The agent a task runs, by name: Codex for a Codex task, else Claude (SPEC-503 CDX-013). */
+export const agentOf = (task) => (task && task.harness === 'codex' ? 'Codex' : 'Claude');
+
 const FAIL_LABELS = {
   failed_spawn_error: 'Failed to start',
   failed_precondition: 'Failed (precondition)',
@@ -54,13 +57,15 @@ export function limitCause(exitReason) {
  * What to tell the user when a task's session has ended (UX-02): a plain sentence with a `tone`
  * ('info' | 'warn' | 'error'), whether checking the subscriptions may help (`accounts`), and
  * whether the next step is to try again rather than continue (`retry`). `cause` is the limit the
- * sandbox was at when a crashed or killed run ended (`pids`, `memory`).
+ * sandbox was at when a crashed or killed run ended (`pids`, `memory`); `harness` the task's agent.
  */
-export function endedMessage(status, cause) {
+export function endedMessage(status, cause, harness) {
   if ((status === 'stopped_crashed' || status === 'stopped_killed') && LIMIT_MESSAGES[cause]) {
     return { tone: 'warn', text: LIMIT_MESSAGES[cause] };
   }
-  return ENDED_MESSAGES[status] || { tone: 'info', text: `The agent's session ended. ${SAFE}` };
+  const message = ENDED_MESSAGES[status] || { tone: 'info', text: `The agent's session ended. ${SAFE}` };
+  // A Codex task's messages name Codex (SPEC-503 CDX-013).
+  return harness === 'codex' ? { ...message, text: message.text.replace('Claude Code', 'Codex').replace('Claude', 'Codex') } : message;
 }
 
 /** True while a task has (or is about to have) a running session. */
@@ -231,7 +236,7 @@ export function statusInfo(task) {
   if (status === 'closed') return { glyph: '✓', icon: 'st-closed', tone: 'closed', label: 'Closed', group: 'ended' };
   if (status === 'stopped_cancelled') return { glyph: '■', icon: 'st-stopped', tone: 'stopped', label: STOP_LABELS[status], group: 'ended' };
   if (status in STOP_LABELS) return { glyph: '▲', icon: 'st-crashed', tone: 'stopped-abnormal', label: STOP_LABELS[status], group: 'ended' };
-  if (status in FAIL_LABELS) return { glyph: '✕', icon: 'st-failed', tone: 'failed', label: FAIL_LABELS[status], group: 'ended' };
+  if (status in FAIL_LABELS) return { glyph: '✕', icon: 'st-failed', tone: 'failed', label: FAIL_LABELS[status].replace('Claude', agentOf(task)), group: 'ended' };
   return { glyph: '?', icon: 'st-stopped', tone: 'stopped', label: 'Unknown state', group: 'ended', detail: status };
 }
 
@@ -260,9 +265,9 @@ export function resetAround(iso) {
  * pauses only when every subscription is used up, and continues by itself.
  */
 export function pausedLine(task) {
-  // Not capacity: no Claude account is usable (none connected, or every one must sign in again),
-  // so it waits for one (SPEC-246).
-  if (task.waits_for_account) return 'Waiting for a Claude account: none is usable (Subscriptions)';
+  // Not capacity: no account of its agent is usable (none connected, or every one must sign in
+  // again), so it waits for one (SPEC-246, SPEC-503).
+  if (task.waits_for_account) return `Waiting for a ${agentOf(task)} account: none is usable (Subscriptions)`;
   const reset = resetAround(task.resumes_at);
   return `Paused: no subscription has capacity left${reset ? ` (${reset})` : ''}`;
 }

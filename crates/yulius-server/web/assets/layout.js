@@ -735,7 +735,7 @@ const USAGE_KEYS = ['primary', 'secondary', 'weekly_opus', 'weekly_sonnet', 'wee
  * `yulius:usage-changed` event on the card.
  */
 export function accountUsage(account, { foldable = false, open = false, rename = null, setEmail = null, showEmail = false, refresh = null, note = null } = {}) {
-  const provider = account.provider === 'anthropic' ? 'Claude' : account.provider;
+  const provider = account.provider === 'anthropic' ? 'Claude' : account.provider === 'openai' ? 'Codex' : account.provider;
   const label = () => account.label || account.id;
   // Usage not read yet: a shimmering bar where the reset time will be (SPEC-092).
   const reading = () => [h('span', { class: 'skeleton-line', 'aria-hidden': 'true' }), h('span', { class: 'sr-only' }, 'Reading usage…')];
@@ -819,8 +819,8 @@ export function accountUsage(account, { foldable = false, open = false, rename =
         now.lines.map((line) => h('div', { class: 'account-limit', dataset: { window: line.key } }, icon('clock', { size: 13 }), h('span', null, line.text))),
         quiet ? h('div', { class: 'account-note' }, icon('clock', { size: 13 }), h('span', null, quiet)) : null,
         // Claude refusing a subscription (cancelled, downgraded, revoked) marks it for a new sign-in
-        // with Claude's words, said as why (SPEC-447 MOV-005).
-        account.last_error && !usageNote ? h('div', { class: 'account-error' }, icon('warn', { size: 13 }), h('span', null, account.status === 'relogin' ? `Claude refused it: ${account.last_error.trim().replace(/\.$/, '')}. Sign in again.` : account.last_error)) : null,
+        // with Claude's words, said as why (SPEC-447 MOV-005); a Codex one names Codex.
+        account.last_error && !usageNote ? h('div', { class: 'account-error' }, icon('warn', { size: 13 }), h('span', null, account.status === 'relogin' ? `${provider} refused it: ${account.last_error.trim().replace(/\.$/, '')}. Sign in again.` : account.last_error)) : null,
         usageRow(usage.primary, '5-hour window', at),
         usageRow(usage.secondary, 'This week', at),
         // Per-model weekly caps, when the plan has them (they bind only tasks of that model).

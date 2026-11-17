@@ -176,9 +176,9 @@ function card(title, sub, body, { tools, className } = {}) {
 function subscriptions(capacity) {
   if (!capacity) return null;
   const accounts = Array.isArray(capacity.accounts) ? capacity.accounts : [];
-  return card('Subscriptions', 'whole instance · Claude subscriptions in one pool', h('div', { class: 'stack' },
+  return card('Subscriptions', 'whole instance · each provider’s subscriptions in one pool', h('div', { class: 'stack' },
     capacityPanel(capacity),
-    accounts.length ? h('div', { class: 'account-list' }, accounts.map((a, i) => accountUsage({ ...a, id: a.id || `pool-${i}`, provider: 'anthropic' }, { foldable: true, open: false, showEmail: Boolean(a.id) }))) : null));
+    accounts.length ? h('div', { class: 'account-list' }, accounts.map((a, i) => accountUsage({ ...a, id: a.id || `pool-${i}`, provider: a.provider || 'anthropic' }, { foldable: true, open: false, showEmail: Boolean(a.id) }))) : null));
 }
 
 /**
