@@ -44,7 +44,7 @@ test('a Codex subscription is added with an OpenAI API key, without a sign-in', 
   // An API key has no usage windows (SPEC-503 CDX-008): Refresh says so in Codex's name.
   await screen.getByRole('button', 'Refresh usage of Codex key').click();
   await expect(browser.locator('.toast .toast-msg:has-text("usage reading for Codex key")')).toHaveText('Codex gave no new usage reading for Codex key.');
-  await expect(browser.locator('main .account-card:has-text("Codex key")')).toContainText('Codex gives no usage reading for an API key: its usage comes from its running tasks.');
+  await expect(browser.locator('main .account-card:has-text("Codex key")')).toContainText('Codex gave no new usage reading: this subscription’s usage comes from its running tasks.');
   await expect(browser.locator('main .account-card:has-text("Codex key")')).not.toContainText('Claude');
 });
 

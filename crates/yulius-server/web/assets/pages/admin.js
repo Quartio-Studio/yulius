@@ -170,13 +170,13 @@ export function recoveryCard(ctx) {
 
 /** What the sign-in dialog says while Claude's sign-in runs. */
 const SIGN_IN_RUNNING = 'Finish Claude’s sign-in in the terminal below: open the link, approve, and paste the code if Claude asks for it. This window closes by itself once the subscription is connected. Secrets are masked for other viewers.';
+/** The largest auth.json the server takes (`CODEX_AUTH_MAX_BYTES`). */
+const AUTH_JSON_MAX = 1024 * 1024;
+
 /**
  * The auth.json of a `codex login` made elsewhere (SPEC-503 CDX-011), pasted or read from a file.
  * A chosen file is kept here, never shown; the text is sent once and cleared.
  */
-/** The largest auth.json the server takes (`CODEX_AUTH_MAX_BYTES`). */
-const AUTH_JSON_MAX = 1024 * 1024;
-
 function authJsonInput() {
   let loaded = '';
   // A chosen file is read before the dialog's button sends it.
@@ -538,7 +538,7 @@ export function mountAccountsPage(ctx, route) {
   let readingAll = false;
   /** What the card says when a reading asked for came back without one (SPEC-473, SPEC-503). */
   const noNewReading = (account) => (account && account.provider === 'openai'
-    ? 'Codex gives no usage reading for an API key: its usage comes from its running tasks.'
+    ? 'Codex gave no new usage reading: this subscription’s usage comes from its running tasks.'
     : 'Claude gave no new usage reading: it shares this subscription’s usage only with its running tasks.');
   /** Who gave no reading: Claude, Codex, or both kinds among `accounts`. */
   const giver = (accounts) => {

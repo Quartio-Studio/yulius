@@ -1,11 +1,11 @@
 ---
 yulius-task: d068a269-9b2e-4341-9686-330714daae2f
-status: in-progress
+status: done
 ---
 
 # SPEC-503: Codex returns as a second harness
 
-Status: in-progress (accepted 2026-11-16, delivered in five slices)
+Status: done (accepted 2026-11-16, delivered in five slices)
 Date: 2026-11-10 (proposed as SPEC-451), 2026-11-16 (accepted, brought onto current dev)
 Owner: Yulius task #485, from outside pull request #1146 by studenciak00owl (written as SPEC-451
 with ADR-0290 in their fork), accepted by MrFishPL
@@ -129,7 +129,7 @@ Five pull requests, each merged into `dev` on green before the next begins.
 - [x] Slice D: slice C2's round-2 review notes fixed test-first
 - [x] Slice D: the UI offers Codex in the composer, automations, Subscriptions and task moves
 - [x] Slice D: SPEC-001/002/003 and the documents say Codex is accepted
-- [ ] Slice D: review findings fixed and the slice delivered
+- [x] Slice D: review findings fixed and the slice delivered
 
 ## Acceptance criteria
 
@@ -650,4 +650,17 @@ Five pull requests, each merged into `dev` on green before the next begins.
     - the whole e2e suite: 1085 passed, 1 skipped;
     - `codex.e2e.ts` 13 passed and `claude-connect.e2e.ts` 7 passed;
     - `ui_contract` and `claude_updates`: 33 passed.
+- **Review round 2** (Fable 5.2) approved `220d5dfaf`. Its minor and nits were fixed after it,
+  within the 20 product lines an approval allows:
+  - an `openai` account's card no longer names an API key when Codex gives no reading, since a
+    ChatGPT sign-in's 403 takes the same path; it now says "Codex gave no new usage reading: this
+    subscription’s usage comes from its running tasks." (`codex.e2e.ts` asserts it);
+  - in the mock, an import into an API-key account reads that account's usage windows again;
+  - the doc comments of `AUTH_JSON_MAX` and `authJsonInput` are back in order.
+- The third nit is answered in words: "Connect Codex" is recognised by the refusal's words,
+  because the error code `claude_account_required` is shared. The words are the server's own:
+  `account_gate.rs` and `supervisor.rs::open_credential` both say "Connect a Codex account
+  first" for `Provider::OpenAi`. A code per provider would change the API for one label.
+- `origin/dev` (#1381) was merged cleanly after the approval: no conflict was resolved, and the
+  merge took nothing out of dev. `codex.e2e.ts` and `subscriptions.e2e.ts` pass (62).
 

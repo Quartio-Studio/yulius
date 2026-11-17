@@ -4137,6 +4137,8 @@ route('POST', `/api/admin/accounts/${ID}/import`, ({ db, p, body }) => {
   if (!account) fail(404, 'not_found', 'not found');
   if (account.provider !== 'openai') fail(422, 'invalid', 'an auth.json is only for an openai (Codex) account');
   mockCodexImport(body.auth_json);
+  // A ChatGPT sign-in now: its usage windows are read again (SPEC-503 CDX-008).
+  db.codexKeyAccounts.delete(account.id);
   db.unsignedAccounts.delete(account.id);
   Object.assign(account, { status: 'ok', last_error: null });
   emit(db, { type: 'account.updated', account });
