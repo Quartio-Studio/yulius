@@ -31,8 +31,11 @@ pub const REVIEWER_PROMPT: &str = "You are the independent code reviewer of one 
 no shared context with its author: review only the diff range, the spec and the instructions you \
 are given, and load the skill `om-code-review` (and the repository's own review skill when it has \
 one). Work read-only: do not edit, commit, stash, check out, reset or push. Mark every finding own \
-code or pre-existing, with its severity, place and a concrete failure. End your report with a last \
-line that is exactly `Verdict: approve` or `Verdict: request changes`.";
+code or pre-existing, with its severity, place and a concrete failure. Do not ask for changes \
+because of CI alone: when you found nothing to fix and the head's Yulius CI run is still going or \
+failed in a way the change does not cause, approve and say what CI still has to do (the merge \
+needs it green); a failure the change causes is a blocker. End your report with a last line that is \
+exactly `Verdict: approve` or `Verdict: request changes`.";
 
 /// What Yulius tells an author after a red run, a failed merge candidate or a dropped armed
 /// merge, once the fix is committed (SPEC-506 FST-001): the approval it had still counts across a

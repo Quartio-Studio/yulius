@@ -1480,4 +1480,60 @@ mod tests {
         }
         Ok(())
     }
+
+    /// SPEC-506 FST-002 (AC-2): a reviewer does not ask for changes because of CI alone, the
+    /// same everywhere the review is described and in the reviewer agents' prompt; the old
+    /// wording that made any failed job a blocker is gone.
+    #[test]
+    fn every_place_says_ci_alone_is_no_request_for_changes() -> TestResult {
+        const RULE: &str = "a reviewer does not ask for changes because of ci alone: \
+            `delivery_merge` merges only a head whose own yulius ci run passed. when the review \
+            finds nothing to fix and the head's run is still going, or failed in a way the change \
+            does not cause, the verdict is approve and the report says what ci still has to do. a \
+            failure the change causes (its own test, format or lint, or a contract its files \
+            break) is a blocker.";
+        const OLD: [&str; 3] = [
+            "a failed job is a blocker, even if it looks unrelated",
+            "a failing gate included",
+            "any unexecuted configured command keeps the verdict at request changes until \
+             validation runs.",
+        ];
+        let normal = |text: &str| {
+            text.split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+                .to_lowercase()
+        };
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        for rel in [
+            "catalog/skills/open-mercato/om-code-review/SKILL.md",
+            "catalog/skills/open-mercato/om-code-review/references/review-checklist.md",
+            "catalog/skills/yulius/delivery-pipeline/SKILL.md",
+            ".apm/skills/yulius-review/SKILL.md",
+            "docs/engineering/workflow.md",
+        ] {
+            let text = normal(&fs::read_to_string(root.join(rel))?);
+            assert!(
+                text.contains(&normal(RULE)),
+                "{rel} does not state the rule"
+            );
+        }
+        for rel in [
+            "catalog/skills/open-mercato/om-code-review/SKILL.md",
+            "catalog/skills/open-mercato/om-code-review/references/review-checklist.md",
+            "catalog/skills/open-mercato/om-code-review/references/output-format.md",
+        ] {
+            let text = normal(&fs::read_to_string(root.join(rel))?);
+            for old in OLD {
+                assert!(!text.contains(&normal(old)), "{rel} keeps {old:?}");
+            }
+        }
+        let prompt = normal(yulius_domain::review::REVIEWER_PROMPT);
+        assert!(
+            prompt.contains("do not ask for changes because of ci alone")
+                && prompt.contains("a failure the change causes is a blocker"),
+            "the reviewer agents' prompt does not say the rule"
+        );
+        Ok(())
+    }
 }

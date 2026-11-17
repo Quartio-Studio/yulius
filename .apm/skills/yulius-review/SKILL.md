@@ -23,6 +23,12 @@ claim an unexecuted test passed.
 For the independent review of a task's change: start the independent code review with the Agent
 tool and the `yulius-reviewer` agent: Yulius picks the round's model (Fable 5.2 for a pull
 request's first two rounds, then Opus 5.5).
+A reviewer does not ask for changes because of CI alone: `delivery_merge` merges
+only a head whose own Yulius CI run passed. When the review finds nothing to fix
+and the head's run is still going, or failed in a way the change does not cause,
+the verdict is approve and the report says what CI still has to do. A failure
+the change causes (its own test, format or lint, or a contract its files break)
+is a blocker.
 
 Deliver findings ordered by severity, each with path/location, concrete trigger,
 impact and suggested correction, marked own code (code or tests the change added

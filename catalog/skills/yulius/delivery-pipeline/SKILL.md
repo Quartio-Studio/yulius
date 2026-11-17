@@ -74,8 +74,13 @@ The author never reviews alone. Start the independent code review with the Agent
 rounds, then Opus 5.5). It has **no shared context**: give it only the diff range
 (`<integration>...HEAD`), the spec path and the `om-code-review` skill (outside Yulius: a subagent
 or a new session with no shared context). It is read-only: no edits, commits or label changes. It
-judges the code and the tests separately, runs the gates, and returns a verdict for the exact head
-commit.
+judges the code and the tests separately, reads the head's Yulius CI run, runs the tests it doubts,
+and returns a verdict for the exact head commit.
+A reviewer does not ask for changes because of CI alone: `delivery_merge` merges only a head whose
+own Yulius CI run passed. When the review finds nothing to fix and the head's run is still going, or
+failed in a way the change does not cause, the verdict is approve and the report says what CI still
+has to do. A failure the change causes (its own test, format or lint, or a contract its files break)
+is a blocker.
 
 - Every finding is checked on its merits (is it true here?), then fixed test-first: a test that
   shows the problem, then the fix. Answer each finding in the pull request.
