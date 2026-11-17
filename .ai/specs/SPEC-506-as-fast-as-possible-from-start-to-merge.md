@@ -171,7 +171,7 @@ product project's 21 jobs pinned to 3 CPUs are its `yulius.toml`.
 - [x] One quick command runs first in CI and before each published commit
 - [x] The checker's tests run beside the Rust gates, for no more CPU
 - [x] Review of the quick checks and the gate order (pull request 3) approved
-- [ ] The Review card counts re-reviews that ask again and rounds that re-approve
+- [x] The Review card counts re-reviews that ask again and rounds that re-approve
 - [ ] Review of the review numbers (pull request 4) approved
 - [ ] Companion requests for quartio-v2, product and VistulaValley handed to the person
 - [ ] The report and the decisions on candidates 8 to 11 brought to the person
@@ -337,4 +337,16 @@ the run's start (baseline included) until the n-th mutant ended, read from each 
   `cargo check` and checker-test stubs wait for each other (10 s at most), and fails when `gates`
   runs them in a row (checked by hand); the stubs' directory is removed. `cargo nextest run -p
   xtask`: 20 passed.
+
+### Pull request 4 (FST-007)
+
+- `cargo nextest run -p yulius-domain --lib -E 'test(review::)'`: 4 passed, among them
+  `re_reviews_and_re_approvals_are_counted_by_the_round_before` (it fails with the asking-again
+  count removed: left 0, right 1).
+- `cargo nextest run -p yulius -E 'binary_id(yulius::main) &
+  test(the_reviews_read_counts_only_visible_sandboxes)'`: passed (a round 2 asking after an
+  approving round 1 reads `rounds_after_approval` 1, asking 1).
+- `cd e2e && npx e2e run tests/pipeline.e2e.ts`: 18 passed; with dev's `pipeline.js` the new
+  assertion fails ("expected: text containing /Re-reviews that asked again …/", 1 failed).
+- `scripts/dev mutants` beside the review: in the summary below once it ends.
 

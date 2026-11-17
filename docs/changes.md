@@ -6,6 +6,11 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-17
 
+- The Review card counts what the next study needs (SPEC-506 pull request 4, task #488): the
+  Pipeline tab's Review card and `GET /api/analytics/reviews` give the rounds after a request for
+  changes and how many asked again, and the rounds after an approval and how many asked for
+  changes (the rest re-approved an approved change), for the pull requests merged in the range.
+
 - The checks of seconds fail a CI run in seconds (SPEC-506 pull request 3, task #488,
   [ADR-0363](decisions/0363-the-quick-checks-run-first-and-the-checkers-tests-beside-the-rust-gates.md)):
   `scripts/dev quick` (repository contracts and formatting) runs first in the `quality` job, and
