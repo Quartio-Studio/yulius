@@ -3666,9 +3666,11 @@ line.
   back) whose file is valid. Its source is then `last_valid_yulius_toml`: the CI page names the
   problem and the commit, and each run says so.
 - **Every commit on its way** (`App::ci_gate_for_head`) is judged by that gate, also one that
-  changes its jobs. This covers a pull request's head, a merge candidate and a playground merge.
-  A commit's own jobs run only where there is no gate: a branch without CI, or a file never
-  valid.
+  changes its jobs; its own changed or added jobs run beside them as `<job> (this change)`,
+  never instead (`dom::with_changed_jobs`). This covers a pull request's head, a merge
+  candidate and a playground merge. A commit's own jobs alone run only where there is no gate:
+  a branch without CI, or a file never valid. A branch's run reuses a same-tree passed run only
+  when every job of its gate ran there with the same command.
 - **The configuration check** (`App::ci_config_problem`, at queue time) reads the file as CI will
   read it after the merge. That is the commit's own, except for a pull request that did not
   change it: then it is the integration branch's. An invalid one fails the run at once with a
@@ -3684,7 +3686,7 @@ flowchart TD
   L -->|none| N["no gate: a commit's own valid jobs, else nothing"]
   C["a commit on its way: pull request, merge candidate, playground merge"] --> K{"its yulius.toml as read after the merge valid?"}
   K -->|no| F["run fails at once: job yulius.toml, the parser's message"]
-  K -->|yes| R["run with the gate in force (never its own jobs while there is one)"]
+  K -->|yes| R["run with the gate in force, its own changed jobs beside (never instead)"]
 ```
 
 ## CI job output

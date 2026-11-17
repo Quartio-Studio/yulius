@@ -1487,11 +1487,13 @@ involved.
 
 - The CI comes from `[[ci.jobs]]`, or `[commands] gate`, in `yulius.toml` on the integration
   branch (docs/api.md "CI"). Every pull request, merge candidate and playground merge is judged by
-  those jobs, also one that changes them; its own `yulius.toml` is checked as CI will read it
+  those jobs, also one that changes them, with its own changed or added jobs beside them
+  (`<job> (this change)`); its own `yulius.toml` is checked as CI will read it
   after the merge, and an invalid one fails the run at once with the parser's message (a job
   `yulius.toml`; SPEC-504, ADR-0360). While the integration branch's own file is invalid, the
   gate of its last valid one runs until a fix merges: the CI page names the problem and that
-  commit, each run says so, and a pull request that does not repair the file fails naming it.
+  commit, each run says so, and a pull request that does not repair the file fails naming it
+  (and runs again by itself once the file is valid).
   Only a file never valid leaves no gate; then a change that brings valid jobs is tested with
   them. `GET /api/analytics/merge-queue` counts the minutes CI ran nothing because of its
   configuration (`config_blocked_minutes`).
