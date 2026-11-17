@@ -1423,4 +1423,3 @@ fn a_sign_in_made_meanwhile_wins_over_a_runs_refresh() -> TestResult {
     rt.shutdown_timeout(Duration::from_secs(5));
     Ok(())
 }
-

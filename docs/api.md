@@ -468,8 +468,9 @@ Step = {"id","ordinal","title","status":"pending|in_progress|done|skipped|blocke
 Metrics = {"wall_ms","active_ms|null","input_tokens|null","output_tokens|null","cache_read_tokens|null","cache_write_tokens|null","models":["…"],"switches":0,"turns|null"}
 ```
 
-`model` and `effort` are what the task asks Claude Code for (its own, else Yulius's default:
-`model_default`); what answered is `metrics.models` and each attempt's `model`, read from the
+`model` and `effort` are what the task asks its agent for (its own, else Yulius's default:
+`model_default`; a Codex task without a model asks none, `""`, and runs its subscription's
+default, SPEC-503); what answered is `metrics.models` and each attempt's `model`, read from the
 transcripts. `fallback_model` is the model its live run was launched with when that is not
 `model`: a task set to a Fable model runs Opus 5.5 while no subscription can run Fable (SPEC-482;
 a default task runs Opus 5.5 and has no fallback, ADR-0340),

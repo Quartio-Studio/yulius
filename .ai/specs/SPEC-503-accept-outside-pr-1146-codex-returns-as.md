@@ -457,4 +457,18 @@ Five pull requests, each merged into `dev` on green before the next begins.
 - After the fixes: clippy clean; the C1 set with `task_setup`, `models` and `yulius-store`: 2532
   passed, 1 failed (`migrate_helper::tests::a_stop_of_the_helper_ends_the_command_first`, #1375,
   outside this change).
+- **Review round 2** (Fable 5.2, `ac0f3b7c4`, request changes: 1 major, 1 minor, 3 nits, own
+  code), answered test-first:
+  - the trust test asserted before the spawned write-back ran: the vault part runs at the run's
+    end again (`keep_codex_refresh` takes no lock), only the removal waits for the launch lock on
+    its own task (`remove_codex_auth_after`, the task and sandbox looked up before it is spawned),
+    and the new test-only point `race::Point::CodexWriteBackDone` lets the test wait for it; with
+    the trust rule undone the test fails (the reviewer's mutation, now caught);
+  - the store write's condition had no test: `store::a_refreshed_credential_replaces_only_the_one_it_refreshes`
+    (fails with the condition undone) and, at the app, `codex::a_sign_in_made_meanwhile_wins_over_a_runs_refresh`
+    (a hold at the new point `CodexRefreshTaken`; fails with the old unconditional write);
+  - nits: the write-back's doc comments put back on their functions, `keep_codex_refresh`'s says
+    a sign-in made meanwhile gives `None`; `docs/api.md` says a Codex task without a model asks
+    none (`""`).
+  Hand mutation log: `$HOME/.cache/yulius-task-485/handmut-c1c.{py,txt}`.
 

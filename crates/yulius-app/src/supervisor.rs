@@ -3115,7 +3115,10 @@ impl App {
         let Ok(Some(attempt)) = self.deps.store.attempt(attempt_id).await else {
             return;
         };
-        let Some(account) = attempt.account_id.filter(|_| attempt.harness == Harness::Codex) else {
+        let Some(account) = attempt
+            .account_id
+            .filter(|_| attempt.harness == Harness::Codex)
+        else {
             return;
         };
         let Ok(Some(task)) = self.deps.store.task(task_id).await else {
