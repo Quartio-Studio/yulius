@@ -755,8 +755,8 @@ mode.
   lane, a candidate its last member's first, then a candidate sharing a member, else the first
   free; a claimed sandbox none); `CiState::lane_runs` and the job's `[yulius] lane …` line;
   `local_ci::a_run_takes_the_lane_that_last_built_its_pull_request` (two pull requests in lanes
-  0 and 1; the one in lane 1 pushes first, its run takes lane 1 and says "its checkouts last
-  built pr/N, which this run builds on"). Undone (no preference), it fails.
+  0 and 1; the one in lane 1 pushes first, its run takes lane 1 and says "last taken by pr/N,
+  which this run builds on"). Undone (no preference), it fails.
 - The gain, measured on this repository's test build (`cargo nextest run --workspace
   --all-features --profile ci --no-run`, one worktree and target directory, 64 CPUs, load about
   18): building `dev` (a2b6f4b0c) after an unrelated older build (`dev~25`) took 105 s, as long
@@ -769,6 +769,29 @@ mode.
   own run fails at the point, #2 is not merged, `member_failed`); with only that read undone it
   fails 3 of 3. The racing assertion is gone; ADR-0357's long line wrapped.
 - ADR-0358; architecture, operations (lanes, shards), development, AGENTS.md, `changes.md`.
+- Measured on the instance (`ci_status`): the five pull request runs before this change took
+  11 min 9 s, 11 min 32 s, 12 min 35 s, 14 min 33 s and 15 min 0 s, `quality` the longest each
+  time. This pull request's first run (head aa08961) took 8 min 39 s: `quality` 6 min 31 s,
+  `test (1/2)` 4 min 18 s, `test (2/2)` 4 min 31 s, `e2e` 8 min 38 s (its share a fifth, 5
+  workers; it gets `cpus = 18` since).
+- Review round 1 of slice D (Fable 5.2, head aa089614e). Request changes, all own code.
+  Answered:
+  - Major: the shard test's two runs (`dev` and #1) could wait on each other's half-admitted
+    shards (reproduced by the reviewer under load and with an admission probe). One lane in that
+    fixture.
+  - Major: the lane test's first lanes depended on which of `dev` and #1 ended first. `dev` and
+    #1 settle before #2 opens. The three tests passed 10 of 10 under `--stress-count 10`, and 10
+    of 10 again beside 32 busy loops.
+  - Minor: a pull request behind `dev` would run `scripts/dev checks` on an xtask without it.
+    `quality` looks for `checks` in `scripts/dev help` and runs `ci` otherwise.
+  - Minor: `e2e` became the longest job at a fifth of the budget; `cpus = 18` (ADR-0358).
+  - Minor: the note named a second-choice lane plainly, and said "built" for a lane only taken.
+    "last taken by …, which this run builds on" for any preferred lane.
+  - Minor: a failed shard stops its sibling: stated in ADR-0358's consequences.
+  - Minor: no candidate test. `merge_train::a_candidates_run_takes_a_lane_of_its_members`; undone
+    (no preference), it and the pull request test fail 3 of 3.
+  - Nits: "three jobs" in ADR-0358; `development.md` names the jobs; `scripts/dev test` names its
+    stage (once in `ci`).
 - Checks run on this head: `cargo fmt --check`; `cargo clippy --workspace --all-targets -D
   warnings`; `scripts/check_repository.py`; the unit tests of `yulius-app`, `yulius-domain`,
   `xtask` (1,173 passed); `local_ci::`, `merge_train::`, `analytics::` (149 passed).

@@ -54,13 +54,23 @@ and the gain measured. A run's critical path is its longest job.
 
 ## Consequences
 
-- This repository's run has five jobs instead of four. Each default share is a fifth of CI's
-  budget instead of a third, and the run's critical path is the longest of `quality` without
-  tests, a shard (its build and half the tests), and `e2e`.
+- This repository's run has five jobs instead of three (`quality`, `test (1/2)`, `test (2/2)`,
+  `e2e`, `security`). A default share is a fifth of CI's budget instead of a third; `e2e`, whose
+  workers are half its CPUs, declares `cpus = 18` to keep its 9 workers (with 11 CPUs and 5
+  workers it took 8 min 38 s against 5 min 13 s). The run's critical path is the longest of
+  `quality` without tests, a shard (its build and half the tests), and `e2e`.
   - Locally on 64 CPUs, the tests took 161 s in one go, and 91 s for each of two hash
     partitions run alone.
-  - Measured on the instance: the run durations of pull requests before (#1378 18 min 7 s, #1381
-    12 min 35 s) and after this change, read from `ci_status` (slice E).
+  - On the instance: the five pull request runs before took 11 min 9 s to 15 min 0 s (`quality`
+    the longest); this pull request's first run took 8 min 39 s (`quality` 6 min 31 s, the shards
+    4 min 18 s and 4 min 31 s, `e2e` 8 min 38 s before its `cpus`).
+- A pull request still behind the `dev` that added `scripts/dev checks` runs `dev`'s jobs with
+  its own older xtask: `quality` then runs the whole `ci` (it looks for `checks` in
+  `scripts/dev help`) and each shard all the tests. It takes longer, never checks less.
+- A failing shard stops its sibling as any failed job stops the run's others (fail-fast), so a
+  head that fails tests in both halves shows one half's failing tests per run, where one job
+  listed them all. A second run after the fix shows the rest; sparing siblings would spend the
+  other half's minutes on every red run.
 - A shard builds the tests in its own checkout, so two shards compile them twice. The cost is CPU
   the budget admits, not wall time.
 - A candidate's build starts from a member's when that member's lane is free. On this
@@ -70,4 +80,5 @@ and the gain measured. A run's critical path is its longest job.
   touches, so the gain is part of the build; a project whose changes touch fewer crates gains
   more.
 - The lane memory is in the process: after a restart the first runs take the first free lanes as
-  before.
+  before. It records the run that took a lane, so a run cancelled before its jobs started leaves
+  its reference there; the note says "last taken by", not "built".
