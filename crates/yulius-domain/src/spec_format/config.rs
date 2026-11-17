@@ -1,20 +1,20 @@
 //! The `yulius.toml` project contract (SPEC-001 §7.2, DLV-005).
 //!
-//! Choice: the domain owns a tiny, strict TOML-subset parser instead of accepting a
-//! pre-parsed map, so the domain stays dependency-free and every problem carries a line
-//! number for the agent prompt. Supported:
+//! The file is read by a TOML 1.0 parser (the `toml` crate's spanned document, SPEC-504
+//! CFG-005, ADR-0360): anything valid TOML parses, whatever its layout (multi-line arrays,
+//! trailing commas, comments inside arrays and after values, literal and multi-line strings,
+//! inline tables, dotted keys), and invalid TOML is refused with the parser's message at its line.
+//! Known tables:
 //!
-//! - `[docs]`, `[commands]`, `[delivery]`, `[disk]`, `[review]`, `[merge_queue]`,
-//!   `[branch_policy]`, `[resources.env]`, `[cd.<name>]` tables, `[[delivery.environments]]` and `[[ci.jobs]]` entries;
-//! - `key = "basic string"` (escapes `\" \\ \n \t \r \b \f \uXXXX \UXXXXXXXX`),
-//!   `key = 'literal string'`, `key = true|false`, whole numbers (`cpus = 6`) and
-//!   `environments = []`;
-//! - blank lines and `#` comments (also after a value).
+//! - `[docs]`, `[commands]`, `[delivery]`, `[disk]`, `[branch_policy]`, `[resources.env]`,
+//!   `[review]`, `[merge_queue]`, `[cd.<name>]` tables, `[[delivery.environments]]` and
+//!   `[[ci.jobs]]` entries.
 //!
-//! Keys in the known tables are strict (unknown keys are errors, catching typos). Other
-//! tables and keys before the first table are ignored for forward compatibility; their lines
-//! are skipped unparsed. Multi-line strings, signed or fractional numbers, non-empty arrays,
-//! inline tables, dotted and quoted keys are rejected inside known tables.
+//! Their keys are strict (unknown keys are errors, catching typos), and their values are what
+//! the checks read: strings, `true`/`false`, whole numbers of at least 0 and arrays of strings;
+//! anything else is refused at its line. Other tables and keys are ignored for forward
+//! compatibility. Nesting is bounded by the parser (a line of brackets is refused, never
+//! recursed into: review of SPEC-278, B1).
 //!
 //! ```toml
 //! [docs]
