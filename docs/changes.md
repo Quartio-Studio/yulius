@@ -6,6 +6,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-17
 
+- The checks of seconds fail a CI run in seconds (SPEC-506 pull request 3, task #488,
+  [ADR-0363](decisions/0363-the-quick-checks-run-first-and-the-checkers-tests-beside-the-rust-gates.md)):
+  `scripts/dev quick` (repository contracts and formatting) runs first in the `quality` job, and
+  every project's author runs its quick checks before each commit it publishes. The checker's
+  Python tests run beside the Rust gates: `checks` took 108 to 114 s instead of 138 s after a
+  one-line change, for no more CPU.
 - Antigravity, slice A (SPEC-505 pull request 1, task #487,
   [ADR-0361](decisions/0361-antigravity-is-a-third-harness-picked-at-random-by-default.md)):
   Google's Antigravity CLI (`agy` 1.5.10) gets an adapter beside Claude Code's and Codex's: its

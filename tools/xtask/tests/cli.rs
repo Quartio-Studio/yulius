@@ -58,3 +58,240 @@ fn security_is_listed_and_needs_a_vidoc_key() -> std::io::Result<()> {
     assert!(String::from_utf8_lossy(&broad.stderr).contains("No Vidoc key"));
     Ok(())
 }
+
+/// A gate run against recording stubs of `cargo` and `python` (SPEC-506 FST-006, FST-008, review
+/// round 1 of pull request 3): each stub writes its arguments to a file, prints a line, and fails
+/// when its arguments contain `fail`.
+#[cfg(unix)]
+struct Stubs {
+    dir: std::path::PathBuf,
+}
+
+#[cfg(unix)]
+impl Stubs {
+    fn new(name: &str) -> std::io::Result<Self> {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = std::env::temp_dir().join(format!("xtask-gates-{}-{name}", std::process::id()));
+        std::fs::create_dir_all(&dir)?;
+        for tool in ["cargo", "python"] {
+            let path = dir.join(tool);
+            std::fs::write(
+                &path,
+                format!(
+                    "#!/bin/sh\necho \"{tool} $*\" >> \"$XT_RECORD\"\necho \"stub {tool} $*\"\n\
+                     if [ -n \"$XT_HANDSHAKE\" ]; then other=''; case \"{tool} $*\" in \
+                     *'-m unittest'*) other='cargo check';; 'cargo check'*) \
+                     other='python -m unittest';; esac; if [ -n \"$other\" ]; then n=0; \
+                     until grep -q \"^$other\" \"$XT_RECORD\"; do n=$((n+1)); \
+                     if [ $n -gt 100 ]; then echo \"HANDSHAKE TIMEOUT {tool}\"; exit 3; fi; \
+                     sleep 0.1; done; fi; fi\n\
+                     for f in \"$XT_FAIL\" \"$XT_FAIL2\"; do if [ -n \"$f\" ]; then \
+                     case \"{tool} $*\" in *\"$f\"*) echo \"STUB FAILURE of {tool} $*\"; \
+                     exit 1;; esac; fi; done\nexit 0\n"
+                ),
+            )?;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))?;
+        }
+        Ok(Self { dir })
+    }
+
+    /// Runs `xtask <task>` with the stubs, failing the stub call whose words contain `fail`;
+    /// returns its exit code, its output and the calls in the order made.
+    fn run(&self, task: &str, fail: &str) -> std::io::Result<(Option<i32>, String, Vec<String>)> {
+        self.run_with(task, &[fail], false)
+    }
+
+    /// [`Self::run`]; with `handshake`, the checker's tests and `cargo check` each wait (10 s at
+    /// most) until the other has started, so they pass only when they run at the same time.
+    fn run_with(
+        &self,
+        task: &str,
+        fails: &[&str],
+        handshake: bool,
+    ) -> std::io::Result<(Option<i32>, String, Vec<String>)> {
+        let record = self.dir.join("record");
+        let _ = std::fs::remove_file(&record);
+        std::fs::write(&record, "")?;
+        let out = Command::new(env!("CARGO_BIN_EXE_xtask"))
+            .env("XT_HANDSHAKE", if handshake { "1" } else { "" })
+            .env("CARGO", self.dir.join("cargo"))
+            .env("PYTHON", self.dir.join("python"))
+            .env("XT_RECORD", &record)
+            .env("XT_FAIL", fails.first().copied().unwrap_or_default())
+            .env("XT_FAIL2", fails.get(1).copied().unwrap_or_default())
+            .env("YULIUS_CI", "1")
+            .env_remove("YULIUS_CI_MATRIX")
+            .env_remove("YULIUS_CI_QUARANTINE")
+            .arg(task)
+            .output()?;
+        let calls = std::fs::read_to_string(&record)
+            .unwrap_or_default()
+            .lines()
+            .map(|line| {
+                // The tool and its first two words name a call; macOS's Clippy names its target.
+                let words: Vec<&str> = line.split_whitespace().collect();
+                let mut call = words.iter().take(3).copied().collect::<Vec<_>>().join(" ");
+                if line.contains("--target") {
+                    call.push_str(" --target");
+                }
+                call
+            })
+            .collect();
+        let text = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        Ok((out.status.code(), text, calls))
+    }
+}
+
+#[cfg(unix)]
+impl Drop for Stubs {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+
+/// The last line of a gate's output: the one that says why it failed.
+#[cfg(unix)]
+fn last_line(text: &str) -> &str {
+    text.trim_end().lines().last().unwrap_or_default()
+}
+
+#[cfg(unix)]
+fn sorted(mut calls: Vec<String>) -> Vec<String> {
+    calls.sort();
+    calls
+}
+
+/// SPEC-506 FST-006, FST-008 (review round 1 of pull request 3): `ci` and `checks` run the old
+/// gate's commands, each once: `quick` (contracts, format) right after `doctor`, the checker's
+/// tests beside the Rust gates; `check` and `lint` alone still run what `quick` holds.
+#[cfg(unix)]
+#[test]
+fn the_gates_run_each_command_once_with_quick_first() -> std::io::Result<()> {
+    let stubs = Stubs::new("order")?;
+    let rust = [
+        "cargo check --locked",
+        "cargo clippy --locked",
+        "cargo clippy --locked --target",
+        "cargo deny --locked",
+        "cargo doc --locked",
+        "cargo shear --locked",
+    ];
+    let (code, text, calls) = stubs.run("checks", "")?;
+    assert_eq!(code, Some(0), "{text}");
+    assert_eq!(
+        calls[..3],
+        [
+            "python scripts/check_repository.py --doctor",
+            "python scripts/check_repository.py",
+            "cargo fmt --all",
+        ],
+        "doctor, then quick, before anything else: {calls:?}"
+    );
+    let mut checks: Vec<String> = calls[..3].to_vec();
+    checks.extend(["python -m unittest".to_owned()]);
+    checks.extend(rust.iter().map(|c| (*c).to_owned()));
+    assert_eq!(sorted(calls), sorted(checks.clone()));
+    let (code, text, calls) = stubs.run("ci", "")?;
+    assert_eq!(code, Some(0), "{text}");
+    let mut ci = checks;
+    ci.extend([
+        "cargo nextest run".to_owned(),
+        "python scripts/doctests.py".to_owned(),
+    ]);
+    assert_eq!(sorted(calls), sorted(ci));
+    let (code, _, calls) = stubs.run("check", "")?;
+    assert_eq!(code, Some(0));
+    assert_eq!(
+        sorted(calls),
+        sorted(vec![
+            "python scripts/check_repository.py".to_owned(),
+            "python -m unittest".to_owned(),
+            "cargo check --locked".to_owned(),
+        ])
+    );
+    let (code, _, calls) = stubs.run("lint", "")?;
+    assert_eq!(code, Some(0));
+    assert_eq!(calls, ["cargo fmt --all", "cargo clippy --locked"]);
+    Ok(())
+}
+
+/// SPEC-506 FST-006, FST-008 (review round 1 of pull request 3): a failed format check ends the
+/// gate before the build and the checker's tests start; a failed checker test fails it after the
+/// Rust gates, its output in a stage of its own at the end; a failed Rust gate is named.
+#[cfg(unix)]
+#[test]
+fn a_failure_fails_the_gate_and_says_where() -> std::io::Result<()> {
+    let stubs = Stubs::new("failures")?;
+    let (code, text, calls) = stubs.run("checks", "fmt --all -- --check")?;
+    assert_eq!(code, Some(1), "{text}");
+    assert!(
+        !calls
+            .iter()
+            .any(|c| c == "python -m unittest" || c == "cargo check --locked"),
+        "nothing after quick started: {calls:?}"
+    );
+    let (code, text, calls) = stubs.run("checks", "unittest")?;
+    assert_eq!(code, Some(1), "{text}");
+    assert!(calls.iter().any(|c| c == "cargo doc --locked"), "{calls:?}");
+    let stage = text.find("::yulius-stage checker-tests").unwrap_or(0);
+    let failure = text.find("STUB FAILURE of python -m unittest").unwrap_or(0);
+    let docs = text.find("stub cargo doc").unwrap_or(usize::MAX);
+    assert!(
+        docs < stage && stage < failure,
+        "the checker's output comes in its own stage after the Rust gates: {text}"
+    );
+    let last = last_line(&text);
+    assert!(
+        last.starts_with("Gate failed:") && last.contains("-m unittest"),
+        "{text}"
+    );
+    let (code, text, _) = stubs.run(
+        "checks",
+        "clippy --locked --workspace --all-targets --all-features -- -D",
+    )?;
+    assert_eq!(code, Some(1), "{text}");
+    let last = last_line(&text);
+    assert!(
+        last.starts_with("Gate failed:") && last.contains("clippy --locked"),
+        "{text}"
+    );
+    // Both fail: the Rust gate is named first.
+    let (code, text, _) = stubs.run_with(
+        "checks",
+        &[
+            "clippy --locked --workspace --all-targets --all-features -- -D",
+            "-m unittest",
+        ],
+        false,
+    )?;
+    assert_eq!(code, Some(1), "{text}");
+    let last = last_line(&text);
+    assert!(
+        last.starts_with("Gate failed:") && last.contains("clippy --locked"),
+        "{text}"
+    );
+    Ok(())
+}
+
+/// SPEC-506 FST-008 (review round 2 of pull request 3): in `checks`, `ci` and `check` the
+/// checker's tests and `cargo check` run at the same time (each stub waits for the other to start;
+/// in a row the first times out), and the checker's tests' stage opens when the Rust gates end.
+#[cfg(unix)]
+#[test]
+fn the_checkers_tests_run_beside_the_build() -> std::io::Result<()> {
+    let stubs = Stubs::new("beside")?;
+    for task in ["checks", "ci", "check"] {
+        let (code, text, _) = stubs.run_with(task, &[], true)?;
+        assert_eq!(code, Some(0), "{task}: {text}");
+        assert!(!text.contains("HANDSHAKE TIMEOUT"), "{task}: {text}");
+    }
+    let (_, text, _) = stubs.run("checks", "")?;
+    let docs = text.find("stub cargo doc").unwrap_or(usize::MAX);
+    let stage = text.find("::yulius-stage checker-tests").unwrap_or(0);
+    assert!(docs < stage, "{text}");
+    Ok(())
+}
