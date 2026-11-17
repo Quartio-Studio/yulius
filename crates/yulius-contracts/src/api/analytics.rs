@@ -427,6 +427,16 @@ pub struct DockerAnalytics {
     pub gave_way: u64,
     /// Needs you naming the sandbox's Docker over the range.
     pub needs_you: u64,
+    /// Containers CI jobs left that Yulius removed over the range (SPEC-504 CLB-006).
+    #[serde(default)]
+    pub ci_containers: u64,
+    /// Networks CI jobs left that Yulius removed over the range.
+    #[serde(default)]
+    pub ci_networks: u64,
+    /// Of those containers and networks, the ones the upkeep's sweep found (after a restart, or
+    /// with the engine stopped at the job's end) rather than the job's end.
+    #[serde(default)]
+    pub ci_swept: u64,
 }
 
 /// One week of [`DockerAnalytics`].
@@ -440,6 +450,15 @@ pub struct DockerWeek {
     pub gave_way: u64,
     /// See [`DockerAnalytics::needs_you`].
     pub needs_you: u64,
+    /// See [`DockerAnalytics::ci_containers`].
+    #[serde(default)]
+    pub ci_containers: u64,
+    /// See [`DockerAnalytics::ci_networks`].
+    #[serde(default)]
+    pub ci_networks: u64,
+    /// See [`DockerAnalytics::ci_swept`].
+    #[serde(default)]
+    pub ci_swept: u64,
 }
 
 /// One day of [`MergeQueueAnalytics`].

@@ -4227,8 +4227,11 @@ route('GET', '/api/analytics/docker', ({ db, query }) => {
   if (query.get('sandbox') && !db.sandboxes.some((s) => s.id === query.get('sandbox'))) fail(404, 'not_found', 'not found');
   return db.dockerAnalytics || {
     range: { sandbox: query.get('sandbox'), from: query.get('from'), to: query.get('to') },
-    weeks: [{ week: '2026-11-09', restarts: 2, gave_way: 38, needs_you: 2 }, { week: '2026-11-16', restarts: 1, gave_way: 3, needs_you: 0 }],
-    restarts: 3, gave_way: 41, needs_you: 2,
+    weeks: [
+      { week: '2026-11-09', restarts: 2, gave_way: 38, needs_you: 2, ci_containers: 22, ci_networks: 13, ci_swept: 35 },
+      { week: '2026-11-16', restarts: 1, gave_way: 3, needs_you: 0, ci_containers: 4, ci_networks: 1, ci_swept: 0 },
+    ],
+    restarts: 3, gave_way: 41, needs_you: 2, ci_containers: 26, ci_networks: 14, ci_swept: 35,
   };
 });
 

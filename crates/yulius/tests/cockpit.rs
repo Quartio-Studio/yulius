@@ -8098,7 +8098,8 @@ impl yulius_app::ports::isolation::SandboxIsolation for EventfulDocker {
 }
 
 /// SPEC-494 DFJ-013: front restarts, connections that gave way and Needs you naming the
-/// sandbox's Docker are counted per week and read on the instance.
+/// sandbox's Docker are counted per week and read on the instance; so is what CI jobs left
+/// (SPEC-504 CLB-006).
 #[tokio::test]
 async fn the_instance_counts_docker_restarts_give_ways_and_needs_you_per_week() -> TestResult {
     use yulius_app::ports::isolation::DockerEvent;
@@ -8117,6 +8118,15 @@ async fn the_instance_counts_docker_restarts_give_ways_and_needs_you_per_week() 
             event(sid().as_str(), "gave_way", 2),
             event(&format!("{}.prod", sid().as_str()), "restarted", 1),
             event("unknown-sandbox", "restarted", 1),
+            // SPEC-504 CLB-006: what CI jobs left, removed at a job's end and by the sweep.
+            DockerEvent {
+                detail: "2 1 job-end".to_owned(),
+                ..event(sid().as_str(), "ci_leftovers", 2)
+            },
+            DockerEvent {
+                detail: "0 3 sweep".to_owned(),
+                ..event(sid().as_str(), "ci_leftovers", 0)
+            },
         ]),
     });
     assert!(f.h.app.set_isolation(docker));
@@ -8153,6 +8163,11 @@ async fn the_instance_counts_docker_restarts_give_ways_and_needs_you_per_week() 
     assert_eq!(
         (seen.restarts, seen.gave_way, seen.needs_you),
         (2, 5, 1),
+        "{seen:?}"
+    );
+    assert_eq!(
+        (seen.ci_containers, seen.ci_networks, seen.ci_swept),
+        (2, 4, 3),
         "{seen:?}"
     );
     assert_eq!(seen.weeks.len(), 1, "{seen:?}");
