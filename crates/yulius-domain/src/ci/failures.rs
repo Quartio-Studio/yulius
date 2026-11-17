@@ -73,7 +73,10 @@ impl FailureScanner {
     /// as a block or not (SPEC-497 OFC-001: such a job is never run again).
     #[must_use]
     pub fn failure_seen(&self) -> bool {
+        // A last line with no newline yet counts too (review round 4).
         self.failure_seen
+            || (!self.partial.is_empty()
+                && crate::ci::infra::reads_as_failure(&String::from_utf8_lossy(&self.partial)))
     }
 
     /// Reads the next bytes of the output.
@@ -287,6 +290,14 @@ fn libtest_header(line: &str) -> Option<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// SPEC-497 OFC-001 (review round 4): a last line with no newline is read too.
+    #[test]
+    fn a_failure_on_the_unfinished_last_line_is_seen() {
+        let mut scanner = FailureScanner::default();
+        scanner.push(b"running\n--- FAIL: TestTotal");
+        assert!(scanner.failure_seen());
+    }
 
     /// SPEC-497 OFC-001 (review round 3): a failure in any runner's words is seen wherever it is
     /// printed, kept as a block or not; a passing summary and Docker's own words are not.

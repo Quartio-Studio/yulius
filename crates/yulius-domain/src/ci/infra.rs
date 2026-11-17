@@ -104,8 +104,12 @@ fn named(line: &str) -> Option<Infra> {
     if !line.contains("docker.sock") {
         return None;
     }
-    let client = line.contains("cannot connect to the docker daemon")
-        || (CLIENT_WORDS.iter().any(|words| line.contains(words))
+    // The client's words begin the line (after an `error:` it may put first): a container's log
+    // (`app-1  | dial unix …`) quotes them after its own prefix (review round 4).
+    let own = line.trim_start();
+    let own = own.strip_prefix("error:").map_or(own, str::trim_start);
+    let client = own.starts_with("cannot connect to the docker daemon")
+        || (CLIENT_WORDS.iter().any(|words| own.starts_with(words))
             && SOCKET_ENDS.iter().any(|words| {
                 line.contains(words) || (*words == ": eof" && line.ends_with(" eof"))
             }));
@@ -134,7 +138,9 @@ pub fn reads_as_failure(line: &str) -> bool {
         return false;
     }
     let lower = trimmed.to_ascii_lowercase();
-    if PASSING.iter().any(|words| lower.contains(words)) {
+    // A leading space so a summary at the line's start matches " 0 failing" as a whole word.
+    let spaced = format!(" {lower}");
+    if PASSING.iter().any(|words| spaced.contains(words)) {
         return false;
     }
     // `make`'s report that a recipe exited: the recipe's own lines say what failed.
@@ -145,7 +151,7 @@ pub fn reads_as_failure(line: &str) -> bool {
 }
 
 /// Summaries of runs that passed, which name failures as none.
-const PASSING: [&str; 4] = ["test result: ok", " 0 failed", "0 failing", "failed: 0"];
+const PASSING: [&str; 4] = ["test result: ok", " 0 failed", " 0 failing", "failed: 0"];
 
 /// Why the failure of a job that ended `end` is the infrastructure's, if it is, from this run's
 /// own `output` (what it printed, the end kept), whether any failing test's block was kept
@@ -306,9 +312,31 @@ mod tests {
         assert_eq!(infrastructure(JobEnd::Signalled(9), "", true, true), None);
         assert_eq!(infrastructure(JobEnd::Lost, "", true, false), None);
         // A container's own log naming the socket is not the client's word (review round 3).
-        let container = "app-1  | dial tcp: lookup /var/run/docker.sock: connection refused\n\
-                         app-1  | retrying /var/run/docker.sock: connection refused";
-        assert_eq!(infrastructure(exited, container, false, false), None);
+        for container in [
+            "app-1  | dial unix /var/run/docker.sock: connect: connection refused",
+            "app-1  | time=1 level=error msg=\"read unix @->/var/run/docker.sock: read: \
+             connection reset by peer\"",
+            "app-1  | dial tcp: lookup /var/run/docker.sock: connection refused",
+        ] {
+            assert_eq!(
+                infrastructure(exited, container, false, false),
+                None,
+                "{container}"
+            );
+        }
+        // The client's own words, after the `error:` it may print first, still count.
+        assert_eq!(
+            infrastructure(
+                exited,
+                "error: read unix @->/run/yulius/docker/docker.sock: read: connection reset by peer",
+                false,
+                false
+            ),
+            Some(Infra::DockerSocket)
+        );
+        // Mocha's "10 failing" is no passing summary (review round 4).
+        assert!(reads_as_failure("  10 failing"));
+        assert!(!reads_as_failure("  0 failing"));
         // Failure lines without the old words after Docker's (review round 3).
         for after in [
             "1 error in 0.05s",

@@ -162,7 +162,7 @@ mode.
 - [x] Slice A2: CI wait job-minutes per hour and host busy % measured and shown
 - [x] Slice B: documents and ADR of the reruns and minutes
 - [x] Slice B: the reruns and minutes' review rounds 1 to 3 answered
-- [ ] Slice B: the reruns and minutes' last review round
+- [x] Slice B: the reruns and minutes' last review round
 - [ ] Slice B: flaky tests quarantined with an issue, the project told
 - [ ] Slice B: quarantine documents, ADR and review
 - [ ] Slice C: a failed member leaves without cancelling the candidate
@@ -538,3 +538,10 @@ mode.
     one branch each, read.
   - Nits: a cancellation that came while the first run ended starts no second one; the
     Evidence's test names.
+- Review round 4 (Opus 5.5, head e73c91224) approved. Its minors, fixed after the approval within
+  the allowance: the socket counts only when the Docker client's words begin the line (after an
+  `error:`), so `app-1  | dial unix …` is a container's log (unit cases); a second start that
+  fails to spawn is the infrastructure's too, with its reason; mocha's `10 failing` is no passing
+  summary (`" 0 failing"` as a whole word); a failure on an unfinished last line is seen (unit
+  `a_failure_on_the_unfinished_last_line_is_seen`). Still read only, not tested through the
+  executor: a second start that cannot be made, and the mapping of a lost host.

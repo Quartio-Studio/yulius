@@ -889,8 +889,15 @@ impl App {
                 }
                 // The second start could not be made: the infrastructure's again (review
                 // rounds 2 and 3), with the reason it could not.
-                (None, Some((first, ms))) if ended.is_err() => {
-                    let why = ended.as_ref().err().cloned().unwrap_or_default();
+                (None, Some((first, ms)))
+                    if ended.is_err()
+                        || matches!(&ended, Ok(Ended::Exit(exit)) if exit.spawn_failed) =>
+                {
+                    let why = ended
+                        .as_ref()
+                        .err()
+                        .cloned()
+                        .unwrap_or_else(|| "the job could not be started".to_owned());
                     break (
                         ended,
                         usage,
