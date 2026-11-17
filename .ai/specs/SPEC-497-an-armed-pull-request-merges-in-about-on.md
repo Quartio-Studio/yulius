@@ -184,7 +184,7 @@ mode.
 - [x] Slice D: sharded jobs
 - [x] Slice D: a candidate reuses its members' builds, measured
 - [x] Slice D: review round 1 answered
-- [ ] Slice D: review round 2 answered
+- [x] Slice D: review round 2 answered
 - [ ] Slice E: numbers before and after, quartio-v2's part told
 
 ## Acceptance criteria
@@ -825,6 +825,10 @@ mode.
     `local_ci::` and `merge_train::` suite 141 of 141 twice. On the instance, this pull request's
     run at 2654805 took 6 min 53 s (`quality` 6 min 52 s, shards 4 min 32 s and 4 min 48 s, `e2e`
     5 min 24 s with its 18 CPUs), against 11 min 9 s to 15 min 0 s before slice D.
+- Review round 3 of slice D (Fable 5.2, head f07733727) approved with no finding; its CI run
+  passed in 8 min 35 s (`quality` 7 min 37 s, shards 4 min 18 s and 4 min 38 s, `e2e` 5 min
+  23 s). The reviewer saw every job of that run wait 47 to 60 s for admission, `security`'s one
+  CPU too; the instance's admission decides it, read in slice E with the busy hours.
 
 ### Slice A3: the operator's amendment to the admission (its own pull request, first)
 
