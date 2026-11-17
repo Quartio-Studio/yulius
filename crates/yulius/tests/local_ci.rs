@@ -2042,6 +2042,124 @@ async fn a_branch_never_reuses_a_run_that_did_not_run_its_jobs() -> TestResult {
     Ok(())
 }
 
+/// SPEC-504 review round 4: a branch reuses a same-tree verdict only where every job of its
+/// gate ran as it now defines it, its time limit too: a pull request's run that ran the job
+/// with the old limit only is no source, and the branch's run runs it again.
+#[tokio::test]
+async fn a_branch_never_reuses_a_run_that_ran_its_job_with_another_time_limit() -> TestResult {
+    use yulius_domain::ci::RunState;
+    let f = fixture_with(false, |_| limited_job(30)).await?;
+    let changed = f.push_feature("yulius.toml", Some(&limited_job(20)))?;
+    let merged = squash_after_run(&f, &changed, &[("check", Some(30), RunState::Passed)]).await?;
+    let (run, _) = run_of(&f, &merged).await?;
+    assert!(
+        !run["reason"]
+            .as_str()
+            .is_some_and(|r| r.contains("same tree")),
+        "not reused: {run}"
+    );
+    Ok(())
+}
+
+/// SPEC-504 review round 4: a reused verdict comes from the job that ran as the branch now
+/// defines it, here the twin with the new time limit, not the job of the same command with the
+/// old one.
+#[tokio::test]
+async fn a_reused_verdict_comes_from_the_job_that_ran_with_the_time_limit() -> TestResult {
+    use yulius_domain::ci::RunState;
+    let f = fixture_with(false, |_| limited_job(30)).await?;
+    let changed = f.push_feature("yulius.toml", Some(&limited_job(20)))?;
+    let merged = squash_after_run(
+        &f,
+        &changed,
+        &[
+            ("check", Some(30), RunState::Passed),
+            ("check (this change)", Some(20), RunState::Skipped),
+        ],
+    )
+    .await?;
+    let (run, detail) = run_of(&f, &merged).await?;
+    assert!(
+        run["reason"]
+            .as_str()
+            .is_some_and(|r| r.contains("same tree")),
+        "reused: {run}"
+    );
+    assert_eq!(job_named(&detail, "check")?["state"], "skipped", "{detail}");
+    Ok(())
+}
+
+/// One job `check` running `echo same` within `limit` minutes.
+fn limited_job(limit: u32) -> String {
+    format!("[[ci.jobs]]\nname = \"check\"\ntimeout_minutes = {limit}\ncommand = \"echo same\"\n")
+}
+
+/// Records a passed pull-request run of `changed` with `jobs` (name, time limit, verdict; all
+/// `check` running `echo same`), squash-merges `feat/one` into `dev` and syncs: the merged head.
+async fn squash_after_run(
+    f: &Fixture,
+    changed: &str,
+    jobs: &[(&str, Option<u32>, yulius_domain::ci::RunState)],
+) -> BoxResult<String> {
+    use yulius_app::ci::{CiJobRecord, CiRunRecord};
+    use yulius_app::ports::store_ext::CiStore as _;
+    use yulius_domain::ci::{CiRef, GateSource, RunState};
+    use yulius_domain::time::Timestamp;
+    let run = CiRunRecord {
+        id: "run-source".into(),
+        sandbox_id: SandboxId::parse("s1")?,
+        reference: CiRef::PullRequest(1),
+        sha: changed.to_owned(),
+        source: GateSource::ProjectConfig,
+        state: RunState::Passed,
+        reason: None,
+        requested_by: "yulius".into(),
+        status_for: Some(RunState::Passed),
+        status_note: Some("recorded by the test".into()),
+        status_attempts: 0,
+        queued_at: Timestamp(1),
+        started_at: Some(Timestamp(1)),
+        ended_at: Some(Timestamp(2)),
+    };
+    let records: Vec<CiJobRecord> = jobs
+        .iter()
+        .zip(0u32..)
+        .map(|(&(name, timeout_minutes, state), ordinal)| CiJobRecord {
+            id: format!("source-{ordinal}"),
+            run_id: "run-source".into(),
+            ordinal,
+            name: name.into(),
+            key: "check".into(),
+            command: "echo same".into(),
+            matrix: None,
+            state,
+            reason: None,
+            exit_code: Some(if state == RunState::Skipped { 78 } else { 0 }),
+            output: String::new(),
+            failures: None,
+            started_at: Some(Timestamp(1)),
+            ended_at: Some(Timestamp(2)),
+            need: Default::default(),
+            timeout_minutes,
+            exclusive: false,
+            waited_ms: None,
+        })
+        .collect();
+    f.h.store.insert_ci_run(&run, &records).await?;
+    git(&f.work, &["checkout", "-q", "-b", "dev", "origin/dev"])?;
+    git(&f.work, &["merge", "-q", "--squash", "feat/one"])?;
+    git(
+        &f.work,
+        &["commit", "-q", "-m", "change the time limit (#1)"],
+    )?;
+    git(&f.work, &["push", "-q", "origin", "dev"])?;
+    let merged = git(&f.work, &["rev-parse", "HEAD"])?;
+    git(&f.work, &["checkout", "-q", "feat/one"])?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    Ok(merged)
+}
+
 /// Review round 3 of SPEC-493 fix 5: tree reuse into the integration branch's run looks past a
 /// same-tree source that skipped a `paths` job, to an older one that ran it.
 #[tokio::test]

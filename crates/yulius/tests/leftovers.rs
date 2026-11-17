@@ -1560,7 +1560,15 @@ async fn unused_ci_checkouts_go_while_no_run_runs() -> BoxResult<()> {
     let w = world().await?;
     let live = w.sandbox("live").await?;
     let idle = w.sandbox("idle").await?;
-    for name in ["gate.2", "old", "gate@7", "gate.change", "old.change.2"] {
+    for name in [
+        "gate.2",
+        "old",
+        "gate@7",
+        "gate.change",
+        "old.change.2",
+        "lint",
+        "lint.change",
+    ] {
         write(&live.join(format!("ci/jobs/{name}/f")), "x")?;
     }
     let now = w.h.app.now().0;
@@ -1569,7 +1577,7 @@ async fn unused_ci_checkouts_go_while_no_run_runs() -> BoxResult<()> {
         "live",
         "r-new",
         now - 60_000,
-        &["gate", "gate (this change)"],
+        &["gate", "gate (this change)", "lint"],
     )
     .await?;
     ci_run(
@@ -1587,11 +1595,15 @@ async fn unused_ci_checkouts_go_while_no_run_runs() -> BoxResult<()> {
         .filter(|i| i.kind == Kind::StaleCiCheckout)
         .filter_map(|i| i.path.file_name().map(|n| n.to_string_lossy().into_owned()))
         .collect();
-    assert_eq!(stale.len(), 3, "{stale:?}");
+    assert_eq!(stale.len(), 4, "{stale:?}");
     assert!(stale.contains(&"old".to_owned()) && stale.contains(&"gate@7".to_owned()));
     assert!(
         stale.contains(&"old.change.2".to_owned()),
         "SPEC-504 review round 3: a twin's checkout no recent run used is stale: {stale:?}"
+    );
+    assert!(
+        stale.contains(&"lint.change".to_owned()),
+        "review round 4: a job run lately without a twin leaves its twin's checkout stale"
     );
     assert!(
         !items.iter().any(|i| i.path.starts_with(&idle)),

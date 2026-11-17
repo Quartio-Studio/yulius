@@ -522,6 +522,17 @@ fn lane_note(lane: u32, before: Option<&str>, preferred: &[u32]) -> String {
     }
 }
 
+/// Whether `ran` is the record of `job` as it is defined now: the same key, matrix value and
+/// command, and the same need, time limit and `exclusive` (SPEC-504 review rounds 3 and 4).
+fn ran_as(ran: &CiJobRecord, job: &Job) -> bool {
+    ran.key == job.key
+        && ran.matrix == job.matrix
+        && ran.command == job.command
+        && ran.need == job.need
+        && ran.timeout_minutes == job.timeout_minutes
+        && ran.exclusive == job.exclusive
+}
+
 /// Whether `run` may lend its verdict to `target`, whose tree it tested (the trees are compared
 /// apart): a passed run, not a train's step verdict, and another commit, unless `target` is a
 /// merge candidate formed again on that very commit (slice D review: within one second the
@@ -1554,19 +1565,12 @@ impl App {
             if branch && skipped_a_paths_job {
                 continue;
             }
-            // Every job of the gate ran there, with the same command: a pull request judged by
-            // the jobs its merge then changed never ran the new ones (SPEC-504, review round 1).
-            // (In all a run records of a job: a changed time limit or budget is a change.)
-            let all_ran = gate.jobs.iter().all(|job| {
-                jobs.iter().any(|t| {
-                    t.key == job.key
-                        && t.matrix == job.matrix
-                        && t.command == job.command
-                        && t.need == job.need
-                        && t.timeout_minutes == job.timeout_minutes
-                        && t.exclusive == job.exclusive
-                })
-            });
+            // Every job of the gate ran there as it is defined now: a pull request judged by the
+            // jobs its merge then changed never ran the new ones (SPEC-504, review round 1).
+            let all_ran = gate
+                .jobs
+                .iter()
+                .all(|job| jobs.iter().any(|t| ran_as(t, job)));
             if branch && !all_ran {
                 continue;
             }
@@ -1605,16 +1609,11 @@ impl App {
             .iter()
             .enumerate()
             .map(|(index, job)| {
-                // The values of a matrix job share its key: match the value too, and the command,
-                // which tells a job from a change's twin of it (SPEC-504 review round 2). A job
-                // the source did not have (the gate changed since) is passed, as before SPEC-162.
+                // The job that ran as this one is defined, which tells a job from a change's twin
+                // of it (SPEC-504 review rounds 2 and 4). A job the source did not have (the gate
+                // changed since) is passed, as before SPEC-162.
                 let (state, exit_code) = dom::copied_job_verdict(
-                    tested
-                        .iter()
-                        .find(|t| {
-                            t.key == job.key && t.matrix == job.matrix && t.command == job.command
-                        })
-                        .map(|t| t.state),
+                    tested.iter().find(|t| ran_as(t, job)).map(|t| t.state),
                 );
                 CiJobRecord {
                     id: self.deps.crypto.new_id(),
