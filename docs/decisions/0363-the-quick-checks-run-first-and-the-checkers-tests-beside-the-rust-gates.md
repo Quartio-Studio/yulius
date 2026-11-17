@@ -58,7 +58,9 @@ whole gate is Yulius CI's) and [ADR-0358](0358-tests-run-in-shards-and-a-run-sta
 - A format or contract failure ends the `quality` job in seconds after its bootstrap, not after the
   build.
 - At CI's 11 CPUs after a one-line change, `checks` took 108 and 114 s (load 38 to 158) against
-  138 s before; the stages after `quick` no longer wait for the Python tests.
+  138 s before (at different loads; the gain is at most the lesser of the Python tests' 68 s and
+  the Rust gates' time). The `checker-tests` stage opens when the Rust gates end, so a wait for
+  the Python tests, or one of them that hangs, shows as that stage, not as the last Rust gate's.
 - A failing Python test is reported at the job's end, after the Rust gates, not at the start of
   `check`; it no longer stops the Rust gates, so such a job spends their CPU too (rare: the
   checker's tests failed in none of the runs read).

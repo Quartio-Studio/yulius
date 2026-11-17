@@ -170,7 +170,7 @@ product project's 21 jobs pinned to 3 CPUs are its `yulius.toml`.
 - [x] Review of the mutation rules (pull request 2) approved
 - [x] One quick command runs first in CI and before each published commit
 - [x] The checker's tests run beside the Rust gates, for no more CPU
-- [ ] Review of the quick checks and the gate order (pull request 3) approved
+- [x] Review of the quick checks and the gate order (pull request 3) approved
 - [ ] The Review card counts re-reviews that ask again and rounds that re-approve
 - [ ] Review of the review numbers (pull request 4) approved
 - [ ] Companion requests for quartio-v2, product and VistulaValley handed to the person
@@ -330,4 +330,11 @@ the run's start (baseline included) until the n-th mutant ended, read from each 
   outside this change (it touches `tools/xtask`, documents and a skills test). Yulius quarantined
   it as flaky with issue #1398 (failed on two pull requests); it passed here 20 of 20 alone and 5
   of 5 with its file at 64 threads, load 81 to 118.
+- Review round 2 (Fable 5.2) approved 571eff15f with three minors and a nit, fixed after it: the
+  `checker-tests` stage opens when the Rust gates end (it opened only after the join, so the last
+  Rust gate took the wait); the failure tests read the last line, and a case where Clippy and the
+  checker's tests both fail names Clippy; `the_checkers_tests_run_beside_the_build` makes the
+  `cargo check` and checker-test stubs wait for each other (10 s at most), and fails when `gates`
+  runs them in a row (checked by hand); the stubs' directory is removed. `cargo nextest run -p
+  xtask`: 20 passed.
 

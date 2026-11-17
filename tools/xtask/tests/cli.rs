@@ -79,8 +79,15 @@ impl Stubs {
                 &path,
                 format!(
                     "#!/bin/sh\necho \"{tool} $*\" >> \"$XT_RECORD\"\necho \"stub {tool} $*\"\n\
-                     if [ -n \"$XT_FAIL\" ]; then case \"{tool} $*\" in *\"$XT_FAIL\"*) \
-                     echo \"STUB FAILURE of {tool} $*\"; exit 1;; esac; fi\nexit 0\n"
+                     if [ -n \"$XT_HANDSHAKE\" ]; then other=''; case \"{tool} $*\" in \
+                     *'-m unittest'*) other='cargo check';; 'cargo check'*) \
+                     other='python -m unittest';; esac; if [ -n \"$other\" ]; then n=0; \
+                     until grep -q \"^$other\" \"$XT_RECORD\"; do n=$((n+1)); \
+                     if [ $n -gt 100 ]; then echo \"HANDSHAKE TIMEOUT {tool}\"; exit 3; fi; \
+                     sleep 0.1; done; fi; fi\n\
+                     for f in \"$XT_FAIL\" \"$XT_FAIL2\"; do if [ -n \"$f\" ]; then \
+                     case \"{tool} $*\" in *\"$f\"*) echo \"STUB FAILURE of {tool} $*\"; \
+                     exit 1;; esac; fi; done\nexit 0\n"
                 ),
             )?;
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))?;
@@ -91,13 +98,27 @@ impl Stubs {
     /// Runs `xtask <task>` with the stubs, failing the stub call whose words contain `fail`;
     /// returns its exit code, its output and the calls in the order made.
     fn run(&self, task: &str, fail: &str) -> std::io::Result<(Option<i32>, String, Vec<String>)> {
+        self.run_with(task, &[fail], false)
+    }
+
+    /// [`Self::run`]; with `handshake`, the checker's tests and `cargo check` each wait (10 s at
+    /// most) until the other has started, so they pass only when they run at the same time.
+    fn run_with(
+        &self,
+        task: &str,
+        fails: &[&str],
+        handshake: bool,
+    ) -> std::io::Result<(Option<i32>, String, Vec<String>)> {
         let record = self.dir.join("record");
         let _ = std::fs::remove_file(&record);
+        std::fs::write(&record, "")?;
         let out = Command::new(env!("CARGO_BIN_EXE_xtask"))
+            .env("XT_HANDSHAKE", if handshake { "1" } else { "" })
             .env("CARGO", self.dir.join("cargo"))
             .env("PYTHON", self.dir.join("python"))
             .env("XT_RECORD", &record)
-            .env("XT_FAIL", fail)
+            .env("XT_FAIL", fails.first().copied().unwrap_or_default())
+            .env("XT_FAIL2", fails.get(1).copied().unwrap_or_default())
             .env("YULIUS_CI", "1")
             .env_remove("YULIUS_CI_MATRIX")
             .env_remove("YULIUS_CI_QUARANTINE")
@@ -123,6 +144,19 @@ impl Stubs {
         );
         Ok((out.status.code(), text, calls))
     }
+}
+
+#[cfg(unix)]
+impl Drop for Stubs {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+
+/// The last line of a gate's output: the one that says why it failed.
+#[cfg(unix)]
+fn last_line(text: &str) -> &str {
+    text.trim_end().lines().last().unwrap_or_default()
 }
 
 #[cfg(unix)]
@@ -210,10 +244,9 @@ fn a_failure_fails_the_gate_and_says_where() -> std::io::Result<()> {
         docs < stage && stage < failure,
         "the checker's output comes in its own stage after the Rust gates: {text}"
     );
+    let last = last_line(&text);
     assert!(
-        text.trim_end().ends_with("failed: exit status: 1")
-            && text.contains("Gate failed:")
-            && text.contains("-m unittest"),
+        last.starts_with("Gate failed:") && last.contains("-m unittest"),
         "{text}"
     );
     let (code, text, _) = stubs.run(
@@ -221,9 +254,44 @@ fn a_failure_fails_the_gate_and_says_where() -> std::io::Result<()> {
         "clippy --locked --workspace --all-targets --all-features -- -D",
     )?;
     assert_eq!(code, Some(1), "{text}");
+    let last = last_line(&text);
     assert!(
-        text.contains("Gate failed:") && text.contains("clippy"),
+        last.starts_with("Gate failed:") && last.contains("clippy --locked"),
         "{text}"
     );
+    // Both fail: the Rust gate is named first.
+    let (code, text, _) = stubs.run_with(
+        "checks",
+        &[
+            "clippy --locked --workspace --all-targets --all-features -- -D",
+            "-m unittest",
+        ],
+        false,
+    )?;
+    assert_eq!(code, Some(1), "{text}");
+    let last = last_line(&text);
+    assert!(
+        last.starts_with("Gate failed:") && last.contains("clippy --locked"),
+        "{text}"
+    );
+    Ok(())
+}
+
+/// SPEC-506 FST-008 (review round 2 of pull request 3): in `checks`, `ci` and `check` the
+/// checker's tests and `cargo check` run at the same time (each stub waits for the other to start;
+/// in a row the first times out), and the checker's tests' stage opens when the Rust gates end.
+#[cfg(unix)]
+#[test]
+fn the_checkers_tests_run_beside_the_build() -> std::io::Result<()> {
+    let stubs = Stubs::new("beside")?;
+    for task in ["checks", "ci", "check"] {
+        let (code, text, _) = stubs.run_with(task, &[], true)?;
+        assert_eq!(code, Some(0), "{task}: {text}");
+        assert!(!text.contains("HANDSHAKE TIMEOUT"), "{task}: {text}");
+    }
+    let (_, text, _) = stubs.run("checks", "")?;
+    let docs = text.find("stub cargo doc").unwrap_or(usize::MAX);
+    let stage = text.find("::yulius-stage checker-tests").unwrap_or(0);
+    assert!(docs < stage, "{text}");
     Ok(())
 }

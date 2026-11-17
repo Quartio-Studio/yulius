@@ -158,13 +158,18 @@ fn gates(with_tests: bool, cargo: &str, python: &str) -> io::Result<()> {
                 if *gate != "test" {
                     stage(gate);
                 }
-                execute_in(gate, true)?;
+                // The wait for the checker's tests is their stage's, not the last Rust gate's.
+                if let Err(error) = execute_in(gate, true) {
+                    stage("checker-tests");
+                    return Err(error);
+                }
             }
             stage("docs");
-            docs(cargo)
+            let docs = docs(cargo);
+            stage("checker-tests");
+            docs
         },
     );
-    stage("checker-tests");
     let tests = checker_report(python, tests);
     rest.and(tests)
 }
