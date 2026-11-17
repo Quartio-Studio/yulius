@@ -6,6 +6,13 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-17
 
+- Every sandbox gets the new skills at a server start, not at its next task's start (SPEC-507,
+  task #489, ADR-0364): an update or a restart installs, before any task resumes, the skills that
+  differ from the instance's into every sandbox's home, running tasks or not, and audits each
+  sandbox as `skills.refreshed`; switching a skill does the same for its sandbox at once. The
+  reviewer agents' prompt, which a session keeps across an update, now holds only the reviewer's
+  contract; the CI rule is in `om-code-review` alone. `docs/operations.md` says what an update
+  reaches in a running session and what waits for its next launch.
 - The Review card counts what the next study needs (SPEC-506 pull request 4, task #488): the
   Pipeline tab's Review card and `GET /api/analytics/reviews` give the rounds after a request for
   changes and how many asked again, and the rounds after an approval and how many asked for

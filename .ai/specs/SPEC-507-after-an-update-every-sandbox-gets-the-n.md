@@ -82,11 +82,11 @@ What the code does (read on `dev` at 06289c6ee):
 ## Plan
 
 - [x] Spec SPEC-507 and ADR-0364 written
-- [ ] Harness: a refresh installs only where the installed copies differ, read without following links
-- [ ] A server start refreshes every sandbox's home, audited as skills.refreshed
-- [ ] Switching a skill on or off installs the sandbox's skills at once
-- [ ] The reviewer agents' prompt holds only a contract no update changes
-- [ ] Operations, architecture and changes documents say what an update refreshes
+- [x] Harness: a refresh installs only where the installed copies differ, read without following links
+- [x] A server start refreshes every sandbox's home, audited as skills.refreshed
+- [x] Switching a skill on or off installs the sandbox's skills at once
+- [x] The reviewer agents' prompt holds only a contract no update changes
+- [x] Operations, architecture and changes documents say what an update refreshes
 - [ ] Independent review approved and its findings answered
 
 ## Acceptance criteria

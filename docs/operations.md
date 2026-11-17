@@ -2546,6 +2546,28 @@ commits. Nothing updates by itself: a superadmin chooses **Update now** and conf
    nothing happened, except the tasks a person paused, which stay paused until they resume them.
    A server that starts with no update open thaws any run group left frozen but those.
 
+**What an update reaches in a running session** (SPEC-507, ADR-0364). Before it resumes any task,
+the server that starts brings every sandbox's skills to its catalog: in each sandbox that has a
+home (`<sandbox>/home`, made by its first run), the skills that differ from the instance's copy
+are installed again into `home/.claude/skills` with the run start's install (staged, swapped in by
+rename, nothing written through a link; a skill the agent added under its own name stays), and
+managed copies of skills that left the set are removed. Running tasks do not hold it back: a
+session reads the new skill at its next use. Each sandbox it changed gets an audit entry
+`skills.refreshed` (actor `system`, target the sandbox's slug, detail like `server start at
+ffa950b0c; installed om-fix, om-code-review`); a start that changed nothing writes none. A
+sandbox whose refresh fails (a link on the way to its skills folder, say) is logged as `skill
+refresh failed` and keeps its copies until its next run; the start goes on. A plain restart does
+the same, and switching a skill on or off for a sandbox (its Skills page) installs or removes it
+there at once. To see what the last update refreshed: `sudo -u yulius sqlite3 /var/lib/yulius/yulius.db "SELECT
+at, target, detail FROM audit_log WHERE action = 'skills.refreshed' ORDER BY at DESC LIMIT 20"`.
+
+What else changes at once: everything a session asks the server (hooks, MCP tools, the message a
+review round gets when it starts) is answered by the new build. What does not, until the session
+is launched again (a new run, a Continue after it ended, a move to another subscription): its
+briefing, its run settings and the reviewer agents' definition (`--agents`), whose prompt holds
+only the reviewer's contract and sends it to `om-code-review` for the rules, so it carries nothing
+an update changes. Working sessions are never relaunched for an update.
+
 The service user cannot replace `/usr/local/bin/yulius`, and it restarts only through the helper.
 A root-owned **path unit** starts the helper when the server writes
 `/var/lib/yulius/update/request.json`; the request can only say "build" or "install" one commit,
