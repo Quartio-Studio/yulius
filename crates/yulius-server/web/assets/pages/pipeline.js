@@ -229,6 +229,7 @@ export function mountPipelineSection(ctx, sandbox, route, section, actions) {
   function reviewCard(r) {
     const prs = r.pull_requests || 0;
     const share = (n) => (prs ? `${Math.round((n / prs) * 100)}%` : '—');
+    const ratio = (n, of) => (of ? `${Math.round(((n || 0) / of) * 100)}%` : '—');
     const models = (r.rounds_by_model || []).map((m) => `${modelLabel(m.model)} ${int(m.rounds)}`).join(' · ');
     return h('section', { class: 'card db-card', 'aria-label': 'Review' },
       h('header', { class: 'db-card-head' }, h('div', { class: 'db-card-titles' }, h('h2', { class: 'card-title' }, 'Review'),
@@ -237,7 +238,9 @@ export function mountPipelineSection(ctx, sandbox, route, section, actions) {
         tile('First review asked for changes', share(r.first_rounds_requesting_changes || 0), `${int(r.first_rounds_requesting_changes || 0)} of ${int(prs)}`),
         tile('Rounds per pull request', Number.isFinite(r.median_rounds) ? `${r.median_rounds}` : '—', 'median'),
         tile('First review cut off', share(r.first_rounds_without_report || 0), 'ended with no report (a usage limit)'),
-        tile('Rounds by model', models || '—', r.no_fable_rounds ? `${int(r.no_fable_rounds)} on Opus for want of Fable` : 'the model that answered')));
+        tile('Rounds by model', models || '—', r.no_fable_rounds ? `${int(r.no_fable_rounds)} on Opus for want of Fable` : 'the model that answered'),
+        tile('Re-reviews that asked again', ratio(r.re_reviews_asking_again, r.re_reviews_after_changes), `${int(r.re_reviews_asking_again || 0)} of ${int(r.re_reviews_after_changes || 0)} rounds after a request for changes`),
+        tile('Re-approvals', int((r.rounds_after_approval || 0) - (r.rounds_after_approval_asking || 0)), `rounds after an approval; ${int(r.rounds_after_approval_asking || 0)} of ${int(r.rounds_after_approval || 0)} asked for changes`)));
   }
 
   /** The merge queue's candidates in the range (SPEC-493 MQC-005). */

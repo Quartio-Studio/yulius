@@ -50,8 +50,9 @@ whole gate is Yulius CI's) and [ADR-0358](0358-tests-run-in-shards-and-a-run-sta
   pushes. The rule and the named command come first; the share of CI runs that still fail on a
   check of seconds decides whether such a hook is worth it.
 - **Split `quality` into two jobs.** It adds a checkout, a bootstrap and a build of the host
-  crates, more CPU on a busy host, for a run the test shards and e2e (4.5 and 5.2 minutes) already
-  bound.
+  crates, more CPU on a busy host. After a small change the test shards and e2e (4.5 and 5.2
+  minutes) bound the run; on a larger one `quality` is still the longest job (6 m 50 s against
+  e2e's 5 m 25 s in run `4fbd32b3`), so a split would save about a minute there for that CPU.
 
 ## Consequences
 

@@ -304,6 +304,18 @@ pub struct ReviewAnalytics {
     pub rounds_by_model: Vec<ModelCount>,
     /// Rounds run on Opus 5.5 because the subscription could not run Fable 5.2.
     pub no_fable_rounds: u32,
+    /// Rounds with a verdict whose previous round asked for changes (SPEC-506 FST-007).
+    #[serde(default)]
+    pub re_reviews_after_changes: u32,
+    /// Of those, the ones that asked for changes again.
+    #[serde(default)]
+    pub re_reviews_asking_again: u32,
+    /// Rounds with a verdict whose previous round approved (re-approvals unless they asked).
+    #[serde(default)]
+    pub rounds_after_approval: u32,
+    /// Of those, the ones that asked for changes.
+    #[serde(default)]
+    pub rounds_after_approval_asking: u32,
 }
 
 /// `GET /api/analytics/merge-queue`: the merge queue's candidates over the range, per day, and the
