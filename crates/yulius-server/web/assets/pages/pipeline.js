@@ -242,7 +242,7 @@ export function mountPipelineSection(ctx, sandbox, route, section, actions) {
 
   /** The merge queue's candidates in the range (SPEC-493 MQC-005). */
   function queueCard(q) {
-    const why = { member_left: 'a member left', bisected: 'bisected', base_moved: 'base moved', errored: 'errored', too_long: 'too long' };
+    const why = { member_left: 'a member left', member_failed: "a member's own run failed", bisected: 'bisected', base_moved: 'base moved', errored: 'errored', too_long: 'too long' };
     const dissolved = Object.entries(q.dissolved_by || {}).map(([k, n]) => `${why[k] || k} ${int(n)}`).join(' · ');
     const minutes = Number.isFinite(q.median_arm_to_merge_minutes) ? `${Math.round(q.median_arm_to_merge_minutes)} min` : '—';
     return h('section', { class: 'card db-card', 'aria-label': 'Merge queue' },
@@ -253,7 +253,19 @@ export function mountPipelineSection(ctx, sandbox, route, section, actions) {
         tile('Merged', int(q.merged || 0), 'every member merged on one run'),
         tile('Dissolved', int(q.dissolved || 0), dissolved || 'none'),
         tile('Arming to merge', minutes, `median of ${int(q.merges || 0)} armed ${q.merges === 1 ? 'merge' : 'merges'}`),
-        ...ciMinutesTiles(q.ci_minutes)));
+        ...ciMinutesTiles(q.ci_minutes)),
+      dissolvedList(q.dissolved_recent || [], why));
+  }
+
+  /** The last candidates dissolved, newest first, each with why and its whole reason (SPEC-497
+   * MQW-004); nothing when none was. */
+  function dissolvedList(recent, why) {
+    if (!recent.length) return null;
+    return h('details', { class: 'pl-dissolved' },
+      h('summary', {}, `Why the last ${recent.length === 1 ? 'candidate was' : `${int(recent.length)} candidates were`} dissolved`),
+      h('ul', { 'aria-label': 'Dissolved candidates' }, ...recent.map((d) =>
+        h('li', {}, h('time', { datetime: d.at }, String(d.at || '').slice(0, 16).replace('T', ' ')),
+          ` · ${why[d.why] || d.why}: ${d.reason}`))));
   }
 
   /** CI minutes by how the runs ended (SPEC-497 OFC-003): wasted is failed outside the change or

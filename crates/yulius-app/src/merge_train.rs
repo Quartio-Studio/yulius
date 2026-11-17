@@ -1617,6 +1617,8 @@ fn dissolved_why(reason: &str) -> yulius_domain::merge_queue::Dissolved {
     let has = |words: &[&str]| words.iter().any(|w| reason.contains(w));
     if has(&["too long"]) {
         Dissolved::TooLong
+    } else if has(&["ended failed: it leaves the candidate"]) {
+        Dissolved::MemberFailed
     } else if has(&[
         "leaves the candidate",
         "was armed again",
@@ -1716,7 +1718,7 @@ mod tests {
         for (reason, why) in [
             (
                 "#2's own run at abc ended failed: it leaves the candidate",
-                Dissolved::MemberLeft,
+                Dissolved::MemberFailed,
             ),
             ("#3 was armed again", Dissolved::MemberLeft),
             ("#3 is no longer armed", Dissolved::MemberLeft),

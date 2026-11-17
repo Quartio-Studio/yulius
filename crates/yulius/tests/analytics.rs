@@ -1026,6 +1026,19 @@ async fn the_merge_queue_read_counts_candidates_from_the_audit_log() -> TestResu
         "{body}"
     );
     assert_eq!(body["dissolved_by"]["member_left"], 1, "{body}");
+    // SPEC-497 MQW-004: each dissolved candidate is listed with its why and whole reason.
+    let recent = body["dissolved_recent"].as_array().ok_or("dissolved_recent")?;
+    assert_eq!(recent.len(), 1, "{body}");
+    assert_eq!(recent[0]["why"], "member_left", "{body}");
+    assert_eq!(recent[0]["sandbox"], s1.slug.as_str(), "{body}");
+    assert!(
+        recent[0]["reason"].as_str().is_some_and(|r| r.contains("(why: member_left)")),
+        "{body}"
+    );
+    assert!(
+        recent[0]["at"].as_str().is_some_and(|at| at.starts_with("2026-10-01T")),
+        "{body}"
+    );
     assert_eq!(body["days"][0]["day"], "2026-10-01", "{body}");
     // 180, 180 and 360 minutes.
     assert_eq!(body["merges"], 3, "{body}");
