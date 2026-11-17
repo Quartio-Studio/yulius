@@ -689,6 +689,12 @@ mode.
   the card's list (`pipeline.e2e.ts`, 18 of 18).
 - The quarantine review's round-3 nit: the hourly release runs off the CI poll (spawned).
 - ADR-0357; architecture (merge queue, diagram), `api.md`, `product.md`, `changes.md`.
+- Checks run on this head: `cargo fmt --check`; `cargo clippy --workspace --all-targets -D
+  warnings`; rustdoc of `yulius-app`, `yulius-domain`, `yulius-contracts`; the unit tests of
+  `yulius-domain`, `yulius-store`, `yulius-app`, `yulius-github`, `yulius-git`, `xtask` (1,432
+  passed); `local_ci::`, `analytics::`, `merge_train::` (144 passed); `pipeline.e2e.ts` (18
+  passed). `scripts/dev mutants`: 54 listed, 24 caught, 0 missed, 0 timed out, 30 unviable, 0 not
+  reached (724 s). Hand mutations: see each requirement above.
 
 ### Slice A3: the operator's amendment to the admission (its own pull request, first)
 
