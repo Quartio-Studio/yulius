@@ -6,6 +6,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-17
 
+- Antigravity, slice B (SPEC-505 pull request 2, task #487): Yulius provides the pinned
+  Antigravity CLI (`agy` 1.5.10) itself, downloaded once from Google's release storage into
+  `<data>/antigravity-cli`, only when its sha512 matches the one in the source, and with the
+  host's `agy` as the fallback. One installer now serves Codex and Antigravity
+  (`wiring/pinned_cli.rs`).
+
 - The checks of seconds fail a CI run in seconds (SPEC-506 pull request 3, task #488,
   [ADR-0363](decisions/0363-the-quick-checks-run-first-and-the-checkers-tests-beside-the-rust-gates.md)):
   `scripts/dev quick` (repository contracts and formatting) runs first in the `quality` job, and
