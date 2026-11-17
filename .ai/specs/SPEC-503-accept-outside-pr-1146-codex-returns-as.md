@@ -123,8 +123,8 @@ Five pull requests, each merged into `dev` on green before the next begins.
 - [x] Slice C1: a Codex task runs in the supervisor (homes, session id, hooks, write-back, rotation)
 - [x] Slice C1: the fake agent speaks Codex and integration tests cover a Codex task
 - [ ] Slice C1: review findings fixed and the slice delivered
-- [ ] Slice C2: Codex subscriptions sign in by device code, API key or imported auth.json
-- [ ] Slice C2: Codex usage windows, codex_connected and moves within Codex subscriptions
+- [x] Slice C2: Codex subscriptions sign in by device code, API key or imported auth.json
+- [x] Slice C2: Codex usage windows, codex_connected and moves within Codex subscriptions
 - [ ] Slice C2: review findings fixed and the slice delivered
 - [ ] Slice D: the UI offers Codex in the composer, automations, Subscriptions and task moves
 - [ ] Slice D: SPEC-001/002/003 and the documents say Codex is accepted
@@ -471,4 +471,37 @@ Five pull requests, each merged into `dev` on green before the next begins.
     a sign-in made meanwhile gives `None`; `docs/api.md` says a Codex task without a model asks
     none (`""`).
   Hand mutation log: `$HOME/.cache/yulius-task-485/handmut-c1c.{py,txt}`.
+
+### Slice C2 (Codex subscriptions)
+
+- **Answered first, from slice C1's review round 3** (approved with them left open): when a
+  sign-in made meanwhile wins over a run's refresh, `keep_codex_refresh` now says what the account
+  holds and the bytes that lost, so the superseded `auth.json` is removed and a launch uses the
+  current credential (`codex::a_sign_in_made_meanwhile_wins_over_a_runs_refresh` asserts the file
+  gone; failed first); a start sweeps an `auth.json` no live run uses, keeping a genuine refresh
+  from it (`codex::a_start_sweeps_an_auth_json_no_run_uses`, failed first); the shared-file test
+  waits on `CodexWriteBackDone` instead of watching for 2 s; the store port's doc says `false`
+  also for a credential gone or stored by another run.
+- **Brought from the contribution** (3-way patches against today's `dev`): `CreateAccount` with
+  `api_key` and `auth_json` beside dev's `token` (one at most; a token for `anthropic` only, the
+  others for `openai` only), `ImportAccountAuth` and `POST /api/admin/accounts/{id}/import`
+  (a malformed body refused without echoing it), the device sign-in starting the provided CLI
+  (installed before the sign-in lock) with its `config.toml`, an import cancelling a running
+  sign-in (`superseded`), the Codex usage probe (`wham/usage`, a 403 said in Codex's words, an
+  API-key account without windows, the email from the `id_token`), `codex_connected` in
+  `/api/me`, and the capacity view's `provider` and resume time across both pools; with their
+  tests in `accounts.rs`, `claude_gate.rs`, `codex.rs` (the imported sign-in reaching a run and
+  its refresh kept; the capacity view) and `wiring/usage.rs`.
+- **Flaky tests met and fixed** (reproduced with `nextest --stress-count`):
+  `account_token::a_pasted_token_connects_a_subscription_at_once` (dev's, from #484) counted
+  profile requests after a listing whose background email round may ask again: 1 failure in 8
+  stress iterations beside the Codex tests; the listing now comes after the count (24 of 24
+  iterations then). `codex::a_codex_task_moves_only_between_codex_subscriptions` (slice C1) read
+  the Needs you request as the task began to wait, before it is recorded (1 failure in 12 on
+  `dev`); the wait now includes it.
+- `cargo fmt --check`, `cargo clippy --workspace --all-targets -D warnings` clean; every crate's
+  unit tests and the `yulius` files `codex`, `codex_cli`, `accounts`, `account_token`,
+  `account_usage`, `account_email`, `claude_gate`, `subscription_moves`, `subscription_pool`,
+  `usage_credits`, `agent_hooks`, `task_delete`, `automations`, `supervision`, `mcp`, `cockpit`,
+  `telegram`, `onboarding*`: 2567 passed, 0 failed.
 

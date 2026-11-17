@@ -852,11 +852,22 @@ fn a_codex_task_moves_only_between_codex_subscriptions() -> TestResult {
         );
 
         app.delete_account(&ctx, other).await?;
-        wait_for("the wait", Duration::from_secs(60), || async {
-            task(&app, &id)
-                .await
-                .is_ok_and(|t| t.status == TaskStatus::WaitingCapacity)
-        })
+        // The task waits, and then asks for a subscription (recorded after the wait begins).
+        wait_for(
+            "the wait and its request",
+            Duration::from_secs(60),
+            || async {
+                task(&app, &id)
+                    .await
+                    .is_ok_and(|t| t.status == TaskStatus::WaitingCapacity)
+                    && app
+                        .deps
+                        .store
+                        .task_needs_you(&id)
+                        .await
+                        .is_ok_and(|r| r.is_some())
+            },
+        )
         .await?;
         let runs = app.deps.store.attempts(&id).await?;
         assert!(
@@ -1452,6 +1463,173 @@ fn a_start_sweeps_an_auth_json_no_run_uses() -> TestResult {
         assert!(
             !home.join("auth.json").exists(),
             "auth.json left after the start"
+        );
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// Runs a Codex task to its end: started, `refreshed` written into its Codex home by "Codex"
+/// when given, then `/exit`.
+async fn run_codex_task(
+    app: &Arc<App>,
+    sandbox: &SandboxId,
+    user: &UserId,
+    title: &str,
+    home: &Path,
+    seen: &str,
+    refreshed: Option<&str>,
+) -> TestResult {
+    let id = new_codex_task(app, sandbox, user, title).await?;
+    wait_for("the banner", Duration::from_secs(30), || {
+        screen_contains(app, &id, "FAKE-AGENT READY")
+    })
+    .await?;
+    assert_eq!(std::fs::read_to_string(home.join("auth.json"))?, seen);
+    if let Some(refreshed) = refreshed {
+        std::fs::write(home.join("auth.json"), refreshed)?;
+    }
+    app.send_input(&id, b"/exit\r").await?;
+    wait_for("the run's end", Duration::from_secs(30), || async {
+        task(app, &id).await.is_ok_and(|t| !t.status.is_live())
+    })
+    .await?;
+    Ok(())
+}
+
+/// SPEC-503 CDX-011, CDX-006: a sign-in imported as an `auth.json` (from `codex login` on a
+/// laptop) is what a Codex task's home gets; the tokens Codex refreshes during the run go back
+/// into the account; and a later import replaces them for the next run.
+#[test]
+fn an_imported_codex_sign_in_reaches_the_run_and_its_refresh_is_kept() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = temp()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let app = build_full(&data, Some(&fake), FakeAgentOptions::default(), 8)?;
+        let (sandbox, user) = seed_records(&app).await?;
+        seed_repo(&data, &sandbox)?;
+        let ctx = admin_ctx(&app, &user).await?;
+        let imported = codex_auth(&ago(3_600_000));
+        let created = app
+            .create_account(
+                &ctx,
+                yulius_contracts::api::admin::CreateAccount {
+                    provider: "openai".into(),
+                    label: "Codex laptop".into(),
+                    token: None,
+                    api_key: None,
+                    auth_json: Some(imported.clone()),
+                },
+            )
+            .await?;
+        assert_eq!(created.login_id, None, "no sign-in runs");
+        let account = AccountId::parse(&created.account.id)?;
+        let home = data
+            .join("sandboxes")
+            .join(sandbox.as_str())
+            .join("codex")
+            .join(account.as_str());
+
+        let refreshed = codex_auth(&ago(60_000));
+        run_codex_task(
+            &app,
+            &sandbox,
+            &user,
+            "Codex import",
+            &home,
+            &imported,
+            Some(&refreshed),
+        )
+        .await?;
+        wait_for(
+            "the written-back credentials",
+            Duration::from_secs(10),
+            || async {
+                stored_credential(&app, &account)
+                    .await
+                    .is_ok_and(|stored| stored == refreshed)
+            },
+        )
+        .await?;
+
+        // Signed in again on the laptop and imported: the next run gets the new file.
+        let again = codex_auth(&ago(1_000)).replace("SYNTHETIC-refresh", "SYNTHETIC-refresh-2");
+        app.import_account_auth(
+            &ctx,
+            account.as_str(),
+            &yulius_contracts::api::admin::ImportAccountAuth {
+                auth_json: again.clone(),
+            },
+        )
+        .await?;
+        assert_eq!(stored_credential(&app, &account).await?, again);
+        run_codex_task(&app, &sandbox, &user, "Codex reimport", &home, &again, None).await?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// Marks `account` limited until `resets_at` (100 % of its 5-hour window).
+async fn limit_until(
+    app: &App,
+    account: &AccountId,
+    resets_at: i64,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let full = yulius_domain::usage::AccountUsage {
+        primary: Some(yulius_domain::usage::UsageWindow {
+            used_percent: Some(100.0),
+            window_minutes: Some(300),
+            resets_at: Some(Timestamp(resets_at)),
+        }),
+        limit_reached: true,
+        limit_resets_at: Some(Timestamp(resets_at)),
+        ..yulius_domain::usage::AccountUsage::default()
+    };
+    app.deps
+        .store
+        .set_account_state(
+            account,
+            AccountStatus::Limited,
+            Some(&yulius_app::usage_json::to_json(&full)),
+            None,
+            app.now(),
+        )
+        .await?;
+    Ok(())
+}
+
+/// SPEC-503 CDX-010: the capacity view (the Dashboard's Subscriptions card) names each
+/// subscription's provider, and with nothing available it resumes when the first subscription
+/// of any provider does, a Codex one included.
+#[test]
+fn the_capacity_view_names_providers_and_resumes_with_codex_too() -> TestResult {
+    let (_dir, data) = temp()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let app = build_full(&data, None, FakeAgentOptions::default(), 8)?;
+        let (_sandbox, user) = seed_records(&app).await?;
+        let ctx = admin_ctx(&app, &user).await?;
+        let codex = add_codex_account(&app, "a-codex", &codex_auth("2026-11-01T10:00:00Z")).await?;
+        let soon = app.now().0 + 3_600_000;
+        limit_until(&app, &AccountId::parse("a-claude")?, soon + 3_600_000).await?;
+        limit_until(&app, &codex, soon).await?;
+        let capacity = app.capacity_view(&ctx).await?;
+        let provider = |id: &str| {
+            capacity
+                .accounts
+                .iter()
+                .find(|a| a.id.as_deref() == Some(id))
+                .map(|a| a.provider.clone())
+        };
+        assert_eq!(provider("a-claude").as_deref(), Some("anthropic"));
+        assert_eq!(provider("a-codex").as_deref(), Some("openai"));
+        assert_eq!(
+            capacity.resumes_at.as_deref(),
+            Some(yulius_app::auth::rfc3339(Timestamp(soon)).as_str()),
+            "{capacity:?}"
         );
         Ok::<_, Box<dyn std::error::Error>>(())
     })?;

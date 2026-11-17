@@ -208,6 +208,7 @@ pub fn public() -> Router<AppState> {
             patch(accounts::update).delete(accounts::delete),
         )
         .route("/api/admin/accounts/{id}/relogin", post(accounts::relogin))
+        .route("/api/admin/accounts/{id}/import", post(accounts::import))
         .route(
             "/api/admin/accounts/{id}/token",
             put(accounts::replace_token),

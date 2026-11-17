@@ -7,8 +7,8 @@ Anthropic. Codex returns as a second harness
 [decision 0355](decisions/0355-codex-returns-as-a-second-harness-with-a-pinned-cli.md)): its
 adapter in `yulius-harness` plans a run, reads its rollout and checks its sign-ins, the supervisor
 runs a Codex task in its own Codex home (see "Codex" below), and Yulius provides the pinned
-Codex CLI itself (see "Codex CLI" below); Codex subscriptions are signed in from later slices of
-SPEC-503. The detailed contracts are in
+Codex CLI itself (see "Codex CLI" below); Codex subscriptions sign in by device code, an API key
+or an imported `auth.json`. The detailed contracts are in
 [SPEC-002](../.ai/specs/SPEC-002-yulius-architecture.md); crate layering rules are in
 [engineering/architecture.md](engineering/architecture.md).
 
@@ -72,6 +72,12 @@ flowchart LR
   SUP2 -->|"a genuine refresh"| ACC
 ```
 
+A Codex subscription signs in with `codex login --device-auth` in the login terminal (the
+provided CLI, its `CODEX_HOME` in the sign-in's own folder with credentials kept in a file),
+takes an OpenAI API key, or takes the `auth.json` of a ChatGPT sign-in made elsewhere; each is
+sealed in the vault. Its usage windows come from `chatgpt.com/backend-api/wham/usage` and from
+its runs' rollouts.
+
 Rotation picks only accounts of the task's provider, so a Codex task moves only between Codex
 accounts, by `codex resume <id>`: at a usage limit, when a person moves it and when its
 subscription is removed (SPEC-447); it waits when none has capacity, and with no Codex
@@ -85,14 +91,13 @@ pinned release (0.169.0) is downloaded from npm once, checked against the sha512
 (`yulius_domain::agent_cli::codex`) and unpacked into `<data>/codex-cli/<version>-<platform>`
 (`wiring/codex_cli.rs`). Codex runs start its `bin/codex` by absolute path
 (`HarnessPort::provide_codex`), and a contained Codex run binds that directory read-only; Codex
-sign-ins are to start it the same way (a later slice of SPEC-503). Without it, a host `codex` is
-used.
+sign-ins start it the same way. Without it, a host `codex` is used.
 
 ```mermaid
 flowchart LR
   NPM["registry.npmjs.org: @openai/codex@0.169.0-linux-x64"] -->|"first need, sha512 pinned"| CLI["data/codex-cli/0.169.0-linux-x64 (bin/codex, codex-path/rg)"]
   CLI -->|"absolute path, read-only bind"| RUN["Codex run in its sandbox"]
-  CLI -.->|"planned: absolute path"| LOGIN["codex login --device-auth"]
+  CLI -->|"absolute path"| LOGIN["codex login --device-auth"]
 ```
 
 ## Layers and crates

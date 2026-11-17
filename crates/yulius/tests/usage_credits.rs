@@ -2143,6 +2143,8 @@ fn a_task_waiting_for_capacity_starts_on_a_pasted_subscription_at_once() -> Test
                     provider: "anthropic".into(),
                     label: "pasted".into(),
                     token: Some(token.into()),
+                    api_key: None,
+                    auth_json: None,
                 },
             )
             .await?;

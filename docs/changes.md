@@ -6,6 +6,15 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-17
 
+- Codex, slice C2 (SPEC-503, task #485): Codex subscriptions can be added through the API. An
+  instance administrator signs one in with `codex login --device-auth` in the login terminal
+  (the pinned CLI Yulius provides), gives an OpenAI API key, or imports the `auth.json` of a
+  ChatGPT sign-in made elsewhere (`POST /api/admin/accounts` with `api_key` or `auth_json`, and
+  `POST /api/admin/accounts/{id}/import`); a pasted token stays Claude's. A Codex subscription's
+  usage windows are read from `chatgpt.com/backend-api/wham/usage` and its runs' rollouts;
+  `/api/me` says `codex_connected` (`claude_connected` stays Claude's), and the capacity view
+  names each subscription's provider and resumes at the first reset of either pool. The UI
+  offers all of it in the next slice.
 - Codex, slice C1 (SPEC-503, task #485): a task or an automation can run Codex (`harness:
   codex`). The supervisor runs the native Codex TUI in the task terminal with its own
   `CODEX_HOME` per sandbox and subscription, the pinned CLI by its path (bound read-only into a

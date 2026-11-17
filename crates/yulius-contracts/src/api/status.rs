@@ -61,7 +61,7 @@ pub struct StatusAccount {
     /// unknown, SPEC-244 SUB-005).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub email: Option<String>,
-    /// Provider (`anthropic`).
+    /// Provider: `anthropic`, or `openai` for Codex (SPEC-451).
     pub provider: String,
     /// `ok`, `relogin`, `error`, `limited` or `pending_login`.
     pub status: String,
