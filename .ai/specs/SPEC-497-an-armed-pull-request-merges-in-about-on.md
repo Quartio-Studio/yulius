@@ -167,9 +167,11 @@ mode.
 - [x] Slice B: the reruns and minutes' review rounds 1 to 3 answered
 - [x] Slice B: the reruns and minutes' last review round
 - [x] Slice A3: the operator's admission amendment applied
-- [ ] Slice A3: the amendment's review rounds
-- [ ] Slice B: flaky tests quarantined with an issue, the project told
-- [ ] Slice B: quarantine documents, ADR and review
+- [x] Slice A3: the amendment's review rounds
+- [x] Slice B: flaky tests quarantined with an issue, the project told
+- [x] Slice B: quarantine documents and ADR
+- [x] Slice B: quarantine review round 1 answered
+- [ ] Slice B: quarantine review round 2 answered
 - [ ] Slice C: a failed member leaves without cancelling the candidate
 - [ ] Slice C: a passed candidate merges while own runs go
 - [ ] Slice C: derived-file conflicts handled without a wasted cycle
