@@ -408,6 +408,22 @@ async fn request(
     method: &str,
     path: &str,
 ) -> std::io::Result<serde_json::Value> {
+    let (status, body) = call(socket, method, path).await?;
+    if status != 200 {
+        return Err(std::io::Error::other(format!(
+            "{path}: {status} {}",
+            body.chars().take(200).collect::<String>()
+        )));
+    }
+    serde_json::from_str(body.trim()).map_err(std::io::Error::other)
+}
+
+/// `method path` over HTTP/1.0: the answer's status and body (at most [`PRUNE_ANSWER_MAX`]).
+async fn call(
+    socket: &std::path::Path,
+    method: &str,
+    path: &str,
+) -> std::io::Result<(u16, String)> {
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
     let mut stream = crate::engine_supervisor::connect_control(socket).await?;
     let request = format!("{method} {path} HTTP/1.0\r\nHost: docker\r\nContent-Length: 0\r\n\r\n");
@@ -421,14 +437,169 @@ async fn request(
     let (head, body) = text
         .split_once("\r\n\r\n")
         .ok_or_else(|| std::io::Error::other("no answer from the engine"))?;
-    let status = head.split_whitespace().nth(1).unwrap_or_default();
-    if status != "200" {
-        return Err(std::io::Error::other(format!(
-            "{path}: {status} {}",
-            body.chars().take(200).collect::<String>()
-        )));
+    let status = head
+        .split_whitespace()
+        .nth(1)
+        .and_then(|status| status.parse().ok())
+        .ok_or_else(|| std::io::Error::other(format!("{path}: no status")))?;
+    Ok((status, body.to_owned()))
+}
+
+/// How long removing one engine's CI leftovers may take, every call together (SPEC-504).
+pub const LEFTOVERS_TIMEOUT: Duration = Duration::from_secs(60);
+/// Containers or networks one removal looks at, at most.
+const LEFTOVERS_MAX: usize = 1000;
+
+/// What [`remove_ci_leftovers`] removed.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Leftovers {
+    /// Containers removed.
+    pub containers: u32,
+    /// Networks removed.
+    pub networks: u32,
+}
+
+impl Leftovers {
+    /// Whether nothing was removed.
+    #[must_use]
+    pub fn is_empty(self) -> bool {
+        self.containers == 0 && self.networks == 0
     }
-    serde_json::from_str(body.trim()).map_err(std::io::Error::other)
+}
+
+/// The CI jobs whose leftovers [`remove_ci_leftovers`] removes.
+pub enum Jobs<'a> {
+    /// The job that just ended.
+    One(&'a str),
+    /// Every labelled job this says ended.
+    Ended(&'a (dyn Fn(&str) -> bool + Sync)),
+}
+
+impl Jobs<'_> {
+    fn filter(&self) -> String {
+        let label = crate::docker_label::CI_JOB_LABEL;
+        let value = match self {
+            Self::One(job) => format!("{label}={job}"),
+            Self::Ended(_) => label.to_owned(),
+        };
+        query_value(&serde_json::json!({ "label": [value] }).to_string())
+    }
+
+    fn takes(&self, job: &str) -> bool {
+        match self {
+            Self::One(one) => *one == job,
+            Self::Ended(ended) => ended(job),
+        }
+    }
+}
+
+/// `text` percent-encoded for a query value.
+fn query_value(text: &str) -> String {
+    text.bytes()
+        .map(|b| {
+            if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~') {
+                char::from(b).to_string()
+            } else {
+                format!("%{b:02X}")
+            }
+        })
+        .collect()
+}
+
+/// Whether `id` (an answer of the engine, which runs code its sandbox controls) is safe in a
+/// path: 1 to 128 ASCII letters, digits and `:`.
+fn plain_id(id: &str) -> bool {
+    !id.is_empty() && id.len() <= 128 && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b':')
+}
+
+/// The CI job label of a listed container or network.
+fn job_label(item: &serde_json::Value) -> Option<&str> {
+    item["Labels"][crate::docker_label::CI_JOB_LABEL].as_str()
+}
+
+/// Removes from the engine behind `socket` the containers and then the networks labelled with
+/// the CI jobs `jobs` names (SPEC-504 CLB-004, CLB-005), within [`LEFTOVERS_TIMEOUT`].
+/// Containers are removed forced and keep their volumes; images and volumes are never removed.
+/// A container whose label its image carries with the same value got it from the image (an
+/// image committed from a CI job's container), not from a job's create: it is kept. A network
+/// still in use (a container the job did not make joined it) stays. Reached only while the
+/// engine runs: nothing here starts it.
+///
+/// # Errors
+/// The engine is not reachable, refused a list, answered something else or took too long.
+pub async fn remove_ci_leftovers(
+    socket: &std::path::Path,
+    jobs: &Jobs<'_>,
+) -> std::io::Result<Leftovers> {
+    tokio::time::timeout(LEFTOVERS_TIMEOUT, remove_leftovers(socket, jobs))
+        .await
+        .map_err(|_| std::io::Error::other("removing CI leftovers timed out"))?
+}
+
+async fn remove_leftovers(socket: &std::path::Path, jobs: &Jobs<'_>) -> std::io::Result<Leftovers> {
+    let filter = jobs.filter();
+    let mut removed = Leftovers::default();
+    let listed = request(
+        socket,
+        "GET",
+        &format!("/containers/json?all=1&filters={filter}"),
+    )
+    .await?;
+    let mut images: std::collections::HashMap<String, Option<String>> =
+        std::collections::HashMap::new();
+    for container in listed.as_array().into_iter().flatten().take(LEFTOVERS_MAX) {
+        let (Some(id), Some(job)) = (container["Id"].as_str(), job_label(container)) else {
+            continue;
+        };
+        if !plain_id(id) || !jobs.takes(job) {
+            continue;
+        }
+        // The image's own value of the label: `None` when it has none (or is gone).
+        let image = container["ImageID"].as_str().unwrap_or_default();
+        let inherited = if plain_id(image) {
+            if !images.contains_key(image) {
+                let value = match call(socket, "GET", &format!("/images/{image}/json")).await? {
+                    (200, body) => serde_json::from_str::<serde_json::Value>(&body)
+                        .ok()
+                        .and_then(|json| {
+                            json["Config"]["Labels"][crate::docker_label::CI_JOB_LABEL]
+                                .as_str()
+                                .map(str::to_owned)
+                        }),
+                    (404, _) => None,
+                    // Unknown: kept this time.
+                    _ => Some(job.to_owned()),
+                };
+                images.insert(image.to_owned(), value);
+            }
+            images.get(image).cloned().flatten().as_deref() == Some(job)
+        } else {
+            false
+        };
+        if inherited {
+            continue;
+        }
+        if call(socket, "DELETE", &format!("/containers/{id}?force=1"))
+            .await?
+            .0
+            == 204
+        {
+            removed.containers += 1;
+        }
+    }
+    let listed = request(socket, "GET", &format!("/networks?filters={filter}")).await?;
+    for network in listed.as_array().into_iter().flatten().take(LEFTOVERS_MAX) {
+        let (Some(id), Some(job)) = (network["Id"].as_str(), job_label(network)) else {
+            continue;
+        };
+        if plain_id(id)
+            && jobs.takes(job)
+            && call(socket, "DELETE", &format!("/networks/{id}")).await?.0 == 204
+        {
+            removed.networks += 1;
+        }
+    }
+    Ok(removed)
 }
 
 #[cfg(test)]
@@ -561,6 +732,128 @@ mod tests {
             }
         });
         Ok((server, heads))
+    }
+
+    const ONE: &str = "%7B%22label%22%3A%5B%22yulius.ci.job%3Dj1%22%5D%7D";
+    const ANY: &str = "%7B%22label%22%3A%5B%22yulius.ci.job%22%5D%7D";
+
+    /// SPEC-504 CLB-004: a job's end removes its containers, forced and keeping their volumes,
+    /// then its networks; a container whose label came from its image, another job's, an id
+    /// unsafe in a path and a network still in use stay; images and volumes are never removed.
+    #[tokio::test]
+    async fn a_jobs_end_removes_its_containers_then_its_networks()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let socket = dir.path().join("docker.sock");
+        let containers = format!("/containers/json?all=1&filters={ONE}");
+        let networks = format!("/networks?filters={ONE}");
+        let (server, heads) = fake_api(
+            socket.clone(),
+            vec![
+                (
+                    Box::leak(containers.into_boxed_str()),
+                    200,
+                    r#"[{"Id":"c1","ImageID":"sha256:i1","Labels":{"yulius.ci.job":"j1"}},
+                        {"Id":"c2","ImageID":"sha256:i2","Labels":{"yulius.ci.job":"j1"}},
+                        {"Id":"c3","ImageID":"sha256:i1","Labels":{"yulius.ci.job":"j2"}},
+                        {"Id":"../x","ImageID":"sha256:i1","Labels":{"yulius.ci.job":"j1"}}]"#,
+                ),
+                ("/images/sha256:i1/json", 404, r#"{"message":"gone"}"#),
+                (
+                    "/images/sha256:i2/json",
+                    200,
+                    r#"{"Config":{"Labels":{"yulius.ci.job":"j1"}}}"#,
+                ),
+                ("/containers/c1?force=1", 204, ""),
+                (
+                    Box::leak(networks.into_boxed_str()),
+                    200,
+                    r#"[{"Id":"n1","Labels":{"yulius.ci.job":"j1"}},
+                        {"Id":"n2","Labels":{"yulius.ci.job":"j1"}}]"#,
+                ),
+                ("/networks/n1", 204, ""),
+                ("/networks/n2", 403, r#"{"message":"has active endpoints"}"#),
+            ],
+        )
+        .await?;
+        let removed = remove_ci_leftovers(&socket, &Jobs::One("j1")).await?;
+        assert_eq!(
+            removed,
+            Leftovers {
+                containers: 1,
+                networks: 1
+            }
+        );
+        let heads = heads.lock().map_err(|_| "poisoned")?.clone();
+        let deletes: Vec<&str> = heads
+            .iter()
+            .filter(|h| h.starts_with("DELETE "))
+            .map(|h| h.split_whitespace().nth(1).unwrap_or_default())
+            .collect();
+        assert_eq!(
+            deletes,
+            ["/containers/c1?force=1", "/networks/n1", "/networks/n2"],
+            "containers first, never volumes or images: {heads:?}"
+        );
+        server.abort();
+        Ok(())
+    }
+
+    /// SPEC-504 CLB-005: the sweep lists every CI job's leftovers and removes those of jobs that
+    /// ended; a running job's stay. An engine that is not there is an error, not a removal.
+    #[tokio::test]
+    async fn the_sweep_removes_only_ended_jobs_leftovers() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let dir = tempfile::tempdir()?;
+        let socket = dir.path().join("docker.sock");
+        let containers = format!("/containers/json?all=1&filters={ANY}");
+        let networks = format!("/networks?filters={ANY}");
+        let (server, heads) = fake_api(
+            socket.clone(),
+            vec![
+                (
+                    Box::leak(containers.into_boxed_str()),
+                    200,
+                    r#"[{"Id":"a","ImageID":"sha256:i","Labels":{"yulius.ci.job":"gone"}},
+                        {"Id":"b","ImageID":"sha256:i","Labels":{"yulius.ci.job":"running"}},
+                        {"Id":"c","ImageID":"sha256:i","Labels":{}}]"#,
+                ),
+                (
+                    "/images/sha256:i/json",
+                    200,
+                    r#"{"Config":{"Labels":null}}"#,
+                ),
+                ("/containers/a?force=1", 204, ""),
+                (
+                    Box::leak(networks.into_boxed_str()),
+                    200,
+                    r#"[{"Id":"n","Labels":{"yulius.ci.job":"running"}}]"#,
+                ),
+            ],
+        )
+        .await?;
+        let ended = |job: &str| job == "gone";
+        let removed = remove_ci_leftovers(&socket, &Jobs::Ended(&ended)).await?;
+        assert_eq!(
+            removed,
+            Leftovers {
+                containers: 1,
+                networks: 0
+            }
+        );
+        let heads = heads.lock().map_err(|_| "poisoned")?.clone();
+        assert_eq!(
+            heads.iter().filter(|h| h.starts_with("DELETE ")).count(),
+            1,
+            "{heads:?}"
+        );
+        server.abort();
+        assert!(
+            remove_ci_leftovers(&dir.path().join("none.sock"), &Jobs::One("j1"))
+                .await
+                .is_err()
+        );
+        Ok(())
     }
 
     /// SPEC-497 HBA-003: the networks that take an address range are counted (not `host` and

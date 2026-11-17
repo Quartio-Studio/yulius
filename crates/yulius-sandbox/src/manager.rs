@@ -488,6 +488,9 @@ pub struct Manager {
     /// Events of the sandboxes' fronts for the instance's measures, until the app takes them
     /// (SPEC-494 DFJ-013); bounded by [`DOCKER_EVENTS_MAX`].
     docker_events: Mutex<std::collections::VecDeque<DockerEvent>>,
+    /// A sweep of CI jobs' leftovers is under way (SPEC-504 CLB-005): the next tick starts
+    /// none beside it.
+    sweeping: Arc<std::sync::atomic::AtomicBool>,
 }
 
 /// Most front events kept until the app takes them (it does every few seconds).
@@ -498,7 +501,8 @@ pub const DOCKER_EVENTS_MAX: usize = 4096;
 pub struct DockerEvent {
     /// The sandbox (a production holder's name for its production engine).
     pub sandbox: String,
-    /// `restarted` (the front and engine, by a repair, a request or an update) or `gave_way`.
+    /// `restarted` (the front and engine, by a repair, a request or an update), `gave_way` or
+    /// `ci_leftovers` (SPEC-504 CLB-006: `detail` is `<containers> <networks> <job-end|sweep>`).
     pub kind: &'static str,
     /// How many (give-ways since the last tick; 1 for a restart).
     pub count: u64,
@@ -572,6 +576,7 @@ impl Manager {
             disk_max: AtomicU64::new(config.disk_max.unwrap_or(0)),
             docker_restarts: AtomicU64::new(0),
             docker_events: Mutex::new(std::collections::VecDeque::new()),
+            sweeping: Arc::default(),
             config,
             sandboxes: Mutex::new(HashMap::new()),
             build: Mutex::new(BuildState::default()),
@@ -1893,6 +1898,7 @@ impl Manager {
             .collect();
         let current = self.bases.current();
         let mut in_use = Vec::new();
+        let mut engines = Vec::new();
         for (sandbox, entry) in entries {
             let mut state = entry.lock().await;
             if let Some(live) = &state.live {
@@ -1972,8 +1978,43 @@ impl Manager {
                 }
             }
             self.refresh_usage(&sandbox, &mut state);
+            if state.live.as_ref().is_some_and(Live::serves_engine) {
+                engines.push(sandbox);
+            }
         }
         self.maybe_build(in_use);
+        self.sweep_in_background(engines);
+    }
+
+    /// Sweeps the CI jobs' leftovers of `sandboxes` one after another in a task of its own, so
+    /// an engine slow to answer holds no tick; none while the last one still runs.
+    fn sweep_in_background(self: &Arc<Self>, sandboxes: Vec<String>) {
+        use std::sync::atomic::Ordering;
+        if sandboxes.is_empty()
+            || self.config.delegation.is_none()
+            || self.sweeping.swap(true, Ordering::SeqCst)
+        {
+            return;
+        }
+        /// Ends the sweep however its task ends.
+        struct Swept(Arc<std::sync::atomic::AtomicBool>);
+        impl Drop for Swept {
+            fn drop(&mut self) {
+                self.0.store(false, Ordering::SeqCst);
+            }
+        }
+        let swept = Swept(Arc::clone(&self.sweeping));
+        let manager = Arc::clone(self);
+        tokio::spawn(async move {
+            let _swept = swept;
+            // CI jobs never run in a production holder.
+            for sandbox in sandboxes
+                .iter()
+                .filter(|sandbox| production_sandbox(sandbox).is_none())
+            {
+                manager.sweep_ci_leftovers(sandbox).await;
+            }
+        });
     }
 
     /// Prunes `sandbox`'s Docker engine when it runs, through its own control socket: build cache
@@ -2036,10 +2077,66 @@ impl Manager {
     }
 
     /// CI job `job` of `sandbox` ended (SPEC-504 CLB-004): its group goes (one that still holds
-    /// a process stays for the sweep).
+    /// a process stays for the sweep), and the containers and networks labelled with it are
+    /// removed from the sandbox's running engine. A stopped engine is not started for it: the
+    /// sweep takes them once it runs again.
     pub async fn ci_job_ended(&self, sandbox: &str, job: &str) {
-        if let Some(delegation) = self.config.delegation.as_ref() {
-            delegation.end_ci_job_group(sandbox, job);
+        let Some(delegation) = self.config.delegation.as_ref() else {
+            return;
+        };
+        delegation.end_ci_job_group(sandbox, job);
+        if crate::cgroup::ci_job_group_name(job).is_none() {
+            return;
+        }
+        self.remove_ci_leftovers(sandbox, &crate::engine::Jobs::One(job), "job-end")
+            .await;
+    }
+
+    /// Removes from `sandbox`'s running engine what CI jobs that ended left (SPEC-504 CLB-005):
+    /// the containers and networks labelled with a job whose group holds no process (gone or
+    /// empty; one that cannot be read counts as running), and the job groups emptied long ago.
+    /// Each upkeep pass, so first after a server starts.
+    pub async fn sweep_ci_leftovers(&self, sandbox: &str) {
+        let Some(delegation) = self.config.delegation.clone() else {
+            return;
+        };
+        let name = sandbox.to_owned();
+        let ended = move |job: &str| delegation.ci_job_running(&name, job) == Some(false);
+        self.remove_ci_leftovers(sandbox, &crate::engine::Jobs::Ended(&ended), "sweep")
+            .await;
+        if let Some(delegation) = self.config.delegation.clone() {
+            let sandbox = sandbox.to_owned();
+            let _ =
+                tokio::task::spawn_blocking(move || delegation.sweep_ci_job_groups(&sandbox)).await;
+        }
+    }
+
+    /// [`crate::engine::remove_ci_leftovers`] on `sandbox`'s running engine, recorded for the
+    /// instance's measures as found `when` (`job-end` or `sweep`).
+    async fn remove_ci_leftovers(&self, sandbox: &str, jobs: &crate::engine::Jobs<'_>, when: &str) {
+        let Some(socket) = self.engine_socket(sandbox).await else {
+            return;
+        };
+        match crate::engine::remove_ci_leftovers(&socket, jobs).await {
+            Ok(removed) if !removed.is_empty() => {
+                tracing::info!(
+                    sandbox,
+                    containers = removed.containers,
+                    networks = removed.networks,
+                    when,
+                    "removed what CI jobs left in the sandbox's Docker engine"
+                );
+                self.docker_event(
+                    sandbox,
+                    "ci_leftovers",
+                    u64::from(removed.containers),
+                    format!("{} {} {when}", removed.containers, removed.networks),
+                );
+            }
+            Ok(_) => {}
+            Err(error) => {
+                tracing::debug!(sandbox, %error, when, "cannot remove CI jobs' leftovers now");
+            }
         }
     }
 
@@ -4010,6 +4107,102 @@ while True:
             }
         });
         (server, count)
+    }
+
+    /// SPEC-504 CLB-004/005/006: a job's end removes its containers from the running engine
+    /// through its control socket, the sweep those of every job whose group has no process,
+    /// keeping a running job's; each removal is a Docker event. Without a running engine
+    /// nothing is asked.
+    #[tokio::test]
+    async fn a_jobs_end_and_the_sweep_remove_what_ci_jobs_left()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+        let data = tempfile::tempdir()?;
+        let mut config = config(data.path(), 1 << 40);
+        config.delegation = Some(delegation(data.path())?);
+        let delegation = config.delegation.clone().ok_or("no delegation")?;
+        let manager = Manager::new(config);
+        manager.ci_job_ended("s1", "j1").await;
+        manager.sweep_ci_leftovers("s1").await;
+        assert!(
+            manager.take_docker_events().is_empty(),
+            "no holder: nothing"
+        );
+        delegation.sandbox_group("s1", &crate::cgroup::Limits::default())?;
+        let running = delegation.ci_job_group("s1", "j2")?;
+        std::fs::write(running.join("cgroup.events"), "populated 1\n")?;
+        let state = StatePaths::new(manager.state_dir("s1"));
+        std::fs::create_dir_all(state.engine_control())?;
+        let listener = tokio::net::UnixListener::bind(state.engine_control().join("docker.sock"))?;
+        let deleted = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let seen = Arc::clone(&deleted);
+        let engine = tokio::spawn(async move {
+            while let Ok((mut stream, _)) = listener.accept().await {
+                let mut head = vec![0u8; 4096];
+                let n = stream.read(&mut head).await.unwrap_or(0);
+                let head = String::from_utf8_lossy(&head[..n]).into_owned();
+                let path = head
+                    .split_whitespace()
+                    .nth(1)
+                    .unwrap_or_default()
+                    .to_owned();
+                let (status, body) = if head.starts_with("DELETE ") {
+                    if let Ok(mut seen) = seen.lock() {
+                        seen.push(path);
+                    }
+                    (204, String::new())
+                } else if path.starts_with("/containers/json") {
+                    let all = r#"[{"Id":"c1","ImageID":"sha256:i","Labels":{"yulius.ci.job":"j1"}},
+                                  {"Id":"c2","ImageID":"sha256:i","Labels":{"yulius.ci.job":"j2"}}]"#;
+                    let one =
+                        r#"[{"Id":"c1","ImageID":"sha256:i","Labels":{"yulius.ci.job":"j1"}}]"#;
+                    (
+                        200,
+                        if path.contains("%3Dj1") { one } else { all }.to_owned(),
+                    )
+                } else if path.starts_with("/networks") {
+                    (200, "[]".to_owned())
+                } else {
+                    (404, "{}".to_owned())
+                };
+                let _ = stream
+                    .write_all(format!("HTTP/1.0 {status} X\r\n\r\n{body}").as_bytes())
+                    .await;
+            }
+        });
+        let entry = manager.entry("s1");
+        entry.lock().await.live = Some(Live::new(live_record(false), Vec::new()));
+        manager.ci_job_ended("s1", "j1").await;
+        assert!(
+            deleted.lock().map_err(|_| "poisoned")?.is_empty(),
+            "no engine"
+        );
+        entry.lock().await.live = Some(Live::new(live_record(true), Vec::new()));
+        manager.ci_job_ended("s1", "j1").await;
+        assert_eq!(
+            deleted.lock().map_err(|_| "poisoned")?.clone(),
+            ["/containers/c1?force=1"]
+        );
+        manager.sweep_ci_leftovers("s1").await;
+        assert_eq!(
+            deleted.lock().map_err(|_| "poisoned")?.clone(),
+            ["/containers/c1?force=1", "/containers/c1?force=1"],
+            "the running job's container stays"
+        );
+        let events: Vec<(String, String)> = manager
+            .take_docker_events()
+            .into_iter()
+            .map(|e| (e.kind.to_owned(), e.detail))
+            .collect();
+        assert_eq!(
+            events,
+            [
+                ("ci_leftovers".to_owned(), "1 0 job-end".to_owned()),
+                ("ci_leftovers".to_owned(), "1 0 sweep".to_owned())
+            ]
+        );
+        engine.abort();
+        Ok(())
     }
 
     /// SPEC-187 DKR-006, review round 2 (medium): pruning reaches only an engine that already
