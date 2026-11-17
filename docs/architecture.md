@@ -87,22 +87,22 @@ subscription is removed (SPEC-447); it waits when none has capacity, and with no
 subscription usable it asks for one.
 
 An Antigravity task ([decision 0361](decisions/0361-antigravity-is-a-third-harness-picked-at-random-by-default.md))
-runs the `agy` TUI on a Google account in `<sandbox>/antigravity/<account>`, the folder whose
-`.gemini` the CLI reads: Yulius writes its `settings.json` (the worktree trusted, the first-run
-screens skipped, `modelProvider: gemini` for a Gemini API key), `config/hooks.json`,
-`config/mcp_config.json` and, for a Google sign-in, the CLI's token file. Its
-`antigravity-cli/brain` and `conversations` link to `<sandbox>/antigravity/shared`, so a
-conversation resumes on any Antigravity account by `--conversation <id>`. A contained run binds
-that `.gemini` over the sandbox home's (the agent's shell keeps the sandbox's `HOME`); an
-uncontained one sets `HOME` to the Antigravity home. `yulius hook antigravity <event>` translates
-its hooks (SessionStart, the first model call of a typed turn, Stop, `run_command`) to Yulius's;
-its transcript gives prompts, tokens, limits and turns its model API ended. When its run ends, a
-token file the CLI refreshed replaces the stored sign-in, and the file leaves the sandbox once no
-run of the account is left.
+runs the `agy` TUI on a Google account with a home of its own in its run directory,
+`<run>/antigravity-home`, the folder whose `.gemini` the CLI reads: Yulius writes its
+`settings.json` (the worktree trusted, the first-run screens skipped, `modelProvider: gemini` for
+a Gemini API key), `config/hooks.json`, `config/mcp_config.json` and, for a Google sign-in, the
+CLI's token file. Its `antigravity-cli/brain` and `conversations` link to
+`<sandbox>/antigravity/shared`, so a conversation resumes on any Antigravity account by
+`--conversation <id>`. A contained run binds that `.gemini` over the sandbox home's (the agent's
+shell keeps the sandbox's `HOME`); an uncontained one sets `HOME` to the run's Antigravity home.
+`yulius hook antigravity <event>` translates its hooks (SessionStart, the first model call of a
+typed turn, Stop, `run_command`) to Yulius's; its transcript gives prompts, tokens and limits, and
+a turn its model API failed ends with a Stop Yulius settles without a gate. When its run ends, a
+token file the CLI refreshed replaces the stored sign-in and is removed.
 
 ```mermaid
 flowchart LR
-  GACC["google account (vault: API key or token file)"] -->|"written before each run"| AHOME["sandbox/antigravity/account/.gemini: settings, hooks, MCP, token"]
+  GACC["google account (vault: API key or token file)"] -->|"written before each run"| AHOME["run/antigravity-home/.gemini: settings, hooks, MCP, token"]
   AHOME -->|"brain, conversations links"| ASH["sandbox/antigravity/shared (conversations)"]
   AGY["agy TUI (ptyhost)"] -->|"HOME or bind of .gemini"| AHOME
   AGY -->|"transcript.jsonl"| ASH

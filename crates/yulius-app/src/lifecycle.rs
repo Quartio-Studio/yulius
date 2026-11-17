@@ -59,7 +59,7 @@ pub struct NewTask {
 
 /// Codex runs OpenAI's models and Antigravity Google's Gemini models: another provider's model,
 /// given at creation or set later, would make its run fail at start (SPEC-503, SPEC-505).
-pub(crate) fn codex_takes_no_claude_model(harness: Harness, model: Option<&str>) -> AppResult<()> {
+pub(crate) fn model_of_its_harness(harness: Harness, model: Option<&str>) -> AppResult<()> {
     let Some(model) = model.map(|m| m.trim().to_ascii_lowercase()) else {
         return Ok(());
     };
@@ -345,7 +345,7 @@ impl App {
         let sid = sid.clone();
         self.require(user, &sid, Action::Work).await?;
         let harness = parse_harness(&req.harness)?;
-        codex_takes_no_claude_model(harness, req.model.as_deref())?;
+        model_of_its_harness(harness, req.model.as_deref())?;
         // New tasks run in goal mode unless the user picks prompt mode (TSK-010); `auto` lets Jev
         // choose (TSK-015).
         let mode = match req.mode.as_deref().map(str::trim) {

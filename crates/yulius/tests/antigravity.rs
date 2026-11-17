@@ -152,6 +152,7 @@ fn an_antigravity_task_runs_in_its_home() -> TestResult {
         let agent = FakeAgentOptions {
             transcript: true,
             hooks: true,
+            report_env: vec!["HOME".into()],
             ..FakeAgentOptions::default()
         };
         let app = build_hooked(&data, &fake, agent).await?;
@@ -183,10 +184,18 @@ fn an_antigravity_task_runs_in_its_home() -> TestResult {
         );
 
         let sandbox_dir = data.join("sandboxes").join(sandbox.as_str());
-        let gemini = sandbox_dir
-            .join("antigravity")
-            .join(account.as_str())
-            .join(".gemini");
+        // The run's own home, in its run directory: no agent of the sandbox could have made it
+        // a link before a contained run binds its `.gemini` (AGY-003).
+        let agy_home = Path::new(&attempt.run_dir).join("antigravity-home");
+        let gemini = agy_home.join(".gemini");
+        assert!(!gemini.starts_with(&sandbox_dir), "{gemini:?}");
+        // This run is uncontained: its HOME is that home.
+        let home_len = agy_home.as_os_str().len();
+        assert!(
+            screen_contains(&app, &id, &format!("ENV HOME=set len={home_len}")).await,
+            "{}",
+            app.runtime(&id).hub.screen_text()
+        );
         let worktree = task(&app, &id).await?.worktree_path.ok_or("worktree")?;
         for file in [
             "antigravity-cli/settings.json",
@@ -373,6 +382,22 @@ fn an_antigravity_goal_task_gets_its_request_as_its_first_message() -> TestResul
             "{launch}"
         );
         assert!(!launch.contains("/goal"), "{launch}");
+        // No `/goal` is typed later either, and its Stop is not held as a goal's.
+        for marker in ["launch-goal-pending", "typed-goal-pending"] {
+            assert!(!run_dir.join(marker).exists(), "{marker}");
+        }
+        let ctx = yulius_app::auth::AuthContext {
+            user: app.deps.store.user(&user).await?.ok_or("user")?,
+            csrf_token: None,
+            session_hash: None,
+            token: None,
+        };
+        let detail = app.task_detail(&ctx, id.as_str()).await?;
+        assert_eq!(
+            detail.model, "gemini-4-carbon",
+            "Gemini, not the Claude default"
+        );
+        assert!(detail.model_default);
         support::stop_tasks(&app, &[&id]).await?;
         Ok::<_, Box<dyn std::error::Error>>(())
     })?;
@@ -406,12 +431,14 @@ fn a_refreshed_antigravity_sign_in_is_kept_and_leaves_the_sandbox() -> TestResul
             screen_contains(&app, &id, "FAKE-AGENT READY")
         })
         .await?;
-        let token = data
-            .join("sandboxes")
-            .join(sandbox.as_str())
-            .join("antigravity")
-            .join(account.as_str())
-            .join(".gemini/antigravity-cli/antigravity-oauth-token");
+        let attempt = app
+            .deps
+            .store
+            .live_attempt(&id)
+            .await?
+            .ok_or("no live attempt")?;
+        let token = Path::new(&attempt.run_dir)
+            .join("antigravity-home/.gemini/antigravity-cli/antigravity-oauth-token");
         assert_eq!(std::fs::read(&token)?, b"SYNTHETIC-token-old");
         assert_eq!(
             std::fs::metadata(&token)?.permissions().mode() & 0o777,
@@ -445,8 +472,9 @@ fn a_refreshed_antigravity_sign_in_is_kept_and_leaves_the_sandbox() -> TestResul
     Ok(())
 }
 
-/// SPEC-505 AGY-004, AGY-006: a turn the model API failed for good writes an error step and no
-/// Stop Yulius hears: the task leaves `working` and waits for its person, as after an interrupt.
+/// SPEC-505 AGY-004, AGY-006: a turn whose model API fails for good writes an error step per
+/// attempt (no end of the turn: agy goes on) and then its Stop with the error, which Yulius settles
+/// without a gate: the task leaves `working` and waits for its person.
 #[test]
 fn a_failed_antigravity_turn_leaves_its_task_waiting() -> TestResult {
     use yulius_domain::task::Activity;
@@ -475,44 +503,21 @@ fn a_failed_antigravity_turn_leaves_its_task_waiting() -> TestResult {
             screen_contains(&app, &id, "FAKE-AGENT READY")
         })
         .await?;
-        let attempt = app.deps.store.live_attempt(&id).await?.ok_or("attempt")?;
-        app.send_input(&id, b"/work 60000 a long turn\r").await?;
-        wait_for("the working turn", Duration::from_secs(20), || async {
-            task(&app, &id)
-                .await
-                .is_ok_and(|t| t.activity == Some(Activity::Working))
+        // A code change the gate would block a clean Stop for: a failed turn's is never held.
+        let worktree = task(&app, &id).await?.worktree_path.ok_or("worktree")?;
+        std::fs::write(Path::new(&worktree).join("api.rs"), "fn main() {}\n")?;
+        app.send_input(&id, b"/apierror\r").await?;
+        wait_for("the failed turn", Duration::from_secs(20), || {
+            screen_contains(&app, &id, "API ERROR")
         })
         .await?;
-        let transcript = data
-            .join("sandboxes")
-            .join(sandbox.as_str())
-            .join("antigravity/shared/brain")
-            .join(attempt.id.as_str())
-            .join(".system_generated/logs/transcript.jsonl");
-        let failure = serde_json::json!({
-            "step_index": 99, "source": "SYSTEM", "type": "ERROR_MESSAGE", "status": "DONE",
-            "error": "API error (attempt 8): Error 503, Status: UNAVAILABLE",
-            "created_at": yulius_app::auth::rfc3339(app.now()),
-        });
-        wait_for(
-            "the turn's prompt step",
-            Duration::from_secs(20),
-            || async {
-                std::fs::read_to_string(&transcript).is_ok_and(|t| t.contains("a long turn"))
-            },
-        )
-        .await?;
-        {
-            use std::io::Write as _;
-            let mut file = std::fs::OpenOptions::new().append(true).open(&transcript)?;
-            writeln!(file, "{failure}")?;
-        }
         wait_for("the task waiting", Duration::from_secs(20), || async {
             task(&app, &id).await.is_ok_and(|t| {
                 t.status == TaskStatus::Running && t.activity == Some(Activity::Waiting)
             })
         })
         .await?;
+        assert_eq!(task(&app, &id).await?.gate_blocks, 0, "no gate block");
         support::stop_tasks(&app, &[&id]).await?;
         Ok::<_, Box<dyn std::error::Error>>(())
     })?;

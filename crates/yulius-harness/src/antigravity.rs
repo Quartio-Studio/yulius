@@ -53,12 +53,12 @@ pub fn observe_line(line: &str) -> Vec<Observed> {
         // What a person (or Yulius, typing for one) sent.
         ("USER_EXPLICIT", "USER_INPUT") => vec![Observed::UserTurn { at, wake: false }],
         ("MODEL", "PLANNER_RESPONSE") => model_response(&step, at),
-        // An error that is no limit ends the turn, as an interrupt does: agy runs no Stop
-        // Yulius answers then (a model API failure after its retries, a prompt Yulius refused,
-        // whose error comes from `SYSTEM_SDK`). A later model step shows the turn goes on.
-        ("SYSTEM" | "SYSTEM_SDK", "ERROR_MESSAGE") => {
-            vec![limit(&step, at).unwrap_or(Observed::TurnInterrupted { at })]
-        }
+        // A model API error, one step per attempt agy makes: a limit of the subscription, or
+        // nothing (agy goes on; its Stop ends a turn that failed for good).
+        ("SYSTEM", "ERROR_MESSAGE") => limit(&step, at).into_iter().collect(),
+        // A prompt Yulius refused (its hook's error): the turn ends as an interrupt's does, with
+        // no Stop Yulius answers.
+        ("SYSTEM_SDK", "ERROR_MESSAGE") => vec![Observed::TurnInterrupted { at }],
         // Tool steps, refused tool calls, anything the model did.
         ("MODEL", _) => vec![Observed::AgentWork { at }],
         // System messages and the CLI's own notices are no one's work.

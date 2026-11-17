@@ -909,10 +909,13 @@ impl App {
     async fn hook_stop(
         self: &Arc<Self>,
         ctx: &AgentContext,
-        _input: &HookInput,
+        input: &HookInput,
     ) -> AppResult<HookReply> {
         let store = &self.deps.store;
         let mut task = &ctx.task;
+        // A turn its model API failed ends for good: its CLI goes on with nothing Yulius says,
+        // so no gate, nudge or goal holds it (SPEC-505 AGY-006).
+        let failed = input.error.is_some();
         // A turn held for capacity stays held while its pause lasts (also across a restart).
         let refreshed;
         if let Some(pause) = store.open_pause(&task.id).await? {
@@ -938,10 +941,14 @@ impl App {
         if let Err(err) = self.sync_steps_from_spec(task).await {
             tracing::warn!(error = %err, task = %task.id, "step sync from the spec failed");
         }
-        let reasons = self.stop_reasons(task).await?;
+        let reasons = if failed {
+            Vec::new()
+        } else {
+            self.stop_reasons(task).await?
+        };
         let gate_continues = !reasons.is_empty() && task.gate_blocks < MAX_GATE_BLOCKS;
         // Would the agent work on after this boundary (a gate block, or its goal)?
-        let continues = gate_continues || task.follows_goal();
+        let continues = gate_continues || (task.follows_goal() && !failed);
 
         // The turn boundary: stay, move to another subscription, or pause (ROT-003, ROT-010).
         self.runtime(&task.id)
@@ -1122,7 +1129,7 @@ impl App {
 
         // A clean turn end on the same subscription may carry one gentle step nudge (STP-008).
         // It is not a gate block: it is given once and never escalates to "needs attention".
-        if reasons.is_empty() && stays {
+        if reasons.is_empty() && stays && !failed {
             match self.take_turn_end_nudge(task).await {
                 Ok(Some(text)) => return Ok(HookReply::Output(HookOutput::block(text))),
                 Ok(None) => {}

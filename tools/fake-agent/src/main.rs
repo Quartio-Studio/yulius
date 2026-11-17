@@ -1561,7 +1561,7 @@ impl Transcript {
 
     fn limit(&mut self) -> io::Result<()> {
         if self.antigravity {
-            // The plan's quota, as the CLI writes it once its attempts end.
+            // The plan's quota, as the CLI writes it at an attempt (one step per attempt).
             self.prompt_written = false;
             return self.agy_step(
                 "SYSTEM",
@@ -1754,6 +1754,13 @@ impl Hooks {
                 payload["invocationNum"] = json!(0);
                 payload["initialNumSteps"] = json!(steps.unwrap_or(0));
                 "PreInvocation"
+            }
+            "Stop" if input.get("error").is_some() => {
+                payload["terminationReason"] = json!("ERROR");
+                payload["error"] = input["error"].clone();
+                payload["continuationActive"] = json!(false);
+                payload["fullyIdle"] = json!(true);
+                "Stop"
             }
             "Stop" => {
                 payload["terminationReason"] = json!("NO_TOOL_CALL");
@@ -3021,6 +3028,35 @@ fn echo_loop(options: &Options, session_id: &str) -> io::Result<i32> {
             "/crash" => {
                 say("CRASHING")?;
                 return Ok(3);
+            }
+            // Antigravity: a typed turn whose model API fails for good, as agy 1.5.10 ends one:
+            // an error step per attempt, then its Stop with `terminationReason: ERROR`.
+            "/apierror" if options.antigravity => {
+                if let Some(hooks) = &hooks {
+                    let _ = hooks.prompt(&line);
+                }
+                if let Some(transcript) = &transcript
+                    && let Ok(mut t) = transcript.lock()
+                {
+                    t.agy_prompt(&line)?;
+                    t.prompt_written = false;
+                    for attempt in [1, 8] {
+                        t.agy_step(
+                            "SYSTEM",
+                            "ERROR_MESSAGE",
+                            json!({"error": format!(
+                                "API error (attempt {attempt}): Error 503, Status: UNAVAILABLE")}),
+                        )?;
+                    }
+                }
+                if let Some(hooks) = &hooks {
+                    hooks.call(
+                        "Stop",
+                        &json!({"stop_hook_active": false,
+                            "error": "Error 503, Status: UNAVAILABLE"}),
+                    );
+                }
+                say("API ERROR")?;
             }
             "/size" => say(&format!("SIZE {}", terminal_size()))?,
             "/tool" => {

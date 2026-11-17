@@ -13,9 +13,9 @@
 //!   prompt still in `lastUserInput`), ask nothing.
 //! - `Stop` → `Stop` (`continuationActive` as `stop_hook_active`); a block becomes
 //!   `{"decision":"continue"}`. A turn the model API ended with an error (`terminationReason`
-//!   `ERROR`) or a refused prompt ended (`TERMINAL_CUSTOM_HOOK`) asks nothing, so no answer
-//!   continues it (Claude Code runs no Stop hook for either); the transcript's error step ends
-//!   the turn.
+//!   `ERROR`) is sent with its `error`, which Yulius settles without a gate, and nothing continues
+//!   it; a turn a refused prompt ended (`TERMINAL_CUSTOM_HOOK`) asks nothing (Yulius ended it
+//!   itself; the transcript's refusal step ends it there).
 //! - `PreToolUse` of `run_command` → Claude Code's `Bash` for the guard, checked in the sandbox.
 //!   The CLI denies a tool whose hook prints nothing, so every other outcome is `allow`.
 //!
@@ -155,6 +155,10 @@ fn answer(
             Err(_) => return go_on(event),
         }
     };
+    // A turn its model API failed is never continued: agy would only try the model again.
+    if payload.get("terminationReason").and_then(Value::as_str) == Some("ERROR") {
+        return go_on(event);
+    }
     from_claude(event, claude_event, &reply)
 }
 
@@ -174,13 +178,10 @@ fn to_claude(
     let claude_event = match event {
         "SessionStart" => "SessionStart",
         "PreInvocation" if opens_a_typed_turn(payload) => "UserPromptSubmit",
-        // A turn a refused prompt ended (Yulius ended it itself) or the model API failed (the
-        // transcript's error step ends it) asks nothing: no answer may continue it.
+        // A turn a refused prompt ended asks nothing: Yulius ended it itself.
         "Stop"
-            if !matches!(
-                payload.get("terminationReason").and_then(Value::as_str),
-                Some("TERMINAL_CUSTOM_HOOK" | "ERROR")
-            ) =>
+            if payload.get("terminationReason").and_then(Value::as_str)
+                != Some("TERMINAL_CUSTOM_HOOK") =>
         {
             "Stop"
         }
@@ -214,6 +215,18 @@ fn to_claude(
                 .and_then(Value::as_bool)
                 .unwrap_or(false);
             request.insert("stop_hook_active".into(), json!(active));
+            // A turn its model API failed: Yulius settles it without a gate (AGY-006).
+            if payload.get("terminationReason").and_then(Value::as_str) == Some("ERROR") {
+                let error = payload
+                    .get("error")
+                    .and_then(Value::as_str)
+                    .filter(|e| !e.is_empty())
+                    .unwrap_or("the model API failed");
+                request.insert(
+                    "error".into(),
+                    json!(crate::json::truncate_utf8(error, 1024)),
+                );
+            }
         }
         _ => {
             let call = payload.get("toolCall")?;
