@@ -178,6 +178,7 @@ mode.
 - [x] Slice C: a failed member leaves without cancelling the candidate
 - [x] Slice C: a passed candidate merges while own runs go
 - [x] Slice C: derived-file conflicts handled without a wasted cycle
+- [x] Slice C: derived files a project names are changed one candidate at a time
 - [x] Slice C: dissolve reasons shown; documents and ADR
 - [x] Slice C: review round 1 answered
 - [x] Slice C: review round 2 answered
@@ -248,7 +249,10 @@ mode.
   decides no one (its tree can never land) and is still cancelled: merging the members before it
   would leave the integration branch at an untested tree. Derived files: Yulius cannot run a
   project's formatter or generator where it builds candidates, so it saves the cycle it can,
-  telling the member that breaks a combination once the others pass without it.
+  telling the member that breaks a combination once the others pass without it, and serialises
+  the derived files a project names in `[merge_queue] apart`, so they never meet in one
+  candidate (the request's "serialised"; redoing the step would need the project's commands
+  where Yulius builds candidates).
 - **Shards are a matrix; a run picks its lane** (slice D,
   [ADR-0358](../../docs/decisions/0358-tests-run-in-shards-and-a-run-starts-from-the-build-it-builds-on.md)):
   `matrix = "i/n"` values already run side by side, each in its own checkout, so a project
@@ -739,6 +743,20 @@ mode.
   e2e; security skipped, Vidoc 401). Its minor (a deterministic test of the read before each
   merge, with a pause point) and two nits (an assertion that races the background pass, one long
   ADR line) go into slice D's pull request, not after the approval.
+
+### Slice C, follow-up: derived files serialised (after the closing check)
+
+- MQW-003 asked for derived-file conflicts found early and handled without a wasted cycle,
+  serialised or the deterministic step redone. The told-at-once rule above still spent one red
+  candidate run. `[merge_queue] apart = [globs]` (`spec_format::parse_yulius_toml_merge_queue`,
+  doctest; checked in the whole-file parse too) names derived files; `merge_queue::held_apart`
+  (doctest; unit `derived_files_keep_their_changes_apart`: under the same pattern held, under
+  different ones or outside together, nothing declared nothing held) holds a later pull request
+  out of a candidate whose earlier member changes files under the same pattern;
+  `App::hold_apart` reads the integration branch's `yulius.toml` and each head's changed paths.
+  `merge_train::derived_files_are_changed_one_candidate_at_a_time` (#1 and #2 change `gen/`
+  files, #3 another: candidates `train/1+3` then `train/2`, the formed entry names "#2 (with #1,
+  gen/**)"); with the holding undone it fails. An older instance ignores the unknown table.
 
 ### Slice D: a CI run is shorter
 

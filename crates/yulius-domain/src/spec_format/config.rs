@@ -53,6 +53,10 @@
 //!                                        # only these, `not_product` never these; default:
 //!                                        # every file but tests and documents
 //!
+//! [merge_queue]                        # derived files (SPEC-497 MQW-003): two armed pull
+//! apart = ["skills/defaults/"]           # requests that both change files under one of these
+//!                                        # globs never share a merge candidate
+//!
 //! [resources.env]                       # the budget in this repository's tools' terms
 //! CARGO_BUILD_JOBS = "{cpus}"            # also {memory_mb}, {memory_gb}; with YULIUS_CPUS and
 //!                                        # YULIUS_MEMORY_MB in agent sessions and CI jobs;

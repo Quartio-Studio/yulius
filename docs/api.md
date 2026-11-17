@@ -811,6 +811,11 @@ CARGO_BUILD_JOBS = "{cpus}" # placeholders {cpus}, {memory_mb}, {memory_gb}; at 
 product = ["crates/"]       #   approval (at most 20 such lines keep it, ADR-0345): `product` (1-50
 not_product = ["crates/gen/"] # globs) counts only these, `not_product` never these; default: every
                             #   file but tests and documents; the integration branch's table counts
+[merge_queue]               # optional (SPEC-497 MQW-003, ADR-0357): derived files, such as a
+apart = ["skills/defaults/", "Cargo.lock"] # generated list: two armed pull requests that both
+                            #   change files under one of these 1-50 globs never share a merge
+                            #   candidate; the later waits for the next; the integration branch's
+                            #   table counts
 ```
 
 Jobs name their stages with `::yulius-stage <name>` lines ("Stages" below). Jobs get `CI=true`, `HOME` (persistent, shared by the sandbox's lanes), `YULIUS_CI_CACHE` (persistent, the job checkout's own: never shared with a job running at the same time), `YULIUS_CI_RUN`,

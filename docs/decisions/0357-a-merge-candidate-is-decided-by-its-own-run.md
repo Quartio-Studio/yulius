@@ -53,7 +53,20 @@ merged result, and a failing test is never run again until it passes.
   run does not record its base. A candidate's own run skips such jobs too, so a project with
   `paths` jobs gets this reuse only from runs that ran every job. A train's verdict recorded at a
   pull request head (`yulius:merge-train`) is never a source.
-- **How members combine is told without a candidate of its own** (MQW-003). A red candidate whose
+- **Derived files a project names are changed one candidate at a time** (MQW-003, serialised).
+  `[merge_queue] apart = [globs]` in the integration branch's `yulius.toml` names them (a
+  generated list, a table of shipped files, `Cargo.lock`). When the queue forms a candidate,
+  an armed pull request that changes a file under one of those globs, which an earlier member
+  in arm order also changes, is held out (`merge_queue::held_apart`). It waits for the next
+  candidate, built on top of the first's merge, so their combination is never tested together
+  and no candidate run fails on it. The candidate's audit entry names who was held apart and
+  why. A pull request whose changed files cannot be told is not held. Serialising, not redoing
+  the deterministic step: redoing it means running the project's formatter or generator where
+  Yulius builds candidates (outside the sandbox) and landing a commit the members' trees do not
+  predict; holding one back costs that pull request one candidate's wait, and only when both
+  touch the same derived files.
+- **How members combine is told without a candidate of its own** (MQW-003, for what no `apart`
+  names). A red candidate whose
   bisection leaves out exactly one member (a candidate of two or three) remembers that member and
   the others' heads. If exactly those heads then pass without it on the same base, it failed with
   them and they pass without it: often a combination in a derived file (formatting, a generated
@@ -79,6 +92,8 @@ merged result, and a failing test is never run again until it passes.
   would be tested exactly, and a failed member would cost only the runs after it, but every
   candidate would cost as many runs as members. CI's budget (ADR-0350, ADR-0353) is what the
   queue waits on.
+- **Hold every pull request touching a common file apart**, without the project naming derived
+  files: a changes log or an index every pull request touches would leave candidates of one.
 - **Regenerate derived files in the candidate** (run the project's formatter or generator on the
   merged result and land that commit): it would need the project's commands run where Yulius
   builds candidates. Yulius would have to run them outside the sandbox, or merge a job's commit
