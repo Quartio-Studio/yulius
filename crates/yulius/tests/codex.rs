@@ -401,11 +401,22 @@ fn only_a_genuine_codex_refresh_reaches_the_vault() -> TestResult {
         // The agent writes a sign-in of its own: it is not taken when the run ends.
         let forged = codex_auth(&ago(1_000)).replace("acc-synthetic", "acc-attacker");
         std::fs::write(home.join("auth.json"), &forged)?;
+        // What the run's write-back decided is read once it is done (slice C1 review).
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        yulius_app::race::on(
+            yulius_app::race::Point::CodexWriteBackDone,
+            Path::new(id.as_str()),
+            move || {
+                let _ = done_tx.send(());
+            },
+        );
         app.send_input(&id, b"/exit\r").await?;
         wait_for("the run's end", Duration::from_secs(30), || async {
             task(&app, &id).await.is_ok_and(|t| !t.status.is_live())
         })
         .await?;
+        tokio::task::spawn_blocking(move || done_rx.recv_timeout(Duration::from_secs(30)))
+            .await??;
         assert_eq!(stored_credential(&app, &account).await?, left);
         // A file that did not reach the vault is not removed: were it a genuine refresh that
         // could not be stored, it is the only copy of the rotated tokens.
@@ -1350,3 +1361,66 @@ fn a_codex_task_refuses_a_claude_model_set_later() -> TestResult {
     rt.shutdown_timeout(Duration::from_secs(5));
     Ok(())
 }
+
+/// SPEC-503 CDX-006 (slice C1 review): a sign-in made between the read of a run's refresh and its
+/// write wins: the refresh, of the sign-in before, is not stored over it.
+#[test]
+fn a_sign_in_made_meanwhile_wins_over_a_runs_refresh() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built")?;
+    let (_dir, data) = temp()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let app = build_full(&data, Some(&fake), FakeAgentOptions::default(), 8)?;
+        let (sandbox, user) = seed_records(&app).await?;
+        let account =
+            add_codex_account(&app, "a-codex", &codex_auth("2026-11-01T10:00:00Z")).await?;
+        seed_repo(&data, &sandbox)?;
+        let home = data
+            .join("sandboxes")
+            .join(sandbox.as_str())
+            .join("codex")
+            .join(account.as_str());
+        let id = new_codex_task(&app, &sandbox, &user, "Codex race").await?;
+        wait_for("the banner", Duration::from_secs(30), || {
+            screen_contains(&app, &id, "FAKE-AGENT READY")
+        })
+        .await?;
+        std::fs::write(home.join("auth.json"), codex_auth(&ago(60_000)))?;
+        let (reached_tx, reached_rx) = std::sync::mpsc::channel();
+        let (go_tx, go_rx) = std::sync::mpsc::channel::<()>();
+        yulius_app::race::on(
+            yulius_app::race::Point::CodexRefreshTaken,
+            Path::new(account.as_str()),
+            move || {
+                let _ = reached_tx.send(());
+                let _ = go_rx.recv_timeout(Duration::from_secs(60));
+            },
+        );
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        yulius_app::race::on(
+            yulius_app::race::Point::CodexWriteBackDone,
+            Path::new(id.as_str()),
+            move || {
+                let _ = done_tx.send(());
+            },
+        );
+        app.send_input(&id, b"/exit\r").await?;
+        tokio::task::spawn_blocking(move || reached_rx.recv_timeout(Duration::from_secs(30)))
+            .await??;
+        // An administrator signs the subscription in again right then.
+        let signed_in = codex_auth(&ago(1_000)).replace("acc-synthetic", "acc-new");
+        let sealed = app.deps.crypto.seal(signed_in.as_bytes())?;
+        app.deps
+            .store
+            .set_account_credential(&account, &sealed, AccountStatus::Ok, app.now())
+            .await?;
+        let _ = go_tx.send(());
+        tokio::task::spawn_blocking(move || done_rx.recv_timeout(Duration::from_secs(30)))
+            .await??;
+        assert_eq!(stored_credential(&app, &account).await?, signed_in);
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+

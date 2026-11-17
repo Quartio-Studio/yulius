@@ -3105,42 +3105,81 @@ impl App {
         }
     }
 
-    /// After a Codex run: its home's `auth.json` replaces the account's credential when it is a
-    /// genuine refresh of the same sign-in (SPEC-503 CDX-006); the file lies where the agent
-    /// writes, so a forged one is not taken. The account keeps its state. Once no run of the
-    /// account is left in the sandbox, the file is removed: the credential lives in the vault,
-    /// not in a folder later tasks can read.
-    ///
-    /// `attempt` is the run that ended, left out of the runs still using the file; `None` for a
-    /// launch that ended before its run was live (`CodexLeftover`).
-    /// After a Codex run ended or was lost: its write-back ([`Self::write_back_codex_auth`]) on a
-    /// task of its own, which waits for the launch lock, so neither the run's end nor a caller
+    /// After a Codex run ended or was lost (SPEC-503 CDX-006): its home's `auth.json` replaces the
+    /// account's credential when it is a genuine refresh of the same sign-in, at once
+    /// ([`Self::keep_codex_refresh`]); the file lies where the agent writes, so a forged one is not
+    /// taken, and the account keeps its state. Its removal waits for the launch lock, so it runs
+    /// on a task of its own ([`Self::remove_codex_auth_after`]): neither the run's end nor a caller
     /// holding that lock waits for it.
     async fn codex_run_ended(self: &Arc<Self>, task_id: &TaskId, attempt_id: &AttemptId) {
-        if let Ok(Some(attempt)) = self.deps.store.attempt(attempt_id).await
-            && attempt.harness == Harness::Codex
-            && let Some(account) = attempt.account_id
-        {
-            let app = Arc::clone(self);
-            let task = task_id.clone();
-            tokio::spawn(async move {
-                app.write_back_codex_auth(&task, &account, Some(&attempt.id))
-                    .await;
-            });
-        }
+        let Ok(Some(attempt)) = self.deps.store.attempt(attempt_id).await else {
+            return;
+        };
+        let Some(account) = attempt.account_id.filter(|_| attempt.harness == Harness::Codex) else {
+            return;
+        };
+        let Ok(Some(task)) = self.deps.store.task(task_id).await else {
+            return;
+        };
+        let root = self.sandbox_dir(&task.sandbox_id);
+        let held = self.keep_codex_refresh(&root, &account).await;
+        let app = Arc::clone(self);
+        let task_id = task_id.clone();
+        tokio::spawn(async move {
+            app.remove_codex_auth_after(
+                &task_id,
+                &task.sandbox_id,
+                &root,
+                &account,
+                Some(&attempt.id),
+                held,
+            )
+            .await;
+        });
     }
 
-    async fn write_back_codex_auth(
-        &self,
-        task_id: &TaskId,
-        account_id: &AccountId,
-        attempt: Option<&AttemptId>,
-    ) {
+    /// The write-back of a launch that ended before its run was live (`CodexLeftover`): as
+    /// [`Self::codex_run_ended`], with no run of its own to leave out.
+    async fn write_back_codex_auth(&self, task_id: &TaskId, account_id: &AccountId) {
         let Ok(Some(task)) = self.deps.store.task(task_id).await else {
             return;
         };
         let root = self.sandbox_dir(&task.sandbox_id);
         let held = self.keep_codex_refresh(&root, account_id).await;
+        self.remove_codex_auth_after(task_id, &task.sandbox_id, &root, account_id, None, held)
+            .await;
+    }
+
+    /// Once no run of the account is left in the sandbox, its `auth.json` is removed: the
+    /// credential lives in the vault (`held`, what it holds after the write-back), not in a
+    /// folder later tasks can read. `attempt` is the run that ended, left out of the runs still
+    /// using the file. Reaches [`crate::race::Point::CodexWriteBackDone`] when done.
+    async fn remove_codex_auth_after(
+        &self,
+        task_id: &TaskId,
+        sandbox: &SandboxId,
+        root: &Path,
+        account_id: &AccountId,
+        attempt: Option<&AttemptId>,
+        held: Option<Secret>,
+    ) {
+        self.remove_codex_auth_unless_used(task_id, sandbox, root, account_id, attempt, held)
+            .await;
+        crate::race::reached(
+            crate::race::Point::CodexWriteBackDone,
+            Path::new(task_id.as_str()),
+        );
+    }
+
+    async fn remove_codex_auth_unless_used(
+        &self,
+        task_id: &TaskId,
+        sandbox: &SandboxId,
+        root: &Path,
+        account_id: &AccountId,
+        attempt: Option<&AttemptId>,
+        held: Option<Secret>,
+    ) {
         // Under the launch lock: a run of the account starting now in this sandbox has written
         // its `auth.json` and is recorded live once the lock is free, so its file is never taken.
         let _launch = self.supervisor.launch.lock().await;
@@ -3154,7 +3193,7 @@ impl App {
                 }) {
                     // A task that cannot be read may be in this sandbox: its run keeps the file.
                     match self.deps.store.task(&other.task_id).await {
-                        Ok(Some(t)) if t.sandbox_id != task.sandbox_id => {}
+                        Ok(Some(t)) if &t.sandbox_id != sandbox => {}
                         Ok(None) => {}
                         Ok(Some(_)) | Err(_) => others = true,
                     }
@@ -3175,11 +3214,11 @@ impl App {
         // Otherwise only the vault's own copy goes: a file that did not reach the vault (a
         // refresh that could not be stored, or one not taken) may hold the only copy of rotated
         // tokens.
-        match read_codex_auth(&root, account_id) {
+        match read_codex_auth(root, account_id) {
             Ok(Some(file))
                 if gone || held.as_ref().is_some_and(|h| h.expose().as_bytes() == file) =>
             {
-                if let Err(err) = remove_codex_auth(&root, account_id) {
+                if let Err(err) = remove_codex_auth(root, account_id) {
                     tracing::warn!(task = %task_id, error = %err, "the run's Codex credentials could not be removed");
                 }
             }
@@ -3196,7 +3235,8 @@ impl App {
     /// Stores the `auth.json` in the Codex home of `account` below `root` when it replaces the
     /// account's credential ([`HarnessPort::codex_auth_replaces`]), and returns the credential
     /// the account holds afterwards; `None` when the account or its credential is gone (signed
-    /// out meanwhile: nothing is stored back).
+    /// out meanwhile: nothing is stored back), or when it was signed in again meanwhile (the
+    /// refresh is of the sign-in before).
     async fn keep_codex_refresh(&self, root: &Path, account_id: &AccountId) -> Option<Secret> {
         let account = self.deps.store.account(account_id).await.ok().flatten()?;
         let stored = self.deps.crypto.open(account.credential.as_ref()?).ok()?;
@@ -3215,6 +3255,10 @@ impl App {
         {
             return String::from_utf8(stored).ok().map(Secret);
         }
+        crate::race::reached(
+            crate::race::Point::CodexRefreshTaken,
+            Path::new(account_id.as_str()),
+        );
         let sealed = match self.deps.crypto.seal(&fresh) {
             Ok(sealed) => sealed,
             Err(err) => {
@@ -6273,7 +6317,7 @@ impl Drop for CodexLeftover {
         };
         if let Ok(runtime) = tokio::runtime::Handle::try_current() {
             runtime.spawn(async move {
-                app.write_back_codex_auth(&task, &account, None).await;
+                app.write_back_codex_auth(&task, &account).await;
             });
         }
     }
