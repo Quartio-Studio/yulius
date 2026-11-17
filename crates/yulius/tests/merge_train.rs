@@ -164,6 +164,9 @@ enum Project {
     /// [`Project::Standard`] with a second job that runs only for changes under `never/`
     /// (SPEC-497 MQW-001: a run that skipped it is no source for a candidate's verdict).
     Paths,
+    /// [`Project::Standard`] whose `[merge_queue]` holds changes under `gen/` apart (SPEC-497
+    /// MQW-003).
+    Apart,
 }
 
 struct Fixture {
@@ -210,7 +213,7 @@ async fn fixture_with(project: Project, lanes: Option<u32>) -> BoxResult<Fixture
     h.github.set_perm("alice", "acme/app", perms("write"));
     let sandbox = seed_sandbox(&h, "s1", "app", "u-alice").await?;
     let integration = match project {
-        Project::Standard | Project::Paths => "dev",
+        Project::Standard | Project::Paths | Project::Apart => "dev",
         Project::Minimal => {
             let mut profile = yulius_domain::delivery::DeliveryProfile::standard();
             profile.integration_branch = "trunk".into();
@@ -237,8 +240,10 @@ async fn fixture_with(project: Project, lanes: Option<u32>) -> BoxResult<Fixture
     )?;
     std::fs::write(work.join("README.md"), "# app\n")?;
     match project {
-        Project::Standard | Project::Paths => {
-            let toml = if project == Project::Paths {
+        Project::Standard | Project::Paths | Project::Apart => {
+            let toml = if project == Project::Apart {
+                format!("{YULIUS_TOML}\n[merge_queue]\napart = [\"gen/\"]\n")
+            } else if project == Project::Paths {
                 format!(
                     "{YULIUS_TOML}\n[[ci.jobs]]\nname = \"never\"\ncommand = \"echo never\"\n\
                      paths = [\"never/**\"]\n"
@@ -327,7 +332,11 @@ impl Fixture {
             ],
         )?;
         for (path, text) in files {
-            std::fs::write(worktree.join(path), text)?;
+            let file = worktree.join(path);
+            if let Some(parent) = file.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::write(file, text)?;
         }
         if self.project != Project::Minimal {
             std::fs::write(
@@ -1716,6 +1725,58 @@ async fn formed_again(project: Project) -> TestResult {
     Ok(())
 }
 
+/// SPEC-497 MQW-003: two armed pull requests that both change files under a pattern the
+/// project's `[merge_queue] apart` names never share a candidate: the first goes into one, the
+/// other waits and merges on the next, on top of it. A third that changes nothing there joins the
+/// first. No candidate fails on their combination.
+#[tokio::test]
+async fn derived_files_are_changed_one_candidate_at_a_time() -> TestResult {
+    let f = fixture_with(Project::Apart, None).await?;
+    let app = f.h.app.clone();
+    let mut worktrees = Vec::new();
+    for (n, file) in [(1u32, "gen/a.txt"), (2, "gen/b.txt"), (3, "c.txt")] {
+        worktrees.push(f.task(n, &[(file, "x\n")]).await?);
+    }
+    for (n, worktree) in (1u32..).zip(&worktrees) {
+        f.arm(n, worktree).await?;
+        f.record_passed(&app, n, &git(worktree, &["rev-parse", "HEAD"])?)
+            .await?;
+    }
+    f.advance_dev("other.txt")?;
+    let sandbox = app.deps.store.sandbox(&f.sandbox).await?.ok_or("s1")?;
+    f.decide_until(&app, || async {
+        app.ci_sync_sandbox(&sandbox).await?;
+        f.settle(&app).await?;
+        Ok(f.merged(&app, 1).await? && f.merged(&app, 2).await? && f.merged(&app, 3).await?)
+    })
+    .await?;
+    let mut trains: Vec<String> = f
+        .train_runs(&app)
+        .await?
+        .iter()
+        .map(|r| r.reference.key())
+        .collect();
+    trains.sort();
+    assert_eq!(
+        trains,
+        ["train/1+3", "train/2"],
+        "held apart, then on its own"
+    );
+    let formed = yulius_app::ports::store::AuditStore::audit_details(
+        app.deps.store.as_ref(),
+        "app",
+        yulius_domain::merge_queue::FORMED,
+        10,
+    )
+    .await?;
+    assert!(
+        formed.iter().any(|d| d
+            .contains("held apart for the next candidate (derived files): #2 (with #1, gen/**)")),
+        "{formed:?}"
+    );
+    Ok(())
+}
+
 /// SPEC-497 SHR-002 (slice D review round 1): a merge candidate's run takes a lane its members'
 /// own runs took, and its job's output says so.
 #[tokio::test]
@@ -2001,7 +2062,7 @@ async fn three_green_in_sequence(project: Project) -> TestResult {
     })
     .await?;
     let method = match project {
-        Project::Standard | Project::Paths => "squash",
+        Project::Standard | Project::Paths | Project::Apart => "squash",
         Project::Minimal => "merge",
     };
     assert_eq!(

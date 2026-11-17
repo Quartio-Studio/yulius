@@ -4,6 +4,7 @@
 
 use std::collections::BTreeMap;
 
+use crate::scope::{Pattern, pattern_matches};
 use crate::time::{Timestamp, format_rfc3339};
 
 /// The audit action of a candidate formed.
@@ -116,6 +117,70 @@ pub struct QueueNumbers {
 
 /// Most dissolved candidates listed with their reason.
 pub const RECENT_DISSOLVED: usize = 10;
+
+/// The audit action of an armed pull request held out of a candidate for a derived file.
+pub const HELD_APART: &str = "delivery.train.held_apart";
+
+/// A pull request held out of the next merge candidate (SPEC-497 MQW-003).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HeldApart {
+    /// The pull request held out.
+    pub pr: u64,
+    /// The earlier member that changes files under the same pattern.
+    pub with: u64,
+    /// That pattern (`[merge_queue] apart`).
+    pub pattern: String,
+}
+
+/// Which of the armed pull requests `candidates` (in arm order, each with the files it changes)
+/// go into one merge candidate when `apart` names derived files (SPEC-497 MQW-003: generated
+/// lists, formatted tables): a pull request that changes a file under a pattern an earlier one
+/// in the candidate also changes is held out, and waits for the next candidate on top of the
+/// first's merge. Their combination is then never tested together, so no candidate fails on it.
+///
+/// # Examples
+/// ```
+/// use yulius_domain::merge_queue::held_apart;
+/// use yulius_domain::scope::Pattern;
+/// let apart = [Pattern::parse("skills/defaults/")?];
+/// let changed = [
+///     (3, vec!["skills/defaults/a.md".to_owned()]),
+///     (5, vec!["src/x.rs".to_owned()]),
+///     (7, vec!["skills/defaults/b.md".to_owned()]),
+/// ];
+/// let (kept, held) = held_apart(&apart, &changed);
+/// assert_eq!(kept, [3, 5]);
+/// assert_eq!((held[0].pr, held[0].with), (7, 3));
+/// # Ok::<(), yulius_domain::scope::ScopeError>(())
+/// ```
+#[must_use]
+pub fn held_apart(
+    apart: &[Pattern],
+    candidates: &[(u64, Vec<String>)],
+) -> (Vec<u64>, Vec<HeldApart>) {
+    let mut kept: Vec<u64> = Vec::new();
+    let mut taken: Vec<(usize, u64)> = Vec::new();
+    let mut held = Vec::new();
+    for (pr, paths) in candidates {
+        let touched: Vec<usize> = apart
+            .iter()
+            .enumerate()
+            .filter(|(_, pattern)| paths.iter().any(|path| pattern_matches(pattern, path)))
+            .map(|(index, _)| index)
+            .collect();
+        if let Some((index, with)) = taken.iter().find(|(index, _)| touched.contains(index)) {
+            held.push(HeldApart {
+                pr: *pr,
+                with: *with,
+                pattern: apart[*index].as_str().to_owned(),
+            });
+            continue;
+        }
+        taken.extend(touched.into_iter().map(|index| (index, *pr)));
+        kept.push(*pr);
+    }
+    (kept, held)
+}
 
 /// The numbers of `events` (any order) at or after `from` (none: all). Entries before `from`
 /// still pair an arming with its merge, so a merge in the range is not paired with an arming an
@@ -359,6 +424,45 @@ mod tests {
                 .all(|(_, e)| !e.detail.contains("before the range"))
         );
         assert_eq!(numbers.days[0].dissolved.get("member_failed"), Some(&1));
+    }
+
+    /// SPEC-497 MQW-003: pull requests that change files under the same `apart` pattern never
+    /// share a candidate; under different patterns, or outside them, they do; the first in arm
+    /// order goes first.
+    #[test]
+    fn derived_files_keep_their_changes_apart() -> Result<(), crate::scope::ScopeError> {
+        let apart = [Pattern::parse("gen/")?, Pattern::parse("Cargo.lock")?];
+        let changed =
+            |pr: u64, paths: &[&str]| (pr, paths.iter().map(|p| (*p).to_owned()).collect());
+        let (kept, held) = held_apart(
+            &apart,
+            &[
+                changed(1, &["gen/a.txt", "src/a.rs"]),
+                changed(2, &["Cargo.lock"]),
+                changed(3, &["gen/b.txt"]),
+                changed(4, &["src/b.rs"]),
+                changed(5, &["Cargo.lock", "gen/c.txt"]),
+            ],
+        );
+        assert_eq!(kept, [1, 2, 4]);
+        assert_eq!(
+            held,
+            [
+                HeldApart {
+                    pr: 3,
+                    with: 1,
+                    pattern: "gen/**".into()
+                },
+                HeldApart {
+                    pr: 5,
+                    with: 1,
+                    pattern: "gen/**".into()
+                },
+            ]
+        );
+        let (kept, held) = held_apart(&[], &[changed(1, &["gen/a"]), changed(2, &["gen/b"])]);
+        assert_eq!((kept, held.len()), (vec![1, 2], 0), "nothing declared");
+        Ok(())
     }
 
     #[test]
