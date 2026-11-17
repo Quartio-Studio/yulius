@@ -429,7 +429,9 @@ watching, steering and unblocking.
 - **Merge queue** (every sandbox, SPEC-441): a pull request's own CI run always finishes, however
   often the integration branch moves; armed and green, it merges at once when up to date, else
   Yulius tests it once on top of the current integration branch, together with the others
-  waiting (a merge candidate, halved when red), and merges them in order. Every armed pull
+  waiting (a merge candidate, halved when red), and merges them in order as soon as that run
+  passed, without waiting for their own runs (SPEC-497). The Pipeline tab says why each recent
+  candidate was dissolved. Every armed pull
   request says where it stands, and a merge at a head whose own Yulius CI run passed counts as
   merged on green, whoever made it.
 - **Pull request notices** (every sandbox, SPEC-444): Yulius types what happens to a task's open

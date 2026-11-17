@@ -175,7 +175,7 @@ mode.
 - [x] Slice B: quarantine review round 3 answered
 - [x] Slice C: a failed member leaves without cancelling the candidate
 - [x] Slice C: a passed candidate merges while own runs go
-- [ ] Slice C: derived-file conflicts handled without a wasted cycle
+- [x] Slice C: derived-file conflicts handled without a wasted cycle
 - [ ] Slice C: dissolve reasons shown; documents, ADR and review
 - [ ] Slice D: sharded jobs
 - [ ] Slice D: a candidate reuses its members' builds; review
@@ -234,6 +234,14 @@ mode.
   a merge. The gate knows what it ran. The environment, not a file in the job's home, carries the
   list: the job could have linked such a file elsewhere. Two pull requests, not one pull request's
   repeated runs: only an unrelated change shows the failure is not the change's.
+- **A merge candidate is decided by its own run** (slice C,
+  [ADR-0357](../../docs/decisions/0357-a-merge-candidate-is-decided-by-its-own-run.md)): its run
+  tested the exact merged result, so a passed one merges without the members' own runs, and an
+  errored or cancelled own run is the candidate's to decide. A run that holds a failed member
+  decides no one (its tree can never land) and is still cancelled: merging the members before it
+  would leave the integration branch at an untested tree. Derived files: Yulius cannot run a
+  project's formatter or generator where it builds candidates, so it saves the cycle it can,
+  telling the member that breaks a combination once the others pass without it.
 - **`YULIUS_CI_LANES` keeps its default** (slice A): it bounds checkouts per sandbox (each lane
   keeps its own job folders and caches, a disk cost), and the budget now decides the load, so a
   lower default would only make a small project's runs queue behind each other for nothing.
@@ -651,6 +659,36 @@ mode.
   warnings denied; the unit tests of `yulius-domain`, `yulius-store`, `yulius-app`,
   `yulius-github`, `xtask` (1,314 passed); `local_ci::` and `analytics::` (105 passed);
   `yulius-domain` doctests (24 passed).
+
+### Slice C: the merge queue does not throw work away
+
+- MQW-001: `member_left` leaves a member only for a failed own run; an errored or cancelled one
+  stays (`merge_train::a_member_whose_own_run_is_cancelled_or_errors_stays_in_the_candidate`:
+  both own runs ended so, no dissolve, the candidate's run goes on, passes, both merge; undone, it
+  fails). A candidate formed again takes its tree's passed run (`App::ci_reuse_for_candidate`,
+  `ci_reuse_tree` for train references with no `paths`-skipping source;
+  `merge_train::a_candidate_formed_again_reuses_its_trees_passed_run`: after a busy member's wait
+  limit the same candidate forms again, passed at once with "not run again", one candidate run
+  executed; undone, it fails). A failed member still leaves
+  (`a_member_whose_own_run_fails_leaves_the_candidate`, unchanged).
+- MQW-002: `drive_train` no longer waits for own runs
+  (`merge_train::a_passed_candidate_merges_while_a_members_own_run_goes`: merged while its own run
+  is held running, which never passed; `a_stuck_own_run_holds_nothing_back`: both merge, nothing
+  dissolved, one candidate run; with the wait put back both fail).
+- MQW-003: `SandboxTrains::suspect`, set by `bisect` when one member is left out, proven by a
+  passed train of exactly the others on the same base (`Suspect::proven_by`, unit
+  `a_suspect_is_proven_only_by_the_others_on_the_same_base`); `tell_suspect` ends its armed merge
+  naming both runs. `a_red_candidate_is_bisected_and_the_breaking_pull_request_told` now expects
+  `train/1+2+3 failed`, `train/1+2 passed` and no `train/3`;
+  `a_member_left_out_is_blamed_only_when_the_others_pass_without_it` (the first member fails
+  alone on the new base: it is told, the other merges). Undone (no suspect; the others' check
+  dropped), the tests fail.
+- MQW-004: `Dissolved::MemberFailed`; `QueueNumbers::dissolved_recent` (unit
+  `each_dissolved_candidate_is_listed_with_its_reason`); `dissolved_recent` in
+  `GET /api/analytics/merge-queue` (`analytics::the_merge_queue_read_counts_candidates_from_the_audit_log`);
+  the card's list (`pipeline.e2e.ts`, 18 of 18).
+- The quarantine review's round-3 nit: the hourly release runs off the CI poll (spawned).
+- ADR-0357; architecture (merge queue, diagram), `api.md`, `product.md`, `changes.md`.
 
 ### Slice A3: the operator's amendment to the admission (its own pull request, first)
 
