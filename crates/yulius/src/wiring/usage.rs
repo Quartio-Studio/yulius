@@ -16,7 +16,7 @@
 //! (SPEC-244, ADR-0185). It may answer 403 for the same missing scope; that is a definite
 //! "unknown", never retried for the same sign-in.
 //!
-//! Codex accounts (SPEC-451 CDX-008): a ChatGPT sign-in's windows come from
+//! Codex accounts (SPEC-503 CDX-008): a ChatGPT sign-in's windows come from
 //! `GET https://chatgpt.com/backend-api/wham/usage` (the access token of its `auth.json`,
 //! `ChatGPT-Account-Id`; `rate_limit.primary_window` / `secondary_window` with `used_percent`,
 //! `limit_window_seconds` and `reset_at` in epoch seconds, as Codex CLI 0.167 reads them), and its
@@ -89,14 +89,16 @@ impl ProviderUsage {
         })
     }
 
-    /// A probe that asks `base` (`http://127.0.0.1:PORT`) instead of Claude's API: a local
-    /// stand-in in tests.
+    /// A probe that asks `base` (`http://127.0.0.1:PORT`) instead of Claude's API and ChatGPT's
+    /// backend: a local stand-in in tests, which never reaches either.
     ///
     /// # Errors
     /// When the HTTP client cannot be built.
     pub fn at(base: impl Into<String>) -> Result<Self, String> {
+        let base = base.into();
         Ok(Self {
-            base: base.into(),
+            codex_base: base.clone(),
+            base,
             ..Self::new()?
         })
     }
@@ -604,7 +606,7 @@ mod tests {
 
     use super::*;
 
-    /// SPEC-451 CDX-008: Codex windows parse with epoch or relative resets.
+    /// SPEC-503 CDX-008: Codex windows parse with epoch or relative resets.
     #[test]
     fn codex_windows_parse_with_epoch_or_relative_resets() -> Result<(), String> {
         let usage = parse_codex(
@@ -647,7 +649,7 @@ mod tests {
         Ok(())
     }
 
-    /// SPEC-451 CDX-008: a Codex sign-in the usage endpoint will not answer (403) says so in
+    /// SPEC-503 CDX-008: a Codex sign-in the usage endpoint will not answer (403) says so in
     /// Codex's words, never Claude's.
     #[tokio::test]
     async fn a_codex_usage_403_speaks_of_codex() -> Result<(), Box<dyn std::error::Error>> {
@@ -663,8 +665,7 @@ mod tests {
                 let _ = sock.write_all(reply.as_bytes()).await;
             }
         });
-        let mut probe = ProviderUsage::new()?;
-        probe.codex_base = base;
+        let probe = ProviderUsage::at(base)?;
         let auth =
             Secret(r#"{"tokens":{"access_token":"synthetic-access","account_id":"acc-1"}}"#.into());
         let failure = probe
@@ -678,7 +679,7 @@ mod tests {
         Ok(())
     }
 
-    /// SPEC-451 CDX-008: the probe asks with the sign-in's access token and account, and an
+    /// SPEC-503 CDX-008: the probe asks with the sign-in's access token and account, and an
     /// API-key account has no windows; the email is the id token's claim.
     #[tokio::test]
     async fn codex_usage_is_read_with_the_access_token() -> Result<(), Box<dyn std::error::Error>> {
@@ -707,8 +708,7 @@ mod tests {
                 let _ = sock.write_all(reply.as_bytes()).await;
             }
         });
-        let mut probe = ProviderUsage::new()?;
-        probe.codex_base = base;
+        let probe = ProviderUsage::at(base)?;
         let claims = base64::engine::general_purpose::URL_SAFE_NO_PAD
             .encode(br#"{"email":"dev@example.com"}"#);
         let auth = format!(

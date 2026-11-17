@@ -62,6 +62,9 @@ const SHUTDOWN_WRITE_BOUND: Duration = Duration::from_secs(2);
 /// How many times a stop makes its status change: each lost one means another writer changed the
 /// status, and the status machine has no cycle a stop can keep losing to (SPEC-250 STW-001).
 const STOP_ROUNDS: usize = 4;
+/// How many times a Codex refresh is stored again after another run's older refresh of the same
+/// sign-in won the swap (SPEC-503 CDX-006).
+const CODEX_REFRESH_SWAPS: usize = 4;
 /// How often a close waiting for its run looks again without an update (SPEC-039).
 const CLOSE_RECHECK: Duration = Duration::from_secs(1);
 
@@ -3230,15 +3233,15 @@ impl App {
                     || kept.lost.as_ref().is_some_and(|lost| *lost == file) =>
             {
                 if let Err(err) = remove_codex_auth(root, account_id) {
-                    tracing::warn!(task = ?task_id, account = %account_id, error = %err, "the run's Codex credentials could not be removed");
+                    tracing::warn!(task = task_id.map(TaskId::as_str), account = %account_id, error = %err, "the run's Codex credentials could not be removed");
                 }
             }
             Ok(Some(_)) => {
-                tracing::warn!(task = ?task_id, account = %account_id, "the run's Codex credentials did not reach the vault; left in place");
+                tracing::warn!(task = task_id.map(TaskId::as_str), account = %account_id, "the run's Codex credentials did not reach the vault; left in place");
             }
             Ok(None) => {}
             Err(err) => {
-                tracing::warn!(task = ?task_id, account = %account_id, error = %err, "the run's Codex credentials could not be read");
+                tracing::warn!(task = task_id.map(TaskId::as_str), account = %account_id, error = %err, "the run's Codex credentials could not be read");
             }
         }
     }
@@ -3247,7 +3250,7 @@ impl App {
     /// account's credential ([`HarnessPort::codex_auth_replaces`]). Says what the account holds
     /// afterwards (`holds`; `None` when its credential is gone: signed out, nothing is stored
     /// back) and, when another credential won (the account held another or none by the time of
-    /// the write: a sign-in made meanwhile, a removal, another run's refresh), the file's bytes
+    /// the write: a sign-in made meanwhile, a removal, another run's newer refresh), the file's bytes
     /// that lost, which are never taken and need not stay.
     async fn keep_codex_refresh(&self, root: &Path, account_id: &AccountId) -> KeptCodexAuth {
         let holds = |stored: Vec<u8>| KeptCodexAuth {
@@ -3292,41 +3295,61 @@ impl App {
         };
         // Only the credential changes, and only while it is the one this refresh is of: the
         // status, error and email stay (a status read above is never written back), and a new
-        // sign-in made meanwhile wins.
-        let Some(previous) = account.credential.as_ref() else {
+        // sign-in made meanwhile wins. Another run's refresh of the same sign-in stored first
+        // does not win when this one is newer: the swap is tried again against it.
+        let Some(mut previous) = account.credential else {
             return holds(stored);
         };
-        match self
-            .deps
-            .store
-            .refresh_account_credential(account_id, previous, &sealed, self.now())
-            .await
-        {
-            Ok(true) => {
-                tracing::info!(account = %account_id, "refreshed Codex credentials kept");
-                holds(fresh)
-            }
-            Ok(false) => {
-                tracing::info!(account = %account_id, "the account holds another credential or none now: the Codex refresh is not kept");
-                let now_held = self
-                    .deps
-                    .store
-                    .account(account_id)
-                    .await
-                    .ok()
-                    .flatten()
-                    .and_then(|account| account.credential)
-                    .and_then(|sealed| self.deps.crypto.open(&sealed).ok());
-                KeptCodexAuth {
-                    holds: now_held.and_then(|bytes| String::from_utf8(bytes).ok().map(Secret)),
-                    lost: Some(fresh),
+        for _ in 0..CODEX_REFRESH_SWAPS {
+            match self
+                .deps
+                .store
+                .refresh_account_credential(account_id, &previous, &sealed, self.now())
+                .await
+            {
+                Ok(true) => {
+                    tracing::info!(account = %account_id, "refreshed Codex credentials kept");
+                    return holds(fresh);
+                }
+                Ok(false) => {}
+                Err(err) => {
+                    tracing::error!(error = %err, "could not store refreshed Codex credentials");
+                    return holds(stored);
                 }
             }
-            Err(err) => {
-                tracing::error!(error = %err, "could not store refreshed Codex credentials");
-                holds(stored)
+            let now_sealed = self
+                .deps
+                .store
+                .account(account_id)
+                .await
+                .ok()
+                .flatten()
+                .and_then(|account| account.credential);
+            let now_held = now_sealed
+                .as_ref()
+                .and_then(|sealed| self.deps.crypto.open(sealed).ok());
+            match (now_sealed, now_held) {
+                (Some(again), Some(held))
+                    if self
+                        .deps
+                        .harness
+                        .codex_auth_replaces(&fresh, &held, self.now()) =>
+                {
+                    previous = again;
+                }
+                (_, held) => {
+                    tracing::info!(account = %account_id, "the account holds another credential or none now: the Codex refresh is not kept");
+                    return KeptCodexAuth {
+                        holds: held.and_then(|bytes| String::from_utf8(bytes).ok().map(Secret)),
+                        lost: Some(fresh),
+                    };
+                }
             }
         }
+        // Still contended after every try: what the account holds is not known for sure, so
+        // the file stays where it is (the next end or start of a run takes it again).
+        tracing::warn!(account = %account_id, "the Codex refresh could not be stored: the account's credential kept changing");
+        KeptCodexAuth::default()
     }
 
     /// Attaches to a run's host, resets the hub and starts the output pump and transcript watcher.

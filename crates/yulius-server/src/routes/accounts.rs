@@ -104,7 +104,7 @@ pub async fn import(
     body: Result<Json<ImportAccountAuth>, JsonRejection>,
 ) -> ApiResult<Json<AccountLoginStarted>> {
     let req = token_body(body, r#"{"auth_json": "…"}"#)?;
-    Ok(Json(app.import_account_auth(&ctx, &id, &req).await?))
+    Ok(Json(app.import_account_auth(&ctx, &id, req).await?))
 }
 
 /// `POST /api/admin/accounts/login/{login_id}/cancel`: stops a running sign-in and says how it

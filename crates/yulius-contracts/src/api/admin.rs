@@ -151,7 +151,7 @@ pub struct TokenTotalsView {
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CreateAccount {
-    /// Provider: `anthropic` (Claude) or `openai` (Codex, SPEC-451).
+    /// Provider: `anthropic` (Claude) or `openai` (Codex, SPEC-503).
     pub provider: String,
     /// Label.
     pub label: String,
@@ -267,7 +267,7 @@ pub struct CapacityAccount {
     /// unknown, SPEC-244 SUB-005).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub email: Option<String>,
-    /// Provider: `anthropic`, or `openai` for Codex (SPEC-451).
+    /// Provider: `anthropic`, or `openai` for Codex (SPEC-503).
     #[serde(default = "anthropic")]
     pub provider: String,
     /// `ok`, `relogin`, `error`, `limited` or `pending_login`.

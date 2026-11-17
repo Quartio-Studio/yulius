@@ -3,7 +3,7 @@
 //! priorities or switches to manage: the pool policy decides (F 2026-10-10).
 //!
 //! Each login runs the provider CLI's own sign-in (`claude setup-token`, or `codex login
-//! --device-auth` for a Codex account, SPEC-451 CDX-005) in a server-owned PTY through the process
+//! --device-auth` for a Codex account, SPEC-503 CDX-005) in a server-owned PTY through the process
 //! host, with a temporary config directory under `<data_dir>/logins/<login_id>/`. A Codex account
 //! may instead be given an OpenAI API key, which becomes its `auth.json` without a sign-in. Viewers (instance administrators) watch it
 //! through a [`Hub`]; every output chunk passes through the harness masker first, so a Claude
@@ -86,6 +86,9 @@ const CLAUDE_TOKEN_MIN_BODY: usize = 20;
 const PASTED_TOKEN_SHAPE: &str = "the token must be what claude setup-token prints: \
      sk-ant-oat01- followed by letters, digits, - and _ (at most 512 characters)";
 /// Why a pasted token was not taken: Claude refused it.
+/// The refusal of a pasted token for a Codex subscription (SPEC-503 CDX-015).
+const PASTED_TOKEN_CLAUDE_ONLY: &str = "a pasted token is only for an anthropic (Claude) account";
+
 const PASTED_TOKEN_REFUSED: &str = "Claude did not accept this token; make a new one with \
      claude setup-token and paste it again";
 
@@ -180,7 +183,7 @@ pub struct LoginSession {
     failure: Mutex<Option<String>>,
     cancelled: AtomicBool,
     /// An imported `auth.json` replaced the account's sign-in: whatever this one holds is not
-    /// stored (SPEC-451 IMP-001).
+    /// stored (SPEC-503 IMP-001).
     superseded: AtomicBool,
     cancel: Notify,
     /// Notified once the sign-in has ended (its phase is final).
@@ -842,7 +845,12 @@ impl App {
             }
             Err(failure) => return Err(failure),
         };
-        let answered = self.ask_about_limits(&account.id, reading.as_ref()).await?;
+        // Only Claude reports a limit of one model's family, which a question settles; a Codex
+        // subscription's limit is its windows', which the reading itself says (SPEC-503 CDX-008).
+        let answered = match account.provider {
+            Provider::Anthropic => self.ask_about_limits(&account.id, reading.as_ref()).await?,
+            Provider::OpenAi => false,
+        };
         match unread {
             Some(failure) if failure.kind == UsageFailureKind::Throttled => Err(failure),
             _ => Ok(reading.is_some() || answered),
@@ -1153,9 +1161,7 @@ impl App {
             // A pasted token is a Claude credential (SPEC-502); a Codex account takes an API key
             // or an `auth.json` instead (SPEC-503 CDX-005, CDX-011).
             if provider != Provider::Anthropic {
-                return Err(AppError::Invalid(
-                    "a pasted token is only for an anthropic (Claude) account".into(),
-                ));
+                return Err(AppError::Invalid(PASTED_TOKEN_CLAUDE_ONLY.into()));
             }
             if req.api_key.is_some() || req.auth_json.is_some() {
                 return Err(AppError::Invalid(
@@ -1168,14 +1174,17 @@ impl App {
                 .await;
         }
         // An API key or an imported `auth.json` is a Codex account's credential at once: no
-        // sign-in runs (CDX-005, CDX-011).
-        let api_key = req
-            .api_key
-            .as_deref()
-            .map(str::trim)
-            .filter(|k| !k.is_empty());
-        let auth_json = req.auth_json.as_deref().filter(|a| !a.trim().is_empty());
-        let immediate = match (api_key, auth_json) {
+        // sign-in runs (CDX-005, CDX-011). Both are zeroed when they go, whichever way this ends;
+        // one given empty is refused, never taken for a request without one (a device sign-in).
+        let api_key = req.api_key.take().map(Zeroizing::new);
+        let auth_json = req.auth_json.take().map(Zeroizing::new);
+        if api_key.as_ref().is_some_and(|k| k.trim().is_empty()) {
+            return Err(AppError::Invalid("the API key is empty".into()));
+        }
+        if auth_json.as_ref().is_some_and(|a| a.trim().is_empty()) {
+            return Err(AppError::Invalid("the auth.json is empty".into()));
+        }
+        let immediate = match (api_key.as_deref(), auth_json.as_deref()) {
             (None, None) => None,
             (Some(_), Some(_)) => {
                 return Err(AppError::Invalid(
@@ -1188,16 +1197,28 @@ impl App {
                 ));
             }
             (Some(key), None) => Some((
-                self.deps.harness.codex_api_key_auth(key).ok_or_else(|| {
-                    AppError::Invalid("the API key is not an OpenAI API key (sk-…)".into())
-                })?,
+                self.deps
+                    .harness
+                    .codex_api_key_auth(key.trim())
+                    .ok_or_else(|| {
+                        AppError::Invalid("the API key is not an OpenAI API key (sk-…)".into())
+                    })?,
                 "api_key",
             )),
             (None, Some(auth)) => Some((self.codex_import(auth)?, "auth_json")),
         };
+        drop((api_key, auth_json));
+        let sealed = match immediate {
+            Some((mut auth, via)) => {
+                let sealed = self.deps.crypto.seal(&auth);
+                auth.zeroize();
+                Some((sealed?, via))
+            }
+            None => None,
+        };
         // A Codex sign-in needs the Codex CLI: installed before the account exists, so a request
-        // that waits for it and goes away leaves no account without a sign-in (SPEC-451 CLI-002).
-        if immediate.is_none() && provider == Provider::OpenAi {
+        // that waits for it and goes away leaves no account without a sign-in (SPEC-503 CLI-002).
+        if sealed.is_none() && provider == Provider::OpenAi {
             self.deps.harness.provide_codex(true).await?;
         }
         let store = &self.deps.store;
@@ -1206,8 +1227,12 @@ impl App {
             id: AccountId::parse(&self.deps.crypto.new_id()).map_err(AppError::internal)?,
             provider,
             label: label.clone(),
-            credential: None,
-            status: AccountStatus::PendingLogin,
+            credential: sealed.as_ref().map(|(sealed, _)| sealed.clone()),
+            status: if sealed.is_some() {
+                AccountStatus::Ok
+            } else {
+                AccountStatus::PendingLogin
+            },
             usage_json: None,
             last_error: None,
             created_at: now,
@@ -1217,21 +1242,7 @@ impl App {
             email_typed: false,
         };
         store.insert_account(&account).await?;
-        if let Some((mut auth, source)) = immediate {
-            let sealed = self.deps.crypto.seal(&auth);
-            auth.zeroize();
-            let stored = match sealed {
-                Ok(sealed) => {
-                    store
-                        .set_account_credential(&account.id, &sealed, AccountStatus::Ok, now)
-                        .await
-                }
-                Err(err) => Err(err),
-            };
-            if let Err(err) = stored {
-                store.delete_account(&account.id).await?;
-                return Err(err);
-            }
+        if let Some((_, via)) = sealed {
             store
                 .audit(
                     now,
@@ -1239,17 +1250,16 @@ impl App {
                     "account.created",
                     Some(account.id.as_str()),
                     Some(&format!(
-                        "provider={} label={label} {source}",
+                        "provider={} label={label:?} via={via}",
                         provider.as_str()
                     )),
                 )
                 .await?;
-            let account = self.load_account(account.id.as_str()).await?;
             let view = account_view(&account, &[]);
             self.publish_account(view.clone());
             self.capacity_changed();
             // No sign-in installed the Codex CLI: its install starts now, so the account's first
-            // task does not wait for it (SPEC-451 CLI-001).
+            // task does not wait for it (SPEC-503 CLI-001).
             let app = Arc::clone(self);
             tokio::spawn(async move {
                 if let Err(err) = app.deps.harness.provide_codex(true).await {
@@ -1349,8 +1359,8 @@ impl App {
     /// sealed and stored like a captured one; it is never echoed, logged or audited.
     ///
     /// # Errors
-    /// `Forbidden`, `NotFound`, `Invalid` for a malformed or refused token, `Conflict` when a
-    /// running sign-in did not stop in time.
+    /// `Forbidden`, `NotFound`, `Invalid` for a Codex account or a malformed or refused token,
+    /// `Conflict` when a running sign-in did not stop in time.
     pub async fn replace_account_token(
         self: &Arc<Self>,
         ctx: &AuthContext,
@@ -1361,6 +1371,11 @@ impl App {
         let token = Zeroizing::new(std::mem::take(&mut req.token));
         self.require_instance_admin(ctx)?;
         let account = self.load_account(id).await?;
+        // A Codex subscription signs in again by device code, an `auth.json` or an API key
+        // (SPEC-503 CDX-015); nothing running for it is touched.
+        if account.provider != Provider::Anthropic {
+            return Err(AppError::Invalid(PASTED_TOKEN_CLAUDE_ONLY.into()));
+        }
         let secret = pasted_token(&token)?;
         let checked = self.check_pasted_token(account.provider, &secret.0).await;
         let sealed = checked.and_then(|email| {
@@ -1645,7 +1660,7 @@ impl App {
         }
     }
 
-    /// Signs a Codex account in again from an imported `auth.json` (SPEC-451 CDX-011): it
+    /// Signs a Codex account in again from an imported `auth.json` (SPEC-503 CDX-011): it
     /// replaces the credential at once and the account is `ok`; a sign-in running for it is
     /// cancelled. The audit names the import, never its content.
     ///
@@ -1656,8 +1671,10 @@ impl App {
         self: &Arc<Self>,
         ctx: &AuthContext,
         id: &str,
-        req: &ImportAccountAuth,
+        mut req: ImportAccountAuth,
     ) -> AppResult<AccountLoginStarted> {
+        // The imported file is zeroed when it goes, whichever way this ends.
+        let auth_json = Zeroizing::new(std::mem::take(&mut req.auth_json));
         self.require_instance_admin(ctx)?;
         let account = self.load_account(id).await?;
         if account.provider != Provider::OpenAi {
@@ -1665,12 +1682,13 @@ impl App {
                 "an auth.json is only for an openai (Codex) account".into(),
             ));
         }
-        let mut auth = self.codex_import(&req.auth_json)?;
+        let mut auth = self.codex_import(&auth_json)?;
         let sealed = self.deps.crypto.seal(&auth);
         auth.zeroize();
         let sealed = sealed?;
-        // A sign-in still running would replace the import when it ends.
-        if let Some(active) = self.active_login(&account.id) {
+        // A sign-in still running would replace the import when it ends; a "Sign in again"
+        // replaces one without waiting, so every running one is flagged and cancelled.
+        for active in self.active_logins(&account.id) {
             active.superseded.store(true, Ordering::SeqCst);
             active.request_cancel();
         }
@@ -1892,7 +1910,7 @@ impl App {
         account: &AccountRecord,
     ) -> AppResult<Arc<LoginSession>> {
         // Codex signs in with the CLI Yulius provides, installed before the start lock so a first
-        // install holds no other sign-in (SPEC-451 CLI-002).
+        // install holds no other sign-in (SPEC-503 CLI-002).
         let program = match account.provider {
             Provider::OpenAi => self
                 .deps

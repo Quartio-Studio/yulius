@@ -294,6 +294,11 @@ fn a_codex_task_runs_in_its_home_survives_a_restart_and_keeps_refreshed_credenti
             .await?
             .ok_or("attempt lost on restart")?;
         assert_eq!(attempt.child_pid, child_pid, "same process, not respawned");
+        // The start's sweep of left-behind sign-ins keeps the one the reattached run uses.
+        assert!(
+            home.join("auth.json").is_file(),
+            "the sweep removed the live run's sign-in"
+        );
         app.send_input(&task_id, b"again\r").await?;
         wait_for("the echo after restart", Duration::from_secs(10), || {
             screen_contains(&app, &task_id, "ECHO: again")
@@ -1438,6 +1443,83 @@ fn a_sign_in_made_meanwhile_wins_over_a_runs_refresh() -> TestResult {
     Ok(())
 }
 
+/// SPEC-503 CDX-006 (slice C2 review): another run of the subscription (in another sandbox)
+/// stored its refresh between this run's read and its write. This run's refresh, the newer of the
+/// same sign-in, is still kept: losing the swap to an older refresh is no reason to drop it.
+#[test]
+fn a_newer_refresh_is_kept_after_an_older_one_was_stored_first() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built")?;
+    let (_dir, data) = temp()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let app = build_full(&data, Some(&fake), FakeAgentOptions::default(), 8)?;
+        let (sandbox, user) = seed_records(&app).await?;
+        let account =
+            add_codex_account(&app, "a-codex", &codex_auth("2026-11-01T10:00:00Z")).await?;
+        seed_repo(&data, &sandbox)?;
+        let home = data
+            .join("sandboxes")
+            .join(sandbox.as_str())
+            .join("codex")
+            .join(account.as_str());
+        let id = new_codex_task(&app, &sandbox, &user, "Codex newer").await?;
+        wait_for("the banner", Duration::from_secs(30), || {
+            screen_contains(&app, &id, "FAKE-AGENT READY")
+        })
+        .await?;
+        let newer = codex_auth(&ago(60_000));
+        std::fs::write(home.join("auth.json"), &newer)?;
+        let (reached_tx, reached_rx) = std::sync::mpsc::channel();
+        let (go_tx, go_rx) = std::sync::mpsc::channel::<()>();
+        yulius_app::race::on(
+            yulius_app::race::Point::CodexRefreshTaken,
+            Path::new(account.as_str()),
+            move || {
+                let _ = reached_tx.send(());
+                let _ = go_rx.recv_timeout(Duration::from_secs(60));
+            },
+        );
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        yulius_app::race::on(
+            yulius_app::race::Point::CodexWriteBackDone,
+            Path::new(id.as_str()),
+            move || {
+                let _ = done_tx.send(());
+            },
+        );
+        app.send_input(&id, b"/exit\r").await?;
+        tokio::task::spawn_blocking(move || reached_rx.recv_timeout(Duration::from_secs(30)))
+            .await??;
+        // The other run's refresh, older than this run's, is stored right then.
+        let older = codex_auth(&ago(120_000));
+        let previous = app
+            .deps
+            .store
+            .account(&account)
+            .await?
+            .and_then(|a| a.credential)
+            .ok_or("no credential")?;
+        let sealed = app.deps.crypto.seal(older.as_bytes())?;
+        assert!(
+            app.deps
+                .store
+                .refresh_account_credential(&account, &previous, &sealed, app.now())
+                .await?
+        );
+        let _ = go_tx.send(());
+        tokio::task::spawn_blocking(move || done_rx.recv_timeout(Duration::from_secs(30)))
+            .await??;
+        assert_eq!(stored_credential(&app, &account).await?, newer);
+        assert!(
+            !home.join("auth.json").exists(),
+            "the kept auth.json stayed"
+        );
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
 /// SPEC-503 CDX-006 (slice C1 review round 3): a server that stopped between a run's end and the
 /// removal of its `auth.json` left the file in the sandbox; the next start's reconciliation keeps
 /// a genuine refresh in it and removes it, since no run of the subscription is left there.
@@ -1559,7 +1641,7 @@ fn an_imported_codex_sign_in_reaches_the_run_and_its_refresh_is_kept() -> TestRe
         app.import_account_auth(
             &ctx,
             account.as_str(),
-            &yulius_contracts::api::admin::ImportAccountAuth {
+            yulius_contracts::api::admin::ImportAccountAuth {
                 auth_json: again.clone(),
             },
         )

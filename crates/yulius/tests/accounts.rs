@@ -502,7 +502,7 @@ async fn stored_credential(s: &Setup, account: &str) -> Result<String, Box<dyn s
     Ok(String::from_utf8(s.h.app.deps.crypto.open(&sealed)?)?)
 }
 
-/// SPEC-451 CDX-005: a Codex account signs in with `codex login --device-auth` in a temporary
+/// SPEC-503 CDX-005: a Codex account signs in with `codex login --device-auth` in a temporary
 /// Codex home that keeps its credentials in a file; viewers see the device code, and the
 /// `auth.json` it wrote is sealed into the account.
 #[tokio::test]
@@ -559,7 +559,7 @@ async fn codex_device_login_seals_the_auth_file() -> TestResult {
     Ok(())
 }
 
-/// SPEC-451 CLI-002: the device sign-in starts the Codex CLI Yulius provides, by its path.
+/// SPEC-503 CLI-002: the device sign-in starts the Codex CLI Yulius provides, by its path.
 #[tokio::test]
 async fn a_codex_device_login_runs_the_provided_codex_cli() -> TestResult {
     let host = Arc::new(FakeHost::default());
@@ -604,7 +604,7 @@ async fn a_codex_device_login_runs_the_provided_codex_cli() -> TestResult {
     Ok(())
 }
 
-/// SPEC-451 CLI-001: a Codex account that needs no sign-in (an API key, an imported auth.json)
+/// SPEC-503 CLI-001: a Codex account that needs no sign-in (an API key, an imported auth.json)
 /// starts the Codex CLI's install in the background, so its first task does not wait for it.
 #[tokio::test]
 async fn a_codex_account_without_a_sign_in_starts_the_cli_install() -> TestResult {
@@ -648,7 +648,7 @@ async fn a_codex_account_without_a_sign_in_starts_the_cli_install() -> TestResul
     Ok(())
 }
 
-/// SPEC-451 CDX-005: a Codex sign-in that stored no usable credentials fails the account.
+/// SPEC-503 CDX-005: a Codex sign-in that stored no usable credentials fails the account.
 #[tokio::test]
 async fn a_codex_login_without_credentials_fails() -> TestResult {
     let s = setup().await?;
@@ -673,7 +673,7 @@ async fn a_codex_login_without_credentials_fails() -> TestResult {
     Ok(())
 }
 
-/// SPEC-451 CDX-005: an OpenAI API key makes a Codex account at once, without a sign-in; it is
+/// SPEC-503 CDX-005: an OpenAI API key makes a Codex account at once, without a sign-in; it is
 /// sealed as the `auth.json` Codex writes for it and never returned. A key that is not one, a key
 /// for a Claude account and an unknown provider are refused.
 #[tokio::test]
@@ -701,6 +701,8 @@ async fn a_codex_account_can_be_added_with_an_api_key() -> TestResult {
     let stored: Value = serde_json::from_str(&stored_credential(&s, id).await?)?;
     assert_eq!(stored["auth_mode"], "apikey");
     assert_eq!(stored["OPENAI_API_KEY"], key);
+    let audit = s.h.store.audit_details(id, "account.created", 5).await?;
+    assert_eq!(audit, ["provider=openai label=\"Codex key\" via=api_key"]);
     let listed = call(
         &s.h.router,
         Method::GET,
@@ -715,6 +717,11 @@ async fn a_codex_account_can_be_added_with_an_api_key() -> TestResult {
         json!({"provider": "openai", "label": "Bad key", "api_key": "not-a-key"}),
         json!({"provider": "anthropic", "label": "Claude key", "api_key": key}),
         json!({"provider": "google", "label": "Gemini"}),
+        // Given but empty: refused, not taken for a request without one (a device sign-in).
+        json!({"provider": "openai", "label": "Empty key", "api_key": ""}),
+        json!({"provider": "openai", "label": "Blank key", "api_key": "   "}),
+        json!({"provider": "openai", "label": "Empty file", "auth_json": ""}),
+        json!({"provider": "openai", "label": "Blank file", "auth_json": " \n "}),
     ] {
         let refused = call(
             &s.h.router,
@@ -732,6 +739,7 @@ async fn a_codex_account_can_be_added_with_an_api_key() -> TestResult {
         );
         assert!(!refused.body.to_string().contains(key));
     }
+    assert!(s.host.plans().is_empty(), "no sign-in ran");
     let after = call(
         &s.h.router,
         Method::GET,
@@ -749,7 +757,7 @@ async fn a_codex_account_can_be_added_with_an_api_key() -> TestResult {
     Ok(())
 }
 
-/// SPEC-451 IMP-001: an import wins over a device sign-in running for the account even when that
+/// SPEC-503 IMP-001: an import wins over a device sign-in running for the account even when that
 /// sign-in has already stored credentials in its temporary home: it is cancelled and its file is
 /// not taken.
 #[tokio::test]
@@ -804,7 +812,7 @@ async fn listed(s: &Setup) -> Result<Value, Box<dyn std::error::Error>> {
     .body)
 }
 
-/// SPEC-451 CDX-011: an `auth.json` of a `codex login` made elsewhere makes a Codex account at
+/// SPEC-503 CDX-011: an `auth.json` of a `codex login` made elsewhere makes a Codex account at
 /// once, sealed as the device sign-in's file is; it is never returned, logged in the audit or
 /// accepted when it is not a full ChatGPT sign-in.
 #[tokio::test]
@@ -828,8 +836,10 @@ async fn a_codex_account_can_be_added_by_importing_its_auth_file() -> TestResult
     let id = r.body["account"]["id"].as_str().ok_or("id")?.to_owned();
     assert_eq!(stored_credential(&s, &id).await?, auth);
     let audit = s.h.store.audit_details(&id, "account.created", 5).await?;
-    assert!(audit.iter().any(|d| d.contains("auth_json")), "{audit:?}");
-    assert!(audit.iter().all(|d| !d.contains("SYNTHETIC")), "{audit:?}");
+    assert_eq!(
+        audit,
+        ["provider=openai label=\"Codex laptop\" via=auth_json"]
+    );
     assert!(!listed(&s).await?.to_string().contains("SYNTHETIC"));
 
     let api_key_file = r#"{"auth_mode":"apikey","OPENAI_API_KEY":"sk-SYNTHETIC0123456789abcdef"}"#;
@@ -866,7 +876,7 @@ async fn a_codex_account_can_be_added_by_importing_its_auth_file() -> TestResult
     Ok(())
 }
 
-/// SPEC-451 CDX-011: an existing Codex account signs in again by importing a new `auth.json`:
+/// SPEC-503 CDX-011: an existing Codex account signs in again by importing a new `auth.json`:
 /// the file replaces its credential at once, a sign-in running for it is cancelled, the audit
 /// names the import without its content, and a file that is not a ChatGPT sign-in or an account
 /// of Claude is refused without changing anything.
@@ -1445,6 +1455,12 @@ async fn account_crud_permissions_usage_and_removal_in_use() -> TestResult {
         (Method::DELETE, path.clone(), None),
         (Method::POST, format!("{path}/relogin"), None),
         (Method::POST, format!("{path}/usage"), None),
+        // An import of a Codex sign-in is an administrator's too (SPEC-503 IMP-001).
+        (
+            Method::POST,
+            format!("{path}/import"),
+            Some(json!({"auth_json": "{}"})),
+        ),
     ] {
         let r = call(&s.h.router, method.clone(), &uri, body, &alice).await?;
         assert_eq!(r.status, StatusCode::FORBIDDEN, "{method} {uri}");

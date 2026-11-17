@@ -255,7 +255,7 @@ async fn me_says_whether_a_claude_account_is_connected() -> TestResult {
     Ok(())
 }
 
-/// SPEC-451 CDX-014: a usable Codex account alone is `codex_connected`, not `claude_connected`:
+/// SPEC-503 CDX-014: a usable Codex account alone is `codex_connected`, not `claude_connected`:
 /// onboarding, the Superagent, split proposals and the Cockpit still need Claude, and the UI keeps
 /// offering to connect it, while Codex tasks can start.
 #[tokio::test]
