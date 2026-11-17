@@ -307,3 +307,54 @@ after the approval within the follow-up allowance:
   change meaning to Go's last-wins decoder: said in ADR-0359's Consequences (only the job's own
   unusual bodies are affected).
 
+### Pull request 2: a bad yulius.toml never blocks CI
+
+2026-11-17, on this branch after PR #1389 merged (dev at `87c08e62a`).
+
+- `cargo nextest run -p yulius-domain`: 565 passed. Among them:
+  - `spec_format::config::tests::valid_toml_parses_whatever_its_layout`, which failed with the
+    old reader: autoresearch's multi-line `paths = [` array with comments and a trailing comma,
+    a multi-line basic string, `4_0`, an inline-table job and an unknown table of any shape;
+  - `precise_errors_with_line_numbers`: invalid TOML is refused with the parser's message at
+    its line, including a broken multi-line array at the line of its bad entry;
+  - this repository's own `yulius.toml` parsed by `the_repositorys_own_cd_is_defined` and
+    `the_repositorys_own_security_job_alone_is_granted_the_vidoc_key`;
+  - the bounded nesting (65,000 `[` refused, "cannot recurse further");
+  - `merge_queue::tests::blocked_minutes_add_up_episodes_within_the_range`.
+- `cargo nextest run -p yulius-app -p yulius-contracts`: passed. CI-110's unit test is removed
+  with the rule.
+- `cargo nextest run -p yulius -E 'binary_id(yulius::main) & (test(/^local_ci::/) |
+  test(/^merge_train::/) | test(/^playground::/))'`: 194 passed. New tests:
+  - `a_pull_request_that_changes_its_jobs_is_judged_by_the_integration_branchs` (CFG-001);
+  - `a_pull_request_with_an_invalid_yulius_toml_fails_with_the_parsers_message` (CFG-002,
+    autoresearch's PR #4: `gate` and `[[ci.jobs]]` together). It fails at once with the
+    parser's message, a failed job `yulius.toml` and its jobs skipped, and its gate result is
+    failed.
+  - `an_invalid_integration_branch_runs_its_last_valid_gate_until_a_fix_merges` (CFG-003,
+    CFG-006), in four stages:
+    1. dev breaks after a valid commit; the overview names the problem, `gate_fallback` and the
+       source `last_valid_yulius_toml`;
+    2. a pull request that leaves the file alone fails, naming dev's problem;
+    3. the repair passes on the last valid gate, and its run says so;
+    4. once the repair merges, dev's own gate is in force again.
+  - `a_repair_of_a_never_valid_configuration_is_tested_with_its_own_jobs` (CFG-003 for a file
+    never valid, and CFG-004: 30 blocked minutes counted by the merge-queue read).
+
+  Rewritten to the new rule:
+  - the secrets test: a pull request's own grants and commands never run;
+  - the security-job test: bootstrap only;
+  - the run-again test: the same integration jobs;
+  - the two scan-switch tests: the scanning job is the integration branch's;
+  - the playground test: a task that changes a job is judged by dev's.
+- Other integration files that read the CI configuration or its problems (analytics,
+  scope_overlaps, leftovers, stages, delivery, playground_move, pr_watch, cockpit): 213 passed.
+- e2e: `npx e2e run tests/ci.e2e.ts`: 21 passed. The new test covers the banner of the last
+  valid gate (`ciconfig=fallback`), never "CI is not running", the gate card's source and the
+  run's note.
+- Mutation testing (`scripts/dev mutants`): `mutants: 171 listed, 89 caught, 0 missed, 0 timed
+  out, 82 unviable, 0 not reached (bound 30 min, took 1563 s)`.
+- Not measured here: production's minutes before and after. The incidents give the "before"
+  (autoresearch's CI ran nothing from PR #4's merge to PR #5's, and from PR #42's merge until a
+  person bypassed the ruleset for PR #50). The "after" is `config_blocked_minutes`, which counts
+  only a file never valid once this is deployed; promotion and deployment are a person's.
+
