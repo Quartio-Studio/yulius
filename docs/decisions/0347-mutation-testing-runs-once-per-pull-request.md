@@ -4,7 +4,10 @@
 
 Accepted (2026-11-16). Specified in
 [SPEC-493](../../.ai/specs/SPEC-493-faster-from-start-to-merge-opus-writes-f.md) (MUT-001,
-MUT-002, fix 8); task #472.
+MUT-002, fix 8); task #472. Amended (2026-11-17) by
+[SPEC-506](../../.ai/specs/SPEC-506-as-fast-as-possible-from-start-to-merge.md) FST-004 and
+FST-005, task #488: the run starts with the first review and runs beside it, a later round's fix
+is run on its own lines, and the jobs follow the CPU budget (see Amendment).
 
 ## Context
 
@@ -64,3 +67,20 @@ No one command existed.
   splits the change.
 - A week later: the share of blocking review rounds whose findings are about test strength only,
   read from the rounds' reports (fix 1's records).
+
+## Amendment (2026-11-17, SPEC-506)
+
+- **Beside the review, not before it.** The author waited for the run before asking for the
+  review, so the two were in a row: in quartio-v2 mutation runs were 33 % of task time on 17 Nov
+  (a median 30 of a task's 108 minutes), here 11 % (#479: 5 runs, 135 minutes). The rule is now:
+  "Mutation testing runs beside the review: when you ask for a pull request's first review, start
+  the project's mutation command in the background and let the reviewer read meanwhile; when it
+  ends, put its summary line in the spec's Evidence and fix each missed mutant test-first before
+  the merge. After a later round's fix, run it on that fix's lines alone." The same mutants are
+  tested and every missed one is fixed before the merge; what changes is that round 1's reviewer
+  judges test strength by reading, without the run's result. A missed mutant's fix is a test,
+  which ADR-0345 does not count, so it does not need another round; a fix in product code is
+  counted as any other.
+- **A fix's lines alone.** `scripts/dev mutants --base <reviewed head>` mutates only what changed
+  since that head (with a merge of `dev` since then, its lines too).
+
