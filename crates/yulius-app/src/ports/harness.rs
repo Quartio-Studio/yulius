@@ -351,8 +351,34 @@ pub trait OutputMasker: Send {
     fn finish(&mut self) -> Vec<u8>;
 }
 
+/// An agent CLI Yulius provides itself (SPEC-503 CLI-001): its program, started by this absolute
+/// path, and the directory holding it, which a contained run binds read-only at the same path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProvidedCli {
+    /// The executable.
+    pub program: PathBuf,
+    /// Its release's directory.
+    pub dir: PathBuf,
+}
+
+/// What [`HarnessPort::provide_codex`] returns.
+pub type ProvideFuture<'a> = std::pin::Pin<
+    Box<dyn std::future::Future<Output = AppResult<Option<ProvidedCli>>> + Send + 'a>,
+>;
+
 /// Harness operations.
 pub trait HarnessPort: Send + Sync {
+    /// The Codex CLI Codex runs and sign-ins start (SPEC-503 CLI-002), installed first when
+    /// `install` (else only what is ready: a caller holding a lock never waits for a download);
+    /// `None`: the `codex` on the run's `PATH`.
+    ///
+    /// # Errors
+    /// `Upstream` when the pinned CLI cannot be installed (or, without `install`, is not
+    /// installed yet) and the host has no `codex` either.
+    fn provide_codex(&self, install: bool) -> ProvideFuture<'_> {
+        let _ = install;
+        Box::pin(async { Ok(None) })
+    }
     /// Plans a launch.
     ///
     /// # Errors
