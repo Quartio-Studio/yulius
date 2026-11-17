@@ -770,6 +770,10 @@ impl App {
                 .map(|(model, rounds)| ModelCount { model, rounds })
                 .collect(),
             no_fable_rounds: numbers.no_fable_rounds,
+            re_reviews_after_changes: numbers.re_reviews_after_changes,
+            re_reviews_asking_again: numbers.re_reviews_asking_again,
+            rounds_after_approval: numbers.rounds_after_approval,
+            rounds_after_approval_asking: numbers.rounds_after_approval_asking,
         })
     }
 
