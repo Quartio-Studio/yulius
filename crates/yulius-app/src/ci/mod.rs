@@ -361,6 +361,10 @@ pub struct CiState {
     /// same test at once would each file an issue for it (review round 1); per sandbox, so a
     /// slow GitHub holds only that project's job ends (review round 2).
     pub(crate) quarantine_locks: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    /// The reference of the last run each lane (`<sandbox>/<lane>`) took (SPEC-497 SHR-002).
+    pub(crate) lane_runs: Mutex<HashMap<String, CiRef>>,
+    /// What each executing run's lane last built, for its jobs' output (SPEC-497 SHR-002).
+    pub(crate) lane_notes: Mutex<HashMap<String, String>>,
     /// Sandboxes with a run that passed when it was queued (every job skipped for its
     /// `paths`): the dispatcher starts their merge pass, as a run's end does.
     passed_when_queued: Mutex<Vec<SandboxId>>,
@@ -474,10 +478,62 @@ fn free_lane(busy: &HashSet<String>, sandbox: &str, lanes: u32) -> Option<u32> {
 }
 
 /// [`free_lane`], and marks it.
+#[cfg(test)]
 fn take_lane(busy: &mut HashSet<String>, sandbox: &str, lanes: u32) -> Option<u32> {
-    let lane = free_lane(busy, sandbox, lanes)?;
+    take_lane_preferring(busy, sandbox, lanes, &[])
+}
+
+/// [`take_lane`], the first free lane of `preferred` first (SPEC-497 SHR-002: the lane whose
+/// checkouts last built what the run builds on).
+fn take_lane_preferring(
+    busy: &mut HashSet<String>,
+    sandbox: &str,
+    lanes: u32,
+    preferred: &[u32],
+) -> Option<u32> {
+    free_lane(busy, sandbox, lanes)?;
+    let lane = preferred
+        .iter()
+        .copied()
+        .find(|lane| *lane < lanes.max(1) && !busy.contains(&format!("{sandbox}/{lane}")))
+        .or_else(|| free_lane(busy, sandbox, lanes))?;
     busy.insert(format!("{sandbox}/{lane}"));
     Some(lane)
+}
+
+/// The lanes whose checkouts last built what `reference` builds on, best first (SPEC-497
+/// SHR-002): for a pull request's run, the lane of its own last run (its previous head); for a
+/// merge candidate's, the lanes of its members' own runs, the last member first, then of an
+/// earlier candidate sharing a member. `last` maps each lane to the reference of its last run.
+fn preferred_lanes(reference: &CiRef, last: &[(u32, CiRef)]) -> Vec<u32> {
+    let lanes_of = |wanted: &dyn Fn(&CiRef) -> bool| -> Vec<u32> {
+        last.iter()
+            .filter(|(_, r)| wanted(r))
+            .map(|(lane, _)| *lane)
+            .collect()
+    };
+    let mut lanes = Vec::new();
+    match reference {
+        CiRef::PullRequest(n) => {
+            lanes.extend(lanes_of(&|r| *r == CiRef::PullRequest(*n)));
+        }
+        CiRef::Train(members) => {
+            for member in members.iter().rev() {
+                lanes.extend(lanes_of(&|r| *r == CiRef::PullRequest(*member)));
+            }
+            lanes.extend(lanes_of(&|r| {
+                matches!(r, CiRef::Train(others) if others.iter().any(|o| members.contains(o)))
+            }));
+        }
+        CiRef::Branch(_) | CiRef::Task(_) => {}
+    }
+    let mut seen = Vec::new();
+    lanes.retain(|lane| {
+        let new = !seen.contains(lane);
+        seen.push(*lane);
+        new
+    });
+    lanes
 }
 
 /// Takes a lane of `sandbox` for `run_id` and registers its executor, under the caller's locks;
@@ -487,12 +543,13 @@ fn reserve_run<T>(
     busy: &mut HashSet<String>,
     executing: &mut HashMap<String, T>,
     (run_id, sandbox, lanes): (&str, &str, u32),
+    preferred: &[u32],
     executor: T,
 ) -> Option<u32> {
     if executing.contains_key(run_id) {
         return None;
     }
-    let lane = take_lane(busy, sandbox, lanes)?;
+    let lane = take_lane_preferring(busy, sandbox, lanes, preferred)?;
     executing.insert(run_id.to_owned(), executor);
     Some(lane)
 }
@@ -1594,19 +1651,54 @@ impl App {
             }
             let sandbox = run.sandbox_id.as_str().to_owned();
             let (tx, rx) = watch::channel(None);
+            // The lane whose checkouts last built what this run builds on, where one is free
+            // (SPEC-497 SHR-002): a candidate starts from its members' builds, a pull request from
+            // its previous head's.
+            let last: Vec<(u32, CiRef)> = self
+                .ci
+                .lane_runs
+                .lock()
+                .map(|map| {
+                    (0..lanes.max(1))
+                        .filter_map(|lane| {
+                            map.get(&format!("{sandbox}/{lane}"))
+                                .map(|r| (lane, r.clone()))
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            let preferred = preferred_lanes(&run.reference, &last);
             let lane = {
                 let (Ok(mut busy), Ok(mut executing)) =
                     (self.ci.busy.lock(), self.ci.executing.lock())
                 else {
                     return;
                 };
-                let Some(lane) =
-                    reserve_run(&mut busy, &mut executing, (&run.id, &sandbox, lanes), tx)
-                else {
+                let Some(lane) = reserve_run(
+                    &mut busy,
+                    &mut executing,
+                    (&run.id, &sandbox, lanes),
+                    &preferred,
+                    tx,
+                ) else {
                     continue;
                 };
                 lane
             };
+            let before = last.iter().find(|(l, _)| *l == lane).map(|(_, r)| r.key());
+            let note = match &before {
+                Some(key) if preferred.first() == Some(&lane) => {
+                    format!("lane {lane}: its checkouts last built {key}, which this run builds on")
+                }
+                Some(key) => format!("lane {lane}: its checkouts last built {key}"),
+                None => format!("lane {lane}"),
+            };
+            if let Ok(mut map) = self.ci.lane_runs.lock() {
+                map.insert(format!("{sandbox}/{lane}"), run.reference.clone());
+            }
+            if let Ok(mut notes) = self.ci.lane_notes.lock() {
+                notes.insert(run.id.clone(), note);
+            }
             let app = Arc::clone(self);
             tokio::spawn(async move { app.ci_execute(run, rx, lane).await });
         }
@@ -1928,7 +2020,56 @@ impl App {
 
 #[cfg(test)]
 mod lane_tests {
-    use super::{busy_in, forget_idle_turn, own_jobs_apply, reserve_run, take_lane};
+    use super::{
+        busy_in, forget_idle_turn, own_jobs_apply, preferred_lanes, reserve_run, take_lane,
+        take_lane_preferring,
+    };
+    use yulius_domain::ci::CiRef;
+
+    /// SPEC-497 SHR-002: a run takes the lane whose checkouts last built what it builds on,
+    /// when it is free: a pull request its own previous run's, a candidate its members' (the last
+    /// member first), then an earlier candidate's sharing a member; otherwise the first free.
+    #[test]
+    fn a_run_takes_the_lane_that_last_built_what_it_builds_on() {
+        let last = [
+            (0, CiRef::PullRequest(7)),
+            (1, CiRef::PullRequest(3)),
+            (2, CiRef::Train(vec![3, 9])),
+            (3, CiRef::PullRequest(5)),
+        ];
+        assert_eq!(preferred_lanes(&CiRef::PullRequest(3), &last), [1]);
+        assert_eq!(
+            preferred_lanes(&CiRef::Train(vec![3, 5]), &last),
+            [3, 1, 2],
+            "the last member first, then a candidate sharing #3"
+        );
+        assert!(preferred_lanes(&CiRef::Branch("dev".into()), &last).is_empty());
+        assert!(preferred_lanes(&CiRef::PullRequest(4), &last).is_empty());
+        let mut busy = std::collections::HashSet::new();
+        assert_eq!(take_lane_preferring(&mut busy, "s1", 4, &[3, 1]), Some(3));
+        assert_eq!(
+            take_lane_preferring(&mut busy, "s1", 4, &[3, 1]),
+            Some(1),
+            "3 runs"
+        );
+        assert_eq!(
+            take_lane_preferring(&mut busy, "s1", 4, &[3, 1]),
+            Some(0),
+            "the first free"
+        );
+        assert_eq!(
+            take_lane_preferring(&mut busy, "s1", 4, &[9]),
+            Some(2),
+            "a lane past the count is none"
+        );
+        assert_eq!(take_lane_preferring(&mut busy, "s1", 4, &[]), None);
+        let mut claimed = std::collections::HashSet::from(["s2".to_owned()]);
+        assert_eq!(
+            take_lane_preferring(&mut claimed, "s2", 4, &[1]),
+            None,
+            "claimed"
+        );
+    }
 
     /// SPEC-435: an exclusive job's turn stays while a job holds or waits for it, and goes once
     /// nobody does, so the map does not keep every job name ever seen.
@@ -1998,11 +2139,11 @@ mod lane_tests {
     fn a_run_with_an_executor_is_not_reserved_again() {
         let (mut busy, mut executing) = (HashSet::new(), HashMap::new());
         assert_eq!(
-            reserve_run(&mut busy, &mut executing, ("r1", "s1", 2), "first"),
+            reserve_run(&mut busy, &mut executing, ("r1", "s1", 2), &[], "first"),
             Some(0)
         );
         assert_eq!(
-            reserve_run(&mut busy, &mut executing, ("r1", "s1", 2), "second"),
+            reserve_run(&mut busy, &mut executing, ("r1", "s1", 2), &[], "second"),
             None,
             "the run already executes"
         );
@@ -2013,13 +2154,13 @@ mod lane_tests {
         );
         assert!(!busy.contains("s1/1"), "no second lane: {busy:?}");
         assert_eq!(
-            reserve_run(&mut busy, &mut executing, ("r2", "s1", 2), "other"),
+            reserve_run(&mut busy, &mut executing, ("r2", "s1", 2), &[], "other"),
             Some(1),
             "another run takes the free lane"
         );
         busy.insert("s2".to_owned());
         assert_eq!(
-            reserve_run(&mut busy, &mut executing, ("r3", "s2", 2), "claimed"),
+            reserve_run(&mut busy, &mut executing, ("r3", "s2", 2), &[], "claimed"),
             None
         );
         assert!(

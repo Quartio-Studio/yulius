@@ -1378,6 +1378,79 @@ async fn a_sharded_job_runs_its_shards_side_by_side() -> TestResult {
     Ok(())
 }
 
+/// SPEC-497 SHR-002: a run takes the lane whose checkouts last built what it builds on. #1 and #2
+/// run side by side in lanes 0 and 1; then #2 pushes first: its new run, queued first, takes lane
+/// 1 (its own previous build), not the first free, and its output says so; #1's takes lane 0.
+#[tokio::test]
+async fn a_run_takes_the_lane_that_last_built_its_pull_request() -> TestResult {
+    let f = fixture_tuned(
+        false,
+        |_| "[[ci.jobs]]\nname = \"check\"\ncommand = \"true\"\ncpus = 1\n".to_owned(),
+        None,
+        |config| config.ci.lanes = 2,
+    )
+    .await?;
+    open_pull(&f, 2, "feat/two", "origin/dev", "two.txt")?;
+    sync_and_settle(&f).await?;
+    let lane_of = |job: &Value| {
+        job["output"]
+            .as_str()
+            .unwrap_or_default()
+            .lines()
+            .find(|l| l.starts_with("[yulius] lane "))
+            .unwrap_or_default()
+            .to_owned()
+    };
+    let lane_number = |line: &str| -> Option<u32> {
+        line.strip_prefix("[yulius] lane ")?
+            .split(|c: char| !c.is_ascii_digit())
+            .next()?
+            .parse()
+            .ok()
+    };
+    let mut lanes = Vec::new();
+    for pr in ["pr/1", "pr/2"] {
+        let line = lane_of(&job_of(&f, "reference", pr).await?);
+        lanes.push(lane_number(&line).ok_or(line)?);
+    }
+    assert_ne!(lanes[0], lanes[1], "side by side: {lanes:?}");
+    // The pull request in lane 1 pushes first, so its run is queued first: the first free lane
+    // would be 0.
+    let push = |branch: &str, number: u64, file: &str| -> BoxResult<String> {
+        git(&f.work, &["checkout", "-q", branch])?;
+        std::fs::write(f.work.join(file), "again\n")?;
+        git(&f.work, &["add", "-A"])?;
+        git(&f.work, &["commit", "-q", "-m", file])?;
+        git(&f.work, &["push", "-q", "origin", branch])?;
+        let head = git(&f.work, &["rev-parse", "HEAD"])?;
+        git(&f.work, &["checkout", "-q", "feat/one"])?;
+        if let Ok(mut pulls) = f.h.github.pulls.lock()
+            && let Some(pull) = pulls.iter_mut().find(|p| p.number == number)
+        {
+            pull.head_sha = head.clone();
+        }
+        Ok(head)
+    };
+    let mut order = [(1u64, "feat/one", lanes[0]), (2, "feat/two", lanes[1])];
+    order.sort_by_key(|(_, _, lane)| std::cmp::Reverse(*lane));
+    let mut heads = Vec::new();
+    for (number, branch, lane) in order {
+        let head = push(branch, number, &format!("again-{number}.txt"))?;
+        f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+        heads.push((number, head, lane));
+    }
+    f.settle().await?;
+    for (number, head, lane) in heads {
+        assert_eq!(
+            lane_of(&job_of(&f, "sha", &head).await?),
+            format!(
+                "[yulius] lane {lane}: its checkouts last built pr/{number}, which this run builds on"
+            )
+        );
+    }
+    Ok(())
+}
+
 /// SPEC-493 CJP-001 to CJP-004 (AC-16): a job naming the files it tests ends skipped, with the
 /// reason and without running, for a pull request touching none of them, which still passes and
 /// gates nothing; the integration branch's own run runs it; a pull request touching one of them

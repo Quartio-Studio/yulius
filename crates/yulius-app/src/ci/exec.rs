@@ -353,6 +353,9 @@ impl App {
         let own = cancel.clone();
         self.ci_execute_inner(&run, cancel, lane).await;
         self.ci_forget_executor(&run.id, &own);
+        if let Ok(mut notes) = self.ci.lane_notes.lock() {
+            notes.remove(&run.id);
+        }
         if let Ok(mut busy) = self.ci.busy.lock() {
             busy.remove(&format!("{}/{lane}", run.sandbox_id.as_str()));
         }
@@ -784,6 +787,16 @@ impl App {
             "[yulius] budget: {budget} (YULIUS_CPUS={}, YULIUS_MEMORY_MB={})\n",
             budget.cpus, budget.memory_mb
         ));
+        // Which earlier build its checkout starts from (SPEC-497 SHR-002), to compare durations.
+        let lane = self
+            .ci
+            .lane_notes
+            .lock()
+            .ok()
+            .and_then(|notes| notes.get(&run.id).cloned());
+        if let Some(lane) = lane {
+            ring.push_str(&format!("[yulius] {lane}\n"));
+        }
         // A run that ended for an infrastructure reason runs again once by itself (SPEC-497
         // OFC-001): the reason and the time the first run took.
         let mut thrown: Option<(Infra, i64)> = None;
