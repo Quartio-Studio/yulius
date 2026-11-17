@@ -13,6 +13,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   trust the worktree and skip the first-run screens, and `yulius hook antigravity <event>`
   translates its hooks to Yulius's. Nothing reaches it yet: tasks and subscriptions still refuse
   `antigravity` and `google` until the later slices.
+
 - Mutation testing runs beside the review (SPEC-506 pull request 2, task #488,
   [ADR-0347](decisions/0347-mutation-testing-runs-once-per-pull-request.md) amended): the author
   starts it when the first review is asked for instead of waiting for it, fixes each missed
