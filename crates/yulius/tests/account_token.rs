@@ -382,17 +382,6 @@ async fn a_pasted_token_connects_a_subscription_at_once() -> TestResult {
     assert_eq!(published["status"], "ok");
     assert_no_token(&published);
 
-    let list = call(
-        &w.h.router,
-        Method::GET,
-        "/api/admin/accounts",
-        None,
-        &w.admin,
-    )
-    .await?;
-    assert_no_token(&list.body);
-    assert_eq!(list.body[0]["status"], "ok", "{}", list.body);
-
     let with_email = paste(&w, "work Max", WITH_EMAIL).await?;
     assert_eq!(
         with_email.status,
@@ -413,6 +402,18 @@ async fn a_pasted_token_connects_a_subscription_at_once() -> TestResult {
     let spare = record(&w, unanswered.body["account"]["id"].as_str().ok_or("id")?).await?;
     assert!(spare.email_checked_at.is_none(), "asked again later");
     assert_eq!(w.profile.asked(), 3, "one profile request per paste");
+    // Listed last: a listing starts the background email round, which may ask again about the
+    // subscriptions without an email; counted before it, the pastes' requests are exact.
+    let list = call(
+        &w.h.router,
+        Method::GET,
+        "/api/admin/accounts",
+        None,
+        &w.admin,
+    )
+    .await?;
+    assert_no_token(&list.body);
+    assert_eq!(list.body[0]["status"], "ok", "{}", list.body);
     Ok(())
 }
 
@@ -984,6 +985,8 @@ fn a_task_starts_on_a_pasted_subscription() -> TestResult {
                     provider: "anthropic".into(),
                     label: "pasted".into(),
                     token: Some(PASTED.into()),
+                    api_key: None,
+                    auth_json: None,
                 },
             )
             .await?;
