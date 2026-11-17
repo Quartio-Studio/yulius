@@ -399,6 +399,16 @@ function seed(params) {
   // `claude=0`: no Claude account is connected (SPEC-246): nothing that runs an agent starts.
   // `onboarding=failed`: `product` waits for onboarding, whose start failed for want of one.
   if (params.get('claude') === '0') db.accounts = [];
+  // `ciconfig=fallback` (SPEC-504 CFG-003, CFG-006): studio's dev has an invalid yulius.toml, so
+  // its last valid one's gate runs, and its newest run says so.
+  if (params.get('ciconfig') === 'fallback') {
+    const studio = db.ci.sb_studio;
+    studio.gate_problem = "yulius.toml line 117: [commands] gate and [[ci.jobs]] cannot both be set";
+    studio.gate_fallback = '5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a4b';
+    studio.gate.source = 'last_valid_yulius_toml';
+    studio.runs[1].source = 'last_valid_yulius_toml';
+    studio.runs[1].reason = "judged by the integration branch's last valid yulius.toml: its own is invalid, and that gate runs until a fix merges";
+  }
   if (params.get('onboarding') === 'failed') {
     const product = db.sandboxes.find((s) => s.id === 'sb_product');
     product.onboarding = 'pending';
@@ -2171,7 +2181,7 @@ function ciOverview(db, sid) {
   const sandbox = sandboxOf(db, sid);
   const ci = ciOf(db, sid);
   return {
-    gate: clone(ci.gate), gate_problem: ci.gate_problem, runs: ci.runs.map((r) => ciSummary(progressCi(r, db.ciRunMs))),
+    gate: clone(ci.gate), gate_problem: ci.gate_problem, gate_fallback: ci.gate_fallback || null, runs: ci.runs.map((r) => ciSummary(progressCi(r, db.ciRunMs))),
     can_run: (RANK[sandbox.access] || 0) >= RANK.write, status_access: ci.status_access, actions_workflows: ci.actions_workflows.slice(),
   };
 }
