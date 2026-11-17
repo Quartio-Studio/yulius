@@ -4200,6 +4200,10 @@ route('GET', '/api/analytics/merge-queue', ({ db, query }) => {
   return db.mergeQueue || {
     range: { sandbox: query.get('sandbox'), from: query.get('from'), to: query.get('to') },
     days: [], formed: 9, merged: 6, dissolved: 3, dissolved_by: { member_left: 2, bisected: 1 },
+    dissolved_recent: [
+      { at: '2026-11-16T15:02:00Z', sandbox: 'app', why: 'member_failed', reason: "merge train #12, #14 (run r9): #14's own run at 1a2b3c4 ended failed: it leaves the candidate" },
+      { at: '2026-11-16T13:40:00Z', sandbox: 'app', why: 'bisected', reason: 'merge train #10, #11 (run r7): its CI run failed; the first 1 are tested again without the rest' },
+    ],
     merges: 14, median_arm_to_merge_minutes: 31.5,
     ci_minutes: { passed: 588, failed: 120, failed_outside: 406, cancelled: 114, rerun: 12, outside_share: 0.423 },
     ci_minutes_by_day: [],

@@ -132,8 +132,10 @@ mode.
 
 ### Slice C: the merge queue does not throw work away
 
-- **MQW-001** A member whose own run fails leaves without cancelling a candidate run that still
-  decides the others.
+- **MQW-001** A member's own run that errors or is cancelled no longer makes it leave or cancels
+  the candidate's run, which still decides it; only a failed own run makes a member leave, and a
+  candidate run whose tree holds that member decides no one and is cancelled (ADR-0357). A
+  candidate formed again reuses its tree's passed run.
 - **MQW-002** A candidate whose run passed merges, even while a member's own run still goes.
 - **MQW-003** Members whose combination conflicts in derived files are handled without a wasted
   cycle (decision recorded in the slice).
@@ -173,10 +175,12 @@ mode.
 - [x] Slice B: quarantine review round 1 answered
 - [x] Slice B: quarantine review round 2 answered
 - [x] Slice B: quarantine review round 3 answered
-- [ ] Slice C: a failed member leaves without cancelling the candidate
-- [ ] Slice C: a passed candidate merges while own runs go
-- [ ] Slice C: derived-file conflicts handled without a wasted cycle
-- [ ] Slice C: dissolve reasons shown; documents, ADR and review
+- [x] Slice C: a failed member leaves without cancelling the candidate
+- [x] Slice C: a passed candidate merges while own runs go
+- [x] Slice C: derived-file conflicts handled without a wasted cycle
+- [x] Slice C: dissolve reasons shown; documents and ADR
+- [x] Slice C: review round 1 answered
+- [x] Slice C: review round 2 answered
 - [ ] Slice D: sharded jobs
 - [ ] Slice D: a candidate reuses its members' builds; review
 - [ ] Slice E: numbers before and after, quartio-v2's part told
@@ -189,8 +193,9 @@ mode.
   executor (`local_ci`).
 - Slice B: an infrastructure failure reruns that job once and says so; a test failing in two
   pull requests' runs is quarantined with one issue; CI minutes by outcome read per project.
-- Slice C: a failing member does not cancel the candidate's run; a passed candidate merges with
-  an own run still going; dissolves are shown with their reasons.
+- Slice C: an errored or cancelled own run does not cancel the candidate's run; a failed one
+  makes its member leave; a passed candidate merges with an own run still going; dissolves are
+  shown with their reasons.
 - Slice D: a sharded job runs its shards side by side and passes only when every shard passed.
 - Nothing merges without a passed Yulius CI run on the exact head or the exact merged result; a
   failed test is never rerun until green; ADR-0285's gains stay.
@@ -234,6 +239,14 @@ mode.
   a merge. The gate knows what it ran. The environment, not a file in the job's home, carries the
   list: the job could have linked such a file elsewhere. Two pull requests, not one pull request's
   repeated runs: only an unrelated change shows the failure is not the change's.
+- **A merge candidate is decided by its own run** (slice C,
+  [ADR-0357](../../docs/decisions/0357-a-merge-candidate-is-decided-by-its-own-run.md)): its run
+  tested the exact merged result, so a passed one merges without the members' own runs, and an
+  errored or cancelled own run is the candidate's to decide. A run that holds a failed member
+  decides no one (its tree can never land) and is still cancelled: merging the members before it
+  would leave the integration branch at an untested tree. Derived files: Yulius cannot run a
+  project's formatter or generator where it builds candidates, so it saves the cycle it can,
+  telling the member that breaks a combination once the others pass without it.
 - **`YULIUS_CI_LANES` keeps its default** (slice A): it bounds checkouts per sandbox (each lane
   keeps its own job folders and caches, a disk cost), and the budget now decides the load, so a
   lower default would only make a small project's runs queue behind each other for nothing.
@@ -651,6 +664,72 @@ mode.
   warnings denied; the unit tests of `yulius-domain`, `yulius-store`, `yulius-app`,
   `yulius-github`, `xtask` (1,314 passed); `local_ci::` and `analytics::` (105 passed);
   `yulius-domain` doctests (24 passed).
+
+### Slice C: the merge queue does not throw work away
+
+- MQW-001: `member_left` leaves a member only for a failed own run; an errored or cancelled one
+  stays (`merge_train::a_member_whose_own_run_is_cancelled_or_errors_stays_in_the_candidate`:
+  both own runs ended so, no dissolve, the candidate's run goes on, passes, both merge; undone, it
+  fails). A candidate formed again takes its tree's passed run (`App::ci_reuse_for_candidate`,
+  `ci_reuse_tree` for train references with no `paths`-skipping source;
+  `merge_train::a_candidate_formed_again_reuses_its_trees_passed_run`: after a busy member's wait
+  limit the same candidate forms again, passed at once with "not run again", one candidate run
+  executed; undone, it fails). A failed member still leaves
+  (`a_member_whose_own_run_fails_leaves_the_candidate`, unchanged).
+- MQW-002: `drive_train` no longer waits for own runs
+  (`merge_train::a_passed_candidate_merges_while_a_members_own_run_goes`: merged while its own run
+  is held running, which never passed; `a_stuck_own_run_holds_nothing_back`: both merge, nothing
+  dissolved, one candidate run; with the wait put back both fail).
+- MQW-003: `SandboxTrains::suspect`, set by `bisect` when one member is left out, proven by a
+  passed train of exactly the others on the same base (`Suspect::proven_by`, unit
+  `a_suspect_is_proven_only_by_the_others_on_the_same_base`); `tell_suspect` ends its armed merge
+  naming both runs. `a_red_candidate_is_bisected_and_the_breaking_pull_request_told` now expects
+  `train/1+2+3 failed`, `train/1+2 passed` and no `train/3`;
+  `a_member_left_out_is_blamed_only_when_the_others_pass_without_it` (the first member fails
+  alone on the new base: it is told, the other merges). Undone (no suspect; the others' check
+  dropped), the tests fail.
+- MQW-004: `Dissolved::MemberFailed`; `QueueNumbers::dissolved_recent` (unit
+  `each_dissolved_candidate_is_listed_with_its_reason`); `dissolved_recent` in
+  `GET /api/analytics/merge-queue` (`analytics::the_merge_queue_read_counts_candidates_from_the_audit_log`);
+  the card's list (`pipeline.e2e.ts`, 18 of 18).
+- The quarantine review's round-3 nit: the hourly release runs off the CI poll (spawned).
+- ADR-0357; architecture (merge queue, diagram), `api.md`, `product.md`, `changes.md`.
+- Checks run on this head: `cargo fmt --check`; `cargo clippy --workspace --all-targets -D
+  warnings`; rustdoc of `yulius-app`, `yulius-domain`, `yulius-contracts`; the unit tests of
+  `yulius-domain`, `yulius-store`, `yulius-app`, `yulius-github`, `yulius-git`, `xtask` (1,432
+  passed); `local_ci::`, `analytics::`, `merge_train::` (144 passed); `pipeline.e2e.ts` (18
+  passed). `scripts/dev mutants`: 54 listed, 24 caught, 0 missed, 0 timed out, 30 unviable, 0 not
+  reached (724 s). Hand mutations: see each requirement above.
+
+- Review round 1 of slice C (Fable 5.2, head d10b67896). Request changes, all own code but one.
+  Answered:
+  - Blocker: the card's list padding (18px) was off the spacing scale, so the repository check
+    failed and CI stopped in 4 s. 16px; `scripts/check_repository.py` passes.
+  - Major: nothing held "a failed own run beats a passed candidate".
+    `merge_train::a_failed_own_run_beats_a_passed_candidate` (#2's own run held, the candidate
+    passes, then #2's run fails: #2 is not merged, `member_failed`, its armed merge ends, #1
+    merges on a candidate formed again). The failure is now read at each pass's start and again
+    before each member's merge (`own_run_failed`); undoing both reads fails the test; undoing
+    only the second fails it 1 time in 40 (the reviewer's count: which read catches it depends
+    on the background pass a candidate's end starts; no test times it, ADR-0357 says so).
+  - Major: nothing held the reuse guard for candidates. `Project::Paths` (a job with `paths =
+    ["never/**"]`) and `a_run_that_skipped_a_paths_job_is_no_source_for_a_candidate`: the
+    candidate formed again gets a run of its own. Undone (`Branch` only), it fails.
+  - Minor: the failed own run is read at the member's armed head now (a clean merge of the
+    integration branch with the same arming moves it), not only the head it joined with.
+  - Minor: the suspect keeps the others' heads, so another #2 head proves nothing (unit case).
+  - Minor: the told message says what was seen and its own run's state, not "combine badly";
+    the audit is written only when the merge is dropped.
+  - Minor: the records: ADR-0357 names the exception to ADR-0285's base-merge rule and the
+    fallback push without a verdict; ADR-0285's section is marked amended; MQW-001 and the
+    acceptance line say what is cancelled and why.
+  - Nits: stale texts; the dead `merging` arm in `train_run_ended`; "the own run of #N … ended
+    failed" counts as `member_failed`; the product summary.
+  - Pre-existing: a bisected candidate's second half reruns the red tree: #1384.
+- Review round 2 of slice C (Fable 5.2, head eebe8f366) approved; its CI run passed (quality,
+  e2e; security skipped, Vidoc 401). Its minor (a deterministic test of the read before each
+  merge, with a pause point) and two nits (an assertion that races the background pass, one long
+  ADR line) go into slice D's pull request, not after the approval.
 
 ### Slice A3: the operator's amendment to the admission (its own pull request, first)
 

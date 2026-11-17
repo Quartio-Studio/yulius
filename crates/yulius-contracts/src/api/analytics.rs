@@ -320,9 +320,13 @@ pub struct MergeQueueAnalytics {
     pub merged: u32,
     /// See `formed`.
     pub dissolved: u32,
-    /// Dissolved candidates by why (`member_left`, `bisected`, `base_moved`, `errored`,
-    /// `too_long`), over the range.
+    /// Dissolved candidates by why (`member_left`, `member_failed`, `bisected`, `base_moved`,
+    /// `errored`, `too_long`), over the range.
     pub dissolved_by: std::collections::BTreeMap<String, u32>,
+    /// The last ten candidates dissolved in the range, newest first, with why and the whole
+    /// reason (SPEC-497 MQW-004).
+    #[serde(default)]
+    pub dissolved_recent: Vec<MergeQueueDissolved>,
     /// Pull requests merged after an armed merge.
     pub merges: u32,
     /// The median minutes from a merge's last arming to the merge; `null` without any.
@@ -333,6 +337,19 @@ pub struct MergeQueueAnalytics {
     /// The same per UTC day of the runs' start, oldest first; days with no run are left out.
     #[serde(default)]
     pub ci_minutes_by_day: Vec<CiMinutesDay>,
+}
+
+/// A dissolved merge candidate (SPEC-497 MQW-004).
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct MergeQueueDissolved {
+    /// When (RFC 3339).
+    pub at: String,
+    /// The sandbox's slug.
+    pub sandbox: String,
+    /// Why, as `dissolved_by` names it.
+    pub why: String,
+    /// The reason as the queue recorded it (the candidate's pull requests, its run, why).
+    pub reason: String,
 }
 
 /// CI minutes by how the runs ended (SPEC-497 OFC-003): run minutes (start to end) of runs that
