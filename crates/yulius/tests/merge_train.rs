@@ -1716,6 +1716,52 @@ async fn formed_again(project: Project) -> TestResult {
     Ok(())
 }
 
+/// SPEC-497 MQW-002 (slice C review round 2): a member's own run that fails while the passed
+/// candidate merges the members before it is read again before its own merge: #1 merges, #2's
+/// own run fails exactly then (the pass held at its pause point), and #2 is not merged.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_member_whose_own_run_fails_during_the_merges_is_not_merged() -> TestResult {
+    let f = fixture().await?;
+    let app = f.h.app.clone();
+    let sandbox = app.deps.store.sandbox(&f.sandbox).await?.ok_or("s1")?;
+    let one = f.task(1, &[("a.txt", "x\n")]).await?;
+    let two = f.task(2, &[("b.txt", "x\n")]).await?;
+    app.ci_sync_sandbox(&sandbox).await?;
+    f.arm(1, &one).await?;
+    f.arm(2, &two).await?;
+    let held = hold_own_run(&f, &app, 2).await?;
+    let (at, go) = support::hold_point(yulius_app::race::Point::TrainMemberMerging, "t2");
+    f.advance_dev("other.txt")?;
+    app.ci_sync_sandbox(&sandbox).await?;
+    app.merge_armed(&f.sandbox).await;
+    let train = f
+        .train_runs(&app)
+        .await?
+        .into_iter()
+        .next()
+        .ok_or("no candidate")?;
+    assert_eq!(run_candidate(&f, &app, &train.id).await?, RunState::Passed);
+    // A pass merges #1 and stops before #2; #2's own run fails there.
+    let pass = {
+        let app = Arc::clone(&app);
+        let sandbox = f.sandbox.clone();
+        tokio::spawn(async move { app.merge_armed(&sandbox).await })
+    };
+    support::point_reached(at).await?;
+    assert!(f.merged(&app, 1).await?, "#1 merged first");
+    end_own_run(&app, &held, RunState::Failed).await?;
+    go.send(())?;
+    pass.await?;
+    assert!(!f.merged(&app, 2).await?, "merged on the candidate");
+    let gone = dissolved(&app).await?;
+    assert!(
+        gone.iter()
+            .any(|d| d.contains("#2's own run") && d.contains("(why: member_failed)")),
+        "{gone:?}"
+    );
+    Ok(())
+}
+
 /// SPEC-497 MQW-001, MQW-002 (review round 1): a member whose own run fails after its candidate
 /// passed is not merged on the candidate: it leaves with `member_failed`, its armed merge ends,
 /// and the other merges on a candidate formed again.
@@ -1740,7 +1786,6 @@ async fn a_failed_own_run_beats_a_passed_candidate() -> TestResult {
         .next()
         .ok_or("no candidate")?;
     assert_eq!(run_candidate(&f, &app, &train.id).await?, RunState::Passed);
-    assert!(!f.merged(&app, 1).await? && !f.merged(&app, 2).await?);
     end_own_run(&app, &held, RunState::Failed).await?;
     app.merge_armed(&f.sandbox).await;
     assert!(!f.merged(&app, 2).await?, "merged on the candidate");

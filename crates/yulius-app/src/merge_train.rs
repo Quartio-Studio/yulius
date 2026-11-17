@@ -894,6 +894,10 @@ impl App {
             // Its own run may still go: the candidate's run tested the exact merged result, which
             // is enough to merge (SPEC-497 MQW-002); one that failed, at this pass's start or
             // since, makes it leave (review round 1).
+            crate::race::reached(
+                crate::race::Point::TrainMemberMerging,
+                Path::new(&train.members[index].task),
+            );
             if let Some(reason) = self.own_run_failed(sandbox, &train.members[index]).await {
                 self.dissolve(sandbox, &train, &reason).await;
                 return None;
