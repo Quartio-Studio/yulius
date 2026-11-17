@@ -1359,6 +1359,12 @@ impl App {
         self.sandbox_dir(sandbox).join("repo")
     }
 
+    /// The lock every launch holds; a skill refresh takes it too, so it never installs into a
+    /// home while a launch does (SPEC-507 SKR-005).
+    pub(crate) async fn launch_lock(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.supervisor.launch.lock().await
+    }
+
     pub(crate) fn sandbox_home(&self, sandbox: &SandboxId) -> PathBuf {
         self.sandbox_dir(sandbox).join("home")
     }
@@ -1582,13 +1588,10 @@ impl App {
     async fn prepare_run_extras(&self, sandbox: &SandboxRecord, home: &Path) {
         match self.skills_for_run(sandbox).await {
             Ok(skills) if !skills.is_empty() => {
-                // The agent owns its home: the skills folder is reached from the sandbox
-                // directory without following links (#657).
+                // Under the launch lock (held by the launch): a refresh never meets this
+                // install in the same home (SPEC-507 SKR-005).
                 let root = self.sandbox_dir(&sandbox.id);
-                let skills_dir = home
-                    .strip_prefix(&root)
-                    .unwrap_or(Path::new("home"))
-                    .join(".claude/skills");
+                let skills_dir = crate::skills::refresh::skills_dir_below(&root, home);
                 if let Err(err) = self
                     .deps
                     .harness

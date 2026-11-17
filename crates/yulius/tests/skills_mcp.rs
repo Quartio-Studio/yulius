@@ -60,6 +60,150 @@ fn by_name<'a>(list: &'a Value, name: &str) -> Option<&'a Value> {
     list.as_array()?.iter().find(|s| s["name"] == name)
 }
 
+fn inode(path: &Path) -> std::io::Result<u64> {
+    use std::os::unix::fs::MetadataExt as _;
+    Ok(std::fs::symlink_metadata(path)?.ino())
+}
+
+/// SPEC-507 AC-1, AC-2, AC-4, AC-5: a server start with a changed skill refreshes the copy in a
+/// sandbox whose task is running, rewrites nothing else, leaves the agent's own skill alone, skips
+/// a sandbox without a home, logs a sandbox whose skills folder is behind a link and goes on, and
+/// audits what it did; a switched skill reaches the home at once.
+#[tokio::test]
+async fn a_server_start_refreshes_every_sandboxs_skills() -> TestResult {
+    use yulius_app::ports::store::{AuditStore, TaskStore};
+    use yulius_app::skills::refresh::REFRESHED_AUDIT;
+    use yulius_domain::task::TaskStatus;
+    let w = world(false).await?;
+    add_sandbox(&w.h, "s2", "homeless", 20100).await?;
+    add_sandbox(&w.h, "s3", "linked", 20200).await?;
+    let data = w.h.app.config.data_dir.clone();
+    w.h.app.install_skill_catalog().await?;
+
+    // The build before had other rules in om-fix; studio's task started under it and runs on.
+    let catalog_fix = data.join("skills/open-mercato/om-fix/SKILL.md");
+    let new_rules = std::fs::read_to_string(&catalog_fix)?;
+    std::fs::write(&catalog_fix, "---\nname: om-fix\n---\nthe old rules\n")?;
+    support::seed_task(&w.h, "t-run", "s1", "u-alice", TaskStatus::Running, None).await?;
+    support::seed_live_attempt(&w.h, "t-run", "token-run").await?;
+    let studio =
+        w.h.store
+            .sandbox(&SandboxId::parse("s1")?)
+            .await?
+            .ok_or("s1")?;
+    let sandbox_dir = data.join("sandboxes/s1");
+    let skills = sandbox_dir.join("home/.claude/skills");
+    std::fs::create_dir_all(sandbox_dir.join("home"))?;
+    let set = w.h.app.skills_for_run(&studio).await?;
+    w.h.app
+        .deps
+        .harness
+        .install_skills(&set, &sandbox_dir, Path::new("home/.claude/skills"))?;
+    assert!(std::fs::read_to_string(skills.join("om-fix/SKILL.md"))?.contains("the old rules"));
+    write(&skills.join("personal/SKILL.md"), "the agent's own")?;
+    let review_before = inode(&skills.join("om-code-review"))?;
+    // linked: the agent made `.claude` a link to a host folder.
+    let outside = tempfile::tempdir()?;
+    std::fs::create_dir_all(data.join("sandboxes/s3/home"))?;
+    std::os::unix::fs::symlink(outside.path(), data.join("sandboxes/s3/home/.claude"))?;
+
+    // The new build starts: its catalog has the new om-fix.
+    w.h.app.skills_at_start().await;
+    assert_eq!(std::fs::read_to_string(&catalog_fix)?, new_rules);
+    assert_eq!(
+        std::fs::read_to_string(skills.join("om-fix/SKILL.md"))?,
+        new_rules,
+        "the running task's sandbox has the new skill"
+    );
+    assert_eq!(
+        inode(&skills.join("om-code-review"))?,
+        review_before,
+        "a matching copy is not rewritten"
+    );
+    assert_eq!(
+        std::fs::read_to_string(skills.join("personal/SKILL.md"))?,
+        "the agent's own"
+    );
+    assert!(
+        !data.join("sandboxes/s2/home").exists(),
+        "a sandbox with no home waits for its first run"
+    );
+    assert_eq!(
+        std::fs::read_dir(outside.path())?.count(),
+        0,
+        "nothing written through a link"
+    );
+    let task =
+        w.h.store
+            .task(&yulius_domain::ids::TaskId::parse("t-run")?)
+            .await?
+            .ok_or("task")?;
+    assert_eq!(task.status, TaskStatus::Running);
+    let audited =
+        w.h.store
+            .audit_details("studio", REFRESHED_AUDIT, 10)
+            .await?;
+    assert_eq!(audited.len(), 1, "{audited:?}");
+    assert!(
+        audited[0].starts_with("server start at ") && audited[0].ends_with("; installed om-fix"),
+        "{audited:?}"
+    );
+    assert!(
+        w.h.store
+            .audit_details("linked", REFRESHED_AUDIT, 10)
+            .await?
+            .is_empty()
+    );
+
+    // A start with nothing changed writes nothing.
+    w.h.app.skills_at_start().await;
+    assert_eq!(
+        w.h.store
+            .audit_details("studio", REFRESHED_AUDIT, 10)
+            .await?
+            .len(),
+        1
+    );
+
+    // A switched skill reaches the home at once (SKR-003).
+    let off = call(
+        &w.h.router,
+        Method::PUT,
+        "/api/sandboxes/s1/skills/om-fix",
+        Some(json!({"enabled": false})),
+        &w.alice,
+    )
+    .await?;
+    assert_eq!(off.status, StatusCode::NO_CONTENT);
+    assert!(
+        !skills.join("om-fix").exists(),
+        "switched off: the copy is gone"
+    );
+    let on = call(
+        &w.h.router,
+        Method::PUT,
+        "/api/sandboxes/s1/skills/om-fix",
+        Some(json!({"enabled": true})),
+        &w.alice,
+    )
+    .await?;
+    assert_eq!(on.status, StatusCode::NO_CONTENT);
+    assert_eq!(
+        std::fs::read_to_string(skills.join("om-fix/SKILL.md"))?,
+        new_rules
+    );
+    let audited =
+        w.h.store
+            .audit_details("studio", REFRESHED_AUDIT, 10)
+            .await?;
+    assert_eq!(audited.len(), 3, "{audited:?}");
+    assert!(
+        audited[1].starts_with("skill switched at ") && audited[1].ends_with("; removed om-fix")
+    );
+    assert!(audited[0].ends_with("; installed om-fix"), "{audited:?}");
+    Ok(())
+}
+
 #[tokio::test]
 async fn skill_catalog_sources_toggles_and_run_set() -> TestResult {
     let w = world(false).await?;

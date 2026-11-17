@@ -15,6 +15,7 @@
 //! names must be safe directory names. Disk work runs on blocking threads.
 
 pub mod pack;
+pub mod refresh;
 
 use std::collections::{BTreeSet, HashMap};
 use std::fs;
@@ -668,7 +669,12 @@ impl App {
                 Some(sid.as_str()),
                 Some(&skill.name),
             )
-            .await
+            .await?;
+        // The sandbox's home follows the switch at once, not at its next run (SPEC-507 SKR-003).
+        if let Some(record) = self.deps.store.sandbox(&sid).await? {
+            self.refresh_sandbox_skills(&record, "skill switched").await;
+        }
+        Ok(())
     }
 
     /// Enabled instance and bundled skills for a run in `sandbox`, as (name, directory)
