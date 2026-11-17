@@ -148,9 +148,9 @@ product project's 21 jobs pinned to 3 CPUs are its `yulius.toml`.
 
 ## Plan
 
-- [ ] Yulius's typed messages keep an approval across a fix within 20 product lines
-- [ ] A reviewer approves a change whose only open point is CI
-- [ ] The author proves each fix before asking for another round
+- [x] Yulius's typed messages keep an approval across a fix within 20 product lines
+- [x] A reviewer approves a change whose only open point is CI
+- [x] The author proves each fix before asking for another round
 - [ ] Review of the round rules (pull request 1) approved
 - [ ] Mutation runs use the session's CPUs, measured on a real change
 - [ ] Mutation testing runs beside the first review, then on each fix's lines
