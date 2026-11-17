@@ -429,6 +429,17 @@ impl GitPort for LocalGit {
         Ok(git(repo, &["show", &format!("{rev}:{path}")]).ok())
     }
 
+    async fn parents(&self, repo: &Path, rev: &str) -> AppResult<Vec<String>> {
+        let line = git(repo, &["rev-list", "--parents", "-n", "1", rev]).map_err(upstream)?;
+        Ok(line.split_whitespace().skip(1).map(str::to_owned).collect())
+    }
+
+    async fn merge_base(&self, repo: &Path, a: &str, b: &str) -> AppResult<Option<String>> {
+        Ok(git(repo, &["merge-base", a, b])
+            .ok()
+            .map(|sha| sha.trim().to_owned()))
+    }
+
     async fn list_dir(&self, repo: &Path, rev: &str, dir: &str) -> AppResult<Vec<String>> {
         let mut args = vec!["ls-tree", "--name-only", rev];
         let filter = format!("{dir}/");

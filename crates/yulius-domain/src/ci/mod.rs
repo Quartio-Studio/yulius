@@ -502,6 +502,40 @@ pub fn keep_security_jobs(mut own: Gate, trusted: Option<&Gate>, vidoc: bool) ->
     own
 }
 
+/// What names a job of a change's own beside the gate's (SPEC-504 CFG-001).
+pub const CHANGE_SUFFIX: &str = " (this change)";
+
+/// `gate` (the integration branch's) with the jobs of a change's own `yulius.toml` (`own`) that
+/// differ from all of its: the changed and the added ones, named with [`CHANGE_SUFFIX`] and
+/// keeping their key (SPEC-504 CFG-001, ADR-0360). Every job of `gate` still runs, so a change
+/// never weakens the gate that judges it, and a job it changes or adds runs before it merges, so
+/// a failing one never lands untested to judge its own repair. A job equal to one of `gate`'s
+/// (key, matrix and command) is not run twice, and none takes the key of the gate's scanning
+/// job (SPEC-217 VDP-001: the trusted scan stays the only one); past [`MAX_JOBS`] in all, the
+/// rest are left out.
+#[must_use]
+pub fn with_changed_jobs(mut gate: Gate, own: Vec<Job>) -> Gate {
+    let same = |a: &Job, b: &Job| a.key == b.key && a.matrix == b.matrix && a.command == b.command;
+    let scanning: Vec<String> = gate
+        .jobs
+        .iter()
+        .filter(|job| scans(job))
+        .map(|job| job.key.clone())
+        .collect();
+    let changed: Vec<Job> = own
+        .into_iter()
+        .filter(|job| !gate.jobs.iter().any(|kept| same(kept, job)))
+        .filter(|job| !scanning.contains(&job.key))
+        .map(|job| Job {
+            name: format!("{}{CHANGE_SUFFIX}", job.name),
+            ..job
+        })
+        .collect();
+    let room = MAX_JOBS.saturating_sub(gate.jobs.len());
+    gate.jobs.extend(changed.into_iter().take(room));
+    gate
+}
+
 /// The state of a run from its jobs' states: running while any job is active, then failed if
 /// any failed, error if any errored, cancelled if any was cancelled, else passed (skipped jobs
 /// included, SPEC-162). A run without jobs is an error.
@@ -1164,6 +1198,57 @@ pub fn classify_worktree(owner: WorktreeOwner, prunable: bool) -> Option<StaleRe
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// SPEC-504 CFG-001: a change's own jobs run beside the gate's, never instead: changed and
+    /// added ones, named apart and keeping their key; equal ones once; within [`MAX_JOBS`].
+    #[test]
+    fn a_changes_own_jobs_run_beside_the_gates() {
+        let job = |key: &str, command: &str| Job {
+            name: key.to_owned(),
+            key: key.to_owned(),
+            command: command.to_owned(),
+            matrix: None,
+            need: Need::default(),
+            secrets: Vec::new(),
+            timeout_minutes: None,
+            exclusive: false,
+            paths: Vec::new(),
+        };
+        let gate = Gate {
+            jobs: vec![job("check", "make check"), job("lint", "make lint")],
+            source: GateSource::ProjectConfig,
+        };
+        let own = vec![
+            job("check", "make check"),
+            job("lint", "true"),
+            job("added", "make more"),
+        ];
+        let both = with_changed_jobs(gate.clone(), own);
+        let names: Vec<&str> = both.jobs.iter().map(|j| j.name.as_str()).collect();
+        assert_eq!(
+            names,
+            ["check", "lint", "lint (this change)", "added (this change)"]
+        );
+        assert_eq!(both.jobs[2].key, "lint");
+        assert_eq!(both.jobs[2].command, "true");
+        assert_eq!(both.source, GateSource::ProjectConfig);
+        assert_eq!(
+            with_changed_jobs(gate.clone(), Vec::new()),
+            gate,
+            "no own jobs: the gate"
+        );
+        let many: Vec<Job> = (0..40).map(|n| job(&format!("j{n}"), "x")).collect();
+        assert_eq!(with_changed_jobs(gate.clone(), many).jobs.len(), MAX_JOBS);
+        // A job of its own under the trusted scan's key never runs beside it.
+        let scanned = with_security_job(gate);
+        let key = scanned
+            .jobs
+            .last()
+            .map(|j| j.key.clone())
+            .unwrap_or_default();
+        let fake = with_changed_jobs(scanned.clone(), vec![job(&key, "echo fake pass")]);
+        assert_eq!(fake, scanned);
+    }
 
     /// SPEC-493 CJP-002, CJP-003 (AC-16): a job with `paths` is skipped, with the reason, only
     /// for a known change that touches none of them and not `yulius.toml`.

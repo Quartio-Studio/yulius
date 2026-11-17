@@ -304,6 +304,9 @@ pub(crate) struct GateView {
     /// While it is: the newest first-parent commit of the integration branch whose
     /// configuration is valid, whose gate is the one in force (SPEC-504 CFG-003).
     pub(crate) fallback: Option<String>,
+    /// While it is: whether looking for that commit failed (Git), so it is not known whether
+    /// one exists.
+    pub(crate) fallback_unknown: bool,
     /// GitHub Actions workflow files on the integration branch.
     pub(crate) workflows: Vec<String>,
 }
@@ -894,23 +897,28 @@ impl App {
                     view.problem = Some(problem);
                     // The last valid gate runs until a fix merges (SPEC-504 CFG-003).
                     match self.ci_last_valid_jobs(&repo, sha).await {
-                        Some((valid, jobs)) => {
+                        Ok(Some((valid, jobs))) => {
                             view.fallback = Some(valid);
                             jobs
                         }
-                        None => Vec::new(),
+                        Ok(None) => Vec::new(),
+                        Err(()) => {
+                            view.fallback_unknown = true;
+                            Vec::new()
+                        }
                     }
                 }
             },
             None => Vec::new(),
         };
         view.gate = dom::effective_gate(profile_gate.as_deref(), &project);
-        // Every run of it says it runs the last valid gate (SPEC-504 CFG-006).
-        if view.fallback.is_some()
-            && let Some(gate) = view.gate.as_mut()
-            && gate.source == GateSource::ProjectConfig
-        {
-            gate.source = GateSource::LastValid;
+        // Every run of it says it runs the last valid gate (SPEC-504 CFG-006); a fallback that
+        // gives no gate in force (none there, or a profile's gate instead) is no fallback.
+        match view.gate.as_mut() {
+            Some(gate) if view.fallback.is_some() && gate.source == GateSource::ProjectConfig => {
+                gate.source = GateSource::LastValid;
+            }
+            _ => view.fallback = None,
         }
         if let Some(sha) = &base
             && let Ok(files) = self.deps.git.list_dir(&repo, sha, WORKFLOWS_DIR).await
@@ -929,24 +937,25 @@ impl App {
 
     /// The jobs of the newest first-parent ancestor of `sha` (at most [`LAST_VALID_BACK`] back)
     /// whose `yulius.toml` is valid, with that commit (SPEC-504 CFG-003): the gate that judged
-    /// the integration branch before its configuration broke. `None` when none is.
-    async fn ci_last_valid_jobs(&self, repo: &Path, sha: &str) -> Option<(String, Vec<Job>)> {
+    /// the integration branch before its configuration broke. `Ok(None)` when none is, `Err`
+    /// when Git could not say.
+    async fn ci_last_valid_jobs(
+        &self,
+        repo: &Path,
+        sha: &str,
+    ) -> Result<Option<(String, Vec<Job>)>, ()> {
         let mut at = sha.to_owned();
         for _ in 0..LAST_VALID_BACK {
-            let parent = self
-                .deps
-                .git
-                .parents(repo, &at)
-                .await
-                .ok()?
-                .into_iter()
-                .next()?;
+            let parents = self.deps.git.parents(repo, &at).await.map_err(|_| ())?;
+            let Some(parent) = parents.into_iter().next() else {
+                return Ok(None);
+            };
             if let Ok(jobs) = self.ci_jobs_at(repo, &parent).await {
-                return Some((parent, jobs));
+                return Ok(Some((parent, jobs)));
             }
             at = parent;
         }
-        None
+        Ok(None)
     }
 
     /// Records when `sandbox`'s CI starts and stops having no gate because of its configuration
@@ -1187,23 +1196,23 @@ impl App {
             CiRef::PullRequest(_) => {
                 let integration =
                     format!("origin/{}", delivery_profile(sandbox).integration_branch);
-                let base = self
-                    .deps
-                    .git
-                    .merge_base(&repo, sha, &integration)
-                    .await
-                    .ok()?;
+                // What Git cannot tell (a merge base, a file) leaves the head's own file to
+                // check: a failure never skips the check (review round 1).
+                let base = self.deps.git.merge_base(&repo, sha, &integration).await;
                 let changed = match base {
-                    Some(base) => read(base).await? != read(sha.to_owned()).await?,
-                    None => true,
+                    Ok(Some(base)) => match (read(base).await, read(sha.to_owned()).await) {
+                        (Some(before), Some(now)) => before != now,
+                        _ => true,
+                    },
+                    Ok(None) | Err(_) => true,
                 };
                 if changed {
                     sha.to_owned()
                 } else {
                     let problem = self.ci_jobs_at(&repo, &integration).await.err()?;
                     return Some(format!(
-                        "yulius.toml is invalid on {} and this change does not repair it: \
-                         {problem}",
+                        "yulius.toml is invalid on {} and this change does not repair it (its run \
+                         goes again once it is valid there): {problem}",
                         delivery_profile(sandbox).integration_branch
                     ));
                 }
@@ -1211,7 +1220,12 @@ impl App {
             _ => sha.to_owned(),
         };
         let problem = self.ci_jobs_at(&repo, &at).await.err()?;
-        Some(format!("yulius.toml is invalid: {problem}"))
+        // The parser's message names the file and its line already.
+        Some(if problem.starts_with("yulius.toml") {
+            problem
+        } else {
+            format!("yulius.toml is invalid: {problem}")
+        })
     }
 
     /// `run` and its `jobs` refused for `problem` (SPEC-504 CFG-002): failed now, its jobs
@@ -1503,6 +1517,15 @@ impl App {
                     })
             });
             if branch && skipped_a_paths_job {
+                continue;
+            }
+            // Every job of the gate ran there, with the same command: a pull request judged by
+            // the jobs its merge then changed never ran the new ones (SPEC-504, review round 1).
+            let all_ran = gate.jobs.iter().all(|job| {
+                jobs.iter()
+                    .any(|t| t.key == job.key && t.matrix == job.matrix && t.command == job.command)
+            });
+            if branch && !all_ran {
                 continue;
             }
             found = Some((run, jobs));
@@ -2102,10 +2125,20 @@ impl App {
         // What the commit is no longer changes its jobs (CFG-001): kept for the callers' word.
         (head, _): (&str, Head),
     ) -> Option<Gate> {
-        if let Some(gate) = &view.gate {
-            return Some(gate.clone());
-        }
         let repo = self.sandbox_repo(&sandbox.id);
+        if let Some(gate) = &view.gate {
+            // Its own changed and added jobs beside the gate's, never instead (CFG-001); an own
+            // file that cannot be read fails the run by the configuration check.
+            return Some(match self.ci_jobs_at(&repo, head).await {
+                Ok(own) => dom::with_changed_jobs(gate.clone(), own),
+                Err(_) => gate.clone(),
+            });
+        }
+        // The last valid gate could not be looked for (Git failed): no verdict until it can,
+        // never the commit's own jobs in its place (review round 1).
+        if view.fallback_unknown {
+            return None;
+        }
         let jobs = match self.ci_jobs_at(&repo, head).await {
             Ok(jobs) if !jobs.is_empty() => jobs,
             _ => return None,

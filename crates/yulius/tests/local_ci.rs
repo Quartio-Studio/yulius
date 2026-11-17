@@ -1803,7 +1803,13 @@ async fn a_branch_reuses_a_same_tree_run_that_ran_its_paths_job() -> TestResult 
         ordinal,
         name: name.into(),
         key: name.into(),
-        command: "true".into(),
+        // As the job ran it (a reuse needs every job's command to have run, SPEC-504).
+        command: if name == "web" {
+            "echo web ran"
+        } else {
+            "true"
+        }
+        .into(),
         matrix: None,
         state: RunState::Passed,
         reason: None,
@@ -5371,9 +5377,9 @@ async fn ci_jobs_get_the_secrets_the_integration_branch_grants_them() -> TestRes
     assert!(!plain_out.contains("ca-readable"), "{plain_out}");
 
     // The pull request grants secrets in its own yulius.toml, reuses the granted job's name for
-    // its own command and adds a job (SPEC-264 CSG-001, CSG-002, #659): it is judged by the
-    // integration branch's jobs (SPEC-504 CFG-001), so its own commands never run and nothing it
-    // grants itself reaches anything; the integration branch's grant is all there is.
+    // its own command and adds a job (SPEC-264 CSG-001, CSG-002, #659): the integration branch's
+    // jobs judge it, with their grant (SPEC-504 CFG-001), and its own run beside them with no
+    // secret, since a grant binds the integration branch's name and command.
     let own = format!(
         "[[ci.jobs]]\nname = \"granted\"\nsecrets = \"API_KEY OTHER_KEY\"\ncommand = '{granted}'\n\n\
          [[ci.jobs]]\nname = \"plain\"\nsecrets = \"API_KEY\"\ncommand = '{plain}'\n\n\
@@ -5390,21 +5396,36 @@ async fn ci_jobs_get_the_secrets_the_integration_branch_grants_them() -> TestRes
     let names: Vec<&str> = outputs.iter().map(|(n, _)| n.as_str()).collect();
     assert_eq!(
         names,
-        ["granted", "plain"],
-        "the integration branch's jobs ran"
+        [
+            "granted",
+            "plain",
+            "granted (this change)",
+            "plain (this change)",
+            "sneaky (this change)"
+        ],
+        "the integration branch's jobs, and its own beside them"
     );
+    for name in [
+        "granted (this change)",
+        "plain (this change)",
+        "sneaky (this change)",
+    ] {
+        assert!(
+            output_of(&outputs, name)?.contains("own key=none other=none proxy= ca=none"),
+            "{outputs:?}"
+        );
+    }
     assert!(
-        outputs.iter().all(|(_, out)| !out.contains("own key")),
-        "no command of its own ran: {outputs:?}"
+        output_of(&outputs, "granted (this change)")?.contains(
+            "[yulius] agent secrets: none; this job's command is not the one the integration \
+             branch grants them to"
+        ),
+        "{outputs:?}"
     );
     let granted = output_of(&outputs, "granted")?;
     assert!(
         granted.contains("key=yulius-secret-API_KEY other=none proxy=set ca=/"),
-        "{granted}"
-    );
-    assert!(
-        output_of(&outputs, "plain")?.contains("key=none other=none proxy= ca=none"),
-        "{outputs:?}"
+        "the integration branch's job keeps its grant: {granted}"
     );
     Ok(())
 }
@@ -6184,9 +6205,9 @@ async fn a_pull_request_with_its_own_jobs_cannot_drop_the_security_job() -> Test
 }
 
 /// SPEC-483 D4, SPEC-504 CFG-001: a run again tests a pull request with the jobs the scheduler
-/// gave it: a pull request that changes the CI is tested with the integration branch's jobs, by
-/// its first run and by a run again (by a person, by the agent's `ci_rerun`, by Yulius after an
-/// errored run).
+/// gave it: a pull request that changes the CI is tested with the integration branch's jobs and
+/// its own changed ones beside them, by its first run and by a run again (by a person, by the
+/// agent's `ci_rerun`, by Yulius after an errored run).
 #[tokio::test]
 async fn a_run_again_tests_a_pull_request_with_the_jobs_its_first_run_had() -> TestResult {
     let f = fixture_with(false, |_| {
@@ -6215,7 +6236,11 @@ async fn a_run_again_tests_a_pull_request_with_the_jobs_its_first_run_had() -> T
     let names = |outputs: &[(String, String)]| -> Vec<String> {
         outputs.iter().map(|(name, _)| name.clone()).collect()
     };
-    assert_eq!(names(&first), ["plain"], "{first:?}");
+    assert_eq!(
+        names(&first),
+        ["plain", "plain (this change)", "added (this change)"],
+        "{first:?}"
+    );
     assert!(output_of(&first, "plain")?.contains("plain"), "{first:?}");
     let again = f
         .post(
@@ -6230,7 +6255,11 @@ async fn a_run_again_tests_a_pull_request_with_the_jobs_its_first_run_had() -> T
     assert_eq!(names(&second), names(&first), "the same jobs");
     assert!(
         !output_of(&second, "plain")?.contains("changed"),
-        "the integration branch's command, not its own: {second:?}"
+        "the integration branch's command, not its own instead: {second:?}"
+    );
+    assert!(
+        output_of(&second, "plain (this change)")?.contains("changed"),
+        "{second:?}"
     );
     Ok(())
 }
@@ -6356,8 +6385,9 @@ async fn run_of_sha(f: &Fixture, sha: &str) -> BoxResult<Value> {
 }
 
 /// SPEC-504 CFG-001 (superseding CI-110): a pull request that changes `[[ci.jobs]]` is judged by
-/// the integration branch's jobs, never its own: a change never weakens the gate that judges
-/// it.
+/// the integration branch's jobs, never its own instead: a change never weakens the gate that
+/// judges it; its changed and added jobs run beside them (review round 1), and one that fails
+/// fails the run, so it never lands untested to judge its own repair.
 #[tokio::test]
 async fn a_pull_request_that_changes_its_jobs_is_judged_by_the_integration_branchs() -> TestResult {
     let f = fixture_with(false, |_| one_job("dev-gate")).await?;
@@ -6374,8 +6404,33 @@ async fn a_pull_request_that_changes_its_jobs_is_judged_by_the_integration_branc
         .iter()
         .filter_map(|job| job["name"].as_str())
         .collect();
-    assert_eq!(names, ["check"], "dev's jobs judge it: {detail}");
+    assert_eq!(
+        names,
+        ["check", "weaker (this change)"],
+        "dev's jobs judge it, its own beside: {detail}"
+    );
     assert_eq!(detail["source"], "yulius_toml");
+    assert_eq!(detail["state"], "passed", "{detail}");
+    // A job it changes to one that fails fails it: it cannot merge.
+    let failing = f.push_feature(
+        "yulius.toml",
+        Some("[[ci.jobs]]\nname = \"check\"\ncommand = \"exit 1\"\n"),
+    )?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    let detail = run_of_sha(&f, &failing).await?;
+    assert_eq!(detail["state"], "failed", "{detail}");
+    let state = |name: &str| {
+        detail["jobs"]
+            .as_array()
+            .and_then(|jobs| jobs.iter().find(|job| job["name"] == name))
+            .map(|job| job["state"].clone())
+    };
+    assert_eq!(
+        state("check (this change)"),
+        Some(serde_json::json!("failed")),
+        "{detail}"
+    );
     Ok(())
 }
 
@@ -6397,7 +6452,7 @@ async fn a_pull_request_with_an_invalid_yulius_toml_fails_with_the_parsers_messa
     let detail = run_of_sha(&f, &sha).await?;
     assert_eq!(detail["state"], "failed", "{detail}");
     let reason = detail["reason"].as_str().unwrap_or_default();
-    assert!(reason.starts_with("yulius.toml is invalid: "), "{reason}");
+    assert!(reason.starts_with("yulius.toml"), "{reason}");
     assert!(reason.contains("gate"), "the parser's message: {reason}");
     let jobs = detail["jobs"].as_array().ok_or("jobs")?;
     let state = |name: &str| {

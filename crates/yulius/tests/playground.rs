@@ -1714,7 +1714,7 @@ async fn task_job_output(
 
 /// SPEC-504 CFG-001 (superseding SPEC-483 D4's own jobs): a playground task that changes a job
 /// is judged by `dev`'s jobs, as a pull request is: the run of its merge shows `dev`'s command,
-/// not the task's.
+/// and the task's own beside it, never instead.
 #[tokio::test]
 async fn a_task_that_changes_the_jobs_is_judged_by_devs() -> TestResult {
     let (h, owner) = ci_world().await?;
@@ -1731,6 +1731,9 @@ async fn a_task_that_changes_the_jobs_is_judged_by_devs() -> TestResult {
     let output = task_job_output(&h, &owner, &body, "check").await?;
     assert!(output.contains("check-ok"), "dev's command: {output}");
     assert!(!output.contains("the-tasks-own-check"), "{output}");
+    // Its own changed job runs beside dev's (review round 1).
+    let own = task_job_output(&h, &owner, &body, "check (this change)").await?;
+    assert!(own.contains("the-tasks-own-check"), "{own}");
     Ok(())
 }
 
