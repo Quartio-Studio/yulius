@@ -1368,8 +1368,12 @@ async fn ci_run(w: &World, sandbox: &str, id: &str, at: i64, keys: &[&str]) -> B
             id: format!("{id}-{key}"),
             run_id: id.into(),
             ordinal: u32::try_from(i).unwrap_or(0),
+            // A twin's name keeps its suffix; its key is the job's.
             name: (*key).into(),
-            key: (*key).into(),
+            key: key
+                .strip_suffix(yulius_domain::ci::CHANGE_SUFFIX)
+                .unwrap_or(key)
+                .into(),
             command: "true".into(),
             matrix: None,
             state: RunState::Passed,
@@ -1556,17 +1560,24 @@ async fn unused_ci_checkouts_go_while_no_run_runs() -> BoxResult<()> {
     let w = world().await?;
     let live = w.sandbox("live").await?;
     let idle = w.sandbox("idle").await?;
-    for name in ["gate.2", "old", "gate@7"] {
+    for name in ["gate.2", "old", "gate@7", "gate.change", "old.change.2"] {
         write(&live.join(format!("ci/jobs/{name}/f")), "x")?;
     }
     let now = w.h.app.now().0;
-    ci_run(&w, "live", "r-new", now - 60_000, &["gate"]).await?;
+    ci_run(
+        &w,
+        "live",
+        "r-new",
+        now - 60_000,
+        &["gate", "gate (this change)"],
+    )
+    .await?;
     ci_run(
         &w,
         "live",
         "r-old",
         now - 20 * 24 * 60 * 60 * 1000,
-        &["old"],
+        &["old", "old (this change)"],
     )
     .await?;
 
@@ -1576,8 +1587,12 @@ async fn unused_ci_checkouts_go_while_no_run_runs() -> BoxResult<()> {
         .filter(|i| i.kind == Kind::StaleCiCheckout)
         .filter_map(|i| i.path.file_name().map(|n| n.to_string_lossy().into_owned()))
         .collect();
-    assert_eq!(stale.len(), 2, "{stale:?}");
+    assert_eq!(stale.len(), 3, "{stale:?}");
     assert!(stale.contains(&"old".to_owned()) && stale.contains(&"gate@7".to_owned()));
+    assert!(
+        stale.contains(&"old.change.2".to_owned()),
+        "SPEC-504 review round 3: a twin's checkout no recent run used is stale: {stale:?}"
+    );
     assert!(
         !items.iter().any(|i| i.path.starts_with(&idle)),
         "no recent run: idle checkouts are not stale"
@@ -1596,6 +1611,11 @@ async fn unused_ci_checkouts_go_while_no_run_runs() -> BoxResult<()> {
         "#675: a stale checkout goes through the mapped removal"
     );
     assert!(live.join("ci/jobs/gate.2/f").exists(), "a job still used");
+    assert!(
+        live.join("ci/jobs/gate.change/f").exists(),
+        "a twin still run keeps its checkout"
+    );
+    assert!(!live.join("ci/jobs/old.change.2").exists());
     assert!(idle.join("ci/jobs/gate/build.log").exists());
     Ok(())
 }
