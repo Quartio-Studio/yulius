@@ -315,7 +315,7 @@ pub async fn serve_until_done(mut front: Front, holder_alive: impl Fn() -> bool)
 /// Setup failed; the message also goes to stdout instead of `ready`.
 pub fn run(spec_path: &Path) -> Result<(), String> {
     let result = setup(spec_path);
-    let (spec, runtime) = match result {
+    let (spec, runtime, proc) = match result {
         Ok(parts) => parts,
         Err(message) => {
             println!("{message}");
@@ -326,14 +326,20 @@ pub fn run(spec_path: &Path) -> Result<(), String> {
     runtime.block_on(async move {
         let (state, sysfs) = (paths.dir.clone(), paths.engine_sysfs());
         let prepare: Prepare = Box::new(move || prepare_engine(&state, &sysfs));
-        let front = match Front::start(&paths, &spec.serve, &spec.bridge_forwards, prepare) {
-            Ok(front) => front,
-            Err(error) => {
-                let message = format!("docker.sock: {error}");
-                println!("{message}");
-                return Err(message);
-            }
-        };
+        // CI jobs' connections are told by their caller's cgroup (SPEC-504 CLB-002).
+        let gate = Gate::new().telling_jobs(Arc::new(move |pid| {
+            proc.as_ref()
+                .and_then(|proc| crate::docker_label::caller_job(proc, pid))
+        }));
+        let front =
+            match Front::start_through(&paths, &spec.serve, &spec.bridge_forwards, prepare, gate) {
+                Ok(front) => front,
+                Err(error) => {
+                    let message = format!("docker.sock: {error}");
+                    println!("{message}");
+                    return Err(message);
+                }
+            };
         println!("{READY}");
         let (pid, net_ns) = (spec.holder_pid, spec.net_ns);
         serve_until_done(front, move || {
@@ -344,13 +350,30 @@ pub fn run(spec_path: &Path) -> Result<(), String> {
     })
 }
 
-fn setup(spec_path: &Path) -> Result<(DockerFrontSpec, tokio::runtime::Runtime), String> {
+/// What the front runs with: its spec, its runtime, and the host's `/proc` when it could be
+/// opened (before the sandbox's mount namespace is joined: there `/proc` may show another PID
+/// namespace than the callers' pids are in).
+type Setup = (
+    DockerFrontSpec,
+    tokio::runtime::Runtime,
+    Option<std::os::fd::OwnedFd>,
+);
+
+fn setup(spec_path: &Path) -> Result<Setup, String> {
     let spec: DockerFrontSpec = crate::holder::read_json(spec_path)
         .map_err(|e| format!("docker front spec {}: {e}", spec_path.display()))?;
     spec.validate().map_err(|e| e.to_string())?;
     if let Some(cgroup) = &spec.cgroup {
         crate::cgroup::join(Path::new(cgroup)).map_err(|e| format!("join {cgroup}: {e}"))?;
     }
+    // Without it nothing is labelled: CI jobs' leftovers stay, and the front still serves.
+    let proc = match std::fs::File::open("/proc") {
+        Ok(dir) => Some(std::os::fd::OwnedFd::from(dir)),
+        Err(error) => {
+            eprintln!("cannot open /proc: CI jobs' containers are not labelled: {error}");
+            None
+        }
+    };
     // Still single-threaded: `setns` into a user namespace needs it.
     crate::enter::join_holder(spec.holder_pid, spec.user_ns, spec.net_ns, spec.mnt_ns)
         .map_err(|e| format!("join the sandbox's namespaces: {e}"))?;
@@ -359,7 +382,7 @@ fn setup(spec_path: &Path) -> Result<(DockerFrontSpec, tokio::runtime::Runtime),
         .enable_all()
         .build()
         .map_err(|e| format!("runtime: {e}"))?;
-    Ok((spec, runtime))
+    Ok((spec, runtime, proc))
 }
 
 /// Before each engine start: a fresh read-only sysfs of the sandbox's network at `sysfs` (the
@@ -615,6 +638,52 @@ mod tests {
         );
         drop(engine);
         front.stop(Duration::from_secs(1)).await;
+        Ok(())
+    }
+
+    /// SPEC-504 CLB-002/003: the engine receives a CI job's create with the job's label, and
+    /// the same bytes from a caller that is no CI job's unchanged.
+    #[tokio::test]
+    async fn a_ci_jobs_create_reaches_the_engine_labelled_and_no_one_elses() -> io::Result<()> {
+        let create = "POST /v1.47/containers/create HTTP/1.1\r\nHost: x\r\nContent-Length: 13\r\n\r\n{\"Image\":\"a\"}";
+        for (job, labelled) in [(Some("j1"), true), (None, false)] {
+            let dir = tempfile::tempdir()?;
+            let paths = StatePaths::new(dir.path().to_path_buf());
+            let engine = UnixListener::bind(paths.engine_socket())?;
+            let received = tokio::spawn(async move {
+                let (mut stream, _) = engine.accept().await?;
+                let mut got = String::new();
+                stream.read_to_string(&mut got).await?;
+                stream.write_all(b"done").await?;
+                io::Result::Ok(got)
+            });
+            let me = std::process::id();
+            let gate = Gate::new().telling_jobs(Arc::new(move |pid| {
+                (pid == me).then(|| job.map(str::to_owned)).flatten()
+            }));
+            let front = Front::start_through(
+                &paths,
+                &DockerServe::Relay {
+                    socket: paths.engine_socket().to_string_lossy().into_owned(),
+                },
+                &[],
+                ok(),
+                gate,
+            )?;
+            let mut client = UnixStream::connect(paths.docker_socket()).await?;
+            client.write_all(create.as_bytes()).await?;
+            client.shutdown().await?;
+            let mut answer = String::new();
+            client.read_to_string(&mut answer).await?;
+            assert_eq!(answer, "done");
+            let got = received.await.map_err(io::Error::other)??;
+            if labelled {
+                assert!(got.contains(r#""yulius.ci.job":"j1""#), "{got}");
+            } else {
+                assert_eq!(got, create);
+            }
+            front.stop(Duration::from_secs(1)).await;
+        }
         Ok(())
     }
 

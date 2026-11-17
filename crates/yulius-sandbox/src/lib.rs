@@ -10,6 +10,7 @@
 //! | [`enter`] | the ptyhost of a contained run, and `yulius sandbox-exec` |
 //! | [`engine`] | the server (the engine's file view) and the engine (`sandbox-host engine`) |
 //! | [`docker_front`] | `yulius sandbox-host docker`: the sandbox's Docker socket beside its holder (ADR-0158) |
+//! | [`docker_label`] | the Docker front: a CI job's containers and networks carry its label (ADR-0359) |
 //! | [`docker_bind`] | `yulius sandbox-host bind-docker`: the Docker directory into live runs (ADR-0158) |
 //! | [`engine_supervisor`] | the Docker front: the engine on demand (ADR-0151) |
 //! | [`front_repair`] | the server: when a sandbox's Docker front is restarted by itself (ADR-0344) |
@@ -25,6 +26,7 @@ pub mod base;
 pub mod cgroup;
 pub mod docker_bind;
 pub mod docker_front;
+pub mod docker_label;
 pub mod docker_status;
 pub mod engine;
 pub mod engine_supervisor;
