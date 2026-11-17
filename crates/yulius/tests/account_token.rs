@@ -1034,7 +1034,12 @@ async fn a_token_is_only_a_claude_subscriptions_credential() -> TestResult {
             &w.admin,
         )
         .await?;
-        assert_eq!(refused.status, StatusCode::UNPROCESSABLE_ENTITY, "{body}: {}", refused.body);
+        assert_eq!(
+            refused.status,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "{body}: {}",
+            refused.body
+        );
         assert_no_token(&refused.body);
     }
     assert!(w.h.store.accounts().await?.is_empty(), "nothing created");
