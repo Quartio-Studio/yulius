@@ -75,14 +75,15 @@ goes first, so a branch's job can wait longer while merges and pull requests kee
 
 ## Alternatives
 
-- **Reservations only** (ADR-0350's pools of declarations): what made the queue on 16 Nov, with
-  the host 25–30 % busy while jobs held 50–56 of 64 CPUs.
-- **Larger pools** (reservations up to twice the host, the stopgap): five jobs ran, but CI's
-  processes waited for a CPU 10–25 % of the time at compile peaks, and quartio-v2's timing tests
-  are its flaky ones.
-- **The host's load or CPU pressure as the gate**: first adopted as rule 1. Removed, because a job
-  pinned to a few CPUs shows pressure while the host idles (the amendment below), and the
-  agents' own builds would hold CI back.
+- **The reservations as a floor** (ADR-0350: the larger of reservations and measured use): what
+  made the queue on 16 Nov, with the host 25–30 % busy while jobs held 50–56 of 64 CPUs.
+- **Larger pools** (reservations up to twice the host, the stopgap): nothing but reservations
+  stopped a start, so five jobs ran and CI's processes waited for a CPU 10–25 % of the time at
+  compile peaks; quartio-v2's timing tests are its flaky ones. Rule 2's three times the budget
+  differs in that measured use (rule 3) stops new jobs first.
+- **The `ci` groups' CPU pressure as the gate**: first adopted as rule 1. Removed: a job pinned to
+  a few CPUs showed 15–20 % pressure while the host was 45 % busy (the amendment below).
+- **The host's load as the gate**: never adopted; the agents' own builds would hold CI back.
 - **Strict first-come order**: one whole-budget job at the front kept every job behind it waiting
   7–37 min. A bounded overtake keeps the order fair without that.
 - **Learn each job's need from its history**: exact per job, but a container is not tied to the

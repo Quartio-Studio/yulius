@@ -7,10 +7,10 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 ## 2026-11-17
 
 - SPEC-497 (task #479) is done: its Evidence keeps the numbers before (quartio-v2, 16 Nov 2026)
-  and after (this repository's pull request runs: 11 to 15 min before slice D, 5.5 to 8.7 min
-  after) and names the reads that show the merge queue's targets on the instance a week after
-  the promotion. quartio-v2's own part is issue #1385, carried by its task #248. ADR-0353 gained
-  its Alternatives.
+  and after (this repository's first pull request runs: 11 to 15 min before slice D, 6.9 to 8.7
+  min after) and names the reads that show the merge queue's targets on the instance a week after
+  the promotion; the targets themselves are not read yet. quartio-v2's own part is issue #1385,
+  carried by its task #248. ADR-0353 gained its Alternatives.
 - A CI run is shorter (SPEC-497 slice D, task #479,
   [ADR-0358](decisions/0358-tests-run-in-shards-and-a-run-starts-from-the-build-it-builds-on.md)):
   a run takes the free lane whose checkouts last built what it builds on (a merge candidate its
