@@ -334,4 +334,8 @@ Five pull requests, each merged into `dev` on green before the next begins.
 - `cargo fmt --check`, `cargo clippy --workspace --all-targets -D warnings` clean; `cargo nextest`
   for `yulius-domain`, `yulius-harness`, the `yulius` lib and `codex_cli`, `claude_updates`,
   `cockpit`, `accounts`: 1523 passed, 0 failed.
+- `scripts/dev mutants` (on `5033af233`): `mutants: 103 listed, 82 caught, 0 missed, 0 timed out,
+  21 unviable, 0 not reached (bound 30 min, took 1608 s)`.
+- `yulius security-scan`: not run (Vidoc refused the instance key, HTTP 401, exit 2), as for
+  slice A; CI's `security` job skips (exit 78).
 
