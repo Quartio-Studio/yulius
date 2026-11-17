@@ -329,18 +329,18 @@ async fn workflows_defaults_scope_permissions_and_task_steps() -> TestResult {
         quick.body["harness"], "claude",
         "Claude Code is the default harness"
     );
-    let codex = call(
+    let other = call(
         &w.h.router,
         Method::POST,
         "/api/sandboxes/s1/tasks",
-        Some(json!({"prompt": "x", "harness": "codex"})),
+        Some(json!({"prompt": "x", "harness": "opencode"})),
         &w.alice,
     )
     .await?;
     assert_eq!(
-        codex.status,
+        other.status,
         StatusCode::UNPROCESSABLE_ENTITY,
-        "Yulius runs Claude Code only"
+        "Yulius runs Claude Code and Codex only"
     );
     let quick_record =
         w.h.store

@@ -120,8 +120,8 @@ Five pull requests, each merged into `dev` on green before the next begins.
 - [x] Slice B: Codex CLI 0.169.0 checked against the integration and pinned
 - [x] Slice B: Yulius installs the pinned Codex CLI into its data directory
 - [ ] Slice B: review findings fixed and the slice delivered
-- [ ] Slice C1: a Codex task runs in the supervisor (homes, session id, hooks, write-back, rotation)
-- [ ] Slice C1: the fake agent speaks Codex and integration tests cover a Codex task
+- [x] Slice C1: a Codex task runs in the supervisor (homes, session id, hooks, write-back, rotation)
+- [x] Slice C1: the fake agent speaks Codex and integration tests cover a Codex task
 - [ ] Slice C1: review findings fixed and the slice delivered
 - [ ] Slice C2: Codex subscriptions sign in by device code, API key or imported auth.json
 - [ ] Slice C2: Codex usage windows, codex_connected and moves within Codex subscriptions
@@ -371,4 +371,42 @@ Five pull requests, each merged into `dev` on green before the next begins.
     while `host_codex` is looked up on the server's; C1 passes the found path to the run.
 - After the fixes: `codex_cli::` 11 passed; `cargo fmt --check` and `cargo clippy --workspace
   --all-targets -D warnings` clean.
+
+### Slice C1 (Codex tasks)
+
+- **Brought from the contribution** by 3-way patches against today's `dev` (the full port of
+  2026-11-16 was older than `dev` by then): the supervisor's Codex runs (homes per sandbox and
+  account with a shared `sessions`, `auth.json`, `config.toml` and `hooks.json` written through
+  handles, the CLI from `provide_codex` before the launch lock, its directory bound read-only into
+  a contained run, the session id from the hook or the rollout, the write-back and the
+  `CodexLeftover` guard), `harness: codex` accepted for tasks, automations and the MCP tool (a
+  Claude model refused for a Codex task), `yulius hook codex` (a hook of another harness than the
+  run's refused), provider-aware words (`account_gate::account_kind`, refusals, waiting notices,
+  move notices, the Needs you action) and Continue / Run on… refusing another provider's
+  subscription (CDX-013), the fake agent's Codex mode and the tests. Left for slice C2: Codex
+  sign-ins, imports and API keys, usage readings, `codex_connected` and the capacity view's
+  provider (the two tests that need them,
+  `an_imported_codex_sign_in_reaches_the_run_and_its_refresh_is_kept` and
+  `the_capacity_view_names_providers_and_resumes_with_codex_too`, come with it).
+- **Changed for what slices A and B settled**: the fake agent writes each response's
+  `token_usage_record` (unique `response_id`) as Codex 0.169.0 does, since usage is counted from
+  it (`fake-agent::cli::codex_rollout_has_session_meta_turns_usage_and_a_limit` asserts it and
+  failed first; `codex::a_codex_task_runs_in_its_home_…` timed out waiting for tokens before);
+  rate limits go through `rollout_usage` (slice A's review) rather than `record_account_usage`.
+- **Answered from earlier reviews**: the `codex` PreToolUse guard (slice A review, minor) with
+  `hook_client::a_codex_bash_call_is_checked_locally_like_claude_codes` (fails without the guard,
+  passes with it, no connection made); dev's notification "Failed (no Claude account)" names Codex
+  for a Codex task (`notify::tests::an_ended_task_says_how_it_ended`, failed first; a Claude task
+  reads as before); the staging folder is created 0700 rather than narrowed after (slice B
+  review, nit). The fallback to a host `codex` stays as the contribution has it: the run resolves
+  `codex` on its own `PATH`, which in a sandbox copied from the host holds the same standard
+  directories the server looked in; a host `codex` elsewhere is not found (a known limit).
+- **Unrelated failure met**: `migrate_helper::tests::a_stop_of_the_helper_ends_the_command_first`
+  failed once under the full lib run and passed three of three alone; its files are not in this
+  change: issue #1375.
+- `cargo fmt --check`, `cargo clippy --workspace --all-targets -D warnings` clean; `cargo nextest`
+  for every crate's unit tests and the `yulius` files `codex`, `codex_cli`, `agent_hooks`,
+  `task_delete`, `automations`, `supervision`, `pool_supervision`, `subscription_moves`,
+  `subscription_pool`, `claude_gate`, `accounts`, `account_token`, `mcp`, `restart`, `notify`,
+  `telegram`, `cockpit`: 2403 passed, 0 failed.
 

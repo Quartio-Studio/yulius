@@ -110,7 +110,7 @@ exec "$real" "$@"
 /// at the agent's head finish, its delivery moves or an armed merge is decided, `yulius tool`,
 /// a Yulius tool called from the shell (SPEC-432), `yulius security-scan`, Vidoc's scan of the
 /// repository (SPEC-195), and `yulius remove`, for the task's own files (SPEC-192). Every
-/// subcommand documented "In a task's session" must be in its `case` (SPEC-451).
+/// subcommand documented "In a task's session" must be in its `case` (SPEC-503).
 #[must_use]
 pub fn agent_yulius_shim(exe: &Path) -> String {
     let exe = exe.to_string_lossy().replace('\'', "'\\''");
@@ -853,7 +853,7 @@ mod tests {
         Ok(exe)
     }
 
-    /// SPEC-195 VSC-001, SPEC-451 WRP-001: the agent's `yulius` offers `wait`, `tool`,
+    /// SPEC-195 VSC-001, SPEC-503 WRP-001: the agent's `yulius` offers `wait`, `tool`,
     /// `security-scan` and `remove`, passing their arguments through, and nothing else.
     #[test]
     fn the_agent_yulius_shim_offers_the_session_commands() -> TestResult {

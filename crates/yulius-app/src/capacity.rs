@@ -102,7 +102,12 @@ pub struct CapacityState {
     /// The Claude accounts' state at the last resume pass (usable, every one to sign in again,
     /// none): when it changes, the paused tasks are shown again, so their `waits_for_account`
     /// follows (SPEC-246 CLA-004).
-    accounts_seen: Mutex<Option<crate::account_gate::AgentAccounts>>,
+    accounts_seen: Mutex<
+        Option<(
+            crate::account_gate::AgentAccounts,
+            crate::account_gate::AgentAccounts,
+        )>,
+    >,
     /// Held while a subscription's stored usage is read, changed and written back
     /// ([`App::change_account_usage`]: a limit Claude reported, a session's reading, a
     /// provider's reading; and a new sign-in), so none of them writes over what another stored
@@ -441,10 +446,12 @@ impl App {
                 crate::account_gate::AgentAccounts::Usable
             };
             self.runtime(task_id).hub.notice(
-                crate::account_gate::waiting_notice(accounts).unwrap_or(
-                    "Yulius paused this task: no subscription has capacity left. It continues by \
-                     itself.",
-                ),
+                crate::account_gate::waiting_notice(accounts, task.harness.provider())
+                    .unwrap_or_else(|| {
+                        "Yulius paused this task: no subscription has capacity left. It \
+                         continues by itself."
+                            .to_owned()
+                    }),
             );
         }
         self.publish_task(task_id).await;
@@ -657,15 +664,18 @@ impl App {
         if holding { wait.min(HOLD_CHECK) } else { wait }
     }
 
-    /// Shows the paused tasks again when a Claude account became usable or stopped being usable
-    /// since the last pass: whether each waits for an account or for capacity changed with it.
+    /// Shows the paused tasks again when a Claude or Codex account became usable or stopped being
+    /// usable since the last pass: whether each waits for an account or for capacity changed with
+    /// it.
     async fn republish_when_accounts_change(&self, pauses: &[PauseRecord]) {
-        let Ok(now) = self
-            .agent_accounts(yulius_domain::harness::Provider::Anthropic)
-            .await
-        else {
+        use yulius_domain::harness::Provider;
+        let (Ok(claude), Ok(codex)) = (
+            self.agent_accounts(Provider::Anthropic).await,
+            self.agent_accounts(Provider::OpenAi).await,
+        ) else {
             return;
         };
+        let now = (claude, codex);
         let changed = self
             .capacity
             .accounts_seen
