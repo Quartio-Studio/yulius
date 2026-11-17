@@ -301,6 +301,12 @@ pub(crate) struct GateView {
     pub(crate) gate: Option<Gate>,
     /// Why the integration branch's configuration is unusable.
     pub(crate) problem: Option<String>,
+    /// While it is: the newest first-parent commit of the integration branch whose
+    /// configuration is valid, whose gate is the one in force (SPEC-504 CFG-003).
+    pub(crate) fallback: Option<String>,
+    /// While it is: whether looking for that commit failed (Git), so it is not known whether
+    /// one exists.
+    pub(crate) fallback_unknown: bool,
     /// GitHub Actions workflow files on the integration branch.
     pub(crate) workflows: Vec<String>,
 }
@@ -346,6 +352,9 @@ pub struct CiState {
     /// dropped.
     busy: Arc<Mutex<HashSet<String>>>,
     gates: Mutex<HashMap<String, GateView>>,
+    /// Whether each sandbox's CI has no gate because of its configuration, as last recorded
+    /// (SPEC-504 CFG-004); a sandbox not in it is read from the audit first.
+    config_blocked: Mutex<HashMap<String, bool>>,
     pub(crate) hygiene: Mutex<HashMap<String, yulius_contracts::api::ci::HygieneReport>>,
     /// Each sandbox's last cleanup (SPEC-269 HSC-002), shown on every report.
     pub(crate) hygiene_cleanups:
@@ -442,22 +451,20 @@ pub(crate) fn short(sha: &str) -> &str {
     sha.get(..7).unwrap_or(sha)
 }
 
-/// What a commit asked about in [`App::ci_gate_for_head`] is.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Head {
-    /// A pull request's head: a proposal for the integration branch.
-    Proposed,
-    /// The integration branch with a change merged into it (a merge train's commit, a
-    /// playground task's merge): what the branch would be.
-    Merged,
-}
+/// What a run judged by the integration branch's last valid gate says (SPEC-504 CFG-006).
+pub const LAST_VALID_NOTE: &str = "judged by the integration branch's last valid yulius.toml: \
+     its own is invalid, and that gate runs until a fix merges";
 
-/// Whether a pull request is tested with its own jobs (`own`) instead of the integration branch's:
-/// only when it changed them itself, against what it branched off (`at_base`, unknown: assumed
-/// changed), and they differ from the integration branch's.
-fn own_jobs_apply<J: PartialEq>(own: &[J], at_base: Option<&[J]>, integration: &[J]) -> bool {
-    own != integration && at_base.is_none_or(|base| own != base)
-}
+/// How a run refused for the integration branch's invalid `yulius.toml` begins its reason: it
+/// is queued again once that file is valid (SPEC-504 CFG-002).
+const DEV_INVALID_PREFIX: &str = "yulius.toml is invalid on ";
+
+/// The job of a run refused for its `yulius.toml` (SPEC-504 CFG-002).
+pub const CONFIG_JOB: &str = "yulius.toml";
+
+/// First-parent commits of the integration branch read back for its last valid configuration
+/// (SPEC-504 CFG-003).
+const LAST_VALID_BACK: usize = 100;
 
 /// Whether anything of `sandbox` is in `busy`: a lane (`<sandbox>/<n>`) or a claim.
 fn busy_in(busy: &HashSet<String>, sandbox: &str) -> bool {
@@ -513,6 +520,17 @@ fn lane_note(lane: u32, before: Option<&str>, preferred: &[u32]) -> String {
         Some(key) => format!("lane {lane}, last taken by {key}"),
         None => format!("lane {lane}"),
     }
+}
+
+/// Whether `ran` is the record of `job` as it is defined now: the same key, matrix value and
+/// command, and the same need, time limit and `exclusive` (SPEC-504 review rounds 3 and 4).
+fn ran_as(ran: &CiJobRecord, job: &Job) -> bool {
+    ran.key == job.key
+        && ran.matrix == job.matrix
+        && ran.command == job.command
+        && ran.need == job.need
+        && ran.timeout_minutes == job.timeout_minutes
+        && ran.exclusive == job.exclusive
 }
 
 /// Whether `run` may lend its verdict to `target`, whose tree it tested (the trees are compared
@@ -621,8 +639,12 @@ pub fn run_view(run: &CiRunRecord, jobs: &[CiJobRecord], with_output: bool) -> C
         sha: run.sha.clone(),
         state: run.state.as_str().to_owned(),
         source: run.source.as_str().to_owned(),
+        // A run judged by the last valid gate says so (SPEC-504 CFG-006).
+        reason: run
+            .reason
+            .clone()
+            .or_else(|| (run.source == GateSource::LastValid).then(|| LAST_VALID_NOTE.to_owned())),
         jobs: jobs.iter().map(|job| job_view(job, with_output)).collect(),
-        reason: run.reason.clone(),
         queued_at: rfc3339(run.queued_at),
         started_at: run.started_at.map(rfc3339),
         ended_at: run.ended_at.map(rfc3339),
@@ -878,12 +900,31 @@ impl App {
                 Ok(jobs) => jobs,
                 Err(problem) => {
                     view.problem = Some(problem);
-                    Vec::new()
+                    // The last valid gate runs until a fix merges (SPEC-504 CFG-003).
+                    match self.ci_last_valid_jobs(&repo, sha).await {
+                        Ok(Some((valid, jobs))) => {
+                            view.fallback = Some(valid);
+                            jobs
+                        }
+                        Ok(None) => Vec::new(),
+                        Err(()) => {
+                            view.fallback_unknown = true;
+                            Vec::new()
+                        }
+                    }
                 }
             },
             None => Vec::new(),
         };
         view.gate = dom::effective_gate(profile_gate.as_deref(), &project);
+        // Every run of it says it runs the last valid gate (SPEC-504 CFG-006); a fallback that
+        // gives no gate in force (none there, or a profile's gate instead) is no fallback.
+        match view.gate.as_mut() {
+            Some(gate) if view.fallback.is_some() && gate.source == GateSource::ProjectConfig => {
+                gate.source = GateSource::LastValid;
+            }
+            _ => view.fallback = None,
+        }
         if let Some(sha) = &base
             && let Ok(files) = self.deps.git.list_dir(&repo, sha, WORKFLOWS_DIR).await
         {
@@ -897,6 +938,100 @@ impl App {
             cache.insert(sandbox.id.as_str().to_owned(), view.clone());
         }
         view
+    }
+
+    /// The jobs of the newest first-parent ancestor of `sha` (at most [`LAST_VALID_BACK`] back)
+    /// whose `yulius.toml` is valid, with that commit (SPEC-504 CFG-003): the gate that judged
+    /// the integration branch before its configuration broke. `Ok(None)` when none is, `Err`
+    /// when Git could not say.
+    async fn ci_last_valid_jobs(
+        &self,
+        repo: &Path,
+        sha: &str,
+    ) -> Result<Option<(String, Vec<Job>)>, ()> {
+        let mut at = sha.to_owned();
+        for _ in 0..LAST_VALID_BACK {
+            let parents = self.deps.git.parents(repo, &at).await.map_err(|_| ())?;
+            let Some(parent) = parents.into_iter().next() else {
+                return Ok(None);
+            };
+            if let Ok(jobs) = self.ci_jobs_at(repo, &parent).await {
+                return Ok(Some((parent, jobs)));
+            }
+            at = parent;
+        }
+        Ok(None)
+    }
+
+    /// Records when `sandbox`'s CI starts and stops having no gate because of its configuration
+    /// (SPEC-504 CFG-004): an audit entry `ci.config_blocked` with the problem, and
+    /// `ci.config_unblocked` once a gate is in force again. The first look after a start reads
+    /// the last entry, and a state is kept only once its entry is written, so a failed write is
+    /// tried again at the next look.
+    async fn ci_note_config_block(&self, sandbox: &SandboxRecord, view: &GateView) {
+        use yulius_domain::merge_queue::{CONFIG_BLOCKED, CONFIG_UNBLOCKED};
+        let blocked = view.gate.is_none() && view.problem.is_some();
+        let known = self
+            .ci
+            .config_blocked
+            .lock()
+            .ok()
+            .and_then(|map| map.get(sandbox.id.as_str()).copied());
+        // First look since this server started: what the audit last said, so an episode that
+        // ended while it was down is closed (review round 1).
+        let was = match known {
+            Some(was) => was,
+            None => self
+                .deps
+                .store
+                .audit_of_sandbox(
+                    &sandbox.slug,
+                    &[],
+                    &[CONFIG_BLOCKED, CONFIG_UNBLOCKED],
+                    None,
+                    None,
+                    20_000,
+                )
+                .await
+                .ok()
+                .and_then(|entries| {
+                    entries
+                        .into_iter()
+                        .max_by_key(|(_, entry)| entry.at.0)
+                        .map(|(_, entry)| entry.action == CONFIG_BLOCKED)
+                })
+                .unwrap_or(false),
+        };
+        if was == blocked {
+            if let Ok(mut map) = self.ci.config_blocked.lock() {
+                map.insert(sandbox.id.as_str().to_owned(), blocked);
+            }
+            return;
+        }
+        let (action, detail) = if blocked {
+            (CONFIG_BLOCKED, view.problem.clone().unwrap_or_default())
+        } else {
+            (CONFIG_UNBLOCKED, String::new())
+        };
+        if let Err(err) = self
+            .deps
+            .store
+            .audit(
+                self.now(),
+                "yulius",
+                action,
+                Some(&sandbox.slug),
+                Some(&detail),
+            )
+            .await
+        {
+            tracing::warn!(sandbox = %sandbox.slug, error = %err, "recording CI's configuration state failed");
+            return;
+        }
+        // Kept once written: a failed write is tried again at the next look (review round 2).
+        if let Ok(mut map) = self.ci.config_blocked.lock() {
+            map.insert(sandbox.id.as_str().to_owned(), blocked);
+        }
     }
 
     /// Forgets the cached CI configuration (after a fetch or a profile change).
@@ -922,11 +1057,11 @@ impl App {
         // branch's jobs or, for a commit that brings CI to a branch without any, with its own
         // (the scheduler's own answer, `ci_gate_for_head`).
         let view = self.ci_gate(sandbox).await;
+        // While Git cannot tell whether a last valid gate exists, the commit waits for it: it
+        // is never read as having no CI (SPEC-504 review round 2).
         if view.gate.is_some()
-            || self
-                .ci_gate_for_head(sandbox, &view, (sha, Head::Proposed))
-                .await
-                .is_some()
+            || view.fallback_unknown
+            || self.ci_gate_for_head(sandbox, &view, sha).await.is_some()
         {
             GateResult::Run(None)
         } else {
@@ -1015,8 +1150,18 @@ impl App {
                 }
             })
             .collect();
+        // Its `yulius.toml` as CI will read it after the merge is invalid: the run fails now
+        // with the parser's message, its jobs not run (SPEC-504 CFG-002).
+        let refused = self.ci_config_problem(sandbox, &run.reference, sha).await;
+        let (run, jobs) = match refused {
+            Some(problem) => self.ci_refused_run(run, jobs, &problem),
+            None => (run, jobs),
+        };
         // Every job skipped for its paths: nothing to run, so the run takes no lane and passes now.
-        let run = if !jobs.is_empty() && jobs.iter().all(|job| job.state == RunState::Skipped) {
+        let run = if run.state == RunState::Queued
+            && !jobs.is_empty()
+            && jobs.iter().all(|job| job.state == RunState::Skipped)
+        {
             CiRunRecord {
                 state: RunState::Passed,
                 reason: Some("every job was skipped: no file they test changed".to_owned()),
@@ -1029,8 +1174,11 @@ impl App {
         };
         self.deps.store.insert_ci_run(&run, &jobs).await?;
         // A skipped job's start and end, one after the other: its span reads as a job that was
-        // skipped (the stages count runs against skips).
-        for job in jobs.iter().filter(|job| job.state == RunState::Skipped) {
+        // skipped (the stages count runs against skips); so does the refused configuration's.
+        for job in jobs
+            .iter()
+            .filter(|job| matches!(job.state, RunState::Skipped | RunState::Failed))
+        {
             for update in [
                 CiJobUpdate {
                     started_at: Some(queued_at),
@@ -1043,7 +1191,7 @@ impl App {
             ] {
                 self.deps
                     .store
-                    .transition_ci_job(&job.id, &[RunState::Skipped], RunState::Skipped, &update)
+                    .transition_ci_job(&job.id, &[job.state], job.state, &update)
                     .await?;
             }
         }
@@ -1058,6 +1206,109 @@ impl App {
         self.ci_publish(&run.id).await;
         self.ci_wake();
         Ok(run)
+    }
+
+    /// Why the `yulius.toml` of a run at `sha` (`reference`) is invalid as CI will read it after
+    /// the merge (SPEC-504 CFG-002): the commit's own file for a branch, a merge candidate and a
+    /// playground task's merge; for a pull request its own file when it changed it since its
+    /// merge base with the integration branch, else the integration branch's. `None` when it is
+    /// valid or cannot be told.
+    async fn ci_config_problem(
+        &self,
+        sandbox: &SandboxRecord,
+        reference: &CiRef,
+        sha: &str,
+    ) -> Option<String> {
+        let repo = self.sandbox_repo(&sandbox.id);
+        let read = |rev: String| {
+            let repo = repo.clone();
+            async move {
+                self.deps
+                    .git
+                    .show_file(&repo, &rev, "yulius.toml")
+                    .await
+                    .ok()
+            }
+        };
+        let at = match reference {
+            CiRef::PullRequest(_) => {
+                let integration =
+                    format!("origin/{}", delivery_profile(sandbox).integration_branch);
+                // What Git cannot tell (a merge base, a file) leaves the head's own file to
+                // check: a failure never skips the check (review round 1).
+                let base = self.deps.git.merge_base(&repo, sha, &integration).await;
+                let changed = match base {
+                    Ok(Some(base)) => match (read(base).await, read(sha.to_owned()).await) {
+                        (Some(before), Some(now)) => before != now,
+                        _ => true,
+                    },
+                    Ok(None) | Err(_) => true,
+                };
+                if changed {
+                    sha.to_owned()
+                } else {
+                    let problem = self.ci_jobs_at(&repo, &integration).await.err()?;
+                    return Some(format!(
+                        "{DEV_INVALID_PREFIX}{} and this change does not repair it (its run \
+                         goes again once it is valid there): {problem}",
+                        delivery_profile(sandbox).integration_branch
+                    ));
+                }
+            }
+            _ => sha.to_owned(),
+        };
+        let problem = self.ci_jobs_at(&repo, &at).await.err()?;
+        // The parser's message names the file and its line already.
+        Some(if problem.starts_with("yulius.toml") {
+            problem
+        } else {
+            format!("yulius.toml is invalid: {problem}")
+        })
+    }
+
+    /// `run` and its `jobs` refused for `problem` (SPEC-504 CFG-002): failed now, its jobs
+    /// skipped unrun, and a failed job `yulius.toml` saying why.
+    fn ci_refused_run(
+        &self,
+        run: CiRunRecord,
+        mut jobs: Vec<CiJobRecord>,
+        problem: &str,
+    ) -> (CiRunRecord, Vec<CiJobRecord>) {
+        for job in &mut jobs {
+            job.state = RunState::Skipped;
+            job.reason = Some("not run: yulius.toml is invalid".to_owned());
+            job.exit_code = Some(dom::SKIP_EXIT_CODE);
+            job.output = "Not run: yulius.toml is invalid (see the yulius.toml job).\n".to_owned();
+        }
+        jobs.push(CiJobRecord {
+            id: self.deps.crypto.new_id(),
+            run_id: run.id.clone(),
+            ordinal: u32::try_from(jobs.len()).unwrap_or(u32::MAX),
+            name: CONFIG_JOB.to_owned(),
+            key: CONFIG_JOB.to_owned(),
+            command: "yulius.toml, read as CI reads it after the merge".to_owned(),
+            matrix: None,
+            state: RunState::Failed,
+            reason: Some(problem.to_owned()),
+            exit_code: Some(1),
+            output: format!("{problem}\n"),
+            failures: None,
+            started_at: None,
+            ended_at: None,
+            need: Default::default(),
+            timeout_minutes: None,
+            exclusive: false,
+            waited_ms: None,
+        });
+        let now = self.now();
+        let run = CiRunRecord {
+            state: RunState::Failed,
+            reason: Some(problem.to_owned()),
+            started_at: Some(now),
+            ended_at: Some(now),
+            ..run
+        };
+        (run, jobs)
     }
 
     /// The files the change of a run at `sha` touches (SPEC-493 CJP-002): a pull request's head,
@@ -1113,6 +1364,7 @@ impl App {
         self.dlv_refresh_clone(sandbox).await?;
         self.ci_forget_gate(&sandbox.id);
         let view = self.ci_gate(sandbox).await;
+        self.ci_note_config_block(sandbox, &view).await;
         let profile = delivery_profile(sandbox);
         let mut targets: Vec<(Target, Gate)> = Vec::new();
         if let Some(gate) = &view.gate {
@@ -1162,9 +1414,7 @@ impl App {
             ) {
                 continue;
             }
-            let gate = self
-                .ci_gate_for_head(sandbox, &view, (&pull.head_sha, Head::Proposed))
-                .await;
+            let gate = self.ci_gate_for_head(sandbox, &view, &pull.head_sha).await;
             if let Some(gate) = gate {
                 targets.push((
                     Target {
@@ -1178,9 +1428,19 @@ impl App {
         let runs = self.deps.store.ci_runs(&sandbox.id, PLAN_RUNS).await?;
         // A merge train's run is the train's own (SPEC-084), a playground task's its delivery's
         // (SPEC-163): they start and cancel them.
+        // A head refused only because the integration branch's file was invalid is tested again
+        // once it is valid (review round 1): its refusal is no verdict then.
+        let dev_valid = view.problem.is_none();
         let facts: Vec<RunFacts> = runs
             .iter()
             .filter(|run| !matches!(run.reference, CiRef::Train(_) | CiRef::Task(_)))
+            .filter(|run| {
+                !(dev_valid
+                    && run
+                        .reason
+                        .as_deref()
+                        .is_some_and(|r| r.starts_with(DEV_INVALID_PREFIX)))
+            })
             .map(|run| RunFacts {
                 id: run.id.clone(),
                 reference: run.reference.clone(),
@@ -1305,6 +1565,15 @@ impl App {
             if branch && skipped_a_paths_job {
                 continue;
             }
+            // Every job of the gate ran there as it is defined now: a pull request judged by the
+            // jobs its merge then changed never ran the new ones (SPEC-504, review round 1).
+            let all_ran = gate
+                .jobs
+                .iter()
+                .all(|job| jobs.iter().any(|t| ran_as(t, job)));
+            if branch && !all_ran {
+                continue;
+            }
             found = Some((run, jobs));
             break;
         }
@@ -1340,13 +1609,11 @@ impl App {
             .iter()
             .enumerate()
             .map(|(index, job)| {
-                // The values of a matrix job share its key: match the value too. A job the
-                // source did not have (the gate changed since) is passed, as before SPEC-162.
+                // The job that ran as this one is defined, which tells a job from a change's twin
+                // of it (SPEC-504 review rounds 2 and 4). A job the source did not have (the gate
+                // changed since) is passed, as before SPEC-162.
                 let (state, exit_code) = dom::copied_job_verdict(
-                    tested
-                        .iter()
-                        .find(|t| t.key == job.key && t.matrix == job.matrix)
-                        .map(|t| t.state),
+                    tested.iter().find(|t| ran_as(t, job)).map(|t| t.state),
                 );
                 CiJobRecord {
                     id: self.deps.crypto.new_id(),
@@ -1827,6 +2094,7 @@ impl App {
         Ok(CiOverview {
             gate: view.gate.as_ref().map(gate_view),
             gate_problem: view.problem,
+            gate_fallback: view.fallback,
             runs,
             can_run: level >= AccessLevel::Write,
             status_access,
@@ -1886,59 +2154,55 @@ impl App {
     /// branch's CI (`view`). One rule for whoever asks: the scheduler, a merge train, a
     /// playground's delivery, a run again and a change from the remote control.
     ///
-    /// - The integration branch has CI: its jobs, or the commit's own when the commit changed
-    ///   them since it branched off (CI-110: not when the integration branch moved on since)
-    ///   and they can be read; own jobs keep the trusted security job (SPEC-217 VDP-001).
-    /// - It has none: the commit's own, when it brings some (the change that adds CI is
-    ///   tested with it). While the integration branch's configuration is broken, that holds
-    ///   only for a commit that is the branch with a change merged ([`Head::Merged`]: what is
-    ///   tested is what the branch would be, repaired); a pull request's head is a proposal
-    ///   beside a branch nobody can test, and is not given a verdict.
+    /// - The integration branch has CI (its own, or while its configuration is broken its last
+    ///   valid gate, CFG-003): its jobs, always. A change never weakens the gate that judges it,
+    ///   also when it changes its jobs (SPEC-504 CFG-001, ADR-0360; superseding CI-110); its own
+    ///   `yulius.toml` is checked separately (`ci_config_problem`).
+    /// - It has none (none yet, or never a valid one): the commit's own, when it brings some
+    ///   (the change that adds CI, or repairs a file never valid, is tested with it); own jobs
+    ///   keep the trusted security job (SPEC-217 VDP-001).
     /// - Otherwise none: nothing tests the commit.
     pub(crate) async fn ci_gate_for_head(
         &self,
         sandbox: &SandboxRecord,
         view: &GateView,
-        (head, what): (&str, Head),
+        head: &str,
     ) -> Option<Gate> {
-        if view.gate.is_none() && view.problem.is_some() && what == Head::Proposed {
+        let repo = self.sandbox_repo(&sandbox.id);
+        if let Some(gate) = &view.gate {
+            // Its own changed and added jobs beside the gate's, never instead (CFG-001); an own
+            // file that cannot be read fails the run by the configuration check.
+            let Ok(own) = self.ci_jobs_at(&repo, head).await else {
+                return Some(gate.clone());
+            };
+            // What the change itself changed: against its merge base with the integration
+            // branch (review round 2; unknown: against the gate alone).
+            let integration = format!("origin/{}", delivery_profile(sandbox).integration_branch);
+            let at_base = match self.deps.git.merge_base(&repo, head, &integration).await {
+                Ok(Some(base)) => self.ci_jobs_at(&repo, &base).await.ok(),
+                _ => None,
+            };
+            return Some(dom::with_changed_jobs(
+                gate.clone(),
+                own,
+                at_base.as_deref(),
+            ));
+        }
+        // The last valid gate could not be looked for (Git failed): no verdict until it can,
+        // never the commit's own jobs in its place (review round 1).
+        if view.fallback_unknown {
             return None;
         }
-        let repo = self.sandbox_repo(&sandbox.id);
-        let own = match self.ci_jobs_at(&repo, head).await {
-            Ok(jobs) if !jobs.is_empty() => Some(jobs),
-            _ => None,
+        let jobs = match self.ci_jobs_at(&repo, head).await {
+            Ok(jobs) if !jobs.is_empty() => jobs,
+            _ => return None,
         };
-        let pull_requests = |jobs| Gate {
+        let scans = self.ci_scans(sandbox).await;
+        let own = Gate {
             jobs,
             source: GateSource::PullRequest,
         };
-        match (&view.gate, own) {
-            (Some(gate), Some(jobs)) => {
-                let integration =
-                    format!("origin/{}", delivery_profile(sandbox).integration_branch);
-                let at_base = match self.deps.git.merge_base(&repo, head, &integration).await {
-                    Ok(Some(base)) => self.ci_jobs_at(&repo, &base).await.ok(),
-                    _ => None,
-                };
-                if own_jobs_apply(&jobs, at_base.as_deref(), &gate.jobs) {
-                    let scans = self.ci_scans(sandbox).await;
-                    Some(dom::keep_security_jobs(
-                        pull_requests(jobs),
-                        Some(gate),
-                        scans,
-                    ))
-                } else {
-                    Some(gate.clone())
-                }
-            }
-            (Some(gate), None) => Some(gate.clone()),
-            (None, Some(jobs)) => {
-                let scans = self.ci_scans(sandbox).await;
-                Some(dom::keep_security_jobs(pull_requests(jobs), None, scans))
-            }
-            (None, None) => None,
-        }
+        Some(dom::keep_security_jobs(own, None, scans))
     }
 
     /// Queues the commit of `run_id` again with the CI in force now.
@@ -1972,34 +2236,28 @@ impl App {
         let view = self.ci_gate(sandbox).await;
         // The jobs the scheduler would give this commit now: a branch's are the integration
         // branch's, a commit on its way there may have its own (`ci_gate_for_head`).
-        let what = match &run.reference {
-            CiRef::Branch(_) => None,
-            CiRef::PullRequest(_) => Some(Head::Proposed),
-            // (A train's run never gets here: it was refused above.)
-            CiRef::Train(_) | CiRef::Task(_) => Some(Head::Merged),
-        };
-        let gate = match what {
-            None => view.gate.clone(),
-            Some(what) => {
-                self.ci_gate_for_head(sandbox, &view, (&run.sha, what))
-                    .await
-            }
+        // A branch's run takes the branch's gate; a commit on its way (a pull request's head,
+        // a playground task's merge; a train's run never gets here) the scheduler's rule.
+        let on_its_way = !matches!(run.reference, CiRef::Branch(_));
+        let gate = if on_its_way {
+            self.ci_gate_for_head(sandbox, &view, &run.sha).await
+        } else {
+            view.gate.clone()
         };
         let Some(gate) = gate else {
             // Why nothing tests it: the integration branch's configuration, the commit's own
             // that cannot be read, or none anywhere.
-            let own = match what {
-                Some(_) => {
-                    self.ci_jobs_at(&self.sandbox_repo(&sandbox.id), &run.sha)
-                        .await
-                }
-                None => Ok(Vec::new()),
+            let own = if on_its_way {
+                self.ci_jobs_at(&self.sandbox_repo(&sandbox.id), &run.sha)
+                    .await
+            } else {
+                Ok(Vec::new())
             };
-            return Err(AppError::Conflict(match (view.problem, own, what) {
+            return Err(AppError::Conflict(match (view.problem, own, on_its_way) {
                 (Some(problem), ..) => problem,
                 (None, Err(unreadable), _) => unreadable,
-                (None, Ok(_), None) => "this sandbox has no CI configured".into(),
-                (None, Ok(_), Some(_)) => "this commit has no CI configured".into(),
+                (None, Ok(_), false) => "this sandbox has no CI configured".into(),
+                (None, Ok(_), true) => "this commit has no CI configured".into(),
             }));
         };
         self.ci_queue(sandbox, run.reference.clone(), &run.sha, &gate, by)
@@ -2044,8 +2302,8 @@ impl App {
 #[cfg(test)]
 mod lane_tests {
     use super::{
-        busy_in, forget_idle_turn, lane_note, own_jobs_apply, preferred_lanes, reserve_run,
-        reuse_source, take_lane, take_lane_preferring,
+        busy_in, forget_idle_turn, lane_note, preferred_lanes, reserve_run, reuse_source,
+        take_lane, take_lane_preferring,
     };
 
     /// SPEC-497 SHR-002 (review round 2): the note names a preferred lane as such, first choice
@@ -2183,22 +2441,6 @@ mod lane_tests {
         forget_idle_turn(&mut turns, "s1/none");
     }
 
-    /// CI-110: a stale branch is not tested with the integration branch's old jobs it still
-    /// carries; a pull request that changed the jobs is tested with its own.
-    #[test]
-    fn a_pull_request_runs_its_own_jobs_only_when_it_changed_them() {
-        let (old, new, scoped) = (["apt"], ["no-apt"], ["no-apt", "scoped"]);
-        assert!(
-            !own_jobs_apply(&old, Some(&old[..]), &new),
-            "behind: dev's jobs"
-        );
-        assert!(
-            own_jobs_apply(&scoped, Some(&new[..]), &new),
-            "changed by the pull request"
-        );
-        assert!(!own_jobs_apply(&new, Some(&old[..]), &new), "same as dev's");
-        assert!(own_jobs_apply(&old, None, &new), "base unknown: as before");
-    }
     use std::collections::{HashMap, HashSet};
 
     #[test]

@@ -2044,7 +2044,7 @@ sequenceDiagram
   M->>A: remote_caller(token): scope, 120/min
   A->>A: require(person, project, Work)
   A->>G: fresh clone, commit as the person, push yulius/change-…, open PR
-  C->>G: tests the pull request (its own [[ci.jobs]])
+  C->>G: tests the pull request (dev's [[ci.jobs]], its own changed ones beside)
   L->>M: tools/call change_merge {number}
   A->>C: run at the exact head passed?
   A->>G: merge, delete the branch
@@ -2673,8 +2673,9 @@ job starts, `App::ci_job_secrets` (`crates/yulius-app/src/ci/exec.rs`) looks up 
 the integration branch's `[[ci.jobs]]` entry of the same name in the integration head GitHub
 reports, taken into the CD mirror only Yulius writes (`App::ci_verified_gate`): CI jobs can write the
 sandbox clone, so its copy only says whether to look. A pull request's own `yulius.toml` is never
-asked, and the grant binds the entry's command too: a pull request tested with its own jobs that
-reuses a granted name for another command runs it without any secret, and its output says why
+asked, and the grant binds the entry's command too: a commit tested with its own jobs (since
+SPEC-504 only one that brings CI to a branch without any) that reuses a granted name for another
+command runs it without any secret, and its output says why
 ([SPEC-264](../.ai/specs/SPEC-264-ci-grants-agent-secrets-only-to-the-trus.md), ADR-0196). A
 granted job gets the placeholders, the CA bundle and a proxy credential of its own, held in memory
 until its process ended. The proxy's `EgressClient` is then a CI caller, `ci:<run>`, that may use
@@ -3650,6 +3651,43 @@ before/after recorded")]
     job -->|"no transcript / no lines /
 live / gone"| keep[("metrics kept;
 outcome recorded")]
+```
+
+## Which jobs judge a commit
+
+[Decision 0360](decisions/0360-dev-s-gate-judges-every-change-and-a-bad-yulius-toml-never-turns-ci-off.md)
+([SPEC-504](../.ai/specs/SPEC-504-ci-leaves-nothing-behind-and-a-bad-yuliu.md) CFG-001 to CFG-006).
+`yulius.toml` is read with a TOML 1.1 parser (`spec_format::config`, the `toml` crate's spanned
+document): any valid layout parses, and invalid TOML is refused with the parser's message at its
+line.
+
+- **The gate in force** (`App::ci_configured_gate`) comes from the integration branch's head.
+  While that file is invalid, the gate comes from the newest first-parent commit (at most 100
+  back) whose file is valid. Its source is then `last_valid_yulius_toml`: the CI page names the
+  problem and the commit, and each run says so.
+- **Every commit on its way** (`App::ci_gate_for_head`) is judged by that gate, also one that
+  changes its jobs; its own changed or added jobs run beside them as `<job> (this change)`,
+  never instead (`dom::with_changed_jobs`). This covers a pull request's head, a merge
+  candidate and a playground merge. A commit's own jobs alone run only where there is no gate:
+  a branch without CI, or a file never valid. A branch's run reuses a same-tree passed run only
+  when every job of its gate ran there as it is defined now (command, matrix value, need, time
+  limit, `exclusive`), and copies each verdict from that job.
+- **The configuration check** (`App::ci_config_problem`, at queue time) reads the file as CI will
+  read it after the merge. That is the commit's own, except for a pull request that did not
+  change it: then it is the integration branch's. An invalid one fails the run at once with a
+  failed job `yulius.toml` and the other jobs skipped.
+- **Episodes** in which a sandbox's CI has no gate because of its configuration are audited
+  (`ci.config_blocked`, `ci.config_unblocked`) and counted as minutes by the merge-queue read.
+
+```mermaid
+flowchart TD
+  D["yulius.toml at the integration head"] -->|valid| G["its gate"]
+  D -->|invalid| L["newest valid first-parent ancestor, at most 100 back"]
+  L -->|found| G2["that gate, source last_valid_yulius_toml"]
+  L -->|none| N["no gate: a commit's own valid jobs, else nothing"]
+  C["a commit on its way: pull request, merge candidate, playground merge"] --> K{"its yulius.toml as read after the merge valid?"}
+  K -->|no| F["run fails at once: job yulius.toml, the parser's message"]
+  K -->|yes| R["run with the gate in force, its own changed jobs beside (never instead)"]
 ```
 
 ## CI job output

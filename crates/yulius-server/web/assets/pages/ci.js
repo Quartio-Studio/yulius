@@ -32,6 +32,7 @@ const SOURCE = {
   yulius_toml: 'yulius.toml on the integration branch',
   profile: 'the sandbox’s delivery profile',
   pull_request: 'the pull request’s own yulius.toml (bootstrap)',
+  last_valid_yulius_toml: 'the integration branch’s last valid yulius.toml',
 };
 const POLL_ACTIVE_MS = 3000;
 const POLL_IDLE_MS = 20000;
@@ -163,7 +164,11 @@ export function mountCiSection(ctx, sandbox, route, host, actions) {
       parts.push(h('div', { class: 'banner banner-warn', role: 'status' }, icon('warn', { size: 16 }),
         h('span', { class: 'banner-text' }, `GitHub Actions workflows are still on the integration branch (${workflows.join(', ')}). ${BRAND.name} is the only CI: onboarding moves their checks into [[ci.jobs]] in yulius.toml and deletes them.`)));
     }
-    if (overview.gate_problem) parts.push(h('div', { class: 'banner banner-warn', role: 'status' }, icon('warn', { size: 16 }), h('span', { class: 'banner-text' }, `CI is not running: ${overview.gate_problem}`)));
+    // SPEC-504 CFG-006: an invalid yulius.toml on the integration branch never turns CI off
+    // while an earlier one was valid: its gate runs until a fix merges.
+    if (overview.gate_problem) parts.push(h('div', { class: 'banner banner-warn', role: 'status' }, icon('warn', { size: 16 }), h('span', { class: 'banner-text' }, overview.gate_fallback
+      ? `yulius.toml on the integration branch is invalid: ${overview.gate_problem}. CI runs the gate of its last valid yulius.toml (${shortSha(overview.gate_fallback)}) until a fix merges; a pull request that does not fix it fails its run.`
+      : `CI is not running: ${overview.gate_problem}`)));
     parts.push(configCard(overview.gate));
     if (overview.vidoc) parts.push(vidocCard(ctx, sandbox, overview.vidoc, rereadVidoc));
     const runs = overview.runs || [];

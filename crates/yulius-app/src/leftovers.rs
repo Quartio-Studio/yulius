@@ -926,7 +926,17 @@ impl App {
         for run in runs.iter().filter(|run| run.queued_at.0 >= since) {
             recent += 1;
             for job in self.deps.store.ci_jobs(&run.id, false).await? {
-                used.insert(job.key);
+                // A change's twin of a job checks out apart, at `<key>.change`: kept while such
+                // twins run, stale like any other otherwise (SPEC-504 review round 3).
+                if job.name.ends_with(yulius_domain::ci::CHANGE_SUFFIX) {
+                    used.insert(format!(
+                        "{}.{}",
+                        job.key,
+                        yulius_domain::ci::CHANGE_CHECKOUT
+                    ));
+                } else {
+                    used.insert(job.key);
+                }
             }
         }
         Ok((recent > 0).then_some(used))

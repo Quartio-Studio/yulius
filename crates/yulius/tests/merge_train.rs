@@ -866,6 +866,54 @@ impl yulius_app::ports::vidoc::VidocConnector for AnyVidoc {
     }
 }
 
+/// SPEC-504 CFG-002 (review round 1): a merge candidate is checked as what the branch would be:
+/// a member whose `yulius.toml` is invalid (its own run recorded passed, as a behind pull
+/// request's could be on an older base) makes the candidate's run fail at once, with a failed
+/// job `yulius.toml` naming the parser's message and no job run.
+#[tokio::test]
+async fn a_candidate_with_an_invalid_yulius_toml_fails_with_the_parsers_message() -> TestResult {
+    use yulius_domain::ci::RunState;
+    let f = fixture().await?;
+    let app = f.h.app.clone();
+    let invalid = format!("[commands]\ngate = \"make ci\"\n\n{YULIUS_TOML}");
+    let worktrees = [
+        f.task(1, &[("yulius.toml", invalid.as_str())]).await?,
+        f.task(2, &[("b.txt", "x\n")]).await?,
+    ];
+    for (n, worktree) in (1..).zip(&worktrees) {
+        f.arm(n, worktree).await?;
+        f.record_passed(&app, n, &git(worktree, &["rev-parse", "HEAD"])?)
+            .await?;
+    }
+    f.advance_dev("other.txt")?;
+    app.merge_armed(&f.sandbox).await;
+    let trains = f.train_runs(&app).await?;
+    let refused = trains
+        .iter()
+        .find(|run| run.state == RunState::Failed)
+        .ok_or_else(|| format!("no refused candidate: {trains:?}"))?;
+    assert!(
+        refused
+            .reason
+            .as_deref()
+            .is_some_and(|r| r.contains("gate")),
+        "{refused:?}"
+    );
+    let jobs = app.deps.store.ci_jobs(&refused.id, false).await?;
+    let config = jobs
+        .iter()
+        .find(|job| job.name == "yulius.toml")
+        .ok_or("no yulius.toml job")?;
+    assert_eq!(config.state, RunState::Failed);
+    assert!(
+        jobs.iter()
+            .filter(|job| job.name != "yulius.toml")
+            .all(|job| job.state == RunState::Skipped),
+        "{jobs:?}"
+    );
+    Ok(())
+}
+
 /// SPEC-217 VDP-001 (review round 6): a train whose members changed the CI runs their jobs with
 /// the trusted security job; a member's own job named `security` does not stand in for it.
 #[tokio::test]

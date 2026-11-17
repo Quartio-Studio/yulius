@@ -6,6 +6,17 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-17
 
+- A bad `yulius.toml` never blocks CI (SPEC-504 pull request 2, task #486,
+  [ADR-0360](decisions/0360-dev-s-gate-judges-every-change-and-a-bad-yulius-toml-never-turns-ci-off.md)):
+  the file is read by a real TOML parser (multi-line arrays, trailing commas and comments
+  parse); every pull request, merge candidate and playground merge is judged by the integration
+  branch's jobs, also one that changes them, with its own changed jobs beside them, never
+  instead; its own `yulius.toml`, as CI will read it after the
+  merge, is checked and an invalid one fails the run at once with the parser's message; while the
+  integration branch's file is invalid, its last valid gate runs until a fix merges and every run
+  and the CI page say so. The minutes CI ran nothing because of its configuration are counted
+  (`config_blocked_minutes` in the merge-queue read).
+
 - A CI job leaves nothing behind in Docker (SPEC-504 pull request 1, task #486,
   [ADR-0359](decisions/0359-a-ci-jobs-containers-and-networks-carry-its-label-and-go-when-it-ends.md)):
   each CI job runs in its own cgroup, the sandbox's Docker front labels the containers and

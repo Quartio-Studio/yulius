@@ -337,6 +337,11 @@ pub struct MergeQueueAnalytics {
     /// The same per UTC day of the runs' start, oldest first; days with no run are left out.
     #[serde(default)]
     pub ci_minutes_by_day: Vec<CiMinutesDay>,
+    /// Minutes over the range in which a sandbox's CI ran nothing because of its configuration
+    /// (an invalid `yulius.toml` with no valid one before it; SPEC-504 CFG-004), summed over the
+    /// sandboxes read.
+    #[serde(default)]
+    pub config_blocked_minutes: u64,
 }
 
 /// A dissolved merge candidate (SPEC-497 MQW-004).

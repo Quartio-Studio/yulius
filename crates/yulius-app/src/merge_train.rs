@@ -1523,9 +1523,10 @@ impl App {
             one_by_one(state, key);
             return None;
         }
-        // Its own CI when the members changed it, as for a pull request (`ci_gate_for_head`).
+        // The integration branch's jobs, with the members' own changed ones beside them, as for a
+        // pull request (`ci_gate_for_head`, SPEC-504 CFG-001).
         let gate = self
-            .ci_gate_for_head(sandbox, &view, (&built.head, crate::ci::Head::Merged))
+            .ci_gate_for_head(sandbox, &view, &built.head)
             .await
             .unwrap_or(gate);
         let prs = numbers(&members);

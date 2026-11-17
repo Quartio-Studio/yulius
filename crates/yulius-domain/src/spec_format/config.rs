@@ -1,20 +1,20 @@
 //! The `yulius.toml` project contract (SPEC-001 §7.2, DLV-005).
 //!
-//! Choice: the domain owns a tiny, strict TOML-subset parser instead of accepting a
-//! pre-parsed map, so the domain stays dependency-free and every problem carries a line
-//! number for the agent prompt. Supported:
+//! The file is read by a TOML 1.1 parser (the `toml` crate's spanned document, SPEC-504
+//! CFG-005, ADR-0360): anything valid TOML parses, whatever its layout (multi-line arrays,
+//! trailing commas, comments inside arrays and after values, literal and multi-line strings,
+//! inline tables, dotted keys), and invalid TOML is refused with the parser's message at its line.
+//! Known tables:
 //!
-//! - `[docs]`, `[commands]`, `[delivery]`, `[disk]`, `[review]`, `[merge_queue]`,
-//!   `[branch_policy]`, `[resources.env]`, `[cd.<name>]` tables, `[[delivery.environments]]` and `[[ci.jobs]]` entries;
-//! - `key = "basic string"` (escapes `\" \\ \n \t \r \b \f \uXXXX \UXXXXXXXX`),
-//!   `key = 'literal string'`, `key = true|false`, whole numbers (`cpus = 6`) and
-//!   `environments = []`;
-//! - blank lines and `#` comments (also after a value).
+//! - `[docs]`, `[commands]`, `[delivery]`, `[disk]`, `[branch_policy]`, `[resources.env]`,
+//!   `[review]`, `[merge_queue]`, `[cd.<name>]` tables, `[[delivery.environments]]` and
+//!   `[[ci.jobs]]` entries.
 //!
-//! Keys in the known tables are strict (unknown keys are errors, catching typos). Other
-//! tables and keys before the first table are ignored for forward compatibility; their lines
-//! are skipped unparsed. Multi-line strings, signed or fractional numbers, non-empty arrays,
-//! inline tables, dotted and quoted keys are rejected inside known tables.
+//! Their keys are strict (unknown keys are errors, catching typos), and their values are what
+//! the checks read: strings, `true`/`false`, whole numbers of at least 0 and arrays of strings;
+//! anything else is refused at its line. Other tables and keys are ignored for forward
+//! compatibility. Nesting is bounded by the parser (a line of brackets is refused, never
+//! recursed into: review of SPEC-278, B1).
 //!
 //! ```toml
 //! [docs]
@@ -137,24 +137,18 @@ pub enum ConfigProblem {
     /// Larger than [`MAX_CONFIG_BYTES`].
     #[error("file is larger than 64 KiB")]
     TooLarge,
-    /// Not a key/value pair, header or comment.
-    #[error("expected 'key = value', a [table] header or a comment")]
-    ExpectedKeyValue,
-    /// Malformed header.
-    #[error("invalid table header")]
-    InvalidHeader,
-    /// A known table twice.
-    #[error("table [{0}] appears more than once")]
-    DuplicateTable(String),
+    /// Not valid TOML: the parser's message (SPEC-504 CFG-005).
+    #[error("{0}")]
+    Syntax(String),
+    /// A known table written as a plain value (`docs = "x"`).
+    #[error("[{0}] must be a table")]
+    NotATable(String),
     /// `[[docs]]` and similar.
     #[error("[{0}] must be a single table, not [[{0}]]")]
     NotAnArrayTable(String),
     /// `[delivery.environments]` without double brackets.
     #[error("write environments as [[{0}]] entries")]
     ArrayTableRequired(String),
-    /// A key twice in one table.
-    #[error("key '{0}' appears more than once in this table")]
-    DuplicateKey(String),
     /// Unknown key in a known table.
     #[error("unknown key '{key}' in [{table}]; known keys: {known}")]
     UnknownKey {
@@ -165,23 +159,19 @@ pub enum ConfigProblem {
         /// Accepted keys.
         known: &'static str,
     },
+    /// A table inside a known one (`[commands.extra]`, an inline table, a dotted key).
+    #[error("[{table}.{key}] is not a table Yulius reads: [{table}] takes keys with values")]
+    NestedTable {
+        /// The known table.
+        table: String,
+        /// The key holding a table.
+        key: String,
+    },
     /// A value outside the subset.
     #[error(
-        "unsupported value; use a \"quoted string\", a whole number, true/false or [\"quoted\", \"strings\"] on one line (signed or fractional numbers, multi-line strings and arrays, and inline tables are not supported)"
+        "unsupported value; use a \"quoted string\", a whole number, true/false or an array of \"quoted\", \"strings\" (signed or fractional numbers, dates and inline tables are not values Yulius reads here)"
     )]
     UnsupportedValue,
-    /// A string without its closing quote.
-    #[error("unterminated string")]
-    UnterminatedString,
-    /// An unknown escape sequence.
-    #[error("invalid escape sequence in string")]
-    InvalidEscape,
-    /// A raw control character inside a string.
-    #[error("control characters are not allowed in strings")]
-    ControlCharacter,
-    /// Text after a value that is not a comment.
-    #[error("unexpected text after the value")]
-    TrailingText,
     /// A key needing a string.
     #[error("'{0}' must be a quoted string")]
     ExpectedString(String),
@@ -228,7 +218,8 @@ pub enum ConfigProblem {
     /// A required environment key is missing.
     #[error("[[delivery.environments]] entry is missing '{0}'")]
     MissingKey(&'static str),
-    /// `environments = []` together with environment entries.
+    /// `environments = []` together with environment entries (the TOML parser refuses that as a
+    /// duplicate key first; kept as a guard of the profile's rule).
     #[error("'environments = []' conflicts with [[delivery.environments]] entries")]
     EnvironmentsConflict,
     /// The resulting profile is invalid.
@@ -300,21 +291,6 @@ struct Document {
     cd: Vec<(String, Table)>,
 }
 
-enum Target {
-    Ignored,
-    Docs,
-    Commands,
-    Delivery,
-    Disk,
-    Review,
-    MergeQueue,
-    BranchPolicy,
-    Environment,
-    CiJob,
-    ResourcesEnv,
-    Cd(usize),
-}
-
 const DOCS_KEYS: &str = "product, architecture, decisions, specs_dir, changes, agents";
 const COMMAND_KEYS: &str = "test, lint, build, gate";
 const DELIVERY_KEYS: &str = "preset, integration_branch, production_branch, merge, promote, auto_promote, require_checks, environments";
@@ -345,280 +321,254 @@ fn err(line: usize, problem: ConfigProblem) -> FormatError {
     FormatError { line, problem }
 }
 
-fn is_key_char(c: char) -> bool {
-    c.is_ascii_alphanumeric() || c == '_' || c == '-'
+/// The 1-based line of byte `offset` in `text`.
+fn line_at(text: &str, offset: usize) -> usize {
+    text.as_bytes()
+        .iter()
+        .take(offset)
+        .filter(|&&b| b == b'\n')
+        .count()
+        + 1
 }
 
-/// Parses a header line. `Ok(None)` when the line is not a header attempt.
-fn parse_header(text: &str, line: usize) -> Result<Option<(String, bool)>, FormatError> {
-    let Some(after_open) = text.strip_prefix('[') else {
-        return Ok(None);
-    };
-    let (array, inner) = match after_open.strip_prefix('[') {
-        Some(inner) => (true, inner),
-        None => (false, after_open),
-    };
-    if !inner.trim_start().starts_with(is_key_char) {
-        return Ok(None);
-    }
-    let close = if array { "]]" } else { "]" };
-    let Some(end) = inner.find(close) else {
-        return Err(err(line, ConfigProblem::InvalidHeader));
-    };
-    let name = inner[..end].trim();
-    let rest = inner[end + close.len()..].trim();
-    let valid_name = name
-        .split('.')
-        .all(|part| !part.is_empty() && part.chars().all(is_key_char));
-    if !valid_name || !(rest.is_empty() || rest.starts_with('#')) {
-        return Err(err(line, ConfigProblem::InvalidHeader));
-    }
-    Ok(Some((name.to_owned(), array)))
+type Spanned<T> = toml::Spanned<T>;
+type TomlTable<'i> = toml::de::DeTable<'i>;
+type TomlValue<'i> = toml::de::DeValue<'i>;
+
+/// The entries of `table` in the order of the file (the parser keeps them by key).
+fn in_file_order<'a, 'i>(
+    table: &'a TomlTable<'i>,
+) -> Vec<(
+    &'a Spanned<std::borrow::Cow<'i, str>>,
+    &'a Spanned<TomlValue<'i>>,
+)> {
+    let mut entries: Vec<_> = table.iter().collect();
+    entries.sort_by_key(|(key, _)| key.span().start);
+    entries
 }
 
-fn parse_basic_string(text: &str) -> Result<(String, &str), ConfigProblem> {
-    let mut value = String::new();
-    let mut chars = text.char_indices();
-    while let Some((offset, c)) = chars.next() {
-        match c {
-            '"' => return Ok((value, &text[offset + 1..])),
-            '\\' => {
-                let (_, escape) = chars.next().ok_or(ConfigProblem::UnterminatedString)?;
-                let decoded = match escape {
-                    '"' => '"',
-                    '\\' => '\\',
-                    'n' => '\n',
-                    't' => '\t',
-                    'r' => '\r',
-                    'b' => '\u{8}',
-                    'f' => '\u{c}',
-                    'u' | 'U' => {
-                        let digits = if escape == 'u' { 4 } else { 8 };
-                        let mut code = 0_u32;
-                        for _ in 0..digits {
-                            let (_, digit) = chars.next().ok_or(ConfigProblem::InvalidEscape)?;
-                            code = code * 16
-                                + digit.to_digit(16).ok_or(ConfigProblem::InvalidEscape)?;
-                        }
-                        char::from_u32(code).ok_or(ConfigProblem::InvalidEscape)?
-                    }
-                    _ => return Err(ConfigProblem::InvalidEscape),
-                };
-                value.push(decoded);
-            }
-            c if c.is_control() && c != '\t' => return Err(ConfigProblem::ControlCharacter),
-            c => value.push(c),
-        }
-    }
-    Err(ConfigProblem::UnterminatedString)
-}
-
-fn parse_value(text: &str) -> Result<(Value, &str), ConfigProblem> {
-    if text.starts_with("\"\"\"") || text.starts_with("'''") {
-        return Err(ConfigProblem::UnsupportedValue);
-    }
-    if let Some(rest) = text.strip_prefix('"') {
-        let (value, rest) = parse_basic_string(rest)?;
-        return Ok((Value::Str(value), rest));
-    }
-    if let Some(rest) = text.strip_prefix('\'') {
-        let end = rest.find('\'').ok_or(ConfigProblem::UnterminatedString)?;
-        let value = &rest[..end];
-        if value.chars().any(|c| c.is_control() && c != '\t') {
-            return Err(ConfigProblem::ControlCharacter);
-        }
-        return Ok((Value::Str(value.to_owned()), &rest[end + 1..]));
-    }
-    if let Some(rest) = text.strip_prefix('[') {
-        return parse_string_array(rest);
-    }
-    let digits = text
-        .find(|c: char| !c.is_ascii_digit())
-        .unwrap_or(text.len());
-    if digits > 0 {
-        let rest = &text[digits..];
-        if rest.starts_with(is_key_char) || rest.starts_with('.') {
-            return Err(ConfigProblem::UnsupportedValue);
-        }
-        let value = text[..digits]
-            .parse::<u64>()
-            .map_err(|_| ConfigProblem::UnsupportedValue)?;
-        return Ok((Value::Int(value), rest));
-    }
-    for (word, value) in [("true", true), ("false", false)] {
-        if let Some(rest) = text.strip_prefix(word)
-            && !rest.starts_with(is_key_char)
-        {
-            return Ok((Value::Bool(value), rest));
-        }
-    }
-    Err(ConfigProblem::UnsupportedValue)
-}
-
-/// The rest of a one-line array of strings after its `[`: quoted strings separated by commas, a
-/// trailing comma allowed. Only a quoted string is read as an item, so nothing nests: the file
-/// comes from branches agents write, and a recursion on `[` would let one line of brackets
-/// overflow the server's stack (review of SPEC-278, B1).
-fn parse_string_array(text: &str) -> Result<(Value, &str), ConfigProblem> {
-    let mut items = Vec::new();
-    let mut rest = text.trim_start();
-    loop {
-        if let Some(after) = rest.strip_prefix(']') {
-            return Ok((Value::Array(items), after));
-        }
-        if !rest.starts_with(['"', '\'']) {
-            return Err(ConfigProblem::UnsupportedValue);
-        }
-        let (Value::Str(item), after) = parse_value(rest)? else {
-            return Err(ConfigProblem::UnsupportedValue);
-        };
-        items.push(item);
-        let after = after.trim_start();
-        rest = match after.strip_prefix(',') {
-            Some(next) => next.trim_start(),
-            None if after.starts_with(']') => after,
-            None => return Err(ConfigProblem::UnsupportedValue),
-        };
+/// A value of a known table, within the subset the checks read: a string, `true`/`false`, a
+/// whole number of at least 0, or an array of strings. Anything else (a fractional or signed
+/// number, a date, an inline table, an array of other things) is refused at its line.
+fn value_of(value: &TomlValue<'_>) -> Result<Value, ConfigProblem> {
+    match value {
+        TomlValue::String(text) => Ok(Value::Str(text.to_string())),
+        TomlValue::Boolean(flag) => Ok(Value::Bool(*flag)),
+        TomlValue::Integer(number) => u64::from_str_radix(number.as_str(), number.radix())
+            .map(Value::Int)
+            .map_err(|_| ConfigProblem::UnsupportedValue),
+        TomlValue::Array(items) => items
+            .into_iter()
+            .map(|item| match item.get_ref() {
+                TomlValue::String(text) => Ok(text.to_string()),
+                _ => Err(ConfigProblem::UnsupportedValue),
+            })
+            .collect::<Result<Vec<_>, _>>()
+            .map(Value::Array),
+        _ => Err(ConfigProblem::UnsupportedValue),
     }
 }
 
-fn parse_entry(text: &str, line: usize) -> Result<Entry, FormatError> {
-    let key_end = text.find(|c: char| !is_key_char(c)).unwrap_or(text.len());
-    let key = &text[..key_end];
-    let Some(after_equals) = text[key_end..].trim_start().strip_prefix('=') else {
-        return Err(err(line, ConfigProblem::ExpectedKeyValue));
-    };
-    if key.is_empty() {
-        return Err(err(line, ConfigProblem::ExpectedKeyValue));
-    }
-    let (value, rest) = parse_value(after_equals.trim_start()).map_err(|p| err(line, p))?;
-    let rest = rest.trim();
-    if !(rest.is_empty() || rest.starts_with('#')) {
-        return Err(err(line, ConfigProblem::TrailingText));
+/// The entry `key` = `value` of the known table `name` at its line: a table there
+/// (`[name.key]`, an inline table, a dotted key) is no key Yulius reads (review round 1).
+fn entry_of(
+    text: &str,
+    name: &str,
+    key: &Spanned<std::borrow::Cow<'_, str>>,
+    value: &Spanned<TomlValue<'_>>,
+) -> Result<Entry, FormatError> {
+    let line = line_at(text, key.span().start);
+    let key = key.get_ref().to_string();
+    if value.get_ref().is_table() {
+        return Err(err(
+            line,
+            ConfigProblem::NestedTable {
+                table: name.to_owned(),
+                key,
+            },
+        ));
     }
     Ok(Entry {
-        key: key.to_owned(),
-        value,
+        value: value_of(value.get_ref()).map_err(|problem| err(line, problem))?,
+        key,
         line,
     })
 }
 
+/// The known table `name` at `line` with its entries in file order.
+fn table_of(
+    text: &str,
+    name: &str,
+    table: &TomlTable<'_>,
+    line: usize,
+) -> Result<Table, FormatError> {
+    let entries = in_file_order(table)
+        .into_iter()
+        .map(|(key, value)| entry_of(text, name, key, value))
+        .collect::<Result<_, _>>()?;
+    Ok(Table { line, entries })
+}
+
+/// The single table `name` (`[name]`); `[[name]]` and a plain value are refused.
+fn single_table(
+    text: &str,
+    name: &str,
+    value: &Spanned<TomlValue<'_>>,
+    line: usize,
+) -> Result<Table, FormatError> {
+    match value.get_ref() {
+        TomlValue::Table(table) => table_of(text, name, table, line),
+        TomlValue::Array(_) => Err(err(line, ConfigProblem::NotAnArrayTable(name.to_owned()))),
+        _ => Err(err(line, ConfigProblem::NotATable(name.to_owned()))),
+    }
+}
+
+/// The entries of the array of tables `name` (`[[name]]`, or an array of inline tables), each
+/// at its own line; a single table or other values are refused.
+fn array_tables(
+    text: &str,
+    name: &str,
+    value: &Spanned<TomlValue<'_>>,
+    line: usize,
+) -> Result<Vec<Table>, FormatError> {
+    let refused = || err(line, ConfigProblem::ArrayTableRequired(name.to_owned()));
+    let TomlValue::Array(items) = value.get_ref() else {
+        return Err(refused());
+    };
+    items
+        .into_iter()
+        .map(|item| match item.get_ref() {
+            TomlValue::Table(table) => {
+                table_of(text, name, table, line_at(text, item.span().start))
+            }
+            _ => Err(refused()),
+        })
+        .collect()
+}
+
+/// Reads `yulius.toml` with a TOML 1.1 parser (SPEC-504 CFG-005, ADR-0360): anything valid
+/// TOML parses, whatever its layout (multi-line arrays, trailing commas, comments, inline
+/// tables, dotted keys); invalid TOML is refused with the parser's message at its line. The
+/// known tables then take only the values their checks read ([`value_of`]); other tables and
+/// keys are ignored for forward compatibility.
 fn parse_document(text: &str) -> Result<Document, FormatError> {
     if text.len() > MAX_CONFIG_BYTES {
         return Err(err(1, ConfigProblem::TooLarge));
     }
+    // A byte-order mark adds no line.
+    let text = text.strip_prefix('\u{feff}').unwrap_or(text);
+    let root = TomlTable::parse(text).map_err(|error| {
+        let line = error.span().map_or(1, |span| line_at(text, span.start));
+        let message = error.message().lines().next().unwrap_or("invalid TOML");
+        err(line, ConfigProblem::Syntax(message.trim().to_owned()))
+    })?;
     let mut document = Document::default();
-    let mut target = Target::Ignored;
-    for (index, raw) in text.lines().enumerate() {
-        let line = index + 1;
-        let raw = if index == 0 {
-            raw.strip_prefix('\u{feff}').unwrap_or(raw)
-        } else {
-            raw
-        };
-        let trimmed = raw.trim();
-        if trimmed.is_empty() || trimmed.starts_with('#') {
-            continue;
-        }
-        if let Some((name, array)) = parse_header(trimmed, line)? {
-            let fresh = Table {
-                line,
-                entries: Vec::new(),
-            };
-            target = match (name.as_str(), array) {
-                (
-                    "docs" | "commands" | "delivery" | "disk" | "review" | "merge_queue"
-                    | "branch_policy" | "resources.env",
-                    true,
-                ) => {
-                    return Err(err(line, ConfigProblem::NotAnArrayTable(name)));
+    for (key, value) in in_file_order(root.get_ref()) {
+        let name = key.get_ref().as_ref();
+        let line = line_at(text, key.span().start);
+        match name {
+            "docs" | "commands" | "disk" | "review" | "merge_queue" | "branch_policy" => {
+                let table = Some(single_table(text, name, value, line)?);
+                match name {
+                    "docs" => document.docs = table,
+                    "commands" => document.commands = table,
+                    "disk" => document.disk = table,
+                    "review" => document.review = table,
+                    "merge_queue" => document.merge_queue = table,
+                    _ => document.branch_policy = table,
                 }
-                (other, array) if other == "cd" || other.starts_with("cd.") => {
-                    let env = other.strip_prefix("cd.").filter(|env| valid_env_name(env));
-                    let Some(env) = env else {
-                        return Err(err(line, ConfigProblem::UnknownCdEnvironment(name)));
-                    };
-                    if array {
-                        return Err(err(line, ConfigProblem::NotAnArrayTable(name)));
+            }
+            "delivery" => {
+                let TomlValue::Table(delivery) = value.get_ref() else {
+                    return Err(single_table(text, name, value, line)
+                        .err()
+                        .unwrap_or_else(|| err(line, ConfigProblem::NotATable(name.to_owned()))));
+                };
+                // `[[delivery.environments]]` are tables of their own; `environments = []`
+                // stays a key of `[delivery]`.
+                let tables = delivery.iter().find(|(key, value)| {
+                    key.get_ref() == "environments"
+                        && !matches!(value.get_ref(), TomlValue::Array(items)
+                            if items.into_iter().all(|item| !item.get_ref().is_table()))
+                });
+                let mut table = Table {
+                    line,
+                    entries: Vec::new(),
+                };
+                if let Some((key, environments)) = tables {
+                    let at = line_at(text, key.span().start);
+                    document.environments =
+                        array_tables(text, "delivery.environments", environments, at)?;
+                }
+                for (key, value) in in_file_order(delivery) {
+                    if tables.is_some() && key.get_ref() == "environments" {
+                        continue;
                     }
-                    if document.cd.iter().any(|(known, _)| known == env) {
-                        return Err(err(line, ConfigProblem::DuplicateTable(name)));
+                    table.entries.push(entry_of(text, name, key, value)?);
+                }
+                document.delivery = Some(table);
+            }
+            "ci" => {
+                if let TomlValue::Table(ci) = value.get_ref()
+                    && let Some((key, jobs)) = ci.iter().find(|(key, _)| key.get_ref() == "jobs")
+                {
+                    let at = line_at(text, key.span().start);
+                    document.ci_jobs = array_tables(text, "ci.jobs", jobs, at)?;
+                }
+            }
+            "resources" => {
+                if let TomlValue::Table(resources) = value.get_ref()
+                    && let Some((key, env)) =
+                        resources.iter().find(|(key, _)| key.get_ref() == "env")
+                {
+                    let at = line_at(text, key.span().start);
+                    document.resources_env = Some(single_table(text, "resources.env", env, at)?);
+                }
+            }
+            "cd" => {
+                let TomlValue::Table(cd) = value.get_ref() else {
+                    return Err(err(
+                        line,
+                        ConfigProblem::UnknownCdEnvironment(name.to_owned()),
+                    ));
+                };
+                if cd.is_empty() {
+                    return Err(err(
+                        line,
+                        ConfigProblem::UnknownCdEnvironment(name.to_owned()),
+                    ));
+                }
+                for (key, table) in in_file_order(cd) {
+                    let env = key.get_ref().as_ref();
+                    let full = format!("cd.{env}");
+                    let at = line_at(text, key.span().start);
+                    if !valid_env_name(env)
+                        || !table.get_ref().is_table() && !table.get_ref().is_array()
+                    {
+                        return Err(err(at, ConfigProblem::UnknownCdEnvironment(full)));
                     }
                     if document.cd.len() == MAX_CD_ENVIRONMENTS {
-                        return Err(err(line, ConfigProblem::TooManyCdEnvironments));
+                        return Err(err(at, ConfigProblem::TooManyCdEnvironments));
                     }
-                    document.cd.push((env.to_owned(), fresh));
-                    Target::Cd(document.cd.len() - 1)
-                }
-                ("resources.env", false) => {
-                    if document.resources_env.is_some() {
-                        return Err(err(line, ConfigProblem::DuplicateTable(name)));
+                    // `[cd.a.b]` names no environment: a table inside one is refused as such.
+                    if let TomlValue::Table(inner) = table.get_ref()
+                        && let Some((key, _)) =
+                            inner.iter().find(|(_, value)| value.get_ref().is_table())
+                    {
+                        return Err(err(
+                            line_at(text, key.span().start),
+                            ConfigProblem::UnknownCdEnvironment(format!(
+                                "{full}.{}",
+                                key.get_ref()
+                            )),
+                        ));
                     }
-                    document.resources_env = Some(fresh);
-                    Target::ResourcesEnv
+                    let table = single_table(text, &full, table, at)?;
+                    document.cd.push((env.to_owned(), table));
                 }
-                ("delivery.environments", false) => {
-                    return Err(err(line, ConfigProblem::ArrayTableRequired(name)));
-                }
-                ("delivery.environments", true) => {
-                    document.environments.push(fresh);
-                    Target::Environment
-                }
-                ("ci.jobs", false) => {
-                    return Err(err(line, ConfigProblem::ArrayTableRequired(name)));
-                }
-                ("ci.jobs", true) => {
-                    document.ci_jobs.push(fresh);
-                    Target::CiJob
-                }
-                (
-                    known @ ("docs" | "commands" | "delivery" | "disk" | "review" | "merge_queue"
-                    | "branch_policy"),
-                    false,
-                ) => {
-                    let (slot, target) = match known {
-                        "docs" => (&mut document.docs, Target::Docs),
-                        "commands" => (&mut document.commands, Target::Commands),
-                        "disk" => (&mut document.disk, Target::Disk),
-                        "review" => (&mut document.review, Target::Review),
-                        "merge_queue" => (&mut document.merge_queue, Target::MergeQueue),
-                        "branch_policy" => (&mut document.branch_policy, Target::BranchPolicy),
-                        _ => (&mut document.delivery, Target::Delivery),
-                    };
-                    if slot.is_some() {
-                        return Err(err(line, ConfigProblem::DuplicateTable(name)));
-                    }
-                    *slot = Some(fresh);
-                    target
-                }
-                _ => Target::Ignored,
-            };
-            continue;
+            }
+            _ => {}
         }
-        let table = match target {
-            Target::Ignored => continue,
-            Target::Docs => document.docs.as_mut(),
-            Target::Commands => document.commands.as_mut(),
-            Target::Delivery => document.delivery.as_mut(),
-            Target::Disk => document.disk.as_mut(),
-            Target::Review => document.review.as_mut(),
-            Target::MergeQueue => document.merge_queue.as_mut(),
-            Target::BranchPolicy => document.branch_policy.as_mut(),
-            Target::Environment => document.environments.last_mut(),
-            Target::CiJob => document.ci_jobs.last_mut(),
-            Target::ResourcesEnv => document.resources_env.as_mut(),
-            Target::Cd(index) => document.cd.get_mut(index).map(|(_, table)| table),
-        };
-        let Some(table) = table else { continue };
-        let entry = parse_entry(trimmed, line)?;
-        if table
-            .entries
-            .iter()
-            .any(|existing| existing.key == entry.key)
-        {
-            return Err(err(line, ConfigProblem::DuplicateKey(entry.key)));
-        }
-        table.entries.push(entry);
     }
     Ok(document)
 }
@@ -1781,13 +1731,10 @@ mod tests {
                 "[cd.dev]\nstates = [\"OPS\", 1]\n".to_owned(),
                 "unsupported value",
             ),
-            (
-                "[cd.dev]\nstates = [\"OPS\"\n".to_owned(),
-                "unsupported value",
-            ),
+            ("[cd.dev]\nstates = [\"OPS\"\n".to_owned(), "unclosed array"),
             (
                 "[cd.dev]\nstates = [\"OPS\" \"B\"]\n".to_owned(),
-                "unsupported value",
+                "missing comma",
             ),
             ("[cd.dev]\nstates = true\n".to_owned(), "'states'"),
             (
@@ -1811,9 +1758,7 @@ mod tests {
         assert!(deep.len() < MAX_CONFIG_BYTES);
         let shown = parse_yulius_toml(&deep).err().map(|e| e.to_string());
         assert!(
-            shown
-                .as_deref()
-                .is_some_and(|e| e.contains("unsupported value")),
+            shown.as_deref().is_some_and(|e| e.contains("recurs")),
             "{shown:?}"
         );
         for (text, message) in cases {
@@ -1951,7 +1896,7 @@ mod tests {
                 "is not a CD environment",
             ),
             ("[[cd.dev]]\n", 1, "[cd.dev] must be a single table"),
-            ("[cd.dev]\n[cd.dev]\n", 2, "appears more than once"),
+            ("[cd.dev]\n[cd.dev]\n", 2, "duplicate key"),
             (
                 "[cd.prod]\npromote = \"yes\"\n",
                 2,
@@ -2055,7 +2000,7 @@ mod tests {
             problem(
                 "[delivery]\nenvironments = []\n[[delivery.environments]]\nname = \"x\"\nafter = \"integration\"\n"
             ),
-            Some((2, ConfigProblem::EnvironmentsConflict))
+            Some((3, ConfigProblem::Syntax("duplicate key".to_owned())))
         );
         assert_eq!(
             problem("[[delivery.environments]]\nafter = \"integration\"\n"),
@@ -2076,47 +2021,94 @@ mod tests {
         Ok(())
     }
 
+    /// SPEC-504 CFG-005: valid TOML parses: a multi-line array with one entry per line (what
+    /// autoresearch's PR #42 merged), trailing commas, comments inside arrays and after values,
+    /// literal and multi-line strings, and a job written as an inline table; unknown tables of any
+    /// shape are still ignored.
+    #[test]
+    fn valid_toml_parses_whatever_its_layout() -> TestResult {
+        let text = r#"
+[commands]
+test = """cargo test"""   # a multi-line basic string on one line
+
+[[ci.jobs]]
+name = "web"
+command = 'npm test'
+paths = [
+  "web/**",   # the site
+  "e2e/**",
+  # and its fixtures
+  "fixtures/**",
+]
+cpus = 4_0
+
+[future.thing]
+anything = { a = [1, 2.5, { b = 1979-05-27 }] }
+"#;
+        let config = parse_yulius_toml(text)?;
+        assert_eq!(config.commands.test.as_deref(), Some("cargo test"));
+        assert_eq!(config.ci.len(), 1);
+        assert_eq!(config.ci[0].paths, ["web/**", "e2e/**", "fixtures/**"]);
+        assert_eq!(config.ci[0].need.cpus, Some(40));
+        let inline = "ci.jobs = [ { name = \"t\", command = \"true\" } ]\n";
+        assert_eq!(parse_yulius_toml(inline)?.ci[0].name, "t");
+        Ok(())
+    }
+
     #[test]
     fn precise_errors_with_line_numbers() {
+        let syntax = |text: &str| match problem(text) {
+            Some((line, ConfigProblem::Syntax(message))) => Some((line, message)),
+            _ => None,
+        };
+        // Invalid TOML: the parser's message at its line (SPEC-504 CFG-005).
+        for (text, line) in [
+            ("[docs]\nproduct = docs/product.md\n", 2),
+            ("[docs]\nproduct = \"x.md\" extra\n", 2),
+            ("[docs]\nproduct = \"x.md\n", 2),
+            ("[docs]\nproduct = \"a\\qb\"\n", 2),
+            ("[docs]\njust text\n", 2),
+            ("[docs\nproduct = \"x\"\n", 1),
+            ("[docs]\n[docs]\n", 2),
+            ("[commands]\ntest = \"a\"\ntest = \"b\"\n", 3),
+            (
+                "[[ci.jobs]]\nname = \"a\"\ncommand = \"b\"\npaths = [\n  \"x\",\n  oops\n]\n",
+                6,
+            ),
+        ] {
+            let found = syntax(text);
+            assert_eq!(
+                found.as_ref().map(|(at, _)| *at),
+                Some(line),
+                "{text:?}: {found:?}"
+            );
+            assert!(
+                found.is_some_and(|(_, message)| !message.is_empty()),
+                "{text:?}"
+            );
+        }
+        // Valid TOML outside what a known table reads.
         assert_eq!(
-            problem("[docs]\nproduct = docs/product.md\n"),
+            problem("[docs]\nproduct = 1.5\n"),
             Some((2, ConfigProblem::UnsupportedValue))
         );
-        assert_eq!(
-            problem("[docs]\nproduct = \"x.md\" extra\n"),
-            Some((2, ConfigProblem::TrailingText))
-        );
-        assert_eq!(
-            problem("[docs]\nproduct = \"x.md\n"),
-            Some((2, ConfigProblem::UnterminatedString))
-        );
-        assert_eq!(
-            problem("[docs]\nproduct = \"a\\qb\"\n"),
-            Some((2, ConfigProblem::InvalidEscape))
-        );
-        assert_eq!(
-            problem("[docs]\nproduct = \"\"\"x\"\"\"\n"),
-            Some((2, ConfigProblem::UnsupportedValue))
-        );
-        assert_eq!(
-            problem("[docs]\njust text\n"),
-            Some((2, ConfigProblem::ExpectedKeyValue))
-        );
-        assert_eq!(
-            problem("[docs]\na.b = \"x\"\n"),
-            Some((2, ConfigProblem::ExpectedKeyValue))
-        );
-        assert_eq!(
-            problem("[docs\nproduct = \"x\"\n"),
-            Some((1, ConfigProblem::InvalidHeader))
-        );
-        assert_eq!(
-            problem("[docs]\n[docs]\n"),
-            Some((2, ConfigProblem::DuplicateTable("docs".to_owned())))
-        );
+        for text in [
+            "[docs]\na.b = \"x\"\n",
+            "[docs]\na = { b = \"x\" }\n",
+            "[docs.a]\nb = \"x\"\n",
+        ] {
+            assert!(
+                matches!(problem(text), Some((_, ConfigProblem::NestedTable { ref table, ref key })) if table == "docs" && key == "a"),
+                "{text}"
+            );
+        }
         assert_eq!(
             problem("[[docs]]\n"),
             Some((1, ConfigProblem::NotAnArrayTable("docs".to_owned())))
+        );
+        assert_eq!(
+            problem("docs = \"x\"\n"),
+            Some((1, ConfigProblem::NotATable("docs".to_owned())))
         );
         assert_eq!(
             problem("[delivery.environments]\n"),
@@ -2124,10 +2116,6 @@ mod tests {
                 1,
                 ConfigProblem::ArrayTableRequired("delivery.environments".to_owned())
             ))
-        );
-        assert_eq!(
-            problem("[commands]\ntest = \"a\"\ntest = \"b\"\n"),
-            Some((3, ConfigProblem::DuplicateKey("test".to_owned())))
         );
         assert!(matches!(
             problem("[docs]\nprodcut = \"x.md\"\n"),
@@ -2171,7 +2159,7 @@ mod tests {
         assert_eq!(
             message.as_deref(),
             Some(
-                "yulius.toml line 2: unsupported value; use a \"quoted string\", a whole number, true/false or [\"quoted\", \"strings\"] on one line (signed or fractional numbers, multi-line strings and arrays, and inline tables are not supported)"
+                "yulius.toml line 2: unsupported value; use a \"quoted string\", a whole number, true/false or an array of \"quoted\", \"strings\" (signed or fractional numbers, dates and inline tables are not values Yulius reads here)"
             )
         );
         assert_eq!(
@@ -2514,13 +2502,24 @@ mod tests {
                 "{extra}"
             );
         }
-        for value in ["-1", "1.5", "4_0", "4x"] {
+        for value in ["-1", "1.5"] {
             assert_eq!(
                 problem(&format!("{job}cpus = {value}\n")),
                 Some((4, ConfigProblem::UnsupportedValue)),
                 "{value}"
             );
         }
+        // TOML's own: `4_0` is 40, `4x` is no value at all (SPEC-504 CFG-005).
+        assert_eq!(
+            parse_yulius_toml(&format!("{job}cpus = 4_0\n"))?.ci[0]
+                .need
+                .cpus,
+            Some(40)
+        );
+        assert!(matches!(
+            problem(&format!("{job}cpus = 4x\n")),
+            Some((4, ConfigProblem::Syntax(_)))
+        ));
         assert_eq!(
             problem("[resources.env]\nPATH = \"/x\"\n"),
             Some((
