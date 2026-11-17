@@ -506,15 +506,21 @@ pub fn keep_security_jobs(mut own: Gate, trusted: Option<&Gate>, vidoc: bool) ->
 pub const CHANGE_SUFFIX: &str = " (this change)";
 
 /// `gate` (the integration branch's) with the jobs of a change's own `yulius.toml` (`own`) that
-/// differ from all of its: the changed and the added ones, named with [`CHANGE_SUFFIX`] and
-/// keeping their key (SPEC-504 CFG-001, ADR-0360). Every job of `gate` still runs, so a change
-/// never weakens the gate that judges it, and a job it changes or adds runs before it merges, so
-/// a failing one never lands untested to judge its own repair. A job equal to one of `gate`'s
-/// (key, matrix and command) is not run twice, and none takes the key of the gate's scanning
-/// job (SPEC-217 VDP-001: the trusted scan stays the only one); past [`MAX_JOBS`] in all, the
-/// rest are left out.
+/// the change itself changed or added: those that differ from all of `gate`'s and from all of
+/// the jobs at its merge base with the integration branch (`at_base`; unknown: every own job
+/// that differs from the gate's), named with [`CHANGE_SUFFIX`] and keeping their key (SPEC-504
+/// CFG-001, ADR-0360). Every job of `gate` still runs, so a change never weakens the gate that
+/// judges it, and a job it changes or adds runs before it merges, so a failing one never lands
+/// untested to judge its own repair; a job it only carries from its base (one the integration
+/// branch changed or removed since) is not its change and does not run (review round 2). None
+/// takes the key of the gate's scanning job (SPEC-217 VDP-001: the trusted scan stays the only
+/// one), and a profile's gate (not `yulius.toml`'s) gets none. Nothing is left out for
+/// [`MAX_JOBS`]: the change's own file is bounded by it, so the run holds at most twice that.
 #[must_use]
-pub fn with_changed_jobs(mut gate: Gate, own: Vec<Job>) -> Gate {
+pub fn with_changed_jobs(mut gate: Gate, own: Vec<Job>, at_base: Option<&[Job]>) -> Gate {
+    if gate.source == GateSource::Profile {
+        return gate;
+    }
     let same = |a: &Job, b: &Job| a.key == b.key && a.matrix == b.matrix && a.command == b.command;
     let scanning: Vec<String> = gate
         .jobs
@@ -525,14 +531,14 @@ pub fn with_changed_jobs(mut gate: Gate, own: Vec<Job>) -> Gate {
     let changed: Vec<Job> = own
         .into_iter()
         .filter(|job| !gate.jobs.iter().any(|kept| same(kept, job)))
+        .filter(|job| !at_base.is_some_and(|base| base.iter().any(|old| same(old, job))))
         .filter(|job| !scanning.contains(&job.key))
         .map(|job| Job {
             name: format!("{}{CHANGE_SUFFIX}", job.name),
             ..job
         })
         .collect();
-    let room = MAX_JOBS.saturating_sub(gate.jobs.len());
-    gate.jobs.extend(changed.into_iter().take(room));
+    gate.jobs.extend(changed);
     gate
 }
 
@@ -1223,7 +1229,7 @@ mod tests {
             job("lint", "true"),
             job("added", "make more"),
         ];
-        let both = with_changed_jobs(gate.clone(), own);
+        let both = with_changed_jobs(gate.clone(), own.clone(), None);
         let names: Vec<&str> = both.jobs.iter().map(|j| j.name.as_str()).collect();
         assert_eq!(
             names,
@@ -1233,12 +1239,29 @@ mod tests {
         assert_eq!(both.jobs[2].command, "true");
         assert_eq!(both.source, GateSource::ProjectConfig);
         assert_eq!(
-            with_changed_jobs(gate.clone(), Vec::new()),
+            with_changed_jobs(gate.clone(), Vec::new(), None),
             gate,
             "no own jobs: the gate"
         );
-        let many: Vec<Job> = (0..40).map(|n| job(&format!("j{n}"), "x")).collect();
-        assert_eq!(with_changed_jobs(gate.clone(), many).jobs.len(), MAX_JOBS);
+        // What it only carries from its base is not its change (review round 2): the gate
+        // changed `lint` and removed `added` since.
+        let base = vec![job("lint", "true"), job("added", "make more")];
+        assert_eq!(with_changed_jobs(gate.clone(), own, Some(&base)), gate);
+        // Never past what its own file can hold, never dropped.
+        let many: Vec<Job> = (0..MAX_JOBS).map(|n| job(&format!("j{n}"), "x")).collect();
+        assert_eq!(
+            with_changed_jobs(gate.clone(), many, None).jobs.len(),
+            2 + MAX_JOBS
+        );
+        // A profile's gate is not `yulius.toml`'s: nothing of the file runs beside it.
+        let profile = Gate {
+            source: GateSource::Profile,
+            ..gate.clone()
+        };
+        assert_eq!(
+            with_changed_jobs(profile.clone(), vec![job("x", "y")], None),
+            profile
+        );
         // A job of its own under the trusted scan's key never runs beside it.
         let scanned = with_security_job(gate);
         let key = scanned
@@ -1246,7 +1269,7 @@ mod tests {
             .last()
             .map(|j| j.key.clone())
             .unwrap_or_default();
-        let fake = with_changed_jobs(scanned.clone(), vec![job(&key, "echo fake pass")]);
+        let fake = with_changed_jobs(scanned.clone(), vec![job(&key, "echo fake pass")], None);
         assert_eq!(fake, scanned);
     }
 

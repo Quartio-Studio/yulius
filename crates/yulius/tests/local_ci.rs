@@ -6416,10 +6416,13 @@ async fn a_run_again_tests_a_pull_request_with_the_jobs_its_first_run_had() -> T
 #[tokio::test]
 async fn a_branch_behind_is_tested_with_the_integration_branchs_jobs_of_now() -> TestResult {
     let f = fixture_with(false, |_| {
-        "[[ci.jobs]]\nname = \"plain\"\ncommand = \"echo old\"\n".to_owned()
+        "[[ci.jobs]]\nname = \"plain\"\ncommand = \"echo old\"\n\n\
+         [[ci.jobs]]\nname = \"gone\"\ncommand = \"echo gone-ran\"\n"
+            .to_owned()
     })
     .await?;
     let sha = f.push_feature("feature.txt", Some("a change that is no job's\n"))?;
+    // dev changes one job and removes the other after the pull request branched off.
     f.push_dev(
         "yulius.toml",
         Some("[[ci.jobs]]\nname = \"plain\"\ncommand = \"echo new\"\n"),
@@ -6427,6 +6430,10 @@ async fn a_branch_behind_is_tested_with_the_integration_branchs_jobs_of_now() ->
     f.h.app.ci_sync_sandbox(&f.sandbox).await?;
     f.settle().await?;
     let outputs = job_outputs(&f, &sha).await?;
+    let names: Vec<&str> = outputs.iter().map(|(n, _)| n.as_str()).collect();
+    // Exactly dev's jobs of now: none of the ones it only carries from its base runs beside
+    // them as its own change (SPEC-504 review round 2).
+    assert_eq!(names, ["plain"], "{outputs:?}");
     let plain = output_of(&outputs, "plain")?;
     assert!(plain.contains("new") && !plain.contains("old"), "{plain}");
     Ok(())

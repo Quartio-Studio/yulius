@@ -2170,10 +2170,21 @@ impl App {
         if let Some(gate) = &view.gate {
             // Its own changed and added jobs beside the gate's, never instead (CFG-001); an own
             // file that cannot be read fails the run by the configuration check.
-            return Some(match self.ci_jobs_at(&repo, head).await {
-                Ok(own) => dom::with_changed_jobs(gate.clone(), own),
-                Err(_) => gate.clone(),
-            });
+            let Ok(own) = self.ci_jobs_at(&repo, head).await else {
+                return Some(gate.clone());
+            };
+            // What the change itself changed: against its merge base with the integration
+            // branch (review round 2; unknown: against the gate alone).
+            let integration = format!("origin/{}", delivery_profile(sandbox).integration_branch);
+            let at_base = match self.deps.git.merge_base(&repo, head, &integration).await {
+                Ok(Some(base)) => self.ci_jobs_at(&repo, &base).await.ok(),
+                _ => None,
+            };
+            return Some(dom::with_changed_jobs(
+                gate.clone(),
+                own,
+                at_base.as_deref(),
+            ));
         }
         // The last valid gate could not be looked for (Git failed): no verdict until it can,
         // never the commit's own jobs in its place (review round 1).
