@@ -1,11 +1,11 @@
 ---
 yulius-task: 6287c480-43ac-42a1-8b09-ab2af5830a44
-status: in-progress
+status: done
 ---
 
 # SPEC-504: CI leaves nothing behind, and a bad yulius.toml never blocks CI
 
-Status: in-progress
+Status: done
 Date: 2026-11-17
 Owner: Yulius task #486
 Scope authorization: task #486, the person's goal of 2026-11-17 after two production incidents of
@@ -110,7 +110,8 @@ ADR-0344), SPEC-497 HBA-003 (CI waits for Docker networks), SPEC-053/SPEC-268 (t
 - [x] Runs on the last valid gate say so, and a fix is never refused for want of CI (CFG-006)
 - [x] ADR, architecture and changes for pull request 2
 - [x] Review round 1 of pull request 2 answered
-- [ ] Pull request 2 reviewed and approved
+- [x] Pull request 2 reviewed and approved
+- [x] The reuse rule's need and `exclusive` conditions are tested (follow-up to review round 5)
 
 ## Acceptance criteria
 
@@ -506,3 +507,23 @@ with `<key>.change`. It found the following:
 5. *Nit: the leftovers test missed the reported case.* `unused_ci_checkouts_go_while_no_run_runs`
    now has `lint` run recently without a twin, and asserts that `lint.change` is stale.
    Mutation check: making `checkout_job_key` strip `.change` again fails it.
+
+### Pull request 2, review round 5 (approve)
+
+The reviewer (Opus 5.5) approved `5df5e64d9`, on which Yulius CI run `23f964f2` passed (quality,
+both test shards and e2e; security skipped because the instance's Vidoc switch is off). It
+confirmed every round-4 answer and found no regression in the shared `ran_as` lookup:
+- both callers of the reuse code take the branch path;
+- a run's job records copy need, time limit and `exclusive` from the configuration, and the
+  store keeps them as they are.
+
+`delivery_merge` merged pull request #1392 into `dev` at that head (`719bb8967`).
+
+Findings:
+- *Nit, own code: the need and `exclusive` conditions of `ran_as` were untested.* Follow-up
+  `ci::ran_as_tests::a_record_ran_a_job_only_with_all_of_its_definition` changes one field at a
+  time. Mutation checks: dropping the need or the `exclusive` condition fails it.
+- *Nit, older than round 4 (from round 2): a change to only a job's `paths` or `secrets` makes a
+  twin with the same fields `ran_as` compares.* Both gate jobs then copy the first record's
+  verdict. The reviewer asked for no action: only the shown state could differ, and a branch
+  rejects a source that skipped a `paths` job anyway.
