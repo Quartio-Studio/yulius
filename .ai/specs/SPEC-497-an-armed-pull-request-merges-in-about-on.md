@@ -178,7 +178,9 @@ mode.
 - [x] Slice C: a failed member leaves without cancelling the candidate
 - [x] Slice C: a passed candidate merges while own runs go
 - [x] Slice C: derived-file conflicts handled without a wasted cycle
-- [ ] Slice C: dissolve reasons shown; documents, ADR and review
+- [x] Slice C: dissolve reasons shown; documents and ADR
+- [x] Slice C: review round 1 answered
+- [x] Slice C: review round 2 answered
 - [ ] Slice D: sharded jobs
 - [ ] Slice D: a candidate reuses its members' builds; review
 - [ ] Slice E: numbers before and after, quartio-v2's part told
@@ -707,8 +709,9 @@ mode.
     `merge_train::a_failed_own_run_beats_a_passed_candidate` (#2's own run held, the candidate
     passes, then #2's run fails: #2 is not merged, `member_failed`, its armed merge ends, #1
     merges on a candidate formed again). The failure is now read at each pass's start and again
-    before each member's merge (`own_run_failed`); undoing both reads fails the test, undoing
-    only the second does not (no test times a failure between them; ADR-0357 says so).
+    before each member's merge (`own_run_failed`); undoing both reads fails the test; undoing
+    only the second fails it 1 time in 40 (the reviewer's count: which read catches it depends
+    on the background pass a candidate's end starts; no test times it, ADR-0357 says so).
   - Major: nothing held the reuse guard for candidates. `Project::Paths` (a job with `paths =
     ["never/**"]`) and `a_run_that_skipped_a_paths_job_is_no_source_for_a_candidate`: the
     candidate formed again gets a run of its own. Undone (`Branch` only), it fails.
@@ -723,6 +726,10 @@ mode.
   - Nits: stale texts; the dead `merging` arm in `train_run_ended`; "the own run of #N … ended
     failed" counts as `member_failed`; the product summary.
   - Pre-existing: a bisected candidate's second half reruns the red tree: #1384.
+- Review round 2 of slice C (Fable 5.2, head eebe8f366) approved; its CI run passed (quality,
+  e2e; security skipped, Vidoc 401). Its minor (a deterministic test of the read before each
+  merge, with a pause point) and two nits (an assertion that races the background pass, one long
+  ADR line) go into slice D's pull request, not after the approval.
 
 ### Slice A3: the operator's amendment to the admission (its own pull request, first)
 
