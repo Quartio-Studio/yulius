@@ -58,13 +58,16 @@ merged result, and a failing test is never run again until it passes.
   generated list, a table of shipped files, `Cargo.lock`). When the queue forms a candidate,
   an armed pull request that changes a file under one of those globs, which an earlier member
   in arm order also changes, is held out (`merge_queue::held_apart`). It waits for the next
-  candidate, built on top of the first's merge, so their combination is never tested together
-  and no candidate run fails on it. The candidate's audit entry names who was held apart and
+  candidate, built on top of the first's merge: no other member loses a run to their
+  combination, and a textual conflict is told without a run. The held one's own candidate still
+  tests the combination and can fail on it (a file to regenerate that merges cleanly). The candidate's audit entry names who was held apart and
   why. A pull request whose changed files cannot be told is not held. Serialising, not redoing
   the deterministic step: redoing it means running the project's formatter or generator where
   Yulius builds candidates (outside the sandbox) and landing a commit the members' trees do not
   predict; holding one back costs that pull request one candidate's wait, and only when both
-  touch the same derived files.
+  touch the same derived files. Its wait note stays the generic "next candidate"; the reason is
+  in the formed candidate's audit entry. Holding happens after the 8 oldest are taken, so a
+  candidate with held ones has fewer members.
 - **How members combine is told without a candidate of its own** (MQW-003, for what no `apart`
   names). A red candidate whose
   bisection leaves out exactly one member (a candidate of two or three) remembers that member and

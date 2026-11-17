@@ -118,9 +118,6 @@ pub struct QueueNumbers {
 /// Most dissolved candidates listed with their reason.
 pub const RECENT_DISSOLVED: usize = 10;
 
-/// The audit action of an armed pull request held out of a candidate for a derived file.
-pub const HELD_APART: &str = "delivery.train.held_apart";
-
 /// A pull request held out of the next merge candidate (SPEC-497 MQW-003).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HeldApart {
@@ -136,7 +133,8 @@ pub struct HeldApart {
 /// go into one merge candidate when `apart` names derived files (SPEC-497 MQW-003: generated
 /// lists, formatted tables): a pull request that changes a file under a pattern an earlier one
 /// in the candidate also changes is held out, and waits for the next candidate on top of the
-/// first's merge. Their combination is then never tested together, so no candidate fails on it.
+/// first's merge. No other member loses a run to their combination; the held one's own candidate
+/// still tests it on top of the first.
 ///
 /// # Examples
 /// ```

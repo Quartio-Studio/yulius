@@ -11,7 +11,9 @@
 //! or once it passed, and only when it is behind its base: a green one that is up to date merges
 //! alone, at once. A member whose own run fails leaves (MQC-002); one whose own run errored or
 //! was cancelled stays, decided by the candidate (SPEC-497 MQW-001). A candidate formed again on
-//! the same base with the same members reuses the passed run of its tree.
+//! the same base with the same members reuses the passed run of its tree. A pull request that
+//! changes derived files an earlier member also changes (`[merge_queue] apart`) waits for the
+//! next candidate (MQW-003).
 //!
 //! A train (1 to [`MAX_MEMBERS`] members, in arm order) is built in Yulius's clone, exactly as the
 //! merges will happen: the integration branch is merged into each armed head in arm order (the

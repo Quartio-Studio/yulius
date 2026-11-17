@@ -4,8 +4,8 @@
 //! pre-parsed map, so the domain stays dependency-free and every problem carries a line
 //! number for the agent prompt. Supported:
 //!
-//! - `[docs]`, `[commands]`, `[delivery]`, `[disk]`, `[branch_policy]`, `[resources.env]`,
-//!   `[cd.<name>]` tables, `[[delivery.environments]]` and `[[ci.jobs]]` entries;
+//! - `[docs]`, `[commands]`, `[delivery]`, `[disk]`, `[review]`, `[merge_queue]`,
+//!   `[branch_policy]`, `[resources.env]`, `[cd.<name>]` tables, `[[delivery.environments]]` and `[[ci.jobs]]` entries;
 //! - `key = "basic string"` (escapes `\" \\ \n \t \r \b \f \uXXXX \UXXXXXXXX`),
 //!   `key = 'literal string'`, `key = true|false`, whole numbers (`cpus = 6`) and
 //!   `environments = []`;
@@ -2600,6 +2600,34 @@ mod tests {
         ] {
             assert!(parse_yulius_toml_review(bad).is_err(), "{bad}");
             assert!(parse_yulius_toml(bad).is_err(), "{bad}");
+        }
+        Ok(())
+    }
+
+    /// SPEC-497 MQW-003 (review round 1): `[merge_queue] apart` takes 1 to 50 repository globs,
+    /// as a list or a string; anything else is refused by its own parse and the whole file's.
+    #[test]
+    fn the_merge_queue_table_names_derived_files() -> TestResult {
+        assert!(parse_yulius_toml_merge_queue("")?.is_empty());
+        let apart = parse_yulius_toml_merge_queue("[merge_queue]\napart = \"gen/ Cargo.lock\"\n")?;
+        let names: Vec<&str> = apart.iter().map(Pattern::as_str).collect();
+        assert_eq!(names, ["gen/**", "Cargo.lock"]);
+        parse_yulius_toml("[merge_queue]\napart = [\"gen/\"]\n")?;
+        let many = (0..51)
+            .map(|n| format!("\"d{n}/\""))
+            .collect::<Vec<_>>()
+            .join(", ");
+        for bad in [
+            "[merge_queue]\napart = []\n".to_owned(),
+            format!("[merge_queue]\napart = [{many}]\n"),
+            "[merge_queue]\napart = [\"/etc\"]\n".to_owned(),
+            "[merge_queue]\napart = [\"a/../b\"]\n".to_owned(),
+            "[merge_queue]\napart = 3\n".to_owned(),
+            "[merge_queue]\nserial = [\"a\"]\n".to_owned(),
+            "[[merge_queue]]\napart = [\"a\"]\n".to_owned(),
+        ] {
+            assert!(parse_yulius_toml_merge_queue(&bad).is_err(), "{bad}");
+            assert!(parse_yulius_toml(&bad).is_err(), "{bad}");
         }
         Ok(())
     }
