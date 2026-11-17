@@ -82,6 +82,7 @@ Python 3.11+, rustup, Git and a platform C linker are prerequisites.
 ```sh
 python3 scripts/bootstrap.py
 scripts/dev doctor
+scripts/dev quick
 scripts/dev check
 scripts/dev lint
 scripts/dev macos
@@ -131,6 +132,12 @@ as `yulius security-scan`.
 
 Web UI changes: also run the end-to-end suite, `cd e2e && npm ci --ignore-scripts && npx e2e run`
 (Node 24.8+, test-only; see [e2e/README.md](e2e/README.md)).
+
+Before each commit you publish, run the project's quick checks: its format check and the tests that
+read the whole repository (contracts, generated lists, palettes), which a change touches whenever it
+changes a file they read. They take seconds, and each one that fails in CI costs a whole run. Here:
+`scripts/dev quick` (the repository contracts and `cargo fmt --check`, about 20 s); `ci` and
+`checks` run it first.
 
 `scripts/dev` selects the pinned Rust even if Homebrew Cargo is first in PATH.
 The `yulius` crate's integration tests are one binary (ADR-0028): run one file's tests with

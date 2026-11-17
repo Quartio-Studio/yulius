@@ -144,14 +144,18 @@ product project's 21 jobs pinned to 3 CPUs are its `yulius.toml`.
   the Evidence.
 - **FST-006** (C6) This repository has one quick command (`scripts/dev quick`: the format check
   and the repository contracts, about 20 s) and the CI `quality` job runs it first, so such a
-  failure ends the run in seconds. A project names its quick command as `quick` in `yulius.toml`
-  `[commands]`; the briefing and `om-check-and-commit` send the author to it before each commit
-  that will be published.
+  failure ends the run in seconds. `om-check-and-commit` sends every project's author to its quick
+  checks before each commit that will be published, `infra-bootstrap` asks a project's gate to run
+  them first and name them in AGENTS.md, and this repository's AGENTS.md names its command. (A
+  `[commands] quick` key in `yulius.toml` waits: the running instance's parser refuses an unknown
+  key, ADR-0360.)
 - **FST-007** (numbers) The Review card and `GET /api/analytics/reviews` give, for the pull
   requests merged in the window: re-reviews after a request for changes and how many asked again,
   and rounds after an approval (re-approvals) and how many asked for changes.
-- **FST-008** (C7) The `quality` job is split where only CPUs decide its length, measured before
-  and after on this repository's own CI.
+- **FST-008** (C7) The `quality` job takes less time for no more CPU: the repository checker's
+  Python tests (68 s, 3 CPU-seconds of user time and 7 with the system's, waiting on local servers and timers) run beside the Rust
+  gates once `doctor` and `quick` passed. Measured before and after; no CPU limit that protects the
+  host is raised, and no job, checkout or build is added.
 - **FST-009** Candidates 8 to 11, and every rule of the request's "What must stay", are not
   changed by this task; they are brought to the person with their numbers.
 
@@ -164,12 +168,11 @@ product project's 21 jobs pinned to 3 CPUs are its `yulius.toml`.
 - [x] Mutation runs use the session's CPUs, measured on a real change
 - [x] Mutation testing runs beside the first review, then on each fix's lines
 - [x] Review of the mutation rules (pull request 2) approved
-- [ ] One quick command runs first in CI and before each published commit
-- [ ] Review of the quick checks (pull request 3) approved
+- [x] One quick command runs first in CI and before each published commit
+- [x] The checker's tests run beside the Rust gates, for no more CPU
+- [x] Review of the quick checks and the gate order (pull request 3) approved
 - [ ] The Review card counts re-reviews that ask again and rounds that re-approve
 - [ ] Review of the review numbers (pull request 4) approved
-- [ ] The quality job is split where only CPUs decide its length
-- [ ] Review of the CI split (pull request 5) approved
 - [ ] Companion requests for quartio-v2, product and VistulaValley handed to the person
 - [ ] The report and the decisions on candidates 8 to 11 brought to the person
 
@@ -187,12 +190,13 @@ product project's 21 jobs pinned to 3 CPUs are its `yulius.toml`.
   260 run 7, within a jobserver of 22 tasks; a 4-CPU budget gets 2 and a small memory 1; `--jobs`
   still decides; with no budget it keeps 2. The measurement is in the Evidence.
 - **AC-4** (FST-006) `scripts/dev quick` fails on a misformatted Rust file and on a broken
-  repository contract, passes on a clean tree, and the `quality` job's first stage is it.
+  repository contract, passes on a clean tree, and is the `quality` job's first stage after
+  `doctor`; a test holds the order and the rule's sentence.
 - **AC-5** (FST-007) Over fixture rounds the numbers count a round 2 after a round 1 that asked as
   a re-review after changes (asking again when it asked), and a round after an approving one as a
   re-approval; the card shows both.
-- **AC-6** (FST-008) The split's before and after run times are in the Evidence; no CPU limit that
-  protects the host is raised.
+- **AC-6** (FST-008) The checker's tests run at the same time as the Rust gates (a test that fails
+  when they run in a row); the stage times before and after are in the Evidence.
 
 ## Test plan
 
@@ -214,6 +218,8 @@ product project's 21 jobs pinned to 3 CPUs are its `yulius.toml`.
   that boundary. A Stop-hook gate that runs the quick command before a turn's push is possible
   inside containment but adds a hook in every session's turn end; first the named command and its
   rule, then the number of such CI failures a week later decides whether the gate is needed.
+- **ADR-0363** records FST-006 and FST-008: the quick checks first, the checker's tests beside the
+  Rust gates, no `[commands] quick` key yet.
 - **ADR-0362** records FST-001 to FST-003: what decides a round (the code, not CI; the count, not
   the message).
 - Open: how many of the 20 % re-approving rounds followed one of the messages of C4 (asked of
@@ -289,4 +295,46 @@ the run's start (baseline included) until the n-th mutant ended, read from each 
   five minors), fixed in 864f757b7; round 2 (Fable 5.2) approved 864f757b7 with five minors and
   four nits (test strength of the jobs rule, the caps through the real tool, the jobserver's
   wording, one percentage, FST-005 and AC-3), fixed after it in test, document and comment lines.
+
+### Pull request 3 (FST-006, FST-008)
+
+- `scripts/dev quick` on a clean tree: exit 0 in 16.1 s; with `pub fn  x() {}` appended to a Rust
+  file: exit 1 (`cargo fmt --all -- --check failed`); with a `<<<<<<<` line in `docs/product.md`:
+  exit 1 ("unresolved merge conflict marker").
+- `quality`'s stages (`YULIUS_CI=1 scripts/dev checks` timed by stage line, `CARGO_BUILD_JOBS`,
+  `NEXTEST_TEST_THREADS` and `YULIUS_CPUS` at CI's 11), after a one-line change in
+  `yulius-domain`:
+
+| Order | Load | quick | check | lint | macos | deps | docs | Total |
+|---|---|---|---|---|---|---|---|---|
+| Before (dev) | 44 to 64 | — | 88.4 (contracts, Python tests, `cargo check` in a row) | 23.0 | 18.5 | 1.1 | 6.5 | 137.7 s |
+| Quick first only | 68 to 95 | 10.1 | 69.6 (Python tests beside `cargo check`) | 22.9 | 24.3 | 1.3 | 10.4 | 138.8 s |
+| Quick first, checker's tests beside every Rust gate | 38 to 132 | 11.6 | 12.7 | 17.7 | 46.7 | 2.1 | 16.8 | 108.0 s |
+| The same, again | 132 to 158 | 12.4 | 16.0 | 34.7 | 31.4 | 1.5 | 17.8 | 114.0 s |
+
+- The Python tests take 3.4 CPU-seconds of their 68 s (`time python3 -m unittest discover -s
+  scripts -p 'test_*.py'`: real 1m7.7s, user 3.4 s), so running them beside adds no CPU on a busy
+  host; beside `cargo check` alone saved nothing, since after a small change `cargo check` takes
+  about 9 s.
+- `cargo nextest run -p xtask`: 17 passed (`the_quick_checks_run_first`,
+  `beside_runs_both_steps_at_once` among them); `beside_runs_both_steps_at_once` fails after 30 s
+  when `beside` runs its steps in a row (checked by hand).
+- Review round 1 (Fable 5.2) asked for changes: the gate's merged exit code was held by no test
+  (major); the checker's output came mid-job, its command line only at its end, and the open stage
+  took its wait (minors); four nits. Fixed test-first: `tools/xtask/tests/cli.rs` runs `checks`,
+  `ci`, `check` and `lint` against recording stubs of `cargo` and `python`
+  (`the_gates_run_each_command_once_with_quick_first`, `a_failure_fails_the_gate_and_says_where`);
+  the second failed before the fix (the output came mid-job) and fails when the gate drops the
+  tests' result (checked by hand). `cargo nextest run -p xtask`: 19 passed.
+- PR #1397's run `805b9b69` failed in `merge_train::a_member_whose_own_run_fails_leaves_the_candidate`,
+  outside this change (it touches `tools/xtask`, documents and a skills test). Yulius quarantined
+  it as flaky with issue #1398 (failed on two pull requests); it passed here 20 of 20 alone and 5
+  of 5 with its file at 64 threads, load 81 to 118.
+- Review round 2 (Fable 5.2) approved 571eff15f with three minors and a nit, fixed after it: the
+  `checker-tests` stage opens when the Rust gates end (it opened only after the join, so the last
+  Rust gate took the wait); the failure tests read the last line, and a case where Clippy and the
+  checker's tests both fail names Clippy; `the_checkers_tests_run_beside_the_build` makes the
+  `cargo check` and checker-test stubs wait for each other (10 s at most), and fails when `gates`
+  runs them in a row (checked by hand); the stubs' directory is removed. `cargo nextest run -p
+  xtask`: 20 passed.
 
