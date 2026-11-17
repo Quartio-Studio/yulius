@@ -2950,6 +2950,10 @@ struct Grouping {
     calls: std::sync::Mutex<Vec<(&'static str, String)>>,
     /// Its removal never ends (an engine that never answers).
     hangs: bool,
+    /// It makes no job group (`ci_job_started` answers `None`).
+    no_group: bool,
+    /// Its join has no CI group (`ci_cgroup` is `None`).
+    no_ci_group: bool,
 }
 
 impl Grouping {
@@ -2967,7 +2971,7 @@ impl SandboxIsolation for Grouping {
             net_ns: 2,
             mnt_ns: 4,
             cgroup: Some("/cg/s1/agents".into()),
-            ci_cgroup: Some("/cg/s1/ci".into()),
+            ci_cgroup: (!self.no_ci_group).then(|| "/cg/s1/ci".into()),
             system_root: "/fake/root".into(),
             hostname: "s1".into(),
             exec_shim: None,
@@ -2987,7 +2991,7 @@ impl SandboxIsolation for Grouping {
         if let Ok(mut calls) = self.calls.lock() {
             calls.push(("started", job.to_owned()));
         }
-        Some(format!("/cg/s1/ci/ci-job-{job}").into())
+        (!self.no_group).then(|| format!("/cg/s1/ci/ci-job-{job}").into())
     }
     async fn ci_job_ended(&self, sandbox: &SandboxId, job: &str) {
         assert_eq!(sandbox.as_str(), "s1");
@@ -3092,6 +3096,94 @@ async fn every_ci_job_is_grouped_and_its_end_told_whatever_the_outcome() -> Test
     for outcome in ["Passed", "Failed", "Cancelled", "Error"] {
         assert!(outcomes.contains(outcome), "no {outcome} job: {outcomes:?}");
     }
+    Ok(())
+}
+
+/// The cgroups contained CI jobs were launched to join, with `grouping`, and the jobs' ids.
+async fn launched_groups(
+    grouping: Grouping,
+) -> BoxResult<(Vec<PathBuf>, Vec<String>, Vec<(&'static str, String)>)> {
+    use yulius_app::ports::session::Containment;
+    let recording = Arc::new(crate::cd::Recording {
+        inner: PtySessionHost::new(PathBuf::from(env!("CARGO_BIN_EXE_yulius"))),
+        seen: std::sync::Mutex::new(Vec::new()),
+    });
+    let f = fixture_hosted(
+        true,
+        |_| "[[ci.jobs]]\nname = \"check\"\ncommand = \"true\"\n".to_owned(),
+        Some(recording.clone()),
+    )
+    .await?;
+    let grouping = Arc::new(grouping);
+    assert!(f.h.app.set_isolation(grouping.clone()));
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    let seen = recording.seen.lock().map(|s| s.clone()).unwrap_or_default();
+    let mut groups = Vec::new();
+    for containment in seen {
+        let Containment::Bubblewrap {
+            join: Some(join), ..
+        } = containment
+        else {
+            return Err(format!("a joined containment: {containment:?}").into());
+        };
+        groups.push(join.cgroup.ok_or("no cgroup")?);
+    }
+    let mut jobs = Vec::new();
+    for run in f.h.store.ci_runs(&f.sandbox.id, 10).await? {
+        jobs.extend(
+            f.h.store
+                .ci_jobs(&run.id, false)
+                .await?
+                .into_iter()
+                .map(|j| j.id),
+        );
+    }
+    Ok((groups, jobs, grouping.calls()))
+}
+
+/// SPEC-504 CLB-001 (review round 1, major): a contained CI job is launched to join its own
+/// group, `ci/ci-job-<job id>`, on the path production takes (the executor's join, its
+/// containment and the CI join); without a job group (none made, or no CI group) it joins the
+/// CI group, or the sandbox's group, as before.
+#[tokio::test]
+async fn a_contained_ci_job_is_launched_in_its_own_group() -> TestResult {
+    let (groups, jobs, _) = launched_groups(Grouping::default()).await?;
+    assert_eq!(jobs.len(), 2, "dev's run and the pull request's: {jobs:?}");
+    let mut want: Vec<PathBuf> = jobs
+        .iter()
+        .map(|job| PathBuf::from(format!("/cg/s1/ci/ci-job-{job}")))
+        .collect();
+    let mut groups = groups;
+    groups.sort();
+    want.sort();
+    assert_eq!(groups, want);
+    let (groups, _, calls) = launched_groups(Grouping {
+        no_group: true,
+        ..Grouping::default()
+    })
+    .await?;
+    assert_eq!(
+        groups,
+        [PathBuf::from("/cg/s1/ci"), PathBuf::from("/cg/s1/ci")]
+    );
+    assert!(calls.iter().any(|(c, _)| *c == "started"));
+    let (groups, _, calls) = launched_groups(Grouping {
+        no_ci_group: true,
+        ..Grouping::default()
+    })
+    .await?;
+    assert_eq!(
+        groups,
+        [
+            PathBuf::from("/cg/s1/agents"),
+            PathBuf::from("/cg/s1/agents")
+        ]
+    );
+    assert!(
+        calls.iter().all(|(c, _)| *c != "started"),
+        "no job group without a CI group: {calls:?}"
+    );
     Ok(())
 }
 

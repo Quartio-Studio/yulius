@@ -716,7 +716,14 @@ async fn ci_job_phase(
         (&joined.join, "agent.sh", "agent.txt"),
     ] {
         let mut run = spawn_run(exe, join, request, probe, script)?;
-        let _ = wait_line(&probe.join(out), "done", PULL_WAIT).await;
+        // A run that never says done (a stuck engine) is killed, so the doctor ends (review
+        // round 1).
+        if wait_line(&probe.join(out), "done", PULL_WAIT)
+            .await
+            .is_err()
+        {
+            let _ = run.kill();
+        }
         let _ = run.wait();
     }
     after.release(&request.id).await;
