@@ -202,17 +202,21 @@ Six pull requests, each merged into `dev` on green before the next begins.
   the turn the CLI opens itself after a background command is the agent's work, as Claude Code's
   wake-ups are, so it neither undoes an achieved goal nor counts as a prompt.
 - **Which Stop is a turn's end.** A Stop after the model API failed (`terminationReason`
-  `ERROR`) asks Yulius nothing, as Claude Code runs no Stop hook then; the transcript's limit
-  steps move the task. A Stop with `fullyIdle` false is a turn's end like Claude Code's with
-  background agents still running: the CLI's own wake-up later is agent work.
+  `ERROR`) reaches Yulius as the turn's end, but no answer continues it (agy would only try the
+  failing model again); the transcript's limit steps move the task. A Stop after a prompt Yulius
+  refused (`TERMINAL_CUSTOM_HOOK`) asks nothing, so nothing continues the refused prompt; its
+  `USER_INPUT` step stays in the conversation, as agy wrote it before the hook ran. A Stop with
+  `fullyIdle` false is a turn's end like Claude Code's with background agents still running: the
+  CLI's own wake-up later is agent work.
 - **A resume gets no new briefing.** The CLI fires no `SessionStart` on `--conversation`; the
   conversation keeps the briefing its start injected, and Yulius knows the session it resumed.
 - **MCP servers with a bearer token are left out** of Antigravity runs (the CLI expands no
   variable in a header, and the token would be written to a file); slice C1's run notice names
   the servers left out.
 - **Limits.** A plan's quota text, or a 429 naming the quota it used up (`quotaId`, not a
-  per-minute one), is a limit of the subscription at once: the CLI stops the turn at these
-  itself. A 429 naming no quota is the model's capacity, which the CLI retries.
+  per-minute one), is a limit of the subscription at its first attempt (the CLI may try a few
+  times more, each attempt the same limit). A 429 naming no quota is the model's capacity,
+  which the CLI retries.
 - **For slice C1** (from the review of slice A): a step's `created_at` has whole seconds while
   the supervisor compares milliseconds, so a prompt in the same second as a Stop must not read
   as the ended turn's; an Esc ends a turn with no Stop hook and no transcript line.
@@ -282,3 +286,13 @@ Six pull requests, each merged into `dev` on green before the next begins.
   9. Bearer-token MCP servers left out silently: recorded under Decisions and in the ADR; slice
      C1's run notice names them.
   10. The window test: an `until` case added, its comment corrected.
+- **Review round 2** (head 2f6939eb7, request changes; no blocker, nothing pre-existing):
+  1. A prompt Yulius refused was continued by a Stop answer: agy ends such a turn with a Stop of
+     its own (`TERMINAL_CUSTOM_HOOK`), which now asks Yulius nothing
+     (`a_refused_antigravity_prompt_is_never_continued`).
+  2. A failed turn that is no quota went unheard: an `ERROR` Stop reaches Yulius again but is
+     never continued (`an_antigravity_turn_ended_by_an_error_is_never_continued`).
+  3. The limit texts' comment and the Limits decision say the CLI may try again.
+- CI run 24ec8826 on 2f6939eb7 failed on
+  `merge_train::a_member_whose_own_run_fails_leaves_the_candidate`, which this change does not
+  touch; it failed on #1397 too and Yulius quarantined it as flaky (issue #1398).

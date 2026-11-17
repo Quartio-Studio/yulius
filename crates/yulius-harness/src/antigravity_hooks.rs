@@ -13,8 +13,9 @@
 //!   prompt still in `lastUserInput`), ask nothing.
 //! - `Stop` → `Stop` (`continuationActive` as `stop_hook_active`); a block becomes
 //!   `{"decision":"continue"}`. A turn the model API ended with an error (`terminationReason`
-//!   `ERROR`) asks nothing, as Claude Code runs no Stop hook then; its limit is read from the
-//!   transcript.
+//!   `ERROR`) is sent as its end, but never continued: agy would only try the failing model
+//!   again. A turn a refused prompt ended (`TERMINAL_CUSTOM_HOOK`) asks nothing, so the refused
+//!   prompt is never continued (Claude Code runs no turn for a refused prompt).
 //! - `PreToolUse` of `run_command` → Claude Code's `Bash` for the guard, checked in the sandbox.
 //!   The CLI denies a tool whose hook prints nothing, so every other outcome is `allow`.
 //!
@@ -154,6 +155,11 @@ fn answer(
             Err(_) => return go_on(event),
         }
     };
+    // A turn the model API failed ends: Yulius hears of it, but no answer makes agy try the
+    // failing model again.
+    if payload.get("terminationReason").and_then(Value::as_str) == Some("ERROR") {
+        return go_on(event);
+    }
     from_claude(event, claude_event, &reply)
 }
 
@@ -173,7 +179,11 @@ fn to_claude(
     let claude_event = match event {
         "SessionStart" => "SessionStart",
         "PreInvocation" if opens_a_typed_turn(payload) => "UserPromptSubmit",
-        "Stop" if payload.get("terminationReason").and_then(Value::as_str) != Some("ERROR") => {
+        // A turn a refused prompt ended: Yulius ended it itself.
+        "Stop"
+            if payload.get("terminationReason").and_then(Value::as_str)
+                != Some("TERMINAL_CUSTOM_HOOK") =>
+        {
             "Stop"
         }
         "PreToolUse" => "PreToolUse",

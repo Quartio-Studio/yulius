@@ -1075,15 +1075,44 @@ fn an_antigravity_wake_up_is_no_prompt() -> TestResult {
 }
 
 /// SPEC-505 AGY-006: a turn the model API ended with an error (agy's Stop with
-/// `terminationReason` `ERROR`, after its retries of a quota) is no turn Yulius answers: like
-/// Claude Code's, whose Stop hook does not run then. Its limit is read from the transcript.
+/// `terminationReason` `ERROR`, after its retries) reaches Yulius as the turn's end, but no
+/// answer continues it: agy would only try the failing model again.
 #[test]
-fn an_antigravity_turn_ended_by_an_error_is_no_stop() -> TestResult {
+fn an_antigravity_turn_ended_by_an_error_is_never_continued() -> TestResult {
+    let (url, server) = serve_once(ok_response(
+        br#"{"decision":"block","reason":"Run the gate"}"#,
+    ))?;
+    let mut output = Vec::new();
+    let payload = agy_payload(
+        "Stop",
+        serde_json::json!({"terminationReason": "ERROR", "error": "Error 503 UNAVAILABLE", "continuationActive": false}),
+    );
+    run_hook(
+        "antigravity",
+        "Stop",
+        &mut &payload[..],
+        &mut output,
+        &env_with(url, Some("task-token-SYNTHETIC")),
+    );
+    assert_eq!(json_out(&output)?, serde_json::json!({}));
+    let request = join(server)?;
+    assert_eq!(
+        request.line.trim_end(),
+        "POST /hooks/antigravity/Stop HTTP/1.1"
+    );
+    Ok(())
+}
+
+/// SPEC-505 AGY-006: a prompt Yulius refused ends agy's turn with a Stop of its own
+/// (`TERMINAL_CUSTOM_HOOK`); Yulius is not asked about it, so nothing continues the refused
+/// prompt (Claude Code runs no turn for a refused prompt).
+#[test]
+fn a_refused_antigravity_prompt_is_never_continued() -> TestResult {
     let (url, listener) = untouched_listener()?;
     let mut output = Vec::new();
     let payload = agy_payload(
         "Stop",
-        serde_json::json!({"terminationReason": "ERROR", "error": "Error 429 RESOURCE_EXHAUSTED", "continuationActive": false}),
+        serde_json::json!({"terminationReason": "TERMINAL_CUSTOM_HOOK", "continuationActive": false}),
     );
     run_hook(
         "antigravity",

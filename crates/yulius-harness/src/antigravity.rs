@@ -19,7 +19,7 @@ use crate::observe::Observed;
 
 /// Texts of an error step that a plan's quota, a spend cap or a prepaid balance wrote: the
 /// subscription is used up (lower-case; the CLI's own words, from its 1.5.10 release notes and
-/// the Gemini API). The CLI stops the turn at these at once (1.5.10 release notes).
+/// the Gemini API). The CLI may try a few times more; each attempt's step is the same limit.
 const LIMIT_TEXTS: [&str; 4] = [
     "quota reached",
     "exceeded your current quota",
