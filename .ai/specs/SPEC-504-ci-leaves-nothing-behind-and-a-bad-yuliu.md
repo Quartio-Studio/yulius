@@ -260,6 +260,11 @@ runs), so the security scan is **unrun**, not passed. Each finding was fixed tes
     an agent uses goes with its creator, anonymous volumes stay, a container whose image cannot
     be read stays.
 
+Mutation testing (`scripts/dev mutants` on the answered head, after merging dev at
+`dff3c34ae`): `mutants: 316 listed, 129 caught, 0 missed, 0 timed out, 12 unviable, 175 not
+reached (bound 30 min, took 1801 s)`. Nothing that ran survived; the 175 not reached are beyond
+the 30-minute bound (ADR-0347).
+
 Nits: a lowercase `labels` key is the one labelled; an unlabellable create passes byte for byte
 wherever its `Content-Length` is; the gate takes its caller when it is made
 (`Gate::telling_jobs`); every sandbox's emptied job groups are swept, with or without a serving
