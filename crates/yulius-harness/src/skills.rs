@@ -349,7 +349,7 @@ fn hash_installed(
                     return Ok(false);
                 }
                 hash_name(hasher, b'f', entry.as_bytes());
-                hasher.update(file_mode(u32::from(stat.st_mode)).to_le_bytes());
+                hasher.update(file_mode(stat.st_mode).to_le_bytes());
                 hash_content(hasher, fs::File::from(fd), MAX_SKILL_BYTES)?;
             }
             // A link, a FIFO, a socket or a device: never installed, so the copy differs.
@@ -361,9 +361,9 @@ fn hash_installed(
     Ok(true)
 }
 
-/// The permission bits a copy keeps of its source's mode.
-fn file_mode(mode: u32) -> u32 {
-    mode & 0o777
+/// The permission bits a copy keeps of its source's mode (`mode_t` is 16 bits on macOS).
+fn file_mode(mode: impl Into<u32>) -> u32 {
+    mode.into() & 0o777
 }
 
 fn hash_name(hasher: &mut Sha256, tag: u8, name: &[u8]) {
