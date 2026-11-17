@@ -469,24 +469,20 @@ async fn stored_messages_reach_no_hook() -> TestResult {
     Ok(())
 }
 
-/// SPEC-505 AGY-006: a Stop that ends a turn its model API failed (Antigravity's, which carries
-/// the error) is never continued: the gate's reason does not block it, and the task waits for its
-/// person, as after an interrupt.
+/// SPEC-505 AGY-006: only an Antigravity run's Stop of a failed turn skips the gate (its
+/// `error`; `antigravity::a_failed_antigravity_turn_leaves_its_task_waiting`): the same field
+/// from another harness's hook changes nothing.
 #[tokio::test]
-async fn a_stop_of_a_failed_turn_is_never_blocked() -> TestResult {
+async fn only_antigravity_skips_the_gate_for_a_failed_turn() -> TestResult {
     let f = fixture().await?;
     std::fs::write(f.worktree.join("api.rs"), "fn main() {}\n")?;
-    let blocked = hook(&f, "Stop", json!({"stop_hook_active": false})).await?;
-    assert_eq!(blocked["decision"], "block", "the gate has a reason");
-    hook(&f, "UserPromptSubmit", json!({"prompt": "go on"})).await?;
     let body = hook(
         &f,
         "Stop",
         json!({"stop_hook_active": false, "error": "Error 503, Status: UNAVAILABLE"}),
     )
     .await?;
-    assert!(body.is_null(), "{body:?}");
-    assert_eq!(activity(&f).await?, Some(Activity::Waiting));
+    assert_eq!(body["decision"], "block", "{body:?}");
     Ok(())
 }
 

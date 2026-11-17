@@ -524,3 +524,270 @@ fn a_failed_antigravity_turn_leaves_its_task_waiting() -> TestResult {
     rt.shutdown_timeout(Duration::from_secs(5));
     Ok(())
 }
+
+/// SPEC-505 AGY-008: a run's token file replaces only the sign-in its launch gave it. A sign-in a
+/// person made during the run, or another run's newer refresh, stays: the run's refreshed file
+/// is dropped, and an unchanged one changes nothing.
+#[test]
+fn a_run_never_replaces_a_newer_antigravity_sign_in() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built")?;
+    let (_dir, data) = temp()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let app = build_full(&data, Some(&fake), FakeAgentOptions::default(), 8)?;
+        let (sandbox, user) = seed_records(&app).await?;
+        let given = antigravity_sign_in_credential(b"SYNTHETIC-token-given").ok_or("envelope")?;
+        let account = add_google_account(&app, "a-google", &given).await?;
+        seed_repo(&data, &sandbox)?;
+        let newer = antigravity_sign_in_credential(b"SYNTHETIC-token-newer").ok_or("envelope")?;
+        for (title, run_refreshes) in [("refreshed", true), ("unchanged", false)] {
+            // The vault holds what the launch gives.
+            let previous = app
+                .deps
+                .store
+                .account(&account)
+                .await?
+                .ok_or("account")?
+                .credential
+                .ok_or("credential")?;
+            app.deps
+                .store
+                .refresh_account_credential(
+                    &account,
+                    &previous,
+                    &app.deps.crypto.seal(&given)?,
+                    app.now(),
+                )
+                .await?;
+            let id = new_agy_task(&app, &sandbox, &user, title, TaskMode::Prompt).await?;
+            wait_for("the banner", Duration::from_secs(30), || {
+                screen_contains(&app, &id, "FAKE-AGENT READY")
+            })
+            .await?;
+            let attempt = app.deps.store.live_attempt(&id).await?.ok_or("attempt")?;
+            let token = Path::new(&attempt.run_dir)
+                .join("antigravity-home/.gemini/antigravity-cli/antigravity-oauth-token");
+            // A person signs the subscription in again (or another run stores its refresh).
+            let launched = app
+                .deps
+                .store
+                .account(&account)
+                .await?
+                .ok_or("account")?
+                .credential
+                .ok_or("credential")?;
+            app.deps
+                .store
+                .refresh_account_credential(
+                    &account,
+                    &launched,
+                    &app.deps.crypto.seal(&newer)?,
+                    app.now(),
+                )
+                .await?;
+            if run_refreshes {
+                std::fs::write(&token, b"SYNTHETIC-token-run")?;
+            }
+            app.send_input(&id, b"/exit\r").await?;
+            wait_for("the run's end", Duration::from_secs(30), || async {
+                task(&app, &id).await.is_ok_and(|t| !t.status.is_live())
+            })
+            .await?;
+            wait_for("the run's file gone", Duration::from_secs(10), || async {
+                !token.exists()
+            })
+            .await?;
+            let held = app
+                .deps
+                .store
+                .account(&account)
+                .await?
+                .and_then(|a| a.credential)
+                .and_then(|sealed| app.deps.crypto.open(&sealed).ok())
+                .ok_or("held")?;
+            assert_eq!(held, newer, "{title}: the newer sign-in stays");
+        }
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// SPEC-505 AGY-005: a run whose SessionStart named nothing (no hooks here) takes the CLI's last
+/// conversation of its worktree from its home's `last_conversations.json`, once its transcript
+/// was written since the run began.
+#[test]
+fn an_antigravity_conversation_is_found_without_its_session_start() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built")?;
+    let (_dir, data) = temp()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let agent = FakeAgentOptions {
+            transcript: true,
+            ..FakeAgentOptions::default()
+        };
+        let app = build_full(&data, Some(&fake), agent, 8)?;
+        let (sandbox, user) = seed_records(&app).await?;
+        add_google_account(&app, "a-google", &api_key()?).await?;
+        seed_repo(&data, &sandbox)?;
+        let id = new_agy_task(&app, &sandbox, &user, "Antigravity found", TaskMode::Prompt).await?;
+        wait_for("the banner", Duration::from_secs(30), || {
+            screen_contains(&app, &id, "FAKE-AGENT READY")
+        })
+        .await?;
+        let attempt = app.deps.store.live_attempt(&id).await?.ok_or("attempt")?;
+        app.send_input(&id, b"hello\r").await?;
+        wait_for("the echo", Duration::from_secs(10), || {
+            screen_contains(&app, &id, "ECHO: hello")
+        })
+        .await?;
+        assert_eq!(attempt.provider_session_id, None, "no hook named it");
+        let worktree = task(&app, &id).await?.worktree_path.ok_or("worktree")?;
+        let cache =
+            Path::new(&attempt.run_dir).join("antigravity-home/.gemini/antigravity-cli/cache");
+        std::fs::write(
+            cache.join("last_conversations.json"),
+            serde_json::json!({ worktree: attempt.id.as_str() }).to_string(),
+        )?;
+        wait_for(
+            "the conversation found",
+            Duration::from_secs(60),
+            || async {
+                app.deps
+                    .store
+                    .attempt(&attempt.id)
+                    .await
+                    .ok()
+                    .flatten()
+                    .and_then(|a| a.provider_session_id)
+                    .as_deref()
+                    == Some(attempt.id.as_str())
+            },
+        )
+        .await?;
+        support::stop_tasks(&app, &[&id]).await?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// SPEC-505 AGY-003: the sandbox's shared conversations folder is opened without following a
+/// link: one an agent put there fails the start, and nothing is spawned.
+#[test]
+fn a_linked_antigravity_folder_fails_the_start() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built")?;
+    let (_dir, data) = temp()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let app = build_full(&data, Some(&fake), FakeAgentOptions::default(), 8)?;
+        let (sandbox, user) = seed_records(&app).await?;
+        add_google_account(&app, "a-google", &api_key()?).await?;
+        seed_repo(&data, &sandbox)?;
+        let agy = data
+            .join("sandboxes")
+            .join(sandbox.as_str())
+            .join("antigravity");
+        std::fs::create_dir_all(&agy)?;
+        let elsewhere = data.join("elsewhere");
+        std::fs::create_dir_all(&elsewhere)?;
+        std::os::unix::fs::symlink(&elsewhere, agy.join("shared"))?;
+        let id = new_agy_task(
+            &app,
+            &sandbox,
+            &user,
+            "Antigravity linked",
+            TaskMode::Prompt,
+        )
+        .await?;
+        wait_for("the failed start", Duration::from_secs(30), || async {
+            task(&app, &id)
+                .await
+                .is_ok_and(|t| matches!(t.status, TaskStatus::Failed(_)))
+        })
+        .await?;
+        assert!(
+            app.deps.store.attempts(&id).await?.is_empty(),
+            "nothing spawned"
+        );
+        assert!(
+            std::fs::read_dir(&elsewhere)?.next().is_none(),
+            "nothing made through the link"
+        );
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// SPEC-505 AGY-003: a contained run sees its run's `.gemini` (the hooks Yulius wrote) at the
+/// sandbox home's, and the data directory not at all. Skipped where bwrap cannot create
+/// namespaces.
+#[test]
+fn a_contained_antigravity_run_sees_its_home_at_the_sandbox_homes() -> TestResult {
+    let probe = std::process::Command::new("bwrap")
+        .args([
+            "--die-with-parent",
+            "--unshare-pid",
+            "--ro-bind",
+            "/",
+            "/",
+            "--proc",
+            "/proc",
+            "--",
+            "/bin/true",
+        ])
+        .output();
+    if !probe.as_ref().is_ok_and(|out| out.status.success()) {
+        eprintln!(
+            "SKIPPED a_contained_antigravity_run_sees_its_home_at_the_sandbox_homes: bwrap cannot create namespaces"
+        );
+        return Ok(());
+    }
+    let fake = locate_fake_agent().ok_or("fake-agent is not built")?;
+    let fake_dir = fake.parent().ok_or("fake-agent dir")?.to_path_buf();
+    let (_dir, data) = temp()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let app = crate::supervision::build_tuned(
+            &data,
+            Some(&fake),
+            FakeAgentOptions::default(),
+            move |c| {
+                c.contained = true;
+                c.contained_readonly = vec![fake_dir];
+            },
+        )?;
+        let (sandbox, user) = seed_records(&app).await?;
+        add_google_account(&app, "a-google", &api_key()?).await?;
+        seed_repo(&data, &sandbox)?;
+        let id = new_agy_task(
+            &app,
+            &sandbox,
+            &user,
+            "Antigravity contained",
+            TaskMode::Prompt,
+        )
+        .await?;
+        wait_for("the banner", Duration::from_secs(30), || {
+            screen_contains(&app, &id, "FAKE-AGENT READY")
+        })
+        .await?;
+        let home = data.join("sandboxes").join(sandbox.as_str()).join("home");
+        for (path, expected) in [
+            (home.join(".gemini/config/hooks.json"), "READ hooks.json OK"),
+            (data.join("yulius.db"), "READ yulius.db ERR"),
+        ] {
+            app.send_input(&id, format!("/read {}\r", path.display()).as_bytes())
+                .await?;
+            wait_for(expected, Duration::from_secs(10), || {
+                screen_contains(&app, &id, expected)
+            })
+            .await?;
+        }
+        support::stop_tasks(&app, &[&id]).await?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}

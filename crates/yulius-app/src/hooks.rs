@@ -915,7 +915,8 @@ impl App {
         let mut task = &ctx.task;
         // A turn its model API failed ends for good: its CLI goes on with nothing Yulius says,
         // so no gate, nudge or goal holds it (SPEC-505 AGY-006).
-        let failed = input.error.is_some();
+        let failed = input.error.is_some()
+            && ctx.attempt.harness == yulius_domain::harness::Harness::Antigravity;
         // A turn held for capacity stays held while its pause lasts (also across a restart).
         let refreshed;
         if let Some(pause) = store.open_pause(&task.id).await? {

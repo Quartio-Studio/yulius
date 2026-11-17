@@ -234,7 +234,8 @@ Six pull requests, each merged into `dev` on green before the next begins.
   whose write-back keeps only a refresh of the same sign-in): the agent of a run can replace its
   account's stored sign-in with any file it writes there, spoiling it until a person signs in
   again. Only that run's agent reaches the file (it lies in the run's own home, not in the
-  sandbox), and a sign-in a person made meanwhile is never replaced.
+  sandbox), and a sign-in a person made meanwhile, or another run's refresh, is never replaced:
+  a run's file counts only as a refresh of the credential its launch gave it.
 - **No usage windows** for Antigravity subscriptions in this delivery: the only source is
   `/usage` of a signed-in CLI, whose output was not seen live. A limit is learnt from the
   transcript, with an unknown reset (the pool's default wait).
@@ -386,3 +387,20 @@ Six pull requests, each merged into `dev` on green before the next begins.
   `model_of_its_harness`). 14. The two places point at each other.
 - After round 1: `yulius-app`, `yulius-harness`, `yulius-domain`, `yulius-contracts`, `fake-agent`
   1494 passed; `yulius --lib` 651; the `yulius` integration files above with `mcp*` 197.
+- Review round 2 (head 3d1e91699, request changes; own code), answered:
+  1. A run's file could replace a newer sign-in: the launch keeps the sealed credential it gave
+     the run beside its home (`<run>/antigravity-given`, out of the bound `.gemini`); the run's
+     end takes only a refresh of that, and swaps only while the account still holds it
+     (`a_run_never_replaces_a_newer_antigravity_sign_in`: a person's new sign-in during the run
+     stays, with the run's file refreshed or not).
+  2. Tests: the supervisor's fallback branch (`an_antigravity_conversation_is_found_without_its_session_start`),
+     a link at `<sandbox>/antigravity/shared` failing the start with nothing spawned or made
+     through it (`a_linked_antigravity_folder_fails_the_start`), and a contained run seeing its
+     home's hooks at the sandbox home's (`a_contained_antigravity_run_sees_its_home_at_the_sandbox_homes`;
+     skipped here, bwrap cannot create namespaces in this sandbox).
+  3. Only an Antigravity run's Stop skips the gate for its `error`
+     (`agent_hooks::only_antigravity_skips_the_gate_for_a_failed_turn`).
+- After round 2: `antigravity::*` 10 tests, 3 of 3 under `--stress-count 3`; `yulius-app`,
+  `yulius-harness`, `yulius-contracts` 891 passed; `yulius` integration files `antigravity`,
+  `codex*`, `agent_hooks`, `accounts`, `task_delete`, `supervision`, `pool_supervision` 156
+  passed. Clippy clean.

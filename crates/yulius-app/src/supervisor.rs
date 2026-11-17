@@ -2213,6 +2213,16 @@ impl App {
                 write_private(&file).map_err(AppError::internal)?;
             }
             antigravity_token = Some(AntigravityToken(Some(antigravity_token_path(&run_dir))));
+            // What this run was given, beside its home (out of the bound `.gemini`): its end
+            // takes back a refresh only of this, and only while the account still holds it.
+            if let Some(given) = &account.credential {
+                write_private(&crate::ports::session::PlannedFile {
+                    path: run_dir.join(ANTIGRAVITY_GIVEN),
+                    contents: given.0.clone(),
+                    mode: 0o600,
+                })
+                .map_err(AppError::internal)?;
+            }
         }
         let task_token = hex_token(&self.deps.crypto.random_bytes());
         let host_token = self.deps.crypto.random_bytes();
@@ -3282,10 +3292,11 @@ impl App {
     }
 
     /// After an Antigravity run ended or was lost (SPEC-505 AGY-008): the token file its CLI left
-    /// in the run's home replaces the account's sign-in when it changed, and is removed once the
-    /// account holds it (stored, or unchanged); a refresh that could not be stored stays in the
-    /// run directory, which no agent reaches after the run. The run's own agent could have
-    /// written the file (ADR-0361), so a sign-in a person made meanwhile is never replaced.
+    /// in the run's home replaces the account's sign-in when it is a refresh of the one the launch
+    /// gave the run and the account still holds that one (a sign-in a person made meanwhile, or
+    /// another run's refresh, stays). The file is removed once that is settled; a refresh that
+    /// could not be stored stays in the run directory, which no agent reaches after the run. The
+    /// run's own agent could have written the file (ADR-0361).
     async fn antigravity_run_ended(&self, attempt_id: &AttemptId) {
         let Ok(Some(attempt)) = self.deps.store.attempt(attempt_id).await else {
             return;
@@ -3305,43 +3316,39 @@ impl App {
                 return;
             }
         };
-        let held = match self.deps.store.account(&account_id).await {
-            Ok(Some(account)) => account.credential.and_then(|previous| {
-                let stored = self.deps.crypto.open(&previous).ok()?;
-                Some((previous, stored))
-            }),
-            Ok(None) => None,
-            Err(err) => {
-                tracing::warn!(account = %account_id, error = %err, "the account of an Antigravity run could not be read");
-                return;
-            }
-        };
-        let kept = match held {
-            Some((previous, stored)) => match self
-                .deps
+        // Only a refresh of what the launch gave this run counts, and only while the account
+        // still holds that: a sign-in a person made meanwhile, or another run's refresh, stays.
+        let given = std::fs::read(run_dir.join(ANTIGRAVITY_GIVEN))
+            .ok()
+            .map(crate::model::Sealed);
+        let refreshed = given.as_ref().and_then(|sealed| {
+            let plain = self.deps.crypto.open(sealed).ok()?;
+            self.deps
                 .harness
-                .antigravity_refreshed_credential(&fresh, &stored)
-            {
-                Some(refreshed) => match self.deps.crypto.seal(&refreshed) {
-                    Ok(sealed) => self
-                        .deps
-                        .store
-                        .refresh_account_credential(&account_id, &previous, &sealed, self.now())
-                        .await
-                        .inspect_err(|err| {
-                            tracing::warn!(account = %account_id, error = %err, "a refreshed Antigravity sign-in could not be stored");
-                        })
-                        .is_ok(),
+                .antigravity_refreshed_credential(&fresh, &plain)
+        });
+        let kept = match (given, refreshed) {
+            (Some(given), Some(refreshed)) => match self.deps.crypto.seal(&refreshed) {
+                Ok(sealed) => match self
+                    .deps
+                    .store
+                    .refresh_account_credential(&account_id, &given, &sealed, self.now())
+                    .await
+                {
+                    // Stored, or the account holds another sign-in now: the file is done.
+                    Ok(_) => true,
                     Err(err) => {
-                        tracing::error!(error = %err, "could not seal a refreshed Antigravity sign-in");
+                        tracing::warn!(account = %account_id, error = %err, "a refreshed Antigravity sign-in could not be stored");
                         false
                     }
                 },
-                // Unchanged, or not a sign-in's: nothing to keep.
-                None => true,
+                Err(err) => {
+                    tracing::error!(error = %err, "could not seal a refreshed Antigravity sign-in");
+                    false
+                }
             },
-            // The account is gone or signed out: its tokens have nowhere to go.
-            None => true,
+            // Unchanged, not a sign-in's, or nothing given: nothing to keep.
+            _ => true,
         };
         if kept && let Err(err) = remove_antigravity_token(&run_dir) {
             tracing::warn!(account = %account_id, error = %err, "the Antigravity run's sign-in could not be removed");
@@ -6690,6 +6697,10 @@ impl Drop for AntigravityToken {
         }
     }
 }
+
+/// The sealed credential an Antigravity launch gave its run, in the run directory (out of the
+/// bound `.gemini`, SPEC-505 AGY-008).
+const ANTIGRAVITY_GIVEN: &str = "antigravity-given";
 
 /// The folders of the Antigravity token file below the run directory, and its name.
 const ANTIGRAVITY_TOKEN_DIRS: [&str; 3] = ["antigravity-home", ".gemini", "antigravity-cli"];
