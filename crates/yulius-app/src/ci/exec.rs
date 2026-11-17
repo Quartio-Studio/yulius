@@ -714,6 +714,10 @@ impl App {
                 None => None,
             };
             self.ci_network_room(&run.sandbox_id, &job.id).await;
+            crate::race::reached(
+                crate::race::Point::CiJobAdmission,
+                std::path::Path::new(&format!("{}/{}", run.reference.key(), job.key)),
+            );
             // Admitted first, then its slot, which admission kept free: a waiting job holds no
             // slot another job could start in (SPEC-497 HBA-002).
             let reservation = self

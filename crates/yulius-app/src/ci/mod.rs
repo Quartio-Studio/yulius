@@ -1269,7 +1269,9 @@ impl App {
         let mut found = None;
         for run in runs.iter().filter(|r| {
             r.state == RunState::Passed
-                && r.sha != target.sha
+                // A candidate formed again within the same second is the same commit: its earlier
+                // passed run is the best source (slice D review; the test met it 1 run in 6).
+                && (r.sha != target.sha || matches!(target.reference, CiRef::Train(_)))
                 && r.requested_by != crate::merge_train::TRAIN_VERDICT_BY
         }) {
             if self.deps.git.tree_of(&repo, &run.sha).await?.as_deref() != Some(tree.as_str()) {

@@ -792,6 +792,16 @@ mode.
     (no preference), it and the pull request test fail 3 of 3.
   - Nits: "three jobs" in ADR-0358; `development.md` names the jobs; `scripts/dev test` names its
     stage (once in `ci`).
+- Two of this task's own tests failed now and then in the suite after round 1 (seen while
+  checking; neither on dev's CI):
+  - `local_ci::a_job_that_cannot_start_holds_no_slot` (slice A2): 1 suite run in 4, when `b`
+    (the whole budget) asked for admission before `a`, so `a` and `c` both waited by right. A
+    pause point before a job's admission (`Point::CiJobAdmission`, `<reference>/<job>`) holds #1's
+    `b` and `c` until `a` runs: 10 of 10 under `--stress-count 10`.
+  - `merge_train::a_candidate_formed_again_reuses_its_trees_passed_run` (slice C): 1 suite run
+    in 6, when the candidate formed again within the same second got the same commit, and the
+    reuse skipped a run of the identical commit. For a candidate, a passed run of that very
+    commit is a source now (`ci_reuse_tree`). The suite then passed 6 runs of 6.
 - Checks run on this head: `cargo fmt --check`; `cargo clippy --workspace --all-targets -D
   warnings`; `scripts/check_repository.py`; the unit tests of `yulius-app`, `yulius-domain`,
   `xtask` (1,173 passed); `local_ci::`, `merge_train::`, `analytics::` (149 passed).

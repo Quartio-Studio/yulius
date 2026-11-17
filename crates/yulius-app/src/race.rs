@@ -77,6 +77,9 @@ pub enum Point {
     /// A switch gave its old run up (SPEC-483): the task's end intent says so; the run's host
     /// is not terminated yet. The path is the task id.
     SwitchEndsRun,
+    /// A CI job is about to ask for admission (SPEC-497 HBA-002): its run's other jobs may ask
+    /// first. The path is `<run reference>/<job key>` (`pr/1/b`).
+    CiJobAdmission,
     /// A passed merge candidate (SPEC-497 MQW-002) comes to a member to merge: members before it
     /// merged; its own run is not read again yet. The path is the member's task id.
     TrainMemberMerging,

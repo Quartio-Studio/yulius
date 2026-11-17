@@ -3203,8 +3203,10 @@ async fn a_job_weighs_by_the_cpus_it_holds() -> TestResult {
 /// ADR-0353 (review of the CI admission fix): a job takes its slot only once admitted, so one
 /// that cannot start holds none. Two slots, a CI budget of 3: `a` (2 CPUs) runs, `b` (3) cannot
 /// start, and `c` (1) runs beside `a` in the second slot. With the slot taken before the
-/// budget's wait, `b` held it and `c` never started.
-#[tokio::test]
+/// budget's wait, `b` held it and `c` never started. `b` and `c` ask for admission only once `a`
+/// runs (pause points): `b` asking first took the whole budget 1 run in 4 of the suite (slice D
+/// review, 17 Nov 2026).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_job_that_cannot_start_holds_no_slot() -> TestResult {
     let f = fixture_tuned(
         false,
@@ -3227,10 +3229,33 @@ async fn a_job_that_cannot_start_holds_no_slot() -> TestResult {
     )
     .await?;
     assert!(f.h.app.set_isolation(Arc::new(Limited)));
+    // #1's `b` and `c` ask for admission only once its `a` runs.
+    let (b_at, b_go) = support::hold_point(yulius_app::race::Point::CiJobAdmission, "pr/1/b");
+    let (c_at, c_go) = support::hold_point(yulius_app::race::Point::CiJobAdmission, "pr/1/c");
     f.h.app.ci_sync_sandbox(&f.sandbox).await?;
     let pull = f.running("pr/1").await?;
     let id = pull["id"].as_str().ok_or("id")?.to_owned();
     let deadline = tokio::time::Instant::now() + WAIT;
+    let state_of = |name: &'static str| {
+        let (store, id) = (f.h.store.clone(), id.clone());
+        async move {
+            let jobs = store.ci_jobs(&id, false).await?;
+            Ok::<_, Box<dyn std::error::Error>>(
+                jobs.iter().find(|j| j.name == name).map(|j| j.state),
+            )
+        }
+    };
+    while state_of("a").await? != Some(RunState::Running) {
+        f.h.app.ci_dispatch().await;
+        if tokio::time::Instant::now() > deadline {
+            return Err("`a` never started".into());
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    support::point_reached(b_at).await?;
+    b_go.send(())?;
+    support::point_reached(c_at).await?;
+    c_go.send(())?;
     loop {
         f.h.app.ci_dispatch().await;
         let jobs = f.h.store.ci_jobs(&id, false).await?;
