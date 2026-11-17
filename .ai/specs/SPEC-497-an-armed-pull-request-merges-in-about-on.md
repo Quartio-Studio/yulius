@@ -757,6 +757,15 @@ mode.
   `merge_train::derived_files_are_changed_one_candidate_at_a_time` (#1 and #2 change `gen/`
   files, #3 another: candidates `train/1+3` then `train/2`, the formed entry names "#2 (with #1,
   gen/**)"); with the holding undone it fails. An older instance ignores the unknown table.
+- Review round 1 of the follow-up (Fable 5.2, head e885d49ba) approved: no blocker, no major.
+  Its minors, after the approval (tests and documents, and two lines of code): the table's
+  refusals have a unit (`the_merge_queue_table_names_derived_files`: an empty list, 51 globs,
+  `/etc`, `a/../b`, a number, an unknown key, `[[merge_queue]]`, by its own parse and the whole
+  file's; the string form taken); "no candidate fails" reworded to what holds (no other member
+  loses a run; the held one's own candidate still tests the combination); the reason for holding
+  stays in the formed entry, the wait note generic (ADR-0357 says so); the unused `HELD_APART`
+  constant is gone; the module docs and the decisions index name it. `scripts/dev mutants`: 29
+  listed, 20 caught, 0 missed, 0 timed out, 9 unviable (517 s).
 
 ### Slice D: a CI run is shorter
 
