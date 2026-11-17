@@ -2343,7 +2343,8 @@ mod ran_as_tests {
             waited_ms: None,
         };
         assert!(ran_as(&record(&job), &job));
-        let changes: [(&str, fn(&mut Job)); 7] = [
+        type Change = fn(&mut Job);
+        let changes: [(&str, Change); 7] = [
             ("key", |j| j.key = "lint".into()),
             ("command", |j| j.command = "echo new".into()),
             ("matrix", |j| j.matrix = Some("b".into())),
