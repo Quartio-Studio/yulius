@@ -3317,17 +3317,26 @@ impl App {
                     return holds(stored);
                 }
             }
-            let now_sealed = self
-                .deps
-                .store
-                .account(account_id)
-                .await
-                .ok()
-                .flatten()
-                .and_then(|account| account.credential);
-            let now_held = now_sealed
-                .as_ref()
-                .and_then(|sealed| self.deps.crypto.open(sealed).ok());
+            // What the account holds now must be known before the file is called lost: a read
+            // that fails or a credential that does not open leaves the file, which may hold the
+            // only copy of rotated tokens.
+            let now_sealed = match self.deps.store.account(account_id).await {
+                Ok(account) => account.and_then(|account| account.credential),
+                Err(err) => {
+                    tracing::error!(account = %account_id, error = %err, "the account could not be read after a lost Codex refresh swap; the file stays");
+                    return KeptCodexAuth::default();
+                }
+            };
+            let now_held = match &now_sealed {
+                Some(sealed) => match self.deps.crypto.open(sealed) {
+                    Ok(bytes) => Some(bytes),
+                    Err(err) => {
+                        tracing::error!(account = %account_id, error = %err, "the account's credential could not be opened after a lost Codex refresh swap; the file stays");
+                        return KeptCodexAuth::default();
+                    }
+                },
+                None => None,
+            };
             match (now_sealed, now_held) {
                 (Some(again), Some(held))
                     if self
@@ -3346,8 +3355,9 @@ impl App {
                 }
             }
         }
-        // Still contended after every try: what the account holds is not known for sure, so
-        // the file stays where it is (the next end or start of a run takes it again).
+        // Still contended after every try: what the account holds is not known for sure. At a
+        // run's end or a start's sweep the file stays (the next one takes it again); a launch
+        // writes the credential it read before over it, as when the account cannot be read.
         tracing::warn!(account = %account_id, "the Codex refresh could not be stored: the account's credential kept changing");
         KeptCodexAuth::default()
     }

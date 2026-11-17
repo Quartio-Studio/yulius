@@ -1,11 +1,11 @@
 ---
 yulius-task: d068a269-9b2e-4341-9686-330714daae2f
-status: in-progress
+status: done
 ---
 
 # SPEC-503: Codex returns as a second harness
 
-Status: in-progress (accepted 2026-11-16, delivered in five slices)
+Status: done (accepted 2026-11-16, delivered in five slices)
 Date: 2026-11-10 (proposed as SPEC-451), 2026-11-16 (accepted, brought onto current dev)
 Owner: Yulius task #485, from outside pull request #1146 by studenciak00owl (written as SPEC-451
 with ADR-0290 in their fork), accepted by MrFishPL
@@ -125,10 +125,11 @@ Five pull requests, each merged into `dev` on green before the next begins.
 - [x] Slice C1: review findings fixed and the slice delivered
 - [x] Slice C2: Codex subscriptions sign in by device code, API key or imported auth.json
 - [x] Slice C2: Codex usage windows, codex_connected and moves within Codex subscriptions
-- [ ] Slice C2: review findings fixed and the slice delivered
-- [ ] Slice D: the UI offers Codex in the composer, automations, Subscriptions and task moves
-- [ ] Slice D: SPEC-001/002/003 and the documents say Codex is accepted
-- [ ] Slice D: review findings fixed and the slice delivered
+- [x] Slice C2: review findings fixed and the slice delivered
+- [x] Slice D: slice C2's round-2 review notes fixed test-first
+- [x] Slice D: the UI offers Codex in the composer, automations, Subscriptions and task moves
+- [x] Slice D: SPEC-001/002/003 and the documents say Codex is accepted
+- [x] Slice D: review findings fixed and the slice delivered
 
 ## Acceptance criteria
 
@@ -525,7 +526,7 @@ Five pull requests, each merged into `dev` on green before the next begins.
   - an import flagged only one running sign-in: every one is flagged and cancelled
     (`account_token::an_import_cancels_every_running_sign_in`: a sign-in still ran after 30 s
     before);
-  - `PUT /accounts/{id}/token` on a Codex subscription stored the Claude token (201 in the test
+  - `PUT /accounts/{id}/token` on a Codex subscription stored the Claude token (200 in the test
     world, whose usage stand-in answers): refused up front in its own words, the running sign-in
     untouched (`account_token::a_token_for_a_codex_subscription_is_refused_up_front`);
   - the start sweep's live-run guard was held by no test: the restart test asserts the reattached
@@ -546,4 +547,120 @@ Five pull requests, each merged into `dev` on green before the next begins.
     write-back logs the task id without `Some(…)`; SPEC-451 citations of this work say SPEC-503.
   - Pre-existing, outside this change: `ProviderUsage::get_json` reads a whole answer before its
     size bound (dev since 404ac0d29): issue #1380.
+- **Review round 2** (Fable 5.2) approved `1b970525c`, and #1379 was merged at it (squash
+  `242318df1`). Yulius opened the pull request with its default body; its title and body were set
+  afterwards (the "Supersedes #1146" line among them), and the squash commit carries the
+  contributor's `Co-authored-by`. Its three minors and six nits (all own code) are fixed in slice
+  D's pull request:
+  - after a lost swap, a failed read of the account or a credential that does not open kept the
+    run's `auth.json` as lost and removed it: the file now stays
+    (`codex::a_refresh_stays_when_what_the_account_holds_cannot_be_read`, failed first: the file
+    was gone);
+  - `docs/api.md`: the Codex sentences of the usage row are one row again; the capacity view's
+    `available`, `resumes_at` and `accounts[].provider` are described as the code has them;
+  - nits: a sign-in replaced by an import ends as cancelled even when it ended by itself at that
+    instant (no failure on the imported sign-in; the window is between two atomic loads, held by
+    no test); `api_key` and `auth_json` are taken out of the request on its first line; the import
+    stores through `store_sealed_credential` (the usage lock); the refusal constants' doc lines;
+    the comment on exhausted swaps says what a launch does; "200" in the round-1 note above.
+
+### Slice D (the UI and the accepted statements)
+
+- **Brought from the contribution** (3-way patch of its web assets and `codex.e2e.ts` against
+  today's `dev`, five files with conflicts resolved by hand): the composer's OpenAI group with
+  Codex (`modelFields`: `harness: codex`, no model), an automation's Agent, "Run on…" listing the
+  task's provider's subscriptions, a usage card naming Codex, the Dashboard's provider per
+  subscription, `codexConnected` (the composer's Connect Claude step left out while a Codex
+  account is usable), the login terminal's Codex wording, the `auth.json` input (pasted or a file,
+  never shown) and the mock's Codex routes.
+- **Changed for current `dev`:**
+  - dev's Add subscription had the Claude token paste (SPEC-502). The dialog now chooses the
+    agent first, then its way in:
+    - Claude: "Sign in here" or "Paste token";
+    - Codex: "ChatGPT sign-in", "Import auth.json" or "API key".
+  - The contribution's own dialog had one way list for both agents. In the new dialog, each
+    agent's ways are a radio group of their own, so the keyboard keeps its place.
+  - A card offers "Paste a new token" for Claude and "Import auth.json" for Codex (CDX-015).
+  - dev's usage card is drawn by the clock: it names Codex through `provider`.
+  - The mock refuses a token for `openai` (create and `PUT …/token`) and an empty `api_key` or
+    `auth_json`, as the server now does. It decides `waits_for_account` by the task's provider.
+  - New: a Codex task's waiting and failure wording names Codex: the strip, the lists' line, the
+    terminal's titles, "Failed (no Codex account)" and the ended messages (CDX-013;
+    `codex.e2e.ts` "…names Codex", red first: "waits for a Claude account").
+- **Accepted statements** (`F 2026-11-16 Codex`):
+  - SPEC-001: the source table (the new row; `F 2026-10-08` superseded for Codex only), §1, the
+    glossary (Task, Harness, Account), J3, TSK-001, TSK-003, ROT-001, ROT-004, AC-ROT-8, §8 and
+    the changelog;
+  - SPEC-002: principle 1, §7.3, R-02, R-03, R-12, the evidence table and the changelog;
+  - SPEC-003: item 89 superseding item 17 for Codex, and the changelog;
+  - AGENTS.md, `docs/product.md`, `docs/architecture.md` (the UI), ADR-0005's status and
+    `docs/changes.md`.
+  - The contribution's "proposed (SPEC-451)" wording is not kept anywhere; it is accepted, with
+    CLI 0.169.0.
+- **Slice C2's round-2 notes:** fixed in `c80709503`; see "Review round 2" above.
+- **Checks:**
+  - e2e `codex.e2e.ts`: 6 passed, and `subscriptions.e2e.ts` 49 passed.
+  - The whole e2e suite: 1078 passed, 1 skipped (88 files).
+  - Mutation by hand: showing Claude's ways for Codex fails `codex.e2e.ts` "…with an OpenAI API
+    key…".
+  - `cargo nextest` over `codex`, `accounts`, `account_token`, `account_usage` and
+    `claude_gate`: 71 passed after the round-2 fixes.
+- **Review round 1** (Fable 5.2, on `23098540e`) requested changes. All findings are fixed; each
+  new test was seen failing first (or failing under a mutation), and the e2e cases are in
+  `codex.e2e.ts`:
+  - Majors:
+    - the dialog's Codex ChatGPT sign-in was held by no test. The mock's sign-in terminal now
+      speaks Codex for an `openai` account (the device code, the server's `harness: codex`),
+      and the toast names Codex tasks ("…signs in with ChatGPT in the login terminal": the
+      terminal said "Claude Code login");
+    - the composer's Connect Claude step left out while a Codex account is usable was held by
+      no test ("…asks for Claude only while no Codex account is usable either"; with the
+      condition undone, it fails). A Codex start refused for want of a Codex account now offers
+      "Connect Codex", which opens the dialog on Codex (`?add=codex`; it offered Connect
+      Claude).
+  - Minors:
+    - Refresh of an API-key Codex subscription said Claude gave no reading. It now names Codex,
+      on the card and in the toast, and the mock answers `usage_read: false` for it, as the
+      server does.
+    - The Status line judged Fable over Codex subscriptions too. It now judges the Claude ones
+      alone: a usable Codex subscription hid that Claude was out of Fable.
+    - Other wording that now names Codex for a Codex subscription or task:
+      - a Codex card's reported limit and its unknown email's title;
+      - a Codex task's drop overlay and its details' CLI row (with either undone, the test fails);
+      - the ended messages, which now replace every occurrence.
+    - A split proposal refused for want of a Claude account leaves a Codex request one Codex
+      task ("a mixed Codex request with only Codex usable…": it was refused). This line of
+      dev's became reachable when Codex returned.
+    - SPEC-002's ADR-05 and ADR-06 rows point at ADR-0355.
+    - Mock fidelity:
+      - Run now of a Codex automation creates a Codex task (red first);
+      - the import refusals follow the server's order and words ("hold neither an API key nor
+        sign-in tokens", "empty or too large").
+  - Nits:
+    - a file that cannot be read, or is over the server's 1 MiB, says so and leaves nothing
+      loaded;
+    - the dialog's focus starts on the name, with the agent after it;
+    - the e2e temp dir is removed;
+    - Settings and Tasks describe both agents.
+  - Not changed, answered in words: a pasted `auth.json` stays visible in its field, like the
+    contribution had it. It is a person's own file on their own screen. Masking a textarea of
+    JSON would hide the mistakes the server's refusal names, and the field is cleared once the
+    file is sent.
+  - Checks:
+    - the whole e2e suite: 1085 passed, 1 skipped;
+    - `codex.e2e.ts` 13 passed and `claude-connect.e2e.ts` 7 passed;
+    - `ui_contract` and `claude_updates`: 33 passed.
+- **Review round 2** (Fable 5.2) approved `220d5dfaf`. Its minor and nits were fixed after it,
+  within the 20 product lines an approval allows:
+  - an `openai` account's card no longer names an API key when Codex gives no reading, since a
+    ChatGPT sign-in's 403 takes the same path; it now says "Codex gave no new usage reading: this
+    subscription’s usage comes from its running tasks." (`codex.e2e.ts` asserts it);
+  - in the mock, an import into an API-key account reads that account's usage windows again;
+  - the doc comments of `AUTH_JSON_MAX` and `authJsonInput` are back in order.
+- The third nit is answered in words: "Connect Codex" is recognised by the refusal's words,
+  because the error code `claude_account_required` is shared. The words are the server's own:
+  `account_gate.rs` and `supervisor.rs::open_credential` both say "Connect a Codex account
+  first" for `Provider::OpenAi`. A code per provider would change the API for one label.
+- `origin/dev` (#1381) was merged cleanly after the approval: no conflict was resolved, and the
+  merge took nothing out of dev. `codex.e2e.ts` and `subscriptions.e2e.ts` pass (62).
 

@@ -225,11 +225,14 @@ function useLine(account) {
 }
 
 /**
- * "Run on…" (SPEC-447 MOV-001): every Claude subscription with its use, the task's own marked and
- * one that cannot take it disabled with why. A running or waiting task moves to the choice in its
- * session; an ended one continues there.
+ * "Run on…" (SPEC-447 MOV-001): every subscription of the task's provider (Claude, or Codex for a
+ * Codex task: a task never changes harness, SPEC-503 CDX-013) with its use, the task's own marked
+ * and one that cannot take it disabled with why. A running or waiting task moves to the choice in
+ * its session; an ended one continues there.
  */
 export async function openSubscriptionMenu(ctx, anchor, task) {
+  const codex = task.harness === 'codex';
+  const kind = codex ? 'Codex' : 'Claude';
   let accounts;
   let model = task.model || null;
   try {
@@ -241,7 +244,7 @@ export async function openSubscriptionMenu(ctx, anchor, task) {
       ctx.api.get('/api/status'),
       model ? null : ctx.api.get(`/api/tasks/${enc(task.id)}`).catch(() => null),
     ]);
-    accounts = (status.accounts || []).filter((a) => a.id && a.provider === 'anthropic');
+    accounts = (status.accounts || []).filter((a) => a.id && a.provider === (codex ? 'openai' : 'anthropic'));
     model = model || (detail && detail.model) || null;
   } catch (error) {
     errorToast(error, 'Couldn’t read the subscriptions');
@@ -265,7 +268,7 @@ export async function openSubscriptionMenu(ctx, anchor, task) {
           : taskPost(ctx, task, 'continue', () => ctx.api.post(`/api/tasks/${enc(task.id)}/continue`, { account_id: account.id }), `Continuing #${task.number} on ${account.label}…`)),
       };
     }),
-    accounts.length ? null : { label: 'No Claude subscription yet', disabled: true, description: 'An instance administrator adds one in Subscriptions' },
+    accounts.length ? null : { label: `No ${kind} subscription yet`, disabled: true, description: 'An instance administrator adds one in Subscriptions' },
   ]);
 }
 

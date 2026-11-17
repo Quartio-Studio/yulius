@@ -7,7 +7,7 @@ import { openRuleEditor, ruleText } from './ruleeditor.js';
 import { openStartMenu, renderStartChip, startKind, waitingStartChip, SUPERTASK_HELP, WHEN_I_DECIDE_HELP } from './startchoice.js';
 import { createTerminalView } from './terminal.js';
 import { createWatchView } from './watchview.js';
-import { taskInfo, isLive, allows, taskActions, otherOwner, endedMessage, limitCause, pausedLine, pauseLine, planGrowth, resetAround, shellsLine, heldBy, supertaskLine, preparedLine } from './status.js';
+import { taskInfo, isLive, allows, taskActions, otherOwner, endedMessage, agentOf, limitCause, pausedLine, pauseLine, planGrowth, resetAround, shellsLine, heldBy, supertaskLine, preparedLine } from './status.js';
 import { heldPromptCard, splitCard, supertaskCard, checkRequest, intakeStatus } from './intake.js';
 import { createMarkdownEditor } from './mdeditor.js';
 import { SUBMIT_KEYS, SUBMIT_ARIA } from './shortcuts.js';
@@ -18,11 +18,11 @@ import { mentionOf, parsePrompt } from './promptparts.js';
 import { relLong, dateTime, whenLabel } from './format.js';
 import { readJson, writeJson } from './store.js';
 import { href } from './router.js';
-import { findModel, findEffort, modelMenuItems, effortMenuItems, MODEL_PREF_KEY, EFFORT_PREF_KEY } from './models.js';
+import { findModel, findEffort, modelFields, modelMenuItems, effortMenuItems, MODEL_PREF_KEY, EFFORT_PREF_KEY } from './models.js';
 import { randomQuote } from './quotes.js';
 import { brandSmoke } from './brandfx.js';
 import { BRAND } from './brand.js';
-import { claudeConnected, connectClaudeStep } from './claude.js';
+import { claudeConnected, codexConnected, connectClaudeStep } from './claude.js';
 import { isPhone } from './theme.js';
 import { draftFor, saveDraft, clearDraft, attachToDraft, onDraftChange } from './drafts.js';
 
@@ -101,12 +101,12 @@ function readOnlyText(sandbox) {
 function emptyTerminalMessage(task) {
   switch (task.status) {
     case 'queued': return { title: 'Queued', text: 'The agent starts as soon as a session slot is free.', busy: true };
-    case 'starting': return { title: 'Starting Claude Code…', text: 'The session appears here in a moment.', busy: true };
+    case 'starting': return { title: `Starting ${agentOf(task) === 'Codex' ? 'Codex' : 'Claude Code'}…`, text: 'The session appears here in a moment.', busy: true };
     case 'switching': return { title: 'Continuing…', text: 'The session picks up where it left off in a moment.', busy: true };
     case 'waiting_capacity': return task.waits_for_account
-      ? { title: 'Waiting for Claude', text: `${pausedLine(task)}. It starts by itself once an instance administrator connects one or signs one in again.` }
+      ? { title: `Waiting for ${agentOf(task)}`, text: `${pausedLine(task)}. It starts by itself once an instance administrator connects one or signs one in again.` }
       : { title: 'Paused', text: `${pausedLine(task)}. It continues by itself.` };
-    case 'running': return { title: 'Claude Code is starting…', text: 'The session appears here in a moment.', busy: true };
+    case 'running': return { title: `${agentOf(task) === 'Codex' ? 'Codex' : 'Claude Code'} is starting…`, text: 'The session appears here in a moment.', busy: true };
     case 'chained': {
       const after = task.after;
       if (after && after.blocked) return { title: 'Waiting for you', text: after.blocked };
@@ -201,14 +201,14 @@ export function mountTaskView(ctx, sandbox, task) {
       // its transcript, never in a terminal (SPEC-179).
       readOnlyLabel: () => readOnlyText(ctx.store.sandboxById(sandbox.id) || sandbox),
       // The limit the sandbox was at: from the exit, else from the last run's record (a reload).
-      exitMessage: (exit) => endedMessage(exit.status || current.status, exit.cause || lastLimitCause()),
+      exitMessage: (exit) => endedMessage(exit.status || current.status, exit.cause || lastLimitCause(), current.harness),
       emptyMessage: () => emptyTerminalMessage(current),
       // Claude Code shows a session only from its last compaction: past the terminal's top, the
       // whole session is offered (SPEC-326).
       // A task that never started has no session to show.
       topOffer: { label: 'Earlier messages: show the whole session', open: () => openHistory(), when: () => !(detail && detail.started === false) },
       exitActions: (exit) => {
-        const message = endedMessage(exit.status || current.status, exit.cause || lastLimitCause());
+        const message = endedMessage(exit.status || current.status, exit.cause || lastLimitCause(), current.harness);
         const actions = [];
         // Administrators go to the Subscriptions page, where a subscription signs in again; everyone
         // else sees the subscriptions' state in the Status panel (#147).
@@ -228,8 +228,9 @@ export function mountTaskView(ctx, sandbox, task) {
         open: (file) => ctx.openFile && ctx.openFile(sandbox, { root: `task:${task.id}`, ...file }),
       } : null,
     });
-    // Files dropped (or an image pasted) here reach Claude by path, as in a local terminal (UI-048).
-    attachTerminalDrop(ctx, view, { label: 'Drop to send to Claude', upload: taskAttachments(ctx, task.id) });
+    // Files dropped (or an image pasted) here reach the agent by path, as in a local terminal
+    // (UI-048); a Codex task's is Codex (SPEC-503).
+    attachTerminalDrop(ctx, view, { label: `Drop to send to ${agentOf(task)}`, upload: taskAttachments(ctx, task.id) });
     return view;
   };
   const makeWatch = () => createWatchView(ctx, {
@@ -833,8 +834,8 @@ export function mountTaskView(ctx, sandbox, task) {
     progress.setAttribute('aria-label', `${done} of ${total} steps done, ${pct}% of the plan${active ? `, ${active}% in progress` : ''}`);
     progress.hidden = !total;
     statusEl.dataset.tone = info.tone;
-    // Waiting for a Claude account to be connected has no reset to wait for (SPEC-246).
-    const reset = current.status !== 'waiting_capacity' ? '' : current.waits_for_account ? 'waits for a Claude account' : resetAround(current.resumes_at);
+    // Waiting for an account of its agent to be connected has no reset to wait for (SPEC-246).
+    const reset = current.status !== 'waiting_capacity' ? '' : current.waits_for_account ? `waits for a ${agentOf(current)} account` : resetAround(current.resumes_at);
     statusEl.title = [info.label, reset, info.detail].filter(Boolean).join(' · ');
     setChildren(statusEl,
       statusMark(info),
@@ -1535,7 +1536,8 @@ export function mountComposer(ctx, sandbox) {
     el.classList.toggle('gated', preparing);
     if (!write) items.push(h('div', { class: 'banner' }, icon('lock'), h('span', { class: 'banner-text' }, 'Read-only (GitHub: read). You can watch tasks but not start them.')));
     // A task needs an agent: without a Claude account the composer says so first (SPEC-246).
-    else if (!connected && !preparing) items.push(connectClaudeStep(me, 'Tasks start once one is usable.'));
+    // Codex tasks start on a Codex account alone (SPEC-503 CDX-014): no Claude step then.
+    else if (!connected && !codexConnected(me) && !preparing) items.push(connectClaudeStep(me, 'Tasks start once one is usable.'));
     setChildren(banner, items);
     startButton.disabled = !write;
     prompt.disabled = !write;
@@ -1691,10 +1693,7 @@ export function mountComposer(ctx, sandbox) {
     if (title) body.title = title;
     if (workflowId) body.workflow_id = workflowId;
     const found = findModel(modelId);
-    if (found) {
-      body.model = found.model.id;
-      if (found.provider.harness !== 'claude') body.harness = found.provider.harness;
-    }
+    Object.assign(body, modelFields(modelId));
     if (effortId && !(found && found.model.effort === false)) body.effort = effortId;
     return body;
   }
@@ -1789,6 +1788,7 @@ export function mountComposer(ctx, sandbox) {
       }),
       keep: () => busyRun(autoStage(), async () => opened(await createTask(bodyFor(value)))),
       close: () => clearSplit(),
+      codex: bodyFor(value).harness === 'codex',
     });
     setChildren(intakeSlot, split.el);
     const calm = window.matchMedia('(prefers-reduced-motion: reduce)').matches;

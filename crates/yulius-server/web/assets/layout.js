@@ -456,7 +456,9 @@ export function renderStatus(data) {
   // go on with that (SPEC-482; the default model has none, SPEC-493). Judged at the pool's
   // threshold, as the server and the Capacity panel do, so it is also said before every window
   // reads used up.
-  const placed = accounts.length ? placingModel(accounts, REVIEW_MODEL) : REVIEW_MODEL;
+  // Judged over the Claude subscriptions alone: a Codex one runs no Claude model (SPEC-503).
+  const claude = accounts.filter((a) => (a.provider || 'anthropic') === 'anthropic');
+  const placed = claude.length ? placingModel(claude, REVIEW_MODEL) : REVIEW_MODEL;
   if (placed !== REVIEW_MODEL) health = { tone: 'warn', icon: 'clock', text: fallbackLine(REVIEW_MODEL, placed) };
   if (troubled.length) health = { tone: 'warn', icon: 'warn', text: `${troubled.length} ${troubled.length === 1 ? 'subscription needs' : 'subscriptions need'} attention` };
 
@@ -735,7 +737,7 @@ const USAGE_KEYS = ['primary', 'secondary', 'weekly_opus', 'weekly_sonnet', 'wee
  * `yulius:usage-changed` event on the card.
  */
 export function accountUsage(account, { foldable = false, open = false, rename = null, setEmail = null, showEmail = false, refresh = null, note = null } = {}) {
-  const provider = account.provider === 'anthropic' ? 'Claude' : account.provider;
+  const provider = account.provider === 'anthropic' ? 'Claude' : account.provider === 'openai' ? 'Codex' : account.provider;
   const label = () => account.label || account.id;
   // Usage not read yet: a shimmering bar where the reset time will be (SPEC-092).
   const reading = () => [h('span', { class: 'skeleton-line', 'aria-hidden': 'true' }), h('span', { class: 'sr-only' }, 'Reading usage…')];
@@ -772,7 +774,7 @@ export function accountUsage(account, { foldable = false, open = false, rename =
       // The email is for administrators (UI-022); others see the provider as before.
       !showEmail ? h('span', { class: 'account-sub' }, provider)
         : setEmail && !foldable ? editableEmail(account, setEmail)
-          : h('span', { class: ['account-sub', account.email ? null : 'account-email-unknown'], title: account.email ? `${provider} account` : 'Shown after the subscription’s next sign-in, when Claude shares it' }, accountEmail(account.email))),
+          : h('span', { class: ['account-sub', account.email ? null : 'account-email-unknown'], title: account.email ? `${provider} account` : `Shown after the subscription’s next sign-in, when ${provider} shares it` }, accountEmail(account.email))),
     stateHost,
     glanceHost,
     foldable ? icon('down', { size: 14 }) : null,
@@ -819,8 +821,8 @@ export function accountUsage(account, { foldable = false, open = false, rename =
         now.lines.map((line) => h('div', { class: 'account-limit', dataset: { window: line.key } }, icon('clock', { size: 13 }), h('span', null, line.text))),
         quiet ? h('div', { class: 'account-note' }, icon('clock', { size: 13 }), h('span', null, quiet)) : null,
         // Claude refusing a subscription (cancelled, downgraded, revoked) marks it for a new sign-in
-        // with Claude's words, said as why (SPEC-447 MOV-005).
-        account.last_error && !usageNote ? h('div', { class: 'account-error' }, icon('warn', { size: 13 }), h('span', null, account.status === 'relogin' ? `Claude refused it: ${account.last_error.trim().replace(/\.$/, '')}. Sign in again.` : account.last_error)) : null,
+        // with Claude's words, said as why (SPEC-447 MOV-005); a Codex one names Codex.
+        account.last_error && !usageNote ? h('div', { class: 'account-error' }, icon('warn', { size: 13 }), h('span', null, account.status === 'relogin' ? `${provider} refused it: ${account.last_error.trim().replace(/\.$/, '')}. Sign in again.` : account.last_error)) : null,
         usageRow(usage.primary, '5-hour window', at),
         usageRow(usage.secondary, 'This week', at),
         // Per-model weekly caps, when the plan has them (they bind only tasks of that model).

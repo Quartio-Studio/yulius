@@ -76,7 +76,10 @@ A Codex subscription signs in with `codex login --device-auth` in the login term
 provided CLI, its `CODEX_HOME` in the sign-in's own folder with credentials kept in a file),
 takes an OpenAI API key, or takes the `auth.json` of a ChatGPT sign-in made elsewhere; each is
 sealed in the vault. Its usage windows come from `chatgpt.com/backend-api/wham/usage` and from
-its runs' rollouts.
+its runs' rollouts. In the web UI, Subscriptions' Add dialog chooses the agent first (Claude Code
+or Codex) and then its way in, a Codex card imports a new `auth.json`, the composer's model menu
+offers Codex under OpenAI (`harness: codex`, no model), and an automation chooses the agent of
+the tasks it creates.
 
 Rotation picks only accounts of the task's provider, so a Codex task moves only between Codex
 accounts, by `codex resume <id>`: at a usage limit, when a person moves it and when its
