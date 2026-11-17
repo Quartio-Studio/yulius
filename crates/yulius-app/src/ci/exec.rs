@@ -983,6 +983,22 @@ impl App {
             ),
             _ => (state, reason),
         };
+        // A failed job's failing tests are kept; a flaky one is quarantined with an issue
+        // (SPEC-497 OFC-002), which its output says.
+        let mut reason = reason;
+        if state == RunState::Failed
+            && let Some(kept) = failures.as_deref()
+        {
+            let noted = self.ci_note_failing_tests(sandbox, run, job, kept).await;
+            for line in &noted.lines {
+                ring.push_str(&format!("\n{line}\n"));
+            }
+            if noted.quarantined {
+                reason.get_or_insert_with(|| {
+                    "a failing test is now quarantined as flaky (see the output)".to_owned()
+                });
+            }
+        }
         if let Some(reason) = &reason {
             ring.push_str(&format!("\n[yulius] {reason}\n"));
         }
@@ -1318,6 +1334,8 @@ impl App {
             }
             Err(err) => return Err(err.public_message()),
         };
+        // The quarantined tests, which the project's gate leaves out (SPEC-497 OFC-002).
+        let quarantine = self.ci_quarantine_env(&sandbox.id).await;
         let mut plan = LaunchPlan {
             argv: vec![
                 "/bin/sh".into(),
@@ -1333,6 +1351,7 @@ impl App {
             files: Vec::new(),
             containment: self.ci_containment(sandbox, &home, join),
         };
+        plan.env.extend(quarantine);
         let run_dir = self.ci_run_dir(&job.id);
         let proxy = self
             .ci_job_secrets(sandbox, (run, job), &run_dir, &mut plan, ring)

@@ -95,8 +95,9 @@ pub struct CiUse {
     /// Anonymous memory now, in bytes.
     pub anon_bytes: u64,
     /// Thousandths of the last 10 seconds for which the CI jobs' processes waited for a CPU;
-    /// `None` where it is not measured. For diagnosis only: admission does not use it (a job
-    /// pinned to a few CPUs shows it while the host idles, ADR-0353's amendment).
+    /// `None` where it is not measured. For diagnosis only, logged at `debug` with each reading:
+    /// admission does not use it (a job pinned to a few CPUs shows it while the host idles,
+    /// ADR-0353's amendment).
     pub cpu_pressure: Option<u32>,
 }
 

@@ -139,7 +139,7 @@ whole instance, the capacity less an eighth for the server and the agents. A job
   started in the last minute may still bring, and its own start fit (`Delegation::ci_use`: CPU
   time over at least 5 s, read at each job's start, each dispatcher pass and each look of a
   waiting job, under the admission's lock; anonymous memory). CPU pressure is read for
-  diagnosis only: a job pinned to a few CPUs shows it while the host idles (17 Nov 2026).
+  diagnosis only (logged at `debug`, `cpu_pressure_permille`): a job pinned to a few CPUs shows it while the host idles (17 Nov 2026).
 
 Waiting jobs start by priority (merge trains', pull requests', branches') and age; one that cannot
 start lets the others pass for 10 minutes at most, and a job takes its slot once admitted
@@ -3693,6 +3693,14 @@ it error, and the thrown-away run's kind and time are kept for the CI minutes (a
 written when a run ends, `ci_minutes`; the dispatcher also keeps the host's CI load once a
 minute, `ci_load`, read by hour at `GET /api/analytics/ci-load`)
 ([decision 0354](decisions/0354-a-job-that-fails-for-the-infrastructure-runs-again-once-by-itself.md)).
+A failed job's kept failing tests are recorded (`ci_test_failures`, with the run's commit); one
+that failed in the same job on two pull requests within 48 hours, at heads whose merge bases are
+all on the integration branch (`GitPort::merge_bases`), while the integration branch did not fail it
+(`yulius_domain::ci::flaky`), is quarantined with an issue filed through the GitHub port, one at
+a time (`ci_quarantine`, `App::ci_note_failing_tests`). Every later job of the sandbox gets the list in
+`YULIUS_CI_QUARANTINE` and `YULIUS_CI_QUARANTINE_NEXTEST`, and the hourly prune ends a quarantine
+whose issue is closed, forgetting the test's failures
+([decision 0356](decisions/0356-a-test-failing-on-two-pull-requests-is-quarantined-with-an-issue.md)).
 A failed job cancels the run's other jobs (fail-fast), except that the
 `security` job neither cancels nor is cancelled by them (SPEC-273). `yulius_domain::ci::aggregate` makes the run's
 state, where skipped counts like passed, so a run is never skipped and the merge gate stays one

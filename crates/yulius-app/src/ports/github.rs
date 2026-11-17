@@ -442,6 +442,17 @@ pub trait GitHubPort: Send + Sync {
         repo: &str,
         issue: &NewIssue,
     ) -> AppResult<GhIssue>;
+    /// Whether issue `number` is open; a missing one is not (SPEC-497: a quarantined test stays
+    /// quarantined while its issue is open). Where GitHub cannot be asked: open.
+    async fn issue_open(
+        &self,
+        _token: &Secret,
+        _owner: &str,
+        _repo: &str,
+        _number: u64,
+    ) -> AppResult<bool> {
+        Ok(true)
+    }
     /// Reopens (`open`) or closes issue `number`, first commenting `comment`, unless it already
     /// is in that state; whether it changed (SPEC-217 VSI-004).
     async fn set_issue_state(

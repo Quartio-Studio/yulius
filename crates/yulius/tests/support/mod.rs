@@ -97,6 +97,11 @@ pub struct FakeGitHub {
     /// Issues closed (number to the comments said, in order) by `set_issue_state`; any other
     /// issue is open.
     pub closed_issues: Mutex<HashMap<u64, Vec<String>>>,
+    /// When set, reading whether an issue is open fails as with GitHub down (SPEC-497).
+    pub fail_issue_reads: std::sync::atomic::AtomicBool,
+    /// When set, opening an issue waits for it; `issue_entered` says one began (SPEC-497).
+    pub issue_hold: Mutex<Option<Arc<tokio::sync::Notify>>>,
+    pub issue_entered: tokio::sync::Notify,
     /// Every comment `set_issue_state` added: (number, comment).
     pub issue_comments: Mutex<Vec<(u64, String)>>,
     /// Issues GitHub no longer has (deleted or transferred): `set_issue_state` answers NotFound.
@@ -318,6 +323,11 @@ impl GitHubPort for FakeGitHub {
         repo: &str,
         issue: &NewIssue,
     ) -> AppResult<GhIssue> {
+        let hold = self.issue_hold.lock().ok().and_then(|h| h.clone());
+        if let Some(hold) = hold {
+            self.issue_entered.notify_one();
+            hold.notified().await;
+        }
         if self.fail_issues.load(Ordering::SeqCst) {
             return Err(AppError::Upstream("github down".into()));
         }
@@ -330,6 +340,22 @@ impl GitHubPort for FakeGitHub {
             number,
             html_url: format!("https://github.test/{owner}/{repo}/issues/{number}"),
         })
+    }
+    async fn issue_open(
+        &self,
+        _token: &Secret,
+        _owner: &str,
+        _repo: &str,
+        number: u64,
+    ) -> AppResult<bool> {
+        if self.fail_issue_reads.load(Ordering::SeqCst) {
+            return Err(AppError::Upstream("github down".into()));
+        }
+        Ok(!self
+            .closed_issues
+            .lock()
+            .map_err(AppError::internal)?
+            .contains_key(&number))
     }
     async fn set_issue_state(
         &self,

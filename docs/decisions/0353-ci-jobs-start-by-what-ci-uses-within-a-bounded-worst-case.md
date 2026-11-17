@@ -76,7 +76,7 @@ goes first, so a branch's job can wait longer while merges and pull requests kee
 ## Consequences
 
 - **The host's idle CPUs are used.** A job is held back only:
-  - by contention the kernel measures;
+  - by contention the kernel measures (until the amendment below: no longer);
   - by the bounded worst case;
   - by measured use.
 
@@ -86,7 +86,8 @@ goes first, so a branch's job can wait longer while merges and pull requests kee
   then the host drains only as far as it needs.
 - **Merges come first**: a merge train's run no longer queues behind pull requests' runs.
 - **Contention stops admissions and never stops a running job.** A job admitted between two peaks
-  can still meet the next one. The worst-case bound keeps that within three times the CPUs.
+  can still meet the next one. The worst-case bound keeps that within three times the CPUs. (Since
+  the amendment below, measured use alone stops admissions.)
 - **The job's environment is unchanged**: `YULIUS_CPUS` and the variables derived from it are
   still its budget.
 - **Projects' `cpus` still matter.** They bound the worst case and set a job's parallelism, but they
@@ -109,8 +110,9 @@ to the job's own CPUs (`scripts/ci/bounded.sh`, `taskset`), three of them for a 
   already stops new jobs when CI really fills the host, and the worst case (rule 2) bounds what
   a burst can do.
 
-So the rule is gone. The pressure is still read, for diagnosis, and a test keeps a pinned job's
-pressure from holding others back again.
+So the rule is gone. The pressure is still read, for diagnosis (logged at `debug` with each
+reading, as `cpu_pressure_permille`), and a test keeps a pinned job's pressure from holding others
+back again.
 
 ## Amendment, 17 Nov 2026: the worst case is three times the budget
 
@@ -122,4 +124,3 @@ At twice the budget, the worst case was the limit that held jobs back all night,
 
 Measured use (rule 3) is what stops jobs when CI really fills the host. The worst case only bounds
 a burst, and three times still guarantees each job a third of what it may use.
-

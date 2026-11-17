@@ -225,6 +225,30 @@ pub fn failed_test_names(kept: &str) -> Vec<String> {
     names
 }
 
+/// How many failing tests' output [`FailureScanner::finish`] counted but did not keep (its
+/// `[yulius] N more failing tests' output not kept` line); 0 when it kept every one.
+///
+/// # Examples
+/// ```
+/// use yulius_domain::ci::failures::omitted_tests;
+/// assert_eq!(omitted_tests("FAIL [ 0.1s] (1/9) app a\n[yulius] 17 more failing tests' output not kept\n"), 17);
+/// assert_eq!(omitted_tests("FAIL [ 0.1s] (1/9) app a\n"), 0);
+/// ```
+#[must_use]
+pub fn omitted_tests(kept: &str) -> usize {
+    kept.lines()
+        .rev()
+        .find_map(|line| {
+            let rest = line.strip_prefix("[yulius] ")?;
+            let (count, words) = rest.split_once(' ')?;
+            words
+                .starts_with("more failing test")
+                .then(|| count.parse().ok())
+                .flatten()
+        })
+        .unwrap_or(0)
+}
+
 /// The test a kept nextest header names (`FAIL [   0.1s] (1/4) crate name` at the margin).
 fn kept_nextest_name(line: &str) -> Option<&str> {
     if line.starts_with(char::is_whitespace) {

@@ -118,10 +118,13 @@ mode.
 - **OFC-001** A job that ended for an infrastructure reason (no free Docker address pool, the
   Docker socket's EOF or reset, killed for memory, its process host lost) is run again once by
   itself, its output saying why; a second infrastructure failure ends it error.
-- **OFC-002** A test that fails in the runs of two different pull requests within 48 hours
-  while the integration branch's last run passed it is flaky: Yulius quarantines it at once (its
-  failure alone no longer fails a job, the job's output says so), files one issue in the
-  project's repository and tells the project. It is never rerun until green.
+- **OFC-002** A test that fails in the same job in the runs of two different pull requests
+  within 48 hours, at heads that share no commit outside the integration branch, while the
+  integration branch did not fail it then, is flaky: Yulius
+  quarantines it at once, files one issue in the project's repository, says so in the job's
+  output and tells every later job of the project in its environment (`YULIUS_CI_QUARANTINE`, a
+  nextest filter in `YULIUS_CI_QUARANTINE_NEXTEST`), so the project's gate leaves it out; closing
+  the issue ends the quarantine. It is never rerun until green.
 - **OFC-003** CI minutes are counted by outcome (passed, failed in the change, failed outside
   it, cancelled) per project and day, and read with the merge queue's numbers
   (`GET /api/analytics/merge-queue`, the Pipeline tab's Merge queue card), with the job minutes
@@ -164,9 +167,12 @@ mode.
 - [x] Slice B: the reruns and minutes' review rounds 1 to 3 answered
 - [x] Slice B: the reruns and minutes' last review round
 - [x] Slice A3: the operator's admission amendment applied
-- [ ] Slice A3: the amendment's review rounds
-- [ ] Slice B: flaky tests quarantined with an issue, the project told
-- [ ] Slice B: quarantine documents, ADR and review
+- [x] Slice A3: the amendment's review rounds
+- [x] Slice B: flaky tests quarantined with an issue, the project told
+- [x] Slice B: quarantine documents and ADR
+- [x] Slice B: quarantine review round 1 answered
+- [x] Slice B: quarantine review round 2 answered
+- [x] Slice B: quarantine review round 3 answered
 - [ ] Slice C: a failed member leaves without cancelling the candidate
 - [ ] Slice C: a passed candidate merges while own runs go
 - [ ] Slice C: derived-file conflicts handled without a wasted cycle
@@ -210,7 +216,8 @@ mode.
 
   Hence measured use plus starting jobs for room, twice the budget for the worst case, the
   kernel's CPU pressure against contention, and jobs that fit passing one that does not, within
-  10 minutes.
+  10 minutes. Amended 17 Nov 2026 by the operator (slice A3): three times the budget, and no
+  pressure rule (a job pinned to a few CPUs showed pressure while the host idled).
 - **The budget counts measured use, not only declarations** (slice A): a job's `cpus` is a
   promise the job does not keep (its tools and containers use what is free), so admitting by
   declarations let four 16-CPU jobs take 18.8 min each. Measuring per job would need each
@@ -220,6 +227,13 @@ mode.
   31 networks per engine, which side-by-side test runs use up; /24 networks out of the same ranges
   give 4,096 without touching an address the sandbox did not already give Docker. The wait for 32
   free is the budget's part for an engine that was started with the old pools or leaks networks.
+- **A flaky test is told to the project's gate, not turned into a pass by Yulius** (slice B,
+  [ADR-0356](../../docs/decisions/0356-a-test-failing-on-two-pull-requests-is-quarantined-with-an-issue.md)):
+  passing a failed job whose failing tests are all quarantined would need every failure read from
+  its output, and a build error or a runner's own failure missed there would pass a run that gates
+  a merge. The gate knows what it ran. The environment, not a file in the job's home, carries the
+  list: the job could have linked such a file elsewhere. Two pull requests, not one pull request's
+  repeated runs: only an unrelated change shows the failure is not the change's.
 - **`YULIUS_CI_LANES` keeps its default** (slice A): it bounds checkouts per sandbox (each lane
   keeps its own job folders and caches, a disk cost), and the budget now decides the load, so a
   lower default would only make a small project's runs queue behind each other for nothing.
@@ -547,6 +561,96 @@ mode.
   summary (`" 0 failing"` as a whole word); a failure on an unfinished last line is seen (unit
   `a_failure_on_the_unfinished_last_line_is_seen`). Still read only, not tested through the
   executor: a second start that cannot be made, and the mapping of a lost host.
+
+### Slice B (second pull request): flaky tests quarantined with an issue
+
+- OFC-002: `yulius_domain::ci::flaky::{is_flaky, nextest_filter}` (doctests; units
+  `a_test_failing_on_two_pull_requests_is_flaky`: one pull request's three runs, a failure older
+  than 48 hours, the integration branch failing it and another branch's failure do not count;
+  `the_quarantine_is_a_nextest_filter`: a name with `)` or `|` is left out). Migration 0065
+  (`ci_test_failures`, `ci_quarantine`); store unit `failing_tests_and_the_quarantine_are_kept`
+  (by job and time, forgotten past the keep, quarantined once, per sandbox, released).
+  `App::ci_note_failing_tests` at a failed job's end, `ci_quarantine` (the issue through the
+  GitHub port, audited `ci.test.quarantined`), `ci_quarantine_env` in every job's plan,
+  `ci_release_quarantines` in the hourly prune (`GitHubPort::issue_open`; audited
+  `ci.test.released`); unit `the_issue_names_the_test_its_pull_requests_and_how_it_ends`.
+  `local_ci::a_test_failing_on_two_pull_requests_is_quarantined_with_an_issue` (real Git and
+  jobs, a fake GitHub): the test fails in #1's run (nothing quarantined), then in #2's: one issue
+  "Flaky test quarantined: app tests::flaky", #2's output says it is quarantined (issue #101);
+  dev's next job gets `YULIUS_CI_QUARANTINE_NEXTEST=(binary_id(app) & test(=tests::flaky))`;
+  the issue closed, the release leaves no quarantine.
+- This repository's gate leaves the quarantine out: `cargo xtask test` adds
+  `-E "not ($YULIUS_CI_QUARANTINE_NEXTEST)"` and prints what it left out.
+- ADR-0356; architecture (CI job states), `api.md` (the job's variables), `operations.md`,
+  `changes.md`.
+- Review round 1 of the quarantine (Fable 5.2, head dd2e2cc75). Request changes, all own code.
+  Answered, each test failing with its fix undone by hand (seven mutations, all caught):
+  - Major: two jobs failing the test at once filed two issues. One quarantine is decided at a time
+    (`CiState::quarantine`), the list read again under the lock; the second job names the issue.
+    `local_ci::two_jobs_at_once_file_one_issue` (the fake GitHub holds the first filing).
+  - Major: a release kept the test's failures, so one more failure quarantined it again.
+    `release_test` forgets them (store unit; the main test's fourth pull request files nothing).
+  - Major: a chained pull request and its predecessor counted as two changes. Each failure keeps
+    its commit; two pull requests count only when Git's merge base of their heads is on the
+    integration branch (domain unit; `local_ci::no_quarantine_when_the_integration_branch_or_a_shared_commit_fails_it`,
+    which also covers the integration branch failing the test).
+  - Major: a filter naming a binary the head lacks fails nextest (probed: "operator didn't match
+    any binary IDs"). `YULIUS_CI_QUARANTINE_NEXTEST` names test paths only; `cargo xtask test`
+    builds its own filter from the names and the binaries `cargo nextest list --list-type
+    binaries-only` lists, with `binary_id(=…)` (unit
+    `quarantined_tests_are_left_out_in_the_binaries_this_head_builds`).
+  - Major: the cap of 10 counted kept names only. The omitted count is added
+    (`failures::omitted_tests`, doctest; `local_ci::no_quarantine_without_its_issue_or_for_a_broken_job`:
+    twelve 9 KiB failures, four kept).
+  - Major: the app layer's other paths. The main test now covers the reason, each job running
+    once, a third pull request filing no second issue, an open and an unreadable issue keeping
+    the quarantine, and one failure after the release; the issue failing to be filed leaves
+    nothing quarantined and the reason the job's own; `GitHubClient::issue_open` has a client
+    test (open, closed, 404, 410).
+  - Minors: the reason only when a test was quarantined; names checked by
+    `flaky::quarantinable` (no backtick, `@`, control character or leading `/`; unit); `=` in
+    the binary match. Nits: the release audited only when it was recorded, with the job; a
+    sandbox gone or removed loses its quarantines; ADR-0356's recipe with `${…:+…}`;
+    `job_key` is read by the release's audit.
+- Review round 2 of the quarantine (Fable 5.2, head 49b46c83d). Request changes, own code.
+  Answered:
+  - Major: two chained heads that both merged a newer `dev` commit have two merge bases, and
+    plain `git merge-base` named the `dev` one (probed by the reviewer with Git 2.53), so they
+    read as unrelated; and the adapter turned every Git error into "no base", read as unrelated.
+    `GitPort::merge_bases` (`merge-base --all`, an error stays an error; `yulius-git` test
+    `merge_bases_lists_every_best_common_ancestor`: a criss-cross history's two bases, none for
+    an orphan, an unknown revision an error); two heads are one change unless every base is on
+    the integration branch. `no_quarantine_when_the_integration_branch_or_a_shared_commit_fails_it`
+    now merges a newer `dev` commit into both chained branches (both fail, no issue) and asks
+    about a head the clone lacks (no quarantine). Undone by hand, both cases fail.
+  - Nits: names at most 200 bytes (the title within 256; unit at 200 and 201); the line for a
+    test already quarantined says a job started before it, or a gate not reading the variable,
+    still runs it; the lock is per sandbox (`CiState::quarantine_locks`); `cargo xtask test`
+    prints its listing step and shows its compile output.
+- Checks run after review round 2: `cargo fmt --check`; `cargo clippy --workspace
+  --all-targets -D warnings`; rustdoc of `yulius-app`, `yulius-domain`, `yulius-git` with
+  warnings denied; the unit tests of `yulius-domain`, `yulius-store`, `yulius-app`,
+  `yulius-github`, `yulius-git`, `xtask` (1,430 passed); `local_ci::` and `analytics::` (105
+  passed); `yulius-domain` doctests (24 passed).
+- Review round 3 of the quarantine (Fable 5.2, head 2eb0fa696) approved: no blocker, major or
+  minor. Its nit (the hourly release asks GitHub inside the CI poll loop, one request per
+  quarantine) is taken off the loop in slice C's pull request, not after the approval.
+- Leftovers of #1373's and #1377's reviews: an older client's `docker:` prefix before its socket
+  words counts (unit case in `a_failure_of_the_change_is_never_the_infrastructures`, failing
+  before the fix); the CI's CPU pressure is logged at `debug` (`cpu_pressure_permille`) where it
+  is read; stale pressure wording in `operations.md`, ADR-0353's consequences, the spec's
+  Decisions and two doc comments; ADR-0353's trailing blank line. Still read only, not tested
+  through the executor: a second start that cannot be made, and the mapping of a lost host.
+- Checks run on this head: `cargo fmt --check`; `cargo clippy --workspace --all-targets -D
+  warnings`; the unit tests of `yulius-domain`, `yulius-store`, `yulius-app`, `yulius-github`
+  (1,300 passed); `local_ci::` and `analytics::` (102 passed); `yulius-domain` doctests.
+  `scripts/dev mutants`: 108 listed, 60 caught, 0 missed, 0 timed out, 48 unviable, 0 not
+  reached (bound 40 min, 1613 s).
+- Checks run after review round 1 (head after the fixes): `cargo fmt --check`; `cargo clippy
+  --workspace --all-targets -D warnings`; rustdoc of `yulius-app` and `yulius-domain` with
+  warnings denied; the unit tests of `yulius-domain`, `yulius-store`, `yulius-app`,
+  `yulius-github`, `xtask` (1,314 passed); `local_ci::` and `analytics::` (105 passed);
+  `yulius-domain` doctests (24 passed).
 
 ### Slice A3: the operator's amendment to the admission (its own pull request, first)
 
