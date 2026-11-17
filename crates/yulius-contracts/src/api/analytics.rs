@@ -327,6 +327,73 @@ pub struct MergeQueueAnalytics {
     pub merges: u32,
     /// The median minutes from a merge's last arming to the merge; `null` without any.
     pub median_arm_to_merge_minutes: Option<f64>,
+    /// CI minutes over the range by how the runs ended (SPEC-497 OFC-003).
+    #[serde(default)]
+    pub ci_minutes: CiMinutes,
+    /// The same per UTC day of the runs' start, oldest first; days with no run are left out.
+    #[serde(default)]
+    pub ci_minutes_by_day: Vec<CiMinutesDay>,
+}
+
+/// CI minutes by how the runs ended (SPEC-497 OFC-003): run minutes (start to end) of runs that
+/// passed, failed, failed only for the infrastructure and were cancelled; and job minutes thrown
+/// away by infrastructure failures that were run again.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct CiMinutes {
+    /// Runs that passed.
+    pub passed: f64,
+    /// Runs that failed for the change (or a reason not told apart).
+    pub failed: f64,
+    /// Runs that failed only for the infrastructure.
+    pub failed_outside: f64,
+    /// Runs that were cancelled.
+    pub cancelled: f64,
+    /// Job minutes of runs thrown away for the infrastructure (inside runs of any outcome).
+    pub rerun: f64,
+    /// `(failed_outside + cancelled) / all four`; `null` without any run. The target: 0.15.
+    pub outside_share: Option<f64>,
+}
+
+/// `GET /api/analytics/ci-load`: the host's load from CI per UTC hour (SPEC-497): job-minutes CI
+/// jobs waited to start, the host's CPUs busy, and the CPUs running jobs reserved and measured.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct CiLoadAnalytics {
+    /// The range read.
+    pub range: AnalyticsRange,
+    /// Per hour, oldest first; hours with no reading are left out.
+    pub hours: Vec<CiLoadHour>,
+    /// Job-minutes waited over the range.
+    pub wait_job_minutes: u32,
+    /// The most job-minutes waited in one hour.
+    pub peak_wait_job_minutes: u32,
+    /// The host's CPUs busy, percent, averaged over the hours; `null` without a reading.
+    pub busy_percent: Option<f64>,
+}
+
+/// One hour of [`CiLoadAnalytics`].
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct CiLoadHour {
+    /// `YYYY-MM-DDTHH` (UTC).
+    pub hour: String,
+    /// Minutes read.
+    pub minutes: u32,
+    /// Job-minutes CI jobs waited to start.
+    pub wait_job_minutes: u32,
+    /// The host's CPUs busy, percent; `null` when not read.
+    pub busy_percent: Option<f64>,
+    /// CPUs the running CI jobs reserved, averaged.
+    pub held_cpus: f64,
+    /// CPUs their sandboxes' CI and engine groups used, averaged; `null` when not measured.
+    pub measured_cpus: Option<f64>,
+}
+
+/// One day's [`CiMinutes`].
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct CiMinutesDay {
+    /// `YYYY-MM-DD` (UTC).
+    pub day: String,
+    /// Its minutes.
+    pub minutes: CiMinutes,
 }
 
 /// `GET /api/analytics/docker`: what the sandboxes' Docker fronts needed over the range, per week

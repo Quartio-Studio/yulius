@@ -857,6 +857,8 @@ pub struct SettableSystem {
     pub disk: std::sync::Mutex<Option<(u64, u64)>>,
     /// Logical CPUs and memory bytes ([`FixedSystem`]'s by default).
     pub host: std::sync::Mutex<Option<(u32, u64)>>,
+    /// The host's CPU time counters `(busy, total)` (unknown by default; SPEC-497).
+    pub ticks: std::sync::Mutex<Option<(u64, u64)>>,
 }
 
 impl SettableSystem {
@@ -866,6 +868,14 @@ impl SettableSystem {
             .host
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((cpus, memory));
+    }
+
+    /// Sets the host's CPU time counters `(busy, total)`.
+    pub fn set_ticks(&self, busy: u64, total: u64) {
+        *self
+            .ticks
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((busy, total));
     }
 
     /// Sets the data disk's total and used bytes.
@@ -878,6 +888,13 @@ impl SettableSystem {
 }
 
 impl yulius_app::ports::system::SystemProbe for SettableSystem {
+    fn cpu_ticks(&self) -> Option<(u64, u64)> {
+        *self
+            .ticks
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
     fn snapshot(&self, dir: &std::path::Path) -> yulius_app::ports::system::SystemSnapshot {
         let disk = *self
             .disk

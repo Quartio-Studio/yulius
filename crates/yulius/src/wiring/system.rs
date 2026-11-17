@@ -77,9 +77,29 @@ fn statvfs_of(path: &Path) -> Option<(u64, u64)> {
     Some((total, total.saturating_sub(available)))
 }
 
+/// `(busy, total)` clock ticks of the `cpu` line of `/proc/stat` (user, nice, system, idle,
+/// iowait, irq, softirq, steal): idle and iowait are not busy.
+fn cpu_ticks_of(stat: &str) -> Option<(u64, u64)> {
+    let line = stat.lines().find(|line| line.starts_with("cpu "))?;
+    let fields: Vec<u64> = line
+        .split_whitespace()
+        .skip(1)
+        .take(8)
+        .map(str::parse)
+        .collect::<Result<_, _>>()
+        .ok()?;
+    let total: u64 = fields.iter().sum();
+    let idle = fields.get(3)? + fields.get(4).copied().unwrap_or(0);
+    Some((total.saturating_sub(idle), total))
+}
+
 impl SystemProbe for SysinfoProbe {
     fn disk(&self, data_dir: &Path) -> Option<(u64, u64)> {
         volume_of(data_dir)
+    }
+
+    fn cpu_ticks(&self) -> Option<(u64, u64)> {
+        cpu_ticks_of(&std::fs::read_to_string("/proc/stat").ok()?)
     }
 
     fn snapshot(&self, data_dir: &Path) -> SystemSnapshot {
@@ -116,6 +136,14 @@ impl SystemProbe for SysinfoProbe {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// SPEC-497: the host's busy and total ticks, idle and iowait not busy.
+    #[test]
+    fn cpu_ticks_are_read_from_proc_stat() {
+        let stat = "cpu  100 5 50 800 40 3 2 0 0 0\ncpu0 1 2 3 4 5 6 7 8 0 0\n";
+        assert_eq!(cpu_ticks_of(stat), Some((160, 1000)));
+        assert_eq!(cpu_ticks_of("intr 1 2 3\n"), None);
+    }
 
     #[test]
     fn the_file_system_reports_its_size_when_no_disk_is_listed_for_it() {

@@ -10,6 +10,7 @@
 
 pub mod actions;
 pub mod failures;
+pub mod infra;
 pub mod vidoc;
 
 use crate::delivery::ChecksState;

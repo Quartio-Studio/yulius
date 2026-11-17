@@ -51,6 +51,15 @@ test('the Pipeline shows delivery figures, a stage trend with p50 and p90, and t
   await expect(mergeQueue).toContainText(/Merged\s*6/);
   await expect(mergeQueue).toContainText(/Dissolved\s*3\s*a member left 2 · bisected 1/);
   await expect(mergeQueue).toContainText(/Arming to merge\s*32 min\s*median of 14 armed merges/);
+  // SPEC-497 OFC-003: CI minutes by how the runs ended, and the share outside the change.
+  await expect(mergeQueue).toContainText(/CI minutes\s*1,?228\s*588 passed · 120 failed/);
+  await expect(mergeQueue).toContainText(
+    /Outside the change\s*42%\s*406 min failed for the infrastructure · 114 min cancelled · 12 min run again; target 15%/);
+  // SPEC-497: the host's load from CI, per hour: waits, busy and CPUs held against measured.
+  const load = screen.getByRole('region', 'CI load');
+  await expect(load).toContainText(/Waiting to start\s*1,?552 job-min\s*most in one hour: 904 \(11-16 19:00\)/);
+  await expect(load).toContainText(/Host busy\s*28%/);
+  await expect(load).toContainText(/CPUs held by CI\s*54\s*18 measured in use/);
 
   // The CI run's trend by default: two lines, labelled and in a legend, and a table of every day.
   const trend = screen.getByRole('region', 'Trend: CI · Run');

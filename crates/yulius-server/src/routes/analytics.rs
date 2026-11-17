@@ -92,6 +92,18 @@ pub async fn docker(
     ))
 }
 
+/// `GET /api/analytics/ci-load` (SPEC-497).
+pub async fn ci_load(
+    State(app): State<AppState>,
+    Auth(ctx): Auth,
+    Query(q): Query<RangeQuery>,
+) -> ApiResult<Json<yulius_contracts::api::analytics::CiLoadAnalytics>> {
+    Ok(Json(
+        app.analytics_ci_load(&ctx, q.from.as_deref(), q.to.as_deref())
+            .await?,
+    ))
+}
+
 /// Safe file-name part from a `YYYY-MM-DD` parameter (already validated by the app).
 fn name_part(value: Option<&str>, fallback: &str) -> String {
     value

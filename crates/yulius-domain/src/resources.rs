@@ -524,6 +524,100 @@ pub fn admit(budget: Capacity, held: &Held, need: Budget) -> Admission {
     Admission::Now
 }
 
+/// One minute's reading of the host for CI (SPEC-497): how busy its CPUs were over the minute
+/// (per mille), the CPUs running CI jobs reserved, what their sandboxes' CI and engine groups
+/// were measured to use, and how many CI jobs waited to start.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LoadMinute {
+    /// The minute's start.
+    pub at: crate::time::Timestamp,
+    /// The host's CPUs busy over the minute, per mille; `None` where the host does not say.
+    pub busy_permille: Option<u32>,
+    /// CPUs the running CI jobs reserved.
+    pub held_cpus: u32,
+    /// CPUs their sandboxes' CI and engine groups used, when measured.
+    pub measured_cpus: Option<u32>,
+    /// CI jobs of running runs that had not started (waiting for a turn, networks, a slot or
+    /// the budget).
+    pub waiting_jobs: u32,
+}
+
+/// One hour of [`LoadMinute`]s.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LoadHour {
+    /// `YYYY-MM-DDTHH` (UTC).
+    pub hour: String,
+    /// Minutes read.
+    pub minutes: u32,
+    /// Job-minutes CI jobs waited to start (each read minute's waiting jobs).
+    pub wait_job_minutes: u32,
+    /// The host's CPUs busy, in percent, averaged over the minutes that say.
+    pub busy_percent: Option<f64>,
+    /// CPUs reserved by running CI jobs, averaged.
+    pub held_cpus: f64,
+    /// CPUs measured, averaged over the minutes that say.
+    pub measured_cpus: Option<f64>,
+}
+
+/// The host's CPUs busy between two readings of `(busy, total)` time counters, per mille;
+/// `None` when the counters did not move forward.
+///
+/// # Examples
+/// ```
+/// use yulius_domain::resources::busy_permille;
+/// assert_eq!(busy_permille((100, 1000), (400, 2000)), Some(300));
+/// assert_eq!(busy_permille((100, 1000), (100, 1000)), None);
+/// ```
+#[must_use]
+pub fn busy_permille(before: (u64, u64), after: (u64, u64)) -> Option<u32> {
+    let total = after.1.checked_sub(before.1).filter(|t| *t > 0)?;
+    let busy = after.0.checked_sub(before.0)?.min(total);
+    u32::try_from(busy * 1000 / total).ok()
+}
+
+/// `minutes` by UTC hour, oldest first.
+#[must_use]
+pub fn load_by_hour(minutes: &[LoadMinute]) -> Vec<LoadHour> {
+    let mut hours: std::collections::BTreeMap<String, Vec<&LoadMinute>> =
+        std::collections::BTreeMap::new();
+    for minute in minutes {
+        let hour = crate::time::format_rfc3339(minute.at)
+            .chars()
+            .take(13)
+            .collect::<String>();
+        hours.entry(hour).or_default().push(minute);
+    }
+    let mean = |values: Vec<f64>| {
+        #[expect(clippy::cast_precision_loss, reason = "minutes in an hour")]
+        let n = values.len() as f64;
+        (!values.is_empty()).then(|| values.iter().sum::<f64>() / n)
+    };
+    hours
+        .into_iter()
+        .map(|(hour, minutes)| LoadHour {
+            hour,
+            minutes: u32::try_from(minutes.len()).unwrap_or(u32::MAX),
+            wait_job_minutes: minutes.iter().map(|m| m.waiting_jobs).sum(),
+            busy_percent: mean(
+                minutes
+                    .iter()
+                    .filter_map(|m| m.busy_permille)
+                    .map(|p| f64::from(p) / 10.0)
+                    .collect(),
+            ),
+            held_cpus: mean(minutes.iter().map(|m| f64::from(m.held_cpus)).collect())
+                .unwrap_or(0.0),
+            measured_cpus: mean(
+                minutes
+                    .iter()
+                    .filter_map(|m| m.measured_cpus)
+                    .map(f64::from)
+                    .collect(),
+            ),
+        })
+        .collect()
+}
+
 /// What a repository without a `[resources.env]` table gets (SPEC-268 PID-007): Cargo's build
 /// jobs, nextest's and libtest's test threads at the budget's CPUs. Other tools ignore them, so a
 /// repository in another language is not affected; one with a table, even empty, gets its own.
@@ -673,6 +767,41 @@ pub fn budget_env(budget: Budget, templates: &[EnvTemplate]) -> Vec<(String, Str
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// SPEC-497: a host's minutes by hour: waiting job-minutes add up, busy and CPUs average
+    /// over the minutes that say.
+    #[test]
+    fn the_hosts_minutes_add_up_by_hour() {
+        let minute =
+            |at: i64, busy: Option<u32>, held: u32, measured: Option<u32>, waiting: u32| {
+                LoadMinute {
+                    at: crate::time::Timestamp(at * 60_000),
+                    busy_permille: busy,
+                    held_cpus: held,
+                    measured_cpus: measured,
+                    waiting_jobs: waiting,
+                }
+            };
+        let hours = load_by_hour(&[
+            minute(0, Some(250), 50, Some(16), 8),
+            minute(1, Some(350), 56, None, 10),
+            minute(2, None, 56, Some(20), 4),
+            minute(60, Some(100), 0, None, 0),
+        ]);
+        assert_eq!(hours.len(), 2);
+        assert_eq!(
+            hours[0],
+            LoadHour {
+                hour: "1970-01-01T00".to_owned(),
+                minutes: 3,
+                wait_job_minutes: 22,
+                busy_percent: Some(30.0),
+                held_cpus: 54.0,
+                measured_cpus: Some(18.0),
+            }
+        );
+        assert_eq!(hours[1].measured_cpus, None);
+    }
 
     /// SPEC-497 HBA-001, HBA-002: the reserve of the server and agents; what CI uses decides,
     /// with what starting jobs may still bring; the worst case is bounded at twice the budget;
