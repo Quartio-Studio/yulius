@@ -6,6 +6,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-17
 
+- Antigravity, slice B (SPEC-505 pull request 2, task #487): Yulius provides the pinned
+  Antigravity CLI (`agy` 1.5.10) itself, downloaded once from Google's release storage into
+  `<data>/antigravity-cli`, only when its sha512 matches the one in the source, and with the
+  host's `agy` as the fallback. One installer now serves Codex and Antigravity
+  (`wiring/pinned_cli.rs`).
+
 - Antigravity, slice A (SPEC-505 pull request 1, task #487,
   [ADR-0361](decisions/0361-antigravity-is-a-third-harness-picked-at-random-by-default.md)):
   Google's Antigravity CLI (`agy` 1.5.10) gets an adapter beside Claude Code's and Codex's: its

@@ -672,9 +672,111 @@ pub mod codex {
     }
 }
 
+/// The Antigravity CLI Yulius pins and provides to Antigravity runs (SPEC-505 AGY-007, ADR-0361):
+/// Google's release tarballs, one per platform, each holding the single binary `antigravity`.
+pub mod antigravity {
+    /// The pinned release: the newest on 2026-11-17, checked against the harness then
+    /// (SPEC-505).
+    pub const VERSION: &str = "1.5.10";
+    /// The release's build, part of its download path.
+    pub const BUILD: &str = "1.5.10-5253791805734912";
+    /// Where Google publishes the tarballs.
+    pub const HOST: &str = "storage.googleapis.com";
+    /// The binary in a tarball and below an installed release's directory.
+    pub const BINARY: &str = "antigravity";
+
+    /// A platform's tarball of the pinned release.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct Platform {
+        /// Name of the platform in the installed release's directory (`linux-x64`).
+        pub suffix: &'static str,
+        /// Google's folder of the platform (`linux-x64`, `linux-arm`).
+        pub folder: &'static str,
+        /// The tarball's file name.
+        pub file: &'static str,
+        /// ELF `e_machine` of its binary.
+        pub machine: u16,
+        /// The tarball's sha512 in hexadecimal, as Google's release manifest
+        /// (`manifests/<platform>.json`) gave it for [`VERSION`].
+        pub sha512: &'static str,
+    }
+
+    impl Platform {
+        /// Path of its tarball on [`HOST`].
+        #[must_use]
+        pub fn tarball_path(&self) -> String {
+            format!(
+                "/antigravity-public/antigravity-cli/{BUILD}/{}/{}",
+                self.folder, self.file
+            )
+        }
+
+        /// Name of the installed release's directory.
+        #[must_use]
+        pub fn install_name(&self) -> String {
+            format!("{VERSION}-{}", self.suffix)
+        }
+    }
+
+    /// The platform tarball for Rust's `os` and `arch` names; `None` where Yulius provides none.
+    /// The Linux builds use the host's C library (glibc), which the sandboxes copy from the host.
+    #[must_use]
+    pub fn platform(os: &str, arch: &str) -> Option<Platform> {
+        match (os, arch) {
+            ("linux", "x86_64") => Some(Platform {
+                suffix: "linux-x64",
+                folder: "linux-x64",
+                file: "cli_linux_x64.tar.gz",
+                machine: 62,
+                sha512: "713ae840845d74736e2d4a96f5d84e3353d614e73a875793ddf500997ccee09595448cebfd8e94fdd90ce2a0fa97707bd1cc29763dcfe01c945d80c92234378f",
+            }),
+            ("linux", "aarch64") => Some(Platform {
+                suffix: "linux-arm64",
+                folder: "linux-arm",
+                file: "cli_linux_arm64.tar.gz",
+                machine: 183,
+                sha512: "f9f5c7ebc47a8b8de536acca8116b1f5a43dca614cde94008fe5a510517b23535fb281d85416930d76e76478858bf3dc66ea6d1b0c9b6eeadcfabe4d8ef2a807",
+            }),
+            _ => None,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// SPEC-505 AGY-007: the pinned agy 1.5.10 is published per Linux platform at Google's path,
+    /// each with a full sha512; other hosts get none.
+    #[test]
+    fn the_pinned_antigravity_cli_names_its_tarballs() {
+        let x64 = antigravity::platform("linux", "x86_64");
+        assert_eq!(
+            x64.map(|p| p.tarball_path()).as_deref(),
+            Some(
+                "/antigravity-public/antigravity-cli/1.5.10-5253791805734912/linux-x64/\
+                 cli_linux_x64.tar.gz"
+            )
+        );
+        assert_eq!(
+            x64.map(|p| p.install_name()).as_deref(),
+            Some("1.5.10-linux-x64")
+        );
+        let arm = antigravity::platform("linux", "aarch64");
+        assert_eq!(
+            arm.map(|p| p.tarball_path()).as_deref(),
+            Some(
+                "/antigravity-public/antigravity-cli/1.5.10-5253791805734912/linux-arm/\
+                 cli_linux_arm64.tar.gz"
+            )
+        );
+        for platform in [x64, arm].into_iter().flatten() {
+            assert_eq!(platform.sha512.len(), 128);
+            assert!(platform.sha512.bytes().all(|b| b.is_ascii_hexdigit()));
+        }
+        assert_eq!(antigravity::platform("macos", "aarch64"), None);
+        assert_eq!(antigravity::platform("linux", "riscv64"), None);
+    }
 
     fn v(text: &str) -> Version {
         Version::parse(text).unwrap_or_else(|| panic!("{text} parses"))

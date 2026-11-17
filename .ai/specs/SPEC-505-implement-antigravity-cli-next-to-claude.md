@@ -122,7 +122,7 @@ Six pull requests, each merged into `dev` on green before the next begins.
 - [x] Slice A: Antigravity launch plan, home files and session paths in yulius-harness
 - [x] Slice A: Antigravity hooks reach Yulius as Claude Code's through the hook client
 - [x] Slice A: review findings fixed and the slice delivered
-- [ ] Slice B: Yulius installs the pinned agy 1.5.10 into its data directory
+- [x] Slice B: Yulius installs the pinned agy 1.5.10 into its data directory
 - [ ] Slice B: review findings fixed and the slice delivered
 - [ ] Slice C1: an Antigravity task runs in the supervisor (homes, session id, hooks, write-back, rotation)
 - [ ] Slice C1: the fake agent speaks Antigravity and integration tests cover an Antigravity task
@@ -302,3 +302,16 @@ Six pull requests, each merged into `dev` on green before the next begins.
 - CI run 24ec8826 on 2f6939eb7 failed on
   `merge_train::a_member_whose_own_run_fails_leaves_the_candidate`, which this change does not
   touch; it failed on #1397 too and Yulius quarantined it as flaky (issue #1398).
+
+### Slice B (the pinned agy)
+
+- `yulius_domain::agent_cli::antigravity` pins 1.5.10 for linux-x64 and linux-arm64 (paths and
+  sha512 from Google's manifests `manifests/linux_amd64.json` and `linux_arm64.json` of
+  2026-11-17); the Codex installer became `wiring/pinned_cli.rs` (`PinnedCli`, a `Release` per
+  CLI), Codex's behaviour and messages unchanged.
+- Tests: `antigravity_cli::*` (install once for concurrent callers, refused digest, missing
+  binary, wrong machine, a link; the adapter's provided CLI, host `agy` fallback and reasons) and
+  `codex_cli::*`, `codex::*`: 14 and 31 passed; the domain's
+  `the_pinned_antigravity_cli_names_its_tarballs` passed.
+- `antigravity_cli::the_real_pinned_release_installs_from_google` (`--run-ignored only`):
+  passed in 8.5 s; the installed binary prints `1.5.10`.

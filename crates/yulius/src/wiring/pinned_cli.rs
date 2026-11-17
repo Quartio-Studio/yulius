@@ -1,20 +1,21 @@
-//! The pinned Codex CLI provided to Codex runs and sign-ins (SPEC-503 CLI-001, CDX-012,
-//! ADR-0355).
+//! The pinned agent CLIs Yulius provides to runs and sign-ins: Codex (SPEC-503 CLI-001, CDX-012,
+//! ADR-0355) and Antigravity (SPEC-505 AGY-007, ADR-0361).
 //!
-//! **Install.** On the first need (a Codex run or sign-in, or at start when Codex accounts
-//! exist) the platform package of [`codex::VERSION`] is downloaded from npm's registry, its
-//! sha512 checked against the one pinned in [`codex::platform`] (not the registry's word), and
-//! its `package/vendor/<triple>/` tree (the native `bin/codex`, `codex-path/rg`,
-//! `codex-resources`, `codex-package.json`) unpacked into a temporary directory: regular files
-//! only, no links, no path leaving it, bounded. `bin/codex` must be a 64-bit ELF for this
-//! platform. The tree then moves to `<data>/codex-cli/<version>-<platform>` by an atomic rename;
-//! other releases there go once no process runs them. Nothing runs `npm`, a package script or
-//! the binary on the host.
+//! **Install.** On the first need (a run or sign-in, or at start when accounts of the provider
+//! exist) the platform tarball of the pinned release is downloaded (Codex: npm's registry;
+//! Antigravity: Google's release storage), its sha512 checked against the one pinned in the
+//! source (not the server's word), and its release tree (Codex: `package/vendor/<triple>/`, the
+//! native `bin/codex`, `codex-path/rg`, `codex-resources`, `codex-package.json`; Antigravity: the
+//! single `antigravity`) unpacked into a temporary directory: regular files only, no links, no
+//! path leaving it, bounded. The binary must be a 64-bit ELF for this platform. The tree then
+//! moves to `<root>/<version>-<platform>` by an atomic rename; other releases there go once no
+//! process runs them. Nothing runs `npm`, a package script, an installer or the binary on the
+//! host.
 //!
-//! **Use.** Codex runs and sign-ins start `<dir>/bin/codex` by
-//! its absolute path through `HarnessPort::provide_codex`; a contained run binds `<dir>`
-//! read-only at the same path, so a sandbox without Codex in its system layer still runs it.
-//! Installs are one at a time: callers wait for the one under way.
+//! **Use.** Runs and sign-ins start the binary by its absolute path through
+//! `HarnessPort::provide_codex` and `provide_antigravity`; a contained run binds the release's
+//! directory read-only at the same path, so a sandbox without the CLI in its system layer still
+//! runs it. Installs are one at a time: callers wait for the one under way.
 
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
@@ -24,15 +25,16 @@ use sha2::{Digest, Sha512};
 use tokio::io::AsyncWriteExt as _;
 use yulius_app::ports::harness::ProvidedCli;
 use yulius_domain::agent_cli::REGISTRY_HOST;
-use yulius_domain::agent_cli::codex::{self, Platform};
+use yulius_domain::agent_cli::{antigravity, codex};
 
 use crate::wiring::claude_cli::{
     REGISTRY, UpdateError, running_executables, sha512_of, unique_suffix,
 };
 
-/// The largest tarball downloaded (0.169.0's linux-x64 package is 167 MB packed).
+/// The largest tarball downloaded (Codex 0.169.0's linux-x64 package is 167 MB packed,
+/// Antigravity 1.5.10's 100 MB).
 pub const MAX_TARBALL: u64 = 512 * 1024 * 1024;
-/// The largest unpacked release (0.169.0's is 423 MB).
+/// The largest unpacked release (Codex 0.169.0's is 423 MB, Antigravity 1.5.10's 267 MB).
 pub const MAX_UNPACKED: u64 = 1536 * 1024 * 1024;
 /// Deadline of the download.
 const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(15 * 60);
@@ -41,19 +43,111 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 /// Prefix of temporary entries in the root, removed by the next install.
 const STAGING: &str = ".staging-";
 /// How long a failed install answers callers at once with its reason before one tries again:
-/// every Codex start would otherwise wait for its own failing download.
+/// every start would otherwise wait for its own failing download.
 pub const RETRY_AFTER: Duration = Duration::from_secs(60);
 
 fn fail<T>(why: impl Into<String>) -> Result<T, UpdateError> {
     Err(UpdateError::new(why.into()))
 }
 
-/// Installs and provides the pinned Codex CLI under `root`.
-pub struct CodexCli {
+/// How a tarball's pinned sha512 is written in the source.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Digest512 {
+    /// npm's `integrity` (`sha512-<base64>`).
+    Integrity(&'static str),
+    /// Hexadecimal, as Google's release manifests give it.
+    Hex(&'static str),
+}
+
+impl Digest512 {
+    fn bytes(self) -> Result<Vec<u8>, UpdateError> {
+        match self {
+            Self::Integrity(integrity) => sha512_of(integrity),
+            Self::Hex(hex) => (0..hex.len())
+                .step_by(2)
+                .map(|i| {
+                    hex.get(i..i + 2)
+                        .and_then(|pair| u8::from_str_radix(pair, 16).ok())
+                })
+                .collect::<Option<Vec<u8>>>()
+                .filter(|digest| digest.len() == 64)
+                .ok_or_else(|| UpdateError::new("the pinned sha512 is not 128 hex digits")),
+        }
+    }
+}
+
+/// One platform's release of a pinned CLI: where its tarball lies, what it must hash to, and
+/// what of it is installed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Release {
+    /// How people name it ("Codex CLI").
+    label: &'static str,
+    /// The release's version.
+    version: &'static str,
+    /// The server named when it cannot be reached.
+    host: &'static str,
+    /// The tarball's path on the server.
+    tarball_path: String,
+    /// Its pinned sha512.
+    digest: Digest512,
+    /// The tarball's folder holding the release (`""`: its root).
+    archive_dir: String,
+    /// The binary below the installed release's directory.
+    binary: &'static str,
+    /// Name of the installed release's directory.
+    install_name: String,
+    /// ELF `e_machine` of the binary.
+    machine: u16,
+}
+
+impl Release {
+    /// The Codex CLI's release for `platform` (SPEC-503).
+    #[must_use]
+    pub fn codex(platform: &codex::Platform) -> Self {
+        Self {
+            label: "Codex CLI",
+            version: codex::VERSION,
+            host: REGISTRY_HOST,
+            tarball_path: platform.tarball_path(),
+            digest: Digest512::Integrity(platform.integrity),
+            archive_dir: platform.vendor_dir(),
+            binary: codex::BINARY,
+            install_name: platform.install_name(),
+            machine: platform.machine,
+        }
+    }
+
+    /// The Antigravity CLI's release for `platform` (SPEC-505 AGY-007).
+    #[must_use]
+    pub fn antigravity(platform: &antigravity::Platform) -> Self {
+        Self {
+            label: "Antigravity CLI",
+            version: antigravity::VERSION,
+            host: antigravity::HOST,
+            tarball_path: platform.tarball_path(),
+            digest: Digest512::Hex(platform.sha512),
+            archive_dir: String::new(),
+            binary: antigravity::BINARY,
+            install_name: platform.install_name(),
+            machine: platform.machine,
+        }
+    }
+}
+
+/// Where Google's Antigravity releases are downloaded from.
+pub const ANTIGRAVITY_SERVER: &str = "https://storage.googleapis.com";
+
+/// The Codex CLI's installer (SPEC-503): a [`PinnedCli`] made by [`PinnedCli::codex`].
+pub type CodexCli = PinnedCli;
+
+/// Installs and provides a pinned CLI under `root`.
+pub struct PinnedCli {
     http: reqwest::Client,
     registry: String,
     root: PathBuf,
-    platform: Option<Platform>,
+    release: Option<Release>,
+    /// How people name it, also when this host gets no release.
+    label: &'static str,
     max_tarball: u64,
     max_unpacked: u64,
     /// Held while one install runs; the others wait for it.
@@ -65,24 +159,60 @@ pub struct CodexCli {
     pruned: std::sync::atomic::AtomicBool,
 }
 
-impl CodexCli {
-    /// The provider of `root` (`<data>/codex-cli`) over npm's registry, for this host's platform.
+impl PinnedCli {
+    /// The Codex CLI's provider of `root` (`<data>/codex-cli`) over npm's registry, for this
+    /// host's platform.
     ///
     /// # Errors
     /// When the HTTP client cannot be built.
-    pub fn new(root: PathBuf) -> Result<Self, String> {
+    pub fn codex(root: PathBuf) -> Result<Self, String> {
         let platform = codex::platform(std::env::consts::OS, std::env::consts::ARCH);
-        Self::with_registry(root, REGISTRY.to_owned(), platform, true)
+        Self::codex_from(root, REGISTRY.to_owned(), platform, true)
     }
 
     /// The same over another registry and platform package (tests).
     ///
     /// # Errors
     /// When the HTTP client cannot be built.
-    pub fn with_registry(
+    pub fn codex_from(
         root: PathBuf,
         registry: String,
-        platform: Option<Platform>,
+        platform: Option<codex::Platform>,
+        https_only: bool,
+    ) -> Result<Self, String> {
+        let release = platform.as_ref().map(Release::codex);
+        Self::with_release(root, registry, release, "Codex CLI", https_only)
+    }
+
+    /// The Antigravity CLI's provider of `root` (`<data>/antigravity-cli`) over Google's release
+    /// storage, for this host's platform (SPEC-505 AGY-007).
+    ///
+    /// # Errors
+    /// When the HTTP client cannot be built.
+    pub fn antigravity(root: PathBuf) -> Result<Self, String> {
+        let platform = antigravity::platform(std::env::consts::OS, std::env::consts::ARCH);
+        Self::antigravity_from(root, ANTIGRAVITY_SERVER.to_owned(), platform, true)
+    }
+
+    /// The same over another server and platform (tests).
+    ///
+    /// # Errors
+    /// When the HTTP client cannot be built.
+    pub fn antigravity_from(
+        root: PathBuf,
+        server: String,
+        platform: Option<antigravity::Platform>,
+        https_only: bool,
+    ) -> Result<Self, String> {
+        let release = platform.as_ref().map(Release::antigravity);
+        Self::with_release(root, server, release, "Antigravity CLI", https_only)
+    }
+
+    fn with_release(
+        root: PathBuf,
+        registry: String,
+        release: Option<Release>,
+        label: &'static str,
         https_only: bool,
     ) -> Result<Self, String> {
         let _ = rustls::crypto::ring::default_provider().install_default();
@@ -97,7 +227,8 @@ impl CodexCli {
             http,
             registry: registry.trim_end_matches('/').to_owned(),
             root,
-            platform,
+            release,
+            label,
             max_tarball: MAX_TARBALL,
             max_unpacked: MAX_UNPACKED,
             installing: tokio::sync::Mutex::new(()),
@@ -131,8 +262,9 @@ impl CodexCli {
     /// The installed pinned release, if it is there.
     #[must_use]
     pub fn installed(&self) -> Option<ProvidedCli> {
-        let dir = self.root.join(self.platform?.install_name());
-        let program = dir.join(codex::BINARY);
+        let release = self.release.as_ref()?;
+        let dir = self.root.join(&release.install_name);
+        let program = dir.join(release.binary);
         std::fs::symlink_metadata(&program)
             .is_ok_and(|m| m.is_file())
             .then_some(ProvidedCli { program, dir })
@@ -144,8 +276,8 @@ impl CodexCli {
     /// # Errors
     /// The recent failure.
     pub fn ready(&self) -> Result<Option<ProvidedCli>, UpdateError> {
-        if self.platform.is_none() {
-            return Err(unsupported());
+        if self.release.is_none() {
+            return Err(unsupported(self.label));
         }
         if let Some(provided) = self.installed() {
             return Ok(Some(provided));
@@ -173,32 +305,32 @@ impl CodexCli {
         let me = Arc::clone(self);
         tokio::spawn(async move { me.ensure_now().await })
             .await
-            .map_err(|e| UpdateError::new(format!("the Codex CLI install stopped: {e}")))?
+            .map_err(|e| UpdateError::new(format!("the {} install stopped: {e}", self.label)))?
     }
 
     /// Looks once per process for earlier releases to remove (one still running at the last
     /// install stays until then).
     fn prune_once(self: &Arc<Self>) {
-        let Some(platform) = self.platform else {
+        let Some(release) = self.release.clone() else {
             return;
         };
         if self.pruned.swap(true, std::sync::atomic::Ordering::SeqCst) {
             return;
         }
         let me = Arc::clone(self);
-        tokio::spawn(async move { me.remove_others(platform).await });
+        tokio::spawn(async move { me.remove_others(&release).await });
     }
 
     async fn ensure_now(&self) -> Result<ProvidedCli, UpdateError> {
-        let Some(platform) = self.platform else {
-            return Err(unsupported());
+        let Some(release) = self.release.clone() else {
+            return Err(unsupported(self.label));
         };
         let _one = self.installing.lock().await;
         // Another caller may have installed it while this one waited, or just failed to.
         if let Some(provided) = self.ready()? {
             return Ok(provided);
         }
-        let result = self.install_now(platform).await;
+        let result = self.install_now(&release).await;
         if let Ok(mut failed) = self.failed.lock() {
             *failed = result
                 .as_ref()
@@ -208,25 +340,26 @@ impl CodexCli {
         result
     }
 
-    async fn install_now(&self, platform: Platform) -> Result<ProvidedCli, UpdateError> {
+    async fn install_now(&self, release: &Release) -> Result<ProvidedCli, UpdateError> {
         self.remove_temporary().await;
         tokio::fs::create_dir_all(&self.root)
             .await
             .map_err(|e| UpdateError::new(format!("cannot create {}: {e}", self.root.display())))?;
         set_mode(&self.root, 0o755).await?;
         let staging = self.root.join(format!("{STAGING}{}", unique_suffix()));
-        let installed = self.install(platform, &staging).await;
+        let installed = self.install(release, &staging).await;
         let _ = tokio::fs::remove_dir_all(&staging).await;
         installed?;
-        self.remove_others(platform).await;
+        self.remove_others(release).await;
         self.pruned.store(true, std::sync::atomic::Ordering::SeqCst);
-        self.installed()
-            .ok_or_else(|| UpdateError::new("the installed Codex CLI is not in place"))
+        self.installed().ok_or_else(|| {
+            UpdateError::new(format!("the installed {} is not in place", release.label))
+        })
     }
 
-    async fn install(&self, platform: Platform, staging: &Path) -> Result<(), UpdateError> {
-        let expected = sha512_of(platform.integrity)?;
-        let release = staging.join("release");
+    async fn install(&self, release: &Release, staging: &Path) -> Result<(), UpdateError> {
+        let expected = release.digest.bytes()?;
+        let release_dir = staging.join("release");
         let create = |e: std::io::Error| {
             UpdateError::new(format!("cannot create {}: {e}", staging.display()))
         };
@@ -238,47 +371,66 @@ impl CodexCli {
             .await
             .map_err(create)?;
         set_mode(staging, 0o700).await?;
-        tokio::fs::create_dir(&release).await.map_err(create)?;
-        set_mode(&release, 0o755).await?;
+        tokio::fs::create_dir(&release_dir).await.map_err(create)?;
+        set_mode(&release_dir, 0o755).await?;
         let tarball = staging.join("download.tgz");
-        let url = format!("{}{}", self.registry, platform.tarball_path());
-        let digest = self.download(&url, &tarball).await?;
+        let url = format!("{}{}", self.registry, release.tarball_path);
+        let digest = self.download(release, &url, &tarball).await?;
         if digest != expected {
-            return fail("the Codex CLI tarball's sha512 is not the pinned one");
+            return fail(format!(
+                "the {} tarball's sha512 is not the pinned one",
+                release.label
+            ));
         }
-        let (from, to, max) = (tarball.clone(), release.clone(), self.max_unpacked);
-        tokio::task::spawn_blocking(move || unpack(&from, &to, &platform, max))
+        let (from, to, max, of) = (
+            tarball.clone(),
+            release_dir.clone(),
+            self.max_unpacked,
+            release.clone(),
+        );
+        tokio::task::spawn_blocking(move || unpack(&from, &to, &of, max))
             .await
             .map_err(|e| UpdateError::new(format!("unpacking stopped: {e}")))??;
         let _ = tokio::fs::remove_file(&tarball).await;
-        let target = self.root.join(platform.install_name());
+        let target = self.root.join(&release.install_name);
         if tokio::fs::symlink_metadata(&target).await.is_ok() {
             tokio::fs::remove_dir_all(&target)
                 .await
                 .map_err(|e| UpdateError::new(format!("cannot replace a partial release: {e}")))?;
         }
-        tokio::fs::rename(&release, &target)
+        tokio::fs::rename(&release_dir, &target)
             .await
             .map_err(|e| UpdateError::new(format!("cannot move the release in place: {e}")))?;
         if let Ok(dir) = tokio::fs::File::open(&self.root).await {
             let _ = dir.sync_all().await;
         }
-        tracing::info!(version = codex::VERSION, dir = %target.display(), "Codex CLI installed");
+        tracing::info!(
+            cli = release.label,
+            version = release.version,
+            dir = %target.display(),
+            "agent CLI installed"
+        );
         Ok(())
     }
 
     /// Streams the tarball to `to`, bounded; its sha512.
-    async fn download(&self, url: &str, to: &Path) -> Result<Vec<u8>, UpdateError> {
+    async fn download(
+        &self,
+        release: &Release,
+        url: &str,
+        to: &Path,
+    ) -> Result<Vec<u8>, UpdateError> {
         let mut response = self
             .http
             .get(url)
             .timeout(DOWNLOAD_TIMEOUT)
             .send()
             .await
-            .map_err(|_| UpdateError::new(format!("{REGISTRY_HOST} is unreachable")))?;
+            .map_err(|_| UpdateError::new(format!("{} is unreachable", release.host)))?;
         if !response.status().is_success() {
             return fail(format!(
-                "the Codex CLI download answered HTTP {}",
+                "the {} download answered HTTP {}",
+                release.label,
                 response.status().as_u16()
             ));
         }
@@ -286,7 +438,10 @@ impl CodexCli {
             .content_length()
             .is_some_and(|n| n > self.max_tarball)
         {
-            return fail("the Codex CLI tarball is larger than allowed");
+            return fail(format!(
+                "the {} tarball is larger than allowed",
+                release.label
+            ));
         }
         let write = |e: std::io::Error| UpdateError::new(format!("cannot write the tarball: {e}"));
         let mut file = tokio::fs::File::create(to).await.map_err(write)?;
@@ -295,11 +450,14 @@ impl CodexCli {
         while let Some(chunk) = response
             .chunk()
             .await
-            .map_err(|_| UpdateError::new("the Codex CLI download stopped"))?
+            .map_err(|_| UpdateError::new(format!("the {} download stopped", release.label)))?
         {
             size += chunk.len() as u64;
             if size > self.max_tarball {
-                return fail("the Codex CLI tarball is larger than allowed");
+                return fail(format!(
+                    "the {} tarball is larger than allowed",
+                    release.label
+                ));
             }
             hasher.update(&chunk);
             file.write_all(&chunk).await.map_err(write)?;
@@ -309,7 +467,7 @@ impl CodexCli {
     }
 
     /// Removes releases other than `keep`'s that no process runs (an earlier pin).
-    async fn remove_others(&self, keep: Platform) {
+    async fn remove_others(&self, keep: &Release) {
         let Ok(mut entries) = tokio::fs::read_dir(&self.root).await else {
             return;
         };
@@ -317,11 +475,11 @@ impl CodexCli {
         while let Ok(Some(entry)) = entries.next_entry().await {
             let name = entry.file_name();
             let Some(name) = name.to_str() else { continue };
-            if name != keep.install_name() && !name.starts_with('.') {
+            if name != keep.install_name && !name.starts_with('.') {
                 others.push(entry.path());
             }
         }
-        let programs: Vec<PathBuf> = others.iter().map(|d| d.join(codex::BINARY)).collect();
+        let programs: Vec<PathBuf> = others.iter().map(|d| d.join(keep.binary)).collect();
         let running = tokio::task::spawn_blocking(move || {
             let paths: Vec<&Path> = programs.iter().map(PathBuf::as_path).collect();
             running_executables(&paths)
@@ -330,11 +488,11 @@ impl CodexCli {
         .unwrap_or_default();
         for (index, dir) in others.iter().enumerate() {
             if running.contains(&index) {
-                tracing::info!(dir = %dir.display(), "an earlier Codex CLI still runs: kept for now");
+                tracing::info!(dir = %dir.display(), cli = keep.label, "an earlier release still runs: kept for now");
                 continue;
             }
             if let Err(error) = tokio::fs::remove_dir_all(dir).await {
-                tracing::warn!(dir = %dir.display(), %error, "cannot remove an earlier Codex CLI");
+                tracing::warn!(dir = %dir.display(), cli = keep.label, %error, "cannot remove an earlier release");
             }
         }
     }
@@ -356,10 +514,10 @@ impl CodexCli {
     }
 }
 
-/// Why this host gets no provided Codex CLI.
-fn unsupported() -> UpdateError {
+/// Why this host gets no provided `label`.
+fn unsupported(label: &str) -> UpdateError {
     UpdateError::new(format!(
-        "Yulius provides no Codex CLI for {} {}",
+        "Yulius provides no {label} for {} {}",
         std::env::consts::OS,
         std::env::consts::ARCH
     ))
@@ -373,15 +531,16 @@ async fn set_mode(path: &Path, mode: u32) -> Result<(), UpdateError> {
         .map_err(|e| UpdateError::new(format!("cannot set the mode of {}: {e}", path.display())))
 }
 
-/// Unpacks the tarball's `vendor/<triple>/` tree into `to`: regular files (0755 when executable,
-/// else 0644) in directories of 0755, every path inside `to`, at most `max` bytes in all; and
-/// checks its `bin/codex` is a 64-bit little-endian ELF for the platform's machine.
-fn unpack(tarball: &Path, to: &Path, platform: &Platform, max: u64) -> Result<(), UpdateError> {
+/// Unpacks the tarball's release tree (its `archive_dir`) into `to`: regular files (0755 when
+/// executable, else 0644) in directories of 0755, every path inside `to`, at most `max` bytes in
+/// all; and checks its binary is a 64-bit little-endian ELF for the platform's machine.
+fn unpack(tarball: &Path, to: &Path, release: &Release, max: u64) -> Result<(), UpdateError> {
     use std::io::{Read as _, Write as _};
     use std::os::unix::fs::{DirBuilderExt as _, OpenOptionsExt as _, PermissionsExt as _};
     let io = |e: std::io::Error| UpdateError::new(format!("cannot read the tarball: {e}"));
-    let write = |e: std::io::Error| UpdateError::new(format!("cannot unpack the Codex CLI: {e}"));
-    let prefix = platform.vendor_dir();
+    let label = release.label;
+    let write = |e: std::io::Error| UpdateError::new(format!("cannot unpack the {label}: {e}"));
+    let prefix = release.archive_dir.as_str();
     let file = std::fs::File::open(tarball).map_err(io)?;
     let mut archive = tar::Archive::new(flate2::read::GzDecoder::new(file));
     let mut total = 0u64;
@@ -390,7 +549,7 @@ fn unpack(tarball: &Path, to: &Path, platform: &Platform, max: u64) -> Result<()
         let path = entry.path().map_err(io)?.into_owned();
         let Some(relative) = path
             .to_str()
-            .and_then(|p| p.strip_prefix(prefix.as_str()))
+            .and_then(|p| p.strip_prefix(prefix))
             .map(PathBuf::from)
         else {
             continue;
@@ -404,10 +563,14 @@ fn unpack(tarball: &Path, to: &Path, platform: &Platform, max: u64) -> Result<()
                 .components()
                 .all(|c| matches!(c, Component::Normal(_)))
         {
-            return fail("the Codex CLI tarball names a path outside its release");
+            return fail(format!(
+                "the {label} tarball names a path outside its release"
+            ));
         }
         if kind != tar::EntryType::Regular {
-            return fail("the Codex CLI tarball holds an entry that is not a regular file");
+            return fail(format!(
+                "the {label} tarball holds an entry that is not a regular file"
+            ));
         }
         let target = to.join(&relative);
         if let Some(parent) = target.parent() {
@@ -433,7 +596,7 @@ fn unpack(tarball: &Path, to: &Path, platform: &Platform, max: u64) -> Result<()
             }
             total += n as u64;
             if total > max {
-                return fail("the Codex CLI is larger than allowed");
+                return fail(format!("the {label} is larger than allowed"));
             }
             out.write_all(&buf[..n]).map_err(write)?;
         }
@@ -444,7 +607,7 @@ fn unpack(tarball: &Path, to: &Path, platform: &Platform, max: u64) -> Result<()
     }
     // The builder's mode passed through the umask; every sandbox user enters these.
     open_dirs(to).map_err(write)?;
-    let program = to.join(codex::BINARY);
+    let program = to.join(release.binary);
     let mut header = [0u8; 20];
     let read = std::fs::symlink_metadata(&program)
         .ok()
@@ -452,16 +615,16 @@ fn unpack(tarball: &Path, to: &Path, platform: &Platform, max: u64) -> Result<()
         .and_then(|_| std::fs::File::open(&program).ok())
         .is_some_and(|mut f| f.read_exact(&mut header).is_ok());
     if !read {
-        return fail(format!("the Codex CLI tarball holds no {}", codex::BINARY));
+        return fail(format!("the {label} tarball holds no {}", release.binary));
     }
     let elf = header[..4] == *b"\x7fELF"
         && header[4] == 2
         && header[5] == 1
-        && u16::from_le_bytes([header[18], header[19]]) == platform.machine;
+        && u16::from_le_bytes([header[18], header[19]]) == release.machine;
     if !elf {
         return fail(format!(
-            "the Codex CLI is not a 64-bit ELF for machine {}",
-            platform.machine
+            "the {label} is not a 64-bit ELF for machine {}",
+            release.machine
         ));
     }
     Ok(())

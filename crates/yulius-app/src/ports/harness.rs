@@ -367,7 +367,7 @@ pub struct ProvidedCli {
     pub dir: PathBuf,
 }
 
-/// What [`HarnessPort::provide_codex`] returns.
+/// What [`HarnessPort::provide_codex`] and [`HarnessPort::provide_antigravity`] return.
 pub type ProvideFuture<'a> = std::pin::Pin<
     Box<dyn std::future::Future<Output = AppResult<Option<ProvidedCli>>> + Send + 'a>,
 >;
@@ -382,6 +382,16 @@ pub trait HarnessPort: Send + Sync {
     /// `Upstream` when the pinned CLI cannot be installed (or, without `install`, is not
     /// installed yet) and the host has no `codex` either.
     fn provide_codex(&self, install: bool) -> ProvideFuture<'_> {
+        let _ = install;
+        Box::pin(async { Ok(None) })
+    }
+    /// The Antigravity CLI Antigravity runs and sign-ins start (SPEC-505 AGY-007), installed
+    /// first when `install` (else only what is ready); `None`: the `agy` on the run's `PATH`.
+    ///
+    /// # Errors
+    /// `Upstream` when the pinned CLI cannot be installed (or, without `install`, is not
+    /// installed yet) and the host has no `agy` either.
+    fn provide_antigravity(&self, install: bool) -> ProvideFuture<'_> {
         let _ = install;
         Box::pin(async { Ok(None) })
     }
