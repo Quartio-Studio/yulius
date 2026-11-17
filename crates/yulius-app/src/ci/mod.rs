@@ -250,6 +250,21 @@ pub struct CiMinutesRow {
     pub rerun_ms: i64,
 }
 
+/// A test quarantined as flaky in a sandbox (SPEC-497 OFC-002).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Quarantined {
+    /// Its sandbox.
+    pub sandbox_id: SandboxId,
+    /// Its name as the failing tests' blocks name it.
+    pub test: String,
+    /// The job it failed in.
+    pub job_key: String,
+    /// The issue filed for it, if one could be.
+    pub issue: Option<(u64, String)>,
+    /// When it was quarantined.
+    pub since: Timestamp,
+}
+
 /// Fields set with a job transition.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct CiJobUpdate {

@@ -508,6 +508,34 @@ pub trait CiStore: Send + Sync {
     ) -> AppResult<Vec<crate::ci::CiMinutesRow>>;
     /// CI jobs of running runs that have not started (SPEC-497).
     async fn ci_jobs_waiting(&self) -> AppResult<u32>;
+    /// Records that `tests` failed in job `job_key` of run `run` of `reference` (`pr/<n>`,
+    /// `branch/<name>`) at `at`, and forgets failures before `forget_before` (SPEC-497 OFC-002).
+    async fn record_test_failures(
+        &self,
+        sandbox: &SandboxId,
+        job_key: &str,
+        (reference, run): (&str, &str),
+        tests: &[String],
+        at: Timestamp,
+        forget_before: Timestamp,
+    ) -> AppResult<()>;
+    /// The failures of `test` in job `job_key` of `sandbox` since `since`.
+    async fn test_failures(
+        &self,
+        sandbox: &SandboxId,
+        job_key: &str,
+        test: &str,
+        since: Timestamp,
+    ) -> AppResult<Vec<yulius_domain::ci::flaky::TestFailure>>;
+    /// Quarantines `entry`'s test; `false` when it already was.
+    async fn quarantine_test(&self, entry: &crate::ci::Quarantined) -> AppResult<bool>;
+    /// The tests quarantined in `sandbox`, or in every sandbox.
+    async fn quarantined_tests(
+        &self,
+        sandbox: Option<&SandboxId>,
+    ) -> AppResult<Vec<crate::ci::Quarantined>>;
+    /// Ends the quarantine of `test` in `sandbox`.
+    async fn release_test(&self, sandbox: &SandboxId, test: &str) -> AppResult<()>;
     /// Keeps one minute's reading of the host for CI and forgets those before `forget_before`
     /// (SPEC-497).
     async fn record_ci_load(

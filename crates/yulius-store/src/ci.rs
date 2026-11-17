@@ -3,7 +3,7 @@
 use async_trait::async_trait;
 use rusqlite::{OptionalExtension, Row, params, params_from_iter};
 use yulius_app::ci::{
-    CiJobRecord, CiJobUpdate, CiMinutesRow, CiRunRecord, CiRunUpdate, FiledFinding,
+    CiJobRecord, CiJobUpdate, CiMinutesRow, CiRunRecord, CiRunUpdate, FiledFinding, Quarantined,
 };
 use yulius_app::error::{AppError, AppResult};
 use yulius_app::ports::store_ext::CiStore;
@@ -484,6 +484,151 @@ impl CiStore for SqliteStore {
                 )
                 .map_err(db)?;
             Ok(u32::try_from(waiting).unwrap_or(u32::MAX))
+        })
+        .await
+    }
+
+    async fn record_test_failures(
+        &self,
+        sandbox: &SandboxId,
+        job_key: &str,
+        (reference, run): (&str, &str),
+        tests: &[String],
+        at: Timestamp,
+        forget_before: Timestamp,
+    ) -> AppResult<()> {
+        let (sandbox, job_key, reference, run, tests) = (
+            sandbox.as_str().to_owned(),
+            job_key.to_owned(),
+            reference.to_owned(),
+            run.to_owned(),
+            tests.to_vec(),
+        );
+        self.call(move |c| {
+            let tx = c.transaction().map_err(db)?;
+            for test in &tests {
+                tx.execute(
+                    "INSERT INTO ci_test_failures (sandbox_id, job_key, test, reference, run_id, at) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                    params![sandbox, job_key, test, reference, run, at.0],
+                )
+                .map_err(db)?;
+            }
+            tx.execute(
+                "DELETE FROM ci_test_failures WHERE at < ?1",
+                params![forget_before.0],
+            )
+            .map_err(db)?;
+            tx.commit().map_err(db)
+        })
+        .await
+    }
+
+    async fn test_failures(
+        &self,
+        sandbox: &SandboxId,
+        job_key: &str,
+        test: &str,
+        since: Timestamp,
+    ) -> AppResult<Vec<yulius_domain::ci::flaky::TestFailure>> {
+        let (sandbox, job_key, test) = (
+            sandbox.as_str().to_owned(),
+            job_key.to_owned(),
+            test.to_owned(),
+        );
+        self.call(move |c| {
+            let mut statement = c
+                .prepare(
+                    "SELECT reference, at FROM ci_test_failures WHERE sandbox_id = ?1 \
+                     AND job_key = ?2 AND test = ?3 AND at >= ?4 ORDER BY at",
+                )
+                .map_err(db)?;
+            let rows = statement
+                .query_map(params![sandbox, job_key, test, since.0], |row| {
+                    Ok(yulius_domain::ci::flaky::TestFailure {
+                        reference: row.get(0)?,
+                        at: Timestamp(row.get(1)?),
+                    })
+                })
+                .map_err(db)?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(db)?;
+            Ok(rows)
+        })
+        .await
+    }
+
+    async fn quarantine_test(&self, entry: &Quarantined) -> AppResult<bool> {
+        let entry = entry.clone();
+        self.call(move |c| {
+            let added = c
+                .execute(
+                    "INSERT OR IGNORE INTO ci_quarantine (sandbox_id, test, job_key, issue_number, \
+                     issue_url, since) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                    params![
+                        entry.sandbox_id.as_str(),
+                        entry.test,
+                        entry.job_key,
+                        entry
+                            .issue
+                            .as_ref()
+                            .map(|(n, _)| i64::try_from(*n).unwrap_or(i64::MAX)),
+                        entry.issue.as_ref().map(|(_, url)| url.clone()),
+                        entry.since.0
+                    ],
+                )
+                .map_err(db)?;
+            Ok(added == 1)
+        })
+        .await
+    }
+
+    async fn quarantined_tests(&self, sandbox: Option<&SandboxId>) -> AppResult<Vec<Quarantined>> {
+        let sandbox = sandbox.map(|s| s.as_str().to_owned());
+        self.call(move |c| {
+            let mut statement = c
+                .prepare(
+                    "SELECT sandbox_id, test, job_key, issue_number, issue_url, since \
+                     FROM ci_quarantine WHERE ?1 IS NULL OR sandbox_id = ?1 ORDER BY since, test",
+                )
+                .map_err(db)?;
+            let rows = statement
+                .query_map(params![sandbox], |row| {
+                    let sandbox: String = row.get(0)?;
+                    let number: Option<i64> = row.get(3)?;
+                    let url: Option<String> = row.get(4)?;
+                    Ok((sandbox, row.get(1)?, row.get(2)?, number, url, row.get(5)?))
+                })
+                .map_err(db)?
+                .collect::<Result<Vec<(String, String, String, Option<i64>, Option<String>, i64)>, _>>()
+                .map_err(db)?;
+            rows.into_iter()
+                .map(|(sandbox, test, job_key, number, url, since)| {
+                    Ok(Quarantined {
+                        sandbox_id: SandboxId::parse(&sandbox)
+                            .map_err(|_| AppError::Internal("a quarantined test's sandbox".into()))?,
+                        test,
+                        job_key,
+                        issue: number
+                            .and_then(|n| u64::try_from(n).ok())
+                            .zip(url),
+                        since: Timestamp(since),
+                    })
+                })
+                .collect()
+        })
+        .await
+    }
+
+    async fn release_test(&self, sandbox: &SandboxId, test: &str) -> AppResult<()> {
+        let (sandbox, test) = (sandbox.as_str().to_owned(), test.to_owned());
+        self.call(move |c| {
+            c.execute(
+                "DELETE FROM ci_quarantine WHERE sandbox_id = ?1 AND test = ?2",
+                params![sandbox, test],
+            )
+            .map_err(db)?;
+            Ok(())
         })
         .await
     }

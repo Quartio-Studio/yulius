@@ -331,6 +331,19 @@ impl GitHubPort for FakeGitHub {
             html_url: format!("https://github.test/{owner}/{repo}/issues/{number}"),
         })
     }
+    async fn issue_open(
+        &self,
+        _token: &Secret,
+        _owner: &str,
+        _repo: &str,
+        number: u64,
+    ) -> AppResult<bool> {
+        Ok(!self
+            .closed_issues
+            .lock()
+            .map_err(AppError::internal)?
+            .contains_key(&number))
+    }
     async fn set_issue_state(
         &self,
         token: &Secret,
