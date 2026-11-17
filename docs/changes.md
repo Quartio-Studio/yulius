@@ -11,7 +11,8 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   starts it when the first review is asked for instead of waiting for it, fixes each missed
   mutant before the merge, and after a later round's fix runs it on that fix's lines alone.
   `scripts/dev mutants` runs one job per 8 mutants listed (up to 7, a third of the session's
-  CPUs) within the session's CPUs: a whole change's 36 mutants in 476 s instead of 866 s.
+  CPUs) within the session's CPUs: on a 260-mutant change, the 36th mutant ended at 476 s instead of
+  866 s.
 
 - Fewer review rounds spent on what CI or the count already decide (SPEC-506 pull request 1, task
   #488, [ADR-0362](decisions/0362-a-round-is-decided-by-the-code-not-by-ci-or-a-message.md)): after

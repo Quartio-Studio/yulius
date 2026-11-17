@@ -1274,8 +1274,8 @@ mod tests {
         Ok(())
     }
 
-    /// SPEC-493 MUT-002 (AC-12), SPEC-506 FST-004: mutation testing beside the review, the same everywhere
-    /// tests and reviews are described; this repository names its command; the workflows send
+    /// SPEC-493 MUT-002 (AC-12), SPEC-506 FST-004: mutation testing beside the review, the same
+    /// everywhere tests and reviews are described; this repository names its command; the workflows send
     /// the agent to `delivery-pipeline`, which states it.
     #[test]
     fn every_place_says_mutation_testing_runs_beside_the_review() -> TestResult {

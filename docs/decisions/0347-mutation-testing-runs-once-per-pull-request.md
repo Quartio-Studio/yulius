@@ -87,9 +87,10 @@ No one command existed.
   since that head (with a merge of `dev` since then, its lines too).
 - **Jobs from the mutants and the budget.** With no `--jobs`, one job per 8 mutants listed, at
   least 2, at most a third of `YULIUS_CPUS` (the rest is the review's and CI's, beside it), one
-  per 12 GB of `YULIUS_MEMORY_MB` and 7; 2 with no budget. The run stays within the CPUs:
-  cargo-mutants' jobserver, shared by every build and test it starts, gets `YULIUS_CPUS` tasks
-  (by default the host's 64), and each job's tests get their share as threads. Measured on PR
+  per 12 GB of `YULIUS_MEMORY_MB` and 7; 2 with no budget. The run keeps near the CPUs: the
+  builds share cargo-mutants' jobserver, which gets `YULIUS_CPUS` tasks (by default the host's
+  64); tests take no jobserver task (the pinned tool's book), so each job's tests get their share
+  as threads. Overlapping builds and tests can pass the budget for a while: it bounds the mean. Measured on PR
   #1392's change (260 mutants, 17 Nov 2026): to the 36th mutant, 2 jobs took 866 s and 7 took
   476 s (1.8 times); to the 8th, both about 350 s, since each job first builds the workspace in a
   copy of its own (one cold build at 2 jobs, six at 7). So a fix's few mutants keep 2 jobs, and

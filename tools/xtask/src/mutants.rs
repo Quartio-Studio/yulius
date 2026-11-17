@@ -314,10 +314,11 @@ fn mutants_command(cargo: &str, root: &Path, head: &str) -> Command {
     command
 }
 
-/// What keeps a run of `jobs` mutants at once within the budget's CPUs (SPEC-506, review round 1
-/// of pull request 2): cargo-mutants' jobserver, which every build and test it starts shares
-/// (by default as many tasks as the host has CPUs), gets the budget's CPUs, and each job's tests
-/// get their share of them as threads (each job's nextest otherwise takes the whole budget).
+/// What keeps a run of `jobs` mutants at once near the budget's CPUs (SPEC-506, review rounds 1
+/// and 2 of pull request 2): the builds share cargo-mutants' jobserver, which gets the budget's
+/// CPUs (by default the host's); tests take no jobserver task, so each job's tests get their share
+/// as threads (else each job's nextest takes the whole budget). Builds and tests that overlap can
+/// pass the budget for a while: it bounds the mean (17.1 of 22 CPUs measured), not each moment.
 fn budget_caps(budget: Budget, jobs: u32) -> (Vec<String>, Vec<(String, String)>) {
     let Some(cpus) = budget.cpus else {
         return (Vec::new(), Vec::new());
@@ -683,8 +684,13 @@ mod tests {
             base: base.to_owned(),
             minutes: 10,
             mutant_seconds: 120,
-            jobs: Some(1),
-            budget: Budget::default(),
+            // The default jobs within a budget of 2 CPUs: the pinned tool takes the caps
+            // (`--jobserver-tasks`) and the run's own call of `jobs_for` (SPEC-506, review round 2).
+            jobs: None,
+            budget: Budget {
+                cpus: Some(2),
+                memory_mb: None,
+            },
             tests: None,
             seconds: None,
         };
@@ -833,11 +839,10 @@ mod tests {
         assert_eq!(jobs(&[], session, 8)?, 2);
         assert_eq!(jobs(&[], session, 36)?, 5);
         // A whole change: a third of the CPUs.
-        assert_eq!(jobs(&[], session, 260)?, MOST_JOBS);
-        assert_eq!(
-            jobs(&[], Budget::read(env(Some("64"), None)), 260)?,
-            MOST_JOBS
-        );
+        assert_eq!(jobs(&[], session, 260)?, 7);
+        assert_eq!(jobs(&[], Budget::read(env(Some("64"), None)), 260)?, 7);
+        // A small budget still gets 2.
+        assert_eq!(jobs(&[], Budget::read(env(Some("4"), None)), 260)?, 2);
         assert_eq!(jobs(&[], Budget::read(env(Some("12"), None)), 260)?, 4);
         // A small host's memory bounds it, down to one job.
         assert_eq!(
@@ -865,6 +870,11 @@ mod tests {
             )
         );
         assert_eq!(budget_caps(Budget::default(), 2), (Vec::new(), Vec::new()));
+        // More jobs than CPUs: each job's tests still get a thread.
+        assert_eq!(
+            budget_caps(session, 30).1[0],
+            ("NEXTEST_TEST_THREADS".to_owned(), "1".to_owned())
+        );
         // The budget is read from those two names and no other.
         assert_eq!(
             session,
