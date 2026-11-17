@@ -6,6 +6,8 @@ mod mutants;
 
 const HELP: &str = "Yulius engineering commands (scripts/dev <command>)
   doctor    Verify pinned compiler and repository-local tool versions
+  quick     The checks of seconds: repository contracts and Rust formatting (run it before each
+            commit you publish; ci and checks run it first)
   check     Validate repository contracts and compile every target
   fmt       Format Rust sources
   lint      Check formatting and Clippy warnings
@@ -81,13 +83,34 @@ fn run_with(program: &str, args: &[&str], envs: &[(String, String)]) -> io::Resu
     }
 }
 
+/// The gates of `ci` (with the tests) or `checks` (without), in order: `quick`, the checks of
+/// seconds, right after `doctor`, so that a format or contract failure ends a CI run in seconds
+/// rather than after the build (SPEC-506 FST-006).
+fn gate_sequence(with_tests: bool) -> Vec<&'static str> {
+    ["doctor", "quick", "check", "lint", "macos", "test", "deps"]
+        .into_iter()
+        .filter(|gate| with_tests || *gate != "test")
+        .collect()
+}
+
 fn execute(task: &str) -> io::Result<()> {
+    execute_in(task, false)
+}
+
+/// Runs `task`; `after_quick` leaves out of `check` and `lint` what `quick` already ran.
+fn execute_in(task: &str, after_quick: bool) -> io::Result<()> {
     let cargo = env::var("CARGO").unwrap_or_else(|_| "cargo".into());
     let python = env::var("PYTHON").unwrap_or_else(|_| "python3".into());
     match task {
         "doctor" => run(&python, &["scripts/check_repository.py", "--doctor"]),
-        "check" => {
+        "quick" => {
             run(&python, &["scripts/check_repository.py"])?;
+            run(&cargo, &["fmt", "--all", "--", "--check"])
+        }
+        "check" => {
+            if !after_quick {
+                run(&python, &["scripts/check_repository.py"])?;
+            }
             run(
                 &python,
                 &[
@@ -113,7 +136,9 @@ fn execute(task: &str) -> io::Result<()> {
         }
         "fmt" => run(&cargo, &["fmt", "--all"]),
         "lint" => {
-            run(&cargo, &["fmt", "--all", "--", "--check"])?;
+            if !after_quick {
+                run(&cargo, &["fmt", "--all", "--", "--check"])?;
+            }
             run(
                 &cargo,
                 &[
@@ -205,9 +230,9 @@ fn execute(task: &str) -> io::Result<()> {
         }
         "checks" => {
             // Everything `ci` runs but the tests, which a CI job of their own runs in shards.
-            for gate in ["doctor", "check", "lint", "macos", "deps"] {
+            for gate in gate_sequence(false) {
                 stage(gate);
-                execute(gate)?;
+                execute_in(gate, true)?;
             }
             stage("docs");
             docs(&cargo)
@@ -217,12 +242,12 @@ fn execute(task: &str) -> io::Result<()> {
             run(&cargo, &["shear", "--locked", "--deny-warnings"])
         }
         "ci" => {
-            for gate in ["doctor", "check", "lint", "macos", "test", "deps"] {
+            for gate in gate_sequence(true) {
                 // `test` names its own stage.
                 if gate != "test" {
                     stage(gate);
                 }
-                execute(gate)?;
+                execute_in(gate, true)?;
             }
             stage("docs");
             docs(&cargo)
@@ -313,8 +338,8 @@ fn main() -> ExitCode {
     }
     if (args.len() != 1 && args[0] != "security" && args[0] != "mutants")
         || ![
-            "doctor", "check", "fmt", "lint", "macos", "test", "deps", "ci", "checks", "security",
-            "mutants",
+            "doctor", "quick", "check", "fmt", "lint", "macos", "test", "deps", "ci", "checks",
+            "security", "mutants",
         ]
         .contains(&args[0].as_str())
     {
@@ -357,7 +382,22 @@ fn main() -> ExitCode {
 
 #[cfg(test)]
 mod tests {
-    use super::{macos_env, quarantine_filter, shard_of, stage_marker};
+    use super::{gate_sequence, macos_env, quarantine_filter, shard_of, stage_marker};
+
+    /// SPEC-506 FST-006 (AC-4): the checks of seconds run first, right after the tool check, in
+    /// `ci` and in `checks` (the CI job `quality`), so a format or contract failure ends a run
+    /// before the build; `checks` leaves the tests to their own jobs.
+    #[test]
+    fn the_quick_checks_run_first() {
+        assert_eq!(
+            gate_sequence(true),
+            ["doctor", "quick", "check", "lint", "macos", "test", "deps"]
+        );
+        assert_eq!(
+            gate_sequence(false),
+            ["doctor", "quick", "check", "lint", "macos", "deps"]
+        );
+    }
     use std::path::Path;
 
     /// SPEC-497 OFC-002 (review round 1): a quarantined test is left out in its own binary, and

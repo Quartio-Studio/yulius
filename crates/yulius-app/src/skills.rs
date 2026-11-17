@@ -1598,4 +1598,34 @@ mod tests {
         }
         Ok(())
     }
+
+    /// SPEC-506 FST-006 (AC-4): the quick checks before each published commit, the same in
+    /// `om-check-and-commit` (every project) and AGENTS.md (with this repository's command).
+    #[test]
+    fn every_place_says_run_the_quick_checks_before_a_published_commit() -> TestResult {
+        const RULE: &str = "before each commit you publish, run the project's quick checks: its \
+            format check and the tests that read the whole repository (contracts, generated \
+            lists, palettes), which a change touches whenever it changes a file they read. they \
+            take seconds, and each one that fails in ci costs a whole run.";
+        let normal = |text: &str| {
+            text.split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+                .to_lowercase()
+        };
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        for rel in [
+            "catalog/skills/open-mercato/om-check-and-commit/SKILL.md",
+            "AGENTS.md",
+        ] {
+            let text = normal(&fs::read_to_string(root.join(rel))?);
+            assert!(text.contains(&normal(RULE)), "{rel} does not state the rule");
+        }
+        let agents = normal(&fs::read_to_string(root.join("AGENTS.md"))?);
+        assert!(
+            agents.contains("here: `scripts/dev quick`"),
+            "AGENTS.md does not name this repository's command"
+        );
+        Ok(())
+    }
 }
