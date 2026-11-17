@@ -48,9 +48,10 @@ The rules allowed both incidents:
   - A twin never takes the trusted scan's key, gets no twin under a profile's gate (whose CI is
     not `yulius.toml`'s), shares an `exclusive` job's turn (by definition and matrix value), has
     checkouts apart (`<key>.change`), and is told the job's own name in `YULIUS_CI_JOB`.
-  - A twin's command differs from the integration branch's entry, so it gets no secret. A twin
-    that differs only in its matrix gets that entry's grant, as any job of that name and
-    command did before.
+  - A twin gets a secret only as the integration branch's entry grants it: by the job's name
+    and command, as any job did before. So a twin that changes the command gets none, and one
+    that changes only its matrix, time limit, need or `exclusive` gets that entry's grant.
+    The grant always comes from the integration branch's file, never from the change's own.
   - A change never weakens the gate that judges it.
   - A job it changes or adds runs before it merges, so a failing one never lands untested to
     judge its own repair.
@@ -58,7 +59,8 @@ The rules allowed both incidents:
     valid), and they keep the trusted security job.
 - **A branch reuses a tree's verdict only where its gate ran.** A same-tree passed run (a squash
   merge of a tested pull request) counts for the integration branch only when every job of the
-  branch's gate ran there with the same key, matrix and command.
+  branch's gate ran there as it is defined now: the same key, matrix value, command, need, time
+  limit and `exclusive`. Each job's verdict is copied from the job that ran that way.
 - **A change's own file is checked as CI will read it after the merge** (CFG-002). Which file is
   checked:
   - a branch, a merge candidate or a playground merge: the commit's own;

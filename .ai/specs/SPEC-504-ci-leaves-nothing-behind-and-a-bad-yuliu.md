@@ -481,3 +481,28 @@ failed in each of two runs (`over_its_cap_…`, then `a_cross_target_profile_s_l
 The host's load average was 14 to 19 at the time. Each passes alone (3 of 3) and in the
 single-threaded run. This branch does not touch `sweep.rs`, and Yulius CI ran these tests green
 on `38d960201`.
+
+### Pull request 2, review round 4 (request changes; every finding own code)
+
+The reviewer (Opus 5.5) on `9febbf056` confirmed every round-3 answer by reading the code and
+running its tests. It also checked that job keys cannot contain `.`, so no real key collides
+with `<key>.change`. It found the following:
+
+1. *Blocker: CI run `b9d60ec8` failed in `quality` on `cargo fmt`.* `c198699cf` formats the
+   line; `cargo fmt --all -- --check` and `clippy -D warnings` on the changed crates are clean.
+2. *Minor: ADR-0360 no longer matched the code.*
+   - A twin that changes only its time limit keeps the command, so it gets the integration
+     branch's grant. That is safe, because the grant always comes from the integration
+     branch's entry, and the ADR now says so.
+   - The reuse rule now names need, time limit and `exclusive` too, as does
+     `docs/architecture.md`.
+3. *Minor: the extended reuse check had no test.*
+   `a_branch_never_reuses_a_run_that_ran_its_job_with_another_time_limit`. Mutation check:
+   dropping the time limit from the check fails it.
+4. *Nit: the reused verdict was looked up by fewer fields than the reuse check.* Both now use
+   one predicate, `ran_as`. `a_reused_verdict_comes_from_the_job_that_ran_with_the_time_limit`
+   failed before the change: it copied `passed` from the old job instead of the twin's
+   `skipped`.
+5. *Nit: the leftovers test missed the reported case.* `unused_ci_checkouts_go_while_no_run_runs`
+   now has `lint` run recently without a twin, and asserts that `lint.change` is stale.
+   Mutation check: making `checkout_job_key` strip `.change` again fails it.

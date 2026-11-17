@@ -3670,7 +3670,8 @@ line.
   never instead (`dom::with_changed_jobs`). This covers a pull request's head, a merge
   candidate and a playground merge. A commit's own jobs alone run only where there is no gate:
   a branch without CI, or a file never valid. A branch's run reuses a same-tree passed run only
-  when every job of its gate ran there with the same command.
+  when every job of its gate ran there as it is defined now (command, matrix value, need, time
+  limit, `exclusive`), and copies each verdict from that job.
 - **The configuration check** (`App::ci_config_problem`, at queue time) reads the file as CI will
   read it after the merge. That is the commit's own, except for a pull request that did not
   change it: then it is the integration branch's. An invalid one fails the run at once with a
