@@ -125,10 +125,10 @@ Five pull requests, each merged into `dev` on green before the next begins.
 - [x] Slice C1: review findings fixed and the slice delivered
 - [x] Slice C2: Codex subscriptions sign in by device code, API key or imported auth.json
 - [x] Slice C2: Codex usage windows, codex_connected and moves within Codex subscriptions
-- [ ] Slice C2: review findings fixed and the slice delivered
-- [ ] Slice D: slice C2's round-2 review notes fixed test-first
-- [ ] Slice D: the UI offers Codex in the composer, automations, Subscriptions and task moves
-- [ ] Slice D: SPEC-001/002/003 and the documents say Codex is accepted
+- [x] Slice C2: review findings fixed and the slice delivered
+- [x] Slice D: slice C2's round-2 review notes fixed test-first
+- [x] Slice D: the UI offers Codex in the composer, automations, Subscriptions and task moves
+- [x] Slice D: SPEC-001/002/003 and the documents say Codex is accepted
 - [ ] Slice D: review findings fixed and the slice delivered
 
 ## Acceptance criteria
@@ -563,3 +563,46 @@ Five pull requests, each merged into `dev` on green before the next begins.
     no test); `api_key` and `auth_json` are taken out of the request on its first line; the import
     stores through `store_sealed_credential` (the usage lock); the refusal constants' doc lines;
     the comment on exhausted swaps says what a launch does; "200" in the round-1 note above.
+
+### Slice D (the UI and the accepted statements)
+
+- **Brought from the contribution** (3-way patch of its web assets and `codex.e2e.ts` against
+  today's `dev`, five files with conflicts resolved by hand): the composer's OpenAI group with
+  Codex (`modelFields`: `harness: codex`, no model), an automation's Agent, "Run on…" listing the
+  task's provider's subscriptions, a usage card naming Codex, the Dashboard's provider per
+  subscription, `codexConnected` (the composer's Connect Claude step left out while a Codex
+  account is usable), the login terminal's Codex wording, the `auth.json` input (pasted or a file,
+  never shown) and the mock's Codex routes.
+- **Changed for current `dev`:**
+  - dev's Add subscription had the Claude token paste (SPEC-502). The dialog now chooses the
+    agent first, then its way in:
+    - Claude: "Sign in here" or "Paste token";
+    - Codex: "ChatGPT sign-in", "Import auth.json" or "API key".
+  - The contribution's own dialog had one way list for both agents. In the new dialog, each
+    agent's ways are a radio group of their own, so the keyboard keeps its place.
+  - A card offers "Paste a new token" for Claude and "Import auth.json" for Codex (CDX-015).
+  - dev's usage card is drawn by the clock: it names Codex through `provider`.
+  - The mock refuses a token for `openai` (create and `PUT …/token`) and an empty `api_key` or
+    `auth_json`, as the server now does. It decides `waits_for_account` by the task's provider.
+  - New: a Codex task's waiting and failure wording names Codex: the strip, the lists' line, the
+    terminal's titles, "Failed (no Codex account)" and the ended messages (CDX-013;
+    `codex.e2e.ts` "…names Codex", red first: "waits for a Claude account").
+- **Accepted statements** (`F 2026-11-16 Codex`):
+  - SPEC-001: the source table (the new row; `F 2026-10-08` superseded for Codex only), §1, the
+    glossary (Task, Harness, Account), J3, TSK-001, TSK-003, ROT-001, ROT-004, AC-ROT-8, §8 and
+    the changelog;
+  - SPEC-002: principle 1, §7.3, R-02, R-03, R-12, the evidence table and the changelog;
+  - SPEC-003: item 89 superseding item 17 for Codex, and the changelog;
+  - AGENTS.md, `docs/product.md`, `docs/architecture.md` (the UI), ADR-0005's status and
+    `docs/changes.md`.
+  - The contribution's "proposed (SPEC-451)" wording is not kept anywhere; it is accepted, with
+    CLI 0.169.0.
+- **Slice C2's round-2 notes:** fixed in `c80709503`; see "Review round 2" above.
+- **Checks:**
+  - e2e `codex.e2e.ts`: 6 passed, and `subscriptions.e2e.ts` 49 passed.
+  - The whole e2e suite: 1078 passed, 1 skipped (88 files).
+  - Mutation by hand: showing Claude's ways for Codex fails `codex.e2e.ts` "…with an OpenAI API
+    key…".
+  - `cargo nextest` over `codex`, `accounts`, `account_token`, `account_usage` and
+    `claude_gate`: 71 passed after the round-2 fixes.
+

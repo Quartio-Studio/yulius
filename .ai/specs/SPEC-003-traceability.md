@@ -187,7 +187,7 @@ Claude-only decision of the next day, and where each item landed. Later follow-u
 | 14 | The "unknown tab" error. | BRW-004 (vanished tabs are not errors) |
 | 15 | Links open in a normal new tab; localhost links in the internal browser. | UI-018 |
 | 16 | TUI, terminal and browser as HTML text with instant copying; double-click selects in the terminal. | UI-019, BRW-005 |
-| 17 | (2026-10-08, `F 2026-10-08`) Prune Codex support and provider switching now; only Claude is used; Codex returns if it gets better. Supersedes the harness approval of item 10. | TSK-001/003, ROT-001/004/007/012, ROT-005/006 withdrawn, IMP-003/004, COM-002, SKL-004, MCP-001, ADR-05/06 |
+| 17 | (2026-10-08, `F 2026-10-08`) Prune Codex support and provider switching now; only Claude is used; Codex returns if it gets better. Supersedes the harness approval of item 10; its Codex part is superseded by item 89. | TSK-001/003, ROT-001/004/007/012, ROT-005/006 withdrawn, IMP-003/004, COM-002, SKL-004, MCP-001, ADR-05/06 |
 | 18 | (2026-10-08, `F 2026-10-08 UI`) All notifications in one place, behind an icon next to Status. | UI-020 |
 | 19 | (2026-10-08, `F 2026-10-08 UI`) Model and effort as elegant lists like in Claude, workflow integrated under the chat, a rounded chat box; models are picked from a list, never typed; several providers may exist. | UI-021 |
 | 20 | (2026-10-08, `F 2026-10-08 UI`) The Status panel must be intuitive with icons (understood in 3 seconds); sandboxes and accounts as expandable lists; each account with an initials avatar, email and plan (5x, 20x… per provider), usage as horizontal bars, accounts clearly separated. | UI-022 (email/plan need the server) |
@@ -259,9 +259,11 @@ Claude-only decision of the next day, and where each item landed. Later follow-u
 | 86 | (2026-10-12, `F 2026-10-12`, task #39, a screenshot of the "Add team secret" dialog: Title, Address, User name, Password, Notes, Two-factor seed) "It should be only value title notes. 2FA should be per wallet and should be mandatory. The same for the agents but without 2FA for agents ofc. But for human to read them, 2FA should also be mandatory (but they should be able to read actually)". | VLT-001, VLT-002, VLT-006 changed, VLT-003 withdrawn, AC-VLT-1/2/5 (SPEC-040, ADR-0042) |
 | 87 | (2026-10-14, task #77, a screenshot of the Git page with a spinner and "Loading delivery…") "Instead of loading we want floating loading fields in all places". | UI-050 changed (SPEC-092, ADR-0073) |
 | 88 | (2026-10-14, task #83, a screenshot of the terminal's "Mouse: select text · send to app" chip) "this is weird af, delete it. default should be sending things to the terminal". | UI-019 (changed), AC-UI-11 (SPEC-098, ADR-0079) |
+| 89 | (2026-11-16, `F 2026-11-16 Codex`, task #485) MrFishPL accepted outside pull request #1146 by studenciak00owl: Codex returns as a second harness, as `F 2026-10-08` allowed ("if Codex gets better, we'll support it"), on the Codex CLI Yulius pins (0.169.0) and provides; a task keeps its harness; provider switching and session translation stay removed. Supersedes item 17 for Codex only. | TSK-001/003, ROT-001/004, AC-ROT-8, §8 (SPEC-001); principle 1, §7.3, R-02/03/12 (SPEC-002); SPEC-503, ADR-0355 |
 
 ## Changelog
 
+- 2026-11-17: Codex is back as a second harness (§6 item 89, `F 2026-11-16 Codex`, task #485; SPEC-503, ADR-0355); item 17 keeps provider switching and translation removed.
 - 2026-10-14: loading shows shimmering fields everywhere, never a spinner with "Loading…" (§6 item 87, task #77, UI-050; SPEC-092).
 - 2026-10-12: messages removed altogether (§6 item 85, F 2026-10-12; COM-005 withdrawn, SPEC-028).
 - 2026-10-11: disk upkeep — a switch checks the new start first, a quota refusal re-measures, Yulius prunes build caches and ended tasks' worktrees (NFR-008/009, ROT-014; SPEC-008).

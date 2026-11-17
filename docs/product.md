@@ -5,6 +5,16 @@ Cezar and Open Mercato Cloud. It runs native Claude Code sessions, one per task,
 contained sandboxes on a single Linux VM, and enforces engineering discipline around them.
 Yulius develops itself with Yulius.
 
+It also runs native Codex CLI sessions on Codex (OpenAI) subscriptions, chosen per task or
+automation; a task keeps its agent for life, and a Codex task moves only between Codex
+subscriptions. A Codex subscription signs in by device code, by an imported `auth.json` of a
+`codex login` made elsewhere, or with an OpenAI API key, and Yulius provides the pinned Codex CLI
+(0.169.0) to every Codex run. The founders accepted this on 2026-11-16 (`F 2026-11-16 Codex`,
+outside pull request #1146 by studenciak00owl), reversing the Codex part of their Claude-only
+decision `F 2026-10-08`; provider switching and session translation stay out
+([SPEC-503](../.ai/specs/SPEC-503-accept-outside-pr-1146-codex-returns-as.md),
+[ADR-0355](decisions/0355-codex-returns-as-a-second-harness-with-a-pinned-cli.md)).
+
 The authoritative product brief is [SPEC-001](../.ai/specs/SPEC-001-yulius-product.md); this
 page is the short version for anyone who must know the whole product before building.
 
@@ -367,8 +377,8 @@ watching, steering and unblocking.
   as the new owner, and whoever handed it over can take it back at any time without asking. No administrator takes a task
   without asking; only a task whose owner can no longer act (a disabled account, no write
   access) passes to the first person who asks.
-- **Subscription pool**: Claude accounts are used as one self-managing pool; switches and
-  pauses are invisible to agents. Each task shows the subscription it runs on, and a person can
+- **Subscription pool**: Claude accounts are used as one self-managing pool, and Codex accounts
+  as one of their own (SPEC-503); switches and pauses are invisible to agents. Each task shows the subscription it runs on, and a person can
   run it on another from the task ("Run #N on…"); removing a subscription moves its tasks, and a
   subscription Claude refuses (cancelled, downgraded) is taken out of the pool and says why. A
   task that moved for either reason says so in its terminal, and one with nothing usable left is

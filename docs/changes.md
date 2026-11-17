@@ -6,6 +6,17 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-17
 
+- Codex is accepted (SPEC-503 slice D, task #485, `F 2026-11-16 Codex`: MrFishPL accepted outside
+  pull request #1146 by studenciak00owl): the web UI offers Codex. Add subscription chooses the
+  agent first, Claude Code (sign in here or paste a token) or Codex (ChatGPT sign-in, import an
+  `auth.json` or an OpenAI API key); a Codex subscription's card imports a new `auth.json`; the
+  composer's model menu has Codex under OpenAI; an automation chooses the agent of its tasks;
+  "Run on…" lists only the task's provider's subscriptions; a Codex task's waiting and failure
+  wording names Codex. SPEC-001/002/003, the product summary, AGENTS.md and ADR-0005 now say
+  Codex is accepted; provider switching and session translation stay removed. Fixed from slice
+  C2's review: a run's refreshed `auth.json` stays when what the account holds cannot be read, a
+  sign-in replaced by an import ends as cancelled, the import stores under the usage lock.
+
 - Codex, slice C2 (SPEC-503, task #485): Codex subscriptions can be added through the API. An
   instance administrator signs one in with `codex login --device-auth` in the login terminal
   (the pinned CLI Yulius provides), gives an OpenAI API key, or imports the `auth.json` of a
