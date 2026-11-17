@@ -54,6 +54,9 @@ pub enum GateSource {
     /// `yulius.toml` of the pull request itself, while the integration branch has no CI yet
     /// (bootstrap: the pull request that sets up CI is tested with it).
     PullRequest,
+    /// The integration branch's last valid `yulius.toml`, while its own head's is invalid
+    /// (SPEC-504 CFG-003): the gate that judged it before, until a fix merges.
+    LastValid,
 }
 
 impl GateSource {
@@ -64,6 +67,7 @@ impl GateSource {
             Self::Profile => "profile",
             Self::ProjectConfig => "yulius_toml",
             Self::PullRequest => "pull_request",
+            Self::LastValid => "last_valid_yulius_toml",
         }
     }
 
@@ -74,6 +78,7 @@ impl GateSource {
             "profile" => Some(Self::Profile),
             "yulius_toml" => Some(Self::ProjectConfig),
             "pull_request" => Some(Self::PullRequest),
+            "last_valid_yulius_toml" => Some(Self::LastValid),
             _ => None,
         }
     }

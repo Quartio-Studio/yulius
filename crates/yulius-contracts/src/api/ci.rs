@@ -118,9 +118,14 @@ pub struct CiRun {
 pub struct CiOverview {
     /// The gate in force, if any.
     pub gate: Option<CiGate>,
-    /// Why no gate is in force (for example an invalid `yulius.toml`), when that is known.
+    /// Why the integration branch's own configuration is not in force (for example an invalid
+    /// `yulius.toml`), when that is known.
     #[serde(default)]
     pub gate_problem: Option<String>,
+    /// While it is invalid: the integration branch's commit whose last valid configuration is
+    /// the gate in force until a fix merges (SPEC-504 CFG-003, CFG-006).
+    #[serde(default)]
+    pub gate_fallback: Option<String>,
     /// Most recent runs, newest first.
     pub runs: Vec<CiRun>,
     /// The caller may run again and cancel.

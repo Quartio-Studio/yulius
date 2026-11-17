@@ -258,8 +258,14 @@ const NO_DISK_REQUEUE: &str =
 /// own configuration (it never reaches `gate`, which [`App::ci_gate`] reads from the integration
 /// branch).
 fn trusted_job<'g>(gate: Option<&'g Gate>, key: &str) -> Option<&'g dom::Job> {
-    gate.filter(|gate| gate.source == GateSource::ProjectConfig)
-        .and_then(|gate| gate.jobs.iter().find(|job| job.key == key))
+    // The last valid configuration was the integration branch's too (SPEC-504 CFG-003).
+    gate.filter(|gate| {
+        matches!(
+            gate.source,
+            GateSource::ProjectConfig | GateSource::LastValid
+        )
+    })
+    .and_then(|gate| gate.jobs.iter().find(|job| job.key == key))
 }
 
 /// The agent secrets a job of definition `key` running `command` may use (SPEC-264 CSG-001):

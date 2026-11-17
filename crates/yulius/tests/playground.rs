@@ -1712,10 +1712,11 @@ async fn task_job_output(
         .ok_or_else(|| format!("no job {name}: {}", detail.body).into())
 }
 
-/// SPEC-483 D4: a playground task that changes a job is tested with its own jobs, as a pull
-/// request is: the run of its merge shows the task's command, not `dev`'s.
+/// SPEC-504 CFG-001 (superseding SPEC-483 D4's own jobs): a playground task that changes a job
+/// is judged by `dev`'s jobs, as a pull request is: the run of its merge shows `dev`'s command,
+/// not the task's.
 #[tokio::test]
-async fn a_task_that_changes_the_jobs_is_tested_with_its_own() -> TestResult {
+async fn a_task_that_changes_the_jobs_is_judged_by_devs() -> TestResult {
     let (h, owner) = ci_world().await?;
     let body = ci_playground(&h, &owner).await?;
     let own = "\n[[ci.jobs]]\nname = \"check\"\ncommand = \"echo the-tasks-own-check\"\n";
@@ -1728,15 +1729,15 @@ async fn a_task_that_changes_the_jobs_is_tested_with_its_own() -> TestResult {
     assert!(armed.contains("armed: true"), "{armed}");
     ci_settle(&h, &owner, &body).await?;
     let output = task_job_output(&h, &owner, &body, "check").await?;
-    assert!(output.contains("the-tasks-own-check"), "{output}");
-    assert!(!output.contains("check-ok"), "not dev's command: {output}");
+    assert!(output.contains("check-ok"), "dev's command: {output}");
+    assert!(!output.contains("the-tasks-own-check"), "{output}");
     Ok(())
 }
 
-/// SPEC-483 D4 (review of slice 13): a playground whose `dev` has a `yulius.toml` nobody can
-/// read is repaired by a task, and that task's merge is tested with the configuration it
-/// brings: what is tested is `dev` as it would be. (A pull request beside such a branch is
-/// not tested; a playground has no other way out, and no other checks.)
+/// SPEC-483 D4 (review of slice 13), SPEC-504 CFG-003: a playground whose `dev` has a
+/// `yulius.toml` nobody can read, and no earlier valid gate, is repaired by a task, and that
+/// task's merge is tested with the configuration it brings: a broken file never blocks its own
+/// repair.
 #[tokio::test]
 async fn a_task_that_repairs_a_broken_configuration_is_tested_with_its_own() -> TestResult {
     let (h, owner) = ci_world().await?;

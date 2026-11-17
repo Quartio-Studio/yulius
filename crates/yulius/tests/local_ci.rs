@@ -5266,7 +5266,7 @@ async fn ci_jobs_get_the_secrets_the_integration_branch_grants_them() -> TestRes
         )
     };
     let plain = report("");
-    // The integration branch's command of the granted job, which a pull request may keep.
+    // The integration branch's command of the granted job.
     let trusted = std::sync::OnceLock::new();
     let f = fixture_with(false, |data| {
         let command = trusted.get_or_init(|| {
@@ -5283,10 +5283,6 @@ async fn ci_jobs_get_the_secrets_the_integration_branch_grants_them() -> TestRes
         )
     })
     .await?;
-    let trusted = trusted
-        .get()
-        .ok_or("the fixture wrote no configuration")?
-        .clone();
     for name in ["API_KEY", "OTHER_KEY"] {
         let created = f
             .post(
@@ -5374,9 +5370,10 @@ async fn ci_jobs_get_the_secrets_the_integration_branch_grants_them() -> TestRes
     );
     assert!(!plain_out.contains("ca-readable"), "{plain_out}");
 
-    // The pull request grants secrets in its own yulius.toml and reuses the granted job's name
-    // for its own command (SPEC-264 CSG-001, CSG-002, #659): its own jobs run, and none gets a
-    // secret, since a grant binds the integration branch's name and command.
+    // The pull request grants secrets in its own yulius.toml, reuses the granted job's name for
+    // its own command and adds a job (SPEC-264 CSG-001, CSG-002, #659): it is judged by the
+    // integration branch's jobs (SPEC-504 CFG-001), so its own commands never run and nothing it
+    // grants itself reaches anything; the integration branch's grant is all there is.
     let own = format!(
         "[[ci.jobs]]\nname = \"granted\"\nsecrets = \"API_KEY OTHER_KEY\"\ncommand = '{granted}'\n\n\
          [[ci.jobs]]\nname = \"plain\"\nsecrets = \"API_KEY\"\ncommand = '{plain}'\n\n\
@@ -5387,48 +5384,26 @@ async fn ci_jobs_get_the_secrets_the_integration_branch_grants_them() -> TestRes
     );
     let own_sha = f.push_feature("yulius.toml", Some(&own))?;
     f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    std::fs::write(f.data.join("go"), "")?;
     f.settle().await?;
     let outputs = job_outputs(&f, &own_sha).await?;
     let names: Vec<&str> = outputs.iter().map(|(n, _)| n.as_str()).collect();
-    assert_eq!(names, ["granted", "plain", "sneaky"], "its own jobs ran");
-    for name in ["granted", "plain", "sneaky"] {
-        assert!(
-            output_of(&outputs, name)?.contains("own key=none other=none proxy= ca=none"),
-            "{outputs:?}"
-        );
-    }
+    assert_eq!(
+        names,
+        ["granted", "plain"],
+        "the integration branch's jobs ran"
+    );
     assert!(
-        output_of(&outputs, "granted")?.contains(
-            "[yulius] agent secrets: none; this job's command is not the one the integration \
-             branch grants them to"
-        ),
-        "{outputs:?}"
+        outputs.iter().all(|(_, out)| !out.contains("own key")),
+        "no command of its own ran: {outputs:?}"
     );
-
-    // A pull request that keeps the granted job's name and command and changes another job
-    // (SPEC-264 CSG-003): the trusted command keeps its grant, and only its grant.
-    let kept = format!(
-        "[[ci.jobs]]\nname = \"granted\"\nsecrets = \"API_KEY OTHER_KEY\"\ncommand = '{trusted}'\n\n\
-         [[ci.jobs]]\nname = \"plain\"\ncommand = '{plain}'\n",
-        plain = report("own "),
-    );
-    let kept_sha = f.push_feature("yulius.toml", Some(&kept))?;
-    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
-    f.settle().await?;
-    let outputs = job_outputs(&f, &kept_sha).await?;
-    let names: Vec<&str> = outputs.iter().map(|(n, _)| n.as_str()).collect();
-    assert_eq!(names, ["granted", "plain"], "its own jobs ran");
     let granted = output_of(&outputs, "granted")?;
     assert!(
         granted.contains("key=yulius-secret-API_KEY other=none proxy=set ca=/"),
         "{granted}"
     );
     assert!(
-        granted.contains("[yulius] agent secrets: API_KEY"),
-        "{granted}"
-    );
-    assert!(
-        output_of(&outputs, "plain")?.contains("own key=none other=none proxy= ca=none"),
+        output_of(&outputs, "plain")?.contains("key=none other=none proxy= ca=none"),
         "{outputs:?}"
     );
     Ok(())
@@ -6054,13 +6029,16 @@ async fn no_project_scans_in_ci_while_vidoc_is_off_for_the_instance() -> TestRes
         ["plain"],
         "instance off: no built-in scan"
     );
-    let own = f.push_feature(
+    // The integration branch's own scanning job (a pull request's own jobs never run, SPEC-504
+    // CFG-001), at the pull request's next head (the scanner runs on pull requests only).
+    f.push_dev(
         "yulius.toml",
         Some(
             "[[ci.jobs]]\nname = \"plain\"\ncommand = \"echo plain\"\n\n\
              [[ci.jobs]]\nname = \"security\"\nsecrets = \"VIDOC_API_KEY\"\ncommand = \"yulius security-scan --ci\"\n",
         ),
     )?;
+    let own = f.push_feature("notes.txt", Some("three\n"))?;
     f.h.app.ci_sync_sandbox(&f.sandbox).await?;
     f.settle().await?;
     let outputs = job_outputs(&f, &own).await?;
@@ -6121,13 +6099,16 @@ async fn a_switched_off_project_scans_nothing_in_ci() -> TestResult {
     );
 
     // Its own job runs the scanner, which stops at once.
-    let own = f.push_feature(
+    // The integration branch's own scanning job (a pull request's own jobs never run, SPEC-504
+    // CFG-001), at the pull request's next head (the scanner runs on pull requests only).
+    f.push_dev(
         "yulius.toml",
         Some(
             "[[ci.jobs]]\nname = \"plain\"\ncommand = \"echo plain\"\n\n\
              [[ci.jobs]]\nname = \"security\"\ncommand = \"yulius security-scan --ci\"\n",
         ),
     )?;
+    let own = f.push_feature("notes.txt", Some("three\n"))?;
     f.h.app.ci_sync_sandbox(&sandbox).await?;
     f.settle().await?;
     let outputs = job_outputs(&f, &own).await?;
@@ -6161,13 +6142,11 @@ async fn a_switched_off_project_scans_nothing_in_ci() -> TestResult {
 }
 
 /// SPEC-217 VDP-001 (the branch's own CI scan, medium): a pull request tested with its own jobs
-/// keeps the built-in security job; its own job named `security` does not stand in for it.
+/// (since SPEC-504 CFG-001 only one that brings CI to a branch without any) keeps the built-in
+/// security job; its own job named `security` does not stand in for it.
 #[tokio::test]
 async fn a_pull_request_with_its_own_jobs_cannot_drop_the_security_job() -> TestResult {
-    let f = fixture_with(false, |_| {
-        "[[ci.jobs]]\nname = \"plain\"\ncommand = \"echo plain\"\n".to_owned()
-    })
-    .await?;
+    let f = fixture_with(false, |_| String::new()).await?;
     f.h.app.set_vidoc(yulius_app::vidoc_key::VidocServices::new(
         Arc::new(AnyVidoc),
         Ok(Some(yulius_app::model::Secret(
@@ -6204,12 +6183,12 @@ async fn a_pull_request_with_its_own_jobs_cannot_drop_the_security_job() -> Test
     Ok(())
 }
 
-/// SPEC-483 D4: a run again tests a pull request with the jobs the scheduler gave it. A pull
-/// request that changes the CI is tested with its own jobs; run again (by a person, by the
-/// agent's `ci_rerun`, by Yulius after an errored run), it was tested with the integration
-/// branch's instead, and that newest run was the head's verdict.
+/// SPEC-483 D4, SPEC-504 CFG-001: a run again tests a pull request with the jobs the scheduler
+/// gave it: a pull request that changes the CI is tested with the integration branch's jobs, by
+/// its first run and by a run again (by a person, by the agent's `ci_rerun`, by Yulius after an
+/// errored run).
 #[tokio::test]
-async fn a_run_again_tests_a_pull_request_with_its_own_jobs() -> TestResult {
+async fn a_run_again_tests_a_pull_request_with_the_jobs_its_first_run_had() -> TestResult {
     let f = fixture_with(false, |_| {
         "[[ci.jobs]]\nname = \"plain\"\ncommand = \"echo plain\"\n".to_owned()
     })
@@ -6233,9 +6212,11 @@ async fn a_run_again_tests_a_pull_request_with_its_own_jobs() -> TestResult {
     };
     let first_run = newest().await?;
     let first = job_outputs(&f, &sha).await?;
-    assert!(output_of(&first, "plain")?.contains("changed"), "{first:?}");
-    assert!(output_of(&first, "added")?.contains("added"), "{first:?}");
-
+    let names = |outputs: &[(String, String)]| -> Vec<String> {
+        outputs.iter().map(|(name, _)| name.clone()).collect()
+    };
+    assert_eq!(names(&first), ["plain"], "{first:?}");
+    assert!(output_of(&first, "plain")?.contains("plain"), "{first:?}");
     let again = f
         .post(
             &format!("/api/sandboxes/s1/ci/runs/{first_run}/rerun"),
@@ -6246,13 +6227,10 @@ async fn a_run_again_tests_a_pull_request_with_its_own_jobs() -> TestResult {
     f.settle().await?;
     assert_ne!(newest().await?, first_run, "a new run");
     let second = job_outputs(&f, &sha).await?;
-    let names = |outputs: &[(String, String)]| -> Vec<String> {
-        outputs.iter().map(|(name, _)| name.clone()).collect()
-    };
     assert_eq!(names(&second), names(&first), "the same jobs");
     assert!(
-        output_of(&second, "plain")?.contains("changed"),
-        "its own command, not the integration branch's: {second:?}"
+        !output_of(&second, "plain")?.contains("changed"),
+        "the integration branch's command, not its own: {second:?}"
     );
     Ok(())
 }
@@ -6317,11 +6295,12 @@ async fn a_pull_request_that_brings_ci_waits_for_its_first_run() -> TestResult {
     Ok(())
 }
 
-/// SPEC-483 D4: while the integration branch's own configuration cannot be read, nothing is
-/// tested, not even a pull request that brings jobs of its own: what is broken is said, and
-/// the pull request is not given a verdict by a configuration nobody merged.
+/// SPEC-504 CFG-003 (superseding SPEC-483 D4's "nothing is tested"): while the integration
+/// branch's configuration was never valid, there is no gate to fall back on, and a pull request
+/// that repairs it is tested with its own jobs: a broken file never blocks its own repair. What
+/// is broken is said.
 #[tokio::test]
-async fn nothing_is_tested_while_the_integration_branchs_configuration_is_broken() -> TestResult {
+async fn a_repair_of_a_never_valid_configuration_is_tested_with_its_own_jobs() -> TestResult {
     let f = fixture_with(false, |_| "[[ci.jobs]\nname = \"plain\"\n".to_owned()).await?;
     let sha = f.push_feature(
         "yulius.toml",
@@ -6330,18 +6309,166 @@ async fn nothing_is_tested_while_the_integration_branchs_configuration_is_broken
     f.h.app.ci_sync_sandbox(&f.sandbox).await?;
     f.settle().await?;
     let overview = f.get("/api/sandboxes/s1/ci").await?;
-    let tested = |overview: &serde_json::Value| {
-        overview["runs"]
-            .as_array()
-            .is_some_and(|runs| runs.iter().any(|run| run["sha"] == sha.as_str()))
-    };
-    assert!(!tested(&overview), "{overview}");
     assert!(
         overview["gate_problem"]
             .as_str()
             .is_some_and(|why| !why.is_empty()),
         "what is broken is said: {overview}"
     );
+    assert!(overview["gate_fallback"].is_null(), "{overview}");
+    let outputs = job_outputs(&f, &sha).await?;
+    assert!(output_of(&outputs, "own")?.contains("own"), "{outputs:?}");
+    assert_eq!(
+        f.h.app.ci_gate_result(&f.sandbox, &sha).await,
+        GateResult::Run(Some(RunState::Passed))
+    );
+    Ok(())
+}
+
+/// The fixture's `yulius.toml` of one job named `check` printing `word`.
+fn one_job(word: &str) -> String {
+    format!("[[ci.jobs]]\nname = \"check\"\ncommand = \"echo {word}\"\n")
+}
+
+/// The run of `sha`, with its jobs, waiting for none of them.
+async fn run_of_sha(f: &Fixture, sha: &str) -> BoxResult<Value> {
+    let overview = f.get("/api/sandboxes/s1/ci").await?;
+    let run = overview["runs"]
+        .as_array()
+        .and_then(|runs| runs.iter().find(|run| run["sha"] == sha))
+        .ok_or_else(|| format!("no run of {sha}: {overview}"))?;
+    let id = run["id"].as_str().ok_or("id")?;
+    f.get(&format!("/api/sandboxes/s1/ci/runs/{id}")).await
+}
+
+/// SPEC-504 CFG-001 (superseding CI-110): a pull request that changes `[[ci.jobs]]` is judged by
+/// the integration branch's jobs, never its own: a change never weakens the gate that judges
+/// it.
+#[tokio::test]
+async fn a_pull_request_that_changes_its_jobs_is_judged_by_the_integration_branchs() -> TestResult {
+    let f = fixture_with(false, |_| one_job("dev-gate")).await?;
+    let sha = f.push_feature(
+        "yulius.toml",
+        Some("[[ci.jobs]]\nname = \"weaker\"\ncommand = \"true\"\n"),
+    )?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    let detail = run_of_sha(&f, &sha).await?;
+    let names: Vec<&str> = detail["jobs"]
+        .as_array()
+        .ok_or("jobs")?
+        .iter()
+        .filter_map(|job| job["name"].as_str())
+        .collect();
+    assert_eq!(names, ["check"], "dev's jobs judge it: {detail}");
+    assert_eq!(detail["source"], "yulius_toml");
+    Ok(())
+}
+
+/// SPEC-504 CFG-002: a pull request whose own `yulius.toml` is invalid (autoresearch's PR #4: both
+/// `[commands] gate` and `[[ci.jobs]]`) fails its run with the parser's message, its jobs not
+/// run, so it cannot merge; the integration branch's own CI is untouched.
+#[tokio::test]
+async fn a_pull_request_with_an_invalid_yulius_toml_fails_with_the_parsers_message() -> TestResult {
+    let f = fixture_with(false, |_| one_job("dev-gate")).await?;
+    let sha = f.push_feature(
+        "yulius.toml",
+        Some(&format!(
+            "[commands]\ngate = \"make ci\"\n\n{}",
+            one_job("both")
+        )),
+    )?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    let detail = run_of_sha(&f, &sha).await?;
+    assert_eq!(detail["state"], "failed", "{detail}");
+    let reason = detail["reason"].as_str().unwrap_or_default();
+    assert!(reason.starts_with("yulius.toml is invalid: "), "{reason}");
+    assert!(reason.contains("gate"), "the parser's message: {reason}");
+    let jobs = detail["jobs"].as_array().ok_or("jobs")?;
+    let state = |name: &str| {
+        jobs.iter()
+            .find(|job| job["name"] == name)
+            .map(|job| job["state"].as_str().unwrap_or_default().to_owned())
+    };
+    assert_eq!(state("yulius.toml").as_deref(), Some("failed"), "{detail}");
+    assert_eq!(
+        state("check").as_deref(),
+        Some("skipped"),
+        "not run: {detail}"
+    );
+    assert_eq!(
+        f.h.app.ci_gate_result(&f.sandbox, &sha).await,
+        GateResult::Run(Some(RunState::Failed))
+    );
+    let overview = f.get("/api/sandboxes/s1/ci").await?;
+    assert!(
+        overview["gate_problem"].is_null(),
+        "dev is fine: {overview}"
+    );
+    Ok(())
+}
+
+/// SPEC-504 CFG-003, CFG-006 (autoresearch's PR #42: a `yulius.toml` dev's old reader refused
+/// reached dev): while the integration branch's file is invalid, its last valid gate runs and
+/// every run says so; a pull request that does not repair it fails, naming dev's problem; the
+/// repair passes with that gate, and once it merges the branch's own gate is in force again.
+#[tokio::test]
+async fn an_invalid_integration_branch_runs_its_last_valid_gate_until_a_fix_merges() -> TestResult {
+    let f = fixture_with(false, |_| one_job("last-valid")).await?;
+    let valid = git(&f.origin, &["rev-parse", "dev"])?;
+    let broken = format!("[commands]\ngate = \"make ci\"\n\n{}", one_job("broken"));
+    f.push_dev("yulius.toml", Some(&broken))?;
+    f.push_dev("other.txt", Some("later\n"))?;
+    // feat/one does not touch yulius.toml: after its merge the file is dev's, still invalid.
+    let untouched = git(&f.origin, &["rev-parse", "feat/one"])?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    let overview = f.get("/api/sandboxes/s1/ci").await?;
+    assert_eq!(overview["gate_fallback"], valid.as_str(), "{overview}");
+    assert!(
+        overview["gate_problem"]
+            .as_str()
+            .is_some_and(|p| p.contains("gate"))
+    );
+    assert_eq!(overview["gate"]["source"], "last_valid_yulius_toml");
+    let refused = run_of_sha(&f, &untouched).await?;
+    assert_eq!(refused["state"], "failed", "{refused}");
+    assert!(
+        refused["reason"]
+            .as_str()
+            .is_some_and(|r| r.contains("invalid on dev and this change does not repair it")),
+        "{refused}"
+    );
+    // The repair: its own file valid, judged by the last valid gate, and saying so.
+    let repair = f.push_feature("yulius.toml", Some(&one_job("repaired")))?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    let run = run_of_sha(&f, &repair).await?;
+    assert_eq!(run["state"], "passed", "{run}");
+    assert_eq!(run["source"], "last_valid_yulius_toml");
+    assert!(
+        run["reason"]
+            .as_str()
+            .is_some_and(|r| r.contains("last valid yulius.toml")),
+        "{run}"
+    );
+    let outputs = job_outputs(&f, &repair).await?;
+    assert!(
+        output_of(&outputs, "check")?.contains("last-valid"),
+        "{outputs:?}"
+    );
+    assert_eq!(
+        f.h.app.ci_gate_result(&f.sandbox, &repair).await,
+        GateResult::Run(Some(RunState::Passed))
+    );
+    // The repair merges: dev's own gate again.
+    f.push_dev("yulius.toml", Some(&one_job("repaired")))?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    let overview = f.get("/api/sandboxes/s1/ci").await?;
+    assert!(overview["gate_problem"].is_null(), "{overview}");
+    assert!(overview["gate_fallback"].is_null(), "{overview}");
+    assert_eq!(overview["gate"]["source"], "yulius_toml");
     Ok(())
 }
 
