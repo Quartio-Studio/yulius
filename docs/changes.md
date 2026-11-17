@@ -6,6 +6,14 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-17
 
+- A CI job leaves nothing behind in Docker (SPEC-504 pull request 1, task #486,
+  [ADR-0359](decisions/0359-a-ci-jobs-containers-and-networks-carry-its-label-and-go-when-it-ends.md)):
+  each CI job runs in its own cgroup, the sandbox's Docker front labels the containers and
+  networks it creates `yulius.ci.job=<id>`, and Yulius removes them when the job ends (passed,
+  failed, cancelled, timed out, or ended by a restart) and in an upkeep sweep every 30 s, first
+  after a start. Agents' containers, images and volumes are never touched. The Pipeline tab's
+  Docker card counts what was removed per week; `yulius doctor --docker-smoke` proves it on a host.
+
 - Codex is accepted (SPEC-503 slice D, task #485, `F 2026-11-16 Codex`: MrFishPL accepted outside
   pull request #1146 by studenciak00owl): the web UI offers Codex. Add subscription chooses the
   agent first, Claude Code (sign in here or paste a token) or Codex (ChatGPT sign-in, import an
