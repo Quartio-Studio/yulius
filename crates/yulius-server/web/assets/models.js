@@ -1,9 +1,10 @@
 // Models and effort levels the new-task composer offers (SPEC-001 UI-021). Grouped by provider so
 // another harness's models can join the list; each provider names the harness that runs them.
-// Yulius runs Claude Code only today (TSK-003). A model id goes to Claude Code's `--model` and a
-// level to `--effort`; choosing "Default" sends neither and the task runs Yulius's default,
+// Yulius runs Claude Code and Codex (SPEC-503). A Claude model id goes to Claude Code's `--model`
+// and a level to `--effort`; choosing "Default" sends neither and the task runs Yulius's default,
 // Opus 5.5 at high effort (SPEC-023, SPEC-462, SPEC-493). The first model listed is the default,
-// as on the server.
+// as on the server. Choosing Codex sends `harness: codex` and no model: Codex runs its account's
+// default model at the chosen effort.
 
 /** This browser's defaults for new tasks (the composer and Settings share them). */
 export const MODEL_PREF_KEY = 'yulius.composer.model';
@@ -21,6 +22,15 @@ export const PROVIDERS = [
       { id: 'claude-sonnet-5-5', name: 'Sonnet 5.5', description: 'Fast and capable for everyday coding' },
       // Haiku 4.5 takes no effort level.
       { id: 'claude-haiku-4-5', name: 'Haiku 4.5', description: 'Fastest, for small and quick tasks', effort: false },
+    ],
+  },
+  {
+    id: 'openai',
+    name: 'OpenAI',
+    harness: 'codex',
+    models: [
+      // No model id: Codex picks its account's default model (`harnessOnly`).
+      { id: 'codex', name: 'Codex', description: 'OpenAI Codex CLI on a Codex account, its default model', harnessOnly: true },
     ],
   },
 ];
@@ -45,6 +55,15 @@ export function fallbackOf(model) {
 /** What the pool says while tasks of `model` run its fallback (SPEC-482), in one line. */
 export function fallbackLine(model, fallback) {
   return `${modelLabel(model)} is used up on every subscription: tasks set to it run on ${modelLabel(fallback)} until it can run again`;
+}
+
+/** The request fields of a model choice: `{model?, harness?}` (none for "Default"). */
+export function modelFields(id) {
+  const found = findModel(id);
+  if (!found) return {};
+  const fields = found.model.harnessOnly ? {} : { model: found.model.id };
+  if (found.provider.harness !== 'claude') fields.harness = found.provider.harness;
+  return fields;
 }
 
 export const EFFORTS = [

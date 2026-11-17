@@ -62,6 +62,9 @@ const SHUTDOWN_WRITE_BOUND: Duration = Duration::from_secs(2);
 /// How many times a stop makes its status change: each lost one means another writer changed the
 /// status, and the status machine has no cycle a stop can keep losing to (SPEC-250 STW-001).
 const STOP_ROUNDS: usize = 4;
+/// How many times a Codex refresh is stored again after another run's older refresh of the same
+/// sign-in won the swap (SPEC-503 CDX-006).
+const CODEX_REFRESH_SWAPS: usize = 4;
 /// How often a close waiting for its run looks again without an update (SPEC-039).
 const CLOSE_RECHECK: Duration = Duration::from_secs(1);
 
@@ -1360,6 +1363,42 @@ impl App {
         self.sandbox_dir(sandbox).join("home")
     }
 
+    /// The sandbox's Codex sessions, shared by its Codex homes (SPEC-503 CDX-003).
+    pub(crate) fn codex_sessions(&self, sandbox: &SandboxId) -> PathBuf {
+        self.sandbox_dir(sandbox).join("codex").join("sessions")
+    }
+
+    /// The Codex home of `account` in `sandbox`, `<sandbox>/codex/<account>`, opened without
+    /// following a link (the agent owns the sandbox directory, #657), with `sessions` linking to
+    /// the sandbox's shared sessions so a resumed session finds its rollout whichever account
+    /// runs it (CDX-003).
+    fn codex_home(
+        &self,
+        sandbox: &SandboxId,
+        account: &AccountId,
+    ) -> AppResult<(PathBuf, std::os::fd::OwnedFd)> {
+        let root = self.sandbox_dir(sandbox);
+        std::fs::create_dir_all(&root).map_err(AppError::internal)?;
+        let linked = |err: nix::errno::Errno| match err {
+            nix::errno::Errno::ELOOP | nix::errno::Errno::ENOTDIR => AppError::internal(
+                "the sandbox's Codex folder is a link or not a folder: Yulius follows no links",
+            ),
+            other => crate::files::errno_error(other),
+        };
+        let codex = std::ffi::OsStr::new("codex");
+        crate::files::open_dirs_below(&root, &[codex, std::ffi::OsStr::new("sessions")], true)
+            .map_err(linked)?;
+        let dir = crate::files::open_dirs_below(
+            &root,
+            &[codex, std::ffi::OsStr::new(account.as_str())],
+            true,
+        )
+        .map_err(linked)?;
+        let home = root.join("codex").join(account.as_str());
+        ensure_sessions_link(&dir)?;
+        Ok((home, dir))
+    }
+
     /// Account views for the rotation policy; Done tasks' idle sessions are no load (SPEC-057).
     pub(crate) async fn account_views(&self) -> AppResult<Vec<AccountView>> {
         let accounts = self.deps.store.accounts().await?;
@@ -1432,6 +1471,7 @@ impl App {
                 };
                 Err(AppError::Capacity(refused_choice(
                     label.as_deref(),
+                    task.harness.provider(),
                     &reason,
                 )))
             }
@@ -1584,6 +1624,13 @@ impl App {
     ) -> BoxFuture<'a, AppResult<bool>> {
         Box::pin(async move {
             self.settle_resting_run(task_id).await?;
+            // The Codex CLI is installed before the launch lock, so a first install does not hold
+            // other tasks' starts (SPEC-503 CLI-002); the launch asks again and reports a failure.
+            if let Ok(Some(task)) = self.deps.store.task(task_id).await
+                && task.harness == Harness::Codex
+            {
+                let _ = self.deps.harness.provide_codex(true).await;
+            }
             let guard = self.supervisor.launch.lock().await;
             let task = self
                 .deps
@@ -1818,12 +1865,37 @@ impl App {
         );
         let home = self.sandbox_home(&sandbox.id);
         make_home(&self.sandbox_dir(&sandbox.id))?;
+        // A Codex run has the account's own Codex home in the sandbox (SPEC-503 CDX-003). Another
+        // run of the account may have refreshed its tokens there: that copy is kept, never
+        // overwritten with the vault's older one (CDX-006).
+        let codex_home = match harness {
+            Harness::Codex => Some(self.codex_home(&sandbox.id, &account.id)?),
+            Harness::ClaudeCode => None,
+        };
+        // The Codex CLI Yulius provides, by its absolute path (SPEC-503 CLI-002).
+        let codex_cli = match harness {
+            // Under the launch lock: only what the install before it left, never a download.
+            Harness::Codex => self.deps.harness.provide_codex(false).await?,
+            Harness::ClaudeCode => None,
+        };
+        let credential = match &codex_home {
+            Some(_) => self
+                .keep_codex_refresh(&self.sandbox_dir(&sandbox.id), &account.id)
+                .await
+                .holds
+                .unwrap_or(credential),
+            None => credential,
+        };
         self.prepare_run_extras(&sandbox, &home).await;
 
         // Goal mode (TSK-010): the request is the session goal, set through `/goal`. A fresh
         // session gets it as its launch prompt (SPEC-117); Claude's goal is per session, so a
         // resumed session gets it typed again once its TUI is ready.
-        let goal_mode = task.mode == TaskMode::Goal;
+        // Codex takes `/goal` only typed, never as its launch prompt, and records goals its own
+        // way: a Codex task gets its whole request, the definition of done included, as its first
+        // message, and its turns end it as a prompt-mode task's do (SPEC-503).
+        let codex = harness == Harness::Codex;
+        let goal_mode = task.follows_goal();
         // A prompt-mode first message with attached images is typed into the TUI, not given on
         // the command line: Claude Code attaches only a pasted image natively (SPEC-030).
         let mut typed_opening = None;
@@ -1919,6 +1991,17 @@ impl App {
                 use yulius_domain::request::{Opening, Request};
                 let prompt = match prompt {
                     Some(prompt) => Some(prompt),
+                    None if codex && task.mode == TaskMode::Goal => {
+                        match self.write_task_request(&sandbox, &task, &home).await {
+                            Ok(goal) => Some(goal.launch),
+                            Err(err) => {
+                                tracing::error!(task = %task.id, error = %err, "could not write the task request");
+                                Some(Request::parse(&task.prompt).first_message())
+                            }
+                        }
+                    }
+                    // Codex attaches no pasted image: each file is mentioned where it sits.
+                    None if codex => Some(Request::parse(&task.prompt).first_message()),
                     None if goal_mode => {
                         match self.write_task_request(&sandbox, &task, &home).await {
                             Ok(goal) => Some(format!("{GOAL_COMMAND}{}", goal.launch)),
@@ -1965,9 +2048,10 @@ impl App {
                     }
                 ));
         // This session's transcript steps back over a usage limit before the run (SPEC-034),
-        // also when the run opens with the prompt that resumes its workflows (SPEC-486).
+        // also when the run opens with the prompt that resumes its workflows (SPEC-486); a Codex
+        // rollout has no step-back (SPEC-503).
         let stepped_back = match (&start, &mode) {
-            (RunStart::AfterLimit, SessionMode::Resume { session_id, .. }) => {
+            (RunStart::AfterLimit, SessionMode::Resume { session_id, .. }) if !codex => {
                 Some(session_id.clone())
             }
             _ => None,
@@ -2007,15 +2091,22 @@ impl App {
             contained: self.config.contained,
             mcp,
             credential,
-            // A Codex run's home and CLI come with Codex tasks (SPEC-503 slice C1).
-            codex_home: None,
-            codex_program: None,
+            codex_home: codex_home.as_ref().map(|(path, _)| path.clone()),
+            codex_program: codex_cli.as_ref().map(|cli| cli.program.clone()),
         })?;
         if let Some(session_id) = &stepped_back {
             self.step_back_transcript(&task.sandbox_id, &home, &worktree, session_id)
                 .await;
         }
         let mut launch = plan.plan;
+        // The Codex home's files (its `auth.json` among them) are written through the home's
+        // handle, never by a path the agent could have turned into a link (#657).
+        let mut codex_leftover = None;
+        if let Some((path, dir)) = &codex_home {
+            // Written now: a launch that ends before its run is live takes them away again.
+            codex_leftover = Some(CodexLeftover::new(self, &task.id, &account.id));
+            write_codex_files(dir, path, &mut launch.files)?;
+        }
         let task_token = hex_token(&self.deps.crypto.random_bytes());
         let host_token = self.deps.crypto.random_bytes();
         launch
@@ -2071,6 +2162,8 @@ impl App {
                 readonly: std::iter::once(self.config.yulius_exe.clone())
                     .chain(self.config.contained_readonly.iter().cloned())
                     .chain(run_files)
+                    // The provided Codex CLI, at its own path (SPEC-503 CLI-002).
+                    .chain(codex_cli.iter().map(|cli| cli.dir.clone()))
                     .collect(),
                 binds: join
                     .iter()
@@ -2088,10 +2181,13 @@ impl App {
         let seq = u32::try_from(earlier.len() + 1).unwrap_or(u32::MAX);
         let own = task.model.as_deref().unwrap_or(DEFAULT_CLAUDE_MODEL);
         let model = fallback.unwrap_or(own);
+        // A Codex task without a model runs its subscription's default: no Claude model is
+        // recorded for it, and the Claude models' fallbacks say nothing (SPEC-503 CDX-013).
+        let codex_default = harness == Harness::Codex && task.model.is_none();
         // Said once per change of the model (SPEC-482 FBK-008): at the launch that falls back,
         // and at the first one that runs the task's own model again.
         let before = earlier.last().and_then(|run| run.model.as_deref());
-        if let Some(said) = model_change_notice(own, before, model) {
+        if let Some(said) = model_change_notice(own, before, model).filter(|_| !codex_default) {
             self.runtime(&task.id).hub.notice(said);
         }
         // Past the limit of a model the session's person switched it to (SPEC-493 MDL-002): said
@@ -2118,7 +2214,7 @@ impl App {
             account_id: Some(account.id.clone()),
             provider_session_id: plan.session_id.clone(),
             launch_kind,
-            model: Some(model.to_owned()),
+            model: (!codex_default).then(|| model.to_owned()),
             state: AttemptState::Spawning,
             run_dir: run_dir.to_string_lossy().into_owned(),
             token_hash: self.deps.crypto.sha256_hex(task_token.as_bytes()),
@@ -2220,6 +2316,10 @@ impl App {
                 },
             )
             .await?;
+        // The run is live: its end takes the Codex home's credentials back (CDX-006).
+        if let Some(leftover) = &mut codex_leftover {
+            leftover.disarm();
+        }
         let current = store.task(&task.id).await?.ok_or(AppError::NotFound)?;
         // Control passed during the launch, after its fingerprint file was computed: the file a
         // hand-over found nothing of yet becomes the new holder's (SPEC-248 FUP-002).
@@ -2900,8 +3000,9 @@ impl App {
         // Signed out since it was chosen: the start needs a connected account (SPEC-246 CLA-005).
         let sealed = account.credential.as_ref().ok_or_else(|| {
             AppError::AccountRequired(format!(
-                "Connect a Claude account first: {} is not signed in. An instance administrator \
+                "Connect a {} account first: {} is not signed in. An instance administrator \
                  signs it in again in Subscriptions ({}).",
+                crate::account_gate::account_kind(account.provider),
                 account.label,
                 crate::account_gate::CONNECT_PATH
             ))
@@ -2998,11 +3099,6 @@ impl App {
         }
     }
 
-    /// The sandbox's Codex sessions, shared by its Codex homes (SPEC-503 CDX-003).
-    pub(crate) fn codex_sessions(&self, sandbox: &SandboxId) -> PathBuf {
-        self.sandbox_dir(sandbox).join("codex").join("sessions")
-    }
-
     /// The rollout of the Codex session `session_id` in the sandbox's sessions, or where none is
     /// yet (Codex writes it at the session's first turn).
     pub(crate) fn codex_rollout(&self, sandbox: &SandboxId, session_id: &str) -> PathBuf {
@@ -3011,6 +3107,259 @@ impl App {
             Ok(Some(path)) => path,
             Ok(None) | Err(_) => sessions.join(format!("missing-{session_id}.jsonl")),
         }
+    }
+
+    /// After a Codex run ended or was lost (SPEC-503 CDX-006): its home's `auth.json` replaces the
+    /// account's credential when it is a genuine refresh of the same sign-in, at once
+    /// ([`Self::keep_codex_refresh`]); the file lies where the agent writes, so a forged one is not
+    /// taken, and the account keeps its state. Its removal waits for the launch lock, so it runs
+    /// on a task of its own ([`Self::remove_codex_auth_after`]): neither the run's end nor a caller
+    /// holding that lock waits for it.
+    async fn codex_run_ended(self: &Arc<Self>, task_id: &TaskId, attempt_id: &AttemptId) {
+        let Ok(Some(attempt)) = self.deps.store.attempt(attempt_id).await else {
+            return;
+        };
+        let Some(account) = attempt
+            .account_id
+            .filter(|_| attempt.harness == Harness::Codex)
+        else {
+            return;
+        };
+        let Ok(Some(task)) = self.deps.store.task(task_id).await else {
+            return;
+        };
+        let root = self.sandbox_dir(&task.sandbox_id);
+        let kept = self.keep_codex_refresh(&root, &account).await;
+        let app = Arc::clone(self);
+        let task_id = task_id.clone();
+        tokio::spawn(async move {
+            app.remove_codex_auth_after(
+                &task_id,
+                &task.sandbox_id,
+                &root,
+                &account,
+                Some(&attempt.id),
+                kept,
+            )
+            .await;
+        });
+    }
+
+    /// The write-back of a launch that ended before its run was live (`CodexLeftover`): as
+    /// [`Self::codex_run_ended`], with no run of its own to leave out.
+    async fn write_back_codex_auth(&self, task_id: &TaskId, account_id: &AccountId) {
+        let Ok(Some(task)) = self.deps.store.task(task_id).await else {
+            return;
+        };
+        let root = self.sandbox_dir(&task.sandbox_id);
+        let kept = self.keep_codex_refresh(&root, account_id).await;
+        self.remove_codex_auth_after(task_id, &task.sandbox_id, &root, account_id, None, kept)
+            .await;
+    }
+
+    /// Once no run of the account is left in the sandbox, its `auth.json` is removed: the
+    /// credential lives in the vault (`kept`: what it holds after the write-back, and the bytes
+    /// that lost to another credential), not in a folder later tasks can read. `attempt` is the run that ended, left out of the runs still
+    /// using the file. Reaches [`crate::race::Point::CodexWriteBackDone`] when done.
+    async fn remove_codex_auth_after(
+        &self,
+        task_id: &TaskId,
+        sandbox: &SandboxId,
+        root: &Path,
+        account_id: &AccountId,
+        attempt: Option<&AttemptId>,
+        kept: KeptCodexAuth,
+    ) {
+        self.remove_codex_auth_unless_used(Some(task_id), sandbox, root, account_id, attempt, kept)
+            .await;
+        crate::race::reached(
+            crate::race::Point::CodexWriteBackDone,
+            Path::new(task_id.as_str()),
+        );
+    }
+
+    async fn remove_codex_auth_unless_used(
+        &self,
+        task_id: Option<&TaskId>,
+        sandbox: &SandboxId,
+        root: &Path,
+        account_id: &AccountId,
+        attempt: Option<&AttemptId>,
+        kept: KeptCodexAuth,
+    ) {
+        // Under the launch lock: a run of the account starting now in this sandbox has written
+        // its `auth.json` and is recorded live once the lock is free, so its file is never taken.
+        let _launch = self.supervisor.launch.lock().await;
+        let others = match self.deps.store.live_attempts().await {
+            Ok(live) => {
+                let mut others = false;
+                for other in live.iter().filter(|a| {
+                    Some(&a.id) != attempt
+                        && a.harness == Harness::Codex
+                        && a.account_id.as_ref() == Some(account_id)
+                }) {
+                    // A task that cannot be read may be in this sandbox: its run keeps the file.
+                    match self.deps.store.task(&other.task_id).await {
+                        Ok(Some(t)) if &t.sandbox_id != sandbox => {}
+                        Ok(None) => {}
+                        Ok(Some(_)) | Err(_) => others = true,
+                    }
+                }
+                others
+            }
+            Err(_) => true,
+        };
+        if others {
+            return;
+        }
+        // An account gone or signed out meanwhile has no tokens to keep: whatever is there goes.
+        let gone = match self.deps.store.account(account_id).await {
+            Ok(Some(account)) => account.credential.is_none(),
+            Ok(None) => true,
+            Err(_) => false,
+        };
+        // Otherwise only the vault's own copy goes: a file that did not reach the vault (a
+        // refresh that could not be stored, or one not taken) may hold the only copy of rotated
+        // tokens.
+        match read_codex_auth(root, account_id) {
+            // The vault's own copy goes, and so do tokens another credential won over: they are
+            // never taken.
+            Ok(Some(file))
+                if gone
+                    || kept
+                        .holds
+                        .as_ref()
+                        .is_some_and(|h| h.expose().as_bytes() == file)
+                    || kept.lost.as_ref().is_some_and(|lost| *lost == file) =>
+            {
+                if let Err(err) = remove_codex_auth(root, account_id) {
+                    tracing::warn!(task = task_id.map(TaskId::as_str), account = %account_id, error = %err, "the run's Codex credentials could not be removed");
+                }
+            }
+            Ok(Some(_)) => {
+                tracing::warn!(task = task_id.map(TaskId::as_str), account = %account_id, "the run's Codex credentials did not reach the vault; left in place");
+            }
+            Ok(None) => {}
+            Err(err) => {
+                tracing::warn!(task = task_id.map(TaskId::as_str), account = %account_id, error = %err, "the run's Codex credentials could not be read");
+            }
+        }
+    }
+
+    /// Stores the `auth.json` in the Codex home of `account` below `root` when it replaces the
+    /// account's credential ([`HarnessPort::codex_auth_replaces`]). Says what the account holds
+    /// afterwards (`holds`; `None` when its credential is gone: signed out, nothing is stored
+    /// back) and, when another credential won (the account held another or none by the time of
+    /// the write: a sign-in made meanwhile, a removal, another run's newer refresh), the file's bytes
+    /// that lost, which are never taken and need not stay.
+    async fn keep_codex_refresh(&self, root: &Path, account_id: &AccountId) -> KeptCodexAuth {
+        let holds = |stored: Vec<u8>| KeptCodexAuth {
+            holds: String::from_utf8(stored).ok().map(Secret),
+            lost: None,
+        };
+        let Some(account) = self.deps.store.account(account_id).await.ok().flatten() else {
+            return KeptCodexAuth::default();
+        };
+        let Some(stored) = account
+            .credential
+            .as_ref()
+            .and_then(|sealed| self.deps.crypto.open(sealed).ok())
+        else {
+            return KeptCodexAuth::default();
+        };
+        let fresh = match read_codex_auth(root, account_id) {
+            Ok(Some(bytes)) => bytes,
+            Ok(None) => return holds(stored),
+            Err(err) => {
+                tracing::warn!(account = %account_id, error = %err, "the Codex home's credentials could not be read");
+                return holds(stored);
+            }
+        };
+        if !self
+            .deps
+            .harness
+            .codex_auth_replaces(&fresh, &stored, self.now())
+        {
+            return holds(stored);
+        }
+        crate::race::reached(
+            crate::race::Point::CodexRefreshTaken,
+            Path::new(account_id.as_str()),
+        );
+        let sealed = match self.deps.crypto.seal(&fresh) {
+            Ok(sealed) => sealed,
+            Err(err) => {
+                tracing::error!(error = %err, "could not seal refreshed Codex credentials");
+                return holds(stored);
+            }
+        };
+        // Only the credential changes, and only while it is the one this refresh is of: the
+        // status, error and email stay (a status read above is never written back), and a new
+        // sign-in made meanwhile wins. Another run's refresh of the same sign-in stored first
+        // does not win when this one is newer: the swap is tried again against it.
+        let Some(mut previous) = account.credential else {
+            return holds(stored);
+        };
+        for _ in 0..CODEX_REFRESH_SWAPS {
+            match self
+                .deps
+                .store
+                .refresh_account_credential(account_id, &previous, &sealed, self.now())
+                .await
+            {
+                Ok(true) => {
+                    tracing::info!(account = %account_id, "refreshed Codex credentials kept");
+                    return holds(fresh);
+                }
+                Ok(false) => {}
+                Err(err) => {
+                    tracing::error!(error = %err, "could not store refreshed Codex credentials");
+                    return holds(stored);
+                }
+            }
+            // What the account holds now must be known before the file is called lost: a read
+            // that fails or a credential that does not open leaves the file, which may hold the
+            // only copy of rotated tokens.
+            let now_sealed = match self.deps.store.account(account_id).await {
+                Ok(account) => account.and_then(|account| account.credential),
+                Err(err) => {
+                    tracing::error!(account = %account_id, error = %err, "the account could not be read after a lost Codex refresh swap; the file stays");
+                    return KeptCodexAuth::default();
+                }
+            };
+            let now_held = match &now_sealed {
+                Some(sealed) => match self.deps.crypto.open(sealed) {
+                    Ok(bytes) => Some(bytes),
+                    Err(err) => {
+                        tracing::error!(account = %account_id, error = %err, "the account's credential could not be opened after a lost Codex refresh swap; the file stays");
+                        return KeptCodexAuth::default();
+                    }
+                },
+                None => None,
+            };
+            match (now_sealed, now_held) {
+                (Some(again), Some(held))
+                    if self
+                        .deps
+                        .harness
+                        .codex_auth_replaces(&fresh, &held, self.now()) =>
+                {
+                    previous = again;
+                }
+                (_, held) => {
+                    tracing::info!(account = %account_id, "the account holds another credential or none now: the Codex refresh is not kept");
+                    return KeptCodexAuth {
+                        holds: held.and_then(|bytes| String::from_utf8(bytes).ok().map(Secret)),
+                        lost: Some(fresh),
+                    };
+                }
+            }
+        }
+        // Still contended after every try: what the account holds is not known for sure. At a
+        // run's end or a start's sweep the file stays (the next one takes it again); a launch
+        // writes the credential it read before over it, as when the account cannot be read.
+        tracing::warn!(account = %account_id, "the Codex refresh could not be stored: the account's credential kept changing");
+        KeptCodexAuth::default()
     }
 
     /// Attaches to a run's host, resets the hub and starts the output pump and transcript watcher.
@@ -3333,6 +3682,9 @@ impl App {
         if !first {
             return; // another observer already recorded the outcome
         }
+        // A lost Codex run's processes are gone too: its refresh is kept and its file goes, as
+        // after a run that ended (SPEC-503 CDX-006).
+        self.codex_run_ended(task_id, attempt_id).await;
         let mut reason = reason;
         if let Some(rt) = &runtime
             && let Ok(mut intent) = rt.intent.lock()
@@ -3476,6 +3828,7 @@ impl App {
         // there: that version gets no other session (SPEC-461 CCM-013).
         self.claude_code_run_ended(task_id, attempt_id, session_started, intent.is_none())
             .await;
+        self.codex_run_ended(task_id, attempt_id).await;
         // The snapshot is the run's once its watcher read the run's transcript to its end;
         // otherwise it is empty or partial, and the transcript is counted (SPEC-143 RDM-001).
         let read = runtime
@@ -4215,11 +4568,14 @@ impl App {
             runtime.hub.notice(self.claude_code_move_notice());
         } else {
             let line = if fresh {
-                "↻ Yulius starts a fresh session for this task…"
+                "↻ Yulius starts a fresh session for this task…".to_owned()
             } else if elsewhere {
-                "↻ Yulius continues this session on another Claude subscription…"
+                format!(
+                    "↻ Yulius continues this session on another {} subscription…",
+                    crate::account_gate::account_kind(task.harness.provider())
+                )
             } else {
-                "↻ Yulius continues this session…"
+                "↻ Yulius continues this session…".to_owned()
             };
             // A workflow the old process leaves unfinished is resumed (SPEC-486 WFL-004).
             let resumes_workflow =
@@ -5010,7 +5366,40 @@ impl App {
             }
         }
         self.drain_queue().await;
+        // A server that stopped between a Codex run's end and the removal of its `auth.json`
+        // left the file: no run of this server uses one yet (SPEC-503 CDX-006).
+        self.sweep_codex_homes().await;
         Ok(lost)
+    }
+
+    /// Keeps a genuine refresh from, and removes, each Codex home's `auth.json` that no live run
+    /// of its subscription in its sandbox uses (a server stopped before its run's write-back
+    /// removed it).
+    async fn sweep_codex_homes(&self) {
+        let Ok(sandboxes) = self.deps.store.sandboxes().await else {
+            return;
+        };
+        for sandbox in sandboxes {
+            let root = self.sandbox_dir(&sandbox.id);
+            let Ok(homes) = std::fs::read_dir(root.join("codex")) else {
+                continue;
+            };
+            for home in homes.flatten() {
+                let Some(account) = home
+                    .file_name()
+                    .to_str()
+                    .and_then(|name| AccountId::parse(name).ok())
+                else {
+                    continue;
+                };
+                if !matches!(read_codex_auth(&root, &account), Ok(Some(_))) {
+                    continue;
+                }
+                let kept = self.keep_codex_refresh(&root, &account).await;
+                self.remove_codex_auth_unless_used(None, &sandbox.id, &root, &account, None, kept)
+                    .await;
+            }
+        }
     }
 
     /// Account usage update from transcripts or providers. The subscription reads `limited`
@@ -5215,15 +5604,37 @@ impl App {
             // hook names its new session on the attempt; adopt it into the lineage. Never the
             // newest transcript of the worktree: a `claude` the agent runs there writes one too
             // (SPEC-281 SSN-002).
-            if attempt.harness == Harness::ClaudeCode && now.millis_since(last_drift_check) > 5_000
-            {
+            // Codex names its session itself: its SessionStart hook names it the same way, and
+            // without hooks the rollout started for the worktree since the run began does
+            // (SPEC-503 CDX-003).
+            if now.millis_since(last_drift_check) > 5_000 {
                 last_drift_check = now;
-                if let Ok(Some(named)) = self.deps.store.attempt(&attempt.id).await
-                    && let Some(id) = named.provider_session_id
+                let mut named = self
+                    .deps
+                    .store
+                    .attempt(&attempt.id)
+                    .await
+                    .ok()
+                    .flatten()
+                    .and_then(|named| named.provider_session_id);
+                // The rollouts are read only while no hook has named the session yet.
+                if named.is_none()
+                    && session_id.is_none()
+                    && attempt.harness == Harness::Codex
+                    && let Ok(Some((id, _))) = self.deps.harness.discover_codex_session(
+                        &self.codex_sessions(&sandbox.id),
+                        &worktree,
+                        attempt.started_at,
+                    )
+                {
+                    let _ = self.deps.store.set_attempt_session(&attempt.id, &id).await;
+                    named = Some(id);
+                }
+                if let Some(id) = named
                     && session_id.as_deref() != Some(id.as_str())
                 {
                     let _ = self
-                        .record_lineage(&task, Harness::ClaudeCode, &id, "native")
+                        .record_lineage(&task, attempt.harness, &id, "native")
                         .await;
                     // `/clear` or `/resume` in the TUI: a person took the session in hand.
                     if session_id.is_some() {
@@ -5474,11 +5885,16 @@ impl App {
                 let app = self.clone();
                 let tid = task_id.clone();
                 let account = attempt.account_id.clone();
+                let provider = attempt.harness.provider();
                 tokio::spawn(async move {
                     app.rotate(&tid, account, Trigger::LimitReached).await;
                     // Said in one line, with a Needs you when nothing is left (SPEC-447 MOV-006).
                     if let Some(label) = refused {
-                        let left = crate::moves::Left::Refused { label, message };
+                        let left = crate::moves::Left::Refused {
+                            provider,
+                            label,
+                            message,
+                        };
                         app.tell_left(&tid, &left).await;
                     }
                 });
@@ -5954,6 +6370,162 @@ async fn request_shutdown(runtime: &TaskRuntime) {
     }
 }
 
+/// Where a Codex home's `sessions` points: the sandbox's shared sessions.
+const CODEX_SESSIONS_LINK: &str = "../sessions";
+
+/// Makes the Codex home `dir`'s `sessions` the link to the sandbox's shared sessions, or checks
+/// that it is: anything else (a folder, another link) would put rollouts where Yulius and the
+/// other accounts' runs never look, so the start is refused (SPEC-503 CDX-003).
+fn ensure_sessions_link(dir: &std::os::fd::OwnedFd) -> AppResult<()> {
+    match nix::fcntl::readlinkat(dir, "sessions") {
+        Ok(target) if target == std::ffi::OsStr::new(CODEX_SESSIONS_LINK) => Ok(()),
+        Ok(_) | Err(nix::errno::Errno::EINVAL) => Err(AppError::internal(
+            "the Codex home's sessions is not Yulius's link to the sandbox's sessions",
+        )),
+        Err(nix::errno::Errno::ENOENT) => {
+            nix::unistd::symlinkat(CODEX_SESSIONS_LINK, dir, "sessions")
+                .map_err(crate::files::errno_error)
+        }
+        Err(err) => Err(crate::files::errno_error(err)),
+    }
+}
+
+/// Largest Codex `auth.json` read back from a run (SPEC-503 CDX-006).
+const CODEX_AUTH_MAX: u64 = 1024 * 1024;
+
+/// The Codex home's `auth.json` a launch wrote, taken back when the launch ends before its run is
+/// live (SPEC-503 CDX-006): a failed spawn, a store error, or a subscription removed just after it
+/// was chosen (SPEC-447) would otherwise leave it for later tasks of the sandbox to read. Dropped
+/// armed, it runs the write-back rule on its own task (the launch lock may be held); disarmed once
+/// the run is live, whose end does it instead.
+struct CodexLeftover {
+    cleanup: Option<(Arc<App>, TaskId, AccountId)>,
+}
+
+impl CodexLeftover {
+    fn new(app: &Arc<App>, task: &TaskId, account: &AccountId) -> Self {
+        Self {
+            cleanup: Some((app.clone(), task.clone(), account.clone())),
+        }
+    }
+
+    fn disarm(&mut self) {
+        self.cleanup = None;
+    }
+}
+
+impl Drop for CodexLeftover {
+    fn drop(&mut self) {
+        let Some((app, task, account)) = self.cleanup.take() else {
+            return;
+        };
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            runtime.spawn(async move {
+                app.write_back_codex_auth(&task, &account).await;
+            });
+        }
+    }
+}
+
+/// What a Codex write-back left ([`App::keep_codex_refresh`]): the credential the account holds,
+/// and the bytes of a run's `auth.json` that lost to another credential.
+#[derive(Default)]
+struct KeptCodexAuth {
+    holds: Option<Secret>,
+    lost: Option<Vec<u8>>,
+}
+
+/// Removes the `auth.json` of `account`'s Codex home below `root`, opened without following a
+/// link; a missing one is fine.
+fn remove_codex_auth(root: &Path, account: &AccountId) -> AppResult<()> {
+    let dir = match crate::files::open_dirs_below(
+        root,
+        &[
+            std::ffi::OsStr::new("codex"),
+            std::ffi::OsStr::new(account.as_str()),
+        ],
+        false,
+    ) {
+        Ok(dir) => dir,
+        Err(nix::errno::Errno::ENOENT) => return Ok(()),
+        Err(err) => return Err(crate::files::errno_error(err)),
+    };
+    match nix::unistd::unlinkat(&dir, "auth.json", nix::unistd::UnlinkatFlags::NoRemoveDir) {
+        Ok(()) | Err(nix::errno::Errno::ENOENT) => Ok(()),
+        Err(err) => Err(crate::files::errno_error(err)),
+    }
+}
+
+/// Writes the plan's files of the Codex home `home` through its handle `dir` (mode 0600) and takes
+/// them out of the plan: the agent could have turned a path below the sandbox into a link.
+fn write_codex_files(
+    dir: &std::os::fd::OwnedFd,
+    home: &Path,
+    files: &mut Vec<crate::ports::session::PlannedFile>,
+) -> AppResult<()> {
+    let (own, rest): (Vec<_>, Vec<_>) = std::mem::take(files)
+        .into_iter()
+        .partition(|f| f.path.parent() == Some(home));
+    *files = rest;
+    for file in own {
+        let Some(name) = file.path.file_name() else {
+            continue;
+        };
+        let temporary = format!(".{}.yulius-tmp", name.to_string_lossy());
+        let _ = nix::unistd::unlinkat(
+            dir,
+            temporary.as_str(),
+            nix::unistd::UnlinkatFlags::NoRemoveDir,
+        );
+        crate::files::replace_in(dir, name, &temporary, |out| {
+            use std::io::Write as _;
+            use std::os::unix::fs::PermissionsExt as _;
+            out.set_permissions(std::fs::Permissions::from_mode(file.mode))?;
+            out.write_all(&file.contents)
+        })?;
+    }
+    Ok(())
+}
+
+/// The `auth.json` a Codex run left in its home, read without following a link and bounded;
+/// `None` when there is none.
+fn read_codex_auth(root: &Path, account: &AccountId) -> AppResult<Option<Vec<u8>>> {
+    use std::io::Read as _;
+    let dir = match crate::files::open_dirs_below(
+        root,
+        &[
+            std::ffi::OsStr::new("codex"),
+            std::ffi::OsStr::new(account.as_str()),
+        ],
+        false,
+    ) {
+        Ok(dir) => dir,
+        Err(nix::errno::Errno::ENOENT) => return Ok(None),
+        Err(err) => return Err(crate::files::errno_error(err)),
+    };
+    let flags = nix::fcntl::OFlag::O_RDONLY
+        | nix::fcntl::OFlag::O_NOFOLLOW
+        | nix::fcntl::OFlag::O_NONBLOCK
+        | nix::fcntl::OFlag::O_CLOEXEC;
+    let fd = match nix::fcntl::openat(&dir, "auth.json", flags, nix::sys::stat::Mode::empty()) {
+        Ok(fd) => fd,
+        Err(nix::errno::Errno::ENOENT) => return Ok(None),
+        Err(err) => return Err(crate::files::errno_error(err)),
+    };
+    let file = std::fs::File::from(fd);
+    if !file.metadata().map_err(AppError::internal)?.is_file() {
+        return Ok(None);
+    }
+    let mut bytes = Vec::new();
+    file.take(CODEX_AUTH_MAX + 1)
+        .read_to_end(&mut bytes)
+        .map_err(AppError::internal)?;
+    if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > CODEX_AUTH_MAX {
+        return Ok(None);
+    }
+    Ok(Some(bytes))
+}
+
 /// Makes the sandbox's home, `<sandbox_dir>/home`, when it is missing. The home is the agent's:
 /// it is made with `mkdirat` from the sandbox directory and opened without following a link, so a
 /// `home` link, dangling or to a host folder, fails the start and is never taken as the home
@@ -6002,7 +6574,11 @@ pub(crate) fn model_change_notice(own: &str, before: Option<&str>, model: &str) 
 
 /// Why a person's choice of subscription cannot take the task, in one plain sentence naming it
 /// (SPEC-447 MOV-002).
-fn refused_choice(label: Option<&str>, reason: &rotation::DecisionReason) -> String {
+fn refused_choice(
+    label: Option<&str>,
+    provider: yulius_domain::harness::Provider,
+    reason: &rotation::DecisionReason,
+) -> String {
     use rotation::{DecisionReason, Refusal};
     let name = label.unwrap_or("That subscription");
     match reason {
@@ -6016,7 +6592,10 @@ fn refused_choice(label: Option<&str>, reason: &rotation::DecisionReason) -> Str
             format!("{name} is at its usage limit, so it cannot take the task until it resets.")
         }
         DecisionReason::ManualRefused(Refusal::ProviderMismatch) => {
-            format!("{name} is not a Claude subscription, so it cannot take the task.")
+            format!(
+                "{name} is not a {} subscription, so it cannot take the task.",
+                crate::account_gate::account_kind(provider)
+            )
         }
         _ => "No other subscription can take the task right now.".into(),
     }
@@ -6224,6 +6803,75 @@ mod tests {
         for reason in ["rotation", "limit", "context_full", "proactive"] {
             assert!(!super::interrupts_first(reason), "{reason}");
         }
+    }
+
+    /// SPEC-503 CDX-006: the run's `auth.json` is read without following a link the agent put
+    /// there, and a home that is a link is refused; a missing one is nothing to read.
+    #[test]
+    fn codex_credentials_are_read_without_following_links() -> Result<(), Box<dyn std::error::Error>>
+    {
+        use super::{AccountId, read_codex_auth, remove_codex_auth};
+        let dir = tempfile::tempdir()?;
+        let root = dir.path();
+        let account = AccountId::parse("acc-1")?;
+        assert_eq!(read_codex_auth(root, &account)?, None);
+        let home = root.join("codex/acc-1");
+        std::fs::create_dir_all(&home)?;
+        assert_eq!(read_codex_auth(root, &account)?, None);
+        std::fs::write(home.join("auth.json"), b"{}")?;
+        assert_eq!(read_codex_auth(root, &account)?, Some(b"{}".to_vec()));
+        std::fs::remove_file(home.join("auth.json"))?;
+        std::fs::write(root.join("secret.json"), b"host secret")?;
+        std::os::unix::fs::symlink(root.join("secret.json"), home.join("auth.json"))?;
+        assert!(
+            read_codex_auth(root, &account).is_err(),
+            "a linked auth.json"
+        );
+        remove_codex_auth(root, &account)?;
+        assert!(
+            root.join("secret.json").exists(),
+            "the link's target is untouched"
+        );
+        assert!(std::fs::symlink_metadata(home.join("auth.json")).is_err());
+        std::fs::remove_dir(&home)?;
+        std::os::unix::fs::symlink(root, &home)?;
+        std::fs::write(root.join("auth.json"), b"{}")?;
+        assert!(read_codex_auth(root, &account).is_err(), "a linked home");
+        Ok(())
+    }
+
+    /// SPEC-503 CDX-003: a Codex home's `sessions` is made the link to the shared sessions, kept
+    /// when it is, and anything else refuses the start.
+    #[test]
+    fn a_codex_homes_sessions_is_the_shared_link() -> Result<(), Box<dyn std::error::Error>> {
+        use super::ensure_sessions_link;
+        let dir = tempfile::tempdir()?;
+        let open = |path: &std::path::Path| {
+            nix::fcntl::open(
+                path,
+                nix::fcntl::OFlag::O_RDONLY | nix::fcntl::OFlag::O_DIRECTORY,
+                nix::sys::stat::Mode::empty(),
+            )
+        };
+        let home = dir.path().join("a");
+        std::fs::create_dir(&home)?;
+        ensure_sessions_link(&open(&home)?)?;
+        assert_eq!(
+            std::fs::read_link(home.join("sessions"))?,
+            std::path::PathBuf::from("../sessions")
+        );
+        ensure_sessions_link(&open(&home)?)?;
+        let folder = dir.path().join("b");
+        std::fs::create_dir_all(folder.join("sessions"))?;
+        assert!(ensure_sessions_link(&open(&folder)?).is_err(), "a folder");
+        let other = dir.path().join("c");
+        std::fs::create_dir(&other)?;
+        std::os::unix::fs::symlink("/etc", other.join("sessions"))?;
+        assert!(
+            ensure_sessions_link(&open(&other)?).is_err(),
+            "another link"
+        );
+        Ok(())
     }
 
     /// #661: a `home` link fails the start, dangling (nothing is made where it points) or to a

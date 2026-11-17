@@ -172,6 +172,10 @@ impl App {
         let task = self.load_task(ctx, id, Action::Work).await?;
         let model = setting(model, "model", model_shaped)?;
         let effort = setting(effort, "effort", effort_shaped)?;
+        crate::lifecycle::codex_takes_no_claude_model(
+            task.harness,
+            model.as_ref().and_then(|m| m.as_deref()),
+        )?;
         if model.is_none() && effort.is_none() {
             return Err(AppError::Invalid(
                 "give `model` or `effort` (or both); `default` goes back to the default".into(),

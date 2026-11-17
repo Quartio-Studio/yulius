@@ -44,15 +44,12 @@ Measured on production on 16 Nov 2026 (64 CPUs, 755 GiB; `yulius.db` wait and jo
 A waiting job starts when all of these hold (`yulius_domain::resources::admit`,
 `App::ci_reserve`):
 
-1. **CI's processes are not waiting for CPUs.**
-   - The sandboxes' `ci` groups' `cpu.pressure` `some avg10` is at most 10 % (`CI_PRESSURE_LIMIT`).
-   - This is the kernel's own measure of contention, so no job starts into a compile peak and
-     tests keep the CPU they get.
+1. ~~CI's processes are not waiting for CPUs~~ (removed 17 Nov 2026, see the amendment below).
 2. **The worst case is bounded.**
    - The CPUs the running jobs may use at once (their `cpus` or default shares), with this job's,
-     are at most twice the CI budget (`CI_OVERSUBSCRIPTION`).
-   - Were every job to use all it may at the same moment, each would still get half of it, so a
-     test's time limits keep their margin.
+     are at most three times the CI budget (`CI_OVERSUBSCRIPTION`; twice until 17 Nov 2026).
+   - Were every job to use all it may at the same moment, each would still get a third of it.
+     Measured use (rule 3) stops new jobs long before that.
    - Declarations bound the worst case; they no longer reserve the host.
 3. **What CI uses leaves room.** The sum of these fits in the CI budget, in CPUs and in memory:
    - what the sandboxes' `ci` and `engine` groups were measured to use;
@@ -79,7 +76,7 @@ goes first, so a branch's job can wait longer while merges and pull requests kee
 ## Consequences
 
 - **The host's idle CPUs are used.** A job is held back only:
-  - by contention the kernel measures;
+  - by contention the kernel measures (until the amendment below: no longer);
   - by the bounded worst case;
   - by measured use.
 
@@ -89,7 +86,8 @@ goes first, so a branch's job can wait longer while merges and pull requests kee
   then the host drains only as far as it needs.
 - **Merges come first**: a merge train's run no longer queues behind pull requests' runs.
 - **Contention stops admissions and never stops a running job.** A job admitted between two peaks
-  can still meet the next one. The worst-case bound keeps that within twice the CPUs.
+  can still meet the next one. The worst-case bound keeps that within three times the CPUs. (Since
+  the amendment below, measured use alone stops admissions.)
 - **The job's environment is unchanged**: `YULIUS_CPUS` and the variables derived from it are
   still its budget.
 - **Projects' `cpus` still matter.** They bound the worst case and set a job's parallelism, but they
@@ -98,3 +96,31 @@ goes first, so a branch's job can wait longer while merges and pull requests kee
   a job's memory counts at its start as its budget (at most a quarter of the CI budget's), then as
   the anonymous memory measured. Jobs that peak late in memory together can meet the sandbox's
   memory limit; a memory bound was left for when it is seen.
+
+## Amendment, 17 Nov 2026: CPU pressure holds no job back
+
+The first rule held every job while any sandbox's `ci` group showed more than 10 % CPU pressure.
+The night after it shipped, the product repository's CI pinned each job's `node --test` workers
+to the job's own CPUs (`scripts/ci/bounded.sh`, `taskset`), three of them for a 21-job run.
+
+- Those workers waited for their three CPUs: 15–20 % pressure in that sandbox's `ci` group, while
+  every other sandbox showed 0 %.
+- The host was 45 % busy, and 117 jobs of every project queued behind the rule.
+- Pressure cannot tell a job that confines itself from a host that is full. Measured use (rule 3)
+  already stops new jobs when CI really fills the host, and the worst case (rule 2) bounds what
+  a burst can do.
+
+So the rule is gone. The pressure is still read, for diagnosis (logged at `debug` with each
+reading, as `cpu_pressure_permille`), and a test keeps a pinned job's pressure from holding others
+back again.
+
+## Amendment, 17 Nov 2026: the worst case is three times the budget
+
+At twice the budget, the worst case was the limit that held jobs back all night, not the host:
+- 00:13 UTC: the running jobs' budgets were 108 of 112, with the host 60–77 % busy and CI's
+  processes waiting for a CPU 1–2 % of the time.
+- 01:25 UTC: three quartio-v2 jobs of 30 CPUs held a fourth back (90 + 30 > 112) with the host 55 %
+  busy. Once that job had waited 10 minutes, it held back 105 smaller jobs behind it.
+
+Measured use (rule 3) is what stops jobs when CI really fills the host. The worst case only bounds
+a burst, and three times still guarantees each job a third of what it may use.

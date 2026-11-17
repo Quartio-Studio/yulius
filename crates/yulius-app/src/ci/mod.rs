@@ -38,6 +38,8 @@ mod disk_wait;
 mod environment;
 mod exec;
 mod findings;
+mod flaky;
+pub use flaky::Noted;
 pub mod hygiene;
 pub(crate) mod playground;
 mod prove;
@@ -114,6 +116,9 @@ pub struct CiSettings {
     pub poll: Duration,
     /// Bytes a CD or environment run's files and cache may use (SPEC-300, ADR-0216).
     pub run_disk_max: u64,
+    /// The longest a job waits for network room before its second run after a full address
+    /// pool; past it, it ends error for the infrastructure (SPEC-497 OFC-001).
+    pub rerun_network_wait: Duration,
 }
 
 impl Default for CiSettings {
@@ -125,6 +130,7 @@ impl Default for CiSettings {
             job_timeout: Duration::from_secs(30 * 60),
             poll: Duration::from_secs(60),
             run_disk_max: 20_000_000_000,
+            rerun_network_wait: Duration::from_secs(10 * 60),
         }
     }
 }
@@ -229,6 +235,38 @@ pub struct CiRunUpdate {
     pub ended_at: Option<Timestamp>,
 }
 
+/// One line of a sandbox's tally of CI minutes (SPEC-497 OFC-003): a UTC day, how the runs
+/// ended (`passed`, `failed`, `failed_outside`, `cancelled`), how many, their minutes start to end
+/// and their jobs' time thrown away by infrastructure failures, in milliseconds.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CiMinutesRow {
+    /// `YYYY-MM-DD`.
+    pub day: String,
+    /// How the runs ended.
+    pub outcome: String,
+    /// Runs.
+    pub runs: i64,
+    /// Their time, start to end.
+    pub run_ms: i64,
+    /// Their jobs' thrown-away time.
+    pub rerun_ms: i64,
+}
+
+/// A test quarantined as flaky in a sandbox (SPEC-497 OFC-002).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Quarantined {
+    /// Its sandbox.
+    pub sandbox_id: SandboxId,
+    /// Its name as the failing tests' blocks name it.
+    pub test: String,
+    /// The job it failed in.
+    pub job_key: String,
+    /// The issue filed for it, if one could be.
+    pub issue: Option<(u64, String)>,
+    /// When it was quarantined.
+    pub since: Timestamp,
+}
+
 /// Fields set with a job transition.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct CiJobUpdate {
@@ -248,6 +286,10 @@ pub struct CiJobUpdate {
     pub usage: Option<yulius_domain::stages::ResourceUse>,
     /// How long it waited before it started, with its start (SPEC-435).
     pub waited_ms: Option<i64>,
+    /// With its end, after an infrastructure failure (SPEC-497 OFC-001): its kind
+    /// ([`yulius_domain::ci::infra::Infra::as_str`]), the milliseconds of the runs thrown away,
+    /// and whether its end itself was the infrastructure's (it met one again).
+    pub infra: Option<(&'static str, i64, bool)>,
 }
 
 /// The CI configuration of a sandbox as last read.
@@ -280,6 +322,10 @@ impl Drop for CiClaim {
     }
 }
 
+/// The minute of a reading of the host for CI and the host's CPU ticks then, `(busy, total)`
+/// (SPEC-497).
+pub(crate) type LoadReading = (i64, Option<(u64, u64)>);
+
 /// Process-local CI state.
 #[derive(Default)]
 pub struct CiState {
@@ -311,12 +357,18 @@ pub struct CiState {
     /// One CI sync of a sandbox at a time (the 60 s loop, a person's sync, a review's start):
     /// each reads the runs before it queues, so two at once would queue one head twice.
     sync_locks: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    /// One quarantine of a sandbox decided at a time (SPEC-497 OFC-002): two jobs failing the
+    /// same test at once would each file an issue for it (review round 1); per sandbox, so a
+    /// slow GitHub holds only that project's job ends (review round 2).
+    pub(crate) quarantine_locks: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     /// Sandboxes with a run that passed when it was queued (every job skipped for its
     /// `paths`): the dispatcher starts their merge pass, as a run's end does.
     passed_when_queued: Mutex<Vec<SandboxId>>,
     wake: Arc<Notify>,
     started: AtomicBool,
     last_prune: Mutex<i64>,
+    /// The minute of the last reading of the host for CI and its CPU ticks then (SPEC-497).
+    pub(crate) load: Mutex<Option<LoadReading>>,
     /// Sandboxes whose runs wait for disk (SPEC-059 CI-301).
     disk_waits: Mutex<HashMap<String, disk_wait::DiskWait>>,
     /// One pass deciding a sandbox's armed merges (and its merge train) at a time (SPEC-084
@@ -1088,7 +1140,10 @@ impl App {
                 // up-to-date pull request) reuses that result instead of running again: every
                 // merge used to cost a second 12-20 minute run in the sandbox's one lane.
                 if matches!(target.reference, CiRef::Branch(_))
-                    && self.ci_reuse_tree(sandbox, &target, gate, &runs).await?
+                    && self
+                        .ci_reuse_tree(sandbox, &target, gate, &runs)
+                        .await?
+                        .is_some()
                 {
                     continue;
                 }
@@ -1110,24 +1165,50 @@ impl App {
         Ok(())
     }
 
+    /// A merge candidate's run for `sha` (`reference`, of `gate`'s jobs) taken from a recent
+    /// passed run that tested the same tree, recorded as passed; `None` when there is none
+    /// (SPEC-497 MQW-001: a candidate formed again on the same base with the same members
+    /// reuses its earlier verdict instead of a new run).
+    ///
+    /// # Errors
+    /// Store or Git failures.
+    pub(crate) async fn ci_reuse_for_candidate(
+        &self,
+        sandbox: &SandboxRecord,
+        reference: CiRef,
+        sha: &str,
+        gate: &Gate,
+    ) -> AppResult<Option<CiRunRecord>> {
+        let runs = self.deps.store.ci_runs(&sandbox.id, PLAN_RUNS).await?;
+        let target = Target {
+            reference,
+            sha: sha.to_owned(),
+        };
+        let Some(id) = self.ci_reuse_tree(sandbox, &target, gate, &runs).await? else {
+            return Ok(None);
+        };
+        self.deps.store.ci_run(&id).await
+    }
+
     /// Records a passed run for `target` when a recent passed run tested a commit with the same
-    /// tree (and therefore the same jobs); `false` when there is none.
+    /// tree (and therefore the same jobs); its id, or `None` when there is none.
     async fn ci_reuse_tree(
         &self,
         sandbox: &SandboxRecord,
         target: &Target,
         gate: &Gate,
         runs: &[CiRunRecord],
-    ) -> AppResult<bool> {
+    ) -> AppResult<Option<String>> {
         let repo = self.sandbox_repo(&sandbox.id);
         let Some(tree) = self.deps.git.tree_of(&repo, &target.sha).await? else {
-            return Ok(false);
+            return Ok(None);
         };
         // A merge train's verdict for a pull request it merged before the last one covers a tree
         // no run tested (SPEC-084 TRN-005): never a source.
         // A branch's own run runs every job (SPEC-493 CJP-003): a source that skipped a job for
-        // its `paths` never ran it, so it is no source there, and an earlier one may be.
-        let branch = matches!(target.reference, CiRef::Branch(_));
+        // its `paths` never ran it, so it is no source there, and an earlier one may be. A merge
+        // candidate's neither: the same tree on another base may change what `paths` decides.
+        let branch = matches!(target.reference, CiRef::Branch(_) | CiRef::Train(_));
         let mut found = None;
         for run in runs.iter().filter(|r| {
             r.state == RunState::Passed
@@ -1151,7 +1232,7 @@ impl App {
             break;
         }
         let Some((source, tested)) = found else {
-            return Ok(false);
+            return Ok(None);
         };
         // Its jobs keep the verdict they had there: a skipped one stays skipped (SPEC-162).
         let now = self.now();
@@ -1215,7 +1296,7 @@ impl App {
         self.deps.store.insert_ci_run(&run, &jobs).await?;
         tracing::info!(sandbox = %sandbox.slug, run = %run.id, sha = %short(&target.sha), reused = %short(&source.sha), "CI result reused for the same tree");
         self.ci_publish(&run.id).await;
-        Ok(true)
+        Ok(Some(run.id))
     }
 
     /// Cancels a run: a queued one at once, a running one through its executor (which kills
@@ -1449,7 +1530,7 @@ impl App {
         }
     }
 
-    async fn ci_prune(&self) {
+    async fn ci_prune(self: &Arc<Self>) {
         let now = self.now().0;
         {
             let Ok(mut last) = self.ci.last_prune.lock() else {
@@ -1472,13 +1553,19 @@ impl App {
         }
         self.cd_prune().await;
         self.prune_spans(Timestamp(now)).await;
+        // Quarantined tests whose issue was closed go back into the runs (SPEC-497 OFC-002), off
+        // the poll loop: it asks GitHub once per quarantine (review of the quarantine, round 3).
+        let app = Arc::clone(self);
+        tokio::spawn(async move { app.ci_release_quarantines().await });
     }
 
     /// Starts the oldest queued runs of every sandbox, as many as it has free lanes
     /// ([`CiSettings::lanes`]); the instance-wide job slots still bound the machine's load.
     pub async fn ci_dispatch(self: &Arc<Self>) {
-        // A reading of what CI uses at each pass keeps the measuring bases recent (SPEC-497).
+        // A reading of what CI uses at each pass keeps the measuring bases recent, and once a
+        // minute the host's load is kept (SPEC-497).
         let _ = self.ci_measured();
+        self.ci_record_load().await;
         // A merge armed on a run that passed when it was queued happens now (SPEC-011).
         let ended: Vec<SandboxId> = self
             .ci

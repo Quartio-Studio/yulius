@@ -382,17 +382,6 @@ async fn a_pasted_token_connects_a_subscription_at_once() -> TestResult {
     assert_eq!(published["status"], "ok");
     assert_no_token(&published);
 
-    let list = call(
-        &w.h.router,
-        Method::GET,
-        "/api/admin/accounts",
-        None,
-        &w.admin,
-    )
-    .await?;
-    assert_no_token(&list.body);
-    assert_eq!(list.body[0]["status"], "ok", "{}", list.body);
-
     let with_email = paste(&w, "work Max", WITH_EMAIL).await?;
     assert_eq!(
         with_email.status,
@@ -413,6 +402,18 @@ async fn a_pasted_token_connects_a_subscription_at_once() -> TestResult {
     let spare = record(&w, unanswered.body["account"]["id"].as_str().ok_or("id")?).await?;
     assert!(spare.email_checked_at.is_none(), "asked again later");
     assert_eq!(w.profile.asked(), 3, "one profile request per paste");
+    // Listed last: a listing starts the background email round, which may ask again about the
+    // subscriptions without an email; counted before it, the pastes' requests are exact.
+    let list = call(
+        &w.h.router,
+        Method::GET,
+        "/api/admin/accounts",
+        None,
+        &w.admin,
+    )
+    .await?;
+    assert_no_token(&list.body);
+    assert_eq!(list.body[0]["status"], "ok", "{}", list.body);
     Ok(())
 }
 
@@ -984,6 +985,8 @@ fn a_task_starts_on_a_pasted_subscription() -> TestResult {
                     provider: "anthropic".into(),
                     label: "pasted".into(),
                     token: Some(PASTED.into()),
+                    api_key: None,
+                    auth_json: None,
                 },
             )
             .await?;
@@ -1008,4 +1011,224 @@ fn a_task_starts_on_a_pasted_subscription() -> TestResult {
         );
         crate::pool_supervision::stop(&app, &id).await
     })
+}
+
+/// SPEC-503 CDX-015: a pasted token is Claude's: given for an `openai` subscription, or together
+/// with an API key or an `auth.json`, it is refused (422) without a word of it, nothing is created
+/// and Claude's profile is not asked.
+#[tokio::test]
+async fn a_token_is_only_a_claude_subscriptions_credential() -> TestResult {
+    let w = world().await?;
+    for body in [
+        json!({"provider": "openai", "label": "Codex", "token": PASTED}),
+        json!({"provider": "anthropic", "label": "both", "token": PASTED,
+               "api_key": "sk-SYNTHETIC0123456789abcdefghij"}),
+        json!({"provider": "anthropic", "label": "both", "token": PASTED,
+               "auth_json": "{}"}),
+    ] {
+        let refused = call(
+            &w.h.router,
+            Method::POST,
+            "/api/admin/accounts",
+            Some(body.clone()),
+            &w.admin,
+        )
+        .await?;
+        assert_eq!(
+            refused.status,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "{body}: {}",
+            refused.body
+        );
+        assert_no_token(&refused.body);
+    }
+    assert!(w.h.store.accounts().await?.is_empty(), "nothing created");
+    assert_eq!(w.profile.asked(), 0);
+    Ok(())
+}
+
+const CODEX_DEVICE: &str = r#"{"auth_mode":"chatgpt","OPENAI_API_KEY":null,"tokens":{"id_token":"h.e30.s","access_token":"SYNTHETIC-device-access","refresh_token":"SYNTHETIC-device-refresh","account_id":"acc-synthetic"},"last_refresh":"2026-11-09T10:00:00Z"}"#;
+const CODEX_IMPORT: &str = r#"{"auth_mode":"chatgpt","OPENAI_API_KEY":null,"tokens":{"id_token":"h.e30.s","access_token":"SYNTHETIC-import-access","refresh_token":"SYNTHETIC-import-refresh","account_id":"acc-synthetic"},"last_refresh":"2026-11-09T12:00:00Z"}"#;
+
+/// SPEC-503 IMP-001 (slice C2 review): an import cancels every sign-in of the Codex subscription
+/// that runs, not the first found: "Sign in again" replaced one that holds a complete
+/// `auth.json` and is still stopping, and neither may write over the imported sign-in.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_import_cancels_every_running_sign_in() -> TestResult {
+    let w = world().await?;
+    let ctx = admin_ctx(&w).await?;
+    w.h.app
+        .set_account_login_token_grace(Duration::from_secs(600));
+    w.host.deaf.store(true, Ordering::SeqCst);
+    let created = call(
+        &w.h.router,
+        Method::POST,
+        "/api/admin/accounts",
+        Some(json!({"provider": "openai", "label": "Codex two"})),
+        &w.admin,
+    )
+    .await?;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
+    let id = created.body["account"]["id"]
+        .as_str()
+        .ok_or("id")?
+        .to_owned();
+    let first = created.body["login_id"].as_str().ok_or("login")?.to_owned();
+    // The device sign-in finished on OpenAI's side and Codex wrote its file.
+    let codex =
+        w.h.app
+            .config
+            .data_dir
+            .join("logins")
+            .join(&first)
+            .join("codex");
+    std::fs::create_dir_all(&codex)?;
+    std::fs::write(codex.join("auth.json"), CODEX_DEVICE)?;
+    w.host.deaf.store(false, Ordering::SeqCst);
+    let again = call(
+        &w.h.router,
+        Method::POST,
+        &format!("/api/admin/accounts/{id}/relogin"),
+        None,
+        &w.admin,
+    )
+    .await?;
+    assert_eq!(again.status, StatusCode::OK, "{}", again.body);
+    let second = again.body["login_id"]
+        .as_str()
+        .ok_or("login_id")?
+        .to_owned();
+    assert_eq!(
+        login_ended(&w, &ctx, &first)?,
+        None,
+        "the first is still stopping"
+    );
+    let imported = call(
+        &w.h.router,
+        Method::POST,
+        &format!("/api/admin/accounts/{id}/import"),
+        Some(json!({"auth_json": CODEX_IMPORT})),
+        &w.admin,
+    )
+    .await?;
+    assert_eq!(imported.status, StatusCode::OK, "{}", imported.body);
+    tokio::time::timeout(Duration::from_secs(30), async {
+        while login_ended(&w, &ctx, &first)?.is_none() || login_ended(&w, &ctx, &second)?.is_none()
+        {
+            tokio::task::yield_now().await;
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        Ok::<(), Box<dyn std::error::Error>>(())
+    })
+    .await
+    .map_err(|_| "a sign-in still runs after the import")??;
+    assert_eq!(
+        opened(&w, &record(&w, &id).await?)?,
+        CODEX_IMPORT,
+        "the import was overwritten"
+    );
+    Ok(())
+}
+
+/// SPEC-503 CDX-015 (slice C2 review): a token pasted for a Codex subscription is refused up
+/// front in its own words, not as a token Claude refused, and the sign-in running for the
+/// subscription goes on.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_token_for_a_codex_subscription_is_refused_up_front() -> TestResult {
+    let w = world().await?;
+    let ctx = admin_ctx(&w).await?;
+    w.host.deaf.store(true, Ordering::SeqCst);
+    let created = call(
+        &w.h.router,
+        Method::POST,
+        "/api/admin/accounts",
+        Some(json!({"provider": "openai", "label": "Codex"})),
+        &w.admin,
+    )
+    .await?;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
+    let id = created.body["account"]["id"]
+        .as_str()
+        .ok_or("id")?
+        .to_owned();
+    let login = created.body["login_id"].as_str().ok_or("login")?.to_owned();
+    let refused = call(
+        &w.h.router,
+        Method::PUT,
+        &format!("/api/admin/accounts/{id}/token"),
+        Some(json!({"token": PASTED})),
+        &w.admin,
+    )
+    .await?;
+    assert_eq!(
+        refused.status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "{}",
+        refused.body
+    );
+    assert_eq!(
+        refused.body["error"]["message"],
+        "a pasted token is only for an anthropic (Claude) account"
+    );
+    assert_no_token(&refused.body);
+    assert_eq!(w.profile.asked(), 0);
+    assert_eq!(login_ended(&w, &ctx, &login)?, None, "the sign-in goes on");
+    Ok(())
+}
+
+/// SPEC-503 CDX-011 (slice C2 review): an import body of another shape is refused in a fixed
+/// sentence, never with serde's, which would quote the `auth.json`; and nothing is stored.
+#[tokio::test]
+async fn a_malformed_import_never_echoes_the_auth_json() -> TestResult {
+    let w = world().await?;
+    let created = call(
+        &w.h.router,
+        Method::POST,
+        "/api/admin/accounts",
+        Some(json!({"provider": "openai", "label": "Codex", "auth_json": CODEX_DEVICE})),
+        &w.admin,
+    )
+    .await?;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
+    let id = created.body["account"]["id"]
+        .as_str()
+        .ok_or("id")?
+        .to_owned();
+    let path = format!("/api/admin/accounts/{id}/import");
+    for body in [
+        json!(CODEX_IMPORT),
+        json!({"auth_json": {"tokens": {"access_token": "SYNTHETIC-import-access"}}}),
+        json!({"auth_jsn": CODEX_IMPORT}),
+        json!({"auth_json": CODEX_IMPORT, "label": "SYNTHETIC-import-access"}),
+    ] {
+        let refused = call(
+            &w.h.router,
+            Method::POST,
+            &path,
+            Some(body.clone()),
+            &w.admin,
+        )
+        .await?;
+        assert_eq!(
+            refused.status,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "{body}: {}",
+            refused.body
+        );
+        assert_eq!(
+            refused.body["error"]["message"], r#"the body must be JSON like {"auth_json": "…"}"#,
+            "{body}"
+        );
+        assert!(
+            !refused.body.to_string().contains("SYNTHETIC"),
+            "{}",
+            refused.body
+        );
+    }
+    assert_eq!(
+        opened(&w, &record(&w, &id).await?)?,
+        CODEX_DEVICE,
+        "nothing was stored"
+    );
+    Ok(())
 }

@@ -403,6 +403,16 @@ pub struct TaskRecord {
     pub supertask: bool,
 }
 
+impl TaskRecord {
+    /// Whether Yulius follows a goal for this task: a goal-mode task of Claude Code. A Codex task
+    /// in goal mode gets its request as its first message and its turns end it, as a prompt-mode
+    /// task's do (SPEC-503): its launch sets no `/goal` and its Stop is not held as a goal's.
+    #[must_use]
+    pub fn follows_goal(&self) -> bool {
+        self.mode == TaskMode::Goal && self.harness != yulius_domain::harness::Harness::Codex
+    }
+}
+
 /// How an attempt was launched.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum LaunchKind {

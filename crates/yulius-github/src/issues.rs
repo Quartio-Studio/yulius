@@ -129,6 +129,29 @@ impl GitHubClient {
         })
     }
 
+    /// Whether issue `number` is open (SPEC-497: a quarantined test stays quarantined while its
+    /// issue is). An issue that is gone (404, or 410 when deleted) is not open.
+    ///
+    /// # Errors
+    /// Typed errors other than a missing issue.
+    pub async fn issue_open(
+        &self,
+        token: &Secret,
+        owner: &str,
+        repo: &str,
+        number: u64,
+    ) -> Result<bool, GitHubError> {
+        validate::owner(owner)?;
+        validate::repo_name(repo)?;
+        let number = number.to_string();
+        let url = self.api_url(&["repos", owner, repo, "issues", &number])?;
+        match self.get_json::<WireIssueState>(url, Some(token)).await {
+            Ok(current) => Ok(current.state == "open"),
+            Err(GitHubError::NotFound | GitHubError::Upstream(410)) => Ok(false),
+            Err(err) => Err(err),
+        }
+    }
+
     /// Reopens (`open`) or closes issue `number`, first adding `comment` (why), unless it already
     /// is in that state. Returns whether it changed (SPEC-217 VSI-004).
     ///

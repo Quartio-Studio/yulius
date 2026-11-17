@@ -121,15 +121,17 @@ export function mountPipelineSection(ctx, sandbox, route, section, actions) {
     // The review's numbers (SPEC-493 REV-006) and the merge queue's (MQC-005) beside the
     // stages; the stages show without them.
     const range = new URLSearchParams({ sandbox: sandbox.id, from: p.from, to: p.to });
-    const [summary, reviews, queue, docker] = await Promise.all([
+    const [summary, reviews, queue, docker, load] = await Promise.all([
       ctx.api.get(`${api}/stages/summary?${params()}`),
       ctx.api.get(`/api/analytics/reviews?${range}`).catch(() => null),
       ctx.api.get(`/api/analytics/merge-queue?${range}`).catch(() => null),
       // What the sandbox's Docker front needed (SPEC-494): restarts, give-ways, Needs you.
       ctx.api.get(`/api/analytics/docker?${range}`).catch(() => null),
+      // The host's load from CI per hour (SPEC-497): jobs' waits, CPUs busy, held, measured.
+      ctx.api.get(`/api/analytics/ci-load?${new URLSearchParams({ from: p.from, to: p.to })}`).catch(() => null),
     ]);
     const weeks = Math.max(1, (Date.parse(`${p.to}T00:00:00Z`) - Date.parse(`${p.from}T00:00:00Z`)) / 86400000 + 1) / 7;
-    return { ...summary, reviews, queue, docker: docker && { ...docker, rangeWeeks: weeks } };
+    return { ...summary, reviews, queue, load, docker: docker && { ...docker, rangeWeeks: weeks } };
   }, (summary) => {
     options = summary.options || options;
     renderFilters();
@@ -153,6 +155,7 @@ export function mountPipelineSection(ctx, sandbox, route, section, actions) {
       summary.reviews ? reviewCard(summary.reviews) : null,
       summary.queue ? queueCard(summary.queue) : null,
       summary.docker ? dockerCard(summary.docker) : null,
+      summary.load && summary.load.hours && summary.load.hours.length ? loadCard(summary.load) : null,
       h('section', { class: 'card db-card', 'aria-label': `Trend: ${label}` },
         h('header', { class: 'db-card-head' },
           h('div', { class: 'db-card-titles' }, h('h2', { class: 'card-title' }, label),
@@ -239,7 +242,7 @@ export function mountPipelineSection(ctx, sandbox, route, section, actions) {
 
   /** The merge queue's candidates in the range (SPEC-493 MQC-005). */
   function queueCard(q) {
-    const why = { member_left: 'a member left', bisected: 'bisected', base_moved: 'base moved', errored: 'errored', too_long: 'too long' };
+    const why = { member_left: 'a member left', member_failed: "a member's own run failed", bisected: 'bisected', base_moved: 'base moved', errored: 'errored', too_long: 'too long' };
     const dissolved = Object.entries(q.dissolved_by || {}).map(([k, n]) => `${why[k] || k} ${int(n)}`).join(' · ');
     const minutes = Number.isFinite(q.median_arm_to_merge_minutes) ? `${Math.round(q.median_arm_to_merge_minutes)} min` : '—';
     return h('section', { class: 'card db-card', 'aria-label': 'Merge queue' },
@@ -249,7 +252,51 @@ export function mountPipelineSection(ctx, sandbox, route, section, actions) {
         tile('Candidates formed', int(q.formed || 0), 'in this range'),
         tile('Merged', int(q.merged || 0), 'every member merged on one run'),
         tile('Dissolved', int(q.dissolved || 0), dissolved || 'none'),
-        tile('Arming to merge', minutes, `median of ${int(q.merges || 0)} armed ${q.merges === 1 ? 'merge' : 'merges'}`)));
+        tile('Arming to merge', minutes, `median of ${int(q.merges || 0)} armed ${q.merges === 1 ? 'merge' : 'merges'}`),
+        ...ciMinutesTiles(q.ci_minutes)),
+      dissolvedList(q.dissolved_recent || [], why));
+  }
+
+  /** The last candidates dissolved, newest first, each with why and its whole reason (SPEC-497
+   * MQW-004); nothing when none was. */
+  function dissolvedList(recent, why) {
+    if (!recent.length) return null;
+    return h('details', { class: 'pl-dissolved' },
+      h('summary', {}, `Why the last ${recent.length === 1 ? 'candidate was' : `${int(recent.length)} candidates were`} dissolved`),
+      h('ul', { 'aria-label': 'Dissolved candidates' }, ...recent.map((d) =>
+        h('li', {}, h('time', { datetime: d.at }, String(d.at || '').slice(0, 16).replace('T', ' ')),
+          ` · ${why[d.why] || d.why}: ${d.reason}`))));
+  }
+
+  /** CI minutes by how the runs ended (SPEC-497 OFC-003): wasted is failed outside the change or
+   * cancelled, against the target of 15 %; nothing when the server sends none. */
+  function ciMinutesTiles(m) {
+    if (!m) return [];
+    const total = (m.passed || 0) + (m.failed || 0) + (m.failed_outside || 0) + (m.cancelled || 0);
+    const wasted = Number.isFinite(m.outside_share) ? `${Math.round(m.outside_share * 100)}%` : '—';
+    return [
+      tile('CI minutes', int(Math.round(total)), `${int(Math.round(m.passed || 0))} passed · ${int(Math.round(m.failed || 0))} failed`),
+      tile('Outside the change', wasted,
+        `${int(Math.round(m.failed_outside || 0))} min failed for the infrastructure · ${int(Math.round(m.cancelled || 0))} min cancelled · ${int(Math.round(m.rerun || 0))} min run again; target 15%`),
+    ];
+  }
+
+  /** The host's load from CI in the range (SPEC-497): job-minutes waited to start, the host's
+   * CPUs busy, and the busiest hour; the instance's, not the sandbox's. */
+  function loadCard(l) {
+    const peak = (l.hours || []).reduce((top, hour) => (!top || hour.wait_job_minutes > top.wait_job_minutes ? hour : top), null);
+    const busy = Number.isFinite(l.busy_percent) ? `${Math.round(l.busy_percent)}%` : '—';
+    const held = (l.hours || []).filter((hr) => Number.isFinite(hr.held_cpus));
+    const avg = (xs) => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : null);
+    const heldAvg = avg(held.map((hr) => hr.held_cpus));
+    const measuredAvg = avg((l.hours || []).filter((hr) => Number.isFinite(hr.measured_cpus)).map((hr) => hr.measured_cpus));
+    return h('section', { class: 'card db-card', 'aria-label': 'CI load' },
+      h('header', { class: 'db-card-head' }, h('div', { class: 'db-card-titles' }, h('h2', { class: 'card-title' }, 'CI load'),
+        h('span', { class: 'db-card-sub' }, 'the host, all projects: jobs waiting to start and the CPUs busy, per hour (UTC)'))),
+      h('div', { class: 'db-kpis pl-kpis' },
+        tile('Waiting to start', `${int(l.wait_job_minutes || 0)} job-min`, peak ? `most in one hour: ${int(peak.wait_job_minutes)} (${peak.hour.slice(5, 10)} ${peak.hour.slice(11)}:00)` : 'in this range'),
+        tile('Host busy', busy, 'average of the hours read'),
+        tile('CPUs held by CI', heldAvg === null ? '—' : `${Math.round(heldAvg)}`, measuredAvg === null ? 'by the running jobs\u2019 budgets' : `${Math.round(measuredAvg)} measured in use`)));
   }
 
   /** What the sandbox's Docker front needed in the range (SPEC-494): totals and per week. */

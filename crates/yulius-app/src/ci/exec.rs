@@ -27,6 +27,7 @@ use nix::unistd::{UnlinkatFlags, unlinkat};
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tokio::sync::watch;
 use yulius_domain::ci::failures::FailureScanner;
+use yulius_domain::ci::infra::{Infra, JobEnd, infrastructure};
 use yulius_domain::ci::{self as dom, Gate, GateSource, RunState};
 use yulius_domain::ids::SandboxId;
 use yulius_domain::resources::{Budget, CiPriority, budget_env};
@@ -153,6 +154,50 @@ pub(super) enum Ended {
     NoDisk(String),
     /// Its files grew past the bound for a run, which this says (SPEC-300 RDB-002).
     DiskLimit(String),
+}
+
+/// The end of the line a job's output gets when it runs again after an infrastructure failure
+/// (SPEC-497 OFC-001); what follows it is the second run's.
+const RERUN_NOTE: &str = "the job runs again once by itself (SPEC-497)\n";
+/// How a job's second run, after an infrastructure failure, ended as the infrastructure's too
+/// (SPEC-497 OFC-001).
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Second {
+    /// It met this infrastructure failure.
+    Again(Infra),
+    /// Its sandbox's engine had no room for a network within this long: no second run.
+    NoRoom(std::time::Duration),
+    /// It could not start, for this reason.
+    NotStarted(String),
+}
+
+impl Second {
+    /// The job's reason after `first` ended its first run.
+    fn reason(&self, first: Infra) -> String {
+        match self {
+            Self::Again(again) if *again == first => format!(
+                "{}, again when it was run again: an infrastructure failure, not the change",
+                again.describe()
+            ),
+            Self::Again(again) => format!(
+                "{} when it was run again, after {} in its first run: infrastructure failures, \
+                 not the change",
+                again.describe(),
+                first.describe()
+            ),
+            Self::NoRoom(waited) => format!(
+                "{}, and its sandbox's Docker engine had no room for a network for {} min, so it \
+                 was not run again: an infrastructure failure, not the change",
+                first.describe(),
+                waited.as_millis().div_ceil(60_000)
+            ),
+            Self::NotStarted(why) => format!(
+                "{} in its first run, and its second run could not start: {why}; an \
+                 infrastructure failure, not the change",
+                first.describe()
+            ),
+        }
+    }
 }
 
 /// What a CD or environment run's files may use while it runs (SPEC-300, ADR-0216): the
@@ -739,22 +784,140 @@ impl App {
             "[yulius] budget: {budget} (YULIUS_CPUS={}, YULIUS_MEMORY_MB={})\n",
             budget.cpus, budget.memory_mb
         ));
-        // Its failing tests' output, from all it prints (SPEC-145): the ring keeps only the end.
-        let mut failures = FailureScanner::default();
-        let (ended, usage) = match self
-            .ci_job_process(
-                sandbox,
-                run,
-                job,
-                budget,
-                checkout,
-                (&mut ring, &mut stages, &mut failures),
-                &mut cancel,
-            )
-            .await
-        {
-            Ok((ended, usage)) => (Ok(ended), usage),
-            Err(reason) => (Err(reason), None),
+        // A run that ended for an infrastructure reason runs again once by itself (SPEC-497
+        // OFC-001): the reason and the time the first run took.
+        let mut thrown: Option<(Infra, i64)> = None;
+        let wait_limit = self.config.ci.rerun_network_wait;
+        let (ended, usage, failures, infra) = loop {
+            // A cancellation that came while the first run ended starts no second one.
+            if let (Some((kind, ms)), Some(reason)) = (thrown, cancel.borrow().clone()) {
+                break (
+                    Ok(Ended::Cancelled(reason)),
+                    None,
+                    None,
+                    Some((kind, ms, None)),
+                );
+            }
+            let attempt = tokio::time::Instant::now();
+            let oom_before = self.ci_oom_kills(&run.sandbox_id).await;
+            // Its failing tests' output, from all it prints (SPEC-145): the ring keeps only the
+            // end.
+            let mut failures = FailureScanner::default();
+            let (ended, usage) = match self
+                .ci_job_process(
+                    sandbox,
+                    run,
+                    job,
+                    budget,
+                    checkout,
+                    (&mut ring, &mut stages, &mut failures),
+                    &mut cancel,
+                )
+                .await
+            {
+                Ok((ended, usage)) => (Ok(ended), usage),
+                Err(reason) => (Err(reason), None),
+            };
+            // A failure in any runner's words, kept as a block or not, makes it the change's
+            // (review round 3).
+            let tests_failed = failures.failure_seen();
+            let failures = failures.finish();
+            let infra = match &ended {
+                Ok(ended) if cancel.borrow().is_none() => {
+                    self.ci_infrastructure(
+                        &run.sandbox_id,
+                        ended,
+                        &ring,
+                        tests_failed || failures.is_some(),
+                        oom_before,
+                    )
+                    .await
+                }
+                _ => None,
+            };
+            let took = i64::try_from(attempt.elapsed().as_millis()).unwrap_or(i64::MAX);
+            match (infra, thrown) {
+                (Some(kind), None) => {
+                    ring.push_str(&format!(
+                        "\n[yulius] {}: an infrastructure failure, not the change; {RERUN_NOTE}",
+                        kind.describe()
+                    ));
+                    thrown = Some((kind, took));
+                    // A full address pool is waited out before the second run (review round 1),
+                    // within a bound and as long as the job is not cancelled (round 2): the job
+                    // keeps its slot and budget meanwhile, and its output says so.
+                    if kind == Infra::AddressPool {
+                        ring.push_str(&format!(
+                            "[yulius] it first waits for its sandbox's Docker engine to have \
+                             room for a network, at most {} min\n",
+                            wait_limit.as_millis().div_ceil(60_000)
+                        ));
+                        let _ = store.set_ci_job_output(&job.id, &ring.text()).await;
+                        let room = tokio::select! {
+                            () = self.ci_network_room(&run.sandbox_id, &job.id) => None,
+                            reason = wait_cancel(&mut cancel) => Some(Ok(reason)),
+                            () = tokio::time::sleep(wait_limit) => Some(Err(())),
+                        };
+                        match room {
+                            None => {}
+                            Some(Ok(reason)) => {
+                                break (
+                                    Ok(Ended::Cancelled(reason)),
+                                    usage,
+                                    failures,
+                                    Some((kind, took, None)),
+                                );
+                            }
+                            Some(Err(())) => {
+                                break (
+                                    ended,
+                                    usage,
+                                    failures,
+                                    Some((kind, took, Some(Second::NoRoom(wait_limit)))),
+                                );
+                            }
+                        }
+                    }
+                }
+                (Some(again), Some((first, ms))) => {
+                    break (
+                        ended,
+                        usage,
+                        failures,
+                        Some((first, ms.saturating_add(took), Some(Second::Again(again)))),
+                    );
+                }
+                // The second start could not be made: the infrastructure's again (review
+                // rounds 2 and 3), with the reason it could not.
+                (None, Some((first, ms)))
+                    if ended.is_err()
+                        || matches!(&ended, Ok(Ended::Exit(exit)) if exit.spawn_failed) =>
+                {
+                    let why = ended
+                        .as_ref()
+                        .err()
+                        .cloned()
+                        .unwrap_or_else(|| "the job could not be started".to_owned());
+                    break (
+                        ended,
+                        usage,
+                        failures,
+                        Some((
+                            first,
+                            ms.saturating_add(took),
+                            Some(Second::NotStarted(why)),
+                        )),
+                    );
+                }
+                (None, thrown) => {
+                    break (
+                        ended,
+                        usage,
+                        failures,
+                        thrown.map(|(kind, ms)| (kind, ms, None)),
+                    );
+                }
+            }
         };
         drop(weight);
         let no_disk = matches!(ended, Ok(Ended::NoDisk(_)));
@@ -806,6 +969,36 @@ impl App {
                 (RunState::Error, None, Some(reason))
             }
         };
+        // After an infrastructure failure the job says so: passed when run again, or an error when
+        // it met one again (never a failure of the change).
+        let (state, reason) = match &infra {
+            Some((first, _, Some(second))) => (RunState::Error, Some(second.reason(*first))),
+            Some((kind, _, None)) if state == RunState::Passed => (
+                state,
+                Some(format!(
+                    "passed when run again: its first run ended for an infrastructure failure \
+                     ({})",
+                    kind.describe()
+                )),
+            ),
+            _ => (state, reason),
+        };
+        // A failed job's failing tests are kept; a flaky one is quarantined with an issue
+        // (SPEC-497 OFC-002), which its output says.
+        let mut reason = reason;
+        if state == RunState::Failed
+            && let Some(kept) = failures.as_deref()
+        {
+            let noted = self.ci_note_failing_tests(sandbox, run, job, kept).await;
+            for line in &noted.lines {
+                ring.push_str(&format!("\n{line}\n"));
+            }
+            if noted.quarantined {
+                reason.get_or_insert_with(|| {
+                    "a failing test is now quarantined as flaky (see the output)".to_owned()
+                });
+            }
+        }
         if let Some(reason) = &reason {
             ring.push_str(&format!("\n[yulius] {reason}\n"));
         }
@@ -813,11 +1006,12 @@ impl App {
             reason,
             exit_code,
             output: Some(ring.text()),
-            failures: failures.finish(),
+            failures,
             started_at: None,
             ended_at: Some(self.now()),
             usage,
             waited_ms: None,
+            infra: infra.map(|(kind, ms, second)| (kind.as_str(), ms, second.is_some())),
         };
         if let Err(err) = store
             .transition_ci_job(&job.id, &[RunState::Running], state, &end)
@@ -826,6 +1020,57 @@ impl App {
             tracing::warn!(job = %job.id, error = %err, "recording a CI job's end failed");
         }
         no_disk
+    }
+
+    /// Processes of `sandbox` the kernel killed for memory so far, where that is counted.
+    async fn ci_oom_kills(&self, sandbox: &SandboxId) -> Option<u64> {
+        self.limit_counters(sandbox)
+            .await
+            .map(|counters| counters.oom_kills)
+    }
+
+    /// Why a job of `sandbox` that `ended`, printing what `ring` kept, failed for the
+    /// infrastructure, if it did (SPEC-497 OFC-001): only a failed or lost job is asked, one with
+    /// a failing test kept (`tests_failed`) never is the infrastructure's (review round 2), and a
+    /// kill for memory needs the sandbox's OOM count to have grown since `oom_before`.
+    async fn ci_infrastructure(
+        &self,
+        sandbox: &SandboxId,
+        ended: &Ended,
+        ring: &OutputRing,
+        tests_failed: bool,
+        oom_before: Option<u64>,
+    ) -> Option<Infra> {
+        let end = match ended {
+            Ended::Exit(exit) if exit.spawn_failed || exit.is_clean() => return None,
+            Ended::Exit(exit)
+                if exit.signal.is_none()
+                    && matches!(
+                        exit.code,
+                        Some(dom::SKIP_EXIT_CODE | dom::INCOMPLETE_EXIT_CODE)
+                    ) =>
+            {
+                return None;
+            }
+            Ended::Exit(exit) => match (exit.signal, exit.code) {
+                (Some(signal), _) => JobEnd::Signalled(signal),
+                (None, Some(code)) => JobEnd::Exited(code),
+                (None, None) => return None,
+            },
+            Ended::Lost => JobEnd::Lost,
+            _ => return None,
+        };
+        let oom = match (oom_before, self.ci_oom_kills(sandbox).await) {
+            (Some(before), Some(after)) => after > before,
+            _ => false,
+        };
+        // Only this run's output: after a second start, what the first printed is not read again
+        // (review round 1).
+        let text = ring.text();
+        let this_run = text
+            .rsplit_once(RERUN_NOTE)
+            .map_or(text.as_str(), |(_, after)| after);
+        infrastructure(end, this_run, tests_failed, oom)
     }
 
     /// The job's environment: no secret; its budget and what the checkout's `[resources.env]`
@@ -1089,6 +1334,8 @@ impl App {
             }
             Err(err) => return Err(err.public_message()),
         };
+        // The quarantined tests, which the project's gate leaves out (SPEC-497 OFC-002).
+        let quarantine = self.ci_quarantine_env(&sandbox.id).await;
         let mut plan = LaunchPlan {
             argv: vec![
                 "/bin/sh".into(),
@@ -1104,6 +1351,7 @@ impl App {
             files: Vec::new(),
             containment: self.ci_containment(sandbox, &home, join),
         };
+        plan.env.extend(quarantine);
         let run_dir = self.ci_run_dir(&job.id);
         let proxy = self
             .ci_job_secrets(sandbox, (run, job), &run_dir, &mut plan, ring)

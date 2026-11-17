@@ -404,6 +404,15 @@ pub trait GitPort: Send + Sync {
         let _ = (repo, a, b);
         unsupported("finding a merge base")
     }
+    /// Every best common ancestor of two revisions; empty when they share no history (SPEC-497
+    /// OFC-002: a criss-cross history has several).
+    ///
+    /// # Errors
+    /// Unknown revisions or Git failures: never read as "no common ancestor".
+    async fn merge_bases(&self, repo: &Path, a: &str, b: &str) -> AppResult<Vec<String>> {
+        let _ = (repo, a, b);
+        unsupported("finding merge bases")
+    }
     /// Whether a remote-tracking branch contains `sha`.
     async fn on_remote(&self, repo: &Path, sha: &str) -> AppResult<bool> {
         let _ = (repo, sha);

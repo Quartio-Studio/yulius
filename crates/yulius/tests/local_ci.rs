@@ -22,7 +22,8 @@ use yulius_app::error::{AppError, AppResult};
 use yulius_app::model::SandboxRecord;
 use yulius_app::ports::github::GhPull;
 use yulius_app::ports::isolation::{
-    CiUse, DiskUsage, EngineNetworks, SandboxIsolation, SandboxJoin, SandboxLimits, SandboxRef,
+    CiUse, DiskUsage, EngineNetworks, LimitCounters, SandboxIsolation, SandboxJoin, SandboxLimits,
+    SandboxRef,
 };
 use yulius_app::ports::store_ext::{AutomationStore as _, CiStore as _};
 use yulius_domain::ci::{GateResult, RunState};
@@ -3107,11 +3108,11 @@ async fn a_job_that_cannot_start_holds_no_slot() -> TestResult {
     Ok(())
 }
 
-/// ADR-0353 (review of the CI admission fix): while CI's processes wait for a CPU more than 10 %
-/// of the last 10 seconds, no further job starts, and the job says so; it starts once they no
-/// longer do.
+/// ADR-0353 (amended 17 Nov 2026): CI's CPU pressure holds no job back. A job that confines
+/// itself to a few CPUs (`taskset`) shows pressure while the host idles; on 17 Nov one project's
+/// pinned jobs held every sandbox's jobs back that way. What CI is measured to use decides.
 #[tokio::test]
-async fn a_job_waits_while_cis_processes_wait_for_cpus() -> TestResult {
+async fn cpu_pressure_holds_no_job_back() -> TestResult {
     let f = fixture_tuned(
         false,
         |data| {
@@ -3133,20 +3134,11 @@ async fn a_job_waits_while_cis_processes_wait_for_cpus() -> TestResult {
     let pull_sha = pull["sha"].as_str().ok_or("sha")?.to_owned();
     let later = f.push_dev("later.txt", Some("later\n"))?;
     f.h.app.ci_sync_sandbox(&f.sandbox).await?;
-    let reason = waits_with(&f, &later, "waited for a CPU").await?;
-    assert!(
-        reason.ends_with(
-            "CI's jobs waited for a CPU 25.0 % of the last 10 seconds; a job starts at 10 % or \
-             less"
-        ),
-        "{reason}"
-    );
-    measured.pressure.store(50, Ordering::SeqCst);
     let deadline = tokio::time::Instant::now() + WAIT;
     while only_job_state(&f, &later).await? != Some(RunState::Running) {
         f.h.app.ci_dispatch().await;
         if tokio::time::Instant::now() > deadline {
-            return Err("the job never started".into());
+            return Err("the job never started beside one whose processes wait for CPUs".into());
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
@@ -3156,6 +3148,747 @@ async fn a_job_waits_while_cis_processes_wait_for_cpus() -> TestResult {
     );
     std::fs::write(f.data.join("go"), "")?;
     f.settle().await?;
+    Ok(())
+}
+
+/// A job command that counts its attempts per checkout in `<data>/attempts-<checkout>` and
+/// runs `first` on the first one, `again` on the later ones.
+fn attempts(data: &Path, first: &str, again: &str) -> String {
+    format!(
+        "[[ci.jobs]]\nname = \"build\"\ncommand = 'm=\"{}/attempts-$(echo \"$PWD\" | cksum | cut -d\" \" -f1)\"; \
+         echo x >> \"$m\"; if [ \"$(wc -l < \"$m\")\" -eq 1 ]; then {first}; else {again}; fi'\n",
+        data.display()
+    )
+}
+
+/// How many times each checkout's job ran.
+fn attempts_of(f: &Fixture) -> BoxResult<Vec<usize>> {
+    let mut counts = Vec::new();
+    for entry in std::fs::read_dir(&f.data)? {
+        let entry = entry?;
+        if entry.file_name().to_string_lossy().starts_with("attempts-") {
+            counts.push(std::fs::read_to_string(entry.path())?.lines().count());
+        }
+    }
+    counts.sort_unstable();
+    Ok(counts)
+}
+
+/// The pull request's run's only job, from its detail.
+async fn pull_job(f: &Fixture) -> BoxResult<Value> {
+    let overview = f.get("/api/sandboxes/s1/ci").await?;
+    for run in overview["runs"].as_array().ok_or("runs")? {
+        if run["reference"] == "pr/1" {
+            let jobs = run_jobs(f, run).await?;
+            return jobs.into_iter().next().ok_or_else(|| "no job".into());
+        }
+    }
+    Err(format!("no run of the pull request: {overview}").into())
+}
+
+const NO_POOL: &str = "echo \"Error response from daemon: could not find an available, \
+                       non-overlapping IPv4 address pool among the defaults to assign to the \
+                       network\"; exit 1";
+
+/// SPEC-497 OFC-001: a job that met an infrastructure failure runs again once by itself and
+/// passes, saying so in its output and its reason; its run passes.
+#[tokio::test]
+async fn an_infrastructure_failure_runs_the_job_again_once() -> TestResult {
+    let f = fixture_with(false, |data| attempts(data, NO_POOL, "echo ok")).await?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    let job = pull_job(&f).await?;
+    assert_eq!(job["state"], "passed", "{job}");
+    assert_eq!(
+        job["reason"],
+        "passed when run again: its first run ended for an infrastructure failure (Docker had \
+         no free address pool for a new network)"
+    );
+    let output = job["output"].as_str().unwrap_or_default();
+    assert!(
+        output.contains(
+            "[yulius] Docker had no free address pool for a new network: an infrastructure \
+             failure, not the change; the job runs again once by itself (SPEC-497)"
+        ) && output.contains(
+            "[yulius] passed when run again: its first run ended for an infrastructure failure \
+             (Docker had no free address pool for a new network)"
+        ),
+        "{output}"
+    );
+    // dev's run and the pull request's: twice each.
+    assert_eq!(attempts_of(&f)?, [2, 2]);
+    Ok(())
+}
+
+/// SPEC-497 OFC-001: a second infrastructure failure ends the job as an error saying so, never
+/// a third run; a test's failure is never run again.
+#[tokio::test]
+async fn a_job_runs_again_once_and_only_for_the_infrastructure() -> TestResult {
+    let f = fixture_with(false, |data| attempts(data, NO_POOL, NO_POOL)).await?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    let job = pull_job(&f).await?;
+    assert_eq!(job["state"], "error", "{job}");
+    assert_eq!(
+        job["reason"],
+        "Docker had no free address pool for a new network, again when it was run again: an \
+         infrastructure failure, not the change"
+    );
+    assert_eq!(attempts_of(&f)?, [2, 2]);
+
+    let f = fixture_with(false, |data| {
+        attempts(data, "echo \"test x ... FAILED\"; exit 101", "echo ok")
+    })
+    .await?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    let job = pull_job(&f).await?;
+    assert_eq!(job["state"], "failed", "{job}");
+    assert!(job["reason"].is_null(), "{job}");
+    assert_eq!(
+        attempts_of(&f)?,
+        [1, 1],
+        "a test's failure is never run again"
+    );
+    Ok(())
+}
+
+/// A sandbox whose OOM count grows at every look (SPEC-497 OFC-001).
+#[derive(Default)]
+struct Oomy {
+    looks: AtomicU64,
+}
+
+#[async_trait::async_trait]
+impl SandboxIsolation for Oomy {
+    async fn prepare(&self, _: &SandboxRef) -> AppResult<Option<SandboxJoin>> {
+        Ok(None)
+    }
+    fn release(&self, _: &SandboxId) {}
+    async fn limit_counters(&self, _: &SandboxId) -> Option<LimitCounters> {
+        Some(LimitCounters {
+            task_limit_hits: 0,
+            oom_kills: self.looks.fetch_add(1, Ordering::SeqCst),
+        })
+    }
+}
+
+/// SPEC-497 OFC-001: a job killed (SIGKILL) while the kernel killed for memory in its sandbox
+/// runs again once.
+#[tokio::test]
+async fn a_job_killed_for_memory_runs_again_once() -> TestResult {
+    let f = fixture_with(false, |data| attempts(data, "kill -9 $$", "echo ok")).await?;
+    assert!(f.h.app.set_isolation(Arc::new(Oomy::default())));
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    let job = pull_job(&f).await?;
+    assert_eq!(job["state"], "passed", "{job}");
+    assert_eq!(
+        job["reason"],
+        "passed when run again: its first run ended for an infrastructure failure (a process of \
+         it was killed for memory)"
+    );
+    Ok(())
+}
+
+/// SPEC-497 OFC-001 (review round 1): a Docker error the job went on from, then a test's
+/// failure, is the change's: no second run. A first run thrown away for the infrastructure and
+/// a second that fails a test is the change's failure, not an infrastructure error.
+#[tokio::test]
+async fn a_tests_failure_is_never_taken_for_the_infrastructure() -> TestResult {
+    let survived = "echo \"Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is \
+                    the docker daemon running?\"; echo \"test flaky ... FAILED\"; exit 101";
+    let f = fixture_with(false, |data| attempts(data, survived, "echo ok")).await?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    let job = pull_job(&f).await?;
+    assert_eq!(job["state"], "failed", "{job}");
+    assert_eq!(
+        attempts_of(&f)?,
+        [1, 1],
+        "no second run after a test's failure"
+    );
+
+    let f = fixture_with(false, |data| {
+        attempts(data, NO_POOL, "echo \"test x ... FAILED\"; exit 101")
+    })
+    .await?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    let job = pull_job(&f).await?;
+    assert_eq!(job["state"], "failed", "{job}");
+    assert!(job["reason"].is_null(), "{job}");
+    assert_eq!(attempts_of(&f)?, [2, 2]);
+    Ok(())
+}
+
+/// SPEC-497 OFC-001 (review round 2): a Docker error the job went on from, then its own failure
+/// in Go's, pytest's or jest's words, is the change's: no second run.
+#[tokio::test]
+async fn a_failure_in_any_runners_words_is_never_run_again() -> TestResult {
+    for failure in [
+        "echo \"--- FAIL: TestTotal (0.00s)\"; echo FAIL",
+        "echo \"FAILED tests/test_x.py::test_total - assert 1 == 2\"",
+        "echo \"FAIL src/x.test.ts\"",
+    ] {
+        let first = format!(
+            "echo \"Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the \
+             docker daemon running?\"; {failure}; exit 1"
+        );
+        let f = fixture_with(false, |data| attempts(data, &first, "echo ok")).await?;
+        f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+        f.settle().await?;
+        let job = pull_job(&f).await?;
+        assert_eq!(job["state"], "failed", "{failure}: {job}");
+        assert_eq!(attempts_of(&f)?, [1, 1], "{failure}");
+    }
+    Ok(())
+}
+
+/// SPEC-497 OFC-001 (review round 2): a job with a failing test kept (nextest's block, with its
+/// blank lines) is the change's, even when the test failed on Docker's words: no second run.
+#[tokio::test]
+async fn a_kept_failing_test_is_never_run_again() -> TestResult {
+    let block = "printf \"        FAIL [   0.004s] (1/1) app tests::pool\\n  stdout ───\\n\\n    \
+                 running 1 test\\n    thread \\x27tests::pool\\x27 panicked at src/lib.rs:3:5:\\n    \
+                 Error response from daemon: could not find an available, non-overlapping IPv4 \
+                 address pool among the defaults to assign to the network\\n\\n\"; exit 100";
+    let f = fixture_with(false, |data| attempts(data, block, "echo ok")).await?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    let job = pull_job(&f).await?;
+    assert_eq!(job["state"], "failed", "{job}");
+    assert_eq!(attempts_of(&f)?, [1, 1]);
+    Ok(())
+}
+
+/// SPEC-497 OFC-001 (review round 2): only the second run's own output decides it: a first run
+/// thrown away for the infrastructure, then a second that fails with no runner's words, is the
+/// change's failure, not "again" the infrastructure.
+#[tokio::test]
+async fn the_second_run_is_judged_on_its_own_output() -> TestResult {
+    let f = fixture_with(false, |data| {
+        attempts(
+            data,
+            NO_POOL,
+            "echo \"error: could not compile app\"; exit 1",
+        )
+    })
+    .await?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    let job = pull_job(&f).await?;
+    assert_eq!(job["state"], "failed", "{job}");
+    assert!(job["reason"].is_null(), "{job}");
+    assert_eq!(attempts_of(&f)?, [2, 2]);
+    Ok(())
+}
+
+/// SPEC-497 OFC-001 (review round 2): after a full address pool the second run waits for room
+/// in the engine, saying so in the job's output, and a cancellation ends it at once, cancelled,
+/// with no second start.
+#[tokio::test]
+async fn the_wait_before_a_second_run_can_be_cancelled() -> TestResult {
+    let f = fixture_tuned(
+        false,
+        |data| {
+            let go = data.join("go").display().to_string();
+            let first = format!("while [ ! -e \"{go}\" ]; do sleep 0.05; done; {NO_POOL}");
+            format!(
+                "[[ci.jobs]]\nname = \"build\"\ncommand = 'if [ -e feature.txt ]; then \
+                 m=\"{}/attempts-pr\"; echo x >> \"$m\"; if [ \"$(wc -l < \"$m\")\" -eq 1 ]; \
+                 then {first}; else echo ok; fi; fi'\n",
+                data.display()
+            )
+        },
+        None,
+        |config| config.ci.job_timeout = WAIT,
+    )
+    .await?;
+    let measured = Measured::new(0, 1);
+    assert!(f.h.app.set_isolation(measured.clone()));
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    let pull = f.running("pr/1").await?;
+    let run = pull["id"].as_str().ok_or("id")?.to_owned();
+    // The engine fills once the first run has started (review round 3: before, the job could
+    // still be at its first look for room); then that run meets the full pool.
+    let deadline = tokio::time::Instant::now() + WAIT;
+    while !f.data.join("attempts-pr").exists() {
+        if tokio::time::Instant::now() > deadline {
+            return Err("the first run never started".into());
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    measured.networks.store(4096, Ordering::SeqCst);
+    std::fs::write(f.data.join("go"), "")?;
+    let deadline = tokio::time::Instant::now() + WAIT;
+    loop {
+        let jobs = f.h.store.ci_jobs(&run, true).await?;
+        if jobs
+            .iter()
+            .any(|j| j.output.contains("waits for its sandbox's Docker engine"))
+        {
+            break;
+        }
+        if tokio::time::Instant::now() > deadline {
+            return Err(format!("the job never said it waits: {jobs:?}").into());
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let cancelled = f
+        .post(&format!("/api/sandboxes/s1/ci/runs/{run}/cancel"), None)
+        .await?;
+    assert!(cancelled.status.is_success(), "{}", cancelled.body);
+    let deadline = tokio::time::Instant::now() + WAIT;
+    loop {
+        let jobs = f.h.store.ci_jobs(&run, false).await?;
+        if jobs.iter().all(|j| j.state == RunState::Cancelled) {
+            break;
+        }
+        if tokio::time::Instant::now() > deadline {
+            return Err(format!("the job never ended cancelled: {jobs:?}").into());
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let tries = std::fs::read_to_string(f.data.join("attempts-pr"))?;
+    assert_eq!(tries.lines().count(), 1, "no second start");
+    Ok(())
+}
+
+/// SPEC-497 OFC-001 (review round 3): a test's failure in Go's or pytest's words before Docker's
+/// words at the end (a teardown or a log dump) is the change's: no second run.
+#[tokio::test]
+async fn a_failure_before_dockers_words_is_never_run_again() -> TestResult {
+    for first in [
+        "echo \"--- FAIL: TestTotal (0.00s)\"; echo FAIL; echo \"Cannot connect to the Docker \
+         daemon at unix:///var/run/docker.sock. Is the docker daemon running?\"; exit 1",
+        "echo \"FAILED tests/test_x.py::test_total - assert 1 == 2\"; echo \"1 failed in 0.03s\"; \
+         echo \"app-1  | dial unix /var/run/docker.sock: connect: connection refused\"; exit 1",
+    ] {
+        let f = fixture_with(false, |data| attempts(data, first, "echo ok")).await?;
+        f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+        f.settle().await?;
+        let job = pull_job(&f).await?;
+        assert_eq!(job["state"], "failed", "{first}: {job}");
+        assert_eq!(attempts_of(&f)?, [1, 1], "{first}");
+    }
+    Ok(())
+}
+
+/// SPEC-497 OFC-001 (review round 3): past the bound of the wait for network room, the job ends
+/// error saying its engine had no room, with no second run.
+#[tokio::test]
+async fn a_second_run_that_finds_no_network_room_is_not_made() -> TestResult {
+    let f = fixture_tuned(
+        false,
+        |data| {
+            let first = format!(
+                "while [ ! -e \"{}\" ]; do sleep 0.05; done; {NO_POOL}",
+                data.join("go").display()
+            );
+            attempts(data, &first, "echo ok")
+        },
+        None,
+        |config| config.ci.rerun_network_wait = Duration::from_millis(500),
+    )
+    .await?;
+    // Room for the first start; none once it ran.
+    let measured = Measured::new(0, 1);
+    assert!(f.h.app.set_isolation(measured.clone()));
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    let deadline = tokio::time::Instant::now() + WAIT;
+    while attempts_of(&f)?.len() < 2 {
+        f.h.app.ci_dispatch().await;
+        if tokio::time::Instant::now() > deadline {
+            return Err("the jobs never started".into());
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    measured.networks.store(4096, Ordering::SeqCst);
+    std::fs::write(f.data.join("go"), "")?;
+    f.settle().await?;
+    let job = pull_job(&f).await?;
+    assert_eq!(job["state"], "error", "{job}");
+    assert_eq!(
+        job["reason"],
+        "Docker had no free address pool for a new network, and its sandbox's Docker engine had \
+         no room for a network for 1 min, so it was not run again: an infrastructure failure, not \
+         the change"
+    );
+    assert_eq!(attempts_of(&f)?, [1, 1]);
+    Ok(())
+}
+
+/// A sandbox whose OOM count never grows (SPEC-497 OFC-001, review round 1).
+struct NoOom;
+
+#[async_trait::async_trait]
+impl SandboxIsolation for NoOom {
+    async fn prepare(&self, _: &SandboxRef) -> AppResult<Option<SandboxJoin>> {
+        Ok(None)
+    }
+    fn release(&self, _: &SandboxId) {}
+    async fn limit_counters(&self, _: &SandboxId) -> Option<LimitCounters> {
+        Some(LimitCounters {
+            task_limit_hits: 0,
+            oom_kills: 3,
+        })
+    }
+}
+
+/// SPEC-497 OFC-001 (review round 1): a SIGKILL while the kernel killed nothing for memory is
+/// the job's own failure: no second run.
+#[tokio::test]
+async fn a_kill_without_a_kill_for_memory_is_not_run_again() -> TestResult {
+    let f = fixture_with(false, |data| attempts(data, "kill -9 $$", "echo ok")).await?;
+    assert!(f.h.app.set_isolation(Arc::new(NoOom)));
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    let job = pull_job(&f).await?;
+    assert_eq!(job["state"], "failed", "{job}");
+    assert_eq!(attempts_of(&f)?, [1, 1]);
+    Ok(())
+}
+
+/// A job that fails nextest's way on `app tests::flaky` when any of `files` is in its checkout,
+/// and prints the nextest filter it was given.
+fn flaky_job(files: &[&str]) -> String {
+    let block = "printf \"        FAIL [   0.004s] (1/1) app tests::flaky\\n  stdout ───\\n\\n    \
+                 assertion failed: the race lost\\n\\n\"; exit 100";
+    let test = files
+        .iter()
+        .map(|f| format!("[ -e {f} ]"))
+        .collect::<Vec<_>>()
+        .join(" || ");
+    format!(
+        "[[ci.jobs]]\nname = \"quality\"\ncommand = 'echo \"q=[$YULIUS_CI_QUARANTINE_NEXTEST]\"; \
+         if {test}; then {block}; fi'\n"
+    )
+}
+
+/// Opens pull request `number` from a new branch `branch` made from `from` with `file` added;
+/// its head.
+fn open_pull(f: &Fixture, number: u64, branch: &str, from: &str, file: &str) -> BoxResult<String> {
+    git(&f.work, &["checkout", "-q", "-b", branch, from])?;
+    std::fs::write(f.work.join(file), "x\n")?;
+    git(&f.work, &["add", "-A"])?;
+    git(&f.work, &["commit", "-q", "-m", file])?;
+    git(&f.work, &["push", "-q", "origin", branch])?;
+    let head = git(&f.work, &["rev-parse", "HEAD"])?;
+    git(&f.work, &["checkout", "-q", "feat/one"])?;
+    if let Ok(mut pulls) = f.h.github.pulls.lock() {
+        pulls.push(GhPull {
+            number,
+            html_url: format!("https://github.test/acme/app/pull/{number}"),
+            title: branch.into(),
+            state: "open".into(),
+            merged: false,
+            base: "dev".into(),
+            head: branch.into(),
+            head_sha: head.clone(),
+            mergeable: None,
+            behind: false,
+            from_fork: false,
+            merge_commit_sha: None,
+        });
+    }
+    Ok(head)
+}
+
+/// The only job of the run of `reference` (`pr/2`) or at `sha`, with its output.
+async fn job_of(f: &Fixture, key: &str, value: &str) -> BoxResult<Value> {
+    let overview = f.get("/api/sandboxes/s1/ci").await?;
+    let run = overview["runs"]
+        .as_array()
+        .ok_or("runs")?
+        .iter()
+        .find(|r| r[key] == value)
+        .ok_or_else(|| format!("no run with {key} {value}: {overview}"))?
+        .clone();
+    Ok(run_jobs(f, &run).await?.into_iter().next().ok_or("job")?)
+}
+
+async fn sync_and_settle(f: &Fixture) -> BoxResult<()> {
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await
+}
+
+fn issue_titles(f: &Fixture) -> BoxResult<Vec<String>> {
+    Ok(f.h
+        .github
+        .issues
+        .lock()
+        .map_err(|_| "lock")?
+        .iter()
+        .map(|(_, issue)| issue.title.clone())
+        .collect())
+}
+
+/// SPEC-497 OFC-002: a test that fails in the runs of two different pull requests is quarantined
+/// at once with one issue, the job that found it says so, a later job of the project is told it
+/// in its environment, and closing the issue ends the quarantine. The failing test is never run
+/// again by Yulius (each pull request's job ran once).
+#[tokio::test]
+async fn a_test_failing_on_two_pull_requests_is_quarantined_with_an_issue() -> TestResult {
+    let f = fixture_with(false, |_| {
+        flaky_job(&["feature.txt", "two.txt", "three.txt", "four.txt"])
+    })
+    .await?;
+    sync_and_settle(&f).await?;
+    assert!(
+        issue_titles(&f)?.is_empty(),
+        "one pull request is not enough"
+    );
+    // A second pull request, from dev, fails the same test.
+    open_pull(&f, 2, "feat/two", "origin/dev", "two.txt")?;
+    sync_and_settle(&f).await?;
+    assert_eq!(
+        issue_titles(&f)?,
+        ["Flaky test quarantined: app tests::flaky"]
+    );
+    let job = job_of(&f, "reference", "pr/2").await?;
+    assert_eq!(job["state"], "failed", "{job}");
+    assert_eq!(
+        job["reason"], "a failing test is now quarantined as flaky (see the output)",
+        "{job}"
+    );
+    let output = job["output"].as_str().unwrap_or_default();
+    assert!(
+        output.contains("`app tests::flaky` failed in the runs of #1, #2 within 48 hours")
+            && output.contains("quarantined as a flaky test (issue #101)"),
+        "{output}"
+    );
+    // Nothing ran twice: the job's own failure is printed once.
+    assert_eq!(output.matches("the race lost").count(), 1, "{output}");
+    let first = job_of(&f, "reference", "pr/1").await?;
+    let first_output = first["output"].as_str().unwrap_or_default();
+    assert_eq!(first_output.matches("the race lost").count(), 1, "{first}");
+    // The next job of the project is told it, as a filter of test paths.
+    let later = f.push_dev("later.txt", Some("later\n"))?;
+    sync_and_settle(&f).await?;
+    let dev_job = job_of(&f, "sha", &later).await?;
+    assert!(
+        dev_job["output"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("q=[test(=tests::flaky)]"),
+        "{dev_job}"
+    );
+    // A third pull request failing it files no second issue, and says it is quarantined.
+    open_pull(&f, 3, "feat/three", "origin/dev", "three.txt")?;
+    sync_and_settle(&f).await?;
+    assert_eq!(issue_titles(&f)?.len(), 1);
+    let third = job_of(&f, "reference", "pr/3").await?;
+    let third_output = third["output"].as_str().unwrap_or_default();
+    assert!(
+        third_output.contains("`app tests::flaky` is quarantined as flaky (issue #101)"),
+        "{third_output}"
+    );
+    assert!(third["reason"].is_null(), "{third}");
+    // An open issue, or one that cannot be read, keeps the quarantine.
+    f.h.app.ci_release_quarantines().await;
+    assert_eq!(f.h.store.quarantined_tests(None).await?.len(), 1, "open");
+    f.h.github.fail_issue_reads.store(true, Ordering::SeqCst);
+    f.h.github
+        .closed_issues
+        .lock()
+        .map_err(|_| "lock")?
+        .insert(101, Vec::new());
+    f.h.app.ci_release_quarantines().await;
+    assert_eq!(f.h.store.quarantined_tests(None).await?.len(), 1, "unread");
+    // Closing the issue ends the quarantine, and forgets the failures that made it.
+    f.h.github.fail_issue_reads.store(false, Ordering::SeqCst);
+    f.h.app.ci_release_quarantines().await;
+    let left = f.h.store.quarantined_tests(None).await?;
+    assert!(left.is_empty(), "{left:?}");
+    open_pull(&f, 4, "feat/four", "origin/dev", "four.txt")?;
+    sync_and_settle(&f).await?;
+    assert_eq!(issue_titles(&f)?.len(), 1, "one failure after the release");
+    Ok(())
+}
+
+/// SPEC-497 OFC-002 (review round 1): a test the integration branch failed too is broken there,
+/// not flaky; two pull requests whose heads share a commit (a chained one) are one change.
+#[tokio::test]
+async fn no_quarantine_when_the_integration_branch_or_a_shared_commit_fails_it() -> TestResult {
+    let f = fixture_with(false, |_| flaky_job(&["devfail.txt"])).await?;
+    f.push_dev("devfail.txt", Some("x\n"))?;
+    sync_and_settle(&f).await?;
+    open_pull(&f, 2, "feat/two", "origin/dev", "two.txt")?;
+    open_pull(&f, 3, "feat/three", "origin/dev", "three.txt")?;
+    sync_and_settle(&f).await?;
+    for reference in ["pr/2", "pr/3"] {
+        let job = job_of(&f, "reference", reference).await?;
+        assert_eq!(job["state"], "failed", "{job}");
+    }
+    assert!(
+        issue_titles(&f)?.is_empty(),
+        "the integration branch fails it"
+    );
+
+    let f = fixture_with(false, |_| flaky_job(&["feature.txt"])).await?;
+    sync_and_settle(&f).await?;
+    // Chained on feat/one: it carries the commit that breaks the test.
+    open_pull(&f, 2, "feat/two", "feat/one", "two.txt")?;
+    sync_and_settle(&f).await?;
+    let job = job_of(&f, "reference", "pr/2").await?;
+    assert_eq!(job["state"], "failed", "{job}");
+    assert!(
+        issue_titles(&f)?.is_empty(),
+        "one change in two pull requests"
+    );
+    // Both merge a newer `dev` commit: their heads then have two merge bases, the shared commit
+    // and that one, and plain `git merge-base` names only the latter (review round 2).
+    f.push_dev("newer.txt", Some("newer\n"))?;
+    for (number, branch) in [(1, "feat/one"), (2, "feat/two")] {
+        git(&f.work, &["checkout", "-q", branch])?;
+        git(&f.work, &["merge", "-q", "--no-edit", "origin/dev"])?;
+        git(&f.work, &["push", "-q", "origin", branch])?;
+        let head = git(&f.work, &["rev-parse", "HEAD"])?;
+        if let Ok(mut pulls) = f.h.github.pulls.lock()
+            && let Some(pull) = pulls.iter_mut().find(|p| p.number == number)
+        {
+            pull.head_sha = head;
+        }
+    }
+    git(&f.work, &["checkout", "-q", "feat/one"])?;
+    sync_and_settle(&f).await?;
+    let merged = git(&f.work, &["rev-parse", "feat/two"])?;
+    let job = job_of(&f, "sha", &merged).await?;
+    assert_eq!(job["state"], "failed", "{job}");
+    assert!(issue_titles(&f)?.is_empty(), "still one change");
+    // A head the clone does not have cannot be compared: no quarantine rests on it.
+    let runs = f.h.store.ci_runs(&f.sandbox.id, 20).await?;
+    let first = runs
+        .iter()
+        .find(|r| r.reference.key() == "pr/1")
+        .ok_or("pr/1's run")?
+        .clone();
+    let job =
+        f.h.store
+            .ci_jobs(&first.id, false)
+            .await?
+            .into_iter()
+            .next()
+            .ok_or("job")?;
+    let mut unknown = first.clone();
+    unknown.id = "unknown-head".into();
+    unknown.reference = yulius_domain::ci::CiRef::PullRequest(9);
+    unknown.sha = "0123456789abcdef0123456789abcdef01234567".into();
+    let noted =
+        f.h.app
+            .ci_note_failing_tests(
+                &f.sandbox,
+                &unknown,
+                &job,
+                "FAIL [   0.004s] (1/1) app tests::flaky\n  stdout ───\n",
+            )
+            .await;
+    assert!(!noted.quarantined, "{noted:?}");
+    assert!(issue_titles(&f)?.is_empty(), "an unknown head");
+    Ok(())
+}
+
+/// SPEC-497 OFC-002 (review round 1): when the issue cannot be filed nothing is quarantined, and
+/// the output says why; a job failing more than 10 tests, kept or only counted, quarantines none.
+#[tokio::test]
+async fn no_quarantine_without_its_issue_or_for_a_broken_job() -> TestResult {
+    let f = fixture_with(false, |_| flaky_job(&["feature.txt", "two.txt"])).await?;
+    f.h.github.fail_issues.store(true, Ordering::SeqCst);
+    sync_and_settle(&f).await?;
+    open_pull(&f, 2, "feat/two", "origin/dev", "two.txt")?;
+    sync_and_settle(&f).await?;
+    let job = job_of(&f, "reference", "pr/2").await?;
+    let output = job["output"].as_str().unwrap_or_default();
+    assert!(
+        output.contains(
+            "`app tests::flaky` looks flaky (it failed in the runs of #1, #2), but it \
+                         was not quarantined: its issue could not be filed"
+        ),
+        "{output}"
+    );
+    assert!(job["reason"].is_null(), "{job}");
+    assert!(f.h.store.quarantined_tests(None).await?.is_empty());
+
+    // Twelve failing tests of 9 KiB each: four kept, eight only counted.
+    let many = "for t in 1 2 3 4 5 6 7 8 9 10 11 12; do printf \"        FAIL [   0.004s] (1/12) \
+                app tests::t$t\\n  stdout ───\\n\"; for l in $(seq 1 100); do echo \"    \
+                line $l of a long failure output that goes on and on and on\"; done; \
+                echo; done; exit 100";
+    let f = fixture_with(false, move |_| {
+        format!(
+            "[[ci.jobs]]\nname = \"quality\"\ncommand = 'if [ -e feature.txt ] || \
+             [ -e two.txt ]; then {many}; fi'\n"
+        )
+    })
+    .await?;
+    sync_and_settle(&f).await?;
+    open_pull(&f, 2, "feat/two", "origin/dev", "two.txt")?;
+    sync_and_settle(&f).await?;
+    let job = job_of(&f, "reference", "pr/2").await?;
+    assert_eq!(job["state"], "failed", "{job}");
+    assert!(
+        issue_titles(&f)?.is_empty(),
+        "a broken job, not a flaky test"
+    );
+    Ok(())
+}
+
+/// SPEC-497 OFC-002 (review round 1): two jobs that make the same test flaky at once file one
+/// issue; the second says it is quarantined.
+#[tokio::test]
+async fn two_jobs_at_once_file_one_issue() -> TestResult {
+    let f = fixture_with(false, |_| flaky_job(&["feature.txt"])).await?;
+    sync_and_settle(&f).await?;
+    let runs = f.h.store.ci_runs(&f.sandbox.id, 10).await?;
+    let first = runs
+        .iter()
+        .find(|r| r.reference.key() == "pr/1")
+        .ok_or("pr/1's run")?
+        .clone();
+    let job =
+        f.h.store
+            .ci_jobs(&first.id, false)
+            .await?
+            .into_iter()
+            .next()
+            .ok_or("job")?;
+    let dev = git(&f.work, &["rev-parse", "origin/dev"])?;
+    let other = |number: u64| {
+        let mut run = first.clone();
+        run.id = format!("race-{number}");
+        run.reference = yulius_domain::ci::CiRef::PullRequest(number);
+        run.sha = dev.clone();
+        run
+    };
+    let (two, three) = (other(2), other(3));
+    let failures = "FAIL [   0.004s] (1/1) app tests::flaky\n  stdout ───\n";
+    let hold = Arc::new(tokio::sync::Notify::new());
+    *f.h.github.issue_hold.lock().map_err(|_| "lock")? = Some(Arc::clone(&hold));
+    let release = async {
+        f.h.github.issue_entered.notified().await;
+        if let Ok(mut held) = f.h.github.issue_hold.lock() {
+            *held = None;
+        }
+        hold.notify_waiters();
+    };
+    let (a, b, ()) = tokio::join!(
+        f.h.app
+            .ci_note_failing_tests(&f.sandbox, &two, &job, failures),
+        f.h.app
+            .ci_note_failing_tests(&f.sandbox, &three, &job, failures),
+        release
+    );
+    assert_eq!(issue_titles(&f)?.len(), 1, "{a:?} {b:?}");
+    assert!(a.quarantined != b.quarantined, "{a:?} {b:?}");
+    let second = if a.quarantined { &b } else { &a };
+    assert!(
+        second
+            .lines
+            .iter()
+            .any(|l| l.contains("is quarantined as flaky (issue #101)")),
+        "{second:?}"
+    );
     Ok(())
 }
 

@@ -803,6 +803,45 @@ async fn issues_are_reopened_and_closed_with_a_comment() -> TestResult {
     Ok(())
 }
 
+/// SPEC-497 OFC-002 (review round 1): a quarantine lasts while its issue is open; a closed issue,
+/// one GitHub does not have (404) and a deleted one (410) are not open.
+#[tokio::test]
+async fn an_issue_reads_open_until_it_is_closed_or_gone() -> TestResult {
+    let (fake, client) = setup().await?;
+    fake.add_repo("acme", "app", true);
+    fake.add_user("dev", None);
+    fake.set_permission("acme", "app", "dev", writer());
+    let token = fake.issue_user_token("dev");
+    let issue = NewIssue {
+        title: "Flaky test quarantined: app tests::x".into(),
+        body: "b".into(),
+        labels: Vec::new(),
+    };
+    let opened = client.create_issue(&token, "acme", "app", &issue).await?;
+    assert!(
+        client
+            .issue_open(&token, "acme", "app", opened.number)
+            .await?
+    );
+    client
+        .set_issue_state(&token, "acme", "app", opened.number, false, "fixed")
+        .await?;
+    assert!(
+        !client
+            .issue_open(&token, "acme", "app", opened.number)
+            .await?
+    );
+    assert!(!client.issue_open(&token, "acme", "app", 99).await?, "404");
+    fake.delete_issue("acme", "app", opened.number);
+    assert!(
+        !client
+            .issue_open(&token, "acme", "app", opened.number)
+            .await?,
+        "410"
+    );
+    Ok(())
+}
+
 /// DLV-008 (#139): agents log issues with Definition-of-Ready labels; labels the repository does
 /// not have yet are created first, existing ones are reused, and bad input never reaches GitHub.
 #[tokio::test]

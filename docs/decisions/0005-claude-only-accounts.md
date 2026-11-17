@@ -3,7 +3,10 @@
 ## Status
 
 Accepted. Recorded retroactively from SPEC-002 (ADR-05, ADR-06, ADR-17); the full analysis is in
-[SPEC-002 section 2](../../.ai/specs/SPEC-002-yulius-architecture.md).
+[SPEC-002 section 2](../../.ai/specs/SPEC-002-yulius-architecture.md). Its "Claude Code only" is
+superseded for Codex by [ADR-0355](0355-codex-returns-as-a-second-harness-with-a-pinned-cli.md)
+(`F 2026-11-16 Codex`, SPEC-503), which keeps the per-sandbox homes and the absence of provider
+switching.
 
 ## Context
 

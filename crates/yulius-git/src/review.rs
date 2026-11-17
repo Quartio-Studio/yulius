@@ -208,6 +208,31 @@ impl Git {
         Ok(sha)
     }
 
+    /// Every best common ancestor of two revisions (`merge-base --all`; a criss-cross history has
+    /// several, and the plain form prints one of them); empty when they share no history.
+    ///
+    /// # Errors
+    /// Unknown revisions or Git failures.
+    pub fn merge_bases(&self, repo: &Path, a: &str, b: &str) -> Result<Vec<String>, GitError> {
+        let a = self.rev_parse(repo, a)?;
+        let b = self.rev_parse(repo, b)?;
+        let output = self.run(
+            Invocation::new(self, "merge-base", Some(repo))
+                .args(["merge-base", "--all", "--end-of-options"])
+                .arg(a)
+                .arg(b),
+        )?;
+        let text = output.stdout_trimmed();
+        if !output.status.success() {
+            // Exit 1 with nothing printed: no common ancestor.
+            if output.status.code() == Some(1) && text.is_empty() {
+                return Ok(Vec::new());
+            }
+            return Err(crate::runner::failure("merge-base", &output));
+        }
+        Ok(text.lines().map(str::to_owned).collect())
+    }
+
     /// Files with counts only, for a diff too large to read whole.
     fn numstat_files(&self, worktree: &Path, base: &str) -> Result<Vec<FileDiff>, GitError> {
         let output = self.run_ok(

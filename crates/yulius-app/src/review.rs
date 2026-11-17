@@ -787,7 +787,9 @@ impl App {
         from: Option<&str>,
         to: Option<&str>,
     ) -> AppResult<yulius_contracts::api::analytics::MergeQueueAnalytics> {
-        use yulius_contracts::api::analytics::{MergeQueueAnalytics, MergeQueueDay};
+        use yulius_contracts::api::analytics::{
+            CiMinutesDay, MergeQueueAnalytics, MergeQueueDay, MergeQueueDissolved,
+        };
         use yulius_domain::merge_queue as mq;
         let (sandboxes, from_at, to_at, range) =
             self.analytics_window(ctx, sandbox, from, to).await?;
@@ -823,11 +825,42 @@ impl App {
                 detail: entry.detail.unwrap_or_default(),
             }));
         }
+        // CI minutes by how the runs ended, from each sandbox's daily tally (SPEC-497 OFC-003).
+        let mut minutes = mq::Minutes::default();
+        let mut minute_days: std::collections::BTreeMap<String, mq::Minutes> =
+            std::collections::BTreeMap::new();
+        for id in &sandboxes {
+            for row in self.deps.store.ci_minutes(id, from_at, to_at).await? {
+                minutes.add(&row.outcome, row.run_ms, row.rerun_ms);
+                minute_days
+                    .entry(row.day)
+                    .or_default()
+                    .add(&row.outcome, row.run_ms, row.rerun_ms);
+            }
+        }
         let numbers = mq::queue_numbers(&events, from_at);
         let mut totals = MergeQueueAnalytics {
             range,
+            dissolved_recent: numbers
+                .dissolved_recent
+                .iter()
+                .map(|(why, event)| MergeQueueDissolved {
+                    at: yulius_domain::time::format_rfc3339(event.at),
+                    sandbox: event.target.clone(),
+                    why: why.as_str().to_owned(),
+                    reason: event.detail.clone(),
+                })
+                .collect(),
             merges: numbers.merges,
             median_arm_to_merge_minutes: numbers.median_arm_to_merge_minutes,
+            ci_minutes: ci_minutes(minutes),
+            ci_minutes_by_day: minute_days
+                .into_iter()
+                .map(|(day, minutes)| CiMinutesDay {
+                    day,
+                    minutes: ci_minutes(minutes),
+                })
+                .collect(),
             ..MergeQueueAnalytics::default()
         };
         for day in numbers.days {
@@ -850,6 +883,45 @@ impl App {
             });
         }
         Ok(totals)
+    }
+
+    /// `GET /api/analytics/ci-load` (SPEC-497): the host's load from CI per hour over `[from,
+    /// to]`, for any signed-in person (the host's figures, no project's).
+    ///
+    /// # Errors
+    /// A malformed or reversed range.
+    pub async fn analytics_ci_load(
+        &self,
+        ctx: &crate::auth::AuthContext,
+        from: Option<&str>,
+        to: Option<&str>,
+    ) -> AppResult<yulius_contracts::api::analytics::CiLoadAnalytics> {
+        use yulius_contracts::api::analytics::{CiLoadAnalytics, CiLoadHour};
+        let (_, from_at, to_at, range) = self.analytics_window(ctx, None, from, to).await?;
+        let minutes = self.deps.store.ci_load(from_at, to_at).await?;
+        let hours = yulius_domain::resources::load_by_hour(&minutes);
+        let tenth = |v: f64| (v * 10.0).round() / 10.0;
+        let busy: Vec<f64> = hours.iter().filter_map(|h| h.busy_percent).collect();
+        #[expect(clippy::cast_precision_loss, reason = "hours in a range")]
+        let busy_percent =
+            (!busy.is_empty()).then(|| tenth(busy.iter().sum::<f64>() / busy.len() as f64));
+        Ok(CiLoadAnalytics {
+            range,
+            wait_job_minutes: hours.iter().map(|h| h.wait_job_minutes).sum(),
+            peak_wait_job_minutes: hours.iter().map(|h| h.wait_job_minutes).max().unwrap_or(0),
+            busy_percent,
+            hours: hours
+                .into_iter()
+                .map(|h| CiLoadHour {
+                    hour: h.hour,
+                    minutes: h.minutes,
+                    wait_job_minutes: h.wait_job_minutes,
+                    busy_percent: h.busy_percent.map(tenth),
+                    held_cpus: tenth(h.held_cpus),
+                    measured_cpus: h.measured_cpus.map(tenth),
+                })
+                .collect(),
+        })
     }
 
     /// The rounds of `task`'s open pull request, as the delivery view shows them. A failed read
@@ -1069,6 +1141,23 @@ fn round_view(r: ReviewRoundRecord) -> yulius_contracts::api::git::ReviewRoundVi
         verdict: r.verdict,
         reported: r.ended_at.is_some(),
         cut_off: r.cut_off,
+    }
+}
+
+/// The contract's form of [`yulius_domain::merge_queue::Minutes`], rounded to tenths.
+fn ci_minutes(
+    minutes: yulius_domain::merge_queue::Minutes,
+) -> yulius_contracts::api::analytics::CiMinutes {
+    let tenth = |m: f64| (m * 10.0).round() / 10.0;
+    yulius_contracts::api::analytics::CiMinutes {
+        passed: tenth(minutes.passed),
+        failed: tenth(minutes.failed),
+        failed_outside: tenth(minutes.failed_outside),
+        cancelled: tenth(minutes.cancelled),
+        rerun: tenth(minutes.rerun),
+        outside_share: minutes
+            .outside_share()
+            .map(|share| (share * 1000.0).round() / 1000.0),
     }
 }
 

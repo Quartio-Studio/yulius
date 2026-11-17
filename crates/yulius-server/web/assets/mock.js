@@ -247,6 +247,8 @@ function seed(params) {
     loginCancels: [],
     // Accounts added here that never signed in: they hold no credential.
     unsignedAccounts: new Set(),
+    // Codex subscriptions made with an OpenAI API key: no usage windows (SPEC-503 CDX-008).
+    codexKeyAccounts: new Set(),
   };
   // Product: the product preset with a dev-vm deploy command (so it is "custom"): exercises
   // command runs plus manual confirmation. Studio: continuous, no environments.
@@ -514,8 +516,8 @@ function summary(task) {
     attention: task.status === 'running' && task.activity === 'needs_attention' && task.attention ? { ...task.attention } : null,
     steps: stepsSummary(task), archived: task.archived, account_label: task.account_label,
     resumes_at: task.status === 'waiting_capacity' ? task.resumes_at || null : null,
-    // No Claude account usable (SPEC-246): it waits for one, not for capacity.
-    waits_for_account: task.status === 'waiting_capacity' && Boolean(seededDb) && !claudeUsable(seededDb),
+    // No account of its provider usable (SPEC-246, SPEC-503): it waits for one, not for capacity.
+    waits_for_account: task.status === 'waiting_capacity' && Boolean(seededDb) && !usableOf(seededDb, providerOfTask(task)),
     // Chained tasks (TSK-012) and a held prompt (TSK-013).
     after: task.afterLink ? { ...task.afterLink } : null,
     next: (task.nextLinks || []).map((link) => ({ ...link })),
@@ -926,12 +928,15 @@ route('POST', '/api/auth/password', ({ db, body }) => {
 route('POST', '/api/auth/mock-github', ({ db }) => { db.signedIn = true; return db.me; });
 route('POST', '/api/auth/logout', ({ db }) => { db.signedIn = false; for (const s of db.eventSockets) s.serverClose(1000); return json(204); });
 // Whether agents can start (SPEC-246 CLA-001): an account signed in and `ok` or `limited`.
-const claudeUsable = (db) => db.accounts.some((a) => a.status === 'ok' || a.status === 'limited');
-// A person's start of an agent without one is refused, with where to connect one (CLA-002).
-const needClaude = (db) => {
-  if (!claudeUsable(db)) fail(409, 'claude_account_required', 'Connect a Claude account first: no Claude account is connected, so no agent can start. An instance administrator connects one in Subscriptions (/admin/accounts).');
+const usableOf = (db, provider) => db.accounts.some((a) => (a.provider || 'anthropic') === provider && (a.status === 'ok' || a.status === 'limited'));
+const claudeUsable = (db) => usableOf(db, 'anthropic');
+// A person's start of an agent without one is refused, with where to connect one (CLA-002); a
+// Codex task needs a Codex account (SPEC-503).
+const needClaude = (db, provider = 'anthropic') => {
+  const kind = provider === 'openai' ? 'Codex' : 'Claude';
+  if (!usableOf(db, provider)) fail(409, 'claude_account_required', `Connect a ${kind} account first: no ${kind} account is connected, so no agent can start. An instance administrator connects one in Subscriptions (/admin/accounts).`);
 };
-route('GET', '/api/me', ({ db }) => ({ ...db.me, instance: { ...db.me.instance, claude_connected: claudeUsable(db), vidoc: Boolean(db.vidoc.key || db.vidoc.config) && !db.vidoc.offAt } }));
+route('GET', '/api/me', ({ db }) => ({ ...db.me, instance: { ...db.me.instance, claude_connected: claudeUsable(db), codex_connected: usableOf(db, 'openai'), vidoc: Boolean(db.vidoc.key || db.vidoc.config) && !db.vidoc.offAt } }));
 // Superadmin recovery (ACC-011): a code is set, three attempts left. A test can hold the answers
 // (`__yuliusMock.holdRecovery = promise`; `recoveryWaiting` counts the reads waiting there), so a
 // page that asked can be left before it answers (#581). `recoveryAnswered` counts the answers: a
@@ -1462,7 +1467,8 @@ route('POST', `/api/sandboxes/${ID}/tasks`, async ({ db, p, body }) => {
   const sandbox = sandboxOf(db, p[0]);
   need(sandbox, 'write');
   if (!body.prompt || !body.prompt.trim()) fail(422, 'invalid', 'The prompt is empty.');
-  if (body.harness && body.harness !== 'claude') fail(422, 'invalid', 'harness must be claude (Yulius runs Claude Code only)');
+  if (body.harness && !['claude', 'codex'].includes(body.harness)) fail(422, 'invalid', 'harness must be claude or codex');
+  const harness = body.harness || 'claude';
   if (body.mode && !['goal', 'prompt', 'auto'].includes(body.mode)) fail(422, 'invalid', 'mode must be goal, prompt or auto');
   const visible = db.workflows.filter((w) => w.scope === 'instance' || w.sandbox === sandbox.id);
   if (body.workflow_id && body.workflow_id !== 'auto' && !visible.some((w) => w.id === body.workflow_id)) fail(422, 'invalid', `unknown workflow \`${body.workflow_id}\``);
@@ -1477,7 +1483,7 @@ route('POST', `/api/sandboxes/${ID}/tasks`, async ({ db, p, body }) => {
   const prepared = body.prepared === true || Boolean(body.start_at);
   if (prepared && (body.after_task_id || body.supertask || (body.start_rule && body.start_rule.trim()))) fail(422, 'invalid', 'a prepared task starts when you decide or at its time: it cannot also run after a task, by a rule or as a supertask');
   const startAt = body.start_at ? mockStartAt(body.start_at) : null;
-  if (!prepared) needClaude(db);
+  if (!prepared) needClaude(db, harness === 'codex' ? 'openai' : 'anthropic');
   let rule = null;
   if (body.start_rule && body.start_rule.trim()) {
     if (body.after_task_id) fail(422, 'invalid', 'give a task to run after or a start rule, not both');
@@ -1502,7 +1508,7 @@ route('POST', `/api/sandboxes/${ID}/tasks`, async ({ db, p, body }) => {
   const wf = choice ? choice.workflow : db.workflows.find((w) => w.id === body.workflow_id);
   const id = `tsk_${sandbox.id.slice(3)}_${number}`;
   const task = {
-    id, sandbox_id: sandbox.id, number, title, harness: 'claude', status: waitsFor ? 'chained' : 'queued', activity: null,
+    id, sandbox_id: sandbox.id, number, title, harness, status: waitsFor ? 'chained' : 'queued', activity: null,
     branch: `feat/${title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40) || `task-${number}`}`,
     origin: 'ui', created_by: { login: db.me.user.login, id: db.me.user.id }, created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
     archived: false, account_label: null,
@@ -1789,14 +1795,21 @@ route('POST', `/api/tasks/${ID}/stop`, ({ db, p }) => {
   later(() => touch(db, task, { status: 'stopped_cancelled', account_label: null }), 1400);
   return summary(task);
 });
+// A task runs on subscriptions of its harness's provider only (SPEC-503 CDX-013).
+const providerOfTask = (task) => (task.harness === 'codex' ? 'openai' : 'anthropic');
+const kindOf = (provider) => (provider === 'openai' ? 'Codex' : 'Claude');
+const refuseOtherProvider = (task, account) => {
+  if (account && (account.provider || 'anthropic') !== providerOfTask(task)) fail(429, 'capacity', `${account.label} is not a ${kindOf(providerOfTask(task))} subscription, so it cannot take the task.`);
+};
 const continueHandler = ({ db, p, body }) => {
   const task = taskOf(db, p[0]);
   needTaskWrite(db, task);
   if (LIVE.has(task.status)) fail(409, 'conflict', 'The task is already running.');
-  needClaude(db);
-  touch(db, task, { status: 'starting', activity: null });
+  needClaude(db, providerOfTask(task));
   const account = db.accounts.find((a) => body && a.id === body.account_id);
-  later(() => touch(db, task, { status: 'running', activity: 'waiting', account_label: account ? account.label : 'Claude #1' }), 1300);
+  refuseOtherProvider(task, account);
+  touch(db, task, { status: 'starting', activity: null });
+  later(() => touch(db, task, { status: 'running', activity: 'waiting', account_label: account ? account.label : `${kindOf(providerOfTask(task))} #1` }), 1300);
   return summary(task);
 };
 route('POST', `/api/tasks/${ID}/continue`, continueHandler);
@@ -1806,6 +1819,7 @@ route('POST', `/api/tasks/${ID}/switch`, ({ db, p, body }) => {
   if (!['running', 'waiting_capacity'].includes(task.status)) fail(409, 'conflict', 'Only running tasks can switch.');
   const from = task.account_label;
   const account = db.accounts.find((a) => a.id === body.account_id);
+  refuseOtherProvider(task, account);
   // A person's choice: refused only when it cannot take the task (SPEC-447 MOV-002).
   if (account && !['ok', 'limited'].includes(account.status)) fail(429, 'capacity', `${account.label} needs a new sign-in, so it cannot take the task.`);
   touch(db, task, { status: 'switching' });
@@ -3086,7 +3100,7 @@ function automationTask(db, a, start) {
     : start.after_task_id ? db.tasks.find((t) => t.id === start.after_task_id) : null;
   const now = new Date().toISOString();
   const task = {
-    id, sandbox_id: a.sandbox, number, title: a.name, harness: 'claude', status: before ? 'chained' : start.prepared ? 'prepared' : 'queued', activity: null,
+    id, sandbox_id: a.sandbox, number, title: a.name, harness: a.harness || 'claude', status: before ? 'chained' : start.prepared ? 'prepared' : 'queued', activity: null,
     branch: `feat/${number}-automation`, origin: 'automation', created_by: { login: db.me.user.login }, created_at: now, updated_at: now,
     archived: false, account_label: null, stepsList: [], model: 'claude-opus-4', effort: 'default', prompt: a.prompt,
     delivery: null, mode: 'goal', auto: null, supertask: start.supertask,
@@ -3989,9 +4003,11 @@ function signedInByPaste(db, account) {
 // With a pasted `token` it is `ok` at once and there is no `login_id` (SPEC-502 TKP-001).
 route('POST', '/api/admin/accounts', ({ db, body }) => {
   adminOnly(db);
-  if (body.provider !== 'anthropic') fail(422, 'invalid', 'provider must be anthropic (Claude)');
+  if (!['anthropic', 'openai'].includes(body.provider)) fail(422, 'invalid', 'provider must be anthropic (Claude) or openai (Codex)');
   if (!body.label || body.label.length > 80) fail(422, 'invalid', 'label must be 1–80 characters');
   if (body.token !== undefined && body.token !== null) {
+    if (body.provider !== 'anthropic') fail(422, 'invalid', 'a pasted token is only for an anthropic (Claude) account');
+    if (body.api_key !== undefined || body.auth_json !== undefined) fail(422, 'invalid', 'give either a token, an API key or an auth.json, not more than one');
     pastedToken(body.token);
     db.nextId += 1;
     const account = { id: `acc_${db.nextId}`, provider: body.provider, label: body.label, email: null, email_typed: false, status: 'ok', usage: { primary: null, secondary: null, observed_at: null }, last_error: null, in_use_by: 0 };
@@ -3999,9 +4015,23 @@ route('POST', '/api/admin/accounts', ({ db, body }) => {
     signedInByPaste(db, account);
     return json(201, { account });
   }
+  // An OpenAI API key makes a Codex account at once, with no sign-in (SPEC-503 CDX-005).
+  // So does the auth.json of a `codex login` made elsewhere (SPEC-503 CDX-011).
+  if (body.api_key !== undefined && !String(body.api_key).trim()) fail(422, 'invalid', 'the API key is empty');
+  if (body.auth_json !== undefined && !String(body.auth_json).trim()) fail(422, 'invalid', 'the auth.json is empty');
+  if (body.api_key && body.auth_json) fail(422, 'invalid', 'give either an API key or an auth.json, not both');
+  if ((body.api_key || body.auth_json) && body.provider !== 'openai') fail(422, 'invalid', 'an API key or an auth.json is only for an openai (Codex) account');
+  if (body.api_key && !/^sk-[A-Za-z0-9_-]{20,512}$/.test(body.api_key.trim())) fail(422, 'invalid', 'the API key is not an OpenAI API key (sk-…)');
+  if (body.auth_json) mockCodexImport(body.auth_json);
+  const immediate = Boolean(body.api_key || body.auth_json);
   db.nextId += 1;
-  const account = { id: `acc_${db.nextId}`, provider: body.provider, label: body.label, email: null, status: 'pending_login', usage: { primary: null, secondary: null, observed_at: null }, last_error: null, in_use_by: 0 };
+  const account = { id: `acc_${db.nextId}`, provider: body.provider, label: body.label, email: null, email_typed: false, status: immediate ? 'ok' : 'pending_login', usage: { primary: null, secondary: null, observed_at: null }, last_error: null, in_use_by: 0 };
   db.accounts.push(account);
+  if (immediate) {
+    if (body.api_key) db.codexKeyAccounts.add(account.id);
+    emit(db, { type: 'account.updated', account });
+    return json(201, { account });
+  }
   db.unsignedAccounts.add(account.id);
   return json(201, { account, login_id: startLogin(db, account.id) });
 });
@@ -4035,17 +4065,19 @@ route('DELETE', `/api/admin/accounts/${ID}`, ({ db, p }) => {
   if (!account) fail(404, 'not_found', 'not found');
   for (const session of db.logins.values()) if (session.accountId === account.id && !session.done) session.end('cancelled', null);
   db.accounts = db.accounts.filter((a) => a.id !== p[0]);
-  // Its tasks move to another subscription, or wait for one (SPEC-447 MOV-003, MOV-006).
-  const other = db.accounts.find((a) => a.status === 'ok' || a.status === 'limited');
+  // Its tasks move to another subscription of their provider, or wait for one (SPEC-447 MOV-003,
+  // MOV-006; SPEC-503 CDX-013).
   for (const task of db.tasks) {
     if (task.account_label !== account.label || !['running', 'waiting_capacity'].includes(task.status)) continue;
+    const provider = providerOfTask(task);
+    const other = db.accounts.find((a) => (a.provider || 'anthropic') === provider && (a.status === 'ok' || a.status === 'limited'));
     const session = db.sessions.get(task.id);
     if (other) {
       touch(db, task, { status: 'running', account_label: other.label });
       if (session) session.notice(`↻ ${account.label} was removed: this session continues on ${other.label}.`);
     } else {
       touch(db, task, { status: 'waiting_capacity', activity: null, account_label: null, waits_for_account: true });
-      if (session) session.notice(`⏸ ${account.label} was removed. No Claude subscription is left to continue on: sign one in again or add one in Subscriptions, and the task continues by itself.`);
+      if (session) session.notice(`⏸ ${account.label} was removed. No ${kindOf(provider)} subscription is left to continue on: sign one in again or add one in Subscriptions, and the task continues by itself.`);
     }
   }
   return json(204);
@@ -4077,9 +4109,40 @@ route('POST', `/api/admin/accounts/${ID}/usage`, async ({ db, p }) => {
   // that does not work (SPEC-483 SGN-002).
   const working = account.status === 'ok' || account.status === 'limited';
   if (working) account.last_error = null;
-  if (answer.unread) return { ...account, usage_read: false };
+  // An API-key Codex subscription has no windows to read, as on the server (SPEC-503 CDX-008).
+  if (answer.unread || db.codexKeyAccounts.has(account.id)) return { ...account, usage_read: false };
   Object.assign(account, { status: working ? answer.status || account.status : account.status, usage: { ...(answer.usage || account.usage), observed_at: answer.at || new Date().toISOString() } });
   return { ...account, usage_read: true };
+});
+/**
+ * Refuses an imported auth.json that is not a full ChatGPT sign-in of Codex, in the server's
+ * order and words (`yulius_harness::login::validate_codex_import`, SPEC-503 CDX-011).
+ */
+function mockCodexImport(text) {
+  const no = (why) => fail(422, 'invalid', `the auth.json cannot be imported: ${why}`);
+  const trimmed = String(text).trim();
+  if (!trimmed || new TextEncoder().encode(trimmed).length > 1024 * 1024) no('the Codex credentials are empty or too large');
+  let auth = null;
+  try { auth = JSON.parse(trimmed); } catch { /* refused below */ }
+  if (!auth || typeof auth !== 'object' || Array.isArray(auth)) no('the Codex credentials are not valid JSON');
+  const filled = (v) => typeof v === 'string' && v !== '';
+  const tokens = auth.tokens && typeof auth.tokens === 'object' && !Array.isArray(auth.tokens) ? auth.tokens : null;
+  if (!filled(auth.OPENAI_API_KEY) && !(tokens && (filled(tokens.access_token) || filled(tokens.refresh_token)))) no('the Codex credentials hold neither an API key nor sign-in tokens');
+  if (auth.auth_mode !== 'chatgpt') no('the file is not a ChatGPT sign-in of Codex (its auth_mode is not "chatgpt")');
+  if (!['id_token', 'access_token', 'refresh_token', 'account_id'].every((k) => tokens && typeof tokens[k] === 'string' && tokens[k].trim())) no('the ChatGPT sign-in lacks its id_token, access_token, refresh_token or account_id');
+}
+route('POST', `/api/admin/accounts/${ID}/import`, ({ db, p, body }) => {
+  adminOnly(db);
+  const account = db.accounts.find((a) => a.id === p[0]);
+  if (!account) fail(404, 'not_found', 'not found');
+  if (account.provider !== 'openai') fail(422, 'invalid', 'an auth.json is only for an openai (Codex) account');
+  mockCodexImport(body.auth_json);
+  // A ChatGPT sign-in now: its usage windows are read again (SPEC-503 CDX-008).
+  db.codexKeyAccounts.delete(account.id);
+  db.unsignedAccounts.delete(account.id);
+  Object.assign(account, { status: 'ok', last_error: null });
+  emit(db, { type: 'account.updated', account });
+  return json(200, { account });
 });
 route('POST', `/api/admin/accounts/${ID}/relogin`, ({ db, p }) => {
   adminOnly(db);
@@ -4093,6 +4156,7 @@ route('PUT', `/api/admin/accounts/${ID}/token`, ({ db, p, body }) => {
   adminOnly(db);
   const account = db.accounts.find((a) => a.id === p[0]);
   if (!account) fail(404, 'not_found', 'not found');
+  if ((account.provider || 'anthropic') !== 'anthropic') fail(422, 'invalid', 'a pasted token is only for an anthropic (Claude) account');
   pastedToken(body.token);
   for (const session of db.logins.values()) if (session.accountId === account.id && !session.done) session.end('cancelled', null);
   signedInByPaste(db, account);
@@ -4138,8 +4202,24 @@ route('GET', '/api/analytics/merge-queue', ({ db, query }) => {
   return db.mergeQueue || {
     range: { sandbox: query.get('sandbox'), from: query.get('from'), to: query.get('to') },
     days: [], formed: 9, merged: 6, dissolved: 3, dissolved_by: { member_left: 2, bisected: 1 },
+    dissolved_recent: [
+      { at: '2026-11-16T15:02:00Z', sandbox: 'app', why: 'member_failed', reason: "merge train #12, #14 (run r9): #14's own run at 1a2b3c4 ended failed: it leaves the candidate" },
+      { at: '2026-11-16T13:40:00Z', sandbox: 'app', why: 'bisected', reason: 'merge train #10, #11 (run r7): its CI run failed; the first 1 are tested again without the rest' },
+    ],
     merges: 14, median_arm_to_merge_minutes: 31.5,
+    ci_minutes: { passed: 588, failed: 120, failed_outside: 406, cancelled: 114, rerun: 12, outside_share: 0.423 },
+    ci_minutes_by_day: [],
   };
+});
+
+// GET /api/analytics/ci-load (SPEC-497): `db.ciLoad` replaces the mock's figures.
+route('GET', '/api/analytics/ci-load', ({ db, query }) => db.ciLoad || {
+  range: { sandbox: null, from: query.get('from'), to: query.get('to') },
+  hours: [
+    { hour: '2026-11-16T18', minutes: 60, wait_job_minutes: 648, busy_percent: 27.5, held_cpus: 52.3, measured_cpus: 17.1 },
+    { hour: '2026-11-16T19', minutes: 60, wait_job_minutes: 904, busy_percent: 29.0, held_cpus: 55.8, measured_cpus: 18.4 },
+  ],
+  wait_job_minutes: 1552, peak_wait_job_minutes: 904, busy_percent: 28.3,
 });
 
 // GET /api/analytics/docker (SPEC-494 DFJ-013): `db.dockerAnalytics` replaces the mock's figures.
@@ -6511,7 +6591,17 @@ class LoginSession {
       this.ws = ws;
       ws.push(JSON.stringify(this.state()));
       this.seq += 1;
-      ws.push(terminalFrame(2, this.seq, [
+      // A Codex subscription's sign-in is Codex's device code (SPEC-503), a Claude one Claude's.
+      ws.push(terminalFrame(2, this.seq, (this.codex() ? [
+        bold('codex login --device-auth'),
+        '',
+        'Follow these steps to sign in with ChatGPT using device code authorization:',
+        `1. Open this link in your browser and sign in to your account: ${c(39, 'https://auth.openai.com/codex/device')}`,
+        `2. Enter this one-time code: ${bold('MOCK-1234')}`,
+        '',
+        'Press Enter once it is approved (in mock mode; "fail" fails):',
+        '> ',
+      ] : [
         bold('Claude Code login'),
         '',
         'Open this URL in your browser and approve access:',
@@ -6519,7 +6609,7 @@ class LoginSession {
         '',
         'Paste the authorization code here (any text in mock mode; "fail" fails), then press Enter:',
         '> ',
-      ].join('\r\n')));
+      ]).join('\r\n')));
       if (this.done) ws.push(JSON.stringify({ type: 'exit', status: this.status, code: this.code, cause: this.cause }));
     } else if (msg.type === 'input' && !this.done) {
       for (const ch of String(msg.data || '')) {
@@ -6529,14 +6619,20 @@ class LoginSession {
     }
   }
 
+  /** Whether the account signing in is a Codex subscription. */
+  codex() {
+    const account = this.db.accounts.find((a) => a.id === this.accountId);
+    return Boolean(account && account.provider === 'openai');
+  }
+
   state() {
-    return { type: 'state', attempt_seq: null, harness: 'claude', cols: 500, rows: 40, can_write: !this.done, controller: true, status: this.status };
+    return { type: 'state', attempt_seq: null, harness: this.codex() ? 'codex' : 'claude', cols: 500, rows: 40, can_write: !this.done, controller: true, status: this.status };
   }
 
   finish() {
     const account = this.db.accounts.find((a) => a.id === this.accountId);
     if (this.input === 'fail') {
-      this.out(`\r\n${c(203, 'OAuth error: the authorization code was not accepted.')}\r\n`);
+      this.out(`\r\n${c(203, this.codex() ? 'Error logging in with device code: the code was not approved.' : 'OAuth error: the authorization code was not accepted.')}\r\n`);
       if (account) {
         // Like the server: a working account keeps its state and notes the failed re-login, one
         // Claude refused keeps needing a sign-in with Claude's reason, and only a first sign-in
@@ -6550,7 +6646,7 @@ class LoginSession {
       this.end('error', 1, SIGN_IN_FAILED);
       return;
     }
-    this.out(`\r\nToken: sk-ant-oat01-[REDACTED]\r\n${c(114, '✔')} Logged in. Credentials stored encrypted for this account.\r\n`);
+    this.out(this.codex() ? `\r\n${c(114, '✔')} Successfully logged in.\r\n` : `\r\nToken: sk-ant-oat01-[REDACTED]\r\n${c(114, '✔')} Logged in. Credentials stored encrypted for this account.\r\n`);
     if (account) {
       this.db.unsignedAccounts.delete(account.id);
       Object.assign(account, { status: 'ok', last_error: null, usage: { primary: { used_percent: 3.0, resets_at: isoIn(5 * HOUR), window_minutes: 300 }, secondary: { used_percent: 1.0, resets_at: isoIn(7 * DAY), window_minutes: 10080 }, observed_at: new Date().toISOString() } });
@@ -7014,6 +7110,13 @@ export function createMockTransport(params) {
   };
   db.touchTask = (sandboxId, number, changes) => touch(db, db.tasks.find((t) => t.sandbox_id === sandboxId && t.number === number), changes);
   // An administrator connects a Claude account elsewhere (another tab, SPEC-246): it is signed in.
+  // A Codex account signed in elsewhere (`connectCodex()`, SPEC-503).
+  db.connectCodex = () => {
+    db.nextId += 1;
+    const account = { id: `acc_${db.nextId}`, provider: 'openai', label: 'Codex', email: null, status: 'ok', usage: { primary: null, secondary: null, observed_at: null }, last_error: null, in_use_by: 0 };
+    db.accounts.push(account);
+    emit(db, { type: 'account.updated', account });
+  };
   db.connectClaude = () => {
     db.nextId += 1;
     const account = { id: `acc_${db.nextId}`, provider: 'anthropic', label: 'Claude', email: 'signed-in@example.com', status: 'ok', usage: { primary: null, secondary: null, observed_at: null }, last_error: null, in_use_by: 0 };

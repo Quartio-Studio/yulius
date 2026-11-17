@@ -4,8 +4,67 @@ Notable changes, newest first. Per-change detail lives in the merged pull reques
 evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-architecture.md)
 (sections 14 and 15).
 
+## 2026-11-17
+
+- Codex is accepted (SPEC-503 slice D, task #485, `F 2026-11-16 Codex`: MrFishPL accepted outside
+  pull request #1146 by studenciak00owl): the web UI offers Codex. Add subscription chooses the
+  agent first, Claude Code (sign in here or paste a token) or Codex (ChatGPT sign-in, import an
+  `auth.json` or an OpenAI API key); a Codex subscription's card imports a new `auth.json`; the
+  composer's model menu has Codex under OpenAI; an automation chooses the agent of its tasks;
+  "Run on…" lists only the task's provider's subscriptions; a Codex task's waiting and failure
+  wording names Codex. SPEC-001/002/003, the product summary, AGENTS.md and ADR-0005 now say
+  Codex is accepted; provider switching and session translation stay removed. Fixed from slice
+  C2's review: a run's refreshed `auth.json` stays when what the account holds cannot be read, a
+  sign-in replaced by an import ends as cancelled, the import stores under the usage lock.
+
+- The merge queue throws less work away (SPEC-497 slice C, task #479,
+  [ADR-0357](decisions/0357-a-merge-candidate-is-decided-by-its-own-run.md)): a merge candidate
+  that passed merges its pull requests at once, without waiting for their own runs (it tested the
+  exact merged result); a member whose own run errored or was cancelled stays in, and only a
+  failed one leaves; a candidate formed again with the same members on the same base reuses its
+  tree's passed run; when a red candidate's other members pass without the one its bisection left
+  out, that one is told at once that its change breaks the combination (often formatting or a
+  generated list), with no candidate run of its own. The Pipeline tab's Merge queue card lists
+  why each of the last ten candidates was dissolved, and a member's failed own run is its own
+  kind (`member_failed`). The hourly release of quarantined tests no longer holds the CI poll.
+- Codex, slice C2 (SPEC-503, task #485): Codex subscriptions can be added through the API. An
+  instance administrator signs one in with `codex login --device-auth` in the login terminal
+  (the pinned CLI Yulius provides), gives an OpenAI API key, or imports the `auth.json` of a
+  ChatGPT sign-in made elsewhere (`POST /api/admin/accounts` with `api_key` or `auth_json`, and
+  `POST /api/admin/accounts/{id}/import`); a pasted token stays Claude's. A Codex subscription's
+  usage windows are read from `chatgpt.com/backend-api/wham/usage` and its runs' rollouts;
+  `/api/me` says `codex_connected` (`claude_connected` stays Claude's), and the capacity view
+  names each subscription's provider and resumes at the first reset of either pool. The UI
+  offers all of it in the next slice.
+- A test that fails on other people's changes is quarantined with an issue (SPEC-497 slice B,
+  task #479,
+  [ADR-0356](decisions/0356-a-test-failing-on-two-pull-requests-is-quarantined-with-an-issue.md)):
+  one that failed in the same CI job on two different pull requests within 48 hours, while the
+  integration branch did not fail it, gets one issue (`flaky test`), a line in the job's output,
+  and a place in `YULIUS_CI_QUARANTINE` and `YULIUS_CI_QUARANTINE_NEXTEST` (a nextest filter) for
+  every later job of the project. Gates that read the variables leave the test out. This
+  repository's does. Closing the issue ends the quarantine within an hour. Nothing is run again
+  until green. Older Docker clients' `docker:` prefix no longer hides a socket failure from the
+  rerun, and the CI's CPU pressure is logged at `debug`.
+- Codex, slice C1 (SPEC-503, task #485): a task or an automation can run Codex (`harness:
+  codex`). The supervisor runs the native Codex TUI in the task terminal with its own
+  `CODEX_HOME` per sandbox and subscription, the pinned CLI by its path (bound read-only into a
+  contained run), Yulius's MCP and hooks (`yulius hook codex`, the shell guard included); it reads
+  the rollout for turns, tokens, rate limits and the usage limit, takes the session id from the
+  SessionStart hook or the rollout, resumes natively, keeps the tokens Codex refreshes and removes
+  `auth.json` once no run of the subscription is left. A Codex task moves only between Codex
+  subscriptions, and what it says names Codex (a Claude task reads as before). Codex subscriptions
+  can be added from the next slice.
+
 ## 2026-11-16
 
+- Codex, slice B (SPEC-503, task #485): Yulius provides the Codex CLI itself. The pinned release,
+  0.169.0 (the contribution pinned 0.167.0; 0.169.0 was the newest and passed the same checks), is
+  downloaded once from npm into `<data>/codex-cli`, only when its sha512 matches the one in the
+  source; Codex runs and sign-ins start it by its path once the next slices run them; a host move
+  leaves it behind for the
+  new host to install. It is installed at start when Codex subscriptions exist, which the next
+  slices allow.
 - Codex returns as a second harness: MrFishPL accepted outside pull request #1146 by
   studenciak00owl (SPEC-503, task #485,
   [ADR-0355](decisions/0355-codex-returns-as-a-second-harness-with-a-pinned-cli.md)), reversing
@@ -18,6 +77,15 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   pull request #1149 by Damian Fajfer). The "Just found Yulius" note and the first-task diagram
   named an old domain.
 
+- A CI job that fails for the infrastructure runs again once by itself (SPEC-497 slice B, task
+  #479, [ADR-0354](decisions/0354-a-job-that-fails-for-the-infrastructure-runs-again-once-by-itself.md)):
+  Docker with no free address pool, a Docker socket that ended a connection, a kill for memory or
+  a lost process host; its output and reason say so, and a second one ends it error. A test's
+  failure is never run again. The Pipeline tab's Merge queue card and
+  `GET /api/analytics/merge-queue` count CI minutes by how runs ended and the share that went to
+  runs failed outside the change or cancelled (target 15 %).
+  The Pipeline tab's CI load card shows, per hour, the job-minutes CI jobs waited to start, the
+  host's CPUs busy and the CPUs CI held and used.
 - Notifications reach a person's own Telegram chat (SPEC-498, task #480,
   [ADR-0351](decisions/0351-a-personal-telegram-channel-behind-a-notification-channel-port.md),
   part 1 of #1107, from outside pull request #1130 by studenciak00owl).
@@ -55,8 +123,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   SPEC-497 HBA-002 amended). On 16 Nov 2026, jobs held 50–56 of 64 CPUs by their declarations while
   the host was 25–30 % busy, and waited a median 10–11 min to start. Now a job starts by:
   - what CI was measured to use and what jobs started in the last minute may still bring;
-  - the running jobs' budgets staying within twice the CI budget;
-  - the kernel's CPU pressure of CI's processes staying at most 10 %.
+  - the running jobs' budgets staying within three times the CI budget (twice until 17 Nov 2026:
+    that held jobs back while the host was 45–77 % busy).
+
+  (17 Nov 2026) CPU pressure no longer holds jobs back. A project whose CI pins its test workers
+  to its job's CPUs (`taskset`) showed pressure while the host was half idle, and held every
+  other sandbox's jobs back: 117 jobs queued at 45 % busy.
 
   Merge trains' jobs go first. A job that cannot start (such as a one-job run asking for the whole
   host) no longer holds up every job behind it, and a waiting job holds no slot.
@@ -65,8 +137,8 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   project's jobs come out of one budget, the host less an eighth for the server and agents, and a
   job starts only when it fits beside what CI's groups were measured to use, not only what jobs
   declared, and a job's default share is of that budget; each sandbox's Docker engine has 4,096
-  /24 networks instead of 31 from its next start (the first is 172.17.1.0/24, not
-  172.18.0.0/16) and a job waits, saying so, while fewer than 32 are left; a sandbox's weight follows the CPUs its jobs hold, so agents'
+  /24 networks instead of 31 from its next start (after the sandbox's next start the first is
+  172.17.1.0/24, not 172.18.0.0/16) and a job waits, saying so, while fewer than 32 are left; a sandbox's weight follows the CPUs its jobs hold, so agents'
   local builds take what CI does not. A waiting job's reason says what it waits for.
 - An idle Superagent's leftover processes count their two hours from when the probe that found
   them was asked, not from when its answer was read (SPEC-501, task #483, #1110; outside pull

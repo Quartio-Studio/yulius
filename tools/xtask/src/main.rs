@@ -144,18 +144,45 @@ fn execute(task: &str) -> io::Result<()> {
             )
         }
         "test" => {
-            run(
-                &cargo,
-                &[
-                    "nextest",
-                    "run",
-                    "--locked",
-                    "--workspace",
-                    "--all-features",
-                    "--profile",
-                    "ci",
-                ],
-            )?;
+            let mut args = vec![
+                "nextest",
+                "run",
+                "--locked",
+                "--workspace",
+                "--all-features",
+                "--profile",
+                "ci",
+            ];
+            // Tests Yulius CI quarantined as flaky are left out (SPEC-497 OFC-002), each in its
+            // own binary where this head builds it.
+            let names = std::env::var("YULIUS_CI_QUARANTINE").unwrap_or_default();
+            let quarantined = if names.trim().is_empty() {
+                String::new()
+            } else {
+                println!(
+                    "+ cargo nextest list --list-type binaries-only (the binaries this head \
+                     builds, to leave the quarantined tests out in theirs)"
+                );
+                let mut list = Command::new(&cargo);
+                list.stderr(std::process::Stdio::inherit());
+                list.args(["nextest", "list"]).args(&args[2..]).args([
+                    "--list-type",
+                    "binaries-only",
+                    "--message-format",
+                    "oneline",
+                ]);
+                let listed = list.output()?;
+                if !listed.status.success() {
+                    return Err(io::Error::other("cargo nextest list failed"));
+                }
+                quarantine_filter(&names, &String::from_utf8_lossy(&listed.stdout))
+            };
+            let filter = format!("not ({quarantined})");
+            if !quarantined.is_empty() {
+                println!("quarantined as flaky, left out: {quarantined}");
+                args.extend(["-E", filter.as_str()]);
+            }
+            run(&cargo, &args)?;
             run(&python, &["scripts/doctests.py"])
         }
         "deps" => {
@@ -205,6 +232,34 @@ fn security(args: &[String]) -> io::Result<ExitCode> {
             None => ExitCode::FAILURE,
         })
     }
+}
+
+/// The nextest filter of the tests Yulius CI quarantined (`names`, one per line, as
+/// `$YULIUS_CI_QUARANTINE` gives them) among this head's test binaries (`binaries`, one id per
+/// line): `crate tests::name` as `(binary_id(=crate) & test(=tests::name))` when the head builds
+/// that binary, left out when it does not (nextest refuses a filter naming a binary it lacks), a
+/// bare `tests::name` as `test(=tests::name)`. A name a filter cannot hold is left out.
+fn quarantine_filter(names: &str, binaries: &str) -> String {
+    let safe = |part: &str| {
+        !part.is_empty()
+            && !part.starts_with('/')
+            && part
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | ':' | '-' | '.' | '/'))
+    };
+    let built: Vec<&str> = binaries.lines().map(str::trim).collect();
+    names
+        .lines()
+        .map(str::trim)
+        .filter_map(|name| match name.split_once(' ') {
+            Some((binary, test)) if safe(binary) && safe(test) => built
+                .contains(&binary)
+                .then(|| format!("(binary_id(={binary}) & test(={test}))")),
+            None if safe(name) => Some(format!("test(={name})")),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join(" | ")
 }
 
 fn main() -> ExitCode {
@@ -258,8 +313,22 @@ fn main() -> ExitCode {
 
 #[cfg(test)]
 mod tests {
-    use super::{macos_env, stage_marker};
+    use super::{macos_env, quarantine_filter, stage_marker};
     use std::path::Path;
+
+    /// SPEC-497 OFC-002 (review round 1): a quarantined test is left out in its own binary, and
+    /// one whose binary this head does not build is not named (nextest would refuse the filter).
+    #[test]
+    fn quarantined_tests_are_left_out_in_the_binaries_this_head_builds() {
+        let names = "yulius::main local_ci::slow\nyulius-egress::browser images::a\ntests::bare\n\
+                     app (evil)\n/a tests::x\n";
+        assert_eq!(
+            quarantine_filter(names, "yulius-domain\nyulius::main\n"),
+            "(binary_id(=yulius::main) & test(=local_ci::slow)) | test(=tests::bare)"
+        );
+        assert_eq!(quarantine_filter(names, ""), "test(=tests::bare)");
+        assert_eq!(quarantine_filter("", "app\n"), "");
+    }
 
     #[test]
     fn a_stage_line_is_the_marker_yulius_reads() {

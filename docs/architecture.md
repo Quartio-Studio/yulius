@@ -5,8 +5,10 @@ that own Claude Code sessions inside per-sandbox containment, and talks to GitHu
 Anthropic. Codex returns as a second harness
 ([SPEC-503](../.ai/specs/SPEC-503-accept-outside-pr-1146-codex-returns-as.md),
 [decision 0355](decisions/0355-codex-returns-as-a-second-harness-with-a-pinned-cli.md)): its
-adapter in `yulius-harness` plans a run, reads its rollout and checks its sign-ins; tasks take it
-once the supervisor runs it (later slices of SPEC-503). The detailed contracts are in
+adapter in `yulius-harness` plans a run, reads its rollout and checks its sign-ins, the supervisor
+runs a Codex task in its own Codex home (see "Codex" below), and Yulius provides the pinned
+Codex CLI itself (see "Codex CLI" below); Codex subscriptions sign in by device code, an API key
+or an imported `auth.json`. The detailed contracts are in
 [SPEC-002](../.ai/specs/SPEC-002-yulius-architecture.md); crate layering rules are in
 [engineering/architecture.md](engineering/architecture.md).
 
@@ -33,7 +35,7 @@ flowchart LR
   CI -->|"jobs in its ci/ leaf, job slots"| SB
   SUP <-->|"Unix socket"| PH["yulius ptyhost (per run)"]
   subgraph SB["Sandbox (namespace holder)"]
-    PH --> AG["claude TUI"]
+    PH --> AG["claude or codex TUI"]
     AG -->|"/run/yulius/docker"| DF["Docker front"]
     DF --> DE["Docker engine (on demand)"]
   end
@@ -46,7 +48,59 @@ flowchart LR
   APP <--> GH["GitHub App + REST"]
   APP -->|"long poll getUpdates, sendMessage"| TG["Telegram Bot API"]
   AG <--> AN["Anthropic"]
+  AG <--> OA["OpenAI (Codex)"]
   APP <-->|"DevTools pipe (fds 3/4)"| CH["Chrome on Xvfb"]
+```
+
+## Codex
+
+A Codex task runs `codex --no-daemon` in its worktree with `CODEX_HOME=<sandbox>/codex/<account>`.
+The supervisor writes the home's `auth.json` (the account's sealed credential), `config.toml` and
+`hooks.json` through handles that follow no link, and reads the rollout from the sandbox's shared
+`codex/sessions`; its hooks reach Yulius as `yulius hook codex <event>`. After the run, a
+refreshed `auth.json` goes back into the vault, and the file leaves the sandbox once no run of the
+account is left there.
+
+```mermaid
+flowchart LR
+  ACC["openai account (vault: auth.json)"] -->|"written before each run"| HOME["sandbox/codex/account: auth.json, config.toml, hooks.json"]
+  HOME -->|"sessions link"| SESS["sandbox/codex/sessions (rollouts)"]
+  CX["codex TUI (ptyhost)"] -->|"CODEX_HOME"| HOME
+  CX -->|"rollout JSONL"| SESS
+  CX -->|"yulius hook codex, yulius mcp"| INT2["Internal listener"]
+  SESS -->|"turns, tokens, rate limits, limit"| SUP2["Supervisor"]
+  SUP2 -->|"a genuine refresh"| ACC
+```
+
+A Codex subscription signs in with `codex login --device-auth` in the login terminal (the
+provided CLI, its `CODEX_HOME` in the sign-in's own folder with credentials kept in a file),
+takes an OpenAI API key, or takes the `auth.json` of a ChatGPT sign-in made elsewhere; each is
+sealed in the vault. Its usage windows come from `chatgpt.com/backend-api/wham/usage` and from
+its runs' rollouts. In the web UI, Subscriptions' Add dialog chooses the agent first (Claude Code
+or Codex) and then its way in, a Codex card imports a new `auth.json`, the composer's model menu
+offers Codex under OpenAI (`harness: codex`, no model), and an automation chooses the agent of
+the tasks it creates.
+
+Rotation picks only accounts of the task's provider, so a Codex task moves only between Codex
+accounts, by `codex resume <id>`: at a usage limit, when a person moves it and when its
+subscription is removed (SPEC-447); it waits when none has capacity, and with no Codex
+subscription usable it asks for one.
+
+## Codex CLI
+
+The Codex CLI is Yulius's own
+([decision 0355](decisions/0355-codex-returns-as-a-second-harness-with-a-pinned-cli.md)): the
+pinned release (0.169.0) is downloaded from npm once, checked against the sha512 in the source
+(`yulius_domain::agent_cli::codex`) and unpacked into `<data>/codex-cli/<version>-<platform>`
+(`wiring/codex_cli.rs`). Codex runs start its `bin/codex` by absolute path
+(`HarnessPort::provide_codex`), and a contained Codex run binds that directory read-only; Codex
+sign-ins start it the same way. Without it, a host `codex` is used.
+
+```mermaid
+flowchart LR
+  NPM["registry.npmjs.org: @openai/codex@0.169.0-linux-x64"] -->|"first need, sha512 pinned"| CLI["data/codex-cli/0.169.0-linux-x64 (bin/codex, codex-path/rg)"]
+  CLI -->|"absolute path, read-only bind"| RUN["Codex run in its sandbox"]
+  CLI -->|"absolute path"| LOGIN["codex login --device-auth"]
 ```
 
 ## Layers and crates
@@ -83,12 +137,12 @@ follows the CPUs the sandbox's running jobs hold: 100 plus 100 per CPU, at least
 ([decision 0350](decisions/0350-ci-jobs-are-admitted-by-what-ci-really-holds-on-the-host.md)).
 `ci/slots.rs` counts the jobs; `resources.rs` (`CiAdmission`) admits them from one CI budget for the
 whole instance, the capacity less an eighth for the server and the agents. A job starts when:
-- the highest CPU pressure of the `ci` groups of the sandboxes running jobs is at most 10 %;
-- the running jobs' budgets with its own stay within twice the budget;
+- the running jobs' budgets with its own stay within three times the budget;
 - the measured use of the `ci` and `engine` groups of the sandboxes running jobs, what jobs
   started in the last minute may still bring, and its own start fit (`Delegation::ci_use`: CPU
   time over at least 5 s, read at each job's start, each dispatcher pass and each look of a
-  waiting job, under the admission's lock; anonymous memory; `cpu.pressure` `some avg10`).
+  waiting job, under the admission's lock; anonymous memory). CPU pressure is read for
+  diagnosis only (logged at `debug`, `cpu_pressure_permille`): a job pinned to a few CPUs shows it while the host idles (17 Nov 2026).
 
 Waiting jobs start by priority (merge trains', pull requests', branches') and age; one that cannot
 start lets the others pass for 10 minutes at most, and a job takes its slot once admitted
@@ -1367,20 +1421,26 @@ request as it is:
 - green, or its own run still queued or running, and behind: into the next merge candidate
   (`merge_train.rs`), the integration branch with up to 8 such pull requests merged in, in arm
   order, tested by one run (`train/<n>+…`) beside the members' own runs (SPEC-493 MQC-001); once
-  the candidate and a member's own run passed, the members are brought up to date in their
-  worktrees, the verdict recorded at each pushed head, and merged in order; a member whose own
-  run fails, errors or is cancelled leaves, and the candidate is formed again from the others
-  (MQC-002); a failed candidate waits for its members' own runs before it is bisected;
-- a red candidate of n ≥ 2 is formed again from its first ⌈n/2⌉; a red one of one ends that armed
+  the candidate passed, the members are brought up to date in their worktrees, the verdict
+  recorded at each pushed head, and merged in order, whether or not their own runs still go: the
+  candidate tested the exact merged result (SPEC-497 MQW-002); a member whose own run fails leaves,
+  and the candidate is formed again from the others (MQC-002); an errored or cancelled own run
+  leaves it to the candidate (MQW-001); a candidate formed again on the same base with the same
+  members takes its tree's passed run (`App::ci_reuse_for_candidate`); a failed candidate waits
+  for its members' own runs before it is bisected;
+- a red candidate of n ≥ 2 is formed again from its first ⌈n/2⌉; when that leaves out exactly one
+  member and the others then pass without it on the same base, that member's armed merge ends at
+  once, naming both runs (MQW-003, `delivery.train.combined`); a red one of one ends that armed
   merge with the reason; a member busy at its turn is waited for (15 minutes at most); an errored
   or cancelled one, a member that cannot merge for a reason of its own, a candidate that cannot
   be built, a pull request that conflicts with the base alone, and projects without Yulius CI,
   with rebase merges or automatic promotion go one by one (DLV-203 after the pre-check).
 
 The queue writes `delivery.train.formed`, `.merged` and `.dissolved` (`(why: member_left |
-bisected | base_moved | errored | too_long)`); `GET /api/analytics/merge-queue` reads them per
-day with the minutes from arming to merge (`merge_queue::queue_numbers`; the Pipeline tab's Merge
-queue card).
+member_failed | bisected | base_moved | errored | too_long)`); `GET /api/analytics/merge-queue`
+reads them per day with the minutes from arming to merge and the last ten dissolved with their
+reason (`merge_queue::queue_numbers`; the Pipeline tab's Merge queue card)
+([decision 0357](decisions/0357-a-merge-candidate-is-decided-by-its-own-run.md)).
 
 Each kept decision leaves a sentence in the armed slot (`ArmedSlot::note`), which `yulius wait`
 (`merge_train`), `delivery_status` and the task page show. `delivery_merge` for an armed head
@@ -1398,8 +1458,9 @@ flowchart TD
     U -- yes --> M[merged now]
     U -- no --> C[merge candidate: base + armed pull requests, one run beside their own]
     C -- a member's own run fails --> C
-    C -- passed, own runs passed --> L[each brought up to date, verdict recorded, merged in order]
+    C -- passed --> L[each brought up to date, verdict recorded, merged in order]
     C -- failed, n >= 2 --> H[first half again]
+    H -- passed without the one left out --> T[the one left out told: it breaks the combination]
     C -- failed, alone --> X[dropped: fails on the current base]
     H --> C
 ```
@@ -3634,7 +3695,23 @@ A job's exit decides its state in `App::ci_job` (`crates/yulius-app/src/ci/exec.
 `YULIUS_CI_SKIP_CODE`) is skipped, the incomplete code `INCOMPLETE_EXIT_CODE` (75,
 `YULIUS_CI_INCOMPLETE_CODE`) is error with the reason `incomplete: <its ::yulius-incomplete
 line>` (ADR-0202), any other exit or a signal is failed; a timeout, the output limit, a lost host
-or a refused start is error. A failed job cancels the run's other jobs (fail-fast), except that the
+or a refused start is error. Before that, a failed or lost job is asked whether it failed for the
+infrastructure (`yulius_domain::ci::infra`: Docker's words for a full address pool, a
+`docker.sock` connection that ended, a `SIGKILL` while its sandbox's OOM count grew, a lost
+host): it then runs again once by itself in the same slot, saying so; a second such failure ends
+it error, and the thrown-away run's kind and time are kept for the CI minutes (a per-day tally
+written when a run ends, `ci_minutes`; the dispatcher also keeps the host's CI load once a
+minute, `ci_load`, read by hour at `GET /api/analytics/ci-load`)
+([decision 0354](decisions/0354-a-job-that-fails-for-the-infrastructure-runs-again-once-by-itself.md)).
+A failed job's kept failing tests are recorded (`ci_test_failures`, with the run's commit); one
+that failed in the same job on two pull requests within 48 hours, at heads whose merge bases are
+all on the integration branch (`GitPort::merge_bases`), while the integration branch did not fail it
+(`yulius_domain::ci::flaky`), is quarantined with an issue filed through the GitHub port, one at
+a time (`ci_quarantine`, `App::ci_note_failing_tests`). Every later job of the sandbox gets the list in
+`YULIUS_CI_QUARANTINE` and `YULIUS_CI_QUARANTINE_NEXTEST`, and the hourly prune ends a quarantine
+whose issue is closed, forgetting the test's failures
+([decision 0356](decisions/0356-a-test-failing-on-two-pull-requests-is-quarantined-with-an-issue.md)).
+A failed job cancels the run's other jobs (fail-fast), except that the
 `security` job neither cancels nor is cancelled by them (SPEC-273). `yulius_domain::ci::aggregate` makes the run's
 state, where skipped counts like passed, so a run is never skipped and the merge gate stays one
 rule; the commit status counts the skipped jobs

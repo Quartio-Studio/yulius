@@ -2,12 +2,14 @@
 
 use async_trait::async_trait;
 use rusqlite::{OptionalExtension, Row, params, params_from_iter};
-use yulius_app::ci::{CiJobRecord, CiJobUpdate, CiRunRecord, CiRunUpdate, FiledFinding};
+use yulius_app::ci::{
+    CiJobRecord, CiJobUpdate, CiMinutesRow, CiRunRecord, CiRunUpdate, FiledFinding, Quarantined,
+};
 use yulius_app::error::{AppError, AppResult};
 use yulius_app::ports::store_ext::CiStore;
 use yulius_domain::ci::{CiRef, GateSource, RunState};
 use yulius_domain::ids::SandboxId;
-use yulius_domain::resources::Need;
+use yulius_domain::resources::{LoadMinute, Need};
 use yulius_domain::time::Timestamp;
 
 use crate::{SqliteStore, bad_column, db, to_u32};
@@ -34,6 +36,23 @@ fn finding_from_row(row: &Row<'_>) -> rusqlite::Result<FiledFinding> {
 
 const JOB_COLS: &str = "id, run_id, ordinal, name, job_key, command, matrix, state, reason, \
     exit_code, started_at, ended_at, cpus, memory_mb, timeout_minutes, exclusive, waited_ms";
+
+/// Adds the run `?1`, once it started and ended, to its sandbox's tally of the UTC day it started
+/// (SPEC-497 OFC-003): `failed_outside` when every job of it that failed or errored ended for the
+/// infrastructure (`infra_end`), and the jobs' thrown-away time.
+const CI_MINUTES_ADD: &str = "INSERT INTO ci_minutes (sandbox_id, day, outcome, runs, run_ms, rerun_ms) \
+     SELECT r.sandbox_id, strftime('%Y-%m-%d', r.started_at / 1000, 'unixepoch'), \
+       CASE r.state WHEN 'passed' THEN 'passed' WHEN 'cancelled' THEN 'cancelled' \
+         ELSE CASE WHEN EXISTS (SELECT 1 FROM ci_jobs j WHERE j.run_id = r.id \
+                                AND j.state IN ('failed', 'error')) \
+                   AND NOT EXISTS (SELECT 1 FROM ci_jobs j WHERE j.run_id = r.id \
+                                AND j.state IN ('failed', 'error') AND COALESCE(j.infra_end, 0) = 0) \
+              THEN 'failed_outside' ELSE 'failed' END END, \
+       1, MAX(r.ended_at - r.started_at, 0), \
+       COALESCE((SELECT SUM(j.infra_ms) FROM ci_jobs j WHERE j.run_id = r.id), 0) \
+     FROM ci_runs r WHERE r.id = ?1 AND r.started_at IS NOT NULL AND r.ended_at IS NOT NULL \
+     ON CONFLICT (sandbox_id, day, outcome) DO UPDATE SET runs = runs + excluded.runs, \
+       run_ms = run_ms + excluded.run_ms, rerun_ms = rerun_ms + excluded.rerun_ms";
 
 fn state(text: &str) -> rusqlite::Result<RunState> {
     RunState::parse(text).ok_or_else(|| bad_column("CI state", text))
@@ -306,6 +325,7 @@ impl CiStore for SqliteStore {
         update: &CiRunUpdate,
     ) -> AppResult<bool> {
         let (id, from, update) = (id.to_owned(), states(from), update.clone());
+        let id_for_tally = id.clone();
         self.call(move |c| {
             // A reason before a run starts is a queue note (waiting for disk): it goes.
             let sql = format!(
@@ -326,17 +346,32 @@ impl CiStore for SqliteStore {
                 from.into_iter()
                     .map(|s| Box::new(s) as Box<dyn rusqlite::ToSql>),
             );
-            match c.execute(&sql, params_from_iter(args.iter().map(AsRef::as_ref))) {
-                Ok(changed) => Ok(changed == 1),
+            // The new state and the day's tally together (review round 2).
+            let tx = c.transaction().map_err(db)?;
+            let changed = match tx.execute(&sql, params_from_iter(args.iter().map(AsRef::as_ref))) {
+                Ok(changed) => changed == 1,
                 Err(rusqlite::Error::SqliteFailure(err, _))
                     if err.code == rusqlite::ErrorCode::ConstraintViolation =>
                 {
-                    Err(AppError::Conflict(
+                    return Err(AppError::Conflict(
                         "a constraint refused the CI run's new state".into(),
-                    ))
+                    ));
                 }
-                Err(err) => Err(db(err)),
+                Err(err) => return Err(db(err)),
+            };
+            // A run that started and ended adds its minutes to its day's tally (SPEC-497
+            // OFC-003, review round 1: runs are pruned, the tally stays).
+            if changed
+                && matches!(
+                    to,
+                    RunState::Passed | RunState::Failed | RunState::Error | RunState::Cancelled
+                )
+            {
+                tx.execute(CI_MINUTES_ADD, params![id_for_tally])
+                    .map_err(db)?;
             }
+            tx.commit().map_err(db)?;
+            Ok(changed)
         })
         .await
     }
@@ -357,9 +392,10 @@ impl CiStore for SqliteStore {
                  failures = COALESCE(?8, failures), cpu_ms = COALESCE(?9, cpu_ms), \
                  memory_peak_mb = COALESCE(?10, memory_peak_mb), \
                  disk_written_mb = COALESCE(?11, disk_written_mb), \
-                 waited_ms = COALESCE(?12, waited_ms) \
+                 waited_ms = COALESCE(?12, waited_ms), infra = COALESCE(?13, infra), \
+                 infra_ms = COALESCE(?14, infra_ms), infra_end = COALESCE(?15, infra_end) \
                  WHERE id = ?7 AND state IN ({})",
-                placeholders(13, from.len())
+                placeholders(16, from.len())
             );
             let mut args: Vec<Box<dyn rusqlite::ToSql>> = vec![
                 Box::new(to.as_str().to_owned()),
@@ -374,6 +410,9 @@ impl CiStore for SqliteStore {
                 Box::new(update.usage.map(|u| u.memory_peak_mb)),
                 Box::new(update.usage.and_then(|u| u.disk_written_mb)),
                 Box::new(update.waited_ms),
+                Box::new(update.infra.map(|(kind, _, _)| kind.to_owned())),
+                Box::new(update.infra.map(|(_, ms, _)| ms)),
+                Box::new(update.infra.map(|(_, _, end)| i64::from(end))),
             ];
             args.extend(
                 from.into_iter()
@@ -383,6 +422,276 @@ impl CiStore for SqliteStore {
                 .execute(&sql, params_from_iter(args.iter().map(AsRef::as_ref)))
                 .map_err(db)?;
             Ok(changed == 1)
+        })
+        .await
+    }
+
+    async fn ci_minutes(
+        &self,
+        sandbox: &SandboxId,
+        from: Option<Timestamp>,
+        to: Option<Timestamp>,
+    ) -> AppResult<Vec<CiMinutesRow>> {
+        let day = |at: Option<Timestamp>, or: &str| {
+            at.map_or_else(
+                || or.to_owned(),
+                |at| {
+                    yulius_domain::time::format_rfc3339(at)
+                        .chars()
+                        .take(10)
+                        .collect()
+                },
+            )
+        };
+        let (sandbox, from, to) = (
+            sandbox.as_str().to_owned(),
+            day(from, "0000-00-00"),
+            day(to, "9999-99-99"),
+        );
+        self.call(move |c| {
+            let mut statement = c
+                .prepare(
+                    "SELECT day, outcome, runs, run_ms, rerun_ms FROM ci_minutes \
+                     WHERE sandbox_id = ?1 AND day >= ?2 AND day < ?3 ORDER BY day, outcome",
+                )
+                .map_err(db)?;
+            let rows = statement
+                .query_map(params![sandbox, from, to], |row| {
+                    Ok(CiMinutesRow {
+                        day: row.get(0)?,
+                        outcome: row.get(1)?,
+                        runs: row.get(2)?,
+                        run_ms: row.get(3)?,
+                        rerun_ms: row.get(4)?,
+                    })
+                })
+                .map_err(db)?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(db)?;
+            Ok(rows)
+        })
+        .await
+    }
+
+    async fn ci_jobs_waiting(&self) -> AppResult<u32> {
+        self.call(|c| {
+            let waiting: i64 = c
+                .query_row(
+                    "SELECT COUNT(*) FROM ci_jobs j JOIN ci_runs r ON r.id = j.run_id \
+                     WHERE r.state = 'running' AND j.state = 'queued'",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(db)?;
+            Ok(u32::try_from(waiting).unwrap_or(u32::MAX))
+        })
+        .await
+    }
+
+    async fn record_test_failures(
+        &self,
+        sandbox: &SandboxId,
+        job_key: &str,
+        (reference, run, sha): (&str, &str, &str),
+        tests: &[String],
+        at: Timestamp,
+        forget_before: Timestamp,
+    ) -> AppResult<()> {
+        let (sandbox, job_key, reference, run, sha, tests) = (
+            sandbox.as_str().to_owned(),
+            job_key.to_owned(),
+            reference.to_owned(),
+            run.to_owned(),
+            sha.to_owned(),
+            tests.to_vec(),
+        );
+        self.call(move |c| {
+            let tx = c.transaction().map_err(db)?;
+            for test in &tests {
+                tx.execute(
+                    "INSERT INTO ci_test_failures (sandbox_id, job_key, test, reference, run_id, \
+                     sha, at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                    params![sandbox, job_key, test, reference, run, sha, at.0],
+                )
+                .map_err(db)?;
+            }
+            tx.execute(
+                "DELETE FROM ci_test_failures WHERE at < ?1",
+                params![forget_before.0],
+            )
+            .map_err(db)?;
+            tx.commit().map_err(db)
+        })
+        .await
+    }
+
+    async fn test_failures(
+        &self,
+        sandbox: &SandboxId,
+        job_key: &str,
+        test: &str,
+        since: Timestamp,
+    ) -> AppResult<Vec<yulius_domain::ci::flaky::TestFailure>> {
+        let (sandbox, job_key, test) = (
+            sandbox.as_str().to_owned(),
+            job_key.to_owned(),
+            test.to_owned(),
+        );
+        self.call(move |c| {
+            let mut statement = c
+                .prepare(
+                    "SELECT reference, sha, at FROM ci_test_failures WHERE sandbox_id = ?1 \
+                     AND job_key = ?2 AND test = ?3 AND at >= ?4 ORDER BY at",
+                )
+                .map_err(db)?;
+            let rows = statement
+                .query_map(params![sandbox, job_key, test, since.0], |row| {
+                    Ok(yulius_domain::ci::flaky::TestFailure {
+                        reference: row.get(0)?,
+                        sha: row.get(1)?,
+                        at: Timestamp(row.get(2)?),
+                    })
+                })
+                .map_err(db)?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(db)?;
+            Ok(rows)
+        })
+        .await
+    }
+
+    async fn quarantine_test(&self, entry: &Quarantined) -> AppResult<bool> {
+        let entry = entry.clone();
+        self.call(move |c| {
+            let added = c
+                .execute(
+                    "INSERT OR IGNORE INTO ci_quarantine (sandbox_id, test, job_key, issue_number, \
+                     issue_url, since) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                    params![
+                        entry.sandbox_id.as_str(),
+                        entry.test,
+                        entry.job_key,
+                        entry
+                            .issue
+                            .as_ref()
+                            .map(|(n, _)| i64::try_from(*n).unwrap_or(i64::MAX)),
+                        entry.issue.as_ref().map(|(_, url)| url.clone()),
+                        entry.since.0
+                    ],
+                )
+                .map_err(db)?;
+            Ok(added == 1)
+        })
+        .await
+    }
+
+    async fn quarantined_tests(&self, sandbox: Option<&SandboxId>) -> AppResult<Vec<Quarantined>> {
+        let sandbox = sandbox.map(|s| s.as_str().to_owned());
+        self.call(move |c| {
+            let mut statement = c
+                .prepare(
+                    "SELECT sandbox_id, test, job_key, issue_number, issue_url, since \
+                     FROM ci_quarantine WHERE ?1 IS NULL OR sandbox_id = ?1 ORDER BY since, test",
+                )
+                .map_err(db)?;
+            let rows = statement
+                .query_map(params![sandbox], |row| {
+                    let sandbox: String = row.get(0)?;
+                    let number: Option<i64> = row.get(3)?;
+                    let url: Option<String> = row.get(4)?;
+                    Ok((sandbox, row.get(1)?, row.get(2)?, number, url, row.get(5)?))
+                })
+                .map_err(db)?
+                .collect::<Result<Vec<(String, String, String, Option<i64>, Option<String>, i64)>, _>>()
+                .map_err(db)?;
+            rows.into_iter()
+                .map(|(sandbox, test, job_key, number, url, since)| {
+                    Ok(Quarantined {
+                        sandbox_id: SandboxId::parse(&sandbox)
+                            .map_err(|_| AppError::Internal("a quarantined test's sandbox".into()))?,
+                        test,
+                        job_key,
+                        issue: number
+                            .and_then(|n| u64::try_from(n).ok())
+                            .zip(url),
+                        since: Timestamp(since),
+                    })
+                })
+                .collect()
+        })
+        .await
+    }
+
+    async fn release_test(&self, sandbox: &SandboxId, test: &str) -> AppResult<()> {
+        let (sandbox, test) = (sandbox.as_str().to_owned(), test.to_owned());
+        self.call(move |c| {
+            let tx = c.transaction().map_err(db)?;
+            tx.execute(
+                "DELETE FROM ci_quarantine WHERE sandbox_id = ?1 AND test = ?2",
+                params![sandbox, test],
+            )
+            .map_err(db)?;
+            tx.execute(
+                "DELETE FROM ci_test_failures WHERE sandbox_id = ?1 AND test = ?2",
+                params![sandbox, test],
+            )
+            .map_err(db)?;
+            tx.commit().map_err(db)
+        })
+        .await
+    }
+
+    async fn record_ci_load(&self, minute: LoadMinute, forget_before: Timestamp) -> AppResult<()> {
+        self.call(move |c| {
+            c.execute(
+                "INSERT OR REPLACE INTO ci_load (at, busy_permille, held_cpus, measured_cpus, \
+                 waiting_jobs) VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![
+                    minute.at.0,
+                    minute.busy_permille,
+                    minute.held_cpus,
+                    minute.measured_cpus,
+                    minute.waiting_jobs
+                ],
+            )
+            .map_err(db)?;
+            c.execute(
+                "DELETE FROM ci_load WHERE at < ?1",
+                params![forget_before.0],
+            )
+            .map_err(db)?;
+            Ok(())
+        })
+        .await
+    }
+
+    async fn ci_load(
+        &self,
+        from: Option<Timestamp>,
+        to: Option<Timestamp>,
+    ) -> AppResult<Vec<LoadMinute>> {
+        let (from, to) = (from.map_or(i64::MIN, |t| t.0), to.map_or(i64::MAX, |t| t.0));
+        self.call(move |c| {
+            let mut statement = c
+                .prepare(
+                    "SELECT at, busy_permille, held_cpus, measured_cpus, waiting_jobs FROM ci_load \
+                     WHERE at >= ?1 AND at < ?2 ORDER BY at",
+                )
+                .map_err(db)?;
+            let rows = statement
+                .query_map(params![from, to], |row| {
+                    Ok(LoadMinute {
+                        at: Timestamp(row.get(0)?),
+                        busy_permille: row.get(1)?,
+                        held_cpus: row.get(2)?,
+                        measured_cpus: row.get(3)?,
+                        waiting_jobs: row.get(4)?,
+                    })
+                })
+                .map_err(db)?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(db)?;
+            Ok(rows)
         })
         .await
     }
@@ -428,7 +737,8 @@ impl CiStore for SqliteStore {
                 tx.execute(
                     "UPDATE ci_jobs SET state = 'queued', started_at = NULL, ended_at = NULL, \
                      reason = NULL, exit_code = NULL, output = ?2, failures = NULL, cpu_ms = NULL, \
-                     memory_peak_mb = NULL, disk_written_mb = NULL, waited_ms = NULL \
+                     memory_peak_mb = NULL, disk_written_mb = NULL, waited_ms = NULL, infra = NULL, \
+                     infra_ms = NULL, infra_end = NULL \
                      WHERE run_id = ?1 AND NOT (state = 'skipped' \
                        AND substr(COALESCE(reason, ''), 1, length(?3)) = ?3)",
                     [&id, &note, &yulius_domain::ci::PATHS_SKIP_REASON.to_owned()],
@@ -711,6 +1021,271 @@ mod tests {
             exclusive: false,
             waited_ms: None,
         }
+    }
+
+    /// SPEC-497 OFC-001, OFC-003 (review round 1): a run that ends adds its minutes to its
+    /// day's tally by how it ended: `failed_outside` only when every failed job's end was the
+    /// infrastructure's (a job that failed its second run after a thrown-away first counts as
+    /// failed), the thrown-away time apart; the tally outlives the runs' prune.
+    #[tokio::test]
+    async fn a_runs_end_adds_to_its_days_minutes() -> TestResult {
+        let store = SqliteStore::open_in_memory()?;
+        let min = 60_000;
+        // (run, its end, the job's end, the job's infrastructure failure)
+        let cases = [
+            (
+                "passed",
+                RunState::Passed,
+                RunState::Passed,
+                Some(("address_pool", 2 * min, false)),
+            ),
+            (
+                "failed",
+                RunState::Failed,
+                RunState::Failed,
+                Some(("address_pool", min, false)),
+            ),
+            (
+                "outside",
+                RunState::Error,
+                RunState::Error,
+                Some(("docker_socket", 3 * min, true)),
+            ),
+            ("cancelled", RunState::Cancelled, RunState::Cancelled, None),
+            ("never", RunState::Cancelled, RunState::Cancelled, None),
+        ];
+        for (n, (id, run_end, job_end, infra)) in (0_i64..).zip(cases) {
+            let job_id = format!("{id}-job");
+            store
+                .insert_ci_run(&run(id, id, n * min)?, &[job(&job_id, id, 0)])
+                .await?;
+            if id == "never" {
+                // Cancelled before it started: no minutes.
+                store
+                    .transition_ci_run(id, &[RunState::Queued], run_end, &CiRunUpdate::default())
+                    .await?;
+                continue;
+            }
+            let started = CiRunUpdate {
+                started_at: Some(Timestamp(n * min)),
+                ..CiRunUpdate::default()
+            };
+            store
+                .transition_ci_run(id, &[RunState::Queued], RunState::Running, &started)
+                .await?;
+            let job_started = CiJobUpdate {
+                started_at: Some(Timestamp(n * min)),
+                ..CiJobUpdate::default()
+            };
+            store
+                .transition_ci_job(
+                    &job_id,
+                    &[RunState::Queued],
+                    RunState::Running,
+                    &job_started,
+                )
+                .await?;
+            let job_ended = CiJobUpdate {
+                ended_at: Some(Timestamp(n * min + 10 * min)),
+                infra,
+                ..CiJobUpdate::default()
+            };
+            store
+                .transition_ci_job(&job_id, &[RunState::Running], job_end, &job_ended)
+                .await?;
+            let ended = CiRunUpdate {
+                ended_at: Some(Timestamp(n * min + 10 * min)),
+                ..CiRunUpdate::default()
+            };
+            store
+                .transition_ci_run(id, &[RunState::Running], run_end, &ended)
+                .await?;
+        }
+        let sandbox = SandboxId::parse("s1")?;
+        let read = |store: SqliteStore| {
+            let sandbox = sandbox.clone();
+            async move {
+                let rows = store.ci_minutes(&sandbox, None, None).await?;
+                Ok::<_, AppError>(
+                    rows.into_iter()
+                        .map(|r| (r.day, r.outcome, r.runs, r.run_ms, r.rerun_ms))
+                        .collect::<Vec<_>>(),
+                )
+            }
+        };
+        let day = "1970-01-01".to_owned();
+        let expected = vec![
+            (day.clone(), "cancelled".to_owned(), 1, 10 * min, 0),
+            (day.clone(), "failed".to_owned(), 1, 10 * min, min),
+            (
+                day.clone(),
+                "failed_outside".to_owned(),
+                1,
+                10 * min,
+                3 * min,
+            ),
+            (day.clone(), "passed".to_owned(), 1, 10 * min, 2 * min),
+        ];
+        assert_eq!(read(store.clone()).await?, expected);
+        // The runs go; their minutes stay.
+        store.prune_ci_runs(0, Timestamp(i64::MAX)).await?;
+        assert_eq!(read(store.clone()).await?, expected);
+        // The days of the range.
+        let none = store
+            .ci_minutes(&sandbox, Some(Timestamp(86_400_000)), None)
+            .await?;
+        assert!(none.is_empty());
+        Ok(())
+    }
+
+    /// SPEC-497 OFC-002: a test's failures are read by sandbox, job and time and forgotten past
+    /// their keep; a test is quarantined once, listed per sandbox or in all, and released.
+    #[tokio::test]
+    async fn failing_tests_and_the_quarantine_are_kept() -> TestResult {
+        let store = SqliteStore::open_in_memory()?;
+        let s1 = SandboxId::parse("s1")?;
+        let tests = vec!["app tests::flaky".to_owned(), "app tests::other".to_owned()];
+        store
+            .record_test_failures(
+                &s1,
+                "quality",
+                ("pr/1", "r1", "c1"),
+                &tests,
+                Timestamp(10),
+                Timestamp(0),
+            )
+            .await?;
+        store
+            .record_test_failures(
+                &s1,
+                "quality",
+                ("pr/2", "r2", "c2"),
+                &tests[..1],
+                Timestamp(20),
+                Timestamp(0),
+            )
+            .await?;
+        store
+            .record_test_failures(
+                &s1,
+                "e2e",
+                ("pr/3", "r3", "c3"),
+                &tests[..1],
+                Timestamp(30),
+                Timestamp(0),
+            )
+            .await?;
+        let failed = store
+            .test_failures(&s1, "quality", "app tests::flaky", Timestamp(0))
+            .await?;
+        let refs: Vec<&str> = failed.iter().map(|f| f.reference.as_str()).collect();
+        assert_eq!(refs, ["pr/1", "pr/2"], "only this job's");
+        assert_eq!(failed[1].sha, "c2");
+        let since = store
+            .test_failures(&s1, "quality", "app tests::flaky", Timestamp(15))
+            .await?;
+        assert_eq!(since.len(), 1);
+        // A later record forgets what is older than its keep.
+        store
+            .record_test_failures(
+                &s1,
+                "quality",
+                ("pr/4", "r4", "c4"),
+                &tests[..1],
+                Timestamp(40),
+                Timestamp(25),
+            )
+            .await?;
+        let kept = store
+            .test_failures(&s1, "quality", "app tests::flaky", Timestamp(0))
+            .await?;
+        assert_eq!(kept.len(), 1, "{kept:?}");
+        let entry = Quarantined {
+            sandbox_id: s1.clone(),
+            test: "app tests::flaky".into(),
+            job_key: "quality".into(),
+            issue: Some((101, "https://github.test/acme/app/issues/101".into())),
+            since: Timestamp(50),
+        };
+        assert!(store.quarantine_test(&entry).await?);
+        assert!(!store.quarantine_test(&entry).await?, "once");
+        assert_eq!(
+            store.quarantined_tests(Some(&s1)).await?,
+            std::slice::from_ref(&entry)
+        );
+        assert!(
+            store
+                .quarantined_tests(Some(&SandboxId::parse("s2")?))
+                .await?
+                .is_empty()
+        );
+        assert_eq!(store.quarantined_tests(None).await?.len(), 1);
+        store
+            .record_test_failures(
+                &s1,
+                "quality",
+                ("pr/5", "r5", "c5"),
+                &tests,
+                Timestamp(45),
+                Timestamp(25),
+            )
+            .await?;
+        store.release_test(&s1, "app tests::flaky").await?;
+        assert!(store.quarantined_tests(None).await?.is_empty());
+        // Its failures are forgotten with it (review round 1); another test's stay.
+        assert!(
+            store
+                .test_failures(&s1, "quality", "app tests::flaky", Timestamp(0))
+                .await?
+                .is_empty()
+        );
+        assert_eq!(
+            store
+                .test_failures(&s1, "quality", "app tests::other", Timestamp(0))
+                .await?
+                .len(),
+            1
+        );
+        Ok(())
+    }
+
+    /// SPEC-497 (review round 2): the jobs waiting to start are the queued jobs of running runs;
+    /// a queued run's jobs and running jobs are not counted.
+    #[tokio::test]
+    async fn jobs_waiting_to_start_are_queued_jobs_of_running_runs() -> TestResult {
+        let store = SqliteStore::open_in_memory()?;
+        store
+            .insert_ci_run(
+                &run("r1", "a", 1)?,
+                &[job("j1", "r1", 0), job("j2", "r1", 1)],
+            )
+            .await?;
+        store
+            .insert_ci_run(&run("r2", "b", 2)?, &[job("j3", "r2", 0)])
+            .await?;
+        assert_eq!(store.ci_jobs_waiting().await?, 0, "no run started");
+        let start = CiRunUpdate {
+            started_at: Some(Timestamp(5)),
+            ..CiRunUpdate::default()
+        };
+        store
+            .transition_ci_run("r1", &[RunState::Queued], RunState::Running, &start)
+            .await?;
+        assert_eq!(store.ci_jobs_waiting().await?, 2);
+        store
+            .transition_ci_job(
+                "j1",
+                &[RunState::Queued],
+                RunState::Running,
+                &CiJobUpdate::default(),
+            )
+            .await?;
+        assert_eq!(
+            store.ci_jobs_waiting().await?,
+            1,
+            "the running job is not waiting"
+        );
+        Ok(())
     }
 
     #[tokio::test]

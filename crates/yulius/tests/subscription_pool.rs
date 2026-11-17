@@ -119,6 +119,19 @@ async fn running_task_set_to(
     own: Option<&str>,
     model: Option<&str>,
 ) -> Result<TaskId, Box<dyn std::error::Error>> {
+    running_task_of_agent(h, Agent::ClaudeCode, mode, account, run_dir, own, model).await
+}
+
+/// [`running_task_set_to`] for a task and run of `agent` (SPEC-503).
+async fn running_task_of_agent(
+    h: &Harness,
+    agent: Agent,
+    mode: TaskMode,
+    account: &AccountId,
+    run_dir: &str,
+    own: Option<&str>,
+    model: Option<&str>,
+) -> Result<TaskId, Box<dyn std::error::Error>> {
     let created = now(h);
     let task = h
         .store
@@ -128,7 +141,7 @@ async fn running_task_set_to(
             number: 0,
             title: "Pool".into(),
             prompt: "Build the thing".into(),
-            harness: Agent::ClaudeCode,
+            harness: agent,
             model: own.map(str::to_owned),
             effort: None,
             workflow_id: None,
@@ -157,7 +170,7 @@ async fn running_task_set_to(
             id: AttemptId::parse("at-pool")?,
             task_id: task.id.clone(),
             seq: 1,
-            harness: Agent::ClaudeCode,
+            harness: agent,
             account_id: Some(account.clone()),
             provider_session_id: Some("session-1".into()),
             launch_kind: LaunchKind::New,
@@ -202,11 +215,21 @@ pub(crate) async fn hook(
     event: &str,
     body: serde_json::Value,
 ) -> Result<(u16, Option<String>, serde_json::Value), Box<dyn std::error::Error>> {
+    hook_of(internal, "claude", event, body).await
+}
+
+/// [`hook`] from a run of `harness` (`claude` or `codex`).
+async fn hook_of(
+    internal: &axum::Router,
+    harness: &str,
+    event: &str,
+    body: serde_json::Value,
+) -> Result<(u16, Option<String>, serde_json::Value), Box<dyn std::error::Error>> {
     use http_body_util::BodyExt;
     use tower::ServiceExt;
     let request = axum::http::Request::builder()
         .method(Method::POST)
-        .uri(format!("/hooks/claude/{event}"))
+        .uri(format!("/hooks/{harness}/{event}"))
         .header(axum::http::header::AUTHORIZATION, format!("Bearer {TOKEN}"))
         .header(axum::http::header::CONTENT_TYPE, "application/json")
         .body(axum::body::Body::from(body.to_string()))?;
@@ -294,6 +317,59 @@ async fn an_exhausted_pool_holds_the_turn_until_capacity_returns() -> TestResult
         1,
         "resumed in place: no new run"
     );
+    Ok(())
+}
+
+/// SPEC-503 (slice C1 review): a Codex task follows no goal of Yulius's (it gets its request as its
+/// first message and its turns end it), so with every Codex subscription used up its Stop is not
+/// held as a goal's would be: the turn ends, and its next prompt waits for capacity instead.
+#[tokio::test]
+async fn a_codex_goal_tasks_stop_is_not_held_for_capacity() -> TestResult {
+    let h = harness()?;
+    seed(&h).await?;
+    let t0 = now(&h);
+    let only = AccountId::parse("acc-codex")?;
+    h.store
+        .insert_account(&AccountRecord {
+            id: only.clone(),
+            provider: Provider::OpenAi,
+            label: "Codex".into(),
+            credential: Some(h.app.deps.crypto.seal(b"{}")?),
+            status: AccountStatus::Ok,
+            usage_json: Some(usage(
+                98.0,
+                t0.plus_millis(2 * HOUR),
+                40.0,
+                t0.plus_millis(90 * HOUR),
+            )),
+            last_error: None,
+            created_at: Timestamp(1),
+            updated_at: Timestamp(1),
+            email: None,
+            email_checked_at: None,
+            email_typed: false,
+        })
+        .await?;
+    let task = running_task_of_agent(
+        &h,
+        Agent::Codex,
+        TaskMode::Goal,
+        &only,
+        "/nonexistent/run",
+        None,
+        None,
+    )
+    .await?;
+    let (code, _, body) = hook_of(
+        &h.internal,
+        "codex",
+        "Stop",
+        json!({"session_id": "session-1"}),
+    )
+    .await?;
+    assert_eq!(code, 200, "{body}");
+    assert_ne!(status(&h, &task).await?, TaskStatus::WaitingCapacity);
+    assert!(h.store.open_pause(&task).await?.is_none());
     Ok(())
 }
 

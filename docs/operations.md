@@ -14,6 +14,7 @@ been performed or verified** as part of the implementation work.
 | `git` ≥ 2.40 | sandboxes, worktrees, delivery | on `PATH` of the service; `yulius host setup` installs it. |
 | Landlock in the kernel (Linux ≥ 5.13, `landlock` in `/sys/kernel/security/lsm`) | the server's own Git, which runs confined to Git's programs and its sandbox's folders (ADR-0322) | Ubuntu 22.04 and later and Debian 12 have it. Without it the server runs no Git (clones, worktrees, fetches and merges fail with that reason); `yulius doctor` checks it as "git confinement". |
 | Docker Engine (`docker-ce` with `docker-buildx-plugin` and `docker-compose-plugin`) | Docker in sandboxes: every new base copies `dockerd`, buildx and compose | from Docker's apt repository; `yulius host setup` installs it and stops the host's own daemon, which nothing uses (see [Docker in sandboxes](#docker-in-sandboxes)). |
+| Codex CLI (`codex`; SPEC-503) | Codex tasks and Codex account sign-in | nothing to install: Yulius downloads the pinned release (0.169.0, its sha512 in the source) from `registry.npmjs.org` into `<data>/codex-cli/` on the first Codex use, or at start when Codex accounts exist (about 167 MB, 423 MB unpacked), and Codex runs start it by its path, binding its directory read-only into a contained run, and so do Codex sign-ins ([ADR-0355](decisions/0355-codex-returns-as-a-second-harness-with-a-pinned-cli.md)). Without access to the registry it uses a host `codex` if there is one; otherwise a Codex start says why it could not install. A host move leaves `codex-cli/` behind: the new host installs its own. |
 | Claude Code (`claude`) | Claude tasks and Claude account login | installed with npm system-wide (`npm install -g @anthropic-ai/claude-code`; verified with 2.1.292 and 2.1.322). Isolated sandboxes then get newer releases by themselves, each checked for Yulius's default model first: see [Claude Code updates](#claude-code-updates). |
 | GitHub CLI (`gh`) ≥ 2.82.1 | `gh` in every sandbox, logged in as the person (their shells) or the task's creator (agents) | install it on the host from [GitHub's package repository](https://github.com/cli/cli/blob/trunk/docs/install_linux.md), not the distribution's package: Ubuntu 24.04 ships 2.45, and since GitHub retired Projects (classic) `gh pr edit` and `gh issue view --comments` fail with a GraphQL error before 2.82.1. Sandboxes copy the host system, so rebuild the base afterwards (`yulius sandbox-base build`). `yulius doctor` warns without it or below 2.82.1. |
 | Chrome's managed policy (`yulius.json` in `/etc/opt/chrome/policies/managed`, `/etc/chromium/policies/managed` and `/etc/chromium-browser/policies/managed`) | clicks and keys in the sandbox browsers on a virtual display | `yulius host setup` writes it and the update's host check keeps it current; without it the browsers show but take no clicks and keys (ADR-0318). A browser an agent clicked or typed in before it was written stays so until it restarts (after 30 minutes in which no page shows it and no agent uses it, or with the server), since a file dialog opened then may still be on its display. It applies to every Chrome on the host: no file dialogs, downloads, printing or extension installs, and only web addresses (no `file:` or `chrome:` pages, no links to other programs). |
@@ -1502,8 +1503,8 @@ involved.
 - Budget the disk: a Rust workspace's `target/` per job and lane.
 - Removing `ci/` (with no run active) resets a sandbox's caches. The next run rebuilds them.
 - CI jobs share the host's CI budget (SPEC-082, SPEC-497 HBA-002, ADR-0353): a job starts when
-  CI's processes are not short of CPUs, the running jobs' declared CPUs (`cpus`, else an equal
-  share among the run's jobs) with its own stay within twice the budget, and its start fits
+  the running jobs' declared CPUs (`cpus`, else an equal share among the run's jobs) with its
+  own stay within three times the budget, and its start fits
   beside what CI is measured to use. `memory_gb` is the job's budget and counts at its start;
   after that the measured memory decides. Each
   is told its budget in `YULIUS_CPUS` and `YULIUS_MEMORY_MB` and the repository's
@@ -1523,25 +1524,34 @@ involved.
   the sandbox.
 - CI jobs of every sandbox come out of one budget: the host's CPUs and memory less an eighth for
   the server and the agents. A job starts when:
-  - CI's processes are not waiting for CPUs (`cpu.pressure` of the sandboxes' `ci` groups at most
-    10 %);
-  - the running jobs' budgets with its own stay within twice the budget's CPUs;
+  - the running jobs' budgets with its own stay within three times the budget's CPUs;
   - what CI was measured to use, what jobs started in the last minute may still bring, and its own
     start (its budget, at most a quarter of the budget) fit.
 
   Merge trains' jobs go first, then pull requests', then branches'. A job that cannot start lets
   later ones pass for 10 minutes at most. A waiting job's reason in `ci_status` (and the run's API)
-  says what it waits for: contention, the worst case, CPUs, memory, a slot or Docker networks
+  says what it waits for: the worst case, CPUs, memory, a slot or Docker networks
   ([ADR-0353](decisions/0353-ci-jobs-start-by-what-ci-uses-within-a-bounded-worst-case.md),
   [ADR-0350](decisions/0350-ci-jobs-are-admitted-by-what-ci-really-holds-on-the-host.md)). A job's
   default share (no `cpus`) is an equal share of that budget among its run's jobs: what it may use
   at once, not what it holds.
 - Each sandbox's Docker engine makes /24 networks from Docker's own ranges (172.17.0.0/16 to
-  172.31.0.0/16 and 192.168.0.0/16): 4,096 networks from its next start, instead of 31. The first
-  network a project makes is 172.17.1.0/24 (`docker0` stays 172.17.0.1), not 172.18.0.0/16, and
-  a network takes at most 253 containers: a project that needs another range or more sets its
+  172.31.0.0/16 and 192.168.0.0/16): 4,096 networks from its next start, instead of 31. Once the
+  sandbox started again the first network a project makes is 172.17.1.0/24 (`docker0` is
+  172.17.0.1), not 172.18.0.0/16 (172.18.0.0/24 while a sandbox that kept running keeps its old
+  `docker0`), and a network takes at most 253 containers: a project that needs another range or more sets its
   own `subnet`. A CI job waits while its engine can make fewer than 32 more; networks no container
   used for 10 minutes are pruned first.
+- A test that fails in the same job on two different pull requests within 48 hours, while the
+  integration branch did not fail it, is quarantined with an issue labelled `flaky test`. Every
+  later job of the project gets the quarantined names in `YULIUS_CI_QUARANTINE` (one per line) and
+  a nextest filter of their test paths in `YULIUS_CI_QUARANTINE_NEXTEST` (no binary: nextest
+  refuses one the head lacks). A project's gate leaves them out, for example
+  `cargo nextest run ${YULIUS_CI_QUARANTINE_NEXTEST:+-E "not ($YULIUS_CI_QUARANTINE_NEXTEST)"}`;
+  Yulius never passes a failed job for it. Two pull requests whose heads share a commit outside
+  the integration branch (a chained one) count as one. Closing the issue ends the quarantine within
+  an hour and forgets the test's failures
+  ([ADR-0356](decisions/0356-a-test-failing-on-two-pull-requests-is-quarantined-with-an-issue.md)).
 - `YULIUS_CI_LANES` (host-sized, a [resource limit](#resource-limits); 2 below 32 CPUs) runs of one sandbox take a checkout at once; the CI budget, not the lanes, decides how many of their jobs run. Each lane past the first
   keeps its own job checkouts and caches (`ci/jobs/<job>[.<n>]@<lane>`, `ci/cache/<job>[.<n>]@<lane>`), so
   budget its disk too.

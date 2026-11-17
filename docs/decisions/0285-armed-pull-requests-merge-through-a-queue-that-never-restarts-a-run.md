@@ -21,7 +21,10 @@ hand, and re-armed merges, which reset their place and dissolved trains.
 
 ## Decision
 
-- **Pre-check beside the candidate** (amended by SPEC-493 MQC-001, MQC-002). A pull request's own
+- **Pre-check beside the candidate** (amended by SPEC-493 MQC-001, MQC-002, and by SPEC-497
+  MQW-001, MQW-002, [ADR-0357](0357-a-merge-candidate-is-decided-by-its-own-run.md): a passed
+  candidate merges its members without waiting for their own runs, and only a failed own run
+  makes a member leave). A pull request's own
   run on its own head (the pre-check) always finishes: Yulius never merges the integration branch
   into an armed pull request before that run passed. Since SPEC-493 it may join a candidate while
   that run is still queued or running: the candidate's run goes beside it, and the member merges
