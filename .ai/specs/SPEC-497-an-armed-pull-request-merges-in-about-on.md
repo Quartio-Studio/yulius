@@ -171,7 +171,8 @@ mode.
 - [x] Slice B: flaky tests quarantined with an issue, the project told
 - [x] Slice B: quarantine documents and ADR
 - [x] Slice B: quarantine review round 1 answered
-- [ ] Slice B: quarantine review round 2 answered
+- [x] Slice B: quarantine review round 2 answered
+- [x] Slice B: quarantine review round 3 answered
 - [ ] Slice C: a failed member leaves without cancelling the candidate
 - [ ] Slice C: a passed candidate merges while own runs go
 - [ ] Slice C: derived-file conflicts handled without a wasted cycle
@@ -631,6 +632,9 @@ mode.
   warnings denied; the unit tests of `yulius-domain`, `yulius-store`, `yulius-app`,
   `yulius-github`, `yulius-git`, `xtask` (1,430 passed); `local_ci::` and `analytics::` (105
   passed); `yulius-domain` doctests (24 passed).
+- Review round 3 of the quarantine (Fable 5.2, head 2eb0fa696) approved: no blocker, major or
+  minor. Its nit (the hourly release asks GitHub inside the CI poll loop, one request per
+  quarantine) is taken off the loop in slice C's pull request, not after the approval.
 - Leftovers of #1373's and #1377's reviews: an older client's `docker:` prefix before its socket
   words counts (unit case in `a_failure_of_the_change_is_never_the_infrastructures`, failing
   before the fix); the CI's CPU pressure is logged at `debug` (`cpu_pressure_permille`) where it
