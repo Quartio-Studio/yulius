@@ -838,6 +838,32 @@ impl App {
                     .add(&row.outcome, row.run_ms, row.rerun_ms);
             }
         }
+        // Minutes CI ran nothing because of its configuration (SPEC-504 CFG-004), from the
+        // episodes recorded, one started before the range included.
+        let mut config_blocked_minutes = 0;
+        let until = to_at.map_or(self.now(), |to| to.min(self.now()));
+        for id in &sandboxes {
+            let Some(record) = self.deps.store.sandbox(id).await? else {
+                continue;
+            };
+            let entries = self
+                .deps
+                .store
+                .audit_of_sandbox(
+                    &record.slug,
+                    &[],
+                    &[mq::CONFIG_BLOCKED, mq::CONFIG_UNBLOCKED],
+                    read_from,
+                    to_at,
+                    20_000,
+                )
+                .await?;
+            let episodes: Vec<(yulius_domain::time::Timestamp, bool)> = entries
+                .into_iter()
+                .map(|(_, entry)| (entry.at, entry.action == mq::CONFIG_BLOCKED))
+                .collect();
+            config_blocked_minutes += mq::blocked_minutes(&episodes, from_at, until);
+        }
         let numbers = mq::queue_numbers(&events, from_at);
         let mut totals = MergeQueueAnalytics {
             range,
@@ -861,6 +887,7 @@ impl App {
                     minutes: ci_minutes(minutes),
                 })
                 .collect(),
+            config_blocked_minutes,
             ..MergeQueueAnalytics::default()
         };
         for day in numbers.days {

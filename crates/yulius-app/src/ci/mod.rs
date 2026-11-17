@@ -349,6 +349,9 @@ pub struct CiState {
     /// dropped.
     busy: Arc<Mutex<HashSet<String>>>,
     gates: Mutex<HashMap<String, GateView>>,
+    /// Sandboxes whose CI has no gate because of its configuration, as last recorded (SPEC-504
+    /// CFG-004).
+    config_blocked: Mutex<HashSet<String>>,
     pub(crate) hygiene: Mutex<HashMap<String, yulius_contracts::api::ci::HygieneReport>>,
     /// Each sandbox's last cleanup (SPEC-269 HSC-002), shown on every report.
     pub(crate) hygiene_cleanups:
@@ -946,6 +949,44 @@ impl App {
         None
     }
 
+    /// Records when `sandbox`'s CI starts and stops having no gate because of its configuration
+    /// (SPEC-504 CFG-004): an audit entry `ci.config_blocked` with the problem, and
+    /// `ci.config_unblocked` once a gate is in force again. A server that starts says it again
+    /// for an episode under way; the measure counts it once.
+    async fn ci_note_config_block(&self, sandbox: &SandboxRecord, view: &GateView) {
+        use yulius_domain::merge_queue::{CONFIG_BLOCKED, CONFIG_UNBLOCKED};
+        let blocked = view.gate.is_none() && view.problem.is_some();
+        let changed = self.ci.config_blocked.lock().is_ok_and(|mut set| {
+            if blocked {
+                set.insert(sandbox.id.as_str().to_owned())
+            } else {
+                set.remove(sandbox.id.as_str())
+            }
+        });
+        if !changed {
+            return;
+        }
+        let (action, detail) = if blocked {
+            (CONFIG_BLOCKED, view.problem.clone().unwrap_or_default())
+        } else {
+            (CONFIG_UNBLOCKED, String::new())
+        };
+        if let Err(err) = self
+            .deps
+            .store
+            .audit(
+                self.now(),
+                "yulius",
+                action,
+                Some(&sandbox.slug),
+                Some(&detail),
+            )
+            .await
+        {
+            tracing::warn!(sandbox = %sandbox.slug, error = %err, "recording CI's configuration state failed");
+        }
+    }
+
     /// Forgets the cached CI configuration (after a fetch or a profile change).
     pub(crate) fn ci_forget_gate(&self, sandbox: &SandboxId) {
         if let Ok(mut cache) = self.ci.gates.lock() {
@@ -1271,6 +1312,7 @@ impl App {
         self.dlv_refresh_clone(sandbox).await?;
         self.ci_forget_gate(&sandbox.id);
         let view = self.ci_gate(sandbox).await;
+        self.ci_note_config_block(sandbox, &view).await;
         let profile = delivery_profile(sandbox);
         let mut targets: Vec<(Target, Gate)> = Vec::new();
         if let Some(gate) = &view.gate {

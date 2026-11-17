@@ -6322,6 +6322,20 @@ async fn a_repair_of_a_never_valid_configuration_is_tested_with_its_own_jobs() -
         f.h.app.ci_gate_result(&f.sandbox, &sha).await,
         GateResult::Run(Some(RunState::Passed))
     );
+    // SPEC-504 CFG-004: the minutes CI ran nothing because of its configuration are counted
+    // until a gate is in force again (here the repair lands on dev 30 minutes later).
+    f.h.clock.0.fetch_add(30 * 60_000, Ordering::SeqCst);
+    f.push_dev("yulius.toml", Some(&one_job("repaired")))?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.h.clock.0.fetch_add(60 * 60_000, Ordering::SeqCst);
+    let day = yulius_domain::time::format_rfc3339(f.h.app.now());
+    let day = day.get(..10).ok_or("day")?;
+    let read = f
+        .get(&format!(
+            "/api/analytics/merge-queue?sandbox=s1&from={day}&to={day}"
+        ))
+        .await?;
+    assert_eq!(read["config_blocked_minutes"], 30, "{read}");
     Ok(())
 }
 
