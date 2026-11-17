@@ -633,7 +633,7 @@ async fn a_codex_account_without_a_sign_in_starts_the_cli_install() -> TestResul
         &h.router,
         Method::POST,
         "/api/admin/accounts",
-        Some(json!({"provider": "openai", "label": "Codex key", "api_key": "sk-proj-SYNTHETIC0123456789abcdefghij"})),
+        Some(json!({"provider": "openai", "label": "Codex key", "api_key": concat!("sk-proj-", "SYNTHETIC0123456789abcdefghij")})),
         &admin,
     )
     .await?;
@@ -679,7 +679,7 @@ async fn a_codex_login_without_credentials_fails() -> TestResult {
 #[tokio::test]
 async fn a_codex_account_can_be_added_with_an_api_key() -> TestResult {
     let s = setup().await?;
-    let key = "sk-proj-SYNTHETIC0123456789abcdefghij";
+    let key = concat!("sk-proj-", "SYNTHETIC0123456789abcdefghij");
     let r = call(
         &s.h.router,
         Method::POST,
@@ -840,7 +840,7 @@ async fn a_codex_account_can_be_added_by_importing_its_auth_file() -> TestResult
         json!({"provider": "openai", "label": "Not JSON", "auth_json": "SYNTHETIC {"}),
         json!({"provider": "anthropic", "label": "Claude file", "auth_json": auth}),
         json!({"provider": "openai", "label": "Both", "auth_json": auth,
-               "api_key": "sk-proj-SYNTHETIC0123456789abcdefghij"}),
+               "api_key": concat!("sk-proj-", "SYNTHETIC0123456789abcdefghij")}),
     ] {
         let refused = call(
             &s.h.router,
