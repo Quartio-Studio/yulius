@@ -159,9 +159,46 @@ pub(super) enum Ended {
 /// The end of the line a job's output gets when it runs again after an infrastructure failure
 /// (SPEC-497 OFC-001); what follows it is the second run's.
 const RERUN_NOTE: &str = "the job runs again once by itself (SPEC-497)\n";
-/// The longest a job waits for network room before its second run after a full address pool;
-/// past it, the job ends error for the infrastructure (SPEC-497 OFC-001, review round 2).
-const RERUN_NETWORK_WAIT: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+/// How a job's second run, after an infrastructure failure, ended as the infrastructure's too
+/// (SPEC-497 OFC-001).
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Second {
+    /// It met this infrastructure failure.
+    Again(Infra),
+    /// Its sandbox's engine had no room for a network within this long: no second run.
+    NoRoom(std::time::Duration),
+    /// It could not start, for this reason.
+    NotStarted(String),
+}
+
+impl Second {
+    /// The job's reason after `first` ended its first run.
+    fn reason(&self, first: Infra) -> String {
+        match self {
+            Self::Again(again) if *again == first => format!(
+                "{}, again when it was run again: an infrastructure failure, not the change",
+                again.describe()
+            ),
+            Self::Again(again) => format!(
+                "{} when it was run again, after {} in its first run: infrastructure failures, \
+                 not the change",
+                again.describe(),
+                first.describe()
+            ),
+            Self::NoRoom(waited) => format!(
+                "{}, and its sandbox's Docker engine had no room for a network for {} min, so it \
+                 was not run again: an infrastructure failure, not the change",
+                first.describe(),
+                waited.as_millis().div_ceil(60_000)
+            ),
+            Self::NotStarted(why) => format!(
+                "{} in its first run, and its second run could not start: {why}; an \
+                 infrastructure failure, not the change",
+                first.describe()
+            ),
+        }
+    }
+}
 
 /// What a CD or environment run's files may use while it runs (SPEC-300, ADR-0216): the
 /// directories measured, each with its name in the reason, and the bound in bytes.
@@ -750,7 +787,17 @@ impl App {
         // A run that ended for an infrastructure reason runs again once by itself (SPEC-497
         // OFC-001): the reason and the time the first run took.
         let mut thrown: Option<(Infra, i64)> = None;
+        let wait_limit = self.config.ci.rerun_network_wait;
         let (ended, usage, failures, infra) = loop {
+            // A cancellation that came while the first run ended starts no second one.
+            if let (Some((kind, ms)), Some(reason)) = (thrown, cancel.borrow().clone()) {
+                break (
+                    Ok(Ended::Cancelled(reason)),
+                    None,
+                    None,
+                    Some((kind, ms, None)),
+                );
+            }
             let attempt = tokio::time::Instant::now();
             let oom_before = self.ci_oom_kills(&run.sandbox_id).await;
             // Its failing tests' output, from all it prints (SPEC-145): the ring keeps only the
@@ -771,6 +818,9 @@ impl App {
                 Ok((ended, usage)) => (Ok(ended), usage),
                 Err(reason) => (Err(reason), None),
             };
+            // A failure in any runner's words, kept as a block or not, makes it the change's
+            // (review round 3).
+            let tests_failed = failures.failure_seen();
             let failures = failures.finish();
             let infra = match &ended {
                 Ok(ended) if cancel.borrow().is_none() => {
@@ -778,7 +828,7 @@ impl App {
                         &run.sandbox_id,
                         ended,
                         &ring,
-                        failures.is_some(),
+                        tests_failed || failures.is_some(),
                         oom_before,
                     )
                     .await
@@ -800,13 +850,13 @@ impl App {
                         ring.push_str(&format!(
                             "[yulius] it first waits for its sandbox's Docker engine to have \
                              room for a network, at most {} min\n",
-                            RERUN_NETWORK_WAIT.as_secs() / 60
+                            wait_limit.as_millis().div_ceil(60_000)
                         ));
                         let _ = store.set_ci_job_output(&job.id, &ring.text()).await;
                         let room = tokio::select! {
                             () = self.ci_network_room(&run.sandbox_id, &job.id) => None,
                             reason = wait_cancel(&mut cancel) => Some(Ok(reason)),
-                            () = tokio::time::sleep(RERUN_NETWORK_WAIT) => Some(Err(())),
+                            () = tokio::time::sleep(wait_limit) => Some(Err(())),
                         };
                         match room {
                             None => {}
@@ -819,7 +869,12 @@ impl App {
                                 );
                             }
                             Some(Err(())) => {
-                                break (ended, usage, failures, Some((kind, took, Some(kind))));
+                                break (
+                                    ended,
+                                    usage,
+                                    failures,
+                                    Some((kind, took, Some(Second::NoRoom(wait_limit)))),
+                                );
                             }
                         }
                     }
@@ -829,17 +884,22 @@ impl App {
                         ended,
                         usage,
                         failures,
-                        Some((first, ms.saturating_add(took), Some(again))),
+                        Some((first, ms.saturating_add(took), Some(Second::Again(again)))),
                     );
                 }
                 // The second start could not be made: the infrastructure's again (review
-                // round 2), not a failure of the change.
+                // rounds 2 and 3), with the reason it could not.
                 (None, Some((first, ms))) if ended.is_err() => {
+                    let why = ended.as_ref().err().cloned().unwrap_or_default();
                     break (
                         ended,
                         usage,
                         failures,
-                        Some((first, ms.saturating_add(took), Some(first))),
+                        Some((
+                            first,
+                            ms.saturating_add(took),
+                            Some(Second::NotStarted(why)),
+                        )),
                     );
                 }
                 (None, thrown) => {
@@ -904,24 +964,8 @@ impl App {
         };
         // After an infrastructure failure the job says so: passed when run again, or an error when
         // it met one again (never a failure of the change).
-        let (state, reason) = match infra {
-            Some((first, _, Some(again))) => (
-                RunState::Error,
-                Some(if first == again {
-                    format!(
-                        "{}, again when it was run again: an infrastructure failure, not the \
-                         change",
-                        again.describe()
-                    )
-                } else {
-                    format!(
-                        "{} when it was run again, after {} in its first run: infrastructure \
-                         failures, not the change",
-                        again.describe(),
-                        first.describe()
-                    )
-                }),
-            ),
+        let (state, reason) = match &infra {
+            Some((first, _, Some(second))) => (RunState::Error, Some(second.reason(*first))),
             Some((kind, _, None)) if state == RunState::Passed => (
                 state,
                 Some(format!(
@@ -944,7 +988,7 @@ impl App {
             ended_at: Some(self.now()),
             usage,
             waited_ms: None,
-            infra: infra.map(|(kind, ms, again)| (kind.as_str(), ms, again.is_some())),
+            infra: infra.map(|(kind, ms, second)| (kind.as_str(), ms, second.is_some())),
         };
         if let Err(err) = store
             .transition_ci_job(&job.id, &[RunState::Running], state, &end)

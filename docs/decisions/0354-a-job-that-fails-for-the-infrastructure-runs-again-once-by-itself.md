@@ -30,11 +30,15 @@ and fixed, or quarantined with an issue).
   - A `SIGKILL` (or exit 137) while the kernel's OOM count of the job's sandbox grew.
   - A job whose process host was lost.
   Only the run's own output counts (what it printed after the line that started it again). A run
-  with a failing test's block kept is the change's, whatever the block says (a test's message can
-  quote Docker's words). Otherwise the words must be in its last 3 lines (Yulius's own lines left
-  out), with no line after them that reads as a failure in any test runner's words (`fail`,
-  `panic`, `assert`, `not ok`, `timeout`, `timed out`, `error[`). A missed rerun costs a cycle; a
-  wrong one would break the rule that a failing test is never run again.
+  in which any line reads as a failure in a test runner's or a tool's words (`fail`, `panic`,
+  `assert`, `not ok`, `timeout`, `timed out`, `error`, `segmentation fault`, `core dumped`;
+  Docker's own lines, Yulius's lines, passing summaries and `make`'s exit report left out), or
+  with a failing test's block kept, is the change's, whatever ended it: a kill for memory or a
+  lost host too. Otherwise Docker's words must be in its last 3 lines, the socket's only from the
+  Docker client's own words (`Cannot connect to the Docker daemon`, or `error during connect`,
+  `read unix`, `write unix`, `dial unix` with the connection's end), so a container's log naming
+  the socket is not one. A missed rerun costs a cycle; a wrong one would break the rule that a
+  failing test is never run again.
 - **Run again once, by itself**: the job, not its run, starts again in its checkout with its slot
   and budget, its output saying why ("Docker had no free address pool for a new network: an
   infrastructure failure, not the change; the job runs again once by itself"). If it then passes,
@@ -42,8 +46,10 @@ and fixed, or quarantined with an issue).
   **error** saying so, never failed. A second run is never made after a test's failure.
 - **Before the second run** after a full address pool, the job waits for room in its engine, at
   most 10 minutes, keeping its slot, budget and turn meanwhile; its output says so, a
-  cancellation ends it cancelled with no second start, and past the bound it ends error for the
-  infrastructure. A second start that cannot be made ends error for the infrastructure too. The
+  cancellation ends it cancelled with no second start, and past the bound it ends error saying
+  its engine had no room, with no second run. A second start that cannot be made ends error for
+  the infrastructure too, with the reason it could not. A cancellation that came while the first
+  run ended starts no second one. The
   second run has its own time limit (a job can hold its slot up to twice its limit), the first
   run's measured use is not kept, and the stages of both runs stay on the job's span.
 - **Counted**: the job keeps the kind, the milliseconds the thrown-away run took and whether its

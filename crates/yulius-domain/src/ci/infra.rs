@@ -72,12 +72,20 @@ const ADDRESS_POOL: [&str; 2] = [
 ];
 
 /// What a client prints when the engine's socket ends a connection, on a line naming the socket.
-const SOCKET_ENDS: [&str; 5] = [
+const SOCKET_ENDS: [&str; 4] = [
     ": eof",
     "connection reset by peer",
     "broken pipe",
     "connection refused",
-    "cannot connect to the docker daemon",
+];
+
+/// How the Docker client itself begins the line about the socket (review round 3: a container's
+/// own log naming the socket is not the client's word).
+const CLIENT_WORDS: [&str; 4] = [
+    "error during connect",
+    "read unix",
+    "write unix",
+    "dial unix",
 ];
 
 /// The output lines read at the end of a job that failed with no failing test kept: the words
@@ -93,12 +101,51 @@ fn named(line: &str) -> Option<Infra> {
     if ADDRESS_POOL.iter().any(|words| line.contains(words)) {
         return Some(Infra::AddressPool);
     }
-    (line.contains("docker.sock")
-        && SOCKET_ENDS
-            .iter()
-            .any(|words| line.contains(words) || (*words == ": eof" && line.ends_with(" eof"))))
-    .then_some(Infra::DockerSocket)
+    if !line.contains("docker.sock") {
+        return None;
+    }
+    let client = line.contains("cannot connect to the docker daemon")
+        || (CLIENT_WORDS.iter().any(|words| line.contains(words))
+            && SOCKET_ENDS.iter().any(|words| {
+                line.contains(words) || (*words == ": eof" && line.ends_with(" eof"))
+            }));
+    client.then_some(Infra::DockerSocket)
 }
+
+/// Whether a line of a job's output reads as a failure in a test runner's or a tool's words
+/// (Rust's, Go's, pytest's, jest's, mocha's, TAP's, PHPUnit's): the job's own failure, so no
+/// second run (SPEC-497 OFC-001, review round 3). The infrastructure's own lines, Yulius's
+/// lines and passing summaries ("test result: ok", "0 failed") are not.
+///
+/// # Examples
+/// ```
+/// use yulius_domain::ci::infra::reads_as_failure;
+/// assert!(reads_as_failure("--- FAIL: TestTotal (0.00s)"));
+/// assert!(reads_as_failure("1 error in 0.05s"));
+/// assert!(!reads_as_failure("test result: ok. 5 passed; 0 failed; 0 ignored"));
+/// assert!(!reads_as_failure(
+///     "Error response from daemon: all predefined address pools have been fully subnetted"
+/// ));
+/// ```
+#[must_use]
+pub fn reads_as_failure(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    if trimmed.starts_with("[yulius]") || named(line).is_some() {
+        return false;
+    }
+    let lower = trimmed.to_ascii_lowercase();
+    if PASSING.iter().any(|words| lower.contains(words)) {
+        return false;
+    }
+    // `make`'s report that a recipe exited: the recipe's own lines say what failed.
+    if lower.starts_with("make: ***") || (lower.starts_with("make[") && lower.contains("]: ***")) {
+        return false;
+    }
+    FAILURE_WORDS.iter().any(|words| lower.contains(words))
+}
+
+/// Summaries of runs that passed, which name failures as none.
+const PASSING: [&str; 4] = ["test result: ok", " 0 failed", "0 failing", "failed: 0"];
 
 /// Why the failure of a job that ended `end` is the infrastructure's, if it is, from this run's
 /// own `output` (what it printed, the end kept), whether any failing test's block was kept
@@ -132,15 +179,16 @@ pub fn infrastructure(
     tests_failed: bool,
     oom_killed: bool,
 ) -> Option<Infra> {
+    // A failing test of this run makes it the change's, whatever ended it (review round 3).
+    if tests_failed {
+        return None;
+    }
     match end {
         JobEnd::Lost => return Some(Infra::HostLost),
         JobEnd::Signalled(SIGKILL) | JobEnd::Exited(137) if oom_killed => {
             return Some(Infra::OutOfMemory);
         }
         _ => {}
-    }
-    if tests_failed {
-        return None;
     }
     let lines: Vec<&str> = output
         .lines()
@@ -153,23 +201,22 @@ pub fn infrastructure(
         .enumerate()
         .rev()
         .find_map(|(at, line)| named(line).map(|kind| (at, kind)))?;
-    let failed_after = tail[at + 1..].iter().any(|line| {
-        let line = line.to_ascii_lowercase();
-        FAILURE_WORDS.iter().any(|words| line.contains(words))
-    });
+    let failed_after = tail[at + 1..].iter().any(|line| reads_as_failure(line));
     (!failed_after).then_some(kind)
 }
 
 /// Words, lower-case, of a failure in any test runner or tool (Rust's, Go's, pytest's, jest's,
 /// TAP's): a line after the infrastructure's that has one makes the failure the change's.
-const FAILURE_WORDS: [&str; 7] = [
+const FAILURE_WORDS: [&str; 9] = [
     "fail",
     "panic",
     "assert",
     "not ok",
     "timeout",
     "timed out",
-    "error[",
+    "error",
+    "segmentation fault",
+    "core dumped",
 ];
 
 #[cfg(test)]
@@ -252,8 +299,30 @@ mod tests {
                 );
             }
         }
-        // A failing test kept: never, even when its message quotes Docker's words.
+        // A failing test kept or seen anywhere in the run (the scanner's flag): never, even when
+        // its message quotes Docker's words, and not for a kill or a lost host either (review
+        // round 3).
         assert_eq!(infrastructure(exited, POOL, true, false), None);
+        assert_eq!(infrastructure(JobEnd::Signalled(9), "", true, true), None);
+        assert_eq!(infrastructure(JobEnd::Lost, "", true, false), None);
+        // A container's own log naming the socket is not the client's word (review round 3).
+        let container = "app-1  | dial tcp: lookup /var/run/docker.sock: connection refused\n\
+                         app-1  | retrying /var/run/docker.sock: connection refused";
+        assert_eq!(infrastructure(exited, container, false, false), None);
+        // Failure lines without the old words after Docker's (review round 3).
+        for after in [
+            "1 error in 0.05s",
+            "ERRORS!",
+            "Error: expected 3 to equal 4",
+            "Segmentation fault (core dumped)",
+        ] {
+            let output = format!("{POOL}\n{after}");
+            assert_eq!(
+                infrastructure(exited, &output, false, false),
+                None,
+                "{output}"
+            );
+        }
         // Words before the last lines: the job went on.
         let early = format!("{SOCKET}\n{}", "   Compiling crate\n".repeat(TAIL_LINES));
         assert_eq!(infrastructure(exited, &early, false, false), None);

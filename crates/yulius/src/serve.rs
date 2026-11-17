@@ -524,6 +524,7 @@ pub fn build_app(
         lanes: args.ci_lanes.unwrap_or(fixed(Limit::CiLanes)),
         job_timeout: std::time::Duration::from_secs(args.ci_job_timeout_min * 60),
         poll: std::time::Duration::from_secs(args.ci_poll_secs),
+        rerun_network_wait: std::time::Duration::from_secs(10 * 60),
         run_disk_max: args
             .cd_run_disk_gb
             .unwrap_or(Limit::CdRunDisk.fixed())

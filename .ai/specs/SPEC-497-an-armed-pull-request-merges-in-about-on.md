@@ -514,3 +514,26 @@ mode.
   - Nits: the decision index's order; both runs' stages stay on the job's span (ADR-0354); the
     tally and the run's state in one transaction; `Infra::parse` removed; the busiest hour shows
     its day.
+- Review round 3 of the reruns, minutes and load (Fable 5.2, head 8ce212c02). Request changes,
+  all own code. Answered:
+  - Major: `the_wait_before_a_second_run_can_be_cancelled` was flaky (the engine filled before the
+    job's first look for room). It fills once the first run has started (its attempts file);
+    the two wait tests passed 6 of 6 under `--stress-count 6`.
+  - Major: a failure in Go's, pytest's or jest's words before Docker's words at the end was run
+    again (the scanner keeps only nextest's and libtest's blocks). `FailureScanner` now also sees
+    any line that reads as a failure in a runner's or a tool's words
+    (`ci::infra::reads_as_failure`, doctest; unit `a_failure_in_any_runners_words_is_seen`), and
+    such a run is the change's; the socket counts only in the Docker client's own words.
+    `local_ci::a_failure_before_dockers_words_is_never_run_again` (Go's lines then the client's
+    socket line last; pytest's then a container's log naming the socket: failed, one run).
+  - Minors: a failing test now wins over a kill for memory and a lost host (unit); past the bound
+    the reason says the engine had no room and no second run was made
+    (`local_ci::a_second_run_that_finds_no_network_room_is_not_made`, the bound shortened to
+    0.5 s through `CiSettings::rerun_network_wait`); a second start that cannot be made keeps its
+    reason; failure lines without the old words (`1 error in 0.05s`, `ERRORS!`, mocha's `Error:
+    expected`, a segmentation fault) refuse the rerun (unit), while `make`'s exit report does not.
+    The second start that cannot be made and the executor's mapping of a lost host have no
+    executor test (a fake session host failing only its second start was not built); both are
+    one branch each, read.
+  - Nits: a cancellation that came while the first run ended starts no second one; the
+    Evidence's test names.

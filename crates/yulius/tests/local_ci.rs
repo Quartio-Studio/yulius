@@ -3419,7 +3419,15 @@ async fn the_wait_before_a_second_run_can_be_cancelled() -> TestResult {
     f.h.app.ci_sync_sandbox(&f.sandbox).await?;
     let pull = f.running("pr/1").await?;
     let run = pull["id"].as_str().ok_or("id")?.to_owned();
-    // The engine fills while the first run goes; then it meets the full pool.
+    // The engine fills once the first run has started (review round 3: before, the job could
+    // still be at its first look for room); then that run meets the full pool.
+    let deadline = tokio::time::Instant::now() + WAIT;
+    while !f.data.join("attempts-pr").exists() {
+        if tokio::time::Instant::now() > deadline {
+            return Err("the first run never started".into());
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
     measured.networks.store(4096, Ordering::SeqCst);
     std::fs::write(f.data.join("go"), "")?;
     let deadline = tokio::time::Instant::now() + WAIT;
@@ -3453,6 +3461,70 @@ async fn the_wait_before_a_second_run_can_be_cancelled() -> TestResult {
     }
     let tries = std::fs::read_to_string(f.data.join("attempts-pr"))?;
     assert_eq!(tries.lines().count(), 1, "no second start");
+    Ok(())
+}
+
+/// SPEC-497 OFC-001 (review round 3): a test's failure in Go's or pytest's words before Docker's
+/// words at the end (a teardown or a log dump) is the change's: no second run.
+#[tokio::test]
+async fn a_failure_before_dockers_words_is_never_run_again() -> TestResult {
+    for first in [
+        "echo \"--- FAIL: TestTotal (0.00s)\"; echo FAIL; echo \"Cannot connect to the Docker \
+         daemon at unix:///var/run/docker.sock. Is the docker daemon running?\"; exit 1",
+        "echo \"FAILED tests/test_x.py::test_total - assert 1 == 2\"; echo \"1 failed in 0.03s\"; \
+         echo \"app-1  | dial unix /var/run/docker.sock: connect: connection refused\"; exit 1",
+    ] {
+        let f = fixture_with(false, |data| attempts(data, first, "echo ok")).await?;
+        f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+        f.settle().await?;
+        let job = pull_job(&f).await?;
+        assert_eq!(job["state"], "failed", "{first}: {job}");
+        assert_eq!(attempts_of(&f)?, [1, 1], "{first}");
+    }
+    Ok(())
+}
+
+/// SPEC-497 OFC-001 (review round 3): past the bound of the wait for network room, the job ends
+/// error saying its engine had no room, with no second run.
+#[tokio::test]
+async fn a_second_run_that_finds_no_network_room_is_not_made() -> TestResult {
+    let f = fixture_tuned(
+        false,
+        |data| {
+            let first = format!(
+                "while [ ! -e \"{}\" ]; do sleep 0.05; done; {NO_POOL}",
+                data.join("go").display()
+            );
+            attempts(data, &first, "echo ok")
+        },
+        None,
+        |config| config.ci.rerun_network_wait = Duration::from_millis(500),
+    )
+    .await?;
+    // Room for the first start; none once it ran.
+    let measured = Measured::new(0, 1);
+    assert!(f.h.app.set_isolation(measured.clone()));
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    let deadline = tokio::time::Instant::now() + WAIT;
+    while attempts_of(&f)?.len() < 2 {
+        f.h.app.ci_dispatch().await;
+        if tokio::time::Instant::now() > deadline {
+            return Err("the jobs never started".into());
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    measured.networks.store(4096, Ordering::SeqCst);
+    std::fs::write(f.data.join("go"), "")?;
+    f.settle().await?;
+    let job = pull_job(&f).await?;
+    assert_eq!(job["state"], "error", "{job}");
+    assert_eq!(
+        job["reason"],
+        "Docker had no free address pool for a new network, and its sandbox's Docker engine had \
+         no room for a network for 1 min, so it was not run again: an infrastructure failure, not \
+         the change"
+    );
+    assert_eq!(attempts_of(&f)?, [1, 1]);
     Ok(())
 }
 

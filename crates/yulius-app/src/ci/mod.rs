@@ -114,6 +114,9 @@ pub struct CiSettings {
     pub poll: Duration,
     /// Bytes a CD or environment run's files and cache may use (SPEC-300, ADR-0216).
     pub run_disk_max: u64,
+    /// The longest a job waits for network room before its second run after a full address
+    /// pool; past it, it ends error for the infrastructure (SPEC-497 OFC-001).
+    pub rerun_network_wait: Duration,
 }
 
 impl Default for CiSettings {
@@ -125,6 +128,7 @@ impl Default for CiSettings {
             job_timeout: Duration::from_secs(30 * 60),
             poll: Duration::from_secs(60),
             run_disk_max: 20_000_000_000,
+            rerun_network_wait: Duration::from_secs(10 * 60),
         }
     }
 }
