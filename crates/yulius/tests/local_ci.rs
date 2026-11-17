@@ -1755,6 +1755,76 @@ async fn the_integration_branch_runs_a_paths_job_a_merged_tree_skipped() -> Test
     Ok(())
 }
 
+/// SPEC-504 review round 1 (major): a squash merge that changed a job lands on the integration
+/// branch with a tree some pull request's run passed, but that run never ran the job as the
+/// merge now defines it: the branch's run runs again instead of taking that verdict, and the
+/// new command runs.
+#[tokio::test]
+async fn a_branch_never_reuses_a_run_that_did_not_run_its_jobs() -> TestResult {
+    use yulius_app::ci::{CiJobRecord, CiRunRecord};
+    use yulius_app::ports::store_ext::CiStore as _;
+    use yulius_domain::ci::{CiRef, GateSource, RunState};
+    use yulius_domain::time::Timestamp;
+    let f = fixture_with(false, |_| one_job("old")).await?;
+    let changed = f.push_feature("yulius.toml", Some(&one_job("new")))?;
+    // A passed run of that head that ran the old command only (as before SPEC-504 CFG-001).
+    let run = CiRunRecord {
+        id: "run-old-jobs".into(),
+        sandbox_id: SandboxId::parse("s1")?,
+        reference: CiRef::PullRequest(1),
+        sha: changed.clone(),
+        source: GateSource::ProjectConfig,
+        state: RunState::Passed,
+        reason: None,
+        requested_by: "yulius".into(),
+        status_for: Some(RunState::Passed),
+        status_note: Some("recorded by the test".into()),
+        status_attempts: 0,
+        queued_at: Timestamp(1),
+        started_at: Some(Timestamp(1)),
+        ended_at: Some(Timestamp(2)),
+    };
+    let job = CiJobRecord {
+        id: "old-check".into(),
+        run_id: "run-old-jobs".into(),
+        ordinal: 0,
+        name: "check".into(),
+        key: "check".into(),
+        command: "echo old".into(),
+        matrix: None,
+        state: RunState::Passed,
+        reason: None,
+        exit_code: Some(0),
+        output: String::new(),
+        failures: None,
+        started_at: Some(Timestamp(1)),
+        ended_at: Some(Timestamp(2)),
+        need: Default::default(),
+        timeout_minutes: None,
+        exclusive: false,
+        waited_ms: None,
+    };
+    f.h.store.insert_ci_run(&run, &[job]).await?;
+    git(&f.work, &["checkout", "-q", "-b", "dev", "origin/dev"])?;
+    git(&f.work, &["merge", "-q", "--squash", "feat/one"])?;
+    git(&f.work, &["commit", "-q", "-m", "change the job (#1)"])?;
+    git(&f.work, &["push", "-q", "origin", "dev"])?;
+    let merged = git(&f.work, &["rev-parse", "HEAD"])?;
+    git(&f.work, &["checkout", "-q", "feat/one"])?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    let (run, _) = run_of(&f, &merged).await?;
+    assert!(
+        !run["reason"]
+            .as_str()
+            .is_some_and(|r| r.contains("same tree")),
+        "not reused: {run}"
+    );
+    let outputs = job_outputs(&f, &merged).await?;
+    assert!(output_of(&outputs, "check")?.contains("new"), "{outputs:?}");
+    Ok(())
+}
+
 /// Review round 3 of SPEC-493 fix 5: tree reuse into the integration branch's run looks past a
 /// same-tree source that skipped a `paths` job, to an older one that ran it.
 #[tokio::test]
