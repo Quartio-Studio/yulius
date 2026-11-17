@@ -757,6 +757,13 @@ mode.
   `local_ci::a_run_takes_the_lane_that_last_built_its_pull_request` (two pull requests in lanes
   0 and 1; the one in lane 1 pushes first, its run takes lane 1 and says "its checkouts last
   built pr/N, which this run builds on"). Undone (no preference), it fails.
+- The gain, measured on this repository's test build (`cargo nextest run --workspace
+  --all-features --profile ci --no-run`, one worktree and target directory, 64 CPUs, load about
+  18): building `dev` (a2b6f4b0c) after an unrelated older build (`dev~25`) took 105 s, as long
+  as a cold build (104 s); after a member's build (`dev~1`, 20 Rust files apart across the
+  workspace) it took 87 s, 17 % less. Most of this workspace's test binaries depend on the
+  crates any change touches, so the gain is a part of the build, not all of it; a project whose
+  changes touch fewer crates gains more.
 - Slice C review round 2's minor and nits: the pause point `TrainMemberMerging` and
   `merge_train::a_member_whose_own_run_fails_during_the_merges_is_not_merged` (#1 merges, #2's
   own run fails at the point, #2 is not merged, `member_failed`); with only that read undone it

@@ -63,7 +63,11 @@ and the gain measured. A run's critical path is its longest job.
     12 min 35 s) and after this change, read from `ci_status` (slice E).
 - A shard builds the tests in its own checkout, so two shards compile them twice. The cost is CPU
   the budget admits, not wall time.
-- A candidate's build starts from a member's when that member's lane is free. Measured on this
-  repository's test build (`cargo nextest run --no-run`): see SPEC-497's Evidence, slice D.
+- A candidate's build starts from a member's when that member's lane is free. On this
+  repository's test build (`cargo nextest run --no-run`), building `dev` took 105 s after an
+  unrelated older build (as long as a cold one) and 87 s after a member's, 17 % less (SPEC-497's
+  Evidence, slice D). Most of this workspace's test binaries depend on whatever crate a change
+  touches, so the gain is part of the build; a project whose changes touch fewer crates gains
+  more.
 - The lane memory is in the process: after a restart the first runs take the first free lanes as
   before.
