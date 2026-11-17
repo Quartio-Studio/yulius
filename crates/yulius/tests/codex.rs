@@ -1,5 +1,5 @@
 //! Codex as a second harness with real processes (SPEC-503): supervisor → detached
-//! `yulius ptyhost` → fake agent writing a Codex CLI 0.167 shaped rollout. A Codex task runs on a
+//! `yulius ptyhost` → fake agent writing a Codex CLI 0.169 shaped rollout. A Codex task runs on a
 //! Codex account in its own Codex home, its rollout is found and watched, its usage reaches its
 //! account, it moves to another Codex account at a usage limit by a native resume, a restart
 //! reattaches it, and the credentials Codex refreshed are kept. No test calls OpenAI.
@@ -63,6 +63,23 @@ async fn new_codex_task(
     user: &UserId,
     title: &str,
 ) -> Result<TaskId, Box<dyn std::error::Error>> {
+    new_codex_task_in(
+        app,
+        sandbox,
+        user,
+        title,
+        yulius_app::model::TaskMode::Prompt,
+    )
+    .await
+}
+
+async fn new_codex_task_in(
+    app: &Arc<App>,
+    sandbox: &SandboxId,
+    user: &UserId,
+    title: &str,
+    mode: yulius_app::model::TaskMode,
+) -> Result<TaskId, Box<dyn std::error::Error>> {
     let record = app
         .create_task_internal(NewTask {
             sandbox: sandbox.clone(),
@@ -77,7 +94,7 @@ async fn new_codex_task(
             origin: TaskOrigin::Ui,
             automation_run: None,
             start: true,
-            mode: yulius_app::model::TaskMode::Prompt,
+            mode,
             supertask: false,
         })
         .await?;
@@ -126,7 +143,7 @@ fn temp() -> Result<(tempfile::TempDir, PathBuf), Box<dyn std::error::Error>> {
     Ok((dir, data))
 }
 
-/// SPEC-503 CDX-002, CDX-003, CDX-004, CDX-006, AC-451-1/3/5: a Codex task runs Codex on a Codex
+/// SPEC-503 CDX-002, CDX-003, CDX-004, CDX-006, AC-503-1/3/5: a Codex task runs Codex on a Codex
 /// account (never the Claude one) in `<sandbox>/codex/<account>`, whose `auth.json`, `config.toml`
 /// and `hooks.json` are private and whose `sessions` is the sandbox's; its session is learnt from
 /// the rollout; its turns, usage and rate limits are read; a restart reattaches the same process
@@ -314,10 +331,12 @@ fn a_codex_task_runs_in_its_home_survives_a_restart_and_keeps_refreshed_credenti
             "the account keeps its state"
         );
         // No run of the account is left in the sandbox: its credential does not stay there.
-        assert!(
-            !home.join("auth.json").exists(),
-            "auth.json left in the sandbox"
-        );
+        wait_for(
+            "no auth.json left in the sandbox",
+            Duration::from_secs(30),
+            || async { !home.join("auth.json").exists() },
+        )
+        .await?;
         assert!(home.join("config.toml").exists());
         Ok::<_, Box<dyn std::error::Error>>(())
     })?;
@@ -349,6 +368,26 @@ fn only_a_genuine_codex_refresh_reaches_the_vault() -> TestResult {
         std::fs::create_dir_all(&home)?;
         let left = codex_auth(&ago(120_000));
         std::fs::write(home.join("auth.json"), &left)?;
+        // What Yulius knows of the subscription besides its tokens (slice C1 review): a refresh
+        // of the same sign-in changes none of it, and never writes the status it read before.
+        {
+            let record = app.deps.store.account(&account).await?.ok_or("account")?;
+            let sealed = record.credential.ok_or("credential")?;
+            app.deps
+                .store
+                .set_account_email(&account, &sealed, Some("dev@example.com"), None, app.now())
+                .await?;
+            app.deps
+                .store
+                .set_account_state(
+                    &account,
+                    AccountStatus::Ok,
+                    None,
+                    Some("usage: read later"),
+                    app.now(),
+                )
+                .await?;
+        }
         let id = new_codex_task(&app, &sandbox, &user, "Codex refresh").await?;
         wait_for("the banner", Duration::from_secs(30), || {
             screen_contains(&app, &id, "FAKE-AGENT READY")
@@ -356,6 +395,9 @@ fn only_a_genuine_codex_refresh_reaches_the_vault() -> TestResult {
         .await?;
         assert_eq!(std::fs::read_to_string(home.join("auth.json"))?, left);
         assert_eq!(stored_credential(&app, &account).await?, left);
+        let record = app.deps.store.account(&account).await?.ok_or("account")?;
+        assert_eq!(record.email.as_deref(), Some("dev@example.com"));
+        assert_eq!(record.last_error.as_deref(), Some("usage: read later"));
         // The agent writes a sign-in of its own: it is not taken when the run ends.
         let forged = codex_auth(&ago(1_000)).replace("acc-synthetic", "acc-attacker");
         std::fs::write(home.join("auth.json"), &forged)?;
@@ -387,13 +429,13 @@ async fn admin_ctx(
     })
 }
 
-/// SPEC-503 CLI-002, AC-451-6: a Codex task starts the Codex CLI Yulius provides by its absolute
+/// SPEC-503 CLI-002, AC-503-6: a Codex task starts the Codex CLI Yulius provides by its absolute
 /// path, never `codex` from a `PATH` that may not have it.
 #[test]
 fn a_codex_task_starts_the_provided_codex_cli() -> TestResult {
     let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
     let (_dir, data) = temp()?;
-    let dir = data.join("codex-cli").join("0.167.0-linux-x64");
+    let dir = data.join("codex-cli").join("0.169.0-linux-x64");
     let program = dir.join("bin/codex");
     let agent = FakeAgentOptions {
         provided_codex: Some(yulius_app::ports::harness::ProvidedCli {
@@ -435,7 +477,7 @@ fn a_codex_task_starts_the_provided_codex_cli() -> TestResult {
     Ok(())
 }
 
-/// SPEC-503 CLI-002, AC-451-6 (Linux): a contained Codex run sees the provided Codex CLI's
+/// SPEC-503 CLI-002, AC-503-6 (Linux): a contained Codex run sees the provided Codex CLI's
 /// directory, bound read-only at its own path, though the rest of the data directory stays hidden.
 /// Skipped with a message where bubblewrap cannot create namespaces.
 #[cfg(target_os = "linux")]
@@ -463,7 +505,7 @@ fn a_contained_codex_run_sees_the_provided_codex_cli() -> TestResult {
     let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
     let fake_dir = fake.parent().ok_or("fake-agent dir")?.to_path_buf();
     let (_dir, data) = temp()?;
-    let dir = data.join("codex-cli").join("0.167.0-linux-x64");
+    let dir = data.join("codex-cli").join("0.169.0-linux-x64");
     std::fs::create_dir_all(dir.join("bin"))?;
     std::fs::write(dir.join("bin/codex"), b"provided")?;
     let agent = FakeAgentOptions {
@@ -512,8 +554,10 @@ fn a_contained_codex_run_sees_the_provided_codex_cli() -> TestResult {
 fn a_codex_start_without_a_codex_cli_says_why() -> TestResult {
     let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
     let (_dir, data) = temp()?;
+    let gate = Arc::new(tokio::sync::Semaphore::new(0));
     let agent = FakeAgentOptions {
-        codex_unavailable: Some("the Codex CLI 0.167.0 could not be installed (offline)".into()),
+        codex_unavailable: Some("the Codex CLI 0.169.0 could not be installed (offline)".into()),
+        codex_gate: Some(Arc::clone(&gate)),
         ..FakeAgentOptions::default()
     };
     let rt = runtime()?;
@@ -523,6 +567,9 @@ fn a_codex_start_without_a_codex_cli_says_why() -> TestResult {
         add_codex_account(&app, "a-codex", &codex_auth("2026-11-01T10:00:00Z")).await?;
         seed_repo(&data, &sandbox)?;
         let id = new_codex_task(&app, &sandbox, &user, "Codex offline").await?;
+        // Watched before the start may go on, so what it says is heard.
+        let mut watch = app.runtime(&id).hub.watch();
+        gate.add_permits(8);
         wait_for("the failed start", Duration::from_secs(30), || async {
             task(&app, &id)
                 .await
@@ -534,13 +581,21 @@ fn a_codex_start_without_a_codex_cli_says_why() -> TestResult {
             app.deps.store.attempts(&id).await?.is_empty(),
             "nothing was spawned"
         );
+        // The terminal says why, never `codex: not found`.
+        let said = notices(&mut watch);
+        assert!(
+            said.iter()
+                .any(|n| n
+                    == "Could not start: the Codex CLI 0.169.0 could not be installed (offline)"),
+            "{said:?}"
+        );
         Ok::<_, Box<dyn std::error::Error>>(())
     })?;
     rt.shutdown_timeout(Duration::from_secs(5));
     Ok(())
 }
 
-/// SPEC-503 CDX-009, AC-451-2: a Codex task at its usage limit moves to another Codex account by
+/// SPEC-503 CDX-009, AC-503-2: a Codex task at its usage limit moves to another Codex account by
 /// a native resume of the same session, never to the Claude account, and the limited account is
 /// marked; Codex does not go on by itself, so the resume asks it to.
 #[test]
@@ -685,7 +740,7 @@ fn notices(watch: &mut tokio::sync::broadcast::Receiver<yulius_app::hub::HubFram
     said
 }
 
-/// SPEC-503 CDX-013, AC-451-7, with SPEC-447 (MOV-001, MOV-003, MOV-006): a Codex task moves only
+/// SPEC-503 CDX-013, AC-503-7, with SPEC-447 (MOV-001, MOV-003, MOV-006): a Codex task moves only
 /// between Codex subscriptions. A person's move to the Claude subscription is refused naming why;
 /// removing its Codex subscription moves it to the other Codex one in the same session, never to
 /// the Claude one that has room; removing that one too leaves it waiting, asking for a Codex
@@ -992,6 +1047,304 @@ fn a_gone_accounts_codex_credentials_leave_the_sandbox() -> TestResult {
             || async { !home.join("auth.json").exists() },
         )
         .await?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// SPEC-503 CDX-006 (slice C1 review): a Codex run Yulius records as lost (here its processes died
+/// with the server, and the next server finds them gone) still gets its write-back: the refreshed
+/// `auth.json` reaches the vault and the file leaves the sandbox, as after a run that ended.
+#[test]
+fn a_lost_codex_run_keeps_its_refresh_and_leaves_no_credentials() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built")?;
+    let (_dir, data) = temp()?;
+    let first = runtime()?;
+    let (task_id, account, pids, home) = first.block_on(async {
+        let app = build_full(&data, Some(&fake), FakeAgentOptions::default(), 8)?;
+        let (sandbox, user) = seed_records(&app).await?;
+        let account =
+            add_codex_account(&app, "a-codex", &codex_auth("2026-11-01T10:00:00Z")).await?;
+        seed_repo(&data, &sandbox)?;
+        let id = new_codex_task(&app, &sandbox, &user, "Codex lost").await?;
+        wait_for("the banner", Duration::from_secs(30), || {
+            screen_contains(&app, &id, "FAKE-AGENT READY")
+        })
+        .await?;
+        let attempt = app
+            .deps
+            .store
+            .live_attempt(&id)
+            .await?
+            .ok_or("no live attempt")?;
+        let home = data
+            .join("sandboxes")
+            .join(sandbox.as_str())
+            .join("codex")
+            .join(account.as_str());
+        // The host first, so it records no exit of the agent: the next server finds the run lost.
+        let pids: Vec<i64> = [attempt.ptyhost_pid, attempt.child_pid]
+            .into_iter()
+            .flatten()
+            .map(i64::from)
+            .collect();
+        Ok::<_, Box<dyn std::error::Error>>((id, account, pids, home))
+    })?;
+    first.shutdown_timeout(Duration::from_secs(5));
+    // Codex refreshed the sign-in during the run; then the run and its host died.
+    let refreshed = codex_auth(&ago(60_000));
+    std::fs::write(home.join("auth.json"), &refreshed)?;
+    for pid in &pids {
+        let _ = std::process::Command::new("kill")
+            .args(["-9", &pid.to_string()])
+            .status()?;
+    }
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    // Gone, or a zombie nobody reaped yet: no process runs.
+    let alive = |pid: &i64| {
+        std::fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|stat| {
+            stat.rsplit_once(')')
+                .is_some_and(|(_, rest)| !rest.trim_start().starts_with('Z'))
+        })
+    };
+    while pids.iter().any(alive) {
+        if std::time::Instant::now() >= deadline {
+            return Err("the run's processes did not end".into());
+        }
+        std::thread::yield_now();
+    }
+    let second = runtime()?;
+    second.block_on(async {
+        let app = build_full(&data, Some(&fake), FakeAgentOptions::default(), 8)?;
+        app.reconcile().await?;
+        wait_for("the task rests", Duration::from_secs(30), || async {
+            task(&app, &task_id)
+                .await
+                .is_ok_and(|t| !t.status.is_live())
+        })
+        .await?;
+        wait_for(
+            "the refresh in the vault and no auth.json left",
+            Duration::from_secs(30),
+            || async {
+                !home.join("auth.json").exists()
+                    && stored_credential(&app, &account)
+                        .await
+                        .is_ok_and(|stored| stored == refreshed)
+            },
+        )
+        .await?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    second.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// SPEC-503 CDX-006 (slice C1 review): the file stays while another run of the subscription lives
+/// in the sandbox, and goes once the last one ended: two Codex tasks of one sandbox on one
+/// subscription, the usual case.
+#[test]
+fn the_file_stays_while_another_run_of_the_subscription_lives() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built")?;
+    let (_dir, data) = temp()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let app = build_full(&data, Some(&fake), FakeAgentOptions::default(), 8)?;
+        let (sandbox, user) = seed_records(&app).await?;
+        let account =
+            add_codex_account(&app, "a-codex", &codex_auth("2026-11-01T10:00:00Z")).await?;
+        seed_repo(&data, &sandbox)?;
+        let home = data
+            .join("sandboxes")
+            .join(sandbox.as_str())
+            .join("codex")
+            .join(account.as_str());
+        let first = new_codex_task(&app, &sandbox, &user, "Codex one").await?;
+        let second = new_codex_task(&app, &sandbox, &user, "Codex two").await?;
+        for id in [&first, &second] {
+            wait_for("the banner", Duration::from_secs(30), || {
+                screen_contains(&app, id, "FAKE-AGENT READY")
+            })
+            .await?;
+        }
+        // The first run refreshed the sign-in and ends: its refresh reaches the vault.
+        let refreshed = codex_auth(&ago(60_000));
+        std::fs::write(home.join("auth.json"), &refreshed)?;
+        app.send_input(&first, b"/exit\r").await?;
+        wait_for(
+            "the refresh in the vault",
+            Duration::from_secs(30),
+            || async {
+                stored_credential(&app, &account)
+                    .await
+                    .is_ok_and(|stored| stored == refreshed)
+            },
+        )
+        .await?;
+        // The second run still uses the file: it stays, watched for a while after the write-back.
+        let watched = std::time::Instant::now();
+        while watched.elapsed() < Duration::from_secs(2) {
+            assert!(
+                home.join("auth.json").exists(),
+                "auth.json removed under a live run of the subscription"
+            );
+            tokio::task::yield_now().await;
+        }
+        assert!(task(&app, &second).await?.status.is_live());
+        app.send_input(&second, b"/exit\r").await?;
+        wait_for(
+            "no auth.json once the last run ended",
+            Duration::from_secs(30),
+            || async { !home.join("auth.json").exists() },
+        )
+        .await?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// SPEC-503 (slice C1 review): a Codex task in goal mode, the default for a task from the API and
+/// every automation's, gets its whole request as its first message: no `/goal`, which Codex takes
+/// only typed, and no goal for Yulius to watch.
+#[test]
+fn a_codex_goal_task_gets_its_request_as_its_first_message() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built")?;
+    let (_dir, data) = temp()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let app = build_full(&data, Some(&fake), FakeAgentOptions::default(), 8)?;
+        let (sandbox, user) = seed_records(&app).await?;
+        let account =
+            add_codex_account(&app, "a-codex", &codex_auth("2026-11-01T10:00:00Z")).await?;
+        seed_repo(&data, &sandbox)?;
+        let id = new_codex_task_in(
+            &app,
+            &sandbox,
+            &user,
+            "Codex goal",
+            yulius_app::model::TaskMode::Goal,
+        )
+        .await?;
+        wait_for("the banner", Duration::from_secs(30), || {
+            screen_contains(&app, &id, "FAKE-AGENT READY")
+        })
+        .await?;
+        let attempt = app
+            .deps
+            .store
+            .live_attempt(&id)
+            .await?
+            .ok_or("no live attempt")?;
+        let run_dir = Path::new(&attempt.run_dir);
+        let launch = std::fs::read_to_string(run_dir.join("fake-launch.txt"))?;
+        assert!(
+            launch.contains("Codex goal: answer with an echo"),
+            "{launch}"
+        );
+        assert!(!launch.contains("/goal"), "{launch}");
+        for marker in ["launch-goal-pending", "typed-goal-pending"] {
+            assert!(!run_dir.join(marker).exists(), "{marker}");
+        }
+        // Without a model of its own it runs its subscription's default: no Claude model is
+        // recorded for the run or named for the task (CDX-013).
+        assert_eq!(attempt.model, None);
+        let ctx = admin_ctx(&app, &user).await?;
+        let detail = app.task_detail(&ctx, id.as_str()).await?;
+        assert!(!detail.model.starts_with("claude"), "{}", detail.model);
+        assert!(detail.model_default);
+        // Its turns end it as a prompt-mode task's do: with every Codex subscription used up, a
+        // turn's Stop is not held for capacity as a goal's would be, so the next line is read.
+        let full = yulius_domain::usage::AccountUsage {
+            primary: Some(yulius_domain::usage::UsageWindow {
+                used_percent: Some(100.0),
+                window_minutes: Some(300),
+                resets_at: Some(Timestamp(4_000_000_000_000)),
+            }),
+            limit_reached: true,
+            limit_resets_at: Some(Timestamp(4_000_000_000_000)),
+            ..yulius_domain::usage::AccountUsage::default()
+        };
+        app.deps
+            .store
+            .set_account_state(
+                &account,
+                AccountStatus::Limited,
+                Some(&yulius_app::usage_json::to_json(&full)),
+                None,
+                app.now(),
+            )
+            .await?;
+        app.send_input(&id, b"first-after-full\r").await?;
+        wait_for("its echo", Duration::from_secs(30), || {
+            screen_contains(&app, &id, "ECHO: first-after-full")
+        })
+        .await?;
+        app.send_input(&id, b"second-after-full\r").await?;
+        wait_for("the next line read", Duration::from_secs(30), || {
+            screen_contains(&app, &id, "ECHO: second-after-full")
+        })
+        .await?;
+        let status = task(&app, &id).await?.status;
+        assert_ne!(
+            status,
+            TaskStatus::WaitingCapacity,
+            "paused at its Stop like a goal"
+        );
+        app.send_input(&id, b"/exit\r").await?;
+        wait_for("the run's end", Duration::from_secs(30), || async {
+            task(&app, &id).await.is_ok_and(|t| !t.status.is_live())
+        })
+        .await?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// SPEC-503 (slice C1 review): a Codex task takes no Claude model later either: setting one is
+/// refused as at creation, since the run would fail at start; going back to the default works.
+#[test]
+fn a_codex_task_refuses_a_claude_model_set_later() -> TestResult {
+    let (_dir, data) = temp()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let app = build_full(&data, None, FakeAgentOptions::default(), 8)?;
+        let (sandbox, user) = seed_records(&app).await?;
+        let record = app
+            .create_task_internal(NewTask {
+                sandbox: sandbox.clone(),
+                created_by: user.clone(),
+                prompt: "Codex later: answer with an echo".into(),
+                harness: Harness::Codex,
+                title: Some("Codex later".into()),
+                workflow_id: None,
+                steps: Vec::new(),
+                model: None,
+                effort: None,
+                origin: TaskOrigin::Ui,
+                automation_run: None,
+                start: false,
+                mode: yulius_app::model::TaskMode::Prompt,
+                supertask: false,
+            })
+            .await?;
+        let ctx = admin_ctx(&app, &user).await?;
+        let refused = app
+            .set_task_model(&ctx, record.id.as_str(), Some("claude-opus-5-5"), None)
+            .await;
+        assert!(
+            matches!(refused, Err(yulius_app::error::AppError::Invalid(ref why)) if why.contains("OpenAI model")),
+            "{refused:?}"
+        );
+        assert_eq!(task(&app, &record.id).await?.model, None);
+        app.set_task_model(&ctx, record.id.as_str(), Some("gpt-synthetic"), None)
+            .await?;
+        assert_eq!(
+            task(&app, &record.id).await?.model.as_deref(),
+            Some("gpt-synthetic")
+        );
         Ok::<_, Box<dyn std::error::Error>>(())
     })?;
     rt.shutdown_timeout(Duration::from_secs(5));

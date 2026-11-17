@@ -651,6 +651,17 @@ pub trait AccountStore: Send + Sync {
         status: AccountStatus,
         at: Timestamp,
     ) -> AppResult<()>;
+    /// Replaces the sealed credential with `refreshed`, a refresh of the same sign-in (a Codex
+    /// run's `auth.json`, SPEC-503 CDX-006), only while the account still holds `previous`:
+    /// status, error, usage and email stay as they are, so no status read earlier is written
+    /// back. `false` when the account holds another credential (signed in again meanwhile).
+    async fn refresh_account_credential(
+        &self,
+        id: &AccountId,
+        previous: &Sealed,
+        refreshed: &Sealed,
+        at: Timestamp,
+    ) -> AppResult<bool>;
     /// Stores status, usage snapshot and error.
     async fn set_account_state(
         &self,

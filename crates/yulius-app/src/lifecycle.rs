@@ -57,6 +57,19 @@ pub struct NewTask {
     pub supertask: bool,
 }
 
+/// Codex runs OpenAI's models: a Claude model, given at creation or set later, would make its run
+/// fail at start (SPEC-503).
+pub(crate) fn codex_takes_no_claude_model(harness: Harness, model: Option<&str>) -> AppResult<()> {
+    if harness == Harness::Codex
+        && model.is_some_and(|m| m.trim().to_ascii_lowercase().starts_with("claude"))
+    {
+        return Err(AppError::Invalid(
+            "a Codex task takes an OpenAI model, not a Claude one".into(),
+        ));
+    }
+    Ok(())
+}
+
 fn parse_harness(text: &str) -> AppResult<Harness> {
     Harness::parse(text).map_err(|_| AppError::Invalid("harness must be claude or codex".into()))
 }
@@ -327,17 +340,7 @@ impl App {
         let sid = sid.clone();
         self.require(user, &sid, Action::Work).await?;
         let harness = parse_harness(&req.harness)?;
-        // Codex runs OpenAI's models: a Claude model would make its run fail at start (SPEC-503).
-        if harness == Harness::Codex
-            && req
-                .model
-                .as_deref()
-                .is_some_and(|m| m.trim().to_ascii_lowercase().starts_with("claude"))
-        {
-            return Err(AppError::Invalid(
-                "a Codex task takes an OpenAI model, not a Claude one".into(),
-            ));
-        }
+        codex_takes_no_claude_model(harness, req.model.as_deref())?;
         // New tasks run in goal mode unless the user picks prompt mode (TSK-010); `auto` lets Jev
         // choose (TSK-015).
         let mode = match req.mode.as_deref().map(str::trim) {

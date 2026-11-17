@@ -191,6 +191,9 @@ pub struct FakeAgentOptions {
     pub provided_codex: Option<yulius_app::ports::harness::ProvidedCli>,
     /// The Codex CLI cannot be provided, for this reason (SPEC-503 CLI-002).
     pub codex_unavailable: Option<String>,
+    /// Each answer about the Codex CLI waits for a permit of this gate (a test watches the task
+    /// before its start goes on).
+    pub codex_gate: Option<std::sync::Arc<tokio::sync::Semaphore>>,
 }
 
 /// See the module docs.
@@ -221,7 +224,11 @@ impl HarnessPort for FakeAgentHarness {
         }
         let provided = self.options.provided_codex.clone();
         let unavailable = self.options.codex_unavailable.clone();
+        let gate = self.options.codex_gate.clone();
         Box::pin(async move {
+            if let Some(gate) = gate {
+                let _permit = gate.acquire_owned().await;
+            }
             match unavailable {
                 Some(reason) => Err(yulius_app::error::AppError::Upstream(reason)),
                 None => Ok(provided),

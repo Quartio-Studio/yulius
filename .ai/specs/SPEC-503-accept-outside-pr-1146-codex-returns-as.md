@@ -119,7 +119,7 @@ Five pull requests, each merged into `dev` on green before the next begins.
 - [x] Slice A: later review findings answered and the slice delivered
 - [x] Slice B: Codex CLI 0.169.0 checked against the integration and pinned
 - [x] Slice B: Yulius installs the pinned Codex CLI into its data directory
-- [ ] Slice B: review findings fixed and the slice delivered
+- [x] Slice B: review findings fixed and the slice delivered
 - [x] Slice C1: a Codex task runs in the supervisor (homes, session id, hooks, write-back, rotation)
 - [x] Slice C1: the fake agent speaks Codex and integration tests cover a Codex task
 - [ ] Slice C1: review findings fixed and the slice delivered

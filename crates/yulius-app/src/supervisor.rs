@@ -1891,7 +1891,7 @@ impl App {
         // way: a Codex task gets its whole request, the definition of done included, as its first
         // message, and its turns end it as a prompt-mode task's do (SPEC-503).
         let codex = harness == Harness::Codex;
-        let goal_mode = task.mode == TaskMode::Goal && !codex;
+        let goal_mode = task.follows_goal();
         // A prompt-mode first message with attached images is typed into the TUI, not given on
         // the command line: Claude Code attaches only a pasted image natively (SPEC-030).
         let mut typed_opening = None;
@@ -2177,10 +2177,13 @@ impl App {
         let seq = u32::try_from(earlier.len() + 1).unwrap_or(u32::MAX);
         let own = task.model.as_deref().unwrap_or(DEFAULT_CLAUDE_MODEL);
         let model = fallback.unwrap_or(own);
+        // A Codex task without a model runs its subscription's default: no Claude model is
+        // recorded for it, and the Claude models' fallbacks say nothing (SPEC-503 CDX-013).
+        let codex_default = harness == Harness::Codex && task.model.is_none();
         // Said once per change of the model (SPEC-482 FBK-008): at the launch that falls back,
         // and at the first one that runs the task's own model again.
         let before = earlier.last().and_then(|run| run.model.as_deref());
-        if let Some(said) = model_change_notice(own, before, model) {
+        if let Some(said) = model_change_notice(own, before, model).filter(|_| !codex_default) {
             self.runtime(&task.id).hub.notice(said);
         }
         // Past the limit of a model the session's person switched it to (SPEC-493 MDL-002): said
@@ -2207,7 +2210,7 @@ impl App {
             account_id: Some(account.id.clone()),
             provider_session_id: plan.session_id.clone(),
             launch_kind,
-            model: Some(model.to_owned()),
+            model: (!codex_default).then(|| model.to_owned()),
             state: AttemptState::Spawning,
             run_dir: run_dir.to_string_lossy().into_owned(),
             token_hash: self.deps.crypto.sha256_hex(task_token.as_bytes()),
@@ -3110,6 +3113,23 @@ impl App {
     ///
     /// `attempt` is the run that ended, left out of the runs still using the file; `None` for a
     /// launch that ended before its run was live (`CodexLeftover`).
+    /// After a Codex run ended or was lost: its write-back ([`Self::write_back_codex_auth`]) on a
+    /// task of its own, which waits for the launch lock, so neither the run's end nor a caller
+    /// holding that lock waits for it.
+    async fn codex_run_ended(self: &Arc<Self>, task_id: &TaskId, attempt_id: &AttemptId) {
+        if let Ok(Some(attempt)) = self.deps.store.attempt(attempt_id).await
+            && attempt.harness == Harness::Codex
+            && let Some(account) = attempt.account_id
+        {
+            let app = Arc::clone(self);
+            let task = task_id.clone();
+            tokio::spawn(async move {
+                app.write_back_codex_auth(&task, &account, Some(&attempt.id))
+                    .await;
+            });
+        }
+    }
+
     async fn write_back_codex_auth(
         &self,
         task_id: &TaskId,
@@ -3132,10 +3152,11 @@ impl App {
                         && a.harness == Harness::Codex
                         && a.account_id.as_ref() == Some(account_id)
                 }) {
-                    if let Ok(Some(t)) = self.deps.store.task(&other.task_id).await
-                        && t.sandbox_id == task.sandbox_id
-                    {
-                        others = true;
+                    // A task that cannot be read may be in this sandbox: its run keeps the file.
+                    match self.deps.store.task(&other.task_id).await {
+                        Ok(Some(t)) if t.sandbox_id != task.sandbox_id => {}
+                        Ok(None) => {}
+                        Ok(Some(_)) | Err(_) => others = true,
                     }
                 }
                 others
@@ -3201,15 +3222,23 @@ impl App {
                 return String::from_utf8(stored).ok().map(Secret);
             }
         };
+        // Only the credential changes, and only while it is the one this refresh is of: the
+        // status, error and email stay (a status read above is never written back), and a new
+        // sign-in made meanwhile wins.
+        let previous = account.credential.as_ref()?;
         match self
             .deps
             .store
-            .set_account_credential(account_id, &sealed, account.status, self.now())
+            .refresh_account_credential(account_id, previous, &sealed, self.now())
             .await
         {
-            Ok(()) => {
+            Ok(true) => {
                 tracing::info!(account = %account_id, "refreshed Codex credentials kept");
                 String::from_utf8(fresh).ok().map(Secret)
+            }
+            Ok(false) => {
+                tracing::info!(account = %account_id, "signed in again meanwhile: the Codex refresh is not kept");
+                None
             }
             Err(err) => {
                 tracing::error!(error = %err, "could not store refreshed Codex credentials");
@@ -3538,6 +3567,9 @@ impl App {
         if !first {
             return; // another observer already recorded the outcome
         }
+        // A lost Codex run's processes are gone too: its refresh is kept and its file goes, as
+        // after a run that ended (SPEC-503 CDX-006).
+        self.codex_run_ended(task_id, attempt_id).await;
         let mut reason = reason;
         if let Some(rt) = &runtime
             && let Ok(mut intent) = rt.intent.lock()
@@ -3681,13 +3713,7 @@ impl App {
         // there: that version gets no other session (SPEC-461 CCM-013).
         self.claude_code_run_ended(task_id, attempt_id, session_started, intent.is_none())
             .await;
-        if let Ok(Some(attempt)) = store.attempt(attempt_id).await
-            && attempt.harness == Harness::Codex
-            && let Some(account) = &attempt.account_id
-        {
-            self.write_back_codex_auth(task_id, account, Some(&attempt.id))
-                .await;
-        }
+        self.codex_run_ended(task_id, attempt_id).await;
         // The snapshot is the run's once its watcher read the run's transcript to its end;
         // otherwise it is empty or partial, and the transcript is counted (SPEC-143 RDM-001).
         let read = runtime
@@ -5435,7 +5461,17 @@ impl App {
             // (SPEC-503 CDX-003).
             if now.millis_since(last_drift_check) > 5_000 {
                 last_drift_check = now;
-                if session_id.is_none()
+                let mut named = self
+                    .deps
+                    .store
+                    .attempt(&attempt.id)
+                    .await
+                    .ok()
+                    .flatten()
+                    .and_then(|named| named.provider_session_id);
+                // The rollouts are read only while no hook has named the session yet.
+                if named.is_none()
+                    && session_id.is_none()
                     && attempt.harness == Harness::Codex
                     && let Ok(Some((id, _))) = self.deps.harness.discover_codex_session(
                         &self.codex_sessions(&sandbox.id),
@@ -5444,9 +5480,9 @@ impl App {
                     )
                 {
                     let _ = self.deps.store.set_attempt_session(&attempt.id, &id).await;
+                    named = Some(id);
                 }
-                if let Ok(Some(named)) = self.deps.store.attempt(&attempt.id).await
-                    && let Some(id) = named.provider_session_id
+                if let Some(id) = named
                     && session_id.as_deref() != Some(id.as_str())
                 {
                     let _ = self

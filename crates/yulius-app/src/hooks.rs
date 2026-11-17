@@ -941,7 +941,7 @@ impl App {
         let reasons = self.stop_reasons(task).await?;
         let gate_continues = !reasons.is_empty() && task.gate_blocks < MAX_GATE_BLOCKS;
         // Would the agent work on after this boundary (a gate block, or its goal)?
-        let continues = gate_continues || task.mode == TaskMode::Goal;
+        let continues = gate_continues || task.follows_goal();
 
         // The turn boundary: stay, move to another subscription, or pause (ROT-003, ROT-010).
         self.runtime(&task.id)

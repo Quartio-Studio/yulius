@@ -189,6 +189,31 @@ impl AccountStore for SqliteStore {
         .await
     }
 
+    async fn refresh_account_credential(
+        &self,
+        id: &AccountId,
+        previous: &Sealed,
+        refreshed: &Sealed,
+        at: Timestamp,
+    ) -> AppResult<bool> {
+        let (id, previous, refreshed) = (
+            id.as_str().to_owned(),
+            previous.0.clone(),
+            refreshed.0.clone(),
+        );
+        self.call(move |c| {
+            let changed = c
+                .execute(
+                    "UPDATE accounts SET credential = ?1, updated_at = ?2 \
+                     WHERE id = ?3 AND credential = ?4",
+                    params![refreshed, at.0, id, previous],
+                )
+                .map_err(db)?;
+            Ok(changed == 1)
+        })
+        .await
+    }
+
     async fn set_account_state(
         &self,
         id: &AccountId,
