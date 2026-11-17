@@ -24,10 +24,13 @@ quarantined one.
   the integration branch, and the integration branch did not fail it in that window. A test the
   integration branch fails is broken there, not flaky. A chained pull request carries its
   predecessor's commits, and a pull request recreated from the same branch carries its own: a
-  break in those fails both, so they count as one change (Git's merge base of the two heads must
-  be on the integration branch; a pair Git cannot answer counts as one change). Tests are named as
+  break in those fails both, so they count as one change: every merge base of the two heads
+  (`merge-base --all`; heads that both merged a newer integration commit have it and the shared
+  commit as bases) must be on the integration branch, and a pair Git cannot answer (a head the
+  clone lacks) counts as one change. Tests are named as
   their failing blocks name them (`crate tests::name` for nextest, `tests::name` for libtest).
-  Only names of letters, digits, `_ : - . /` and one space are quarantined: they go into a filter,
+  Only names of at most 200 bytes (the issue's title stays within GitHub's 256) of letters,
+  digits, `_ : - . /` and one space are quarantined: they go into a filter,
   an issue's text and the environment, where a backtick, an `@` or a control character could do
   harm.
 - **Kept**: when a job fails, its kept failing tests are recorded (`ci_test_failures`, migration
@@ -38,8 +41,9 @@ quarantined one.
 - **Quarantined at once, with one issue**: the job whose failure makes the test flaky files an
   issue in the project's repository through the GitHub App. The issue is in the Definition of
   Ready's form (labels `type: bug`, `priority: high`, `area: ci`, `flaky test`) and names the
-  pull requests. The test goes into `ci_quarantine`, keyed by sandbox and test. One quarantine is
-  decided at a time, and the list is read again under that lock, so two jobs that fail the test at
+  pull requests. The test goes into `ci_quarantine`, keyed by sandbox and test. One quarantine of
+  a sandbox is decided at a time (a slow GitHub holds only that project), and the list is read
+  again under that lock, so two jobs that fail the test at
   once file one issue; the second job's output names it. The job's output and reason say so
   ("quarantined as a flaky test (issue #N)"), and an audit entry `ci.test.quarantined` is
   written. If the issue cannot be filed, nothing is quarantined and the output says why (the

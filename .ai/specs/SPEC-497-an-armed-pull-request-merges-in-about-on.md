@@ -611,6 +611,26 @@ mode.
     the binary match. Nits: the release audited only when it was recorded, with the job; a
     sandbox gone or removed loses its quarantines; ADR-0356's recipe with `${…:+…}`;
     `job_key` is read by the release's audit.
+- Review round 2 of the quarantine (Fable 5.2, head 49b46c83d). Request changes, own code.
+  Answered:
+  - Major: two chained heads that both merged a newer `dev` commit have two merge bases, and
+    plain `git merge-base` named the `dev` one (probed by the reviewer with Git 2.53), so they
+    read as unrelated; and the adapter turned every Git error into "no base", read as unrelated.
+    `GitPort::merge_bases` (`merge-base --all`, an error stays an error; `yulius-git` test
+    `merge_bases_lists_every_best_common_ancestor`: a criss-cross history's two bases, none for
+    an orphan, an unknown revision an error); two heads are one change unless every base is on
+    the integration branch. `no_quarantine_when_the_integration_branch_or_a_shared_commit_fails_it`
+    now merges a newer `dev` commit into both chained branches (both fail, no issue) and asks
+    about a head the clone lacks (no quarantine). Undone by hand, both cases fail.
+  - Nits: names at most 200 bytes (the title within 256; unit at 200 and 201); the line for a
+    test already quarantined says a job started before it, or a gate not reading the variable,
+    still runs it; the lock is per sandbox (`CiState::quarantine_locks`); `cargo xtask test`
+    prints its listing step and shows its compile output.
+- Checks run after review round 2: `cargo fmt --check`; `cargo clippy --workspace
+  --all-targets -D warnings`; rustdoc of `yulius-app`, `yulius-domain`, `yulius-git` with
+  warnings denied; the unit tests of `yulius-domain`, `yulius-store`, `yulius-app`,
+  `yulius-github`, `yulius-git`, `xtask` (1,430 passed); `local_ci::` and `analytics::` (105
+  passed); `yulius-domain` doctests (24 passed).
 - Leftovers of #1373's and #1377's reviews: an older client's `docker:` prefix before its socket
   words counts (unit case in `a_failure_of_the_change_is_never_the_infrastructures`, failing
   before the fix); the CI's CPU pressure is logged at `debug` (`cpu_pressure_permille`) where it
