@@ -161,7 +161,8 @@ mode.
 - [x] Slice B: review round 1 answered: reruns tied to the failure, minutes kept per day
 - [x] Slice A2: CI wait job-minutes per hour and host busy % measured and shown
 - [x] Slice B: documents and ADR of the reruns and minutes
-- [ ] Slice B: the reruns and minutes' review rounds
+- [x] Slice B: the reruns and minutes' review rounds 1 to 3 answered
+- [ ] Slice B: the reruns and minutes' last review round
 - [ ] Slice B: flaky tests quarantined with an issue, the project told
 - [ ] Slice B: quarantine documents, ADR and review
 - [ ] Slice C: a failed member leaves without cancelling the candidate
