@@ -72,14 +72,23 @@ outage). Commit and push with `om-check-and-commit`, and claim nothing without f
 The author never reviews alone. Start the independent code review with the Agent tool and the
 `yulius-reviewer` agent: Yulius picks the round's model (Fable 5.2 for a pull request's first two
 rounds, then Opus 5.5). It has **no shared context**: give it only the diff range
-(`<integration>...HEAD`), the spec path and the `om-code-review` skill (outside Yulius: a subagent
+(`<integration>...HEAD`), the spec path and the `om-code-review` skill, and for a later round the
+author's answers to the last report (outside Yulius: a subagent
 or a new session with no shared context). It is read-only: no edits, commits or label changes. It
-judges the code and the tests separately, runs the gates, and returns a verdict for the exact head
-commit.
+judges the code and the tests separately, reads the head's Yulius CI run, runs the tests it doubts,
+and returns a verdict for the exact head commit.
+A reviewer does not ask for changes because of CI alone: `delivery_merge` merges only a head whose
+own Yulius CI run passed. When the review finds nothing to fix and the head's run is still going, or
+failed in a way the change does not cause, the verdict is approve and the report says what CI still
+has to do. A failure the change causes (its own test, format or lint, or a contract its files break)
+is a blocker.
 
 - Every finding is checked on its merits (is it true here?), then fixed test-first: a test that
   shows the problem, then the fix. Answer each finding in the pull request.
-- Re-review after fixes, up to 3 rounds.
+- Re-review after fixes, up to 3 rounds. Before asking for another round, answer each finding of the
+  last report with the test that fails without its fix (or why no test can), check every finding of
+  that report against the new head, and run the project's mutation command on the lines of the fix
+  where it can take them.
 - After an approval, fix the remaining nits within 20 product lines and merge without another round:
   `delivery_merge` with the approved head counts them (tests and documents do not count). More than
   that, or a file leaving the change, needs a new round. A usage limit can cut a reviewer off before its report: resume that same reviewer with SendMessage to its agent id, never start a new one for the same round. A reviewer runs at high effort, never max.

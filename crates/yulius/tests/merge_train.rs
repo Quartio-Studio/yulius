@@ -1005,6 +1005,7 @@ async fn a_red_candidate_is_bisected_and_the_breaking_pull_request_told() -> Tes
             "The merge you armed was dropped: pull request #3 merged into the current `dev` \
              together with #1, #2 failed (merge candidate run"
         ) && outcome.contains("and #1, #2 passed without it on the same `dev`")
+            && outcome.contains(yulius_domain::review::KEEP_APPROVAL)
             && outcome.contains("its own run at")
             && outcome.contains("passed."),
         "{outcome}"
@@ -1070,7 +1071,10 @@ async fn a_member_left_out_is_blamed_only_when_the_others_pass_without_it() -> T
     assert!(
         outcome(1)
             .await?
-            .contains("merged into the current `dev` it fails"),
+            .contains("merged into the current `dev` it fails")
+            && outcome(1)
+                .await?
+                .contains(yulius_domain::review::KEEP_APPROVAL),
         "{}",
         outcome(1).await?
     );

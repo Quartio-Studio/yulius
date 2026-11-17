@@ -34,6 +34,11 @@ gates.
    the `yulius-reviewer` agent: Yulius picks the round's model (Fable 5.2 for a pull
    request's first two rounds, then Opus 5.5). Then fix each finding in the change's own
    code test-first, never deferring it ([Review output](#review-output)).
+   A reviewer does not ask for changes because of CI alone: `delivery_merge` merges only a
+   head whose own Yulius CI run passed. When the review finds nothing to fix and the
+   head's run is still going, or failed in a way the change does not cause, the verdict is
+   approve and the report says what CI still has to do. A failure the change causes (its
+   own test, format or lint, or a contract its files break) is a blocker.
 6. **Deliver and hand off:** for authorized delivery, follow the [Git sequence](git.md) to a
    verified merge into dev (`delivery_merge` with the reviewed head); promotion to main is a
    person's. Report changed behavior, exact evidence and unresolved limits. Update the spec
@@ -87,6 +92,11 @@ Findings in the change's own code are fixed, never deferred
    dev before this change").
 3. The reviewer classifies each finding as own code or pre-existing, and the pull request
    answers every finding. Deferring an own-code finding makes the verdict request changes.
+
+Before asking for another round, answer each finding of the last report with the test that
+fails without its fix (or why no test can), check every finding of that report against the
+new head, and run the project's mutation command on the lines of the fix where it can take
+them. Here: `scripts/dev mutants --base <reviewed head>`.
 
 Do not invent issues for balance. For changes to existing mechanisms, identify the
 old guarantee and test it under the new default configuration.

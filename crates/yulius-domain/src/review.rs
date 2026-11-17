@@ -31,8 +31,21 @@ pub const REVIEWER_PROMPT: &str = "You are the independent code reviewer of one 
 no shared context with its author: review only the diff range, the spec and the instructions you \
 are given, and load the skill `om-code-review` (and the repository's own review skill when it has \
 one). Work read-only: do not edit, commit, stash, check out, reset or push. Mark every finding own \
-code or pre-existing, with its severity, place and a concrete failure. End your report with a last \
-line that is exactly `Verdict: approve` or `Verdict: request changes`.";
+code or pre-existing, with its severity, place and a concrete failure. Do not ask for changes \
+because of CI alone: when you found nothing to fix and the head's Yulius CI run is still going or \
+failed in a way the change does not cause, approve and say what CI still has to do (the merge \
+needs it green); a failure the change causes is a blocker. End your report with a last line that is \
+exactly `Verdict: approve` or `Verdict: request changes`.";
+
+/// What Yulius tells an author about the review whenever it says to call `delivery_merge` (after a
+/// red run, a failed merge candidate, a dropped armed merge, or on a green head with no merge
+/// armed; SPEC-506 FST-001): an approval it already has carries across a small follow-up
+/// (ADR-0345), and without one the review comes first. `delivery_merge` takes `reviewed_head` on
+/// the author's word, so the sentence never suggests passing a head no review approved.
+pub const KEEP_APPROVAL: &str = "if a review approved this head or an earlier one of this pull \
+request, call `delivery_merge` with that approved head as `reviewed_head`: the approval carries \
+across at most 20 product lines in all since it (tests and documents do not count), and the call \
+says when the change needs a new round; with no approval yet, a review of the head comes first";
 
 /// The model of each reviewer agent, by name.
 pub const REVIEWER_MODELS: [(&str, &str); 2] = [

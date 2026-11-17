@@ -773,10 +773,10 @@ impl App {
             }
             return Verdict::Decided(format!(
                 "The merge you armed was dropped: you armed {} with `delivery_merge`, but the \
-                 branch is now at {}. Get the independent review of the new head and call \
-                 `delivery_merge` again.",
+                 branch is now at {}. To merge the new head, {}.",
                 short(&armed.head),
-                head.as_deref().map_or("an unknown commit", short)
+                head.as_deref().map_or("an unknown commit", short),
+                yulius_domain::review::KEEP_APPROVAL
             ));
         }
         let user = match self.deps.store.user(&task.owner).await {
@@ -868,10 +868,10 @@ impl App {
         if checks == "failure" {
             return Verdict::Decided(format!(
                 "The merge you armed was dropped: the checks of pull request #{} failed at \
-                 {}. Read why with `ci_status`, fix it test-first, get the review of the new \
-                 head and call `delivery_merge` again.",
+                 {}. Read why with `ci_status`, fix it test-first, commit, then {}.",
                 pr.number,
-                short(&armed.head)
+                short(&armed.head),
+                yulius_domain::review::KEEP_APPROVAL
             ));
         }
         // Its own run (the pre-check) finishes on its own head: moving the head now would only
