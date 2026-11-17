@@ -482,4 +482,9 @@ the run's start (baseline included) until the n-th mutant ended, read from each 
   `quality` is the long pole, and the cold builds. The pre-existing finding is issue #1401. Not
   changed: the card's six tiles leave a second row of two in its four-column grid, and long labels
   are cut at 390 px as two earlier ones already are (cosmetic).
+- PR #1400's run `6cfb6074` failed in `account_email::a_typed_email_outlives_sign_ins_until_it_is_removed`,
+  outside this change: it failed on dev too (1 in 22 under `--stress-count`) and on the branch (1
+  in 27). Its removal's answer can already show Claude's address when a background usage round
+  answers first; the test now asserts the typed address is gone and the one shown is none or
+  Claude's: 100 of 100. The other test with that assertion passed 100 of 100 unchanged.
 
