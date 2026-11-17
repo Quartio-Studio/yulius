@@ -3550,112 +3550,296 @@ async fn a_kill_without_a_kill_for_memory_is_not_run_again() -> TestResult {
     Ok(())
 }
 
-/// SPEC-497 OFC-002: a test that fails in the runs of two different pull requests is quarantined
-/// at once with one issue, the job that found it says so, a later job of the project is told it
-/// in its environment, and closing the issue ends the quarantine. The failing test is never run
-/// again by Yulius (each pull request's job ran once).
-#[tokio::test]
-async fn a_test_failing_on_two_pull_requests_is_quarantined_with_an_issue() -> TestResult {
+/// A job that fails nextest's way on `app tests::flaky` when any of `files` is in its checkout,
+/// and prints the nextest filter it was given.
+fn flaky_job(files: &[&str]) -> String {
     let block = "printf \"        FAIL [   0.004s] (1/1) app tests::flaky\\n  stdout ───\\n\\n    \
                  assertion failed: the race lost\\n\\n\"; exit 100";
-    let f = fixture_with(false, |_| {
-        format!(
-            "[[ci.jobs]]\nname = \"quality\"\ncommand = 'echo \"q=[$YULIUS_CI_QUARANTINE_NEXTEST]\"; \
-             if [ -e feature.txt ] || [ -e two.txt ]; then {block}; fi'\n"
-        )
-    })
-    .await?;
-    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
-    f.settle().await?;
-    assert!(
-        f.h.github.issues.lock().map_err(|_| "lock")?.is_empty(),
-        "one pull request is not enough"
-    );
-    // A second pull request, from dev, fails the same test.
-    git(&f.work, &["checkout", "-q", "-b", "feat/two", "origin/dev"])?;
-    std::fs::write(f.work.join("two.txt"), "two\n")?;
+    let test = files
+        .iter()
+        .map(|f| format!("[ -e {f} ]"))
+        .collect::<Vec<_>>()
+        .join(" || ");
+    format!(
+        "[[ci.jobs]]\nname = \"quality\"\ncommand = 'echo \"q=[$YULIUS_CI_QUARANTINE_NEXTEST]\"; \
+         if {test}; then {block}; fi'\n"
+    )
+}
+
+/// Opens pull request `number` from a new branch `branch` made from `from` with `file` added;
+/// its head.
+fn open_pull(f: &Fixture, number: u64, branch: &str, from: &str, file: &str) -> BoxResult<String> {
+    git(&f.work, &["checkout", "-q", "-b", branch, from])?;
+    std::fs::write(f.work.join(file), "x\n")?;
     git(&f.work, &["add", "-A"])?;
-    git(&f.work, &["commit", "-q", "-m", "two"])?;
-    git(&f.work, &["push", "-q", "origin", "feat/two"])?;
-    let two = git(&f.work, &["rev-parse", "HEAD"])?;
+    git(&f.work, &["commit", "-q", "-m", file])?;
+    git(&f.work, &["push", "-q", "origin", branch])?;
+    let head = git(&f.work, &["rev-parse", "HEAD"])?;
     git(&f.work, &["checkout", "-q", "feat/one"])?;
     if let Ok(mut pulls) = f.h.github.pulls.lock() {
         pulls.push(GhPull {
-            number: 2,
-            html_url: "https://github.test/acme/app/pull/2".into(),
-            title: "Two".into(),
+            number,
+            html_url: format!("https://github.test/acme/app/pull/{number}"),
+            title: branch.into(),
             state: "open".into(),
             merged: false,
             base: "dev".into(),
-            head: "feat/two".into(),
-            head_sha: two,
+            head: branch.into(),
+            head_sha: head.clone(),
             mergeable: None,
             behind: false,
             from_fork: false,
             merge_commit_sha: None,
         });
     }
-    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
-    f.settle().await?;
-    let issues = f.h.github.issues.lock().map_err(|_| "lock")?.clone();
-    assert_eq!(issues.len(), 1, "{issues:?}");
-    assert_eq!(
-        issues[0].1.title,
-        "Flaky test quarantined: app tests::flaky"
-    );
+    Ok(head)
+}
+
+/// The only job of the run of `reference` (`pr/2`) or at `sha`, with its output.
+async fn job_of(f: &Fixture, key: &str, value: &str) -> BoxResult<Value> {
     let overview = f.get("/api/sandboxes/s1/ci").await?;
-    let second = overview["runs"]
+    let run = overview["runs"]
         .as_array()
         .ok_or("runs")?
         .iter()
-        .find(|r| r["reference"] == "pr/2")
-        .ok_or("pr/2's run")?
+        .find(|r| r[key] == value)
+        .ok_or_else(|| format!("no run with {key} {value}: {overview}"))?
         .clone();
-    let job = run_jobs(&f, &second)
-        .await?
-        .into_iter()
-        .next()
-        .ok_or("job")?;
+    Ok(run_jobs(f, &run).await?.into_iter().next().ok_or("job")?)
+}
+
+async fn sync_and_settle(f: &Fixture) -> BoxResult<()> {
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await
+}
+
+fn issue_titles(f: &Fixture) -> BoxResult<Vec<String>> {
+    Ok(f.h
+        .github
+        .issues
+        .lock()
+        .map_err(|_| "lock")?
+        .iter()
+        .map(|(_, issue)| issue.title.clone())
+        .collect())
+}
+
+/// SPEC-497 OFC-002: a test that fails in the runs of two different pull requests is quarantined
+/// at once with one issue, the job that found it says so, a later job of the project is told it
+/// in its environment, and closing the issue ends the quarantine. The failing test is never run
+/// again by Yulius (each pull request's job ran once).
+#[tokio::test]
+async fn a_test_failing_on_two_pull_requests_is_quarantined_with_an_issue() -> TestResult {
+    let f = fixture_with(false, |_| {
+        flaky_job(&["feature.txt", "two.txt", "three.txt", "four.txt"])
+    })
+    .await?;
+    sync_and_settle(&f).await?;
+    assert!(
+        issue_titles(&f)?.is_empty(),
+        "one pull request is not enough"
+    );
+    // A second pull request, from dev, fails the same test.
+    open_pull(&f, 2, "feat/two", "origin/dev", "two.txt")?;
+    sync_and_settle(&f).await?;
+    assert_eq!(
+        issue_titles(&f)?,
+        ["Flaky test quarantined: app tests::flaky"]
+    );
+    let job = job_of(&f, "reference", "pr/2").await?;
     assert_eq!(job["state"], "failed", "{job}");
+    assert_eq!(
+        job["reason"], "a failing test is now quarantined as flaky (see the output)",
+        "{job}"
+    );
     let output = job["output"].as_str().unwrap_or_default();
     assert!(
         output.contains("`app tests::flaky` failed in the runs of #1, #2 within 48 hours")
             && output.contains("quarantined as a flaky test (issue #101)"),
         "{output}"
     );
-    // The next job of the project is told it.
+    // Nothing ran twice: the job's own failure is printed once.
+    assert_eq!(output.matches("the race lost").count(), 1, "{output}");
+    let first = job_of(&f, "reference", "pr/1").await?;
+    let first_output = first["output"].as_str().unwrap_or_default();
+    assert_eq!(first_output.matches("the race lost").count(), 1, "{first}");
+    // The next job of the project is told it, as a filter of test paths.
     let later = f.push_dev("later.txt", Some("later\n"))?;
-    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
-    f.settle().await?;
-    let overview = f.get("/api/sandboxes/s1/ci").await?;
-    let dev_run = overview["runs"]
-        .as_array()
-        .ok_or("runs")?
-        .iter()
-        .find(|r| r["sha"] == later.as_str())
-        .ok_or("dev's run")?
-        .clone();
-    let dev_job = run_jobs(&f, &dev_run)
-        .await?
-        .into_iter()
-        .next()
-        .ok_or("job")?;
+    sync_and_settle(&f).await?;
+    let dev_job = job_of(&f, "sha", &later).await?;
     assert!(
         dev_job["output"]
             .as_str()
             .unwrap_or_default()
-            .contains("q=[(binary_id(app) & test(=tests::flaky))]"),
+            .contains("q=[test(=tests::flaky)]"),
         "{dev_job}"
     );
-    // Closing the issue ends the quarantine.
+    // A third pull request failing it files no second issue, and says it is quarantined.
+    open_pull(&f, 3, "feat/three", "origin/dev", "three.txt")?;
+    sync_and_settle(&f).await?;
+    assert_eq!(issue_titles(&f)?.len(), 1);
+    let third = job_of(&f, "reference", "pr/3").await?;
+    let third_output = third["output"].as_str().unwrap_or_default();
+    assert!(
+        third_output.contains("`app tests::flaky` is quarantined as flaky (issue #101)"),
+        "{third_output}"
+    );
+    assert!(third["reason"].is_null(), "{third}");
+    // An open issue, or one that cannot be read, keeps the quarantine.
+    f.h.app.ci_release_quarantines().await;
+    assert_eq!(f.h.store.quarantined_tests(None).await?.len(), 1, "open");
+    f.h.github.fail_issue_reads.store(true, Ordering::SeqCst);
     f.h.github
         .closed_issues
         .lock()
         .map_err(|_| "lock")?
         .insert(101, Vec::new());
     f.h.app.ci_release_quarantines().await;
+    assert_eq!(f.h.store.quarantined_tests(None).await?.len(), 1, "unread");
+    // Closing the issue ends the quarantine, and forgets the failures that made it.
+    f.h.github.fail_issue_reads.store(false, Ordering::SeqCst);
+    f.h.app.ci_release_quarantines().await;
     let left = f.h.store.quarantined_tests(None).await?;
     assert!(left.is_empty(), "{left:?}");
+    open_pull(&f, 4, "feat/four", "origin/dev", "four.txt")?;
+    sync_and_settle(&f).await?;
+    assert_eq!(issue_titles(&f)?.len(), 1, "one failure after the release");
+    Ok(())
+}
+
+/// SPEC-497 OFC-002 (review round 1): a test the integration branch failed too is broken there,
+/// not flaky; two pull requests whose heads share a commit (a chained one) are one change.
+#[tokio::test]
+async fn no_quarantine_when_the_integration_branch_or_a_shared_commit_fails_it() -> TestResult {
+    let f = fixture_with(false, |_| flaky_job(&["devfail.txt"])).await?;
+    f.push_dev("devfail.txt", Some("x\n"))?;
+    sync_and_settle(&f).await?;
+    open_pull(&f, 2, "feat/two", "origin/dev", "two.txt")?;
+    open_pull(&f, 3, "feat/three", "origin/dev", "three.txt")?;
+    sync_and_settle(&f).await?;
+    for reference in ["pr/2", "pr/3"] {
+        let job = job_of(&f, "reference", reference).await?;
+        assert_eq!(job["state"], "failed", "{job}");
+    }
+    assert!(
+        issue_titles(&f)?.is_empty(),
+        "the integration branch fails it"
+    );
+
+    let f = fixture_with(false, |_| flaky_job(&["feature.txt"])).await?;
+    sync_and_settle(&f).await?;
+    // Chained on feat/one: it carries the commit that breaks the test.
+    open_pull(&f, 2, "feat/two", "feat/one", "two.txt")?;
+    sync_and_settle(&f).await?;
+    let job = job_of(&f, "reference", "pr/2").await?;
+    assert_eq!(job["state"], "failed", "{job}");
+    assert!(
+        issue_titles(&f)?.is_empty(),
+        "one change in two pull requests"
+    );
+    Ok(())
+}
+
+/// SPEC-497 OFC-002 (review round 1): when the issue cannot be filed nothing is quarantined, and
+/// the output says why; a job failing more than 10 tests, kept or only counted, quarantines none.
+#[tokio::test]
+async fn no_quarantine_without_its_issue_or_for_a_broken_job() -> TestResult {
+    let f = fixture_with(false, |_| flaky_job(&["feature.txt", "two.txt"])).await?;
+    f.h.github.fail_issues.store(true, Ordering::SeqCst);
+    sync_and_settle(&f).await?;
+    open_pull(&f, 2, "feat/two", "origin/dev", "two.txt")?;
+    sync_and_settle(&f).await?;
+    let job = job_of(&f, "reference", "pr/2").await?;
+    let output = job["output"].as_str().unwrap_or_default();
+    assert!(
+        output.contains(
+            "`app tests::flaky` looks flaky (it failed in the runs of #1, #2), but it \
+                         was not quarantined: its issue could not be filed"
+        ),
+        "{output}"
+    );
+    assert!(job["reason"].is_null(), "{job}");
+    assert!(f.h.store.quarantined_tests(None).await?.is_empty());
+
+    // Twelve failing tests of 9 KiB each: four kept, eight only counted.
+    let many = "for t in 1 2 3 4 5 6 7 8 9 10 11 12; do printf \"        FAIL [   0.004s] (1/12) \
+                app tests::t$t\\n  stdout ───\\n\"; for l in $(seq 1 100); do echo \"    \
+                line $l of a long failure output that goes on and on and on\"; done; \
+                echo; done; exit 100";
+    let f = fixture_with(false, move |_| {
+        format!(
+            "[[ci.jobs]]\nname = \"quality\"\ncommand = 'if [ -e feature.txt ] || \
+             [ -e two.txt ]; then {many}; fi'\n"
+        )
+    })
+    .await?;
+    sync_and_settle(&f).await?;
+    open_pull(&f, 2, "feat/two", "origin/dev", "two.txt")?;
+    sync_and_settle(&f).await?;
+    let job = job_of(&f, "reference", "pr/2").await?;
+    assert_eq!(job["state"], "failed", "{job}");
+    assert!(
+        issue_titles(&f)?.is_empty(),
+        "a broken job, not a flaky test"
+    );
+    Ok(())
+}
+
+/// SPEC-497 OFC-002 (review round 1): two jobs that make the same test flaky at once file one
+/// issue; the second says it is quarantined.
+#[tokio::test]
+async fn two_jobs_at_once_file_one_issue() -> TestResult {
+    let f = fixture_with(false, |_| flaky_job(&["feature.txt"])).await?;
+    sync_and_settle(&f).await?;
+    let runs = f.h.store.ci_runs(&f.sandbox.id, 10).await?;
+    let first = runs
+        .iter()
+        .find(|r| r.reference.key() == "pr/1")
+        .ok_or("pr/1's run")?
+        .clone();
+    let job =
+        f.h.store
+            .ci_jobs(&first.id, false)
+            .await?
+            .into_iter()
+            .next()
+            .ok_or("job")?;
+    let dev = git(&f.work, &["rev-parse", "origin/dev"])?;
+    let other = |number: u64| {
+        let mut run = first.clone();
+        run.id = format!("race-{number}");
+        run.reference = yulius_domain::ci::CiRef::PullRequest(number);
+        run.sha = dev.clone();
+        run
+    };
+    let (two, three) = (other(2), other(3));
+    let failures = "FAIL [   0.004s] (1/1) app tests::flaky\n  stdout ───\n";
+    let hold = Arc::new(tokio::sync::Notify::new());
+    *f.h.github.issue_hold.lock().map_err(|_| "lock")? = Some(Arc::clone(&hold));
+    let release = async {
+        f.h.github.issue_entered.notified().await;
+        if let Ok(mut held) = f.h.github.issue_hold.lock() {
+            *held = None;
+        }
+        hold.notify_waiters();
+    };
+    let (a, b, ()) = tokio::join!(
+        f.h.app
+            .ci_note_failing_tests(&f.sandbox, &two, &job, failures),
+        f.h.app
+            .ci_note_failing_tests(&f.sandbox, &three, &job, failures),
+        release
+    );
+    assert_eq!(issue_titles(&f)?.len(), 1, "{a:?} {b:?}");
+    assert!(a.quarantined != b.quarantined, "{a:?} {b:?}");
+    let second = if a.quarantined { &b } else { &a };
+    assert!(
+        second
+            .lines
+            .iter()
+            .any(|l| l.contains("is quarantined as flaky (issue #101)")),
+        "{second:?}"
+    );
     Ok(())
 }
 

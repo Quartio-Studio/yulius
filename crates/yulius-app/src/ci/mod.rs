@@ -39,6 +39,7 @@ mod environment;
 mod exec;
 mod findings;
 mod flaky;
+pub use flaky::Noted;
 pub mod hygiene;
 pub(crate) mod playground;
 mod prove;
@@ -356,6 +357,9 @@ pub struct CiState {
     /// One CI sync of a sandbox at a time (the 60 s loop, a person's sync, a review's start):
     /// each reads the runs before it queues, so two at once would queue one head twice.
     sync_locks: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    /// One quarantine decided at a time (SPEC-497 OFC-002): two jobs failing the same test at
+    /// once would each file an issue for it (review round 1).
+    pub(crate) quarantine: tokio::sync::Mutex<()>,
     /// Sandboxes with a run that passed when it was queued (every job skipped for its
     /// `paths`): the dispatcher starts their merge pass, as a run's end does.
     passed_when_queued: Mutex<Vec<SandboxId>>,

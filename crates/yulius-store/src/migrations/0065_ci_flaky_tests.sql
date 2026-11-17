@@ -1,5 +1,6 @@
 -- Yulius migration 0065, schema version 65 (SPEC-497 OFC-002): flaky tests. Each failing test a
--- CI job's blocks named, with the run's reference, kept 7 days; and the tests quarantined as
+-- CI job's blocks named, with the run's reference and commit, kept 7 days (forgotten when its
+-- quarantine ends); and the tests quarantined as
 -- flaky, each with the issue filed for it, until that issue is closed.
 CREATE TABLE IF NOT EXISTS ci_test_failures (
     sandbox_id TEXT NOT NULL,
@@ -7,6 +8,7 @@ CREATE TABLE IF NOT EXISTS ci_test_failures (
     test TEXT NOT NULL,
     reference TEXT NOT NULL,
     run_id TEXT NOT NULL,
+    sha TEXT NOT NULL,
     at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS ci_test_failures_test ON ci_test_failures (sandbox_id, job_key, test, at);

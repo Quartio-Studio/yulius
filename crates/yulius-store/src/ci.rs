@@ -492,25 +492,26 @@ impl CiStore for SqliteStore {
         &self,
         sandbox: &SandboxId,
         job_key: &str,
-        (reference, run): (&str, &str),
+        (reference, run, sha): (&str, &str, &str),
         tests: &[String],
         at: Timestamp,
         forget_before: Timestamp,
     ) -> AppResult<()> {
-        let (sandbox, job_key, reference, run, tests) = (
+        let (sandbox, job_key, reference, run, sha, tests) = (
             sandbox.as_str().to_owned(),
             job_key.to_owned(),
             reference.to_owned(),
             run.to_owned(),
+            sha.to_owned(),
             tests.to_vec(),
         );
         self.call(move |c| {
             let tx = c.transaction().map_err(db)?;
             for test in &tests {
                 tx.execute(
-                    "INSERT INTO ci_test_failures (sandbox_id, job_key, test, reference, run_id, at) \
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                    params![sandbox, job_key, test, reference, run, at.0],
+                    "INSERT INTO ci_test_failures (sandbox_id, job_key, test, reference, run_id, \
+                     sha, at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                    params![sandbox, job_key, test, reference, run, sha, at.0],
                 )
                 .map_err(db)?;
             }
@@ -539,7 +540,7 @@ impl CiStore for SqliteStore {
         self.call(move |c| {
             let mut statement = c
                 .prepare(
-                    "SELECT reference, at FROM ci_test_failures WHERE sandbox_id = ?1 \
+                    "SELECT reference, sha, at FROM ci_test_failures WHERE sandbox_id = ?1 \
                      AND job_key = ?2 AND test = ?3 AND at >= ?4 ORDER BY at",
                 )
                 .map_err(db)?;
@@ -547,7 +548,8 @@ impl CiStore for SqliteStore {
                 .query_map(params![sandbox, job_key, test, since.0], |row| {
                     Ok(yulius_domain::ci::flaky::TestFailure {
                         reference: row.get(0)?,
-                        at: Timestamp(row.get(1)?),
+                        sha: row.get(1)?,
+                        at: Timestamp(row.get(2)?),
                     })
                 })
                 .map_err(db)?
@@ -623,12 +625,18 @@ impl CiStore for SqliteStore {
     async fn release_test(&self, sandbox: &SandboxId, test: &str) -> AppResult<()> {
         let (sandbox, test) = (sandbox.as_str().to_owned(), test.to_owned());
         self.call(move |c| {
-            c.execute(
+            let tx = c.transaction().map_err(db)?;
+            tx.execute(
                 "DELETE FROM ci_quarantine WHERE sandbox_id = ?1 AND test = ?2",
                 params![sandbox, test],
             )
             .map_err(db)?;
-            Ok(())
+            tx.execute(
+                "DELETE FROM ci_test_failures WHERE sandbox_id = ?1 AND test = ?2",
+                params![sandbox, test],
+            )
+            .map_err(db)?;
+            tx.commit().map_err(db)
         })
         .await
     }
@@ -1141,7 +1149,7 @@ mod tests {
             .record_test_failures(
                 &s1,
                 "quality",
-                ("pr/1", "r1"),
+                ("pr/1", "r1", "c1"),
                 &tests,
                 Timestamp(10),
                 Timestamp(0),
@@ -1151,7 +1159,7 @@ mod tests {
             .record_test_failures(
                 &s1,
                 "quality",
-                ("pr/2", "r2"),
+                ("pr/2", "r2", "c2"),
                 &tests[..1],
                 Timestamp(20),
                 Timestamp(0),
@@ -1161,7 +1169,7 @@ mod tests {
             .record_test_failures(
                 &s1,
                 "e2e",
-                ("pr/3", "r3"),
+                ("pr/3", "r3", "c3"),
                 &tests[..1],
                 Timestamp(30),
                 Timestamp(0),
@@ -1172,6 +1180,7 @@ mod tests {
             .await?;
         let refs: Vec<&str> = failed.iter().map(|f| f.reference.as_str()).collect();
         assert_eq!(refs, ["pr/1", "pr/2"], "only this job's");
+        assert_eq!(failed[1].sha, "c2");
         let since = store
             .test_failures(&s1, "quality", "app tests::flaky", Timestamp(15))
             .await?;
@@ -1181,7 +1190,7 @@ mod tests {
             .record_test_failures(
                 &s1,
                 "quality",
-                ("pr/4", "r4"),
+                ("pr/4", "r4", "c4"),
                 &tests[..1],
                 Timestamp(40),
                 Timestamp(25),
@@ -1211,8 +1220,32 @@ mod tests {
                 .is_empty()
         );
         assert_eq!(store.quarantined_tests(None).await?.len(), 1);
+        store
+            .record_test_failures(
+                &s1,
+                "quality",
+                ("pr/5", "r5", "c5"),
+                &tests,
+                Timestamp(45),
+                Timestamp(25),
+            )
+            .await?;
         store.release_test(&s1, "app tests::flaky").await?;
         assert!(store.quarantined_tests(None).await?.is_empty());
+        // Its failures are forgotten with it (review round 1); another test's stay.
+        assert!(
+            store
+                .test_failures(&s1, "quality", "app tests::flaky", Timestamp(0))
+                .await?
+                .is_empty()
+        );
+        assert_eq!(
+            store
+                .test_failures(&s1, "quality", "app tests::other", Timestamp(0))
+                .await?
+                .len(),
+            1
+        );
         Ok(())
     }
 

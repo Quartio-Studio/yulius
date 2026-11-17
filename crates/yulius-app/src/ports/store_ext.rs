@@ -509,12 +509,13 @@ pub trait CiStore: Send + Sync {
     /// CI jobs of running runs that have not started (SPEC-497).
     async fn ci_jobs_waiting(&self) -> AppResult<u32>;
     /// Records that `tests` failed in job `job_key` of run `run` of `reference` (`pr/<n>`,
-    /// `branch/<name>`) at `at`, and forgets failures before `forget_before` (SPEC-497 OFC-002).
+    /// `branch/<name>`) at commit `sha` at `at`, and forgets failures before `forget_before`
+    /// (SPEC-497 OFC-002).
     async fn record_test_failures(
         &self,
         sandbox: &SandboxId,
         job_key: &str,
-        (reference, run): (&str, &str),
+        (reference, run, sha): (&str, &str, &str),
         tests: &[String],
         at: Timestamp,
         forget_before: Timestamp,
@@ -534,7 +535,8 @@ pub trait CiStore: Send + Sync {
         &self,
         sandbox: Option<&SandboxId>,
     ) -> AppResult<Vec<crate::ci::Quarantined>>;
-    /// Ends the quarantine of `test` in `sandbox`.
+    /// Ends the quarantine of `test` in `sandbox` and forgets its failures, so the failures that
+    /// made it flaky never count again (SPEC-497 OFC-002, review round 1).
     async fn release_test(&self, sandbox: &SandboxId, test: &str) -> AppResult<()>;
     /// Keeps one minute's reading of the host for CI and forgets those before `forget_before`
     /// (SPEC-497).

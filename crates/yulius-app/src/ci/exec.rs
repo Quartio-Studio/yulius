@@ -989,11 +989,11 @@ impl App {
         if state == RunState::Failed
             && let Some(kept) = failures.as_deref()
         {
-            let said = self.ci_note_failing_tests(sandbox, run, job, kept).await;
-            if !said.is_empty() {
-                for line in &said {
-                    ring.push_str(&format!("\n{line}\n"));
-                }
+            let noted = self.ci_note_failing_tests(sandbox, run, job, kept).await;
+            for line in &noted.lines {
+                ring.push_str(&format!("\n{line}\n"));
+            }
+            if noted.quarantined {
                 reason.get_or_insert_with(|| {
                     "a failing test is now quarantined as flaky (see the output)".to_owned()
                 });
