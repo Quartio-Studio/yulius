@@ -757,3 +757,245 @@ fn an_edit_check_fails_open_and_is_never_held() -> TestResult {
     );
     Ok(())
 }
+
+fn ok_response(body: &[u8]) -> Vec<u8> {
+    let mut response = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
+        body.len()
+    )
+    .into_bytes();
+    response.extend_from_slice(body);
+    response
+}
+
+/// The common fields of an Antigravity hook payload, as agy 1.5.10 sends them (synthetic values).
+fn agy_payload(event: &str, extra: serde_json::Value) -> Vec<u8> {
+    let mut payload = serde_json::json!({
+        "artifactDirectoryPath": "/h/.gemini/antigravity-cli/brain/c-1",
+        "conversationId": "c-1",
+        "cwd": "/w/t1",
+        "hookEventName": event,
+        "lastUserInput": "Fix the failing test",
+        "modelName": "gemini-4-carbon-high",
+        "transcriptPath": "/h/.gemini/antigravity-cli/brain/c-1/.system_generated/logs/transcript_full.jsonl",
+        "workspacePaths": ["/w/t1"],
+    });
+    if let (Some(base), Some(extra)) = (payload.as_object_mut(), extra.as_object()) {
+        base.extend(extra.clone());
+    }
+    payload.to_string().into_bytes()
+}
+
+fn json_out(output: &[u8]) -> Result<serde_json::Value, serde_json::Error> {
+    serde_json::from_slice(output)
+}
+
+/// SPEC-505 AGY-006: an Antigravity SessionStart reaches Yulius as Claude Code's (its
+/// conversation as the session, the transcript and folder), and the briefing comes back as a
+/// system message the CLI injects.
+#[test]
+fn an_antigravity_session_start_is_sent_as_claude_codes() -> TestResult {
+    let (url, server) = serve_once(ok_response(
+        br#"{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"the briefing"}}"#,
+    ))?;
+    let mut output = Vec::new();
+    let payload = agy_payload("SessionStart", serde_json::json!({}));
+    run_hook(
+        "antigravity",
+        "SessionStart",
+        &mut &payload[..],
+        &mut output,
+        &env_with(url, Some("task-token-SYNTHETIC")),
+    );
+    assert_eq!(
+        json_out(&output)?,
+        serde_json::json!({ "injectSteps": [{ "systemMessage": { "systemMessage": "the briefing" } }] })
+    );
+    let request = join(server)?;
+    assert_eq!(
+        request.line.trim_end(),
+        "POST /hooks/antigravity/SessionStart HTTP/1.1"
+    );
+    let sent: serde_json::Value = serde_json::from_slice(&request.body)?;
+    assert_eq!(sent["session_id"], "c-1");
+    assert_eq!(sent["hook_event_name"], "SessionStart");
+    assert_eq!(sent["source"], "startup");
+    assert_eq!(sent["cwd"], "/w/t1");
+    assert_eq!(sent["model"], "gemini-4-carbon-high");
+    assert_eq!(
+        sent["transcript_path"],
+        "/h/.gemini/antigravity-cli/brain/c-1/.system_generated/logs/transcript.jsonl",
+        "the transcript Yulius reads, not the full one"
+    );
+    Ok(())
+}
+
+/// SPEC-505 AGY-006: the first model call of a turn is its prompt (Claude Code's
+/// UserPromptSubmit); a refusal ends the turn with the reason shown; a later call of the same
+/// turn asks nothing.
+#[test]
+fn an_antigravity_turn_opens_with_its_prompt() -> TestResult {
+    let (url, server) = serve_once(ok_response(br#"{"decision":"block","reason":"Paused"}"#))?;
+    let mut output = Vec::new();
+    let payload = agy_payload(
+        "PreInvocation",
+        serde_json::json!({"invocationNum": 0, "initialNumSteps": 3}),
+    );
+    run_hook(
+        "antigravity",
+        "PreInvocation",
+        &mut &payload[..],
+        &mut output,
+        &env_with(url, Some("task-token-SYNTHETIC")),
+    );
+    assert_eq!(
+        json_out(&output)?,
+        serde_json::json!({
+            "injectSteps": [{ "errorMessage": { "userMessage": "Paused" } }],
+            "terminationBehavior": "terminate"
+        })
+    );
+    let request = join(server)?;
+    assert_eq!(
+        request.line.trim_end(),
+        "POST /hooks/antigravity/UserPromptSubmit HTTP/1.1"
+    );
+    let sent: serde_json::Value = serde_json::from_slice(&request.body)?;
+    assert_eq!(sent["prompt"], "Fix the failing test");
+    assert_eq!(sent["hook_event_name"], "UserPromptSubmit");
+
+    let (url, listener) = untouched_listener()?;
+    let mut output = Vec::new();
+    let later = agy_payload("PreInvocation", serde_json::json!({"invocationNum": 2}));
+    run_hook(
+        "antigravity",
+        "PreInvocation",
+        &mut &later[..],
+        &mut output,
+        &env_with(url, Some("task-token-SYNTHETIC")),
+    );
+    assert_eq!(json_out(&output)?, serde_json::json!({}));
+    assert_no_connection(&listener);
+    Ok(())
+}
+
+/// SPEC-505 AGY-006: a Stop Yulius blocks keeps the agent going with the reason; one it lets
+/// pass prints an empty answer; the continuation flag is Claude Code's `stop_hook_active`.
+#[test]
+fn an_antigravity_stop_is_continued_or_let_pass() -> TestResult {
+    let (url, server) = serve_once(ok_response(
+        br#"{"decision":"block","reason":"Run the gate"}"#,
+    ))?;
+    let mut output = Vec::new();
+    let payload = agy_payload(
+        "Stop",
+        serde_json::json!({"terminationReason": "NO_TOOL_CALL", "continuationActive": true, "fullyIdle": true}),
+    );
+    run_hook(
+        "antigravity",
+        "Stop",
+        &mut &payload[..],
+        &mut output,
+        &env_with(url, Some("task-token-SYNTHETIC")),
+    );
+    assert_eq!(
+        json_out(&output)?,
+        serde_json::json!({ "decision": "continue", "reason": "Run the gate" })
+    );
+    let sent: serde_json::Value = serde_json::from_slice(&join(server)?.body)?;
+    assert_eq!(sent["stop_hook_active"], true);
+    assert_eq!(sent["hook_event_name"], "Stop");
+
+    let (url, server) = serve_once(ok_response(b""))?;
+    let mut output = Vec::new();
+    run_hook(
+        "antigravity",
+        "Stop",
+        &mut &payload[..],
+        &mut output,
+        &env_with(url, Some("task-token-SYNTHETIC")),
+    );
+    assert_eq!(json_out(&output)?, serde_json::json!({}));
+    join(server)?;
+    Ok(())
+}
+
+/// SPEC-505 AGY-006: agy denies a tool on an empty answer, so a `run_command` is allowed unless
+/// Yulius's guard refuses it (checked in the sandbox, as Claude Code's `Bash`), and a Yulius that
+/// cannot be reached still lets the agent work.
+#[test]
+fn an_antigravity_command_is_allowed_unless_the_guard_refuses_it() -> TestResult {
+    let (url, listener) = untouched_listener()?;
+    let env = env_with(url, Some("task-token-SYNTHETIC"));
+    let tool = |command: &str| {
+        agy_payload(
+            "PreToolUse",
+            serde_json::json!({"stepIdx": 4, "toolCall": {"id": "t1", "name": "run_command", "args": {"CommandLine": command, "toolSummary": "x"}}}),
+        )
+    };
+    let mut output = Vec::new();
+    run_hook(
+        "antigravity",
+        "PreToolUse",
+        &mut &tool("cargo test")[..],
+        &mut output,
+        &env,
+    );
+    assert_eq!(
+        json_out(&output)?,
+        serde_json::json!({ "decision": "allow" })
+    );
+    let mut output = Vec::new();
+    run_hook(
+        "antigravity",
+        "PreToolUse",
+        &mut &tool("pkill -f cargo-nextest")[..],
+        &mut output,
+        &env,
+    );
+    let answer = json_out(&output)?;
+    assert_eq!(answer["decision"], "deny");
+    assert!(
+        answer["reason"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("pkill -f"),
+        "{answer}"
+    );
+    assert_no_connection(&listener);
+    // Broken input, or a tool the guard does not read: allowed.
+    for body in [
+        &b"{broken"[..],
+        &agy_payload(
+            "PreToolUse",
+            serde_json::json!({"toolCall": {"name": "view_file", "args": {}}}),
+        )[..],
+    ] {
+        let mut output = Vec::new();
+        run_hook(
+            "antigravity",
+            "PreToolUse",
+            &mut &body[..],
+            &mut output,
+            &env,
+        );
+        assert_eq!(
+            json_out(&output)?,
+            serde_json::json!({ "decision": "allow" })
+        );
+    }
+    // Other events Yulius cannot answer print an empty answer the CLI reads as "go on".
+    let mut output = Vec::new();
+    let unreachable = env_with("http://127.0.0.1:9".into(), Some("task-token-SYNTHETIC"));
+    let stop = agy_payload("Stop", serde_json::json!({}));
+    run_hook_with(
+        "antigravity",
+        "Stop",
+        &mut &stop[..],
+        &mut output,
+        &unreachable,
+        HoldPolicy::NEVER,
+    );
+    assert_eq!(json_out(&output)?, serde_json::json!({}));
+    Ok(())
+}

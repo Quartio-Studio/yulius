@@ -9,6 +9,7 @@
 //! malformed lines are reported, never fatal (SPEC-002 R-01, EVT-002).
 
 pub mod antigravity;
+mod antigravity_hooks;
 pub mod claude;
 pub mod claude_config;
 pub mod claude_plugins;
