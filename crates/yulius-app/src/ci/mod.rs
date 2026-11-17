@@ -1050,7 +1050,10 @@ impl App {
         // branch's jobs or, for a commit that brings CI to a branch without any, with its own
         // (the scheduler's own answer, `ci_gate_for_head`).
         let view = self.ci_gate(sandbox).await;
+        // While Git cannot tell whether a last valid gate exists, the commit waits for it: it
+        // is never read as having no CI (SPEC-504 review round 2).
         if view.gate.is_some()
+            || view.fallback_unknown
             || self
                 .ci_gate_for_head(sandbox, &view, (sha, Head::Proposed))
                 .await

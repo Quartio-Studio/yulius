@@ -504,6 +504,8 @@ pub fn keep_security_jobs(mut own: Gate, trusted: Option<&Gate>, vidoc: bool) ->
 
 /// What names a job of a change's own beside the gate's (SPEC-504 CFG-001).
 pub const CHANGE_SUFFIX: &str = " (this change)";
+/// What its checkout's name adds to the job's key: `<key>.change` (SPEC-504 review round 2).
+pub const CHANGE_CHECKOUT: &str = "change";
 
 /// `gate` (the integration branch's) with the jobs of a change's own `yulius.toml` (`own`) that
 /// the change itself changed or added: those that differ from all of `gate`'s and from all of

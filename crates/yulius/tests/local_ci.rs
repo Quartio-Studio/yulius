@@ -1755,6 +1755,32 @@ async fn the_integration_branch_runs_a_paths_job_a_merged_tree_skipped() -> Test
     Ok(())
 }
 
+/// SPEC-504 review round 2: when Git cannot walk the integration branch's history for its last
+/// valid gate (here a commit of it is missing from the clone), a pull request's verdict is
+/// pending, never "no CI" (which would let a merge through on no checks).
+#[tokio::test]
+async fn a_history_git_cannot_walk_leaves_a_head_pending_not_unconfigured() -> TestResult {
+    let f = fixture_with(false, |_| one_job("first")).await?;
+    let broken = format!("[commands]\ngate = \"make ci\"\n\n{}", one_job("broken"));
+    let middle = f.push_dev("yulius.toml", Some(&broken))?;
+    f.push_dev("other.txt", Some("later\n"))?;
+    let head = git(&f.origin, &["rev-parse", "feat/one"])?;
+    let repo = f.data.join("sandboxes/s1/repo");
+    git(&repo, &["fetch", "-q", "origin"])?;
+    // The middle commit's object goes: walking back from dev's head meets it and fails.
+    let object = repo
+        .join(".git/objects")
+        .join(&middle[..2])
+        .join(&middle[2..]);
+    std::fs::remove_file(&object).map_err(|e| format!("{}: {e}", object.display()))?;
+    assert_eq!(
+        f.h.app.ci_gate_result(&f.sandbox, &head).await,
+        GateResult::Run(None),
+        "pending until Git can tell"
+    );
+    Ok(())
+}
+
 /// SPEC-504 review round 1: an invalid file with no valid one before it names no fallback (the
 /// page would otherwise say a gate runs while none does).
 #[tokio::test]

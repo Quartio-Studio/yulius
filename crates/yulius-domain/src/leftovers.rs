@@ -168,10 +168,12 @@ pub fn smoke_pid(name: &str) -> Option<u32> {
 #[must_use]
 pub fn checkout_job_key(name: &str) -> &str {
     let name = name.split_once('@').map_or(name, |(key, _)| key);
-    match name.rsplit_once('.') {
+    let name = match name.rsplit_once('.') {
         Some((key, index)) if !index.is_empty() && index.bytes().all(|b| b.is_ascii_digit()) => key,
         _ => name,
-    }
+    };
+    // A change's own twin of a job checks out at `<key>.change` (SPEC-504 review round 2).
+    name.strip_suffix(".change").unwrap_or(name)
 }
 
 #[cfg(test)]
@@ -224,5 +226,7 @@ mod tests {
         assert_eq!(checkout_job_key("gate.2@1"), "gate");
         assert_eq!(checkout_job_key("node.js"), "node.js");
         assert_eq!(checkout_job_key("v1.2"), "v1");
+        assert_eq!(checkout_job_key("gate.change"), "gate");
+        assert_eq!(checkout_job_key("gate.change.2@1"), "gate");
     }
 }

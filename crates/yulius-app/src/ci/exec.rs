@@ -334,12 +334,23 @@ fn ci_path(path: &str, exe: &Path) -> String {
 /// position for matrix jobs (siblings run in parallel and need their own), plus the lane past
 /// the first (two runs of a sandbox run in parallel and need their own too).
 fn checkout_name(job: &CiJobRecord, siblings: &[CiJobRecord], lane: u32) -> String {
-    let same: Vec<&CiJobRecord> = siblings.iter().filter(|j| j.key == job.key).collect();
-    let name = if same.len() <= 1 {
+    // A change's own twin of a job (`<job> (this change)`) has checkouts apart, so the gate's
+    // job keeps its own (SPEC-504 review round 2).
+    let twin = |j: &CiJobRecord| j.name.ends_with(dom::CHANGE_SUFFIX);
+    let same: Vec<&CiJobRecord> = siblings
+        .iter()
+        .filter(|j| j.key == job.key && twin(j) == twin(job))
+        .collect();
+    let base = if twin(job) {
+        format!("{}.{}", job.key, dom::CHANGE_CHECKOUT)
+    } else {
         job.key.clone()
+    };
+    let name = if same.len() <= 1 {
+        base
     } else {
         let index = same.iter().position(|j| j.id == job.id).unwrap_or(0) + 1;
-        format!("{}.{index}", job.key)
+        format!("{base}.{index}")
     };
     if lane == 0 {
         name
@@ -2238,5 +2249,23 @@ mod tests {
         // A second lane of the sandbox has checkouts of its own.
         assert_eq!(checkout_name(&jobs[0], &jobs, 1), "lint@1");
         assert_eq!(checkout_name(&jobs[2], &jobs, 1), "test.2@1");
+        // SPEC-504 review round 2: a change's own twin of a job has a checkout apart, and the
+        // gate's job keeps its own (warm) one.
+        let twin = |id: &str, key: &str| CiJobRecord {
+            name: format!("{key}{}", dom::CHANGE_SUFFIX),
+            ..job(id, key)
+        };
+        let jobs = vec![
+            job("a", "lint"),
+            twin("t", "lint"),
+            job("b", "test"),
+            job("c", "test"),
+            twin("u", "test"),
+            twin("v", "test"),
+        ];
+        assert_eq!(checkout_name(&jobs[0], &jobs, 0), "lint");
+        assert_eq!(checkout_name(&jobs[1], &jobs, 0), "lint.change");
+        assert_eq!(checkout_name(&jobs[3], &jobs, 0), "test.2");
+        assert_eq!(checkout_name(&jobs[5], &jobs, 1), "test.change.2@1");
     }
 }
