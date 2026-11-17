@@ -504,4 +504,15 @@ Five pull requests, each merged into `dev` on green before the next begins.
   `account_usage`, `account_email`, `claude_gate`, `subscription_moves`, `subscription_pool`,
   `usage_credits`, `agent_hooks`, `task_delete`, `automations`, `supervision`, `mcp`, `cockpit`,
   `telegram`, `onboarding*`: 2567 passed, 0 failed.
+- **Mutation check by hand** (`$HOME/.cache/yulius-task-485/handmut-c2.{py,txt}`, on
+  `3d606bd3b`): an API key or `auth.json` accepted for any provider →
+  `accounts::a_codex_account_can_be_added_with_an_api_key` and `…by_importing_its_auth_file`;
+  an import not validated → `accounts::a_codex_account_can_be_added_by_importing_its_auth_file`,
+  `…sign_in_is_replaced_by_an_imported_auth_file`; `codex_connected` of the wrong pool →
+  `claude_gate::a_codex_account_alone_is_codex_connected_not_claude_connected`; an import not
+  superseding the running sign-in → `accounts::an_import_is_not_overwritten_by_the_sign_in_it_cancels`.
+  The pasted token's own provider check was not held: `account_token::a_token_is_only_a_claude_subscriptions_credential`
+  is new (an `openai` token, a token with an API key, a token with an `auth.json`: 422, nothing
+  created, no profile asked); with the check undone it gets 201.
+- `yulius security-scan`: not run (Vidoc refused the key, HTTP 401, exit 2).
 

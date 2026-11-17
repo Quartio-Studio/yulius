@@ -1012,3 +1012,32 @@ fn a_task_starts_on_a_pasted_subscription() -> TestResult {
         crate::pool_supervision::stop(&app, &id).await
     })
 }
+
+/// SPEC-503 CDX-015: a pasted token is Claude's: given for an `openai` subscription, or together
+/// with an API key or an `auth.json`, it is refused (422) without a word of it, nothing is created
+/// and Claude's profile is not asked.
+#[tokio::test]
+async fn a_token_is_only_a_claude_subscriptions_credential() -> TestResult {
+    let w = world().await?;
+    for body in [
+        json!({"provider": "openai", "label": "Codex", "token": PASTED}),
+        json!({"provider": "anthropic", "label": "both", "token": PASTED,
+               "api_key": "sk-SYNTHETIC0123456789abcdefghij"}),
+        json!({"provider": "anthropic", "label": "both", "token": PASTED,
+               "auth_json": "{}"}),
+    ] {
+        let refused = call(
+            &w.h.router,
+            Method::POST,
+            "/api/admin/accounts",
+            Some(body.clone()),
+            &w.admin,
+        )
+        .await?;
+        assert_eq!(refused.status, StatusCode::UNPROCESSABLE_ENTITY, "{body}: {}", refused.body);
+        assert_no_token(&refused.body);
+    }
+    assert!(w.h.store.accounts().await?.is_empty(), "nothing created");
+    assert_eq!(w.profile.asked(), 0);
+    Ok(())
+}
