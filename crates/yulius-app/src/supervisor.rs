@@ -3319,6 +3319,9 @@ impl App {
         // Only a refresh of what the launch gave this run counts, and only while the account
         // still holds that: a sign-in a person made meanwhile, or another run's refresh, stays.
         let given = std::fs::read(run_dir.join(ANTIGRAVITY_GIVEN))
+            .inspect_err(|err| {
+                tracing::warn!(account = %account_id, error = %err, "what an Antigravity run was given is unknown: its sign-in is not taken back");
+            })
             .ok()
             .map(crate::model::Sealed);
         let refreshed = given.as_ref().and_then(|sealed| {

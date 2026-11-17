@@ -189,6 +189,8 @@ pub struct FakeAgentOptions {
     /// The Codex CLI the harness says it provides (SPEC-503 CLI-002); its program is recorded in
     /// `fake-launch.txt`, the fake agent runs instead.
     pub provided_codex: Option<yulius_app::ports::harness::ProvidedCli>,
+    /// The Antigravity CLI the harness provides (SPEC-505 AGY-007); `None`: the host's `agy`.
+    pub provided_antigravity: Option<yulius_app::ports::harness::ProvidedCli>,
     /// The Codex CLI cannot be provided, for this reason (SPEC-503 CLI-002).
     pub codex_unavailable: Option<String>,
     /// Each answer about the Codex CLI waits for a permit of this gate (a test watches the task
@@ -234,6 +236,11 @@ impl HarnessPort for FakeAgentHarness {
                 None => Ok(provided),
             }
         })
+    }
+
+    fn provide_antigravity(&self, _install: bool) -> yulius_app::ports::harness::ProvideFuture<'_> {
+        let provided = self.options.provided_antigravity.clone();
+        Box::pin(async move { Ok(provided) })
     }
 
     fn plan(&self, launch: &HarnessLaunch) -> AppResult<HarnessPlan> {

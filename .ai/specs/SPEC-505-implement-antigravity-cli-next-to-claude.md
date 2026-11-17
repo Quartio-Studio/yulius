@@ -126,7 +126,7 @@ Six pull requests, each merged into `dev` on green before the next begins.
 - [x] Slice B: review findings fixed and the slice delivered
 - [x] Slice C1: an Antigravity task runs in the supervisor (homes, session id, hooks, write-back, rotation)
 - [x] Slice C1: the fake agent speaks Antigravity and integration tests cover an Antigravity task
-- [ ] Slice C1: review findings fixed and the slice delivered
+- [x] Slice C1: review findings fixed and the slice delivered
 - [ ] Slice C2: Antigravity subscriptions sign in with Google or a Gemini API key
 - [ ] Slice C2: Antigravity limits, google_connected and moves within Antigravity subscriptions
 - [ ] Slice C2: review findings fixed and the slice delivered
@@ -400,7 +400,11 @@ Six pull requests, each merged into `dev` on green before the next begins.
      skipped here, bwrap cannot create namespaces in this sandbox).
   3. Only an Antigravity run's Stop skips the gate for its `error`
      (`agent_hooks::only_antigravity_skips_the_gate_for_a_failed_turn`).
-- After round 2: `antigravity::*` 10 tests, 3 of 3 under `--stress-count 3`; `yulius-app`,
+- After round 2: `antigravity::*` 9 tests, 3 of 3 under `--stress-count 3`; `yulius-app`,
   `yulius-harness`, `yulius-contracts` 891 passed; `yulius` integration files `antigravity`,
   `codex*`, `agent_hooks`, `accounts`, `task_delete`, `supervision`, `pool_supervision` 156
   passed. Clippy clean.
+- Review round 3 (head 22a92e712): approve. Its notes, fixed after: a contained plan's bind of
+  the run's `.gemini` is asserted on the plan itself, where any host runs it
+  (`a_contained_antigravity_plan_binds_the_runs_home`, a recording session host); an
+  unreadable `antigravity-given` is logged. `antigravity::*` now 10 tests, all passed.
