@@ -1200,7 +1200,10 @@ mod tests {
         };
         assert!(store.quarantine_test(&entry).await?);
         assert!(!store.quarantine_test(&entry).await?, "once");
-        assert_eq!(store.quarantined_tests(Some(&s1)).await?, [entry.clone()]);
+        assert_eq!(
+            store.quarantined_tests(Some(&s1)).await?,
+            std::slice::from_ref(&entry)
+        );
         assert!(
             store
                 .quarantined_tests(Some(&SandboxId::parse("s2")?))
