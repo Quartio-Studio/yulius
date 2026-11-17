@@ -7,7 +7,8 @@ Accepted (2026-11-16). Specified in
 MUT-002, fix 8); task #472. Amended (2026-11-17) by
 [SPEC-506](../../.ai/specs/SPEC-506-as-fast-as-possible-from-start-to-merge.md) FST-004 and
 FST-005, task #488: the run starts with the first review and runs beside it, a later round's fix
-is run on its own lines, and the jobs follow the CPU budget (see Amendment).
+is run on its own lines, and the jobs follow the mutants listed and the budget in place of "2
+jobs" below (see Amendment).
 
 ## Context
 
@@ -79,8 +80,19 @@ No one command existed.
   the merge. After a later round's fix, run it on that fix's lines alone." The same mutants are
   tested and every missed one is fixed before the merge; what changes is that round 1's reviewer
   judges test strength by reading, without the run's result. A missed mutant's fix is a test,
-  which ADR-0345 does not count, so it does not need another round; a fix in product code is
+  which ADR-0345 does not count, so it does not need another round; its proof is the mutation
+  command run again, its summary line (0 missed) in the Evidence. A fix in product code is
   counted as any other.
 - **A fix's lines alone.** `scripts/dev mutants --base <reviewed head>` mutates only what changed
   since that head (with a merge of `dev` since then, its lines too).
-
+- **Jobs from the mutants and the budget.** With no `--jobs`, one job per 8 mutants listed, at
+  least 2, at most a third of `YULIUS_CPUS` (the rest is the review's and CI's, beside it), one
+  per 12 GB of `YULIUS_MEMORY_MB` and 7; 2 with no budget. The run stays within the CPUs:
+  cargo-mutants' jobserver, shared by every build and test it starts, gets `YULIUS_CPUS` tasks
+  (by default the host's 64), and each job's tests get their share as threads. Measured on PR
+  #1392's change (260 mutants, 17 Nov 2026): to the 36th mutant, 2 jobs took 866 s and 7 took
+  476 s (1.8 times); to the 8th, both about 350 s, since each job first builds the workspace in a
+  copy of its own (one cold build at 2 jobs, six at 7). So a fix's few mutants keep 2 jobs, and
+  only a whole change gets more. The CPU of a run grows with its jobs by those cold builds; on a
+  busy host the kernel's weights share it, and CI keeps four times an agent's share within the
+  sandbox. The numbers are in SPEC-506's Evidence.

@@ -100,7 +100,7 @@ product project's 21 jobs pinned to 3 CPUs are its `yulius.toml`.
 |---|---|---|---|---|
 | 1 | No request for changes for CI alone | yes: the merge still needs green CI on the exact head; a failure the change causes stays a finding; a fix of it falls under ADR-0345 (5 % of such re-reviews asked, 23 of 457) | about 1 to 2 min (5 % of repeated blocks × 23 min, plus rounds that waited for a run) | high on the price, low on the size |
 | 2 | Author proves each fix | yes: adds checks, removes none | 0.2 rounds × 23 min ≈ 4 to 5 min if half of the 45 % are caught | medium |
-| 3 | Mutation beside the review, faster | yes: the same mutants are tested and every missed one is fixed before the merge; the reviewer no longer reads the result in round 1, but judges test strength itself and missed mutants are fixed anyway | the run's wall time on the first ask: about 25 min here (#479: 5 runs, 135 min), up to 30 in quartio-v2 | high on "beside", medium on the speed-up until measured |
+| 3 | Mutation beside the review, faster | yes: the same mutants are tested and every missed one is fixed before the merge; the reviewer no longer reads the result in round 1, but judges test strength itself and missed mutants are fixed anyway | the run's wall time on the first ask, less one more CI run after an approving round 1: about 25 min here (#479: 5 runs, 135 min), up to 30 in quartio-v2; a whole change's run 1.8 times as fast (measured) | high on "beside", measured on the speed-up |
 | 4 | Stop needless re-approvals | yes: `delivery_merge` still counts the lines and refuses above 20 | up to 0.6 rounds × 5 to 15 min; the share these messages explain is the person's number | medium |
 | 5 | Whole suites in CI only | yes | part of 13 % of task time; not measurable from here | low |
 | 6 | Cheap checks before the commit | yes | one CI run (5 to 15 min) for each pull request a format or contract check would have failed (5 of 7 quartio-v2 pull requests on one afternoon) | medium |
@@ -235,31 +235,45 @@ product project's 21 jobs pinned to 3 CPUs are its `yulius.toml`.
 
 ### Pull request 2 (FST-004, FST-005)
 
-`scripts/dev mutants --base 87c08e62a --minutes 15 --jobs N` at PR #1392's head 719bb8967 (260
-mutants in its Rust lines, the same order each run, `--no-shuffle`), this sandbox, 17 Nov 2026;
-CPU and peak memory from `/usr/bin/time -v`, load from `uptime` at the start and end:
+`scripts/dev mutants --base 87c08e62a --minutes 15` at PR #1392's head 719bb8967 (260 mutants in
+its Rust lines, the same order each run, `--no-shuffle`), this sandbox, 17 Nov 2026. Seconds from
+the run's start (baseline included) until the n-th mutant ended, read from each run's
+`debug.log` (`lab.rs: outcome` lines); CPU from `/usr/bin/time -v`; load from `uptime`:
 
-| Jobs | Host load (1 min) | Baseline | Tested in 15 min (caught + unviable) | CPUs used | CPU-s per mutant | Peak RSS of one process |
-|---|---|---|---|---|---|---|
-| 2 | 196 to 343 (busy) | 109 s | 25 (22 + 3) | 4.6 | 166 | 6.1 GB |
-| 2 | 63 to 148 | 62 s | 36 (28 + 8) | 5.1 | 128 | 6.1 GB |
-| 7 | 82 to 148 | 93 s | 145 (82 + 63) | 17.2 | 107 | 6.1 GB |
-| 8 | 71 to 196 | 101 s | 141 (78 + 63) | 17.9 | 115 | 6.2 GB |
+| Run | Load (1 min) | 8th | 14th | 25th | 36th | 80th | CPUs used | Jobserver tasks |
+|---|---|---|---|---|---|---|---|---|
+| `--jobs 2` | 196 to 343 (busy) | 490 | 571 | 821 | — | — | 4.6 | 64 (the host's) |
+| `--jobs 2` (review round 1's reading) | 63 to 148 | 358 | 456 | 694 | 866 | — | 5.1 | 64 |
+| `--jobs 7` (review round 1's reading) | 82 to 148 | 342 | 368 | 431 | 476 | — | 17.2 | 64 |
+| `--jobs 8` | 71 to 196 | 429 | 462 | 532 | 577 | 709 | 17.9 | 64 |
+| default (`YULIUS_CPUS=22`: 7 jobs within 22 CPUs) | 37 to 52 | 279 | 303 | 363 | 409 | 540 | 17.1 | 22 |
 
-- 7 jobs test four times as many mutants as 2 at the same load; 8 adds nothing over 7. None was
-  missed or timed out in any run.
-- The CPU a mutant costs does not grow with jobs (107 to 166 CPU-seconds, lower with more jobs):
-  more jobs spend the same CPU sooner, they add no work. On a busy host the kernel's weights share
-  it (within a sandbox: agents 100, CI 400, engine 100), so CI keeps four times an agent's share.
-- This repository's mutation runs start no container: they never count as CI use for CI's
+- On the same mutants, 7 jobs are 1.8 times as fast as 2 at the 36th and about as fast at the 8th:
+  each job first builds the workspace in a copy of its own (one cold build at 2 jobs, six at 7),
+  which pays only over several mutants. So the default is one job per 8 mutants listed (2 for a
+  fix's few, 7 for a whole change), within a third of the CPUs. My first reading ("four times",
+  "adds no work") counted unviable mutants (about 8 s each, 43 % at 7 jobs against 22 % at 2) and
+  was wrong: more jobs spend more CPU, by their cold builds.
+- The run now stays within the budget's CPUs: cargo-mutants' jobserver had the host's 64 tasks and
+  now gets `YULIUS_CPUS` (22); each job's tests get their share as threads. With the cap, 7 jobs
+  used 17.1 CPUs on average. On a busy host the kernel's weights share the rest (within a
+  sandbox: agents 100, CI 400, engine 100); the busy 2-job run took 40 % longer to its 25th
+  mutant than the same run at a lighter load.
+- This repository's mutation runs start no container, so they never count as CI use for CI's
   admission (ADR-0353 counts a sandbox's CI groups and its Docker engine). A project whose
   mutation run starts browsers in its engine (quartio-v2) is counted; nothing caps the engine's
   CPU but the sandbox's `cpu.max` and its weight (`crates/yulius-sandbox/src/cgroup.rs`).
-- PR 1's own run at 2 jobs: 8 mutants in 683 s; its fix's 14 in 836 s. A pull request of about 80
-  mutants took the whole 30-minute bound at 2 jobs (ADR-0347); at 7 it takes about 9 minutes, and
-  it now runs beside the review instead of before it.
-- `cargo nextest run -p xtask`: 15 passed (`the_jobs_follow_the_cpu_budget` among them);
-  `cargo nextest run -p yulius-app --lib -E 'test(every_place_) | test(no_typed)'`: 9 passed;
-  `every_place_says_mutation_testing_runs_beside_the_review` fails with the old wording in one
-  place (checked by hand).
-
+- No run missed a mutant or timed out; the 141 mutants common to the 7- and 8-job runs and the 36
+  common with 2 jobs had the same outcome in each (review round 1's check), so load made no
+  mutant read as caught.
+- PR 1's own run at 2 jobs: 8 mutants in 683 s; its fix's 14 in 836 s. Pull request 2's own run:
+  "No mutant in the Rust lines changed" (`tools/**` is not mutated), so its lines were undone by
+  hand: the budget's variable name, the per-mutant bound and the thread share, each failing
+  `the_jobs_follow_the_mutants_and_the_budget`.
+- Expected gain: the run no longer comes before the review (it was a median 30 of a quartio-v2
+  task's 108 minutes, 11 % of this repository's task time); an approving round 1 is followed by
+  one more CI run for the Evidence line and any missed mutant's test.
+- `cargo nextest run -p xtask`: 15 passed; `cargo clippy -p xtask --all-targets -- -D warnings`:
+  clean; `cargo nextest run -p yulius-app --lib -E 'test(every_place_) | test(no_typed)'`: 9
+  passed; `every_place_says_mutation_testing_runs_beside_the_review` fails with the old wording in
+  one place (checked by hand).
