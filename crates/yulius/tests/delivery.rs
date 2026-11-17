@@ -537,6 +537,12 @@ impl GitPort for RealGit {
         }
         self.run(repo, &["show", &object]).await.map(Some)
     }
+
+    async fn parents(&self, repo: &Path, rev: &str) -> AppResult<Vec<String>> {
+        let line = git(repo, &["rev-list", "--parents", "-n", "1", rev])
+            .map_err(|e| AppError::Upstream(e.to_string()))?;
+        Ok(line.split_whitespace().skip(1).map(str::to_owned).collect())
+    }
 }
 
 /// The fake GitHub's repository: merges and fast-forwards happen directly in the bare origin
