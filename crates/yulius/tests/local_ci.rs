@@ -1316,6 +1316,68 @@ command = 'if [ "$YULIUS_CI_MATRIX" = 2 ]; then exit "$YULIUS_CI_SKIP_CODE"; fi'
     Ok(())
 }
 
+/// SPEC-497 SHR-001: a job split into shards (`matrix = "1/2 2/2"`) runs them side by side, each
+/// told its shard; the run passes only when every shard passed. Each shard leaves a mark and waits
+/// for the other's (bounded), so a shard that ran alone says so and fails.
+#[tokio::test]
+async fn a_sharded_job_runs_its_shards_side_by_side() -> TestResult {
+    let f = fixture_with(false, |data| {
+        let marks = data.join("shard-marks");
+        let marks = marks.to_string_lossy();
+        let dir = format!("{marks}/$YULIUS_CI_SHA");
+        let script = format!(
+            "mkdir -p {dir}; i=${{YULIUS_CI_MATRIX%/*}}; touch {dir}/$i; other=$((3 - i)); n=0; \
+             while [ ! -e {dir}/$other ]; do n=$((n + 1)); if [ $n -gt 50 ]; then \
+             echo \"shard $i ran alone\"; exit 1; fi; sleep 0.1; done; \
+             echo \"shard $YULIUS_CI_MATRIX met the other\"; \
+             if [ -e two.txt ] && [ $i = 2 ]; then echo \"shard 2 fails\"; exit 1; fi"
+        );
+        format!("[[ci.jobs]]\nname = \"test\"\nmatrix = \"1/2 2/2\"\ncommand = '{script}'\n")
+    })
+    .await?;
+    sync_and_settle(&f).await?;
+    let one = f.get("/api/sandboxes/s1/ci").await?;
+    let run = one["runs"]
+        .as_array()
+        .ok_or("runs")?
+        .iter()
+        .find(|r| r["reference"] == "pr/1")
+        .cloned()
+        .ok_or("pr/1 run")?;
+    assert_eq!(run["state"], "passed", "{run}");
+    let jobs = run_jobs(&f, &run).await?;
+    assert_eq!(jobs.len(), 2, "{jobs:?}");
+    for (job, shard) in jobs.iter().zip(["1/2", "2/2"]) {
+        assert_eq!(job["name"], format!("test ({shard})"), "{job}");
+        assert!(
+            job["output"]
+                .as_str()
+                .unwrap_or_default()
+                .contains(&format!("shard {shard} met the other")),
+            "{job}"
+        );
+    }
+    // A shard that fails fails the run.
+    open_pull(&f, 2, "feat/two", "origin/dev", "two.txt")?;
+    sync_and_settle(&f).await?;
+    let two = f.get("/api/sandboxes/s1/ci").await?;
+    let run = two["runs"]
+        .as_array()
+        .ok_or("runs")?
+        .iter()
+        .find(|r| r["reference"] == "pr/2")
+        .cloned()
+        .ok_or("pr/2 run")?;
+    assert_eq!(run["state"], "failed", "{run}");
+    let jobs = run_jobs(&f, &run).await?;
+    let second = jobs
+        .iter()
+        .find(|j| j["name"] == "test (2/2)")
+        .ok_or("shard 2")?;
+    assert_eq!(second["state"], "failed", "{second}");
+    Ok(())
+}
+
 /// SPEC-493 CJP-001 to CJP-004 (AC-16): a job naming the files it tests ends skipped, with the
 /// reason and without running, for a pull request touching none of them, which still passes and
 /// gates nothing; the integration branch's own run runs it; a pull request touching one of them

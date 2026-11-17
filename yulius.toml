@@ -35,10 +35,20 @@ RUST_TEST_THREADS = "{cpus}"
 
 # macOS has no Yulius runner: the gate compiles every target for macOS (ADR-0169); run
 # `scripts/dev ci` on a Mac before a release to link and test there. Each job gets an
-# equal share of the sandbox (three jobs: a third each), and a run's jobs wait for theirs.
+# equal share of CI's budget (five jobs: a fifth each, ADR-0350); CI's measured use, not the
+# shares, decides when a job starts (ADR-0353).
+# The gate but its tests, and the tests in two shards beside it (SPEC-497 SHR-001): each value of
+# the matrix is its own job, with its own checkout and build, run side by side where CI's budget
+# allows; `scripts/dev test` runs shard i of n for a value `i/n`. Locally, `scripts/dev ci` runs
+# everything in one go.
 [[ci.jobs]]
 name = "quality"
-command = "python3 scripts/bootstrap.py --install-rustup && scripts/dev ci"
+command = "python3 scripts/bootstrap.py --install-rustup && scripts/dev checks"
+
+[[ci.jobs]]
+name = "test"
+matrix = "1/2 2/2"
+command = "python3 scripts/bootstrap.py --install-rustup && scripts/dev test"
 
 # The browser's system libraries are installed once in the sandbox (onboarding); installing them
 # on every run (`--with-deps`, apt) raced the other CI lane and agents for the dpkg lock and
