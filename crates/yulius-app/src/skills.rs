@@ -1619,7 +1619,10 @@ mod tests {
             "AGENTS.md",
         ] {
             let text = normal(&fs::read_to_string(root.join(rel))?);
-            assert!(text.contains(&normal(RULE)), "{rel} does not state the rule");
+            assert!(
+                text.contains(&normal(RULE)),
+                "{rel} does not state the rule"
+            );
         }
         let agents = normal(&fs::read_to_string(root.join("AGENTS.md"))?);
         assert!(
