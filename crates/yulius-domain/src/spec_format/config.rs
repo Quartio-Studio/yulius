@@ -4,8 +4,8 @@
 //! pre-parsed map, so the domain stays dependency-free and every problem carries a line
 //! number for the agent prompt. Supported:
 //!
-//! - `[docs]`, `[commands]`, `[delivery]`, `[disk]`, `[branch_policy]`, `[resources.env]`,
-//!   `[cd.<name>]` tables, `[[delivery.environments]]` and `[[ci.jobs]]` entries;
+//! - `[docs]`, `[commands]`, `[delivery]`, `[disk]`, `[review]`, `[merge_queue]`,
+//!   `[branch_policy]`, `[resources.env]`, `[cd.<name>]` tables, `[[delivery.environments]]` and `[[ci.jobs]]` entries;
 //! - `key = "basic string"` (escapes `\" \\ \n \t \r \b \f \uXXXX \UXXXXXXXX`),
 //!   `key = 'literal string'`, `key = true|false`, whole numbers (`cpus = 6`) and
 //!   `environments = []`;
@@ -52,6 +52,10 @@
 //! not_product = ["crates/gen/"]          # approval (SPEC-493 APR-002): `product` globs count
 //!                                        # only these, `not_product` never these; default:
 //!                                        # every file but tests and documents
+//!
+//! [merge_queue]                        # derived files (SPEC-497 MQW-003): two armed pull
+//! apart = ["skills/defaults/"]           # requests that both change files under one of these
+//!                                        # globs never share a merge candidate
 //!
 //! [resources.env]                       # the budget in this repository's tools' terms
 //! CARGO_BUILD_JOBS = "{cpus}"            # also {memory_mb}, {memory_gb}; with YULIUS_CPUS and
@@ -287,6 +291,7 @@ struct Document {
     delivery: Option<Table>,
     disk: Option<Table>,
     review: Option<Table>,
+    merge_queue: Option<Table>,
     branch_policy: Option<Table>,
     environments: Vec<Table>,
     ci_jobs: Vec<Table>,
@@ -302,6 +307,7 @@ enum Target {
     Delivery,
     Disk,
     Review,
+    MergeQueue,
     BranchPolicy,
     Environment,
     CiJob,
@@ -314,6 +320,7 @@ const COMMAND_KEYS: &str = "test, lint, build, gate";
 const DELIVERY_KEYS: &str = "preset, integration_branch, production_branch, merge, promote, auto_promote, require_checks, environments";
 const DISK_KEYS: &str = "caches";
 const REVIEW_KEYS: &str = "product, not_product";
+const MERGE_QUEUE_KEYS: &str = "apart";
 /// Most globs in one `[review]` key.
 const MAX_REVIEW_GLOBS: usize = 50;
 const BRANCH_POLICY_KEYS: &str = "preset, types";
@@ -520,8 +527,8 @@ fn parse_document(text: &str) -> Result<Document, FormatError> {
             };
             target = match (name.as_str(), array) {
                 (
-                    "docs" | "commands" | "delivery" | "disk" | "review" | "branch_policy"
-                    | "resources.env",
+                    "docs" | "commands" | "delivery" | "disk" | "review" | "merge_queue"
+                    | "branch_policy" | "resources.env",
                     true,
                 ) => {
                     return Err(err(line, ConfigProblem::NotAnArrayTable(name)));
@@ -565,8 +572,8 @@ fn parse_document(text: &str) -> Result<Document, FormatError> {
                     Target::CiJob
                 }
                 (
-                    known
-                    @ ("docs" | "commands" | "delivery" | "disk" | "review" | "branch_policy"),
+                    known @ ("docs" | "commands" | "delivery" | "disk" | "review" | "merge_queue"
+                    | "branch_policy"),
                     false,
                 ) => {
                     let (slot, target) = match known {
@@ -574,6 +581,7 @@ fn parse_document(text: &str) -> Result<Document, FormatError> {
                         "commands" => (&mut document.commands, Target::Commands),
                         "disk" => (&mut document.disk, Target::Disk),
                         "review" => (&mut document.review, Target::Review),
+                        "merge_queue" => (&mut document.merge_queue, Target::MergeQueue),
                         "branch_policy" => (&mut document.branch_policy, Target::BranchPolicy),
                         _ => (&mut document.delivery, Target::Delivery),
                     };
@@ -594,6 +602,7 @@ fn parse_document(text: &str) -> Result<Document, FormatError> {
             Target::Delivery => document.delivery.as_mut(),
             Target::Disk => document.disk.as_mut(),
             Target::Review => document.review.as_mut(),
+            Target::MergeQueue => document.merge_queue.as_mut(),
             Target::BranchPolicy => document.branch_policy.as_mut(),
             Target::Environment => document.environments.last_mut(),
             Target::CiJob => document.ci_jobs.last_mut(),
@@ -992,6 +1001,7 @@ pub fn parse_yulius_toml(text: &str) -> Result<ProjectConfig, FormatError> {
     let ci = ci_jobs(&document, &commands)?;
     branch_policy_of(&document)?;
     review_of(&document)?;
+    merge_queue_of(&document)?;
     resources_env(&document)?;
     cd_of(&document)?;
     Ok(ProjectConfig {
@@ -1383,6 +1393,63 @@ fn review_of(document: &Document) -> Result<ProductRule, FormatError> {
 /// ```
 pub fn parse_yulius_toml_review(text: &str) -> Result<ProductRule, FormatError> {
     parse_document(text).and_then(|document| review_of(&document))
+}
+
+/// `[merge_queue]`'s derived files (SPEC-497 MQW-003): `apart`, 1 to 50 repository path globs;
+/// two armed pull requests that both change files under one of them never share a merge
+/// candidate. None without the table.
+///
+/// # Errors
+/// A syntax error of the file or an invalid `[merge_queue]` entry.
+///
+/// # Examples
+/// ```
+/// use yulius_domain::spec_format::parse_yulius_toml_merge_queue;
+/// let apart = parse_yulius_toml_merge_queue("[merge_queue]\napart = [\"gen/\", \"Cargo.lock\"]\n")?;
+/// assert_eq!(apart[0].as_str(), "gen/**");
+/// assert!(parse_yulius_toml_merge_queue("[docs]\nproduct = \"README.md\"\n")?.is_empty());
+/// assert!(parse_yulius_toml_merge_queue("[merge_queue]\nserial = [\"x\"]\n").is_err());
+/// # Ok::<(), yulius_domain::spec_format::FormatError>(())
+/// ```
+pub fn parse_yulius_toml_merge_queue(text: &str) -> Result<Vec<Pattern>, FormatError> {
+    parse_document(text).and_then(|document| merge_queue_of(&document))
+}
+
+/// `[merge_queue]`'s `apart` patterns, checked.
+fn merge_queue_of(document: &Document) -> Result<Vec<Pattern>, FormatError> {
+    let mut apart = Vec::new();
+    for entry in document
+        .merge_queue
+        .as_ref()
+        .map(|t| t.entries.as_slice())
+        .unwrap_or_default()
+    {
+        if entry.key != "apart" {
+            return Err(unknown("merge_queue", entry, MERGE_QUEUE_KEYS));
+        }
+        let items: Vec<String> = match &entry.value {
+            Value::Array(items) => items.clone(),
+            Value::Str(text) => text.split_whitespace().map(str::to_owned).collect(),
+            _ => Vec::new(),
+        };
+        let invalid = |value: &str| {
+            err(
+                entry.line,
+                ConfigProblem::InvalidValue {
+                    key: entry.key.clone(),
+                    value: clip(value),
+                    allowed: "1 to 50 repository path globs, as scope claims take them",
+                },
+            )
+        };
+        if items.is_empty() || items.len() > MAX_REVIEW_GLOBS {
+            return Err(invalid(&items.join(" ")));
+        }
+        for item in &items {
+            apart.push(Pattern::parse(item.trim()).map_err(|_| invalid(item))?);
+        }
+    }
+    Ok(apart)
 }
 
 /// The repository's `[resources.env]` (SPEC-082 RES-004): the variables its tools read, as
@@ -2533,6 +2600,34 @@ mod tests {
         ] {
             assert!(parse_yulius_toml_review(bad).is_err(), "{bad}");
             assert!(parse_yulius_toml(bad).is_err(), "{bad}");
+        }
+        Ok(())
+    }
+
+    /// SPEC-497 MQW-003 (review round 1): `[merge_queue] apart` takes 1 to 50 repository globs,
+    /// as a list or a string; anything else is refused by its own parse and the whole file's.
+    #[test]
+    fn the_merge_queue_table_names_derived_files() -> TestResult {
+        assert!(parse_yulius_toml_merge_queue("")?.is_empty());
+        let apart = parse_yulius_toml_merge_queue("[merge_queue]\napart = \"gen/ Cargo.lock\"\n")?;
+        let names: Vec<&str> = apart.iter().map(Pattern::as_str).collect();
+        assert_eq!(names, ["gen/**", "Cargo.lock"]);
+        parse_yulius_toml("[merge_queue]\napart = [\"gen/\"]\n")?;
+        let many = (0..51)
+            .map(|n| format!("\"d{n}/\""))
+            .collect::<Vec<_>>()
+            .join(", ");
+        for bad in [
+            "[merge_queue]\napart = []\n".to_owned(),
+            format!("[merge_queue]\napart = [{many}]\n"),
+            "[merge_queue]\napart = [\"/etc\"]\n".to_owned(),
+            "[merge_queue]\napart = [\"a/../b\"]\n".to_owned(),
+            "[merge_queue]\napart = 3\n".to_owned(),
+            "[merge_queue]\nserial = [\"a\"]\n".to_owned(),
+            "[[merge_queue]]\napart = [\"a\"]\n".to_owned(),
+        ] {
+            assert!(parse_yulius_toml_merge_queue(&bad).is_err(), "{bad}");
+            assert!(parse_yulius_toml(&bad).is_err(), "{bad}");
         }
         Ok(())
     }

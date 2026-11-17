@@ -1440,6 +1440,9 @@ request as it is:
   leaves it to the candidate (MQW-001); a candidate formed again on the same base with the same
   members takes its tree's passed run (`App::ci_reuse_for_candidate`); a failed candidate waits
   for its members' own runs before it is bisected;
+- a pull request that changes files under a glob of the integration branch's `[merge_queue]
+  apart` (derived files) that an earlier member also changes is held out of the candidate and
+  waits for the next (`merge_queue::held_apart`, SPEC-497 MQW-003);
 - a red candidate of n ≥ 2 is formed again from its first ⌈n/2⌉; when that leaves out exactly one
   member and the others then pass without it on the same base, that member's armed merge ends at
   once, naming both runs (MQW-003, `delivery.train.combined`); a red one of one ends that armed

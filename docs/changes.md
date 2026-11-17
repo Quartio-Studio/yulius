@@ -14,6 +14,11 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   after a start. Agents' containers, images and volumes are never touched. The Pipeline tab's
   Docker card counts what was removed per week; `yulius doctor --docker-smoke` proves it on a host.
 
+- Derived files are changed one merge candidate at a time (SPEC-497 MQW-003, task #479,
+  [ADR-0357](decisions/0357-a-merge-candidate-is-decided-by-its-own-run.md)): a project names
+  them in `yulius.toml` (`[merge_queue] apart = ["skills/defaults/", "Cargo.lock"]`), and two
+  armed pull requests that both change files under one of those globs never share a candidate;
+  the later waits for the next, so no other member loses a run to how they combine.
 - SPEC-497 (task #479) is done: its Evidence keeps the numbers before (quartio-v2, 16 Nov 2026)
   and after (this repository's first pull request runs: 11 to 15 min before slice D, 6.9 to 8.7
   min after) and names the reads that show the merge queue's targets on the instance a week after
