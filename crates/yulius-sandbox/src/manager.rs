@@ -2117,25 +2117,30 @@ impl Manager {
         let Some(socket) = self.engine_socket(sandbox).await else {
             return;
         };
-        match crate::engine::remove_ci_leftovers(&socket, jobs).await {
-            Ok(removed) if !removed.is_empty() => {
-                tracing::info!(
-                    sandbox,
-                    containers = removed.containers,
-                    networks = removed.networks,
-                    when,
-                    "removed what CI jobs left in the sandbox's Docker engine"
-                );
-                self.docker_event(
-                    sandbox,
-                    "ci_leftovers",
-                    u64::from(removed.containers),
-                    format!("{} {} {when}", removed.containers, removed.networks),
-                );
-            }
-            Ok(_) => {}
-            Err(error) => {
+        let removal = crate::engine::remove_ci_leftovers(&socket, jobs).await;
+        let removed = removal.removed;
+        if !removed.is_empty() {
+            tracing::info!(
+                sandbox,
+                containers = removed.containers,
+                networks = removed.networks,
+                when,
+                "removed what CI jobs left in the sandbox's Docker engine"
+            );
+            // Counted also when a later call failed (review round 1).
+            self.docker_event(
+                sandbox,
+                "ci_leftovers",
+                u64::from(removed.containers),
+                format!("{} {} {when}", removed.containers, removed.networks),
+            );
+        }
+        if let Some(error) = removal.error {
+            // A stopped engine refuses its control socket at every pass: not worth a warning.
+            if removed.is_empty() {
                 tracing::debug!(sandbox, %error, when, "cannot remove CI jobs' leftovers now");
+            } else {
+                tracing::warn!(sandbox, %error, when, "removed only part of what CI jobs left");
             }
         }
     }
@@ -4162,6 +4167,8 @@ while True:
                     )
                 } else if path.starts_with("/networks") {
                     (200, "[]".to_owned())
+                } else if path.starts_with("/images/") {
+                    (200, r#"{"Config":{"Labels":{}}}"#.to_owned())
                 } else {
                     (404, "{}".to_owned())
                 };

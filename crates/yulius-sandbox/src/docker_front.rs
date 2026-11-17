@@ -994,8 +994,9 @@ mod real_engine {
         ci_front.stop(Duration::from_secs(1)).await;
         agent_front.stop(Duration::from_secs(1)).await;
         result.map_err(|e| e.to_string())?;
+        assert!(removed.error.is_none(), "{:?}", removed.error);
         assert_eq!(
-            removed?,
+            removed.removed,
             Leftovers {
                 containers: 2,
                 networks: 2
@@ -1011,7 +1012,7 @@ mod real_engine {
         assert!(!volume.is_empty(), "the volume stays");
         assert!(!image.is_empty(), "the image stays");
         assert_eq!(
-            swept.ok_or("no sweep")??,
+            swept.ok_or("no sweep")?.removed,
             Leftovers {
                 containers: 1,
                 networks: 0
