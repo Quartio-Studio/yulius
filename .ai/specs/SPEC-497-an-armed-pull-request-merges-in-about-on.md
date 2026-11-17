@@ -85,10 +85,10 @@ mode.
   for the server and agent sessions (an eighth of each, at least 1 CPU and 2 GiB). Every
   sandbox's jobs are admitted from it.
 - **HBA-002** (amended 16 Nov 2026, [ADR-0353](../../docs/decisions/0353-ci-jobs-start-by-what-ci-uses-within-a-bounded-worst-case.md))
-  A job starts when, with no CI job running, at once; otherwise when all of these hold:
-  - **No contention.** CI's processes waited for a CPU at most 10 % of the last 10 seconds (the
-    sandboxes' `ci` groups' `cpu.pressure`).
-  - **Bounded worst case.** The running jobs' budgets with its own are at most twice the CI
+  A job starts when, with no CI job running, at once; otherwise when all of these hold (CPU
+  pressure is not one of them since 17 Nov 2026: a job pinned to a few CPUs shows it while the
+  host idles, ADR-0353's amendment):
+  - **Bounded worst case.** The running jobs' budgets with its own are at most three times the CI
     budget's CPUs.
   - **Room.** The sum of these fits in the CI budget, in CPUs and memory: what every sandbox's
     `ci` and `engine` groups were measured to use over the last window, what jobs started in the
@@ -110,8 +110,8 @@ mode.
   reservation; agent processes keep their own weight and nice level.
 - **HBA-005** `YULIUS_CI_LANES` stays the bound of runs at once per sandbox, with its host-sized
   default; it no longer sizes the load, the budget does: neither the lanes nor a project's `cpus`
-  take CI past twice the CI budget's CPUs (HBA-002 as amended), and contention measured by the
-  kernel stops further starts. The job's wait says which part of the budget it waits for.
+  take CI past three times the CI budget's CPUs (HBA-002 as amended), and measured use stops
+  further starts. The job's wait says which part of the budget it waits for.
 
 ### Slice B: a failure outside the change is handled as such
 
@@ -163,6 +163,8 @@ mode.
 - [x] Slice B: documents and ADR of the reruns and minutes
 - [x] Slice B: the reruns and minutes' review rounds 1 to 3 answered
 - [x] Slice B: the reruns and minutes' last review round
+- [x] Slice A3: the operator's admission amendment applied
+- [ ] Slice A3: the amendment's review rounds
 - [ ] Slice B: flaky tests quarantined with an issue, the project told
 - [ ] Slice B: quarantine documents, ADR and review
 - [ ] Slice C: a failed member leaves without cancelling the candidate
@@ -545,3 +547,22 @@ mode.
   summary (`" 0 failing"` as a whole word); a failure on an unfinished last line is seen (unit
   `a_failure_on_the_unfinished_last_line_is_seen`). Still read only, not tested through the
   executor: a second start that cannot be made, and the mapping of a lost host.
+
+### Slice A3: the operator's amendment to the admission (its own pull request, first)
+
+- The instance's operator built production 915ebb6a (17 Nov 2026, 01:41 UTC): main 7a705569 plus a
+  fix to the admission of #1366, measured on production that night. Applied here as it came
+  (`git am`, commit 9a7e9421b, author the operator), on top of `dev` with #1373:
+  - the `cpu.pressure` rule is gone (`Admission::Contended`, `CI_PRESSURE_LIMIT`): a project's CI
+    that pins its workers to its own CPUs showed 15-20 % pressure in its `ci` group while the host
+    was 45 % busy, and 117 jobs of every project queued; the reading stays, for diagnosis;
+  - `CI_OVERSUBSCRIPTION` is 3, not 2: at twice the budget the worst case bound all night (108 of
+    112 with the host 60-77 % busy).
+  ADR-0353 has two amendments; HBA-002 and HBA-005, operations, architecture, changes and the
+  decisions index say the same. `local_ci::cpu_pressure_holds_no_job_back` replaces
+  `a_job_waits_while_cis_processes_wait_for_cpus`.
+- The decisions index got the amended 0353 line twice from the union merge; it is kept once, in
+  order.
+- Checks run on this head: `cargo fmt --check`; `cargo clippy --workspace --all-targets -D
+  warnings`; the unit tests of `yulius-domain`, `yulius-app`, `yulius-sandbox` (1,366 passed);
+  `local_ci::` and `analytics::` (101 passed).

@@ -3108,11 +3108,11 @@ async fn a_job_that_cannot_start_holds_no_slot() -> TestResult {
     Ok(())
 }
 
-/// ADR-0353 (review of the CI admission fix): while CI's processes wait for a CPU more than 10 %
-/// of the last 10 seconds, no further job starts, and the job says so; it starts once they no
-/// longer do.
+/// ADR-0353 (amended 17 Nov 2026): CI's CPU pressure holds no job back. A job that confines
+/// itself to a few CPUs (`taskset`) shows pressure while the host idles; on 17 Nov one project's
+/// pinned jobs held every sandbox's jobs back that way. What CI is measured to use decides.
 #[tokio::test]
-async fn a_job_waits_while_cis_processes_wait_for_cpus() -> TestResult {
+async fn cpu_pressure_holds_no_job_back() -> TestResult {
     let f = fixture_tuned(
         false,
         |data| {
@@ -3134,20 +3134,11 @@ async fn a_job_waits_while_cis_processes_wait_for_cpus() -> TestResult {
     let pull_sha = pull["sha"].as_str().ok_or("sha")?.to_owned();
     let later = f.push_dev("later.txt", Some("later\n"))?;
     f.h.app.ci_sync_sandbox(&f.sandbox).await?;
-    let reason = waits_with(&f, &later, "waited for a CPU").await?;
-    assert!(
-        reason.ends_with(
-            "CI's jobs waited for a CPU 25.0 % of the last 10 seconds; a job starts at 10 % or \
-             less"
-        ),
-        "{reason}"
-    );
-    measured.pressure.store(50, Ordering::SeqCst);
     let deadline = tokio::time::Instant::now() + WAIT;
     while only_job_state(&f, &later).await? != Some(RunState::Running) {
         f.h.app.ci_dispatch().await;
         if tokio::time::Instant::now() > deadline {
-            return Err("the job never started".into());
+            return Err("the job never started beside one whose processes wait for CPUs".into());
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }

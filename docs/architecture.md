@@ -102,12 +102,12 @@ follows the CPUs the sandbox's running jobs hold: 100 plus 100 per CPU, at least
 ([decision 0350](decisions/0350-ci-jobs-are-admitted-by-what-ci-really-holds-on-the-host.md)).
 `ci/slots.rs` counts the jobs; `resources.rs` (`CiAdmission`) admits them from one CI budget for the
 whole instance, the capacity less an eighth for the server and the agents. A job starts when:
-- the highest CPU pressure of the `ci` groups of the sandboxes running jobs is at most 10 %;
-- the running jobs' budgets with its own stay within twice the budget;
+- the running jobs' budgets with its own stay within three times the budget;
 - the measured use of the `ci` and `engine` groups of the sandboxes running jobs, what jobs
   started in the last minute may still bring, and its own start fit (`Delegation::ci_use`: CPU
   time over at least 5 s, read at each job's start, each dispatcher pass and each look of a
-  waiting job, under the admission's lock; anonymous memory; `cpu.pressure` `some avg10`).
+  waiting job, under the admission's lock; anonymous memory). CPU pressure is read for
+  diagnosis only: a job pinned to a few CPUs shows it while the host idles (17 Nov 2026).
 
 Waiting jobs start by priority (merge trains', pull requests', branches') and age; one that cannot
 start lets the others pass for 10 minutes at most, and a job takes its slot once admitted

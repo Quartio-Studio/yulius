@@ -8,8 +8,8 @@
 //!
 //! - A CI job gets what its `[[ci.jobs]]` entry declares (`cpus`, `memory_gb`), else an equal share
 //!   of the capacity among its run's jobs: what it may use at once. The app starts it once the
-//!   instance's CI budget has room for it by what CI was measured to use, CI's processes do not
-//!   wait for CPUs, and the running jobs' budgets with its own stay within twice the CI budget
+//!   instance's CI budget has room for it by what CI was measured to use and the running jobs'
+//!   budgets with its own stay within three times the CI budget
 //!   ([`admit`], SPEC-497 HBA-002), so CI uses the host without taking more than it has,
 //!   whatever the number of lanes or the declarations.
 //! - An agent session, terminal or Cockpit gets the agent budget: a third of the capacity by
@@ -259,17 +259,15 @@ pub fn network_reserve(capacity: u32) -> u32 {
 
 /// How many times the CI budget's CPUs the running jobs may use at once, their `cpus` or default
 /// shares added up (SPEC-497 HBA-002): were every job to use all it may at the same moment, each
-/// would still get half of it, so a test's time limits keep their margin.
-pub const CI_OVERSUBSCRIPTION: u32 = 2;
+/// would still get a third of it. Measured use stops new jobs long before that: on 16–17 Nov 2026
+/// twice the budget was the limit that held jobs back while the host was 45–77 % busy and CI's
+/// processes waited for a CPU 1–6 % of the time.
+pub const CI_OVERSUBSCRIPTION: u32 = 3;
 /// A job that has just started counts, until the readings show it, as its budget but at most this
 /// fraction of the CI budget (SPEC-497 HBA-002): its checkout and set-up come first, and jobs
 /// starting together are never counted as more than the budget between two readings (four
 /// starting at once may still use more until the next reading shows it).
 pub const CI_START_SHARE: u32 = 4;
-/// Thousandths of the last 10 seconds for which CI's processes waited for a CPU (`cpu.pressure`
-/// `some avg10` of the sandboxes' `ci` groups) above which no job starts (SPEC-497 HBA-002):
-/// CI already gets less CPU than it asks for.
-pub const CI_PRESSURE_LIMIT: u32 = 100;
 
 impl Capacity {
     /// What a job counts for between its start and the readings that show it (SPEC-497
@@ -343,9 +341,6 @@ pub struct Held {
     /// What the `ci` and `engine` groups of the sandboxes running them were measured to use (CPU
     /// time per second, rounded up; anonymous memory); `None` when nothing was measured.
     pub measured: Option<Budget>,
-    /// The longest any of their `ci` groups' processes waited for a CPU over the last 10
-    /// seconds, in thousandths (`cpu.pressure` `some avg10`); `None` when not measured.
-    pub pressure: Option<u32>,
 }
 
 /// The part of the CI budget a job waits for.
@@ -362,11 +357,6 @@ pub enum Short {
 pub enum Admission {
     /// It starts.
     Now,
-    /// CI's processes already wait for CPUs ([`CI_PRESSURE_LIMIT`]).
-    Contended {
-        /// Thousandths of the last 10 seconds they waited.
-        pressure: u32,
-    },
     /// The running jobs and this one could use more CPUs at once than [`CI_OVERSUBSCRIPTION`]
     /// times the budget.
     WorstCase {
@@ -397,13 +387,6 @@ impl fmt::Display for Admission {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match *self {
             Self::Now => f.write_str("it fits"),
-            Self::Contended { pressure } => write!(
-                f,
-                "CI's jobs waited for a CPU {}.{} % of the last 10 seconds; a job starts at {} % or less",
-                pressure / 10,
-                pressure % 10,
-                CI_PRESSURE_LIMIT / 10
-            ),
             Self::WorstCase {
                 reserved,
                 need,
@@ -411,7 +394,7 @@ impl fmt::Display for Admission {
             } => write!(
                 f,
                 "the running jobs may use {reserved} CPUs at once, and with this job's {need} \
-                 that is more than {limit}, twice the host's CPUs for CI"
+                 that is more than {limit}, three times the host's CPUs for CI"
             ),
             Self::Load {
                 short,
@@ -437,15 +420,16 @@ impl fmt::Display for Admission {
 /// Whether a job needing `need` starts beside what CI holds (SPEC-497 HBA-002). With no CI job
 /// running anything starts. Otherwise, in this order:
 ///
-/// 1. CI's processes did not wait for a CPU more than [`CI_PRESSURE_LIMIT`] thousandths of the
-///    last 10 seconds;
-/// 2. the CPUs the running jobs and this one may use at once are at most
+/// 1. the CPUs the running jobs and this one may use at once are at most
 ///    [`CI_OVERSUBSCRIPTION`] times the budget;
-/// 3. what CI was measured to use, what jobs that just started may still bring and this job's
+/// 2. what CI was measured to use, what jobs that just started may still bring and this job's
 ///    start allowance fit in the budget, in CPUs and in memory. Where nothing is measured the
 ///    reservations decide: the running jobs' budgets and this job's whole budget.
 ///
-/// A need larger than the budget counts as the whole budget.
+/// A need larger than the budget counts as the whole budget. CPU pressure (`cpu.pressure`) is no
+/// part of it: a job that confines itself to a few CPUs (`taskset`) shows pressure while the
+/// host idles, and held every sandbox's jobs back (17 Nov 2026); measured use already stops new
+/// jobs when CI really fills the host.
 ///
 /// # Examples
 /// ```
@@ -460,9 +444,6 @@ impl fmt::Display for Admission {
 /// // They use 50: it waits.
 /// let held = Held { jobs: 3, reserved, measured: used(50), ..Held::default() };
 /// assert!(matches!(admit(budget, &held, need), Admission::Load { used: 50, .. }));
-/// // CI's processes waited for a CPU 25 % of the last 10 seconds: it waits.
-/// let held = Held { jobs: 3, reserved, measured: used(12), pressure: Some(250), ..Held::default() };
-/// assert_eq!(admit(budget, &held, need), Admission::Contended { pressure: 250 });
 /// ```
 #[must_use]
 pub fn admit(budget: Capacity, held: &Held, need: Budget) -> Admission {
@@ -473,12 +454,6 @@ pub fn admit(budget: Capacity, held: &Held, need: Budget) -> Admission {
         cpus: need.cpus.clamp(1, budget.cpus.max(1)),
         memory_mb: need.memory_mb.clamp(1, budget.memory_mb.max(1)),
     };
-    if let Some(pressure) = held
-        .pressure
-        .filter(|pressure| *pressure > CI_PRESSURE_LIMIT)
-    {
-        return Admission::Contended { pressure };
-    }
     let reserved = u64::from(held.reserved.cpus);
     let limit = u64::from(budget.cpus) * u64::from(CI_OVERSUBSCRIPTION);
     if reserved + u64::from(need.cpus) > limit {
@@ -804,7 +779,7 @@ mod tests {
     }
 
     /// SPEC-497 HBA-001, HBA-002: the reserve of the server and agents; what CI uses decides,
-    /// with what starting jobs may still bring; the worst case is bounded at twice the budget;
+    /// with what starting jobs may still bring; the worst case is bounded at three times the budget;
     /// CI's processes waiting for CPUs stop new jobs; memory as well as CPUs; without readings
     /// the reservations decide; a job larger than the budget counts as the whole budget.
     #[test]
@@ -874,40 +849,35 @@ mod tests {
             "CI uses 20 of the host's 56 CPUs for CI and jobs that just started may bring 28 \
              more; this job starts with 14"
         );
-        // The worst case: the running jobs may use 100 CPUs at once; 16 more is over 112.
-        let worst = admit(budget, &held(5, 100, Some(10)), need);
+        // The worst case: the running jobs may use 160 CPUs at once; 16 more is over 168.
+        let worst = admit(budget, &held(7, 160, Some(10)), need);
         assert_eq!(
             worst,
             Admission::WorstCase {
-                reserved: 100,
+                reserved: 160,
                 need: 16,
-                limit: 112
+                limit: 168
             }
         );
         assert_eq!(
             worst.to_string(),
-            "the running jobs may use 100 CPUs at once, and with this job's 16 that is more \
-             than 112, twice the host's CPUs for CI"
+            "the running jobs may use 160 CPUs at once, and with this job's 16 that is more \
+             than 168, three times the host's CPUs for CI"
         );
-        assert_eq!(admit(budget, &held(5, 96, Some(10)), need), Admission::Now);
-        // CI's processes waiting for CPUs stop new jobs; at the limit they do not.
-        let contended = Held {
-            pressure: Some(101),
-            ..held(2, 32, Some(12))
-        };
+        assert_eq!(admit(budget, &held(7, 152, Some(10)), need), Admission::Now);
+        // 17 Nov 2026: three quartio-v2 jobs of 30 CPUs held back a fourth at twice the budget
+        // (90 + 30 > 112) while the host was 55 % busy; at three times it starts.
         assert_eq!(
-            admit(budget, &contended, need),
-            Admission::Contended { pressure: 101 }
+            admit(
+                budget,
+                &held(3, 90, Some(20)),
+                Budget {
+                    cpus: 30,
+                    memory_mb: 1024
+                }
+            ),
+            Admission::Now
         );
-        assert_eq!(
-            Admission::Contended { pressure: 245 }.to_string(),
-            "CI's jobs waited for a CPU 24.5 % of the last 10 seconds; a job starts at 10 % or less"
-        );
-        let at_limit = Held {
-            pressure: Some(100),
-            ..held(2, 32, Some(12))
-        };
-        assert_eq!(admit(budget, &at_limit, need), Admission::Now);
         // Memory too.
         let big = Held {
             jobs: 1,
@@ -952,7 +922,7 @@ mod tests {
             Admission::Load { need: 56, .. }
         ));
         assert!(matches!(
-            admit(budget, &held(3, 63, Some(5)), huge),
+            admit(budget, &held(5, 120, Some(5)), huge),
             Admission::WorstCase { need: 56, .. }
         ));
     }

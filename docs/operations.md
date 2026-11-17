@@ -1503,8 +1503,8 @@ involved.
 - Budget the disk: a Rust workspace's `target/` per job and lane.
 - Removing `ci/` (with no run active) resets a sandbox's caches. The next run rebuilds them.
 - CI jobs share the host's CI budget (SPEC-082, SPEC-497 HBA-002, ADR-0353): a job starts when
-  CI's processes are not short of CPUs, the running jobs' declared CPUs (`cpus`, else an equal
-  share among the run's jobs) with its own stay within twice the budget, and its start fits
+  the running jobs' declared CPUs (`cpus`, else an equal share among the run's jobs) with its
+  own stay within three times the budget, and its start fits
   beside what CI is measured to use. `memory_gb` is the job's budget and counts at its start;
   after that the measured memory decides. Each
   is told its budget in `YULIUS_CPUS` and `YULIUS_MEMORY_MB` and the repository's
@@ -1524,9 +1524,7 @@ involved.
   the sandbox.
 - CI jobs of every sandbox come out of one budget: the host's CPUs and memory less an eighth for
   the server and the agents. A job starts when:
-  - CI's processes are not waiting for CPUs (`cpu.pressure` of the sandboxes' `ci` groups at most
-    10 %);
-  - the running jobs' budgets with its own stay within twice the budget's CPUs;
+  - the running jobs' budgets with its own stay within three times the budget's CPUs;
   - what CI was measured to use, what jobs started in the last minute may still bring, and its own
     start (its budget, at most a quarter of the budget) fit.
 
