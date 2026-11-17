@@ -1334,6 +1334,9 @@ impl App {
             }
             Err(err) => return Err(err.public_message()),
         };
+        // The job's own cgroup, so the Docker front labels what it creates and its end removes
+        // it (SPEC-504 CLB-001); ended below on every way out once it is made.
+        let join = join.map(|join| self.ci_job_join(&sandbox.id, &job.id, join));
         // The quarantined tests, which the project's gate leaves out (SPEC-497 OFC-002).
         let quarantine = self.ci_quarantine_env(&sandbox.id).await;
         let mut plan = LaunchPlan {
@@ -1357,8 +1360,10 @@ impl App {
             .ci_job_secrets(sandbox, (run, job), &run_dir, &mut plan, ring)
             .await;
         let _ = std::fs::remove_dir_all(&run_dir);
-        std::fs::create_dir_all(&run_dir)
-            .map_err(|e| format!("creating the run directory failed: {e}"))?;
+        if let Err(error) = std::fs::create_dir_all(&run_dir) {
+            self.ci_job_end(&sandbox.id, &job.id).await;
+            return Err(format!("creating the run directory failed: {error}"));
+        }
         let token = self.deps.crypto.random_bytes();
         let outcome = self
             .ci_watch(
@@ -1374,9 +1379,33 @@ impl App {
             .await;
         // The job's process ended (or its host is gone): its proxy credential ends too.
         drop(proxy);
+        // Whatever the outcome: what it left in the sandbox's engine goes (SPEC-504 CLB-004).
+        self.ci_job_end(&sandbox.id, &job.id).await;
         let _ = std::fs::remove_dir_all(&run_dir);
         let _ = unlinkat(&logs, name.as_str(), UnlinkatFlags::NoRemoveDir);
         outcome
+    }
+
+    /// `join` with CI job `job`'s own cgroup in place of the sandbox's CI group, when the
+    /// isolation makes one (SPEC-504 CLB-001); unchanged where it does not.
+    fn ci_job_join(&self, sandbox: &SandboxId, job: &str, mut join: SandboxJoin) -> SandboxJoin {
+        if join.ci_cgroup.is_some()
+            && let Some(group) = self
+                .isolation
+                .get()
+                .and_then(|isolation| isolation.ci_job_started(sandbox, job))
+        {
+            join.ci_cgroup = Some(group);
+        }
+        join
+    }
+
+    /// CI job `job` of `sandbox` ended: the isolation removes its group and what it left in the
+    /// sandbox's engine (SPEC-504 CLB-004).
+    pub(super) async fn ci_job_end(&self, sandbox: &SandboxId, job: &str) {
+        if let Some(isolation) = self.isolation.get() {
+            isolation.ci_job_ended(sandbox, job).await;
+        }
     }
 
     /// Starts `plan` through the process host as run `ids` (its id and its group) and follows

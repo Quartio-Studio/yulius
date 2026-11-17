@@ -2035,6 +2035,14 @@ impl Manager {
         }
     }
 
+    /// CI job `job` of `sandbox` ended (SPEC-504 CLB-004): its group goes (one that still holds
+    /// a process stays for the sweep).
+    pub async fn ci_job_ended(&self, sandbox: &str, job: &str) {
+        if let Some(delegation) = self.config.delegation.as_ref() {
+            delegation.end_ci_job_group(sandbox, job);
+        }
+    }
+
     /// Removes the networks of `sandbox`'s running engine that no container used for 10
     /// minutes ([`crate::engine::prune_networks`]); how many.
     pub async fn prune_engine_networks(&self, sandbox: &str) -> Option<u32> {

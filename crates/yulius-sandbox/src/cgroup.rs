@@ -27,6 +27,13 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 /// Where cgroup v2 is mounted.
 pub const CGROUP_ROOT: &str = "/sys/fs/cgroup";
+/// Prefix of a CI job's own group below the sandbox's CI group (SPEC-504 CLB-001).
+pub const CI_JOB_GROUP_PREFIX: &str = "ci-job-";
+/// Longest CI job id a group is named after.
+const MAX_JOB_ID: usize = 64;
+/// How long an emptied CI job group may stay before the sweep removes it: a job joins its group
+/// seconds after it was made, and the job's own end removes it (SPEC-504 CLB-001).
+pub const CI_JOB_GROUP_KEPT: std::time::Duration = std::time::Duration::from_secs(10 * 60);
 /// Controllers enabled for sandboxes (those available are used).
 const CONTROLLERS: [&str; 3] = ["cpu", "memory", "pids"];
 /// Processes moved out of the unit's root at most (a bound for a pathological unit).
@@ -415,6 +422,28 @@ pub fn prepare(unit: &Path) -> io::Result<Delegation> {
     })
 }
 
+/// The name of CI job `job`'s own group (SPEC-504 CLB-001): [`CI_JOB_GROUP_PREFIX`] and the id,
+/// `None` for an id that is not 1 to 64 ASCII letters, digits, `-` and `_`.
+#[must_use]
+pub fn ci_job_group_name(job: &str) -> Option<String> {
+    let plain = !job.is_empty()
+        && job.len() <= MAX_JOB_ID
+        && job
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_');
+    plain.then(|| format!("{CI_JOB_GROUP_PREFIX}{job}"))
+}
+
+/// The CI job whose own group is the cgroup `path` (`/system.slice/…/ci/ci-job-<id>`, as
+/// `/proc/<pid>/cgroup` gives it): the id, when the group's name is one
+/// [`ci_job_group_name`] makes. Any other group is no CI job's.
+#[must_use]
+pub fn ci_job_of(path: &str) -> Option<String> {
+    let last = path.trim_end_matches('/').rsplit('/').next()?;
+    let job = last.strip_prefix(CI_JOB_GROUP_PREFIX)?;
+    ci_job_group_name(job).map(|_| job.to_owned())
+}
+
 /// The groups a sandbox's processes join (SPEC-053 CPU-201). Without the `cpu` controller the
 /// first three are the sandbox's own group.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -694,6 +723,70 @@ impl Delegation {
                 .and_then(some_avg10);
         }
         used
+    }
+
+    /// Makes CI job `job`'s own group below `sandbox`'s CI group and returns it (SPEC-504
+    /// CLB-001): the job's processes join it, so the Docker front knows their calls as the job's.
+    /// It holds no limit of its own: the CI group's apply to it.
+    ///
+    /// # Errors
+    /// An id [`ci_job_group_name`] refuses, or the group cannot be made (the sandbox's CI group
+    /// is not there yet).
+    pub fn ci_job_group(&self, sandbox: &str, job: &str) -> io::Result<PathBuf> {
+        let name = ci_job_group_name(job).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidInput, "not a CI job id for a group")
+        })?;
+        let group = self.sandbox_paths(sandbox).ci.join(name);
+        match std::fs::create_dir(&group) {
+            Ok(()) => Ok(group),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => Ok(group),
+            Err(error) => Err(error),
+        }
+    }
+
+    /// Removes CI job `job`'s group once the job ended; one that still holds a process stays
+    /// (the sweep, [`Delegation::sweep_ci_job_groups`], takes it once it is empty).
+    pub fn end_ci_job_group(&self, sandbox: &str, job: &str) {
+        if let Some(name) = ci_job_group_name(job) {
+            let _ = std::fs::remove_dir(self.sandbox_paths(sandbox).ci.join(name));
+        }
+    }
+
+    /// Whether CI job `job` of `sandbox` still runs (SPEC-504 CLB-005): `Some(false)` when its
+    /// group is gone or holds no process, `Some(true)` while one runs there, `None` when that
+    /// cannot be told (its group's `cgroup.events` cannot be read), which callers take as running.
+    #[must_use]
+    pub fn ci_job_running(&self, sandbox: &str, job: &str) -> Option<bool> {
+        let Some(name) = ci_job_group_name(job) else {
+            return Some(false);
+        };
+        let group = self.sandbox_paths(sandbox).ci.join(name);
+        match std::fs::read_to_string(group.join("cgroup.events")) {
+            Ok(_) => Some(populated(&group)),
+            Err(error) if error.kind() == io::ErrorKind::NotFound && !group.exists() => Some(false),
+            Err(_) => None,
+        }
+    }
+
+    /// Removes `sandbox`'s CI job groups that hold no process and were made over
+    /// [`CI_JOB_GROUP_KEPT`] ago: those a server that stopped during a job left (SPEC-504
+    /// CLB-001). A group made a moment ago, which its job is about to join, stays.
+    pub fn sweep_ci_job_groups(&self, sandbox: &str) {
+        let ci = self.sandbox_paths(sandbox).ci;
+        for group in subgroups(&ci) {
+            let ours = group
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| ci_job_of(name).is_some());
+            let old = std::fs::metadata(&group)
+                .and_then(|meta| meta.modified())
+                .ok()
+                .and_then(|made| made.elapsed().ok())
+                .is_some_and(|age| age >= CI_JOB_GROUP_KEPT);
+            if ours && old && !populated(&group) {
+                let _ = std::fs::remove_dir(&group);
+            }
+        }
     }
 
     /// CI jobs of `sandbox` running now ([`Delegation::set_ci_jobs`]).
@@ -1212,6 +1305,80 @@ mod tests {
     }
 
     /// A delegated unit whose `sandboxes/<sandbox>` group offers `controllers`.
+    /// SPEC-504 CLB-001/002: a CI job's group is named after its id, and only such a group's
+    /// processes are that job's.
+    #[test]
+    fn a_ci_job_group_is_named_after_the_job_and_read_back() {
+        assert_eq!(
+            ci_job_group_name("0b1c-2d_3").as_deref(),
+            Some("ci-job-0b1c-2d_3")
+        );
+        for refused in ["", "a/b", "..", "a b", "ä", &"x".repeat(65)] {
+            assert_eq!(ci_job_group_name(refused), None, "{refused:?}");
+        }
+        let unit = "/system.slice/yulius.service/sandboxes/s1";
+        assert_eq!(
+            ci_job_of(&format!("{unit}/ci/ci-job-j1")).as_deref(),
+            Some("j1")
+        );
+        assert_eq!(
+            ci_job_of(&format!("{unit}/ci-job-j2/")).as_deref(),
+            Some("j2")
+        );
+        for other in [
+            format!("{unit}/ci"),
+            format!("{unit}/agents"),
+            format!("{unit}/agents/run-ci-job-x"),
+            format!("{unit}/ci/ci-job-"),
+            format!("{unit}/ci/ci-job-a b"),
+            format!("{unit}/engine/inside/docker/ci-job-x/y"),
+        ] {
+            assert_eq!(ci_job_of(&other), None, "{other}");
+        }
+    }
+
+    /// SPEC-504 CLB-001/005: a job's group is made below the CI group, read as running while
+    /// it holds a process and ended once it is empty or gone; the sweep takes only old, empty
+    /// job groups.
+    #[test]
+    fn a_ci_job_group_lives_as_long_as_its_job() -> Result<(), Box<dyn std::error::Error>> {
+        let (_root, delegation, dir) = fake_sandbox("cpu memory pids\n")?;
+        delegation.sandbox_group("s1", &Limits::default())?;
+        let group = delegation.ci_job_group("s1", "j1")?;
+        assert_eq!(group, dir.join("ci").join("ci-job-j1"));
+        assert_eq!(delegation.ci_job_group("s1", "j1")?, group, "made once");
+        assert!(delegation.ci_job_group("s1", "../x").is_err());
+        assert_eq!(
+            delegation.ci_job_running("s1", "j1"),
+            None,
+            "unreadable: taken as running"
+        );
+        std::fs::write(group.join("cgroup.events"), "populated 1\nfrozen 0\n")?;
+        assert_eq!(delegation.ci_job_running("s1", "j1"), Some(true));
+        std::fs::write(group.join("cgroup.events"), "populated 0\nfrozen 0\n")?;
+        assert_eq!(delegation.ci_job_running("s1", "j1"), Some(false));
+        assert_eq!(delegation.ci_job_running("s1", "gone"), Some(false));
+        assert_eq!(delegation.ci_job_running("s1", "a/b"), Some(false));
+        std::fs::remove_file(group.join("cgroup.events"))?;
+        delegation.end_ci_job_group("s1", "j1");
+        assert!(!group.exists(), "removed at the job's end");
+        // The sweep: an empty job group made a moment ago stays (its job is about to join it),
+        // as do other groups; one made long ago goes.
+        let fresh = delegation.ci_job_group("s1", "fresh")?;
+        let other = dir.join("ci").join("not-a-job");
+        std::fs::create_dir(&other)?;
+        delegation.sweep_ci_job_groups("s1");
+        assert!(fresh.exists() && other.exists());
+        let old = std::time::SystemTime::now() - CI_JOB_GROUP_KEPT * 2;
+        for dir in [&fresh, &other] {
+            std::fs::File::open(dir)?.set_modified(old)?;
+        }
+        delegation.sweep_ci_job_groups("s1");
+        assert!(!fresh.exists(), "an old, empty job group goes");
+        assert!(other.exists(), "not a job's");
+        Ok(())
+    }
+
     fn fake_sandbox(
         controllers: &str,
     ) -> Result<(tempfile::TempDir, Delegation, PathBuf), Box<dyn std::error::Error>> {
