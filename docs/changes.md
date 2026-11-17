@@ -6,6 +6,16 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-17
 
+- The merge queue throws less work away (SPEC-497 slice C, task #479,
+  [ADR-0357](decisions/0357-a-merge-candidate-is-decided-by-its-own-run.md)): a merge candidate
+  that passed merges its pull requests at once, without waiting for their own runs (it tested the
+  exact merged result); a member whose own run errored or was cancelled stays in, and only a
+  failed one leaves; a candidate formed again with the same members on the same base reuses its
+  tree's passed run; when a red candidate's other members pass without the one its bisection left
+  out, that one is told at once that its change breaks the combination (often formatting or a
+  generated list), with no candidate run of its own. The Pipeline tab's Merge queue card lists
+  why each of the last ten candidates was dissolved, and a member's failed own run is its own
+  kind (`member_failed`). The hourly release of quarantined tests no longer holds the CI poll.
 - Codex, slice C2 (SPEC-503, task #485): Codex subscriptions can be added through the API. An
   instance administrator signs one in with `codex login --device-auth` in the login terminal
   (the pinned CLI Yulius provides), gives an OpenAI API key, or imports the `auth.json` of a

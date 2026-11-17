@@ -24,8 +24,11 @@ pub const MERGE: [&str; 3] = [
 /// Why a candidate was dissolved, as its audit entry says it (`(why: <kind>)`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Dissolved {
-    /// A member left: its own run did not pass, it was armed again or is no longer armed.
+    /// A member left: it was armed again, is no longer armed or moved on (before SPEC-497, also
+    /// an own run that did not pass).
     MemberLeft,
+    /// A member's own run failed, its change's verdict (SPEC-497 MQW-004).
+    MemberFailed,
     /// Its run failed and it was bisected.
     Bisected,
     /// The integration branch moved in a way it did not predict.
@@ -38,8 +41,9 @@ pub enum Dissolved {
 
 impl Dissolved {
     /// Every kind, in the order the numbers list them.
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
         Self::MemberLeft,
+        Self::MemberFailed,
         Self::Bisected,
         Self::BaseMoved,
         Self::Errored,
@@ -51,6 +55,7 @@ impl Dissolved {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::MemberLeft => "member_left",
+            Self::MemberFailed => "member_failed",
             Self::Bisected => "bisected",
             Self::BaseMoved => "base_moved",
             Self::Errored => "errored",
@@ -104,7 +109,13 @@ pub struct QueueNumbers {
     pub merges: u32,
     /// The median minutes from a merge's last arming to the merge.
     pub median_arm_to_merge_minutes: Option<f64>,
+    /// The last [`RECENT_DISSOLVED`] candidates dissolved in the range, newest first, each with
+    /// its why and its whole reason (SPEC-497 MQW-004).
+    pub dissolved_recent: Vec<(Dissolved, QueueEvent)>,
 }
+
+/// Most dissolved candidates listed with their reason.
+pub const RECENT_DISSOLVED: usize = 10;
 
 /// The numbers of `events` (any order) at or after `from` (none: all). Entries before `from`
 /// still pair an arming with its merge, so a merge in the range is not paired with an arming an
@@ -116,6 +127,7 @@ pub fn queue_numbers(events: &[QueueEvent], from: Option<Timestamp>) -> QueueNum
     let mut days: BTreeMap<String, QueueDay> = BTreeMap::new();
     let mut armed: BTreeMap<&str, Timestamp> = BTreeMap::new();
     let mut minutes = Vec::new();
+    let mut recent: Vec<(Dissolved, QueueEvent)> = Vec::new();
     for event in sorted {
         let action = event.action.as_str();
         let counted = from.is_none_or(|from| event.at >= from);
@@ -135,10 +147,9 @@ pub fn queue_numbers(events: &[QueueEvent], from: Option<Timestamp>) -> QueueNum
                 FORMED => entry.formed += 1,
                 MERGED => entry.merged += 1,
                 _ => {
-                    *entry
-                        .dissolved
-                        .entry(Dissolved::of_detail(&event.detail).as_str())
-                        .or_default() += 1;
+                    let why = Dissolved::of_detail(&event.detail);
+                    *entry.dissolved.entry(why.as_str()).or_default() += 1;
+                    recent.push((why, event.clone()));
                 }
             }
         } else if ARMED.contains(&action) {
@@ -157,10 +168,13 @@ pub fn queue_numbers(events: &[QueueEvent], from: Option<Timestamp>) -> QueueNum
         n if n % 2 == 1 => Some(minutes[n / 2]),
         n => Some(f64::midpoint(minutes[n / 2 - 1], minutes[n / 2])),
     };
+    recent.reverse();
+    recent.truncate(RECENT_DISSOLVED);
     QueueNumbers {
         days: days.into_values().collect(),
         merges: u32::try_from(minutes.len()).unwrap_or(u32::MAX),
         median_arm_to_merge_minutes: median,
+        dissolved_recent: recent,
     }
 }
 
@@ -297,6 +311,54 @@ mod tests {
             (numbers.merges, numbers.median_arm_to_merge_minutes),
             (0, None)
         );
+    }
+
+    /// SPEC-497 MQW-004: the dissolved candidates in the range are listed newest first with
+    /// their why and whole reason, at most ten; a failed member's own run has its own why.
+    #[test]
+    fn each_dissolved_candidate_is_listed_with_its_reason() {
+        let day = 20_000 * DAY;
+        let mut events: Vec<QueueEvent> = (0..12)
+            .map(|i| {
+                event(
+                    day + i * MIN,
+                    "app",
+                    DISSOLVED,
+                    &format!("merge train #{i}: its CI run failed (why: bisected)"),
+                )
+            })
+            .collect();
+        events.push(event(
+            day + 20 * MIN,
+            "app",
+            DISSOLVED,
+            "merge train #1, #2: #2's own run at abc ended failed: it leaves the candidate \
+             (why: member_failed)",
+        ));
+        events.push(event(
+            day - DAY,
+            "app",
+            DISSOLVED,
+            "before the range (why: errored)",
+        ));
+        let numbers = queue_numbers(&events, Some(Timestamp(day)));
+        assert_eq!(numbers.dissolved_recent.len(), RECENT_DISSOLVED);
+        let (why, newest) = &numbers.dissolved_recent[0];
+        assert_eq!(*why, Dissolved::MemberFailed);
+        assert!(newest.detail.contains("#2's own run"), "{newest:?}");
+        assert!(
+            numbers.dissolved_recent[1]
+                .1
+                .detail
+                .starts_with("merge train #11")
+        );
+        assert!(
+            numbers
+                .dissolved_recent
+                .iter()
+                .all(|(_, e)| !e.detail.contains("before the range"))
+        );
+        assert_eq!(numbers.days[0].dissolved.get("member_failed"), Some(&1));
     }
 
     #[test]

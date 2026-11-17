@@ -1140,7 +1140,10 @@ impl App {
                 // up-to-date pull request) reuses that result instead of running again: every
                 // merge used to cost a second 12-20 minute run in the sandbox's one lane.
                 if matches!(target.reference, CiRef::Branch(_))
-                    && self.ci_reuse_tree(sandbox, &target, gate, &runs).await?
+                    && self
+                        .ci_reuse_tree(sandbox, &target, gate, &runs)
+                        .await?
+                        .is_some()
                 {
                     continue;
                 }
@@ -1162,24 +1165,50 @@ impl App {
         Ok(())
     }
 
+    /// A merge candidate's run for `sha` (`reference`, of `gate`'s jobs) taken from a recent
+    /// passed run that tested the same tree, recorded as passed; `None` when there is none
+    /// (SPEC-497 MQW-001: a candidate formed again on the same base with the same members
+    /// reuses its earlier verdict instead of a new run).
+    ///
+    /// # Errors
+    /// Store or Git failures.
+    pub(crate) async fn ci_reuse_for_candidate(
+        &self,
+        sandbox: &SandboxRecord,
+        reference: CiRef,
+        sha: &str,
+        gate: &Gate,
+    ) -> AppResult<Option<CiRunRecord>> {
+        let runs = self.deps.store.ci_runs(&sandbox.id, PLAN_RUNS).await?;
+        let target = Target {
+            reference,
+            sha: sha.to_owned(),
+        };
+        let Some(id) = self.ci_reuse_tree(sandbox, &target, gate, &runs).await? else {
+            return Ok(None);
+        };
+        self.deps.store.ci_run(&id).await
+    }
+
     /// Records a passed run for `target` when a recent passed run tested a commit with the same
-    /// tree (and therefore the same jobs); `false` when there is none.
+    /// tree (and therefore the same jobs); its id, or `None` when there is none.
     async fn ci_reuse_tree(
         &self,
         sandbox: &SandboxRecord,
         target: &Target,
         gate: &Gate,
         runs: &[CiRunRecord],
-    ) -> AppResult<bool> {
+    ) -> AppResult<Option<String>> {
         let repo = self.sandbox_repo(&sandbox.id);
         let Some(tree) = self.deps.git.tree_of(&repo, &target.sha).await? else {
-            return Ok(false);
+            return Ok(None);
         };
         // A merge train's verdict for a pull request it merged before the last one covers a tree
         // no run tested (SPEC-084 TRN-005): never a source.
         // A branch's own run runs every job (SPEC-493 CJP-003): a source that skipped a job for
-        // its `paths` never ran it, so it is no source there, and an earlier one may be.
-        let branch = matches!(target.reference, CiRef::Branch(_));
+        // its `paths` never ran it, so it is no source there, and an earlier one may be. A merge
+        // candidate's neither: the same tree on another base may change what `paths` decides.
+        let branch = matches!(target.reference, CiRef::Branch(_) | CiRef::Train(_));
         let mut found = None;
         for run in runs.iter().filter(|r| {
             r.state == RunState::Passed
@@ -1203,7 +1232,7 @@ impl App {
             break;
         }
         let Some((source, tested)) = found else {
-            return Ok(false);
+            return Ok(None);
         };
         // Its jobs keep the verdict they had there: a skipped one stays skipped (SPEC-162).
         let now = self.now();
@@ -1267,7 +1296,7 @@ impl App {
         self.deps.store.insert_ci_run(&run, &jobs).await?;
         tracing::info!(sandbox = %sandbox.slug, run = %run.id, sha = %short(&target.sha), reused = %short(&source.sha), "CI result reused for the same tree");
         self.ci_publish(&run.id).await;
-        Ok(true)
+        Ok(Some(run.id))
     }
 
     /// Cancels a run: a queued one at once, a running one through its executor (which kills
@@ -1501,7 +1530,7 @@ impl App {
         }
     }
 
-    async fn ci_prune(&self) {
+    async fn ci_prune(self: &Arc<Self>) {
         let now = self.now().0;
         {
             let Ok(mut last) = self.ci.last_prune.lock() else {
@@ -1524,8 +1553,10 @@ impl App {
         }
         self.cd_prune().await;
         self.prune_spans(Timestamp(now)).await;
-        // Quarantined tests whose issue was closed go back into the runs (SPEC-497 OFC-002).
-        self.ci_release_quarantines().await;
+        // Quarantined tests whose issue was closed go back into the runs (SPEC-497 OFC-002), off
+        // the poll loop: it asks GitHub once per quarantine (review of the quarantine, round 3).
+        let app = Arc::clone(self);
+        tokio::spawn(async move { app.ci_release_quarantines().await });
     }
 
     /// Starts the oldest queued runs of every sandbox, as many as it has free lanes

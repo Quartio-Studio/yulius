@@ -1418,20 +1418,26 @@ request as it is:
 - green, or its own run still queued or running, and behind: into the next merge candidate
   (`merge_train.rs`), the integration branch with up to 8 such pull requests merged in, in arm
   order, tested by one run (`train/<n>+…`) beside the members' own runs (SPEC-493 MQC-001); once
-  the candidate and a member's own run passed, the members are brought up to date in their
-  worktrees, the verdict recorded at each pushed head, and merged in order; a member whose own
-  run fails, errors or is cancelled leaves, and the candidate is formed again from the others
-  (MQC-002); a failed candidate waits for its members' own runs before it is bisected;
-- a red candidate of n ≥ 2 is formed again from its first ⌈n/2⌉; a red one of one ends that armed
+  the candidate passed, the members are brought up to date in their worktrees, the verdict
+  recorded at each pushed head, and merged in order, whether or not their own runs still go: the
+  candidate tested the exact merged result (SPEC-497 MQW-002); a member whose own run fails leaves,
+  and the candidate is formed again from the others (MQC-002); an errored or cancelled own run
+  leaves it to the candidate (MQW-001); a candidate formed again on the same base with the same
+  members takes its tree's passed run (`App::ci_reuse_for_candidate`); a failed candidate waits
+  for its members' own runs before it is bisected;
+- a red candidate of n ≥ 2 is formed again from its first ⌈n/2⌉; when that leaves out exactly one
+  member and the others then pass without it on the same base, that member's armed merge ends at
+  once, naming both runs (MQW-003, `delivery.train.combined`); a red one of one ends that armed
   merge with the reason; a member busy at its turn is waited for (15 minutes at most); an errored
   or cancelled one, a member that cannot merge for a reason of its own, a candidate that cannot
   be built, a pull request that conflicts with the base alone, and projects without Yulius CI,
   with rebase merges or automatic promotion go one by one (DLV-203 after the pre-check).
 
 The queue writes `delivery.train.formed`, `.merged` and `.dissolved` (`(why: member_left |
-bisected | base_moved | errored | too_long)`); `GET /api/analytics/merge-queue` reads them per
-day with the minutes from arming to merge (`merge_queue::queue_numbers`; the Pipeline tab's Merge
-queue card).
+member_failed | bisected | base_moved | errored | too_long)`); `GET /api/analytics/merge-queue`
+reads them per day with the minutes from arming to merge and the last ten dissolved with their
+reason (`merge_queue::queue_numbers`; the Pipeline tab's Merge queue card)
+([decision 0357](decisions/0357-a-merge-candidate-is-decided-by-its-own-run.md)).
 
 Each kept decision leaves a sentence in the armed slot (`ArmedSlot::note`), which `yulius wait`
 (`merge_train`), `delivery_status` and the task page show. `delivery_merge` for an armed head
@@ -1449,8 +1455,9 @@ flowchart TD
     U -- yes --> M[merged now]
     U -- no --> C[merge candidate: base + armed pull requests, one run beside their own]
     C -- a member's own run fails --> C
-    C -- passed, own runs passed --> L[each brought up to date, verdict recorded, merged in order]
+    C -- passed --> L[each brought up to date, verdict recorded, merged in order]
     C -- failed, n >= 2 --> H[first half again]
+    H -- passed without the one left out --> T[the one left out told: it breaks the combination]
     C -- failed, alone --> X[dropped: fails on the current base]
     H --> C
 ```

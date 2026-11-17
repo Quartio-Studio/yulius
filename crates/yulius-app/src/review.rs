@@ -787,7 +787,9 @@ impl App {
         from: Option<&str>,
         to: Option<&str>,
     ) -> AppResult<yulius_contracts::api::analytics::MergeQueueAnalytics> {
-        use yulius_contracts::api::analytics::{CiMinutesDay, MergeQueueAnalytics, MergeQueueDay};
+        use yulius_contracts::api::analytics::{
+            CiMinutesDay, MergeQueueAnalytics, MergeQueueDay, MergeQueueDissolved,
+        };
         use yulius_domain::merge_queue as mq;
         let (sandboxes, from_at, to_at, range) =
             self.analytics_window(ctx, sandbox, from, to).await?;
@@ -839,6 +841,16 @@ impl App {
         let numbers = mq::queue_numbers(&events, from_at);
         let mut totals = MergeQueueAnalytics {
             range,
+            dissolved_recent: numbers
+                .dissolved_recent
+                .iter()
+                .map(|(why, event)| MergeQueueDissolved {
+                    at: yulius_domain::time::format_rfc3339(event.at),
+                    sandbox: event.target.clone(),
+                    why: why.as_str().to_owned(),
+                    reason: event.detail.clone(),
+                })
+                .collect(),
             merges: numbers.merges,
             median_arm_to_merge_minutes: numbers.median_arm_to_merge_minutes,
             ci_minutes: ci_minutes(minutes),
