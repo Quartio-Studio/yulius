@@ -109,6 +109,7 @@ ADR-0344), SPEC-497 HBA-003 (CI waits for Docker networks), SPEC-053/SPEC-268 (t
 - [x] yulius.toml is read by a real TOML parser (CFG-005)
 - [x] Runs on the last valid gate say so, and a fix is never refused for want of CI (CFG-006)
 - [x] ADR, architecture and changes for pull request 2
+- [x] Review round 1 of pull request 2 answered
 - [ ] Pull request 2 reviewed and approved
 
 ## Acceptance criteria
