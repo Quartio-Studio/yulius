@@ -798,7 +798,10 @@ fn spawn_run_in(
         probe_text,
     ];
     inner.extend(args.iter().cloned());
-    let argv = yulius_ptyhost::bwrap_argv(&spec, &inner, &root);
+    let argv = on_host_path(
+        yulius_ptyhost::bwrap_argv(&spec, &inner, &root),
+        std::env::var_os("PATH").as_deref(),
+    )?;
     std::process::Command::new(exe)
         .arg("sandbox-exec")
         .arg("--join")
@@ -807,9 +810,26 @@ fn spawn_run_in(
         .args(argv)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
+        // Why a run did not start, kept beside its output (`<probe>/<script>.err`).
+        .stderr(
+            std::fs::File::create(probe.join(format!("{script}.err")))
+                .map_err(|e| format!("{script}.err: {e}"))?,
+        )
         .spawn()
         .map_err(|e| format!("cannot start a run: {e}"))
+}
+
+/// `argv` (bubblewrap's) with bubblewrap named by its path on the host, from the directories of
+/// `path`, as the ptyhost starts a run (ADR-0314): `sandbox-exec` refuses a bare name, so every
+/// smoke run failed to start (SPEC-504).
+fn on_host_path(
+    mut argv: Vec<String>,
+    path: Option<&std::ffi::OsStr>,
+) -> Result<Vec<String>, String> {
+    if let Some(program) = argv.first_mut() {
+        *program = yulius_ptyhost::host_program(program, path).map_err(|e| e.to_string())?;
+    }
+    Ok(argv)
 }
 
 /// Longest detail printed.
@@ -947,6 +967,36 @@ async fn wait_line(path: &Path, line: &str, limit: Duration) -> Result<(), Strin
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// SPEC-504 (found on a fresh Ubuntu 26.04 host): a smoke run names bubblewrap by its path on
+    /// the host, as `sandbox-exec` requires since ADR-0314; a bare `bwrap` made every run fail
+    /// to start ("no `started` … within 90s").
+    #[test]
+    fn a_smoke_run_names_bubblewrap_by_its_host_path() -> Result<(), Box<dyn std::error::Error>> {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = tempfile::tempdir()?;
+        let bwrap = dir.path().join("bwrap");
+        std::fs::write(&bwrap, "#!/bin/sh\n")?;
+        std::fs::set_permissions(&bwrap, std::fs::Permissions::from_mode(0o755))?;
+        let spec = BubblewrapSpec {
+            sandbox_root: "/s".into(),
+            home: "/s/home".into(),
+            writable: Vec::new(),
+            readonly: Vec::new(),
+            share_net: false,
+            binds: Vec::new(),
+            identity: None,
+            join: None,
+        };
+        let argv = yulius_ptyhost::bwrap_argv(&spec, &["/bin/true".to_owned()], "/s");
+        assert_eq!(argv[0], "bwrap", "what bwrap_argv gives");
+        let path = std::ffi::OsString::from(format!("relative:{}", dir.path().display()));
+        let named = on_host_path(argv.clone(), Some(&path))?;
+        assert_eq!(named[0], bwrap.to_string_lossy());
+        assert_eq!(named[1..], argv[1..]);
+        assert!(on_host_path(argv, Some(std::ffi::OsStr::new("relative"))).is_err());
+        Ok(())
+    }
 
     /// SPEC-196 DKL-007: started as root outside a delegated cgroup, the smoke runs itself as
     /// the data directory's owner in a delegated transient unit, and waits for it.

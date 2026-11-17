@@ -211,7 +211,10 @@ fn load_launch(run_dir: &Path) -> Result<LaunchSpec, HostError> {
 
 /// The absolute path of `name` in the directories of `path` (this process's own `PATH`, which is
 /// the server's): the first absolute directory holding an executable file of that name.
-fn host_program(name: &str, path: Option<&std::ffi::OsStr>) -> Result<String, HostError> {
+///
+/// # Errors
+/// No absolute directory of `path` holds one.
+pub fn host_program(name: &str, path: Option<&std::ffi::OsStr>) -> Result<String, HostError> {
     use std::os::unix::fs::PermissionsExt as _;
     path.into_iter()
         .flat_map(std::env::split_paths)
