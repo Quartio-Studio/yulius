@@ -126,6 +126,7 @@ Five pull requests, each merged into `dev` on green before the next begins.
 - [x] Slice C2: Codex subscriptions sign in by device code, API key or imported auth.json
 - [x] Slice C2: Codex usage windows, codex_connected and moves within Codex subscriptions
 - [ ] Slice C2: review findings fixed and the slice delivered
+- [ ] Slice D: slice C2's round-2 review notes fixed test-first
 - [ ] Slice D: the UI offers Codex in the composer, automations, Subscriptions and task moves
 - [ ] Slice D: SPEC-001/002/003 and the documents say Codex is accepted
 - [ ] Slice D: review findings fixed and the slice delivered
@@ -525,7 +526,7 @@ Five pull requests, each merged into `dev` on green before the next begins.
   - an import flagged only one running sign-in: every one is flagged and cancelled
     (`account_token::an_import_cancels_every_running_sign_in`: a sign-in still ran after 30 s
     before);
-  - `PUT /accounts/{id}/token` on a Codex subscription stored the Claude token (201 in the test
+  - `PUT /accounts/{id}/token` on a Codex subscription stored the Claude token (200 in the test
     world, whose usage stand-in answers): refused up front in its own words, the running sign-in
     untouched (`account_token::a_token_for_a_codex_subscription_is_refused_up_front`);
   - the start sweep's live-run guard was held by no test: the restart test asserts the reattached
@@ -546,4 +547,19 @@ Five pull requests, each merged into `dev` on green before the next begins.
     write-back logs the task id without `Some(…)`; SPEC-451 citations of this work say SPEC-503.
   - Pre-existing, outside this change: `ProviderUsage::get_json` reads a whole answer before its
     size bound (dev since 404ac0d29): issue #1380.
-
+- **Review round 2** (Fable 5.2) approved `1b970525c`, and #1379 was merged at it (squash
+  `242318df1`). Yulius opened the pull request with its default body; its title and body were set
+  afterwards (the "Supersedes #1146" line among them), and the squash commit carries the
+  contributor's `Co-authored-by`. Its three minors and six nits (all own code) are fixed in slice
+  D's pull request:
+  - after a lost swap, a failed read of the account or a credential that does not open kept the
+    run's `auth.json` as lost and removed it: the file now stays
+    (`codex::a_refresh_stays_when_what_the_account_holds_cannot_be_read`, failed first: the file
+    was gone);
+  - `docs/api.md`: the Codex sentences of the usage row are one row again; the capacity view's
+    `available`, `resumes_at` and `accounts[].provider` are described as the code has them;
+  - nits: a sign-in replaced by an import ends as cancelled even when it ended by itself at that
+    instant (no failure on the imported sign-in; the window is between two atomic loads, held by
+    no test); `api_key` and `auth_json` are taken out of the request on its first line; the import
+    stores through `store_sealed_credential` (the usage lock); the refusal constants' doc lines;
+    the comment on exhausted swaps says what a launch does; "200" in the round-1 note above.
