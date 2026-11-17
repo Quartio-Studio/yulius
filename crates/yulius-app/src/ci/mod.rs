@@ -501,6 +501,30 @@ fn take_lane_preferring(
     Some(lane)
 }
 
+/// What a run's jobs say about the lane it took (SPEC-497 SHR-002): the lane, the run that last
+/// took it (`before`) and whether it was one this run preferred, first choice or not. The
+/// dispatcher knows the lane's last run, not that it built (it may have been cancelled before
+/// its jobs started): "taken" (review round 1).
+fn lane_note(lane: u32, before: Option<&str>, preferred: &[u32]) -> String {
+    match before {
+        Some(key) if preferred.contains(&lane) => {
+            format!("lane {lane}, last taken by {key}, which this run builds on")
+        }
+        Some(key) => format!("lane {lane}, last taken by {key}"),
+        None => format!("lane {lane}"),
+    }
+}
+
+/// Whether `run` may lend its verdict to `target`, whose tree it tested (the trees are compared
+/// apart): a passed run, not a train's step verdict, and another commit, unless `target` is a
+/// merge candidate formed again on that very commit (slice D review: within one second the
+/// same members on the same base give the same commit).
+fn reuse_source(run: &CiRunRecord, target: &Target) -> bool {
+    run.state == RunState::Passed
+        && (run.sha != target.sha || matches!(target.reference, CiRef::Train(_)))
+        && run.requested_by != crate::merge_train::TRAIN_VERDICT_BY
+}
+
 /// The lanes whose checkouts last built what `reference` builds on, best first (SPEC-497
 /// SHR-002): for a pull request's run, the lane of its own last run (its previous head); for a
 /// merge candidate's, the lanes of its members' own runs, the last member first, then of an
@@ -1267,13 +1291,7 @@ impl App {
         // candidate's neither: the same tree on another base may change what `paths` decides.
         let branch = matches!(target.reference, CiRef::Branch(_) | CiRef::Train(_));
         let mut found = None;
-        for run in runs.iter().filter(|r| {
-            r.state == RunState::Passed
-                // A candidate formed again within the same second is the same commit: its earlier
-                // passed run is the best source (slice D review; the test met it 1 run in 6).
-                && (r.sha != target.sha || matches!(target.reference, CiRef::Train(_)))
-                && r.requested_by != crate::merge_train::TRAIN_VERDICT_BY
-        }) {
+        for run in runs.iter().filter(|r| reuse_source(r, target)) {
             if self.deps.git.tree_of(&repo, &run.sha).await?.as_deref() != Some(tree.as_str()) {
                 continue;
             }
@@ -1688,15 +1706,7 @@ impl App {
                 lane
             };
             let before = last.iter().find(|(l, _)| *l == lane).map(|(_, r)| r.key());
-            // What the dispatcher knows is the lane's last run, not that it built (it may have
-            // been cancelled before its jobs started): "taken" (review round 1).
-            let note = match &before {
-                Some(key) if preferred.contains(&lane) => {
-                    format!("lane {lane}, last taken by {key}, which this run builds on")
-                }
-                Some(key) => format!("lane {lane}, last taken by {key}"),
-                None => format!("lane {lane}"),
-            };
+            let note = lane_note(lane, before.as_deref(), &preferred);
             if let Ok(mut map) = self.ci.lane_runs.lock() {
                 map.insert(format!("{sandbox}/{lane}"), run.reference.clone());
             }
@@ -2025,9 +2035,83 @@ impl App {
 #[cfg(test)]
 mod lane_tests {
     use super::{
-        busy_in, forget_idle_turn, own_jobs_apply, preferred_lanes, reserve_run, take_lane,
-        take_lane_preferring,
+        busy_in, forget_idle_turn, lane_note, own_jobs_apply, preferred_lanes, reserve_run,
+        reuse_source, take_lane, take_lane_preferring,
     };
+
+    /// SPEC-497 SHR-002 (review round 2): the note names a preferred lane as such, first choice
+    /// or not; a lane no preference chose is only "taken".
+    #[test]
+    fn the_lane_note_says_whether_the_run_builds_on_it() {
+        let built = "which this run builds on";
+        assert!(
+            lane_note(1, Some("pr/3"), &[3, 1]).ends_with(built),
+            "second choice"
+        );
+        assert!(lane_note(3, Some("pr/5"), &[3, 1]).ends_with(built));
+        assert_eq!(
+            lane_note(0, Some("branch/dev"), &[3, 1]),
+            "lane 0, last taken by branch/dev"
+        );
+        assert_eq!(lane_note(2, None, &[]), "lane 2");
+    }
+
+    /// Slice D review round 2: a passed run of the very commit a candidate is formed again on is a
+    /// source; for any other target, a run of the same commit is not, nor a train's step verdict
+    /// or a run that did not pass.
+    #[test]
+    fn a_candidate_on_the_same_commit_reuses_its_run() {
+        use crate::ci::CiRunRecord;
+        use yulius_domain::ci::{GateSource, RunState, Target};
+        use yulius_domain::ids::SandboxId;
+        use yulius_domain::time::Timestamp;
+        let run = |sha: &str, state, by: &str| CiRunRecord {
+            id: "r".into(),
+            sandbox_id: SandboxId::parse("s1").unwrap_or_else(|_| unreachable!()),
+            reference: CiRef::Train(vec![1]),
+            sha: sha.into(),
+            source: GateSource::ProjectConfig,
+            state,
+            reason: None,
+            requested_by: by.into(),
+            status_for: None,
+            status_note: None,
+            status_attempts: 0,
+            queued_at: Timestamp(0),
+            started_at: None,
+            ended_at: None,
+        };
+        let target = |reference, sha: &str| Target {
+            reference,
+            sha: sha.into(),
+        };
+        let candidate = target(CiRef::Train(vec![1]), "c1");
+        assert!(reuse_source(
+            &run("c1", RunState::Passed, "yulius"),
+            &candidate
+        ));
+        assert!(reuse_source(
+            &run("c0", RunState::Passed, "yulius"),
+            &candidate
+        ));
+        assert!(!reuse_source(
+            &run("c1", RunState::Failed, "yulius"),
+            &candidate
+        ));
+        assert!(!reuse_source(
+            &run("c0", RunState::Passed, crate::merge_train::TRAIN_VERDICT_BY),
+            &candidate
+        ));
+        let branch = target(CiRef::Branch("dev".into()), "c1");
+        assert!(!reuse_source(
+            &run("c1", RunState::Passed, "yulius"),
+            &branch
+        ));
+        assert!(reuse_source(
+            &run("c0", RunState::Passed, "yulius"),
+            &branch
+        ));
+    }
     use yulius_domain::ci::CiRef;
 
     /// SPEC-497 SHR-002: a run takes the lane whose checkouts last built what it builds on,

@@ -57,7 +57,9 @@ and the gain measured. A run's critical path is its longest job.
 - This repository's run has five jobs instead of three (`quality`, `test (1/2)`, `test (2/2)`,
   `e2e`, `security`). A default share is a fifth of CI's budget instead of a third; `e2e`, whose
   workers are half its CPUs, declares `cpus = 18` to keep its 9 workers (with 11 CPUs and 5
-  workers it took 8 min 38 s against 5 min 13 s). The run's critical path is the longest of
+  workers it took 8 min 38 s against 5 min 13 s), and `security`, a scan that waits on Vidoc,
+  declares `cpus = 1`, so the five needs (62 CPUs before) fit CI's budget of 56 and no job waits
+  for admission at the run's start. The run's critical path is the longest of
   `quality` without tests, a shard (its build and half the tests), and `e2e`.
   - Locally on 64 CPUs, the tests took 161 s in one go, and 91 s for each of two hash
     partitions run alone.

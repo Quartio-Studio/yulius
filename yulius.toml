@@ -72,6 +72,7 @@ command = "cd e2e && npm ci --ignore-scripts && npx e2e-web install chromium && 
 # else the instance's Vidoc key (ADR-0116).
 [[ci.jobs]]
 name = "security"
+cpus = 1
 secrets = "VIDOC_API_KEY"
 command = "python3 scripts/vidoc_scan.py --ci"
 

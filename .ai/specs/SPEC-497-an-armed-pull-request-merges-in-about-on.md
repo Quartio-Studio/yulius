@@ -182,7 +182,9 @@ mode.
 - [x] Slice C: review round 1 answered
 - [x] Slice C: review round 2 answered
 - [x] Slice D: sharded jobs
-- [ ] Slice D: a candidate reuses its members' builds; review
+- [x] Slice D: a candidate reuses its members' builds, measured
+- [x] Slice D: review round 1 answered
+- [ ] Slice D: review round 2 answered
 - [ ] Slice E: numbers before and after, quartio-v2's part told
 
 ## Acceptance criteria
@@ -806,6 +808,23 @@ mode.
   warnings`; `scripts/check_repository.py`; the unit tests of `yulius-app`, `yulius-domain`,
   `xtask` (1,173 passed); `local_ci::`, `merge_train::`, `analytics::` (149 passed).
   `scripts/dev mutants`: 27 listed, 26 caught, 0 missed, 0 timed out, 1 unviable (524 s).
+- Review round 2 of slice D (Fable 5.2, head 2654805ff). Request changes, all own code.
+  Answered:
+  - Major: the candidate-lane test formed its candidate in the pass a run's end starts, while
+    `dev`'s run could take a member's lane (reproduced by the reviewer with a member's run 600 ms
+    slower). `dev` moves and every run settles before anything is armed; of two lanes one then
+    still names a member's run.
+  - Minor: the same-commit reuse is `reuse_source`, unit `a_candidate_on_the_same_commit_reuses_its_run`
+    (a candidate's same commit is a source, a branch's is not, nor a step verdict or a failed run).
+  - Minor: the needs added up to 62 of 56 CPUs; `security` declares `cpus = 1`.
+  - Minor: the admission test released `b` and `c` back to back; `c` asks only once `b`'s reason
+    says it waits for the budget.
+  - Nits: `scripts/dev test` names its stage before the quarantine's listing builds; the note is
+    `lane_note`, unit `the_lane_note_says_whether_the_run_builds_on_it` (second choice included).
+  - The changed tests passed 10 of 10 under `--stress-count 10` beside 32 busy loops, and the
+    `local_ci::` and `merge_train::` suite 141 of 141 twice. On the instance, this pull request's
+    run at 2654805 took 6 min 53 s (`quality` 6 min 52 s, shards 4 min 32 s and 4 min 48 s, `e2e`
+    5 min 24 s with its 18 CPUs), against 11 min 9 s to 15 min 0 s before slice D.
 
 ### Slice A3: the operator's amendment to the admission (its own pull request, first)
 

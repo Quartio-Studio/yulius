@@ -1725,13 +1725,14 @@ async fn a_candidates_run_takes_a_lane_of_its_members() -> TestResult {
     let sandbox = app.deps.store.sandbox(&f.sandbox).await?.ok_or("s1")?;
     let one = f.task(1, &[("a.txt", "x\n")]).await?;
     let two = f.task(2, &[("b.txt", "x\n")]).await?;
-    app.ci_sync_sandbox(&sandbox).await?;
-    f.arm(1, &one).await?;
-    f.arm(2, &two).await?;
+    // `dev` moves first, so nothing merges on its own; the members' own runs and `dev`'s all run
+    // and end before anything is armed (review round 2: a candidate formed by a run's end while
+    // `dev`'s run took a member's lane). Of two lanes, one still names a member's run.
     f.advance_dev("other.txt")?;
     app.ci_sync_sandbox(&sandbox).await?;
-    // The members' own runs run first and leave their lanes; the candidate forms after them.
     f.settle(&app).await?;
+    f.arm(1, &one).await?;
+    f.arm(2, &two).await?;
     app.merge_armed(&f.sandbox).await;
     let train = f
         .train_runs(&app)

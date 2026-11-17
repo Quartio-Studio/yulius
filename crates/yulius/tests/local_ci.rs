@@ -3254,6 +3254,23 @@ async fn a_job_that_cannot_start_holds_no_slot() -> TestResult {
     }
     support::point_reached(b_at).await?;
     b_go.send(())?;
+    // `b` waits for the budget (its reason says so) before `c` asks (review round 2: with `c`
+    // first, `b` never waited and the old slot-before-budget bug passed too).
+    loop {
+        let jobs = f.h.store.ci_jobs(&id, false).await?;
+        let b = jobs.iter().find(|j| j.name == "b").ok_or("b")?;
+        if b.state == RunState::Queued
+            && b.reason
+                .as_deref()
+                .is_some_and(|r| r.starts_with("waits for the host's CI budget"))
+        {
+            break;
+        }
+        if tokio::time::Instant::now() > deadline {
+            return Err(format!("`b` never waited: {b:?}").into());
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
     support::point_reached(c_at).await?;
     c_go.send(())?;
     loop {
