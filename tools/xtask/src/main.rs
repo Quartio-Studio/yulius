@@ -10,9 +10,11 @@ const HELP: &str = "Yulius engineering commands (scripts/dev <command>)
   fmt       Format Rust sources
   lint      Check formatting and Clippy warnings
   macos     Compile every target for macOS (aarch64-apple-darwin) with Clippy warnings denied
-  test      Run nextest and documentation tests
+  test      Run nextest and documentation tests; in a CI matrix job valued `i/n`
+            ($YULIUS_CI_MATRIX) only shard i of n, the doctests in shard 1
   deps      Check advisories, licenses, sources, and unused dependencies
   ci        Run all required gates, failing on the first failed command
+  checks    Run every gate of ci but test (Yulius CI runs the tests apart, in shards)
   security  Scan the branch's changes with Vidoc (vidoc-1), failing on open critical or high findings
             and on open medium ones in the changed lines;
             --all scans the whole repository (needs a Vidoc key; not in ci)
@@ -144,6 +146,9 @@ fn execute(task: &str) -> io::Result<()> {
             )
         }
         "test" => {
+            // Its own stage, first (the quarantine's listing builds the tests), so the test
+            // stage's history goes on in the shards' job (SPEC-137).
+            stage("test");
             let mut args = vec![
                 "nextest",
                 "run",
@@ -182,8 +187,28 @@ fn execute(task: &str) -> io::Result<()> {
                 println!("quarantined as flaky, left out: {quarantined}");
                 args.extend(["-E", filter.as_str()]);
             }
+            // A shard of a matrix job (`matrix = "1/2 2/2"`) runs its part of the tests, by a hash
+            // of each test's name; the doctests run in the first (SPEC-497 SHR-001).
+            let shard = shard_of(&env::var("YULIUS_CI_MATRIX").unwrap_or_default());
+            let partition = shard.map(|(index, count)| format!("hash:{index}/{count}"));
+            if let Some(partition) = &partition {
+                println!("shard {partition} of the tests");
+                args.extend(["--partition", partition.as_str()]);
+            }
             run(&cargo, &args)?;
-            run(&python, &["scripts/doctests.py"])
+            if shard.is_none_or(|(index, _)| index == 1) {
+                run(&python, &["scripts/doctests.py"])?;
+            }
+            Ok(())
+        }
+        "checks" => {
+            // Everything `ci` runs but the tests, which a CI job of their own runs in shards.
+            for gate in ["doctor", "check", "lint", "macos", "deps"] {
+                stage(gate);
+                execute(gate)?;
+            }
+            stage("docs");
+            docs(&cargo)
         }
         "deps" => {
             run(&cargo, &["deny", "--locked", "check"])?;
@@ -191,23 +216,39 @@ fn execute(task: &str) -> io::Result<()> {
         }
         "ci" => {
             for gate in ["doctor", "check", "lint", "macos", "test", "deps"] {
-                stage(gate);
+                // `test` names its own stage.
+                if gate != "test" {
+                    stage(gate);
+                }
                 execute(gate)?;
             }
             stage("docs");
-            run(
-                &cargo,
-                &[
-                    "doc",
-                    "--locked",
-                    "--workspace",
-                    "--all-features",
-                    "--no-deps",
-                ],
-            )
+            docs(&cargo)
         }
         _ => Err(io::Error::new(io::ErrorKind::InvalidInput, "unknown task")),
     }
+}
+
+/// The workspace's documentation, warnings as `RUSTDOCFLAGS` sets them.
+fn docs(cargo: &str) -> io::Result<()> {
+    run(
+        cargo,
+        &[
+            "doc",
+            "--locked",
+            "--workspace",
+            "--all-features",
+            "--no-deps",
+        ],
+    )
+}
+
+/// The shard a matrix value `i/n` names (1-based, `1 <= i <= n`, `n` at most 64), if it is one.
+fn shard_of(matrix: &str) -> Option<(u32, u32)> {
+    let (index, count) = matrix.trim().split_once('/')?;
+    let (index, count): (u32, u32) = (index.parse().ok()?, count.parse().ok()?);
+    (1..=64).contains(&count).then_some(())?;
+    (1..=count).contains(&index).then_some((index, count))
 }
 
 /// The security gate keeps its exit code: 2 (not run here) must stay distinct from 1 (failed).
@@ -270,7 +311,8 @@ fn main() -> ExitCode {
     }
     if (args.len() != 1 && args[0] != "security" && args[0] != "mutants")
         || ![
-            "doctor", "check", "fmt", "lint", "macos", "test", "deps", "ci", "security", "mutants",
+            "doctor", "check", "fmt", "lint", "macos", "test", "deps", "ci", "checks", "security",
+            "mutants",
         ]
         .contains(&args[0].as_str())
     {
@@ -313,7 +355,7 @@ fn main() -> ExitCode {
 
 #[cfg(test)]
 mod tests {
-    use super::{macos_env, quarantine_filter, stage_marker};
+    use super::{macos_env, quarantine_filter, shard_of, stage_marker};
     use std::path::Path;
 
     /// SPEC-497 OFC-002 (review round 1): a quarantined test is left out in its own binary, and
@@ -328,6 +370,16 @@ mod tests {
         );
         assert_eq!(quarantine_filter(names, ""), "test(=tests::bare)");
         assert_eq!(quarantine_filter("", "app\n"), "");
+    }
+
+    /// SPEC-497 SHR-001: a matrix value `i/n` is a shard of the tests; anything else is none.
+    #[test]
+    fn a_matrix_value_names_a_shard_of_the_tests() {
+        assert_eq!(shard_of("1/2"), Some((1, 2)));
+        assert_eq!(shard_of(" 2/2 "), Some((2, 2)));
+        for none in ["", "1", "0/2", "3/2", "a/2", "1/0", "1/65", "1/2/3"] {
+            assert_eq!(shard_of(none), None, "{none}");
+        }
     }
 
     #[test]

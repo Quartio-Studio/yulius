@@ -181,8 +181,10 @@ mode.
 - [x] Slice C: dissolve reasons shown; documents and ADR
 - [x] Slice C: review round 1 answered
 - [x] Slice C: review round 2 answered
-- [ ] Slice D: sharded jobs
-- [ ] Slice D: a candidate reuses its members' builds; review
+- [x] Slice D: sharded jobs
+- [x] Slice D: a candidate reuses its members' builds, measured
+- [x] Slice D: review round 1 answered
+- [x] Slice D: review round 2 answered
 - [ ] Slice E: numbers before and after, quartio-v2's part told
 
 ## Acceptance criteria
@@ -247,6 +249,13 @@ mode.
   would leave the integration branch at an untested tree. Derived files: Yulius cannot run a
   project's formatter or generator where it builds candidates, so it saves the cycle it can,
   telling the member that breaks a combination once the others pass without it.
+- **Shards are a matrix; a run picks its lane** (slice D,
+  [ADR-0358](../../docs/decisions/0358-tests-run-in-shards-and-a-run-starts-from-the-build-it-builds-on.md)):
+  `matrix = "i/n"` values already run side by side, each in its own checkout, so a project
+  splits its tests by the runner's own partition; a `shards` key would only rename it. A
+  candidate reuses its members' builds by taking the lane whose persistent checkouts built them:
+  a shared cache was relinked under a running job before (SPEC-351), and copying a `target/`
+  costs gigabytes per run.
 - **`YULIUS_CI_LANES` keeps its default** (slice A): it bounds checkouts per sandbox (each lane
   keeps its own job folders and caches, a disk cost), and the budget now decides the load, so a
   lower default would only make a small project's runs queue behind each other for nothing.
@@ -730,6 +739,96 @@ mode.
   e2e; security skipped, Vidoc 401). Its minor (a deterministic test of the read before each
   merge, with a pause point) and two nits (an assertion that races the background pass, one long
   ADR line) go into slice D's pull request, not after the approval.
+
+### Slice D: a CI run is shorter
+
+- SHR-001: `local_ci::a_sharded_job_runs_its_shards_side_by_side` (two shards of `matrix =
+  "1/2 2/2"` wait for each other's mark, bounded: each says it met the other, the run passes; a
+  failing shard fails the run). This repository's `yulius.toml`: `quality` runs
+  `scripts/dev checks`, `test` runs `scripts/dev test` in two shards; xtask `shard_of` (unit
+  `a_matrix_value_names_a_shard_of_the_tests`) turns `i/n` into `--partition hash:i/n`, the
+  doctests in shard 1. `YULIUS_CI_MATRIX=2/2 scripts/dev test`: 2,444 tests, no doctests.
+- Measured locally (64 CPUs, warm build, load 18): the tests took 161 s in one go (4,840
+  tests), 91 s for `hash:1/2` (2,396) and 91 s for `hash:2/2` (2,444). On the instance: the
+  run of #1381 took 12 min 35 s (`quality` 12 min 34 s with the tests in it) and #1378's
+  `quality` 18 min 7 s; the runs after this change are read in slice E.
+- SHR-002: `preferred_lanes`, `take_lane_preferring` (unit
+  `a_run_takes_the_lane_that_last_built_what_it_builds_on`: a pull request its own previous
+  lane, a candidate its last member's first, then a candidate sharing a member, else the first
+  free; a claimed sandbox none); `CiState::lane_runs` and the job's `[yulius] lane …` line;
+  `local_ci::a_run_takes_the_lane_that_last_built_its_pull_request` (two pull requests in lanes
+  0 and 1; the one in lane 1 pushes first, its run takes lane 1 and says "last taken by pr/N,
+  which this run builds on"). Undone (no preference), it fails.
+- The gain, measured on this repository's test build (`cargo nextest run --workspace
+  --all-features --profile ci --no-run`, one worktree and target directory, 64 CPUs, load about
+  18): building `dev` (a2b6f4b0c) after an unrelated older build (`dev~25`) took 105 s, as long
+  as a cold build (104 s); after a member's build (`dev~1`, 20 Rust files apart across the
+  workspace) it took 87 s, 17 % less. Most of this workspace's test binaries depend on the
+  crates any change touches, so the gain is a part of the build, not all of it; a project whose
+  changes touch fewer crates gains more.
+- Slice C review round 2's minor and nits: the pause point `TrainMemberMerging` and
+  `merge_train::a_member_whose_own_run_fails_during_the_merges_is_not_merged` (#1 merges, #2's
+  own run fails at the point, #2 is not merged, `member_failed`); with only that read undone it
+  fails 3 of 3. The racing assertion is gone; ADR-0357's long line wrapped.
+- ADR-0358; architecture, operations (lanes, shards), development, AGENTS.md, `changes.md`.
+- Measured on the instance (`ci_status`): the five pull request runs before this change took
+  11 min 9 s, 11 min 32 s, 12 min 35 s, 14 min 33 s and 15 min 0 s, `quality` the longest each
+  time. This pull request's first run (head aa08961) took 8 min 39 s: `quality` 6 min 31 s,
+  `test (1/2)` 4 min 18 s, `test (2/2)` 4 min 31 s, `e2e` 8 min 38 s (its share a fifth, 5
+  workers; it gets `cpus = 18` since).
+- Review round 1 of slice D (Fable 5.2, head aa089614e). Request changes, all own code.
+  Answered:
+  - Major: the shard test's two runs (`dev` and #1) could wait on each other's half-admitted
+    shards (reproduced by the reviewer under load and with an admission probe). One lane in that
+    fixture.
+  - Major: the lane test's first lanes depended on which of `dev` and #1 ended first. `dev` and
+    #1 settle before #2 opens. The three tests passed 10 of 10 under `--stress-count 10`, and 10
+    of 10 again beside 32 busy loops.
+  - Minor: a pull request behind `dev` would run `scripts/dev checks` on an xtask without it.
+    `quality` looks for `checks` in `scripts/dev help` and runs `ci` otherwise.
+  - Minor: `e2e` became the longest job at a fifth of the budget; `cpus = 18` (ADR-0358).
+  - Minor: the note named a second-choice lane plainly, and said "built" for a lane only taken.
+    "last taken by …, which this run builds on" for any preferred lane.
+  - Minor: a failed shard stops its sibling: stated in ADR-0358's consequences.
+  - Minor: no candidate test. `merge_train::a_candidates_run_takes_a_lane_of_its_members`; undone
+    (no preference), it and the pull request test fail 3 of 3.
+  - Nits: "three jobs" in ADR-0358; `development.md` names the jobs; `scripts/dev test` names its
+    stage (once in `ci`).
+- Two of this task's own tests failed now and then in the suite after round 1 (seen while
+  checking; neither on dev's CI):
+  - `local_ci::a_job_that_cannot_start_holds_no_slot` (slice A2): 1 suite run in 4, when `b`
+    (the whole budget) asked for admission before `a`, so `a` and `c` both waited by right. A
+    pause point before a job's admission (`Point::CiJobAdmission`, `<reference>/<job>`) holds #1's
+    `b` and `c` until `a` runs: 10 of 10 under `--stress-count 10`.
+  - `merge_train::a_candidate_formed_again_reuses_its_trees_passed_run` (slice C): 1 suite run
+    in 6, when the candidate formed again within the same second got the same commit, and the
+    reuse skipped a run of the identical commit. For a candidate, a passed run of that very
+    commit is a source now (`ci_reuse_tree`). The suite then passed 6 runs of 6.
+- Checks run on this head: `cargo fmt --check`; `cargo clippy --workspace --all-targets -D
+  warnings`; `scripts/check_repository.py`; the unit tests of `yulius-app`, `yulius-domain`,
+  `xtask` (1,173 passed); `local_ci::`, `merge_train::`, `analytics::` (149 passed).
+  `scripts/dev mutants`: 27 listed, 26 caught, 0 missed, 0 timed out, 1 unviable (524 s).
+- Review round 2 of slice D (Fable 5.2, head 2654805ff). Request changes, all own code.
+  Answered:
+  - Major: the candidate-lane test formed its candidate in the pass a run's end starts, while
+    `dev`'s run could take a member's lane (reproduced by the reviewer with a member's run 600 ms
+    slower). `dev` moves and every run settles before anything is armed; of two lanes one then
+    still names a member's run.
+  - Minor: the same-commit reuse is `reuse_source`, unit `a_candidate_on_the_same_commit_reuses_its_run`
+    (a candidate's same commit is a source, a branch's is not, nor a step verdict or a failed run).
+  - Minor: the needs added up to 62 of 56 CPUs; `security` declares `cpus = 1`.
+  - Minor: the admission test released `b` and `c` back to back; `c` asks only once `b`'s reason
+    says it waits for the budget.
+  - Nits: `scripts/dev test` names its stage before the quarantine's listing builds; the note is
+    `lane_note`, unit `the_lane_note_says_whether_the_run_builds_on_it` (second choice included).
+  - The changed tests passed 10 of 10 under `--stress-count 10` beside 32 busy loops, and the
+    `local_ci::` and `merge_train::` suite 141 of 141 twice. On the instance, this pull request's
+    run at 2654805 took 6 min 53 s (`quality` 6 min 52 s, shards 4 min 32 s and 4 min 48 s, `e2e`
+    5 min 24 s with its 18 CPUs), against 11 min 9 s to 15 min 0 s before slice D.
+- Review round 3 of slice D (Fable 5.2, head f07733727) approved with no finding; its CI run
+  passed in 8 min 35 s (`quality` 7 min 37 s, shards 4 min 18 s and 4 min 38 s, `e2e` 5 min
+  23 s). The reviewer saw every job of that run wait 47 to 60 s for admission, `security`'s one
+  CPU too; the instance's admission decides it, read in slice E with the busy hours.
 
 ### Slice A3: the operator's amendment to the admission (its own pull request, first)
 

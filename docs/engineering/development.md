@@ -41,9 +41,10 @@ Python's standard-library `tomllib` means Python 3.10 and older are unsupported.
 | `scripts/dev fmt` | Rust formatting mutation |
 | `scripts/dev lint` | Formatting verification and Clippy with warnings denied |
 | `scripts/dev macos` | Clippy with warnings denied on every target for `aarch64-apple-darwin`; on Linux the vendored C (ring, SQLite) is compiled by the pinned zig. Type-checks only: nothing is linked |
-| `scripts/dev test` | nextest workspace tests with zero retries; doctests for eligible library targets |
+| `scripts/dev test` | nextest workspace tests with zero retries; doctests for eligible library targets. With `YULIUS_CI_MATRIX=i/n` (Yulius CI's `test` job, two shards) only hash partition i of n, and the doctests in shard 1 (ADR-0358) |
 | `scripts/dev deps` | cargo-deny advisories/licenses/bans/sources and cargo-shear (unused crate and workspace dependencies) |
 | `scripts/dev ci` | doctor, check, lint, macos, test, deps, then rustdoc with warnings denied |
+| `scripts/dev checks` | `ci` without its tests: Yulius CI's `quality` job, beside the `test` shards |
 | `scripts/dev mutants` | One bounded mutation run of the Rust lines the branch changed (pinned cargo-mutants; ADR-0347): 30 min in all, 300 s a mutant, 2 jobs by default; the product's tests narrowed to those the branch changed. Once per pull request, its summary line in the Evidence; not part of `ci` |
 | `scripts/dev security` | Vidoc's vidoc-1 scan of the files the branch's commits changed since `dev` (`--all`: the whole repository); fails on open medium findings in the changed lines and on open critical or high findings, exit 2 when it could not run, exit 3 when incomplete. Needs a key and the network; not part of `ci`, but Yulius CI runs it as the `security` job on pull request heads |
 
@@ -284,7 +285,8 @@ can use the same rust-analyzer component and toolchain. No global editor setting
 or agent permission overrides are installed.
 
 Yulius CI is the only CI ([SPEC-002 ADR-18](../../.ai/specs/SPEC-002-yulius-architecture.md),
-ADR-21): there are no GitHub Actions. It runs `quality`, `e2e` and `security` (`[[ci.jobs]]`) and publishes
+ADR-21): there are no GitHub Actions. It runs `quality` (`scripts/dev checks`), `test` in two
+shards, `e2e` and `security` (`[[ci.jobs]]`; ADR-0358) and publishes
 the `yulius/ci` commit status, which the rulesets require. The `e2e` job gets no model key (agent
 steps are skipped). [Git delivery](git.md) defines promotion checks and post-merge evidence.
 

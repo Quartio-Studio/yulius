@@ -41,8 +41,8 @@ merged result, and a failing test is never run again until it passes.
   verdict, and a failing test is never run again until it passes, so the candidate cannot decide
   that member. The run read is the one at the member's armed head now: one its agent's clean merge
   of the integration branch moved with the same arming, else the head it joined with. It is read
-  at each pass's start and again before each member's merge. An errored or cancelled own run says nothing about the change, and the
-  candidate's run, which goes on, decides it. A run whose tree holds a member that failed decides
+  at each pass's start and again before each member's merge. An errored or cancelled own run
+  says nothing about the change, and the candidate's run, which goes on, decides it. A run whose tree holds a member that failed decides
   no one, since that tree can never land, so that run is still cancelled. A pull request left out
   of the candidate for a conflict is not in its tree and never touches its run.
 - **Results are reused by tree** (MQW-001). A candidate formed again with the same members on
@@ -102,4 +102,5 @@ merged result, and a failing test is never run again until it passes.
   run still goes then gets a new run at that head: the restart ADR-0285 avoids, in a case that
   needs a broken prediction.
 - An own run that fails between a pass's start and that member's merge is caught by the second
-  read before the merge. No test times it there; a test holds both reads together.
+  read before the merge (a pause point there, `TrainMemberMerging`, lets a test fail it exactly
+  then).
