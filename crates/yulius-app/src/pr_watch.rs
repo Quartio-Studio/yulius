@@ -1359,8 +1359,8 @@ mod tests {
              approved this head or an earlier one of this pull request, call `delivery_merge` \
              with that approved head as `reviewed_head`: the approval carries across at most 20 \
              product lines in all since it (tests and documents do not count), and the call says \
-             when the change needs a new round; with no approval yet, the review of the new head \
-             comes first."
+             when the change needs a new round; with no approval yet, a review of the head comes \
+             first."
         );
         let errored = RunState::Error;
         let text = errored_run_text(&CiRunRecord {
@@ -1457,11 +1457,11 @@ mod tests {
                 None,
                 "dev",
             ),
+            no_ci_status(false),
         ] {
             assert!(
                 text.contains(yulius_domain::review::KEEP_APPROVAL)
-                    && text
-                        .contains("with no approval yet, the review of the new head comes first"),
+                    && text.contains("with no approval yet, a review of the head comes first"),
                 "{text}"
             );
         }

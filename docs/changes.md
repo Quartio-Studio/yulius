@@ -8,9 +8,10 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 - Fewer review rounds spent on what CI or the count already decide (SPEC-506 pull request 1, task
   #488, [ADR-0362](decisions/0362-a-round-is-decided-by-the-code-not-by-ci-or-a-message.md)): after
-  a red run, a failed merge candidate or a dropped merge, Yulius tells the author to call
-  `delivery_merge` with the approved head (an approval carries across 20 product lines) instead of
-  getting a new review; a reviewer approves a change whose only open point is CI and says what CI
+  a red run, a failed merge candidate, a dropped merge or on a green head with no merge armed,
+  Yulius tells an approved author to call `delivery_merge` with the approved head (the approval
+  carries across 20 product lines in all) instead of getting a new review, and one with no
+  approval yet to get the review first; a reviewer approves a change whose only open point is CI and says what CI
   still has to do; before another round the author answers each finding with the test that fails
   without its fix and checks the whole last report on the new head.
 

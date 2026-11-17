@@ -61,9 +61,10 @@ is its task (#261, running).
 **C4. Where re-approvals come from.** Eight messages Yulius types into a session send the author
 to a new round after any fix, though ADR-0345 keeps the approval across 20 product lines:
 `pr_watch.rs` (a red run: "once the new head passed and its review approved it, call
-`delivery_merge` again"; a conflict; a refused merge), `merge_train.rs` (two dropped merge
-candidates: "fix it test-first, get the review of the new head"), `agent_wait.rs` (an armed merge
-dropped because the branch moved: "Get the independent review of the new head"), and
+`delivery_merge` again"; a conflict), `merge_train.rs` (two dropped merge candidates: "fix it
+test-first, get the review of the new head"), `agent_wait.rs` (an armed merge dropped because the
+branch moved: "Get the independent review of the new head"; one dropped by failed checks; a
+conflict's hold), and
 `wait_cli.rs` (`yulius wait` on failed checks: "get the review of the new head"). Six of them
 follow a red run or a dropped merge; the two of a conflict are right, since ADR-0345 needs a new
 round after a resolved conflict. Four notices of a green head with no merge armed ask for the
@@ -157,7 +158,7 @@ product project's 21 jobs pinned to 3 CPUs are its `yulius.toml`.
 - [x] Yulius's typed messages keep an approval across a fix within 20 product lines
 - [x] A reviewer approves a change whose only open point is CI
 - [x] The author proves each fix before asking for another round
-- [ ] Review of the round rules (pull request 1) approved
+- [x] Review of the round rules (pull request 1) approved
 - [ ] Mutation runs use the session's CPUs, measured on a real change
 - [ ] Mutation testing runs beside the first review, then on each fix's lines
 - [ ] Review of the mutation rules (pull request 2) approved
@@ -213,7 +214,7 @@ product project's 21 jobs pinned to 3 CPUs are its `yulius.toml`.
   rule, then the number of such CI failures a week later decides whether the gate is needed.
 - **ADR-0362** records FST-001 to FST-003: what decides a round (the code, not CI; the count, not
   the message).
-- Open: how many of the 20 % re-approving rounds followed one of the seven messages of C4 (asked of
+- Open: how many of the 20 % re-approving rounds followed one of the messages of C4 (asked of
   the person; FST-001 is free whatever the answer).
 
 ## Evidence
@@ -228,4 +229,7 @@ product project's 21 jobs pinned to 3 CPUs are its `yulius.toml`.
   tests named there.
 - The round 1 fixes' lines alone (`scripts/dev mutants --base 1031920ed`, 2 jobs): `mutants: 14
   listed, 14 caught, 0 missed, 0 timed out, 0 unviable, 0 not reached (bound 30 min, took 836 s)`.
+- Review round 2 (Fable 5.2) approved b4315ea8d: one minor (two notices' produced text untested)
+  and four nits, all own code, fixed after it within ADR-0345's bound (test lines, the sentence
+  "a review of the head", "Unless it merged already", the spec's and the index's wording).
 

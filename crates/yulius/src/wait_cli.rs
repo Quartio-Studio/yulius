@@ -188,7 +188,7 @@ pub fn settled(now: &WaitState, before: Option<&WaitState>) -> Option<String> {
         let head = short(&now.head);
         return Some(match now.checks.as_str() {
             "passed" => format!(
-                "The checks at {head} passed: {}.",
+                "The checks at {head} passed. Unless it merged already: {}.",
                 yulius_domain::review::KEEP_APPROVAL
             ),
             state => format!(
@@ -440,7 +440,7 @@ mod tests {
         let passed = settled(&state("passed"), None).unwrap_or_default();
         // SPEC-506 FST-001: the passed line says both cases of the review.
         assert!(
-            passed.starts_with("The checks at 012345678 passed: ")
+            passed.starts_with("The checks at 012345678 passed. Unless it merged already: ")
                 && passed.contains(yulius_domain::review::KEEP_APPROVAL),
             "{passed}"
         );

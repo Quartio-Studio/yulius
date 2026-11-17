@@ -45,8 +45,7 @@ exactly `Verdict: approve` or `Verdict: request changes`.";
 pub const KEEP_APPROVAL: &str = "if a review approved this head or an earlier one of this pull \
 request, call `delivery_merge` with that approved head as `reviewed_head`: the approval carries \
 across at most 20 product lines in all since it (tests and documents do not count), and the call \
-says when the change needs a new round; with no approval yet, the review of the new head comes \
-first";
+says when the change needs a new round; with no approval yet, a review of the head comes first";
 
 /// The model of each reviewer agent, by name.
 pub const REVIEWER_MODELS: [(&str, &str); 2] = [

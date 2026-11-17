@@ -1447,7 +1447,7 @@ mod tests {
         assert!(
             keep.contains("`delivery_merge` with that approved head")
                 && keep.contains("at most 20 product lines in all since it")
-                && keep.contains("with no approval yet, the review of the new head comes first"),
+                && keep.contains("with no approval yet, a review of the head comes first"),
             "the sentence names the call, the bound and the case with no approval: {keep}"
         );
         for (rel, uses) in [

@@ -6927,7 +6927,10 @@ async fn an_armed_merge_says_why_it_was_dropped_or_refused() -> TestResult {
     f.h.app.merge_armed(&sandbox).await;
     let outcome = t.outcome().await?;
     assert!(
-        outcome.contains("dropped") && outcome.contains("checks") && outcome.contains("failed"),
+        outcome.contains("dropped")
+            && outcome.contains("checks")
+            && outcome.contains("failed")
+            && outcome.contains(yulius_domain::review::KEEP_APPROVAL),
         "{outcome}"
     );
 
