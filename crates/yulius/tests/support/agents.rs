@@ -268,10 +268,11 @@ impl HarnessPort for FakeAgentHarness {
         };
         let resumed_session = resumed.is_some();
         let codex = launch.harness == Harness::Codex;
+        let antigravity = launch.harness == Harness::Antigravity;
         // Codex names its own session: a new fake one takes the run directory's name (the
         // attempt id), which Yulius learns from the rollout's `session_meta` or the hook.
         let session = plan.session_id.clone().or(resumed).unwrap_or_else(|| {
-            if codex {
+            if codex || antigravity {
                 launch
                     .run_dir
                     .file_name()
@@ -303,6 +304,17 @@ impl HarnessPort for FakeAgentHarness {
                 argv.extend(["--transcript".into(), path.to_string_lossy().into_owned()]);
             }
             argv.extend(["--transcript-kind".into(), "codex".into()]);
+        } else if let (true, Some(home)) = (antigravity, &launch.antigravity_home) {
+            // The conversation lives in the sandbox's shared brain, reached through the home's
+            // `brain` link as the CLI reaches it (SPEC-505 AGY-003).
+            let path = yulius_harness::paths::antigravity_transcript_path(
+                &home.join(".gemini/antigravity-cli/brain"),
+                &session,
+            );
+            if self.options.transcript {
+                argv.extend(["--transcript".into(), path.to_string_lossy().into_owned()]);
+            }
+            argv.extend(["--transcript-kind".into(), "antigravity".into()]);
         } else if self.options.transcript {
             let path =
                 self.inner
@@ -476,7 +488,9 @@ impl HarnessPort for FakeAgentHarness {
         {
             argv.extend(["--prompt".into(), prompt.clone()]);
         }
-        if self.options.hooks && !self.options.no_session_start {
+        // The Antigravity CLI runs no SessionStart for a resumed conversation (SPEC-505).
+        if self.options.hooks && !self.options.no_session_start && !(antigravity && resumed_session)
+        {
             argv.push("--session-start".into());
         }
         // A continued resume (CLAUDE_CODE_RESUME_INTERRUPTED_TURN) opens with the turn Claude
@@ -569,6 +583,19 @@ impl HarnessPort for FakeAgentHarness {
     ) -> AppResult<Option<yulius_app::ports::harness::UsageSnapshot>> {
         self.inner
             .recount(harness, sandbox_home, worktree, session_id, from, until)
+    }
+    fn discover_antigravity_session(
+        &self,
+        gemini_dir: &Path,
+        brain: &Path,
+        worktree: &Path,
+        since: Timestamp,
+    ) -> Option<String> {
+        self.inner
+            .discover_antigravity_session(gemini_dir, brain, worktree, since)
+    }
+    fn antigravity_refreshed_credential(&self, fresh: &[u8], stored: &[u8]) -> Option<Vec<u8>> {
+        self.inner.antigravity_refreshed_credential(fresh, stored)
     }
     fn antigravity_transcript(&self, brain: &Path, session: &str) -> PathBuf {
         self.inner.antigravity_transcript(brain, session)

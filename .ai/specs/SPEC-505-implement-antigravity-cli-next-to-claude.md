@@ -124,8 +124,8 @@ Six pull requests, each merged into `dev` on green before the next begins.
 - [x] Slice A: review findings fixed and the slice delivered
 - [x] Slice B: Yulius installs the pinned agy 1.5.10 into its data directory
 - [x] Slice B: review findings fixed and the slice delivered
-- [ ] Slice C1: an Antigravity task runs in the supervisor (homes, session id, hooks, write-back, rotation)
-- [ ] Slice C1: the fake agent speaks Antigravity and integration tests cover an Antigravity task
+- [x] Slice C1: an Antigravity task runs in the supervisor (homes, session id, hooks, write-back, rotation)
+- [x] Slice C1: the fake agent speaks Antigravity and integration tests cover an Antigravity task
 - [ ] Slice C1: review findings fixed and the slice delivered
 - [ ] Slice C2: Antigravity subscriptions sign in with Google or a Gemini API key
 - [ ] Slice C2: Antigravity limits, google_connected and moves within Antigravity subscriptions
@@ -202,10 +202,11 @@ Six pull requests, each merged into `dev` on green before the next begins.
   the turn the CLI opens itself after a background command is the agent's work, as Claude Code's
   wake-ups are, so it neither undoes an achieved goal nor counts as a prompt.
 - **Which Stop is a turn's end.** A Stop after the model API failed (`terminationReason`
-  `ERROR`) reaches Yulius as the turn's end, but no answer continues it (agy would only try the
-  failing model again); the transcript's limit steps move the task. A Stop after a prompt Yulius
-  refused (`TERMINAL_CUSTOM_HOOK`) asks nothing, so nothing continues the refused prompt; its
-  `USER_INPUT` step stays in the conversation, as agy wrote it before the hook ran. A Stop with
+  `ERROR`) or after a prompt Yulius refused (`TERMINAL_CUSTOM_HOOK`) asks Yulius nothing, so no
+  answer continues it (Claude Code runs no Stop hook for either). The transcript's error step
+  ends such a turn as an interrupt does: a limit's moves the task, any other leaves it waiting
+  (slice C1). A refused prompt's `USER_INPUT` step stays in the conversation, as agy wrote it
+  before the hook ran. A Stop with
   `fullyIdle` false is a turn's end like Claude Code's with background agents still running: the
   CLI's own wake-up later is agent work.
 - **A resume gets no new briefing.** The CLI fires no `SessionStart` on `--conversation`; the
@@ -323,3 +324,33 @@ Six pull requests, each merged into `dev` on green before the next begins.
   `../escape` or an absolute path are refused with nothing left behind, "an Antigravity start",
   the module doc and the by-hand test's `AGY_CLI_DISABLE_AUTO_UPDATE=true`. The CI security job
   did not run (Vidoc refused the key, exit 78): unrun, not passed.
+
+### Slice C1 (Antigravity tasks)
+
+- `harness: antigravity` is accepted for tasks and automations; a model that is not `gemini-*`
+  is refused (422), and a task without a Google account says "no Antigravity account is
+  connected" (409) (`task_delete::tasks_run_claude_code_or_codex`).
+- The supervisor makes `<sandbox>/antigravity/<account>` through folder handles, its
+  `antigravity-cli/{brain,conversations}` linking (absolutely) to `<sandbox>/antigravity/shared`,
+  writes the plan's files there through handles, provides the CLI (installed before the launch
+  lock, its folder bound read-only), binds the account's `.gemini` over the sandbox home's in a
+  contained run or sets `HOME` in an uncontained one, gives a goal task its request as its first
+  message, records `gemini-4-carbon` as the run's model when the task names none, learns the
+  conversation from SessionStart (else from `last_conversations.json` written since the run
+  began), writes back a changed token file and removes it once no run of the account is left,
+  and says which token-needing MCP servers a run goes without.
+- From the slice A review's notes: a non-limit error step ends the turn as an interrupt does (a
+  refused prompt, a model API failure after the retries), and an `ERROR` Stop asks Yulius
+  nothing again (`an_agy_error_that_is_no_limit_ends_the_turn`,
+  `an_antigravity_turn_ended_by_an_error_is_never_continued`). Steps' whole-second `created_at`
+  needs no change: a typed prompt reaches Yulius through its prompt hook, which counts.
+- The fake agent speaks Antigravity (`--transcript-kind antigravity`): numbered steps, the
+  typed prompt's step before its prompt hook, hooks sent and answered through
+  `yulius hook antigravity` in the CLI's shapes.
+- Tests: `antigravity::*` (runs in its home with its conversation from SessionStart; moves to
+  another Google account at a quota by resuming the conversation; a goal task's first message;
+  a refreshed sign-in kept and removed; a failed turn leaves the task waiting): 5 passed, and
+  5 of 5 times under `--stress-count 5`. `yulius-app`, `yulius-harness`, `yulius-domain` and
+  `fake-agent`: 1438 passed. The `yulius` integration files `antigravity`, `codex*`,
+  `agent_hooks`, `accounts`, `task_delete`, `automations`, `supervision`, `pool_supervision` and
+  `first_message`: 186 passed. Clippy clean.

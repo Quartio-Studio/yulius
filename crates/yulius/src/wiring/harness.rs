@@ -400,6 +400,26 @@ impl HarnessPort for HarnessAdapter {
         paths::antigravity_transcript_path(brain, session_id)
     }
 
+    fn discover_antigravity_session(
+        &self,
+        gemini_dir: &Path,
+        brain: &Path,
+        worktree: &Path,
+        since: Timestamp,
+    ) -> Option<String> {
+        let id = paths::antigravity_last_conversation(gemini_dir, worktree)?;
+        let written = std::fs::symlink_metadata(paths::antigravity_transcript_path(brain, &id))
+            .ok()
+            .filter(std::fs::Metadata::is_file)?
+            .modified()
+            .ok()?;
+        (written >= to_system(since)).then_some(id)
+    }
+
+    fn antigravity_refreshed_credential(&self, fresh: &[u8], stored: &[u8]) -> Option<Vec<u8>> {
+        login::antigravity_refreshed_credential(fresh, stored)
+    }
+
     fn find_codex_rollout(
         &self,
         sessions_dir: &Path,

@@ -1075,13 +1075,11 @@ fn an_antigravity_wake_up_is_no_prompt() -> TestResult {
 }
 
 /// SPEC-505 AGY-006: a turn the model API ended with an error (agy's Stop with
-/// `terminationReason` `ERROR`, after its retries) reaches Yulius as the turn's end, but no
-/// answer continues it: agy would only try the failing model again.
+/// `terminationReason` `ERROR`, after its retries) asks Yulius nothing, as Claude Code runs no
+/// Stop hook then: the transcript's error step ends the turn, and nothing continues it.
 #[test]
 fn an_antigravity_turn_ended_by_an_error_is_never_continued() -> TestResult {
-    let (url, server) = serve_once(ok_response(
-        br#"{"decision":"block","reason":"Run the gate"}"#,
-    ))?;
+    let (url, listener) = untouched_listener()?;
     let mut output = Vec::new();
     let payload = agy_payload(
         "Stop",
@@ -1095,11 +1093,7 @@ fn an_antigravity_turn_ended_by_an_error_is_never_continued() -> TestResult {
         &env_with(url, Some("task-token-SYNTHETIC")),
     );
     assert_eq!(json_out(&output)?, serde_json::json!({}));
-    let request = join(server)?;
-    assert_eq!(
-        request.line.trim_end(),
-        "POST /hooks/antigravity/Stop HTTP/1.1"
-    );
+    assert_no_connection(&listener);
     Ok(())
 }
 

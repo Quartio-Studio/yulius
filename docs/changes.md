@@ -6,6 +6,14 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-17
 
+- Antigravity, slice C1 (SPEC-505 pull request 3, task #487): a task created with
+  `harness: antigravity` runs the native `agy` TUI on a Google account, on Gemini 4 Carbon at high
+  effort unless it names a Gemini model. It runs in the account's own home in the sandbox, with
+  conversations shared so it resumes on another Google account at a limit. Yulius learns its
+  conversation from its SessionStart and reads its transcript. A goal task gets its request as
+  its first message, and a refreshed Google sign-in is kept. Google subscriptions are added in
+  the next slice.
+
 - Antigravity, slice B (SPEC-505 pull request 2, task #487): Yulius provides the pinned
   Antigravity CLI (`agy` 1.5.10) itself, downloaded once from Google's release storage into
   `<data>/antigravity-cli`, only when its sha512 matches the one in the source, and with the

@@ -57,28 +57,26 @@ pub struct NewTask {
     pub supertask: bool,
 }
 
-/// Codex runs OpenAI's models: a Claude model, given at creation or set later, would make its run
-/// fail at start (SPEC-503).
+/// Codex runs OpenAI's models and Antigravity Google's Gemini models: another provider's model,
+/// given at creation or set later, would make its run fail at start (SPEC-503, SPEC-505).
 pub(crate) fn codex_takes_no_claude_model(harness: Harness, model: Option<&str>) -> AppResult<()> {
-    if harness == Harness::Codex
-        && model.is_some_and(|m| m.trim().to_ascii_lowercase().starts_with("claude"))
-    {
-        return Err(AppError::Invalid(
+    let Some(model) = model.map(|m| m.trim().to_ascii_lowercase()) else {
+        return Ok(());
+    };
+    match harness {
+        Harness::Codex if model.starts_with("claude") => Err(AppError::Invalid(
             "a Codex task takes an OpenAI model, not a Claude one".into(),
-        ));
+        )),
+        Harness::Antigravity if !model.starts_with("gemini-") => Err(AppError::Invalid(
+            "an Antigravity task takes a Gemini model (such as gemini-4-carbon)".into(),
+        )),
+        _ => Ok(()),
     }
-    Ok(())
 }
 
 pub(crate) fn parse_harness(text: &str) -> AppResult<Harness> {
-    match Harness::parse(text) {
-        // Antigravity's adapter is in place, its runs are not yet (SPEC-505 slice A): refused as
-        // unknown until slice C opens the path.
-        Ok(Harness::Antigravity) | Err(_) => {
-            Err(AppError::Invalid("harness must be claude or codex".into()))
-        }
-        Ok(harness) => Ok(harness),
-    }
+    Harness::parse(text)
+        .map_err(|_| AppError::Invalid("harness must be claude, codex or antigravity".into()))
 }
 
 /// A prepared task has one way to start (SPEC-105 PRP-001).
