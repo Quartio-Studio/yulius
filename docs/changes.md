@@ -8,11 +8,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 - Antigravity, slice C1 (SPEC-505 pull request 3, task #487): a task created with
   `harness: antigravity` runs the native `agy` TUI on a Google account, on Gemini 4 Carbon at high
-  effort unless it names a Gemini model. It runs in the account's own home in the sandbox, with
-  conversations shared so it resumes on another Google account at a limit. Yulius learns its
-  conversation from its SessionStart and reads its transcript. A goal task gets its request as
-  its first message, and a refreshed Google sign-in is kept. Google subscriptions are added in
-  the next slice.
+  effort unless it names a Gemini model. Each run has its own home in its run directory, with
+  the sandbox's conversations shared, so a task resumes on another Google account at a limit.
+  Yulius learns its conversation from its SessionStart and reads its transcript; a turn its model
+  API failed ends without a gate. A goal task gets its request as its first message, and a
+  Google sign-in the run refreshed is kept unless a newer one came meanwhile. Google
+  subscriptions are added in the next slice.
 
 - The Review card counts what the next study needs (SPEC-506 pull request 4, task #488): the
   Pipeline tab's Review card and `GET /api/analytics/reviews` give the rounds after a request for
