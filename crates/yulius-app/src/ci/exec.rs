@@ -159,6 +159,9 @@ pub(super) enum Ended {
 /// The end of the line a job's output gets when it runs again after an infrastructure failure
 /// (SPEC-497 OFC-001); what follows it is the second run's.
 const RERUN_NOTE: &str = "the job runs again once by itself (SPEC-497)\n";
+/// The longest a job waits for network room before its second run after a full address pool;
+/// past it, the job ends error for the infrastructure (SPEC-497 OFC-001, review round 2).
+const RERUN_NETWORK_WAIT: std::time::Duration = std::time::Duration::from_secs(10 * 60);
 
 /// What a CD or environment run's files may use while it runs (SPEC-300, ADR-0216): the
 /// directories measured, each with its name in the reason, and the bound in bytes.
@@ -775,7 +778,7 @@ impl App {
                         &run.sandbox_id,
                         ended,
                         &ring,
-                        failures.as_deref(),
+                        failures.is_some(),
                         oom_before,
                     )
                     .await
@@ -790,9 +793,35 @@ impl App {
                         kind.describe()
                     ));
                     thrown = Some((kind, took));
-                    // A full address pool is waited out before the second run (review round 1).
+                    // A full address pool is waited out before the second run (review round 1),
+                    // within a bound and as long as the job is not cancelled (round 2): the job
+                    // keeps its slot and budget meanwhile, and its output says so.
                     if kind == Infra::AddressPool {
-                        self.ci_network_room(&run.sandbox_id, &job.id).await;
+                        ring.push_str(&format!(
+                            "[yulius] it first waits for its sandbox's Docker engine to have \
+                             room for a network, at most {} min\n",
+                            RERUN_NETWORK_WAIT.as_secs() / 60
+                        ));
+                        let _ = store.set_ci_job_output(&job.id, &ring.text()).await;
+                        let room = tokio::select! {
+                            () = self.ci_network_room(&run.sandbox_id, &job.id) => None,
+                            reason = wait_cancel(&mut cancel) => Some(Ok(reason)),
+                            () = tokio::time::sleep(RERUN_NETWORK_WAIT) => Some(Err(())),
+                        };
+                        match room {
+                            None => {}
+                            Some(Ok(reason)) => {
+                                break (
+                                    Ok(Ended::Cancelled(reason)),
+                                    usage,
+                                    failures,
+                                    Some((kind, took, None)),
+                                );
+                            }
+                            Some(Err(())) => {
+                                break (ended, usage, failures, Some((kind, took, Some(kind))));
+                            }
+                        }
                     }
                 }
                 (Some(again), Some((first, ms))) => {
@@ -801,6 +830,16 @@ impl App {
                         usage,
                         failures,
                         Some((first, ms.saturating_add(took), Some(again))),
+                    );
+                }
+                // The second start could not be made: the infrastructure's again (review
+                // round 2), not a failure of the change.
+                (None, Some((first, ms))) if ended.is_err() => {
+                    break (
+                        ended,
+                        usage,
+                        failures,
+                        Some((first, ms.saturating_add(took), Some(first))),
                     );
                 }
                 (None, thrown) => {
@@ -923,16 +962,16 @@ impl App {
             .map(|counters| counters.oom_kills)
     }
 
-    /// Why a job of `sandbox` that `ended` (printing what `ring` kept and the failing tests'
-    /// blocks `failures`) failed for the infrastructure, if it did (SPEC-497 OFC-001): only a
-    /// failed or lost job is asked, and a kill for memory needs the sandbox's OOM count to have
-    /// grown since `oom_before`.
+    /// Why a job of `sandbox` that `ended`, printing what `ring` kept, failed for the
+    /// infrastructure, if it did (SPEC-497 OFC-001): only a failed or lost job is asked, one with
+    /// a failing test kept (`tests_failed`) never is the infrastructure's (review round 2), and a
+    /// kill for memory needs the sandbox's OOM count to have grown since `oom_before`.
     async fn ci_infrastructure(
         &self,
         sandbox: &SandboxId,
         ended: &Ended,
         ring: &OutputRing,
-        failures: Option<&str>,
+        tests_failed: bool,
         oom_before: Option<u64>,
     ) -> Option<Infra> {
         let end = match ended {
@@ -964,7 +1003,7 @@ impl App {
         let this_run = text
             .rsplit_once(RERUN_NOTE)
             .map_or(text.as_str(), |(_, after)| after);
-        infrastructure(end, this_run, failures, oom)
+        infrastructure(end, this_run, tests_failed, oom)
     }
 
     /// The job's environment: no secret; its budget and what the checkout's `[resources.env]`

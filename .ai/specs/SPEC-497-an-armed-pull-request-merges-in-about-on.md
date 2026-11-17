@@ -406,31 +406,28 @@ mode.
 
 ### Slice B (first pull request): failures outside the change, CI minutes
 
-- OFC-001: `yulius_domain::ci::infra::{infrastructure, Infra, JobEnd}` (doctests; unit
-  `only_the_infrastructures_own_words_count`: Docker's two address-pool sentences, a
-  `docker.sock` connection reset, refused or broken, a SIGKILL or 137 only with an OOM kill, a
-  lost host; a test's failure, a line naming the socket that says nothing ended, and a SIGKILL
-  without an OOM kill are not). `App::ci_job` runs the job again once in the same slot when
-  `ci_infrastructure` says so (the kept output end and the failing tests' blocks, the sandbox's
-  OOM count before and after), saying so in its output; passed then, its reason says why it ran
-  twice; the infrastructure again, it ends error saying so. Migration 0064 keeps `infra` and
-  `infra_ms`; a requeue clears them. `local_ci` with real jobs:
-  - `an_infrastructure_failure_runs_the_job_again_once`: Docker's address-pool words, then a
-    pass: passed, its reason and both output lines, two runs per checkout;
-  - `a_job_runs_again_once_and_only_for_the_infrastructure`: the words twice end error with
-    "…, again when it was run again: an infrastructure failure, not the change" after two runs;
-    a test's failure (`exit 101`) fails after one run;
-  - `a_job_killed_for_memory_runs_again_once`: `kill -9 $$` while the fake isolation's OOM
-    count grows: passed when run again.
-- OFC-003: `merge_queue::{RunMinutes, Minutes, minutes_by_day}` (unit
-  `ci_minutes_are_counted_by_how_runs_ended`: per day and in all, the rerun minutes apart, the
-  share 0.2 of 20 minutes); `CiStore::ci_runs_ended` (store unit
-  `ended_runs_say_how_they_ended`: passed with 2 min thrown away, failed, error only for the
-  infrastructure, cancelled; the range); `GET /api/analytics/merge-queue` gets `ci_minutes` and
-  `ci_minutes_by_day` (`analytics::the_merge_queue_read_counts_ci_minutes_by_outcome`: 10 min
-  each passed, failed outside and cancelled, 5 min run again, share 0.667, another sandbox's
-  failed run only for the admin). The Pipeline tab's Merge queue card shows "CI minutes" and
-  "Outside the change" against the 15 % target (`pipeline.e2e.ts`, 18 of 18 passed).
+- OFC-001: `yulius_domain::ci::infra::{infrastructure, Infra, JobEnd}` (doctests; units
+  `the_infrastructures_own_words_at_the_end_count` and `a_failure_of_the_change_is_never_the_infrastructures`,
+  see review round 2 below). `App::ci_job` runs the job again once in the same slot when
+  `ci_infrastructure` says so (this run's own output, whether a failing test was kept, the
+  sandbox's OOM count before and after), saying so in its output; passed then, its reason says
+  why it ran twice; the infrastructure again, it ends error saying so. Migration 0064 keeps
+  `infra`, `infra_ms` and `infra_end`; a requeue clears them. `local_ci` with real jobs:
+  `an_infrastructure_failure_runs_the_job_again_once`,
+  `a_job_runs_again_once_and_only_for_the_infrastructure`, `a_job_killed_for_memory_runs_again_once`,
+  `a_kill_without_a_kill_for_memory_is_not_run_again`,
+  `a_tests_failure_is_never_taken_for_the_infrastructure`, and those of review round 2.
+- OFC-003: `merge_queue::Minutes` (unit `ci_minutes_are_counted_by_how_runs_ended`: by outcome,
+  the rerun minutes apart, the share 4/21); the per-day tally `ci_minutes`, written in
+  `transition_ci_run` with the run's new state in one transaction, read by `CiStore::ci_minutes`
+  (store unit `a_runs_end_adds_to_its_days_minutes`: passed with 2 min thrown away, failed after
+  a thrown-away first run, failed only for the infrastructure, cancelled, a run cancelled before it
+  started adds nothing, the rows outlive the runs' prune, the range);
+  `GET /api/analytics/merge-queue` gets `ci_minutes` and `ci_minutes_by_day`
+  (`analytics::the_merge_queue_read_counts_ci_minutes_by_outcome`: 10 min each passed, failed
+  outside and cancelled, 5 min run again, share 0.667, another sandbox's failed run only for the
+  admin). The Pipeline tab's Merge queue card shows "CI minutes" and "Outside the change" against
+  the 15 % target (`pipeline.e2e.ts`).
 - ADR-0354; architecture (CI job states), `api.md`, `changes.md`.
 - How to read it a week later: `GET /api/analytics/merge-queue?sandbox=<id>&from=&to=`,
   `ci_minutes.outside_share` (target at most 0.15; 16 Nov in quartio-v2: 114 cancelled and most
@@ -487,3 +484,33 @@ mode.
   infrastructure, and a SIGKILL needing an OOM kill were caught; reading the whole output instead
   of its last lines was not, and `only_the_infrastructures_own_words_count` now has that case (a
   Docker error long before the job's own compile error), which catches it.
+- Review round 2 of the reruns, minutes and load (Fable 5.2, head acbd80a6e). Request changes,
+  all own code. Answered:
+  - Major: a Docker error the job went on from, then a failure in Go's, pytest's or jest's words,
+    was run again. The classifier now reads only the run's last 3 lines (Yulius's own left out)
+    and refuses any line after the words that reads as a failure in any runner's words (`fail`,
+    `panic`, `assert`, `not ok`, `timeout`, `timed out`, `error[`). Units with Go, pytest, jest,
+    TAP, nextest `TIMEOUT`, a panic, an assertion and a compile error after each of Docker's
+    words; `local_ci::a_failure_in_any_runners_words_is_never_run_again` (Go, pytest and jest
+    shapes: failed, one run).
+  - Major: real kept blocks (with their blank lines) were never classified, and a block could
+    quote Docker's words. A job with any failing test kept is now the change's, whatever the
+    block says: `local_ci::a_kept_failing_test_is_never_run_again` (nextest's block with its blank
+    lines, its test failing on the address pool: failed, one run). A test failing on a full pool
+    therefore costs a cycle; with 4,096 networks per engine (ADR-0350) that is rare.
+  - Major: the wait for network room before the second run could not be cancelled or bounded.
+    It races the cancellation and a 10-minute bound, flushes the job's output first and says
+    what it waits for; cancelled, the job ends cancelled with no second start; past the bound it
+    ends error for the infrastructure. `local_ci::the_wait_before_a_second_run_can_be_cancelled`.
+  - Major: "only the second run's own output counts" had no test.
+    `local_ci::the_second_run_is_judged_on_its_own_output` (the address pool, then a plain compile
+    error: failed, no reason, two runs).
+  - Minors: ADR-0350's bullet about jobs arriving in one window is dev's text again, pointing to
+    ADR-0353; the Evidence above names what exists; `ci_jobs_waiting` has a store unit
+    (`jobs_waiting_to_start_are_queued_jobs_of_running_runs`); a second start that cannot be
+    made after a thrown-away run ends error for the infrastructure (`infra_end`); ADR-0354 says
+    what the wait holds and for how long. The lost host's rerun is held at the classifier
+    (`JobEnd::Lost`); the executor's one-line mapping from `Ended::Lost` has no test of its own.
+  - Nits: the decision index's order; both runs' stages stay on the job's span (ADR-0354); the
+    tally and the run's state in one transaction; `Infra::parse` removed; the busiest hour shows
+    its day.

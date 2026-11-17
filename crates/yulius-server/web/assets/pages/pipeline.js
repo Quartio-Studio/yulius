@@ -282,7 +282,7 @@ export function mountPipelineSection(ctx, sandbox, route, section, actions) {
       h('header', { class: 'db-card-head' }, h('div', { class: 'db-card-titles' }, h('h2', { class: 'card-title' }, 'CI load'),
         h('span', { class: 'db-card-sub' }, 'the host, all projects: jobs waiting to start and the CPUs busy, per hour (UTC)'))),
       h('div', { class: 'db-kpis pl-kpis' },
-        tile('Waiting to start', `${int(l.wait_job_minutes || 0)} job-min`, peak ? `most in one hour: ${int(peak.wait_job_minutes)} (${peak.hour.slice(11)}:00)` : 'in this range'),
+        tile('Waiting to start', `${int(l.wait_job_minutes || 0)} job-min`, peak ? `most in one hour: ${int(peak.wait_job_minutes)} (${peak.hour.slice(5, 10)} ${peak.hour.slice(11)}:00)` : 'in this range'),
         tile('Host busy', busy, 'average of the hours read'),
         tile('CPUs held by CI', heldAvg === null ? '—' : `${Math.round(heldAvg)}`, measuredAvg === null ? 'by the running jobs\u2019 budgets' : `${Math.round(measuredAvg)} measured in use`)));
   }

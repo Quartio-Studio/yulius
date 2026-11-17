@@ -346,7 +346,9 @@ impl CiStore for SqliteStore {
                 from.into_iter()
                     .map(|s| Box::new(s) as Box<dyn rusqlite::ToSql>),
             );
-            let changed = match c.execute(&sql, params_from_iter(args.iter().map(AsRef::as_ref))) {
+            // The new state and the day's tally together (review round 2).
+            let tx = c.transaction().map_err(db)?;
+            let changed = match tx.execute(&sql, params_from_iter(args.iter().map(AsRef::as_ref))) {
                 Ok(changed) => changed == 1,
                 Err(rusqlite::Error::SqliteFailure(err, _))
                     if err.code == rusqlite::ErrorCode::ConstraintViolation =>
@@ -365,9 +367,10 @@ impl CiStore for SqliteStore {
                     RunState::Passed | RunState::Failed | RunState::Error | RunState::Cancelled
                 )
             {
-                c.execute(CI_MINUTES_ADD, params![id_for_tally])
+                tx.execute(CI_MINUTES_ADD, params![id_for_tally])
                     .map_err(db)?;
             }
+            tx.commit().map_err(db)?;
             Ok(changed)
         })
         .await
@@ -979,6 +982,45 @@ mod tests {
             .ci_minutes(&sandbox, Some(Timestamp(86_400_000)), None)
             .await?;
         assert!(none.is_empty());
+        Ok(())
+    }
+
+    /// SPEC-497 (review round 2): the jobs waiting to start are the queued jobs of running runs;
+    /// a queued run's jobs and running jobs are not counted.
+    #[tokio::test]
+    async fn jobs_waiting_to_start_are_queued_jobs_of_running_runs() -> TestResult {
+        let store = SqliteStore::open_in_memory()?;
+        store
+            .insert_ci_run(
+                &run("r1", "a", 1)?,
+                &[job("j1", "r1", 0), job("j2", "r1", 1)],
+            )
+            .await?;
+        store
+            .insert_ci_run(&run("r2", "b", 2)?, &[job("j3", "r2", 0)])
+            .await?;
+        assert_eq!(store.ci_jobs_waiting().await?, 0, "no run started");
+        let start = CiRunUpdate {
+            started_at: Some(Timestamp(5)),
+            ..CiRunUpdate::default()
+        };
+        store
+            .transition_ci_run("r1", &[RunState::Queued], RunState::Running, &start)
+            .await?;
+        assert_eq!(store.ci_jobs_waiting().await?, 2);
+        store
+            .transition_ci_job(
+                "j1",
+                &[RunState::Queued],
+                RunState::Running,
+                &CiJobUpdate::default(),
+            )
+            .await?;
+        assert_eq!(
+            store.ci_jobs_waiting().await?,
+            1,
+            "the running job is not waiting"
+        );
         Ok(())
     }
 

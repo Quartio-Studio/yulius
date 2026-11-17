@@ -39,12 +39,6 @@ impl Infra {
         }
     }
 
-    /// The kind stored as `name`.
-    #[must_use]
-    pub fn parse(name: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|kind| kind.as_str() == name)
-    }
-
     /// What happened, for a person.
     #[must_use]
     pub const fn describe(self) -> &'static str {
@@ -87,58 +81,55 @@ const SOCKET_ENDS: [&str; 5] = [
 ];
 
 /// The output lines read at the end of a job that failed with no failing test kept: the words
-/// must come just before it ended, not from something it went on from (review round 1).
-pub const TAIL_LINES: usize = 20;
+/// must be among the last few lines it printed, not something it went on from (review round 1;
+/// round 2: the last lines only, a missed rerun costs a cycle, a wrong one breaks the rule that a
+/// failing test is never run again).
+pub const TAIL_LINES: usize = 3;
 
-/// The infrastructure failure `text` names, if any: Docker's words for a full address pool, else
-/// a line naming `docker.sock` that says the connection ended.
-fn named(text: &str) -> Option<Infra> {
-    let mut socket = false;
-    for line in text.lines() {
-        let line = line.to_ascii_lowercase();
-        if ADDRESS_POOL.iter().any(|words| line.contains(words)) {
-            return Some(Infra::AddressPool);
-        }
-        if line.contains("docker.sock")
-            && SOCKET_ENDS
-                .iter()
-                .any(|words| line.contains(words) || (*words == ": eof" && line.ends_with(" eof")))
-        {
-            socket = true;
-        }
+/// The infrastructure failure `line` names, if any: Docker's words for a full address pool, or
+/// `docker.sock` with words for a connection that ended.
+fn named(line: &str) -> Option<Infra> {
+    let line = line.to_ascii_lowercase();
+    if ADDRESS_POOL.iter().any(|words| line.contains(words)) {
+        return Some(Infra::AddressPool);
     }
-    socket.then_some(Infra::DockerSocket)
+    (line.contains("docker.sock")
+        && SOCKET_ENDS
+            .iter()
+            .any(|words| line.contains(words) || (*words == ": eof" && line.ends_with(" eof"))))
+    .then_some(Infra::DockerSocket)
 }
 
 /// Why the failure of a job that ended `end` is the infrastructure's, if it is, from this run's
-/// own `output` (what it printed, the end kept), the failing tests' blocks `failures` it printed
-/// ([`crate::ci::failures::FailureScanner::finish`]) and whether the kernel killed a process of
-/// its sandbox for memory meanwhile (`oom_killed`):
+/// own `output` (what it printed, the end kept), whether any failing test's block was kept
+/// (`tests_failed`, [`crate::ci::failures::FailureScanner::finish`]) and whether the kernel killed
+/// a process of its sandbox for memory meanwhile (`oom_killed`):
 ///
 /// - its process host was lost;
 /// - a `SIGKILL` (or exit 137, a shell's report of one) while the kernel killed for memory;
-/// - with failing tests kept: every one of them failed with Docker's words for a full address
-///   pool or a `docker.sock` connection that ended (the first such test's kind); a test that
-///   failed otherwise makes it the change's;
-/// - with none kept: those words in the last [`TAIL_LINES`] lines of the output, so a Docker
-///   error the job went on from, followed by its own failure, is not one.
+/// - with no failing test kept: Docker's words for a full address pool or a `docker.sock`
+///   connection that ended, in the last [`TAIL_LINES`] lines Yulius did not print itself, with
+///   no line after them that reads as a failure in any test runner's words.
+///
+/// A job with a failing test kept is the change's, whatever its blocks say: a test's message can
+/// quote Docker's words (review round 2). So is one whose last lines read as a failure.
 ///
 /// # Examples
 /// ```
 /// use yulius_domain::ci::infra::{Infra, JobEnd, infrastructure};
 /// let pool = "Error response from daemon: could not find an available, non-overlapping IPv4 \
 ///             address pool among the defaults to assign to the network";
-/// assert_eq!(infrastructure(JobEnd::Exited(1), pool, None, false), Some(Infra::AddressPool));
+/// assert_eq!(infrastructure(JobEnd::Exited(1), pool, false, false), Some(Infra::AddressPool));
 /// let eof = "error during connect: Post \"http://%2Frun%2Fyulius%2Fdocker%2Fdocker.sock/v1.47/containers/create\": EOF";
-/// assert_eq!(infrastructure(JobEnd::Exited(1), eof, None, false), Some(Infra::DockerSocket));
-/// assert_eq!(infrastructure(JobEnd::Signalled(9), "", None, true), Some(Infra::OutOfMemory));
-/// assert_eq!(infrastructure(JobEnd::Exited(101), "test x ... FAILED", None, false), None);
+/// assert_eq!(infrastructure(JobEnd::Exited(1), eof, false, false), Some(Infra::DockerSocket));
+/// assert_eq!(infrastructure(JobEnd::Signalled(9), "", false, true), Some(Infra::OutOfMemory));
+/// assert_eq!(infrastructure(JobEnd::Exited(1), pool, true, false), None);
 /// ```
 #[must_use]
 pub fn infrastructure(
     end: JobEnd,
     output: &str,
-    failures: Option<&str>,
+    tests_failed: bool,
     oom_killed: bool,
 ) -> Option<Infra> {
     match end {
@@ -148,130 +139,134 @@ pub fn infrastructure(
         }
         _ => {}
     }
-    let tests = failures
-        .map(crate::ci::failures::failed_test_names)
-        .unwrap_or_default();
-    if let Some(kept) = failures.filter(|_| !tests.is_empty()) {
-        // Each kept block starts at its header and ends at a blank line.
-        let mut kinds = kept
-            .split("\n\n")
-            .filter(|block| !block.trim().is_empty() && !block.starts_with("[yulius]"))
-            .map(named);
-        let first = kinds.next()??;
-        return kinds.all(|kind| kind.is_some()).then_some(first);
+    if tests_failed {
+        return None;
     }
-    let lines: Vec<&str> = output.lines().filter(|l| !l.trim().is_empty()).collect();
+    let lines: Vec<&str> = output
+        .lines()
+        .filter(|l| !l.trim().is_empty() && !l.trim_start().starts_with("[yulius]"))
+        .collect();
     let tail = &lines[lines.len().saturating_sub(TAIL_LINES)..];
-    // The last line naming the infrastructure, with no test's failure after it.
+    // The last line naming the infrastructure, with nothing that reads as a failure after it.
     let (at, kind) = tail
         .iter()
         .enumerate()
         .rev()
         .find_map(|(at, line)| named(line).map(|kind| (at, kind)))?;
-    let failed_after = tail[at + 1..]
-        .iter()
-        .any(|line| TEST_FAILED.iter().any(|words| line.contains(words)));
+    let failed_after = tail[at + 1..].iter().any(|line| {
+        let line = line.to_ascii_lowercase();
+        FAILURE_WORDS.iter().any(|words| line.contains(words))
+    });
     (!failed_after).then_some(kind)
 }
 
-/// What test runners print for a failing test.
-const TEST_FAILED: [&str; 4] = [" FAILED", "FAIL [", "panicked at", "test result: FAILED"];
+/// Words, lower-case, of a failure in any test runner or tool (Rust's, Go's, pytest's, jest's,
+/// TAP's): a line after the infrastructure's that has one makes the failure the change's.
+const FAILURE_WORDS: [&str; 7] = [
+    "fail",
+    "panic",
+    "assert",
+    "not ok",
+    "timeout",
+    "timed out",
+    "error[",
+];
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// SPEC-497 OFC-001: Docker's own words and the socket's end are the infrastructure's, in any
-    /// case; a test's failure is not, nor a SIGKILL without a kill for memory, nor a line about
-    /// the socket that says nothing ended.
+    const POOL: &str = "Error response from daemon: could not find an available, non-overlapping \
+                        IPv4 address pool among the defaults to assign to the network";
+    const SOCKET: &str = "Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the \
+                          docker daemon running?";
+
+    /// SPEC-497 OFC-001: Docker's own words and the socket's end are the infrastructure's when
+    /// they end the run, in any case; a SIGKILL only with a kill for memory; a lost host.
     #[test]
-    fn only_the_infrastructures_own_words_count() {
+    fn the_infrastructures_own_words_at_the_end_count() {
         let exited = JobEnd::Exited(1);
         for (output, kind) in [
+            (POOL.to_owned(), Infra::AddressPool),
             (
-                "Error response from daemon: all predefined address pools have been fully subnetted",
+                "Error response from daemon: all predefined address pools have been fully subnetted"
+                    .to_owned(),
                 Infra::AddressPool,
             ),
             (
-                "ERROR: could not find an available, non-overlapping IPv4 address pool among the defaults to assign to the network",
-                Infra::AddressPool,
-            ),
-            (
-                "read unix @->/run/yulius/docker/docker.sock: read: connection reset by peer",
+                "read unix @->/run/yulius/docker/docker.sock: read: connection reset by peer"
+                    .to_owned(),
                 Infra::DockerSocket,
             ),
+            (SOCKET.to_owned(), Infra::DockerSocket),
             (
-                "Cannot connect to the Docker daemon at unix:///run/yulius/docker/docker.sock. Is the docker daemon running?",
+                "write unix @->/run/yulius/docker/docker.sock: write: broken pipe".to_owned(),
                 Infra::DockerSocket,
             ),
-            (
-                "write unix @->/run/yulius/docker/docker.sock: write: broken pipe",
-                Infra::DockerSocket,
-            ),
+            // A make or shell report after it reads as no test's failure.
+            (format!("{POOL}\nmake: *** [Makefile:4: up] Error 1"), Infra::AddressPool),
+            // Yulius's own lines are not the job's.
+            (format!("{POOL}\n[yulius] the job's own note"), Infra::AddressPool),
         ] {
-            assert_eq!(
-                infrastructure(exited, output, None, false),
-                Some(kind),
-                "{output}"
-            );
+            assert_eq!(infrastructure(exited, &output, false, false), Some(kind), "{output}");
         }
-        for output in [
-            "test person_lang::a_person_added_in_english ... FAILED",
-            "mounted /run/yulius/docker/docker.sock into the container",
-            "thread 'main' panicked at 'connection reset by peer' (no socket named)",
-        ] {
-            assert_eq!(
-                infrastructure(exited, output, None, false),
-                None,
-                "{output}"
-            );
-        }
-        assert_eq!(infrastructure(JobEnd::Signalled(9), "", None, false), None);
+        assert_eq!(infrastructure(JobEnd::Signalled(9), "", false, false), None);
         assert_eq!(
-            infrastructure(JobEnd::Exited(137), "Killed", None, true),
+            infrastructure(JobEnd::Exited(137), "Killed", false, true),
             Some(Infra::OutOfMemory)
         );
         assert_eq!(
-            infrastructure(JobEnd::Exited(1), "", None, true),
+            infrastructure(JobEnd::Exited(1), "", false, true),
             None,
             "not killed"
         );
         assert_eq!(
-            infrastructure(JobEnd::Lost, "", None, false),
+            infrastructure(JobEnd::Lost, "", false, false),
             Some(Infra::HostLost)
         );
-        // Review round 1: a Docker error the job went on from, then a test's failure, is the
-        // change's, in the output and in the failing tests' blocks.
-        let survived = format!(
-            "Cannot connect to the Docker daemon at unix:///var/run/docker.sock.\n{}test flaky ... FAILED",
-            "line\n".repeat(TAIL_LINES)
-        );
-        assert_eq!(infrastructure(exited, &survived, None, false), None);
-        let close = "Cannot connect to the Docker daemon at unix:///var/run/docker.sock.\n\
-                     test flaky ... FAILED";
-        assert_eq!(infrastructure(exited, close, None, false), None);
-        // A Docker error long before the end, then the job's own error with no test named: only
-        // the last lines count (mutation of the tail).
-        let early = format!(
-            "write unix @->/run/yulius/docker/docker.sock: write: broken pipe\n{}error[E0425]: \
-             cannot find value `x` in this scope",
-            "   Compiling crate\n".repeat(TAIL_LINES)
-        );
-        assert_eq!(infrastructure(exited, &early, None, false), None);
-        let blocks = "FAIL [   0.1s] (1/2) app tests::a\n  stderr\n  read unix @->/run/docker.sock: \
-                      read: connection reset by peer\n\nFAIL [   0.1s] (2/2) app tests::b\n  \
-                      assertion failed: left == right\n\n";
-        assert_eq!(infrastructure(exited, "", Some(blocks), false), None);
-        let both = "FAIL [   0.1s] (1/2) app tests::a\n  read unix @->/run/docker.sock: read: \
-                    connection reset by peer\n\nFAIL [   0.1s] (2/2) app tests::b\n  Error \
-                    response from daemon: all predefined address pools have been fully \
-                    subnetted\n\n";
-        assert_eq!(
-            infrastructure(exited, "", Some(both), false),
-            Some(Infra::DockerSocket)
-        );
-        for kind in Infra::ALL {
-            assert_eq!(Infra::parse(kind.as_str()), Some(kind));
+    }
+
+    /// SPEC-497 OFC-001, review rounds 1 and 2: a Docker error the job went on from, then its own
+    /// failure in any runner's words, is the change's; so is any job with a failing test kept,
+    /// whatever its message quotes; and words long before the end count for nothing.
+    #[test]
+    fn a_failure_of_the_change_is_never_the_infrastructures() {
+        let exited = JobEnd::Exited(1);
+        for after in [
+            "test flaky ... FAILED",
+            "--- FAIL: TestTotal (0.00s)",
+            "FAILED tests/test_x.py::test_total - assert 1 == 2",
+            "FAIL src/x.test.ts",
+            "not ok 3 - totals",
+            "        TIMEOUT [ 60.001s] app tests::slow",
+            "thread 'main' panicked at src/lib.rs:3:5:",
+            "AssertionError: expected 1",
+            "error[E0425]: cannot find value `x` in this scope",
+        ] {
+            for infra in [POOL, SOCKET] {
+                let output = format!("{infra}\n{after}");
+                assert_eq!(
+                    infrastructure(exited, &output, false, false),
+                    None,
+                    "{output}"
+                );
+            }
+        }
+        // A failing test kept: never, even when its message quotes Docker's words.
+        assert_eq!(infrastructure(exited, POOL, true, false), None);
+        // Words before the last lines: the job went on.
+        let early = format!("{SOCKET}\n{}", "   Compiling crate\n".repeat(TAIL_LINES));
+        assert_eq!(infrastructure(exited, &early, false, false), None);
+        // Words that say nothing ended.
+        for output in [
+            "mounted /run/yulius/docker/docker.sock into the container",
+            "thread 'main' stopped: 'connection reset by peer' (no socket named)",
+        ] {
+            assert_eq!(
+                infrastructure(exited, output, false, false),
+                None,
+                "{output}"
+            );
         }
     }
 }

@@ -94,10 +94,11 @@ sandboxes' agents built. Each sandbox's Docker engine had Docker's default pools
   own `subnet` in its compose file.
 - A sandbox running agents' Docker containers beside its CI counts them as CI's: its next job
   waits a little more. Containers of sandboxes running no CI job are not counted.
-- Jobs that arrive within one window (a run's jobs arrive together) add to the reading: what CI
-  holds is the larger of the reservations and the measured use plus the reservations admitted
-  after the reading. On a budget of 56, one job reserving 16 and measured at 40 lets two of five
-  8-CPU jobs start, not five (review round 3).
+- Jobs that arrive within one window (a run's jobs arrive together) are each checked against the
+  same reading, so the excess of jobs already running over their reservations is counted once,
+  not once per new job. [ADR-0353](0353-ci-jobs-start-by-what-ci-uses-within-a-bounded-worst-case.md)
+  amends this: what jobs started in the last minute may still bring counts on top of the
+  readings.
 - A project that declares `cpus` above half the budget runs one such job at a time: quartio-v2's
   `cpus = 30` twice is 60 of 56. It is told so (SPEC-497 slice E); 28 fits twice.
 - An engine restarted with networks made under Docker's old pools counts each of them as one of
