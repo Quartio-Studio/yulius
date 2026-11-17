@@ -1509,7 +1509,8 @@ mod tests {
     }
 
     /// SPEC-506 FST-002 (AC-2): a reviewer does not ask for changes because of CI alone, the
-    /// same everywhere the review is described and in the reviewer agents' prompt; the old
+    /// same everywhere the review is described, and the reviewer agents' prompt leaves it to
+    /// `om-code-review` (SPEC-507 SKR-006); the old
     /// wording that made any failed job a blocker is gone.
     #[test]
     fn every_place_says_ci_alone_is_no_request_for_changes() -> TestResult {
@@ -1555,11 +1556,12 @@ mod tests {
                 assert!(!text.contains(&normal(old)), "{rel} keeps {old:?}");
             }
         }
+        // The reviewer agents' prompt, which a session keeps across an update, sends the
+        // reviewer to `om-code-review` for the rule instead of saying it (SPEC-507 SKR-006).
         let prompt = normal(yulius_domain::review::REVIEWER_PROMPT);
         assert!(
-            prompt.contains("do not ask for changes because of ci alone")
-                && prompt.contains("a failure the change causes is a blocker"),
-            "the reviewer agents' prompt does not say the rule"
+            prompt.contains("load the skill `om-code-review`") && !prompt.contains(" ci "),
+            "the reviewer agents' prompt does not leave the rule to the skill"
         );
         Ok(())
     }
