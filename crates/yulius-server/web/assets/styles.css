@@ -3077,7 +3077,7 @@ a.update-text:hover { text-decoration: underline; text-underline-offset: 2px; }
 .pl-kpis { grid-template-columns: repeat(4, minmax(0, 1fr)); border-radius: var(--radius-sm); box-shadow: inset 0 0 0 1px var(--border); }
 .pl-dissolved { margin-top: 8px; font-size: var(--fs-sm); line-height: var(--lh-sm); color: var(--text-2); }
 .pl-dissolved summary { cursor: pointer; }
-.pl-dissolved ul { margin: 6px 0 0; padding-left: 18px; display: grid; gap: 4px; overflow-wrap: anywhere; }
+.pl-dissolved ul { margin: 6px 0 0; padding-left: 16px; display: grid; gap: 4px; overflow-wrap: anywhere; }
 .pl-chosen td { background: var(--accent-soft); }
 .pl-failed { color: var(--danger-fg); }
 .run-stages { padding-bottom: 8px; border-bottom: 1px solid var(--border); }

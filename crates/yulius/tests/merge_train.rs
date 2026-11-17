@@ -161,6 +161,9 @@ enum Project {
     Standard,
     /// `trunk` with merge commits, no changes log and one job that always passes.
     Minimal,
+    /// [`Project::Standard`] with a second job that runs only for changes under `never/`
+    /// (SPEC-497 MQW-001: a run that skipped it is no source for a candidate's verdict).
+    Paths,
 }
 
 struct Fixture {
@@ -207,7 +210,7 @@ async fn fixture_with(project: Project, lanes: Option<u32>) -> BoxResult<Fixture
     h.github.set_perm("alice", "acme/app", perms("write"));
     let sandbox = seed_sandbox(&h, "s1", "app", "u-alice").await?;
     let integration = match project {
-        Project::Standard => "dev",
+        Project::Standard | Project::Paths => "dev",
         Project::Minimal => {
             let mut profile = yulius_domain::delivery::DeliveryProfile::standard();
             profile.integration_branch = "trunk".into();
@@ -234,8 +237,16 @@ async fn fixture_with(project: Project, lanes: Option<u32>) -> BoxResult<Fixture
     )?;
     std::fs::write(work.join("README.md"), "# app\n")?;
     match project {
-        Project::Standard => {
-            std::fs::write(work.join("yulius.toml"), YULIUS_TOML)?;
+        Project::Standard | Project::Paths => {
+            let toml = if project == Project::Paths {
+                format!(
+                    "{YULIUS_TOML}\n[[ci.jobs]]\nname = \"never\"\ncommand = \"echo never\"\n\
+                     paths = [\"never/**\"]\n"
+                )
+            } else {
+                YULIUS_TOML.to_owned()
+            };
+            std::fs::write(work.join("yulius.toml"), toml)?;
             std::fs::write(work.join(".gitattributes"), "CHANGES.md merge=union\n")?;
             std::fs::write(work.join("CHANGES.md"), "# Changes\n\n- first\n")?;
             std::fs::write(work.join("shared.txt"), "base\n")?;
@@ -318,7 +329,7 @@ impl Fixture {
         for (path, text) in files {
             std::fs::write(worktree.join(path), text)?;
         }
-        if self.project == Project::Standard {
+        if self.project != Project::Minimal {
             std::fs::write(
                 worktree.join("CHANGES.md"),
                 format!("# Changes\n\n- entry {n}\n- first\n"),
@@ -933,9 +944,12 @@ async fn a_red_candidate_is_bisected_and_the_breaking_pull_request_told() -> Tes
     // #1 and #2 passed without it on the same base: #3 is told at once, with no candidate of its
     // own (SPEC-497 MQW-003).
     assert!(
-        outcome.contains("The merge you armed was dropped: pull request #3 passed its own run")
-            && outcome.contains("together with #1, #2 it fails (merge candidate run")
-            && outcome.contains("while #1, #2 passed without it on the same `dev`"),
+        outcome.contains(
+            "The merge you armed was dropped: pull request #3 merged into the current `dev` \
+             together with #1, #2 failed (merge candidate run"
+        ) && outcome.contains("and #1, #2 passed without it on the same `dev`")
+            && outcome.contains("its own run at")
+            && outcome.contains("passed."),
         "{outcome}"
     );
     assert_eq!(f.wait(3, &worktrees[2]).await?["merge_armed"], false);
@@ -1618,7 +1632,21 @@ async fn a_member_whose_own_run_is_cancelled_or_errors_stays_in_the_candidate() 
 /// run is made, and it merges once the member is idle.
 #[tokio::test]
 async fn a_candidate_formed_again_reuses_its_trees_passed_run() -> TestResult {
-    let f = fixture().await?;
+    formed_again(Project::Standard).await
+}
+
+/// SPEC-497 MQW-001 (review round 1): the first candidate's run skipped a job for its `paths`, so
+/// it is no source: the same candidate formed again gets a run of its own.
+#[tokio::test]
+async fn a_run_that_skipped_a_paths_job_is_no_source_for_a_candidate() -> TestResult {
+    formed_again(Project::Paths).await
+}
+
+/// The candidate of one pull request passes, waits too long for its busy member and is formed
+/// again; `reused`: whether the second takes the first's passed run.
+async fn formed_again(project: Project) -> TestResult {
+    let reused = project != Project::Paths;
+    let f = fixture_with(project, None).await?;
     let app = f.h.app.clone();
     let worktree = f.task(1, &[("f1.txt", "x\n")]).await?;
     f.arm(1, &worktree).await?;
@@ -1661,8 +1689,11 @@ async fn a_candidate_formed_again_reuses_its_trees_passed_run() -> TestResult {
             app.now(),
         )
         .await?;
-    f.decide_until(&app, || async { f.merged(&app, 1).await })
-        .await?;
+    f.decide_until(&app, || async {
+        f.settle(&app).await?;
+        f.merged(&app, 1).await
+    })
+    .await?;
     let trains = f.train_runs(&app).await?;
     assert_eq!(trains.len(), 2, "formed again: {trains:?}");
     let again = trains
@@ -1671,19 +1702,61 @@ async fn a_candidate_formed_again_reuses_its_trees_passed_run() -> TestResult {
         .ok_or("the second candidate")?;
     assert_eq!(again.state, RunState::Passed, "{again:?}");
     let jobs = app.deps.store.ci_jobs(&again.id, true).await?;
-    assert!(
-        !jobs.is_empty() && jobs.iter().all(|j| j.output.contains("not run again")),
-        "{jobs:?}"
-    );
+    let copied = !jobs.is_empty() && jobs.iter().all(|j| j.output.contains("not run again"));
+    assert_eq!(copied, reused, "{jobs:?}");
     let executed = f.executed(&app).await?;
     assert_eq!(
         executed
             .iter()
             .filter(|r| matches!(r.reference, CiRef::Train(_)))
             .count(),
-        1,
-        "no second candidate run executed"
+        if reused { 1 } else { 2 },
+        "candidate runs executed"
     );
+    Ok(())
+}
+
+/// SPEC-497 MQW-001, MQW-002 (review round 1): a member whose own run fails after its candidate
+/// passed is not merged on the candidate: it leaves with `member_failed`, its armed merge ends,
+/// and the other merges on a candidate formed again.
+#[tokio::test]
+async fn a_failed_own_run_beats_a_passed_candidate() -> TestResult {
+    let f = fixture().await?;
+    let app = f.h.app.clone();
+    let sandbox = app.deps.store.sandbox(&f.sandbox).await?.ok_or("s1")?;
+    let one = f.task(1, &[("a.txt", "x\n")]).await?;
+    let two = f.task(2, &[("b.txt", "x\n")]).await?;
+    app.ci_sync_sandbox(&sandbox).await?;
+    f.arm(1, &one).await?;
+    f.arm(2, &two).await?;
+    let held = hold_own_run(&f, &app, 2).await?;
+    f.advance_dev("other.txt")?;
+    app.ci_sync_sandbox(&sandbox).await?;
+    app.merge_armed(&f.sandbox).await;
+    let train = f
+        .train_runs(&app)
+        .await?
+        .into_iter()
+        .next()
+        .ok_or("no candidate")?;
+    assert_eq!(run_candidate(&f, &app, &train.id).await?, RunState::Passed);
+    assert!(!f.merged(&app, 1).await? && !f.merged(&app, 2).await?);
+    end_own_run(&app, &held, RunState::Failed).await?;
+    app.merge_armed(&f.sandbox).await;
+    assert!(!f.merged(&app, 2).await?, "merged on the candidate");
+    let gone = dissolved(&app).await?;
+    assert!(
+        gone.iter()
+            .any(|d| d.contains("#2's own run") && d.contains("(why: member_failed)")),
+        "{gone:?}"
+    );
+    f.decide_until(&app, || async {
+        app.ci_sync_sandbox(&sandbox).await?;
+        f.settle(&app).await?;
+        Ok(f.merged(&app, 1).await? && f.wait(2, &two).await?["merge_armed"] == false)
+    })
+    .await?;
+    assert!(!f.merged(&app, 2).await?);
     Ok(())
 }
 
@@ -1844,7 +1917,7 @@ async fn three_green_in_sequence(project: Project) -> TestResult {
     })
     .await?;
     let method = match project {
-        Project::Standard => "squash",
+        Project::Standard | Project::Paths => "squash",
         Project::Minimal => "merge",
     };
     assert_eq!(

@@ -115,8 +115,8 @@ struct Suspect {
     armed_at: i64,
     /// The base the red train was built on.
     base: String,
-    /// The members tested without it, in order.
-    others: Vec<u64>,
+    /// The members tested without it, in order, with the heads they were tested at.
+    others: Vec<(u64, String)>,
     /// The red train's run.
     run: String,
 }
@@ -125,7 +125,17 @@ impl Suspect {
     /// Whether `passed`, a train that passed, shows that this member breaks the combination: it
     /// is exactly the others, on the same base as the red train.
     fn proven_by(&self, passed: &Train) -> bool {
-        self.base == passed.base && self.others == numbers(&passed.members)
+        self.base == passed.base
+            && self.others
+                == passed
+                    .members
+                    .iter()
+                    .map(|m| (m.pr, m.head.clone()))
+                    .collect::<Vec<_>>()
+    }
+
+    fn other_numbers(&self) -> Vec<u64> {
+        self.others.iter().map(|(pr, _)| *pr).collect()
     }
 }
 
@@ -153,7 +163,7 @@ struct Train {
     /// The run passed and the members are being merged.
     #[serde(default)]
     merging: bool,
-    /// Since when a passed train waits (for GitHub or a member's own run).
+    /// Since when a passed train waits (for GitHub, a busy member or a run at a pushed head).
     #[serde(default)]
     waiting_since: Option<i64>,
     /// When it was formed (ms; 0 when unknown).
@@ -201,7 +211,8 @@ pub(crate) enum Hold {
 enum Step {
     /// The member merged; go on with the next.
     Merged,
-    /// Not yet (GitHub has not shown the head, the member's own run still runs): next pass.
+    /// Not yet (GitHub has not shown the head, or a run at the head pushed still runs): next
+    /// pass.
     Wait,
     /// The train is dissolved, for this reason.
     Stop(String),
@@ -403,19 +414,14 @@ impl App {
 
     /// Whether `sandbox`'s merge train has a run that is no longer queued or running: the next
     /// pass merges its members or dissolves it.
-    /// A train waiting for a member's own run within its bound has nothing to decide: the end of
-    /// that run starts a pass by itself.
+    /// A red train waiting for a member's own run within its bound has nothing to decide: the
+    /// end of that run starts a pass by itself.
     pub(crate) async fn train_run_ended(&self, sandbox: &SandboxRecord) -> bool {
         let Some(train) = self.read_trains(&sandbox.id).train else {
             return false;
         };
         if let Some((_, since)) = train.own_wait {
-            let until = if train.merging {
-                train.formed_at.saturating_add(TEST_LIMIT_MS)
-            } else {
-                since.saturating_add(WAIT_LIMIT_MS)
-            };
-            if self.now().0 <= until {
+            if self.now().0 <= since.saturating_add(WAIT_LIMIT_MS) {
                 return false;
             }
         }
@@ -616,21 +622,41 @@ impl App {
             ) {
                 continue;
             }
-            if let GateResult::Run(Some(RunState::Failed)) =
-                self.ci_gate_result(sandbox, &member.head).await
-            {
-                return Some(format!(
-                    "#{}'s own run at {} ended failed: it leaves the candidate",
-                    member.pr,
-                    short(&member.head),
-                ));
+            if let Some(reason) = self.own_run_failed(sandbox, member).await {
+                return Some(reason);
             }
         }
         None
     }
 
-    /// Whether member `index`'s own run at its armed head still goes: it merges only once that
-    /// run passed too (SPEC-493 MQC-001).
+    /// Why `member` leaves for its own run, if its own run failed: the run at its armed head now
+    /// (one its agent's clean merge of the integration branch moved, armed at the same time, or
+    /// one the train brought up to date and recorded its verdict at), else at the head it joined
+    /// with (SPEC-497 MQW-001, review round 1). Asked at each pass's start and before each
+    /// member's merge, so a failure that ends meanwhile is never merged on the candidate.
+    async fn own_run_failed(&self, sandbox: &SandboxRecord, member: &Member) -> Option<String> {
+        let head = TaskId::parse(&member.task)
+            .ok()
+            .and_then(|task| match self.armed_now(&task) {
+                ArmedNow::Armed(armed) if armed.armed_at == member.armed_at => Some(armed.head),
+                _ => None,
+            })
+            .unwrap_or_else(|| member.head.clone());
+        matches!(
+            self.ci_gate_result(sandbox, &head).await,
+            GateResult::Run(Some(RunState::Failed))
+        )
+        .then(|| {
+            format!(
+                "#{}'s own run at {} ended failed: it leaves the candidate",
+                member.pr,
+                short(&head),
+            )
+        })
+    }
+
+    /// Whether member `index`'s own run at its armed head still goes: a red candidate waits for
+    /// it before it is bisected, since it may say why (SPEC-493 MQC-002).
     async fn own_run_going(&self, sandbox: &SandboxRecord, train: &Train, index: usize) -> bool {
         matches!(
             self.ci_gate_result(sandbox, &train.members[index].head)
@@ -656,7 +682,10 @@ impl App {
                     head: last.head.clone(),
                     armed_at: last.armed_at,
                     base: train.base.clone(),
-                    others: numbers(&train.members[..half]),
+                    others: train.members[..half]
+                        .iter()
+                        .map(|m| (m.pr, m.head.clone()))
+                        .collect(),
                     run: train.run.clone(),
                 });
             }
@@ -697,9 +726,10 @@ impl App {
     }
 
     /// Ends the armed merge of `suspect`, the member a red train's bisection left out, once the
-    /// others passed without it on the same base (`passed`): their combination with it is what
-    /// fails, often a derived file (formatting, a generated list), and it is told now instead of
-    /// failing a candidate of its own on top of them (SPEC-497 MQW-003).
+    /// others passed without it on the same base (`passed`): it failed with them and they pass
+    /// without it, often a combination in a derived file (formatting, a generated list), and it is
+    /// told now instead of failing a candidate of its own on top of them (SPEC-497 MQW-003). The
+    /// message says what was seen, not why; an armed merge armed again since is kept.
     async fn tell_suspect(&self, sandbox: &SandboxRecord, suspect: &Suspect, passed: &Train) {
         let Ok(task) = TaskId::parse(&suspect.task) else {
             return;
@@ -707,37 +737,44 @@ impl App {
         let Some(deciding) = self.take_armed(&task) else {
             return;
         };
+        if deciding.merge.armed_at != suspect.armed_at {
+            let verdict = Verdict::Keep(deciding.merge.clone());
+            self.finish_armed(&task, &deciding, verdict).await;
+            return;
+        }
         let integration = delivery_profile(sandbox).integration_branch;
-        let verdict = if deciding.merge.armed_at == suspect.armed_at {
-            Verdict::Decided(format!(
-                "The merge you armed was dropped: pull request #{} passed its own run at {}, but \
-                 merged into the current `{integration}` together with {} it fails (merge \
-                 candidate run {}), while {} passed without it on the same `{integration}` (run \
-                 {}). Your change and theirs combine badly, often in a derived file (formatting, \
-                 a generated list). Read why with `ci_status`, merge `origin/{integration}` once \
-                 they merged, fix it test-first, get the review of the new head and call \
-                 `delivery_merge` again.",
-                suspect.pr,
-                short(&suspect.head),
-                listed(&suspect.others),
-                suspect.run,
-                listed(&suspect.others),
-                passed.run
-            ))
-        } else {
-            Verdict::Keep(deciding.merge.clone())
+        let own = match self.ci_gate_result(sandbox, &suspect.head).await {
+            GateResult::Run(Some(state)) => {
+                format!("its own run at {} {}", short(&suspect.head), {
+                    match state {
+                        RunState::Passed => "passed".to_owned(),
+                        RunState::Queued | RunState::Running => "still goes".to_owned(),
+                        other => format!("ended {}", other.as_str()),
+                    }
+                })
+            }
+            _ => format!("no own run at {} was read", short(&suspect.head)),
         };
+        let others = listed(&suspect.other_numbers());
+        let verdict = Verdict::Decided(format!(
+            "The merge you armed was dropped: pull request #{pr} merged into the current \
+             `{integration}` together with {others} failed (merge candidate run {red}), and \
+             {others} passed without it on the same `{integration}` (run {green}); {own}. Its \
+             change fails with theirs, often in a derived file (formatting, a generated list), \
+             or a test fails only there. Read why with `ci_status`, merge `origin/{integration}` \
+             once they merged, fix it test-first, get the review of the new head and call \
+             `delivery_merge` again.",
+            pr = suspect.pr,
+            red = suspect.run,
+            green = passed.run,
+        ));
         self.finish_armed(&task, &deciding, verdict).await;
         self.train_audit(
             sandbox,
             "delivery.train.combined",
             &format!(
-                "#{} breaks the combination with {} (run {} red, run {} passed without it): told \
-                 at once",
-                suspect.pr,
-                listed(&suspect.others),
-                suspect.run,
-                passed.run
+                "#{} failed with {others} (run {}), which passed without it (run {}): told at once",
+                suspect.pr, suspect.run, passed.run
             ),
         )
         .await;
@@ -855,8 +892,12 @@ impl App {
                 return None;
             }
             // Its own run may still go: the candidate's run tested the exact merged result, which
-            // is enough to merge (SPEC-497 MQW-002); an own run that failed meanwhile made the
-            // member leave at this pass's start.
+            // is enough to merge (SPEC-497 MQW-002); one that failed, at this pass's start or
+            // since, makes it leave (review round 1).
+            if let Some(reason) = self.own_run_failed(sandbox, &train.members[index]).await {
+                self.dissolve(sandbox, &train, &reason).await;
+                return None;
+            }
             train.own_wait = None;
             match self.train_step(sandbox, &train, index).await {
                 Step::Merged => train.waiting_since = None,
@@ -1372,7 +1413,7 @@ impl App {
                 return None;
             }
             // One whose own run passed or still goes (SPEC-493 MQC-001: the candidate's run goes
-            // beside it, and the member merges once both passed), behind its base.
+            // beside it; SPEC-497 MQW-002: it merges once the candidate passed), behind its base.
             let going = matches!(
                 checks,
                 GateResult::Run(Some(RunState::Queued | RunState::Running))
@@ -1617,7 +1658,9 @@ fn dissolved_why(reason: &str) -> yulius_domain::merge_queue::Dissolved {
     let has = |words: &[&str]| words.iter().any(|w| reason.contains(w));
     if has(&["too long"]) {
         Dissolved::TooLong
-    } else if has(&["ended failed: it leaves the candidate"]) {
+    } else if has(&["ended failed: it leaves the candidate"])
+        || (reason.starts_with("the own run of #") && reason.ends_with("ended failed"))
+    {
         Dissolved::MemberFailed
     } else if has(&[
         "leaves the candidate",
@@ -1694,7 +1737,7 @@ mod tests {
             head: "head-c".to_owned(),
             armed_at: 1,
             base: "base".to_owned(),
-            others: vec![11, 12],
+            others: vec![(11, "head-a".to_owned()), (12, "head-b".to_owned())],
             run: "red".to_owned(),
         };
         let mut passed = train();
@@ -1706,6 +1749,12 @@ mod tests {
         let mut fewer = passed.clone();
         fewer.members.truncate(1);
         assert!(!suspect.proven_by(&fewer), "#12 untested");
+        let mut rearmed = passed.clone();
+        rearmed.members[1].head = "head-b2".to_owned();
+        assert!(
+            !suspect.proven_by(&rearmed),
+            "#12 armed again with another head (review round 1)"
+        );
         let mut itself = passed;
         itself.members = vec![member("c", 13, "t3")];
         assert!(!suspect.proven_by(&itself), "it passed alone");
@@ -1739,6 +1788,10 @@ mod tests {
             ("#4 moved on", Dissolved::MemberLeft),
             (
                 "the own run of #2 at abc ended failed",
+                Dissolved::MemberFailed,
+            ),
+            (
+                "the own run of #2 at abc ended error",
                 Dissolved::MemberLeft,
             ),
         ] {
@@ -1830,7 +1883,7 @@ mod tests {
                 head: "head-c".to_owned(),
                 armed_at: 1,
                 base: "base".to_owned(),
-                others: vec![11, 12],
+                others: vec![(11, "head-a".to_owned()), (12, "head-b".to_owned())],
                 run: "red".to_owned(),
             }),
         };
