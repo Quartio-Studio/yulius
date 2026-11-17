@@ -166,7 +166,7 @@ export function mountTaskInfoView(ctx, sandbox, task) {
       // start (SPEC-482 FBK-009).
       ['Model', detail.model ? [modelLabel(detail.model), detail.model_default ? h('span', { class: 'muted' }, ' (default)') : null, detail.effort ? h('span', { class: 'muted' }, ` · ${(findEffort(detail.effort) || { name: detail.effort }).name} effort`) : null, detail.fallback_model ? h('span', { class: 'muted' }, ` · this session runs on ${modelLabel(detail.fallback_model)} (${modelLabel(detail.model)} was used up when it started)`) : null] : '—'],
       ['Answered by', m.models && m.models.length ? m.models.map((id) => modelLabel(id)).join(', ') : '—'],
-      ['Claude Code', detail.cli_version ? [detail.cli_version, detail.cli_moves_to ? h('span', { class: 'muted' }, detail.cli_moves_stopped ? ` · gets ${detail.cli_moves_to} at its next start` : ` · moves to ${detail.cli_moves_to} when its turn ends, or at its next start`) : null] : '—'],
+      [current.harness === 'codex' ? 'Codex' : 'Claude Code', detail.cli_version ? [detail.cli_version, detail.cli_moves_to ? h('span', { class: 'muted' }, detail.cli_moves_stopped ? ` · gets ${detail.cli_moves_to} at its next start` : ` · moves to ${detail.cli_moves_to} when its turn ends, or at its next start`) : null] : '—'],
       ['Turns', m.turns === null || m.turns === undefined ? '—' : int(m.turns)],
       ['Subscription switches', String(m.switches ?? (detail.switches || []).length ?? 0)],
       ['Branch', current.branch ? h('code', null, current.branch) : 'not created yet'],

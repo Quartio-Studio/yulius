@@ -85,10 +85,9 @@ const CLAUDE_TOKEN_MIN_BODY: usize = 20;
 /// Why a pasted token was not taken: its shape (never the token itself).
 const PASTED_TOKEN_SHAPE: &str = "the token must be what claude setup-token prints: \
      sk-ant-oat01- followed by letters, digits, - and _ (at most 512 characters)";
-/// Why a pasted token was not taken: Claude refused it.
 /// The refusal of a pasted token for a Codex subscription (SPEC-503 CDX-015).
 const PASTED_TOKEN_CLAUDE_ONLY: &str = "a pasted token is only for an anthropic (Claude) account";
-
+/// Why a pasted token was not taken: Claude refused it.
 const PASTED_TOKEN_REFUSED: &str = "Claude did not accept this token; make a new one with \
      claude setup-token and paste it again";
 
@@ -1150,8 +1149,11 @@ impl App {
         ctx: &AuthContext,
         mut req: CreateAccount,
     ) -> AppResult<AccountLoginStarted> {
-        // A pasted token is zeroed when it goes, whichever way this ends.
+        // A pasted token, an API key and an imported `auth.json` are zeroed when they go,
+        // whichever way this ends.
         let token = req.token.take().map(Zeroizing::new);
+        let api_key = req.api_key.take().map(Zeroizing::new);
+        let auth_json = req.auth_json.take().map(Zeroizing::new);
         self.require_instance_admin(ctx)?;
         let provider = Provider::parse(req.provider.trim()).map_err(|_| {
             AppError::Invalid("provider must be anthropic (Claude) or openai (Codex)".into())
@@ -1163,7 +1165,7 @@ impl App {
             if provider != Provider::Anthropic {
                 return Err(AppError::Invalid(PASTED_TOKEN_CLAUDE_ONLY.into()));
             }
-            if req.api_key.is_some() || req.auth_json.is_some() {
+            if api_key.is_some() || auth_json.is_some() {
                 return Err(AppError::Invalid(
                     "give either a token, an API key or an auth.json, not more than one".into(),
                 ));
@@ -1174,10 +1176,8 @@ impl App {
                 .await;
         }
         // An API key or an imported `auth.json` is a Codex account's credential at once: no
-        // sign-in runs (CDX-005, CDX-011). Both are zeroed when they go, whichever way this ends;
-        // one given empty is refused, never taken for a request without one (a device sign-in).
-        let api_key = req.api_key.take().map(Zeroizing::new);
-        let auth_json = req.auth_json.take().map(Zeroizing::new);
+        // sign-in runs (CDX-005, CDX-011). One given empty is refused, never taken for a request
+        // without one (a device sign-in).
         if api_key.as_ref().is_some_and(|k| k.trim().is_empty()) {
             return Err(AppError::Invalid("the API key is empty".into()));
         }
@@ -1692,11 +1692,11 @@ impl App {
             active.superseded.store(true, Ordering::SeqCst);
             active.request_cancel();
         }
-        let store = &self.deps.store;
-        store
-            .set_account_credential(&account.id, &sealed, AccountStatus::Ok, self.now())
-            .await?;
-        store
+        // Stored as a pasted token is, under the usage lock: a usage reading never writes back
+        // the state it read over the new sign-in.
+        self.store_sealed_credential(&account.id, &sealed).await?;
+        self.deps
+            .store
             .audit(
                 self.now(),
                 &actor(ctx),
@@ -2276,10 +2276,14 @@ impl App {
             Ending::Exited(exit) => exit.code,
             _ => None,
         };
-        let cancelled =
-            matches!(ending, Ending::Cancelled) || session.cancelled.load(Ordering::SeqCst);
-        // Replaced by an import, the sign-in's own credentials are dropped unread.
-        let credential = if session.superseded.load(Ordering::SeqCst) {
+        // Replaced by an import, the sign-in's own credentials are dropped unread, and it ends
+        // as cancelled even when it ended by itself as the import came: the import flags it
+        // before it cancels it, and its failure would be recorded on the imported sign-in.
+        let superseded = session.superseded.load(Ordering::SeqCst);
+        let cancelled = superseded
+            || matches!(ending, Ending::Cancelled)
+            || session.cancelled.load(Ordering::SeqCst);
+        let credential = if superseded {
             Err("the sign-in was replaced by an imported auth.json".to_owned())
         } else {
             self.take_credential(session)

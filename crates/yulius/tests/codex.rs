@@ -1520,6 +1520,87 @@ fn a_newer_refresh_is_kept_after_an_older_one_was_stored_first() -> TestResult {
     Ok(())
 }
 
+/// SPEC-503 CDX-006 (slice C2 review round 2): the swap was lost and what the account holds now
+/// cannot be told (a credential that does not open, as after a failed read): the run's file may
+/// be the only copy of rotated tokens, so it stays, as when the swap itself fails.
+#[test]
+fn a_refresh_stays_when_what_the_account_holds_cannot_be_read() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built")?;
+    let (_dir, data) = temp()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let app = build_full(&data, Some(&fake), FakeAgentOptions::default(), 8)?;
+        let (sandbox, user) = seed_records(&app).await?;
+        let account =
+            add_codex_account(&app, "a-codex", &codex_auth("2026-11-01T10:00:00Z")).await?;
+        seed_repo(&data, &sandbox)?;
+        let home = data
+            .join("sandboxes")
+            .join(sandbox.as_str())
+            .join("codex")
+            .join(account.as_str());
+        let id = new_codex_task(&app, &sandbox, &user, "Codex unread").await?;
+        wait_for("the banner", Duration::from_secs(30), || {
+            screen_contains(&app, &id, "FAKE-AGENT READY")
+        })
+        .await?;
+        let newer = codex_auth(&ago(60_000));
+        std::fs::write(home.join("auth.json"), &newer)?;
+        let (reached_tx, reached_rx) = std::sync::mpsc::channel();
+        let (go_tx, go_rx) = std::sync::mpsc::channel::<()>();
+        yulius_app::race::on(
+            yulius_app::race::Point::CodexRefreshTaken,
+            Path::new(account.as_str()),
+            move || {
+                let _ = reached_tx.send(());
+                let _ = go_rx.recv_timeout(Duration::from_secs(60));
+            },
+        );
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        yulius_app::race::on(
+            yulius_app::race::Point::CodexWriteBackDone,
+            Path::new(id.as_str()),
+            move || {
+                let _ = done_tx.send(());
+            },
+        );
+        app.send_input(&id, b"/exit\r").await?;
+        tokio::task::spawn_blocking(move || reached_rx.recv_timeout(Duration::from_secs(30)))
+            .await??;
+        // Right then the account holds a credential this server cannot open.
+        let previous = app
+            .deps
+            .store
+            .account(&account)
+            .await?
+            .and_then(|a| a.credential)
+            .ok_or("no credential")?;
+        // Sealed in the right format, but its last byte altered: it does not open.
+        let mut unreadable = app.deps.crypto.seal(codex_auth(&ago(1_000)).as_bytes())?;
+        if let Some(last) = unreadable.0.last_mut() {
+            *last ^= 0xff;
+        }
+        assert!(app.deps.crypto.open(&unreadable).is_err());
+        assert!(
+            app.deps
+                .store
+                .refresh_account_credential(&account, &previous, &unreadable, app.now())
+                .await?
+        );
+        let _ = go_tx.send(());
+        tokio::task::spawn_blocking(move || done_rx.recv_timeout(Duration::from_secs(30)))
+            .await??;
+        assert_eq!(
+            std::fs::read_to_string(home.join("auth.json"))?,
+            newer,
+            "the refresh that could not be stored is not left as it was"
+        );
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
 /// SPEC-503 CDX-006 (slice C1 review round 3): a server that stopped between a run's end and the
 /// removal of its `auth.json` left the file in the sandbox; the next start's reconciliation keeps
 /// a genuine refresh in it and removes it, since no run of the subscription is left there.

@@ -422,7 +422,7 @@ function createApp(root, transport) {
     setErrorAction((error) => {
       if (!error || error.code !== ACCOUNT_REQUIRED) return null;
       refreshMe();
-      return connectAction(store.state.me, navigate);
+      return connectAction(store.state.me, navigate, error);
     });
     const onShown = () => { if (!document.hidden) refreshMe(); };
     document.addEventListener('visibilitychange', onShown);
