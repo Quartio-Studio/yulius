@@ -564,9 +564,11 @@ impl App {
         }
     }
 
-    /// Why a member leaves `train` (SPEC-493 MQC-002): its own run at the head it was armed with
-    /// ended failed, errored or cancelled. A merged member, and one whose own run passed or still
-    /// goes, stays.
+    /// Why a member leaves `train` (SPEC-493 MQC-002, SPEC-497 MQW-001): its own run at the head
+    /// it was armed with failed, its change's verdict. An errored or cancelled own run says
+    /// nothing about the change (the infrastructure twice, a time limit, the head brought up to
+    /// date): the candidate's run, which tests its exact merged result, still decides it. A
+    /// merged member stays.
     async fn member_left(&self, sandbox: &SandboxRecord, train: &Train) -> Option<String> {
         for member in &train.members {
             let Ok(task) = TaskId::parse(&member.task) else {
@@ -578,17 +580,13 @@ impl App {
             ) {
                 continue;
             }
-            if let GateResult::Run(Some(state)) = self.ci_gate_result(sandbox, &member.head).await
-                && matches!(
-                    state,
-                    RunState::Failed | RunState::Error | RunState::Cancelled
-                )
+            if let GateResult::Run(Some(RunState::Failed)) =
+                self.ci_gate_result(sandbox, &member.head).await
             {
                 return Some(format!(
-                    "#{}'s own run at {} ended {}: it leaves the candidate",
+                    "#{}'s own run at {} ended failed: it leaves the candidate",
                     member.pr,
                     short(&member.head),
-                    state.as_str()
                 ));
             }
         }
@@ -759,22 +757,9 @@ impl App {
                 self.dissolve(sandbox, &train, &reason).await;
                 return None;
             }
-            // Its own run still goes: the train waits for it, within the time a candidate's own
-            // run may take, not the time GitHub may take to show a head.
-            if self.own_run_going(sandbox, &train, index).await {
-                if train.formed_at > 0 && self.now().0 - train.formed_at > TEST_LIMIT_MS {
-                    // Held back until armed again: the others form a candidate without it, and
-                    // it goes one by one once its own run passed.
-                    let member = &train.members[index];
-                    state.held_back.push((member.task.clone(), member.armed_at));
-                    let reason = format!("#{}'s own run took too long", member.pr);
-                    self.dissolve(sandbox, &train, &reason).await;
-                    return None;
-                }
-                let since = train.own_wait.map_or(self.now().0, |(_, since)| since);
-                train.own_wait = Some((train.members[index].pr, since));
-                return Some(train);
-            }
+            // Its own run may still go: the candidate's run tested the exact merged result, which
+            // is enough to merge (SPEC-497 MQW-002); an own run that failed meanwhile made the
+            // member leave at this pass's start.
             train.own_wait = None;
             match self.train_step(sandbox, &train, index).await {
                 Step::Merged => train.waiting_since = None,
@@ -1411,17 +1396,29 @@ impl App {
                     .min()
             })
             .map_or_else(|| self.now(), |first| Timestamp(first - 1));
-        let run = match self
-            .ci_queue_placed(
-                sandbox,
-                CiRef::Train(prs.clone()),
-                &built.head,
-                &gate,
-                "yulius",
-                place,
-            )
+        // The same tree passed before (the same members formed again on the same base, after a
+        // dissolve that said nothing about them): its verdict is taken, no run is made
+        // (SPEC-497 MQW-001).
+        let reused = self
+            .ci_reuse_for_candidate(sandbox, CiRef::Train(prs.clone()), &built.head, &gate)
             .await
-        {
+            .ok()
+            .flatten();
+        let queued = match reused {
+            Some(run) => Ok(run),
+            None => {
+                self.ci_queue_placed(
+                    sandbox,
+                    CiRef::Train(prs.clone()),
+                    &built.head,
+                    &gate,
+                    "yulius",
+                    place,
+                )
+                .await
+            }
+        };
+        let run = match queued {
             Ok(run) => run,
             Err(err) => {
                 tracing::warn!(sandbox = %sandbox.slug, error = %err, "a merge train's run could not be queued");
