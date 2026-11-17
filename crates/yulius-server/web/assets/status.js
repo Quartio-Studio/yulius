@@ -65,7 +65,7 @@ export function endedMessage(status, cause, harness) {
   }
   const message = ENDED_MESSAGES[status] || { tone: 'info', text: `The agent's session ended. ${SAFE}` };
   // A Codex task's messages name Codex (SPEC-503 CDX-013).
-  return harness === 'codex' ? { ...message, text: message.text.replace('Claude Code', 'Codex').replace('Claude', 'Codex') } : message;
+  return harness === 'codex' ? { ...message, text: message.text.replaceAll('Claude Code', 'Codex').replaceAll('Claude', 'Codex') } : message;
 }
 
 /** True while a task has (or is about to have) a running session. */

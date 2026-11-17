@@ -174,6 +174,9 @@ const SIGN_IN_RUNNING = 'Finish Claude’s sign-in in the terminal below: open t
  * The auth.json of a `codex login` made elsewhere (SPEC-503 CDX-011), pasted or read from a file.
  * A chosen file is kept here, never shown; the text is sent once and cleared.
  */
+/** The largest auth.json the server takes (`CODEX_AUTH_MAX_BYTES`). */
+const AUTH_JSON_MAX = 1024 * 1024;
+
 function authJsonInput() {
   let loaded = '';
   // A chosen file is read before the dialog's button sends it.
@@ -183,10 +186,21 @@ function authJsonInput() {
   const picker = h('input', { type: 'file', accept: '.json,application/json', class: 'auth-json-file', 'aria-label': 'auth.json file', onChange: () => {
     const file = picker.files && picker.files[0];
     picker.value = '';
+    loaded = '';
+    // The server takes at most 1 MiB; an auth.json is a few KB. A file that cannot be read says
+    // so and leaves nothing loaded, so a pasted text still works.
+    if (file && file.size > AUTH_JSON_MAX) {
+      reading = Promise.resolve();
+      chosen.textContent = `${file.name} is too large for an auth.json.`;
+      return;
+    }
     reading = (file ? file.text() : Promise.resolve('')).then((content) => {
       loaded = content;
       text.value = '';
       chosen.textContent = file ? `${file.name} is loaded.` : '';
+    }, () => {
+      loaded = '';
+      chosen.textContent = file ? `${file.name} could not be read.` : '';
     });
   } });
   text.addEventListener('input', () => { if (text.value) { loaded = ''; chosen.textContent = ''; } });
@@ -270,7 +284,7 @@ export function openLoginTerminal(ctx, { loginId, account, onFinish }) {
     if (!now || !now.email) now = (await update.promise) || now;
     update.stop();
     const email = now && now.email && !now.email_typed ? ` as ${now.email}` : '';
-    toast(`${account.label} is connected${email}. Tasks can use it now.`, { kind: 'ok', timeout: 8000 });
+    toast(`${account.label} is connected${email}. ${codex ? 'Codex tasks' : 'Tasks'} can use it now.`, { kind: 'ok', timeout: 8000 });
   }
 
   /** Cancels sign-in `id` and says how it ended, from the server's answer (LGN-006). */
@@ -522,7 +536,15 @@ export function mountAccountsPage(ctx, route) {
   const queued = [];
   let reading = 0;
   let readingAll = false;
-  const NO_NEW_READING = 'Claude gave no new usage reading: it shares this subscription’s usage only with its running tasks.';
+  /** What the card says when a reading asked for came back without one (SPEC-473, SPEC-503). */
+  const noNewReading = (account) => (account && account.provider === 'openai'
+    ? 'Codex gives no usage reading for an API key: its usage comes from its running tasks.'
+    : 'Claude gave no new usage reading: it shares this subscription’s usage only with its running tasks.');
+  /** Who gave no reading: Claude, Codex, or both kinds among `accounts`. */
+  const giver = (accounts) => {
+    const kinds = new Set(accounts.map((a) => (a && a.provider === 'openai' ? 'Codex' : 'Claude')));
+    return kinds.size === 1 ? [...kinds][0] : 'The providers';
+  };
   /** Draws again what the card of `id` says about its reading (the card asks the queue). */
   const redraw = (id) => {
     const card = [...host.querySelectorAll('[data-account]')].find((el) => el.dataset.account === id);
@@ -560,7 +582,7 @@ export function mountAccountsPage(ctx, route) {
           // What a person asked for is said on the card for the visit; the page's own reading
           // of an old card says nothing.
           if (asked && outcome.error) notes.set(id, outcome.error.message);
-          else if (asked && unread) notes.set(id, NO_NEW_READING);
+          else if (asked && unread) notes.set(id, noNewReading(account));
           else if (outcome.fresh) notes.delete(id);
           outcome.unread = unread;
           redraw(id);
@@ -593,7 +615,7 @@ export function mountAccountsPage(ctx, route) {
       errorToast(outcome.error, `Couldn’t refresh ${name}`);
       // The card is drawn from what the server has now: the list is read again.
       refresh();
-    } else if (outcome.unread) toast(`Claude gave no new usage reading for ${name}.`);
+    } else if (outcome.unread) toast(`${giver([shown.get(account.id) || account])} gave no new usage reading for ${name}.`);
     else toast(`Usage of ${name} read again.`, { kind: 'ok' });
     loadCapacity();
   };
@@ -616,8 +638,8 @@ export function mountAccountsPage(ctx, route) {
       refresh();
     } else if (readAgain === all) toast(`Usage read again for ${all} ${subscriptions}.`, { kind: 'ok' });
     // Those Claude gave no reading for are not counted as read again; their cards say so.
-    else if (readAgain === 0) toast('Claude gave no new usage reading: each card says so.');
-    else toast(`Usage read again for ${readAgain} of ${all} ${subscriptions}: Claude gave no new reading for the rest.`);
+    else if (readAgain === 0) toast(`${giver(accounts)} gave no new usage reading: each card says so.`);
+    else toast(`Usage read again for ${readAgain} of ${all} ${subscriptions}: ${giver(accounts.filter((_, i) => !(outcomes[i].fresh && !outcomes[i].unread)))} gave no new reading for the rest.`);
     loadCapacity();
   }
 
@@ -704,14 +726,14 @@ export function mountAccountsPage(ctx, route) {
   // sign-in in a terminal here (the default), or a token made with `claude setup-token` on any
   // computer. Codex: ChatGPT's device sign-in in a terminal here (the default), the auth.json of a
   // `codex login` made elsewhere, or an OpenAI API key; the last two need no sign-in here.
-  function add() {
+  function add(initial = 'anthropic') {
     const label = h('input', { class: 'input', placeholder: 'Claude #3', maxlength: 80, autofocus: true });
     const token = tokenField();
     const importer = authJsonInput();
     const apiKey = h('input', { class: 'input mono', type: 'password', autocomplete: 'off', autocapitalize: 'off', spellcheck: 'false', placeholder: 'sk-…' });
     const keyField = field('OpenAI API key', apiKey, 'Stored encrypted and never shown again. Usage windows come from the tasks that run on it.');
-    let provider = 'anthropic';
-    const radio = (name, value, text, onPick) => h('label', null, h('input', { type: 'radio', name, value, checked: value === 'anthropic' || value === 'here', onChange: () => onPick(value) }), text);
+    let provider = initial;
+    const radio = (name, value, text, onPick) => h('label', null, h('input', { type: 'radio', name, value, checked: value === initial || value === 'here', onChange: () => onPick(value) }), text);
     const ways = (name, choices) => h('div', { class: 'seg', role: 'radiogroup', 'aria-label': 'How to connect it' }, choices.map(([value, text]) => radio(name, value, text, () => show())));
     const claudeWays = ways('add-subscription-way', [['here', 'Sign in here'], ['paste', 'Paste token']]);
     const codexWays = ways('add-subscription-codex-way', [['here', 'ChatGPT sign-in'], ['import', 'Import auth.json'], ['api_key', 'API key']]);
@@ -722,9 +744,10 @@ export function mountAccountsPage(ctx, route) {
     const modal = openModal({
       title: 'Add a Claude subscription',
       body: h('div', { class: 'stack' },
+        // The name first, where the dialog's focus starts; then the agent and its way in.
+        field('Name', label, 'Shown on usage bars and in task details; you can rename it later.'),
         // A group of radios is named by its own label, never wrapped in a <label>.
         h('div', { class: 'field' }, h('span', { class: 'field-label', 'aria-hidden': 'true' }, 'Agent'), agents),
-        field('Name', label, 'Shown on usage bars and in task details; you can rename it later.'),
         claudeWays, codexWays, note, token.el, keyField, importer.node),
     });
     const named = () => label.value.trim() || invalid(label, 'Give the subscription a name.');
@@ -824,9 +847,11 @@ export function mountAccountsPage(ctx, route) {
     for (const { done } of queued.splice(0)) done({});
     off();
   };
-  // Settings → "Add subscription" lands here with ?add=1: open the dialog right away.
-  if (route && route.query && route.query.get('add') === '1') {
-    setTimeout(add, 0);
+  // Settings → "Add subscription" lands here with ?add=1 (?add=codex for a Codex one, SPEC-503):
+  // open the dialog right away.
+  const adding = route && route.query ? route.query.get('add') : null;
+  if (adding === '1' || adding === 'codex') {
+    setTimeout(() => add(adding === 'codex' ? 'openai' : 'anthropic'), 0);
     ctx.navigate('/admin/accounts', { replace: true });
   }
   return { el: frame.el, key: 'admin:accounts', destroy };

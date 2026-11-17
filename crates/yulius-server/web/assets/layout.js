@@ -456,7 +456,9 @@ export function renderStatus(data) {
   // go on with that (SPEC-482; the default model has none, SPEC-493). Judged at the pool's
   // threshold, as the server and the Capacity panel do, so it is also said before every window
   // reads used up.
-  const placed = accounts.length ? placingModel(accounts, REVIEW_MODEL) : REVIEW_MODEL;
+  // Judged over the Claude subscriptions alone: a Codex one runs no Claude model (SPEC-503).
+  const claude = accounts.filter((a) => (a.provider || 'anthropic') === 'anthropic');
+  const placed = claude.length ? placingModel(claude, REVIEW_MODEL) : REVIEW_MODEL;
   if (placed !== REVIEW_MODEL) health = { tone: 'warn', icon: 'clock', text: fallbackLine(REVIEW_MODEL, placed) };
   if (troubled.length) health = { tone: 'warn', icon: 'warn', text: `${troubled.length} ${troubled.length === 1 ? 'subscription needs' : 'subscriptions need'} attention` };
 
@@ -772,7 +774,7 @@ export function accountUsage(account, { foldable = false, open = false, rename =
       // The email is for administrators (UI-022); others see the provider as before.
       !showEmail ? h('span', { class: 'account-sub' }, provider)
         : setEmail && !foldable ? editableEmail(account, setEmail)
-          : h('span', { class: ['account-sub', account.email ? null : 'account-email-unknown'], title: account.email ? `${provider} account` : 'Shown after the subscription’s next sign-in, when Claude shares it' }, accountEmail(account.email))),
+          : h('span', { class: ['account-sub', account.email ? null : 'account-email-unknown'], title: account.email ? `${provider} account` : `Shown after the subscription’s next sign-in, when ${provider} shares it` }, accountEmail(account.email))),
     stateHost,
     glanceHost,
     foldable ? icon('down', { size: 14 }) : null,

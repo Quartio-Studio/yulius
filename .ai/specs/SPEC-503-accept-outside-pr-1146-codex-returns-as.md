@@ -605,4 +605,49 @@ Five pull requests, each merged into `dev` on green before the next begins.
     key…".
   - `cargo nextest` over `codex`, `accounts`, `account_token`, `account_usage` and
     `claude_gate`: 71 passed after the round-2 fixes.
+- **Review round 1** (Fable 5.2, on `23098540e`) requested changes. All findings are fixed; each
+  new test was seen failing first (or failing under a mutation), and the e2e cases are in
+  `codex.e2e.ts`:
+  - Majors:
+    - the dialog's Codex ChatGPT sign-in was held by no test. The mock's sign-in terminal now
+      speaks Codex for an `openai` account (the device code, the server's `harness: codex`),
+      and the toast names Codex tasks ("…signs in with ChatGPT in the login terminal": the
+      terminal said "Claude Code login");
+    - the composer's Connect Claude step left out while a Codex account is usable was held by
+      no test ("…asks for Claude only while no Codex account is usable either"; with the
+      condition undone, it fails). A Codex start refused for want of a Codex account now offers
+      "Connect Codex", which opens the dialog on Codex (`?add=codex`; it offered Connect
+      Claude).
+  - Minors:
+    - Refresh of an API-key Codex subscription said Claude gave no reading. It now names Codex,
+      on the card and in the toast, and the mock answers `usage_read: false` for it, as the
+      server does.
+    - The Status line judged Fable over Codex subscriptions too. It now judges the Claude ones
+      alone: a usable Codex subscription hid that Claude was out of Fable.
+    - Other wording that now names Codex for a Codex subscription or task:
+      - a Codex card's reported limit and its unknown email's title;
+      - a Codex task's drop overlay and its details' CLI row (with either undone, the test fails);
+      - the ended messages, which now replace every occurrence.
+    - A split proposal refused for want of a Claude account leaves a Codex request one Codex
+      task ("a mixed Codex request with only Codex usable…": it was refused). This line of
+      dev's became reachable when Codex returned.
+    - SPEC-002's ADR-05 and ADR-06 rows point at ADR-0355.
+    - Mock fidelity:
+      - Run now of a Codex automation creates a Codex task (red first);
+      - the import refusals follow the server's order and words ("hold neither an API key nor
+        sign-in tokens", "empty or too large").
+  - Nits:
+    - a file that cannot be read, or is over the server's 1 MiB, says so and leaves nothing
+      loaded;
+    - the dialog's focus starts on the name, with the agent after it;
+    - the e2e temp dir is removed;
+    - Settings and Tasks describe both agents.
+  - Not changed, answered in words: a pasted `auth.json` stays visible in its field, like the
+    contribution had it. It is a person's own file on their own screen. Masking a textarea of
+    JSON would hide the mistakes the server's refusal names, and the field is cleared once the
+    file is sent.
+  - Checks:
+    - the whole e2e suite: 1085 passed, 1 skipped;
+    - `codex.e2e.ts` 13 passed and `claude-connect.e2e.ts` 7 passed;
+    - `ui_contract` and `claude_updates`: 33 passed.
 

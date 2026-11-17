@@ -7,6 +7,8 @@ import { href } from './router.js';
 
 /** Where an instance administrator connects a Claude account (Subscriptions, its sign-in open). */
 export const CONNECT_PATH = '/admin/accounts?add=1';
+/** Where an instance administrator connects a Codex account (the Add dialog on Codex, SPEC-503). */
+export const CONNECT_CODEX_PATH = '/admin/accounts?add=codex';
 
 /** The server's error code for an agent start refused without a usable account (CLA-002). */
 export const ACCOUNT_REQUIRED = 'claude_account_required';
@@ -39,7 +41,14 @@ export function connectClaudeStep(me, what = 'Tasks and onboarding start once on
     isAdmin(me) ? h('a', { class: 'btn btn-sm btn-primary', href: href(CONNECT_PATH), dataset: { route: CONNECT_PATH } }, 'Connect Claude') : null);
 }
 
-/** The toast action for a refused start (CLA-007): Connect Claude, for those who can. */
-export function connectAction(me, navigate) {
-  return isAdmin(me) ? { label: 'Connect Claude', run: () => navigate(CONNECT_PATH) } : null;
+/**
+ * The toast action for a refused start (CLA-007): Connect Claude, for those who can, or Connect
+ * Codex when the refusal was for want of a Codex account (SPEC-503).
+ */
+export function connectAction(me, navigate, error) {
+  if (!isAdmin(me)) return null;
+  const codex = /\bCodex account\b/.test((error && error.message) || '');
+  return codex
+    ? { label: 'Connect Codex', run: () => navigate(CONNECT_CODEX_PATH) }
+    : { label: 'Connect Claude', run: () => navigate(CONNECT_PATH) };
 }

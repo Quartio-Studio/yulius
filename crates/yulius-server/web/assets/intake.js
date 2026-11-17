@@ -51,8 +51,10 @@ function preview(prompt) {
  * Claude prepares the proposal the rows shimmer and Keep as one task already works; without a
  * usable proposal the card calls `keep()` by itself (one task, as asked).
  * `create(list, chain)` creates the tasks; `keep()` the original one; `close()` withdraws.
+ * `codex`: the task runs Codex, which needs no Claude account (SPEC-503): a proposal refused for
+ * want of one leaves it one task.
  */
-export function splitCard(ctx, sandbox, prompt, { create, keep, close }) {
+export function splitCard(ctx, sandbox, prompt, { create, keep, close, codex = false }) {
   const controller = new AbortController();
   const el = h('section', { class: 'split-card', 'aria-label': 'Split proposal', role: 'region' });
   let done = false;
@@ -78,7 +80,8 @@ export function splitCard(ctx, sandbox, prompt, { create, keep, close }) {
     } catch (error) {
       if (error && error.code === 'aborted') return;
       // No Claude account to propose with, nor to run the task (SPEC-246): said, the prompt kept.
-      if (error && error.code === ACCOUNT_REQUIRED) {
+      // A Codex task runs without one, so it is created as one task, unsplit (SPEC-503).
+      if (error && error.code === ACCOUNT_REQUIRED && !codex) {
         if (!done) { errorToast(error, 'Couldn’t start the task'); finish(close); }
         return;
       }

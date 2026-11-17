@@ -228,8 +228,9 @@ export function mountTaskView(ctx, sandbox, task) {
         open: (file) => ctx.openFile && ctx.openFile(sandbox, { root: `task:${task.id}`, ...file }),
       } : null,
     });
-    // Files dropped (or an image pasted) here reach Claude by path, as in a local terminal (UI-048).
-    attachTerminalDrop(ctx, view, { label: 'Drop to send to Claude', upload: taskAttachments(ctx, task.id) });
+    // Files dropped (or an image pasted) here reach the agent by path, as in a local terminal
+    // (UI-048); a Codex task's is Codex (SPEC-503).
+    attachTerminalDrop(ctx, view, { label: `Drop to send to ${agentOf(task)}`, upload: taskAttachments(ctx, task.id) });
     return view;
   };
   const makeWatch = () => createWatchView(ctx, {
@@ -1787,6 +1788,7 @@ export function mountComposer(ctx, sandbox) {
       }),
       keep: () => busyRun(autoStage(), async () => opened(await createTask(bodyFor(value)))),
       close: () => clearSplit(),
+      codex: bodyFor(value).harness === 'codex',
     });
     setChildren(intakeSlot, split.el);
     const calm = window.matchMedia('(prefers-reduced-motion: reduce)').matches;

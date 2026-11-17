@@ -68,10 +68,10 @@ export function limitInEffect(usage, now = Date.now()) {
   return Boolean(usage.limit_reached) && !(ends !== null && ends <= now);
 }
 
-/** "resets at 5:50 PM", or that Claude named no reset. */
-function when(iso, now) {
+/** "resets at 5:50 PM", or that `agent` (Claude, or Codex for a Codex subscription) named no reset. */
+function when(iso, now, agent = 'Claude') {
   const label = iso ? resetLabel(iso, now) : '';
-  return label ? `${label[0].toLowerCase()}${label.slice(1)}` : 'Claude did not say when it resets';
+  return label ? `${label[0].toLowerCase()}${label.slice(1)}` : `${agent} did not say when it resets`;
 }
 
 /** The pool places no task on a subscription at this many percent of a window that binds it. */
@@ -115,9 +115,11 @@ export function limitsNow(account, now = Date.now()) {
   const ofSubscription = full.some((w) => w.key === 'primary' || w.key === 'secondary');
   const reported = limitInEffect(usage, now);
   const limited = reported || ofSubscription || full.some((w) => w.window === own);
-  const lines = full.map((w) => ({ key: w.key, text: `${w.name} used up · ${when(w.window.resets_at, now)}` }));
+  // A Codex subscription's limits are Codex's words (SPEC-503 CDX-013).
+  const agent = account.provider === 'openai' ? 'Codex' : 'Claude';
+  const lines = full.map((w) => ({ key: w.key, text: `${w.name} used up · ${when(w.window.resets_at, now, agent)}` }));
   if (reported && !ofSubscription) {
-    lines.push({ key: 'reported', text: usage.limit_resets_at ? `Claude reported a usage limit · ${when(usage.limit_resets_at, now)}` : 'Claude reported a usage limit without saying when it resets' });
+    lines.push({ key: 'reported', text: usage.limit_resets_at ? `${agent} reported a usage limit · ${when(usage.limit_resets_at, now, agent)}` : `${agent} reported a usage limit without saying when it resets` });
   }
   const read = at(usage.observed_at);
   const settled = !needsSignIn(account);

@@ -1,4 +1,4 @@
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from '@e2e-dev/web';
@@ -41,6 +41,11 @@ test('a Codex subscription is added with an OpenAI API key, without a sign-in', 
   await expect(browser.locator('main .card:has-text("Codex key")')).toBeVisible();
   const added = await browser.evaluate(() => (window as unknown as Mocked).__yuliusMock.accounts.find((a) => a.label === 'Codex key'));
   expect(added).toMatchObject({ provider: 'openai', status: 'ok' });
+  // An API key has no usage windows (SPEC-503 CDX-008): Refresh says so in Codex's name.
+  await screen.getByRole('button', 'Refresh usage of Codex key').click();
+  await expect(browser.locator('.toast .toast-msg:has-text("usage reading for Codex key")')).toHaveText('Codex gave no new usage reading for Codex key.');
+  await expect(browser.locator('main .account-card:has-text("Codex key")')).toContainText('Codex gives no usage reading for an API key: its usage comes from its running tasks.');
+  await expect(browser.locator('main .account-card:has-text("Codex key")')).not.toContainText('Claude');
 });
 
 // A ChatGPT auth.json as `codex login` writes it (synthetic).
@@ -63,6 +68,10 @@ test('a Codex subscription is added by importing an auth.json, pasted or from a 
   await add.getByRole('textbox', 'auth.json').fill('{"auth_mode":"apikey","OPENAI_API_KEY":"sk-SYNTHETIC0123456789abcdef"}');
   await add.getByRole('button', 'Connect').click();
   await expect(add.getByText(/not a ChatGPT sign-in/)).toBeVisible();
+  // A file without sign-in tokens is said as the server says it (SPEC-503 CDX-011).
+  await add.getByRole('textbox', 'auth.json').fill('{"auth_mode":"chatgpt","tokens":{}}');
+  await add.getByRole('button', 'Connect').click();
+  await expect(add.getByText(/hold neither an API key nor sign-in tokens/)).toBeVisible();
   await add.getByRole('textbox', 'auth.json').fill(AUTH_JSON);
   await add.getByRole('button', 'Connect').click();
   await expect(add).toBeHidden();
@@ -75,9 +84,14 @@ test('a Codex subscription is added by importing an auth.json, pasted or from a 
   // Signed in again on the laptop: the card imports the new file, chosen from disk.
   await browser.locator('main .card:has-text("Codex laptop")').getByRole('button', { name: 'Import auth.json' }).click();
   const reimport = screen.getByRole('dialog', 'Import an auth.json · Codex laptop');
-  const file = join(mkdtempSync(join(tmpdir(), 'codex-auth-')), 'auth.json');
+  const dir = mkdtempSync(join(tmpdir(), 'codex-auth-'));
+  const file = join(dir, 'auth.json');
   writeFileSync(file, AUTH_JSON);
-  await browser.locator('dialog.modal input.auth-json-file').setInputFiles(file);
+  try {
+    await browser.locator('dialog.modal input.auth-json-file').setInputFiles(file);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
   await expect(reimport.getByText('auth.json is loaded.')).toBeVisible();
   // The file's content is never shown.
   await expect(reimport.getByRole('textbox', 'auth.json')).toHaveValue('');
@@ -151,4 +165,162 @@ test('a Codex task waiting for or failing without an account names Codex', async
   await browser.evaluate(() => (window as unknown as Touching).__yuliusMock.touchTask('sb_studio', 12, { status: 'failed_no_account', waits_for_account: false }));
   await expect(browser.locator('main')).toContainText('The task couldn’t start because no Codex account was usable.');
   await expect(screen.getByText('Failed (no Codex account)').first()).toBeVisible();
+});
+
+// SPEC-503 CDX-010 (slice D review): the dialog's default Codex way is ChatGPT's device sign-in:
+// it creates an openai subscription that waits for its sign-in, the terminal says what Codex
+// asks, Enter connects it (the toast names Codex tasks), and a failed one says why.
+test('a Codex subscription signs in with ChatGPT in the login terminal', async ({ app, browser, screen }) => {
+  await app.open(mock('/admin/accounts', '&ambient=0'));
+  await screen.getByRole('button', 'Add subscription').first().click();
+  await browser.locator('dialog.modal .seg label:has-text("Codex")').click();
+  const add = screen.getByRole('dialog', 'Add a Codex subscription');
+  await add.getByRole('textbox', /^Name/).fill('Codex dev');
+  await add.getByRole('button', 'Continue to sign-in').click();
+  const dialog = screen.getByRole('dialog', 'Sign in · Codex dev');
+  await expect(dialog.getByText(/^Finish Codex’s sign-in: open the link in the terminal below, sign in with ChatGPT/)).toBeVisible();
+  await expect(browser.locator('.login-terminal')).toContainText('codex login --device-auth');
+  await expect(browser.locator('.login-terminal')).not.toContainText('Claude');
+  const waiting = await browser.evaluate(() => (window as unknown as Mocked).__yuliusMock.accounts.find((a) => a.label === 'Codex dev'));
+  expect(waiting).toMatchObject({ provider: 'openai', status: 'pending_login' });
+  const input = browser.locator('.login-terminal .xterm-helper-textarea');
+  await expect(input).toBeFocused();
+  await browser.keyboard.type('fail');
+  await browser.keyboard.press('Enter');
+  const outcome = dialog.getByRole('alert');
+  await expect(outcome).toContainText('Sign-in failed');
+  await expect(outcome).toContainText('The sign-in ended without producing a token');
+  await dialog.getByRole('button', 'Try again').click();
+  await expect(input).toBeFocused();
+  await browser.keyboard.press('Enter');
+  await expect(dialog).toBeHidden();
+  await expect(browser.locator('.toast-ok .toast-msg:has-text("Codex dev is connected")')).toContainText('Codex tasks can use it now.');
+  const signedIn = await browser.evaluate(() => (window as unknown as Mocked).__yuliusMock.accounts.find((a) => a.label === 'Codex dev'));
+  expect(signedIn).toMatchObject({ provider: 'openai', status: 'ok' });
+});
+
+type Connecting = { __yuliusMock: Mocked['__yuliusMock'] & { connectCodex: () => void } };
+
+// SPEC-503 CDX-014 (slice D review): with no Claude account usable, the composer asks to connect
+// Claude only until a Codex account is usable; a Codex start refused for want of a Codex account
+// offers to connect Codex, which opens the Codex dialog.
+test('the composer asks for Claude only while no Codex account is usable either', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio', '&claude=0'));
+  await expect(browser.locator('.claude-connect')).toContainText('Tasks start once one is usable.');
+  await screen.getByRole('button', /^Model:/).click();
+  await screen.getByRole('menuitemradio', /^Codex/).click();
+  await screen.getByRole('textbox', 'Task prompt').fill('Add a health check');
+  await screen.getByRole('button', 'Start task').click();
+  const toast = browser.locator('.toast-error');
+  await expect(toast).toContainText('Connect a Codex account first');
+  await toast.getByRole('button', { name: 'Connect Codex' }).click();
+  await expect(screen.getByRole('dialog', 'Add a Codex subscription')).toBeVisible();
+  await expect(screen.getByRole('radio', 'ChatGPT sign-in')).toBeChecked();
+
+  await app.open(mock('/s/studio', '&claude=0'));
+  await expect(browser.locator('.claude-connect')).toBeVisible();
+  await browser.evaluate(() => (window as unknown as Connecting).__yuliusMock.connectCodex());
+  await expect(browser.locator('.claude-connect')).toHaveCount(0);
+});
+
+type Pool = { __yuliusMock: { accounts: { provider?: string; label: string; status: string; usage: Record<string, unknown> }[] } };
+
+// SPEC-503 (slice D review): a usable Codex subscription is no Claude capacity. With every Claude
+// subscription out of Fable, the Status line still says Fable tasks run on the fallback, as the
+// server places them.
+test('a Codex subscription does not hide that Claude is out of Fable', async ({ app, browser }) => {
+  await app.open(mock('/s/studio', '&ambient=0'));
+  await browser.evaluate(() => {
+    const db = (window as unknown as Pool).__yuliusMock;
+    const resets_at = new Date(Date.now() + 40 * 3600e3).toISOString();
+    const w = (used_percent: number) => ({ used_percent, resets_at, window_minutes: 10080 });
+    db.accounts.forEach((account) => Object.assign(account, { status: 'limited', usage: { primary: w(10), secondary: w(20), weekly_fable: w(100), observed_at: new Date().toISOString() } }));
+    db.accounts.push({ id: 'acc_codex', provider: 'openai', label: 'Codex #1', status: 'ok', usage: { primary: w(5), secondary: w(5), observed_at: new Date().toISOString() } } as never);
+  });
+  await browser.locator('.btn-status').click();
+  await expect(browser.locator('.status-pop .status-health')).toHaveText('Fable 5.2 is used up on every subscription: tasks set to it run on Opus 5.5 until it can run again');
+});
+
+// SPEC-503 CDX-013 (slice D review): a Codex subscription's card names Codex for a limit it
+// reported.
+test('a Codex card names Codex for its limit', async ({ app, browser }) => {
+  await app.open(mock('/s/studio', '&ambient=0'));
+  await browser.evaluate(() => {
+    const db = (window as unknown as Pool).__yuliusMock;
+    db.accounts.push({ id: 'acc_codex', provider: 'openai', label: 'Codex #1', status: 'limited', email: null, usage: { primary: { used_percent: 40, resets_at: new Date(Date.now() + 3600e3).toISOString(), window_minutes: 300 }, secondary: null, limit_reached: true, limit_resets_at: null, observed_at: new Date().toISOString() } } as never);
+  });
+  await browser.evaluate(() => { location.hash = '#/admin/accounts'; });
+  const card = browser.locator('main .account-card:has-text("Codex #1")');
+  await expect(card).toContainText('Codex reported a usage limit without saying when it resets');
+  await expect(card).not.toContainText('Claude');
+});
+
+// SPEC-503 CDX-013 (slice D review): a Codex task's terminal takes dropped files for Codex, and
+// its details name its CLI as Codex.
+test('a Codex task’s terminal and details name Codex', async ({ app, browser, screen }) => {
+  // The terminal is drawn for the task's harness: the task is made a Codex one, then opened again.
+  await app.open(mock('/s/studio/t/12'));
+  await expect(browser.locator('.taskview-term .term')).toBeVisible();
+  await browser.evaluate(() => (window as unknown as Touching).__yuliusMock.touchTask('sb_studio', 12, { harness: 'codex' }));
+  await browser.evaluate(() => { location.hash = '#/s/studio'; });
+  await expect(browser.locator('.taskview-term')).toHaveCount(0);
+  await browser.evaluate(() => { location.hash = '#/s/studio/t/12'; });
+  // The session is attached (and writable) once its screen shows.
+  await expect(browser.locator('.taskview-term .xterm-rows')).toHaveText(/\S/);
+  await browser.evaluate(() => {
+    const target = document.querySelector('.taskview-term .term');
+    const data = new DataTransfer();
+    data.items.add(new File(['png'], 'shot.png', { type: 'image/png' }));
+    for (const type of ['dragenter', 'dragover']) target?.dispatchEvent(new DragEvent(type, { bubbles: true, cancelable: true, composed: true, dataTransfer: data }));
+  });
+  await expect(browser.locator('.taskview-term .drop-overlay')).toHaveText('Drop to send to Codex');
+  await browser.evaluate(() => { location.hash = '#/s/studio/tasks/12'; });
+  await expect(screen.getByRole('heading', { level: 2, name: 'Details' })).toBeVisible();
+  const labels = await browser.evaluate(() => [...document.querySelectorAll('.ti-kv dt')].map((el) => (el as HTMLElement).innerText));
+  expect(labels).toContain('Codex');
+  expect(labels).not.toContain('Claude Code');
+});
+
+type Automating = { __yuliusMock: { automations: { id: string; harness: string; last_run: { task_id: string } | null }[]; tasks: { id: string; harness: string }[] } };
+
+// SPEC-503 CDX-010 (slice D review): Run now of a Codex automation creates a Codex task, as its
+// scheduled runs do.
+test('Run now of a Codex automation creates a Codex task', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/automations'));
+  await browser.evaluate(() => { (window as unknown as Automating).__yuliusMock.automations.find((a) => a.id === 'aut_2')!.harness = 'codex'; });
+  await browser.evaluate(() => { location.hash = '#/s/studio/automations/aut_2'; });
+  await expect(screen.getByRole('radiogroup', 'Agent').getByRole('radio', 'Codex')).toHaveAttribute('aria-checked', 'true');
+  await screen.getByRole('button', 'Run now').click();
+  await expect(screen.getByText(/^task created \(#\d+\)/)).toBeVisible();
+  const harness = await browser.evaluate(() => {
+    const db = (window as unknown as Automating).__yuliusMock;
+    const run = db.automations.find((a) => a.id === 'aut_2')!.last_run!;
+    return db.tasks.find((t) => t.id === run.task_id)!.harness;
+  });
+  expect(harness).toBe('codex');
+});
+
+// SPEC-503 (slice D review): a split proposal is Claude's to make. With only Codex usable, a
+// request the composer would split, started as a Codex task, is created as one Codex task
+// instead of being refused for want of a Claude account.
+test('a mixed Codex request with only Codex usable is created as one Codex task', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio', '&claude=0'));
+  await browser.evaluate(() => (window as unknown as Connecting).__yuliusMock.connectCodex());
+  await screen.getByRole('button', /^Model:/).click();
+  await screen.getByRole('menuitemradio', /^Codex/).click();
+  const prompt = screen.getByRole('textbox', 'Task prompt');
+  await prompt.fill([
+    'Finish the release before Friday, all of this has to land together please.',
+    '1. Make the attention bar opaque over the terminal and keep its colours readable.',
+    '2. Stop the tools rail pills from overflowing the rail on narrow windows.',
+    '3. Route new tasks past exhausted accounts in the backend subscription pool.',
+  ].join('\n'));
+  await prompt.press('ControlOrMeta+Enter');
+  await expect(browser).toHaveURL(/#\/s\/studio\/t\/\d+$/);
+  await expect(browser.locator('.toast-error')).toHaveCount(0);
+  const harness = await browser.evaluate(() => {
+    const tasks = (window as unknown as Mocked).__yuliusMock.tasks;
+    return tasks[tasks.length - 1].harness;
+  });
+  expect(harness).toBe('codex');
 });
