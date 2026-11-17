@@ -1289,7 +1289,7 @@ async fn the_audit_read_of_a_sandbox_keeps_the_newest_entries() -> TestResult {
 /// a hidden sandbox is not found and a reversed range is refused.
 #[tokio::test]
 async fn the_docker_read_counts_restarts_give_ways_and_needs_you_per_week() -> TestResult {
-    use yulius_app::docker_trouble::{DOCKER_GAVE_WAY, DOCKER_RESTARTED};
+    use yulius_app::docker_trouble::{DOCKER_CI_LEFTOVERS, DOCKER_GAVE_WAY, DOCKER_RESTARTED};
     use yulius_app::needs_you::DOCKER_NEEDS_YOU;
     use yulius_app::ports::store::{AuditStore as _, SandboxStore as _};
     let h = harness()?;
@@ -1328,6 +1328,21 @@ async fn the_docker_read_counts_restarts_give_ways_and_needs_you_per_week() -> T
     entry(OCT1 + HOUR, one.clone(), DOCKER_RESTARTED, "it stayed full").await?;
     entry(OCT1 + 2 * HOUR, one.clone(), DOCKER_GAVE_WAY, "3").await?;
     entry(OCT1 + 7 * 24 * HOUR, one.clone(), DOCKER_GAVE_WAY, "2").await?;
+    // SPEC-504 CLB-006: what CI jobs left, at their end and by the sweep.
+    entry(
+        OCT1 + 3 * HOUR,
+        one.clone(),
+        DOCKER_CI_LEFTOVERS,
+        "3 1 job-end",
+    )
+    .await?;
+    entry(
+        OCT1 + 7 * 24 * HOUR,
+        one.clone(),
+        DOCKER_CI_LEFTOVERS,
+        "2 2 sweep",
+    )
+    .await?;
     entry(
         OCT1 + 8 * 24 * HOUR,
         "t-docker".to_owned(),
@@ -1351,8 +1366,10 @@ async fn the_docker_read_counts_restarts_give_ways_and_needs_you_per_week() -> T
     assert_eq!(
         seen.body["weeks"],
         json!([
-            {"week": "2026-09-28", "restarts": 1, "gave_way": 3, "needs_you": 0},
-            {"week": "2026-10-05", "restarts": 0, "gave_way": 2, "needs_you": 1},
+            {"week": "2026-09-28", "restarts": 1, "gave_way": 3, "needs_you": 0,
+             "ci_containers": 3, "ci_networks": 1, "ci_swept": 0},
+            {"week": "2026-10-05", "restarts": 0, "gave_way": 2, "needs_you": 1,
+             "ci_containers": 2, "ci_networks": 2, "ci_swept": 4},
         ]),
         "{}",
         seen.body
@@ -1364,6 +1381,16 @@ async fn the_docker_read_counts_restarts_give_ways_and_needs_you_per_week() -> T
             &seen.body["needs_you"]
         ),
         (&json!(1), &json!(5), &json!(1)),
+        "{}",
+        seen.body
+    );
+    assert_eq!(
+        (
+            &seen.body["ci_containers"],
+            &seen.body["ci_networks"],
+            &seen.body["ci_swept"]
+        ),
+        (&json!(5), &json!(3), &json!(4)),
         "{}",
         seen.body
     );

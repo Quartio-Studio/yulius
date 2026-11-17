@@ -361,6 +361,10 @@ pub struct CiState {
     /// same test at once would each file an issue for it (review round 1); per sandbox, so a
     /// slow GitHub holds only that project's job ends (review round 2).
     pub(crate) quarantine_locks: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    /// The reference of the last run each lane (`<sandbox>/<lane>`) took (SPEC-497 SHR-002).
+    pub(crate) lane_runs: Mutex<HashMap<String, CiRef>>,
+    /// What each executing run's lane last built, for its jobs' output (SPEC-497 SHR-002).
+    pub(crate) lane_notes: Mutex<HashMap<String, String>>,
     /// Sandboxes with a run that passed when it was queued (every job skipped for its
     /// `paths`): the dispatcher starts their merge pass, as a run's end does.
     passed_when_queued: Mutex<Vec<SandboxId>>,
@@ -474,10 +478,86 @@ fn free_lane(busy: &HashSet<String>, sandbox: &str, lanes: u32) -> Option<u32> {
 }
 
 /// [`free_lane`], and marks it.
+#[cfg(test)]
 fn take_lane(busy: &mut HashSet<String>, sandbox: &str, lanes: u32) -> Option<u32> {
-    let lane = free_lane(busy, sandbox, lanes)?;
+    take_lane_preferring(busy, sandbox, lanes, &[])
+}
+
+/// [`take_lane`], the first free lane of `preferred` first (SPEC-497 SHR-002: the lane whose
+/// checkouts last built what the run builds on).
+fn take_lane_preferring(
+    busy: &mut HashSet<String>,
+    sandbox: &str,
+    lanes: u32,
+    preferred: &[u32],
+) -> Option<u32> {
+    free_lane(busy, sandbox, lanes)?;
+    let lane = preferred
+        .iter()
+        .copied()
+        .find(|lane| *lane < lanes.max(1) && !busy.contains(&format!("{sandbox}/{lane}")))
+        .or_else(|| free_lane(busy, sandbox, lanes))?;
     busy.insert(format!("{sandbox}/{lane}"));
     Some(lane)
+}
+
+/// What a run's jobs say about the lane it took (SPEC-497 SHR-002): the lane, the run that last
+/// took it (`before`) and whether it was one this run preferred, first choice or not. The
+/// dispatcher knows the lane's last run, not that it built (it may have been cancelled before
+/// its jobs started): "taken" (review round 1).
+fn lane_note(lane: u32, before: Option<&str>, preferred: &[u32]) -> String {
+    match before {
+        Some(key) if preferred.contains(&lane) => {
+            format!("lane {lane}, last taken by {key}, which this run builds on")
+        }
+        Some(key) => format!("lane {lane}, last taken by {key}"),
+        None => format!("lane {lane}"),
+    }
+}
+
+/// Whether `run` may lend its verdict to `target`, whose tree it tested (the trees are compared
+/// apart): a passed run, not a train's step verdict, and another commit, unless `target` is a
+/// merge candidate formed again on that very commit (slice D review: within one second the
+/// same members on the same base give the same commit).
+fn reuse_source(run: &CiRunRecord, target: &Target) -> bool {
+    run.state == RunState::Passed
+        && (run.sha != target.sha || matches!(target.reference, CiRef::Train(_)))
+        && run.requested_by != crate::merge_train::TRAIN_VERDICT_BY
+}
+
+/// The lanes whose checkouts last built what `reference` builds on, best first (SPEC-497
+/// SHR-002): for a pull request's run, the lane of its own last run (its previous head); for a
+/// merge candidate's, the lanes of its members' own runs, the last member first, then of an
+/// earlier candidate sharing a member. `last` maps each lane to the reference of its last run.
+fn preferred_lanes(reference: &CiRef, last: &[(u32, CiRef)]) -> Vec<u32> {
+    let lanes_of = |wanted: &dyn Fn(&CiRef) -> bool| -> Vec<u32> {
+        last.iter()
+            .filter(|(_, r)| wanted(r))
+            .map(|(lane, _)| *lane)
+            .collect()
+    };
+    let mut lanes = Vec::new();
+    match reference {
+        CiRef::PullRequest(n) => {
+            lanes.extend(lanes_of(&|r| *r == CiRef::PullRequest(*n)));
+        }
+        CiRef::Train(members) => {
+            for member in members.iter().rev() {
+                lanes.extend(lanes_of(&|r| *r == CiRef::PullRequest(*member)));
+            }
+            lanes.extend(lanes_of(&|r| {
+                matches!(r, CiRef::Train(others) if others.iter().any(|o| members.contains(o)))
+            }));
+        }
+        CiRef::Branch(_) | CiRef::Task(_) => {}
+    }
+    let mut seen = Vec::new();
+    lanes.retain(|lane| {
+        let new = !seen.contains(lane);
+        seen.push(*lane);
+        new
+    });
+    lanes
 }
 
 /// Takes a lane of `sandbox` for `run_id` and registers its executor, under the caller's locks;
@@ -487,12 +567,13 @@ fn reserve_run<T>(
     busy: &mut HashSet<String>,
     executing: &mut HashMap<String, T>,
     (run_id, sandbox, lanes): (&str, &str, u32),
+    preferred: &[u32],
     executor: T,
 ) -> Option<u32> {
     if executing.contains_key(run_id) {
         return None;
     }
-    let lane = take_lane(busy, sandbox, lanes)?;
+    let lane = take_lane_preferring(busy, sandbox, lanes, preferred)?;
     executing.insert(run_id.to_owned(), executor);
     Some(lane)
 }
@@ -1210,11 +1291,7 @@ impl App {
         // candidate's neither: the same tree on another base may change what `paths` decides.
         let branch = matches!(target.reference, CiRef::Branch(_) | CiRef::Train(_));
         let mut found = None;
-        for run in runs.iter().filter(|r| {
-            r.state == RunState::Passed
-                && r.sha != target.sha
-                && r.requested_by != crate::merge_train::TRAIN_VERDICT_BY
-        }) {
+        for run in runs.iter().filter(|r| reuse_source(r, target)) {
             if self.deps.git.tree_of(&repo, &run.sha).await?.as_deref() != Some(tree.as_str()) {
                 continue;
             }
@@ -1594,19 +1671,48 @@ impl App {
             }
             let sandbox = run.sandbox_id.as_str().to_owned();
             let (tx, rx) = watch::channel(None);
+            // The lane whose checkouts last built what this run builds on, where one is free
+            // (SPEC-497 SHR-002): a candidate starts from its members' builds, a pull request from
+            // its previous head's.
+            let last: Vec<(u32, CiRef)> = self
+                .ci
+                .lane_runs
+                .lock()
+                .map(|map| {
+                    (0..lanes.max(1))
+                        .filter_map(|lane| {
+                            map.get(&format!("{sandbox}/{lane}"))
+                                .map(|r| (lane, r.clone()))
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            let preferred = preferred_lanes(&run.reference, &last);
             let lane = {
                 let (Ok(mut busy), Ok(mut executing)) =
                     (self.ci.busy.lock(), self.ci.executing.lock())
                 else {
                     return;
                 };
-                let Some(lane) =
-                    reserve_run(&mut busy, &mut executing, (&run.id, &sandbox, lanes), tx)
-                else {
+                let Some(lane) = reserve_run(
+                    &mut busy,
+                    &mut executing,
+                    (&run.id, &sandbox, lanes),
+                    &preferred,
+                    tx,
+                ) else {
                     continue;
                 };
                 lane
             };
+            let before = last.iter().find(|(l, _)| *l == lane).map(|(_, r)| r.key());
+            let note = lane_note(lane, before.as_deref(), &preferred);
+            if let Ok(mut map) = self.ci.lane_runs.lock() {
+                map.insert(format!("{sandbox}/{lane}"), run.reference.clone());
+            }
+            if let Ok(mut notes) = self.ci.lane_notes.lock() {
+                notes.insert(run.id.clone(), note);
+            }
             let app = Arc::clone(self);
             tokio::spawn(async move { app.ci_execute(run, rx, lane).await });
         }
@@ -1633,6 +1739,15 @@ impl App {
                     if dir.exists() {
                         let _ = self.deps.session_host.terminate(&dir);
                         let _ = std::fs::remove_dir_all(&dir);
+                    }
+                    // A restart ended it: what it left goes too (SPEC-504 CLB-004), in a task
+                    // of its own: an engine that never answers must not hold CI's start (review
+                    // round 1).
+                    if let Some(isolation) = self.isolation.get() {
+                        let (isolation, sandbox) = (Arc::clone(isolation), run.sandbox_id.clone());
+                        tokio::spawn(
+                            async move { isolation.ci_job_ended(&sandbox, &job.id).await },
+                        );
                     }
                 }
             }
@@ -1928,7 +2043,130 @@ impl App {
 
 #[cfg(test)]
 mod lane_tests {
-    use super::{busy_in, forget_idle_turn, own_jobs_apply, reserve_run, take_lane};
+    use super::{
+        busy_in, forget_idle_turn, lane_note, own_jobs_apply, preferred_lanes, reserve_run,
+        reuse_source, take_lane, take_lane_preferring,
+    };
+
+    /// SPEC-497 SHR-002 (review round 2): the note names a preferred lane as such, first choice
+    /// or not; a lane no preference chose is only "taken".
+    #[test]
+    fn the_lane_note_says_whether_the_run_builds_on_it() {
+        let built = "which this run builds on";
+        assert!(
+            lane_note(1, Some("pr/3"), &[3, 1]).ends_with(built),
+            "second choice"
+        );
+        assert!(lane_note(3, Some("pr/5"), &[3, 1]).ends_with(built));
+        assert_eq!(
+            lane_note(0, Some("branch/dev"), &[3, 1]),
+            "lane 0, last taken by branch/dev"
+        );
+        assert_eq!(lane_note(2, None, &[]), "lane 2");
+    }
+
+    /// Slice D review round 2: a passed run of the very commit a candidate is formed again on is a
+    /// source; for any other target, a run of the same commit is not, nor a train's step verdict
+    /// or a run that did not pass.
+    #[test]
+    fn a_candidate_on_the_same_commit_reuses_its_run() {
+        use crate::ci::CiRunRecord;
+        use yulius_domain::ci::{GateSource, RunState, Target};
+        use yulius_domain::ids::SandboxId;
+        use yulius_domain::time::Timestamp;
+        let run = |sha: &str, state, by: &str| CiRunRecord {
+            id: "r".into(),
+            sandbox_id: SandboxId::parse("s1").unwrap_or_else(|_| unreachable!()),
+            reference: CiRef::Train(vec![1]),
+            sha: sha.into(),
+            source: GateSource::ProjectConfig,
+            state,
+            reason: None,
+            requested_by: by.into(),
+            status_for: None,
+            status_note: None,
+            status_attempts: 0,
+            queued_at: Timestamp(0),
+            started_at: None,
+            ended_at: None,
+        };
+        let target = |reference, sha: &str| Target {
+            reference,
+            sha: sha.into(),
+        };
+        let candidate = target(CiRef::Train(vec![1]), "c1");
+        assert!(reuse_source(
+            &run("c1", RunState::Passed, "yulius"),
+            &candidate
+        ));
+        assert!(reuse_source(
+            &run("c0", RunState::Passed, "yulius"),
+            &candidate
+        ));
+        assert!(!reuse_source(
+            &run("c1", RunState::Failed, "yulius"),
+            &candidate
+        ));
+        assert!(!reuse_source(
+            &run("c0", RunState::Passed, crate::merge_train::TRAIN_VERDICT_BY),
+            &candidate
+        ));
+        let branch = target(CiRef::Branch("dev".into()), "c1");
+        assert!(!reuse_source(
+            &run("c1", RunState::Passed, "yulius"),
+            &branch
+        ));
+        assert!(reuse_source(
+            &run("c0", RunState::Passed, "yulius"),
+            &branch
+        ));
+    }
+    use yulius_domain::ci::CiRef;
+
+    /// SPEC-497 SHR-002: a run takes the lane whose checkouts last built what it builds on,
+    /// when it is free: a pull request its own previous run's, a candidate its members' (the last
+    /// member first), then an earlier candidate's sharing a member; otherwise the first free.
+    #[test]
+    fn a_run_takes_the_lane_that_last_built_what_it_builds_on() {
+        let last = [
+            (0, CiRef::PullRequest(7)),
+            (1, CiRef::PullRequest(3)),
+            (2, CiRef::Train(vec![3, 9])),
+            (3, CiRef::PullRequest(5)),
+        ];
+        assert_eq!(preferred_lanes(&CiRef::PullRequest(3), &last), [1]);
+        assert_eq!(
+            preferred_lanes(&CiRef::Train(vec![3, 5]), &last),
+            [3, 1, 2],
+            "the last member first, then a candidate sharing #3"
+        );
+        assert!(preferred_lanes(&CiRef::Branch("dev".into()), &last).is_empty());
+        assert!(preferred_lanes(&CiRef::PullRequest(4), &last).is_empty());
+        let mut busy = std::collections::HashSet::new();
+        assert_eq!(take_lane_preferring(&mut busy, "s1", 4, &[3, 1]), Some(3));
+        assert_eq!(
+            take_lane_preferring(&mut busy, "s1", 4, &[3, 1]),
+            Some(1),
+            "3 runs"
+        );
+        assert_eq!(
+            take_lane_preferring(&mut busy, "s1", 4, &[3, 1]),
+            Some(0),
+            "the first free"
+        );
+        assert_eq!(
+            take_lane_preferring(&mut busy, "s1", 4, &[9]),
+            Some(2),
+            "a lane past the count is none"
+        );
+        assert_eq!(take_lane_preferring(&mut busy, "s1", 4, &[]), None);
+        let mut claimed = std::collections::HashSet::from(["s2".to_owned()]);
+        assert_eq!(
+            take_lane_preferring(&mut claimed, "s2", 4, &[1]),
+            None,
+            "claimed"
+        );
+    }
 
     /// SPEC-435: an exclusive job's turn stays while a job holds or waits for it, and goes once
     /// nobody does, so the map does not keep every job name ever seen.
@@ -1998,11 +2236,11 @@ mod lane_tests {
     fn a_run_with_an_executor_is_not_reserved_again() {
         let (mut busy, mut executing) = (HashSet::new(), HashMap::new());
         assert_eq!(
-            reserve_run(&mut busy, &mut executing, ("r1", "s1", 2), "first"),
+            reserve_run(&mut busy, &mut executing, ("r1", "s1", 2), &[], "first"),
             Some(0)
         );
         assert_eq!(
-            reserve_run(&mut busy, &mut executing, ("r1", "s1", 2), "second"),
+            reserve_run(&mut busy, &mut executing, ("r1", "s1", 2), &[], "second"),
             None,
             "the run already executes"
         );
@@ -2013,13 +2251,13 @@ mod lane_tests {
         );
         assert!(!busy.contains("s1/1"), "no second lane: {busy:?}");
         assert_eq!(
-            reserve_run(&mut busy, &mut executing, ("r2", "s1", 2), "other"),
+            reserve_run(&mut busy, &mut executing, ("r2", "s1", 2), &[], "other"),
             Some(1),
             "another run takes the free lane"
         );
         busy.insert("s2".to_owned());
         assert_eq!(
-            reserve_run(&mut busy, &mut executing, ("r3", "s2", 2), "claimed"),
+            reserve_run(&mut busy, &mut executing, ("r3", "s2", 2), &[], "claimed"),
             None
         );
         assert!(

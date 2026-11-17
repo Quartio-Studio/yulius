@@ -11,7 +11,9 @@
 //! or once it passed, and only when it is behind its base: a green one that is up to date merges
 //! alone, at once. A member whose own run fails leaves (MQC-002); one whose own run errored or
 //! was cancelled stays, decided by the candidate (SPEC-497 MQW-001). A candidate formed again on
-//! the same base with the same members reuses the passed run of its tree.
+//! the same base with the same members reuses the passed run of its tree. A pull request that
+//! changes derived files an earlier member also changes (`[merge_queue] apart`) waits for the
+//! next candidate (MQW-003).
 //!
 //! A train (1 to [`MAX_MEMBERS`] members, in arm order) is built in Yulius's clone, exactly as the
 //! merges will happen: the integration branch is merged into each armed head in arm order (the
@@ -894,6 +896,10 @@ impl App {
             // Its own run may still go: the candidate's run tested the exact merged result, which
             // is enough to merge (SPEC-497 MQW-002); one that failed, at this pass's start or
             // since, makes it leave (review round 1).
+            crate::race::reached(
+                crate::race::Point::TrainMemberMerging,
+                Path::new(&train.members[index].task),
+            );
             if let Some(reason) = self.own_run_failed(sandbox, &train.members[index]).await {
                 self.dissolve(sandbox, &train, &reason).await;
                 return None;
@@ -1430,7 +1436,10 @@ impl App {
             candidates.push(Candidate { task, armed, pr });
         }
         state.held_back.retain(|entry| still_armed.contains(entry));
-        let mut candidates = in_arm_order(candidates, |c| (c.armed.armed_at, c.task.number));
+        let candidates = in_arm_order(candidates, |c| (c.armed.armed_at, c.task.number));
+        // Derived files the project names are changed by one member at a time: a later one waits
+        // for the next candidate (SPEC-497 MQW-003).
+        let (mut candidates, held) = self.hold_apart(&repo, &integration, candidates).await;
         candidates.truncate(state.limit.unwrap_or(MAX_MEMBERS).max(1));
         if candidates.is_empty() {
             return None;
@@ -1569,7 +1578,7 @@ impl App {
             sandbox,
             yulius_domain::merge_queue::FORMED,
             &format!(
-                "merge train {} on {} at {}: run {} tests {}{}",
+                "merge train {} on {} at {}: run {} tests {}{}{}",
                 listed(&prs),
                 profile.integration_branch,
                 built.base,
@@ -1579,6 +1588,17 @@ impl App {
                     String::new()
                 } else {
                     format!("; left out (conflicts): {}", listed(&left))
+                },
+                if held.is_empty() {
+                    String::new()
+                } else {
+                    format!(
+                        "; held apart for the next candidate (derived files): {}",
+                        held.iter()
+                            .map(|h| format!("#{} (with #{}, {})", h.pr, h.with, h.pattern))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )
                 }
             ),
         )
@@ -1596,6 +1616,50 @@ impl App {
             formed_at: self.now().0,
             own_wait: None,
         })
+    }
+
+    /// `candidates` (in arm order) without those `[merge_queue] apart` of the integration branch's
+    /// `yulius.toml` holds out of this candidate, and those held (SPEC-497 MQW-003): two that
+    /// change files under one of its patterns never share a candidate. A table that does not parse
+    /// holds nothing apart, as no table does.
+    async fn hold_apart(
+        &self,
+        repo: &Path,
+        integration: &str,
+        candidates: Vec<Candidate>,
+    ) -> (Vec<Candidate>, Vec<yulius_domain::merge_queue::HeldApart>) {
+        let apart = match self
+            .deps
+            .git
+            .show_file(repo, integration, "yulius.toml")
+            .await
+        {
+            Ok(Some(text)) => {
+                yulius_domain::spec_format::parse_yulius_toml_merge_queue(&text).unwrap_or_default()
+            }
+            _ => Vec::new(),
+        };
+        if apart.is_empty() {
+            return (candidates, Vec::new());
+        }
+        let mut changed = Vec::with_capacity(candidates.len());
+        for candidate in &candidates {
+            let paths = self
+                .deps
+                .git
+                .changed_paths(repo, integration, &candidate.armed.head)
+                .await
+                .ok()
+                .flatten()
+                .unwrap_or_default();
+            changed.push((candidate.pr, paths));
+        }
+        let (kept, held) = yulius_domain::merge_queue::held_apart(&apart, &changed);
+        let candidates = candidates
+            .into_iter()
+            .filter(|c| kept.contains(&c.pr))
+            .collect();
+        (candidates, held)
     }
 
     /// Whether GitHub shows pull request `pr` open; `true` when it cannot be read (the merge

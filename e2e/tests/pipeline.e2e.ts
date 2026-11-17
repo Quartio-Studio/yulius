@@ -614,7 +614,7 @@ test('a tab left behind and the page left stop their refreshes', async ({ app, b
   await expect.poll(() => live(300_000)).toBe(0);
 });
 
-test('the Pipeline counts what the sandbox’s Docker needed, per week (SPEC-494 DFJ-013)', async ({ app, screen }) => {
+test('the Pipeline counts what the sandbox’s Docker needed, per week (SPEC-494 DFJ-013, SPEC-504 CLB-006)', async ({ app, screen }) => {
   await app.open(mock('/s/studio/dashboard?section=pipeline'));
   await firstShown(screen.getByRole('heading', { level: 1 }), 'Dashboard');
   const docker = screen.getByRole('region', 'Docker');
@@ -622,4 +622,6 @@ test('the Pipeline counts what the sandbox’s Docker needed, per week (SPEC-494
   await expect(docker).toContainText(/Front restarts\s*3\s*0\.7 a week/);
   await expect(docker).toContainText(/Connections that gave way\s*41\s*9\.6 a week/);
   await expect(docker).toContainText(/Docker Needs you\s*2\s*0\.5 a week/);
+  // SPEC-504 CLB-006: what CI jobs left in the engine, and how much of it the sweep found.
+  await expect(docker).toContainText(/Left by CI jobs, removed\s*40\s*26 containers, 14 networks; 35 by the sweep/);
 });

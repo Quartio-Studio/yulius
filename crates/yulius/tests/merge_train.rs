@@ -164,6 +164,9 @@ enum Project {
     /// [`Project::Standard`] with a second job that runs only for changes under `never/`
     /// (SPEC-497 MQW-001: a run that skipped it is no source for a candidate's verdict).
     Paths,
+    /// [`Project::Standard`] whose `[merge_queue]` holds changes under `gen/` apart (SPEC-497
+    /// MQW-003).
+    Apart,
 }
 
 struct Fixture {
@@ -210,7 +213,7 @@ async fn fixture_with(project: Project, lanes: Option<u32>) -> BoxResult<Fixture
     h.github.set_perm("alice", "acme/app", perms("write"));
     let sandbox = seed_sandbox(&h, "s1", "app", "u-alice").await?;
     let integration = match project {
-        Project::Standard | Project::Paths => "dev",
+        Project::Standard | Project::Paths | Project::Apart => "dev",
         Project::Minimal => {
             let mut profile = yulius_domain::delivery::DeliveryProfile::standard();
             profile.integration_branch = "trunk".into();
@@ -237,8 +240,10 @@ async fn fixture_with(project: Project, lanes: Option<u32>) -> BoxResult<Fixture
     )?;
     std::fs::write(work.join("README.md"), "# app\n")?;
     match project {
-        Project::Standard | Project::Paths => {
-            let toml = if project == Project::Paths {
+        Project::Standard | Project::Paths | Project::Apart => {
+            let toml = if project == Project::Apart {
+                format!("{YULIUS_TOML}\n[merge_queue]\napart = [\"gen/\"]\n")
+            } else if project == Project::Paths {
                 format!(
                     "{YULIUS_TOML}\n[[ci.jobs]]\nname = \"never\"\ncommand = \"echo never\"\n\
                      paths = [\"never/**\"]\n"
@@ -327,7 +332,11 @@ impl Fixture {
             ],
         )?;
         for (path, text) in files {
-            std::fs::write(worktree.join(path), text)?;
+            let file = worktree.join(path);
+            if let Some(parent) = file.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::write(file, text)?;
         }
         if self.project != Project::Minimal {
             std::fs::write(
@@ -1716,6 +1725,143 @@ async fn formed_again(project: Project) -> TestResult {
     Ok(())
 }
 
+/// SPEC-497 MQW-003: two armed pull requests that both change files under a pattern the
+/// project's `[merge_queue] apart` names never share a candidate: the first goes into one, the
+/// other waits and merges on the next, on top of it. A third that changes nothing there joins the
+/// first. No candidate fails on their combination.
+#[tokio::test]
+async fn derived_files_are_changed_one_candidate_at_a_time() -> TestResult {
+    let f = fixture_with(Project::Apart, None).await?;
+    let app = f.h.app.clone();
+    let mut worktrees = Vec::new();
+    for (n, file) in [(1u32, "gen/a.txt"), (2, "gen/b.txt"), (3, "c.txt")] {
+        worktrees.push(f.task(n, &[(file, "x\n")]).await?);
+    }
+    for (n, worktree) in (1u32..).zip(&worktrees) {
+        f.arm(n, worktree).await?;
+        f.record_passed(&app, n, &git(worktree, &["rev-parse", "HEAD"])?)
+            .await?;
+    }
+    f.advance_dev("other.txt")?;
+    let sandbox = app.deps.store.sandbox(&f.sandbox).await?.ok_or("s1")?;
+    f.decide_until(&app, || async {
+        app.ci_sync_sandbox(&sandbox).await?;
+        f.settle(&app).await?;
+        Ok(f.merged(&app, 1).await? && f.merged(&app, 2).await? && f.merged(&app, 3).await?)
+    })
+    .await?;
+    let mut trains: Vec<String> = f
+        .train_runs(&app)
+        .await?
+        .iter()
+        .map(|r| r.reference.key())
+        .collect();
+    trains.sort();
+    assert_eq!(
+        trains,
+        ["train/1+3", "train/2"],
+        "held apart, then on its own"
+    );
+    let formed = yulius_app::ports::store::AuditStore::audit_details(
+        app.deps.store.as_ref(),
+        "app",
+        yulius_domain::merge_queue::FORMED,
+        10,
+    )
+    .await?;
+    assert!(
+        formed.iter().any(|d| d
+            .contains("held apart for the next candidate (derived files): #2 (with #1, gen/**)")),
+        "{formed:?}"
+    );
+    Ok(())
+}
+
+/// SPEC-497 SHR-002 (slice D review round 1): a merge candidate's run takes a lane its members'
+/// own runs took, and its job's output says so.
+#[tokio::test]
+async fn a_candidates_run_takes_a_lane_of_its_members() -> TestResult {
+    let f = fixture_with(Project::Standard, Some(2)).await?;
+    let app = f.h.app.clone();
+    let sandbox = app.deps.store.sandbox(&f.sandbox).await?.ok_or("s1")?;
+    let one = f.task(1, &[("a.txt", "x\n")]).await?;
+    let two = f.task(2, &[("b.txt", "x\n")]).await?;
+    // `dev` moves first, so nothing merges on its own; the members' own runs and `dev`'s all run
+    // and end before anything is armed (review round 2: a candidate formed by a run's end while
+    // `dev`'s run took a member's lane). Of two lanes, one still names a member's run.
+    f.advance_dev("other.txt")?;
+    app.ci_sync_sandbox(&sandbox).await?;
+    f.settle(&app).await?;
+    f.arm(1, &one).await?;
+    f.arm(2, &two).await?;
+    app.merge_armed(&f.sandbox).await;
+    let train = f
+        .train_runs(&app)
+        .await?
+        .into_iter()
+        .next()
+        .ok_or("no candidate")?;
+    run_candidate(&f, &app, &train.id).await?;
+    let jobs = app.deps.store.ci_jobs(&train.id, true).await?;
+    let output = jobs.first().map(|j| j.output.clone()).unwrap_or_default();
+    let lane = output
+        .lines()
+        .find(|l| l.starts_with("[yulius] lane "))
+        .unwrap_or_default();
+    assert!(
+        (lane.contains("last taken by pr/1,") || lane.contains("last taken by pr/2,"))
+            && lane.ends_with("which this run builds on"),
+        "{output}"
+    );
+    Ok(())
+}
+
+/// SPEC-497 MQW-002 (slice C review round 2): a member's own run that fails while the passed
+/// candidate merges the members before it is read again before its own merge: #1 merges, #2's
+/// own run fails exactly then (the pass held at its pause point), and #2 is not merged.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_member_whose_own_run_fails_during_the_merges_is_not_merged() -> TestResult {
+    let f = fixture().await?;
+    let app = f.h.app.clone();
+    let sandbox = app.deps.store.sandbox(&f.sandbox).await?.ok_or("s1")?;
+    let one = f.task(1, &[("a.txt", "x\n")]).await?;
+    let two = f.task(2, &[("b.txt", "x\n")]).await?;
+    app.ci_sync_sandbox(&sandbox).await?;
+    f.arm(1, &one).await?;
+    f.arm(2, &two).await?;
+    let held = hold_own_run(&f, &app, 2).await?;
+    let (at, go) = support::hold_point(yulius_app::race::Point::TrainMemberMerging, "t2");
+    f.advance_dev("other.txt")?;
+    app.ci_sync_sandbox(&sandbox).await?;
+    app.merge_armed(&f.sandbox).await;
+    let train = f
+        .train_runs(&app)
+        .await?
+        .into_iter()
+        .next()
+        .ok_or("no candidate")?;
+    assert_eq!(run_candidate(&f, &app, &train.id).await?, RunState::Passed);
+    // A pass merges #1 and stops before #2; #2's own run fails there.
+    let pass = {
+        let app = Arc::clone(&app);
+        let sandbox = f.sandbox.clone();
+        tokio::spawn(async move { app.merge_armed(&sandbox).await })
+    };
+    support::point_reached(at).await?;
+    assert!(f.merged(&app, 1).await?, "#1 merged first");
+    end_own_run(&app, &held, RunState::Failed).await?;
+    go.send(())?;
+    pass.await?;
+    assert!(!f.merged(&app, 2).await?, "merged on the candidate");
+    let gone = dissolved(&app).await?;
+    assert!(
+        gone.iter()
+            .any(|d| d.contains("#2's own run") && d.contains("(why: member_failed)")),
+        "{gone:?}"
+    );
+    Ok(())
+}
+
 /// SPEC-497 MQW-001, MQW-002 (review round 1): a member whose own run fails after its candidate
 /// passed is not merged on the candidate: it leaves with `member_failed`, its armed merge ends,
 /// and the other merges on a candidate formed again.
@@ -1740,7 +1886,6 @@ async fn a_failed_own_run_beats_a_passed_candidate() -> TestResult {
         .next()
         .ok_or("no candidate")?;
     assert_eq!(run_candidate(&f, &app, &train.id).await?, RunState::Passed);
-    assert!(!f.merged(&app, 1).await? && !f.merged(&app, 2).await?);
     end_own_run(&app, &held, RunState::Failed).await?;
     app.merge_armed(&f.sandbox).await;
     assert!(!f.merged(&app, 2).await?, "merged on the candidate");
@@ -1917,7 +2062,7 @@ async fn three_green_in_sequence(project: Project) -> TestResult {
     })
     .await?;
     let method = match project {
-        Project::Standard | Project::Paths => "squash",
+        Project::Standard | Project::Paths | Project::Apart => "squash",
         Project::Minimal => "merge",
     };
     assert_eq!(

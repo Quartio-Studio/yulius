@@ -1,11 +1,11 @@
 ---
 yulius-task: 29fb50db-a8f1-40ea-bf43-8677399be0fe
-status: in-progress
+status: done
 ---
 
 # SPEC-497: an armed pull request merges in about one CI run
 
-Status: in-progress
+Status: done
 Date: 2026-11-16
 Owner: Yulius task #479
 Scope authorization: the request of task #479 (MrFishPL, 2026-11-16): measure why the path to
@@ -178,12 +178,15 @@ mode.
 - [x] Slice C: a failed member leaves without cancelling the candidate
 - [x] Slice C: a passed candidate merges while own runs go
 - [x] Slice C: derived-file conflicts handled without a wasted cycle
+- [x] Slice C: derived files a project names are changed one candidate at a time
 - [x] Slice C: dissolve reasons shown; documents and ADR
 - [x] Slice C: review round 1 answered
 - [x] Slice C: review round 2 answered
-- [ ] Slice D: sharded jobs
-- [ ] Slice D: a candidate reuses its members' builds; review
-- [ ] Slice E: numbers before and after, quartio-v2's part told
+- [x] Slice D: sharded jobs
+- [x] Slice D: a candidate reuses its members' builds, measured
+- [x] Slice D: review round 1 answered
+- [x] Slice D: review round 2 answered
+- [x] Slice E: numbers before and after, quartio-v2's part told
 
 ## Acceptance criteria
 
@@ -202,8 +205,8 @@ mode.
 
 ## Test plan
 
-- Domain units for the admission rule, the infrastructure classifier, the flaky rule and the
-  shard plan.
+- Domain units for the admission rule, the infrastructure classifier and the flaky rule; xtask's
+  unit for the shard of a matrix value (`shard_of`).
 - `local_ci` (real Git, real jobs, fake isolation measurements) for admission, reruns and
   shards; `merge_train` for the queue changes; `analytics` for the reads.
 
@@ -246,7 +249,17 @@ mode.
   decides no one (its tree can never land) and is still cancelled: merging the members before it
   would leave the integration branch at an untested tree. Derived files: Yulius cannot run a
   project's formatter or generator where it builds candidates, so it saves the cycle it can,
-  telling the member that breaks a combination once the others pass without it.
+  telling the member that breaks a combination once the others pass without it, and serialises
+  the derived files a project names in `[merge_queue] apart`, so they never meet in one
+  candidate (the request's "serialised"; redoing the step would need the project's commands
+  where Yulius builds candidates).
+- **Shards are a matrix; a run picks its lane** (slice D,
+  [ADR-0358](../../docs/decisions/0358-tests-run-in-shards-and-a-run-starts-from-the-build-it-builds-on.md)):
+  `matrix = "i/n"` values already run side by side, each in its own checkout, so a project
+  splits its tests by the runner's own partition; a `shards` key would only rename it. A
+  candidate reuses its members' builds by taking the lane whose persistent checkouts built them:
+  a shared cache was relinked under a running job before (SPEC-351), and copying a `target/`
+  costs gigabytes per run.
 - **`YULIUS_CI_LANES` keeps its default** (slice A): it bounds checkouts per sandbox (each lane
   keeps its own job folders and caches, a disk cost), and the budget now decides the load, so a
   lower default would only make a small project's runs queue behind each other for nothing.
@@ -730,6 +743,174 @@ mode.
   e2e; security skipped, Vidoc 401). Its minor (a deterministic test of the read before each
   merge, with a pause point) and two nits (an assertion that races the background pass, one long
   ADR line) go into slice D's pull request, not after the approval.
+
+### Slice C, follow-up: derived files serialised (after the closing check)
+
+- MQW-003 asked for derived-file conflicts found early and handled without a wasted cycle,
+  serialised or the deterministic step redone. The told-at-once rule above still spent one red
+  candidate run. `[merge_queue] apart = [globs]` (`spec_format::parse_yulius_toml_merge_queue`,
+  doctest; checked in the whole-file parse too) names derived files; `merge_queue::held_apart`
+  (doctest; unit `derived_files_keep_their_changes_apart`: under the same pattern held, under
+  different ones or outside together, nothing declared nothing held) holds a later pull request
+  out of a candidate whose earlier member changes files under the same pattern;
+  `App::hold_apart` reads the integration branch's `yulius.toml` and each head's changed paths.
+  `merge_train::derived_files_are_changed_one_candidate_at_a_time` (#1 and #2 change `gen/`
+  files, #3 another: candidates `train/1+3` then `train/2`, the formed entry names "#2 (with #1,
+  gen/**)"); with the holding undone it fails. An older instance ignores the unknown table.
+- Review round 1 of the follow-up (Fable 5.2, head e885d49ba) approved: no blocker, no major.
+  Its minors, after the approval (tests and documents, and two lines of code): the table's
+  refusals have a unit (`the_merge_queue_table_names_derived_files`: an empty list, 51 globs,
+  `/etc`, `a/../b`, a number, an unknown key, `[[merge_queue]]`, by its own parse and the whole
+  file's; the string form taken); "no candidate fails" reworded to what holds (no other member
+  loses a run; the held one's own candidate still tests the combination); the reason for holding
+  stays in the formed entry, the wait note generic (ADR-0357 says so); the unused `HELD_APART`
+  constant is gone; the module docs and the decisions index name it. `scripts/dev mutants`: 29
+  listed, 20 caught, 0 missed, 0 timed out, 9 unviable (517 s).
+
+### Slice D: a CI run is shorter
+
+- SHR-001: `local_ci::a_sharded_job_runs_its_shards_side_by_side` (two shards of `matrix =
+  "1/2 2/2"` wait for each other's mark, bounded: each says it met the other, the run passes; a
+  failing shard fails the run). This repository's `yulius.toml`: `quality` runs
+  `scripts/dev checks`, `test` runs `scripts/dev test` in two shards; xtask `shard_of` (unit
+  `a_matrix_value_names_a_shard_of_the_tests`) turns `i/n` into `--partition hash:i/n`, the
+  doctests in shard 1. `YULIUS_CI_MATRIX=2/2 scripts/dev test`: 2,444 tests, no doctests.
+- Measured locally (64 CPUs, warm build, load 18): the tests took 161 s in one go (4,840
+  tests), 91 s for `hash:1/2` (2,396) and 91 s for `hash:2/2` (2,444). On the instance: the
+  run of #1381 took 12 min 35 s (`quality` 12 min 34 s with the tests in it) and #1378's
+  `quality` 18 min 7 s; the runs after this change are read in slice E.
+- SHR-002: `preferred_lanes`, `take_lane_preferring` (unit
+  `a_run_takes_the_lane_that_last_built_what_it_builds_on`: a pull request its own previous
+  lane, a candidate its last member's first, then a candidate sharing a member, else the first
+  free; a claimed sandbox none); `CiState::lane_runs` and the job's `[yulius] lane …` line;
+  `local_ci::a_run_takes_the_lane_that_last_built_its_pull_request` (two pull requests in lanes
+  0 and 1; the one in lane 1 pushes first, its run takes lane 1 and says "last taken by pr/N,
+  which this run builds on"). Undone (no preference), it fails.
+- The gain, measured on this repository's test build (`cargo nextest run --workspace
+  --all-features --profile ci --no-run`, one worktree and target directory, 64 CPUs, load about
+  18): building `dev` (a2b6f4b0c) after an unrelated older build (`dev~25`) took 105 s, as long
+  as a cold build (104 s); after a member's build (`dev~1`, 20 Rust files apart across the
+  workspace) it took 87 s, 17 % less. Most of this workspace's test binaries depend on the
+  crates any change touches, so the gain is a part of the build, not all of it; a project whose
+  changes touch fewer crates gains more.
+- Slice C review round 2's minor and nits: the pause point `TrainMemberMerging` and
+  `merge_train::a_member_whose_own_run_fails_during_the_merges_is_not_merged` (#1 merges, #2's
+  own run fails at the point, #2 is not merged, `member_failed`); with only that read undone it
+  fails 3 of 3. The racing assertion is gone; ADR-0357's long line wrapped.
+- ADR-0358; architecture, operations (lanes, shards), development, AGENTS.md, `changes.md`.
+- Measured on the instance (`ci_status`): the five pull request runs before this change took
+  11 min 9 s, 11 min 32 s, 12 min 35 s, 14 min 33 s and 15 min 0 s, `quality` the longest each
+  time. This pull request's first run (head aa08961) took 8 min 39 s: `quality` 6 min 31 s,
+  `test (1/2)` 4 min 18 s, `test (2/2)` 4 min 31 s, `e2e` 8 min 38 s (its share a fifth, 5
+  workers; it gets `cpus = 18` since).
+- Review round 1 of slice D (Fable 5.2, head aa089614e). Request changes, all own code.
+  Answered:
+  - Major: the shard test's two runs (`dev` and #1) could wait on each other's half-admitted
+    shards (reproduced by the reviewer under load and with an admission probe). One lane in that
+    fixture.
+  - Major: the lane test's first lanes depended on which of `dev` and #1 ended first. `dev` and
+    #1 settle before #2 opens. The three tests passed 10 of 10 under `--stress-count 10`, and 10
+    of 10 again beside 32 busy loops.
+  - Minor: a pull request behind `dev` would run `scripts/dev checks` on an xtask without it.
+    `quality` looks for `checks` in `scripts/dev help` and runs `ci` otherwise.
+  - Minor: `e2e` became the longest job at a fifth of the budget; `cpus = 18` (ADR-0358).
+  - Minor: the note named a second-choice lane plainly, and said "built" for a lane only taken.
+    "last taken by …, which this run builds on" for any preferred lane.
+  - Minor: a failed shard stops its sibling: stated in ADR-0358's consequences.
+  - Minor: no candidate test. `merge_train::a_candidates_run_takes_a_lane_of_its_members`; undone
+    (no preference), it and the pull request test fail 3 of 3.
+  - Nits: "three jobs" in ADR-0358; `development.md` names the jobs; `scripts/dev test` names its
+    stage (once in `ci`).
+- Two of this task's own tests failed now and then in the suite after round 1 (seen while
+  checking; neither on dev's CI):
+  - `local_ci::a_job_that_cannot_start_holds_no_slot` (slice A2): 1 suite run in 4, when `b`
+    (the whole budget) asked for admission before `a`, so `a` and `c` both waited by right. A
+    pause point before a job's admission (`Point::CiJobAdmission`, `<reference>/<job>`) holds #1's
+    `b` and `c` until `a` runs: 10 of 10 under `--stress-count 10`.
+  - `merge_train::a_candidate_formed_again_reuses_its_trees_passed_run` (slice C): 1 suite run
+    in 6, when the candidate formed again within the same second got the same commit, and the
+    reuse skipped a run of the identical commit. For a candidate, a passed run of that very
+    commit is a source now (`ci_reuse_tree`). The suite then passed 6 runs of 6.
+- Checks run on this head: `cargo fmt --check`; `cargo clippy --workspace --all-targets -D
+  warnings`; `scripts/check_repository.py`; the unit tests of `yulius-app`, `yulius-domain`,
+  `xtask` (1,173 passed); `local_ci::`, `merge_train::`, `analytics::` (149 passed).
+  `scripts/dev mutants`: 27 listed, 26 caught, 0 missed, 0 timed out, 1 unviable (524 s).
+- Review round 2 of slice D (Fable 5.2, head 2654805ff). Request changes, all own code.
+  Answered:
+  - Major: the candidate-lane test formed its candidate in the pass a run's end starts, while
+    `dev`'s run could take a member's lane (reproduced by the reviewer with a member's run 600 ms
+    slower). `dev` moves and every run settles before anything is armed; of two lanes one then
+    still names a member's run.
+  - Minor: the same-commit reuse is `reuse_source`, unit `a_candidate_on_the_same_commit_reuses_its_run`
+    (a candidate's same commit is a source, a branch's is not, nor a step verdict or a failed run).
+  - Minor: the needs added up to 62 of 56 CPUs; `security` declares `cpus = 1`.
+  - Minor: the admission test released `b` and `c` back to back; `c` asks only once `b`'s reason
+    says it waits for the budget.
+  - Nits: `scripts/dev test` names its stage before the quarantine's listing builds; the note is
+    `lane_note`, unit `the_lane_note_says_whether_the_run_builds_on_it` (second choice included).
+  - The changed tests passed 10 of 10 under `--stress-count 10` beside 32 busy loops, and the
+    `local_ci::` and `merge_train::` suite 141 of 141 twice. On the instance, this pull request's
+    run at 2654805 took 6 min 53 s (`quality` 6 min 52 s, shards 4 min 32 s and 4 min 48 s, `e2e`
+    5 min 24 s with its 18 CPUs), against 11 min 9 s to 15 min 0 s before slice D.
+- Review round 3 of slice D (Fable 5.2, head f07733727) approved with no finding; its CI run
+  passed in 8 min 35 s (`quality` 7 min 37 s, shards 4 min 18 s and 4 min 38 s, `e2e` 5 min
+  23 s). The reviewer saw every job of that run wait 47 to 60 s for admission, `security`'s one
+  CPU too; the instance's admission decides it, read in slice E with the busy hours.
+
+### Slice E: measured before and after
+
+What this task could read itself (`ci_status`, `/internal/version`), and what is left to read on
+the instance: the task's token cannot read `GET /api/analytics/*` (404).
+
+- **Before** (the request's measurement, quartio-v2, 16 Nov 2026): 31 candidates formed, 10
+  merged, 21 dissolved; since 12:00 UTC 10 candidate runs cancelled; CI minutes 588 passed, 526
+  failed, 114 cancelled (52 % of 1,228 on runs that did not pass); opening to merge a median of
+  389 min (00:00 to 08:00) and 250 min (after 16:00); `quality` 13.5 to 18.8 min; jobs waited a
+  median 10 to 11 min to start (ADR-0353's measurement). Yulius: 30 min opening to merge, 3 of 3
+  candidates merged.
+- **After, this repository's runs** (Yulius CI, `ci_status`), the run's own time with its longest
+  job:
+
+  | Head | Change in force | Run | Longest job |
+  |---|---|---|---|
+  | PR #1383 (another task's, SPEC-503) 2309854, 220d5df, c819b47 | before slice D: one `quality` with the tests in it; instance at slices A to A3 | 15 min 0 s, 11 min 32 s, 11 min 9 s | `quality` |
+  | PR #1381 eebe8f3, 8e421a5 | the same | 12 min 35 s, 14 min 33 s | `quality` |
+  | PR #1386 aa08961 | slice D: shards (`e2e` at a fifth) | 8 min 39 s | `e2e` 8 min 38 s |
+  | PR #1386 717b85a, 2654805 | slice D, `e2e` 18 CPUs | 7 min 3 s, 6 min 53 s | `quality` |
+  | PR #1386 f077337 | slice D, `security` 1 CPU | 8 min 35 s (each job waited 47 to 60 s to start) | `quality` 7 min 37 s |
+  | PR #1386 0394bd1, run again | slice D | 5 min 34 s (`quality` 1 min 19 s on a warm checkout) | `e2e` |
+
+  First runs at a new head went from 11 to 15 min to 6.9 to 8.7 min (5.5 min for a run again
+  on a warm checkout): within Yulius's 15 min target for armed-to-merged where a run is all a
+  merge needs (ADR-0357: a passed candidate merges at once), not yet read as armed-to-merged. Merges of an up-to-date pull request reuse the result on `dev` ("not run again", 3 of 3
+  merges in this list).
+- **MSR-001 is met in part**: the CI runs' times before and after are above; armed-to-merged per
+  project, candidates formed, merged and dissolved, and CI minutes by outcome, before and after
+  each slice, are in the instance's audit log and tally, which this task cannot read (the
+  analytics routes answer 404 to its token). The reads below give them.
+- **Not readable from this task, to read on the instance a week after the promotion** (the
+  instance ran main 727df6d on 17 Nov 2026, with slices A to C; slice D waits for a person's
+  promotion):
+  - `GET /api/analytics/merge-queue?sandbox=<id>&from=<day>&to=<day+7>` for quartio-v2 and
+    yulius: `median_arm_to_merge_minutes` (targets 25 and 15), `formed` and `merged` (target
+    merged/formed of at least 0.8), `dissolved_by` and `dissolved_recent` (why), and
+    `ci_minutes.outside_share` (target at most 0.15). The before in the same measure is the same
+    read with `from=2026-11-16&to=2026-11-16` (the queue's numbers come from the audit log), not
+    the opening-to-merge medians above; `ci_minutes` exists only from slice B's arrival on the
+    instance. The Pipeline tab's Merge queue card shows the same.
+  - `GET /api/analytics/ci-load?from=&to=`: the job-minutes waited per hour and the host's busy
+    share, against 648 and 904 job-minutes in hours 18 and 19 of 16 Nov. The 47 to 60 s every
+    job of run c20ac348 waited at its start is read there with the hour's load.
+  - The audit actions `delivery.train.combined` (a member told at once, MQW-003) and
+    `ci.test.quarantined` / `ci.test.released` (flaky tests, ADR-0356).
+- **quartio-v2's part**: issue #1385 names it (read the quarantine in its gate, shard its tests,
+  fix its flaky tests and the derived-file test, `cpus`, Docker networks, fast mode off). The
+  instance's operator forwarded it on 17 Nov 2026, 06:40 UTC: quartio-v2 task #248 carries it
+  (recorded on #1385, comment 6942905039).
+- One `e2e` failure on the way was the infrastructure's, not the change's: run ff906a64 at
+  0394bd1 (a commit of the spec only, on a tree that had passed) failed two tests whose pages
+  never loaded (`net::ERR_NETWORK_CHANGED` on every asset, while Yulius was briefly unreachable);
+  run again once, it passed (traces kept in `$HOME/.cache/yulius-task-479-e2e-net`).
 
 ### Slice A3: the operator's amendment to the admission (its own pull request, first)
 

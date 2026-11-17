@@ -225,6 +225,19 @@ pub trait SandboxIsolation: Send + Sync {
     /// where nothing enforces limits.
     fn ci_jobs_running(&self, _sandbox: &SandboxId, _jobs: u32, _cpus: u32) {}
 
+    /// CI job `job` of `sandbox` is about to start (SPEC-504 CLB-001): its own cgroup, which the
+    /// job joins instead of the sandbox's CI group, so the sandbox's Docker front labels what
+    /// it creates. `None` where nothing groups jobs (no delegation) or the group cannot be made:
+    /// the job then joins the CI group, unlabelled.
+    fn ci_job_started(&self, _sandbox: &SandboxId, _job: &str) -> Option<PathBuf> {
+        None
+    }
+
+    /// CI job `job` of `sandbox` ended, whatever the outcome (SPEC-504 CLB-004): its group goes,
+    /// and the containers and networks it created are removed from the sandbox's running engine
+    /// (volumes and images stay; a stopped engine is not started for it).
+    async fn ci_job_ended(&self, _sandbox: &SandboxId, _job: &str) {}
+
     /// What `sandbox`'s CI jobs and Docker engine use now (SPEC-497 HBA-002); `None` where
     /// nothing measures it.
     fn ci_use(&self, _sandbox: &SandboxId) -> Option<CiUse> {

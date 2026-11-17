@@ -245,6 +245,17 @@ superseding [0140](decisions/0140-isolated-sandboxes-have-no-container-engine-ag
   `docker_restart`), each task told.
   Restarts, give-ways and Docker Needs you are audited and counted per week
   (`/api/analytics/docker`, the Pipeline tab).
+- **What a CI job leaves** ([decision 0359](decisions/0359-a-ci-jobs-containers-and-networks-carry-its-label-and-go-when-it-ends.md)).
+  Each CI job runs in its own cgroup `ci/ci-job-<id>`. The front reads a connecting process's
+  pid (`SO_PEERCRED`) and its cgroup through the host's `/proc`, opened before it joined the
+  sandbox; for a job's connection it reads the requests (`docker_label`) and labels the bodies of
+  container and network creates `yulius.ci.job=<id>` and `yulius.ci.create=<its own value>`
+  (which tells a label inherited from an image), copying all else, and turns to plain copying
+  at a hijack or upgrade, a broken framing or anything that cannot become a request. Every other caller's bytes are only copied. The job's end
+  (whatever the outcome, and a restart's recovery) and the upkeep's sweep (every 30 s, first
+  after a start; jobs whose group has no process) remove the labelled containers, forced with
+  their volumes kept, then the networks, through the running engine's control socket; a label
+  inherited from an image stays. Each removal is audited and counted on the Pipeline tab.
 - **Start on demand.** The first connection starts the engine: `yulius sandbox-exec --engine`
   joins `sandboxes/<sandbox>/engine/inside` (the engine's limits stay on `engine`, out of its
   view, ADR-0339) and execs `bwrap`, then `yulius sandbox-host engine`
@@ -308,6 +319,7 @@ superseding [0140](decisions/0140-isolated-sandboxes-have-no-container-engine-ag
 flowchart LR
   subgraph NS["Sandbox user + network namespace"]
     R["run: agent, Superagent, Shell, CI job"] -->|"/run/yulius/docker/docker.sock"| H["Docker front (beside the holder)"]
+    J["CI job (cgroup ci/ci-job-id)"] -->|"creates labelled yulius.ci.job=id"| H
     H -->|"first connection: sandbox-exec --engine → bwrap"| E["sandbox-host engine → dockerd"]
     H -->|"splice"| E
     E --> C["containers (engine seccomp, engine/ cgroup)"]
@@ -315,6 +327,7 @@ flowchart LR
   end
   T --> S["slirp4netns (host loopback off)"] --> I["Internet"]
   M["server: disk upkeep"] -->|"running engine only: prune build cache, unused images"| E
+  X["server: a job's end, upkeep sweep"] -->|"running engine only: remove ended jobs' labelled containers, networks"| E
   K["server: upkeep tick"] -->|"start / restart the front"| H
   K -->|"bind-docker: move the directory into runs without it"| R
 ```
@@ -1428,6 +1441,9 @@ request as it is:
   leaves it to the candidate (MQW-001); a candidate formed again on the same base with the same
   members takes its tree's passed run (`App::ci_reuse_for_candidate`); a failed candidate waits
   for its members' own runs before it is bisected;
+- a pull request that changes files under a glob of the integration branch's `[merge_queue]
+  apart` (derived files) that an earlier member also changes is held out of the candidate and
+  waits for the next (`merge_queue::held_apart`, SPEC-497 MQW-003);
 - a red candidate of n ≥ 2 is formed again from its first ⌈n/2⌉; when that leaves out exactly one
   member and the others then pass without it on the same base, that member's armed merge ends at
   once, naming both runs (MQW-003, `delivery.train.combined`); a red one of one ends that armed
@@ -3703,6 +3719,10 @@ it error, and the thrown-away run's kind and time are kept for the CI minutes (a
 written when a run ends, `ci_minutes`; the dispatcher also keeps the host's CI load once a
 minute, `ci_load`, read by hour at `GET /api/analytics/ci-load`)
 ([decision 0354](decisions/0354-a-job-that-fails-for-the-infrastructure-runs-again-once-by-itself.md)).
+The dispatcher keeps each lane's last run (`CiState::lane_runs`); a run takes the free lane whose
+checkouts last built what it builds on (`preferred_lanes`: a candidate's members' own runs, a pull
+request's previous run), and each job's output names it
+([decision 0358](decisions/0358-tests-run-in-shards-and-a-run-starts-from-the-build-it-builds-on.md)).
 A failed job's kept failing tests are recorded (`ci_test_failures`, with the run's commit); one
 that failed in the same job on two pull requests within 48 hours, at heads whose merge bases are
 all on the integration branch (`GitPort::merge_bases`), while the integration branch did not fail it

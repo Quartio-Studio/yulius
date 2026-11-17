@@ -1004,8 +1004,9 @@ from a sandbox, and no daemon needs to run on the host.
   running server. It prints one plain line per check and exits 0 only when
   sandboxes get Docker: a run older than the engine gets the socket, its refusal names the reason,
   then `docker run --rm hello-world`, a `docker build` and a two-service `docker compose up` in that
-  run, a recreated socket, and `DOCKER_HOST` in a new run. It needs Docker Hub (`hello-world`,
-  `busybox`).
+  run, a recreated socket, and `DOCKER_HOST` in a new run; last, a CI job in its own group whose
+  container and network carry its label (an agent's beside it none), and whose end removes only
+  the job's (SPEC-504). It needs Docker Hub (`hello-world`, `busybox`).
 
 - **What it is.** On the first connection to the sandbox's socket, the sandbox's Docker front
   starts `dockerd` as root of the sandbox's user namespace (not the host's): in the sandbox's
@@ -1090,6 +1091,21 @@ from a sandbox, and no daemon needs to run on the host.
   For an engine that did not start, it gives the last lines of
   `<data>/runtime/sandboxes/<sandbox>/engine.log`. The front's own log is `docker-front.log`
   beside it.
+- **What CI jobs leave** (SPEC-504, ADR-0359). Each CI job runs in its own cgroup
+  (`…/sandboxes/<sandbox>/ci/ci-job-<job id>`), and the front labels the containers and networks
+  it creates `yulius.ci.job=<job id>` (`docker inspect -f '{{index .Config.Labels
+  "yulius.ci.job"}}' <container>`), with `yulius.ci.create` holding a value of that create's
+  own (a container made from an image committed from a job's container carries its image's
+  value, and is kept). When the job ends, whatever the outcome, Yulius removes them
+  from the running engine (containers forced, their volumes kept); every 30 s, and first after a
+  start, the upkeep removes those of jobs whose group has no process. The journal says `removed
+  what CI jobs left in the sandbox's Docker engine` with the counts and `job-end` or `sweep`; the
+  Pipeline tab's Docker card counts them per week (`GET /api/analytics/docker`: `ci_containers`,
+  `ci_networks`, `ci_swept`). A sweep that keeps finding leftovers means jobs end while the engine
+  is stopped or the server restarts often. Agents' containers, images and volumes are never
+  touched; nothing is labelled without cgroup delegation, or by a front an older build started
+  (it is replaced at its first quiet moment). A project's own test harness should still clean up
+  after each test: Yulius's removal is the backstop for a job that is killed.
 - **A full front** (SPEC-494, ADR-0344). The front holds at most 256 connections. At the limit it
   closes the longest-idle one (idle 300 s or more) for a new call; with every connection active the
   call gets "the sandbox's Docker front holds all of its connections …". It ends a connection whose
@@ -1554,7 +1570,16 @@ involved.
   ([ADR-0356](decisions/0356-a-test-failing-on-two-pull-requests-is-quarantined-with-an-issue.md)).
 - `YULIUS_CI_LANES` (host-sized, a [resource limit](#resource-limits); 2 below 32 CPUs) runs of one sandbox take a checkout at once; the CI budget, not the lanes, decides how many of their jobs run. Each lane past the first
   keeps its own job checkouts and caches (`ci/jobs/<job>[.<n>]@<lane>`, `ci/cache/<job>[.<n>]@<lane>`), so
-  budget its disk too.
+  budget its disk too. A run takes the free lane whose checkouts last built what it builds on: a
+  merge candidate's run a lane of its members' own runs, a pull request's run the lane of its
+  previous head's. Each job's output names it (`[yulius] lane 1, last taken by pr/12, which
+  this run builds on`; ADR-0358).
+- **Shards**: a job split with `matrix = "1/2 2/2"` runs one job per value side by side, each in
+  its own checkout, with the value in `YULIUS_CI_MATRIX`; the run passes only when every shard
+  passed. The test runner reads the shard, for example
+  `cargo nextest run --partition "hash:$YULIUS_CI_MATRIX"` (or `pytest-split`'s `--group`). Keep
+  the other checks in a job of their own, so the longest job is shorter
+  ([ADR-0358](decisions/0358-tests-run-in-shards-and-a-run-starts-from-the-build-it-builds-on.md)).
 
 **Moving a repository off GitHub Actions** (the onboarding step; agents use the `ci_setup` tool):
 

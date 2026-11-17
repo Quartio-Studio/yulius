@@ -6,6 +6,32 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-17
 
+- A CI job leaves nothing behind in Docker (SPEC-504 pull request 1, task #486,
+  [ADR-0359](decisions/0359-a-ci-jobs-containers-and-networks-carry-its-label-and-go-when-it-ends.md)):
+  each CI job runs in its own cgroup, the sandbox's Docker front labels the containers and
+  networks it creates `yulius.ci.job=<id>`, and Yulius removes them when the job ends (passed,
+  failed, cancelled, timed out, or ended by a restart) and in an upkeep sweep every 30 s, first
+  after a start. Agents' containers, images and volumes are never touched. The Pipeline tab's
+  Docker card counts what was removed per week; `yulius doctor --docker-smoke` proves it on a host.
+
+- Derived files are changed one merge candidate at a time (SPEC-497 MQW-003, task #479,
+  [ADR-0357](decisions/0357-a-merge-candidate-is-decided-by-its-own-run.md)): a project names
+  them in `yulius.toml` (`[merge_queue] apart = ["skills/defaults/", "Cargo.lock"]`), and two
+  armed pull requests that both change files under one of those globs never share a candidate;
+  the later waits for the next, so no other member loses a run to how they combine.
+- SPEC-497 (task #479) is done: its Evidence keeps the numbers before (quartio-v2, 16 Nov 2026)
+  and after (this repository's first pull request runs: 11 to 15 min before slice D, 6.9 to 8.7
+  min after) and names the reads that show the merge queue's targets on the instance a week after
+  the promotion; the targets themselves are not read yet. quartio-v2's own part is issue #1385,
+  carried by its task #248. ADR-0353 gained its Alternatives.
+- A CI run is shorter (SPEC-497 slice D, task #479,
+  [ADR-0358](decisions/0358-tests-run-in-shards-and-a-run-starts-from-the-build-it-builds-on.md)):
+  a run takes the free lane whose checkouts last built what it builds on (a merge candidate its
+  members' own runs', a pull request its previous head's), and each job's output names it.
+  This repository's tests run in two shards (`test (1/2)`, `test (2/2)`, nextest hash
+  partitions) beside `quality`, which runs every other check (`scripts/dev checks`); a
+  project shards a job the same way with `matrix = "1/2 2/2"`. A merge candidate's member whose
+  own run fails while the members before it merge is not merged (a pause point proves it).
 - Codex is accepted (SPEC-503 slice D, task #485, `F 2026-11-16 Codex`: MrFishPL accepted outside
   pull request #1146 by studenciak00owl): the web UI offers Codex. Add subscription chooses the
   agent first, Claude Code (sign in here or paste a token) or Codex (ChatGPT sign-in, import an

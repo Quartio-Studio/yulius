@@ -53,6 +53,9 @@ pub const DOCKER_ANSWERED: &str = "Yulius: a person answered this sandbox's shar
 pub const DOCKER_RESTARTED: &str = "sandbox.docker.restarted";
 /// The audit action of connections that gave way at a front's limit; its detail is how many.
 pub const DOCKER_GAVE_WAY: &str = "sandbox.docker.gave_way";
+/// The audit action of what CI jobs left in a sandbox's engine and Yulius removed (SPEC-504
+/// CLB-006); its detail is `<containers> <networks> <job-end|sweep>`.
+pub const DOCKER_CI_LEFTOVERS: &str = "sandbox.docker.ci_leftovers";
 
 /// The Monday (UTC) of the week of `ms`, `YYYY-MM-DD`.
 fn week_of(ms: i64) -> String {
@@ -324,6 +327,7 @@ impl App {
                     ),
                 ),
                 "gave_way" => (DOCKER_GAVE_WAY, event.count.to_string()),
+                "ci_leftovers" => (DOCKER_CI_LEFTOVERS, event.detail.clone()),
                 _ => continue,
             };
             if let Err(err) = self
@@ -344,7 +348,8 @@ impl App {
     }
 
     /// `GET /api/analytics/docker` (SPEC-494 DFJ-013): front restarts, connections that gave way
-    /// and Needs you naming the sandbox's Docker, per week, over the range.
+    /// and Needs you naming the sandbox's Docker, and what CI jobs left that Yulius removed
+    /// (SPEC-504 CLB-006), per week, over the range.
     ///
     /// # Errors
     /// An invalid range, a sandbox the caller cannot see, store failures.
@@ -361,6 +366,7 @@ impl App {
         let actions = [
             DOCKER_RESTARTED,
             DOCKER_GAVE_WAY,
+            DOCKER_CI_LEFTOVERS,
             crate::needs_you::DOCKER_NEEDS_YOU,
         ];
         let mut weeks: std::collections::BTreeMap<String, DockerWeek> =
@@ -392,6 +398,17 @@ impl App {
                             .and_then(|d| d.parse::<u64>().ok())
                             .unwrap_or(0);
                     }
+                    DOCKER_CI_LEFTOVERS => {
+                        let detail = entry.detail.as_deref().unwrap_or_default();
+                        let mut words = detail.split_whitespace();
+                        let mut number = || words.next().and_then(|w| w.parse::<u64>().ok());
+                        let (containers, networks) = (number().unwrap_or(0), number().unwrap_or(0));
+                        row.ci_containers += containers;
+                        row.ci_networks += networks;
+                        if detail.ends_with(" sweep") {
+                            row.ci_swept += containers + networks;
+                        }
+                    }
                     _ => row.needs_you += 1,
                 }
             }
@@ -402,6 +419,9 @@ impl App {
             restarts: weeks.iter().map(|w| w.restarts).sum(),
             gave_way: weeks.iter().map(|w| w.gave_way).sum(),
             needs_you: weeks.iter().map(|w| w.needs_you).sum(),
+            ci_containers: weeks.iter().map(|w| w.ci_containers).sum(),
+            ci_networks: weeks.iter().map(|w| w.ci_networks).sum(),
+            ci_swept: weeks.iter().map(|w| w.ci_swept).sum(),
             weeks,
         })
     }
