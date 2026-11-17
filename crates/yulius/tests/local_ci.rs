@@ -3550,6 +3550,115 @@ async fn a_kill_without_a_kill_for_memory_is_not_run_again() -> TestResult {
     Ok(())
 }
 
+/// SPEC-497 OFC-002: a test that fails in the runs of two different pull requests is quarantined
+/// at once with one issue, the job that found it says so, a later job of the project is told it
+/// in its environment, and closing the issue ends the quarantine. The failing test is never run
+/// again by Yulius (each pull request's job ran once).
+#[tokio::test]
+async fn a_test_failing_on_two_pull_requests_is_quarantined_with_an_issue() -> TestResult {
+    let block = "printf \"        FAIL [   0.004s] (1/1) app tests::flaky\\n  stdout ───\\n\\n    \
+                 assertion failed: the race lost\\n\\n\"; exit 100";
+    let f = fixture_with(false, |_| {
+        format!(
+            "[[ci.jobs]]\nname = \"quality\"\ncommand = 'echo \"q=[$YULIUS_CI_QUARANTINE_NEXTEST]\"; \
+             if [ -e feature.txt ] || [ -e two.txt ]; then {block}; fi'\n"
+        )
+    })
+    .await?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    assert!(
+        f.h.github.issues.lock().map_err(|_| "lock")?.is_empty(),
+        "one pull request is not enough"
+    );
+    // A second pull request, from dev, fails the same test.
+    git(&f.work, &["checkout", "-q", "-b", "feat/two", "origin/dev"])?;
+    std::fs::write(f.work.join("two.txt"), "two\n")?;
+    git(&f.work, &["add", "-A"])?;
+    git(&f.work, &["commit", "-q", "-m", "two"])?;
+    git(&f.work, &["push", "-q", "origin", "feat/two"])?;
+    let two = git(&f.work, &["rev-parse", "HEAD"])?;
+    git(&f.work, &["checkout", "-q", "feat/one"])?;
+    if let Ok(mut pulls) = f.h.github.pulls.lock() {
+        pulls.push(GhPull {
+            number: 2,
+            html_url: "https://github.test/acme/app/pull/2".into(),
+            title: "Two".into(),
+            state: "open".into(),
+            merged: false,
+            base: "dev".into(),
+            head: "feat/two".into(),
+            head_sha: two,
+            mergeable: None,
+            behind: false,
+            from_fork: false,
+            merge_commit_sha: None,
+        });
+    }
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    let issues = f.h.github.issues.lock().map_err(|_| "lock")?.clone();
+    assert_eq!(issues.len(), 1, "{issues:?}");
+    assert_eq!(
+        issues[0].1.title,
+        "Flaky test quarantined: app tests::flaky"
+    );
+    let overview = f.get("/api/sandboxes/s1/ci").await?;
+    let second = overview["runs"]
+        .as_array()
+        .ok_or("runs")?
+        .iter()
+        .find(|r| r["reference"] == "pr/2")
+        .ok_or("pr/2's run")?
+        .clone();
+    let job = run_jobs(&f, &second)
+        .await?
+        .into_iter()
+        .next()
+        .ok_or("job")?;
+    assert_eq!(job["state"], "failed", "{job}");
+    let output = job["output"].as_str().unwrap_or_default();
+    assert!(
+        output.contains("`app tests::flaky` failed in the runs of #1, #2 within 48 hours")
+            && output.contains("quarantined as a flaky test (issue #101)"),
+        "{output}"
+    );
+    // The next job of the project is told it.
+    let later = f.push_dev("later.txt", Some("later\n"))?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    let overview = f.get("/api/sandboxes/s1/ci").await?;
+    let dev_run = overview["runs"]
+        .as_array()
+        .ok_or("runs")?
+        .iter()
+        .find(|r| r["sha"] == later.as_str())
+        .ok_or("dev's run")?
+        .clone();
+    let dev_job = run_jobs(&f, &dev_run)
+        .await?
+        .into_iter()
+        .next()
+        .ok_or("job")?;
+    assert!(
+        dev_job["output"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("q=[(binary_id(app) & test(=tests::flaky))]"),
+        "{dev_job}"
+    );
+    // Closing the issue ends the quarantine.
+    f.h.github
+        .closed_issues
+        .lock()
+        .map_err(|_| "lock")?
+        .insert(101, Vec::new());
+    f.h.app.ci_release_quarantines().await;
+    let left = f.h.store.quarantined_tests(None).await?;
+    assert!(left.is_empty(), "{left:?}");
+    Ok(())
+}
+
 /// The jobs of `run`, from its detail, in order.
 async fn run_jobs(f: &Fixture, run: &Value) -> BoxResult<Vec<Value>> {
     let id = run["id"].as_str().ok_or("id")?;

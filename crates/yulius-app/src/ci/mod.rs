@@ -38,6 +38,7 @@ mod disk_wait;
 mod environment;
 mod exec;
 mod findings;
+mod flaky;
 pub mod hygiene;
 pub(crate) mod playground;
 mod prove;
@@ -1518,6 +1519,8 @@ impl App {
         }
         self.cd_prune().await;
         self.prune_spans(Timestamp(now)).await;
+        // Quarantined tests whose issue was closed go back into the runs (SPEC-497 OFC-002).
+        self.ci_release_quarantines().await;
     }
 
     /// Starts the oldest queued runs of every sandbox, as many as it has free lanes

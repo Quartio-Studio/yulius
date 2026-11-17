@@ -144,18 +144,23 @@ fn execute(task: &str) -> io::Result<()> {
             )
         }
         "test" => {
-            run(
-                &cargo,
-                &[
-                    "nextest",
-                    "run",
-                    "--locked",
-                    "--workspace",
-                    "--all-features",
-                    "--profile",
-                    "ci",
-                ],
-            )?;
+            // Tests Yulius CI quarantined as flaky are left out (SPEC-497 OFC-002).
+            let quarantined = std::env::var("YULIUS_CI_QUARANTINE_NEXTEST").unwrap_or_default();
+            let filter = format!("not ({quarantined})");
+            let mut args = vec![
+                "nextest",
+                "run",
+                "--locked",
+                "--workspace",
+                "--all-features",
+                "--profile",
+                "ci",
+            ];
+            if !quarantined.trim().is_empty() {
+                println!("quarantined as flaky, left out: {quarantined}");
+                args.extend(["-E", filter.as_str()]);
+            }
+            run(&cargo, &args)?;
             run(&python, &["scripts/doctests.py"])
         }
         "deps" => {

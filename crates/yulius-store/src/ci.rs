@@ -1130,6 +1130,89 @@ mod tests {
         Ok(())
     }
 
+    /// SPEC-497 OFC-002: a test's failures are read by sandbox, job and time and forgotten past
+    /// their keep; a test is quarantined once, listed per sandbox or in all, and released.
+    #[tokio::test]
+    async fn failing_tests_and_the_quarantine_are_kept() -> TestResult {
+        let store = SqliteStore::open_in_memory()?;
+        let s1 = SandboxId::parse("s1")?;
+        let tests = vec!["app tests::flaky".to_owned(), "app tests::other".to_owned()];
+        store
+            .record_test_failures(
+                &s1,
+                "quality",
+                ("pr/1", "r1"),
+                &tests,
+                Timestamp(10),
+                Timestamp(0),
+            )
+            .await?;
+        store
+            .record_test_failures(
+                &s1,
+                "quality",
+                ("pr/2", "r2"),
+                &tests[..1],
+                Timestamp(20),
+                Timestamp(0),
+            )
+            .await?;
+        store
+            .record_test_failures(
+                &s1,
+                "e2e",
+                ("pr/3", "r3"),
+                &tests[..1],
+                Timestamp(30),
+                Timestamp(0),
+            )
+            .await?;
+        let failed = store
+            .test_failures(&s1, "quality", "app tests::flaky", Timestamp(0))
+            .await?;
+        let refs: Vec<&str> = failed.iter().map(|f| f.reference.as_str()).collect();
+        assert_eq!(refs, ["pr/1", "pr/2"], "only this job's");
+        let since = store
+            .test_failures(&s1, "quality", "app tests::flaky", Timestamp(15))
+            .await?;
+        assert_eq!(since.len(), 1);
+        // A later record forgets what is older than its keep.
+        store
+            .record_test_failures(
+                &s1,
+                "quality",
+                ("pr/4", "r4"),
+                &tests[..1],
+                Timestamp(40),
+                Timestamp(25),
+            )
+            .await?;
+        let kept = store
+            .test_failures(&s1, "quality", "app tests::flaky", Timestamp(0))
+            .await?;
+        assert_eq!(kept.len(), 1, "{kept:?}");
+        let entry = Quarantined {
+            sandbox_id: s1.clone(),
+            test: "app tests::flaky".into(),
+            job_key: "quality".into(),
+            issue: Some((101, "https://github.test/acme/app/issues/101".into())),
+            since: Timestamp(50),
+        };
+        assert!(store.quarantine_test(&entry).await?);
+        assert!(!store.quarantine_test(&entry).await?, "once");
+        assert_eq!(store.quarantined_tests(Some(&s1)).await?, [entry.clone()]);
+        assert!(
+            store
+                .quarantined_tests(Some(&SandboxId::parse("s2")?))
+                .await?
+                .is_empty()
+        );
+        assert_eq!(store.quarantined_tests(None).await?.len(), 1);
+        store.release_test(&s1, "app tests::flaky").await?;
+        assert!(store.quarantined_tests(None).await?.is_empty());
+        Ok(())
+    }
+
     /// SPEC-497 (review round 2): the jobs waiting to start are the queued jobs of running runs;
     /// a queued run's jobs and running jobs are not counted.
     #[tokio::test]
