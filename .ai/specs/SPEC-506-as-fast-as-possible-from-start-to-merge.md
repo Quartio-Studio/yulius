@@ -92,7 +92,7 @@ No rule names a project's fast checks as one command.
 **C7. CI length here.** Recent pull-request runs: 5 to 10 minutes; `quality` (the whole gate but
 the tests) is the long pole at 5 to 10 minutes, the two test shards about 4.5, e2e about 5.2. A
 dev head whose tree a pull request already passed is not run again (tree reuse, in force). The
-product project's 21 jobs pinned to 3 CPUs are its `yulius.toml`.
+product project's CI (21 jobs, only `engine` naming `cpus = 3`) is its `yulius.toml`.
 
 ### Candidates: finding, price, expected gain
 
@@ -101,9 +101,9 @@ product project's 21 jobs pinned to 3 CPUs are its `yulius.toml`.
 | 1 | No request for changes for CI alone | yes: the merge still needs green CI on the exact head; a failure the change causes stays a finding; a fix of it falls under ADR-0345 (5 % of such re-reviews asked, 23 of 457) | about 1 to 2 min (5 % of repeated blocks × 23 min, plus rounds that waited for a run) | high on the price, low on the size |
 | 2 | Author proves each fix | yes: adds checks, removes none | 0.2 rounds × 23 min ≈ 4 to 5 min if half of the 45 % are caught | medium |
 | 3 | Mutation beside the review, faster | yes: the same mutants are tested and every missed one is fixed before the merge; the reviewer no longer reads the result in round 1, but judges test strength itself and missed mutants are fixed anyway | the run's wall time on the first ask, less one more CI run after an approving round 1: about 25 min here (#479: 5 runs, 135 min), up to 30 in quartio-v2; a whole change's run 1.8 times as fast (measured) | high on "beside", measured on the speed-up |
-| 4 | Stop needless re-approvals | yes: `delivery_merge` still counts the lines and refuses above 20 | up to 0.6 rounds × 5 to 15 min; the share these messages explain is the person's number | medium |
+| 4 | Stop needless re-approvals | yes: `delivery_merge` still counts the lines and refuses above 20 | measured by the person afterwards: about 8 rounds in 132 pull requests (0.06 a pull request, about 4 reviewer-minutes each): under half a minute a pull request | high (measured) |
 | 5 | Whole suites in CI only | yes | part of 13 % of task time; not measurable from here | low |
-| 6 | Cheap checks before the commit | yes | one CI run (5 to 15 min) for each pull request a format or contract check would have failed (5 of 7 quartio-v2 pull requests on one afternoon) | medium |
+| 6 | Cheap checks before the commit | yes | one CI run (5 to 15 min) for each pull request a format or contract check would have failed (5 of 7 quartio-v2 pull requests on one afternoon; over the whole day 1 of 90 runs failed on the format check, which quartio-v2 already runs first: the gain there is small) | medium |
 | 7 | CI shorter by CPUs | yes where only CPUs decide; measure | quality 7 to 10 → about 5 min a run, 2 to 4 runs a pull request | medium until measured |
 | 8 | Same reviewer continues | not known | rounds ask again 12 % against 33 % | replay needed: the person's |
 | 9 | Smaller changes | not known | rounds 2.0 (≤ 20 lines) to 4.1 (> 300) | not known |
@@ -222,62 +222,59 @@ product project's 21 jobs pinned to 3 CPUs are its `yulius.toml`.
   Rust gates, no `[commands] quick` key yet.
 - **ADR-0362** records FST-001 to FST-003: what decides a round (the code, not CI; the count, not
   the message).
-- Open: how many of the 20 % re-approving rounds followed one of the messages of C4 (asked of
-  the person; FST-001 is free whatever the answer).
+- The 20 % re-approving rounds, the person's split (132 pull requests, 420 rounds, 15 Nov 22:00
+  to 17 Nov 16:30 UTC): 86 rounds followed an approval (13 asked for changes), a median 3.0
+  reviewer-minutes each, 2.6 a pull request. A fix over 20 product lines 21, a conflict 12, one
+  of C4's notices 11 (8 of 20 lines or fewer), `delivery_merge` refusing a small change by
+  ADR-0345's deliberate counting rules 11, documents-only closing commits 10, the author asking
+  the same reviewer instead of trying the approved head 10, new work 3, a `yulius.toml` that did
+  not parse 2, unclear 6. PR 1's notices remove about 8 rounds in 132 pull requests. The counting
+  rules stay as ADR-0345 chose them; the rule "after an approval … merge without another round:
+  `delivery_merge` with the approved head counts them" is already in every review and delivery
+  document, and the 3 rounds of authors not trying it since the bound went live are not worth
+  another change.
 
 ## Companion requests (for the person to start in each project)
 
-What every project gets from this task's skills without a change of its own: CI alone is no
-request for changes; the author proves each fix; mutation testing beside the first review and on
-each fix's lines; the quick checks before each published commit; Yulius's messages keep an
-approval across 20 product lines. What only the project itself can change:
+Corrected with the person's day-long numbers (17 Nov, 03:00 to 21:30 UTC); the first versions
+leaned on one afternoon.
 
-### quartio-v2
+### quartio-v2 (started as #273; the mutation part is #261's)
 
-> Request: "Make the cheap checks one command and keep whole suites in CI (SPEC-506 of Yulius)."
->
-> - Name one quick command in AGENTS.md (and in `scripts/`) that runs, in seconds, the format
->   check, the repository-contract test and the palette test, and run it first in the CI job that
->   runs them now. Evidence: on the afternoon of 17 Nov, 5 of 7 pull requests had a failed Yulius
->   CI run on their own change (a format check, a repository-contract test, a palette test), each
->   a whole CI run of 8 to 15 minutes.
-> - AGENTS.md: the whole web suite runs in CI only (its two hash shards, 7 to 8 minutes each); a
->   task runs the tests its change touches. #253 ran the whole suite locally: 22.5 minutes at
->   `nice 19` with 4 threads. Where a local run is needed (reproducing a CI failure), it uses the
->   session's budget (`YULIUS_CPUS`, 22), not 4 threads at `nice 19`.
-> - `scripts/mutants` (ADR 0256, #261): it starts when the first review is asked for and runs
->   beside it; after a later round's fix it runs on that fix's lines alone. 17 Nov: 23 runs,
->   757 minutes, 1.2 minutes a mutant one at a time, 0.4 of 22 CPUs used, up to three runs a pull
->   request (#249: 40, 48 and 71 minutes). Check that #261's side-by-side run uses the budget.
+- Over the day 11 of 90 CI runs failed: nine on one test each, one on the format check (known
+  after 9 seconds: its gate already runs it first), one on Clippy. The cheap checks are not the
+  cost.
+- 55 % of the time of local `cargo test` commands is building (a median 12 s of tests in a 53 s
+  command; 666 commands, 893 minutes). Two tasks built cold with `CARGO_INCREMENTAL=0` and a target
+  directory of their own (91 commands, 236 minutes), as the sandbox's shared memory still tells
+  them. 22 commands ran a whole test binary or library locally (125 minutes).
+- `scripts/mutants` (ADR 0256): side by side 21 minutes against 103 serial on the same commit,
+  the same 50 caught (#261, 21:00 UTC); it runs beside the review and then on a fix's lines.
 
-### product
+### product (no task)
 
-> Request: "CI jobs use the CPUs the host has (SPEC-506 of Yulius)."
->
-> - CI is 46 % of its tasks' active time; its runs have 21 jobs pinned to `cpus = 3`. Remove the
->   pins where a job's length is only a matter of CPUs (a build, a test runner with threads), so
->   CI's measured use decides when a job starts (ADR-0350, ADR-0353 of Yulius), and give its
->   longest jobs shards (`matrix = "1/2 2/2"`, ADR-0358). Measure a run before and after on
->   the same commit; keep a pin only where a tool misbehaves with more CPUs.
+- Only `engine` names `cpus = 3`; the other 20 jobs take an equal share of the run's CPUs, so
+  nothing is pinned that could be unpinned. A run is as long as `package (deployer)` (a median
+  7.0 minutes; `engine` 4.7) and waits up to 15 minutes at the 90th percentile when the nightly
+  tasks start together. Its tasks wait for a person far longer than for CI.
 
-### VistulaValley
+### VistulaValley (started as #10)
 
-> Request: "Run the whole gate in CI only (SPEC-506 of Yulius)."
->
-> - 16 local gate runs in two sessions took 59 minutes (17 Nov). AGENTS.md: while iterating, run
->   the checks the change touches; the whole gate is Yulius CI's (it runs while the reviewer
->   reads), except to reproduce a CI failure. Name one quick command (format and repository
->   checks, seconds) and run it before each published commit.
+- 20 whole-gate runs took 74 of 121 minutes of local checks (a median 3.6 minutes each); CI ran
+  27 times at a median 1.5 minutes. #10 moves the whole gate to CI and names the quick checks.
 
 ## Report to the person
+
+Everything below is merged into `dev`. The instance runs `main`: none of these rules, notices or
+numbers is in force until a person promotes `dev` and the instance updates.
 
 ### Built (merged into dev, each on green Yulius CI)
 
 | Pull request | What changed | Expected per pull request | How sure |
 |---|---|---|---|
-| #1394 (PR 1) | Yulius's notices after a red run, a failed or dropped merge and on a green head say both cases: with an approval, `delivery_merge` with the approved head (it carries across 20 product lines); with none, review first. A reviewer does not ask for changes because of CI alone. The author proves each fix (the test that fails without it, the whole last report checked, mutation on the fix's lines) before asking again. ADR-0362. | fewer needless re-approvals (up to 0.6 rounds × 5 to 15 min); about 1 to 2 min from CI-only blocks; 4 to 5 min if half the "untested or partial fix" re-blocks are caught | medium |
+| #1394 (PR 1) | Yulius's notices after a red run, a failed or dropped merge and on a green head say both cases: with an approval, `delivery_merge` with the approved head (it carries across 20 product lines); with none, review first. A reviewer does not ask for changes because of CI alone. The author proves each fix (the test that fails without it, the whole last report checked, mutation on the fix's lines) before asking again. ADR-0362. | fewer needless re-approvals: about 8 rounds in 132 pull requests, under half a minute a pull request (the person's split); about 1 to 2 min from CI-only blocks; 4 to 5 min if half the "untested or partial fix" re-blocks are caught | medium |
 | #1396 (PR 2) | Mutation testing starts with the first review and runs beside it, then on each fix's lines alone. `scripts/dev mutants` runs one job per 8 mutants (2 to 7, a third of the session's CPUs, within them). ADR-0347 amended. | the run's wall time on the first ask (11 % of this repository's task time, 33 % of quartio-v2's, a median 30 min there), less one CI run after an approving round 1; a whole change's run 1.8 times as fast | high on "beside", measured on jobs |
-| #1397 (PR 3) | `scripts/dev quick` (16 s) runs first in `quality`; every project's author runs its quick checks before each published commit; the checker's Python tests run beside the Rust gates (no more CPU). ADR-0363. | a format or contract failure costs seconds instead of a CI run (5 to 15 min); `quality` 138 → 108 to 114 s after a small change | medium |
+| #1397 (PR 3) | `scripts/dev quick` (16 s) runs first in `quality`; every project's author runs its quick checks before each published commit; the checker's Python tests run beside the Rust gates (no more CPU). ADR-0363. | a format or contract failure costs seconds instead of a CI run (5 to 15 min), rare: 1 of 90 quartio-v2 runs on 17 Nov failed on its format check; `quality` 138 → 108 to 114 s after a small change | medium |
 | #1400 (PR 4) | The Review card and `GET /api/analytics/reviews` count re-reviews after a request for changes that ask again, and rounds after an approval (re-approvals) | the numbers of this request readable in the product a week later | — |
 
 ### Measured on a busy host
@@ -325,14 +322,16 @@ approval across 20 product lines. What only the project itself can change:
 - 10, fewer defects at the first review: needs a study of what first reviews find (your data).
 - 11, a cap on rounds or no re-review after a small fix: costs 4 to 25 % of requests for changes
   (the request's replay); yours to decide.
-- The 20 % re-approving rounds: your split by cause (asked 17 Nov) says how much of them PR 1's
-  notices remove.
+- The 20 % re-approving rounds: by your split, PR 1's notices remove about 8 rounds in 132 pull
+  requests (under half a minute a pull request); the rest are a fix over 20 lines, a conflict, or
+  ADR-0345's counting rules, which stay (Decisions).
 
 ### Companion requests (for you to start in each project)
 
-See the spec's "Companion requests" section: quartio-v2 (one quick command; whole suites in CI
-only; `scripts/mutants` beside the review within the budget), product (21 jobs pinned to 3 CPUs),
-VistulaValley (the whole gate in CI only; a quick command).
+Started by the person on 17 Nov: quartio-v2 #273 (local builds and whole local test runs) and
+VistulaValley #10 (the whole gate in CI only, a quick command); the mutation part went to
+quartio-v2 #261, whose first side-by-side run took 21 minutes against 103 serial on the same
+commit, with the same outcomes. product: no task (see the corrected request above).
 
 ### How to read the numbers a week later
 
