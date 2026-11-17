@@ -1219,7 +1219,15 @@ async fn a_typed_email_outlives_sign_ins_until_it_is_removed() -> TestResult {
     )
     .await?;
     assert_eq!(removed.status, StatusCode::OK, "{}", removed.body);
-    assert!(removed.body["email"].is_null(), "{}", removed.body);
+    // The typed address is gone. A background usage round may already have asked Claude and
+    // written its answer before this answer was read (1 in 22 runs on dev, 2026-11-17): the
+    // address shown is then Claude's, never the typed one.
+    assert_eq!(removed.body["email_typed"], false, "{}", removed.body);
+    assert!(
+        removed.body["email"].is_null() || removed.body["email"] == "pawel@example.com",
+        "{}",
+        removed.body
+    );
     h.app.refresh_usage_round(&mut HashMap::new()).await;
     h.app.refresh_usage_round(&mut HashMap::new()).await;
     assert_eq!(profile.calls(WITH_EMAIL), 2, "asked again, once");

@@ -14,6 +14,10 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   its first message, and a refreshed Google sign-in is kept. Google subscriptions are added in
   the next slice.
 
+- The Review card counts what the next study needs (SPEC-506 pull request 4, task #488): the
+  Pipeline tab's Review card and `GET /api/analytics/reviews` give the rounds after a request for
+  changes and how many asked again, and the rounds after an approval and how many asked for
+  changes (the rest re-approved an approved change), for the pull requests merged in the range.
 - Antigravity, slice B (SPEC-505 pull request 2, task #487): Yulius provides the pinned
   Antigravity CLI (`agy` 1.5.10) itself, downloaded once from Google's release storage into
   `<data>/antigravity-cli`, only when its sha512 matches the one in the source, and with the

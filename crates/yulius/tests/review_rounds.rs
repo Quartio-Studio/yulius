@@ -783,6 +783,10 @@ async fn the_reviews_read_counts_the_rounds_of_merged_pull_requests() -> TestRes
     assert_eq!(r.body["first_rounds_requesting_changes"], 1);
     assert_eq!(r.body["first_rounds_without_report"], 0);
     assert_eq!(r.body["median_rounds"], 2.0);
+    // SPEC-506 FST-007: round 2 followed a request for changes and approved.
+    assert_eq!(r.body["re_reviews_after_changes"], 1, "{}", r.body);
+    assert_eq!(r.body["re_reviews_asking_again"], 0, "{}", r.body);
+    assert_eq!(r.body["rounds_after_approval"], 0, "{}", r.body);
     assert_eq!(
         r.body["rounds_by_model"],
         json!([{"model": "claude-fable-5-2", "rounds": 2}])

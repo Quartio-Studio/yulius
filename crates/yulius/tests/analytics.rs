@@ -897,6 +897,29 @@ async fn the_reviews_read_counts_only_visible_sandboxes() -> TestResult {
                 merged_at: None,
             })
             .await?;
+        // SPEC-506 FST-007: the seen pull request's second round, after the approval, asked
+        // for changes.
+        if id == "t-seen" {
+            h.store
+                .insert_review_round(&ReviewRoundRecord {
+                    id: format!("round-2-{id}"),
+                    task_id: TaskId::parse(id)?,
+                    round: 2,
+                    head: None,
+                    agent: "yulius-reviewer".into(),
+                    model: "claude-fable-5-2".into(),
+                    reason: "round".into(),
+                    subagent_id: None,
+                    model_answered: None,
+                    started_at: Timestamp(OCT1 + 2 * HOUR),
+                    ended_at: Some(Timestamp(OCT1 + 3 * HOUR)),
+                    verdict: Some("request_changes".into()),
+                    cut_off: false,
+                    pr_number: None,
+                    merged_at: None,
+                })
+                .await?;
+        }
         h.store
             .transition_delivery(
                 &DeliveryStage::None,
@@ -920,6 +943,13 @@ async fn the_reviews_read_counts_only_visible_sandboxes() -> TestResult {
     let seen = read(&alice, "").await?;
     assert_eq!(seen.status, StatusCode::OK, "{}", seen.body);
     assert_eq!(seen.body["pull_requests"], 1, "{}", seen.body);
+    assert_eq!(seen.body["rounds_after_approval"], 1, "{}", seen.body);
+    assert_eq!(
+        seen.body["rounds_after_approval_asking"], 1,
+        "{}",
+        seen.body
+    );
+    assert_eq!(seen.body["re_reviews_after_changes"], 0, "{}", seen.body);
     assert_eq!(read(&admin, "").await?.body["pull_requests"], 2);
     let hidden = read(&alice, "&sandbox=s2").await?;
     assert_eq!(hidden.status, StatusCode::NOT_FOUND, "{}", hidden.body);

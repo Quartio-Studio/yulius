@@ -4201,6 +4201,7 @@ route('GET', '/api/analytics/reviews', ({ db, query }) => {
     range: { sandbox: query.get('sandbox'), from: query.get('from'), to: query.get('to') },
     pull_requests: 12, first_rounds_requesting_changes: 5, first_rounds_without_report: 1, median_rounds: 2,
     rounds_by_model: [{ model: 'claude-fable-5-2', rounds: 21 }, { model: 'claude-opus-5-5', rounds: 6 }], no_fable_rounds: 2,
+    re_reviews_after_changes: 8, re_reviews_asking_again: 3, rounds_after_approval: 4, rounds_after_approval_asking: 1,
   };
 });
 
