@@ -250,6 +250,14 @@ mod tests {
         let close = "Cannot connect to the Docker daemon at unix:///var/run/docker.sock.\n\
                      test flaky ... FAILED";
         assert_eq!(infrastructure(exited, close, None, false), None);
+        // A Docker error long before the end, then the job's own error with no test named: only
+        // the last lines count (mutation of the tail).
+        let early = format!(
+            "write unix @->/run/yulius/docker/docker.sock: write: broken pipe\n{}error[E0425]: \
+             cannot find value `x` in this scope",
+            "   Compiling crate\n".repeat(TAIL_LINES)
+        );
+        assert_eq!(infrastructure(exited, &early, None, false), None);
         let blocks = "FAIL [   0.1s] (1/2) app tests::a\n  stderr\n  read unix @->/run/docker.sock: \
                       read: connection reset by peer\n\nFAIL [   0.1s] (2/2) app tests::b\n  \
                       assertion failed: left == right\n\n";

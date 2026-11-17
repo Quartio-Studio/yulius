@@ -479,3 +479,10 @@ mode.
   of `yulius-domain`, `yulius-app`, `yulius-sandbox`, `yulius-store` (1,487 passed); `local_ci`,
   `analytics`, `limits`, `merge_train` (149 passed, then 150 with the CI load test);
   `pipeline.e2e.ts` (18 passed). Security scan: Vidoc refused the key (exit 2, not run).
+- `scripts/dev mutants` on these lines: 226 listed, 119 caught, 0 missed, 0 timed out, 10
+  unviable, 97 not reached (bound 40 min, 2402 s; not reached: 48 in the store's SQL, 26 in the
+  classifier, 13 in the analytics route, 6 in the domain resources, 4 in the route table). Four
+  of the classifier's by hand: the test failure after the words, every block naming the
+  infrastructure, and a SIGKILL needing an OOM kill were caught; reading the whole output instead
+  of its last lines was not, and `only_the_infrastructures_own_words_count` now has that case (a
+  Docker error long before the job's own compile error), which catches it.
