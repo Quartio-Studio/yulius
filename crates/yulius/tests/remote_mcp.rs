@@ -2346,6 +2346,39 @@ async fn a_repair_of_a_broken_integration_ci_waits_for_its_own_checks() -> TestR
     Ok(())
 }
 
+/// SPEC-504 review round 1: on a never-valid integration branch, a change that brings no valid
+/// jobs of its own has nothing to test it, and its merge is refused saying so.
+#[tokio::test]
+async fn a_change_that_does_not_repair_a_never_valid_ci_is_refused() -> TestResult {
+    let w = World::new("org").await?;
+    let (alice, _) = imported_shop(
+        &w,
+        &[
+            ("README.md", "# Shop\n"),
+            ("yulius.toml", "[[ci.jobs]]\nname = 3\n"),
+        ],
+    )
+    .await?;
+    let (error, said, change) = remote(
+        &w,
+        &alice,
+        "project_change",
+        json!({"project": "Quartio-Studio/shop", "title": "docs", "files": [{"path": "README.md", "content": "# Shop!\n"}]}),
+    )
+    .await?;
+    assert!(!error, "{said}");
+    let number = change["pull_request"]["number"].as_u64().ok_or("number")?;
+    let (error, said, _) = remote(
+        &w,
+        &alice,
+        "change_merge",
+        json!({"project": "Quartio-Studio/shop", "number": number}),
+    )
+    .await?;
+    assert!(error && said.contains("tests nothing here"), "{said}");
+    Ok(())
+}
+
 /// Holds the next change at the moment its files are written (before the commit) until `release`
 /// gets a message; `entered` gets one when it is held there.
 fn hold_next_change(

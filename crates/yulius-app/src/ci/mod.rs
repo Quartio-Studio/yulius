@@ -352,9 +352,9 @@ pub struct CiState {
     /// dropped.
     busy: Arc<Mutex<HashSet<String>>>,
     gates: Mutex<HashMap<String, GateView>>,
-    /// Sandboxes whose CI has no gate because of its configuration, as last recorded (SPEC-504
-    /// CFG-004).
-    config_blocked: Mutex<HashSet<String>>,
+    /// Whether each sandbox's CI has no gate because of its configuration, as last recorded
+    /// (SPEC-504 CFG-004); a sandbox not in it is read from the audit first.
+    config_blocked: Mutex<HashMap<String, bool>>,
     pub(crate) hygiene: Mutex<HashMap<String, yulius_contracts::api::ci::HygieneReport>>,
     /// Each sandbox's last cleanup (SPEC-269 HSC-002), shown on every report.
     pub(crate) hygiene_cleanups:
@@ -464,6 +464,10 @@ pub(crate) enum Head {
 /// What a run judged by the integration branch's last valid gate says (SPEC-504 CFG-006).
 pub const LAST_VALID_NOTE: &str = "judged by the integration branch's last valid yulius.toml: \
      its own is invalid, and that gate runs until a fix merges";
+
+/// How a run refused for the integration branch's invalid `yulius.toml` begins its reason: it
+/// is queued again once that file is valid (SPEC-504 CFG-002).
+const DEV_INVALID_PREFIX: &str = "yulius.toml is invalid on ";
 
 /// The job of a run refused for its `yulius.toml` (SPEC-504 CFG-002).
 pub const CONFIG_JOB: &str = "yulius.toml";
@@ -965,14 +969,41 @@ impl App {
     async fn ci_note_config_block(&self, sandbox: &SandboxRecord, view: &GateView) {
         use yulius_domain::merge_queue::{CONFIG_BLOCKED, CONFIG_UNBLOCKED};
         let blocked = view.gate.is_none() && view.problem.is_some();
-        let changed = self.ci.config_blocked.lock().is_ok_and(|mut set| {
-            if blocked {
-                set.insert(sandbox.id.as_str().to_owned())
-            } else {
-                set.remove(sandbox.id.as_str())
-            }
-        });
-        if !changed {
+        let known = self
+            .ci
+            .config_blocked
+            .lock()
+            .ok()
+            .and_then(|map| map.get(sandbox.id.as_str()).copied());
+        // First look since this server started: what the audit last said, so an episode that
+        // ended while it was down is closed (review round 1).
+        let was = match known {
+            Some(was) => was,
+            None => self
+                .deps
+                .store
+                .audit_of_sandbox(
+                    &sandbox.slug,
+                    &[],
+                    &[CONFIG_BLOCKED, CONFIG_UNBLOCKED],
+                    None,
+                    None,
+                    20_000,
+                )
+                .await
+                .ok()
+                .and_then(|entries| {
+                    entries
+                        .into_iter()
+                        .max_by_key(|(_, entry)| entry.at.0)
+                        .map(|(_, entry)| entry.action == CONFIG_BLOCKED)
+                })
+                .unwrap_or(false),
+        };
+        if let Ok(mut map) = self.ci.config_blocked.lock() {
+            map.insert(sandbox.id.as_str().to_owned(), blocked);
+        }
+        if was == blocked {
             return;
         }
         let (action, detail) = if blocked {
@@ -1211,7 +1242,7 @@ impl App {
                 } else {
                     let problem = self.ci_jobs_at(&repo, &integration).await.err()?;
                     return Some(format!(
-                        "yulius.toml is invalid on {} and this change does not repair it (its run \
+                        "{DEV_INVALID_PREFIX}{} and this change does not repair it (its run \
                          goes again once it is valid there): {problem}",
                         delivery_profile(sandbox).integration_branch
                     ));
@@ -1392,9 +1423,19 @@ impl App {
         let runs = self.deps.store.ci_runs(&sandbox.id, PLAN_RUNS).await?;
         // A merge train's run is the train's own (SPEC-084), a playground task's its delivery's
         // (SPEC-163): they start and cancel them.
+        // A head refused only because the integration branch's file was invalid is tested again
+        // once it is valid (review round 1): its refusal is no verdict then.
+        let dev_valid = view.problem.is_none();
         let facts: Vec<RunFacts> = runs
             .iter()
             .filter(|run| !matches!(run.reference, CiRef::Train(_) | CiRef::Task(_)))
+            .filter(|run| {
+                !(dev_valid
+                    && run
+                        .reason
+                        .as_deref()
+                        .is_some_and(|r| r.starts_with(DEV_INVALID_PREFIX)))
+            })
             .map(|run| RunFacts {
                 id: run.id.clone(),
                 reference: run.reference.clone(),

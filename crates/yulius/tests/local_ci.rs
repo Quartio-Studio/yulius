@@ -1755,6 +1755,81 @@ async fn the_integration_branch_runs_a_paths_job_a_merged_tree_skipped() -> Test
     Ok(())
 }
 
+/// SPEC-504 review round 1: an invalid file with no valid one before it names no fallback (the
+/// page would otherwise say a gate runs while none does).
+#[tokio::test]
+async fn an_invalid_file_with_no_earlier_gate_names_no_fallback() -> TestResult {
+    let f = fixture_with(false, |_| String::new()).await?;
+    f.push_dev(
+        "yulius.toml",
+        Some(&format!(
+            "[commands]\ngate = \"make ci\"\n\n{}",
+            one_job("x")
+        )),
+    )?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    let overview = f.get("/api/sandboxes/s1/ci").await?;
+    assert!(overview["gate"].is_null(), "{overview}");
+    assert!(overview["gate_fallback"].is_null(), "{overview}");
+    assert!(
+        overview["gate_problem"]
+            .as_str()
+            .is_some_and(|p| !p.is_empty())
+    );
+    Ok(())
+}
+
+/// SPEC-504 CFG-004, review round 1: an episode without a gate that ended while the server was
+/// down is closed at the first look after the start, not counted on until the range's end.
+#[tokio::test]
+async fn an_episode_that_ended_while_the_server_was_down_is_closed() -> TestResult {
+    use yulius_app::ports::store::AuditStore as _;
+    let f = fixture_with(false, |_| one_job("ok")).await?;
+    let now = f.h.app.now();
+    f.h.store
+        .audit(
+            yulius_domain::time::Timestamp(now.0 - 30 * 60_000),
+            "yulius",
+            yulius_domain::merge_queue::CONFIG_BLOCKED,
+            Some(&f.sandbox.slug),
+            Some("yulius.toml line 1: broken"),
+        )
+        .await?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.h.clock.0.fetch_add(60 * 60_000, Ordering::SeqCst);
+    let day = |at: i64| {
+        let text = yulius_domain::time::format_rfc3339(yulius_domain::time::Timestamp(at));
+        text.get(..10).map(str::to_owned).ok_or("day")
+    };
+    let (from, to) = (day(now.0 - 30 * 60_000)?, day(f.h.app.now().0)?);
+    let read = f
+        .get(&format!(
+            "/api/analytics/merge-queue?sandbox=s1&from={from}&to={to}"
+        ))
+        .await?;
+    assert_eq!(read["config_blocked_minutes"], 30, "{read}");
+    Ok(())
+}
+
+/// SPEC-504 CFG-002, review round 1: a pull request refused only because the integration
+/// branch's file was invalid runs again once that file is valid, without a push.
+#[tokio::test]
+async fn a_head_refused_for_the_branchs_file_runs_again_once_it_is_valid() -> TestResult {
+    let f = fixture_with(false, |_| one_job("first")).await?;
+    let broken = format!("[commands]\ngate = \"make ci\"\n\n{}", one_job("broken"));
+    f.push_dev("yulius.toml", Some(&broken))?;
+    let head = git(&f.origin, &["rev-parse", "feat/one"])?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    assert_eq!(run_of_sha(&f, &head).await?["state"], "failed");
+    f.push_dev("yulius.toml", Some(&one_job("fixed")))?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    let again = run_of_sha(&f, &head).await?;
+    assert_eq!(again["state"], "passed", "{again}");
+    Ok(())
+}
+
 /// SPEC-504 review round 1 (major): a squash merge that changed a job lands on the integration
 /// branch with a tree some pull request's run passed, but that run never ran the job as the
 /// merge now defines it: the branch's run runs again instead of taking that verdict, and the
