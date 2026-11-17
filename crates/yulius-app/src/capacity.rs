@@ -1036,6 +1036,7 @@ impl App {
             accounts.push(CapacityAccount {
                 label: record.label.clone(),
                 email: if admin { record.email.clone() } else { None },
+                provider: record.provider.as_str().to_owned(),
                 status: record.status.as_str().to_owned(),
                 usage: usage_view(&usage),
                 available: is_available,
@@ -1084,8 +1085,21 @@ impl App {
                 .count(),
         )
         .unwrap_or(u32::MAX);
+        // With nothing available, work resumes when the first subscription of any provider does
+        // (SPEC-503: Codex subscriptions are a pool of their own).
         let resumes_at = (available == 0)
-            .then(|| rotation::available_again(&default_task))
+            .then(|| {
+                let codex = RotationInput {
+                    task_provider: yulius_domain::harness::Provider::OpenAi,
+                    family: ModelFamily::Any,
+                    fallback: None,
+                    ..default_task.clone()
+                };
+                [&default_task, &codex]
+                    .into_iter()
+                    .filter_map(rotation::available_again)
+                    .min()
+            })
             .flatten();
         Ok(CapacityView {
             threshold,

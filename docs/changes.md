@@ -16,6 +16,15 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   generated list), with no candidate run of its own. The Pipeline tab's Merge queue card lists
   why each of the last ten candidates was dissolved, and a member's failed own run is its own
   kind (`member_failed`). The hourly release of quarantined tests no longer holds the CI poll.
+- Codex, slice C2 (SPEC-503, task #485): Codex subscriptions can be added through the API. An
+  instance administrator signs one in with `codex login --device-auth` in the login terminal
+  (the pinned CLI Yulius provides), gives an OpenAI API key, or imports the `auth.json` of a
+  ChatGPT sign-in made elsewhere (`POST /api/admin/accounts` with `api_key` or `auth_json`, and
+  `POST /api/admin/accounts/{id}/import`); a pasted token stays Claude's. A Codex subscription's
+  usage windows are read from `chatgpt.com/backend-api/wham/usage` and its runs' rollouts;
+  `/api/me` says `codex_connected` (`claude_connected` stays Claude's), and the capacity view
+  names each subscription's provider and resumes at the first reset of either pool. The UI
+  offers all of it in the next slice.
 - A test that fails on other people's changes is quarantined with an issue (SPEC-497 slice B,
   task #479,
   [ADR-0356](decisions/0356-a-test-failing-on-two-pull-requests-is-quarantined-with-an-issue.md)):
