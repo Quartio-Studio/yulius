@@ -308,7 +308,8 @@ Six pull requests, each merged into `dev` on green before the next begins.
 - `yulius_domain::agent_cli::antigravity` pins 1.5.10 for linux-x64 and linux-arm64 (paths and
   sha512 from Google's manifests `manifests/linux_amd64.json` and `linux_arm64.json` of
   2026-11-17); the Codex installer became `wiring/pinned_cli.rs` (`PinnedCli`, a `Release` per
-  CLI), Codex's behaviour and messages unchanged.
+  CLI), Codex's behaviour and error messages unchanged (its log lines name the CLI in a field
+  now).
 - Tests: `antigravity_cli::*` (install once for concurrent callers, refused digest, missing
   binary, wrong machine, a link; the adapter's provided CLI, host `agy` fallback and reasons) and
   `codex_cli::*`, `codex::*`: 14 and 31 passed; the domain's

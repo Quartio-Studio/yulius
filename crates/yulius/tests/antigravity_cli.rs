@@ -57,6 +57,23 @@ fn tarball_of(entries: &[(&str, u32, Option<&[u8]>)]) -> std::io::Result<Vec<u8>
     builder.into_inner().and_then(GzEncoder::finish)
 }
 
+/// A tarball of one regular file whose name is written raw, so it can be a name the tar
+/// builder refuses (`../x`, an absolute path).
+fn raw_named(name: &str, body: &[u8]) -> std::io::Result<Vec<u8>> {
+    let mut builder = tar::Builder::new(GzEncoder::new(Vec::new(), Compression::fast()));
+    let mut header = tar::Header::new_gnu();
+    header.set_entry_type(tar::EntryType::Regular);
+    header.set_size(body.len() as u64);
+    header.set_mode(0o755);
+    let gnu = header
+        .as_gnu_mut()
+        .ok_or_else(|| std::io::Error::other("gnu"))?;
+    gnu.name[..name.len()].copy_from_slice(name.as_bytes());
+    header.set_cksum();
+    builder.append(&header, body)?;
+    builder.into_inner().and_then(GzEncoder::finish)
+}
+
 /// The release as Google publishes its linux-x64 tarball (1.5.10): one executable.
 fn release() -> std::io::Result<Vec<u8>> {
     tarball_of(&[("antigravity", 0o755, Some(&elf(62)))])
@@ -165,8 +182,16 @@ async fn the_pinned_antigravity_cli_installs_once() -> TestResult {
 #[tokio::test]
 async fn a_tarball_that_is_not_the_pinned_release_is_refused() -> TestResult {
     let real = release()?;
+    let outside = tempfile::tempdir()?;
+    let absolute = outside.path().join("escape");
+    let absolute_name = absolute.to_string_lossy().into_owned();
+    let up = raw_named("../escape", &elf(62))?;
+    let rooted = raw_named(&absolute_name, &elf(62))?;
     let cases: Vec<(Vec<u8>, Platform, &str)> = vec![
         (real.clone(), pinned(b"another tarball")?, "sha512"),
+        // The release lies at the tarball's root: a name may not leave it.
+        (up.clone(), pinned(&up)?, "outside its release"),
+        (rooted.clone(), pinned(&rooted)?, "outside its release"),
         (
             tarball_of(&[("README", 0o644, Some(b"x"))])?,
             pinned(&tarball_of(&[("README", 0o644, Some(b"x"))])?)?,
@@ -195,7 +220,17 @@ async fn a_tarball_that_is_not_the_pinned_release_is_refused() -> TestResult {
             Ok(provided) => return Err(format!("{why}: installed {provided:?}").into()),
         }
         assert_eq!(cli.installed(), None, "{why}");
+        let left: Vec<String> = std::fs::read_dir(&s.root)?
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        assert!(left.is_empty(), "{why}: {left:?} left in the root");
+        assert!(
+            !s.root.parent().ok_or("parent")?.join("escape").exists(),
+            "{why}"
+        );
     }
+    assert!(!absolute.exists(), "nothing written at an absolute name");
     Ok(())
 }
 
@@ -213,7 +248,10 @@ async fn antigravity_runs_get_the_provided_cli_or_a_reason() -> TestResult {
     adapter.host_antigravity = None;
     match adapter.provide_antigravity(false).await {
         Err(AppError::Upstream(reason)) => {
-            assert!(reason.contains("not installed yet"), "{reason}")
+            assert!(
+                reason.contains("not installed yet; an Antigravity start installs it"),
+                "{reason}"
+            )
         }
         other => return Err(format!("expected a reason, got {other:?}").into()),
     }
@@ -258,6 +296,7 @@ async fn the_real_pinned_release_installs_from_google() -> TestResult {
     let output = std::process::Command::new(&provided.program)
         .arg("--version")
         .env("HOME", dir.path())
+        .env("AGY_CLI_DISABLE_AUTO_UPDATE", "true")
         .output()?;
     assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "1.5.10");
     Ok(())

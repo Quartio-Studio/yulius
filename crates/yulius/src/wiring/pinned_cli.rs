@@ -1,7 +1,7 @@
 //! The pinned agent CLIs Yulius provides to runs and sign-ins: Codex (SPEC-503 CLI-001, CDX-012,
 //! ADR-0355) and Antigravity (SPEC-505 AGY-007, ADR-0361).
 //!
-//! **Install.** On the first need (a run or sign-in, or at start when accounts of the provider
+//! **Install.** On the first need (a run or sign-in; for Codex also at start when Codex accounts
 //! exist) the platform tarball of the pinned release is downloaded (Codex: npm's registry;
 //! Antigravity: Google's release storage), its sha512 checked against the one pinned in the
 //! source (not the server's word), and its release tree (Codex: `package/vendor/<triple>/`, the

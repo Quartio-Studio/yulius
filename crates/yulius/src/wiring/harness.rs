@@ -80,7 +80,7 @@ async fn provide(
     cli: Option<&Arc<crate::wiring::pinned_cli::PinnedCli>>,
     install: bool,
     host: Option<&PathBuf>,
-    (label, host_program, version): (&str, &str, &str),
+    (label, article, host_program, version): (&str, &str, &str, &str),
 ) -> AppResult<Option<ProvidedCli>> {
     let Some(cli) = cli else {
         return Ok(None);
@@ -91,7 +91,7 @@ async fn provide(
         cli.ready().and_then(|ready| {
             ready.ok_or_else(|| {
                 crate::wiring::claude_cli::UpdateError::new(format!(
-                    "it is not installed yet; a {label} start installs it"
+                    "it is not installed yet; {article} {label} start installs it"
                 ))
             })
         })
@@ -204,6 +204,7 @@ impl HarnessPort for HarnessAdapter {
             self.host_codex.as_ref(),
             (
                 "Codex",
+                "a",
                 launch::CODEX_PROGRAM,
                 yulius_domain::agent_cli::codex::VERSION,
             ),
@@ -217,6 +218,7 @@ impl HarnessPort for HarnessAdapter {
             self.host_antigravity.as_ref(),
             (
                 "Antigravity",
+                "an",
                 launch::ANTIGRAVITY_PROGRAM,
                 yulius_domain::agent_cli::antigravity::VERSION,
             ),
