@@ -10,10 +10,10 @@ use std::path::Path;
 
 use yulius_domain::time::Timestamp;
 
-use crate::claude;
-use crate::observe::UsageAccumulator;
+use crate::observe::{Observed, UsageAccumulator};
 use crate::subagents::{LinesSince, SubagentTails};
 use crate::tail::{DEFAULT_MAX_LINE_BYTES, TranscriptTail};
+use crate::{claude, codex};
 
 /// Folds the lines of `transcript` from `since` (the first line when `None`) to `until` (the end
 /// of the file when `None`), with its sub-agents' usage over the same window. `None` when the
@@ -26,6 +26,35 @@ pub fn count_run(
     transcript: &Path,
     since: Option<Timestamp>,
     until: Option<Timestamp>,
+) -> io::Result<Option<UsageAccumulator>> {
+    count_with(transcript, since, until, claude::observe_versioned, true)
+}
+
+/// [`count_run`] for a Codex rollout (SPEC-503): its own lines only, Codex keeps no sub-agent
+/// transcripts beside it.
+///
+/// # Errors
+/// I/O errors reading the rollout.
+pub fn count_codex_run(
+    rollout: &Path,
+    since: Option<Timestamp>,
+    until: Option<Timestamp>,
+) -> io::Result<Option<UsageAccumulator>> {
+    count_with(
+        rollout,
+        since,
+        until,
+        |line| (codex::observe_line(line), None),
+        false,
+    )
+}
+
+fn count_with(
+    transcript: &Path,
+    since: Option<Timestamp>,
+    until: Option<Timestamp>,
+    observe: fn(&str) -> (Vec<Observed>, Option<String>),
+    subagents: bool,
 ) -> io::Result<Option<UsageAccumulator>> {
     match fs::symlink_metadata(transcript) {
         Ok(meta) if meta.is_file() => {}
@@ -40,7 +69,7 @@ pub fn count_run(
     while !window.ended() {
         for line in tail.poll()? {
             if window.keep(&line) {
-                let (observed, version) = claude::observe_versioned(&line);
+                let (observed, version) = observe(&line);
                 if let Some(version) = version {
                     acc.note_cli_version(&version);
                 }
@@ -50,6 +79,9 @@ pub fn count_run(
         if tail.at_end() {
             break;
         }
+    }
+    if !subagents {
+        return Ok(Some(acc));
     }
     let mut side = SubagentTails::between(transcript, since, until);
     // A sub-agent transcript that cannot be read fails the count: partial tokens are not the run's.

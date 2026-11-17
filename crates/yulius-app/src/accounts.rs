@@ -44,7 +44,8 @@ use crate::hub::{Hub, Subscription};
 use crate::model::{AccountChange, AccountRecord, AccountStatus, AttemptRecord, Sealed, Secret};
 use crate::ports::harness::OutputMasker;
 use crate::ports::session::{
-    Containment, LaunchPlan, RunEvent, RunExit, RunInspection, RunReader, RunSignal, RunWriter,
+    Containment, LaunchPlan, PlannedFile, RunEvent, RunExit, RunInspection, RunReader, RunSignal,
+    RunWriter,
 };
 use crate::ports::usage::{EMAIL_MAX, UsageFailure, UsageFailureKind, plausible_email};
 use crate::usage_json;
@@ -272,6 +273,46 @@ impl LoginTerminal {
         match writer.as_mut() {
             Some(w) => w.input(data).await,
             None => Err(AppError::Conflict("the sign-in has ended".into())),
+        }
+    }
+}
+
+/// The largest `auth.json` a Codex sign-in may leave (`yulius_harness::login`'s bound).
+const CODEX_LOGIN_AUTH_MAX: usize = 1024 * 1024;
+
+/// The `auth.json` at `path` when it is a plain file within [`CODEX_LOGIN_AUTH_MAX`] and
+/// `problem` finds none in it; a refused copy is scrubbed (SPEC-503 CDX-005). The bound is
+/// checked before reading, and the read itself is bounded too: the sign-in's process writes it.
+fn read_codex_login_auth(
+    path: &Path,
+    problem: impl FnOnce(&[u8]) -> Option<String>,
+) -> Result<Vec<u8>, String> {
+    use std::io::Read as _;
+    let meta = std::fs::symlink_metadata(path)
+        .map_err(|_| "the Codex sign-in did not store credentials".to_owned())?;
+    let too_large = || "the Codex credentials file is too large".to_owned();
+    if !meta.is_file() {
+        return Err("the Codex credentials file is not usable".into());
+    }
+    if meta.len() > CODEX_LOGIN_AUTH_MAX as u64 {
+        return Err(too_large());
+    }
+    let mut bytes = Vec::new();
+    std::fs::File::open(path)
+        .and_then(|file| {
+            file.take(CODEX_LOGIN_AUTH_MAX as u64 + 1)
+                .read_to_end(&mut bytes)
+        })
+        .map_err(|_| "the Codex credentials file could not be read".to_owned())?;
+    if bytes.len() > CODEX_LOGIN_AUTH_MAX {
+        scrub(Some(bytes));
+        return Err(too_large());
+    }
+    match problem(&bytes) {
+        None => Ok(bytes),
+        Some(why) => {
+            scrub(Some(bytes));
+            Err(why)
         }
     }
 }
@@ -1080,8 +1121,15 @@ impl App {
         // A pasted token is zeroed when it goes, whichever way this ends.
         let token = req.token.take().map(Zeroizing::new);
         self.require_instance_admin(ctx)?;
-        let provider = Provider::parse(req.provider.trim())
-            .map_err(|_| AppError::Invalid("provider must be anthropic (Claude)".into()))?;
+        // Codex subscriptions come with their sign-in (SPEC-503 slice C2).
+        let provider = match Provider::parse(req.provider.trim()) {
+            Ok(Provider::Anthropic) => Provider::Anthropic,
+            Ok(Provider::OpenAi) | Err(_) => {
+                return Err(AppError::Invalid(
+                    "provider must be anthropic (Claude)".into(),
+                ));
+            }
+        };
         let label = validate_label(&req.label)?;
         if let Some(token) = token {
             let secret = pasted_token(&token)?;
@@ -1694,6 +1742,7 @@ impl App {
         let home = dir.join("home");
         let config_dir = dir.join(match account.provider {
             Provider::Anthropic => "claude",
+            Provider::OpenAi => "codex",
         });
         create_private_dir(&self.logins_dir())?;
         for d in [&dir, &home, &config_dir] {
@@ -1763,6 +1812,7 @@ impl App {
 
     fn login_plan(&self, provider: Provider, home: &Path, config_dir: &Path) -> LaunchPlan {
         let path = std::env::var("PATH").unwrap_or_else(|_| "/usr/local/bin:/usr/bin:/bin".into());
+        let mut files = Vec::new();
         let mut env = vec![
             ("HOME".to_owned(), home.to_string_lossy().into_owned()),
             ("PATH".to_owned(), path),
@@ -1778,13 +1828,26 @@ impl App {
                 "CLAUDE_CONFIG_DIR".to_owned(),
                 config_dir.to_string_lossy().into_owned(),
             )),
+            Provider::OpenAi => {
+                env.push((
+                    "CODEX_HOME".to_owned(),
+                    config_dir.to_string_lossy().into_owned(),
+                ));
+                // Credentials stay in CODEX_HOME/auth.json, never the OS keyring, so they can be
+                // moved into the vault (SPEC-503 CDX-005).
+                files.push(PlannedFile {
+                    path: config_dir.join("config.toml"),
+                    contents: self.deps.harness.codex_login_config(),
+                    mode: 0o600,
+                });
+            }
         }
         LaunchPlan {
             argv: self.deps.harness.login_argv(provider.harness()),
             cwd: home.to_path_buf(),
             env,
             secret_env: Vec::new(),
-            files: Vec::new(),
+            files,
             containment: Containment::None,
         }
     }
@@ -1929,7 +1992,23 @@ impl App {
                 }
                 held
             }
+            // Codex writes its credentials to a file, not its output: the sign-in holds one
+            // once that file is a usable `auth.json`. The copy read to check it is scrubbed.
+            Provider::OpenAi => match self.codex_login_auth(session) {
+                Ok(bytes) => {
+                    scrub(Some(bytes));
+                    true
+                }
+                Err(_) => false,
+            },
         }
+    }
+
+    /// The `auth.json` the Codex sign-in of `session` wrote, validated (SPEC-503 CDX-005).
+    fn codex_login_auth(&self, session: &LoginSession) -> Result<Vec<u8>, String> {
+        read_codex_login_auth(&session.dir.join("codex").join("auth.json"), |bytes| {
+            self.deps.harness.codex_auth_problem(bytes)
+        })
     }
 
     /// The credential in the whole raw output, which is wiped afterwards, with the temporary
@@ -1948,6 +2027,10 @@ impl App {
                     scrub(Some(copy.into_bytes()));
                 }
                 found
+            }
+            Provider::OpenAi => {
+                let auth = self.codex_login_auth(session).ok();
+                auth.and_then(|bytes| String::from_utf8(bytes).ok())
             }
         };
         raw.wipe();
@@ -2141,6 +2224,34 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// SPEC-503 CDX-005: the `auth.json` a Codex sign-in wrote is read only when it is a plain
+    /// file within the credential bound: a larger one, a link or a folder is refused unread.
+    #[test]
+    fn a_codex_sign_ins_file_is_read_within_its_bound() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let usable = |_: &[u8]| None;
+        let path = dir.path().join("auth.json");
+        std::fs::write(&path, br#"{"OPENAI_API_KEY":"sk-x"}"#)?;
+        assert_eq!(
+            read_codex_login_auth(&path, usable).as_deref(),
+            Ok(&br#"{"OPENAI_API_KEY":"sk-x"}"#[..])
+        );
+        let large = std::fs::File::create(&path)?;
+        large.set_len(u64::try_from(CODEX_LOGIN_AUTH_MAX)? + 1)?;
+        let read = Cell::new(false);
+        let watched = |_: &[u8]| {
+            read.set(true);
+            None
+        };
+        assert!(read_codex_login_auth(&path, watched).is_err());
+        assert!(!read.get(), "a file over the bound is not read");
+        let link = dir.path().join("link.json");
+        std::os::unix::fs::symlink(&path, &link)?;
+        assert!(read_codex_login_auth(&link, usable).is_err());
+        assert!(read_codex_login_auth(dir.path(), usable).is_err());
+        Ok(())
+    }
     use std::cell::Cell;
     use yulius_domain::time::Timestamp;
 
