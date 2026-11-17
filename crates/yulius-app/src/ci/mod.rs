@@ -1556,9 +1556,16 @@ impl App {
             }
             // Every job of the gate ran there, with the same command: a pull request judged by
             // the jobs its merge then changed never ran the new ones (SPEC-504, review round 1).
+            // (In all a run records of a job: a changed time limit or budget is a change.)
             let all_ran = gate.jobs.iter().all(|job| {
-                jobs.iter()
-                    .any(|t| t.key == job.key && t.matrix == job.matrix && t.command == job.command)
+                jobs.iter().any(|t| {
+                    t.key == job.key
+                        && t.matrix == job.matrix
+                        && t.command == job.command
+                        && t.need == job.need
+                        && t.timeout_minutes == job.timeout_minutes
+                        && t.exclusive == job.exclusive
+                })
             });
             if branch && !all_ran {
                 continue;

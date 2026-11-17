@@ -508,7 +508,8 @@ pub const CHANGE_SUFFIX: &str = " (this change)";
 pub const CHANGE_CHECKOUT: &str = "change";
 
 /// `gate` (the integration branch's) with the jobs of a change's own `yulius.toml` (`own`) that
-/// the change itself changed or added: those that differ from all of `gate`'s and from all of
+/// the change itself changed or added (in any field: its command, matrix, budget, time limit,
+/// `exclusive`, secrets or `paths`): those that differ from all of `gate`'s and from all of
 /// the jobs at its merge base with the integration branch (`at_base`; unknown: every own job
 /// that differs from the gate's), named with [`CHANGE_SUFFIX`] and keeping their key (SPEC-504
 /// CFG-001, ADR-0360). Every job of `gate` still runs, so a change never weakens the gate that
@@ -523,7 +524,9 @@ pub fn with_changed_jobs(mut gate: Gate, own: Vec<Job>, at_base: Option<&[Job]>)
     if gate.source == GateSource::Profile {
         return gate;
     }
-    let same = |a: &Job, b: &Job| a.key == b.key && a.matrix == b.matrix && a.command == b.command;
+    // Equal in everything that decides how it runs (command, matrix, budget, time limit,
+    // `exclusive`, secrets, `paths`): a change to any of it is the change's (review round 3).
+    let same = |a: &Job, b: &Job| a == b;
     let scanning: Vec<String> = gate
         .jobs
         .iter()
@@ -1255,6 +1258,16 @@ mod tests {
             with_changed_jobs(gate.clone(), many, None).jobs.len(),
             2 + MAX_JOBS
         );
+        // A change to anything else of a job (its time limit, its budget, `exclusive`, its
+        // secrets or `paths`) is a change too: its twin runs with the new value (review round 3).
+        let slower = Job {
+            timeout_minutes: Some(5),
+            ..job("check", "make check")
+        };
+        let both = with_changed_jobs(gate.clone(), vec![slower], Some(&gate.jobs));
+        assert_eq!(both.jobs.len(), 3, "{both:?}");
+        assert_eq!(both.jobs[2].name, "check (this change)");
+        assert_eq!(both.jobs[2].timeout_minutes, Some(5));
         // A profile's gate is not `yulius.toml`'s: nothing of the file runs beside it.
         let profile = Gate {
             source: GateSource::Profile,

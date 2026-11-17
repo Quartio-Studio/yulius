@@ -1856,6 +1856,122 @@ async fn a_head_refused_for_the_branchs_file_runs_again_once_it_is_valid() -> Te
     Ok(())
 }
 
+/// SPEC-504 review round 3 (major): a pull request that changes only a job's time limit runs
+/// its twin with the new limit (a change to how a job runs is a change), and a twin is told the
+/// job's own name in `YULIUS_CI_JOB`.
+#[tokio::test]
+async fn a_change_to_a_jobs_time_limit_runs_its_twin() -> TestResult {
+    use yulius_app::ports::store_ext::CiStore as _;
+    let job = |limit: u32| {
+        format!(
+            "[[ci.jobs]]\nname = \"check\"\ntimeout_minutes = {limit}\ncommand = 'echo \"job=$YULIUS_CI_JOB\"'\n"
+        )
+    };
+    let f = fixture_with(false, move |_| job(30)).await?;
+    let sha = f.push_feature("yulius.toml", Some(&job(20)))?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    let outputs = job_outputs(&f, &sha).await?;
+    let names: Vec<&str> = outputs.iter().map(|(n, _)| n.as_str()).collect();
+    assert_eq!(names, ["check", "check (this change)"], "{outputs:?}");
+    assert!(
+        output_of(&outputs, "check (this change)")?.contains("job=check\n"),
+        "{outputs:?}"
+    );
+    let run = run_of_sha(&f, &sha).await?;
+    let jobs =
+        f.h.store
+            .ci_jobs(run["id"].as_str().ok_or("id")?, false)
+            .await?;
+    let limits: Vec<(String, Option<u32>)> = jobs
+        .iter()
+        .map(|j| (j.name.clone(), j.timeout_minutes))
+        .collect();
+    assert_eq!(
+        limits,
+        [
+            ("check".to_owned(), Some(30)),
+            ("check (this change)".to_owned(), Some(20))
+        ]
+    );
+    Ok(())
+}
+
+/// SPEC-504 review round 3: a branch's run that reuses a same-tree verdict takes each job's
+/// verdict from the job that ran its command: a change's twin of it, not the integration
+/// branch's job of the same key.
+#[tokio::test]
+async fn a_reused_verdict_comes_from_the_job_that_ran_the_command() -> TestResult {
+    use yulius_app::ci::{CiJobRecord, CiRunRecord};
+    use yulius_app::ports::store_ext::CiStore as _;
+    use yulius_domain::ci::{CiRef, GateSource, RunState};
+    use yulius_domain::time::Timestamp;
+    let f = fixture_with(false, |_| one_job("old")).await?;
+    let changed = f.push_feature("yulius.toml", Some(&one_job("new")))?;
+    let run = CiRunRecord {
+        id: "run-twins".into(),
+        sandbox_id: SandboxId::parse("s1")?,
+        reference: CiRef::PullRequest(1),
+        sha: changed.clone(),
+        source: GateSource::ProjectConfig,
+        state: RunState::Passed,
+        reason: None,
+        requested_by: "yulius".into(),
+        status_for: Some(RunState::Passed),
+        status_note: Some("recorded by the test".into()),
+        status_attempts: 0,
+        queued_at: Timestamp(1),
+        started_at: Some(Timestamp(1)),
+        ended_at: Some(Timestamp(2)),
+    };
+    let job = |ordinal: u32, name: &str, command: &str, state: RunState| CiJobRecord {
+        id: format!("j-{ordinal}"),
+        run_id: "run-twins".into(),
+        ordinal,
+        name: name.into(),
+        key: "check".into(),
+        command: command.into(),
+        matrix: None,
+        state,
+        reason: None,
+        exit_code: Some(if state == RunState::Skipped { 78 } else { 0 }),
+        output: String::new(),
+        failures: None,
+        started_at: Some(Timestamp(1)),
+        ended_at: Some(Timestamp(2)),
+        need: Default::default(),
+        timeout_minutes: None,
+        exclusive: false,
+        waited_ms: None,
+    };
+    f.h.store
+        .insert_ci_run(
+            &run,
+            &[
+                job(0, "check", "echo old", RunState::Passed),
+                job(1, "check (this change)", "echo new", RunState::Skipped),
+            ],
+        )
+        .await?;
+    git(&f.work, &["checkout", "-q", "-b", "dev", "origin/dev"])?;
+    git(&f.work, &["merge", "-q", "--squash", "feat/one"])?;
+    git(&f.work, &["commit", "-q", "-m", "change the job (#1)"])?;
+    git(&f.work, &["push", "-q", "origin", "dev"])?;
+    let merged = git(&f.work, &["rev-parse", "HEAD"])?;
+    git(&f.work, &["checkout", "-q", "feat/one"])?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    let (run, detail) = run_of(&f, &merged).await?;
+    assert!(
+        run["reason"]
+            .as_str()
+            .is_some_and(|r| r.contains("same tree")),
+        "reused: {run}"
+    );
+    assert_eq!(job_named(&detail, "check")?["state"], "skipped", "{detail}");
+    Ok(())
+}
+
 /// SPEC-504 review round 1 (major): a squash merge that changed a job lands on the integration
 /// branch with a tree some pull request's run passed, but that run never ran the job as the
 /// merge now defines it: the branch's run runs again instead of taking that verdict, and the
