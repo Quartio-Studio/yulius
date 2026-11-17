@@ -47,6 +47,8 @@ use crate::usage::Usage;
 
 /// Bound on starting a holder.
 pub const START_TIMEOUT: Duration = Duration::from_secs(60);
+/// How long a CI job's end waits for its last process to leave the job's group (SPEC-504).
+const JOB_EXIT_WAIT: Duration = Duration::from_secs(5);
 /// How often [`Manager::tick`] should run.
 pub const TICK: Duration = Duration::from_secs(30);
 /// Disk usage is measured at most this often per sandbox.
@@ -2085,6 +2087,11 @@ impl Manager {
         let Some(delegation) = self.config.delegation.as_ref() else {
             return;
         };
+        // Its ptyhost leaves the group a moment after it reported the job's end (review round 3).
+        let deadline = Instant::now() + JOB_EXIT_WAIT;
+        while delegation.ci_job_running(sandbox, job) == Some(true) && Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
         delegation.end_ci_job_group(sandbox, job);
         if crate::cgroup::ci_job_group_name(job).is_none() {
             return;
@@ -4173,10 +4180,16 @@ while True:
                                   {"Id":"c2","ImageID":"sha256:i","Labels":{"yulius.ci.job":"j2"}}]"#;
                     let one =
                         r#"[{"Id":"c1","ImageID":"sha256:i","Labels":{"yulius.ci.job":"j1"}}]"#;
-                    (
-                        200,
-                        if path.contains("%3Dj1") { one } else { all }.to_owned(),
-                    )
+                    let three =
+                        r#"[{"Id":"c3","ImageID":"sha256:i","Labels":{"yulius.ci.job":"j3"}}]"#;
+                    let listed = if path.contains("%3Dj1") {
+                        one
+                    } else if path.contains("%3Dj3") {
+                        three
+                    } else {
+                        all
+                    };
+                    (200, listed.to_owned())
                 } else if path.starts_with("/networks") {
                     (200, "[]".to_owned())
                 } else if path.starts_with("/images/") {
@@ -4208,13 +4221,33 @@ while True:
             ["/containers/c1?force=1", "/containers/c1?force=1"],
             "the running job's container stays"
         );
+        // Review round 3: the ptyhost leaves the job's group a moment after it reported the
+        // job's end; the removal waits for that rather than leaving all to the sweep.
+        let leaving = delegation.ci_job_group("s1", "j3")?;
+        std::fs::write(leaving.join("cgroup.events"), "populated 1\n")?;
+        let events = leaving.join("cgroup.events");
+        let exits = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            std::fs::write(events, "populated 0\n")
+        });
+        manager.ci_job_ended("s1", "j3").await;
+        exits.await??;
+        assert_eq!(
+            deleted
+                .lock()
+                .map_err(|_| "poisoned")?
+                .last()
+                .map(String::as_str),
+            Some("/containers/c3?force=1"),
+            "removed once its last process left"
+        );
         // Review round 2 (major): a job id told ended while its group still holds a process (a
         // requeued run's new attempt under the same id) has nothing removed; its own end, or the
         // sweep once the group is empty, takes it.
         manager.ci_job_ended("s1", "j2").await;
         assert_eq!(
             deleted.lock().map_err(|_| "poisoned")?.len(),
-            2,
+            3,
             "a running job's leftovers stay"
         );
         assert!(running.exists(), "a group with a process stays");
@@ -4227,7 +4260,8 @@ while True:
             events,
             [
                 ("ci_leftovers".to_owned(), "1 0 job-end".to_owned()),
-                ("ci_leftovers".to_owned(), "1 0 sweep".to_owned())
+                ("ci_leftovers".to_owned(), "1 0 sweep".to_owned()),
+                ("ci_leftovers".to_owned(), "1 0 job-end".to_owned())
             ]
         );
         engine.abort();

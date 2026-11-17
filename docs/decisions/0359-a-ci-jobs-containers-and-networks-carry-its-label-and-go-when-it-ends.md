@@ -107,6 +107,11 @@ front copied bytes, and every job and agent of a sandbox shared one engine.
   does not normally allow) stays.
 - A create body Go's decoder accepts and `serde_json` refuses (a lone surrogate escape, which
   docker-py can send for an environment value that is not UTF-8) passes unlabelled.
+- A labelled body is written again by `serde_json`, which sorts its keys: a body that spells one
+  key two ways (`image` and `Image`) may then mean the other one to Go's last-wins decoder. Only
+  the job's own unusual bodies are affected.
+- A job's end waits up to 5 s for its last process (the ptyhost) to leave the job's group; what
+  is still there after that is the sweep's.
 - A labelled create that asks `Expect: 100-continue` is held until its body comes (the engine is
   asked without `Expect`); a client that waits for `100 Continue` sends it after its own delay
   (curl: 1 s).

@@ -101,7 +101,7 @@ ADR-0344), SPEC-497 HBA-003 (CI waits for Docker networks), SPEC-053/SPEC-268 (t
 - [x] Proof against a real engine: docker run, compose and a killed job through the front
 - [x] ADR, architecture, operations and changes for pull request 1
 - [x] Review round 1 of pull request 1 answered
-- [ ] Pull request 1 reviewed and approved
+- [x] Pull request 1 reviewed and approved
 - [ ] A pull request is judged by the integration branch's jobs (CFG-001)
 - [ ] An invalid yulius.toml fails its run with the parser's message (CFG-002)
 - [ ] The last valid gate runs while dev's file is invalid (CFG-003)
@@ -291,4 +291,19 @@ Nits: every `labels` key in any case is labelled (`Labels` and `labels` both); `
 gone (one `label` helper); `fake_sandbox`'s doc comment is back on it; ADR-0359 says "made over
 10 minutes ago", the lone-surrogate and `Expect` limits and the per-item rule; architecture and
 operations name `yulius.ci.create`.
+
+### Pull request 1, review round 3 (approve)
+
+Reviewer (Opus 5.5) on `1ea7e5973`: approve; every round-2 fix verified; CI run `547c9d82`
+passed (quality, test 1/2, test 2/2, e2e); security unrun (Vidoc 401). Its notes, answered
+after the approval within the follow-up allowance:
+
+- *Minor: the job's-end removal raced the ptyhost's own exit*, so it often fell to the sweep.
+  `Manager::ci_job_ended` waits up to 5 s for the job's group to empty first;
+  `a_jobs_end_and_the_sweep_remove_what_ci_jobs_left` now reports the end of a job whose group
+  empties 300 ms later, and its container is removed at the end (`job-end`), which failed before
+  the change.
+- *Nit: `serde_json` sorts a labelled body's keys*, so a body that spells one key two ways may
+  change meaning to Go's last-wins decoder: said in ADR-0359's Consequences (only the job's own
+  unusual bodies are affected).
 
