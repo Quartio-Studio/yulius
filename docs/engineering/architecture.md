@@ -18,7 +18,8 @@ The workspace's crates and their layers are listed in
 Every crate declares `[package.metadata.yulius] layer`. The repository checker
 validates Cargo dependency directions, including renamed, build, dev and
 platform-specific dependencies. Product crates cannot depend on tooling.
-Domain crates permit only `thiserror` as an external dependency by default; update
+Domain crates permit only `thiserror` and `toml` as external dependencies (`toml` with its
+`parse` feature alone: `yulius.toml` is read by a TOML 1.0 parser, no I/O, ADR-0360); update
 the documented convention and checker together if a concrete need justifies more.
 Intra-crate I/O and semantic purity remain review responsibilities.
 

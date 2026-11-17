@@ -31,7 +31,10 @@ The rules allowed both incidents:
 ## Decision
 
 - **A real TOML parser** (CFG-005). `yulius.toml` is read with the `toml` crate's spanned
-  document (TOML 1.0, `parse` feature only), and lines come from the spans. Anything valid TOML
+  document (TOML 1.0, `parse` feature only), and lines come from the spans. It is the domain's
+  second external dependency after `thiserror`: it parses text and does no I/O, so the
+  domain stays pure (docs/engineering/architecture.md and `scripts/check_repository.py` allow
+  it by name). Anything valid TOML
   parses, whatever its layout, and invalid TOML is refused with the parser's message at its
   line. The known tables keep their strict keys and read only strings, booleans, whole numbers
   of at least 0 and arrays of strings. Nesting is bounded by the parser.
