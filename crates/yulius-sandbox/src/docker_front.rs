@@ -734,3 +734,289 @@ mod tests {
         Ok(())
     }
 }
+
+/// SPEC-504 proof against a real Docker engine, opt-in: `YULIUS_REAL_DOCKER_SOCKET` names its
+/// socket, and the `docker` CLI with Compose and the `busybox` image must be there. Run with
+/// `cargo nextest run -p yulius-sandbox --run-ignored all -E 'test(/real_engine/)'`.
+#[cfg(test)]
+mod real_engine {
+    use super::*;
+    use crate::engine::{Jobs, Leftovers, remove_ci_leftovers};
+
+    type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+    fn docker(socket: &Path, args: &[&str]) -> Result<String, Box<dyn std::error::Error>> {
+        let out = std::process::Command::new("docker")
+            .args(args)
+            .env("DOCKER_HOST", format!("unix://{}", socket.display()))
+            .output()?;
+        if !out.status.success() {
+            return Err(
+                format!("docker {args:?}: {}", String::from_utf8_lossy(&out.stderr)).into(),
+            );
+        }
+        Ok(String::from_utf8_lossy(&out.stdout).trim().to_owned())
+    }
+
+    /// A relaying front before the real engine whose every caller is CI job `job` (or none).
+    fn front(dir: &Path, engine: &Path, job: Option<String>) -> io::Result<(StatePaths, Front)> {
+        let paths = StatePaths::new(dir.to_path_buf());
+        let gate = Gate::new().telling_jobs(Arc::new(move |_| job.clone()));
+        let front = Front::start_through(
+            &paths,
+            &DockerServe::Relay {
+                socket: engine.to_string_lossy().into_owned(),
+            },
+            &[],
+            Box::new(|| Ok(())),
+            gate,
+        )?;
+        Ok((paths, front))
+    }
+
+    /// The real `docker` CLI and `docker compose` through a CI job's front: their containers and
+    /// networks carry the job's label; an agent's through another front do not, nor does the
+    /// agent's container from an image committed from the job's (it inherits the label, which
+    /// the removal tells apart). The job's end removes exactly the job's containers and networks;
+    /// the volume and the images stay; the sweep removes an ended job's.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[ignore = "needs a real Docker engine: YULIUS_REAL_DOCKER_SOCKET"]
+    async fn real_engine_a_jobs_creates_are_labelled_and_removed_at_its_end() -> TestResult {
+        let engine = PathBuf::from(std::env::var("YULIUS_REAL_DOCKER_SOCKET")?);
+        let id = format!("p{}", std::process::id());
+        let job = format!("proof-{id}");
+        let (ci_dir, agent_dir) = (tempfile::tempdir()?, tempfile::tempdir()?);
+        let (ci, ci_front) = front(ci_dir.path(), &engine, Some(job.clone()))?;
+        let (agent, agent_front) = front(agent_dir.path(), &engine, None)?;
+        let (ci_sock, agent_sock) = (ci.docker_socket(), agent.docker_socket());
+        let compose_dir = tempfile::tempdir()?;
+        let result = tokio::task::spawn_blocking({
+            let (job, id) = (job.clone(), id.clone());
+            let (ci_sock, agent_sock) = (ci_sock.clone(), agent_sock.clone());
+            move || -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+                let run =
+                    |socket: &Path, args: &[&str]| docker(socket, args).map_err(|e| e.to_string());
+                run(&ci_sock, &["volume", "create", &format!("{id}-vol")])?;
+                run(
+                    &ci_sock,
+                    &[
+                        "run",
+                        "-d",
+                        "--name",
+                        &format!("{id}-ci"),
+                        "-v",
+                        &format!("{id}-vol:/data"),
+                        "--label",
+                        "app=quartio",
+                        "busybox",
+                        "sleep",
+                        "600",
+                    ],
+                )?;
+                run(&ci_sock, &["network", "create", &format!("{id}-net")])?;
+                std::fs::write(
+                    compose_dir.path().join("compose.yaml"),
+                    "services:\n  browser:\n    image: busybox\n    command: sleep 600\n",
+                )?;
+                let file = compose_dir.path().join("compose.yaml");
+                run(
+                    &ci_sock,
+                    &[
+                        "compose",
+                        "-p",
+                        &id,
+                        "-f",
+                        &file.to_string_lossy(),
+                        "up",
+                        "-d",
+                    ],
+                )?;
+                run(
+                    &ci_sock,
+                    &["commit", &format!("{id}-ci"), &format!("{id}-img")],
+                )?;
+                run(
+                    &agent_sock,
+                    &[
+                        "run",
+                        "-d",
+                        "--name",
+                        &format!("{id}-agent"),
+                        "busybox",
+                        "sleep",
+                        "600",
+                    ],
+                )?;
+                run(
+                    &agent_sock,
+                    &[
+                        "run",
+                        "-d",
+                        "--name",
+                        &format!("{id}-inherits"),
+                        &format!("{id}-img"),
+                        "sleep",
+                        "600",
+                    ],
+                )?;
+                let network_label = |name: &str| {
+                    run(
+                        &agent_sock,
+                        &[
+                            "network",
+                            "inspect",
+                            "-f",
+                            "{{ index .Labels \"yulius.ci.job\" }}",
+                            name,
+                        ],
+                    )
+                    .map(|text| text.replace("<no value>", ""))
+                };
+                let label_of = |name: &str| {
+                    run(
+                        &agent_sock,
+                        &[
+                            "inspect",
+                            "-f",
+                            "{{ index .Config.Labels \"yulius.ci.job\" }}",
+                            name,
+                        ],
+                    )
+                    .map(|text| text.replace("<no value>", ""))
+                };
+                assert_eq!(label_of(&format!("{id}-ci"))?, job);
+                assert_eq!(
+                    run(
+                        &agent_sock,
+                        &[
+                            "inspect",
+                            "-f",
+                            "{{ index .Config.Labels \"app\" }}",
+                            &format!("{id}-ci")
+                        ]
+                    )?,
+                    "quartio"
+                );
+                assert_eq!(
+                    label_of(&format!("{id}-browser-1"))?,
+                    job,
+                    "compose's container"
+                );
+                assert_eq!(network_label(&format!("{id}-net"))?, job);
+                assert_eq!(
+                    network_label(&format!("{id}_default"))?,
+                    job,
+                    "compose's network"
+                );
+                assert_eq!(label_of(&format!("{id}-agent"))?, "", "the agent's");
+                assert_eq!(
+                    label_of(&format!("{id}-inherits"))?,
+                    job,
+                    "inherited from the image"
+                );
+                Ok(())
+            }
+        })
+        .await?;
+        let removed = remove_ci_leftovers(&engine, &Jobs::One(&job)).await;
+        let check = tokio::task::spawn_blocking({
+            let (id, agent_sock) = (id.clone(), agent_sock.clone());
+            move || -> Result<(Vec<String>, Vec<String>, String, String), String> {
+                let run = |args: &[&str]| docker(&agent_sock, args).map_err(|e| e.to_string());
+                let names = run(&[
+                    "ps",
+                    "-a",
+                    "--filter",
+                    &format!("name={id}"),
+                    "--format",
+                    "{{.Names}}",
+                ])?;
+                let networks = run(&[
+                    "network",
+                    "ls",
+                    "--filter",
+                    &format!("name={id}"),
+                    "--format",
+                    "{{.Name}}",
+                ])?;
+                let volume = run(&["volume", "ls", "-q", "--filter", &format!("name={id}-vol")])?;
+                let image = run(&["images", "-q", &format!("{id}-img")])?;
+                let sorted = |text: String| {
+                    let mut lines: Vec<String> = text.lines().map(str::to_owned).collect();
+                    lines.sort();
+                    lines
+                };
+                Ok((sorted(names), sorted(networks), volume, image))
+            }
+        })
+        .await?;
+        // The sweep: a later container of the job, once the job ended.
+        let swept = match docker(
+            &ci_sock,
+            &[
+                "run",
+                "-d",
+                "--name",
+                &format!("{id}-late"),
+                "busybox",
+                "sleep",
+                "600",
+            ],
+        ) {
+            Ok(_) => {
+                let ended = |j: &str| j == job;
+                Some(remove_ci_leftovers(&engine, &Jobs::Ended(&ended)).await)
+            }
+            Err(error) => return Err(error),
+        };
+        // Leave nothing of the proof behind, whatever it found.
+        for args in [
+            vec![
+                "rm",
+                "-f",
+                &format!("{id}-ci"),
+                &format!("{id}-browser-1"),
+                &format!("{id}-agent"),
+                &format!("{id}-inherits"),
+                &format!("{id}-late"),
+            ],
+            vec![
+                "network",
+                "rm",
+                &format!("{id}-net"),
+                &format!("{id}_default"),
+            ],
+            vec!["rmi", &format!("{id}-img")],
+            vec!["volume", "rm", &format!("{id}-vol")],
+        ] {
+            let _ = docker(&agent_sock, &args);
+        }
+        ci_front.stop(Duration::from_secs(1)).await;
+        agent_front.stop(Duration::from_secs(1)).await;
+        result.map_err(|e| e.to_string())?;
+        assert_eq!(
+            removed?,
+            Leftovers {
+                containers: 2,
+                networks: 2
+            }
+        );
+        let (names, networks, volume, image) = check?;
+        assert_eq!(
+            names,
+            [format!("{id}-agent"), format!("{id}-inherits")],
+            "only the agent's stay"
+        );
+        assert!(networks.is_empty(), "{networks:?}");
+        assert!(!volume.is_empty(), "the volume stays");
+        assert!(!image.is_empty(), "the image stays");
+        assert_eq!(
+            swept.ok_or("no sweep")??,
+            Leftovers {
+                containers: 1,
+                networks: 0
+            }
+        );
+        Ok(())
+    }
+}

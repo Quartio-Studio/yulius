@@ -100,6 +100,37 @@ const NEW_RUN: &str = r#"P="$1"
 echo done >> "$P/new.txt"
 "#;
 
+/// The CI job of the smoke's sixth phase (SPEC-504).
+const SMOKE_JOB: &str = "docker-smoke-job";
+
+/// A CI job's run (its own group, SPEC-504 CLB-001): a network and a container on it, and the
+/// labels the front gave them.
+const CI_RUN: &str = r#"P="$1"
+O="$P/ci.txt"
+docker network create yulius-smoke-ci-net > /dev/null 2>&1 && echo net-ok >> "$O" || echo net-failed >> "$O"
+docker create --name yulius-smoke-ci --network yulius-smoke-ci-net hello-world > /dev/null 2>&1 && echo create-ok >> "$O" || echo create-failed >> "$O"
+docker inspect -f 'label={{index .Config.Labels "yulius.ci.job"}}' yulius-smoke-ci >> "$O" 2>&1
+docker network inspect -f 'net-label={{index .Labels "yulius.ci.job"}}' yulius-smoke-ci-net >> "$O" 2>&1
+echo done >> "$O"
+"#;
+
+/// An agent's run beside it: a container of its own, and its label (none).
+const AGENT_RUN: &str = r#"P="$1"
+O="$P/agent.txt"
+docker create --name yulius-smoke-agent hello-world > /dev/null 2>&1 && echo create-ok >> "$O" || echo create-failed >> "$O"
+docker inspect -f 'label={{index .Config.Labels "yulius.ci.job"}}.' yulius-smoke-agent >> "$O" 2>&1
+echo done >> "$O"
+"#;
+
+/// After the CI job's end: what the engine still has (then the agent's container goes).
+const AFTER_RUN: &str = r#"P="$1"
+O="$P/after.txt"
+docker ps -a --format 'container={{.Names}}' >> "$O" 2>&1
+docker network ls --format 'network={{.Name}}' >> "$O" 2>&1
+docker rm -f yulius-smoke-agent > /dev/null 2>&1
+echo done >> "$O"
+"#;
+
 /// One check's result.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Check {
@@ -645,6 +676,83 @@ async fn phases(
             && text.contains("no-image")
             && text.contains("no-socket"),
         text.lines().take(3).collect::<Vec<_>>().join(" "),
+    );
+
+    // 6. A CI job in its own group (SPEC-504): the front labels what it creates and its end
+    // removes that; an agent's container beside it stays.
+    ci_job_phase(config, &after, exe, request, &probe, runs, &mut check).await
+}
+
+/// The sixth phase: see [`phases`].
+async fn ci_job_phase(
+    config: &yulius_sandbox::manager::IsolationConfig,
+    after: &Manager,
+    exe: &Path,
+    request: &SandboxRequest,
+    probe: &Path,
+    runs: &mut Vec<std::process::Child>,
+    check: &mut dyn FnMut(&'static str, bool, String) -> bool,
+) -> Result<(), String> {
+    for (name, text) in [
+        ("ci.sh", CI_RUN),
+        ("agent.sh", AGENT_RUN),
+        ("after.sh", AFTER_RUN),
+    ] {
+        std::fs::write(probe.join(name), text).map_err(|e| format!("{name}: {e}"))?;
+    }
+    let delegation = config.delegation.as_ref().ok_or("no delegated cgroup")?;
+    let group = delegation
+        .ci_job_group(&request.id, SMOKE_JOB)
+        .map_err(|e| format!("the CI job's group: {e}"))?;
+    let joined = after
+        .prepare(request)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or("no sandbox base")?;
+    let mut job = joined.join.clone();
+    job.cgroup = Some(group.to_string_lossy().into_owned());
+    for (join, script, out) in [
+        (&job, "ci.sh", "ci.txt"),
+        (&joined.join, "agent.sh", "agent.txt"),
+    ] {
+        let mut run = spawn_run(exe, join, request, probe, script)?;
+        let _ = wait_line(&probe.join(out), "done", PULL_WAIT).await;
+        let _ = run.wait();
+    }
+    after.release(&request.id).await;
+    let (ci, agent) = (read(&probe.join("ci.txt")), read(&probe.join("agent.txt")));
+    check(
+        "a CI job's container and network carry its label",
+        ci.contains(&format!("label={SMOKE_JOB}\n"))
+            && ci.contains(&format!("net-label={SMOKE_JOB}\n")),
+        ci.lines().take(4).collect::<Vec<_>>().join(" "),
+    );
+    check(
+        "an agent's container beside it carries none",
+        agent.contains("create-ok")
+            && (agent.contains("label=.") || agent.contains("label=<no value>.")),
+        agent.lines().take(2).collect::<Vec<_>>().join(" "),
+    );
+    after.ci_job_ended(&request.id, SMOKE_JOB).await;
+    let joined = after
+        .prepare(request)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or("no sandbox base")?;
+    runs.push(spawn_run(exe, &joined.join, request, probe, "after.sh")?);
+    after.release(&request.id).await;
+    let out = probe.join("after.txt");
+    let _ = wait_line(&out, "done", WAIT).await;
+    let text = read(&out);
+    check(
+        "a CI job's end removes them and keeps the agent's",
+        text.contains("container=yulius-smoke-agent")
+            && !text.contains("container=yulius-smoke-ci\n")
+            && !text.contains("network=yulius-smoke-ci-net"),
+        text.lines()
+            .filter(|l| l.contains("yulius-smoke"))
+            .collect::<Vec<_>>()
+            .join(" "),
     );
     Ok(())
 }
