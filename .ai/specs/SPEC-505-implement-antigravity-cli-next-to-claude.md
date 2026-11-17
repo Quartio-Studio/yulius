@@ -121,7 +121,7 @@ Six pull requests, each merged into `dev` on green before the next begins.
 - [x] Slice A: an Antigravity transcript is observed and counted, checked on one real agy 1.5.10 wrote
 - [x] Slice A: Antigravity launch plan, home files and session paths in yulius-harness
 - [x] Slice A: Antigravity hooks reach Yulius as Claude Code's through the hook client
-- [ ] Slice A: review findings fixed and the slice delivered
+- [x] Slice A: review findings fixed and the slice delivered
 - [ ] Slice B: Yulius installs the pinned agy 1.5.10 into its data directory
 - [ ] Slice B: review findings fixed and the slice delivered
 - [ ] Slice C1: an Antigravity task runs in the supervisor (homes, session id, hooks, write-back, rotation)
@@ -219,7 +219,10 @@ Six pull requests, each merged into `dev` on green before the next begins.
   which the CLI retries.
 - **For slice C1** (from the review of slice A): a step's `created_at` has whole seconds while
   the supervisor compares milliseconds, so a prompt in the same second as a Stop must not read
-  as the ended turn's; an Esc ends a turn with no Stop hook and no transcript line.
+  as the ended turn's; an Esc ends a turn with no Stop hook and no transcript line; a refused
+  prompt's `USER_INPUT` step reads as a prompt in the transcript, and no Stop follows it (the
+  CLI also sends its text to its title model); an `ERROR` Stop Yulius answers with a block is
+  not continued, so the server must settle that turn rather than wait for the agent.
 - **The Google sign-in credential is the CLI's own token file**, captured from a temporary home
   after the CLI's sign-in, opaque to Yulius (its format is not documented, and no live account was
   available to read one); written back after a run when it changed, as the account's own file.
@@ -293,6 +296,9 @@ Six pull requests, each merged into `dev` on green before the next begins.
   2. A failed turn that is no quota went unheard: an `ERROR` Stop reaches Yulius again but is
      never continued (`an_antigravity_turn_ended_by_an_error_is_never_continued`).
   3. The limit texts' comment and the Limits decision say the CLI may try again.
+- **Review round 3** (head 944efbb58): approve. Both round-2 fixes checked, finding 1 with the
+  real agy and the client built from that head (the refused prompt's model call never happened);
+  two notes for slice C1 added to Decisions.
 - CI run 24ec8826 on 2f6939eb7 failed on
   `merge_train::a_member_whose_own_run_fails_leaves_the_candidate`, which this change does not
   touch; it failed on #1397 too and Yulius quarantined it as flaky (issue #1398).
