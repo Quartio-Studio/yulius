@@ -67,6 +67,14 @@ selection bias of people picking one for certain work.
     args}`). **A `PreToolUse` that answers `{}` denies the tool** ("tool call denied by pre-tool
     hook"): an answer must say `{"decision":"allow"}`. `Stop` answers `{"decision":"continue",
     "reason"}` to go on; `SessionStart` answers `injectSteps` with a `systemMessage`.
+    `PreInvocation` has `invocationNum` 0 at the first model call of each turn and 1 after a
+    continued Stop. Probed by the review of slice A: a resume (`--conversation <id>`, with or
+    without a prompt) fires no `SessionStart`; when a background command ends the CLI opens a
+    turn by itself (`invocationNum` 0, no new `USER_INPUT` step, `lastUserInput` still the earlier
+    prompt); after its retries of a quota the turn's `Stop` has `terminationReason` `ERROR`, and a
+    `continue` answer makes it try the model again; `fullyIdle` is false while a background
+    command runs; Esc ends a turn with no `Stop` and no transcript line; a hook command that exits
+    non-zero (127 for a missing program) denies the tool.
   - **Limits.** A 429 `RESOURCE_EXHAUSTED` is retried, then written as an `ERROR_MESSAGE` step
     ("API error (attempt 7): Error 429, … RESOURCE_EXHAUSTED …"); the release notes name the
     plan's texts "Individual quota reached", "baseline model quota reached" and "Your AI credits
@@ -187,7 +195,27 @@ Six pull requests, each merged into `dev` on green before the next begins.
   instead: its shell then sees that `HOME` (a known limit of uncontained runs).
 - **Hook translation in the client** (inside the sandbox): the server keeps one Claude-shaped hook
   contract; the client maps Antigravity's events and answers. Its fail-open answer for
-  `PreToolUse` is `allow`, because `agy` denies a tool on an empty answer.
+  `PreToolUse` is `allow`, because `agy` denies a tool on an empty answer, and the hook command
+  falls back to printing `allow` when the client cannot run at all.
+- **Which model call is a prompt.** Only the first model call of a turn whose step before it is a
+  person's `USER_INPUT` (read from the transcript's end) reaches Yulius as `UserPromptSubmit`;
+  the turn the CLI opens itself after a background command is the agent's work, as Claude Code's
+  wake-ups are, so it neither undoes an achieved goal nor counts as a prompt.
+- **Which Stop is a turn's end.** A Stop after the model API failed (`terminationReason`
+  `ERROR`) asks Yulius nothing, as Claude Code runs no Stop hook then; the transcript's limit
+  steps move the task. A Stop with `fullyIdle` false is a turn's end like Claude Code's with
+  background agents still running: the CLI's own wake-up later is agent work.
+- **A resume gets no new briefing.** The CLI fires no `SessionStart` on `--conversation`; the
+  conversation keeps the briefing its start injected, and Yulius knows the session it resumed.
+- **MCP servers with a bearer token are left out** of Antigravity runs (the CLI expands no
+  variable in a header, and the token would be written to a file); slice C1's run notice names
+  the servers left out.
+- **Limits.** A plan's quota text, or a 429 naming the quota it used up (`quotaId`, not a
+  per-minute one), is a limit of the subscription at once: the CLI stops the turn at these
+  itself. A 429 naming no quota is the model's capacity, which the CLI retries.
+- **For slice C1** (from the review of slice A): a step's `created_at` has whole seconds while
+  the supervisor compares milliseconds, so a prompt in the same second as a Stop must not read
+  as the ended turn's; an Esc ends a turn with no Stop hook and no transcript line.
 - **The Google sign-in credential is the CLI's own token file**, captured from a temporary home
   after the CLI's sign-in, opaque to Yulius (its format is not documented, and no live account was
   available to read one); written back after a run when it changed, as the account's own file.
@@ -231,3 +259,26 @@ Six pull requests, each merged into `dev` on green before the next begins.
   `-p yulius --lib` 650 passed; the `yulius` integration files the slice touches (`task_delete`,
   `accounts`, `automations`, `codex`, `agent_hooks`, `account_usage`) 103 passed.
   `cargo clippy --workspace --all-targets -D warnings` clean.
+- **Mutation testing** (`scripts/dev mutants`, on 2dfbf0ed5): `mutants: 231 listed, 60 caught,
+  0 missed, 0 timed out, 56 unviable, 115 not reached (bound 30 min, took 1802 s)`.
+- **Review round 1** (yulius-reviewer, head cba71f5bf, request changes; no blocker, nothing
+  pre-existing), each answered in 2dfbf0ed5 and the commit after it:
+  1. A wake-up after a background command was sent as the last prompt: fixed test-first
+     (`an_antigravity_wake_up_is_no_prompt`), the step before the call must be a typed
+     `USER_INPUT`.
+  2. `last_conversations.json` was checked, then opened by path: fixed test-first (a linked
+     folder and a FIFO in `the_last_conversation_of_a_worktree`), folders and file opened with
+     `O_NOFOLLOW`, the file with `O_NONBLOCK`.
+  3. A resume fires no SessionStart: recorded in Context and Decisions and the ADR.
+  4. Stop's `terminationReason`, `error` and `fullyIdle`: an `ERROR` Stop is no longer sent
+     (`an_antigravity_turn_ended_by_an_error_is_no_stop`); `fullyIdle` false is a turn's end,
+     as decided under Decisions.
+  5. A hook command that cannot run denied the tool: the command falls back to `allow`, checked
+     with the real agy and a missing client (the command ran).
+  6. Every attempt's error was a limit: only a quota text or a 429 naming its quota (not
+     per-minute) is one now; a bare 429 is capacity (`agy_limits_and_broken_lines`).
+  7. No mutation result: above.
+  8. The spec's `AGY_CLI_DISABLE_AUTO_UPDATE=1` and token key: corrected.
+  9. Bearer-token MCP servers left out silently: recorded under Decisions and in the ADR; slice
+     C1's run notice names them.
+  10. The window test: an `until` case added, its comment corrected.

@@ -71,3 +71,6 @@ provider switching and session translation stay removed (SPEC-002 ADR-06).
   search, workflows, model limits and their question. A goal task gets its whole request as its
   first message and is settled by its turns.
 - An uncontained run's shell sees the Antigravity home as `HOME`.
+- A sandbox MCP server that needs a bearer token is not offered to Antigravity runs.
+- A resumed conversation gets no new briefing (the CLI runs no `SessionStart` then); its first
+  start's briefing stays in its history.
