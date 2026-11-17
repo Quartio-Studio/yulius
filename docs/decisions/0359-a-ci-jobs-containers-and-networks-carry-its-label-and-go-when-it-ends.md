@@ -35,11 +35,14 @@ front copied bytes, and every job and agent of a sandbox shared one engine.
   named `ci-job-<id>` is that job's; anyone else's connection is only copied, never read.
 - **The front labels what a job creates.** On a job's connection it reads each HTTP/1.1 request
   and sets `yulius.ci.job=<id>` in the body of `POST [/v…]/containers/create` and
-  `POST [/v…]/networks/create` (replacing a label of that name, keeping the others, framed by
-  `Content-Length`); every other byte passes as it came. A hijacking or upgraded call (attach,
-  exec start, a BuildKit session, gRPC, any `Upgrade`) and anything not read as a request turn
-  the connection into plain copying, so streams are never held back. A body that is not JSON or
-  is over 4 MiB passes unlabelled. The engine's answers are never read.
+  `POST [/v…]/networks/create`, with `yulius.ci.create=<a value of its own>` beside it
+  (replacing labels of those names, keeping the others, framed by `Content-Length`); every other
+  byte passes as it came. Each head is read line by line as it comes: the moment its bytes cannot
+  be a request line or a header line ending in CRLF, what was read goes on and the connection
+  turns into plain copying, as it does after a hijacking or upgraded call (attach, an exec start
+  that is not detached, a BuildKit session, gRPC, any `Upgrade`) and after a body whose framing
+  breaks, so nothing is held back for a line that will not make a request. A body that is not
+  JSON or is over 4 MiB passes unlabelled, byte for byte. The engine's answers are never read.
 - **A job's end removes what it made**, whatever the outcome: the executor tells the isolation
   after the job's process ended (passed, failed, cancelled, timed out), and so does the CI's
   recovery for jobs a restart ended. The server lists the running engine's containers and
@@ -48,10 +51,14 @@ front copied bytes, and every job and agent of a sandbox shared one engine.
 - **The upkeep sweeps** every 30 s, and so first after a server starts: each running engine's
   containers and networks labelled with a job whose group has no process (gone or empty) are
   removed the same way; a group that cannot be read counts as running. Job groups emptied over
-  10 minutes ago go too. One sweep runs at a time, in a task of its own, bounded by 60 s per
-  engine.
+  10 minutes ago go too (a job group made again for the same job id is made fresh). One sweep
+  runs at a time, in a task of its own, bounded by 60 s per engine; what it removed before a
+  failure or the bound counts. The recovery after a restart removes in tasks of their own, so an
+  engine that never answers does not hold CI's start.
 - **A label inherited from an image is not a job's.** A container whose image carries the same
-  label value (an image committed from a job's container) is kept.
+  `yulius.ci.create` value (an image committed from a job's container, run by anyone) is kept; a
+  container a job made from such an image has a value of its own and goes. A container whose
+  image cannot be read is kept: nothing then tells it from an agent's.
 - **Nothing starts a stopped engine** for this; what a stopped engine holds is swept once it runs
   again. Images and volumes are never removed.
 - **Measured:** each removal is a Docker event, audited as `sandbox.docker.ci_leftovers`
@@ -89,5 +96,11 @@ front copied bytes, and every job and agent of a sandbox shared one engine.
   (SPEC-494 replaces outdated fronts).
 - An agent can still create a container labelled `yulius.ci.job` itself; it is then treated as
   that job's.
+- A container one job created and another job or an agent uses (a fixed name, the same Compose
+  project) goes when its creator ends.
+- Anonymous volumes of removed containers stay, as volumes are never removed; they count toward
+  the sandbox's disk and are pruned only by a person or the engine's own prune.
+- A job's own container whose image cannot be read (gone while the container stays, which Docker
+  does not normally allow) stays.
 - `yulius doctor --docker-smoke` proves it on a host: a CI job's container and network carry its
   label, an agent's beside it does not, and the job's end removes only the job's.
