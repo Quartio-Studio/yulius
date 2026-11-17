@@ -358,3 +358,58 @@ after the approval within the follow-up allowance:
   person bypassed the ruleset for PR #50). The "after" is `config_blocked_minutes`, which counts
   only a file never valid once this is deployed; promotion and deployment are a person's.
 
+### Pull request 2, review round 1 (request changes; every finding own code)
+
+The reviewer (Fable 5.2) read `ccc36172e`, then the fixes of two failed CI runs, which arrived
+mid-review:
+- `ecdbabddb`: the repository check refused `toml` in the domain. The checker and
+  `docs/engineering/architecture.md` now allow it by name, with ADR-0360.
+- `29a96c920`: `remote_mcp::a_broken_integration_ci_is_named_when_merging` pinned the old "tests
+  nothing" refusal of a repair. It is now
+  `a_repair_of_a_broken_integration_ci_waits_for_its_own_checks`.
+
+The security job ended skipped (Vidoc 401, as on dev): **unrun**. Answers, each fixed
+test-first:
+
+- *Direction and Major 1: a valid but failing job merged untested, then judged its own repair,
+  and the same-tree reuse recorded dev green for jobs that never ran.*
+  - A change's own changed or added jobs now run beside dev's, never instead
+    (`dom::with_changed_jobs`; never under the trusted scan's key;
+    `ci::tests::a_changes_own_jobs_run_beside_the_gates`).
+  - A branch reuses a same-tree verdict only where every job of its gate ran with the same
+    command (`a_branch_never_reuses_a_run_that_did_not_run_its_jobs`). Removing the check fails
+    it.
+  - `a_pull_request_that_changes_its_jobs_is_judged_by_the_integration_branchs` now also changes
+    a job to `exit 1`: the run fails on `check (this change)`.
+  - ADR-0360 records the reversal: "Only the integration branch's jobs" is now a rejected
+    alternative.
+- *Major 2: `LastValid` secrets untested.* `only_the_integration_branch_jobs_grant_secrets` now
+  shows that `LastValid` grants for the same name and command, and not for another.
+- *Major 3: the configuration check was proven for pull requests only.* Each of these fails at
+  once with a failed job `yulius.toml` and the other jobs skipped:
+  - `merge_train::a_candidate_with_an_invalid_yulius_toml_fails_with_the_parsers_message`;
+  - `playground::a_task_with_an_invalid_yulius_toml_fails_its_merges_run`;
+  - dev's own run at its invalid head, in
+    `an_invalid_integration_branch_runs_its_last_valid_gate_until_a_fix_merges`.
+- *Minors.*
+  1. Fallback without a gate: `an_invalid_file_with_no_earlier_gate_names_no_fallback`.
+  2. Episodes across a restart: the state is read from the audit first.
+     `an_episode_that_ended_while_the_server_was_down_is_closed` counts 30 minutes, not the
+     range's 90.
+  3. A head refused for dev's file runs again once it is valid:
+     `a_head_refused_for_the_branchs_file_runs_again_once_it_is_valid`.
+  4. A table inside a known one is refused as `NestedTable` ("is not a table Yulius reads"),
+     and the newly strict corners are in ADR-0360.
+  5. The stale text is fixed: `docs/api.md` "Runs", the architecture's sequence diagram and the
+     code comments.
+  6. The store reads an unknown source as the integration branch's
+     (`a_run_of_an_unknown_source_still_reads`), and ADR-0360 gives the rollback SQL.
+  7. The remaining remote refusal is tested:
+     `a_change_that_does_not_repair_a_never_valid_ci_is_refused`.
+  8. A Git error checks the head's own file, and an unwalkable history gives no verdict, never
+     own jobs. The test `LocalGit` port gained `parents` and `merge_base`, as production's Git
+     has.
+- *Nits.* The parser is named TOML 1.1, the dead test arm is gone, a reason no longer repeats
+  "yulius.toml", and the comments in merge_train.rs and playground.rs are updated.
+  `EnvironmentsConflict` stays as a guard of the profile's rule, said in its comment.
+

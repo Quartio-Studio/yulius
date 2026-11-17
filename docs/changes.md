@@ -10,7 +10,8 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   [ADR-0360](decisions/0360-dev-s-gate-judges-every-change-and-a-bad-yulius-toml-never-turns-ci-off.md)):
   the file is read by a real TOML parser (multi-line arrays, trailing commas and comments
   parse); every pull request, merge candidate and playground merge is judged by the integration
-  branch's jobs, also one that changes them; its own `yulius.toml`, as CI will read it after the
+  branch's jobs, also one that changes them, with its own changed jobs beside them, never
+  instead; its own `yulius.toml`, as CI will read it after the
   merge, is checked and an invalid one fails the run at once with the parser's message; while the
   integration branch's file is invalid, its last valid gate runs until a fix merges and every run
   and the CI page say so. The minutes CI ran nothing because of its configuration are counted
