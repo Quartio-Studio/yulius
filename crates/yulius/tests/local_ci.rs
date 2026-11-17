@@ -2943,6 +2943,334 @@ async fn running_ci_jobs_weigh_on_their_sandbox_until_they_end() -> TestResult {
     Ok(())
 }
 
+/// A contained sandbox's isolation that records which CI jobs got their own group and which it
+/// was told ended (SPEC-504 CLB-001, CLB-004), in order.
+#[derive(Default)]
+struct Grouping {
+    calls: std::sync::Mutex<Vec<(&'static str, String)>>,
+    /// Its removal never ends (an engine that never answers).
+    hangs: bool,
+    /// It makes no job group (`ci_job_started` answers `None`).
+    no_group: bool,
+    /// Its join has no CI group (`ci_cgroup` is `None`).
+    no_ci_group: bool,
+}
+
+impl Grouping {
+    fn calls(&self) -> Vec<(&'static str, String)> {
+        self.calls.lock().map(|c| c.clone()).unwrap_or_default()
+    }
+}
+
+#[async_trait::async_trait]
+impl SandboxIsolation for Grouping {
+    async fn prepare(&self, _: &SandboxRef) -> AppResult<Option<SandboxJoin>> {
+        Ok(Some(SandboxJoin {
+            holder_pid: 4242,
+            user_ns: 3,
+            net_ns: 2,
+            mnt_ns: 4,
+            cgroup: Some("/cg/s1/agents".into()),
+            ci_cgroup: (!self.no_ci_group).then(|| "/cg/s1/ci".into()),
+            system_root: "/fake/root".into(),
+            hostname: "s1".into(),
+            exec_shim: None,
+            extra_binds: Vec::new(),
+            private_dirs: Vec::new(),
+            system_passwd: None,
+            system_group: None,
+            host_system: None,
+            docker_dir: None,
+        }))
+    }
+    fn release(&self, _: &SandboxId) {}
+    fn limits(&self) -> SandboxLimits {
+        Limited.limits()
+    }
+    fn ci_job_started(&self, _: &SandboxId, job: &str) -> Option<PathBuf> {
+        if let Ok(mut calls) = self.calls.lock() {
+            calls.push(("started", job.to_owned()));
+        }
+        (!self.no_group).then(|| format!("/cg/s1/ci/ci-job-{job}").into())
+    }
+    async fn ci_job_ended(&self, sandbox: &SandboxId, job: &str) {
+        assert_eq!(sandbox.as_str(), "s1");
+        if let Ok(mut calls) = self.calls.lock() {
+            calls.push(("ended", job.to_owned()));
+        }
+        if self.hangs {
+            std::future::pending::<()>().await;
+        }
+    }
+}
+
+/// SPEC-504 CLB-001, CLB-004: every CI job gets its own group before it starts, and the
+/// isolation hears that it ended, after it started, whatever the outcome: passed, failed, timed
+/// out, and cancelled when a push supersedes its run.
+#[tokio::test]
+async fn every_ci_job_is_grouped_and_its_end_told_whatever_the_outcome() -> TestResult {
+    let f = fixture_with(false, |data| {
+        let job = format!(
+            "while [ ! -e \"{}\" ]; do sleep 0.05; done; if [ -f hang ]; then sleep 30; fi; \
+             if [ -f bad ]; then exit 1; fi",
+            data.join("go").display()
+        );
+        format!(
+            "[[ci.jobs]]\nname = \"a\"\ncpus = 1\ncommand = '{job}'\n\n\
+             [[ci.jobs]]\nname = \"b\"\ncpus = 1\ncommand = '{job}'\n"
+        )
+    })
+    .await?;
+    let grouping = Arc::new(Grouping::default());
+    assert!(f.h.app.set_isolation(grouping.clone()));
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    // dev's run and the pull request's: three of their four jobs fill the three job slots.
+    let deadline = tokio::time::Instant::now() + WAIT;
+    while grouping
+        .calls()
+        .iter()
+        .filter(|(c, _)| *c == "started")
+        .count()
+        < 3
+    {
+        f.h.app.ci_dispatch().await;
+        if tokio::time::Instant::now() > deadline {
+            return Err(format!("never three jobs: {:?}", grouping.calls()).into());
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    // A push supersedes the pull request's run while a job of it waits for `go`: cancelled.
+    f.push_feature("bad", Some("1\n"))?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    let deadline = tokio::time::Instant::now() + WAIT;
+    while !f
+        .h
+        .store
+        .ci_runs(&f.sandbox.id, 10)
+        .await?
+        .iter()
+        .any(|r| r.state == RunState::Cancelled)
+    {
+        f.h.app.ci_dispatch().await;
+        if tokio::time::Instant::now() > deadline {
+            return Err("the superseded run never ended".into());
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    // dev's jobs pass, the new head's fail.
+    std::fs::write(f.data.join("go"), "")?;
+    f.settle().await?;
+    // A head whose jobs hang past their 8 s limit: timed out.
+    f.push_feature("bad", None)?;
+    f.push_feature("hang", Some("1\n"))?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    let calls = grouping.calls();
+    let mut outcomes = std::collections::BTreeSet::new();
+    for run in f.h.store.ci_runs(&f.sandbox.id, 10).await? {
+        for job in f.h.store.ci_jobs(&run.id, false).await? {
+            if job.started_at.is_none() {
+                continue;
+            }
+            let at = |what: &str| calls.iter().position(|(c, id)| *c == what && *id == job.id);
+            let (Some(started), Some(ended)) = (at("started"), at("ended")) else {
+                return Err(format!(
+                    "{} ({:?}) not grouped and ended: {calls:?}",
+                    job.name, job.state
+                )
+                .into());
+            };
+            assert!(
+                started < ended,
+                "{} ended before it started: {calls:?}",
+                job.name
+            );
+            let ends = calls
+                .iter()
+                .filter(|(c, id)| *c == "ended" && *id == job.id)
+                .count();
+            assert_eq!(ends, 1, "{}: {calls:?}", job.name);
+            outcomes.insert(format!("{:?}", job.state));
+        }
+    }
+    for outcome in ["Passed", "Failed", "Cancelled", "Error"] {
+        assert!(outcomes.contains(outcome), "no {outcome} job: {outcomes:?}");
+    }
+    Ok(())
+}
+
+/// The cgroups contained CI jobs were launched to join, with `grouping`, and the jobs' ids.
+async fn launched_groups(
+    grouping: Grouping,
+) -> BoxResult<(Vec<PathBuf>, Vec<String>, Vec<(&'static str, String)>)> {
+    use yulius_app::ports::session::Containment;
+    let recording = Arc::new(crate::cd::Recording {
+        inner: PtySessionHost::new(PathBuf::from(env!("CARGO_BIN_EXE_yulius"))),
+        seen: std::sync::Mutex::new(Vec::new()),
+    });
+    let f = fixture_hosted(
+        true,
+        |_| "[[ci.jobs]]\nname = \"check\"\ncommand = \"true\"\n".to_owned(),
+        Some(recording.clone()),
+    )
+    .await?;
+    let grouping = Arc::new(grouping);
+    assert!(f.h.app.set_isolation(grouping.clone()));
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    let seen = recording.seen.lock().map(|s| s.clone()).unwrap_or_default();
+    let mut groups = Vec::new();
+    for containment in seen {
+        let Containment::Bubblewrap {
+            join: Some(join), ..
+        } = containment
+        else {
+            return Err(format!("a joined containment: {containment:?}").into());
+        };
+        groups.push(join.cgroup.ok_or("no cgroup")?);
+    }
+    let mut jobs = Vec::new();
+    for run in f.h.store.ci_runs(&f.sandbox.id, 10).await? {
+        jobs.extend(
+            f.h.store
+                .ci_jobs(&run.id, false)
+                .await?
+                .into_iter()
+                .map(|j| j.id),
+        );
+    }
+    Ok((groups, jobs, grouping.calls()))
+}
+
+/// SPEC-504 CLB-001 (review round 1, major): a contained CI job is launched to join its own
+/// group, `ci/ci-job-<job id>`, on the path production takes (the executor's join, its
+/// containment and the CI join); without a job group (none made, or no CI group) it joins the
+/// CI group, or the sandbox's group, as before.
+#[tokio::test]
+async fn a_contained_ci_job_is_launched_in_its_own_group() -> TestResult {
+    let (groups, jobs, _) = launched_groups(Grouping::default()).await?;
+    assert_eq!(jobs.len(), 2, "dev's run and the pull request's: {jobs:?}");
+    let mut want: Vec<PathBuf> = jobs
+        .iter()
+        .map(|job| PathBuf::from(format!("/cg/s1/ci/ci-job-{job}")))
+        .collect();
+    let mut groups = groups;
+    groups.sort();
+    want.sort();
+    assert_eq!(groups, want);
+    let (groups, _, calls) = launched_groups(Grouping {
+        no_group: true,
+        ..Grouping::default()
+    })
+    .await?;
+    assert_eq!(
+        groups,
+        [PathBuf::from("/cg/s1/ci"), PathBuf::from("/cg/s1/ci")]
+    );
+    assert!(calls.iter().any(|(c, _)| *c == "started"));
+    let (groups, _, calls) = launched_groups(Grouping {
+        no_ci_group: true,
+        ..Grouping::default()
+    })
+    .await?;
+    assert_eq!(
+        groups,
+        [
+            PathBuf::from("/cg/s1/agents"),
+            PathBuf::from("/cg/s1/agents")
+        ]
+    );
+    assert!(
+        calls.iter().all(|(c, _)| *c != "started"),
+        "no job group without a CI group: {calls:?}"
+    );
+    Ok(())
+}
+
+/// SPEC-504 CLB-004: a job a restart of Yulius ended (its run recorded as running, with no
+/// executor) is told ended to the isolation when CI starts again; a removal that never ends
+/// (an engine that never answers) does not hold the run's requeue or CI's start (review round 1).
+#[tokio::test]
+async fn a_job_a_restart_ended_is_told_ended() -> TestResult {
+    for hangs in [false, true] {
+        a_job_a_restart_ended_is_told_ended_with(hangs).await?;
+    }
+    Ok(())
+}
+
+async fn a_job_a_restart_ended_is_told_ended_with(hangs: bool) -> TestResult {
+    use yulius_app::ci::{CiJobRecord, CiRunRecord};
+    use yulius_domain::ci::{CiRef, GateSource};
+    use yulius_domain::time::Timestamp;
+    let f = fixture_with(false, |_| {
+        "[[ci.jobs]]\nname = \"check\"\ncommand = \"true\"\n".to_owned()
+    })
+    .await?;
+    let grouping = Arc::new(Grouping {
+        hangs,
+        ..Grouping::default()
+    });
+    assert!(f.h.app.set_isolation(grouping.clone()));
+    let run = CiRunRecord {
+        id: "run-1".into(),
+        sandbox_id: f.sandbox.id.clone(),
+        reference: CiRef::PullRequest(1),
+        sha: "a".repeat(40),
+        source: GateSource::ProjectConfig,
+        state: RunState::Running,
+        reason: None,
+        requested_by: "yulius".into(),
+        status_for: None,
+        status_note: None,
+        status_attempts: 0,
+        queued_at: Timestamp(1),
+        started_at: Some(Timestamp(2)),
+        ended_at: None,
+    };
+    let job = CiJobRecord {
+        id: "job-1".into(),
+        run_id: "run-1".into(),
+        ordinal: 0,
+        name: "check".into(),
+        key: "check".into(),
+        command: "true".into(),
+        matrix: None,
+        state: RunState::Running,
+        reason: None,
+        exit_code: None,
+        output: String::new(),
+        failures: None,
+        started_at: Some(Timestamp(2)),
+        ended_at: None,
+        need: Default::default(),
+        timeout_minutes: None,
+        exclusive: false,
+        waited_ms: None,
+    };
+    f.h.store.insert_ci_run(&run, &[job]).await?;
+    f.h.app.start_ci();
+    let deadline = tokio::time::Instant::now() + WAIT;
+    loop {
+        let requeued =
+            f.h.store
+                .ci_runs(&f.sandbox.id, 10)
+                .await?
+                .iter()
+                .any(|r| r.id == "run-1" && r.state != RunState::Running);
+        if requeued && grouping.calls().contains(&("ended", "job-1".to_owned())) {
+            return Ok(());
+        }
+        if tokio::time::Instant::now() > deadline {
+            return Err(format!(
+                "hangs {hangs}: requeued {requeued}, told {:?}",
+                grouping.calls()
+            )
+            .into());
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
 /// A sandbox limited to 4 CPUs (a CI budget of 3) whose CI and Docker engine use `millis`
 /// thousandths of a CPU, and whose engine of 4,096 networks has `networks` of them
 /// (`u32::MAX`: no running engine) (SPEC-497).

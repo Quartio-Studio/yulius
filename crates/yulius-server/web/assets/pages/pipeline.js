@@ -304,11 +304,13 @@ export function mountPipelineSection(ctx, sandbox, route, section, actions) {
     const perWeek = (n) => `${Number((n / d.rangeWeeks).toFixed(1))} a week`;
     return h('section', { class: 'card db-card', 'aria-label': 'Docker' },
       h('header', { class: 'db-card-head' }, h('div', { class: 'db-card-titles' }, h('h2', { class: 'card-title' }, 'Docker'),
-        h('span', { class: 'db-card-sub' }, 'the sandbox’s Docker front: restarted by itself, on a person’s ask or after an update'))),
+        h('span', { class: 'db-card-sub' }, 'the sandbox’s Docker front: restarted by itself, on a person’s ask or after an update; what CI jobs left in it'))),
       h('div', { class: 'db-kpis pl-kpis' },
         tile('Front restarts', int(d.restarts || 0), perWeek(d.restarts || 0)),
         tile('Connections that gave way', int(d.gave_way || 0), perWeek(d.gave_way || 0)),
-        tile('Docker Needs you', int(d.needs_you || 0), perWeek(d.needs_you || 0))));
+        tile('Docker Needs you', int(d.needs_you || 0), perWeek(d.needs_you || 0)),
+        tile('Left by CI jobs, removed', int((d.ci_containers || 0) + (d.ci_networks || 0)),
+          `${int(d.ci_containers || 0)} containers, ${int(d.ci_networks || 0)} networks; ${int(d.ci_swept || 0)} by the sweep`)));
   }
 
   function tile(label, value, sub) {

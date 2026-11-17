@@ -95,11 +95,19 @@ pub struct Gate {
     hangup_check: Duration,
     close_grace: Duration,
     state_every: Duration,
+    /// Which CI job a connecting process belongs to, by its pid (SPEC-504 CLB-002); none
+    /// without it.
+    caller: Option<Caller>,
 }
 
-/// An admitted connection: its client and its place (freed when dropped).
+/// The CI job of the process with this pid, if it is one's ([`crate::docker_label::caller_job`]).
+pub type Caller = Arc<dyn Fn(u32) -> Option<String> + Send + Sync>;
+
+/// An admitted connection: its client, the CI job it is (if any) and its place (freed when
+/// dropped).
 pub struct Admitted {
     client: UnixStream,
+    job: Option<String>,
     toucher: Toucher,
     _place: crate::relay::Place,
 }
@@ -119,6 +127,17 @@ impl Gate {
         hangup_check: Duration,
         close_grace: Duration,
     ) -> Arc<Self> {
+        Self::built(max, floor, (hangup_check, close_grace), None)
+    }
+
+    /// A gate of `max` places giving way after `floor`, with these bounds, telling CI jobs by
+    /// `caller` when given.
+    fn built(
+        max: usize,
+        floor: Duration,
+        (hangup_check, close_grace): (Duration, Duration),
+        caller: Option<Caller>,
+    ) -> Arc<Self> {
         Arc::new(Self {
             places: Places::new(max, floor),
             max,
@@ -130,7 +149,28 @@ impl Gate {
             hangup_check,
             close_grace,
             state_every: STATE_EVERY,
+            caller,
         })
+    }
+
+    /// A gate of [`MAX_CONNECTIONS`] places and the production bounds that tells CI jobs'
+    /// connections by `caller` (SPEC-504 CLB-002): their creates are labelled
+    /// ([`crate::docker_label`]).
+    #[must_use]
+    pub fn telling_jobs(caller: Caller) -> Arc<Self> {
+        Self::built(
+            MAX_CONNECTIONS,
+            IDLE_FLOOR,
+            (HANGUP_CHECK, CLOSE_GRACE),
+            Some(caller),
+        )
+    }
+
+    /// The CI job `client`'s process belongs to, by its peer credentials.
+    fn job_of(&self, client: &UnixStream) -> Option<String> {
+        let caller = self.caller.as_ref()?;
+        let pid = client.peer_cred().ok()?.pid()?;
+        caller(u32::try_from(pid).ok()?)
     }
 
     /// This gate writing its state every `every` (tests).
@@ -185,9 +225,11 @@ impl Gate {
             self.event(Kind::GaveWay, &mut io::stderr().lock());
         }
         self.mark_at_limit(self.places.held() >= self.max);
+        let job = self.job_of(&client);
         Some((
             Admitted {
                 client,
+                job,
                 toucher: place.toucher(),
                 _place: place,
             },
@@ -288,12 +330,14 @@ impl Gate {
     pub async fn splice(&self, admitted: Admitted, engine: UnixStream) -> End {
         let Admitted {
             client,
+            job,
             toucher,
             _place,
         } = admitted;
         let end = splice_bounded(
             client,
             engine,
+            job.as_deref(),
             &toucher,
             self.hangup_check,
             self.close_grace,
@@ -427,19 +471,27 @@ where
 async fn splice_bounded(
     client: UnixStream,
     engine: UnixStream,
+    job: Option<&str>,
     toucher: &Toucher,
     hangup_check: Duration,
     close_grace: Duration,
 ) -> End {
     let (client_read, client_write) = client.into_split();
     let (engine_read, engine_write) = engine.into_split();
-    let up = pass(
-        Touching {
-            inner: client_read,
-            toucher: toucher.clone(),
-        },
-        engine_write,
-    );
+    let client_read = Touching {
+        inner: client_read,
+        toucher: toucher.clone(),
+    };
+    // A CI job's requests are read to label its creates (SPEC-504 CLB-003); anyone else's
+    // bytes are only copied.
+    let up: Pin<Box<dyn Future<Output = Touching<OwnedReadHalf>> + Send + '_>> = match job {
+        Some(job) => Box::pin(crate::docker_label::pass_labelled(
+            client_read,
+            engine_write,
+            job,
+        )),
+        None => Box::pin(pass(client_read, engine_write)),
+    };
     let down = pass(
         engine_read,
         Touching {

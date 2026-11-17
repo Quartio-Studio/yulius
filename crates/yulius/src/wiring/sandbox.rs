@@ -447,6 +447,21 @@ impl SandboxIsolation for NamespaceIsolation {
         }
     }
 
+    fn ci_job_started(&self, sandbox: &SandboxId, job: &str) -> Option<std::path::PathBuf> {
+        let delegation = self.manager.config().delegation.as_ref()?;
+        match delegation.ci_job_group(sandbox.as_str(), job) {
+            Ok(group) => Some(group),
+            Err(error) => {
+                tracing::warn!(sandbox = %sandbox, job, %error, "the CI job runs in the CI group: what it leaves in Docker is not removed at its end");
+                None
+            }
+        }
+    }
+
+    async fn ci_job_ended(&self, sandbox: &SandboxId, job: &str) {
+        self.manager.ci_job_ended(sandbox.as_str(), job).await;
+    }
+
     fn ci_use(&self, sandbox: &SandboxId) -> Option<yulius_app::ports::isolation::CiUse> {
         let used = self
             .manager
