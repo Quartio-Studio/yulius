@@ -16,7 +16,8 @@ const HELP: &str = "Yulius engineering commands (scripts/dev <command>)
   test      Run nextest and documentation tests; in a CI matrix job valued `i/n`
             ($YULIUS_CI_MATRIX) only shard i of n, the doctests in shard 1
   deps      Check advisories, licenses, sources, and unused dependencies
-  ci        Run all required gates, failing on the first failed command
+  ci        Run all required gates, failing on the first failed command (the checker's tests,
+            beside the Rust gates, fail it at its end)
   checks    Run every gate of ci but test (Yulius CI runs the tests apart, in shards)
   security  Scan the branch's changes with Vidoc (vidoc-1), failing on open critical or high findings
             and on open medium ones in the changed lines;
@@ -94,27 +95,54 @@ fn gate_sequence(with_tests: bool) -> Vec<&'static str> {
         .collect()
 }
 
-/// The repository checker's own tests. They wait on local servers and timers (3 CPU-seconds in
-/// 68 s), so they run beside the Rust gates, which need the CPUs: a gate then takes the longer of
-/// the two instead of both, for no more CPU (SPEC-506 FST-008).
-fn checker_tests(python: &str) -> io::Result<()> {
-    captured(
-        python,
-        &[
-            "-m",
-            "unittest",
-            "discover",
-            "-s",
-            "scripts",
-            "-p",
-            "test_*.py",
-        ],
-    )
+/// The repository checker's own tests' arguments.
+const CHECKER_TESTS: [&str; 7] = [
+    "-m",
+    "unittest",
+    "discover",
+    "-s",
+    "scripts",
+    "-p",
+    "test_*.py",
+];
+
+/// Starts the repository checker's own tests and keeps their output. They wait on local servers
+/// and timers (3 CPU-seconds of user time, 7 with the system's, in 68 s), so they run beside the
+/// Rust gates, which need the CPUs: those gates then take the longer of the two instead of both,
+/// for no more CPU (SPEC-506 FST-008). A line names them when they start.
+fn checker_tests(python: &str) -> io::Result<std::process::Output> {
+    println!(
+        "+ {python} {} (beside the Rust gates; its output follows them)",
+        CHECKER_TESTS.join(" ")
+    );
+    Command::new(python).args(CHECKER_TESTS).output()
+}
+
+/// Prints the checker's tests' output in one piece and says how they ended.
+fn checker_report(python: &str, out: io::Result<std::process::Output>) -> io::Result<()> {
+    let out = out?;
+    let mut stdout = io::stdout().lock();
+    let mut text = format!("+ {python} {} (its output)\n", CHECKER_TESTS.join(" ")).into_bytes();
+    text.extend_from_slice(&out.stdout);
+    text.extend_from_slice(&out.stderr);
+    stdout.write_all(&text)?;
+    stdout.flush()?;
+    if out.status.success() {
+        Ok(())
+    } else {
+        Err(io::Error::other(format!(
+            "{python} {} failed: {}",
+            CHECKER_TESTS.join(" "),
+            out.status
+        )))
+    }
 }
 
 /// Runs the gates of `ci` (with the tests) or `checks` (without), naming each stage: `doctor`
 /// and `quick` first, alone, so a failure there ends the run in seconds; then the checker's
-/// tests beside all the rest (SPEC-506 FST-006, FST-008).
+/// tests beside all the rest, and their output in a stage of their own at the end (SPEC-506
+/// FST-006, FST-008). A Rust gate's failure is named first; a failing checker test no longer
+/// stops the Rust gates.
 fn gates(with_tests: bool, cargo: &str, python: &str) -> io::Result<()> {
     let gates = gate_sequence(with_tests);
     let (first, rest) = gates.split_at(2);
@@ -136,6 +164,8 @@ fn gates(with_tests: bool, cargo: &str, python: &str) -> io::Result<()> {
             docs(cargo)
         },
     );
+    stage("checker-tests");
+    let tests = checker_report(python, tests);
     rest.and(tests)
 }
 
@@ -149,24 +179,6 @@ fn beside<A: Send, B>(first: impl FnOnce() -> A + Send, second: impl FnOnce() ->
             .unwrap_or_else(|panic| std::panic::resume_unwind(panic));
         (first, second)
     })
-}
-
-/// Runs `program` with its output kept and printed at its end in one piece, so that it does not
-/// interleave with a command running beside it.
-fn captured(program: &str, args: &[&str]) -> io::Result<()> {
-    let out = Command::new(program).args(args).output()?;
-    println!("+ {program} {}", args.join(" "));
-    io::stdout().write_all(&out.stdout)?;
-    io::stdout().write_all(&out.stderr)?;
-    if out.status.success() {
-        Ok(())
-    } else {
-        Err(io::Error::other(format!(
-            "{program} {} failed: {}",
-            args.join(" "),
-            out.status
-        )))
-    }
 }
 
 fn execute(task: &str) -> io::Result<()> {
@@ -204,7 +216,7 @@ fn execute_in(task: &str, after_quick: bool) -> io::Result<()> {
                 return compile();
             }
             let (tests, checked) = beside(|| checker_tests(&python), compile);
-            tests.and(checked)
+            checked.and(checker_report(&python, tests))
         }
         "fmt" => run(&cargo, &["fmt", "--all"]),
         "lint" => {
@@ -438,6 +450,7 @@ fn main() -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::{beside, gate_sequence, macos_env, quarantine_filter, shard_of, stage_marker};
+    use std::path::Path;
     use std::sync::mpsc;
     use std::time::Duration;
 
@@ -475,7 +488,6 @@ mod tests {
             ["doctor", "quick", "check", "lint", "macos", "deps"]
         );
     }
-    use std::path::Path;
 
     /// SPEC-497 OFC-002 (review round 1): a quarantined test is left out in its own binary, and
     /// one whose binary this head does not build is not named (nextest would refuse the filter).

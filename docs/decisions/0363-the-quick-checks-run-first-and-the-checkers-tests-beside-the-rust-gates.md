@@ -35,9 +35,10 @@ whole gate is Yulius CI's) and [ADR-0358](0358-tests-run-in-shards-and-a-run-sta
   costs a whole run." `infra-bootstrap` asks a project's gate to run them first and name them in
   AGENTS.md.
 - **The checker's tests run beside the Rust gates.** Once `doctor` and `quick` passed, the Python
-  tests start in a thread of their own and every other gate runs meanwhile; the job ends with both
-  results. Their output is printed in one piece at their end. The standalone `check` runs them
-  beside `cargo check`. No job, checkout or build is added, and no CPU limit is raised.
+  tests start in a thread of their own (a line names them then) and every other gate runs
+  meanwhile; their output is printed in one piece in a `checker-tests` stage after `docs`, and the
+  job fails with a Rust gate's failure first, else theirs. The standalone `check` runs them beside
+  `cargo check`. No job, checkout or build is added, and no CPU limit is raised.
 
 ## Alternatives
 
@@ -59,6 +60,9 @@ whole gate is Yulius CI's) and [ADR-0358](0358-tests-run-in-shards-and-a-run-sta
 - At CI's 11 CPUs after a one-line change, `checks` took 108 and 114 s (load 38 to 158) against
   138 s before; the stages after `quick` no longer wait for the Python tests.
 - A failing Python test is reported at the job's end, after the Rust gates, not at the start of
-  `check`.
+  `check`; it no longer stops the Rust gates, so such a job spends their CPU too (rare: the
+  checker's tests failed in none of the runs read).
+- The Python tests take 3 CPU-seconds of user time, 7 with the system's (review round 1 measured
+  4.7 and 2.4 at load 100): about 0.1 CPU beside the gates.
 - A week later: the share of failed `quality` jobs whose first failed stage is `quick`, and the
   `quality` stage times, on the Dashboard's Pipeline tab.

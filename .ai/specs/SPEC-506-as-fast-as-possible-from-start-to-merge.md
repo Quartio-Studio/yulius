@@ -153,7 +153,7 @@ product project's 21 jobs pinned to 3 CPUs are its `yulius.toml`.
   requests merged in the window: re-reviews after a request for changes and how many asked again,
   and rounds after an approval (re-approvals) and how many asked for changes.
 - **FST-008** (C7) The `quality` job takes less time for no more CPU: the repository checker's
-  Python tests (68 s, 3 CPU-seconds, waiting on local servers and timers) run beside the Rust
+  Python tests (68 s, 3 CPU-seconds of user time and 7 with the system's, waiting on local servers and timers) run beside the Rust
   gates once `doctor` and `quick` passed. Measured before and after; no CPU limit that protects the
   host is raised, and no job, checkout or build is added.
 - **FST-009** Candidates 8 to 11, and every rule of the request's "What must stay", are not
@@ -319,4 +319,15 @@ the run's start (baseline included) until the n-th mutant ended, read from each 
 - `cargo nextest run -p xtask`: 17 passed (`the_quick_checks_run_first`,
   `beside_runs_both_steps_at_once` among them); `beside_runs_both_steps_at_once` fails after 30 s
   when `beside` runs its steps in a row (checked by hand).
+- Review round 1 (Fable 5.2) asked for changes: the gate's merged exit code was held by no test
+  (major); the checker's output came mid-job, its command line only at its end, and the open stage
+  took its wait (minors); four nits. Fixed test-first: `tools/xtask/tests/cli.rs` runs `checks`,
+  `ci`, `check` and `lint` against recording stubs of `cargo` and `python`
+  (`the_gates_run_each_command_once_with_quick_first`, `a_failure_fails_the_gate_and_says_where`);
+  the second failed before the fix (the output came mid-job) and fails when the gate drops the
+  tests' result (checked by hand). `cargo nextest run -p xtask`: 19 passed.
+- PR #1397's run `805b9b69` failed in `merge_train::a_member_whose_own_run_fails_leaves_the_candidate`,
+  outside this change (it touches `tools/xtask`, documents and a skills test). Yulius quarantined
+  it as flaky with issue #1398 (failed on two pull requests); it passed here 20 of 20 alone and 5
+  of 5 with its file at 64 threads, load 81 to 118.
 
