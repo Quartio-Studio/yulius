@@ -173,8 +173,8 @@ mode.
 - [x] Slice B: quarantine review round 1 answered
 - [x] Slice B: quarantine review round 2 answered
 - [x] Slice B: quarantine review round 3 answered
-- [ ] Slice C: a failed member leaves without cancelling the candidate
-- [ ] Slice C: a passed candidate merges while own runs go
+- [x] Slice C: a failed member leaves without cancelling the candidate
+- [x] Slice C: a passed candidate merges while own runs go
 - [ ] Slice C: derived-file conflicts handled without a wasted cycle
 - [ ] Slice C: dissolve reasons shown; documents, ADR and review
 - [ ] Slice D: sharded jobs

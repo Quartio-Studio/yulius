@@ -1,14 +1,17 @@
 //! Merge trains (SPEC-084, ADR-0067), the merge candidates of the merge queue (SPEC-441,
 //! ADR-0285): armed pull requests whose base moved since are tested together on top of the
-//! integration branch and merged one after another on that one verdict, each once its own run
-//! passed too (SPEC-493 MQC-001: the candidate's run goes beside the members' own runs).
+//! integration branch and merged one after another on that one verdict (SPEC-493 MQC-001: the
+//! candidate's run goes beside the members' own runs; SPEC-497 MQW-002: a passed candidate
+//! merges even while a member's own run still goes, since it tested the exact merged result).
 //!
 //! Under a strict "up to date" rule a pull request merges only with its base in its head. Moving
 //! the head of one whose own run still goes restarts that run (F 2026-11-07: with 45 to 60 minute
 //! runs, most runs were thrown away), so Yulius never merges the base into a pull request before
 //! its own run (its pre-check) passed. It joins a train while that run is still queued or running
 //! or once it passed, and only when it is behind its base: a green one that is up to date merges
-//! alone, at once. A member whose own run fails leaves (MQC-002).
+//! alone, at once. A member whose own run fails leaves (MQC-002); one whose own run errored or
+//! was cancelled stays, decided by the candidate (SPEC-497 MQW-001). A candidate formed again on
+//! the same base with the same members reuses the passed run of its tree.
 //!
 //! A train (1 to [`MAX_MEMBERS`] members, in arm order) is built in Yulius's clone, exactly as the
 //! merges will happen: the integration branch is merged into each armed head in arm order (the
