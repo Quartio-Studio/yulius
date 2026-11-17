@@ -2309,9 +2309,12 @@ async fn a_change_with_unreadable_ci_is_never_merged_unchecked() -> TestResult {
     Ok(())
 }
 
-/// The other half: the integration branch's configuration is broken.
+/// The other half: the integration branch's configuration is broken, and was never valid. Since
+/// SPEC-504 CFG-003 a change that repairs it is tested with its own jobs (a broken file never
+/// blocks its own repair): the merge waits for those checks, it is not refused as testing
+/// nothing.
 #[tokio::test]
-async fn a_broken_integration_ci_is_named_when_merging() -> TestResult {
+async fn a_repair_of_a_broken_integration_ci_waits_for_its_own_checks() -> TestResult {
     let w = World::new("org").await?;
     let (alice, _) = imported_shop(
         &w,
@@ -2338,7 +2341,8 @@ async fn a_broken_integration_ci_is_named_when_merging() -> TestResult {
         json!({"project": "Quartio-Studio/shop", "number": number}),
     )
     .await?;
-    assert!(error && said.contains("tests nothing"), "{said}");
+    assert!(!said.contains("tests nothing"), "{said}");
+    assert!(error && said.contains("pending"), "{said}");
     Ok(())
 }
 
