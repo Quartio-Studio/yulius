@@ -19,8 +19,9 @@ fn tree() -> Result<tempfile::TempDir, Box<dyn std::error::Error>> {
         "runs/a",
         // Claude Code built for this host's platform (SPEC-421): the new host installs its own.
         "claude-code/versions/2.1.311/bin",
-        // The Codex CLI too (SPEC-503).
+        // The Codex CLI too (SPEC-503), and the Antigravity CLI (SPEC-505).
         "codex-cli/0.169.0-linux-x64/bin",
+        "antigravity-cli/1.5.10-linux-x64",
     ] {
         fs::create_dir_all(root.join(d))?;
     }

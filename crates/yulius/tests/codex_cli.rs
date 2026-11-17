@@ -15,8 +15,8 @@ use base64::Engine as _;
 use flate2::Compression;
 use flate2::write::GzEncoder;
 use sha2::{Digest, Sha512};
-use yulius::wiring::codex_cli::CodexCli;
 use yulius::wiring::harness::HarnessAdapter;
+use yulius::wiring::pinned_cli::CodexCli;
 use yulius_app::error::AppError;
 use yulius_app::ports::harness::HarnessPort;
 use yulius_domain::agent_cli::codex::{self, Platform};
@@ -171,7 +171,7 @@ async fn setup(tarball: Vec<u8>, gated: bool) -> Result<Setup, Box<dyn std::erro
 }
 
 fn cli(s: &Setup, platform: Platform) -> Result<CodexCli, Box<dyn std::error::Error>> {
-    Ok(CodexCli::with_registry(
+    Ok(CodexCli::codex_from(
         s.root.clone(),
         s.registry.clone(),
         Some(platform),
@@ -321,7 +321,7 @@ async fn an_earlier_release_goes_once_nothing_runs_it() -> TestResult {
 #[tokio::test]
 async fn an_unsupported_platform_gives_its_reason() -> TestResult {
     let dir = tempfile::tempdir()?;
-    let cli = Arc::new(CodexCli::with_registry(
+    let cli = Arc::new(CodexCli::codex_from(
         dir.path().join("codex-cli"),
         "http://127.0.0.1:1".into(),
         None,
@@ -662,7 +662,7 @@ async fn the_cli_is_installed_at_start_only_for_codex_subscriptions() -> TestRes
 #[ignore = "downloads 167 MB from registry.npmjs.org"]
 async fn the_real_pinned_release_installs_from_npm() -> TestResult {
     let dir = tempfile::tempdir()?;
-    let cli = Arc::new(CodexCli::new(dir.path().join("codex-cli"))?);
+    let cli = Arc::new(CodexCli::codex(dir.path().join("codex-cli"))?);
     let provided = cli.ensure().await?;
     let output = std::process::Command::new(&provided.program)
         .arg("--version")

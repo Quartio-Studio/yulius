@@ -86,21 +86,26 @@ accounts, by `codex resume <id>`: at a usage limit, when a person moves it and w
 subscription is removed (SPEC-447); it waits when none has capacity, and with no Codex
 subscription usable it asks for one.
 
-## Codex CLI
+## Codex and Antigravity CLIs
 
-The Codex CLI is Yulius's own
-([decision 0355](decisions/0355-codex-returns-as-a-second-harness-with-a-pinned-cli.md)): the
-pinned release (0.169.0) is downloaded from npm once, checked against the sha512 in the source
-(`yulius_domain::agent_cli::codex`) and unpacked into `<data>/codex-cli/<version>-<platform>`
-(`wiring/codex_cli.rs`). Codex runs start its `bin/codex` by absolute path
-(`HarnessPort::provide_codex`), and a contained Codex run binds that directory read-only; Codex
-sign-ins start it the same way. Without it, a host `codex` is used.
+The Codex CLI and the Antigravity CLI are Yulius's own
+([decision 0355](decisions/0355-codex-returns-as-a-second-harness-with-a-pinned-cli.md),
+[decision 0361](decisions/0361-antigravity-is-a-third-harness-picked-at-random-by-default.md)):
+each pinned release (Codex 0.169.0, Antigravity 1.5.10) is downloaded once (Codex from npm,
+Antigravity from Google's release storage), checked against the sha512 in the source
+(`yulius_domain::agent_cli::{codex, antigravity}`) and unpacked into
+`<data>/codex-cli/<version>-<platform>` or `<data>/antigravity-cli/<version>-<platform>` by one
+installer (`wiring/pinned_cli.rs`). Runs start its binary by absolute path
+(`HarnessPort::provide_codex`, `provide_antigravity`), and a contained run binds that directory
+read-only; sign-ins start it the same way. Without it, a host `codex` or `agy` is used.
 
 ```mermaid
 flowchart LR
   NPM["registry.npmjs.org: @openai/codex@0.169.0-linux-x64"] -->|"first need, sha512 pinned"| CLI["data/codex-cli/0.169.0-linux-x64 (bin/codex, codex-path/rg)"]
+  GCS["storage.googleapis.com: antigravity-cli 1.5.10 linux-x64"] -->|"first need, sha512 pinned"| AGY["data/antigravity-cli/1.5.10-linux-x64 (antigravity)"]
   CLI -->|"absolute path, read-only bind"| RUN["Codex run in its sandbox"]
   CLI -->|"absolute path"| LOGIN["codex login --device-auth"]
+  AGY -->|"absolute path, read-only bind"| ARUN["Antigravity run in its sandbox"]
 ```
 
 ## Layers and crates

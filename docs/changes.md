@@ -10,6 +10,11 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   Pipeline tab's Review card and `GET /api/analytics/reviews` give the rounds after a request for
   changes and how many asked again, and the rounds after an approval and how many asked for
   changes (the rest re-approved an approved change), for the pull requests merged in the range.
+- Antigravity, slice B (SPEC-505 pull request 2, task #487): Yulius provides the pinned
+  Antigravity CLI (`agy` 1.5.10) itself, downloaded once from Google's release storage into
+  `<data>/antigravity-cli`, only when its sha512 matches the one in the source, and with the
+  host's `agy` as the fallback. One installer now serves Codex and Antigravity
+  (`wiring/pinned_cli.rs`).
 
 - The checks of seconds fail a CI run in seconds (SPEC-506 pull request 3, task #488,
   [ADR-0363](decisions/0363-the-quick-checks-run-first-and-the-checkers-tests-beside-the-rust-gates.md)):
