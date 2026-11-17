@@ -119,7 +119,8 @@ mode.
   Docker socket's EOF or reset, killed for memory, its process host lost) is run again once by
   itself, its output saying why; a second infrastructure failure ends it error.
 - **OFC-002** A test that fails in the same job in the runs of two different pull requests
-  within 48 hours, while the integration branch did not fail it then, is flaky: Yulius
+  within 48 hours, at heads that share no commit outside the integration branch, while the
+  integration branch did not fail it then, is flaky: Yulius
   quarantines it at once, files one issue in the project's repository, says so in the job's
   output and tells every later job of the project in its environment (`YULIUS_CI_QUARANTINE`, a
   nextest filter in `YULIUS_CI_QUARANTINE_NEXTEST`), so the project's gate leaves it out; closing
@@ -579,6 +580,35 @@ mode.
   `-E "not ($YULIUS_CI_QUARANTINE_NEXTEST)"` and prints what it left out.
 - ADR-0356; architecture (CI job states), `api.md` (the job's variables), `operations.md`,
   `changes.md`.
+- Review round 1 of the quarantine (Fable 5.2, head dd2e2cc75). Request changes, all own code.
+  Answered, each test failing with its fix undone by hand (seven mutations, all caught):
+  - Major: two jobs failing the test at once filed two issues. One quarantine is decided at a time
+    (`CiState::quarantine`), the list read again under the lock; the second job names the issue.
+    `local_ci::two_jobs_at_once_file_one_issue` (the fake GitHub holds the first filing).
+  - Major: a release kept the test's failures, so one more failure quarantined it again.
+    `release_test` forgets them (store unit; the main test's fourth pull request files nothing).
+  - Major: a chained pull request and its predecessor counted as two changes. Each failure keeps
+    its commit; two pull requests count only when Git's merge base of their heads is on the
+    integration branch (domain unit; `local_ci::no_quarantine_when_the_integration_branch_or_a_shared_commit_fails_it`,
+    which also covers the integration branch failing the test).
+  - Major: a filter naming a binary the head lacks fails nextest (probed: "operator didn't match
+    any binary IDs"). `YULIUS_CI_QUARANTINE_NEXTEST` names test paths only; `cargo xtask test`
+    builds its own filter from the names and the binaries `cargo nextest list --list-type
+    binaries-only` lists, with `binary_id(=…)` (unit
+    `quarantined_tests_are_left_out_in_the_binaries_this_head_builds`).
+  - Major: the cap of 10 counted kept names only. The omitted count is added
+    (`failures::omitted_tests`, doctest; `local_ci::no_quarantine_without_its_issue_or_for_a_broken_job`:
+    twelve 9 KiB failures, four kept).
+  - Major: the app layer's other paths. The main test now covers the reason, each job running
+    once, a third pull request filing no second issue, an open and an unreadable issue keeping
+    the quarantine, and one failure after the release; the issue failing to be filed leaves
+    nothing quarantined and the reason the job's own; `GitHubClient::issue_open` has a client
+    test (open, closed, 404, 410).
+  - Minors: the reason only when a test was quarantined; names checked by
+    `flaky::quarantinable` (no backtick, `@`, control character or leading `/`; unit); `=` in
+    the binary match. Nits: the release audited only when it was recorded, with the job; a
+    sandbox gone or removed loses its quarantines; ADR-0356's recipe with `${…:+…}`;
+    `job_key` is read by the release's audit.
 - Leftovers of #1373's and #1377's reviews: an older client's `docker:` prefix before its socket
   words counts (unit case in `a_failure_of_the_change_is_never_the_infrastructures`, failing
   before the fix); the CI's CPU pressure is logged at `debug` (`cpu_pressure_permille`) where it
@@ -590,6 +620,11 @@ mode.
   (1,300 passed); `local_ci::` and `analytics::` (102 passed); `yulius-domain` doctests.
   `scripts/dev mutants`: 108 listed, 60 caught, 0 missed, 0 timed out, 48 unviable, 0 not
   reached (bound 40 min, 1613 s).
+- Checks run after review round 1 (head after the fixes): `cargo fmt --check`; `cargo clippy
+  --workspace --all-targets -D warnings`; rustdoc of `yulius-app` and `yulius-domain` with
+  warnings denied; the unit tests of `yulius-domain`, `yulius-store`, `yulius-app`,
+  `yulius-github`, `xtask` (1,314 passed); `local_ci::` and `analytics::` (105 passed);
+  `yulius-domain` doctests (24 passed).
 
 ### Slice A3: the operator's amendment to the admission (its own pull request, first)
 

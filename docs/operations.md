@@ -1545,9 +1545,12 @@ involved.
 - A test that fails in the same job on two different pull requests within 48 hours, while the
   integration branch did not fail it, is quarantined with an issue labelled `flaky test`. Every
   later job of the project gets the quarantined names in `YULIUS_CI_QUARANTINE` (one per line) and
-  a nextest filter in `YULIUS_CI_QUARANTINE_NEXTEST`. A project's gate leaves them out, for example
+  a nextest filter of their test paths in `YULIUS_CI_QUARANTINE_NEXTEST` (no binary: nextest
+  refuses one the head lacks). A project's gate leaves them out, for example
   `cargo nextest run ${YULIUS_CI_QUARANTINE_NEXTEST:+-E "not ($YULIUS_CI_QUARANTINE_NEXTEST)"}`;
-  Yulius never passes a failed job for it. Closing the issue ends the quarantine within an hour
+  Yulius never passes a failed job for it. Two pull requests whose heads share a commit outside
+  the integration branch (a chained one) count as one. Closing the issue ends the quarantine within
+  an hour and forgets the test's failures
   ([ADR-0356](decisions/0356-a-test-failing-on-two-pull-requests-is-quarantined-with-an-issue.md)).
 - `YULIUS_CI_LANES` (host-sized, a [resource limit](#resource-limits); 2 below 32 CPUs) runs of one sandbox take a checkout at once; the CI budget, not the lanes, decides how many of their jobs run. Each lane past the first
   keeps its own job checkouts and caches (`ci/jobs/<job>[.<n>]@<lane>`, `ci/cache/<job>[.<n>]@<lane>`), so

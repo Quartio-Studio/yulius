@@ -3661,12 +3661,13 @@ it error, and the thrown-away run's kind and time are kept for the CI minutes (a
 written when a run ends, `ci_minutes`; the dispatcher also keeps the host's CI load once a
 minute, `ci_load`, read by hour at `GET /api/analytics/ci-load`)
 ([decision 0354](decisions/0354-a-job-that-fails-for-the-infrastructure-runs-again-once-by-itself.md)).
-A failed job's kept failing tests are recorded (`ci_test_failures`); one that failed in the same
-job on two pull requests within 48 hours, while the integration branch did not fail it
-(`yulius_domain::ci::flaky`), is quarantined with an issue filed through the GitHub port
-(`ci_quarantine`, `App::ci_note_failing_tests`). Every later job of the sandbox gets the list in
+A failed job's kept failing tests are recorded (`ci_test_failures`, with the run's commit); one
+that failed in the same job on two pull requests within 48 hours, at heads whose merge base is on
+the integration branch, while the integration branch did not fail it
+(`yulius_domain::ci::flaky`), is quarantined with an issue filed through the GitHub port, one at
+a time (`ci_quarantine`, `App::ci_note_failing_tests`). Every later job of the sandbox gets the list in
 `YULIUS_CI_QUARANTINE` and `YULIUS_CI_QUARANTINE_NEXTEST`, and the hourly prune ends a quarantine
-whose issue is closed
+whose issue is closed, forgetting the test's failures
 ([decision 0356](decisions/0356-a-test-failing-on-two-pull-requests-is-quarantined-with-an-issue.md)).
 A failed job cancels the run's other jobs (fail-fast), except that the
 `security` job neither cancels nor is cancelled by them (SPEC-273). `yulius_domain::ci::aggregate` makes the run's
