@@ -105,7 +105,7 @@ refreshes during a run, and provides the pinned Codex CLI itself, so a Codex tas
 | IMP-003 | An imported sign-in is what a Codex run's home gets, and the tokens Codex refreshes during the run are written back as for a device sign-in. | `tests/codex.rs` |
 | IMP-004 | Add subscription → Codex offers "Import auth.json" (paste or file) with a note to sign in with a separate `CODEX_HOME`; a Codex subscription's card imports a new file. The mock serves both endpoints. | `e2e/tests/codex.e2e.ts` |
 | CLI-001 | Yulius installs the pinned Codex CLI (`0.169.0`) from npm's registry into `<data>/codex-cli/<version>-<platform>`: the tarball's sha512 must equal the one pinned in the source, only regular files of `vendor/<triple>/` inside the release are unpacked, bounded, `bin/codex` must be an ELF for the platform, the move is atomic, one install at a time, earlier releases go once no process runs them. | `tests/codex_cli.rs` |
-| CLI-002 | Every Codex run and Codex sign-in starts the provided `bin/codex` by its absolute path; a contained run binds its directory read-only. Without a provided CLI (an unsupported platform, or an install that failed while the host has `codex`), the host's `codex` is used; an install that failed with no host `codex` fails the start with the reason, never `codex: not found`. | `yulius-harness/tests/launch.rs`; `tests/codex.rs`; `wiring/harness.rs` tests |
+| CLI-002 | Every Codex run and Codex sign-in starts the provided `bin/codex` by its absolute path; a contained run binds its directory read-only. Without a provided CLI (an unsupported platform, or an install that failed while the host has `codex`), the host's `codex` is used; an install that failed with no host `codex` fails the start with the reason, never `codex: not found`. | `yulius-harness/tests/launch.rs`; `tests/codex.rs`; `tests/codex_cli.rs` `codex_runs_get_the_provided_cli_or_a_reason` |
 
 ## Plan
 
@@ -116,7 +116,7 @@ Five pull requests, each merged into `dev` on green before the next begins.
 - [x] Slice A: a Codex rollout is observed and counted, checked on a rollout real Codex 0.169.0 wrote
 - [x] Slice A: Codex launch plan, homes, session paths and sign-in helpers in yulius-harness
 - [x] Slice A: review round 1 findings fixed test-first
-- [ ] Slice A: later review findings answered and the slice delivered
+- [x] Slice A: later review findings answered and the slice delivered
 - [x] Slice B: Codex CLI 0.169.0 checked against the integration and pinned
 - [x] Slice B: Yulius installs the pinned Codex CLI into its data directory
 - [ ] Slice B: review findings fixed and the slice delivered
@@ -285,8 +285,10 @@ Five pull requests, each merged into `dev` on green before the next begins.
     guard moves to slice C1, where Codex hooks reach Yulius and can be tested end to end;
   - nits: comments, ADR "first rollout", the spec's word on SPEC-001. `codex_rollout`'s
     synchronous walk is placed with slice C1, which calls it on a run's paths.
-- `scripts/dev mutants` (on `34f784fe3`): `mutants: 308 listed, 119 caught, 0 missed, 0 timed
-  out, 82 unviable, 107 not reached (bound 30 min, took 1802 s)`.
+- `scripts/dev mutants` (on `34f784fe3`) printed `308 listed, 119 caught, 0 missed`, but that
+  summary is void: slice B's review found every "caught" mutant failed on one xtask test that
+  cannot pass in cargo-mutants' copy (#1374, the tool's, outside this change). The round-1 tests
+  each failed first against the code before its fix (above), which is what they hold.
 - After the fixes: `cargo fmt --check` and `cargo clippy --workspace --all-targets -D warnings`
   clean; the same `cargo nextest` set plus `metrics_recount`: 2235 passed, 0 failed. Yulius CI
   passed on `9bfa82ec5`.
@@ -334,8 +336,39 @@ Five pull requests, each merged into `dev` on green before the next begins.
 - `cargo fmt --check`, `cargo clippy --workspace --all-targets -D warnings` clean; `cargo nextest`
   for `yulius-domain`, `yulius-harness`, the `yulius` lib and `codex_cli`, `claude_updates`,
   `cockpit`, `accounts`: 1523 passed, 0 failed.
-- `scripts/dev mutants` (on `5033af233`): `mutants: 103 listed, 82 caught, 0 missed, 0 timed out,
-  21 unviable, 0 not reached (bound 30 min, took 1608 s)`.
+- `scripts/dev mutants` (on `5033af233`) printed `103 listed, 82 caught, 0 missed`: void, as
+  the review found (all 82 failed on `xtask::cli security_is_listed_and_needs_a_vidoc_key`, which
+  fails in cargo-mutants' copy without `.git`; issue #1374, outside this change). Instead, the
+  lines the new tests hold were undone by hand, one at a time, on `8f52f6093`
+  (`target/evidence/handmut.py`); each made its test fail (nextest exit 100):
+  - the streamed download bound (`if size > self.max_tarball` → `false`):
+    `a_tarball_over_the_download_bound_installs_nothing` (the `Content-Length` check alone is an
+    equivalent mutant: the stream's bound refuses the same tarball);
+  - keeping a running release (`running.contains(&index)` → `false`):
+    `an_earlier_release_a_process_runs_is_kept`;
+  - the private staging folder (its `set_mode(staging, 0o700)` removed):
+    `the_staging_folder_is_private`;
+  - the start rule (`== Provider::OpenAi` → `!=`):
+    `the_cli_is_installed_at_start_only_for_codex_subscriptions`;
+  - what a caller that must not wait gets (`ready` ignored): `codex_runs_get_the_provided_cli_or_a_reason`.
 - `yulius security-scan`: not run (Vidoc refused the instance key, HTTP 401, exit 2), as for
   slice A; CI's `security` job skips (exit 78).
+- **Review round 1** (Fable 5.2, `4947ed7b6`, request changes: 4 major, 3 minor, 4 nits, own code;
+  the installer itself read sound), answered in `8f52f6093` and the commit after it:
+  - the void mutation summary: replaced by the hand check above; the tool's bug is issue #1374;
+  - the download bound, a running earlier release and the start rule had no test: three new tests
+    (`a_tarball_over_the_download_bound_installs_nothing` with and without `Content-Length`,
+    `an_earlier_release_a_process_runs_is_kept`, `the_cli_is_installed_at_start_only_for_codex_subscriptions`);
+    the start rule moved from `serve.rs` into `App::warm_codex_cli` so a test reaches it;
+  - minors: the `install=false` arm is tested (installed, recent failure, never tried, host
+    `codex`), and its reason says "not installed yet" instead of "still being installed"; the
+    documents say runs and sign-ins start the CLI from the later slices (the diagram's arrows are
+    marked planned); CLI-002's evidence names `codex_runs_get_the_provided_cli_or_a_reason`;
+  - nits: the staging folder is 0700 whatever the umask (`the_staging_folder_is_private`, run
+    under umask 022, failed first at 0755); the live test's size is 167 MB; the fallback's warning
+    says the CLI is not ready; slice A's last Plan item is ticked.
+  - For slice C1 (direction, not defects here): the fallback `None` means the run's own `PATH`,
+    while `host_codex` is looked up on the server's; C1 passes the found path to the run.
+- After the fixes: `codex_cli::` 11 passed; `cargo fmt --check` and `cargo clippy --workspace
+  --all-targets -D warnings` clean.
 
