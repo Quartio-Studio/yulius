@@ -100,6 +100,7 @@ ADR-0344), SPEC-497 HBA-003 (CI waits for Docker networks), SPEC-053/SPEC-268 (t
 - [x] Leftovers are counted in the Docker analytics (CLB-006)
 - [x] Proof against a real engine: docker run, compose and a killed job through the front
 - [x] ADR, architecture, operations and changes for pull request 1
+- [x] Review round 1 of pull request 1 answered
 - [ ] Pull request 1 reviewed and approved
 - [ ] A pull request is judged by the integration branch's jobs (CFG-001)
 - [ ] An invalid yulius.toml fails its run with the parser's message (CFG-002)
