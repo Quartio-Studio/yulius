@@ -133,8 +133,19 @@ where
             }
             (Body::Chunked, true) => match read_chunked(reader).await? {
                 Chunked::Whole(body) => write_labelled(to, &head, body, job, false).await?,
-                Chunked::Long { raw } | Chunked::Cut(raw) => {
-                    // Too long to label, or broken: on as it came, and raw from here.
+                Chunked::Long { raw, size } => {
+                    // Too long to label: on as it came, its chunk and the rest copied, and the
+                    // connection still read (review round 2).
+                    to.write_all(&head).await?;
+                    to.write_all(&raw).await?;
+                    let whole = size.saturating_add(2);
+                    let copied = tokio::io::copy(&mut (&mut *reader).take(whole), to).await?;
+                    if copied < whole || !pass_chunked(reader, to).await? {
+                        return Ok(Rest::Raw);
+                    }
+                }
+                Chunked::Cut(raw) => {
+                    // Broken: on as it came, and raw from here.
                     to.write_all(&head).await?;
                     to.write_all(&raw).await?;
                     return Ok(Rest::Raw);
@@ -407,33 +418,35 @@ fn api_path(target: &str) -> &str {
 }
 
 /// `body` (a create's JSON object) with [`CI_JOB_LABEL`] set to `job` and [`CI_CREATE_LABEL`]
-/// to a value of its own among its labels: the `Labels` key, else the one Go's decoder takes
-/// for it (the same name in any case), else a new `Labels`. `None` when it is not a JSON object
-/// or those labels are neither an object nor null.
+/// to a value of its own among its labels: under every key Go's decoder takes for them (`Labels`
+/// in any case: it merges them), else a new `Labels`. `None` when it is not a JSON object or
+/// those labels are neither an object nor null.
 fn labelled_body(body: &[u8], job: &str) -> Option<Vec<u8>> {
     let mut value: serde_json::Value = serde_json::from_slice(body).ok()?;
     let object = value.as_object_mut()?;
-    let key = if object.contains_key("Labels") {
-        "Labels".to_owned()
-    } else {
-        object
-            .keys()
-            .find(|key| key.eq_ignore_ascii_case("labels"))
-            .cloned()
-            .unwrap_or_else(|| "Labels".to_owned())
-    };
-    let labels = object
-        .entry(key)
-        .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
-    if labels.is_null() {
-        *labels = serde_json::Value::Object(serde_json::Map::new());
+    let mut keys: Vec<String> = object
+        .keys()
+        .filter(|key| key.eq_ignore_ascii_case("labels"))
+        .cloned()
+        .collect();
+    if keys.is_empty() {
+        keys.push("Labels".to_owned());
     }
-    let labels = labels.as_object_mut()?;
-    labels.insert(CI_JOB_LABEL.to_owned(), serde_json::Value::from(job));
-    labels.insert(
-        CI_CREATE_LABEL.to_owned(),
-        serde_json::Value::from(create_value()),
-    );
+    let create = create_value();
+    for key in keys {
+        let labels = object
+            .entry(key)
+            .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+        if labels.is_null() {
+            *labels = serde_json::Value::Object(serde_json::Map::new());
+        }
+        let labels = labels.as_object_mut()?;
+        labels.insert(CI_JOB_LABEL.to_owned(), serde_json::Value::from(job));
+        labels.insert(
+            CI_CREATE_LABEL.to_owned(),
+            serde_json::Value::from(create.clone()),
+        );
+    }
     serde_json::to_vec(&value).ok()
 }
 
@@ -478,8 +491,9 @@ async fn write_labelled<W: AsyncWrite + Unpin>(
 enum Chunked {
     /// The whole body, decoded.
     Whole(Vec<u8>),
-    /// Too long to label: the `raw` bytes read so far, as they came; the rest is still to read.
-    Long { raw: Vec<u8> },
+    /// Too long to label: the `raw` bytes read so far, as they came, up to and with the size
+    /// line of a chunk of `size` bytes; that chunk and the rest are still to read.
+    Long { raw: Vec<u8>, size: u64 },
     /// The client's side ended or the framing broke: the `raw` bytes read, as they came.
     Cut(Vec<u8>),
 }
@@ -544,7 +558,7 @@ async fn read_chunked<R: AsyncRead + Unpin>(reader: &mut BufReader<R>) -> io::Re
             }
         }
         if (body.len() as u64).saturating_add(size) > BODY_MAX as u64 {
-            return Ok(Chunked::Long { raw });
+            return Ok(Chunked::Long { raw, size });
         }
         let start = body.len();
         (&mut *reader).take(size).read_to_end(&mut body).await?;
@@ -724,6 +738,16 @@ mod tests {
         chunked.extend(b"GET /_ping HTTP/1.1\r\n\r\n");
         let out = through(&chunked).await;
         assert_eq!(out, chunked, "the chunks read go on as they came");
+        // Review round 2: the connection is still read after it, so a later create is labelled.
+        let create = post("/containers/create", r#"{"Image":"a"}"#);
+        let mut then = chunked.clone();
+        then.extend(create.as_bytes());
+        let out = through(&then).await;
+        assert!(out.starts_with(&chunked));
+        assert_eq!(
+            body_of(&out[chunked.len()..])?["Labels"][CI_JOB_LABEL],
+            "job-1"
+        );
         Ok(())
     }
 
@@ -915,6 +939,19 @@ mod tests {
         assert_eq!(lower["labels"]["k"], "v");
         assert_eq!(lower["labels"][CI_JOB_LABEL], "job-1");
         assert!(lower.get("Labels").is_none(), "{lower}");
+        // Both spellings: each is labelled, as Go's decoder merges them (review round 2).
+        let both = body_of(
+            &through(
+                post(
+                    "/containers/create",
+                    r#"{"Labels":{"a":"1"},"labels":{"yulius.ci.job":"forged"}}"#,
+                )
+                .as_bytes(),
+            )
+            .await,
+        )?;
+        assert_eq!(both["Labels"][CI_JOB_LABEL], "job-1");
+        assert_eq!(both["labels"][CI_JOB_LABEL], "job-1");
         let input =
             "POST /containers/create HTTP/1.1\r\nContent-Length: 8\r\nHost: x\r\n\r\nnot json";
         assert_eq!(through(input.as_bytes()).await, input.as_bytes());

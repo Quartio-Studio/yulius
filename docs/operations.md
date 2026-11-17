@@ -1094,7 +1094,9 @@ from a sandbox, and no daemon needs to run on the host.
 - **What CI jobs leave** (SPEC-504, ADR-0359). Each CI job runs in its own cgroup
   (`…/sandboxes/<sandbox>/ci/ci-job-<job id>`), and the front labels the containers and networks
   it creates `yulius.ci.job=<job id>` (`docker inspect -f '{{index .Config.Labels
-  "yulius.ci.job"}}' <container>`). When the job ends, whatever the outcome, Yulius removes them
+  "yulius.ci.job"}}' <container>`), with `yulius.ci.create` holding a value of that create's
+  own (a container made from an image committed from a job's container carries its image's
+  value, and is kept). When the job ends, whatever the outcome, Yulius removes them
   from the running engine (containers forced, their volumes kept); every 30 s, and first after a
   start, the upkeep removes those of jobs whose group has no process. The journal says `removed
   what CI jobs left in the sandbox's Docker engine` with the counts and `job-end` or `sweep`; the

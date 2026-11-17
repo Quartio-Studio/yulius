@@ -1313,7 +1313,6 @@ mod tests {
         Ok(())
     }
 
-    /// A delegated unit whose `sandboxes/<sandbox>` group offers `controllers`.
     /// SPEC-504 CLB-001/002: a CI job's group is named after its id, and only such a group's
     /// processes are that job's.
     #[test]
@@ -1404,6 +1403,7 @@ mod tests {
         Ok(())
     }
 
+    /// A delegated unit whose `sandboxes/<sandbox>` group offers `controllers`.
     fn fake_sandbox(
         controllers: &str,
     ) -> Result<(tempfile::TempDir, Delegation, PathBuf), Box<dyn std::error::Error>> {

@@ -249,8 +249,9 @@ superseding [0140](decisions/0140-isolated-sandboxes-have-no-container-engine-ag
   Each CI job runs in its own cgroup `ci/ci-job-<id>`. The front reads a connecting process's
   pid (`SO_PEERCRED`) and its cgroup through the host's `/proc`, opened before it joined the
   sandbox; for a job's connection it reads the requests (`docker_label`) and labels the bodies of
-  container and network creates `yulius.ci.job=<id>`, copying all else, and turns to plain
-  copying at a hijack or upgrade. Every other caller's bytes are only copied. The job's end
+  container and network creates `yulius.ci.job=<id>` and `yulius.ci.create=<its own value>`
+  (which tells a label inherited from an image), copying all else, and turns to plain copying
+  at a hijack or upgrade, a broken framing or anything that cannot become a request. Every other caller's bytes are only copied. The job's end
   (whatever the outcome, and a restart's recovery) and the upkeep's sweep (every 30 s, first
   after a start; jobs whose group has no process) remove the labelled containers, forced with
   their volumes kept, then the networks, through the running engine's control socket; a label

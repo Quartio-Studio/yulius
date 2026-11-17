@@ -2079,8 +2079,8 @@ impl Manager {
 
     /// CI job `job` of `sandbox` ended (SPEC-504 CLB-004): its group goes (one that still holds
     /// a process stays for the sweep), and the containers and networks labelled with it are
-    /// removed from the sandbox's running engine. A stopped engine is not started for it: the
-    /// sweep takes them once it runs again.
+    /// removed from the sandbox's running engine while its group holds no process. A stopped
+    /// engine is not started for it: the sweep takes them once it runs again.
     pub async fn ci_job_ended(&self, sandbox: &str, job: &str) {
         let Some(delegation) = self.config.delegation.as_ref() else {
             return;
@@ -2089,8 +2089,19 @@ impl Manager {
         if crate::cgroup::ci_job_group_name(job).is_none() {
             return;
         }
-        self.remove_ci_leftovers(sandbox, &crate::engine::Jobs::One(job), "job-end")
-            .await;
+        // Only while its group holds no process, asked for each container and network: the
+        // same job id may run again at once (a run queued again after a restart), and its new
+        // attempt's must stay (review round 2). A group that still holds one waits for the
+        // sweep.
+        let delegation = delegation.clone();
+        let name = sandbox.to_owned();
+        let ended = move |job: &str| delegation.ci_job_running(&name, job) == Some(false);
+        self.remove_ci_leftovers(
+            sandbox,
+            &crate::engine::Jobs::OneEnded(job, &ended),
+            "job-end",
+        )
+        .await;
     }
 
     /// Removes from `sandbox`'s running engine what CI jobs that ended left (SPEC-504 CLB-005):
@@ -4197,6 +4208,16 @@ while True:
             ["/containers/c1?force=1", "/containers/c1?force=1"],
             "the running job's container stays"
         );
+        // Review round 2 (major): a job id told ended while its group still holds a process (a
+        // requeued run's new attempt under the same id) has nothing removed; its own end, or the
+        // sweep once the group is empty, takes it.
+        manager.ci_job_ended("s1", "j2").await;
+        assert_eq!(
+            deleted.lock().map_err(|_| "poisoned")?.len(),
+            2,
+            "a running job's leftovers stay"
+        );
+        assert!(running.exists(), "a group with a process stays");
         let events: Vec<(String, String)> = manager
             .take_docker_events()
             .into_iter()

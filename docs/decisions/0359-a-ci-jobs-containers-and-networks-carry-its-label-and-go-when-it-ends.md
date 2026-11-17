@@ -45,13 +45,16 @@ front copied bytes, and every job and agent of a sandbox shared one engine.
   JSON or is over 4 MiB passes unlabelled, byte for byte. The engine's answers are never read.
 - **A job's end removes what it made**, whatever the outcome: the executor tells the isolation
   after the job's process ended (passed, failed, cancelled, timed out), and so does the CI's
-  recovery for jobs a restart ended. The server lists the running engine's containers and
-  networks with that label through the engine's control socket, removes the containers forced
-  without their volumes, then the networks; a network still used by another container stays.
+  recovery for jobs a restart ended (in tasks of their own). The server lists the running
+  engine's containers and networks with that label through the engine's control socket, removes
+  the containers forced without their volumes, then the networks; a network still used by
+  another container stays. Each is removed only while the job's group holds no process, asked
+  for each one: a run queued again after a restart runs the same job ids at once, and its new
+  attempt's containers and networks stay (they go at that attempt's end).
 - **The upkeep sweeps** every 30 s, and so first after a server starts: each running engine's
   containers and networks labelled with a job whose group has no process (gone or empty) are
-  removed the same way; a group that cannot be read counts as running. Job groups emptied over
-  10 minutes ago go too (a job group made again for the same job id is made fresh). One sweep
+  removed the same way; a group that cannot be read counts as running. Empty job groups made
+  over 10 minutes ago go too (a job group made again for the same job id is made fresh). One sweep
   runs at a time, in a task of its own, bounded by 60 s per engine; what it removed before a
   failure or the bound counts. The recovery after a restart removes in tasks of their own, so an
   engine that never answers does not hold CI's start.
@@ -102,5 +105,10 @@ front copied bytes, and every job and agent of a sandbox shared one engine.
   the sandbox's disk and are pruned only by a person or the engine's own prune.
 - A job's own container whose image cannot be read (gone while the container stays, which Docker
   does not normally allow) stays.
+- A create body Go's decoder accepts and `serde_json` refuses (a lone surrogate escape, which
+  docker-py can send for an environment value that is not UTF-8) passes unlabelled.
+- A labelled create that asks `Expect: 100-continue` is held until its body comes (the engine is
+  asked without `Expect`); a client that waits for `100 Continue` sends it after its own delay
+  (curl: 1 s).
 - `yulius doctor --docker-smoke` proves it on a host: a CI job's container and network carry its
   label, an agent's beside it does not, and the job's end removes only the job's.

@@ -471,6 +471,9 @@ impl Leftovers {
 pub enum Jobs<'a> {
     /// The job that just ended.
     One(&'a str),
+    /// That job, while this says it ended, asked again for each container and network: a job
+    /// id that runs again (a requeued run) keeps its new attempt's (review round 2).
+    OneEnded(&'a str, &'a (dyn Fn(&str) -> bool + Sync)),
     /// Every labelled job this says ended.
     Ended(&'a (dyn Fn(&str) -> bool + Sync)),
 }
@@ -479,7 +482,7 @@ impl Jobs<'_> {
     fn filter(&self) -> String {
         let label = crate::docker_label::CI_JOB_LABEL;
         let value = match self {
-            Self::One(job) => format!("{label}={job}"),
+            Self::One(job) | Self::OneEnded(job, _) => format!("{label}={job}"),
             Self::Ended(_) => label.to_owned(),
         };
         query_value(&serde_json::json!({ "label": [value] }).to_string())
@@ -488,6 +491,7 @@ impl Jobs<'_> {
     fn takes(&self, job: &str) -> bool {
         match self {
             Self::One(one) => *one == job,
+            Self::OneEnded(one, ended) => *one == job && ended(job),
             Self::Ended(ended) => ended(job),
         }
     }
@@ -510,11 +514,6 @@ fn query_value(text: &str) -> String {
 /// path: 1 to 128 ASCII letters, digits and `:`.
 fn plain_id(id: &str) -> bool {
     !id.is_empty() && id.len() <= 128 && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b':')
-}
-
-/// The CI job label of a listed container or network.
-fn job_label(item: &serde_json::Value) -> Option<&str> {
-    item["Labels"][crate::docker_label::CI_JOB_LABEL].as_str()
 }
 
 /// What [`remove_ci_leftovers`] did: what it removed, and why it stopped early, if it did.
@@ -619,7 +618,10 @@ async fn remove_leftovers(socket: &std::path::Path, jobs: &Jobs<'_>, removal: &m
     match request(socket, "GET", &format!("/networks?filters={filter}")).await {
         Ok(listed) => {
             for network in listed.as_array().into_iter().flatten().take(LEFTOVERS_MAX) {
-                let (Some(id), Some(job)) = (network["Id"].as_str(), job_label(network)) else {
+                let (Some(id), Some(job)) = (
+                    network["Id"].as_str(),
+                    label(&network["Labels"], CI_JOB_LABEL),
+                ) else {
                     continue;
                 };
                 if !plain_id(id) || !jobs.takes(job) {

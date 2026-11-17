@@ -74,9 +74,9 @@ ADR-0344), SPEC-497 HBA-003 (CI waits for Docker networks), SPEC-053/SPEC-268 (t
 | --- | --- |
 | CLB-001 | Each CI job runs in its own cgroup `ci/ci-job-<job id>` under the sandbox's CI group (the sandbox's group where CPU is not split), made before the job starts and removed after it ends; where it cannot be made the job runs in the CI group as before (unlabelled). |
 | CLB-002 | The Docker front tells a CI job's calls from everyone else's by the caller's cgroup (the connecting process, `SO_PEERCRED`, read from the host's `/proc` opened before the front joins the sandbox): a caller in `…/ci-job-<id>` is that job; any other caller is not a CI job. |
-| CLB-003 | For a CI job's caller, the front adds the label `yulius.ci.job=<id>` to the body of every `POST [/v<version>]/containers/create` and `POST [/v<version>]/networks/create`, replacing a label of that name the caller set and keeping its other labels; every other byte passes unchanged. Requests are framed by HTTP/1.1 (`Content-Length`, `chunked`); an upgraded or hijacked call (attach, exec start, session, gRPC, `Upgrade`) and anything not parsed as a request pass raw from there on. A body that is not JSON or over 4 MiB passes unlabelled. Agents' calls are never parsed. |
-| CLB-004 | When a CI job ends, whatever the outcome, Yulius removes the containers (forced, keeping their volumes) and then the networks of the sandbox's running engine labelled with that job. Images and volumes are never removed, and nothing starts a stopped engine. |
-| CLB-005 | Each upkeep pass, and so first after a server starts, removes from each running engine the containers and networks labelled with a CI job whose cgroup no longer has a process (gone or empty). A container whose label came from its image (the image carries the same value) is not the job's and is kept. |
+| CLB-003 | For a CI job's caller, the front adds the labels `yulius.ci.job=<id>` and `yulius.ci.create=<a value of that create's own>` to the body of every `POST [/v<version>]/containers/create` and `POST [/v<version>]/networks/create`, under every `Labels` key in any case, replacing labels of those names the caller set and keeping its other labels; every other byte passes unchanged. Requests are framed by HTTP/1.1 (`Content-Length`, `chunked`) and their heads read line by line as they come; an upgraded or hijacked call (attach, an exec start that is not detached, session, gRPC, `Upgrade`), a broken body framing and anything that cannot become a request pass raw from there on. A body that is not JSON or over 4 MiB passes unlabelled, and the connection is still read after it. Agents' calls are never parsed. |
+| CLB-004 | When a CI job ends, whatever the outcome, Yulius removes the containers (forced, keeping their volumes) and then the networks of the sandbox's running engine labelled with that job, while the job's group holds no process (asked for each one: a job id run again keeps its new attempt's). Images and volumes are never removed, and nothing starts a stopped engine. |
+| CLB-005 | Each upkeep pass, and so first after a server starts, removes from each running engine the containers and networks labelled with a CI job whose cgroup no longer has a process (gone or empty). A container whose labels came from its image (its `yulius.ci.create` value is its image's) is not the job's and is kept, and so is one whose image cannot be read. |
 | CLB-006 | Every removal is recorded per sandbox (audit `sandbox.docker.ci_leftovers`: containers, networks, at the job's end or by the sweep), and `GET /api/analytics/docker` adds them per week and in total. |
 
 ### A bad yulius.toml never blocks CI (pull request 2)
@@ -269,4 +269,26 @@ Nits: a lowercase `labels` key is the one labelled; an unlabellable create passe
 wherever its `Content-Length` is; the gate takes its caller when it is made
 (`Gate::telling_jobs`); every sandbox's emptied job groups are swept, with or without a serving
 engine.
+
+### Pull request 1, review round 2 (request changes; own code, all fixed)
+
+Reviewer (Fable 5.2) on `1b8490201`: every round-1 finding fixed; CI run `496b40ae` passed;
+security unrun (Vidoc 401). New:
+
+1. *Major: the recovery's removal by job id could delete a network of the requeued attempt*
+   (`requeue_ci_run` keeps job ids). A job's removal now takes each container and network only
+   while the job's group holds no process, asked for each one (`Jobs::OneEnded`); a running
+   attempt's stay and go at its own end. `manager::tests::a_jobs_end_and_the_sweep_remove_what_ci_jobs_left`
+   now tells a job id whose group holds a process ended: nothing is removed (it failed before
+   the change: 3 deletes instead of 2).
+2. *The spec's CLB-003 and CLB-005 rows* say the create value, the detached exec start and the
+   unreadable image (CLB-004 the per-item rule).
+3. *A chunked create over 4 MiB turned the connection raw.* Its chunk and the rest are copied,
+   and the connection is still read: `an_unlabellable_create_passes_as_it_came` now sends a
+   create after it, labelled.
+
+Nits: every `labels` key in any case is labelled (`Labels` and `labels` both); `job_label` is
+gone (one `label` helper); `fake_sandbox`'s doc comment is back on it; ADR-0359 says "made over
+10 minutes ago", the lone-surrogate and `Expect` limits and the per-item rule; architecture and
+operations name `yulius.ci.create`.
 
