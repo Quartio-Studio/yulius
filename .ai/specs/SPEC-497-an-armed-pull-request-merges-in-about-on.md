@@ -579,6 +579,17 @@ mode.
   `-E "not ($YULIUS_CI_QUARANTINE_NEXTEST)"` and prints what it left out.
 - ADR-0356; architecture (CI job states), `api.md` (the job's variables), `operations.md`,
   `changes.md`.
+- Leftovers of #1373's and #1377's reviews: an older client's `docker:` prefix before its socket
+  words counts (unit case in `a_failure_of_the_change_is_never_the_infrastructures`, failing
+  before the fix); the CI's CPU pressure is logged at `debug` (`cpu_pressure_permille`) where it
+  is read; stale pressure wording in `operations.md`, ADR-0353's consequences, the spec's
+  Decisions and two doc comments; ADR-0353's trailing blank line. Still read only, not tested
+  through the executor: a second start that cannot be made, and the mapping of a lost host.
+- Checks run on this head: `cargo fmt --check`; `cargo clippy --workspace --all-targets -D
+  warnings`; the unit tests of `yulius-domain`, `yulius-store`, `yulius-app`, `yulius-github`
+  (1,300 passed); `local_ci::` and `analytics::` (102 passed); `yulius-domain` doctests.
+  `scripts/dev mutants`: 108 listed, 60 caught, 0 missed, 0 timed out, 48 unviable, 0 not
+  reached (bound 40 min, 1613 s).
 
 ### Slice A3: the operator's amendment to the admission (its own pull request, first)
 

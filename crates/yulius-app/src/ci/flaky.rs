@@ -93,22 +93,21 @@ impl App {
                 .collect();
             pulls.sort_unstable();
             pulls.dedup();
+            let named = pulls
+                .iter()
+                .map(|p| format!("#{}", p.trim_start_matches("pr/")))
+                .collect::<Vec<_>>()
+                .join(", ");
             match self.ci_quarantine(sandbox, job, &test, &pulls, now).await {
                 Ok(issue) => said.push(format!(
-                    "[yulius] `{test}` failed in the runs of {} within 48 hours while `{}` did \
-                     not fail it: quarantined as a flaky test ({issue}); later jobs are told it in \
-                     ${QUARANTINE_ENV} (SPEC-497)",
-                    pulls
-                        .iter()
-                        .map(|p| format!("#{}", p.trim_start_matches("pr/")))
-                        .collect::<Vec<_>>()
-                        .join(", "),
+                    "[yulius] `{test}` failed in the runs of {named} within 48 hours while `{}` \
+                     did not fail it: quarantined as a flaky test ({issue}); later jobs are told \
+                     it in ${QUARANTINE_ENV} (SPEC-497)",
                     delivery_profile(sandbox).integration_branch
                 )),
                 Err(why) => said.push(format!(
-                    "[yulius] `{test}` looks flaky (it failed in the runs of {}), but it was not \
-                     quarantined: {why}",
-                    pulls.join(", ")
+                    "[yulius] `{test}` looks flaky (it failed in the runs of {named}), but it was \
+                     not quarantined: {why}"
                 )),
             }
         }
