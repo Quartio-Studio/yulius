@@ -31,7 +31,7 @@ The rules allowed both incidents:
 ## Decision
 
 - **A real TOML parser** (CFG-005). `yulius.toml` is read with the `toml` crate's spanned
-  document (TOML 1.0, `parse` feature only), and lines come from the spans. It is the domain's
+  document (TOML 1.1, so 1.0 too; `parse` feature only), and lines come from the spans. It is the domain's
   second external dependency after `thiserror`: it parses text and does no I/O, so the
   domain stays pure (docs/engineering/architecture.md and `scripts/check_repository.py` allow
   it by name). Anything valid TOML

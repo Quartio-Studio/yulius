@@ -1,6 +1,6 @@
 //! The `yulius.toml` project contract (SPEC-001 §7.2, DLV-005).
 //!
-//! The file is read by a TOML 1.0 parser (the `toml` crate's spanned document, SPEC-504
+//! The file is read by a TOML 1.1 parser (the `toml` crate's spanned document, SPEC-504
 //! CFG-005, ADR-0360): anything valid TOML parses, whatever its layout (multi-line arrays,
 //! trailing commas, comments inside arrays and after values, literal and multi-line strings,
 //! inline tables, dotted keys), and invalid TOML is refused with the parser's message at its line.
@@ -159,6 +159,14 @@ pub enum ConfigProblem {
         /// Accepted keys.
         known: &'static str,
     },
+    /// A table inside a known one (`[commands.extra]`, an inline table, a dotted key).
+    #[error("[{table}.{key}] is not a table Yulius reads: [{table}] takes keys with values")]
+    NestedTable {
+        /// The known table.
+        table: String,
+        /// The key holding a table.
+        key: String,
+    },
     /// A value outside the subset.
     #[error(
         "unsupported value; use a \"quoted string\", a whole number, true/false or an array of \"quoted\", \"strings\" (signed or fractional numbers, dates and inline tables are not values Yulius reads here)"
@@ -210,7 +218,8 @@ pub enum ConfigProblem {
     /// A required environment key is missing.
     #[error("[[delivery.environments]] entry is missing '{0}'")]
     MissingKey(&'static str),
-    /// `environments = []` together with environment entries.
+    /// `environments = []` together with environment entries (the TOML parser refuses that as a
+    /// duplicate key first; kept as a guard of the profile's rule).
     #[error("'environments = []' conflicts with [[delivery.environments]] entries")]
     EnvironmentsConflict,
     /// The resulting profile is invalid.
@@ -360,17 +369,43 @@ fn value_of(value: &TomlValue<'_>) -> Result<Value, ConfigProblem> {
     }
 }
 
-/// A known table at `line` with its entries in file order.
-fn table_of(text: &str, table: &TomlTable<'_>, line: usize) -> Result<Table, FormatError> {
-    let mut entries = Vec::new();
-    for (key, value) in in_file_order(table) {
-        let line = line_at(text, key.span().start);
-        entries.push(Entry {
-            key: key.get_ref().to_string(),
-            value: value_of(value.get_ref()).map_err(|problem| err(line, problem))?,
+/// The entry `key` = `value` of the known table `name` at its line: a table there
+/// (`[name.key]`, an inline table, a dotted key) is no key Yulius reads (review round 1).
+fn entry_of(
+    text: &str,
+    name: &str,
+    key: &Spanned<std::borrow::Cow<'_, str>>,
+    value: &Spanned<TomlValue<'_>>,
+) -> Result<Entry, FormatError> {
+    let line = line_at(text, key.span().start);
+    let key = key.get_ref().to_string();
+    if value.get_ref().is_table() {
+        return Err(err(
             line,
-        });
+            ConfigProblem::NestedTable {
+                table: name.to_owned(),
+                key,
+            },
+        ));
     }
+    Ok(Entry {
+        value: value_of(value.get_ref()).map_err(|problem| err(line, problem))?,
+        key,
+        line,
+    })
+}
+
+/// The known table `name` at `line` with its entries in file order.
+fn table_of(
+    text: &str,
+    name: &str,
+    table: &TomlTable<'_>,
+    line: usize,
+) -> Result<Table, FormatError> {
+    let entries = in_file_order(table)
+        .into_iter()
+        .map(|(key, value)| entry_of(text, name, key, value))
+        .collect::<Result<_, _>>()?;
     Ok(Table { line, entries })
 }
 
@@ -382,7 +417,7 @@ fn single_table(
     line: usize,
 ) -> Result<Table, FormatError> {
     match value.get_ref() {
-        TomlValue::Table(table) => table_of(text, table, line),
+        TomlValue::Table(table) => table_of(text, name, table, line),
         TomlValue::Array(_) => Err(err(line, ConfigProblem::NotAnArrayTable(name.to_owned()))),
         _ => Err(err(line, ConfigProblem::NotATable(name.to_owned()))),
     }
@@ -403,13 +438,15 @@ fn array_tables(
     items
         .into_iter()
         .map(|item| match item.get_ref() {
-            TomlValue::Table(table) => table_of(text, table, line_at(text, item.span().start)),
+            TomlValue::Table(table) => {
+                table_of(text, name, table, line_at(text, item.span().start))
+            }
             _ => Err(refused()),
         })
         .collect()
 }
 
-/// Reads `yulius.toml` with a TOML 1.0 parser (SPEC-504 CFG-005, ADR-0360): anything valid
+/// Reads `yulius.toml` with a TOML 1.1 parser (SPEC-504 CFG-005, ADR-0360): anything valid
 /// TOML parses, whatever its layout (multi-line arrays, trailing commas, comments, inline
 /// tables, dotted keys); invalid TOML is refused with the parser's message at its line. The
 /// known tables then take only the values their checks read ([`value_of`]); other tables and
@@ -467,12 +504,7 @@ fn parse_document(text: &str) -> Result<Document, FormatError> {
                     if tables.is_some() && key.get_ref() == "environments" {
                         continue;
                     }
-                    let at = line_at(text, key.span().start);
-                    table.entries.push(Entry {
-                        key: key.get_ref().to_string(),
-                        value: value_of(value.get_ref()).map_err(|problem| err(at, problem))?,
-                        line: at,
-                    });
+                    table.entries.push(entry_of(text, name, key, value)?);
                 }
                 document.delivery = Some(table);
             }
@@ -1726,9 +1758,7 @@ mod tests {
         assert!(deep.len() < MAX_CONFIG_BYTES);
         let shown = parse_yulius_toml(&deep).err().map(|e| e.to_string());
         assert!(
-            shown
-                .as_deref()
-                .is_some_and(|e| e.contains("recurs") || e.contains("unsupported value")),
+            shown.as_deref().is_some_and(|e| e.contains("recurs")),
             "{shown:?}"
         );
         for (text, message) in cases {
@@ -2062,10 +2092,16 @@ anything = { a = [1, 2.5, { b = 1979-05-27 }] }
             problem("[docs]\nproduct = 1.5\n"),
             Some((2, ConfigProblem::UnsupportedValue))
         );
-        assert_eq!(
-            problem("[docs]\na.b = \"x\"\n"),
-            Some((2, ConfigProblem::UnsupportedValue))
-        );
+        for text in [
+            "[docs]\na.b = \"x\"\n",
+            "[docs]\na = { b = \"x\" }\n",
+            "[docs.a]\nb = \"x\"\n",
+        ] {
+            assert!(
+                matches!(problem(text), Some((_, ConfigProblem::NestedTable { ref table, ref key })) if table == "docs" && key == "a"),
+                "{text}"
+            );
+        }
         assert_eq!(
             problem("[[docs]]\n"),
             Some((1, ConfigProblem::NotAnArrayTable("docs".to_owned())))

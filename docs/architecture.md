@@ -3657,7 +3657,7 @@ outcome recorded")]
 
 [Decision 0360](decisions/0360-dev-s-gate-judges-every-change-and-a-bad-yulius-toml-never-turns-ci-off.md)
 ([SPEC-504](../.ai/specs/SPEC-504-ci-leaves-nothing-behind-and-a-bad-yuliu.md) CFG-001 to CFG-006).
-`yulius.toml` is read with a TOML 1.0 parser (`spec_format::config`, the `toml` crate's spanned
+`yulius.toml` is read with a TOML 1.1 parser (`spec_format::config`, the `toml` crate's spanned
 document): any valid layout parses, and invalid TOML is refused with the parser's message at its
 line.
 
