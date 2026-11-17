@@ -447,3 +447,37 @@ Nits:
 - ADR-0360 says a matrix-only twin keeps the entry's grant;
 - `Head` is removed.
 
+
+### Pull request 2, review round 3 (request changes; every finding own code)
+
+The reviewer (Fable 5.2) on `38d960201` confirmed every round-2 answer by reading the code and
+its tests. It found the following, each fixed test-first:
+
+1. *Major: a change to a job's time limit or resources got no twin.* `with_changed_jobs`
+   compared key, matrix and command only, where dev's earlier rule compared the whole job. The
+   reviewer showed it with a scratch domain test: a job with `timeout_minutes` 30 changed to 1
+   ran only the gate's job. The whole `Job` is compared now, and the reuse rule's "every gate
+   job ran" check covers need, timeout and exclusive too.
+   - `a_change_to_a_jobs_time_limit_runs_its_twin` (integration) and the timeout-only case in
+     `ci::tests::a_changes_own_jobs_run_beside_the_gates` failed before the change.
+2. *Minor: two round-2 fixes had no test.*
+   - `a_reused_verdict_comes_from_the_job_that_ran_the_command`. Mutation check: dropping the
+     command match from the reused verdict fails it.
+   - The time-limit test also asserts the twin's `YULIUS_CI_JOB`. Mutation check: dropping the
+     strip fails it.
+3. *Nit: a twin's checkout never went stale.* `checkout_job_key` read `<key>.change` as
+   `<key>`'s. It is its own name now, and it is used while a recent run had that job's twin.
+   `unused_ci_checkouts_go_while_no_run_runs` keeps `gate.change` and removes `old.change.2`.
+   Mutation check: counting twins as their job's key fails it.
+
+Commands on `7b21063b6`:
+- `cargo test -p yulius-domain`: 566 + 26 passed.
+- `cargo test -p yulius-app --lib -- --test-threads=1`: 599 passed.
+- `cargo test -p yulius --test main -- leftovers:: local_ci:: playground:: merge_train::`: 231
+  passed.
+
+Outside this change: in a parallel `cargo test -p yulius-app --lib`, one of the `sweep::tests`
+failed in each of two runs (`over_its_cap_…`, then `a_cross_target_profile_s_lock_counts_too`).
+The host's load average was 14 to 19 at the time. Each passes alone (3 of 3) and in the
+single-threaded run. This branch does not touch `sweep.rs`, and Yulius CI ran these tests green
+on `38d960201`.
