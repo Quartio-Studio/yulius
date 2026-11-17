@@ -2044,7 +2044,7 @@ sequenceDiagram
   M->>A: remote_caller(token): scope, 120/min
   A->>A: require(person, project, Work)
   A->>G: fresh clone, commit as the person, push yulius/change-…, open PR
-  C->>G: tests the pull request (its own [[ci.jobs]])
+  C->>G: tests the pull request (dev's [[ci.jobs]], its own changed ones beside)
   L->>M: tools/call change_merge {number}
   A->>C: run at the exact head passed?
   A->>G: merge, delete the branch

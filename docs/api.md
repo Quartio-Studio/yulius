@@ -873,13 +873,16 @@ Cleanup request = {"items": [{"kind", "name"}] (empty: every safe item), "force"
 
 - **Runs.** Every open pull request into the integration branch (same repository, at most 30) and
   every new integration and production head is tested once per commit. The integration branch's
-  configuration applies; a pull request that changed the jobs since it branched off is tested
-  with its own, which keep the trusted security job, and while the integration branch has
-  none, a pull request that adds CI is tested with its own (`source: pull_request`). A merge
-  train, a playground task's merge, and a run again of a pull request's or a playground task's
-  run are given their jobs by the same rule (a train's run is not run again). While the
-  integration branch's configuration cannot be read, no pull request is tested; a playground
-  task's merge that brings a readable one is, with it. A newer head cancels the active run of the same reference ("superseded
+  jobs judge every commit on its way there, and a commit's own changed or added jobs run beside
+  them, named `<job> (this change)`, never instead (SPEC-504 CFG-001, ADR-0360). A commit whose
+  `yulius.toml`, as read after the merge, is invalid fails at once with a job `yulius.toml`
+  holding the parser's message. While the integration branch's own file is invalid, its last
+  valid gate judges (`source: last_valid_yulius_toml`), and a pull request refused for that
+  file runs again once it is valid. While it has none (no CI yet, or a file never valid), a
+  commit that brings valid jobs is tested with them and keeps the trusted security job
+  (`source: pull_request`). A merge train, a playground task's merge, and a run again of a pull
+  request's or a playground task's run are given their jobs by the same rule (a train's run is
+  not run again). A newer head cancels the active run of the same reference ("superseded
   by …"). Up to `YULIUS_CI_LANES` runs of one sandbox (host-sized, 2 below 32 CPUs) execute at once, each in its own job
   checkouts; their jobs share the instance's job slots (`YULIUS_CI_MAX_JOBS`) and its CI budget
   (ADR-0350): a queued job's `reason` says what it waits for while it waits.

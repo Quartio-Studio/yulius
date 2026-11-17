@@ -39,10 +39,18 @@ The rules allowed both incidents:
   line. The known tables keep their strict keys and read only strings, booleans, whole numbers
   of at least 0 and arrays of strings. Nesting is bounded by the parser.
 - **Dev's gate judges every change** (CFG-001). While the integration branch has CI, every
-  commit on its way there is judged by the integration branch's jobs, never its own. This covers
-  a pull request's head, a merge candidate and a playground task's merge. A commit's own jobs
-  run only where the branch has no gate (bootstrap, or a file never valid), and they keep the
-  trusted security job.
+  commit on its way there is judged by the integration branch's jobs. Its own changed or added
+  jobs run beside them, named `<job> (this change)` with no secret and never under the trusted
+  scan's key, never instead (review round 1). This covers a pull request's head, a merge
+  candidate and a playground task's merge.
+  - A change never weakens the gate that judges it.
+  - A job it changes or adds runs before it merges, so a failing one never lands untested to
+    judge its own repair.
+  - A commit's own jobs alone run only where the branch has no gate (bootstrap, or a file never
+    valid), and they keep the trusted security job.
+- **A branch reuses a tree's verdict only where its gate ran.** A same-tree passed run (a squash
+  merge of a tested pull request) counts for the integration branch only when every job of the
+  branch's gate ran there with the same key, matrix and command.
 - **A change's own file is checked as CI will read it after the merge** (CFG-002). Which file is
   checked:
   - a branch, a merge candidate or a playground merge: the commit's own;
@@ -51,10 +59,13 @@ The rules allowed both incidents:
 
   An invalid one fails the run at once. A job `yulius.toml` fails with the parser's message, and
   the other jobs are skipped unrun, so the change cannot merge. A pull request that does not
-  repair an invalid `dev` fails naming `dev`'s problem.
+  repair an invalid `dev` fails naming `dev`'s problem, and runs again by itself once `dev`'s
+  file is valid. Where Git cannot tell whether the change touched the file, its own file is
+  checked.
 - **The last valid gate runs while dev's file is invalid** (CFG-003). The gate in force is that of
   the newest first-parent commit of the integration branch, at most 100 back, whose file is
-  valid. It runs until a fix merges.
+  valid. It runs until a fix merges. When Git cannot walk the history, nothing is judged until it
+  can; a commit's own jobs never stand in.
 - **It says so** (CFG-006). That gate's source is `last_valid_yulius_toml`. Each run judged by it
   carries a note, the CI page names the problem and the commit, and never says "CI is not
   running" then. A fix gets a run and can merge on it, so `delivery_merge` is never refused for
@@ -62,16 +73,20 @@ The rules allowed both incidents:
   wrote them, as before.
 - **Measured** (CFG-004). Each episode in which a sandbox's CI has no gate because of its
   configuration is audited (`ci.config_blocked`, then `ci.config_unblocked`). `GET
-  /api/analytics/merge-queue` adds up its minutes (`config_blocked_minutes`).
+  /api/analytics/merge-queue` adds up its minutes (`config_blocked_minutes`). After a start, a
+  sandbox's state is read from its last audited entry first, so an episode that ended while the
+  server was down is closed.
 
 ## Alternatives
 
 - **Keep testing a change with its own jobs (CI-110).** Rejected: a change could weaken the gate
   that judges it (drop a job, change a command to `true`), and the pull request that broke
   autoresearch passed this way.
-- **Run both the integration branch's and the change's own jobs.** Rejected: a change that renames
-  a script its old job runs could never merge. Running the change's jobs too also adds nothing
-  dev's gate does not check after the merge.
+- **Only the integration branch's jobs (this record's first version).** Rejected in review round
+  1: a valid job that fails merged untested (dev's old jobs passed), then judged every later
+  change, its own repair included. The same-tree reuse even recorded the branch green for jobs
+  that never ran. Running a change's changed jobs beside dev's costs a few job runs on such
+  changes only.
 - **Turn CI off while dev's file is invalid (the old rule).** Rejected: it blocks the repair, which
   is the very incident.
 - **Fall back to a built-in default gate.** Rejected: Yulius cannot know a project's checks.
@@ -87,15 +102,28 @@ The rules allowed both incidents:
 
 ## Consequences
 
-- A change to `[[ci.jobs]]` is tested after its merge, by the integration branch's next run. A
-  change that renames what an old job runs must keep the old command working until it has
-  merged, or land in two steps.
+- A change to `[[ci.jobs]]` runs both versions of a changed job. A change that renames what an
+  old job runs must keep the old command working until it has merged, or land in two steps.
+- A job that passes on its change and fails later on the branch (an outside service) still
+  judges every change until the branch is fixed; only a person's bypass, or a fix that makes the
+  old command pass, lands then.
 - While `dev`'s file is invalid, every pull request that does not repair it fails its run, naming
   `dev`'s problem, and the repair passes on the last valid gate.
 - A file that was never valid still leaves nothing to fall back on. The change that repairs it is
   tested with its own jobs, and those minutes are counted.
 - Messages for invalid TOML are the parser's ("duplicate key", "unclosed array, expected `]`"),
-  no longer Yulius's own, and some layouts the old reader refused now parse: multi-line strings,
-  `4_0`, inline tables, dotted keys.
-- Runs on the last valid gate have the source `last_valid_yulius_toml`, which older clients show
-  as is.
+  no longer Yulius's own. Some layouts the old reader refused now parse: multi-line arrays and
+  strings, trailing commas, `4_0`, inline tables in tables Yulius ignores.
+- Some files the old reader accepted are now refused:
+  - invalid TOML anywhere, also in a table Yulius ignores;
+  - a table repeated;
+  - a number with a leading zero (`08`);
+  - a table inside a known one (`[commands.extra]`, "is not a table Yulius reads").
+
+  Where such a file is in a branch's history, it gives no last-valid gate.
+- The parser is `toml` 1.2 (TOML 1.1): a multi-line inline table and `\e` parse too.
+- Runs on the last valid gate have the source `last_valid_yulius_toml`. A store from now on reads
+  an unknown source as the integration branch's configuration. The release before this one
+  cannot: before rolling back past this change, run `UPDATE ci_runs SET source = 'yulius_toml'
+  WHERE source = 'last_valid_yulius_toml'` in the instance's database, or the sandbox's CI sync
+  fails on reading such a run.
