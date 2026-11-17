@@ -40,9 +40,17 @@ The rules allowed both incidents:
   of at least 0 and arrays of strings. Nesting is bounded by the parser.
 - **Dev's gate judges every change** (CFG-001). While the integration branch has CI, every
   commit on its way there is judged by the integration branch's jobs. Its own changed or added
-  jobs run beside them, named `<job> (this change)` with no secret and never under the trusted
-  scan's key, never instead (review round 1). This covers a pull request's head, a merge
-  candidate and a playground task's merge.
+  jobs run beside them, named `<job> (this change)`, never instead (review round 1). This covers
+  a pull request's head, a merge candidate and a playground task's merge.
+  - What it changed is what differs from the jobs at its merge base with the integration branch
+    as well as from the gate's (review round 2): a pull request behind the branch runs the
+    branch's jobs of now, not the old or removed ones it carries.
+  - A twin never takes the trusted scan's key, gets no twin under a profile's gate (whose CI is
+    not `yulius.toml`'s), shares an `exclusive` job's turn (by definition and matrix value), has
+    checkouts apart (`<key>.change`), and is told the job's own name in `YULIUS_CI_JOB`.
+  - A twin's command differs from the integration branch's entry, so it gets no secret. A twin
+    that differs only in its matrix gets that entry's grant, as any job of that name and
+    command did before.
   - A change never weakens the gate that judges it.
   - A job it changes or adds runs before it merges, so a failing one never lands untested to
     judge its own repair.
@@ -104,6 +112,10 @@ The rules allowed both incidents:
 
 - A change to `[[ci.jobs]]` runs both versions of a changed job. A change that renames what an
   old job runs must keep the old command working until it has merged, or land in two steps.
+- A change to the scanning job's command (the built-in `security` job's key) gets no twin: the
+  trusted scan stays the only one, and the change is first scanned by the branch's next run.
+- A run holds at most twice `MAX_JOBS` jobs: the change's own file is bounded by it, and none
+  is dropped.
 - A job that passes on its change and fails later on the branch (an outside service) still
   judges every change until the branch is fixed; only a person's bypass, or a fix that makes the
   old command pass, lands then.

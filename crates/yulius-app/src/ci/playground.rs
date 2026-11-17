@@ -117,8 +117,7 @@ impl App {
         let candidate = built.head;
         // The integration branch's jobs, with the task's own changed ones beside them, and its
         // own when the branch has none, as for a pull request (`ci_gate_for_head`, SPEC-504).
-        let merged = (candidate.as_str(), super::Head::Merged);
-        let Some(gate) = self.ci_gate_for_head(sandbox, &view, merged).await else {
+        let Some(gate) = self.ci_gate_for_head(sandbox, &view, &candidate).await else {
             return Ok(TaskChecks::Clear);
         };
         let reason = format!("superseded by {}", short(&candidate));

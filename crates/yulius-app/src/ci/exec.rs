@@ -1135,7 +1135,14 @@ impl App {
             ("GIT_TERMINAL_PROMPT".to_owned(), "0".to_owned()),
             ("YULIUS_CI".to_owned(), "1".to_owned()),
             ("YULIUS_CI_RUN".to_owned(), run.id.clone()),
-            ("YULIUS_CI_JOB".to_owned(), job.name.clone()),
+            // A change's twin of a job is told the job's own name (SPEC-504 review round 2).
+            (
+                "YULIUS_CI_JOB".to_owned(),
+                job.name
+                    .strip_suffix(dom::CHANGE_SUFFIX)
+                    .unwrap_or(&job.name)
+                    .to_owned(),
+            ),
             ("YULIUS_CI_SHA".to_owned(), run.sha.clone()),
             ("YULIUS_CI_REF".to_owned(), run.reference.key()),
             (

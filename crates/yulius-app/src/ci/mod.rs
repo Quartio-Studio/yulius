@@ -451,16 +451,6 @@ pub(crate) fn short(sha: &str) -> &str {
     sha.get(..7).unwrap_or(sha)
 }
 
-/// What a commit asked about in [`App::ci_gate_for_head`] is.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Head {
-    /// A pull request's head: a proposal for the integration branch.
-    Proposed,
-    /// The integration branch with a change merged into it (a merge train's commit, a
-    /// playground task's merge): what the branch would be.
-    Merged,
-}
-
 /// What a run judged by the integration branch's last valid gate says (SPEC-504 CFG-006).
 pub const LAST_VALID_NOTE: &str = "judged by the integration branch's last valid yulius.toml: \
      its own is invalid, and that gate runs until a fix merges";
@@ -964,8 +954,9 @@ impl App {
 
     /// Records when `sandbox`'s CI starts and stops having no gate because of its configuration
     /// (SPEC-504 CFG-004): an audit entry `ci.config_blocked` with the problem, and
-    /// `ci.config_unblocked` once a gate is in force again. A server that starts says it again
-    /// for an episode under way; the measure counts it once.
+    /// `ci.config_unblocked` once a gate is in force again. The first look after a start reads
+    /// the last entry, and a state is kept only once its entry is written, so a failed write is
+    /// tried again at the next look.
     async fn ci_note_config_block(&self, sandbox: &SandboxRecord, view: &GateView) {
         use yulius_domain::merge_queue::{CONFIG_BLOCKED, CONFIG_UNBLOCKED};
         let blocked = view.gate.is_none() && view.problem.is_some();
@@ -1000,10 +991,10 @@ impl App {
                 })
                 .unwrap_or(false),
         };
-        if let Ok(mut map) = self.ci.config_blocked.lock() {
-            map.insert(sandbox.id.as_str().to_owned(), blocked);
-        }
         if was == blocked {
+            if let Ok(mut map) = self.ci.config_blocked.lock() {
+                map.insert(sandbox.id.as_str().to_owned(), blocked);
+            }
             return;
         }
         let (action, detail) = if blocked {
@@ -1024,6 +1015,11 @@ impl App {
             .await
         {
             tracing::warn!(sandbox = %sandbox.slug, error = %err, "recording CI's configuration state failed");
+            return;
+        }
+        // Kept once written: a failed write is tried again at the next look (review round 2).
+        if let Ok(mut map) = self.ci.config_blocked.lock() {
+            map.insert(sandbox.id.as_str().to_owned(), blocked);
         }
     }
 
@@ -1054,10 +1050,7 @@ impl App {
         // is never read as having no CI (SPEC-504 review round 2).
         if view.gate.is_some()
             || view.fallback_unknown
-            || self
-                .ci_gate_for_head(sandbox, &view, (sha, Head::Proposed))
-                .await
-                .is_some()
+            || self.ci_gate_for_head(sandbox, &view, sha).await.is_some()
         {
             GateResult::Run(None)
         } else {
@@ -1410,9 +1403,7 @@ impl App {
             ) {
                 continue;
             }
-            let gate = self
-                .ci_gate_for_head(sandbox, &view, (&pull.head_sha, Head::Proposed))
-                .await;
+            let gate = self.ci_gate_for_head(sandbox, &view, &pull.head_sha).await;
             if let Some(gate) = gate {
                 targets.push((
                     Target {
@@ -1607,12 +1598,15 @@ impl App {
             .iter()
             .enumerate()
             .map(|(index, job)| {
-                // The values of a matrix job share its key: match the value too. A job the
-                // source did not have (the gate changed since) is passed, as before SPEC-162.
+                // The values of a matrix job share its key: match the value too, and the command,
+                // which tells a job from a change's twin of it (SPEC-504 review round 2). A job
+                // the source did not have (the gate changed since) is passed, as before SPEC-162.
                 let (state, exit_code) = dom::copied_job_verdict(
                     tested
                         .iter()
-                        .find(|t| t.key == job.key && t.matrix == job.matrix)
+                        .find(|t| {
+                            t.key == job.key && t.matrix == job.matrix && t.command == job.command
+                        })
                         .map(|t| t.state),
                 );
                 CiJobRecord {
@@ -2166,8 +2160,7 @@ impl App {
         &self,
         sandbox: &SandboxRecord,
         view: &GateView,
-        // What the commit is no longer changes its jobs (CFG-001): kept for the callers' word.
-        (head, _): (&str, Head),
+        head: &str,
     ) -> Option<Gate> {
         let repo = self.sandbox_repo(&sandbox.id);
         if let Some(gate) = &view.gate {
@@ -2237,34 +2230,28 @@ impl App {
         let view = self.ci_gate(sandbox).await;
         // The jobs the scheduler would give this commit now: a branch's are the integration
         // branch's, a commit on its way there may have its own (`ci_gate_for_head`).
-        let what = match &run.reference {
-            CiRef::Branch(_) => None,
-            CiRef::PullRequest(_) => Some(Head::Proposed),
-            // (A train's run never gets here: it was refused above.)
-            CiRef::Train(_) | CiRef::Task(_) => Some(Head::Merged),
-        };
-        let gate = match what {
-            None => view.gate.clone(),
-            Some(what) => {
-                self.ci_gate_for_head(sandbox, &view, (&run.sha, what))
-                    .await
-            }
+        // A branch's run takes the branch's gate; a commit on its way (a pull request's head,
+        // a playground task's merge; a train's run never gets here) the scheduler's rule.
+        let on_its_way = !matches!(run.reference, CiRef::Branch(_));
+        let gate = if on_its_way {
+            self.ci_gate_for_head(sandbox, &view, &run.sha).await
+        } else {
+            view.gate.clone()
         };
         let Some(gate) = gate else {
             // Why nothing tests it: the integration branch's configuration, the commit's own
             // that cannot be read, or none anywhere.
-            let own = match what {
-                Some(_) => {
-                    self.ci_jobs_at(&self.sandbox_repo(&sandbox.id), &run.sha)
-                        .await
-                }
-                None => Ok(Vec::new()),
+            let own = if on_its_way {
+                self.ci_jobs_at(&self.sandbox_repo(&sandbox.id), &run.sha)
+                    .await
+            } else {
+                Ok(Vec::new())
             };
-            return Err(AppError::Conflict(match (view.problem, own, what) {
+            return Err(AppError::Conflict(match (view.problem, own, on_its_way) {
                 (Some(problem), ..) => problem,
                 (None, Err(unreadable), _) => unreadable,
-                (None, Ok(_), None) => "this sandbox has no CI configured".into(),
-                (None, Ok(_), Some(_)) => "this commit has no CI configured".into(),
+                (None, Ok(_), false) => "this sandbox has no CI configured".into(),
+                (None, Ok(_), true) => "this commit has no CI configured".into(),
             }));
         };
         self.ci_queue(sandbox, run.reference.clone(), &run.sha, &gate, by)

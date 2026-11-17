@@ -414,3 +414,36 @@ test-first:
   "yulius.toml", and the comments in merge_train.rs and playground.rs are updated.
   `EnvironmentsConflict` stays as a guard of the profile's rule, said in its comment.
 
+### Pull request 2, review round 2 (request changes; every finding own code)
+
+The reviewer (Fable 5.2) on `0120363ca` (`304ca1cae` adds only a plan line) confirmed every
+round-1 fix. CI run `fae842a9` passed; security unrun (Vidoc 401). It found the following, each
+fixed test-first:
+
+1. *Major: a pull request behind dev ran dev's old and removed jobs as "(this change)".* Own jobs
+   are compared with the jobs at the head's merge base as well as with the gate (unknown base:
+   with the gate alone), and a profile's gate gets none.
+   - `a_branch_behind_is_tested_with_the_integration_branchs_jobs_of_now` now asserts the run's
+     exact jobs, with a changed and a removed job on dev. It failed before the change with
+     `plain (this change)` and `gone (this change)`.
+   - `ci::tests::a_changes_own_jobs_run_beside_the_gates` covers the base and the profile gate.
+2. *Major: an `exclusive` job and its twin ran at once.* The turn is keyed by the job's
+   definition and matrix value: `an_exclusive_job_and_its_changed_twin_share_a_turn`. It failed
+   before the change; `an_exclusive_job_waits_its_turn_outside_its_time_limit` still passes.
+3. *Minor: no verdict on a Git error read as no CI.* `ci_gate_result` answers pending while the
+   walk is unknown: `a_history_git_cannot_walk_leaves_a_head_pending_not_unconfigured`. With a
+   commit object of dev missing from the clone, it was `NotConfigured` before. A failing
+   `merge_base` in the configuration check takes the "changed" path, which the pull-request
+   tests cover.
+4. *Minor: twins moved the gate's job to a cold checkout.* A twin checks out at `<key>.change`
+   (`matrix_siblings_get_their_own_checkouts`), and `checkout_job_key` reads it as the job's.
+5. *Minor: changed jobs past `MAX_JOBS` were dropped silently.* None is dropped (the run holds
+   at most twice the bound), and ADR-0360 says a scanning job's change gets no twin.
+
+Nits:
+- a reused run matches a job's verdict by command too;
+- an episode's state is kept only once its audit entry is written, and the doc is corrected;
+- a twin is told the job's own name in `YULIUS_CI_JOB`;
+- ADR-0360 says a matrix-only twin keeps the entry's grant;
+- `Head` is removed.
+
