@@ -64,6 +64,13 @@ pub fn claude_model_name(id: &str) -> String {
 /// high from task #21 until then).
 pub const DEFAULT_CLAUDE_EFFORT: &str = "high";
 
+/// The model of an Antigravity task that names none: Gemini 4 Carbon (the person's request of
+/// 2026-11-17, SPEC-505: "Use Gemini 4 Carbon high by default").
+pub const DEFAULT_ANTIGRAVITY_MODEL: &str = "gemini-4-carbon";
+
+/// The effort of an Antigravity task that names none: high (SPEC-505).
+pub const DEFAULT_ANTIGRAVITY_EFFORT: &str = "high";
+
 /// The effort a task runs at: its own, else [`DEFAULT_CLAUDE_EFFORT`], except for a Haiku model,
 /// which takes no effort level.
 #[must_use]
@@ -84,15 +91,18 @@ pub fn is_compact_command(text: &str) -> bool {
         .is_some_and(|rest| rest.is_empty() || rest.starts_with(char::is_whitespace))
 }
 
-/// A coding-agent CLI Yulius can run as a task (SPEC-001 TSK-003). Claude Code, and Codex
-/// again (SPEC-503, ADR-0355: F 2026-11-16 reverses the Codex part of F 2026-10-08). A new
-/// harness needs a variant here and an adapter.
+/// A coding-agent CLI Yulius can run as a task (SPEC-001 TSK-003). Claude Code, Codex again
+/// (SPEC-503, ADR-0355: F 2026-11-16 reverses the Codex part of F 2026-10-08) and Google's
+/// Antigravity CLI (SPEC-505, ADR-0361: F 2026-11-17). A new harness needs a variant here and an
+/// adapter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Harness {
     /// Anthropic Claude Code CLI.
     ClaudeCode,
     /// OpenAI Codex CLI.
     Codex,
+    /// Google Antigravity CLI (`agy`, SPEC-505).
+    Antigravity,
 }
 
 /// The subscription provider behind a harness; accounts belong to providers.
@@ -102,16 +112,18 @@ pub enum Provider {
     Anthropic,
     /// OpenAI (ChatGPT subscriptions or API keys, used by Codex).
     OpenAi,
+    /// Google (Google sign-ins or Gemini API keys, used by Antigravity; SPEC-505).
+    Google,
 }
 
 /// Unknown or unsupported harness or provider text.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[error("unsupported harness or provider: {0} (Yulius runs Claude Code and Codex)")]
+#[error("unsupported harness or provider: {0} (Yulius runs Claude Code, Codex and Antigravity)")]
 pub struct UnknownHarness(pub String);
 
 impl Harness {
     /// All supported harnesses.
-    pub const ALL: [Self; 2] = [Self::ClaudeCode, Self::Codex];
+    pub const ALL: [Self; 3] = [Self::ClaudeCode, Self::Codex, Self::Antigravity];
 
     /// The provider whose accounts this harness uses.
     #[must_use]
@@ -119,15 +131,17 @@ impl Harness {
         match self {
             Self::ClaudeCode => Provider::Anthropic,
             Self::Codex => Provider::OpenAi,
+            Self::Antigravity => Provider::Google,
         }
     }
 
-    /// Stable wire name (`claude` or `codex`).
+    /// Stable wire name (`claude`, `codex` or `antigravity`).
     #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {
             Self::ClaudeCode => "claude",
             Self::Codex => "codex",
+            Self::Antigravity => "antigravity",
         }
     }
 
@@ -137,17 +151,19 @@ impl Harness {
         match self {
             Self::ClaudeCode => "Claude Code",
             Self::Codex => "Codex",
+            Self::Antigravity => "Antigravity",
         }
     }
 
     /// Parses a wire name.
     ///
     /// # Errors
-    /// Returns [`UnknownHarness`] for anything other than `claude` or `codex`.
+    /// Returns [`UnknownHarness`] for anything other than `claude`, `codex` or `antigravity`.
     pub fn parse(text: &str) -> Result<Self, UnknownHarness> {
         match text {
             "claude" => Ok(Self::ClaudeCode),
             "codex" => Ok(Self::Codex),
+            "antigravity" => Ok(Self::Antigravity),
             other => Err(UnknownHarness(other.to_owned())),
         }
     }
@@ -160,26 +176,29 @@ impl Provider {
         match self {
             Self::Anthropic => Harness::ClaudeCode,
             Self::OpenAi => Harness::Codex,
+            Self::Google => Harness::Antigravity,
         }
     }
 
-    /// Stable wire name (`anthropic` or `openai`).
+    /// Stable wire name (`anthropic`, `openai` or `google`).
     #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Anthropic => "anthropic",
             Self::OpenAi => "openai",
+            Self::Google => "google",
         }
     }
 
     /// Parses a wire name.
     ///
     /// # Errors
-    /// Returns [`UnknownHarness`] for anything other than `anthropic` or `openai`.
+    /// Returns [`UnknownHarness`] for anything other than `anthropic`, `openai` or `google`.
     pub fn parse(text: &str) -> Result<Self, UnknownHarness> {
         match text {
             "anthropic" => Ok(Self::Anthropic),
             "openai" => Ok(Self::OpenAi),
+            "google" => Ok(Self::Google),
             other => Err(UnknownHarness(other.to_owned())),
         }
     }
@@ -316,6 +335,18 @@ mod tests {
         assert_eq!(Harness::Codex.provider(), Provider::OpenAi);
         assert_eq!(Harness::Codex.display_name(), "Codex");
         assert!(Harness::parse("opencode").is_err());
-        assert!(Provider::parse("google").is_err());
+        assert!(Provider::parse("gemini").is_err());
+    }
+
+    /// SPEC-505 AGY-001: Antigravity runs on Google's accounts; other names stay unsupported.
+    #[test]
+    fn antigravity_is_a_harness_of_google() {
+        assert_eq!(Harness::parse("antigravity"), Ok(Harness::Antigravity));
+        assert_eq!(Provider::parse("google"), Ok(Provider::Google));
+        assert_eq!(Harness::Antigravity.provider(), Provider::Google);
+        assert_eq!(Provider::Google.harness(), Harness::Antigravity);
+        assert_eq!(Harness::Antigravity.display_name(), "Antigravity");
+        assert!(Harness::parse("agy").is_err());
+        assert!(Harness::parse("gemini").is_err());
     }
 }

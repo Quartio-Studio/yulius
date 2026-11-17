@@ -154,6 +154,8 @@ async fn claude_code_runs_yulius_hooks_and_mcp() -> TestResult {
         credential: Secret("unused-the-local-login-is-used".into()),
         codex_home: None,
         codex_program: None,
+        antigravity_home: None,
+        antigravity_program: None,
     })?;
     for file in &plan.plan.files {
         if let Some(parent) = file.path.parent() {
@@ -498,6 +500,8 @@ impl LiveHome {
             credential: Secret("unused-no-provider-request-is-made".into()),
             codex_home: None,
             codex_program: None,
+            antigravity_home: None,
+            antigravity_program: None,
         })?;
         let settings = plan
             .plan

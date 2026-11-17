@@ -42,12 +42,14 @@ pub(crate) fn agent_accounts(accounts: &[AccountRecord], provider: Provider) -> 
     }
 }
 
-/// How people name a provider's accounts: "Claude", or "Codex" (SPEC-503).
+/// How people name a provider's accounts: "Claude", "Codex" (SPEC-503) or "Antigravity"
+/// (SPEC-505).
 #[must_use]
 pub(crate) fn account_kind(provider: Provider) -> &'static str {
     match provider {
         Provider::Anthropic => "Claude",
         Provider::OpenAi => "Codex",
+        Provider::Google => "Antigravity",
     }
 }
 

@@ -1368,6 +1368,22 @@ impl App {
         self.sandbox_dir(sandbox).join("codex").join("sessions")
     }
 
+    /// The sandbox's Antigravity conversations, shared by its Antigravity homes (SPEC-505
+    /// AGY-003).
+    pub(crate) fn antigravity_brain(&self, sandbox: &SandboxId) -> PathBuf {
+        self.sandbox_dir(sandbox)
+            .join("antigravity")
+            .join("shared")
+            .join("brain")
+    }
+
+    /// The transcript of the Antigravity conversation `session_id` in `sandbox` (AGY-004).
+    pub(crate) fn antigravity_transcript(&self, sandbox: &SandboxId, session_id: &str) -> PathBuf {
+        self.deps
+            .harness
+            .antigravity_transcript(&self.antigravity_brain(sandbox), session_id)
+    }
+
     /// The Codex home of `account` in `sandbox`, `<sandbox>/codex/<account>`, opened without
     /// following a link (the agent owns the sandbox directory, #657), with `sessions` linking to
     /// the sandbox's shared sessions so a resumed session finds its rollout whichever account
@@ -1870,13 +1886,13 @@ impl App {
         // overwritten with the vault's older one (CDX-006).
         let codex_home = match harness {
             Harness::Codex => Some(self.codex_home(&sandbox.id, &account.id)?),
-            Harness::ClaudeCode => None,
+            Harness::ClaudeCode | Harness::Antigravity => None,
         };
         // The Codex CLI Yulius provides, by its absolute path (SPEC-503 CLI-002).
         let codex_cli = match harness {
             // Under the launch lock: only what the install before it left, never a download.
             Harness::Codex => self.deps.harness.provide_codex(false).await?,
-            Harness::ClaudeCode => None,
+            Harness::ClaudeCode | Harness::Antigravity => None,
         };
         let credential = match &codex_home {
             Some(_) => self
@@ -2093,6 +2109,8 @@ impl App {
             credential,
             codex_home: codex_home.as_ref().map(|(path, _)| path.clone()),
             codex_program: codex_cli.as_ref().map(|cli| cli.program.clone()),
+            antigravity_home: None,
+            antigravity_program: None,
         })?;
         if let Some(session_id) = &stepped_back {
             self.step_back_transcript(&task.sandbox_id, &home, &worktree, session_id)
@@ -3096,6 +3114,7 @@ impl App {
                 session_id,
             ),
             Harness::Codex => self.codex_rollout(&sandbox.id, session_id),
+            Harness::Antigravity => self.antigravity_transcript(&sandbox.id, session_id),
         }
     }
 

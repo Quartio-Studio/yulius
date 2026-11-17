@@ -311,7 +311,7 @@ fn validate_prompt(prompt: &str) -> AppResult<String> {
 }
 
 fn validate_harness(text: &str) -> AppResult<Harness> {
-    Harness::parse(text).map_err(|_| AppError::Invalid("harness must be claude or codex".into()))
+    crate::lifecycle::parse_harness(text)
 }
 
 fn input_start(input: &Automation) -> AppResult<StartInput> {

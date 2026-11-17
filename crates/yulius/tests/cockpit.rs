@@ -1390,6 +1390,9 @@ impl HarnessPort for RecordingHarness {
         self.inner
             .recount(harness, sandbox_home, worktree, session_id, from, until)
     }
+    fn antigravity_transcript(&self, brain: &Path, session: &str) -> PathBuf {
+        self.inner.antigravity_transcript(brain, session)
+    }
     fn find_codex_rollout(&self, dir: &Path, session: &str) -> AppResult<Option<PathBuf>> {
         self.inner.find_codex_rollout(dir, session)
     }

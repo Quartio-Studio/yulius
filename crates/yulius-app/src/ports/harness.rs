@@ -87,6 +87,12 @@ pub struct HarnessLaunch {
     /// The Codex CLI Yulius provides, started by its absolute path (SPEC-503 CLI-002); `None`:
     /// `codex` from `PATH`.
     pub codex_program: Option<PathBuf>,
+    /// Antigravity home of the (sandbox, account) pair, the folder holding its `.gemini` (SPEC-505
+    /// AGY-003); `None` for other harnesses.
+    pub antigravity_home: Option<PathBuf>,
+    /// The Antigravity CLI Yulius provides, an absolute path (SPEC-505 AGY-007); `None`: `agy`
+    /// from `PATH`.
+    pub antigravity_program: Option<PathBuf>,
 }
 
 /// A user's Cockpit launch (SPEC-021): plain Claude Code outside any task.
@@ -444,6 +450,9 @@ pub trait HarnessPort: Send + Sync {
         from: WatchFrom,
         until: Option<Timestamp>,
     ) -> AppResult<Option<UsageSnapshot>>;
+    /// The transcript of the Antigravity conversation `session_id` in the conversations folder
+    /// `brain` (SPEC-505 AGY-004).
+    fn antigravity_transcript(&self, brain: &Path, session_id: &str) -> PathBuf;
     /// The rollout of the Codex session `session_id` below `sessions_dir` (SPEC-503 CDX-003).
     ///
     /// # Errors

@@ -12,6 +12,13 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   every project's author runs its quick checks before each commit it publishes. The checker's
   Python tests run beside the Rust gates: `checks` took 108 to 114 s instead of 138 s after a
   one-line change, for no more CPU.
+- Antigravity, slice A (SPEC-505 pull request 1, task #487,
+  [ADR-0361](decisions/0361-antigravity-is-a-third-harness-picked-at-random-by-default.md)):
+  Google's Antigravity CLI (`agy` 1.5.10) gets an adapter beside Claude Code's and Codex's: its
+  transcript is read for prompts, tokens and limits, its launch writes a home whose settings
+  trust the worktree and skip the first-run screens, and `yulius hook antigravity <event>`
+  translates its hooks to Yulius's. Nothing reaches it yet: tasks and subscriptions still refuse
+  `antigravity` and `google` until the later slices.
 
 - Mutation testing runs beside the review (SPEC-506 pull request 2, task #488,
   [ADR-0347](decisions/0347-mutation-testing-runs-once-per-pull-request.md) amended): the author
