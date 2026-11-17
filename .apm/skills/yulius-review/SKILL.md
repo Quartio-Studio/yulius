@@ -45,6 +45,11 @@ test the change did not cause, or a cosmetic nit left at the round limit becomes
 an issue, saying why it is outside the change ("present on dev before this change",
 with the evidence). The PR answers every finding; deferring an own-code finding
 makes your verdict request changes (`docs/engineering/workflow.md`, Review output).
+Before asking for another round, answer each finding of the last report with the
+test that fails without its fix (or why no test can), check every finding of
+that report against the new head, and run the project's mutation command on the
+lines of the fix where it can take them. Here: `scripts/dev mutants --base
+<reviewed head>`.
 After an approval, fix the remaining nits within 20 product lines and merge
 without another round: `delivery_merge` with the approved head counts them
 (tests and documents do not count). More than that, or a file leaving the

@@ -6,6 +6,14 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-17
 
+- Fewer review rounds spent on what CI or the count already decide (SPEC-506 pull request 1, task
+  #488, [ADR-0362](decisions/0362-a-round-is-decided-by-the-code-not-by-ci-or-a-message.md)): after
+  a red run, a failed merge candidate or a dropped merge, Yulius tells the author to call
+  `delivery_merge` with the approved head (an approval carries across 20 product lines) instead of
+  getting a new review; a reviewer approves a change whose only open point is CI and says what CI
+  still has to do; before another round the author answers each finding with the test that fails
+  without its fix and checks the whole last report on the new head.
+
 - A bad `yulius.toml` never blocks CI (SPEC-504 pull request 2, task #486,
   [ADR-0360](decisions/0360-dev-s-gate-judges-every-change-and-a-bad-yulius-toml-never-turns-ci-off.md)):
   the file is read by a real TOML parser (multi-line arrays, trailing commas and comments

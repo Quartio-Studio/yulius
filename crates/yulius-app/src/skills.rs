@@ -1536,4 +1536,45 @@ mod tests {
         );
         Ok(())
     }
+
+    /// SPEC-506 FST-003 (AC-2): the author proves each fix before asking for another round, the
+    /// same everywhere fixes and reviews are described; this repository names its command for a
+    /// fix's lines.
+    #[test]
+    fn every_place_says_prove_each_fix_before_another_round() -> TestResult {
+        const RULE: &str = "before asking for another round, answer each finding of the last \
+            report with the test that fails without its fix (or why no test can), check every \
+            finding of that report against the new head, and run the project's mutation command \
+            on the lines of the fix where it can take them.";
+        const HERE: &str = "here: `scripts/dev mutants --base <reviewed head>`.";
+        let normal = |text: &str| {
+            text.split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+                .to_lowercase()
+        };
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        for rel in [
+            "catalog/skills/open-mercato/om-fix/SKILL.md",
+            "catalog/skills/open-mercato/om-code-review/SKILL.md",
+            "catalog/skills/yulius/delivery-pipeline/SKILL.md",
+        ] {
+            let text = normal(&fs::read_to_string(root.join(rel))?);
+            assert!(
+                text.contains(&normal(RULE)),
+                "{rel} does not state the rule"
+            );
+        }
+        for rel in [
+            ".apm/skills/yulius-review/SKILL.md",
+            "docs/engineering/workflow.md",
+        ] {
+            let text = normal(&fs::read_to_string(root.join(rel))?);
+            assert!(
+                text.contains(&normal(&format!("{RULE} {HERE}"))),
+                "{rel} does not state the rule with this repository's command"
+            );
+        }
+        Ok(())
+    }
 }

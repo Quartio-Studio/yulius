@@ -84,7 +84,10 @@ is a blocker.
 
 - Every finding is checked on its merits (is it true here?), then fixed test-first: a test that
   shows the problem, then the fix. Answer each finding in the pull request.
-- Re-review after fixes, up to 3 rounds.
+- Re-review after fixes, up to 3 rounds. Before asking for another round, answer each finding of the
+  last report with the test that fails without its fix (or why no test can), check every finding of
+  that report against the new head, and run the project's mutation command on the lines of the fix
+  where it can take them.
 - After an approval, fix the remaining nits within 20 product lines and merge without another round:
   `delivery_merge` with the approved head counts them (tests and documents do not count). More than
   that, or a file leaving the change, needs a new round. A usage limit can cut a reviewer off before its report: resume that same reviewer with SendMessage to its agent id, never start a new one for the same round. A reviewer runs at high effort, never max.
