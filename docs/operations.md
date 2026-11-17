@@ -1554,7 +1554,16 @@ involved.
   ([ADR-0356](decisions/0356-a-test-failing-on-two-pull-requests-is-quarantined-with-an-issue.md)).
 - `YULIUS_CI_LANES` (host-sized, a [resource limit](#resource-limits); 2 below 32 CPUs) runs of one sandbox take a checkout at once; the CI budget, not the lanes, decides how many of their jobs run. Each lane past the first
   keeps its own job checkouts and caches (`ci/jobs/<job>[.<n>]@<lane>`, `ci/cache/<job>[.<n>]@<lane>`), so
-  budget its disk too.
+  budget its disk too. A run takes the free lane whose checkouts last built what it builds on: a
+  merge candidate's run a lane of its members' own runs, a pull request's run the lane of its
+  previous head's. Each job's output names it (`[yulius] lane 1, last taken by pr/12, which
+  this run builds on`; ADR-0358).
+- **Shards**: a job split with `matrix = "1/2 2/2"` runs one job per value side by side, each in
+  its own checkout, with the value in `YULIUS_CI_MATRIX`; the run passes only when every shard
+  passed. The test runner reads the shard, for example
+  `cargo nextest run --partition "hash:$YULIUS_CI_MATRIX"` (or `pytest-split`'s `--group`). Keep
+  the other checks in a job of their own, so the longest job is shorter
+  ([ADR-0358](decisions/0358-tests-run-in-shards-and-a-run-starts-from-the-build-it-builds-on.md)).
 
 **Moving a repository off GitHub Actions** (the onboarding step; agents use the `ci_setup` tool):
 

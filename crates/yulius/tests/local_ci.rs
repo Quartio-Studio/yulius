@@ -1316,6 +1316,149 @@ command = 'if [ "$YULIUS_CI_MATRIX" = 2 ]; then exit "$YULIUS_CI_SKIP_CODE"; fi'
     Ok(())
 }
 
+/// SPEC-497 SHR-001: a job split into shards (`matrix = "1/2 2/2"`) runs them side by side, each
+/// told its shard; the run passes only when every shard passed. Each shard leaves a mark and waits
+/// for the other's (bounded), so a shard that ran alone says so and fails.
+#[tokio::test]
+async fn a_sharded_job_runs_its_shards_side_by_side() -> TestResult {
+    // One run at a time: two runs' shards each half-admitted would wait for each other (review
+    // round 1: each shard needs half the budget).
+    let f = fixture_tuned(
+        false,
+        |data| {
+        let marks = data.join("shard-marks");
+        let marks = marks.to_string_lossy();
+        let dir = format!("{marks}/$YULIUS_CI_SHA");
+        let script = format!(
+            "mkdir -p {dir}; i=${{YULIUS_CI_MATRIX%/*}}; touch {dir}/$i; other=$((3 - i)); n=0; \
+             while [ ! -e {dir}/$other ]; do n=$((n + 1)); if [ $n -gt 50 ]; then \
+             echo \"shard $i ran alone\"; exit 1; fi; sleep 0.1; done; \
+             echo \"shard $YULIUS_CI_MATRIX met the other\"; \
+             if [ -e two.txt ] && [ $i = 2 ]; then echo \"shard 2 fails\"; exit 1; fi"
+        );
+        format!("[[ci.jobs]]\nname = \"test\"\nmatrix = \"1/2 2/2\"\ncommand = '{script}'\n")
+        },
+        None,
+        |config| config.ci.lanes = 1,
+    )
+    .await?;
+    sync_and_settle(&f).await?;
+    let one = f.get("/api/sandboxes/s1/ci").await?;
+    let run = one["runs"]
+        .as_array()
+        .ok_or("runs")?
+        .iter()
+        .find(|r| r["reference"] == "pr/1")
+        .cloned()
+        .ok_or("pr/1 run")?;
+    assert_eq!(run["state"], "passed", "{run}");
+    let jobs = run_jobs(&f, &run).await?;
+    assert_eq!(jobs.len(), 2, "{jobs:?}");
+    for (job, shard) in jobs.iter().zip(["1/2", "2/2"]) {
+        assert_eq!(job["name"], format!("test ({shard})"), "{job}");
+        assert!(
+            job["output"]
+                .as_str()
+                .unwrap_or_default()
+                .contains(&format!("shard {shard} met the other")),
+            "{job}"
+        );
+    }
+    // A shard that fails fails the run.
+    open_pull(&f, 2, "feat/two", "origin/dev", "two.txt")?;
+    sync_and_settle(&f).await?;
+    let two = f.get("/api/sandboxes/s1/ci").await?;
+    let run = two["runs"]
+        .as_array()
+        .ok_or("runs")?
+        .iter()
+        .find(|r| r["reference"] == "pr/2")
+        .cloned()
+        .ok_or("pr/2 run")?;
+    assert_eq!(run["state"], "failed", "{run}");
+    let jobs = run_jobs(&f, &run).await?;
+    let second = jobs
+        .iter()
+        .find(|j| j["name"] == "test (2/2)")
+        .ok_or("shard 2")?;
+    assert_eq!(second["state"], "failed", "{second}");
+    Ok(())
+}
+
+/// SPEC-497 SHR-002: a run takes the lane whose checkouts last built what it builds on. #1 and #2
+/// run side by side in lanes 0 and 1; then #2 pushes first: its new run, queued first, takes lane
+/// 1 (its own previous build), not the first free, and its output says so; #1's takes lane 0.
+#[tokio::test]
+async fn a_run_takes_the_lane_that_last_built_its_pull_request() -> TestResult {
+    let f = fixture_tuned(
+        false,
+        |_| "[[ci.jobs]]\nname = \"check\"\ncommand = \"true\"\ncpus = 1\n".to_owned(),
+        None,
+        |config| config.ci.lanes = 2,
+    )
+    .await?;
+    // `dev` and #1 first, so #2's lane does not depend on which of them ends first (review
+    // round 1): they end, and #2 takes the first free lane.
+    sync_and_settle(&f).await?;
+    open_pull(&f, 2, "feat/two", "origin/dev", "two.txt")?;
+    sync_and_settle(&f).await?;
+    let lane_of = |job: &Value| {
+        job["output"]
+            .as_str()
+            .unwrap_or_default()
+            .lines()
+            .find(|l| l.starts_with("[yulius] lane "))
+            .unwrap_or_default()
+            .to_owned()
+    };
+    let lane_number = |line: &str| -> Option<u32> {
+        line.strip_prefix("[yulius] lane ")?
+            .split(|c: char| !c.is_ascii_digit())
+            .next()?
+            .parse()
+            .ok()
+    };
+    let mut lanes = Vec::new();
+    for pr in ["pr/1", "pr/2"] {
+        let line = lane_of(&job_of(&f, "reference", pr).await?);
+        lanes.push(lane_number(&line).ok_or(line)?);
+    }
+    assert_ne!(lanes[0], lanes[1], "side by side: {lanes:?}");
+    // The pull request in lane 1 pushes first, so its run is queued first: the first free lane
+    // would be 0.
+    let push = |branch: &str, number: u64, file: &str| -> BoxResult<String> {
+        git(&f.work, &["checkout", "-q", branch])?;
+        std::fs::write(f.work.join(file), "again\n")?;
+        git(&f.work, &["add", "-A"])?;
+        git(&f.work, &["commit", "-q", "-m", file])?;
+        git(&f.work, &["push", "-q", "origin", branch])?;
+        let head = git(&f.work, &["rev-parse", "HEAD"])?;
+        git(&f.work, &["checkout", "-q", "feat/one"])?;
+        if let Ok(mut pulls) = f.h.github.pulls.lock()
+            && let Some(pull) = pulls.iter_mut().find(|p| p.number == number)
+        {
+            pull.head_sha = head.clone();
+        }
+        Ok(head)
+    };
+    let mut order = [(1u64, "feat/one", lanes[0]), (2, "feat/two", lanes[1])];
+    order.sort_by_key(|(_, _, lane)| std::cmp::Reverse(*lane));
+    let mut heads = Vec::new();
+    for (number, branch, lane) in order {
+        let head = push(branch, number, &format!("again-{number}.txt"))?;
+        f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+        heads.push((number, head, lane));
+    }
+    f.settle().await?;
+    for (number, head, lane) in heads {
+        assert_eq!(
+            lane_of(&job_of(&f, "sha", &head).await?),
+            format!("[yulius] lane {lane}, last taken by pr/{number}, which this run builds on")
+        );
+    }
+    Ok(())
+}
+
 /// SPEC-493 CJP-001 to CJP-004 (AC-16): a job naming the files it tests ends skipped, with the
 /// reason and without running, for a pull request touching none of them, which still passes and
 /// gates nothing; the integration branch's own run runs it; a pull request touching one of them
@@ -3060,8 +3203,10 @@ async fn a_job_weighs_by_the_cpus_it_holds() -> TestResult {
 /// ADR-0353 (review of the CI admission fix): a job takes its slot only once admitted, so one
 /// that cannot start holds none. Two slots, a CI budget of 3: `a` (2 CPUs) runs, `b` (3) cannot
 /// start, and `c` (1) runs beside `a` in the second slot. With the slot taken before the
-/// budget's wait, `b` held it and `c` never started.
-#[tokio::test]
+/// budget's wait, `b` held it and `c` never started. `b` and `c` ask for admission only once `a`
+/// runs (pause points): `b` asking first took the whole budget 1 run in 4 of the suite (slice D
+/// review, 17 Nov 2026).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_job_that_cannot_start_holds_no_slot() -> TestResult {
     let f = fixture_tuned(
         false,
@@ -3084,10 +3229,50 @@ async fn a_job_that_cannot_start_holds_no_slot() -> TestResult {
     )
     .await?;
     assert!(f.h.app.set_isolation(Arc::new(Limited)));
+    // #1's `b` and `c` ask for admission only once its `a` runs.
+    let (b_at, b_go) = support::hold_point(yulius_app::race::Point::CiJobAdmission, "pr/1/b");
+    let (c_at, c_go) = support::hold_point(yulius_app::race::Point::CiJobAdmission, "pr/1/c");
     f.h.app.ci_sync_sandbox(&f.sandbox).await?;
     let pull = f.running("pr/1").await?;
     let id = pull["id"].as_str().ok_or("id")?.to_owned();
     let deadline = tokio::time::Instant::now() + WAIT;
+    let state_of = |name: &'static str| {
+        let (store, id) = (f.h.store.clone(), id.clone());
+        async move {
+            let jobs = store.ci_jobs(&id, false).await?;
+            Ok::<_, Box<dyn std::error::Error>>(
+                jobs.iter().find(|j| j.name == name).map(|j| j.state),
+            )
+        }
+    };
+    while state_of("a").await? != Some(RunState::Running) {
+        f.h.app.ci_dispatch().await;
+        if tokio::time::Instant::now() > deadline {
+            return Err("`a` never started".into());
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    support::point_reached(b_at).await?;
+    b_go.send(())?;
+    // `b` waits for the budget (its reason says so) before `c` asks (review round 2: with `c`
+    // first, `b` never waited and the old slot-before-budget bug passed too).
+    loop {
+        let jobs = f.h.store.ci_jobs(&id, false).await?;
+        let b = jobs.iter().find(|j| j.name == "b").ok_or("b")?;
+        if b.state == RunState::Queued
+            && b.reason
+                .as_deref()
+                .is_some_and(|r| r.starts_with("waits for the host's CI budget"))
+        {
+            break;
+        }
+        if tokio::time::Instant::now() > deadline {
+            return Err(format!("`b` never waited: {b:?}").into());
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    support::point_reached(c_at).await?;
+    c_go.send(())?;
     loop {
         f.h.app.ci_dispatch().await;
         let jobs = f.h.store.ci_jobs(&id, false).await?;
