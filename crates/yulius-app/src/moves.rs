@@ -1,26 +1,40 @@
 //! Moving a task off its subscription (SPEC-447): a person's choice, a removed subscription, and
 //! one Claude refused. The move continues the same session where the task stands; a task with
-//! nowhere to go waits, and when no subscription is usable at all it needs a person.
+//! nowhere to go waits, and when no subscription is usable at all it needs a person. A task moves
+//! only between subscriptions of its own harness's provider, and what it says names them (SPEC-503
+//! CDX-013).
 
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
+use yulius_domain::harness::{Harness, Provider};
 use yulius_domain::ids::{AccountId, TaskId};
 use yulius_domain::task::{Activity, TaskStatus};
 use yulius_domain::time::Timestamp;
 use yulius_domain::usage::ModelFamily;
 
-use crate::account_gate::AgentAccounts;
+use crate::account_gate::{AgentAccounts, account_kind};
 use crate::context::App;
 use crate::error::{AppError, AppResult};
 use crate::model::{PauseKind, TaskRecord};
 use crate::needs_you::NeedsYouRecord;
 use crate::supervisor::RunStart;
 
-/// What a task with nothing usable left is asked for (MOV-006). The request ends by itself when
-/// the task gets a subscription again.
-pub(crate) const NO_SUBSCRIPTION_ACTION: &str =
-    "Sign a Claude subscription in again or add one in Subscriptions";
+/// What a task of `provider` with nothing usable left is asked for (MOV-006). The request ends by
+/// itself when the task gets a subscription again.
+pub(crate) fn no_subscription_action(provider: Provider) -> String {
+    format!(
+        "Sign a {} subscription in again or add one in Subscriptions",
+        account_kind(provider)
+    )
+}
+
+/// Whether `action` is the "no subscription left" request of any provider.
+fn is_no_subscription_action(action: &str) -> bool {
+    Harness::ALL
+        .iter()
+        .any(|harness| action == no_subscription_action(harness.provider()))
+}
 
 /// What a task is asked for when Claude refused it at a limit nothing says the end of, again
 /// right after a retry, and no subscription can take it (SPEC-464 UCL-010). The request ends by
@@ -110,8 +124,12 @@ impl BlindLimits {
 
 /// Why a task left its subscription, as its terminal says it.
 pub(crate) enum Left {
-    /// Claude refused the subscription (#1138's `AccessLost`), with the provider's text.
-    Refused { label: String, message: String },
+    /// The provider refused the subscription (#1138's `AccessLost`), with the provider's text.
+    Refused {
+        provider: Provider,
+        label: String,
+        message: String,
+    },
     /// A person removed it.
     Removed { label: String },
 }
@@ -119,9 +137,17 @@ pub(crate) enum Left {
 impl Left {
     pub(crate) fn said(&self) -> String {
         match self {
-            Self::Refused { label, message } => {
+            Self::Refused {
+                provider,
+                label,
+                message,
+            } => {
                 let message: String = message.chars().take(200).collect();
-                format!("Claude refused {label} ({})", message.trim())
+                format!(
+                    "{} refused {label} ({})",
+                    account_kind(*provider),
+                    message.trim()
+                )
             }
             Self::Removed { label } => format!("{label} was removed"),
         }
@@ -190,8 +216,10 @@ impl App {
         if task.status != TaskStatus::WaitingCapacity {
             return;
         }
+        let provider = task.harness.provider();
+        let kind = account_kind(provider);
         let usable = self
-            .agent_accounts(task.harness.provider())
+            .agent_accounts(provider)
             .await
             .is_ok_and(|a| a == AgentAccounts::Usable);
         if usable {
@@ -202,19 +230,22 @@ impl App {
             return;
         }
         hub.notice(format!(
-            "⏸ {said}. No Claude subscription is left to continue on: sign one in again or add \
+            "⏸ {said}. No {kind} subscription is left to continue on: sign one in again or add \
              one in Subscriptions, and the task continues by itself."
         ));
+        let action = no_subscription_action(provider);
         // A request already open (the agent's question) stays: the task is under Needs you anyway.
         if let Ok(Some(open)) = store.task_needs_you(task_id).await
-            && open.action != NO_SUBSCRIPTION_ACTION
+            && !is_no_subscription_action(&open.action)
         {
             return;
         }
         let request = NeedsYouRecord {
-            action: NO_SUBSCRIPTION_ACTION.into(),
+            action,
             happened: Some(format!("{said}.")),
-            problem: Some("No Claude subscription is usable, so the task waits.".into()),
+            problem: Some(format!(
+                "No {kind} subscription is usable, so the task waits."
+            )),
             decision: false,
             link: Some(crate::account_gate::CONNECT_PATH.into()),
             at: self.now().0,
@@ -306,7 +337,7 @@ impl App {
     /// request stays.
     pub(crate) async fn end_no_subscription_request(&self, task_id: &TaskId) {
         if let Ok(Some(request)) = self.deps.store.task_needs_you(task_id).await
-            && request.action == NO_SUBSCRIPTION_ACTION
+            && is_no_subscription_action(&request.action)
         {
             self.end_needs_you(task_id).await;
         }

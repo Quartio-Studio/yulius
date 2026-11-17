@@ -729,11 +729,21 @@ impl App {
             .map(|(_, newest)| newest);
         let cli_moves_stopped = moves_to.is_some_and(|to| self.claude_moves_stopped_for(to));
         let cli_moves_to = moves_to.map(|newest| newest.to_string());
-        let model = task
-            .model
-            .clone()
-            .unwrap_or_else(|| DEFAULT_CLAUDE_MODEL.to_owned());
-        let effort = claude_effort(&model, task.effort.as_deref()).map(str::to_owned);
+        // A Codex task without a model runs its subscription's default, which is no Claude
+        // model: none is named (SPEC-503 CDX-013), and its effort is its own.
+        let codex = task.harness == yulius_domain::harness::Harness::Codex;
+        let model = task.model.clone().unwrap_or_else(|| {
+            if codex {
+                String::new()
+            } else {
+                DEFAULT_CLAUDE_MODEL.to_owned()
+            }
+        });
+        let effort = if codex {
+            task.effort.clone()
+        } else {
+            claude_effort(&model, task.effort.as_deref()).map(str::to_owned)
+        };
         // The model its live run was launched with, when the pool placed it with the fallback
         // (SPEC-482 FBK-009).
         let launched = store

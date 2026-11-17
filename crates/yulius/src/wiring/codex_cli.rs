@@ -11,8 +11,8 @@
 //! other releases there go once no process runs them. Nothing runs `npm`, a package script or
 //! the binary on the host.
 //!
-//! **Use.** Codex runs and sign-ins (later slices of SPEC-503) start `<dir>/bin/codex` by its
-//! absolute path through `HarnessPort::provide_codex`; a contained run is to bind `<dir>`
+//! **Use.** Codex runs (and, from a later slice of SPEC-503, sign-ins) start `<dir>/bin/codex` by
+//! its absolute path through `HarnessPort::provide_codex`; a contained run binds `<dir>`
 //! read-only at the same path, so a sandbox without Codex in its system layer still runs it.
 //! Installs are one at a time: callers wait for the one under way.
 
@@ -227,12 +227,18 @@ impl CodexCli {
     async fn install(&self, platform: Platform, staging: &Path) -> Result<(), UpdateError> {
         let expected = sha512_of(platform.integrity)?;
         let release = staging.join("release");
-        tokio::fs::create_dir_all(&release)
+        let create = |e: std::io::Error| {
+            UpdateError::new(format!("cannot create {}: {e}", staging.display()))
+        };
+        // Only Yulius enters the staging folder, from its creation and whatever the umask: nobody
+        // swaps the hashed tarball before it is unpacked.
+        tokio::fs::DirBuilder::new()
+            .mode(0o700)
+            .create(staging)
             .await
-            .map_err(|e| UpdateError::new(format!("cannot create {}: {e}", staging.display())))?;
-        // Only Yulius enters the staging folder, whatever the umask: nobody swaps the hashed
-        // tarball before it is unpacked.
+            .map_err(create)?;
         set_mode(staging, 0o700).await?;
+        tokio::fs::create_dir(&release).await.map_err(create)?;
         set_mode(&release, 0o755).await?;
         let tarball = staging.join("download.tgz");
         let url = format!("{}{}", self.registry, platform.tarball_path());

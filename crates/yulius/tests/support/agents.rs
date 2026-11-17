@@ -186,6 +186,14 @@ pub struct FakeAgentOptions {
     /// Claude Code may before any prompt when it resumes an interrupted turn
     /// (`--resume-record`).
     pub resume_record: bool,
+    /// The Codex CLI the harness says it provides (SPEC-503 CLI-002); its program is recorded in
+    /// `fake-launch.txt`, the fake agent runs instead.
+    pub provided_codex: Option<yulius_app::ports::harness::ProvidedCli>,
+    /// The Codex CLI cannot be provided, for this reason (SPEC-503 CLI-002).
+    pub codex_unavailable: Option<String>,
+    /// Each answer about the Codex CLI waits for a permit of this gate (a test watches the task
+    /// before its start goes on).
+    pub codex_gate: Option<std::sync::Arc<tokio::sync::Semaphore>>,
 }
 
 /// See the module docs.
@@ -214,7 +222,18 @@ impl HarnessPort for FakeAgentHarness {
         if let (true, Some(count)) = (install, &self.options.codex_installs) {
             count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         }
-        Box::pin(async { Ok(None) })
+        let provided = self.options.provided_codex.clone();
+        let unavailable = self.options.codex_unavailable.clone();
+        let gate = self.options.codex_gate.clone();
+        Box::pin(async move {
+            if let Some(gate) = gate {
+                let _permit = gate.acquire_owned().await;
+            }
+            match unavailable {
+                Some(reason) => Err(yulius_app::error::AppError::Upstream(reason)),
+                None => Ok(provided),
+            }
+        })
     }
 
     fn plan(&self, launch: &HarnessLaunch) -> AppResult<HarnessPlan> {
@@ -233,8 +252,11 @@ impl HarnessPort for FakeAgentHarness {
         let _ = std::fs::write(
             launch.run_dir.join("fake-launch.txt"),
             format!(
-                "mode={:?}\nmodel={:?}\neffort={:?}\n",
-                launch.mode, launch.model, launch.effort
+                "mode={:?}\nmodel={:?}\neffort={:?}\nprogram={:?}\n",
+                launch.mode,
+                launch.model,
+                launch.effort,
+                plan.plan.argv.first()
             ),
         );
         // A resume continues the same session (and transcript), like `claude --resume <id>`.
@@ -245,11 +267,19 @@ impl HarnessPort for FakeAgentHarness {
             yulius_app::ports::harness::SessionMode::New { .. } => None,
         };
         let resumed_session = resumed.is_some();
-        let session = plan
-            .session_id
-            .clone()
-            .or(resumed)
-            .unwrap_or_else(|| "fake-session".into());
+        let codex = launch.harness == Harness::Codex;
+        // Codex names its own session: a new fake one takes the run directory's name (the
+        // attempt id), which Yulius learns from the rollout's `session_meta` or the hook.
+        let session = plan.session_id.clone().or(resumed).unwrap_or_else(|| {
+            if codex {
+                launch
+                    .run_dir
+                    .file_name()
+                    .map_or_else(|| "fake-codex".into(), |n| n.to_string_lossy().into_owned())
+            } else {
+                "fake-session".into()
+            }
+        });
         let mut argv = vec![
             self.fake.to_string_lossy().into_owned(),
             "--mode".into(),
@@ -259,7 +289,21 @@ impl HarnessPort for FakeAgentHarness {
             "--report-env".into(),
             "YULIUS_TASK_TOKEN".into(),
         ];
-        if self.options.transcript {
+        if let (true, Some(home)) = (codex, &launch.codex_home) {
+            // The rollout lives in the sandbox's shared sessions, reached through the home's
+            // `sessions` link as Codex reaches it (SPEC-503 CDX-003).
+            let sessions = home.join("sessions");
+            let path = match self.inner.find_codex_rollout(&sessions, &session) {
+                Ok(Some(existing)) => existing,
+                _ => sessions
+                    .join("2026/11/09")
+                    .join(format!("rollout-2026-11-09T00-00-00-{session}.jsonl")),
+            };
+            if self.options.transcript {
+                argv.extend(["--transcript".into(), path.to_string_lossy().into_owned()]);
+            }
+            argv.extend(["--transcript-kind".into(), "codex".into()]);
+        } else if self.options.transcript {
             let path =
                 self.inner
                     .claude_transcript(&launch.sandbox_home, &launch.worktree, &session);
