@@ -58,13 +58,16 @@ run the project's mutation command and put its summary line in the spec's Eviden
 reviewer reads that result": the author waits for the run before asking. quartio-v2's own command
 is its task (#261, running).
 
-**C4. Where re-approvals come from.** Seven messages Yulius types into a session send the author
+**C4. Where re-approvals come from.** Eight messages Yulius types into a session send the author
 to a new round after any fix, though ADR-0345 keeps the approval across 20 product lines:
 `pr_watch.rs` (a red run: "once the new head passed and its review approved it, call
 `delivery_merge` again"; a conflict; a refused merge), `merge_train.rs` (two dropped merge
 candidates: "fix it test-first, get the review of the new head"), `agent_wait.rs` (an armed merge
 dropped because the branch moved: "Get the independent review of the new head"), and
-`wait_cli.rs` (`yulius wait` on failed checks: "get the review of the new head"). These are the
+`wait_cli.rs` (`yulius wait` on failed checks: "get the review of the new head"). Six of them
+follow a red run or a dropped merge; the two of a conflict are right, since ADR-0345 needs a new
+round after a resolved conflict. Four notices of a green head with no merge armed ask for the
+review of that exact head too (`pr_watch.rs` twice, a project without CI, `yulius wait`). These are the
 moments right after an approval at which a small fix is made: a red run, a failed merge
 candidate. How many of the 20 % they explain is the person's number to read (Decisions).
 
@@ -109,10 +112,13 @@ product project's 21 jobs pinned to 3 CPUs are its `yulius.toml`.
 ## Requirements
 
 - **FST-001** (C4) Every message Yulius types into a task's session after a red run, a failed or
-  dropped merge candidate, a conflict, a dropped armed merge or failed checks under `yulius wait`
-  sends the author to `delivery_merge` with the approved head as `reviewed_head`, and says that it
-  keeps the approval across a follow-up of at most 20 product lines and says when a new round is
-  needed. None says "get the review of the new head". A test holds every such message to it.
+  dropped merge candidate, a dropped armed merge or failed checks under `yulius wait`, and every
+  notice of a green head with no merge armed, says both cases: with a review that approved this
+  head or an earlier one, `delivery_merge` with that approved head as `reviewed_head` (the
+  approval carries across at most 20 product lines in all since it, and the call says when a new
+  round is needed); with no approval yet, the review of the new head first. Only a conflict's
+  messages ask for the review of the new head alone (ADR-0345). A test holds every such message
+  to it.
 - **FST-002** (C1) A reviewer does not ask for changes because of CI alone: when it found nothing
   to fix and the head's Yulius CI run is unfinished, or failed in a job the change does not cause,
   the verdict is approve and the report says what CI still has to do. A failure the change itself
@@ -166,9 +172,10 @@ product project's 21 jobs pinned to 3 CPUs are its `yulius.toml`.
 
 ## Acceptance criteria
 
-- **AC-1** (FST-001) A red run, a failed merge candidate, a conflict, a dropped armed merge and
-  `yulius wait` on failed checks each produce a message naming `delivery_merge` with the approved
-  head and the 20-line bound; a test fails when any of them says "review of the new head".
+- **AC-1** (FST-001) A red run, a failed merge candidate, a dropped armed merge, `yulius wait` on
+  failed or passed checks and a green head with no merge armed each produce a message with both
+  cases (the approved head and the 20-line bound; the review first without an approval); a test
+  fails when any of them, a conflict's aside, asks only for the review of the new head.
 - **AC-2** (FST-002, FST-003, FST-004) The rule sentences appear, whitespace and case aside, in
   every listed place; the old sentences ("a failed job is a blocker, even if it looks unrelated",
   "on the first head you ask a review for, run") appear nowhere; the reviewer agents' prompt says
@@ -208,3 +215,15 @@ product project's 21 jobs pinned to 3 CPUs are its `yulius.toml`.
   the message).
 - Open: how many of the 20 % re-approving rounds followed one of the seven messages of C4 (asked of
   the person; FST-001 is free whatever the answer).
+
+## Evidence
+
+### Pull request 1 (FST-001 to FST-003)
+
+- `scripts/dev mutants` at 1031920ed, beside review round 1 (2 jobs): `mutants: 8 listed, 7
+  caught, 0 missed, 0 timed out, 1 unviable, 0 not reached (bound 30 min, took 683 s)`; 4.2 of
+  22 CPUs on average (`/usr/bin/time`: 423 %), 6.2 GB peak, a 202 s baseline build.
+- Review round 1 (Fable 5.2) asked for changes: one major (the red-run notice reached authors with
+  no approval), five minors and two nits, all own code; each fixed in the next commit with the
+  tests named there.
+

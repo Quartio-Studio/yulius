@@ -280,7 +280,7 @@ fn red_run_text(run: &CiRunRecord, jobs: &[CiJobRecord]) -> String {
     format!(
         "Its Yulius CI run {} at {} failed: {}. Read the log with {log}, fix it test-first on \
          this branch, commit and end your turn so Yulius pushes; a failed run drops an armed \
-         merge, so once the new head passed, {}.",
+         merge, so once the new head passed: {}.",
         run.id,
         short(&run.sha),
         failed_jobs(jobs),
@@ -342,11 +342,10 @@ fn conflict_text(head: &str, integration: &str) -> String {
 /// PRN-006: a green head with no merge armed.
 fn unarmed_text(head: &str) -> String {
     format!(
-        "Its head {} passed its own Yulius CI run, but no merge is armed: once the independent \
-         review approved {}, call `delivery_merge` with that reviewed_head. The queue does the \
-         rest; never merge by hand.",
+        "Its head {} passed its own Yulius CI run, but no merge is armed: {}. The queue does \
+         the rest; never merge by hand.",
         short(head),
-        short(head)
+        yulius_domain::review::KEEP_APPROVAL
     )
 }
 
@@ -1197,9 +1196,11 @@ fn no_ci_status(armed: bool) -> String {
          on its next pass; `delivery_status` says what it waits for. Never merge by hand."
             .to_owned()
     } else {
-        "This project has no Yulius CI, so no run comes: once the independent review approved \
-         its head, call `delivery_merge`; `delivery_status` says what else the merge needs."
-            .to_owned()
+        format!(
+            "This project has no Yulius CI, so no run comes: {}; `delivery_status` says what \
+             else the merge needs.",
+            yulius_domain::review::KEEP_APPROVAL
+        )
     }
 }
 
@@ -1234,8 +1235,8 @@ fn status_text(
             run.state.as_str()
         ),
         RunState::Passed | RunState::Skipped if !armed => format!(
-            "Its head {head} is green with no merge armed: once the independent review approved \
-             it, call `delivery_merge`."
+            "Its head {head} is green with no merge armed: {}.",
+            yulius_domain::review::KEEP_APPROVAL
         ),
         RunState::Passed | RunState::Skipped => {
             let note = note.map_or_else(
@@ -1354,10 +1355,12 @@ mod tests {
              tests::t1, app tests::t2, app tests::t3, app tests::t4, app tests::t5 and 2 more); \
              `websites` exited 1. Read the log with `ci_status` with run_id r1 and job \
              `quality`, fix it test-first on this branch, commit and end your turn so Yulius \
-             pushes; a failed run drops an armed merge, so once the new head passed, call \
-             `delivery_merge` with the approved head as `reviewed_head`: an approval carries \
-             across a fix of at most 20 product lines (tests and documents do not count), and \
-             the call says when the fix needs a new round."
+             pushes; a failed run drops an armed merge, so once the new head passed: if a review \
+             approved this head or an earlier one of this pull request, call `delivery_merge` \
+             with that approved head as `reviewed_head`: the approval carries across at most 20 \
+             product lines in all since it (tests and documents do not count), and the call says \
+             when the change needs a new round; with no approval yet, the review of the new head \
+             comes first."
         );
         let errored = RunState::Error;
         let text = errored_run_text(&CiRunRecord {
@@ -1443,6 +1446,25 @@ mod tests {
         );
         assert!(behind.ends_with("never merge by hand."), "{behind}");
         assert!(unarmed_text("0123456789").contains("never merge by hand"));
+        // SPEC-506 FST-001 (review round 1): a green head with no merge armed is told both cases,
+        // an approval already given and none yet.
+        for text in [
+            unarmed_text("0123456789"),
+            status_text(
+                Some(&run("r1", RunState::Passed)),
+                false,
+                Hold::Free,
+                None,
+                "dev",
+            ),
+        ] {
+            assert!(
+                text.contains(yulius_domain::review::KEEP_APPROVAL)
+                    && text
+                        .contains("with no approval yet, the review of the new head comes first"),
+                "{text}"
+            );
+        }
         let queued = status_text(
             Some(&run("r1", RunState::Queued)),
             true,

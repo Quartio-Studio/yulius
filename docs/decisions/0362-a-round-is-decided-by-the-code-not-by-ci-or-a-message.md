@@ -7,7 +7,10 @@ Accepted (2026-11-17). Specified in
 FST-003); task #488. Builds on [ADR-0342](0342-yulius-ci-runs-the-whole-gate-while-the-review-reads.md)
 (CI runs while the review reads) and [ADR-0345](0345-an-approval-carries-across-a-follow-up-of-at-most-20-product-lines.md)
 (an approval carries across 20 product lines). [ADR-0141](0141-review-findings-in-the-change-s-own-code-are-fixed-before-merge.md)
-stays: findings in the change's own code are fixed before the merge.
+stays: findings in the change's own code are fixed before the merge. Amends
+[ADR-0347](0347-mutation-testing-runs-once-per-pull-request.md): beside the whole change's run,
+the lines of each later round's fix are mutation-tested where the project's command can take
+them (SPEC-506 pull request 2 rewords ADR-0347's own sentence).
 
 ## Context
 
@@ -33,10 +36,14 @@ Three things in the product sent work to a new round that the round could not ch
 
 ## Decision
 
-- **The messages keep the approval.** Each of the six ends with one sentence
-  (`yulius_domain::review::KEEP_APPROVAL`): call `delivery_merge` with the approved head as
-  `reviewed_head`; an approval carries across a fix of at most 20 product lines (tests and
-  documents do not count), and the call says when the fix needs a new round. The two messages of
+- **The messages keep the approval.** Each of the six, and the four notices of a green head with
+  no merge armed (pull request event, check-in, a project without CI, `yulius wait`), says one
+  sentence (`yulius_domain::review::KEEP_APPROVAL`): if a review approved this head or an earlier
+  one of this pull request, call `delivery_merge` with that approved head as `reviewed_head`; the
+  approval carries across at most 20 product lines in all since it (tests and documents do not
+  count), and the call says when the change needs a new round; with no approval yet, the review
+  of the new head comes first. Both cases are said because a red run's notice also reaches an
+  author with no approval, and `delivery_merge` takes `reviewed_head` on the author's word. The two messages of
   a conflict still ask for the review of the new head: a merge that resolved a conflict needs one
   (ADR-0345). A test reads the four sources and refuses the old wording outside a conflict's
   message.

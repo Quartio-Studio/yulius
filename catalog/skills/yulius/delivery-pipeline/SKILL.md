@@ -72,7 +72,8 @@ outage). Commit and push with `om-check-and-commit`, and claim nothing without f
 The author never reviews alone. Start the independent code review with the Agent tool and the
 `yulius-reviewer` agent: Yulius picks the round's model (Fable 5.2 for a pull request's first two
 rounds, then Opus 5.5). It has **no shared context**: give it only the diff range
-(`<integration>...HEAD`), the spec path and the `om-code-review` skill (outside Yulius: a subagent
+(`<integration>...HEAD`), the spec path and the `om-code-review` skill, and for a later round the
+author's answers to the last report (outside Yulius: a subagent
 or a new session with no shared context). It is read-only: no edits, commits or label changes. It
 judges the code and the tests separately, reads the head's Yulius CI run, runs the tests it doubts,
 and returns a verdict for the exact head commit.

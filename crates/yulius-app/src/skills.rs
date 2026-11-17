@@ -1435,36 +1435,41 @@ mod tests {
     }
 
     /// SPEC-506 FST-001 (AC-1): no message Yulius types after a red run, a failed merge
-    /// candidate, a dropped armed merge or failed checks sends the author to a new round: each
-    /// names `delivery_merge` with the approved head and the 20-line bound
-    /// ([`yulius_domain::review::KEEP_APPROVAL`]). Only a conflict's messages ask for the review
-    /// of the new head, since a merge that resolved a conflict needs one (ADR-0345).
+    /// candidate, a dropped armed merge or failed checks, nor on a green head with no merge
+    /// armed, sends an approved author to a new round: each says the two cases
+    /// ([`yulius_domain::review::KEEP_APPROVAL`]: an approval carries across 20 product lines;
+    /// with none yet the review comes first). Only a conflict's messages ask for the review of
+    /// the new head alone, since a merge that resolved a conflict needs one (ADR-0345).
     #[test]
     fn no_typed_message_asks_for_a_round_the_count_makes_needless() -> TestResult {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
         let keep = yulius_domain::review::KEEP_APPROVAL;
         assert!(
-            keep.contains("`delivery_merge` with the approved head")
-                && keep.contains("at most 20 product lines"),
-            "the sentence names the call and the bound: {keep}"
+            keep.contains("`delivery_merge` with that approved head")
+                && keep.contains("at most 20 product lines in all since it")
+                && keep.contains("with no approval yet, the review of the new head comes first"),
+            "the sentence names the call, the bound and the case with no approval: {keep}"
         );
         for (rel, uses) in [
-            ("crates/yulius-app/src/pr_watch.rs", 1),
+            ("crates/yulius-app/src/pr_watch.rs", 4),
             ("crates/yulius-app/src/merge_train.rs", 2),
             ("crates/yulius-app/src/agent_wait.rs", 2),
-            ("crates/yulius/src/wait_cli.rs", 1),
+            ("crates/yulius/src/wait_cli.rs", 2),
         ] {
             let text = fs::read_to_string(root.join(rel))?;
             let source = match text.find("#[cfg(test)]\nmod tests") {
                 Some(at) => &text[..at],
                 None => text.as_str(),
             };
-            // Each message is a string literal; a line continuation joins its lines.
+            // Each message is a string literal; a line continuation joins its lines. Every
+            // segment between quotes is read, so no escaped quote can hide one (review round 1).
             let joined = source.replace("\\\n", " ");
             let normal: String = joined.split_whitespace().collect::<Vec<_>>().join(" ");
-            for literal in normal.split('"').skip(1).step_by(2) {
+            for literal in normal.split('"') {
                 if literal.contains("review of the new head")
                     || literal.contains("its review approved it")
+                    || literal.contains("once the independent review approved")
+                    || literal.contains("independent review of that head")
                 {
                     assert!(
                         literal.contains("conflict"),

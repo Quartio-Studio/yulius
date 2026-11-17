@@ -20,8 +20,9 @@ fixes findings test-first (`om-fix`, `test-driven-development`) and asks for a n
 rounds (see Own code or pre-existing).
 Before asking for another round, answer each finding of the last report with the test that fails
 without its fix (or why no test can), check every finding of that report against the new head, and
-run the project's mutation command on the lines of the fix where it can take them. A re-review
-starts from those answers.
+run the project's mutation command on the lines of the fix where it can take them. The author
+gives those answers with the request for the next round; the re-review reads them as claims and
+checks each on the new head.
 
 ## Input
 

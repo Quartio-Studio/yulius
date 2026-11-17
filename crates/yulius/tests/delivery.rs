@@ -5609,7 +5609,8 @@ async fn a_task_of_several_slices_merges_each_with_the_rest_ahead() -> TestResul
     assert!(
         dropped["merge_outcome"]
             .as_str()
-            .is_some_and(|text| text.contains("The merge you armed was dropped")),
+            .is_some_and(|text| text.contains("The merge you armed was dropped")
+                && text.contains(yulius_domain::review::KEEP_APPROVAL)),
         "{dropped}"
     );
     assert_eq!(f.delivery("t1").await?["stage"], "pr_open", "{dropped}");
