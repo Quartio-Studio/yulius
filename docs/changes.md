@@ -37,6 +37,15 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   pull request #1149 by Damian Fajfer). The "Just found Yulius" note and the first-task diagram
   named an old domain.
 
+- A CI job that fails for the infrastructure runs again once by itself (SPEC-497 slice B, task
+  #479, [ADR-0354](decisions/0354-a-job-that-fails-for-the-infrastructure-runs-again-once-by-itself.md)):
+  Docker with no free address pool, a Docker socket that ended a connection, a kill for memory or
+  a lost process host; its output and reason say so, and a second one ends it error. A test's
+  failure is never run again. The Pipeline tab's Merge queue card and
+  `GET /api/analytics/merge-queue` count CI minutes by how runs ended and the share that went to
+  runs failed outside the change or cancelled (target 15 %).
+  The Pipeline tab's CI load card shows, per hour, the job-minutes CI jobs waited to start, the
+  host's CPUs busy and the CPUs CI held and used.
 - Notifications reach a person's own Telegram chat (SPEC-498, task #480,
   [ADR-0351](decisions/0351-a-personal-telegram-channel-behind-a-notification-channel-port.md),
   part 1 of #1107, from outside pull request #1130 by studenciak00owl).
@@ -74,8 +83,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   SPEC-497 HBA-002 amended). On 16 Nov 2026, jobs held 50–56 of 64 CPUs by their declarations while
   the host was 25–30 % busy, and waited a median 10–11 min to start. Now a job starts by:
   - what CI was measured to use and what jobs started in the last minute may still bring;
-  - the running jobs' budgets staying within twice the CI budget;
-  - the kernel's CPU pressure of CI's processes staying at most 10 %.
+  - the running jobs' budgets staying within three times the CI budget (twice until 17 Nov 2026:
+    that held jobs back while the host was 45–77 % busy).
+
+  (17 Nov 2026) CPU pressure no longer holds jobs back. A project whose CI pins its test workers
+  to its job's CPUs (`taskset`) showed pressure while the host was half idle, and held every
+  other sandbox's jobs back: 117 jobs queued at 45 % busy.
 
   Merge trains' jobs go first. A job that cannot start (such as a one-job run asking for the whole
   host) no longer holds up every job behind it, and a waiting job holds no slot.
@@ -84,8 +97,8 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   project's jobs come out of one budget, the host less an eighth for the server and agents, and a
   job starts only when it fits beside what CI's groups were measured to use, not only what jobs
   declared, and a job's default share is of that budget; each sandbox's Docker engine has 4,096
-  /24 networks instead of 31 from its next start (the first is 172.17.1.0/24, not
-  172.18.0.0/16) and a job waits, saying so, while fewer than 32 are left; a sandbox's weight follows the CPUs its jobs hold, so agents'
+  /24 networks instead of 31 from its next start (after the sandbox's next start the first is
+  172.17.1.0/24, not 172.18.0.0/16) and a job waits, saying so, while fewer than 32 are left; a sandbox's weight follows the CPUs its jobs hold, so agents'
   local builds take what CI does not. A waiting job's reason says what it waits for.
 - An idle Superagent's leftover processes count their two hours from when the probe that found
   them was asked, not from when its answer was read (SPEC-501, task #483, #1110; outside pull

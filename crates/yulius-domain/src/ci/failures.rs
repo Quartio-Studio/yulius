@@ -63,9 +63,22 @@ pub struct FailureScanner {
     successes: bool,
     kept: String,
     omitted: usize,
+    /// A line read as a failure in any test runner's or tool's words
+    /// ([`crate::ci::infra::reads_as_failure`], SPEC-497).
+    failure_seen: bool,
 }
 
 impl FailureScanner {
+    /// Whether any line read so far reads as a failure in a test runner's or tool's words, kept
+    /// as a block or not (SPEC-497 OFC-001: such a job is never run again).
+    #[must_use]
+    pub fn failure_seen(&self) -> bool {
+        // A last line with no newline yet counts too (review round 4).
+        self.failure_seen
+            || (!self.partial.is_empty()
+                && crate::ci::infra::reads_as_failure(&String::from_utf8_lossy(&self.partial)))
+    }
+
     /// Reads the next bytes of the output.
     pub fn push(&mut self, bytes: &[u8]) {
         for chunk in bytes.split_inclusive(|&b| b == b'\n') {
@@ -117,6 +130,9 @@ impl FailureScanner {
     }
 
     fn line(&mut self, line: &str) {
+        if !self.failure_seen && crate::ci::infra::reads_as_failure(line) {
+            self.failure_seen = true;
+        }
         match line {
             "successes:" => self.successes = true,
             "failures:" => self.successes = false,
@@ -274,6 +290,37 @@ fn libtest_header(line: &str) -> Option<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// SPEC-497 OFC-001 (review round 4): a last line with no newline is read too.
+    #[test]
+    fn a_failure_on_the_unfinished_last_line_is_seen() {
+        let mut scanner = FailureScanner::default();
+        scanner.push(b"running\n--- FAIL: TestTotal");
+        assert!(scanner.failure_seen());
+    }
+
+    /// SPEC-497 OFC-001 (review round 3): a failure in any runner's words is seen wherever it is
+    /// printed, kept as a block or not; a passing summary and Docker's own words are not.
+    #[test]
+    fn a_failure_in_any_runners_words_is_seen() {
+        for line in [
+            "--- FAIL: TestTotal (0.00s)",
+            "FAILED tests/test_x.py::test_total - assert 1 == 2",
+            "Tests:       1 failed, 3 passed, 4 total",
+            "not ok 3 - totals",
+        ] {
+            let mut scanner = FailureScanner::default();
+            scanner.push(format!("starting\n{line}\nCannot connect to the Docker daemon at unix:///var/run/docker.sock.\n").as_bytes());
+            assert!(scanner.failure_seen(), "{line}");
+        }
+        let mut passing = FailureScanner::default();
+        passing.push(
+            b"test result: ok. 5 passed; 0 failed; 0 ignored\nError response from daemon: could \
+              not find an available, non-overlapping IPv4 address pool among the defaults to \
+              assign to the network\n",
+        );
+        assert!(!passing.failure_seen());
+    }
 
     fn scan(chunks: &[&str]) -> Option<String> {
         let mut scanner = FailureScanner::default();

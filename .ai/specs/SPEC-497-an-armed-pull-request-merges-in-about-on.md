@@ -85,10 +85,10 @@ mode.
   for the server and agent sessions (an eighth of each, at least 1 CPU and 2 GiB). Every
   sandbox's jobs are admitted from it.
 - **HBA-002** (amended 16 Nov 2026, [ADR-0353](../../docs/decisions/0353-ci-jobs-start-by-what-ci-uses-within-a-bounded-worst-case.md))
-  A job starts when, with no CI job running, at once; otherwise when all of these hold:
-  - **No contention.** CI's processes waited for a CPU at most 10 % of the last 10 seconds (the
-    sandboxes' `ci` groups' `cpu.pressure`).
-  - **Bounded worst case.** The running jobs' budgets with its own are at most twice the CI
+  A job starts when, with no CI job running, at once; otherwise when all of these hold (CPU
+  pressure is not one of them since 17 Nov 2026: a job pinned to a few CPUs shows it while the
+  host idles, ADR-0353's amendment):
+  - **Bounded worst case.** The running jobs' budgets with its own are at most three times the CI
     budget's CPUs.
   - **Room.** The sum of these fits in the CI budget, in CPUs and memory: what every sandbox's
     `ci` and `engine` groups were measured to use over the last window, what jobs started in the
@@ -110,8 +110,8 @@ mode.
   reservation; agent processes keep their own weight and nice level.
 - **HBA-005** `YULIUS_CI_LANES` stays the bound of runs at once per sandbox, with its host-sized
   default; it no longer sizes the load, the budget does: neither the lanes nor a project's `cpus`
-  take CI past twice the CI budget's CPUs (HBA-002 as amended), and contention measured by the
-  kernel stops further starts. The job's wait says which part of the budget it waits for.
+  take CI past three times the CI budget's CPUs (HBA-002 as amended), and measured use stops
+  further starts. The job's wait says which part of the budget it waits for.
 
 ### Slice B: a failure outside the change is handled as such
 
@@ -123,7 +123,9 @@ mode.
   failure alone no longer fails a job, the job's output says so), files one issue in the
   project's repository and tells the project. It is never rerun until green.
 - **OFC-003** CI minutes are counted by outcome (passed, failed in the change, failed outside
-  it, cancelled) per project and day, and read with the merge queue's numbers.
+  it, cancelled) per project and day, and read with the merge queue's numbers
+  (`GET /api/analytics/merge-queue`, the Pipeline tab's Merge queue card), with the job minutes
+  thrown away by infrastructure failures and the share outside the change.
 
 ### Slice C: the merge queue does not throw work away
 
@@ -153,12 +155,16 @@ mode.
 - [x] Slice A: documents and ADR
 - [x] Slice A: review rounds answered
 - [x] Slice A2: the operator's CI admission fix applied, its first review answered
-- [ ] Slice A2: the admission fix's last review round
+- [x] Slice A2: the admission fix's last review round
 - [x] Slice B: infrastructure failures rerun once by themselves
 - [x] Slice B: CI minutes by outcome read and shown
 - [x] Slice B: review round 1 answered: reruns tied to the failure, minutes kept per day
-- [ ] Slice A2: CI wait job-minutes per hour and host busy % measured and shown
-- [ ] Slice B: documents, ADR and review of the reruns and minutes
+- [x] Slice A2: CI wait job-minutes per hour and host busy % measured and shown
+- [x] Slice B: documents and ADR of the reruns and minutes
+- [x] Slice B: the reruns and minutes' review rounds 1 to 3 answered
+- [x] Slice B: the reruns and minutes' last review round
+- [x] Slice A3: the operator's admission amendment applied
+- [ ] Slice A3: the amendment's review rounds
 - [ ] Slice B: flaky tests quarantined with an issue, the project told
 - [ ] Slice B: quarantine documents, ADR and review
 - [ ] Slice C: a failed member leaves without cancelling the candidate
@@ -381,3 +387,182 @@ mode.
   `local_ci::a_job_waits_while_ci_uses_more_than_it_reserved`); the slot after admission
   (`local_ci::a_job_that_cannot_start_holds_no_slot`); the order and passing
   (`jobs_that_fit_pass_one_that_does_not`).
+- The last round (Opus 5.5, head 0199e93c2) approved: the answers hold (117 unit tests and 81
+  `local_ci` tests on that head; the slot-order mutation caught). One pre-existing minor
+  (`ci_use` sums the `ci` and `engine` groups and skips one it cannot read) is issue #1369.
+  Merged as #1366 at 0199e93c2 on green Yulius CI; promotion to `main` is asked of a person.
+
+### Slice A follow-up: round 3's minor and nit
+
+- Superseded by ADR-0353 (the operator's fix, merged first): its own count of recent starts
+  ("what jobs started in the last minute may still bring") replaces the one below, which was
+  not merged.
+
+- Jobs admitted after a reading add to it: `CiAdmission` keeps each running job's admission
+  time, and CI holds the larger of the reservations and the measured use plus the reservations
+  admitted after the reading the rate ends at. Unit
+  `resources::tests::jobs_admitted_after_a_reading_count_on_top_of_it`: one job reserved 16 and
+  measured at 40, two of five 8-CPU jobs start (56 of 56), and a later reading does not count
+  them twice. Without the addition (the filter made empty) it fails: five start.
+- The first network is 172.17.1.0/24 only after the sandbox's next start: ADR-0350,
+  `operations.md` and `changes.md` say so.
+
+### Slice B (first pull request): failures outside the change, CI minutes
+
+- OFC-001: `yulius_domain::ci::infra::{infrastructure, Infra, JobEnd}` (doctests; units
+  `the_infrastructures_own_words_at_the_end_count` and `a_failure_of_the_change_is_never_the_infrastructures`,
+  see review round 2 below). `App::ci_job` runs the job again once in the same slot when
+  `ci_infrastructure` says so (this run's own output, whether a failing test was kept, the
+  sandbox's OOM count before and after), saying so in its output; passed then, its reason says
+  why it ran twice; the infrastructure again, it ends error saying so. Migration 0064 keeps
+  `infra`, `infra_ms` and `infra_end`; a requeue clears them. `local_ci` with real jobs:
+  `an_infrastructure_failure_runs_the_job_again_once`,
+  `a_job_runs_again_once_and_only_for_the_infrastructure`, `a_job_killed_for_memory_runs_again_once`,
+  `a_kill_without_a_kill_for_memory_is_not_run_again`,
+  `a_tests_failure_is_never_taken_for_the_infrastructure`, and those of review round 2.
+- OFC-003: `merge_queue::Minutes` (unit `ci_minutes_are_counted_by_how_runs_ended`: by outcome,
+  the rerun minutes apart, the share 4/21); the per-day tally `ci_minutes`, written in
+  `transition_ci_run` with the run's new state in one transaction, read by `CiStore::ci_minutes`
+  (store unit `a_runs_end_adds_to_its_days_minutes`: passed with 2 min thrown away, failed after
+  a thrown-away first run, failed only for the infrastructure, cancelled, a run cancelled before it
+  started adds nothing, the rows outlive the runs' prune, the range);
+  `GET /api/analytics/merge-queue` gets `ci_minutes` and `ci_minutes_by_day`
+  (`analytics::the_merge_queue_read_counts_ci_minutes_by_outcome`: 10 min each passed, failed
+  outside and cancelled, 5 min run again, share 0.667, another sandbox's failed run only for the
+  admin). The Pipeline tab's Merge queue card shows "CI minutes" and "Outside the change" against
+  the 15 % target (`pipeline.e2e.ts`).
+- ADR-0354; architecture (CI job states), `api.md`, `changes.md`.
+- How to read it a week later: `GET /api/analytics/merge-queue?sandbox=<id>&from=&to=`,
+  `ci_minutes.outside_share` (target at most 0.15; 16 Nov in quartio-v2: 114 cancelled and most
+  of 526 failed of 1,228 minutes) and `ci_minutes.rerun`; the jobs whose reason starts "passed
+  when run again".
+- Review round 1 of these (Fable 5.2, head 98481f5bb). Request changes, all own code. Answered
+  (the code came back on top of the operator's admission fix, ADR-0353, after it merged):
+  - Major: a failing test was run again when the output named a Docker error the job went on
+    from. The classifier reads only this run's own output: kept failing tests' blocks must all
+    name the infrastructure; without blocks, the words must be in the last 20 lines with no
+    test's failure after them. Unit cases (a survived Docker line, then a test's failure, in the
+    output and in the blocks; two blocks that both name it) and
+    `local_ci::a_tests_failure_is_never_taken_for_the_infrastructure` (first part: failed after
+    one run).
+  - Major: a test failure on the second run was reported as an infrastructure error (the first
+    run's words were read again). Only what follows the rerun line counts; the same test's second
+    part: failed, no reason, two runs.
+  - Major: a run that failed in the change counted as failed outside it. `ci_jobs.infra_end`
+    says whether the job's end itself was the infrastructure's; only then is a run
+    `failed_outside` (store unit `a_runs_end_adds_to_its_days_minutes`: a job that failed its
+    second run after a thrown-away first counts as failed).
+  - Major: the minutes were read from runs, which are pruned to 50 per sandbox. A run's end now
+    adds its minutes to a per-day tally (`ci_minutes`, written in `transition_ci_run`); the store
+    unit reads the same rows after `prune_ci_runs(0, …)`, and the analytics test reads the tally.
+  - Minor: a SIGKILL without an OOM kill: `local_ci::a_kill_without_a_kill_for_memory_is_not_run_again`
+    (failed, one run). The second run's own time limit and the first run's dropped use are in
+    ADR-0354. After a full address pool the second run waits for network room first.
+  - Minor: a job admitted before another sandbox's reading (the follow-up of slice A) is
+    superseded by ADR-0353's count of recent starts. Nits: "…when it was run again, after … in
+    its first run" names both kinds when they differ; the Plan's ticks.
+
+### Slice A2: CI wait job-minutes per hour and host busy %
+
+- `yulius_domain::resources::{LoadMinute, LoadHour, busy_permille, load_by_hour}` (doctest;
+  unit `the_hosts_minutes_add_up_by_hour`); `SystemProbe::cpu_ticks` (`/proc/stat`'s `cpu` line,
+  idle and iowait not busy; unit `cpu_ticks_are_read_from_proc_stat`); `App::ci_record_load`
+  once a minute from the dispatcher (busy since the last reading, CPUs reserved and measured,
+  `ci_jobs_waiting`), kept 30 days in `ci_load` (migration 0064);
+  `GET /api/analytics/ci-load` (`analytics::the_hosts_ci_load_is_kept_each_minute_and_read_by_hour`:
+  two readings in one minute make one, 30 % busy from the ticks, a reversed range 422); the
+  Pipeline tab's CI load card (`pipeline.e2e.ts`, 18 of 18).
+- Before (the person's measurement from production, 16 Nov 2026): 648 job-minutes waited in hour
+  18 and 904 in hour 19, the host 25-30 % busy while jobs held 50-56 CPUs. After: read
+  `GET /api/analytics/ci-load?from=&to=` a week later (hours, `wait_job_minutes`,
+  `busy_percent`, `held_cpus` against `measured_cpus`).
+- Checks run on this head: `cargo clippy --workspace --all-targets -D warnings`; the unit tests
+  of `yulius-domain`, `yulius-app`, `yulius-sandbox`, `yulius-store` (1,487 passed); `local_ci`,
+  `analytics`, `limits`, `merge_train` (149 passed, then 150 with the CI load test);
+  `pipeline.e2e.ts` (18 passed). Security scan: Vidoc refused the key (exit 2, not run).
+- `scripts/dev mutants` on these lines: 226 listed, 119 caught, 0 missed, 0 timed out, 10
+  unviable, 97 not reached (bound 40 min, 2402 s; not reached: 48 in the store's SQL, 26 in the
+  classifier, 13 in the analytics route, 6 in the domain resources, 4 in the route table). Four
+  of the classifier's by hand: the test failure after the words, every block naming the
+  infrastructure, and a SIGKILL needing an OOM kill were caught; reading the whole output instead
+  of its last lines was not, and `only_the_infrastructures_own_words_count` now has that case (a
+  Docker error long before the job's own compile error), which catches it.
+- Review round 2 of the reruns, minutes and load (Fable 5.2, head acbd80a6e). Request changes,
+  all own code. Answered:
+  - Major: a Docker error the job went on from, then a failure in Go's, pytest's or jest's words,
+    was run again. The classifier now reads only the run's last 3 lines (Yulius's own left out)
+    and refuses any line after the words that reads as a failure in any runner's words (`fail`,
+    `panic`, `assert`, `not ok`, `timeout`, `timed out`, `error[`). Units with Go, pytest, jest,
+    TAP, nextest `TIMEOUT`, a panic, an assertion and a compile error after each of Docker's
+    words; `local_ci::a_failure_in_any_runners_words_is_never_run_again` (Go, pytest and jest
+    shapes: failed, one run).
+  - Major: real kept blocks (with their blank lines) were never classified, and a block could
+    quote Docker's words. A job with any failing test kept is now the change's, whatever the
+    block says: `local_ci::a_kept_failing_test_is_never_run_again` (nextest's block with its blank
+    lines, its test failing on the address pool: failed, one run). A test failing on a full pool
+    therefore costs a cycle; with 4,096 networks per engine (ADR-0350) that is rare.
+  - Major: the wait for network room before the second run could not be cancelled or bounded.
+    It races the cancellation and a 10-minute bound, flushes the job's output first and says
+    what it waits for; cancelled, the job ends cancelled with no second start; past the bound it
+    ends error for the infrastructure. `local_ci::the_wait_before_a_second_run_can_be_cancelled`.
+  - Major: "only the second run's own output counts" had no test.
+    `local_ci::the_second_run_is_judged_on_its_own_output` (the address pool, then a plain compile
+    error: failed, no reason, two runs).
+  - Minors: ADR-0350's bullet about jobs arriving in one window is dev's text again, pointing to
+    ADR-0353; the Evidence above names what exists; `ci_jobs_waiting` has a store unit
+    (`jobs_waiting_to_start_are_queued_jobs_of_running_runs`); a second start that cannot be
+    made after a thrown-away run ends error for the infrastructure (`infra_end`); ADR-0354 says
+    what the wait holds and for how long. The lost host's rerun is held at the classifier
+    (`JobEnd::Lost`); the executor's one-line mapping from `Ended::Lost` has no test of its own.
+  - Nits: the decision index's order; both runs' stages stay on the job's span (ADR-0354); the
+    tally and the run's state in one transaction; `Infra::parse` removed; the busiest hour shows
+    its day.
+- Review round 3 of the reruns, minutes and load (Fable 5.2, head 8ce212c02). Request changes,
+  all own code. Answered:
+  - Major: `the_wait_before_a_second_run_can_be_cancelled` was flaky (the engine filled before the
+    job's first look for room). It fills once the first run has started (its attempts file);
+    the two wait tests passed 6 of 6 under `--stress-count 6`.
+  - Major: a failure in Go's, pytest's or jest's words before Docker's words at the end was run
+    again (the scanner keeps only nextest's and libtest's blocks). `FailureScanner` now also sees
+    any line that reads as a failure in a runner's or a tool's words
+    (`ci::infra::reads_as_failure`, doctest; unit `a_failure_in_any_runners_words_is_seen`), and
+    such a run is the change's; the socket counts only in the Docker client's own words.
+    `local_ci::a_failure_before_dockers_words_is_never_run_again` (Go's lines then the client's
+    socket line last; pytest's then a container's log naming the socket: failed, one run).
+  - Minors: a failing test now wins over a kill for memory and a lost host (unit); past the bound
+    the reason says the engine had no room and no second run was made
+    (`local_ci::a_second_run_that_finds_no_network_room_is_not_made`, the bound shortened to
+    0.5 s through `CiSettings::rerun_network_wait`); a second start that cannot be made keeps its
+    reason; failure lines without the old words (`1 error in 0.05s`, `ERRORS!`, mocha's `Error:
+    expected`, a segmentation fault) refuse the rerun (unit), while `make`'s exit report does not.
+    The second start that cannot be made and the executor's mapping of a lost host have no
+    executor test (a fake session host failing only its second start was not built); both are
+    one branch each, read.
+  - Nits: a cancellation that came while the first run ended starts no second one; the
+    Evidence's test names.
+- Review round 4 (Opus 5.5, head e73c91224) approved. Its minors, fixed after the approval within
+  the allowance: the socket counts only when the Docker client's words begin the line (after an
+  `error:`), so `app-1  | dial unix …` is a container's log (unit cases); a second start that
+  fails to spawn is the infrastructure's too, with its reason; mocha's `10 failing` is no passing
+  summary (`" 0 failing"` as a whole word); a failure on an unfinished last line is seen (unit
+  `a_failure_on_the_unfinished_last_line_is_seen`). Still read only, not tested through the
+  executor: a second start that cannot be made, and the mapping of a lost host.
+
+### Slice A3: the operator's amendment to the admission (its own pull request, first)
+
+- The instance's operator built production 915ebb6a (17 Nov 2026, 01:41 UTC): main 7a705569 plus a
+  fix to the admission of #1366, measured on production that night. Applied here as it came
+  (`git am`, commit 9a7e9421b, author the operator), on top of `dev` with #1373:
+  - the `cpu.pressure` rule is gone (`Admission::Contended`, `CI_PRESSURE_LIMIT`): a project's CI
+    that pins its workers to its own CPUs showed 15-20 % pressure in its `ci` group while the host
+    was 45 % busy, and 117 jobs of every project queued; the reading stays, for diagnosis;
+  - `CI_OVERSUBSCRIPTION` is 3, not 2: at twice the budget the worst case bound all night (108 of
+    112 with the host 60-77 % busy).
+  ADR-0353 has two amendments; HBA-002 and HBA-005, operations, architecture, changes and the
+  decisions index say the same. `local_ci::cpu_pressure_holds_no_job_back` replaces
+  `a_job_waits_while_cis_processes_wait_for_cpus`.
+- The decisions index got the amended 0353 line twice from the union merge; it is kept once, in
+  order.
+- Checks run on this head: `cargo fmt --check`; `cargo clippy --workspace --all-targets -D
+  warnings`; the unit tests of `yulius-domain`, `yulius-app`, `yulius-sandbox` (1,366 passed);
+  `local_ci::` and `analytics::` (101 passed).

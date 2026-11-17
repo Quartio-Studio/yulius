@@ -129,12 +129,12 @@ follows the CPUs the sandbox's running jobs hold: 100 plus 100 per CPU, at least
 ([decision 0350](decisions/0350-ci-jobs-are-admitted-by-what-ci-really-holds-on-the-host.md)).
 `ci/slots.rs` counts the jobs; `resources.rs` (`CiAdmission`) admits them from one CI budget for the
 whole instance, the capacity less an eighth for the server and the agents. A job starts when:
-- the highest CPU pressure of the `ci` groups of the sandboxes running jobs is at most 10 %;
-- the running jobs' budgets with its own stay within twice the budget;
+- the running jobs' budgets with its own stay within three times the budget;
 - the measured use of the `ci` and `engine` groups of the sandboxes running jobs, what jobs
   started in the last minute may still bring, and its own start fit (`Delegation::ci_use`: CPU
   time over at least 5 s, read at each job's start, each dispatcher pass and each look of a
-  waiting job, under the admission's lock; anonymous memory; `cpu.pressure` `some avg10`).
+  waiting job, under the admission's lock; anonymous memory). CPU pressure is read for
+  diagnosis only: a job pinned to a few CPUs shows it while the host idles (17 Nov 2026).
 
 Waiting jobs start by priority (merge trains', pull requests', branches') and age; one that cannot
 start lets the others pass for 10 minutes at most, and a job takes its slot once admitted
@@ -3680,7 +3680,15 @@ A job's exit decides its state in `App::ci_job` (`crates/yulius-app/src/ci/exec.
 `YULIUS_CI_SKIP_CODE`) is skipped, the incomplete code `INCOMPLETE_EXIT_CODE` (75,
 `YULIUS_CI_INCOMPLETE_CODE`) is error with the reason `incomplete: <its ::yulius-incomplete
 line>` (ADR-0202), any other exit or a signal is failed; a timeout, the output limit, a lost host
-or a refused start is error. A failed job cancels the run's other jobs (fail-fast), except that the
+or a refused start is error. Before that, a failed or lost job is asked whether it failed for the
+infrastructure (`yulius_domain::ci::infra`: Docker's words for a full address pool, a
+`docker.sock` connection that ended, a `SIGKILL` while its sandbox's OOM count grew, a lost
+host): it then runs again once by itself in the same slot, saying so; a second such failure ends
+it error, and the thrown-away run's kind and time are kept for the CI minutes (a per-day tally
+written when a run ends, `ci_minutes`; the dispatcher also keeps the host's CI load once a
+minute, `ci_load`, read by hour at `GET /api/analytics/ci-load`)
+([decision 0354](decisions/0354-a-job-that-fails-for-the-infrastructure-runs-again-once-by-itself.md)).
+A failed job cancels the run's other jobs (fail-fast), except that the
 `security` job neither cancels nor is cancelled by them (SPEC-273). `yulius_domain::ci::aggregate` makes the run's
 state, where skipped counts like passed, so a run is never skipped and the merge gate stays one
 rule; the commit status counts the skipped jobs

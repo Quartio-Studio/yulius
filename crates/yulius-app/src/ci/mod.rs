@@ -114,6 +114,9 @@ pub struct CiSettings {
     pub poll: Duration,
     /// Bytes a CD or environment run's files and cache may use (SPEC-300, ADR-0216).
     pub run_disk_max: u64,
+    /// The longest a job waits for network room before its second run after a full address
+    /// pool; past it, it ends error for the infrastructure (SPEC-497 OFC-001).
+    pub rerun_network_wait: Duration,
 }
 
 impl Default for CiSettings {
@@ -125,6 +128,7 @@ impl Default for CiSettings {
             job_timeout: Duration::from_secs(30 * 60),
             poll: Duration::from_secs(60),
             run_disk_max: 20_000_000_000,
+            rerun_network_wait: Duration::from_secs(10 * 60),
         }
     }
 }
@@ -229,6 +233,23 @@ pub struct CiRunUpdate {
     pub ended_at: Option<Timestamp>,
 }
 
+/// One line of a sandbox's tally of CI minutes (SPEC-497 OFC-003): a UTC day, how the runs
+/// ended (`passed`, `failed`, `failed_outside`, `cancelled`), how many, their minutes start to end
+/// and their jobs' time thrown away by infrastructure failures, in milliseconds.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CiMinutesRow {
+    /// `YYYY-MM-DD`.
+    pub day: String,
+    /// How the runs ended.
+    pub outcome: String,
+    /// Runs.
+    pub runs: i64,
+    /// Their time, start to end.
+    pub run_ms: i64,
+    /// Their jobs' thrown-away time.
+    pub rerun_ms: i64,
+}
+
 /// Fields set with a job transition.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct CiJobUpdate {
@@ -248,6 +269,10 @@ pub struct CiJobUpdate {
     pub usage: Option<yulius_domain::stages::ResourceUse>,
     /// How long it waited before it started, with its start (SPEC-435).
     pub waited_ms: Option<i64>,
+    /// With its end, after an infrastructure failure (SPEC-497 OFC-001): its kind
+    /// ([`yulius_domain::ci::infra::Infra::as_str`]), the milliseconds of the runs thrown away,
+    /// and whether its end itself was the infrastructure's (it met one again).
+    pub infra: Option<(&'static str, i64, bool)>,
 }
 
 /// The CI configuration of a sandbox as last read.
@@ -279,6 +304,10 @@ impl Drop for CiClaim {
         self.wake.notify_one();
     }
 }
+
+/// The minute of a reading of the host for CI and the host's CPU ticks then, `(busy, total)`
+/// (SPEC-497).
+pub(crate) type LoadReading = (i64, Option<(u64, u64)>);
 
 /// Process-local CI state.
 #[derive(Default)]
@@ -317,6 +346,8 @@ pub struct CiState {
     wake: Arc<Notify>,
     started: AtomicBool,
     last_prune: Mutex<i64>,
+    /// The minute of the last reading of the host for CI and its CPU ticks then (SPEC-497).
+    pub(crate) load: Mutex<Option<LoadReading>>,
     /// Sandboxes whose runs wait for disk (SPEC-059 CI-301).
     disk_waits: Mutex<HashMap<String, disk_wait::DiskWait>>,
     /// One pass deciding a sandbox's armed merges (and its merge train) at a time (SPEC-084
@@ -1477,8 +1508,10 @@ impl App {
     /// Starts the oldest queued runs of every sandbox, as many as it has free lanes
     /// ([`CiSettings::lanes`]); the instance-wide job slots still bound the machine's load.
     pub async fn ci_dispatch(self: &Arc<Self>) {
-        // A reading of what CI uses at each pass keeps the measuring bases recent (SPEC-497).
+        // A reading of what CI uses at each pass keeps the measuring bases recent, and once a
+        // minute the host's load is kept (SPEC-497).
         let _ = self.ci_measured();
+        self.ci_record_load().await;
         // A merge armed on a run that passed when it was queued happens now (SPEC-011).
         let ended: Vec<SandboxId> = self
             .ci
