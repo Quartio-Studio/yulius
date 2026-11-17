@@ -108,11 +108,11 @@ selection bias of people picking one for certain work.
 
 Six pull requests, each merged into `dev` on green before the next begins.
 
-- [ ] Read the product context and related work, then write and validate the spec
-- [ ] Slice A: the domain knows Antigravity and Google while the API still refuses them
-- [ ] Slice A: an Antigravity transcript is observed and counted, checked on one real agy 1.5.10 wrote
-- [ ] Slice A: Antigravity launch plan, home files and session paths in yulius-harness
-- [ ] Slice A: Antigravity hooks reach Yulius as Claude Code's through the hook client
+- [x] Read the product context and related work, then write and validate the spec
+- [x] Slice A: the domain knows Antigravity and Google while the API still refuses them
+- [x] Slice A: an Antigravity transcript is observed and counted, checked on one real agy 1.5.10 wrote
+- [x] Slice A: Antigravity launch plan, home files and session paths in yulius-harness
+- [x] Slice A: Antigravity hooks reach Yulius as Claude Code's through the hook client
 - [ ] Slice A: review findings fixed and the slice delivered
 - [ ] Slice B: Yulius installs the pinned agy 1.5.10 into its data directory
 - [ ] Slice B: review findings fixed and the slice delivered
@@ -200,4 +200,34 @@ Six pull requests, each merged into `dev` on green before the next begins.
 
 ## Evidence
 
-Filled per slice.
+### Slice A (the adapter)
+
+- **Real CLI, by hand** (agy 1.5.10 linux-x64, tarball sha512 equal to the manifest's; a local
+  stub of the Gemini API, `GEMINI_API_KEY` with `GOOGLE_GEMINI_BASE_URL`, no account):
+  - Transcripts `tests/fixtures/antigravity/quota-1.5.10.jsonl` (three `-p` prompts on one
+    conversation, the third meeting a daily-quota 429 retried eight times) and `tool-1.5.10.jsonl`
+    (a `run_command` call, a tool step a hook denied, an invalid call), paths shortened to `/w`.
+  - A `PreToolUse` hook answering `{}` denies the tool ("tool call denied by pre-tool hook").
+  - A hook `timeout` of 694800 s is accepted ("loaded 1 named hooks").
+  - Stdio MCP servers inherit the CLI's environment (`YULIUS_URL`, `YULIUS_TASK_TOKEN` seen by a
+    server that printed its environment); `${VAR}` in an HTTP server's `headers` is sent
+    verbatim, so a bearer-token server is left out of Antigravity runs.
+  - `AGY_CLI_DISABLE_AUTO_UPDATE=true` stops the updater ("Auto-update disabled via environment
+    variable"); `1`, `TRUE` and `yes` do not.
+  - The TUI's first-run colour screen is skipped by `colorScheme` with `cache/onboarding.json`,
+    the trust prompt by `trustedWorkspaces`; `--prompt-interactive=-starts with a dash` arrives
+    as that prompt.
+  - With the files the launch plan writes and `target/debug/yulius hook antigravity <event>`
+    against a fake Yulius: the SessionStart briefing is injected (its text in the transcript),
+    UserPromptSubmit carries the prompt, `run_command` runs, a blocked Stop continues with the
+    reason as a system message and the next Stop ends the turn; the `yulius mcp` bridge reached
+    the fake Yulius's `/mcp`.
+  - A conversation resumes from another `HOME` whose `brain/` and `conversations/` link to the
+    first's.
+  - Without a browser the TUI prints a Google OAuth URL (callback
+    `antigravity.google/oauth-callback`); `strace` shows the token file
+    `.gemini/antigravity-cli/antigravity-oauth-token`. Not completed: no Google account.
+- **Tests:** `cargo nextest run -p yulius-harness -p yulius-domain -p yulius-app` 1393 passed;
+  `-p yulius --lib` 650 passed; the `yulius` integration files the slice touches (`task_delete`,
+  `accounts`, `automations`, `codex`, `agent_hooks`, `account_usage`) 103 passed.
+  `cargo clippy --workspace --all-targets -D warnings` clean.
