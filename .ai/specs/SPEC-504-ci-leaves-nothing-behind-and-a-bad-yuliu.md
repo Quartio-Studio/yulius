@@ -92,14 +92,14 @@ ADR-0344), SPEC-497 HBA-003 (CI waits for Docker networks), SPEC-053/SPEC-268 (t
 
 ## Plan
 
-- [ ] Spec and plan written
-- [ ] A CI job runs in its own cgroup (CLB-001)
-- [ ] The Docker front labels a CI job's containers and networks (CLB-002, CLB-003)
-- [ ] A job's leftovers go at its end (CLB-004)
-- [ ] Ended jobs' leftovers are swept each upkeep and after a start (CLB-005)
-- [ ] Leftovers are counted in the Docker analytics (CLB-006)
-- [ ] Proof against a real engine: docker run, compose and a killed job through the front
-- [ ] ADR, architecture, operations and changes for pull request 1
+- [x] Spec and plan written
+- [x] A CI job runs in its own cgroup (CLB-001)
+- [x] The Docker front labels a CI job's containers and networks (CLB-002, CLB-003)
+- [x] A job's leftovers go at its end (CLB-004)
+- [x] Ended jobs' leftovers are swept each upkeep and after a start (CLB-005)
+- [x] Leftovers are counted in the Docker analytics (CLB-006)
+- [x] Proof against a real engine: docker run, compose and a killed job through the front
+- [x] ADR, architecture, operations and changes for pull request 1
 - [ ] Pull request 1 reviewed and approved
 - [ ] A pull request is judged by the integration branch's jobs (CFG-001)
 - [ ] An invalid yulius.toml fails its run with the parser's message (CFG-002)
@@ -215,3 +215,52 @@ ADR-0344), SPEC-497 HBA-003 (CI waits for Docker networks), SPEC-053/SPEC-268 (t
   the front joined the holder's namespaces, read the job's pid by `SO_PEERCRED` and its cgroup
   through the host's `/proc`, and labelled the job's create calls. The removal went through the
   real engine's control socket.
+
+### Pull request 1, review round 1 (request changes; every finding own code)
+
+Reviewer (Fable 5.2) on `16b22577a`: 2 major, 8 minor, 4 nits; CI run `e156c2bd` passed; the
+`security` job ended skipped (exit 78: Vidoc refused the instance key, HTTP 401, as on dev's own
+runs), so the security scan is **unrun**, not passed. Each finding was fixed test-first:
+
+1. *Major, a head not ending in CRLF CRLF was held until the client closed.* Heads are read line
+   by line as the bytes come; the moment they cannot be a request line or a CRLF-ended header
+   line, what came goes on and the connection turns raw.
+   `what_is_not_a_request_passes_while_the_client_waits` (a client that keeps its side open:
+   `\r\n\n`, bare LF, `hello\n`, `hello`, a header without CR, `HTTP/2.0`).
+2. *Major, nothing failed when a job was not launched in its own group.*
+   `local_ci::a_contained_ci_job_is_launched_in_its_own_group`: contained, through the
+   recording session host, every job's launch joins `/cg/s1/ci/ci-job-<job id>`; with no job
+   group it joins `/cg/s1/ci`, with no CI group `/cg/s1/agents` and no group is asked for.
+   Mutation: `join.ci_cgroup = Some(group)` removed → this test failed.
+3. *Broken chunk framing dropped bytes.* What was read passes and the connection turns raw:
+   `broken_chunk_framing_passes_what_came` (on a create and on `/build`, the next request
+   arriving).
+4. *A call that only might hijack turned the connection raw.* An exec start's body is read;
+   `"Detach": true` keeps the connection read: `a_detached_exec_start_keeps_the_connection_read`.
+5. *Removals made before a failure were lost from the measures.* `remove_ci_leftovers` returns
+   what it removed with the first error; a failed call skips only its own container or network:
+   `removals_before_a_failure_count`.
+6. *The image-inherited rule.* Each labelled create gets `yulius.ci.create` with a value of its
+   own; a container is inherited only when its value is its image's, so a job's container from
+   an image committed from its own container goes; a container whose image cannot be read is
+   kept (ADR-0359 says both): `a_jobs_end_removes_its_containers_then_its_networks`,
+   `each_create_gets_its_own_value_and_keeps_its_bytes_when_unlabellable`, and the real-engine
+   proof again (2 containers, 2 networks removed; the agent's and the inherited one kept).
+7. *Recovery awaited each removal before CI started.* The recovery removes in tasks of its own:
+   `a_job_a_restart_ended_is_told_ended` now also runs with an isolation whose removal never
+   ends, and the run is still queued again. Mutation: the removal awaited again → this test
+   failed (61 s).
+8. *A reused job group kept its old mtime.* A group made again for the same job id is made
+   fresh: `a_job_group_made_again_is_fresh_for_the_sweep`.
+9. *The smoke's sixth phase could hang.* A run that never says done is killed before it is
+   waited for.
+10. *Documents.* `docs/api.md` names the new fields and the audit action; ADR-0359 says the
+    per-create value, the line-by-line head, and the consequences: a container another job or
+    an agent uses goes with its creator, anonymous volumes stay, a container whose image cannot
+    be read stays.
+
+Nits: a lowercase `labels` key is the one labelled; an unlabellable create passes byte for byte
+wherever its `Content-Length` is; the gate takes its caller when it is made
+(`Gate::telling_jobs`); every sandbox's emptied job groups are swept, with or without a serving
+engine.
+
