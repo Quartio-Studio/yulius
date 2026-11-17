@@ -1104,6 +1104,25 @@ impl App {
             .await;
     }
 
+    /// Installs the Codex CLI Yulius provides in the background when a Codex subscription
+    /// exists, so the first Codex task does not wait for its download (SPEC-503 CLI-001); an
+    /// instance without one downloads nothing. The install runs on its own task: the server's
+    /// start never waits for it.
+    pub fn warm_codex_cli(self: &Arc<Self>) -> tokio::task::JoinHandle<()> {
+        let app = Arc::clone(self);
+        tokio::spawn(async move {
+            let codex = app
+                .deps
+                .store
+                .accounts()
+                .await
+                .is_ok_and(|accounts| accounts.iter().any(|a| a.provider == Provider::OpenAi));
+            if codex && let Err(error) = app.deps.harness.provide_codex(true).await {
+                tracing::warn!(%error, "the Codex CLI is not ready; the next Codex start tries again");
+            }
+        })
+    }
+
     /// Creates an account in `pending_login` and starts its login terminal (ROT-001/002).
     ///
     /// The creation is undone when the login cannot be started.

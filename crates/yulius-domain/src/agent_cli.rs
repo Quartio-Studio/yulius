@@ -1,6 +1,7 @@
 //! Claude Code kept current by Yulius (SPEC-421, ADR-0266): which release channel, which
 //! versions, which platform package, which installed versions to keep; and which models a build
-//! must know before sandboxes get it (SPEC-461, ADR-0293).
+//! must know before sandboxes get it (SPEC-461, ADR-0293). [`codex`]: the Codex CLI release Yulius
+//! provides to Codex runs (SPEC-503 CDX-012).
 //!
 //! Pure: the caller reads the registry, downloads, reads the binary, installs and removes.
 
@@ -603,6 +604,72 @@ pub fn to_remove(installed: &[Version], current: Version) -> Vec<Version> {
         .copied()
         .filter(|&v| v != current && Some(v) != previous)
         .collect()
+}
+
+/// The Codex CLI Yulius provides to Codex runs and sign-ins (SPEC-503 CDX-012, CLI-001): one
+/// release pinned with the sha512 of each platform package, so what runs is what the harness was
+/// checked against. Bumping it means checking the harness against the new release.
+pub mod codex {
+    /// The npm package; its platform packages are versions of it (`0.169.0-linux-x64`).
+    pub const PACKAGE: &str = "@openai/codex";
+    /// The pinned release: the newest on 2026-11-16, checked against the harness then (SPEC-503).
+    pub const VERSION: &str = "0.169.0";
+    /// The native binary below an installed release's directory.
+    pub const BINARY: &str = "bin/codex";
+
+    /// A platform package of the pinned release.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct Platform {
+        /// npm's suffix of the version (`linux-x64`).
+        pub suffix: &'static str,
+        /// Rust's target triple naming its `vendor/` directory.
+        pub triple: &'static str,
+        /// ELF `e_machine` of its binary.
+        pub machine: u16,
+        /// npm's `integrity` of its tarball, as published for [`VERSION`].
+        pub integrity: &'static str,
+    }
+
+    impl Platform {
+        /// Path of its tarball on the registry.
+        #[must_use]
+        pub fn tarball_path(&self) -> String {
+            format!("/{PACKAGE}/-/codex-{VERSION}-{}.tgz", self.suffix)
+        }
+
+        /// The tarball's directory holding the release (`bin/codex`, `codex-path`, …).
+        #[must_use]
+        pub fn vendor_dir(&self) -> String {
+            format!("package/vendor/{}/", self.triple)
+        }
+
+        /// Name of the installed release's directory.
+        #[must_use]
+        pub fn install_name(&self) -> String {
+            format!("{VERSION}-{}", self.suffix)
+        }
+    }
+
+    /// The platform package for Rust's `os` and `arch` names; `None` where Yulius provides none.
+    /// Codex's Linux builds are static (musl), so the host's C library does not matter.
+    #[must_use]
+    pub fn platform(os: &str, arch: &str) -> Option<Platform> {
+        match (os, arch) {
+            ("linux", "x86_64") => Some(Platform {
+                suffix: "linux-x64",
+                triple: "x86_64-unknown-linux-musl",
+                machine: 62,
+                integrity: "sha512-o05NyAOCDygSPRo1yinzxvkRSdmsZyBD9E7mbpmjRanSfM8lypqWtQgEo4XfNkwhuCR2aFu8mlGOsQGFXVbVww==",
+            }),
+            ("linux", "aarch64") => Some(Platform {
+                suffix: "linux-arm64",
+                triple: "aarch64-unknown-linux-musl",
+                machine: 183,
+                integrity: "sha512-NZ/DaQUpcQmxmqee7Z9uC1rzw3GhSbooawcaTe1LN5Yk+WlinUKGdTXJgClRT/9ogQEEM9TWxYzvxPfj5G/xFg==",
+            }),
+            _ => None,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1523,5 +1590,42 @@ mod tests {
             vec![v("2.1.318")]
         );
         assert!(to_remove(&[v("2.1.311")], v("2.1.311")).is_empty());
+    }
+
+    /// SPEC-503 CLI-001: the pinned release is 0.169.0, the newest when the contribution was
+    /// accepted (2026-11-16), with the registry's sha512 of each Linux package as published.
+    #[test]
+    fn the_pinned_codex_release_has_linux_packages() {
+        let x64 = codex::platform("linux", "x86_64").unwrap_or_else(|| panic!("x64"));
+        assert_eq!(
+            x64.tarball_path(),
+            "/@openai/codex/-/codex-0.169.0-linux-x64.tgz"
+        );
+        assert_eq!(
+            x64.vendor_dir(),
+            "package/vendor/x86_64-unknown-linux-musl/"
+        );
+        assert_eq!(x64.install_name(), "0.169.0-linux-x64");
+        assert_eq!(
+            x64.integrity,
+            "sha512-o05NyAOCDygSPRo1yinzxvkRSdmsZyBD9E7mbpmjRanSfM8lypqWtQgEo4XfNkwhuCR2aFu8mlGOsQGFXVbVww=="
+        );
+        assert_eq!(x64.machine, 62);
+        let arm = codex::platform("linux", "aarch64").unwrap_or_else(|| panic!("arm64"));
+        assert_eq!(
+            arm.vendor_dir(),
+            "package/vendor/aarch64-unknown-linux-musl/"
+        );
+        assert_eq!(arm.machine, 183);
+        assert_eq!(
+            arm.integrity,
+            "sha512-NZ/DaQUpcQmxmqee7Z9uC1rzw3GhSbooawcaTe1LN5Yk+WlinUKGdTXJgClRT/9ogQEEM9TWxYzvxPfj5G/xFg=="
+        );
+        for platform in [x64, arm] {
+            assert!(platform.integrity.starts_with("sha512-"), "{platform:?}");
+        }
+        assert_eq!(codex::platform("macos", "aarch64"), None);
+        assert_eq!(codex::platform("linux", "riscv64"), None);
+        assert!(Version::parse(codex::VERSION).is_some());
     }
 }

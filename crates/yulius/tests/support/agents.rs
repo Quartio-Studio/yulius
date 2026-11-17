@@ -16,6 +16,8 @@ use yulius_domain::time::Timestamp;
 /// Fake-agent behaviour for every launch planned by [`FakeAgentHarness`].
 #[derive(Debug, Clone, Default)]
 pub struct FakeAgentOptions {
+    /// Counts the Codex CLI installs asked of the harness (`provide_codex(true)`, SPEC-503).
+    pub codex_installs: Option<std::sync::Arc<std::sync::atomic::AtomicUsize>>,
     /// Write a Claude-shaped transcript at the path Yulius watches.
     pub transcript: bool,
     /// Report a usage limit after this many turns.
@@ -208,6 +210,13 @@ impl FakeAgentHarness {
 }
 
 impl HarnessPort for FakeAgentHarness {
+    fn provide_codex(&self, install: bool) -> yulius_app::ports::harness::ProvideFuture<'_> {
+        if let (true, Some(count)) = (install, &self.options.codex_installs) {
+            count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+        Box::pin(async { Ok(None) })
+    }
+
     fn plan(&self, launch: &HarnessLaunch) -> AppResult<HarnessPlan> {
         if self
             .options

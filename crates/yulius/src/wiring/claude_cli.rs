@@ -101,7 +101,7 @@ pub struct UpdateError {
 }
 
 impl UpdateError {
-    fn new(message: impl Into<String>) -> Self {
+    pub(crate) fn new(message: impl Into<String>) -> Self {
         Self {
             message: message.into(),
             refused: Vec::new(),
@@ -812,17 +812,31 @@ fn host_layout_ok(host_dir: &Path) -> bool {
     named.map(|p| p.trim_start_matches("./")) == Some(BINARY)
 }
 
-/// The versions among `binaries` some live process runs: its executable is that file (same
-/// device and inode), seen through `/proc/<pid>/exe` whatever namespace the process is in.
-/// Processes that cannot be read are skipped; elsewhere than Linux, none.
+/// The versions among `binaries` some live process runs (see [`running_executables`]).
 fn running_versions(binaries: &[(Version, PathBuf)]) -> Vec<Version> {
+    let paths: Vec<&Path> = binaries.iter().map(|(_, path)| path.as_path()).collect();
+    let mut running = Vec::new();
+    for index in running_executables(&paths) {
+        let version = binaries[index].0;
+        if !running.contains(&version) {
+            running.push(version);
+        }
+    }
+    running
+}
+
+/// The indices of the `paths` some live process runs: its executable is that file (same device
+/// and inode), seen through `/proc/<pid>/exe` whatever namespace the process is in. Processes
+/// that cannot be read are skipped; elsewhere than Linux, none.
+pub(crate) fn running_executables(paths: &[&Path]) -> Vec<usize> {
     use std::os::unix::fs::MetadataExt as _;
-    let ids: Vec<(Version, (u64, u64))> = binaries
+    let ids: Vec<(usize, (u64, u64))> = paths
         .iter()
-        .filter_map(|(v, path)| {
+        .enumerate()
+        .filter_map(|(index, path)| {
             std::fs::metadata(path)
                 .ok()
-                .map(|m| (*v, (m.dev(), m.ino())))
+                .map(|m| (index, (m.dev(), m.ino())))
         })
         .collect();
     let Ok(procs) = std::fs::read_dir("/proc") else {
@@ -840,9 +854,9 @@ fn running_versions(binaries: &[(Version, PathBuf)]) -> Vec<Version> {
         let Ok(exe) = std::fs::metadata(entry.path().join("exe")) else {
             continue;
         };
-        for (version, id) in &ids {
-            if *id == (exe.dev(), exe.ino()) && !running.contains(version) {
-                running.push(*version);
+        for (index, id) in &ids {
+            if *id == (exe.dev(), exe.ino()) && !running.contains(index) {
+                running.push(*index);
             }
         }
     }
@@ -862,7 +876,7 @@ pub(crate) fn unique_suffix() -> String {
 }
 
 /// The digest of an npm `sha512-<base64>` integrity.
-fn sha512_of(integrity: &str) -> Result<Vec<u8>, UpdateError> {
+pub(crate) fn sha512_of(integrity: &str) -> Result<Vec<u8>, UpdateError> {
     integrity
         .split_whitespace()
         .find_map(|hash| hash.strip_prefix("sha512-"))

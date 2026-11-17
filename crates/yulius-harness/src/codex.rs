@@ -254,8 +254,9 @@ fn message_texts(payload: &Map<String, Value>) -> Vec<&str> {
 /// Whether a user-role message was typed, as Codex 0.169 marks it: each content item's
 /// `provenance.type` is `user` for what a person typed and `harness` for what Codex added (its
 /// environment context, a blocking hook's continuation). `None` without that metadata, and when
-/// every item is `unknown`, which may be either (Codex's own `is_user_authorization_message`
-/// treats it as possibly the user's): the text decides then.
+/// every item is `unknown`, which may be either (`ContentItemProvenance::Unknown` in
+/// `protocol/src/models/item_metadata.rs`: history saved before attribution, or content whose
+/// source is not known): the text decides then.
 fn typed_by_provenance(payload: &Map<String, Value>) -> Option<bool> {
     let items = obj_of(payload, "internal_chat_message_metadata_passthrough")?
         .get("content_item_metadata")?
@@ -280,8 +281,9 @@ mod tests {
     use super::*;
 
     /// Codex marks what a person typed `user` and what it added `harness`; an item it marks
-    /// `unknown` may be either (its own `is_user_authorization_message` treats it as possibly
-    /// the user's), so the text decides as for a message without provenance.
+    /// `unknown` may be either (`ContentItemProvenance::Unknown`: history saved before
+    /// attribution, or content whose source is not known), so the text decides as for a message
+    /// without provenance.
     #[test]
     fn unknown_provenance_lets_the_text_decide() {
         let message = |kind: &str, text: &str| {

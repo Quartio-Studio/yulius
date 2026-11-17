@@ -5,6 +5,7 @@ pub mod claude_cli;
 pub mod claude_models;
 pub mod claude_service;
 pub mod clock;
+pub mod codex_cli;
 pub mod egress;
 pub mod git;
 pub mod github;

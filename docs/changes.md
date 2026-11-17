@@ -6,6 +6,13 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-16
 
+- Codex, slice B (SPEC-503, task #485): Yulius provides the Codex CLI itself. The pinned release,
+  0.169.0 (the contribution pinned 0.167.0; 0.169.0 was the newest and passed the same checks), is
+  downloaded once from npm into `<data>/codex-cli`, only when its sha512 matches the one in the
+  source; Codex runs and sign-ins start it by its path once the next slices run them; a host move
+  leaves it behind for the
+  new host to install. It is installed at start when Codex subscriptions exist, which the next
+  slices allow.
 - Codex returns as a second harness: MrFishPL accepted outside pull request #1146 by
   studenciak00owl (SPEC-503, task #485,
   [ADR-0355](decisions/0355-codex-returns-as-a-second-harness-with-a-pinned-cli.md)), reversing
