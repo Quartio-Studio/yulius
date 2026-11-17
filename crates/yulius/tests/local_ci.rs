@@ -6558,7 +6558,7 @@ async fn an_invalid_integration_branch_runs_its_last_valid_gate_until_a_fix_merg
     let valid = git(&f.origin, &["rev-parse", "dev"])?;
     let broken = format!("[commands]\ngate = \"make ci\"\n\n{}", one_job("broken"));
     f.push_dev("yulius.toml", Some(&broken))?;
-    f.push_dev("other.txt", Some("later\n"))?;
+    let dev_head = f.push_dev("other.txt", Some("later\n"))?;
     // feat/one does not touch yulius.toml: after its merge the file is dev's, still invalid.
     let untouched = git(&f.origin, &["rev-parse", "feat/one"])?;
     f.h.app.ci_sync_sandbox(&f.sandbox).await?;
@@ -6571,6 +6571,15 @@ async fn an_invalid_integration_branch_runs_its_last_valid_gate_until_a_fix_merg
             .is_some_and(|p| p.contains("gate"))
     );
     assert_eq!(overview["gate"]["source"], "last_valid_yulius_toml");
+    // dev's own run at its invalid head fails at once, saying why (CFG-002, review round 1).
+    let dev_run = run_of_sha(&f, &dev_head).await?;
+    assert_eq!(dev_run["state"], "failed", "{dev_run}");
+    assert!(
+        dev_run["jobs"].as_array().is_some_and(|jobs| jobs
+            .iter()
+            .any(|j| j["name"] == "yulius.toml" && j["state"] == "failed")),
+        "{dev_run}"
+    );
     let refused = run_of_sha(&f, &untouched).await?;
     assert_eq!(refused["state"], "failed", "{refused}");
     assert!(

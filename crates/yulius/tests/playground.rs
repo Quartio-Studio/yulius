@@ -1737,6 +1737,27 @@ async fn a_task_that_changes_the_jobs_is_judged_by_devs() -> TestResult {
     Ok(())
 }
 
+/// SPEC-504 CFG-002 (review round 1): a playground task whose `yulius.toml` is invalid has the
+/// run of its merge fail at once, with a failed job `yulius.toml` naming the parser's message:
+/// it never lands.
+#[tokio::test]
+async fn a_task_with_an_invalid_yulius_toml_fails_its_merges_run() -> TestResult {
+    let (h, owner) = ci_world().await?;
+    let body = ci_playground(&h, &owner).await?;
+    let invalid =
+        "[commands]\ngate = \"make ci\"\n\n[[ci.jobs]]\nname = \"x\"\ncommand = \"true\"\n";
+    let worktree = playground_task(&h, &body, "t1", &[("yulius.toml", invalid)], &["done"]).await?;
+    h.app.ci_sync_all().await;
+    ci_settle(&h, &owner, &body).await?;
+    let head = git(&worktree, &["rev-parse", "HEAD"])?.trim().to_owned();
+    support::seed_live_attempt(&h, "t1", "tok-t1").await?;
+    let _ = agent_merge(&h, "tok-t1", &head).await?;
+    ci_settle(&h, &owner, &body).await?;
+    let output = task_job_output(&h, &owner, &body, "yulius.toml").await?;
+    assert!(output.contains("gate"), "the parser's message: {output}");
+    Ok(())
+}
+
 /// SPEC-483 D4 (review of slice 13), SPEC-504 CFG-003: a playground whose `dev` has a
 /// `yulius.toml` nobody can read, and no earlier valid gate, is repaired by a task, and that
 /// task's merge is tested with the configuration it brings: a broken file never blocks its own

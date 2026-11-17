@@ -2148,6 +2148,12 @@ mod tests {
             assert!(granted(Some(&gate(source)), "scan", "x").is_empty());
             assert!(!granted_elsewhere(Some(&gate(source)), "scan", "y"));
         }
+        // SPEC-504 CFG-003: the integration branch's last valid configuration grants as its own
+        // did, for the same name and command only (review round 1).
+        let last_valid = gate(GateSource::LastValid);
+        assert_eq!(granted(Some(&last_valid), "scan", "x"), ["VIDOC_API_KEY"]);
+        assert!(granted(Some(&last_valid), "scan", "y").is_empty());
+        assert!(granted_elsewhere(Some(&last_valid), "scan", "y"));
         assert!(granted(None, "scan", "x").is_empty());
     }
 
