@@ -15,8 +15,8 @@ use yulius_app::auth::AuthContext;
 use yulius_app::error::AppError;
 use yulius_app::hub::HubFrame;
 use yulius_contracts::api::admin::{
-    AccountLoginCancelled, AccountLoginStarted, AccountView, CreateAccount, ReplaceAccountToken,
-    UpdateAccount,
+    AccountLoginCancelled, AccountLoginStarted, AccountView, CreateAccount, ImportAccountAuth,
+    ReplaceAccountToken, UpdateAccount,
 };
 use yulius_contracts::terminal::{
     CLOSE_LAGGING, KIND_OUTPUT, KIND_SNAPSHOT, TerminalClientMsg, TerminalServerMsg, encode_binary,
@@ -49,7 +49,7 @@ pub async fn create(
 ) -> ApiResult<(StatusCode, Json<AccountLoginStarted>)> {
     let req = token_body(
         body,
-        r#"{"provider": "anthropic", "label": "…"} with an optional "token""#,
+        r#"{"provider": "anthropic", "label": "…"} with an optional "token" (or, for "openai", "api_key" or "auth_json")"#,
     )?;
     Ok((
         StatusCode::CREATED,
@@ -93,6 +93,18 @@ pub async fn replace_token(
 ) -> ApiResult<Json<AccountView>> {
     let req = token_body(body, r#"{"token": "…"}"#)?;
     Ok(Json(app.replace_account_token(&ctx, &id, req).await?))
+}
+
+/// `POST /api/admin/accounts/{id}/import`: a Codex account signs in again from an imported
+/// `auth.json` (SPEC-503 CDX-011). A malformed body is refused without echoing it.
+pub async fn import(
+    State(app): State<AppState>,
+    Auth(ctx): Auth,
+    Path(id): Path<String>,
+    body: Result<Json<ImportAccountAuth>, JsonRejection>,
+) -> ApiResult<Json<AccountLoginStarted>> {
+    let req = token_body(body, r#"{"auth_json": "…"}"#)?;
+    Ok(Json(app.import_account_auth(&ctx, &id, req).await?))
 }
 
 /// `POST /api/admin/accounts/login/{login_id}/cancel`: stops a running sign-in and says how it

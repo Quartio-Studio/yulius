@@ -11,7 +11,7 @@
 //! other releases there go once no process runs them. Nothing runs `npm`, a package script or
 //! the binary on the host.
 //!
-//! **Use.** Codex runs (and, from a later slice of SPEC-503, sign-ins) start `<dir>/bin/codex` by
+//! **Use.** Codex runs and sign-ins start `<dir>/bin/codex` by
 //! its absolute path through `HarnessPort::provide_codex`; a contained run binds `<dir>`
 //! read-only at the same path, so a sandbox without Codex in its system layer still runs it.
 //! Installs are one at a time: callers wait for the one under way.

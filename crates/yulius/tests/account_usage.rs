@@ -549,3 +549,121 @@ async fn opening_the_subscriptions_list_reads_usage_again() -> TestResult {
     assert!(read, "the list read the subscription's usage by itself");
     Ok(())
 }
+
+/// The real provider probe for Codex, counting the questions about a model's limit (SPEC-503
+/// CDX-008: Codex has none to ask); a ChatGPT sign-in's reading is `parse_codex`'s of a reached
+/// limit, an API key's has no windows.
+struct CodexProbe {
+    real: yulius::wiring::usage::ProviderUsage,
+    asked: AtomicUsize,
+    chatgpt_at_limit: bool,
+}
+
+#[async_trait]
+impl UsageProbe for CodexProbe {
+    async fn fetch(
+        &self,
+        provider: Provider,
+        credential: &Secret,
+    ) -> Result<AccountUsage, UsageFailure> {
+        if !self.chatgpt_at_limit {
+            return self.real.fetch(provider, credential).await;
+        }
+        let now = Timestamp(
+            i64::try_from(
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |d| d.as_millis()),
+            )
+            .unwrap_or(0),
+        );
+        let reset = now.0 / 1000 + 3600;
+        yulius::wiring::usage::parse_codex(
+            &serde_json::json!({"rate_limit": {"limit_reached": true,
+                "primary_window": {"used_percent": 100, "limit_window_seconds": 18000, "reset_at": reset},
+                "secondary_window": {"used_percent": 40, "limit_window_seconds": 604800, "reset_at": reset + 86400}}}),
+            now,
+        )
+        .map_err(UsageFailure::new)
+    }
+
+    async fn model_answer(
+        &self,
+        provider: Provider,
+        credential: &Secret,
+        model: &str,
+    ) -> Result<yulius_domain::usage::ModelAnswer, UsageFailure> {
+        self.asked.fetch_add(1, Ordering::SeqCst);
+        self.real.model_answer(provider, credential, model).await
+    }
+}
+
+/// SPEC-503 CDX-008 (slice C2 review): Refresh of a Codex subscription whose limit is in effect
+/// reads its usage and asks nothing about a model's limit, which Codex does not have: an API-key
+/// subscription (no windows to read) and a ChatGPT one whose reading says the limit is reached
+/// both answer 200 with no note on the card.
+#[tokio::test]
+async fn a_codex_refresh_at_a_limit_asks_no_model_question() -> TestResult {
+    let api_key = format!(
+        r#"{{"auth_mode":"apikey","OPENAI_API_KEY":"{}"}}"#,
+        concat!("sk-", "SYNTHETIC0123456789abcdefghij")
+    );
+    let chatgpt = r#"{"auth_mode":"chatgpt","tokens":{"id_token":"h.e30.s","access_token":"SYNTHETIC-a","refresh_token":"SYNTHETIC-r","account_id":"acc"}}"#;
+    for (credential, chatgpt_at_limit) in [(api_key.as_str(), false), (chatgpt, true)] {
+        let probe = Arc::new(CodexProbe {
+            real: yulius::wiring::usage::ProviderUsage::new()?,
+            asked: AtomicUsize::new(0),
+            chatgpt_at_limit,
+        });
+        let h = harness_with(HarnessOptions {
+            usage: Some(probe.clone()),
+            ..HarnessOptions::default()
+        })?;
+        let admin = setup_superadmin_creds(&h).await?;
+        let now = h.app.now();
+        let limited = AccountUsage {
+            primary: Some(UsageWindow {
+                used_percent: Some(100.0),
+                window_minutes: Some(300),
+                resets_at: Some(Timestamp(now.0 + 3_600_000)),
+            }),
+            limit_reached: true,
+            limit_resets_at: Some(Timestamp(now.0 + 3_600_000)),
+            observed_at: Some(now),
+            ..AccountUsage::default()
+        };
+        h.store
+            .insert_account(&AccountRecord {
+                id: AccountId::parse("a-codex")?,
+                provider: Provider::OpenAi,
+                label: "Codex".into(),
+                credential: Some(h.app.deps.crypto.seal(credential.as_bytes())?),
+                status: AccountStatus::Limited,
+                usage_json: Some(yulius_app::usage_json::to_json(&limited)),
+                last_error: None,
+                created_at: Timestamp(1),
+                updated_at: Timestamp(1),
+                email: None,
+                email_checked_at: None,
+                email_typed: false,
+            })
+            .await?;
+        let refreshed = call(
+            &h.router,
+            Method::POST,
+            "/api/admin/accounts/a-codex/usage",
+            None,
+            &admin,
+        )
+        .await?;
+        assert_eq!(refreshed.status, StatusCode::OK, "{}", refreshed.body);
+        let stored = h
+            .store
+            .account(&AccountId::parse("a-codex")?)
+            .await?
+            .ok_or("account")?;
+        assert_eq!(stored.last_error, None, "no note on the card");
+        assert_eq!(probe.asked.load(Ordering::SeqCst), 0, "no model question");
+    }
+    Ok(())
+}
