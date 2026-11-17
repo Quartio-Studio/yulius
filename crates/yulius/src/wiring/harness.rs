@@ -21,7 +21,7 @@ use yulius_harness::launch::{
 use yulius_harness::observe::{Observed, UsageAccumulator};
 use yulius_harness::secret::Secret as HSecret;
 use yulius_harness::subagents::{LinesSince, SubagentTails};
-use yulius_harness::{claude, codex, login, paths, recount, skills, tail};
+use yulius_harness::{antigravity, claude, codex, login, paths, recount, skills, tail};
 
 /// Harness adapter.
 pub struct HarnessAdapter {
@@ -185,6 +185,9 @@ impl HarnessPort for HarnessAdapter {
             Harness::Codex => {
                 Credential::CodexAuthJson(HSecret::new(l.credential.expose().as_bytes().to_vec()))
             }
+            Harness::Antigravity => {
+                Credential::Antigravity(HSecret::new(l.credential.expose().as_bytes().to_vec()))
+            }
         };
         let mode = match &l.mode {
             SessionMode::New { session_id, prompt } => LaunchMode::New {
@@ -209,6 +212,8 @@ impl HarnessPort for HarnessAdapter {
             run_dir: l.run_dir.clone(),
             codex_home: l.codex_home.clone(),
             codex_program: l.codex_program.clone(),
+            antigravity_home: l.antigravity_home.clone(),
+            antigravity_program: l.antigravity_program.clone(),
             model: l.model.clone(),
             effort: l.effort.clone(),
             contained: l.contained,
@@ -226,8 +231,8 @@ impl HarnessPort for HarnessAdapter {
                     l.sandbox_home.parent().unwrap_or(&l.sandbox_home),
                     &l.worktree,
                 ),
-                // Codex has no plugins of Claude Code's (SPEC-503).
-                Harness::Codex => Vec::new(),
+                // Codex and Antigravity have no plugins of Claude Code's (SPEC-503, SPEC-505).
+                Harness::Codex | Harness::Antigravity => Vec::new(),
             },
         };
         let plan = launch::plan_launch(&request).map_err(|e| AppError::Invalid(e.to_string()))?;
@@ -340,6 +345,10 @@ impl HarnessPort for HarnessAdapter {
     ) -> AppResult<bool> {
         let transcript = self.claude_transcript(sandbox_home, worktree, session_id);
         yulius_harness::step_back::step_back_file(&transcript).map_err(io)
+    }
+
+    fn antigravity_transcript(&self, brain: &Path, session_id: &str) -> PathBuf {
+        paths::antigravity_transcript_path(brain, session_id)
     }
 
     fn find_codex_rollout(
@@ -484,6 +493,13 @@ impl HarnessPort for HarnessAdapter {
                     None => None,
                 }
             }
+            Harness::Antigravity => {
+                let path = paths::antigravity_transcript_path(
+                    &antigravity_brain_of(sandbox_home),
+                    session_id,
+                );
+                recount::count_antigravity_run(&path, since, until).map_err(io)?
+            }
         };
         Ok(counted.map(|acc| snapshot(&acc)))
     }
@@ -492,6 +508,7 @@ impl HarnessPort for HarnessAdapter {
         match harness {
             Harness::ClaudeCode => login::claude_setup_token_argv(),
             Harness::Codex => login::codex_device_login_argv(),
+            Harness::Antigravity => login::antigravity_sign_in_argv(),
         }
     }
 
@@ -531,6 +548,17 @@ pub fn codex_sessions_of(sandbox_home: &Path) -> PathBuf {
         .unwrap_or(sandbox_home)
         .join("codex")
         .join("sessions")
+}
+
+/// The sandbox's Antigravity conversations from its home: `<sandbox>/antigravity/shared/brain`,
+/// shared by its Antigravity homes (SPEC-505 AGY-003).
+pub fn antigravity_brain_of(sandbox_home: &Path) -> PathBuf {
+    sandbox_home
+        .parent()
+        .unwrap_or(sandbox_home)
+        .join("antigravity")
+        .join("shared")
+        .join("brain")
 }
 
 /// A run's figures as the transcript's lines give them (SPEC-087).
@@ -907,6 +935,7 @@ impl TranscriptWatch for Watch {
                 // A rollout's `session_meta` names its Codex CLI, which is not a Claude Code
                 // version (SPEC-503).
                 Harness::Codex => (codex::observe_line(&line), None),
+                Harness::Antigravity => (antigravity::observe_line(&line), None),
             };
             // Every record of the run's own thread names its Claude Code (SPEC-461 CCM-011).
             if let Some(version) = version {
@@ -1628,6 +1657,8 @@ mod tests {
             run_dir: PathBuf::from("/r"),
             codex_home: None,
             codex_program: None,
+            antigravity_home: None,
+            antigravity_program: None,
             model: None,
             effort: None,
             contained: false,
@@ -1712,6 +1743,8 @@ mod tests {
             credential: Secret("token".into()),
             codex_home: None,
             codex_program: None,
+            antigravity_home: None,
+            antigravity_program: None,
         })?;
         let settings = planned
             .plan
@@ -1853,6 +1886,8 @@ mod tests {
             credential: Secret("token".into()),
             codex_home: None,
             codex_program: None,
+            antigravity_home: None,
+            antigravity_program: None,
         })?;
         assert_eq!(style(&home.join(".claude"))?, "Concise");
         let config = dir.path().join("cockpit");

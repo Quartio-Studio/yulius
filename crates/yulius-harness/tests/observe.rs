@@ -5,7 +5,7 @@ use yulius_domain::task::GoalOutcome;
 use yulius_domain::time::Timestamp;
 use yulius_domain::usage::{LimitScope, TokenUsage, UsageWindow};
 use yulius_harness::observe::{LimitSignal, Observed, UsageAccumulator};
-use yulius_harness::{claude, codex};
+use yulius_harness::{antigravity, claude, codex};
 
 const CLAUDE_SESSION: &str = include_str!("fixtures/claude/session.jsonl");
 const CLAUDE_LIMIT_EPOCH: &str = include_str!("fixtures/claude/limit_epoch.jsonl");
@@ -21,6 +21,13 @@ const CODEX_MALFORMED: &str = include_str!("fixtures/codex/malformed.jsonl");
 const CODEX_REAL_0_169: &str = include_str!("fixtures/codex/exec-0.169.0.jsonl");
 /// The real Codex CLI 0.169.0 again, with a Stop hook that blocked the first turn's end once.
 const CODEX_REAL_STOP_BLOCK: &str = include_str!("fixtures/codex/exec-0.169.0-stop-block.jsonl");
+/// A transcript the real Antigravity CLI 1.5.10 wrote (`agy -p` three times on one conversation)
+/// against a local stub of the Gemini API: two answered prompts, then a third that met the
+/// stub's daily quota (429 `RESOURCE_EXHAUSTED`), retried eight times. Paths shortened to `/w`.
+const AGY_REAL_QUOTA: &str = include_str!("fixtures/antigravity/quota-1.5.10.jsonl");
+/// The real Antigravity CLI 1.5.10 again: a model step that called `run_command`, the tool step a
+/// `PreToolUse` hook denied, and an invalid tool call.
+const AGY_REAL_TOOL: &str = include_str!("fixtures/antigravity/tool-1.5.10.jsonl");
 const CODEX_SESSION_ID: &str = "019a6b2e-7c1d-7f00-9a3e-1b2c3d4e5f60";
 
 const CLAUDE_SESSION_ID: &str = "5b0d9c1e-2f4a-4c6b-9e7d-1a2b3c4d5e6f";
@@ -689,4 +696,210 @@ fn codex_malformed_and_unknown_lines() {
             vec![Observed::Malformed], // not an object
         ]
     );
+}
+
+/// SPEC-505 AGY-004: the transcript the real agy 1.5.10 wrote gives the three typed prompts (not
+/// the system messages it adds), each model response's tokens once (input without the cached
+/// tokens, which it reports apart), the model, and a usage limit for each attempt of the daily
+/// quota's 429; no line is malformed.
+#[test]
+fn a_transcript_the_real_agy_1_5_10_wrote_is_observed() {
+    let all_lines = observe_all(AGY_REAL_QUOTA, antigravity::observe_line);
+    let all = flat(&all_lines);
+    let prompts = all
+        .iter()
+        .filter(|o| {
+            matches!(
+                o,
+                Observed::UserTurn {
+                    wake: false,
+                    at: Some(_)
+                }
+            )
+        })
+        .count();
+    assert_eq!(prompts, 3, "Say hello, Run the probe command, One more");
+    let limits: Vec<&Observed> = all
+        .iter()
+        .copied()
+        .filter(|o| matches!(o, Observed::LimitReached { .. }))
+        .collect();
+    assert_eq!(limits.len(), 8, "one per attempt the CLI recorded");
+    match limits.first() {
+        Some(Observed::LimitReached {
+            message,
+            scope,
+            at,
+            resets_at,
+            window_minutes,
+        }) => {
+            assert!(message.contains("RESOURCE_EXHAUSTED"), "{message}");
+            assert!(message.len() <= 256 + "…".len(), "shortened: {message}");
+            assert_eq!(*scope, LimitScope::Account);
+            assert!(at.is_some());
+            assert_eq!(*resets_at, None);
+            assert_eq!(*window_minutes, None);
+        }
+        other => panic!("a usage limit: {other:?}"),
+    }
+    let acc = accumulate(AGY_REAL_QUOTA, antigravity::observe_line);
+    assert_eq!(
+        acc.usage(),
+        TokenUsage {
+            input: Some(2 * 1_134),
+            output: Some(2 * 66),
+            cache_read: Some(2 * 100),
+            cache_write: None,
+        }
+    );
+    assert_eq!(acc.model(), Some("gemini-4-carbon-high"));
+    assert_eq!(acc.malformed_lines(), 0);
+    // Reading the lines again counts nothing twice.
+    let mut twice = UsageAccumulator::new();
+    for line in AGY_REAL_QUOTA.lines().chain(AGY_REAL_QUOTA.lines()) {
+        twice.observe_all(&antigravity::observe_line(line));
+    }
+    assert_eq!(twice.usage(), acc.usage());
+}
+
+/// SPEC-505 AGY-004: a model step, a tool step and a refused tool call are the agent's work; the
+/// typed prompt starts a turn; the system message is no one's work.
+#[test]
+fn an_agy_tool_turn_is_agent_work() {
+    let per_line = observe_all(AGY_REAL_TOOL, antigravity::observe_line);
+    let kinds: Vec<Vec<&str>> = per_line
+        .iter()
+        .map(|line| {
+            line.iter()
+                .map(|o| match o {
+                    Observed::UserTurn { .. } => "prompt",
+                    Observed::AgentWork { .. } => "work",
+                    Observed::AssistantMessage { .. } => "message",
+                    Observed::TurnContext { .. } => "model",
+                    _ => "other",
+                })
+                .collect()
+        })
+        .collect();
+    assert_eq!(
+        kinds,
+        vec![
+            vec!["work"],
+            vec!["model", "message", "work"],
+            vec!["prompt"],
+            vec![],
+            vec!["model", "message", "work"],
+            vec!["work"],
+            vec!["model", "message", "work"],
+        ]
+    );
+}
+
+/// SPEC-505 AGY-004: what a plan or the API says at a limit is a limit of the subscription; a
+/// per-minute rate limit the CLI waits out by itself is not; broken lines are counted, unknown
+/// types ignored.
+#[test]
+fn agy_limits_and_broken_lines() {
+    let line = |error: &str| {
+        serde_json::json!({
+            "step_index": 3, "source": "SYSTEM", "type": "ERROR_MESSAGE", "status": "DONE",
+            "error": error, "created_at": "2026-11-17T17:09:21Z"
+        })
+        .to_string()
+    };
+    let limited = |error: &str| {
+        antigravity::observe_line(&line(error))
+            .iter()
+            .any(|o| matches!(o, Observed::LimitReached { .. }))
+    };
+    assert!(limited("Individual quota reached. Resets in 3 days."));
+    assert!(limited("baseline model quota reached"));
+    assert!(limited("Your AI credits balance is too low to continue."));
+    assert!(limited(
+        "API error (attempt 1): Error 429, Message: Resource has been exhausted, Status: \
+         RESOURCE_EXHAUSTED, Details: [quotaId:GenerateContentPaidTierInputTokensPerModelPerDay]"
+    ));
+    assert!(!limited(
+        "API error (attempt 1): Error 429, Status: RESOURCE_EXHAUSTED, Details: \
+         [quotaId:GenerateRequestsPerMinutePerProjectPerModel]"
+    ));
+    assert!(!limited(
+        "API error (attempt 1): Error 503, Status: UNAVAILABLE"
+    ));
+    // The model's capacity, which the CLI retries by itself, names no quota of the subscription.
+    assert!(!limited(
+        "API error (attempt 1): Error 429, Message: Resource has been exhausted (e.g. check \
+         quota)., Status: RESOURCE_EXHAUSTED"
+    ));
+    assert!(!limited(
+        "API error (attempt 2): Error 429, Message: You exceeded your current quota, Status: \
+         RESOURCE_EXHAUSTED, Details: [quotaId:GenerateRequestsPerMinutePerProjectPerModel]"
+    ));
+    assert_eq!(
+        antigravity::observe_line("{not json"),
+        vec![Observed::Malformed]
+    );
+    assert_eq!(
+        antigravity::observe_line(r#"{"step_index":1}"#),
+        vec![Observed::Malformed]
+    );
+    assert!(
+        antigravity::observe_line(
+            r#"{"step_index":1,"source":"MODEL","type":"SOME_FUTURE_STEP","status":"DONE"}"#
+        )
+        .iter()
+        .all(|o| matches!(o, Observed::AgentWork { .. }))
+    );
+    assert!(
+        antigravity::observe_line(
+            r#"{"step_index":1,"source":"SYSTEM","type":"SOME_FUTURE_STEP","status":"DONE"}"#
+        )
+        .is_empty()
+    );
+}
+
+/// SPEC-505 AGY-004: a run's window of an Antigravity transcript counts its own steps, read by
+/// their `created_at`.
+#[test]
+fn an_antigravity_run_counts_its_own_window() -> Result<(), Box<dyn std::error::Error>> {
+    let dir = tempfile::tempdir()?;
+    let path = dir.path().join("transcript.jsonl");
+    std::fs::write(&path, AGY_REAL_QUOTA)?;
+    let whole =
+        yulius_harness::recount::count_antigravity_run(&path, None, None)?.ok_or("a count")?;
+    assert_eq!(whole.usage().input, Some(2 * 1_134));
+    // The real transcript's steps share one second: a window from the next second keeps none.
+    let late = yulius_domain::time::parse_rfc3339("2026-11-17T17:09:21Z").ok_or("time")?;
+    let after = yulius_harness::recount::count_antigravity_run(&path, Some(late), None)?
+        .ok_or("a count")?;
+    assert_eq!(after.usage().input, None);
+    // Three runs of one conversation (10:00, 10:05, 10:10): the middle run's window, from its
+    // start to the next run's, counts its own response only.
+    let response = |at: &str, index: u32, input: u64| {
+        serde_json::json!({
+            "step_index": index, "source": "MODEL", "type": "PLANNER_RESPONSE", "status": "DONE",
+            "created_at": at, "model": "gemini-4-carbon-high", "input_tokens": input,
+            "output_tokens": 1
+        })
+        .to_string()
+    };
+    let runs = [
+        response("2026-11-17T10:00:00Z", 1, 100),
+        response("2026-11-17T10:05:00Z", 3, 20),
+        response("2026-11-17T10:10:00Z", 5, 3),
+    ]
+    .join("\n");
+    let runs_path = dir.path().join("runs.jsonl");
+    std::fs::write(&runs_path, runs + "\n")?;
+    let at = |text: &str| yulius_domain::time::parse_rfc3339(text).ok_or("time");
+    let middle = yulius_harness::recount::count_antigravity_run(
+        &runs_path,
+        Some(at("2026-11-17T10:05:00Z")?),
+        Some(at("2026-11-17T10:10:00Z")?),
+    )?
+    .ok_or("a count")?;
+    assert_eq!(middle.usage().input, Some(20));
+    let missing = dir.path().join("none.jsonl");
+    assert!(yulius_harness::recount::count_antigravity_run(&missing, None, None)?.is_none());
+    Ok(())
 }

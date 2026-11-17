@@ -10,6 +10,11 @@
 //! account's credential, validated by [`validate_codex_auth`]. An API key becomes an `auth.json`
 //! through [`codex_api_key_auth`]. After each run the copy with the newer `last_refresh` wins
 //! ([`newer_codex_auth`]), so a token Codex refreshed during a run is kept.
+//!
+//! Antigravity (SPEC-505 AGY-008): a Gemini API key, or the token file the CLI's own Google
+//! sign-in writes in a temporary home, each kept as a small JSON envelope
+//! ([`antigravity_api_key_credential`], [`antigravity_sign_in_credential`]). The token file's
+//! format is the CLI's and stays opaque to Yulius.
 
 use std::cmp::Ordering;
 
@@ -18,6 +23,89 @@ use serde_json::{Value, json};
 use yulius_domain::time::Timestamp;
 
 use yulius_domain::time::parse_rfc3339;
+
+/// Largest Antigravity token file accepted.
+pub const ANTIGRAVITY_TOKEN_MAX_BYTES: usize = 64 * 1024;
+
+/// An Antigravity credential, as its envelope holds it.
+#[derive(Clone, PartialEq, Eq)]
+pub enum AntigravityCredential {
+    /// A Gemini API key (`GEMINI_API_KEY`).
+    ApiKey(String),
+    /// The token file of a Google sign-in, as the CLI wrote it.
+    SignIn(Vec<u8>),
+}
+
+impl std::fmt::Debug for AntigravityCredential {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::ApiKey(_) => "AntigravityCredential::ApiKey(..)",
+            Self::SignIn(_) => "AntigravityCredential::SignIn(..)",
+        })
+    }
+}
+
+/// Whether `key` can be a Gemini API key: 16 to 256 visible ASCII characters.
+fn plausible_gemini_api_key(key: &str) -> bool {
+    (16..=256).contains(&key.len()) && key.bytes().all(|b| b.is_ascii_graphic())
+}
+
+/// The envelope of a Gemini API key, `None` for text that cannot be one (SPEC-505 AGY-008).
+#[must_use]
+pub fn antigravity_api_key_credential(key: &str) -> Option<Vec<u8>> {
+    let key = key.trim();
+    plausible_gemini_api_key(key).then(|| {
+        json!({ "kind": "gemini_api_key", "api_key": key })
+            .to_string()
+            .into_bytes()
+    })
+}
+
+/// The envelope of a Google sign-in's token file, `None` for an empty one or one larger than
+/// [`ANTIGRAVITY_TOKEN_MAX_BYTES`] (SPEC-505 AGY-008).
+#[must_use]
+pub fn antigravity_sign_in_credential(token_file: &[u8]) -> Option<Vec<u8>> {
+    use base64::Engine as _;
+    (!token_file.is_empty() && token_file.len() <= ANTIGRAVITY_TOKEN_MAX_BYTES).then(|| {
+        json!({
+            "kind": "google_sign_in",
+            "token_file": base64::engine::general_purpose::STANDARD.encode(token_file),
+        })
+        .to_string()
+        .into_bytes()
+    })
+}
+
+/// What an envelope holds, `None` when it is not one.
+#[must_use]
+pub fn parse_antigravity_credential(envelope: &[u8]) -> Option<AntigravityCredential> {
+    use base64::Engine as _;
+    let value: Value = serde_json::from_slice(envelope).ok()?;
+    match value.get("kind")?.as_str()? {
+        "gemini_api_key" => value
+            .get("api_key")?
+            .as_str()
+            .filter(|key| plausible_gemini_api_key(key))
+            .map(|key| AntigravityCredential::ApiKey(key.to_owned())),
+        "google_sign_in" => base64::engine::general_purpose::STANDARD
+            .decode(value.get("token_file")?.as_str()?)
+            .ok()
+            .filter(|t| !t.is_empty() && t.len() <= ANTIGRAVITY_TOKEN_MAX_BYTES)
+            .map(AntigravityCredential::SignIn),
+        _ => None,
+    }
+}
+
+/// The envelope to keep after a run of a Google sign-in left `fresh` as its token file: `Some`
+/// when it is a usable file that differs from the one in `stored`. The run used the account's own
+/// sign-in, so a change is the CLI's refresh (or the agent's doing on its own account, ADR-0361).
+#[must_use]
+pub fn antigravity_refreshed_credential(fresh: &[u8], stored: &[u8]) -> Option<Vec<u8>> {
+    match parse_antigravity_credential(stored)? {
+        AntigravityCredential::SignIn(old) if old != fresh => antigravity_sign_in_credential(fresh),
+        _ => None,
+    }
+}
 
 /// Prefix of Claude long-lived OAuth tokens.
 pub const CLAUDE_TOKEN_PREFIX: &str = "sk-ant-oat01-";
@@ -41,6 +129,14 @@ pub fn claude_setup_token_argv() -> Vec<String> {
 #[must_use]
 pub fn codex_device_login_argv() -> Vec<String> {
     vec!["codex".into(), "login".into(), "--device-auth".into()]
+}
+
+/// argv of the Antigravity CLI's own Google sign-in: the bare TUI, which asks for a sign-in in a
+/// home without one and prints the authorization URL when no browser opens (1.5.10). Run it
+/// with `HOME` set to a fresh private folder (SPEC-505 AGY-008).
+#[must_use]
+pub fn antigravity_sign_in_argv() -> Vec<String> {
+    vec![crate::launch::ANTIGRAVITY_PROGRAM.into()]
 }
 
 /// The `config.toml` of a Codex home Yulius prepares: credentials live in `auth.json`, never the

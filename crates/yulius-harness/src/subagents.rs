@@ -105,7 +105,8 @@ impl LinesSince {
         if self.since.is_none() && self.until.is_none() {
             return true;
         }
-        let at = claude::record_time(line);
+        // An Antigravity step says when in `created_at` (SPEC-505).
+        let at = claude::record_time(line).or_else(|| crate::antigravity::record_time(line));
         if let (Some(until), Some(at)) = (self.until, at)
             && at >= until
         {

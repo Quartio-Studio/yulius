@@ -70,8 +70,15 @@ pub(crate) fn codex_takes_no_claude_model(harness: Harness, model: Option<&str>)
     Ok(())
 }
 
-fn parse_harness(text: &str) -> AppResult<Harness> {
-    Harness::parse(text).map_err(|_| AppError::Invalid("harness must be claude or codex".into()))
+pub(crate) fn parse_harness(text: &str) -> AppResult<Harness> {
+    match Harness::parse(text) {
+        // Antigravity's adapter is in place, its runs are not yet (SPEC-505 slice A): refused as
+        // unknown until slice C opens the path.
+        Ok(Harness::Antigravity) | Err(_) => {
+            Err(AppError::Invalid("harness must be claude or codex".into()))
+        }
+        Ok(harness) => Ok(harness),
+    }
 }
 
 /// A prepared task has one way to start (SPEC-105 PRP-001).
