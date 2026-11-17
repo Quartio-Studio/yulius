@@ -409,4 +409,13 @@ Five pull requests, each merged into `dev` on green before the next begins.
   `task_delete`, `automations`, `supervision`, `pool_supervision`, `subscription_moves`,
   `subscription_pool`, `claude_gate`, `accounts`, `account_token`, `mcp`, `restart`, `notify`,
   `telegram`, `cockpit`: 2403 passed, 0 failed.
+- **Mutation check by hand** (`scripts/dev mutants` counts every mutant caught, #1374): on
+  `254d68d6a`, five lines undone one at a time, each failing its test (nextest exit 100;
+  `$HOME/.cache/yulius-task-485/handmut-c1.py`): a hook of another harness accepted →
+  `agent_hooks::codex_hooks_reach_yulius_for_codex_runs_only`; another provider's subscription
+  taken on Continue → `codex::a_codex_start_that_loses_its_subscription_leaves_no_credentials`;
+  no write-back → `codex::only_a_genuine_codex_refresh_reaches_the_vault`; the provided CLI not
+  passed to the run → `codex::a_codex_task_starts_the_provided_codex_cli`; the Codex failure words
+  → `notify::tests::an_ended_task_says_how_it_ended`.
+- `yulius security-scan`: not run (Vidoc refused the key, HTTP 401, exit 2).
 
