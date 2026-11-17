@@ -418,4 +418,43 @@ Five pull requests, each merged into `dev` on green before the next begins.
   passed to the run → `codex::a_codex_task_starts_the_provided_codex_cli`; the Codex failure words
   → `notify::tests::an_ended_task_says_how_it_ended`.
 - `yulius security-scan`: not run (Vidoc refused the key, HTTP 401, exit 2).
+- **Review round 1** (Fable 5.2, `5fe048aa1`, request changes: 4 major, 7 minor, 4 nits of own
+  code, 1 pre-existing), answered in `1b34840bb`, each fix's test failing first:
+  - a Codex run recorded lost (a host that died with the server) got no write-back and left its
+    `auth.json`: `mark_lost` now runs it too
+    (`codex::a_lost_codex_run_keeps_its_refresh_and_leaves_no_credentials`, the reviewer's probe
+    with assertions, killing the host before the agent so the run is lost, not exited);
+  - the write-back stored the status it had read and cleared the email and last error: a new
+    store write, `AccountStore::refresh_account_credential`, changes only the credential and only
+    while the account still holds the one refreshed (`codex::only_a_genuine_codex_refresh_…`
+    extended: a typed email and a usage note stay);
+  - the file kept for another live run of the subscription had no test:
+    `codex::the_file_stays_while_another_run_of_the_subscription_lives` (two tasks, one sandbox,
+    one subscription; the file is watched for 2 s after the first run's write-back, then goes after
+    the second);
+  - a Codex goal launch had no test: `codex::a_codex_goal_task_gets_its_request_as_its_first_message`;
+  - minors: one rule `TaskRecord::follows_goal` (goal mode and not Codex) for the launch and the
+    Stop hook, so a Codex goal task's Stop is not held for capacity
+    (`subscription_pool::a_codex_goal_tasks_stop_is_not_held_for_capacity`, 202 before); no Claude
+    model recorded for a Codex run or named in its detail (the goal test; `claude-opus-5-5` before);
+    a Claude model refused when set on a Codex task later
+    (`codex::a_codex_task_refuses_a_claude_model_set_later`); the failed start's reason asserted
+    (`a_codex_start_without_a_codex_cli_says_why`, watched before the start goes on through a gate
+    in the fake harness); the write-back runs on its own task, so a run's end never waits on
+    another launch's lock; a task lookup that fails counts as another run (the file stays);
+  - nits: dev's SPEC-451 references in `identity.rs` restored (a rename of mine had changed them);
+    0.169.0 and AC-503 in `tests/codex.rs`; slice B's last plan item ticked; the rollouts are not
+    scanned once a hook named the session. Left as found: `files.rs` `replace_in`'s temporary file
+    takes the umask before its caller narrows it (pre-existing, no content exposed).
+  - The contained run's read-only bind of the CLI: `codex::a_contained_codex_run_sees_the_provided_codex_cli`
+    skips here (`bwrap: Creating new namespace failed: Operation not permitted`), so it is proven
+    by reading only in this environment (`supervisor.rs`, the CLI's directory joins the run's
+    read-only binds).
+- **Mutation check by hand** of the fixes (`$HOME/.cache/yulius-task-485/handmut-c1b.py`, on
+  `1b34840bb`): the `others` check, `follows_goal`'s Codex part, the Codex default model, the
+  later-model refusal, the lost run's write-back and the credential-only store write, each undone,
+  failed its test (nextest exit 100).
+- After the fixes: clippy clean; the C1 set with `task_setup`, `models` and `yulius-store`: 2532
+  passed, 1 failed (`migrate_helper::tests::a_stop_of_the_helper_ends_the_command_first`, #1375,
+  outside this change).
 
