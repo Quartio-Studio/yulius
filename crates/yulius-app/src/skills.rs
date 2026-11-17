@@ -1274,17 +1274,19 @@ mod tests {
         Ok(())
     }
 
-    /// SPEC-493 MUT-002 (AC-12): mutation testing once per pull request, the same everywhere
-    /// tests and reviews are described; this repository names its command; the workflows send
+    /// SPEC-493 MUT-002 (AC-12), SPEC-506 FST-004: mutation testing beside the review, the same
+    /// everywhere tests and reviews are described; this repository names its command; the workflows send
     /// the agent to `delivery-pipeline`, which states it.
     #[test]
-    fn every_place_says_mutation_testing_once_per_pull_request() -> TestResult {
-        const RULE: &str = "mutation testing runs once per pull request: on the first head you ask \
-            a review for, run the project's mutation command and put its summary line in the \
-            spec's evidence; a project without one undoes by hand the few lines its new tests are \
-            meant to hold and says what failed. the reviewer reads that result, may undo a single \
-            line it doubts, and runs no campaign of its own. nobody writes a mutation script by \
-            hand. a test that cannot fail is still fixed in the same pull request (adr-0141).";
+    fn every_place_says_mutation_testing_runs_beside_the_review() -> TestResult {
+        const RULE: &str = "mutation testing runs beside the review: when you ask for a pull \
+            request's first review, start the project's mutation command in the background and let \
+            the reviewer read meanwhile; when it ends, put its summary line in the spec's evidence \
+            and fix each missed mutant test-first before the merge. after a later round's fix, run \
+            it on that fix's lines alone. a project without one undoes by hand the few lines its \
+            new tests are meant to hold and says what failed. the reviewer may undo a single line \
+            it doubts and runs no campaign of its own. nobody writes a mutation script by hand. a \
+            test that cannot fail is still fixed in the same pull request (adr-0141).";
         const HERE: &str = "here the command is `scripts/dev mutants`.";
         let normal = |text: &str| {
             text.split_whitespace()
@@ -1315,6 +1317,20 @@ mod tests {
             assert!(
                 text.contains(&normal(&format!("{RULE} {HERE}"))),
                 "{rel} does not state the rule with this repository's command"
+            );
+        }
+        for rel in [
+            "catalog/skills/open-mercato/om-code-review/SKILL.md",
+            "catalog/skills/yulius/delivery-pipeline/SKILL.md",
+            "catalog/skills/superpowers/test-driven-development/SKILL.md",
+            ".apm/skills/yulius-verify/SKILL.md",
+            ".apm/skills/yulius-review/SKILL.md",
+            "docs/engineering/development.md",
+            "AGENTS.md",
+        ] {
+            assert!(
+                !read(rel)?.contains("on the first head you ask a review for"),
+                "{rel} keeps the rule that waits for the run before the review"
             );
         }
         // The workflows' instructions have no byte to spare (1,444 with their heading, #555):
