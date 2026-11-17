@@ -6,6 +6,13 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-17
 
+- The checks of seconds fail a CI run in seconds (SPEC-506 pull request 3, task #488,
+  [ADR-0363](decisions/0363-the-quick-checks-run-first-and-the-checkers-tests-beside-the-rust-gates.md)):
+  `scripts/dev quick` (repository contracts and formatting) runs first in the `quality` job, and
+  every project's author runs its quick checks before each commit it publishes. The checker's
+  Python tests run beside the Rust gates: `checks` took 108 to 114 s instead of 138 s after a
+  one-line change, for no more CPU.
+
 - Mutation testing runs beside the review (SPEC-506 pull request 2, task #488,
   [ADR-0347](decisions/0347-mutation-testing-runs-once-per-pull-request.md) amended): the author
   starts it when the first review is asked for instead of waiting for it, fixes each missed

@@ -37,7 +37,7 @@ Python's standard-library `tomllib` means Python 3.10 and older are unsupported.
 | Command | Actual work |
 | --- | --- |
 | `scripts/dev doctor` | Compiler/tool versions and Python prerequisite |
-| `scripts/dev quick` | The checks of seconds, first in `ci` and `checks`: the repository contracts (`scripts/check_repository.py`) and `cargo fmt --check`; run it before each commit you publish (SPEC-506) |
+| `scripts/dev quick` | The checks of seconds, first in `ci` and `checks` (after `doctor`): the repository contracts (`scripts/check_repository.py`) and `cargo fmt --check`; run it before each commit you publish. In `ci` and `checks` the checker's Python tests then run beside the Rust gates (ADR-0363) |
 | `scripts/dev check` | Local Markdown links, no merge conflict marker lines outside vendored assets, skills (frontmatter, "Use when" description, body size, deployments equal `.apm/skills`), Cargo inheritance/layers, one integration test binary for the composition crate, web UI design tokens (no colour, type, radius or spacing literals in `styles.css`; WCAG contrast of every theme in `tokens.css`), instructions that tell an agent to merge by hand, promote or poll; checker regression tests; locked all-target compilation |
 | `scripts/dev fmt` | Rust formatting mutation |
 | `scripts/dev lint` | Formatting verification and Clippy with warnings denied |
