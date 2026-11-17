@@ -420,10 +420,10 @@ impl App {
         let Some(train) = self.read_trains(&sandbox.id).train else {
             return false;
         };
-        if let Some((_, since)) = train.own_wait {
-            if self.now().0 <= since.saturating_add(WAIT_LIMIT_MS) {
-                return false;
-            }
+        if let Some((_, since)) = train.own_wait
+            && self.now().0 <= since.saturating_add(WAIT_LIMIT_MS)
+        {
+            return false;
         }
         !matches!(
             self.deps.store.ci_run(&train.run).await,
