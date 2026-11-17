@@ -812,7 +812,9 @@ not_product = ["crates/gen/"] # globs) counts only these, `not_product` never th
 Jobs name their stages with `::yulius-stage <name>` lines ("Stages" below). Jobs get `CI=true`, `HOME` (persistent, shared by the sandbox's lanes), `YULIUS_CI_CACHE` (persistent, the job checkout's own: never shared with a job running at the same time), `YULIUS_CI_RUN`,
 `YULIUS_CI_JOB`, `YULIUS_CI_SHA`, `YULIUS_CI_REF`, `YULIUS_CI_MATRIX`, `YULIUS_CI=1`,
 `YULIUS_CI_SKIP_CODE` (78), `YULIUS_CI_INCOMPLETE_CODE` (75), `YULIUS_SANDBOX`,
-`YULIUS_INTEGRATION_BRANCH`, and no secret values (granted `secrets` arrive as placeholders through
+`YULIUS_INTEGRATION_BRANCH`, `YULIUS_CI_QUARANTINE` and `YULIUS_CI_QUARANTINE_NEXTEST` (the tests
+quarantined as flaky, one name per line and as a nextest filter of their test paths; empty for
+none, ADR-0356), and no secret values (granted `secrets` arrive as placeholders through
 the egress proxy, audited `ci:<run>`). A job
 starts once its CPUs and memory are free: the CI jobs of all lanes never ask for more than the
 sandbox has, and each is told its budget in `YULIUS_CPUS`, `YULIUS_MEMORY_MB` and the variables of

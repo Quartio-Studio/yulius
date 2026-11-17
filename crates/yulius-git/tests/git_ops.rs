@@ -879,6 +879,57 @@ fn commit_all_and_push_with_explicit_refspecs() -> TestResult {
 
 /// SPEC-139: the remote's own answer for a branch, which a push that reported a failure may
 /// have moved, and none for a branch it does not have.
+/// Runs plain Git in `repo` with a fixed identity and no user configuration; its output.
+fn plain_git(repo: &Path, args: &[&str]) -> Result<String, Box<dyn Error>> {
+    let out = std::process::Command::new("git")
+        .current_dir(repo)
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .args(["-c", "user.name=t", "-c", "user.email=t@example.invalid"])
+        .args(args)
+        .output()?;
+    if !out.status.success() {
+        return Err(String::from_utf8_lossy(&out.stderr).into_owned().into());
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).trim().to_owned())
+}
+
+/// SPEC-497 OFC-002 (review round 2): every merge base of a criss-cross history, none for two
+/// histories that share nothing, and an unknown revision is an error, never "none".
+#[test]
+fn merge_bases_lists_every_best_common_ancestor() -> TestResult {
+    let fx = Fixture::new()?;
+    let repo = fx.path("repo");
+    fx.git.init(&repo, "main", false)?;
+    let commit = |file: &str| -> Result<String, Box<dyn Error>> {
+        fs::write(repo.join(file), file)?;
+        plain_git(&repo, &["add", "-A"])?;
+        plain_git(&repo, &["commit", "-q", "-m", file])?;
+        plain_git(&repo, &["rev-parse", "HEAD"])
+    };
+    commit("base")?;
+    plain_git(&repo, &["checkout", "-q", "-b", "one"])?;
+    let shared = commit("shared")?;
+    plain_git(&repo, &["checkout", "-q", "-b", "two"])?;
+    commit("two")?;
+    plain_git(&repo, &["checkout", "-q", "main"])?;
+    let newer = commit("newer")?;
+    for branch in ["one", "two"] {
+        plain_git(&repo, &["checkout", "-q", branch])?;
+        plain_git(&repo, &["merge", "-q", "--no-edit", "main"])?;
+    }
+    let mut bases = fx.git.merge_bases(&repo, "one", "two")?;
+    bases.sort();
+    let mut expected = vec![shared, newer];
+    expected.sort();
+    assert_eq!(bases, expected);
+    plain_git(&repo, &["checkout", "-q", "--orphan", "alone"])?;
+    commit("alone")?;
+    assert!(fx.git.merge_bases(&repo, "alone", "main")?.is_empty());
+    assert!(fx.git.merge_bases(&repo, "nosuch", "main").is_err());
+    Ok(())
+}
+
 #[test]
 fn remote_branch_head_reads_the_remote_itself() -> TestResult {
     let fx = Fixture::new()?;

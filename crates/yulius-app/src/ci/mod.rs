@@ -38,6 +38,8 @@ mod disk_wait;
 mod environment;
 mod exec;
 mod findings;
+mod flaky;
+pub use flaky::Noted;
 pub mod hygiene;
 pub(crate) mod playground;
 mod prove;
@@ -250,6 +252,21 @@ pub struct CiMinutesRow {
     pub rerun_ms: i64,
 }
 
+/// A test quarantined as flaky in a sandbox (SPEC-497 OFC-002).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Quarantined {
+    /// Its sandbox.
+    pub sandbox_id: SandboxId,
+    /// Its name as the failing tests' blocks name it.
+    pub test: String,
+    /// The job it failed in.
+    pub job_key: String,
+    /// The issue filed for it, if one could be.
+    pub issue: Option<(u64, String)>,
+    /// When it was quarantined.
+    pub since: Timestamp,
+}
+
 /// Fields set with a job transition.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct CiJobUpdate {
@@ -340,6 +357,10 @@ pub struct CiState {
     /// One CI sync of a sandbox at a time (the 60 s loop, a person's sync, a review's start):
     /// each reads the runs before it queues, so two at once would queue one head twice.
     sync_locks: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    /// One quarantine of a sandbox decided at a time (SPEC-497 OFC-002): two jobs failing the
+    /// same test at once would each file an issue for it (review round 1); per sandbox, so a
+    /// slow GitHub holds only that project's job ends (review round 2).
+    pub(crate) quarantine_locks: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     /// Sandboxes with a run that passed when it was queued (every job skipped for its
     /// `paths`): the dispatcher starts their merge pass, as a run's end does.
     passed_when_queued: Mutex<Vec<SandboxId>>,
@@ -1503,6 +1524,8 @@ impl App {
         }
         self.cd_prune().await;
         self.prune_spans(Timestamp(now)).await;
+        // Quarantined tests whose issue was closed go back into the runs (SPEC-497 OFC-002).
+        self.ci_release_quarantines().await;
     }
 
     /// Starts the oldest queued runs of every sandbox, as many as it has free lanes

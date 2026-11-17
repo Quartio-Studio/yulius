@@ -673,6 +673,14 @@ impl App {
             || self.ci_sandboxes_running(),
             |sandbox| {
                 let used = isolation.ci_use(sandbox)?;
+                // For diagnosis only (ADR-0353's amendment): admission does not use it.
+                if let Some(pressure) = used.cpu_pressure {
+                    tracing::debug!(
+                        %sandbox,
+                        cpu_pressure_permille = pressure,
+                        "CI's CPU pressure"
+                    );
+                }
                 Some((used.cpu_usec, used.anon_bytes))
             },
         )
@@ -681,9 +689,10 @@ impl App {
     /// Waits until the job `job` of a run of `priority` may start with `budget` beside what CI
     /// holds on the whole host, and holds it (SPEC-082 RES-003, SPEC-497 HBA-001, HBA-002):
     /// room by what CI was measured to use and what jobs that just started may still bring, the
-    /// running jobs' budgets within three times the CI budget, and a job slot free. Merge candidates' jobs go first, then the longest waiting; a job that
-    /// cannot start lets the ones behind it that can, for [`OVERTAKE_LIMIT`] at most. The queued
-    /// job says what it waits for whenever that changes (HBA-005).
+    /// running jobs' budgets within three times the CI budget, and a job slot free. Merge
+    /// candidates' jobs go first, then the longest waiting; a job that cannot start lets the ones
+    /// behind it that can, for [`OVERTAKE_LIMIT`] at most. The queued job says what it waits for
+    /// whenever that changes (HBA-005).
     pub(crate) async fn ci_reserve(
         &self,
         job: &str,

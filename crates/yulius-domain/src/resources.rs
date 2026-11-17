@@ -779,9 +779,9 @@ mod tests {
     }
 
     /// SPEC-497 HBA-001, HBA-002: the reserve of the server and agents; what CI uses decides,
-    /// with what starting jobs may still bring; the worst case is bounded at three times the budget;
-    /// CI's processes waiting for CPUs stop new jobs; memory as well as CPUs; without readings
-    /// the reservations decide; a job larger than the budget counts as the whole budget.
+    /// with what starting jobs may still bring; the worst case is bounded at three times the
+    /// budget; memory as well as CPUs; without readings the reservations decide; a job larger
+    /// than the budget counts as the whole budget.
     #[test]
     fn ci_jobs_are_admitted_by_what_ci_uses_within_a_bounded_worst_case() {
         let budget = Capacity::new(64, 512 * 1024).ci_budget();

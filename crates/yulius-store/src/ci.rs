@@ -3,7 +3,7 @@
 use async_trait::async_trait;
 use rusqlite::{OptionalExtension, Row, params, params_from_iter};
 use yulius_app::ci::{
-    CiJobRecord, CiJobUpdate, CiMinutesRow, CiRunRecord, CiRunUpdate, FiledFinding,
+    CiJobRecord, CiJobUpdate, CiMinutesRow, CiRunRecord, CiRunUpdate, FiledFinding, Quarantined,
 };
 use yulius_app::error::{AppError, AppResult};
 use yulius_app::ports::store_ext::CiStore;
@@ -484,6 +484,159 @@ impl CiStore for SqliteStore {
                 )
                 .map_err(db)?;
             Ok(u32::try_from(waiting).unwrap_or(u32::MAX))
+        })
+        .await
+    }
+
+    async fn record_test_failures(
+        &self,
+        sandbox: &SandboxId,
+        job_key: &str,
+        (reference, run, sha): (&str, &str, &str),
+        tests: &[String],
+        at: Timestamp,
+        forget_before: Timestamp,
+    ) -> AppResult<()> {
+        let (sandbox, job_key, reference, run, sha, tests) = (
+            sandbox.as_str().to_owned(),
+            job_key.to_owned(),
+            reference.to_owned(),
+            run.to_owned(),
+            sha.to_owned(),
+            tests.to_vec(),
+        );
+        self.call(move |c| {
+            let tx = c.transaction().map_err(db)?;
+            for test in &tests {
+                tx.execute(
+                    "INSERT INTO ci_test_failures (sandbox_id, job_key, test, reference, run_id, \
+                     sha, at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                    params![sandbox, job_key, test, reference, run, sha, at.0],
+                )
+                .map_err(db)?;
+            }
+            tx.execute(
+                "DELETE FROM ci_test_failures WHERE at < ?1",
+                params![forget_before.0],
+            )
+            .map_err(db)?;
+            tx.commit().map_err(db)
+        })
+        .await
+    }
+
+    async fn test_failures(
+        &self,
+        sandbox: &SandboxId,
+        job_key: &str,
+        test: &str,
+        since: Timestamp,
+    ) -> AppResult<Vec<yulius_domain::ci::flaky::TestFailure>> {
+        let (sandbox, job_key, test) = (
+            sandbox.as_str().to_owned(),
+            job_key.to_owned(),
+            test.to_owned(),
+        );
+        self.call(move |c| {
+            let mut statement = c
+                .prepare(
+                    "SELECT reference, sha, at FROM ci_test_failures WHERE sandbox_id = ?1 \
+                     AND job_key = ?2 AND test = ?3 AND at >= ?4 ORDER BY at",
+                )
+                .map_err(db)?;
+            let rows = statement
+                .query_map(params![sandbox, job_key, test, since.0], |row| {
+                    Ok(yulius_domain::ci::flaky::TestFailure {
+                        reference: row.get(0)?,
+                        sha: row.get(1)?,
+                        at: Timestamp(row.get(2)?),
+                    })
+                })
+                .map_err(db)?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(db)?;
+            Ok(rows)
+        })
+        .await
+    }
+
+    async fn quarantine_test(&self, entry: &Quarantined) -> AppResult<bool> {
+        let entry = entry.clone();
+        self.call(move |c| {
+            let added = c
+                .execute(
+                    "INSERT OR IGNORE INTO ci_quarantine (sandbox_id, test, job_key, issue_number, \
+                     issue_url, since) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                    params![
+                        entry.sandbox_id.as_str(),
+                        entry.test,
+                        entry.job_key,
+                        entry
+                            .issue
+                            .as_ref()
+                            .map(|(n, _)| i64::try_from(*n).unwrap_or(i64::MAX)),
+                        entry.issue.as_ref().map(|(_, url)| url.clone()),
+                        entry.since.0
+                    ],
+                )
+                .map_err(db)?;
+            Ok(added == 1)
+        })
+        .await
+    }
+
+    async fn quarantined_tests(&self, sandbox: Option<&SandboxId>) -> AppResult<Vec<Quarantined>> {
+        let sandbox = sandbox.map(|s| s.as_str().to_owned());
+        self.call(move |c| {
+            let mut statement = c
+                .prepare(
+                    "SELECT sandbox_id, test, job_key, issue_number, issue_url, since \
+                     FROM ci_quarantine WHERE ?1 IS NULL OR sandbox_id = ?1 ORDER BY since, test",
+                )
+                .map_err(db)?;
+            let rows = statement
+                .query_map(params![sandbox], |row| {
+                    let sandbox: String = row.get(0)?;
+                    let number: Option<i64> = row.get(3)?;
+                    let url: Option<String> = row.get(4)?;
+                    Ok((sandbox, row.get(1)?, row.get(2)?, number, url, row.get(5)?))
+                })
+                .map_err(db)?
+                .collect::<Result<Vec<(String, String, String, Option<i64>, Option<String>, i64)>, _>>()
+                .map_err(db)?;
+            rows.into_iter()
+                .map(|(sandbox, test, job_key, number, url, since)| {
+                    Ok(Quarantined {
+                        sandbox_id: SandboxId::parse(&sandbox)
+                            .map_err(|_| AppError::Internal("a quarantined test's sandbox".into()))?,
+                        test,
+                        job_key,
+                        issue: number
+                            .and_then(|n| u64::try_from(n).ok())
+                            .zip(url),
+                        since: Timestamp(since),
+                    })
+                })
+                .collect()
+        })
+        .await
+    }
+
+    async fn release_test(&self, sandbox: &SandboxId, test: &str) -> AppResult<()> {
+        let (sandbox, test) = (sandbox.as_str().to_owned(), test.to_owned());
+        self.call(move |c| {
+            let tx = c.transaction().map_err(db)?;
+            tx.execute(
+                "DELETE FROM ci_quarantine WHERE sandbox_id = ?1 AND test = ?2",
+                params![sandbox, test],
+            )
+            .map_err(db)?;
+            tx.execute(
+                "DELETE FROM ci_test_failures WHERE sandbox_id = ?1 AND test = ?2",
+                params![sandbox, test],
+            )
+            .map_err(db)?;
+            tx.commit().map_err(db)
         })
         .await
     }
@@ -982,6 +1135,117 @@ mod tests {
             .ci_minutes(&sandbox, Some(Timestamp(86_400_000)), None)
             .await?;
         assert!(none.is_empty());
+        Ok(())
+    }
+
+    /// SPEC-497 OFC-002: a test's failures are read by sandbox, job and time and forgotten past
+    /// their keep; a test is quarantined once, listed per sandbox or in all, and released.
+    #[tokio::test]
+    async fn failing_tests_and_the_quarantine_are_kept() -> TestResult {
+        let store = SqliteStore::open_in_memory()?;
+        let s1 = SandboxId::parse("s1")?;
+        let tests = vec!["app tests::flaky".to_owned(), "app tests::other".to_owned()];
+        store
+            .record_test_failures(
+                &s1,
+                "quality",
+                ("pr/1", "r1", "c1"),
+                &tests,
+                Timestamp(10),
+                Timestamp(0),
+            )
+            .await?;
+        store
+            .record_test_failures(
+                &s1,
+                "quality",
+                ("pr/2", "r2", "c2"),
+                &tests[..1],
+                Timestamp(20),
+                Timestamp(0),
+            )
+            .await?;
+        store
+            .record_test_failures(
+                &s1,
+                "e2e",
+                ("pr/3", "r3", "c3"),
+                &tests[..1],
+                Timestamp(30),
+                Timestamp(0),
+            )
+            .await?;
+        let failed = store
+            .test_failures(&s1, "quality", "app tests::flaky", Timestamp(0))
+            .await?;
+        let refs: Vec<&str> = failed.iter().map(|f| f.reference.as_str()).collect();
+        assert_eq!(refs, ["pr/1", "pr/2"], "only this job's");
+        assert_eq!(failed[1].sha, "c2");
+        let since = store
+            .test_failures(&s1, "quality", "app tests::flaky", Timestamp(15))
+            .await?;
+        assert_eq!(since.len(), 1);
+        // A later record forgets what is older than its keep.
+        store
+            .record_test_failures(
+                &s1,
+                "quality",
+                ("pr/4", "r4", "c4"),
+                &tests[..1],
+                Timestamp(40),
+                Timestamp(25),
+            )
+            .await?;
+        let kept = store
+            .test_failures(&s1, "quality", "app tests::flaky", Timestamp(0))
+            .await?;
+        assert_eq!(kept.len(), 1, "{kept:?}");
+        let entry = Quarantined {
+            sandbox_id: s1.clone(),
+            test: "app tests::flaky".into(),
+            job_key: "quality".into(),
+            issue: Some((101, "https://github.test/acme/app/issues/101".into())),
+            since: Timestamp(50),
+        };
+        assert!(store.quarantine_test(&entry).await?);
+        assert!(!store.quarantine_test(&entry).await?, "once");
+        assert_eq!(
+            store.quarantined_tests(Some(&s1)).await?,
+            std::slice::from_ref(&entry)
+        );
+        assert!(
+            store
+                .quarantined_tests(Some(&SandboxId::parse("s2")?))
+                .await?
+                .is_empty()
+        );
+        assert_eq!(store.quarantined_tests(None).await?.len(), 1);
+        store
+            .record_test_failures(
+                &s1,
+                "quality",
+                ("pr/5", "r5", "c5"),
+                &tests,
+                Timestamp(45),
+                Timestamp(25),
+            )
+            .await?;
+        store.release_test(&s1, "app tests::flaky").await?;
+        assert!(store.quarantined_tests(None).await?.is_empty());
+        // Its failures are forgotten with it (review round 1); another test's stay.
+        assert!(
+            store
+                .test_failures(&s1, "quality", "app tests::flaky", Timestamp(0))
+                .await?
+                .is_empty()
+        );
+        assert_eq!(
+            store
+                .test_failures(&s1, "quality", "app tests::other", Timestamp(0))
+                .await?
+                .len(),
+            1
+        );
         Ok(())
     }
 

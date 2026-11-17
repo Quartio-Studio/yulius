@@ -6,6 +6,16 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-17
 
+- A test that fails on other people's changes is quarantined with an issue (SPEC-497 slice B,
+  task #479,
+  [ADR-0356](decisions/0356-a-test-failing-on-two-pull-requests-is-quarantined-with-an-issue.md)):
+  one that failed in the same CI job on two different pull requests within 48 hours, while the
+  integration branch did not fail it, gets one issue (`flaky test`), a line in the job's output,
+  and a place in `YULIUS_CI_QUARANTINE` and `YULIUS_CI_QUARANTINE_NEXTEST` (a nextest filter) for
+  every later job of the project. Gates that read the variables leave the test out. This
+  repository's does. Closing the issue ends the quarantine within an hour. Nothing is run again
+  until green. Older Docker clients' `docker:` prefix no longer hides a socket failure from the
+  rerun, and the CI's CPU pressure is logged at `debug`.
 - Codex, slice C1 (SPEC-503, task #485): a task or an automation can run Codex (`harness:
   codex`). The supervisor runs the native Codex TUI in the task terminal with its own
   `CODEX_HOME` per sandbox and subscription, the pinned CLI by its path (bound read-only into a
