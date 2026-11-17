@@ -73,6 +73,22 @@ goes first. A job that has waited 10 minutes (`OVERTAKE_LIMIT`) holds back the j
 the order (its priority and lower) until it starts or leaves; a job of a higher priority still
 goes first, so a branch's job can wait longer while merges and pull requests keep coming.
 
+## Alternatives
+
+- **Reservations only** (ADR-0350's pools of declarations): what made the queue on 16 Nov, with
+  the host 25–30 % busy while jobs held 50–56 of 64 CPUs.
+- **Larger pools** (reservations up to twice the host, the stopgap): five jobs ran, but CI's
+  processes waited for a CPU 10–25 % of the time at compile peaks, and quartio-v2's timing tests
+  are its flaky ones.
+- **The host's load or CPU pressure as the gate**: first adopted as rule 1. Removed, because a job
+  pinned to a few CPUs shows pressure while the host idles (the amendment below), and the
+  agents' own builds would hold CI back.
+- **Strict first-come order**: one whole-budget job at the front kept every job behind it waiting
+  7–37 min. A bounded overtake keeps the order fair without that.
+- **Learn each job's need from its history**: exact per job, but a container is not tied to the
+  job that started it, and a job's need differs by change. The groups' total needs no
+  attribution.
+
 ## Consequences
 
 - **The host's idle CPUs are used.** A job is held back only:

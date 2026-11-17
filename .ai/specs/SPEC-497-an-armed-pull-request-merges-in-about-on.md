@@ -1,11 +1,11 @@
 ---
 yulius-task: 29fb50db-a8f1-40ea-bf43-8677399be0fe
-status: in-progress
+status: done
 ---
 
 # SPEC-497: an armed pull request merges in about one CI run
 
-Status: in-progress
+Status: done
 Date: 2026-11-16
 Owner: Yulius task #479
 Scope authorization: the request of task #479 (MrFishPL, 2026-11-16): measure why the path to
@@ -185,7 +185,7 @@ mode.
 - [x] Slice D: a candidate reuses its members' builds, measured
 - [x] Slice D: review round 1 answered
 - [x] Slice D: review round 2 answered
-- [ ] Slice E: numbers before and after, quartio-v2's part told
+- [x] Slice E: numbers before and after, quartio-v2's part told
 
 ## Acceptance criteria
 
@@ -829,6 +829,54 @@ mode.
   passed in 8 min 35 s (`quality` 7 min 37 s, shards 4 min 18 s and 4 min 38 s, `e2e` 5 min
   23 s). The reviewer saw every job of that run wait 47 to 60 s for admission, `security`'s one
   CPU too; the instance's admission decides it, read in slice E with the busy hours.
+
+### Slice E: measured before and after
+
+What this task could read itself (`ci_status`, `/internal/version`), and what is left to read on
+the instance: the task's token cannot read `GET /api/analytics/*` (404).
+
+- **Before** (the request's measurement, quartio-v2, 16 Nov 2026): 31 candidates formed, 10
+  merged, 21 dissolved; since 12:00 UTC 10 candidate runs cancelled; CI minutes 588 passed, 526
+  failed, 114 cancelled (51 % of 1,228 on runs that did not pass); opening to merge a median of
+  389 min (00:00 to 08:00) and 250 min (after 16:00); `quality` 13.5 to 18.8 min; jobs waited a
+  median 10 to 11 min to start (ADR-0353's measurement). Yulius: 30 min opening to merge, 3 of 3
+  candidates merged.
+- **After, this repository's runs** (Yulius CI, `ci_status`), the run's own time with its longest
+  job:
+
+  | Head | Change in force | Run | Longest job |
+  |---|---|---|---|
+  | PR #1383 2309854, 220d5df, c819b47 | slices A to C, one `quality` | 15 min 0 s, 11 min 32 s, 11 min 9 s | `quality` |
+  | PR #1381 eebe8f3, 8e421a5 | slices A to C | 12 min 35 s, 14 min 33 s | `quality` |
+  | PR #1386 aa08961 | slice D: shards (`e2e` at a fifth) | 8 min 39 s | `e2e` 8 min 38 s |
+  | PR #1386 717b85a, 2654805 | slice D, `e2e` 18 CPUs | 7 min 3 s, 6 min 53 s | `quality` |
+  | PR #1386 f077337 | slice D, `security` 1 CPU | 8 min 35 s (each job waited 47 to 60 s to start) | `quality` 7 min 37 s |
+  | PR #1386 0394bd1, run again | slice D | 5 min 34 s (`quality` 1 min 19 s on a warm checkout) | `e2e` |
+
+  The pull request runs went from 11 to 15 min to 5.5 to 8.7 min: under Yulius's 15 min target
+  for armed-to-merged once a run is all a merge needs (ADR-0357: a passed candidate merges at
+  once). Merges of an up-to-date pull request reuse the result on `dev` ("not run again", 3 of 3
+  merges in this list).
+- **Not readable from this task, to read on the instance a week after the promotion** (the
+  instance ran main 727df6d on 17 Nov 2026, with slices A to C; slice D waits for a person's
+  promotion):
+  - `GET /api/analytics/merge-queue?sandbox=<id>&from=<day>&to=<day+7>` for quartio-v2 and
+    yulius: `median_arm_to_merge_minutes` (targets 25 and 15), `formed` and `merged` (target
+    merged/formed of at least 0.8), `dissolved_by` and `dissolved_recent` (why), and
+    `ci_minutes.outside_share` (target at most 0.15), against the 16 Nov figures above; the
+    Pipeline tab's Merge queue card shows the same.
+  - `GET /api/analytics/ci-load?from=&to=`: the job-minutes waited per hour and the host's busy
+    share, against 648 and 904 job-minutes in hours 18 and 19 of 16 Nov. The 47 to 60 s every
+    job of run c20ac348 waited at its start is read there with the hour's load.
+  - The audit actions `delivery.train.combined` (a member told at once, MQW-003) and
+    `ci.test.quarantined` / `ci.test.released` (flaky tests, ADR-0356).
+- **quartio-v2's part**: issue #1385 names it (read the quarantine in its gate, shard its tests,
+  fix its flaky tests and the derived-file test, `cpus`, Docker networks, fast mode off). The
+  instance's operator forwarded it on 17 Nov 2026, 06:40 UTC: quartio-v2 task #248 carries it.
+- One `e2e` failure on the way was the infrastructure's, not the change's: run ff906a64 at
+  0394bd1 (a commit of the spec only, on a tree that had passed) failed two tests whose pages
+  never loaded (`net::ERR_NETWORK_CHANGED` on every asset, while Yulius was briefly unreachable);
+  run again once, it passed (traces kept in `$HOME/.cache/yulius-task-479-e2e-net`).
 
 ### Slice A3: the operator's amendment to the admission (its own pull request, first)
 
