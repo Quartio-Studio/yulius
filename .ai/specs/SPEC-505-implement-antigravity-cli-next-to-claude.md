@@ -123,7 +123,7 @@ Six pull requests, each merged into `dev` on green before the next begins.
 - [x] Slice A: Antigravity hooks reach Yulius as Claude Code's through the hook client
 - [x] Slice A: review findings fixed and the slice delivered
 - [x] Slice B: Yulius installs the pinned agy 1.5.10 into its data directory
-- [ ] Slice B: review findings fixed and the slice delivered
+- [x] Slice B: review findings fixed and the slice delivered
 - [ ] Slice C1: an Antigravity task runs in the supervisor (homes, session id, hooks, write-back, rotation)
 - [ ] Slice C1: the fake agent speaks Antigravity and integration tests cover an Antigravity task
 - [ ] Slice C1: review findings fixed and the slice delivered
@@ -316,3 +316,10 @@ Six pull requests, each merged into `dev` on green before the next begins.
   `the_pinned_antigravity_cli_names_its_tarballs` passed.
 - `antigravity_cli::the_real_pinned_release_installs_from_google` (`--run-ignored only`):
   passed in 8.5 s; the installed binary prints `1.5.10`.
+- Mutation testing (`scripts/dev mutants`, on c5bacd7de): `mutants: 72 listed, 44 caught,
+  0 missed, 0 timed out, 28 unviable, 0 not reached (bound 30 min, took 612 s)`.
+- Review round 1 (yulius-reviewer, head c5bacd7de): approve; its minors and nits fixed in
+  37f260c4d: a host move leaves `antigravity-cli` out (`LEFT_OUT`, walk test), tarballs naming
+  `../escape` or an absolute path are refused with nothing left behind, "an Antigravity start",
+  the module doc and the by-hand test's `AGY_CLI_DISABLE_AUTO_UPDATE=true`. The CI security job
+  did not run (Vidoc refused the key, exit 78): unrun, not passed.
