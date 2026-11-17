@@ -3067,3 +3067,54 @@ async fn the_guest_link_sweep_takes_the_least_recently_swept_first() -> R {
     );
     Ok(())
 }
+
+/// SPEC-503 CDX-006: a Codex run's refresh replaces only the credential, and only while the
+/// account still holds the one it refreshes: a sign-in made meanwhile wins and nothing changes;
+/// status, error, usage and email stay either way.
+#[tokio::test]
+async fn a_refreshed_credential_replaces_only_the_one_it_refreshes() -> R {
+    use yulius_app::model::{AccountRecord, AccountStatus, Sealed};
+    use yulius_app::ports::store::AccountStore;
+    use yulius_domain::harness::Provider;
+    use yulius_domain::ids::AccountId;
+
+    let store = SqliteStore::open_in_memory()?;
+    let id = AccountId::parse("acc-codex")?;
+    store
+        .insert_account(&AccountRecord {
+            id: id.clone(),
+            provider: Provider::OpenAi,
+            label: "Codex".into(),
+            credential: Some(Sealed(vec![1])),
+            status: AccountStatus::Limited,
+            usage_json: Some("{}".into()),
+            last_error: Some("usage: read later".into()),
+            email: Some("dev@example.com".into()),
+            email_checked_at: Some(Timestamp(2)),
+            email_typed: false,
+            created_at: Timestamp(1),
+            updated_at: Timestamp(1),
+        })
+        .await?;
+    // Signed in again meanwhile: a refresh of the credential before changes nothing.
+    let stale = store
+        .refresh_account_credential(&id, &Sealed(vec![9]), &Sealed(vec![2]), Timestamp(5))
+        .await?;
+    assert!(!stale);
+    assert_eq!(
+        store.account(&id).await?.ok_or("account")?.credential,
+        Some(Sealed(vec![1]))
+    );
+    let kept = store
+        .refresh_account_credential(&id, &Sealed(vec![1]), &Sealed(vec![2]), Timestamp(6))
+        .await?;
+    assert!(kept);
+    let after = store.account(&id).await?.ok_or("account")?;
+    assert_eq!(after.credential, Some(Sealed(vec![2])));
+    assert_eq!(after.status, AccountStatus::Limited);
+    assert_eq!(after.last_error.as_deref(), Some("usage: read later"));
+    assert_eq!(after.usage_json.as_deref(), Some("{}"));
+    assert_eq!(after.email.as_deref(), Some("dev@example.com"));
+    assert_eq!(after.email_checked_at, Some(Timestamp(2)));
+    Ok(())
+}

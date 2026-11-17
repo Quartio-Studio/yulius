@@ -5,9 +5,10 @@ that own Claude Code sessions inside per-sandbox containment, and talks to GitHu
 Anthropic. Codex returns as a second harness
 ([SPEC-503](../.ai/specs/SPEC-503-accept-outside-pr-1146-codex-returns-as.md),
 [decision 0355](decisions/0355-codex-returns-as-a-second-harness-with-a-pinned-cli.md)): its
-adapter in `yulius-harness` plans a run, reads its rollout and checks its sign-ins, and Yulius
-provides the pinned Codex CLI itself (see "Codex CLI" below); tasks take it once the supervisor
-runs it (later slices of SPEC-503). The detailed contracts are in
+adapter in `yulius-harness` plans a run, reads its rollout and checks its sign-ins, the supervisor
+runs a Codex task in its own Codex home (see "Codex" below), and Yulius provides the pinned
+Codex CLI itself (see "Codex CLI" below); Codex subscriptions are signed in from later slices of
+SPEC-503. The detailed contracts are in
 [SPEC-002](../.ai/specs/SPEC-002-yulius-architecture.md); crate layering rules are in
 [engineering/architecture.md](engineering/architecture.md).
 
@@ -34,7 +35,7 @@ flowchart LR
   CI -->|"jobs in its ci/ leaf, job slots"| SB
   SUP <-->|"Unix socket"| PH["yulius ptyhost (per run)"]
   subgraph SB["Sandbox (namespace holder)"]
-    PH --> AG["claude TUI"]
+    PH --> AG["claude or codex TUI"]
     AG -->|"/run/yulius/docker"| DF["Docker front"]
     DF --> DE["Docker engine (on demand)"]
   end
@@ -47,8 +48,34 @@ flowchart LR
   APP <--> GH["GitHub App + REST"]
   APP -->|"long poll getUpdates, sendMessage"| TG["Telegram Bot API"]
   AG <--> AN["Anthropic"]
+  AG <--> OA["OpenAI (Codex)"]
   APP <-->|"DevTools pipe (fds 3/4)"| CH["Chrome on Xvfb"]
 ```
+
+## Codex
+
+A Codex task runs `codex --no-daemon` in its worktree with `CODEX_HOME=<sandbox>/codex/<account>`.
+The supervisor writes the home's `auth.json` (the account's sealed credential), `config.toml` and
+`hooks.json` through handles that follow no link, and reads the rollout from the sandbox's shared
+`codex/sessions`; its hooks reach Yulius as `yulius hook codex <event>`. After the run, a
+refreshed `auth.json` goes back into the vault, and the file leaves the sandbox once no run of the
+account is left there.
+
+```mermaid
+flowchart LR
+  ACC["openai account (vault: auth.json)"] -->|"written before each run"| HOME["sandbox/codex/account: auth.json, config.toml, hooks.json"]
+  HOME -->|"sessions link"| SESS["sandbox/codex/sessions (rollouts)"]
+  CX["codex TUI (ptyhost)"] -->|"CODEX_HOME"| HOME
+  CX -->|"rollout JSONL"| SESS
+  CX -->|"yulius hook codex, yulius mcp"| INT2["Internal listener"]
+  SESS -->|"turns, tokens, rate limits, limit"| SUP2["Supervisor"]
+  SUP2 -->|"a genuine refresh"| ACC
+```
+
+Rotation picks only accounts of the task's provider, so a Codex task moves only between Codex
+accounts, by `codex resume <id>`: at a usage limit, when a person moves it and when its
+subscription is removed (SPEC-447); it waits when none has capacity, and with no Codex
+subscription usable it asks for one.
 
 ## Codex CLI
 
@@ -56,15 +83,15 @@ The Codex CLI is Yulius's own
 ([decision 0355](decisions/0355-codex-returns-as-a-second-harness-with-a-pinned-cli.md)): the
 pinned release (0.169.0) is downloaded from npm once, checked against the sha512 in the source
 (`yulius_domain::agent_cli::codex`) and unpacked into `<data>/codex-cli/<version>-<platform>`
-(`wiring/codex_cli.rs`). Codex runs and sign-ins (later slices of SPEC-503) are to start its
-`bin/codex` by absolute path
-(`HarnessPort::provide_codex`), and a contained Codex run binds that directory read-only (with
-Codex tasks, a later slice of SPEC-503); without it, a host `codex` is used.
+(`wiring/codex_cli.rs`). Codex runs start its `bin/codex` by absolute path
+(`HarnessPort::provide_codex`), and a contained Codex run binds that directory read-only; Codex
+sign-ins are to start it the same way (a later slice of SPEC-503). Without it, a host `codex` is
+used.
 
 ```mermaid
 flowchart LR
   NPM["registry.npmjs.org: @openai/codex@0.169.0-linux-x64"] -->|"first need, sha512 pinned"| CLI["data/codex-cli/0.169.0-linux-x64 (bin/codex, codex-path/rg)"]
-  CLI -.->|"planned: absolute path, read-only bind"| RUN["Codex run in its sandbox"]
+  CLI -->|"absolute path, read-only bind"| RUN["Codex run in its sandbox"]
   CLI -.->|"planned: absolute path"| LOGIN["codex login --device-auth"]
 ```
 

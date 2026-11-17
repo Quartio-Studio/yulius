@@ -4,6 +4,18 @@ Notable changes, newest first. Per-change detail lives in the merged pull reques
 evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-architecture.md)
 (sections 14 and 15).
 
+## 2026-11-17
+
+- Codex, slice C1 (SPEC-503, task #485): a task or an automation can run Codex (`harness:
+  codex`). The supervisor runs the native Codex TUI in the task terminal with its own
+  `CODEX_HOME` per sandbox and subscription, the pinned CLI by its path (bound read-only into a
+  contained run), Yulius's MCP and hooks (`yulius hook codex`, the shell guard included); it reads
+  the rollout for turns, tokens, rate limits and the usage limit, takes the session id from the
+  SessionStart hook or the rollout, resumes natively, keeps the tokens Codex refreshes and removes
+  `auth.json` once no run of the subscription is left. A Codex task moves only between Codex
+  subscriptions, and what it says names Codex (a Claude task reads as before). Codex subscriptions
+  can be added from the next slice.
+
 ## 2026-11-16
 
 - Codex, slice B (SPEC-503, task #485): Yulius provides the Codex CLI itself. The pinned release,

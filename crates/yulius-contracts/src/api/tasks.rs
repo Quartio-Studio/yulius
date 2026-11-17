@@ -40,7 +40,7 @@ pub struct TaskSummary {
     pub number: u32,
     /// Title.
     pub title: String,
-    /// Harness wire name (`claude`; Yulius runs Claude Code only).
+    /// Harness wire name (`claude` or `codex`, SPEC-503).
     pub harness: String,
     /// Status wire name (domain `TaskStatus::as_str`).
     pub status: String,
@@ -329,7 +329,7 @@ fn default_harness() -> String {
 pub struct CreateTask {
     /// Initial prompt.
     pub prompt: String,
-    /// Harness: `claude` (the default and the only one supported).
+    /// Harness: `claude` (the default) or `codex` (SPEC-503).
     #[serde(default = "default_harness")]
     pub harness: String,
     /// Workflow to seed steps/instructions; `auto` lets Jev choose one or none (TSK-015).

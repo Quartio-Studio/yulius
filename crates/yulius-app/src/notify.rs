@@ -403,6 +403,7 @@ impl App {
         let notice = TaskNotice {
             kind,
             status: task.status,
+            harness: task.harness,
             sandbox: &sandbox.repo_name,
             number: task.number,
             title: &task.title,

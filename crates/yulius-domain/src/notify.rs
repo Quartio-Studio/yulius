@@ -2,6 +2,7 @@
 //! account changes are worth a message, its plain text, the per-person rate bound that folds a
 //! burst into one summary, and the chat commands of linking. Nothing here names a channel.
 
+use crate::harness::Harness;
 use crate::task::{StopReason, TaskGroup, TaskStatus};
 
 /// Characters of a link code (TGC-011): letters and digits only, so it fits a `t.me` start link.
@@ -149,6 +150,8 @@ pub struct TaskNotice<'a> {
     pub kind: NoticeKind,
     /// The task's status (for an end's words).
     pub status: TaskStatus,
+    /// The task's agent: an end for want of an account names its provider's (SPEC-503).
+    pub harness: Harness,
     /// The sandbox's name.
     pub sandbox: &'a str,
     /// The task's number in it.
@@ -175,7 +178,13 @@ impl TaskNotice<'_> {
                 }
             }
             NoticeKind::Done => "Done",
-            NoticeKind::Failed => ended_label(self.status),
+            // A Codex task that found no account names Codex's; the rest read as `status.js`'s.
+            NoticeKind::Failed => match (self.status, self.harness) {
+                (TaskStatus::Failed(crate::task::FailReason::NoAccount), Harness::Codex) => {
+                    "Failed (no Codex account)"
+                }
+                _ => ended_label(self.status),
+            },
             NoticeKind::Account => "Subscription",
         }
     }
@@ -472,6 +481,7 @@ mod tests {
         let notice = TaskNotice {
             kind: NoticeKind::NeedsYou,
             status: TaskStatus::Running,
+            harness: Harness::ClaudeCode,
             sandbox: "Shop",
             number: 12,
             title: "Fix  the\ncheckout",
@@ -505,6 +515,7 @@ mod tests {
         let notice = TaskNotice {
             kind: NoticeKind::Failed,
             status: TaskStatus::Stopped(StopReason::Crashed),
+            harness: Harness::ClaudeCode,
             sandbox: "Shop",
             number: 3,
             title: "T",
@@ -513,6 +524,21 @@ mod tests {
             link: "L",
         };
         assert_eq!(notice.text(), "Stopped (crashed) · Shop\n#3 T\nL");
+        // A task that found no account names its own agent's (SPEC-503 CDX-013); a Claude one
+        // reads as before.
+        let no_account = TaskNotice {
+            status: TaskStatus::Failed(FailReason::NoAccount),
+            ..notice
+        };
+        assert_eq!(
+            no_account.headline(),
+            "Failed (no Claude account) · #3 T (Shop)"
+        );
+        let codex = TaskNotice {
+            harness: Harness::Codex,
+            ..no_account
+        };
+        assert_eq!(codex.headline(), "Failed (no Codex account) · #3 T (Shop)");
     }
 
     /// TGC-028: every end has the words of `status.js`'s `STOP_LABELS`.
@@ -615,6 +641,7 @@ mod tests {
         let notice = TaskNotice {
             kind: NoticeKind::NeedsYou,
             status: TaskStatus::Running,
+            harness: Harness::ClaudeCode,
             sandbox: "Shop",
             number: 4,
             title: "Build",

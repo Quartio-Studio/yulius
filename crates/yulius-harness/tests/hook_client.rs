@@ -550,6 +550,25 @@ fn an_unheld_hook_does_not_retry() -> TestResult {
     Ok(())
 }
 
+/// SPEC-503 CDX-007: Codex's shell tool has Claude Code's shape (`Bash`, `tool_input.command`),
+/// so a Codex run's `PreToolUse` gets the same local guard: a command that can never work as
+/// meant is denied in the sandbox, without a connection.
+#[test]
+fn a_codex_bash_call_is_checked_locally_like_claude_codes() -> TestResult {
+    let (url, listener) = untouched_listener()?;
+    let env = env_with(url, Some("task-token-SYNTHETIC"));
+    let mut output = Vec::new();
+    let bash = br#"{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"pkill -f cargo-nextest"}}"#;
+    run_hook("codex", "PreToolUse", &mut &bash[..], &mut output, &env);
+    assert!(
+        String::from_utf8_lossy(&output).contains("\"permissionDecision\":\"deny\""),
+        "{}",
+        String::from_utf8_lossy(&output)
+    );
+    assert_no_connection(&listener);
+    Ok(())
+}
+
 /// SPEC-426 EDG-001: an edit tool's `PreToolUse` goes to Yulius (its edit gate) and its answer is
 /// printed; a Bash command is still checked in the sandbox, without a connection.
 #[test]

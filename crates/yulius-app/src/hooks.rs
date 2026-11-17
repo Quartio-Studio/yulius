@@ -168,9 +168,10 @@ impl App {
         input: &HookInput,
         sent_ms: Option<i64>,
     ) -> AppResult<HookReply> {
-        if harness != "claude" {
+        // Claude Code's and Codex's hooks (SPEC-503 CDX-007); each from a run of its own harness.
+        let Ok(harness) = yulius_domain::harness::Harness::parse(harness) else {
             return Err(AppError::NotFound);
-        }
+        };
         // Never later than now: the client's clock is the host's (loopback only), and a time
         // from the future would order nothing. One not after the epoch is none (SPEC-346 LPH-001).
         let now = self.now().0;
@@ -178,6 +179,9 @@ impl App {
             .filter(|sent| *sent > 0)
             .map_or(now, |sent| sent.min(now));
         let ctx = self.agent_context(token).await?;
+        if ctx.attempt.harness != harness {
+            return Err(AppError::Unauthenticated);
+        }
         if event != events::STOP {
             return self.answer_hook(&ctx, event, input, sent).await;
         }
@@ -937,7 +941,7 @@ impl App {
         let reasons = self.stop_reasons(task).await?;
         let gate_continues = !reasons.is_empty() && task.gate_blocks < MAX_GATE_BLOCKS;
         // Would the agent work on after this boundary (a gate block, or its goal)?
-        let continues = gate_continues || task.mode == TaskMode::Goal;
+        let continues = gate_continues || task.follows_goal();
 
         // The turn boundary: stay, move to another subscription, or pause (ROT-003, ROT-010).
         self.runtime(&task.id)

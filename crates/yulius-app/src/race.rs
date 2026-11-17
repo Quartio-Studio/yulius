@@ -135,6 +135,12 @@ pub enum Point {
     /// `launch_attempt` (SPEC-447): a subscription was chosen and its credential opened; the run's
     /// attempt is not recorded yet. The path is the task id.
     AccountChosen,
+    /// After a Codex run (SPEC-503 CDX-006): its write-back kept what it keeps and removed what
+    /// it removes, or left the file for another run. The path is the task id.
+    CodexWriteBackDone,
+    /// A Codex run's `auth.json` was read and found a genuine refresh (SPEC-503 CDX-006); it is
+    /// not stored yet. The path is the account id.
+    CodexRefreshTaken,
     /// `launch_attempt` (SPEC-458): the run's attempt is recorded; its host is not started or
     /// attached yet. The path is the task id.
     RunRecorded,
