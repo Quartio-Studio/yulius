@@ -8,7 +8,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use yulius_app::error::{AppError, AppResult};
 use yulius_app::ports::harness::{
     CockpitLaunch, HarnessLaunch, HarnessPlan, HarnessPort, McpAttachment, Observation,
-    OutputMasker, ProvideFuture, SessionMode, TranscriptWatch, UsageSnapshot, WatchFrom,
+    OutputMasker, ProvideFuture, ProvidedCli, SessionMode, TranscriptWatch, UsageSnapshot,
+    WatchFrom,
 };
 use yulius_app::ports::session::{Containment, LaunchPlan, PlannedFile};
 use yulius_domain::harness::Harness;
@@ -21,7 +22,7 @@ use yulius_harness::launch::{
 use yulius_harness::observe::{Observed, UsageAccumulator};
 use yulius_harness::secret::Secret as HSecret;
 use yulius_harness::subagents::{LinesSince, SubagentTails};
-use yulius_harness::{claude, codex, login, paths, recount, skills, tail};
+use yulius_harness::{antigravity, claude, codex, login, paths, recount, skills, tail};
 
 /// Harness adapter.
 pub struct HarnessAdapter {
@@ -30,9 +31,13 @@ pub struct HarnessAdapter {
     /// Internal listener URL.
     pub yulius_url: String,
     /// The Codex CLI Yulius provides (SPEC-503 CLI-001); `None`: runs use `codex` from `PATH`.
-    pub codex_cli: Option<Arc<crate::wiring::codex_cli::CodexCli>>,
+    pub codex_cli: Option<Arc<crate::wiring::pinned_cli::CodexCli>>,
     /// The host's own `codex`, used when the provided one cannot be installed.
     pub host_codex: Option<PathBuf>,
+    /// The pinned Antigravity CLI Yulius provides (SPEC-505 AGY-007).
+    pub antigravity_cli: Option<Arc<crate::wiring::pinned_cli::PinnedCli>>,
+    /// The host's own `agy`, used when the provided one cannot be installed.
+    pub host_antigravity: Option<PathBuf>,
 }
 
 impl HarnessAdapter {
@@ -44,16 +49,63 @@ impl HarnessAdapter {
             yulius_url: yulius_url.into(),
             codex_cli: None,
             host_codex: None,
+            antigravity_cli: None,
+            host_antigravity: None,
         }
     }
 
     /// Codex runs and sign-ins start the CLI `cli` provides, or the host's `codex` while it
     /// cannot (SPEC-503 CLI-002).
     #[must_use]
-    pub fn with_codex_cli(mut self, cli: Arc<crate::wiring::codex_cli::CodexCli>) -> Self {
+    pub fn with_codex_cli(mut self, cli: Arc<crate::wiring::pinned_cli::CodexCli>) -> Self {
         self.codex_cli = Some(cli);
         self.host_codex = crate::wiring::sandbox::which(launch::CODEX_PROGRAM);
         self
+    }
+
+    /// Antigravity runs and sign-ins start the CLI `cli` provides, or the host's `agy` while it
+    /// cannot (SPEC-505 AGY-007).
+    #[must_use]
+    pub fn with_antigravity_cli(mut self, cli: Arc<crate::wiring::pinned_cli::PinnedCli>) -> Self {
+        self.antigravity_cli = Some(cli);
+        self.host_antigravity = crate::wiring::sandbox::which(launch::ANTIGRAVITY_PROGRAM);
+        self
+    }
+}
+
+/// The CLI `cli` provides (installed first when `install`), else `None` while the host has its
+/// own `host_program` (`host`), else why not: the pinned CLIs' common answer (SPEC-503 CLI-002,
+/// SPEC-505 AGY-007).
+async fn provide(
+    cli: Option<&Arc<crate::wiring::pinned_cli::PinnedCli>>,
+    install: bool,
+    host: Option<&PathBuf>,
+    (label, article, host_program, version): (&str, &str, &str, &str),
+) -> AppResult<Option<ProvidedCli>> {
+    let Some(cli) = cli else {
+        return Ok(None);
+    };
+    let provided = if install {
+        cli.ensure().await
+    } else {
+        cli.ready().and_then(|ready| {
+            ready.ok_or_else(|| {
+                crate::wiring::claude_cli::UpdateError::new(format!(
+                    "it is not installed yet; {article} {label} start installs it"
+                ))
+            })
+        })
+    };
+    match provided {
+        Ok(provided) => Ok(Some(provided)),
+        Err(error) if host.is_some() => {
+            tracing::warn!(%error, cli = label, "the provided CLI is not ready; runs use the host's");
+            Ok(None)
+        }
+        Err(error) => Err(AppError::Upstream(format!(
+            "the {label} CLI {version} could not be installed ({error}), and this host has no \
+             `{host_program}` of its own"
+        ))),
     }
 }
 
@@ -146,34 +198,31 @@ fn language_server_plugins(config_dir: &Path, sandbox_dir: &Path, worktree: &Pat
 
 impl HarnessPort for HarnessAdapter {
     fn provide_codex(&self, install: bool) -> ProvideFuture<'_> {
-        Box::pin(async move {
-            let Some(cli) = &self.codex_cli else {
-                return Ok(None);
-            };
-            let provided = if install {
-                cli.ensure().await
-            } else {
-                cli.ready().and_then(|ready| {
-                    ready.ok_or_else(|| {
-                        crate::wiring::claude_cli::UpdateError::new(
-                            "it is not installed yet; a Codex start installs it",
-                        )
-                    })
-                })
-            };
-            match provided {
-                Ok(provided) => Ok(Some(provided)),
-                Err(error) if self.host_codex.is_some() => {
-                    tracing::warn!(%error, "the Codex CLI is not ready; runs use the host's codex");
-                    Ok(None)
-                }
-                Err(error) => Err(AppError::Upstream(format!(
-                    "the Codex CLI {} could not be installed ({error}), and this host has no \
-                     `codex` of its own",
-                    yulius_domain::agent_cli::codex::VERSION
-                ))),
-            }
-        })
+        Box::pin(provide(
+            self.codex_cli.as_ref(),
+            install,
+            self.host_codex.as_ref(),
+            (
+                "Codex",
+                "a",
+                launch::CODEX_PROGRAM,
+                yulius_domain::agent_cli::codex::VERSION,
+            ),
+        ))
+    }
+
+    fn provide_antigravity(&self, install: bool) -> ProvideFuture<'_> {
+        Box::pin(provide(
+            self.antigravity_cli.as_ref(),
+            install,
+            self.host_antigravity.as_ref(),
+            (
+                "Antigravity",
+                "an",
+                launch::ANTIGRAVITY_PROGRAM,
+                yulius_domain::agent_cli::antigravity::VERSION,
+            ),
+        ))
     }
 
     fn plan(&self, l: &HarnessLaunch) -> AppResult<HarnessPlan> {
@@ -184,6 +233,9 @@ impl HarnessPort for HarnessAdapter {
             }
             Harness::Codex => {
                 Credential::CodexAuthJson(HSecret::new(l.credential.expose().as_bytes().to_vec()))
+            }
+            Harness::Antigravity => {
+                Credential::Antigravity(HSecret::new(l.credential.expose().as_bytes().to_vec()))
             }
         };
         let mode = match &l.mode {
@@ -209,6 +261,8 @@ impl HarnessPort for HarnessAdapter {
             run_dir: l.run_dir.clone(),
             codex_home: l.codex_home.clone(),
             codex_program: l.codex_program.clone(),
+            antigravity_home: l.antigravity_home.clone(),
+            antigravity_program: l.antigravity_program.clone(),
             model: l.model.clone(),
             effort: l.effort.clone(),
             contained: l.contained,
@@ -226,8 +280,8 @@ impl HarnessPort for HarnessAdapter {
                     l.sandbox_home.parent().unwrap_or(&l.sandbox_home),
                     &l.worktree,
                 ),
-                // Codex has no plugins of Claude Code's (SPEC-503).
-                Harness::Codex => Vec::new(),
+                // Codex and Antigravity have no plugins of Claude Code's (SPEC-503, SPEC-505).
+                Harness::Codex | Harness::Antigravity => Vec::new(),
             },
         };
         let plan = launch::plan_launch(&request).map_err(|e| AppError::Invalid(e.to_string()))?;
@@ -340,6 +394,10 @@ impl HarnessPort for HarnessAdapter {
     ) -> AppResult<bool> {
         let transcript = self.claude_transcript(sandbox_home, worktree, session_id);
         yulius_harness::step_back::step_back_file(&transcript).map_err(io)
+    }
+
+    fn antigravity_transcript(&self, brain: &Path, session_id: &str) -> PathBuf {
+        paths::antigravity_transcript_path(brain, session_id)
     }
 
     fn find_codex_rollout(
@@ -484,6 +542,13 @@ impl HarnessPort for HarnessAdapter {
                     None => None,
                 }
             }
+            Harness::Antigravity => {
+                let path = paths::antigravity_transcript_path(
+                    &antigravity_brain_of(sandbox_home),
+                    session_id,
+                );
+                recount::count_antigravity_run(&path, since, until).map_err(io)?
+            }
         };
         Ok(counted.map(|acc| snapshot(&acc)))
     }
@@ -492,6 +557,7 @@ impl HarnessPort for HarnessAdapter {
         match harness {
             Harness::ClaudeCode => login::claude_setup_token_argv(),
             Harness::Codex => login::codex_device_login_argv(),
+            Harness::Antigravity => login::antigravity_sign_in_argv(),
         }
     }
 
@@ -531,6 +597,17 @@ pub fn codex_sessions_of(sandbox_home: &Path) -> PathBuf {
         .unwrap_or(sandbox_home)
         .join("codex")
         .join("sessions")
+}
+
+/// The sandbox's Antigravity conversations from its home: `<sandbox>/antigravity/shared/brain`,
+/// shared by its Antigravity homes (SPEC-505 AGY-003).
+pub fn antigravity_brain_of(sandbox_home: &Path) -> PathBuf {
+    sandbox_home
+        .parent()
+        .unwrap_or(sandbox_home)
+        .join("antigravity")
+        .join("shared")
+        .join("brain")
 }
 
 /// A run's figures as the transcript's lines give them (SPEC-087).
@@ -907,6 +984,7 @@ impl TranscriptWatch for Watch {
                 // A rollout's `session_meta` names its Codex CLI, which is not a Claude Code
                 // version (SPEC-503).
                 Harness::Codex => (codex::observe_line(&line), None),
+                Harness::Antigravity => (antigravity::observe_line(&line), None),
             };
             // Every record of the run's own thread names its Claude Code (SPEC-461 CCM-011).
             if let Some(version) = version {
@@ -1628,6 +1706,8 @@ mod tests {
             run_dir: PathBuf::from("/r"),
             codex_home: None,
             codex_program: None,
+            antigravity_home: None,
+            antigravity_program: None,
             model: None,
             effort: None,
             contained: false,
@@ -1712,6 +1792,8 @@ mod tests {
             credential: Secret("token".into()),
             codex_home: None,
             codex_program: None,
+            antigravity_home: None,
+            antigravity_program: None,
         })?;
         let settings = planned
             .plan
@@ -1853,6 +1935,8 @@ mod tests {
             credential: Secret("token".into()),
             codex_home: None,
             codex_program: None,
+            antigravity_home: None,
+            antigravity_program: None,
         })?;
         assert_eq!(style(&home.join(".claude"))?, "Concise");
         let config = dir.path().join("cockpit");

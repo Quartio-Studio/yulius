@@ -16,7 +16,11 @@ publish only a branch in a good state. Publishing is part of the autonomous pipe
 1. **Scope the change.** Read `git status --short` and `git diff --stat`. For each touched area,
    read the project's agent instructions or contributing docs. Never revert or include changes
    that are not yours.
-2. **Run the checks the change touches.** From the project's gate commands (the test, lint,
+2. Before each commit you publish, run the project's quick checks: its format check and the tests
+   that read the whole repository (contracts, generated lists, palettes), which a change touches
+   whenever it changes a file they read. They take seconds, and each one that fails in CI costs a
+   whole run.
+   Then **run the checks the change touches.** From the project's gate commands (the test, lint,
    build and gate commands named in AGENTS.md / CLAUDE.md or `yulius.toml` `[commands]`): its
    formatting and lint, and the tests of the code it changes. Where CI cannot run, every gate
    command, in its documented order. Any non-zero exit is a failure.

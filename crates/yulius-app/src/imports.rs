@@ -1399,11 +1399,13 @@ impl App {
                 })
                 .await?;
             }
-            // Codex sessions are not imported (SPEC-503): an imported entry is Claude Code's.
-            Harness::Codex => {
-                return Err(AppError::Invalid(
-                    "an imported Codex session cannot be resumed".into(),
-                ));
+            // Codex and Antigravity sessions are not imported (SPEC-503, SPEC-505): an imported
+            // entry is Claude Code's.
+            Harness::Codex | Harness::Antigravity => {
+                return Err(AppError::Invalid(format!(
+                    "an imported {} session cannot be resumed",
+                    entry.harness.display_name()
+                )));
             }
         }
         Ok(Some(entry.session_id))

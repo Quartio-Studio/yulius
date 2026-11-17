@@ -35,6 +35,11 @@ def manifest_errors(manifest, label):
     return errors
 
 
+# External crates a domain crate may use, each by a decision: `thiserror` (error types) and
+# `toml` (`yulius.toml` is read by a TOML 1.0 parser, no I/O; ADR-0360).
+DOMAIN_EXTERNAL = {"thiserror", "toml"}
+
+
 def dependency_errors(packages):
     """Cargo metadata names dependencies by real package name, even with rename."""
     errors = []
@@ -52,7 +57,7 @@ def dependency_errors(packages):
                 target_layer = target.get("metadata", {}).get("yulius", {}).get("layer")
                 if target_layer not in LAYERS[layer]:
                     errors.append(f"{package['name']} ({layer}) cannot depend on {target['name']} ({target_layer})")
-            elif layer == "domain" and dep["name"] != "thiserror":
+            elif layer == "domain" and dep["name"] not in DOMAIN_EXTERNAL:
                 errors.append(f"{package['name']}: domain external dependency {dep['name']} needs a boundary decision")
     return errors
 

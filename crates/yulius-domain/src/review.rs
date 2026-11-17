@@ -31,8 +31,21 @@ pub const REVIEWER_PROMPT: &str = "You are the independent code reviewer of one 
 no shared context with its author: review only the diff range, the spec and the instructions you \
 are given, and load the skill `om-code-review` (and the repository's own review skill when it has \
 one). Work read-only: do not edit, commit, stash, check out, reset or push. Mark every finding own \
-code or pre-existing, with its severity, place and a concrete failure. End your report with a last \
-line that is exactly `Verdict: approve` or `Verdict: request changes`.";
+code or pre-existing, with its severity, place and a concrete failure. Do not ask for changes \
+because of CI alone: when you found nothing to fix and the head's Yulius CI run is still going or \
+failed in a way the change does not cause, approve and say what CI still has to do (the merge \
+needs it green); a failure the change causes is a blocker. End your report with a last line that is \
+exactly `Verdict: approve` or `Verdict: request changes`.";
+
+/// What Yulius tells an author about the review whenever it says to call `delivery_merge` (after a
+/// red run, a failed merge candidate, a dropped armed merge, or on a green head with no merge
+/// armed; SPEC-506 FST-001): an approval it already has carries across a small follow-up
+/// (ADR-0345), and without one the review comes first. `delivery_merge` takes `reviewed_head` on
+/// the author's word, so the sentence never suggests passing a head no review approved.
+pub const KEEP_APPROVAL: &str = "if a review approved this head or an earlier one of this pull \
+request, call `delivery_merge` with that approved head as `reviewed_head`: the approval carries \
+across at most 20 product lines in all since it (tests and documents do not count), and the call \
+says when the change needs a new round; with no approval yet, a review of the head comes first";
 
 /// The model of each reviewer agent, by name.
 pub const REVIEWER_MODELS: [(&str, &str); 2] = [
@@ -144,6 +157,15 @@ pub struct ReviewNumbers {
     pub rounds_by_model: Vec<(String, u32)>,
     /// Rounds run on the Opus reviewer because no Fable could run.
     pub no_fable_rounds: u32,
+    /// Rounds with a verdict whose previous round asked for changes (SPEC-506 FST-007).
+    pub re_reviews_after_changes: u32,
+    /// Of [`Self::re_reviews_after_changes`], those that asked for changes again.
+    pub re_reviews_asking_again: u32,
+    /// Rounds with a verdict whose previous round approved: a re-approval of an approved
+    /// change, unless it asked for changes.
+    pub rounds_after_approval: u32,
+    /// Of [`Self::rounds_after_approval`], those that asked for changes.
+    pub rounds_after_approval_asking: u32,
 }
 
 /// Works out [`ReviewNumbers`] from the rounds of merged pull requests.
@@ -175,6 +197,30 @@ pub fn review_numbers(rounds: &[RoundFact]) -> ReviewNumbers {
             numbers.first_rounds_requesting_changes += 1;
         }
         per_pull.push(facts.iter().map(|f| f.round).max().unwrap_or(0));
+        // Each round's verdict is its last report's, as round 1's above (SPEC-506 FST-007): the
+        // facts come in the order the reports ended.
+        let mut verdicts: BTreeMap<u32, Option<Verdict>> = BTreeMap::new();
+        for fact in facts.iter().filter(|f| f.reported) {
+            verdicts.insert(fact.round, fact.verdict);
+        }
+        for (&round, &verdict) in &verdicts {
+            let Some(verdict) = verdict else { continue };
+            let asked = verdict == Verdict::RequestChanges;
+            match round
+                .checked_sub(1)
+                .and_then(|before| verdicts.get(&before).copied().flatten())
+            {
+                Some(Verdict::RequestChanges) => {
+                    numbers.re_reviews_after_changes += 1;
+                    numbers.re_reviews_asking_again += u32::from(asked);
+                }
+                Some(Verdict::Approve) => {
+                    numbers.rounds_after_approval += 1;
+                    numbers.rounds_after_approval_asking += u32::from(asked);
+                }
+                None => {}
+            }
+        }
     }
     per_pull.sort_unstable();
     numbers.median_rounds = match per_pull.len() {
@@ -296,5 +342,79 @@ mod tests {
         );
         assert_eq!(numbers.no_fable_rounds, 1);
         assert_eq!(review_numbers(&[]), ReviewNumbers::default());
+    }
+
+    /// SPEC-506 FST-007: re-reviews after a request for changes and how many asked again, and
+    /// rounds after an approval (re-approvals) and how many asked for changes, each round by the
+    /// last verdict its reviewers reported; a round with no report is neither.
+    #[test]
+    fn re_reviews_and_re_approvals_are_counted_by_the_round_before() {
+        let fact = |task: &str, round: u32, verdict: Option<Verdict>| RoundFact {
+            pull: (task.to_owned(), 1),
+            round,
+            model: "claude-fable-5-2".to_owned(),
+            verdict,
+            reported: verdict.is_some(),
+            no_fable: false,
+        };
+        let (ok, no) = (Some(Verdict::Approve), Some(Verdict::RequestChanges));
+        let rounds = [
+            // Asked, asked again, then approved: two re-reviews after changes, one asking again.
+            fact("t1", 1, no),
+            fact("t1", 2, no),
+            fact("t1", 3, ok),
+            // Approved, approved again, then asked: two re-approvals, one asking for changes.
+            fact("t2", 1, ok),
+            fact("t2", 2, ok),
+            fact("t2", 3, no),
+            fact("t2", 4, ok),
+            // Round 2 cut off then reported approving by its reviewer started again: one
+            // re-review after changes, not asking.
+            fact("t3", 1, no),
+            fact("t3", 2, None),
+            fact("t3", 2, ok),
+            // Round 1 never reported: round 2 follows no verdict and counts as neither.
+            fact("t4", 1, None),
+            fact("t4", 2, ok),
+            // A round with no report after one that asked counts as neither.
+            fact("t5", 1, no),
+            fact("t5", 2, None),
+        ];
+        let numbers = review_numbers(&rounds);
+        // t1 rounds 2 and 3, t2 round 4, t3 round 2.
+        assert_eq!(numbers.re_reviews_after_changes, 4);
+        // t1 round 2.
+        assert_eq!(numbers.re_reviews_asking_again, 1);
+        // t2 rounds 2 and 3.
+        assert_eq!(numbers.rounds_after_approval, 2);
+        // t2 round 3.
+        assert_eq!(numbers.rounds_after_approval_asking, 1);
+        // A round with two reports takes the last one's (review round 1 of pull request 4): round
+        // 2 asked, then its resumed reviewer approved; in the mirror case the last report has
+        // no verdict, so the round has none, as round 1's rule reads it.
+        let rounds = [
+            fact("t6", 1, no),
+            fact("t6", 2, no),
+            fact("t6", 2, ok),
+            fact("t6", 3, ok),
+            fact("t7", 1, ok),
+            fact("t7", 2, no),
+            RoundFact {
+                reported: true,
+                ..fact("t7", 2, None)
+            },
+            fact("t7", 3, ok),
+        ];
+        let numbers = review_numbers(&rounds);
+        assert_eq!(numbers.re_reviews_after_changes, 1, "t6 round 2");
+        assert_eq!(
+            numbers.re_reviews_asking_again, 0,
+            "t6 round 2 approved last"
+        );
+        assert_eq!(
+            numbers.rounds_after_approval, 1,
+            "t6 round 3 (t7 round 2 has no verdict)"
+        );
+        assert_eq!(numbers.rounds_after_approval_asking, 0, "{numbers:?}");
     }
 }

@@ -304,6 +304,18 @@ pub struct ReviewAnalytics {
     pub rounds_by_model: Vec<ModelCount>,
     /// Rounds run on Opus 5.5 because the subscription could not run Fable 5.2.
     pub no_fable_rounds: u32,
+    /// Rounds with a verdict whose previous round asked for changes (SPEC-506 FST-007).
+    #[serde(default)]
+    pub re_reviews_after_changes: u32,
+    /// Of those, the ones that asked for changes again.
+    #[serde(default)]
+    pub re_reviews_asking_again: u32,
+    /// Rounds with a verdict whose previous round approved (re-approvals unless they asked).
+    #[serde(default)]
+    pub rounds_after_approval: u32,
+    /// Of those, the ones that asked for changes.
+    #[serde(default)]
+    pub rounds_after_approval_asking: u32,
 }
 
 /// `GET /api/analytics/merge-queue`: the merge queue's candidates over the range, per day, and the
@@ -337,6 +349,11 @@ pub struct MergeQueueAnalytics {
     /// The same per UTC day of the runs' start, oldest first; days with no run are left out.
     #[serde(default)]
     pub ci_minutes_by_day: Vec<CiMinutesDay>,
+    /// Minutes over the range in which a sandbox's CI ran nothing because of its configuration
+    /// (an invalid `yulius.toml` with no valid one before it; SPEC-504 CFG-004), summed over the
+    /// sandboxes read.
+    #[serde(default)]
+    pub config_blocked_minutes: u64,
 }
 
 /// A dissolved merge candidate (SPEC-497 MQW-004).

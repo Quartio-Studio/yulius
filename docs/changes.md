@@ -6,6 +6,58 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-17
 
+- The Review card counts what the next study needs (SPEC-506 pull request 4, task #488): the
+  Pipeline tab's Review card and `GET /api/analytics/reviews` give the rounds after a request for
+  changes and how many asked again, and the rounds after an approval and how many asked for
+  changes (the rest re-approved an approved change), for the pull requests merged in the range.
+- Antigravity, slice B (SPEC-505 pull request 2, task #487): Yulius provides the pinned
+  Antigravity CLI (`agy` 1.5.10) itself, downloaded once from Google's release storage into
+  `<data>/antigravity-cli`, only when its sha512 matches the one in the source, and with the
+  host's `agy` as the fallback. One installer now serves Codex and Antigravity
+  (`wiring/pinned_cli.rs`).
+
+- The checks of seconds fail a CI run in seconds (SPEC-506 pull request 3, task #488,
+  [ADR-0363](decisions/0363-the-quick-checks-run-first-and-the-checkers-tests-beside-the-rust-gates.md)):
+  `scripts/dev quick` (repository contracts and formatting) runs first in the `quality` job, and
+  every project's author runs its quick checks before each commit it publishes. The checker's
+  Python tests run beside the Rust gates: `checks` took 108 to 114 s instead of 138 s after a
+  one-line change, for no more CPU.
+- Antigravity, slice A (SPEC-505 pull request 1, task #487,
+  [ADR-0361](decisions/0361-antigravity-is-a-third-harness-picked-at-random-by-default.md)):
+  Google's Antigravity CLI (`agy` 1.5.10) gets an adapter beside Claude Code's and Codex's: its
+  transcript is read for prompts, tokens and limits, its launch writes a home whose settings
+  trust the worktree and skip the first-run screens, and `yulius hook antigravity <event>`
+  translates its hooks to Yulius's. Nothing reaches it yet: tasks and subscriptions still refuse
+  `antigravity` and `google` until the later slices.
+
+- Mutation testing runs beside the review (SPEC-506 pull request 2, task #488,
+  [ADR-0347](decisions/0347-mutation-testing-runs-once-per-pull-request.md) amended): the author
+  starts it when the first review is asked for instead of waiting for it, fixes each missed
+  mutant before the merge, and after a later round's fix runs it on that fix's lines alone.
+  `scripts/dev mutants` runs one job per 8 mutants listed (up to 7, a third of the session's
+  CPUs) within the session's CPUs: on a 260-mutant change, the 36th mutant ended at 476 s instead of
+  866 s.
+
+- Fewer review rounds spent on what CI or the count already decide (SPEC-506 pull request 1, task
+  #488, [ADR-0362](decisions/0362-a-round-is-decided-by-the-code-not-by-ci-or-a-message.md)): after
+  a red run, a failed merge candidate, a dropped merge or on a green head with no merge armed,
+  Yulius tells an approved author to call `delivery_merge` with the approved head (the approval
+  carries across 20 product lines in all) instead of getting a new review, and one with no
+  approval yet to get the review first; a reviewer approves a change whose only open point is CI and says what CI
+  still has to do; before another round the author answers each finding with the test that fails
+  without its fix and checks the whole last report on the new head.
+
+- A bad `yulius.toml` never blocks CI (SPEC-504 pull request 2, task #486,
+  [ADR-0360](decisions/0360-dev-s-gate-judges-every-change-and-a-bad-yulius-toml-never-turns-ci-off.md)):
+  the file is read by a real TOML parser (multi-line arrays, trailing commas and comments
+  parse); every pull request, merge candidate and playground merge is judged by the integration
+  branch's jobs, also one that changes them, with its own changed jobs beside them, never
+  instead; its own `yulius.toml`, as CI will read it after the
+  merge, is checked and an invalid one fails the run at once with the parser's message; while the
+  integration branch's file is invalid, its last valid gate runs until a fix merges and every run
+  and the CI page say so. The minutes CI ran nothing because of its configuration are counted
+  (`config_blocked_minutes` in the merge-queue read).
+
 - A CI job leaves nothing behind in Docker (SPEC-504 pull request 1, task #486,
   [ADR-0359](decisions/0359-a-ci-jobs-containers-and-networks-carry-its-label-and-go-when-it-ends.md)):
   each CI job runs in its own cgroup, the sandbox's Docker front labels the containers and

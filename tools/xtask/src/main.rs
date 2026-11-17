@@ -1,11 +1,14 @@
 //! Reproducible local and CI quality gates. This is tooling, not the Yulius product.
 
+use std::io::Write as _;
 use std::{env, io, path::Path, process::Command, process::ExitCode};
 
 mod mutants;
 
 const HELP: &str = "Yulius engineering commands (scripts/dev <command>)
   doctor    Verify pinned compiler and repository-local tool versions
+  quick     The checks of seconds: repository contracts and Rust formatting (run it before each
+            commit you publish; ci and checks run it first)
   check     Validate repository contracts and compile every target
   fmt       Format Rust sources
   lint      Check formatting and Clippy warnings
@@ -13,15 +16,18 @@ const HELP: &str = "Yulius engineering commands (scripts/dev <command>)
   test      Run nextest and documentation tests; in a CI matrix job valued `i/n`
             ($YULIUS_CI_MATRIX) only shard i of n, the doctests in shard 1
   deps      Check advisories, licenses, sources, and unused dependencies
-  ci        Run all required gates, failing on the first failed command
+  ci        Run all required gates, failing on the first failed command (the checker's tests,
+            beside the Rust gates, fail it at its end)
   checks    Run every gate of ci but test (Yulius CI runs the tests apart, in shards)
   security  Scan the branch's changes with Vidoc (vidoc-1), failing on open critical or high findings
             and on open medium ones in the changed lines;
             --all scans the whole repository (needs a Vidoc key; not in ci)
-  mutants   Mutation-test the Rust lines the branch changed, once per pull request (SPEC-493):
-            --base REF (origin/<integration branch>), --minutes N (30), --mutant-seconds N
-            (300), --jobs N (2), --tests FILTER (the product's tests to run in place of those
-            the branch changed); the last line is the summary for the spec's Evidence";
+  mutants   Mutation-test the Rust lines the branch changed, beside the first review (SPEC-506):
+            --base REF (origin/<integration branch>; the reviewed head for a fix's lines),
+            --minutes N (30), --mutant-seconds N (300), --jobs N (one per 8 mutants, 2 to 7,
+            at most a third of $YULIUS_CPUS; 2 without it), --tests FILTER (the product's tests
+            to run in place of those the branch changed); the last line is the summary for the
+            spec's Evidence";
 
 /// The line that names a stage of a Yulius CI job (SPEC-137): Yulius times the stage from when
 /// it reads this line until the next one or the job's end.
@@ -79,39 +85,149 @@ fn run_with(program: &str, args: &[&str], envs: &[(String, String)]) -> io::Resu
     }
 }
 
+/// The gates of `ci` (with the tests) or `checks` (without), in order: `quick`, the checks of
+/// seconds, right after `doctor`, so that a format or contract failure ends a CI run in seconds
+/// rather than after the build (SPEC-506 FST-006).
+fn gate_sequence(with_tests: bool) -> Vec<&'static str> {
+    ["doctor", "quick", "check", "lint", "macos", "test", "deps"]
+        .into_iter()
+        .filter(|gate| with_tests || *gate != "test")
+        .collect()
+}
+
+/// The repository checker's own tests' arguments.
+const CHECKER_TESTS: [&str; 7] = [
+    "-m",
+    "unittest",
+    "discover",
+    "-s",
+    "scripts",
+    "-p",
+    "test_*.py",
+];
+
+/// Starts the repository checker's own tests and keeps their output. They wait on local servers
+/// and timers (3 CPU-seconds of user time, 7 with the system's, in 68 s), so they run beside the
+/// Rust gates, which need the CPUs: those gates then take the longer of the two instead of both,
+/// for no more CPU (SPEC-506 FST-008). A line names them when they start.
+fn checker_tests(python: &str) -> io::Result<std::process::Output> {
+    println!(
+        "+ {python} {} (beside the Rust gates; its output follows them)",
+        CHECKER_TESTS.join(" ")
+    );
+    Command::new(python).args(CHECKER_TESTS).output()
+}
+
+/// Prints the checker's tests' output in one piece and says how they ended.
+fn checker_report(python: &str, out: io::Result<std::process::Output>) -> io::Result<()> {
+    let out = out?;
+    let mut stdout = io::stdout().lock();
+    let mut text = format!("+ {python} {} (its output)\n", CHECKER_TESTS.join(" ")).into_bytes();
+    text.extend_from_slice(&out.stdout);
+    text.extend_from_slice(&out.stderr);
+    stdout.write_all(&text)?;
+    stdout.flush()?;
+    if out.status.success() {
+        Ok(())
+    } else {
+        Err(io::Error::other(format!(
+            "{python} {} failed: {}",
+            CHECKER_TESTS.join(" "),
+            out.status
+        )))
+    }
+}
+
+/// Runs the gates of `ci` (with the tests) or `checks` (without), naming each stage: `doctor`
+/// and `quick` first, alone, so a failure there ends the run in seconds; then the checker's
+/// tests beside all the rest, and their output in a stage of their own at the end (SPEC-506
+/// FST-006, FST-008). A Rust gate's failure is named first; a failing checker test no longer
+/// stops the Rust gates.
+fn gates(with_tests: bool, cargo: &str, python: &str) -> io::Result<()> {
+    let gates = gate_sequence(with_tests);
+    let (first, rest) = gates.split_at(2);
+    for gate in first {
+        stage(gate);
+        execute_in(gate, true)?;
+    }
+    let (tests, rest) = beside(
+        || checker_tests(python),
+        || -> io::Result<()> {
+            for gate in rest {
+                // `test` names its own stage.
+                if *gate != "test" {
+                    stage(gate);
+                }
+                // The wait for the checker's tests is their stage's, not the last Rust gate's.
+                if let Err(error) = execute_in(gate, true) {
+                    stage("checker-tests");
+                    return Err(error);
+                }
+            }
+            stage("docs");
+            let docs = docs(cargo);
+            stage("checker-tests");
+            docs
+        },
+    );
+    let tests = checker_report(python, tests);
+    rest.and(tests)
+}
+
+/// Runs `first` and `second` at once and returns both results (SPEC-506 FST-008).
+fn beside<A: Send, B>(first: impl FnOnce() -> A + Send, second: impl FnOnce() -> B) -> (A, B) {
+    std::thread::scope(|scope| {
+        let first = scope.spawn(first);
+        let second = second();
+        let first = first
+            .join()
+            .unwrap_or_else(|panic| std::panic::resume_unwind(panic));
+        (first, second)
+    })
+}
+
 fn execute(task: &str) -> io::Result<()> {
+    execute_in(task, false)
+}
+
+/// Runs `task`; `after_quick` leaves out of `check` and `lint` what `quick` already ran.
+fn execute_in(task: &str, after_quick: bool) -> io::Result<()> {
     let cargo = env::var("CARGO").unwrap_or_else(|_| "cargo".into());
     let python = env::var("PYTHON").unwrap_or_else(|_| "python3".into());
     match task {
         "doctor" => run(&python, &["scripts/check_repository.py", "--doctor"]),
-        "check" => {
+        "quick" => {
             run(&python, &["scripts/check_repository.py"])?;
-            run(
-                &python,
-                &[
-                    "-m",
-                    "unittest",
-                    "discover",
-                    "-s",
-                    "scripts",
-                    "-p",
-                    "test_*.py",
-                ],
-            )?;
-            run(
-                &cargo,
-                &[
-                    "check",
-                    "--locked",
-                    "--workspace",
-                    "--all-targets",
-                    "--all-features",
-                ],
-            )
+            run(&cargo, &["fmt", "--all", "--", "--check"])
+        }
+        "check" => {
+            if !after_quick {
+                run(&python, &["scripts/check_repository.py"])?;
+            }
+            let compile = || {
+                run(
+                    &cargo,
+                    &[
+                        "check",
+                        "--locked",
+                        "--workspace",
+                        "--all-targets",
+                        "--all-features",
+                    ],
+                )
+            };
+            // In `ci` and `checks` the checker's tests already run beside every Rust gate.
+            if after_quick {
+                return compile();
+            }
+            let (tests, checked) = beside(|| checker_tests(&python), compile);
+            checked.and(checker_report(&python, tests))
         }
         "fmt" => run(&cargo, &["fmt", "--all"]),
         "lint" => {
-            run(&cargo, &["fmt", "--all", "--", "--check"])?;
+            if !after_quick {
+                run(&cargo, &["fmt", "--all", "--", "--check"])?;
+            }
             run(
                 &cargo,
                 &[
@@ -201,30 +317,13 @@ fn execute(task: &str) -> io::Result<()> {
             }
             Ok(())
         }
-        "checks" => {
-            // Everything `ci` runs but the tests, which a CI job of their own runs in shards.
-            for gate in ["doctor", "check", "lint", "macos", "deps"] {
-                stage(gate);
-                execute(gate)?;
-            }
-            stage("docs");
-            docs(&cargo)
-        }
+        // Everything `ci` runs but the tests, which a CI job of their own runs in shards.
+        "checks" => gates(false, &cargo, &python),
         "deps" => {
             run(&cargo, &["deny", "--locked", "check"])?;
             run(&cargo, &["shear", "--locked", "--deny-warnings"])
         }
-        "ci" => {
-            for gate in ["doctor", "check", "lint", "macos", "test", "deps"] {
-                // `test` names its own stage.
-                if gate != "test" {
-                    stage(gate);
-                }
-                execute(gate)?;
-            }
-            stage("docs");
-            docs(&cargo)
-        }
+        "ci" => gates(true, &cargo, &python),
         _ => Err(io::Error::new(io::ErrorKind::InvalidInput, "unknown task")),
     }
 }
@@ -311,8 +410,8 @@ fn main() -> ExitCode {
     }
     if (args.len() != 1 && args[0] != "security" && args[0] != "mutants")
         || ![
-            "doctor", "check", "fmt", "lint", "macos", "test", "deps", "ci", "checks", "security",
-            "mutants",
+            "doctor", "quick", "check", "fmt", "lint", "macos", "test", "deps", "ci", "checks",
+            "security", "mutants",
         ]
         .contains(&args[0].as_str())
     {
@@ -355,8 +454,45 @@ fn main() -> ExitCode {
 
 #[cfg(test)]
 mod tests {
-    use super::{macos_env, quarantine_filter, shard_of, stage_marker};
+    use super::{beside, gate_sequence, macos_env, quarantine_filter, shard_of, stage_marker};
     use std::path::Path;
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    /// SPEC-506 FST-008: the two steps of `beside` run at once: each hands the other a token and
+    /// waits for the other's, which only works when both run (in a row, the first times out).
+    #[test]
+    fn beside_runs_both_steps_at_once() {
+        let (to_second, from_first) = mpsc::channel();
+        let (to_first, from_second) = mpsc::channel();
+        let wait = Duration::from_secs(30);
+        let (first, second) = beside(
+            move || {
+                to_second.send(1).ok();
+                from_second.recv_timeout(wait)
+            },
+            move || {
+                to_first.send(2).ok();
+                from_first.recv_timeout(wait)
+            },
+        );
+        assert_eq!((first, second), (Ok(2), Ok(1)));
+    }
+
+    /// SPEC-506 FST-006 (AC-4): the checks of seconds run first, right after the tool check, in
+    /// `ci` and in `checks` (the CI job `quality`), so a format or contract failure ends a run
+    /// before the build; `checks` leaves the tests to their own jobs.
+    #[test]
+    fn the_quick_checks_run_first() {
+        assert_eq!(
+            gate_sequence(true),
+            ["doctor", "quick", "check", "lint", "macos", "test", "deps"]
+        );
+        assert_eq!(
+            gate_sequence(false),
+            ["doctor", "quick", "check", "lint", "macos", "deps"]
+        );
+    }
 
     /// SPEC-497 OFC-002 (review round 1): a quarantined test is left out in its own binary, and
     /// one whose binary this head does not build is not named (nextest would refuse the filter).

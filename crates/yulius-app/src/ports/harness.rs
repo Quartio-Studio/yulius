@@ -87,6 +87,12 @@ pub struct HarnessLaunch {
     /// The Codex CLI Yulius provides, started by its absolute path (SPEC-503 CLI-002); `None`:
     /// `codex` from `PATH`.
     pub codex_program: Option<PathBuf>,
+    /// Antigravity home of the (sandbox, account) pair, the folder holding its `.gemini` (SPEC-505
+    /// AGY-003); `None` for other harnesses.
+    pub antigravity_home: Option<PathBuf>,
+    /// The Antigravity CLI Yulius provides, an absolute path (SPEC-505 AGY-007); `None`: `agy`
+    /// from `PATH`.
+    pub antigravity_program: Option<PathBuf>,
 }
 
 /// A user's Cockpit launch (SPEC-021): plain Claude Code outside any task.
@@ -361,7 +367,7 @@ pub struct ProvidedCli {
     pub dir: PathBuf,
 }
 
-/// What [`HarnessPort::provide_codex`] returns.
+/// What [`HarnessPort::provide_codex`] and [`HarnessPort::provide_antigravity`] return.
 pub type ProvideFuture<'a> = std::pin::Pin<
     Box<dyn std::future::Future<Output = AppResult<Option<ProvidedCli>>> + Send + 'a>,
 >;
@@ -376,6 +382,16 @@ pub trait HarnessPort: Send + Sync {
     /// `Upstream` when the pinned CLI cannot be installed (or, without `install`, is not
     /// installed yet) and the host has no `codex` either.
     fn provide_codex(&self, install: bool) -> ProvideFuture<'_> {
+        let _ = install;
+        Box::pin(async { Ok(None) })
+    }
+    /// The Antigravity CLI Antigravity runs and sign-ins start (SPEC-505 AGY-007), installed
+    /// first when `install` (else only what is ready); `None`: the `agy` on the run's `PATH`.
+    ///
+    /// # Errors
+    /// `Upstream` when the pinned CLI cannot be installed (or, without `install`, is not
+    /// installed yet) and the host has no `agy` either.
+    fn provide_antigravity(&self, install: bool) -> ProvideFuture<'_> {
         let _ = install;
         Box::pin(async { Ok(None) })
     }
@@ -444,6 +460,9 @@ pub trait HarnessPort: Send + Sync {
         from: WatchFrom,
         until: Option<Timestamp>,
     ) -> AppResult<Option<UsageSnapshot>>;
+    /// The transcript of the Antigravity conversation `session_id` in the conversations folder
+    /// `brain` (SPEC-505 AGY-004).
+    fn antigravity_transcript(&self, brain: &Path, session_id: &str) -> PathBuf;
     /// The rollout of the Codex session `session_id` below `sessions_dir` (SPEC-503 CDX-003).
     ///
     /// # Errors

@@ -848,7 +848,7 @@ impl App {
         // subscription's limit is its windows', which the reading itself says (SPEC-503 CDX-008).
         let answered = match account.provider {
             Provider::Anthropic => self.ask_about_limits(&account.id, reading.as_ref()).await?,
-            Provider::OpenAi => false,
+            Provider::OpenAi | Provider::Google => false,
         };
         match unread {
             Some(failure) if failure.kind == UsageFailureKind::Throttled => Err(failure),
@@ -1155,9 +1155,14 @@ impl App {
         let api_key = req.api_key.take().map(Zeroizing::new);
         let auth_json = req.auth_json.take().map(Zeroizing::new);
         self.require_instance_admin(ctx)?;
-        let provider = Provider::parse(req.provider.trim()).map_err(|_| {
-            AppError::Invalid("provider must be anthropic (Claude) or openai (Codex)".into())
-        })?;
+        // Google (Antigravity) accounts come with slice C2 of SPEC-505: refused as unknown until
+        // then.
+        let provider = Provider::parse(req.provider.trim())
+            .ok()
+            .filter(|p| *p != Provider::Google)
+            .ok_or_else(|| {
+                AppError::Invalid("provider must be anthropic (Claude) or openai (Codex)".into())
+            })?;
         let label = validate_label(&req.label)?;
         if let Some(token) = token {
             // A pasted token is a Claude credential (SPEC-502); a Codex account takes an API key
@@ -1918,7 +1923,8 @@ impl App {
                 .provide_codex(true)
                 .await?
                 .map(|cli| cli.program),
-            Provider::Anthropic => None,
+            // Google accounts are refused before a sign-in until SPEC-505 slice C2.
+            Provider::Anthropic | Provider::Google => None,
         };
         let _serialized = self.logins.start.lock().await;
         self.prune_logins();
@@ -1946,6 +1952,7 @@ impl App {
         let config_dir = dir.join(match account.provider {
             Provider::Anthropic => "claude",
             Provider::OpenAi => "codex",
+            Provider::Google => "antigravity",
         });
         create_private_dir(&self.logins_dir())?;
         for d in [&dir, &home, &config_dir] {
@@ -2048,6 +2055,8 @@ impl App {
                     mode: 0o600,
                 });
             }
+            // Google accounts are refused before a sign-in until SPEC-505 slice C2.
+            Provider::Google => {}
         }
         LaunchPlan {
             argv: self.deps.harness.login_argv(provider.harness()),
@@ -2208,6 +2217,8 @@ impl App {
                 }
                 Err(_) => false,
             },
+            // Google accounts are refused before a sign-in until SPEC-505 slice C2.
+            Provider::Google => false,
         }
     }
 
@@ -2239,6 +2250,8 @@ impl App {
                 let auth = self.codex_login_auth(session).ok();
                 auth.and_then(|bytes| String::from_utf8(bytes).ok())
             }
+            // Google accounts are refused before a sign-in until SPEC-505 slice C2.
+            Provider::Google => None,
         };
         raw.wipe();
         found

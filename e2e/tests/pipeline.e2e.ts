@@ -45,6 +45,9 @@ test('the Pipeline shows delivery figures, a stage trend with p50 and p90, and t
   await expect(review).toContainText(/Rounds per pull request\s*2\s*median/);
   await expect(review).toContainText(/First review cut off\s*8%/);
   await expect(review).toContainText(/Rounds by model\s*Fable 5\.2 21 · Opus 5\.5 6\s*2 on Opus for want of Fable/);
+  // SPEC-506 FST-007: re-reviews after a request for changes that asked again, and re-approvals.
+  await expect(review).toContainText(/Re-reviews that asked again\s*38%\s*3 of 8 rounds after a request for changes/);
+  await expect(review).toContainText(/Re-approvals\s*3\s*rounds after an approval; 1 of 4 asked for changes/);
   // SPEC-493 MQC-005: the merge queue's candidates in the range.
   const mergeQueue = screen.getByRole('region', 'Merge queue');
   await expect(mergeQueue).toContainText(/Candidates formed\s*9/);

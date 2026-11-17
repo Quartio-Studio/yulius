@@ -568,7 +568,7 @@ async fn a_codex_device_login_runs_the_provided_codex_cli() -> TestResult {
     let program = root.path().join(platform.install_name()).join("bin/codex");
     std::fs::create_dir_all(program.parent().ok_or("bin")?)?;
     std::fs::write(&program, b"installed")?;
-    let cli = yulius::wiring::codex_cli::CodexCli::with_registry(
+    let cli = yulius::wiring::pinned_cli::CodexCli::codex_from(
         root.path().to_path_buf(),
         "http://127.0.0.1:1".into(),
         Some(platform),
@@ -611,7 +611,7 @@ async fn a_codex_account_without_a_sign_in_starts_the_cli_install() -> TestResul
     let root = tempfile::tempdir()?;
     let platform = yulius_domain::agent_cli::codex::platform("linux", "x86_64").ok_or("x64")?;
     // An unreachable registry: the install fails at once and says so.
-    let cli = Arc::new(yulius::wiring::codex_cli::CodexCli::with_registry(
+    let cli = Arc::new(yulius::wiring::pinned_cli::CodexCli::codex_from(
         root.path().to_path_buf(),
         "http://127.0.0.1:1".into(),
         Some(platform),

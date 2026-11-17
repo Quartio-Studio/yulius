@@ -180,6 +180,21 @@ async fn tasks_run_claude_code_or_codex() -> TestResult {
         "{:?}",
         other.body
     );
+    // SPEC-505 slice A: Antigravity's adapter exists, its tasks do not yet.
+    let antigravity = call(
+        &h.router,
+        Method::POST,
+        "/api/sandboxes/s1/tasks",
+        Some(json!({"prompt": "x", "harness": "antigravity"})),
+        &alice,
+    )
+    .await?;
+    assert_eq!(
+        antigravity.status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "{:?}",
+        antigravity.body
+    );
     let settings = call(&h.router, Method::GET, "/api/admin/settings", None, &alice).await?;
     assert_eq!(settings.status, StatusCode::NOT_FOUND);
     Ok(())

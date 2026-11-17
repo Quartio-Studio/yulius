@@ -565,16 +565,17 @@ impl App {
         // What the integration branch and the pull request say now, not a cached view.
         self.dlv_refresh_clone(sandbox).await?;
         self.ci_forget_gate(&sandbox.id);
-        // As the scheduler decides (`ci_sync_sandbox`): a pull request that brings Yulius CI is
-        // tested with it before it merges (`dlv_checks_at` says pending until then); one whose
-        // configuration Yulius CI cannot read, or any while the integration branch's is unusable
-        // (then nothing is tested), never merges here.
+        // As the scheduler decides (`ci_sync_sandbox`): a pull request that brings Yulius CI, or
+        // repairs an integration branch's file that was never valid, is tested with its own jobs
+        // before it merges (`dlv_checks_at` says pending until then; SPEC-504 CFG-003); one
+        // whose configuration Yulius CI cannot read, and none bringing valid jobs while the
+        // integration branch's is unusable with no valid gate before it, never merges here.
         if self.ci_gate_result(sandbox, &pull.head_sha).await == GateResult::NotConfigured
             && self.config.ci.enabled
         {
             if let Some(problem) = self.ci_gate(sandbox).await.problem {
                 return Err(AppError::Conflict(format!(
-                    "Yulius CI tests nothing while the integration branch's yulius.toml is unusable ({problem}); merge this fix on GitHub, or have a task fix it"
+                    "Yulius CI tests nothing here: the integration branch's yulius.toml is unusable ({problem}), no earlier one was valid, and this change brings no valid jobs of its own; change yulius.toml to valid [[ci.jobs]] in it"
                 )));
             }
             if let Err(why) = self

@@ -1,7 +1,9 @@
 //! Provider transcript locations and session discovery (SPEC-002 §7.2, SPEC-001 HRN-004).
 //!
 //! Claude Code: `<CLAUDE_CONFIG_DIR>/projects/<cwd-slug>/<sessionId>.jsonl`. Codex (SPEC-503):
-//! `<CODEX_HOME>/sessions/YYYY/MM/DD/rollout-<timestamp>-<sessionId>.jsonl`. Directory walks are
+//! `<CODEX_HOME>/sessions/YYYY/MM/DD/rollout-<timestamp>-<sessionId>.jsonl`. Antigravity
+//! (SPEC-505): `<HOME>/.gemini/antigravity-cli/brain/<conversation>/.system_generated/logs/
+//! transcript.jsonl`. Directory walks are
 //! bounded by [`MAX_WALK_ENTRIES`] and never follow symbolic links below the given root.
 
 use std::fs;
@@ -43,6 +45,71 @@ pub fn claude_transcript_path(config_dir: &Path, cwd: &Path, session_id: &str) -
 }
 
 pub use yulius_domain::harness::valid_session_id;
+
+/// The Antigravity CLI's folder of conversations below its `.gemini` folder (1.5.10).
+pub const ANTIGRAVITY_BRAIN: &str = "antigravity-cli/brain";
+/// Its folder of conversation databases below `.gemini`.
+pub const ANTIGRAVITY_CONVERSATIONS: &str = "antigravity-cli/conversations";
+/// The file naming each workspace's last conversation, below `.gemini`.
+const ANTIGRAVITY_LAST_CONVERSATIONS: &str = "antigravity-cli/cache/last_conversations.json";
+/// The largest `last_conversations.json` read.
+const ANTIGRAVITY_LAST_CONVERSATIONS_MAX: u64 = 1024 * 1024;
+
+/// `<brain>/<conversation>/.system_generated/logs/transcript.jsonl` (SPEC-505 AGY-004).
+#[must_use]
+pub fn antigravity_transcript_path(brain: &Path, conversation: &str) -> PathBuf {
+    brain
+        .join(conversation)
+        .join(".system_generated/logs/transcript.jsonl")
+}
+
+/// The conversation the Antigravity CLI last ran in `worktree`, from its
+/// `cache/last_conversations.json` below `gemini_dir` (SPEC-505 AGY-005): `None` without one, for
+/// an id Yulius would not pass on, or for a file larger than 1 MiB or not a JSON object. The
+/// agent owns the folders below `gemini_dir`: each is opened from the one above it without
+/// following a link, and the file is opened the same way and not waited on when it is no plain
+/// file (a FIFO), so nothing is read but the file named.
+#[must_use]
+pub fn antigravity_last_conversation(gemini_dir: &Path, worktree: &Path) -> Option<String> {
+    use nix::fcntl::{OFlag, open, openat};
+    use nix::sys::stat::Mode;
+    use std::io::Read as _;
+    let dir_flags = OFlag::O_RDONLY | OFlag::O_DIRECTORY | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC;
+    let mut dir = open(gemini_dir, dir_flags, Mode::empty()).ok()?;
+    let mut names = Path::new(ANTIGRAVITY_LAST_CONVERSATIONS)
+        .components()
+        .peekable();
+    let mut file_name = None;
+    while let Some(component) = names.next() {
+        let name = component.as_os_str();
+        if names.peek().is_none() {
+            file_name = Some(name);
+        } else {
+            dir = openat(&dir, name, dir_flags, Mode::empty()).ok()?;
+        }
+    }
+    let file = openat(
+        &dir,
+        file_name?,
+        OFlag::O_RDONLY | OFlag::O_NOFOLLOW | OFlag::O_NONBLOCK | OFlag::O_CLOEXEC,
+        Mode::empty(),
+    )
+    .ok()?;
+    let file = fs::File::from(file);
+    let meta = file.metadata().ok()?;
+    if !meta.is_file() || meta.len() > ANTIGRAVITY_LAST_CONVERSATIONS_MAX {
+        return None;
+    }
+    let mut text = String::new();
+    file.take(ANTIGRAVITY_LAST_CONVERSATIONS_MAX)
+        .read_to_string(&mut text)
+        .ok()?;
+    let map: serde_json::Map<String, serde_json::Value> = serde_json::from_str(&text).ok()?;
+    map.get(worktree.to_str()?)?
+        .as_str()
+        .filter(|id| valid_session_id(id))
+        .map(str::to_owned)
+}
 
 fn walk_limit_error() -> io::Error {
     io::Error::other("directory walk limit exceeded")

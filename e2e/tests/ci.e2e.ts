@@ -438,3 +438,15 @@ test('people with read access watch but cannot run or clean up', async ({ app, s
   await expect(run.getByRole('link', 'In Pipeline')).toBeVisible();
   await expect(run.getByRole('button', /^(Run again|Cancel)/)).toBeHidden();
 });
+
+test('an invalid yulius.toml on dev runs its last valid gate and says so (SPEC-504 CFG-003, CFG-006)', async ({ app, screen }) => {
+  await app.open(mock('/s/studio/ci', '&ciconfig=fallback'));
+  await firstShown(screen.getByRole('heading', { level: 1 }), 'CI/CD');
+  // Not "CI is not running": the gate of its last valid yulius.toml runs until a fix merges.
+  await expect(screen.getByText(/yulius\.toml on the integration branch is invalid: yulius\.toml line 117/)).toBeVisible();
+  await expect(screen.getByText(/CI runs the gate of its last valid yulius\.toml \(5a6b7c8\) until a fix merges/)).toBeVisible();
+  await expect(screen.getByText(/CI is not running/)).toHaveCount(0);
+  await expect(screen.getByRole('heading', "3 jobs from the integration branch’s last valid yulius.toml")).toBeVisible();
+  // Each run judged by it says so.
+  await expect(screen.getByText(/judged by the integration branch's last valid yulius\.toml/)).toBeVisible();
+});

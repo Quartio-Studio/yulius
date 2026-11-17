@@ -37,15 +37,16 @@ Python's standard-library `tomllib` means Python 3.10 and older are unsupported.
 | Command | Actual work |
 | --- | --- |
 | `scripts/dev doctor` | Compiler/tool versions and Python prerequisite |
+| `scripts/dev quick` | The checks of seconds, first in `ci` and `checks` (after `doctor`): the repository contracts (`scripts/check_repository.py`) and `cargo fmt --check`; run it before each commit you publish. In `ci` and `checks` the checker's Python tests then run beside the Rust gates (ADR-0363) |
 | `scripts/dev check` | Local Markdown links, no merge conflict marker lines outside vendored assets, skills (frontmatter, "Use when" description, body size, deployments equal `.apm/skills`), Cargo inheritance/layers, one integration test binary for the composition crate, web UI design tokens (no colour, type, radius or spacing literals in `styles.css`; WCAG contrast of every theme in `tokens.css`), instructions that tell an agent to merge by hand, promote or poll; checker regression tests; locked all-target compilation |
 | `scripts/dev fmt` | Rust formatting mutation |
 | `scripts/dev lint` | Formatting verification and Clippy with warnings denied |
 | `scripts/dev macos` | Clippy with warnings denied on every target for `aarch64-apple-darwin`; on Linux the vendored C (ring, SQLite) is compiled by the pinned zig. Type-checks only: nothing is linked |
 | `scripts/dev test` | nextest workspace tests with zero retries; doctests for eligible library targets. With `YULIUS_CI_MATRIX=i/n` (Yulius CI's `test` job, two shards) only hash partition i of n, and the doctests in shard 1 (ADR-0358) |
 | `scripts/dev deps` | cargo-deny advisories/licenses/bans/sources and cargo-shear (unused crate and workspace dependencies) |
-| `scripts/dev ci` | doctor, check, lint, macos, test, deps, then rustdoc with warnings denied |
+| `scripts/dev ci` | doctor, quick, check, lint, macos, test, deps, then rustdoc with warnings denied; the checker's Python tests run beside the gates after quick, their output in a `checker-tests` stage at the end (ADR-0363) |
 | `scripts/dev checks` | `ci` without its tests: Yulius CI's `quality` job, beside the `test` shards |
-| `scripts/dev mutants` | One bounded mutation run of the Rust lines the branch changed (pinned cargo-mutants; ADR-0347): 30 min in all, 300 s a mutant, 2 jobs by default; the product's tests narrowed to those the branch changed. Once per pull request, its summary line in the Evidence; not part of `ci` |
+| `scripts/dev mutants` | One bounded mutation run of the Rust lines the branch changed (pinned cargo-mutants; ADR-0347): 30 min in all, 300 s a mutant, by default one job per 8 mutants listed (2 to 7, at most a third of `YULIUS_CPUS`, one per 12 GB of `YULIUS_MEMORY_MB`; 2 without a budget), within `YULIUS_CPUS` CPUs; the product's tests narrowed to those the branch changed. Started with the first review and run beside it, its summary line in the Evidence; `--base <reviewed head>` for a later fix's lines alone (SPEC-506); not part of `ci` |
 | `scripts/dev security` | Vidoc's vidoc-1 scan of the files the branch's commits changed since `dev` (`--all`: the whole repository); fails on open medium findings in the changed lines and on open critical or high findings, exit 2 when it could not run, exit 3 when incomplete. Needs a key and the network; not part of `ci`, but Yulius CI runs it as the `security` job on pull request heads |
 
 Use `scripts/dev check`, `scripts/dev lint` or `scripts/dev test` during iteration.
@@ -302,4 +303,4 @@ steps are skipped). [Git delivery](git.md) defines promotion checks and post-mer
 
 ## Mutation testing
 
-Mutation testing runs once per pull request: on the first head you ask a review for, run the project's mutation command and put its summary line in the spec's Evidence; a project without one undoes by hand the few lines its new tests are meant to hold and says what failed. The reviewer reads that result, may undo a single line it doubts, and runs no campaign of its own. Nobody writes a mutation script by hand. A test that cannot fail is still fixed in the same pull request (ADR-0141). Here the command is `scripts/dev mutants`.
+Mutation testing runs beside the review: when you ask for a pull request's first review, start the project's mutation command in the background and let the reviewer read meanwhile; when it ends, put its summary line in the spec's Evidence and fix each missed mutant test-first before the merge. After a later round's fix, run it on that fix's lines alone. A project without one undoes by hand the few lines its new tests are meant to hold and says what failed. The reviewer may undo a single line it doubts and runs no campaign of its own. Nobody writes a mutation script by hand. A test that cannot fail is still fixed in the same pull request (ADR-0141). Here the command is `scripts/dev mutants`.

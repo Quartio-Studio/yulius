@@ -89,6 +89,10 @@ pub fn run_hook_with(
     env: &dyn Fn(&str) -> Option<String>,
     hold: HoldPolicy,
 ) -> i32 {
+    // Antigravity's hooks are translated to Claude Code's and back (SPEC-505 AGY-006).
+    if harness == "antigravity" {
+        return crate::antigravity_hooks::run(event, input, output, env, hold);
+    }
     // Tool results are redacted here, inside the sandbox, from fingerprints: the result itself
     // never goes to the server (SPEC-002 ADR-20).
     if harness == "claude" && event == "PostToolUse" {

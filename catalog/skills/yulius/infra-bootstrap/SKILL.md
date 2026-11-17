@@ -42,7 +42,10 @@ example when it starts deploying for real), and record every change as a decisio
      on the real engine in a disposable instance, queues, external APIs behind fakes), fast,
      deterministic and isolated (`test-driven-development`);
    - one entry point that runs them all in order (for example `scripts/ci` or `make ci`), exiting
-     non-zero on any failure, plus the dependency and license audit the ecosystem offers;
+     non-zero on any failure, plus the dependency and license audit the ecosystem offers; it runs
+     the quick checks first (format and the checks that read the whole repository, seconds in
+     all), also as a command of their own named in AGENTS.md, so a failure ends a CI run in
+     seconds and an author runs them before each commit;
    - `yulius.toml` `[commands]`: `test`, `lint`, `build`, and `gate` (the entry point), or
      `[[ci.jobs]]` entries (`name`, `command`, optional `matrix`) when parallel jobs pay off;
    - in a monorepo, a CI job for every project (each app, client, package or service with its own

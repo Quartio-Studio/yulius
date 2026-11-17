@@ -70,7 +70,9 @@ fn run_from_row(row: &Row<'_>) -> rusqlite::Result<CiRunRecord> {
         reference: CiRef::parse(&reference)
             .ok_or_else(|| bad_column("CI reference", &reference))?,
         sha: row.get("sha")?,
-        source: GateSource::parse(&source).ok_or_else(|| bad_column("CI source", &source))?,
+        // A source a later release wrote reads as the integration branch's configuration, so a
+        // rollback keeps reading its runs (SPEC-504 review round 1: `last_valid_yulius_toml`).
+        source: GateSource::parse(&source).unwrap_or(GateSource::ProjectConfig),
         state: state(&run_state)?,
         reason: row.get("reason")?,
         requested_by: row.get("requested_by")?,
@@ -1021,6 +1023,30 @@ mod tests {
             exclusive: false,
             waited_ms: None,
         }
+    }
+
+    /// SPEC-504 review round 1: a run whose source a later release wrote reads as the
+    /// integration branch's configuration instead of failing every read of the sandbox's runs.
+    #[tokio::test]
+    async fn a_run_of_an_unknown_source_still_reads() -> TestResult {
+        let store = SqliteStore::open_in_memory()?;
+        store
+            .insert_ci_run(&run("r1", "a", 1)?, &[job("j1", "r1", 0)])
+            .await?;
+        store
+            .call(|c| {
+                c.execute(
+                    "UPDATE ci_runs SET source = 'from_a_later_release' WHERE id = 'r1'",
+                    [],
+                )
+                .map_err(db)?;
+                Ok(())
+            })
+            .await?;
+        let runs = store.ci_runs(&SandboxId::parse("s1")?, 10).await?;
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].source, GateSource::ProjectConfig);
+        Ok(())
     }
 
     /// SPEC-497 OFC-001, OFC-003 (review round 1): a run that ends adds its minutes to its

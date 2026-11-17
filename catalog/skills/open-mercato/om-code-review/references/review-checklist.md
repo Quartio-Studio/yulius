@@ -281,7 +281,7 @@ Mark every finding **own code** (in code or tests the change added or modified) 
 
 ## Verdict Rule
 
-- Any **blocker**, pre-existing or not (a failing gate included) → **request changes**. No exceptions, no matter how green the other checks are.
+- Any **blocker**, pre-existing or not (a gate the change fails included) → **request changes**. A reviewer does not ask for changes because of CI alone: `delivery_merge` merges only a head whose own Yulius CI run passed. When the review finds nothing to fix and the head's run is still going, or failed in a way the change does not cause, the verdict is approve and the report says what CI still has to do. A failure the change causes (its own test, format or lint, or a contract its files break) is a blocker. No exceptions, no matter how green the other checks are.
 - Any **major** in the change's own code → **request changes**.
 - Any own-code finding deferred to an issue → **request changes**.
 - Only minors, nits and pre-existing majors filed as issues with the evidence → **approve**, and list them in the review; the author still fixes those in its own code.

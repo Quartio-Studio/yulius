@@ -734,11 +734,14 @@ impl App {
         use yulius_contracts::api::analytics::{ModelCount, ReviewAnalytics};
         let (sandboxes, from_at, to_at, range) =
             self.analytics_window(ctx, sandbox, from, to).await?;
-        let rounds = self
+        let mut rounds = self
             .deps
             .store
             .merged_review_rounds(&sandboxes, from_at, to_at)
             .await?;
+        // In the order the reports ended (stable: start order otherwise), so a round's last
+        // report is the one that ended last, also when a reviewer cut off was resumed.
+        rounds.sort_by_key(|r| r.ended_at);
         let facts: Vec<yulius_domain::review::RoundFact> = rounds
             .into_iter()
             .map(|r| yulius_domain::review::RoundFact {
@@ -770,6 +773,10 @@ impl App {
                 .map(|(model, rounds)| ModelCount { model, rounds })
                 .collect(),
             no_fable_rounds: numbers.no_fable_rounds,
+            re_reviews_after_changes: numbers.re_reviews_after_changes,
+            re_reviews_asking_again: numbers.re_reviews_asking_again,
+            rounds_after_approval: numbers.rounds_after_approval,
+            rounds_after_approval_asking: numbers.rounds_after_approval_asking,
         })
     }
 
@@ -838,6 +845,32 @@ impl App {
                     .add(&row.outcome, row.run_ms, row.rerun_ms);
             }
         }
+        // Minutes CI ran nothing because of its configuration (SPEC-504 CFG-004), from the
+        // episodes recorded, one started before the range included.
+        let mut config_blocked_minutes = 0;
+        let until = to_at.map_or(self.now(), |to| to.min(self.now()));
+        for id in &sandboxes {
+            let Some(record) = self.deps.store.sandbox(id).await? else {
+                continue;
+            };
+            let entries = self
+                .deps
+                .store
+                .audit_of_sandbox(
+                    &record.slug,
+                    &[],
+                    &[mq::CONFIG_BLOCKED, mq::CONFIG_UNBLOCKED],
+                    read_from,
+                    to_at,
+                    20_000,
+                )
+                .await?;
+            let episodes: Vec<(yulius_domain::time::Timestamp, bool)> = entries
+                .into_iter()
+                .map(|(_, entry)| (entry.at, entry.action == mq::CONFIG_BLOCKED))
+                .collect();
+            config_blocked_minutes += mq::blocked_minutes(&episodes, from_at, until);
+        }
         let numbers = mq::queue_numbers(&events, from_at);
         let mut totals = MergeQueueAnalytics {
             range,
@@ -861,6 +894,7 @@ impl App {
                     minutes: ci_minutes(minutes),
                 })
                 .collect(),
+            config_blocked_minutes,
             ..MergeQueueAnalytics::default()
         };
         for day in numbers.days {

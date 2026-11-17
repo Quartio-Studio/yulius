@@ -1,11 +1,11 @@
 ---
 yulius-task: 6287c480-43ac-42a1-8b09-ab2af5830a44
-status: in-progress
+status: done
 ---
 
 # SPEC-504: CI leaves nothing behind, and a bad yulius.toml never blocks CI
 
-Status: in-progress
+Status: done
 Date: 2026-11-17
 Owner: Yulius task #486
 Scope authorization: task #486, the person's goal of 2026-11-17 after two production incidents of
@@ -83,10 +83,10 @@ ADR-0344), SPEC-497 HBA-003 (CI waits for Docker networks), SPEC-053/SPEC-268 (t
 
 | ID | Requirement |
 | --- | --- |
-| CFG-001 | While the integration branch has CI, every commit on its way there (a pull request's head, a merge candidate, a playground task's merge) is judged by the integration branch's jobs, never its own: a change never weakens the gate that judges it. This replaces CI-110 and SPEC-163 PCI-002's own-jobs rule. A branch with no CI and no broken file still lets a commit bring its own (bootstrap). |
+| CFG-001 | While the integration branch has CI, every commit on its way there (a pull request's head, a merge candidate, a playground task's merge) is judged by the integration branch's jobs; its own changed or added jobs run beside them (`<job> (this change)`), never instead: a change never weakens the gate that judges it, and a job it changes never lands untested. A branch's run reuses a same-tree passed run only when every job of its gate ran there. This replaces CI-110 and SPEC-163 PCI-002's own-jobs rule. A branch with no CI, or a file never valid, still lets a commit bring its own (bootstrap). |
 | CFG-002 | A run of such a commit, and of the integration branch, whose `yulius.toml` as CI will read it after the merge is invalid has a failed job `yulius.toml` whose reason and output are the parser's message; the run fails, so it cannot merge. The file read is the head's for a merge candidate, a playground merge and a branch, and for a pull request the head's when it changed the file since its merge base, else the integration branch's. |
 | CFG-003 | While the integration branch's `yulius.toml` is invalid, its gate is that of the newest first-parent commit (at most 100 back) whose file is valid: the last valid gate runs until a fix merges, and the CI page says so with the problem. Without one, CI runs nothing, as before. |
-| CFG-004 | The minutes each sandbox's CI had no gate because of its configuration are counted per day and shown by `GET /api/analytics/ci-minutes`. |
+| CFG-004 | The minutes each sandbox's CI had no gate because of its configuration are counted: each episode is audited (`ci.config_blocked`, `ci.config_unblocked`) and `GET /api/analytics/merge-queue` sums them over its range (`config_blocked_minutes`). |
 | CFG-005 | `yulius.toml` is read by a real TOML parser: multi-line arrays, trailing commas and comments inside arrays (and the rest of TOML 1.0) parse for `[[ci.jobs]]` and every other table; the checks on its values stay as they are. |
 | CFG-006 | Every run judged by a last valid gate says so (the run's reason and the CI page: dev's problem, and the commit whose gate runs), and an invalid dev file never shows "No CI is configured" nor makes `delivery_merge` refuse a fix for want of CI. |
 
@@ -102,14 +102,16 @@ ADR-0344), SPEC-497 HBA-003 (CI waits for Docker networks), SPEC-053/SPEC-268 (t
 - [x] ADR, architecture, operations and changes for pull request 1
 - [x] Review round 1 of pull request 1 answered
 - [x] Pull request 1 reviewed and approved
-- [ ] A pull request is judged by the integration branch's jobs (CFG-001)
-- [ ] An invalid yulius.toml fails its run with the parser's message (CFG-002)
-- [ ] The last valid gate runs while dev's file is invalid (CFG-003)
-- [ ] Config-blocked minutes are counted (CFG-004)
-- [ ] yulius.toml is read by a real TOML parser (CFG-005)
-- [ ] Runs on the last valid gate say so, and a fix is never refused for want of CI (CFG-006)
-- [ ] ADR, architecture and changes for pull request 2
-- [ ] Pull request 2 reviewed and approved
+- [x] A pull request is judged by the integration branch's jobs (CFG-001)
+- [x] An invalid yulius.toml fails its run with the parser's message (CFG-002)
+- [x] The last valid gate runs while dev's file is invalid (CFG-003)
+- [x] Config-blocked minutes are counted (CFG-004)
+- [x] yulius.toml is read by a real TOML parser (CFG-005)
+- [x] Runs on the last valid gate say so, and a fix is never refused for want of CI (CFG-006)
+- [x] ADR, architecture and changes for pull request 2
+- [x] Review round 1 of pull request 2 answered
+- [x] Pull request 2 reviewed and approved
+- [x] The reuse rule's need and `exclusive` conditions are tested (follow-up to review round 5)
 
 ## Acceptance criteria
 
@@ -307,3 +309,221 @@ after the approval within the follow-up allowance:
   change meaning to Go's last-wins decoder: said in ADR-0359's Consequences (only the job's own
   unusual bodies are affected).
 
+### Pull request 2: a bad yulius.toml never blocks CI
+
+2026-11-17, on this branch after PR #1389 merged (dev at `87c08e62a`).
+
+- `cargo nextest run -p yulius-domain`: 565 passed. Among them:
+  - `spec_format::config::tests::valid_toml_parses_whatever_its_layout`, which failed with the
+    old reader: autoresearch's multi-line `paths = [` array with comments and a trailing comma,
+    a multi-line basic string, `4_0`, an inline-table job and an unknown table of any shape;
+  - `precise_errors_with_line_numbers`: invalid TOML is refused with the parser's message at
+    its line, including a broken multi-line array at the line of its bad entry;
+  - this repository's own `yulius.toml` parsed by `the_repositorys_own_cd_is_defined` and
+    `the_repositorys_own_security_job_alone_is_granted_the_vidoc_key`;
+  - the bounded nesting (65,000 `[` refused, "cannot recurse further");
+  - `merge_queue::tests::blocked_minutes_add_up_episodes_within_the_range`.
+- `cargo nextest run -p yulius-app -p yulius-contracts`: passed. CI-110's unit test is removed
+  with the rule.
+- `cargo nextest run -p yulius -E 'binary_id(yulius::main) & (test(/^local_ci::/) |
+  test(/^merge_train::/) | test(/^playground::/))'`: 194 passed. New tests:
+  - `a_pull_request_that_changes_its_jobs_is_judged_by_the_integration_branchs` (CFG-001);
+  - `a_pull_request_with_an_invalid_yulius_toml_fails_with_the_parsers_message` (CFG-002,
+    autoresearch's PR #4: `gate` and `[[ci.jobs]]` together). It fails at once with the
+    parser's message, a failed job `yulius.toml` and its jobs skipped, and its gate result is
+    failed.
+  - `an_invalid_integration_branch_runs_its_last_valid_gate_until_a_fix_merges` (CFG-003,
+    CFG-006), in four stages:
+    1. dev breaks after a valid commit; the overview names the problem, `gate_fallback` and the
+       source `last_valid_yulius_toml`;
+    2. a pull request that leaves the file alone fails, naming dev's problem;
+    3. the repair passes on the last valid gate, and its run says so;
+    4. once the repair merges, dev's own gate is in force again.
+  - `a_repair_of_a_never_valid_configuration_is_tested_with_its_own_jobs` (CFG-003 for a file
+    never valid, and CFG-004: 30 blocked minutes counted by the merge-queue read).
+
+  Rewritten to the new rule:
+  - the secrets test: a pull request's own grants and commands never run;
+  - the security-job test: bootstrap only;
+  - the run-again test: the same integration jobs;
+  - the two scan-switch tests: the scanning job is the integration branch's;
+  - the playground test: a task that changes a job is judged by dev's.
+- Other integration files that read the CI configuration or its problems (analytics,
+  scope_overlaps, leftovers, stages, delivery, playground_move, pr_watch, cockpit): 213 passed.
+- e2e: `npx e2e run tests/ci.e2e.ts`: 21 passed. The new test covers the banner of the last
+  valid gate (`ciconfig=fallback`), never "CI is not running", the gate card's source and the
+  run's note.
+- Mutation testing (`scripts/dev mutants`): `mutants: 171 listed, 89 caught, 0 missed, 0 timed
+  out, 82 unviable, 0 not reached (bound 30 min, took 1563 s)`.
+- Not measured here: production's minutes before and after. The incidents give the "before"
+  (autoresearch's CI ran nothing from PR #4's merge to PR #5's, and from PR #42's merge until a
+  person bypassed the ruleset for PR #50). The "after" is `config_blocked_minutes`, which counts
+  only a file never valid once this is deployed; promotion and deployment are a person's.
+
+### Pull request 2, review round 1 (request changes; every finding own code)
+
+The reviewer (Fable 5.2) read `ccc36172e`, then the fixes of two failed CI runs, which arrived
+mid-review:
+- `ecdbabddb`: the repository check refused `toml` in the domain. The checker and
+  `docs/engineering/architecture.md` now allow it by name, with ADR-0360.
+- `29a96c920`: `remote_mcp::a_broken_integration_ci_is_named_when_merging` pinned the old "tests
+  nothing" refusal of a repair. It is now
+  `a_repair_of_a_broken_integration_ci_waits_for_its_own_checks`.
+
+The security job ended skipped (Vidoc 401, as on dev): **unrun**. Answers, each fixed
+test-first:
+
+- *Direction and Major 1: a valid but failing job merged untested, then judged its own repair,
+  and the same-tree reuse recorded dev green for jobs that never ran.*
+  - A change's own changed or added jobs now run beside dev's, never instead
+    (`dom::with_changed_jobs`; never under the trusted scan's key;
+    `ci::tests::a_changes_own_jobs_run_beside_the_gates`).
+  - A branch reuses a same-tree verdict only where every job of its gate ran with the same
+    command (`a_branch_never_reuses_a_run_that_did_not_run_its_jobs`). Removing the check fails
+    it.
+  - `a_pull_request_that_changes_its_jobs_is_judged_by_the_integration_branchs` now also changes
+    a job to `exit 1`: the run fails on `check (this change)`.
+  - ADR-0360 records the reversal: "Only the integration branch's jobs" is now a rejected
+    alternative.
+- *Major 2: `LastValid` secrets untested.* `only_the_integration_branch_jobs_grant_secrets` now
+  shows that `LastValid` grants for the same name and command, and not for another.
+- *Major 3: the configuration check was proven for pull requests only.* Each of these fails at
+  once with a failed job `yulius.toml` and the other jobs skipped:
+  - `merge_train::a_candidate_with_an_invalid_yulius_toml_fails_with_the_parsers_message`;
+  - `playground::a_task_with_an_invalid_yulius_toml_fails_its_merges_run`;
+  - dev's own run at its invalid head, in
+    `an_invalid_integration_branch_runs_its_last_valid_gate_until_a_fix_merges`.
+- *Minors.*
+  1. Fallback without a gate: `an_invalid_file_with_no_earlier_gate_names_no_fallback`.
+  2. Episodes across a restart: the state is read from the audit first.
+     `an_episode_that_ended_while_the_server_was_down_is_closed` counts 30 minutes, not the
+     range's 90.
+  3. A head refused for dev's file runs again once it is valid:
+     `a_head_refused_for_the_branchs_file_runs_again_once_it_is_valid`.
+  4. A table inside a known one is refused as `NestedTable` ("is not a table Yulius reads"),
+     and the newly strict corners are in ADR-0360.
+  5. The stale text is fixed: `docs/api.md` "Runs", the architecture's sequence diagram and the
+     code comments.
+  6. The store reads an unknown source as the integration branch's
+     (`a_run_of_an_unknown_source_still_reads`), and ADR-0360 gives the rollback SQL.
+  7. The remaining remote refusal is tested:
+     `a_change_that_does_not_repair_a_never_valid_ci_is_refused`.
+  8. A Git error checks the head's own file, and an unwalkable history gives no verdict, never
+     own jobs. The test `LocalGit` port gained `parents` and `merge_base`, as production's Git
+     has.
+- *Nits.* The parser is named TOML 1.1, the dead test arm is gone, a reason no longer repeats
+  "yulius.toml", and the comments in merge_train.rs and playground.rs are updated.
+  `EnvironmentsConflict` stays as a guard of the profile's rule, said in its comment.
+
+### Pull request 2, review round 2 (request changes; every finding own code)
+
+The reviewer (Fable 5.2) on `0120363ca` (`304ca1cae` adds only a plan line) confirmed every
+round-1 fix. CI run `fae842a9` passed; security unrun (Vidoc 401). It found the following, each
+fixed test-first:
+
+1. *Major: a pull request behind dev ran dev's old and removed jobs as "(this change)".* Own jobs
+   are compared with the jobs at the head's merge base as well as with the gate (unknown base:
+   with the gate alone), and a profile's gate gets none.
+   - `a_branch_behind_is_tested_with_the_integration_branchs_jobs_of_now` now asserts the run's
+     exact jobs, with a changed and a removed job on dev. It failed before the change with
+     `plain (this change)` and `gone (this change)`.
+   - `ci::tests::a_changes_own_jobs_run_beside_the_gates` covers the base and the profile gate.
+2. *Major: an `exclusive` job and its twin ran at once.* The turn is keyed by the job's
+   definition and matrix value: `an_exclusive_job_and_its_changed_twin_share_a_turn`. It failed
+   before the change; `an_exclusive_job_waits_its_turn_outside_its_time_limit` still passes.
+3. *Minor: no verdict on a Git error read as no CI.* `ci_gate_result` answers pending while the
+   walk is unknown: `a_history_git_cannot_walk_leaves_a_head_pending_not_unconfigured`. With a
+   commit object of dev missing from the clone, it was `NotConfigured` before. A failing
+   `merge_base` in the configuration check takes the "changed" path, which the pull-request
+   tests cover.
+4. *Minor: twins moved the gate's job to a cold checkout.* A twin checks out at `<key>.change`
+   (`matrix_siblings_get_their_own_checkouts`), and `checkout_job_key` reads it as the job's.
+5. *Minor: changed jobs past `MAX_JOBS` were dropped silently.* None is dropped (the run holds
+   at most twice the bound), and ADR-0360 says a scanning job's change gets no twin.
+
+Nits:
+- a reused run matches a job's verdict by command too;
+- an episode's state is kept only once its audit entry is written, and the doc is corrected;
+- a twin is told the job's own name in `YULIUS_CI_JOB`;
+- ADR-0360 says a matrix-only twin keeps the entry's grant;
+- `Head` is removed.
+
+
+### Pull request 2, review round 3 (request changes; every finding own code)
+
+The reviewer (Fable 5.2) on `38d960201` confirmed every round-2 answer by reading the code and
+its tests. It found the following, each fixed test-first:
+
+1. *Major: a change to a job's time limit or resources got no twin.* `with_changed_jobs`
+   compared key, matrix and command only, where dev's earlier rule compared the whole job. The
+   reviewer showed it with a scratch domain test: a job with `timeout_minutes` 30 changed to 1
+   ran only the gate's job. The whole `Job` is compared now, and the reuse rule's "every gate
+   job ran" check covers need, timeout and exclusive too.
+   - `a_change_to_a_jobs_time_limit_runs_its_twin` (integration) and the timeout-only case in
+     `ci::tests::a_changes_own_jobs_run_beside_the_gates` failed before the change.
+2. *Minor: two round-2 fixes had no test.*
+   - `a_reused_verdict_comes_from_the_job_that_ran_the_command`. Mutation check: dropping the
+     command match from the reused verdict fails it.
+   - The time-limit test also asserts the twin's `YULIUS_CI_JOB`. Mutation check: dropping the
+     strip fails it.
+3. *Nit: a twin's checkout never went stale.* `checkout_job_key` read `<key>.change` as
+   `<key>`'s. It is its own name now, and it is used while a recent run had that job's twin.
+   `unused_ci_checkouts_go_while_no_run_runs` keeps `gate.change` and removes `old.change.2`.
+   Mutation check: counting twins as their job's key fails it.
+
+Commands on `7b21063b6`:
+- `cargo test -p yulius-domain`: 566 + 26 passed.
+- `cargo test -p yulius-app --lib -- --test-threads=1`: 599 passed.
+- `cargo test -p yulius --test main -- leftovers:: local_ci:: playground:: merge_train::`: 231
+  passed.
+
+Outside this change: in a parallel `cargo test -p yulius-app --lib`, one of the `sweep::tests`
+failed in each of two runs (`over_its_cap_…`, then `a_cross_target_profile_s_lock_counts_too`).
+The host's load average was 14 to 19 at the time. Each passes alone (3 of 3) and in the
+single-threaded run. This branch does not touch `sweep.rs`, and Yulius CI ran these tests green
+on `38d960201`.
+
+### Pull request 2, review round 4 (request changes; every finding own code)
+
+The reviewer (Opus 5.5) on `9febbf056` confirmed every round-3 answer by reading the code and
+running its tests. It also checked that job keys cannot contain `.`, so no real key collides
+with `<key>.change`. It found the following:
+
+1. *Blocker: CI run `b9d60ec8` failed in `quality` on `cargo fmt`.* `c198699cf` formats the
+   line; `cargo fmt --all -- --check` and `clippy -D warnings` on the changed crates are clean.
+2. *Minor: ADR-0360 no longer matched the code.*
+   - A twin that changes only its time limit keeps the command, so it gets the integration
+     branch's grant. That is safe, because the grant always comes from the integration
+     branch's entry, and the ADR now says so.
+   - The reuse rule now names need, time limit and `exclusive` too, as does
+     `docs/architecture.md`.
+3. *Minor: the extended reuse check had no test.*
+   `a_branch_never_reuses_a_run_that_ran_its_job_with_another_time_limit`. Mutation check:
+   dropping the time limit from the check fails it.
+4. *Nit: the reused verdict was looked up by fewer fields than the reuse check.* Both now use
+   one predicate, `ran_as`. `a_reused_verdict_comes_from_the_job_that_ran_with_the_time_limit`
+   failed before the change: it copied `passed` from the old job instead of the twin's
+   `skipped`.
+5. *Nit: the leftovers test missed the reported case.* `unused_ci_checkouts_go_while_no_run_runs`
+   now has `lint` run recently without a twin, and asserts that `lint.change` is stale.
+   Mutation check: making `checkout_job_key` strip `.change` again fails it.
+
+### Pull request 2, review round 5 (approve)
+
+The reviewer (Opus 5.5) approved `5df5e64d9`, on which Yulius CI run `23f964f2` passed (quality,
+both test shards and e2e; security skipped because the instance's Vidoc switch is off). It
+confirmed every round-4 answer and found no regression in the shared `ran_as` lookup:
+- both callers of the reuse code take the branch path;
+- a run's job records copy need, time limit and `exclusive` from the configuration, and the
+  store keeps them as they are.
+
+`delivery_merge` merged pull request #1392 into `dev` at that head (`719bb8967`).
+
+Findings:
+- *Nit, own code: the need and `exclusive` conditions of `ran_as` were untested.* Follow-up
+  `ci::ran_as_tests::a_record_ran_a_job_only_with_all_of_its_definition` changes one field at a
+  time. Mutation checks: dropping the need or the `exclusive` condition fails it.
+- *Nit, older than round 4 (from round 2): a change to only a job's `paths` or `secrets` makes a
+  twin with the same fields `ran_as` compares.* Both gate jobs then copy the first record's
+  verdict. The reviewer asked for no action: only the shown state could differ, and a branch
+  rejects a source that skipped a `paths` job anyway.

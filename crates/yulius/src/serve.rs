@@ -545,8 +545,11 @@ pub fn build_app(
             yulius_github::GitHubConfig::github_com().map_err(|e| e.to_string())?,
         )?),
         session_host: Arc::new(PtySessionHost::new(config.yulius_exe.clone())),
-        harness: Arc::new(codex_cli(
-            HarnessAdapter::new(config.yulius_exe.clone(), config.internal_url.clone()),
+        harness: Arc::new(antigravity_cli(
+            codex_cli(
+                HarnessAdapter::new(config.yulius_exe.clone(), config.internal_url.clone()),
+                &args.data_dir,
+            ),
             &args.data_dir,
         )),
         git: Arc::new(git_adapter(&config.yulius_exe, &args.data_dir)),
@@ -580,10 +583,22 @@ pub fn build_app(
 
 /// `adapter` with the pinned Codex CLI provided from `<data>/codex-cli` (SPEC-503 CLI-001).
 fn codex_cli(adapter: HarnessAdapter, data_dir: &std::path::Path) -> HarnessAdapter {
-    match crate::wiring::codex_cli::CodexCli::new(data_dir.join("codex-cli")) {
+    match crate::wiring::pinned_cli::CodexCli::codex(data_dir.join("codex-cli")) {
         Ok(cli) => adapter.with_codex_cli(Arc::new(cli)),
         Err(error) => {
             tracing::warn!(%error, "the Codex CLI cannot be provided; Codex runs use the host's codex");
+            adapter
+        }
+    }
+}
+
+/// `adapter` with the pinned Antigravity CLI provided from `<data>/antigravity-cli` (SPEC-505
+/// AGY-007).
+fn antigravity_cli(adapter: HarnessAdapter, data_dir: &std::path::Path) -> HarnessAdapter {
+    match crate::wiring::pinned_cli::PinnedCli::antigravity(data_dir.join("antigravity-cli")) {
+        Ok(cli) => adapter.with_antigravity_cli(Arc::new(cli)),
+        Err(error) => {
+            tracing::warn!(%error, "the Antigravity CLI cannot be provided; runs use the host's agy");
             adapter
         }
     }

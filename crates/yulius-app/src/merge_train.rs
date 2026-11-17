@@ -716,10 +716,11 @@ impl App {
                 "The merge you armed was dropped: pull request #{} passed its own run at {}, but \
                  merged into the current `{integration}` it fails (merge candidate run {}). Read \
                  why with `ci_status`, merge `origin/{integration}` into your branch, fix it \
-                 test-first, get the review of the new head and call `delivery_merge` again.",
+                 test-first, commit, then {}.",
                 member.pr,
                 short(&member.head),
-                train.run
+                train.run,
+                yulius_domain::review::KEEP_APPROVAL
             ))
         } else {
             Verdict::Keep(deciding.merge.clone())
@@ -764,11 +765,11 @@ impl App {
              {others} passed without it on the same `{integration}` (run {green}); {own}. Its \
              change fails with theirs, often in a derived file (formatting, a generated list), \
              or a test fails only there. Read why with `ci_status`, merge `origin/{integration}` \
-             once they merged, fix it test-first, get the review of the new head and call \
-             `delivery_merge` again.",
+             once they merged, fix it test-first, commit, then {keep}.",
             pr = suspect.pr,
             red = suspect.run,
             green = passed.run,
+            keep = yulius_domain::review::KEEP_APPROVAL,
         ));
         self.finish_armed(&task, &deciding, verdict).await;
         self.train_audit(
@@ -1523,9 +1524,10 @@ impl App {
             one_by_one(state, key);
             return None;
         }
-        // Its own CI when the members changed it, as for a pull request (`ci_gate_for_head`).
+        // The integration branch's jobs, with the members' own changed ones beside them, as for a
+        // pull request (`ci_gate_for_head`, SPEC-504 CFG-001).
         let gate = self
-            .ci_gate_for_head(sandbox, &view, (&built.head, crate::ci::Head::Merged))
+            .ci_gate_for_head(sandbox, &view, &built.head)
             .await
             .unwrap_or(gate);
         let prs = numbers(&members);

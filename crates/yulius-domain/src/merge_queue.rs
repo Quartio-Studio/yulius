@@ -283,8 +283,70 @@ impl Minutes {
     }
 }
 
+/// The audit action of a sandbox whose CI has no gate because of its configuration (SPEC-504
+/// CFG-004); its detail is why.
+pub const CONFIG_BLOCKED: &str = "ci.config_blocked";
+/// The audit action of that sandbox's CI having a gate again.
+pub const CONFIG_UNBLOCKED: &str = "ci.config_unblocked";
+
+/// The minutes within `[from, to]` of the episodes in `events` (time and whether it says
+/// blocked, any order) in which CI had no gate because of its configuration (SPEC-504 CFG-004):
+/// an episode begins at the first `blocked` after an `unblocked` (or none) and ends at the next
+/// `unblocked`, or at `to` while none came. Restarts that say `blocked` again inside an episode
+/// change nothing.
+#[must_use]
+pub fn blocked_minutes(
+    events: &[(Timestamp, bool)],
+    from: Option<Timestamp>,
+    to: Timestamp,
+) -> u64 {
+    let mut sorted = events.to_vec();
+    sorted.sort_by_key(|(at, _)| at.0);
+    let mut since: Option<i64> = None;
+    let mut total_ms: i64 = 0;
+    let close = |start: i64, end: i64, total_ms: &mut i64| {
+        let start = from.map_or(start, |from| start.max(from.0));
+        let end = end.min(to.0);
+        *total_ms += (end - start).max(0);
+    };
+    for (at, blocked) in sorted {
+        match (blocked, since) {
+            (true, None) => since = Some(at.0),
+            (false, Some(start)) => {
+                close(start, at.0, &mut total_ms);
+                since = None;
+            }
+            _ => {}
+        }
+    }
+    if let Some(start) = since {
+        close(start, to.0, &mut total_ms);
+    }
+    u64::try_from(total_ms / 60_000).unwrap_or(0)
+}
+
 #[cfg(test)]
 mod tests {
+
+    /// SPEC-504 CFG-004: episodes from the first `blocked` to the next `unblocked`, clipped to
+    /// the range; an open one runs to its end; repeats inside an episode count once.
+    #[test]
+    fn blocked_minutes_add_up_episodes_within_the_range() {
+        const MIN: i64 = 60_000;
+        let at = |minute: i64| Timestamp(minute * MIN);
+        let events = [
+            (at(10), true),
+            (at(15), true),
+            (at(40), false),
+            (at(100), true),
+            (at(130), false),
+            (at(200), true),
+        ];
+        assert_eq!(blocked_minutes(&events, None, at(260)), 30 + 30 + 60);
+        assert_eq!(blocked_minutes(&events, Some(at(20)), at(120)), 20 + 20);
+        assert_eq!(blocked_minutes(&[(at(5), false)], None, at(10)), 0);
+        assert_eq!(blocked_minutes(&[], None, at(10)), 0);
+    }
     use super::*;
 
     /// SPEC-497 OFC-003: minutes by outcome, the rerun time apart, and the share outside the
