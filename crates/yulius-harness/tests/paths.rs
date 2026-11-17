@@ -202,5 +202,25 @@ fn the_last_conversation_of_a_worktree() -> TestResult {
         antigravity_last_conversation(&gemini, Path::new("/w/t1")),
         None
     );
+    // A FIFO in its place is not waited on.
+    fs::remove_file(&file)?;
+    nix::unistd::mkfifo(&file, nix::sys::stat::Mode::S_IRWXU)?;
+    assert_eq!(
+        antigravity_last_conversation(&gemini, Path::new("/w/t1")),
+        None
+    );
+    // A folder on the way that is a link (the agent owns the home) is not followed.
+    let other = dir.path().join("other/antigravity-cli/cache");
+    fs::create_dir_all(&other)?;
+    fs::write(other.join("last_conversations.json"), r#"{"/w/t1": "abc"}"#)?;
+    fs::remove_dir_all(gemini.join("antigravity-cli"))?;
+    std::os::unix::fs::symlink(
+        dir.path().join("other/antigravity-cli"),
+        gemini.join("antigravity-cli"),
+    )?;
+    assert_eq!(
+        antigravity_last_conversation(&gemini, Path::new("/w/t1")),
+        None
+    );
     Ok(())
 }

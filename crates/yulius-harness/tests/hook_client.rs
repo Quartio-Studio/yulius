@@ -768,6 +768,33 @@ fn ok_response(body: &[u8]) -> Vec<u8> {
     response
 }
 
+/// A conversation's transcripts in `dir`, as agy 1.5.10 lays them out: a step of each type in
+/// `steps` (a `USER_INPUT` typed by a person, the others the model's or the system's), in the
+/// compact `transcript.jsonl` and the full `transcript_full.jsonl`; the full one's path, as its
+/// hooks name it.
+fn agy_transcript(dir: &std::path::Path, steps: &[&str]) -> io::Result<String> {
+    let mut text = String::new();
+    for (index, kind) in steps.iter().enumerate() {
+        let source = match *kind {
+            "USER_INPUT" => "USER_EXPLICIT",
+            "PLANNER_RESPONSE" => "MODEL",
+            _ => "SYSTEM",
+        };
+        text.push_str(
+            &serde_json::json!({
+                "step_index": index, "source": source, "type": kind, "status": "DONE",
+                "created_at": "2026-11-17T17:09:20Z", "content": "x"
+            })
+            .to_string(),
+        );
+        text.push('\n');
+    }
+    std::fs::write(dir.join("transcript.jsonl"), &text)?;
+    let full = dir.join("transcript_full.jsonl");
+    std::fs::write(&full, &text)?;
+    Ok(full.to_string_lossy().into_owned())
+}
+
 /// The common fields of an Antigravity hook payload, as agy 1.5.10 sends them (synthetic values).
 fn agy_payload(event: &str, extra: serde_json::Value) -> Vec<u8> {
     let mut payload = serde_json::json!({
@@ -835,11 +862,16 @@ fn an_antigravity_session_start_is_sent_as_claude_codes() -> TestResult {
 /// turn asks nothing.
 #[test]
 fn an_antigravity_turn_opens_with_its_prompt() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let transcript = agy_transcript(
+        dir.path(),
+        &["USER_INPUT", "PLANNER_RESPONSE", "USER_INPUT"],
+    )?;
     let (url, server) = serve_once(ok_response(br#"{"decision":"block","reason":"Paused"}"#))?;
     let mut output = Vec::new();
     let payload = agy_payload(
         "PreInvocation",
-        serde_json::json!({"invocationNum": 0, "initialNumSteps": 3}),
+        serde_json::json!({"invocationNum": 0, "initialNumSteps": 3, "transcriptPath": transcript}),
     );
     run_hook(
         "antigravity",
@@ -997,5 +1029,70 @@ fn an_antigravity_command_is_allowed_unless_the_guard_refuses_it() -> TestResult
         HoldPolicy::NEVER,
     );
     assert_eq!(json_out(&output)?, serde_json::json!({}));
+    Ok(())
+}
+
+/// SPEC-505 AGY-006: agy wakes itself when a background command ends, with a model call that
+/// opens a turn but no typed prompt (the step before it is a system message, and
+/// `lastUserInput` is still the earlier prompt): Yulius is not asked about a prompt then, nor
+/// when the transcript cannot be read.
+#[test]
+fn an_antigravity_wake_up_is_no_prompt() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let transcript = agy_transcript(
+        dir.path(),
+        &[
+            "USER_INPUT",
+            "PLANNER_RESPONSE",
+            "GENERIC",
+            "SYSTEM_MESSAGE",
+        ],
+    )?;
+    for path in [
+        transcript,
+        dir.path()
+            .join("missing/transcript_full.jsonl")
+            .to_string_lossy()
+            .into_owned(),
+    ] {
+        let (url, listener) = untouched_listener()?;
+        let mut output = Vec::new();
+        let payload = agy_payload(
+            "PreInvocation",
+            serde_json::json!({"invocationNum": 0, "initialNumSteps": 4, "transcriptPath": path}),
+        );
+        run_hook(
+            "antigravity",
+            "PreInvocation",
+            &mut &payload[..],
+            &mut output,
+            &env_with(url, Some("task-token-SYNTHETIC")),
+        );
+        assert_eq!(json_out(&output)?, serde_json::json!({}));
+        assert_no_connection(&listener);
+    }
+    Ok(())
+}
+
+/// SPEC-505 AGY-006: a turn the model API ended with an error (agy's Stop with
+/// `terminationReason` `ERROR`, after its retries of a quota) is no turn Yulius answers: like
+/// Claude Code's, whose Stop hook does not run then. Its limit is read from the transcript.
+#[test]
+fn an_antigravity_turn_ended_by_an_error_is_no_stop() -> TestResult {
+    let (url, listener) = untouched_listener()?;
+    let mut output = Vec::new();
+    let payload = agy_payload(
+        "Stop",
+        serde_json::json!({"terminationReason": "ERROR", "error": "Error 429 RESOURCE_EXHAUSTED", "continuationActive": false}),
+    );
+    run_hook(
+        "antigravity",
+        "Stop",
+        &mut &payload[..],
+        &mut output,
+        &env_with(url, Some("task-token-SYNTHETIC")),
+    );
+    assert_eq!(json_out(&output)?, serde_json::json!({}));
+    assert_no_connection(&listener);
     Ok(())
 }

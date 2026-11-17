@@ -1673,7 +1673,8 @@ fn antigravity_new_session_on_an_api_key() -> TestResult {
         hooks["yulius"]["PreToolUse"],
         json!([{ "matcher": "^run_command$", "hooks": [{
             "type": "command",
-            "command": "'/opt/yulius/bin/yulius' hook antigravity PreToolUse",
+            // agy denies a tool whose hook fails: a hook client that cannot run allows it.
+            "command": "'/opt/yulius/bin/yulius' hook antigravity PreToolUse || printf '{\"decision\":\"allow\"}'",
             "timeout": 60
         }] }])
     );

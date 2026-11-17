@@ -17,21 +17,18 @@ use yulius_domain::usage::{LimitScope, TokenUsage};
 use crate::json::{owned_str, parse_object, shorten, str_of, u64_of};
 use crate::observe::Observed;
 
-/// Texts of an error step that a plan's quota or the API's daily or billing cap wrote: the
+/// Texts of an error step that a plan's quota, a spend cap or a prepaid balance wrote: the
 /// subscription is used up (lower-case; the CLI's own words, from its 1.5.10 release notes and
-/// the Gemini API).
-const LIMIT_TEXTS: [&str; 6] = [
-    "resource_exhausted",
-    "error 429",
+/// the Gemini API). The CLI stops the turn at these at once (1.5.10 release notes).
+const LIMIT_TEXTS: [&str; 4] = [
     "quota reached",
     "exceeded your current quota",
     "credits balance is too low",
     "out of quota",
 ];
 
-/// A quota the CLI waits out by itself (a per-minute rate limit): not a limit of the
-/// subscription.
-const PASSING_LIMIT_TEXTS: [&str; 2] = ["perminute", "per minute"];
+/// The Gemini API's refusal of a request (HTTP 429), lower-case.
+const REFUSAL_TEXTS: [&str; 2] = ["resource_exhausted", "error 429"];
 
 /// When a transcript step was recorded (its `created_at`, to the second), if it says.
 #[must_use]
@@ -91,17 +88,19 @@ fn model_response(step: &Map<String, Value>, at: Option<Timestamp>) -> Vec<Obser
     ]
 }
 
-/// An error step that says the subscription's quota is used up. The CLI writes one per attempt
-/// it makes; it waits out a per-minute rate limit by itself, which is no limit here. Its reset
-/// time is not given in a form Yulius reads.
+/// An error step that says the subscription's quota is used up: a plan's or the API's quota
+/// text, or a 429 that names the quota it used up (`quotaId`). A 429 naming none is the model's
+/// capacity, which the CLI retries by itself, and a per-minute quota it waits out: neither is a
+/// limit of the subscription. The CLI writes one step per attempt. Its reset time is not given in
+/// a form Yulius reads.
 fn limit(step: &Map<String, Value>, at: Option<Timestamp>) -> Option<Observed> {
     let error = str_of(step, "error")?;
     let lower = error.to_ascii_lowercase();
     let squeezed: String = lower.chars().filter(|c| !c.is_whitespace()).collect();
-    let limited = LIMIT_TEXTS.iter().any(|text| lower.contains(text))
-        && !PASSING_LIMIT_TEXTS
-            .iter()
-            .any(|text| lower.contains(text) || squeezed.contains(text));
+    let limited = !squeezed.contains("perminute")
+        && (LIMIT_TEXTS.iter().any(|text| lower.contains(text))
+            || (REFUSAL_TEXTS.iter().any(|text| lower.contains(text))
+                && squeezed.contains("quotaid")));
     limited.then(|| Observed::LimitReached {
         resets_at: None,
         message: shorten(error, 256),
@@ -123,9 +122,10 @@ mod tests {
             map.insert("error".into(), Value::String(error.into()));
             map
         };
-        assert!(limit(&step("Error 429, Message: Too many"), None).is_some());
+        assert!(limit(&step("Error 429, Message: Too many"), None).is_none());
+        assert!(limit(&step("Error 429 quotaId:XPerDay"), None).is_some());
         assert!(limit(&step("Error 503, Status: UNAVAILABLE"), None).is_none());
-        assert!(limit(&step("Error 429 quota PerMinute"), None).is_none());
+        assert!(limit(&step("Error 429 quotaId:X Per Minute"), None).is_none());
         assert!(limit(&Map::new(), None).is_none());
     }
 }

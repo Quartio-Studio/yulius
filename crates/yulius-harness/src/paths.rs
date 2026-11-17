@@ -65,20 +65,43 @@ pub fn antigravity_transcript_path(brain: &Path, conversation: &str) -> PathBuf 
 
 /// The conversation the Antigravity CLI last ran in `worktree`, from its
 /// `cache/last_conversations.json` below `gemini_dir` (SPEC-505 AGY-005): `None` without one, for
-/// an id Yulius would not pass on, or for a file that is a link, larger than 1 MiB or not a JSON
-/// object.
+/// an id Yulius would not pass on, or for a file larger than 1 MiB or not a JSON object. The
+/// agent owns the folders below `gemini_dir`: each is opened from the one above it without
+/// following a link, and the file is opened the same way and not waited on when it is no plain
+/// file (a FIFO), so nothing is read but the file named.
 #[must_use]
 pub fn antigravity_last_conversation(gemini_dir: &Path, worktree: &Path) -> Option<String> {
+    use nix::fcntl::{OFlag, open, openat};
+    use nix::sys::stat::Mode;
     use std::io::Read as _;
-    let path = gemini_dir.join(ANTIGRAVITY_LAST_CONVERSATIONS);
-    let meta = fs::symlink_metadata(&path).ok()?;
+    let dir_flags = OFlag::O_RDONLY | OFlag::O_DIRECTORY | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC;
+    let mut dir = open(gemini_dir, dir_flags, Mode::empty()).ok()?;
+    let mut names = Path::new(ANTIGRAVITY_LAST_CONVERSATIONS)
+        .components()
+        .peekable();
+    let mut file_name = None;
+    while let Some(component) = names.next() {
+        let name = component.as_os_str();
+        if names.peek().is_none() {
+            file_name = Some(name);
+        } else {
+            dir = openat(&dir, name, dir_flags, Mode::empty()).ok()?;
+        }
+    }
+    let file = openat(
+        &dir,
+        file_name?,
+        OFlag::O_RDONLY | OFlag::O_NOFOLLOW | OFlag::O_NONBLOCK | OFlag::O_CLOEXEC,
+        Mode::empty(),
+    )
+    .ok()?;
+    let file = fs::File::from(file);
+    let meta = file.metadata().ok()?;
     if !meta.is_file() || meta.len() > ANTIGRAVITY_LAST_CONVERSATIONS_MAX {
         return None;
     }
     let mut text = String::new();
-    fs::File::open(&path)
-        .ok()?
-        .take(ANTIGRAVITY_LAST_CONVERSATIONS_MAX)
+    file.take(ANTIGRAVITY_LAST_CONVERSATIONS_MAX)
         .read_to_string(&mut text)
         .ok()?;
     let map: serde_json::Map<String, serde_json::Value> = serde_json::from_str(&text).ok()?;

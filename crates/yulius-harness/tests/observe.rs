@@ -826,6 +826,15 @@ fn agy_limits_and_broken_lines() {
     assert!(!limited(
         "API error (attempt 1): Error 503, Status: UNAVAILABLE"
     ));
+    // The model's capacity, which the CLI retries by itself, names no quota of the subscription.
+    assert!(!limited(
+        "API error (attempt 1): Error 429, Message: Resource has been exhausted (e.g. check \
+         quota)., Status: RESOURCE_EXHAUSTED"
+    ));
+    assert!(!limited(
+        "API error (attempt 2): Error 429, Message: You exceeded your current quota, Status: \
+         RESOURCE_EXHAUSTED, Details: [quotaId:GenerateRequestsPerMinutePerProjectPerModel]"
+    ));
     assert_eq!(
         antigravity::observe_line("{not json"),
         vec![Observed::Malformed]
@@ -859,12 +868,37 @@ fn an_antigravity_run_counts_its_own_window() -> Result<(), Box<dyn std::error::
     let whole =
         yulius_harness::recount::count_antigravity_run(&path, None, None)?.ok_or("a count")?;
     assert_eq!(whole.usage().input, Some(2 * 1_134));
-    // From the second prompt on (17:09:20): the second response only… both steps share the
-    // second, so a window starting there keeps them; one starting at 17:09:21 keeps none.
+    // The real transcript's steps share one second: a window from the next second keeps none.
     let late = yulius_domain::time::parse_rfc3339("2026-11-17T17:09:21Z").ok_or("time")?;
     let after = yulius_harness::recount::count_antigravity_run(&path, Some(late), None)?
         .ok_or("a count")?;
     assert_eq!(after.usage().input, None);
+    // Three runs of one conversation (10:00, 10:05, 10:10): the middle run's window, from its
+    // start to the next run's, counts its own response only.
+    let response = |at: &str, index: u32, input: u64| {
+        serde_json::json!({
+            "step_index": index, "source": "MODEL", "type": "PLANNER_RESPONSE", "status": "DONE",
+            "created_at": at, "model": "gemini-4-carbon-high", "input_tokens": input,
+            "output_tokens": 1
+        })
+        .to_string()
+    };
+    let runs = [
+        response("2026-11-17T10:00:00Z", 1, 100),
+        response("2026-11-17T10:05:00Z", 3, 20),
+        response("2026-11-17T10:10:00Z", 5, 3),
+    ]
+    .join("\n");
+    let runs_path = dir.path().join("runs.jsonl");
+    std::fs::write(&runs_path, runs + "\n")?;
+    let at = |text: &str| yulius_domain::time::parse_rfc3339(text).ok_or("time");
+    let middle = yulius_harness::recount::count_antigravity_run(
+        &runs_path,
+        Some(at("2026-11-17T10:05:00Z")?),
+        Some(at("2026-11-17T10:10:00Z")?),
+    )?
+    .ok_or("a count")?;
+    assert_eq!(middle.usage().input, Some(20));
     let missing = dir.path().join("none.jsonl");
     assert!(yulius_harness::recount::count_antigravity_run(&missing, None, None)?.is_none());
     Ok(())

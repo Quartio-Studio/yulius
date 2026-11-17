@@ -6,11 +6,15 @@
 //!
 //! - `SessionStart` → `SessionStart` (`source` `startup`); added context comes back as an
 //!   injected system message.
-//! - `PreInvocation` with `invocationNum` 0, the model call that opens a turn → `UserPromptSubmit`
-//!   with `lastUserInput` as the prompt; a refusal ends the turn showing its reason. Later model
-//!   calls of the turn ask nothing.
+//! - `PreInvocation` with `invocationNum` 0, the model call that opens a turn, whose step before
+//!   it is a person's `USER_INPUT` → `UserPromptSubmit` with `lastUserInput` as the prompt; a
+//!   refusal ends the turn showing its reason. Later model calls of the turn, and the turn the CLI
+//!   opens by itself when a background command ends (a system message before it, the earlier
+//!   prompt still in `lastUserInput`), ask nothing.
 //! - `Stop` → `Stop` (`continuationActive` as `stop_hook_active`); a block becomes
-//!   `{"decision":"continue"}`.
+//!   `{"decision":"continue"}`. A turn the model API ended with an error (`terminationReason`
+//!   `ERROR`) asks nothing, as Claude Code runs no Stop hook then; its limit is read from the
+//!   transcript.
 //! - `PreToolUse` of `run_command` → Claude Code's `Bash` for the guard, checked in the sandbox.
 //!   The CLI denies a tool whose hook prints nothing, so every other outcome is `allow`.
 //!
@@ -25,6 +29,64 @@ use crate::hook_client::{HOOK_TIMEOUT, HoldPolicy, MAX_INPUT_BYTES, MAX_TOOL_INP
 /// The CLI's full transcript, which the hook names, and the one Yulius reads beside it.
 const FULL_TRANSCRIPT: &str = "transcript_full.jsonl";
 const TRANSCRIPT: &str = "transcript.jsonl";
+/// How much of a transcript's end is read to find the step that opened a turn.
+const TRANSCRIPT_TAIL_BYTES: u64 = 4 * 1024 * 1024;
+
+/// The compact transcript beside the full one a hook names (both hold every step).
+fn compact_transcript(full: &str) -> String {
+    full.strip_suffix(FULL_TRANSCRIPT)
+        .map_or_else(|| full.to_owned(), |dir| format!("{dir}{TRANSCRIPT}"))
+}
+
+/// Whether step `index` of the transcript at `path` is a prompt a person typed, read from the
+/// file's last [`TRANSCRIPT_TAIL_BYTES`] without following a link or waiting on a FIFO. `false`
+/// when it cannot be read or found.
+fn typed_step(path: &str, index: u64) -> bool {
+    use std::io::{BufRead as _, BufReader, Seek as _, SeekFrom};
+    let Ok(mut file) = crate::tail::open_regular(std::path::Path::new(path)) else {
+        return false;
+    };
+    let length = file.metadata().map(|m| m.len()).unwrap_or(0);
+    if file
+        .seek(SeekFrom::Start(
+            length.saturating_sub(TRANSCRIPT_TAIL_BYTES),
+        ))
+        .is_err()
+    {
+        return false;
+    }
+    let mut found = None;
+    for line in BufReader::new(file.take(TRANSCRIPT_TAIL_BYTES)).split(b'\n') {
+        let Ok(line) = line else { return false };
+        let Ok(Value::Object(step)) = serde_json::from_slice::<Value>(&line) else {
+            continue;
+        };
+        if step.get("step_index").and_then(Value::as_u64) == Some(index) {
+            found = Some(
+                step.get("type").and_then(Value::as_str) == Some("USER_INPUT")
+                    && step.get("source").and_then(Value::as_str) == Some("USER_EXPLICIT"),
+            );
+        }
+    }
+    found.unwrap_or(false)
+}
+
+/// Whether a `PreInvocation` opens a turn a person's prompt started: its first model call, the
+/// step before it the prompt (SPEC-505 AGY-006).
+fn opens_a_typed_turn(payload: &Map<String, Value>) -> bool {
+    let first = payload.get("invocationNum").and_then(Value::as_u64) == Some(0);
+    let Some(prompt_step) = payload
+        .get("initialNumSteps")
+        .and_then(Value::as_u64)
+        .and_then(|n| n.checked_sub(1))
+    else {
+        return false;
+    };
+    let Some(full) = payload.get("transcriptPath").and_then(Value::as_str) else {
+        return false;
+    };
+    first && typed_step(&compact_transcript(full), prompt_step)
+}
 
 /// Runs one Antigravity hook. Always returns exit code 0.
 pub(crate) fn run(
@@ -110,10 +172,10 @@ fn to_claude(
 ) -> Option<(&'static str, Map<String, Value>)> {
     let claude_event = match event {
         "SessionStart" => "SessionStart",
-        "PreInvocation" if payload.get("invocationNum").and_then(Value::as_u64) == Some(0) => {
-            "UserPromptSubmit"
+        "PreInvocation" if opens_a_typed_turn(payload) => "UserPromptSubmit",
+        "Stop" if payload.get("terminationReason").and_then(Value::as_str) != Some("ERROR") => {
+            "Stop"
         }
-        "Stop" => "Stop",
         "PreToolUse" => "PreToolUse",
         _ => return None,
     };
@@ -129,10 +191,7 @@ fn to_claude(
         request.insert("model".into(), model);
     }
     if let Some(path) = payload.get("transcriptPath").and_then(Value::as_str) {
-        let path = path
-            .strip_suffix(FULL_TRANSCRIPT)
-            .map_or_else(|| path.to_owned(), |dir| format!("{dir}{TRANSCRIPT}"));
-        request.insert("transcript_path".into(), json!(path));
+        request.insert("transcript_path".into(), json!(compact_transcript(path)));
     }
     match claude_event {
         "SessionStart" => {

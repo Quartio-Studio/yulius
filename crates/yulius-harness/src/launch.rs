@@ -1085,7 +1085,12 @@ fn plan_antigravity(request: &LaunchRequest) -> Result<LaunchPlan, LaunchError> 
         "PreToolUse".to_owned(),
         json!([{ "matcher": "^run_command$", "hooks": [{
             "type": "command",
-            "command": hook_command(request, "antigravity", "PreToolUse")?,
+            // agy denies a tool whose hook command fails (exit 127 when the client is
+            // missing, 1.5.10): one that cannot run lets the agent work, as the client does.
+            "command": format!(
+                "{} || printf '{{\"decision\":\"allow\"}}'",
+                hook_command(request, "antigravity", "PreToolUse")?
+            ),
             "timeout": CLAUDE_TOOL_HOOK_TIMEOUT_SECONDS
         }] }]),
     );
