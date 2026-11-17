@@ -4563,6 +4563,49 @@ async fn run_jobs(f: &Fixture, run: &Value) -> BoxResult<Vec<Value>> {
     Ok(detail["jobs"].as_array().ok_or("jobs")?.clone())
 }
 
+/// SPEC-504 review round 2: a pull request that changes the command of an `exclusive` job runs
+/// the integration branch's job and its own changed one one at a time: they share the job's turn
+/// (its definition and matrix value), not one each by their names.
+#[tokio::test]
+async fn an_exclusive_job_and_its_changed_twin_share_a_turn() -> TestResult {
+    let command = |data: &Path| {
+        format!(
+            "b=\"{dir}/busy\"; if [ -e \"$b\" ]; then echo overlap; exit 7; fi; touch \"$b\"; \
+             sleep 1; rm \"$b\"",
+            dir = data.display()
+        )
+    };
+    let f = fixture_tuned(
+        false,
+        |data| {
+            format!(
+                "[[ci.jobs]]\nname = \"site\"\ncpus = 1\nexclusive = true\ncommand = '{}'\n",
+                command(data)
+            )
+        },
+        None,
+        |config| config.ci.lanes = 1,
+    )
+    .await?;
+    let changed = format!(
+        "[[ci.jobs]]\nname = \"site\"\ncpus = 1\nexclusive = true\ncommand = '{}; echo changed'\n",
+        command(&f.data)
+    );
+    let sha = f.push_feature("yulius.toml", Some(&changed))?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    let detail = run_of_sha(&f, &sha).await?;
+    assert_eq!(detail["state"], "passed", "{detail}");
+    let names: Vec<&str> = detail["jobs"]
+        .as_array()
+        .ok_or("jobs")?
+        .iter()
+        .filter_map(|job| job["name"].as_str())
+        .collect();
+    assert_eq!(names, ["site", "site (this change)"], "{detail}");
+    Ok(())
+}
+
 /// SPEC-435 JTL-001/002/004: three runs of an `exclusive` job run one at a time (a job that finds
 /// another inside exits 7), and the last one, which waited longer than the 5 s limit for its turn,
 /// still passes: the wait is outside its limit, and its record says how long it waited.

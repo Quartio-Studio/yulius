@@ -709,7 +709,10 @@ impl App {
         // run of it runs; its wait is part of the same stage and never of its time limit.
         // Its entry is dropped last (declared before the turn and the permit): after them.
         let (turn, _turn_entry) = if job.exclusive {
-            let (turn, entry) = self.ci_turn(&run.sandbox_id, &job.name);
+            // By its definition and matrix value, not its name: a change's own twin of it
+            // (`<job> (this change)`) shares its turn (SPEC-504 review round 2).
+            let definition = format!("{}\u{1f}{}", job.key, job.matrix.as_deref().unwrap_or(""));
+            let (turn, entry) = self.ci_turn(&run.sandbox_id, &definition);
             (Some(turn), Some(entry))
         } else {
             (None, None)
