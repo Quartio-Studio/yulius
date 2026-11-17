@@ -895,8 +895,9 @@ async fn a_train_with_its_own_jobs_keeps_the_security_job() -> TestResult {
 
 /// SPEC-441 MQ-004 (was TRN-006's one-by-one fallback): a candidate whose combined result fails
 /// is bisected. Of three green pull requests, #1 and #3 pass alone but break together: the
-/// candidate of three fails, its first two pass and merge, and #3 alone fails on top of them and
-/// is told why. No pull request's own run is repeated.
+/// candidate of three fails, its first two pass and merge, and #3, which the first two passed
+/// without on the same base, is told why at once, with no candidate of its own (SPEC-497
+/// MQW-003). No pull request's own run is repeated.
 #[tokio::test]
 async fn a_red_candidate_is_bisected_and_the_breaking_pull_request_told() -> TestResult {
     let f = fixture().await?;
@@ -929,9 +930,12 @@ async fn a_red_candidate_is_bisected_and_the_breaking_pull_request_told() -> Tes
     assert_eq!(f.merges(), ["merge_pull #1 squash", "merge_pull #2 squash"]);
     assert!(!f.merged(&app, 3).await?);
     let outcome = dropped().await?;
+    // #1 and #2 passed without it on the same base: #3 is told at once, with no candidate of its
+    // own (SPEC-497 MQW-003).
     assert!(
         outcome.contains("The merge you armed was dropped: pull request #3 passed its own run")
-            && outcome.contains("merged into the current `dev` it fails (merge candidate run"),
+            && outcome.contains("together with #1, #2 it fails (merge candidate run")
+            && outcome.contains("while #1, #2 passed without it on the same `dev`"),
         "{outcome}"
     );
     assert_eq!(f.wait(3, &worktrees[2]).await?["merge_armed"], false);
@@ -944,8 +948,8 @@ async fn a_red_candidate_is_bisected_and_the_breaking_pull_request_told() -> Tes
     trains.sort();
     assert_eq!(
         trains,
-        ["train/1+2 passed", "train/1+2+3 failed", "train/3 failed"],
-        "bisected"
+        ["train/1+2 passed", "train/1+2+3 failed"],
+        "bisected, and #3 told without a run of its own"
     );
     let executed = f.executed(&app).await?;
     assert!(
@@ -953,6 +957,56 @@ async fn a_red_candidate_is_bisected_and_the_breaking_pull_request_told() -> Tes
             .iter()
             .all(|r| !matches!(r.reference, CiRef::PullRequest(_))),
         "no pre-check again: {executed:?}"
+    );
+    Ok(())
+}
+
+/// SPEC-497 MQW-003: the member a bisection left out is told only when the others passed without
+/// it. Here #1 fails on the new base by itself: the candidate of two fails, #1 alone fails and is
+/// told, and #2, blamed for nothing, merges on a candidate of its own.
+#[tokio::test]
+async fn a_member_left_out_is_blamed_only_when_the_others_pass_without_it() -> TestResult {
+    let f = fixture().await?;
+    let app = f.h.app.clone();
+    let sandbox = app.deps.store.sandbox(&f.sandbox).await?.ok_or("s1")?;
+    let one = f.task(1, &[("clash-1", "x\n")]).await?;
+    let two = f.task(2, &[("c.txt", "x\n")]).await?;
+    for (n, worktree) in [(1, &one), (2, &two)] {
+        f.arm(n, worktree).await?;
+        f.record_passed(&app, n, &git(worktree, &["rev-parse", "HEAD"])?)
+            .await?;
+    }
+    f.advance_dev("clash-2")?;
+    let outcome = |n: u32| {
+        let worktree = if n == 1 { &one } else { &two };
+        let f = &f;
+        async move {
+            Ok::<_, Box<dyn std::error::Error>>(
+                f.wait(n, worktree).await?["merge_outcome"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_owned(),
+            )
+        }
+    };
+    f.decide_until(&app, || async {
+        app.ci_sync_sandbox(&sandbox).await?;
+        f.settle(&app).await?;
+        Ok(f.merged(&app, 2).await? && !outcome(1).await?.is_empty())
+    })
+    .await?;
+    assert!(!f.merged(&app, 1).await?);
+    assert!(
+        outcome(1)
+            .await?
+            .contains("merged into the current `dev` it fails"),
+        "{}",
+        outcome(1).await?
+    );
+    assert!(
+        !outcome(2).await?.contains("dropped"),
+        "{}",
+        outcome(2).await?
     );
     Ok(())
 }

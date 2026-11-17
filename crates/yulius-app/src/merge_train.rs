@@ -99,6 +99,26 @@ struct SandboxTrains {
     /// half of the last red train's; none once a train passed.
     #[serde(default)]
     limit: Option<usize>,
+    /// The one member a red train's bisection left out (SPEC-497 MQW-003): if the others pass
+    /// without it on the same base, it is the one that breaks the combination, and it is told at
+    /// once instead of failing a candidate of its own.
+    #[serde(default)]
+    suspect: Option<Suspect>,
+}
+
+/// A member a red train's bisection left out on its own (SPEC-497 MQW-003).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct Suspect {
+    task: String,
+    pr: u64,
+    head: String,
+    armed_at: i64,
+    /// The base the red train was built on.
+    base: String,
+    /// The members tested without it, in order.
+    others: Vec<u64>,
+    /// The red train's run.
+    run: String,
 }
 
 impl SandboxTrains {
@@ -526,6 +546,12 @@ impl App {
             }
             RunState::Passed => {
                 state.limit = None;
+                if let Some(suspect) = state.suspect.take()
+                    && suspect.base == train.base
+                    && suspect.others == numbers(&train.members)
+                {
+                    self.tell_suspect(sandbox, &suspect, &train).await;
+                }
                 self.drive_train(sandbox, state, train).await
             }
             RunState::Failed => {
@@ -610,9 +636,23 @@ impl App {
     /// the first half; a member alone passed its own run but fails on top of the integration
     /// branch, so its armed merge ends, saying so.
     async fn bisect(&self, sandbox: &SandboxRecord, state: &mut SandboxTrains, train: &Train) {
+        state.suspect = None;
         if train.members.len() > 1 {
             let half = train.members.len().div_ceil(2);
             state.limit = Some(half);
+            // One member left out: if the rest pass without it on this base, it is the one that
+            // breaks the combination (SPEC-497 MQW-003).
+            if let [last] = &train.members[half..] {
+                state.suspect = Some(Suspect {
+                    task: last.task.clone(),
+                    pr: last.pr,
+                    head: last.head.clone(),
+                    armed_at: last.armed_at,
+                    base: train.base.clone(),
+                    others: numbers(&train.members[..half]),
+                    run: train.run.clone(),
+                });
+            }
             self.dissolve(
                 sandbox,
                 train,
@@ -647,6 +687,53 @@ impl App {
             Verdict::Keep(deciding.merge.clone())
         };
         self.finish_armed(&task, &deciding, verdict).await;
+    }
+
+    /// Ends the armed merge of `suspect`, the member a red train's bisection left out, once the
+    /// others passed without it on the same base (`passed`): their combination with it is what
+    /// fails, often a derived file (formatting, a generated list), and it is told now instead of
+    /// failing a candidate of its own on top of them (SPEC-497 MQW-003).
+    async fn tell_suspect(&self, sandbox: &SandboxRecord, suspect: &Suspect, passed: &Train) {
+        let Ok(task) = TaskId::parse(&suspect.task) else {
+            return;
+        };
+        let Some(deciding) = self.take_armed(&task) else {
+            return;
+        };
+        let integration = delivery_profile(sandbox).integration_branch;
+        let verdict = if deciding.merge.armed_at == suspect.armed_at {
+            Verdict::Decided(format!(
+                "The merge you armed was dropped: pull request #{} passed its own run at {}, but \
+                 merged into the current `{integration}` together with {} it fails (merge \
+                 candidate run {}), while {} passed without it on the same `{integration}` (run \
+                 {}). Your change and theirs combine badly, often in a derived file (formatting, \
+                 a generated list). Read why with `ci_status`, merge `origin/{integration}` once \
+                 they merged, fix it test-first, get the review of the new head and call \
+                 `delivery_merge` again.",
+                suspect.pr,
+                short(&suspect.head),
+                listed(&suspect.others),
+                suspect.run,
+                listed(&suspect.others),
+                passed.run
+            ))
+        } else {
+            Verdict::Keep(deciding.merge.clone())
+        };
+        self.finish_armed(&task, &deciding, verdict).await;
+        self.train_audit(
+            sandbox,
+            "delivery.train.combined",
+            &format!(
+                "#{} breaks the combination with {} (run {} red, run {} passed without it): told \
+                 at once",
+                suspect.pr,
+                listed(&suspect.others),
+                suspect.run,
+                passed.run
+            ),
+        )
+        .await;
     }
 
     /// Whether merge candidates (trains) decide `sandbox`'s armed merges (SPEC-441 MQ-005): it
