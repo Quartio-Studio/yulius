@@ -85,10 +85,10 @@ mode.
   for the server and agent sessions (an eighth of each, at least 1 CPU and 2 GiB). Every
   sandbox's jobs are admitted from it.
 - **HBA-002** (amended 16 Nov 2026, [ADR-0353](../../docs/decisions/0353-ci-jobs-start-by-what-ci-uses-within-a-bounded-worst-case.md))
-  A job starts when, with no CI job running, at once; otherwise when all of these hold:
-  - **No contention.** CI's processes waited for a CPU at most 10 % of the last 10 seconds (the
-    sandboxes' `ci` groups' `cpu.pressure`).
-  - **Bounded worst case.** The running jobs' budgets with its own are at most twice the CI
+  A job starts when, with no CI job running, at once; otherwise when all of these hold (CPU
+  pressure is not one of them since 17 Nov 2026: a job pinned to a few CPUs shows it while the
+  host idles, ADR-0353's amendment):
+  - **Bounded worst case.** The running jobs' budgets with its own are at most three times the CI
     budget's CPUs.
   - **Room.** The sum of these fits in the CI budget, in CPUs and memory: what every sandbox's
     `ci` and `engine` groups were measured to use over the last window, what jobs started in the
@@ -110,8 +110,8 @@ mode.
   reservation; agent processes keep their own weight and nice level.
 - **HBA-005** `YULIUS_CI_LANES` stays the bound of runs at once per sandbox, with its host-sized
   default; it no longer sizes the load, the budget does: neither the lanes nor a project's `cpus`
-  take CI past twice the CI budget's CPUs (HBA-002 as amended), and contention measured by the
-  kernel stops further starts. The job's wait says which part of the budget it waits for.
+  take CI past three times the CI budget's CPUs (HBA-002 as amended), and measured use stops
+  further starts. The job's wait says which part of the budget it waits for.
 
 ### Slice B: a failure outside the change is handled as such
 

@@ -71,8 +71,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   SPEC-497 HBA-002 amended). On 16 Nov 2026, jobs held 50–56 of 64 CPUs by their declarations while
   the host was 25–30 % busy, and waited a median 10–11 min to start. Now a job starts by:
   - what CI was measured to use and what jobs started in the last minute may still bring;
-  - the running jobs' budgets staying within twice the CI budget;
-  - the kernel's CPU pressure of CI's processes staying at most 10 %.
+  - the running jobs' budgets staying within three times the CI budget (twice until 17 Nov 2026:
+    that held jobs back while the host was 45–77 % busy).
+
+  (17 Nov 2026) CPU pressure no longer holds jobs back. A project whose CI pins its test workers
+  to its job's CPUs (`taskset`) showed pressure while the host was half idle, and held every
+  other sandbox's jobs back: 117 jobs queued at 45 % busy.
 
   Merge trains' jobs go first. A job that cannot start (such as a one-job run asking for the whole
   host) no longer holds up every job behind it, and a waiting job holds no slot.
