@@ -1274,17 +1274,19 @@ mod tests {
         Ok(())
     }
 
-    /// SPEC-493 MUT-002 (AC-12): mutation testing once per pull request, the same everywhere
-    /// tests and reviews are described; this repository names its command; the workflows send
+    /// SPEC-493 MUT-002 (AC-12), SPEC-506 FST-004: mutation testing beside the review, the same
+    /// everywhere tests and reviews are described; this repository names its command; the workflows send
     /// the agent to `delivery-pipeline`, which states it.
     #[test]
-    fn every_place_says_mutation_testing_once_per_pull_request() -> TestResult {
-        const RULE: &str = "mutation testing runs once per pull request: on the first head you ask \
-            a review for, run the project's mutation command and put its summary line in the \
-            spec's evidence; a project without one undoes by hand the few lines its new tests are \
-            meant to hold and says what failed. the reviewer reads that result, may undo a single \
-            line it doubts, and runs no campaign of its own. nobody writes a mutation script by \
-            hand. a test that cannot fail is still fixed in the same pull request (adr-0141).";
+    fn every_place_says_mutation_testing_runs_beside_the_review() -> TestResult {
+        const RULE: &str = "mutation testing runs beside the review: when you ask for a pull \
+            request's first review, start the project's mutation command in the background and let \
+            the reviewer read meanwhile; when it ends, put its summary line in the spec's evidence \
+            and fix each missed mutant test-first before the merge. after a later round's fix, run \
+            it on that fix's lines alone. a project without one undoes by hand the few lines its \
+            new tests are meant to hold and says what failed. the reviewer may undo a single line \
+            it doubts and runs no campaign of its own. nobody writes a mutation script by hand. a \
+            test that cannot fail is still fixed in the same pull request (adr-0141).";
         const HERE: &str = "here the command is `scripts/dev mutants`.";
         let normal = |text: &str| {
             text.split_whitespace()
@@ -1315,6 +1317,20 @@ mod tests {
             assert!(
                 text.contains(&normal(&format!("{RULE} {HERE}"))),
                 "{rel} does not state the rule with this repository's command"
+            );
+        }
+        for rel in [
+            "catalog/skills/open-mercato/om-code-review/SKILL.md",
+            "catalog/skills/yulius/delivery-pipeline/SKILL.md",
+            "catalog/skills/superpowers/test-driven-development/SKILL.md",
+            ".apm/skills/yulius-verify/SKILL.md",
+            ".apm/skills/yulius-review/SKILL.md",
+            "docs/engineering/development.md",
+            "AGENTS.md",
+        ] {
+            assert!(
+                !read(rel)?.contains("on the first head you ask a review for"),
+                "{rel} keeps the rule that waits for the run before the review"
             );
         }
         // The workflows' instructions have no byte to spare (1,444 with their heading, #555):
@@ -1431,6 +1447,155 @@ mod tests {
                 .iter()
                 .all(|s| !matches!(s.source, SkillSource::Repository | SkillSource::Instance))
         );
+        Ok(())
+    }
+
+    /// SPEC-506 FST-001 (AC-1): no message Yulius types after a red run, a failed merge
+    /// candidate, a dropped armed merge or failed checks, nor on a green head with no merge
+    /// armed, sends an approved author to a new round: each says the two cases
+    /// ([`yulius_domain::review::KEEP_APPROVAL`]: an approval carries across 20 product lines;
+    /// with none yet the review comes first). Only a conflict's messages ask for the review of
+    /// the new head alone, since a merge that resolved a conflict needs one (ADR-0345).
+    #[test]
+    fn no_typed_message_asks_for_a_round_the_count_makes_needless() -> TestResult {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let keep = yulius_domain::review::KEEP_APPROVAL;
+        assert!(
+            keep.contains("`delivery_merge` with that approved head")
+                && keep.contains("at most 20 product lines in all since it")
+                && keep.contains("with no approval yet, a review of the head comes first"),
+            "the sentence names the call, the bound and the case with no approval: {keep}"
+        );
+        for (rel, uses) in [
+            ("crates/yulius-app/src/pr_watch.rs", 4),
+            ("crates/yulius-app/src/merge_train.rs", 2),
+            ("crates/yulius-app/src/agent_wait.rs", 2),
+            ("crates/yulius/src/wait_cli.rs", 2),
+        ] {
+            let text = fs::read_to_string(root.join(rel))?;
+            let source = match text.find("#[cfg(test)]\nmod tests") {
+                Some(at) => &text[..at],
+                None => text.as_str(),
+            };
+            // Each message is a string literal; a line continuation joins its lines. Every
+            // segment between quotes is read, so no escaped quote can hide one (review round 1).
+            let joined = source.replace("\\\n", " ");
+            let normal: String = joined.split_whitespace().collect::<Vec<_>>().join(" ");
+            for literal in normal.split('"') {
+                if literal.contains("review of the new head")
+                    || literal.contains("its review approved it")
+                    || literal.contains("once the independent review approved")
+                    || literal.contains("independent review of that head")
+                {
+                    assert!(
+                        literal.contains("conflict"),
+                        "{rel} sends the author to a new round the count makes needless: \
+                         {literal}"
+                    );
+                }
+            }
+            assert!(
+                source.matches("KEEP_APPROVAL").count() >= uses,
+                "{rel} does not name delivery_merge with the approved head {uses} time(s)"
+            );
+        }
+        Ok(())
+    }
+
+    /// SPEC-506 FST-002 (AC-2): a reviewer does not ask for changes because of CI alone, the
+    /// same everywhere the review is described and in the reviewer agents' prompt; the old
+    /// wording that made any failed job a blocker is gone.
+    #[test]
+    fn every_place_says_ci_alone_is_no_request_for_changes() -> TestResult {
+        const RULE: &str = "a reviewer does not ask for changes because of ci alone: \
+            `delivery_merge` merges only a head whose own yulius ci run passed. when the review \
+            finds nothing to fix and the head's run is still going, or failed in a way the change \
+            does not cause, the verdict is approve and the report says what ci still has to do. a \
+            failure the change causes (its own test, format or lint, or a contract its files \
+            break) is a blocker.";
+        const OLD: [&str; 3] = [
+            "a failed job is a blocker, even if it looks unrelated",
+            "a failing gate included",
+            "any unexecuted configured command keeps the verdict at request changes until \
+             validation runs.",
+        ];
+        let normal = |text: &str| {
+            text.split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+                .to_lowercase()
+        };
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        for rel in [
+            "catalog/skills/open-mercato/om-code-review/SKILL.md",
+            "catalog/skills/open-mercato/om-code-review/references/review-checklist.md",
+            "catalog/skills/yulius/delivery-pipeline/SKILL.md",
+            ".apm/skills/yulius-review/SKILL.md",
+            "docs/engineering/workflow.md",
+        ] {
+            let text = normal(&fs::read_to_string(root.join(rel))?);
+            assert!(
+                text.contains(&normal(RULE)),
+                "{rel} does not state the rule"
+            );
+        }
+        for rel in [
+            "catalog/skills/open-mercato/om-code-review/SKILL.md",
+            "catalog/skills/open-mercato/om-code-review/references/review-checklist.md",
+            "catalog/skills/open-mercato/om-code-review/references/output-format.md",
+        ] {
+            let text = normal(&fs::read_to_string(root.join(rel))?);
+            for old in OLD {
+                assert!(!text.contains(&normal(old)), "{rel} keeps {old:?}");
+            }
+        }
+        let prompt = normal(yulius_domain::review::REVIEWER_PROMPT);
+        assert!(
+            prompt.contains("do not ask for changes because of ci alone")
+                && prompt.contains("a failure the change causes is a blocker"),
+            "the reviewer agents' prompt does not say the rule"
+        );
+        Ok(())
+    }
+
+    /// SPEC-506 FST-003 (AC-2): the author proves each fix before asking for another round, the
+    /// same everywhere fixes and reviews are described; this repository names its command for a
+    /// fix's lines.
+    #[test]
+    fn every_place_says_prove_each_fix_before_another_round() -> TestResult {
+        const RULE: &str = "before asking for another round, answer each finding of the last \
+            report with the test that fails without its fix (or why no test can), check every \
+            finding of that report against the new head, and run the project's mutation command \
+            on the lines of the fix where it can take them.";
+        const HERE: &str = "here: `scripts/dev mutants --base <reviewed head>`.";
+        let normal = |text: &str| {
+            text.split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+                .to_lowercase()
+        };
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        for rel in [
+            "catalog/skills/open-mercato/om-fix/SKILL.md",
+            "catalog/skills/open-mercato/om-code-review/SKILL.md",
+            "catalog/skills/yulius/delivery-pipeline/SKILL.md",
+        ] {
+            let text = normal(&fs::read_to_string(root.join(rel))?);
+            assert!(
+                text.contains(&normal(RULE)),
+                "{rel} does not state the rule"
+            );
+        }
+        for rel in [
+            ".apm/skills/yulius-review/SKILL.md",
+            "docs/engineering/workflow.md",
+        ] {
+            let text = normal(&fs::read_to_string(root.join(rel))?);
+            assert!(
+                text.contains(&normal(&format!("{RULE} {HERE}"))),
+                "{rel} does not state the rule with this repository's command"
+            );
+        }
         Ok(())
     }
 }

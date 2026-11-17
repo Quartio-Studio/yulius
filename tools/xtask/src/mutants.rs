@@ -11,6 +11,35 @@ use std::path::Path;
 use std::process::{Command, ExitCode};
 use std::time::{Duration, Instant};
 
+/// The most mutants tested at once by default: the most measured (SPEC-506, 2026-11-17).
+const MOST_JOBS: u32 = 7;
+/// Mutants listed per job by default: each job first builds the workspace in a copy of its own,
+/// which pays only when it then tests several mutants (7 jobs tested 8 mutants no sooner than 2).
+const MUTANTS_PER_JOB: usize = 8;
+/// Memory a job may take by default: a copy of the workspace with its build (12 GB here, in the
+/// temporary directory) and the tests it runs.
+const JOB_MEMORY_MB: u64 = 12_000;
+
+/// The process's budget, as Yulius gives it (`YULIUS_CPUS`, `YULIUS_MEMORY_MB`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Budget {
+    /// CPUs.
+    pub cpus: Option<u32>,
+    /// Memory in MB.
+    pub memory_mb: Option<u64>,
+}
+
+impl Budget {
+    /// Reads the budget through `env` (a variable's value by name); a value that does not parse
+    /// counts as none.
+    pub fn read(env: impl Fn(&str) -> Option<String>) -> Self {
+        Self {
+            cpus: env("YULIUS_CPUS").and_then(|v| v.trim().parse().ok()),
+            memory_mb: env("YULIUS_MEMORY_MB").and_then(|v| v.trim().parse().ok()),
+        }
+    }
+}
+
 /// Code no mutant is made in: the test tool and test folders.
 const EXCLUDED: [&str; 2] = ["tools/**", "crates/*/tests/**"];
 
@@ -23,8 +52,11 @@ pub struct Settings {
     pub minutes: u64,
     /// The bound on one mutant's tests.
     pub mutant_seconds: u64,
-    /// Mutants tested at once (each in a build directory of its own).
-    pub jobs: u32,
+    /// Mutants tested at once (each in a build directory of its own), when `--jobs` names it;
+    /// else [`Self::jobs_for`] decides from the mutants listed and the budget.
+    pub jobs: Option<u32>,
+    /// The process's budget.
+    pub budget: Budget,
     /// A nextest filter for the `yulius` package's tests in place of the changed ones.
     pub tests: Option<String>,
     /// The bound in seconds in place of `minutes` (tests).
@@ -32,16 +64,30 @@ pub struct Settings {
 }
 
 impl Settings {
-    /// Parses `--base REF`, `--minutes N`, `--mutant-seconds N`, `--jobs N`, `--tests FILTER`.
+    /// Parses `--base REF`, `--minutes N`, `--mutant-seconds N`, `--jobs N`, `--tests FILTER`,
+    /// with the process's budget from its environment.
     ///
     /// # Errors
     /// An unknown option, a missing or malformed value.
     pub fn parse(args: &[String], integration: &str) -> Result<Self, String> {
+        Self::parse_with(
+            args,
+            integration,
+            Budget::read(|name| std::env::var(name).ok()),
+        )
+    }
+
+    /// [`Self::parse`] with the budget given.
+    ///
+    /// # Errors
+    /// As [`Self::parse`].
+    pub fn parse_with(args: &[String], integration: &str, budget: Budget) -> Result<Self, String> {
         let mut settings = Self {
             base: format!("origin/{integration}"),
             minutes: 30,
             mutant_seconds: 300,
-            jobs: 2,
+            jobs: None,
+            budget,
             tests: None,
             seconds: None,
         };
@@ -60,12 +106,30 @@ impl Settings {
                 "--base" => settings.base.clone_from(value),
                 "--minutes" => settings.minutes = number()?,
                 "--mutant-seconds" => settings.mutant_seconds = number()?,
-                "--jobs" => settings.jobs = u32::try_from(number()?).unwrap_or(u32::MAX),
+                "--jobs" => settings.jobs = Some(u32::try_from(number()?).unwrap_or(u32::MAX)),
                 "--tests" => settings.tests = Some(value.clone()),
                 other => return Err(format!("unknown option {other}")),
             }
         }
         Ok(settings)
+    }
+
+    /// Mutants tested at once for `listed` mutants (SPEC-506 FST-005): `--jobs` when given, else
+    /// one per [`MUTANTS_PER_JOB`] listed, at least 2, at most a third of the CPUs (the rest is
+    /// the review's and CI's, which run beside it), one per [`JOB_MEMORY_MB`] and [`MOST_JOBS`];
+    /// 2 with no budget, as before.
+    #[must_use]
+    pub fn jobs_for(&self, listed: usize) -> u32 {
+        if let Some(jobs) = self.jobs {
+            return jobs;
+        }
+        let by_mutants = u32::try_from(listed.div_ceil(MUTANTS_PER_JOB)).unwrap_or(u32::MAX);
+        let by_cpus = self.budget.cpus.map_or(2, |cpus| cpus / 3);
+        let jobs = by_mutants.min(by_cpus).clamp(2, MOST_JOBS);
+        match self.budget.memory_mb {
+            Some(mb) => jobs.min(u32::try_from(mb / JOB_MEMORY_MB).unwrap_or(u32::MAX).max(1)),
+            None => jobs,
+        }
     }
 
     /// The bound on the whole run.
@@ -250,6 +314,25 @@ fn mutants_command(cargo: &str, root: &Path, head: &str) -> Command {
     command
 }
 
+/// What keeps a run of `jobs` mutants at once near the budget's CPUs (SPEC-506, review rounds 1
+/// and 2 of pull request 2): the builds share cargo-mutants' jobserver, which gets the budget's
+/// CPUs (by default the host's); tests take no jobserver task, so each job's tests get their share
+/// as threads (else each job's nextest takes the whole budget). Builds and tests that overlap can
+/// pass the budget for a while: it bounds the mean (17.1 of 22 CPUs measured), not each moment.
+fn budget_caps(budget: Budget, jobs: u32) -> (Vec<String>, Vec<(String, String)>) {
+    let Some(cpus) = budget.cpus else {
+        return (Vec::new(), Vec::new());
+    };
+    let threads = (cpus / jobs.max(1)).max(1).to_string();
+    (
+        vec!["--jobserver-tasks".to_owned(), cpus.max(1).to_string()],
+        vec![
+            ("NEXTEST_TEST_THREADS".to_owned(), threads.clone()),
+            ("RUST_TEST_THREADS".to_owned(), threads),
+        ],
+    )
+}
+
 /// The cargo-mutants arguments that choose the mutants: those in `diff`, outside [`EXCLUDED`].
 fn selection(diff: &Path) -> Vec<String> {
     let mut args = vec![
@@ -340,12 +423,19 @@ pub fn run(root: &Path, cargo: &str, settings: &Settings) -> io::Result<Option<O
         .join("crates/yulius/Cargo.toml")
         .exists()
         .then(|| test_filter(settings.tests.as_deref(), &changed_tests(&functions)));
+    let jobs = settings.jobs_for(listed.len());
+    let (cap_args, cap_env) = budget_caps(settings.budget, jobs);
     println!(
-        "{} mutants in the changed lines; each tested with nextest ({}), {} at once, \
+        "{} mutants in the changed lines; each tested with nextest ({}), {} at once{}, \
          {} s each at most, {} s in all.",
         listed.len(),
         filter.as_deref().unwrap_or("all tests"),
-        settings.jobs,
+        jobs,
+        settings
+            .budget
+            .cpus
+            .map(|cpus| format!(" within {cpus} CPUs"))
+            .unwrap_or_default(),
         settings.mutant_seconds,
         settings.bound().as_secs()
     );
@@ -360,7 +450,9 @@ pub fn run(root: &Path, cargo: &str, settings: &Settings) -> io::Result<Option<O
             "true",
             "--no-shuffle",
         ])
-        .args(["--jobs", &settings.jobs.to_string()])
+        .args(["--jobs", &jobs.to_string()])
+        .args(&cap_args)
+        .envs(cap_env)
         .args(["--timeout", &settings.mutant_seconds.to_string()])
         .args(["--output", &dir.display().to_string()])
         .args(
@@ -592,7 +684,13 @@ mod tests {
             base: base.to_owned(),
             minutes: 10,
             mutant_seconds: 120,
-            jobs: 1,
+            // The default jobs within a budget of 2 CPUs: the pinned tool takes the caps
+            // (`--jobserver-tasks`) and the run's own call of `jobs_for` (SPEC-506, review round 2).
+            jobs: None,
+            budget: Budget {
+                cpus: Some(2),
+                memory_mb: None,
+            },
             tests: None,
             seconds: None,
         };
@@ -712,11 +810,79 @@ mod tests {
                 settings.jobs,
                 settings.tests.as_deref()
             ),
-            ("origin/main", 5, 3, Some("all()"))
+            ("origin/main", 5, Some(3), Some("all()"))
         );
         assert_eq!(Settings::parse(&[], "dev")?.base, "origin/dev");
         assert!(Settings::parse(&["--minutes".to_owned(), "0".to_owned()], "dev").is_err());
         assert!(Settings::parse(&["--other".to_owned(), "1".to_owned()], "dev").is_err());
+        Ok(())
+    }
+
+    /// SPEC-506 FST-005 (AC-3, review round 1 of pull request 2): with no `--jobs`, one job per
+    /// eight mutants listed, at least 2, at most a third of `YULIUS_CPUS`, one per 12 GB of
+    /// `YULIUS_MEMORY_MB` and [`MOST_JOBS`]; `--jobs` still decides; with no budget it stays 2.
+    #[test]
+    fn the_jobs_follow_the_mutants_and_the_budget() -> Result<(), String> {
+        let env = |cpus: Option<&'static str>, memory: Option<&'static str>| {
+            move |name: &str| match name {
+                "YULIUS_CPUS" => cpus.map(str::to_owned),
+                "YULIUS_MEMORY_MB" => memory.map(str::to_owned),
+                _ => None,
+            }
+        };
+        let jobs = |args: &[&str], budget: Budget, listed: usize| {
+            let args: Vec<String> = args.iter().map(|a| (*a).to_owned()).collect();
+            Settings::parse_with(&args, "dev", budget).map(|s| s.jobs_for(listed))
+        };
+        let session = Budget::read(env(Some("22"), Some("232566")));
+        // A fix's few mutants: no more than before (7 jobs finished 8 no sooner than 2).
+        assert_eq!(jobs(&[], session, 8)?, 2);
+        assert_eq!(jobs(&[], session, 36)?, 5);
+        // A whole change: a third of the CPUs.
+        assert_eq!(jobs(&[], session, 260)?, 7);
+        assert_eq!(jobs(&[], Budget::read(env(Some("64"), None)), 260)?, 7);
+        // A small budget still gets 2.
+        assert_eq!(jobs(&[], Budget::read(env(Some("4"), None)), 260)?, 2);
+        assert_eq!(jobs(&[], Budget::read(env(Some("12"), None)), 260)?, 4);
+        // A small host's memory bounds it, down to one job.
+        assert_eq!(
+            jobs(&[], Budget::read(env(Some("22"), Some("30000"))), 260)?,
+            2
+        );
+        assert_eq!(
+            jobs(&[], Budget::read(env(Some("22"), Some("8000"))), 260)?,
+            1
+        );
+        // No budget, or one that does not parse: 2, as before.
+        assert_eq!(jobs(&[], Budget::read(env(None, None)), 260)?, 2);
+        assert_eq!(jobs(&[], Budget::read(env(Some("lots"), None)), 260)?, 2);
+        // `--jobs` decides.
+        assert_eq!(jobs(&["--jobs", "3"], session, 8)?, 3);
+        // The run stays within the CPUs: the jobserver gets them, each job's tests its share.
+        assert_eq!(
+            budget_caps(session, 7),
+            (
+                vec!["--jobserver-tasks".to_owned(), "22".to_owned()],
+                vec![
+                    ("NEXTEST_TEST_THREADS".to_owned(), "3".to_owned()),
+                    ("RUST_TEST_THREADS".to_owned(), "3".to_owned()),
+                ]
+            )
+        );
+        assert_eq!(budget_caps(Budget::default(), 2), (Vec::new(), Vec::new()));
+        // More jobs than CPUs: each job's tests still get a thread.
+        assert_eq!(
+            budget_caps(session, 30).1[0],
+            ("NEXTEST_TEST_THREADS".to_owned(), "1".to_owned())
+        );
+        // The budget is read from those two names and no other.
+        assert_eq!(
+            session,
+            Budget {
+                cpus: Some(22),
+                memory_mb: Some(232_566)
+            }
+        );
         Ok(())
     }
 }

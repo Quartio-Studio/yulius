@@ -5609,7 +5609,8 @@ async fn a_task_of_several_slices_merges_each_with_the_rest_ahead() -> TestResul
     assert!(
         dropped["merge_outcome"]
             .as_str()
-            .is_some_and(|text| text.contains("The merge you armed was dropped")),
+            .is_some_and(|text| text.contains("The merge you armed was dropped")
+                && text.contains(yulius_domain::review::KEEP_APPROVAL)),
         "{dropped}"
     );
     assert_eq!(f.delivery("t1").await?["stage"], "pr_open", "{dropped}");
@@ -6926,7 +6927,10 @@ async fn an_armed_merge_says_why_it_was_dropped_or_refused() -> TestResult {
     f.h.app.merge_armed(&sandbox).await;
     let outcome = t.outcome().await?;
     assert!(
-        outcome.contains("dropped") && outcome.contains("checks") && outcome.contains("failed"),
+        outcome.contains("dropped")
+            && outcome.contains("checks")
+            && outcome.contains("failed")
+            && outcome.contains(yulius_domain::review::KEEP_APPROVAL),
         "{outcome}"
     );
 

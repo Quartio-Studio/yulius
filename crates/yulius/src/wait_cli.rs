@@ -157,13 +157,13 @@ pub fn settled(now: &WaitState, before: Option<&WaitState>) -> Option<String> {
     {
         return Some(format!(
             "The checks at {} failed{}: the merge you armed cannot happen. Read why with \
-             `ci_status`, fix it test-first, get the review of the new head and call \
-             `delivery_merge` again.",
+             `ci_status`, fix it test-first, commit, then {}.",
             short(&now.head),
             now.checks_detail
                 .as_deref()
                 .map(|d| format!(" ({d})"))
-                .unwrap_or_default()
+                .unwrap_or_default(),
+            yulius_domain::review::KEEP_APPROVAL
         ));
     }
     // CI could not run at this head (disk, a timeout, the host): not the code. An armed merge
@@ -188,8 +188,8 @@ pub fn settled(now: &WaitState, before: Option<&WaitState>) -> Option<String> {
         let head = short(&now.head);
         return Some(match now.checks.as_str() {
             "passed" => format!(
-                "The checks at {head} passed. Merge with `delivery_merge` (with the independent \
-                 review of that head) if you have not."
+                "The checks at {head} passed. Unless it merged already: {}.",
+                yulius_domain::review::KEEP_APPROVAL
             ),
             state => format!(
                 "The checks at {head} ended {state}{}. Read why with `ci_status`; fix it \
@@ -438,8 +438,10 @@ mod tests {
         assert!(settled(&state("running"), None).is_none());
         assert!(settled(&state("queued"), None).is_none());
         let passed = settled(&state("passed"), None).unwrap_or_default();
+        // SPEC-506 FST-001: the passed line says both cases of the review.
         assert!(
-            passed.starts_with("The checks at 012345678 passed."),
+            passed.starts_with("The checks at 012345678 passed. Unless it merged already: ")
+                && passed.contains(yulius_domain::review::KEEP_APPROVAL),
             "{passed}"
         );
         let failed = WaitState {
@@ -614,7 +616,7 @@ mod tests {
             assert!(
                 line.starts_with("The checks at 012345678 failed (websites exited 1): the merge you armed cannot happen.")
                     && line.contains("`ci_status`")
-                    && line.contains("`delivery_merge` again"),
+                    && line.contains(yulius_domain::review::KEEP_APPROVAL),
                 "{line}"
             );
         }

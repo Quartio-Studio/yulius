@@ -58,8 +58,11 @@ Link evidence; do not repeat a missing-test finding already listed above.}
   own-code finding is fixed in the pull request, never deferred to an issue.
 - Keep Verdict, Summary, and Validation Gate. Omit empty findings, optional
   sections, passing checklists, and routine praise. Per-command results remain
-  mandatory; NOT RUN is a limitation, never evidence of a pass. Any unexecuted
-  configured command keeps the verdict at request changes until validation runs.
+  mandatory; NOT RUN is a limitation, never evidence of a pass. Where CI cannot
+  run, any unexecuted configured command keeps the verdict at request changes
+  until validation runs; where it runs, the head's Yulius CI run is that
+  validation, and a run still going or failed in a way the change does not cause
+  is reported, not a reason to ask for changes.
 - Separate direction/scope choices from verified defects. A planned consumer
   or an unavailable roadmap is a decision dependency, not automatically a bug.
   Report a repository-rule violation only with the applicable rule and code
