@@ -1182,26 +1182,23 @@ fn the_file_stays_while_another_run_of_the_subscription_lives() -> TestResult {
         // The first run refreshed the sign-in and ends: its refresh reaches the vault.
         let refreshed = codex_auth(&ago(60_000));
         std::fs::write(home.join("auth.json"), &refreshed)?;
-        app.send_input(&first, b"/exit\r").await?;
-        wait_for(
-            "the refresh in the vault",
-            Duration::from_secs(30),
-            || async {
-                stored_credential(&app, &account)
-                    .await
-                    .is_ok_and(|stored| stored == refreshed)
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        yulius_app::race::on(
+            yulius_app::race::Point::CodexWriteBackDone,
+            Path::new(first.as_str()),
+            move || {
+                let _ = done_tx.send(());
             },
-        )
-        .await?;
-        // The second run still uses the file: it stays, watched for a while after the write-back.
-        let watched = std::time::Instant::now();
-        while watched.elapsed() < Duration::from_secs(2) {
-            assert!(
-                home.join("auth.json").exists(),
-                "auth.json removed under a live run of the subscription"
-            );
-            tokio::task::yield_now().await;
-        }
+        );
+        app.send_input(&first, b"/exit\r").await?;
+        tokio::task::spawn_blocking(move || done_rx.recv_timeout(Duration::from_secs(30)))
+            .await??;
+        assert_eq!(stored_credential(&app, &account).await?, refreshed);
+        // The second run still uses the file: the first run's write-back left it.
+        assert!(
+            home.join("auth.json").exists(),
+            "auth.json removed under a live run of the subscription"
+        );
         assert!(task(&app, &second).await?.status.is_live());
         app.send_input(&second, b"/exit\r").await?;
         wait_for(
@@ -1418,6 +1415,44 @@ fn a_sign_in_made_meanwhile_wins_over_a_runs_refresh() -> TestResult {
         tokio::task::spawn_blocking(move || done_rx.recv_timeout(Duration::from_secs(30)))
             .await??;
         assert_eq!(stored_credential(&app, &account).await?, signed_in);
+        // The run's file holds the replaced sign-in's tokens, which are never taken: it does
+        // not stay in the sandbox (slice C1 review round 3).
+        assert!(
+            !home.join("auth.json").exists(),
+            "the superseded auth.json stayed"
+        );
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// SPEC-503 CDX-006 (slice C1 review round 3): a server that stopped between a run's end and the
+/// removal of its `auth.json` left the file in the sandbox; the next start's reconciliation keeps
+/// a genuine refresh in it and removes it, since no run of the subscription is left there.
+#[test]
+fn a_start_sweeps_an_auth_json_no_run_uses() -> TestResult {
+    let (_dir, data) = temp()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let app = build_full(&data, None, FakeAgentOptions::default(), 8)?;
+        let (sandbox, _user) = seed_records(&app).await?;
+        let account =
+            add_codex_account(&app, "a-codex", &codex_auth("2026-11-01T10:00:00Z")).await?;
+        let home = data
+            .join("sandboxes")
+            .join(sandbox.as_str())
+            .join("codex")
+            .join(account.as_str());
+        std::fs::create_dir_all(&home)?;
+        let refreshed = codex_auth(&ago(60_000));
+        std::fs::write(home.join("auth.json"), &refreshed)?;
+        app.reconcile().await?;
+        assert_eq!(stored_credential(&app, &account).await?, refreshed);
+        assert!(
+            !home.join("auth.json").exists(),
+            "auth.json left after the start"
+        );
         Ok::<_, Box<dyn std::error::Error>>(())
     })?;
     rt.shutdown_timeout(Duration::from_secs(5));

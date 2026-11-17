@@ -1879,6 +1879,7 @@ impl App {
             Some(_) => self
                 .keep_codex_refresh(&self.sandbox_dir(&sandbox.id), &account.id)
                 .await
+                .holds
                 .unwrap_or(credential),
             None => credential,
         };
@@ -3125,7 +3126,7 @@ impl App {
             return;
         };
         let root = self.sandbox_dir(&task.sandbox_id);
-        let held = self.keep_codex_refresh(&root, &account).await;
+        let kept = self.keep_codex_refresh(&root, &account).await;
         let app = Arc::clone(self);
         let task_id = task_id.clone();
         tokio::spawn(async move {
@@ -3135,7 +3136,7 @@ impl App {
                 &root,
                 &account,
                 Some(&attempt.id),
-                held,
+                kept,
             )
             .await;
         });
@@ -3148,14 +3149,14 @@ impl App {
             return;
         };
         let root = self.sandbox_dir(&task.sandbox_id);
-        let held = self.keep_codex_refresh(&root, account_id).await;
-        self.remove_codex_auth_after(task_id, &task.sandbox_id, &root, account_id, None, held)
+        let kept = self.keep_codex_refresh(&root, account_id).await;
+        self.remove_codex_auth_after(task_id, &task.sandbox_id, &root, account_id, None, kept)
             .await;
     }
 
     /// Once no run of the account is left in the sandbox, its `auth.json` is removed: the
-    /// credential lives in the vault (`held`, what it holds after the write-back), not in a
-    /// folder later tasks can read. `attempt` is the run that ended, left out of the runs still
+    /// credential lives in the vault (`kept`: what it holds after the write-back, and the bytes
+    /// that lost to another credential), not in a folder later tasks can read. `attempt` is the run that ended, left out of the runs still
     /// using the file. Reaches [`crate::race::Point::CodexWriteBackDone`] when done.
     async fn remove_codex_auth_after(
         &self,
@@ -3164,9 +3165,9 @@ impl App {
         root: &Path,
         account_id: &AccountId,
         attempt: Option<&AttemptId>,
-        held: Option<Secret>,
+        kept: KeptCodexAuth,
     ) {
-        self.remove_codex_auth_unless_used(task_id, sandbox, root, account_id, attempt, held)
+        self.remove_codex_auth_unless_used(Some(task_id), sandbox, root, account_id, attempt, kept)
             .await;
         crate::race::reached(
             crate::race::Point::CodexWriteBackDone,
@@ -3176,12 +3177,12 @@ impl App {
 
     async fn remove_codex_auth_unless_used(
         &self,
-        task_id: &TaskId,
+        task_id: Option<&TaskId>,
         sandbox: &SandboxId,
         root: &Path,
         account_id: &AccountId,
         attempt: Option<&AttemptId>,
-        held: Option<Secret>,
+        kept: KeptCodexAuth,
     ) {
         // Under the launch lock: a run of the account starting now in this sandbox has written
         // its `auth.json` and is recorded live once the lock is free, so its file is never taken.
@@ -3218,37 +3219,57 @@ impl App {
         // refresh that could not be stored, or one not taken) may hold the only copy of rotated
         // tokens.
         match read_codex_auth(root, account_id) {
+            // The vault's own copy goes, and so do tokens another credential won over: they are
+            // never taken.
             Ok(Some(file))
-                if gone || held.as_ref().is_some_and(|h| h.expose().as_bytes() == file) =>
+                if gone
+                    || kept
+                        .holds
+                        .as_ref()
+                        .is_some_and(|h| h.expose().as_bytes() == file)
+                    || kept.lost.as_ref().is_some_and(|lost| *lost == file) =>
             {
                 if let Err(err) = remove_codex_auth(root, account_id) {
-                    tracing::warn!(task = %task_id, error = %err, "the run's Codex credentials could not be removed");
+                    tracing::warn!(task = ?task_id, account = %account_id, error = %err, "the run's Codex credentials could not be removed");
                 }
             }
             Ok(Some(_)) => {
-                tracing::warn!(task = %task_id, "the run's Codex credentials did not reach the vault; left in place");
+                tracing::warn!(task = ?task_id, account = %account_id, "the run's Codex credentials did not reach the vault; left in place");
             }
             Ok(None) => {}
             Err(err) => {
-                tracing::warn!(task = %task_id, error = %err, "the run's Codex credentials could not be read");
+                tracing::warn!(task = ?task_id, account = %account_id, error = %err, "the run's Codex credentials could not be read");
             }
         }
     }
 
     /// Stores the `auth.json` in the Codex home of `account` below `root` when it replaces the
-    /// account's credential ([`HarnessPort::codex_auth_replaces`]), and returns the credential
-    /// the account holds afterwards; `None` when the account or its credential is gone (signed
-    /// out meanwhile: nothing is stored back), or when it was signed in again meanwhile (the
-    /// refresh is of the sign-in before).
-    async fn keep_codex_refresh(&self, root: &Path, account_id: &AccountId) -> Option<Secret> {
-        let account = self.deps.store.account(account_id).await.ok().flatten()?;
-        let stored = self.deps.crypto.open(account.credential.as_ref()?).ok()?;
+    /// account's credential ([`HarnessPort::codex_auth_replaces`]). Says what the account holds
+    /// afterwards (`holds`; `None` when its credential is gone: signed out, nothing is stored
+    /// back) and, when another credential won (the account held another or none by the time of
+    /// the write: a sign-in made meanwhile, a removal, another run's refresh), the file's bytes
+    /// that lost, which are never taken and need not stay.
+    async fn keep_codex_refresh(&self, root: &Path, account_id: &AccountId) -> KeptCodexAuth {
+        let holds = |stored: Vec<u8>| KeptCodexAuth {
+            holds: String::from_utf8(stored).ok().map(Secret),
+            lost: None,
+        };
+        let Some(account) = self.deps.store.account(account_id).await.ok().flatten() else {
+            return KeptCodexAuth::default();
+        };
+        let Some(stored) = account
+            .credential
+            .as_ref()
+            .and_then(|sealed| self.deps.crypto.open(sealed).ok())
+        else {
+            return KeptCodexAuth::default();
+        };
         let fresh = match read_codex_auth(root, account_id) {
             Ok(Some(bytes)) => bytes,
-            Ok(None) => return String::from_utf8(stored).ok().map(Secret),
+            Ok(None) => return holds(stored),
             Err(err) => {
                 tracing::warn!(account = %account_id, error = %err, "the Codex home's credentials could not be read");
-                return String::from_utf8(stored).ok().map(Secret);
+                return holds(stored);
             }
         };
         if !self
@@ -3256,7 +3277,7 @@ impl App {
             .harness
             .codex_auth_replaces(&fresh, &stored, self.now())
         {
-            return String::from_utf8(stored).ok().map(Secret);
+            return holds(stored);
         }
         crate::race::reached(
             crate::race::Point::CodexRefreshTaken,
@@ -3266,13 +3287,15 @@ impl App {
             Ok(sealed) => sealed,
             Err(err) => {
                 tracing::error!(error = %err, "could not seal refreshed Codex credentials");
-                return String::from_utf8(stored).ok().map(Secret);
+                return holds(stored);
             }
         };
         // Only the credential changes, and only while it is the one this refresh is of: the
         // status, error and email stay (a status read above is never written back), and a new
         // sign-in made meanwhile wins.
-        let previous = account.credential.as_ref()?;
+        let Some(previous) = account.credential.as_ref() else {
+            return holds(stored);
+        };
         match self
             .deps
             .store
@@ -3281,15 +3304,27 @@ impl App {
         {
             Ok(true) => {
                 tracing::info!(account = %account_id, "refreshed Codex credentials kept");
-                String::from_utf8(fresh).ok().map(Secret)
+                holds(fresh)
             }
             Ok(false) => {
-                tracing::info!(account = %account_id, "signed in again meanwhile: the Codex refresh is not kept");
-                None
+                tracing::info!(account = %account_id, "the account holds another credential or none now: the Codex refresh is not kept");
+                let now_held = self
+                    .deps
+                    .store
+                    .account(account_id)
+                    .await
+                    .ok()
+                    .flatten()
+                    .and_then(|account| account.credential)
+                    .and_then(|sealed| self.deps.crypto.open(&sealed).ok());
+                KeptCodexAuth {
+                    holds: now_held.and_then(|bytes| String::from_utf8(bytes).ok().map(Secret)),
+                    lost: Some(fresh),
+                }
             }
             Err(err) => {
                 tracing::error!(error = %err, "could not store refreshed Codex credentials");
-                String::from_utf8(stored).ok().map(Secret)
+                holds(stored)
             }
         }
     }
@@ -5298,7 +5333,40 @@ impl App {
             }
         }
         self.drain_queue().await;
+        // A server that stopped between a Codex run's end and the removal of its `auth.json`
+        // left the file: no run of this server uses one yet (SPEC-503 CDX-006).
+        self.sweep_codex_homes().await;
         Ok(lost)
+    }
+
+    /// Keeps a genuine refresh from, and removes, each Codex home's `auth.json` that no live run
+    /// of its subscription in its sandbox uses (a server stopped before its run's write-back
+    /// removed it).
+    async fn sweep_codex_homes(&self) {
+        let Ok(sandboxes) = self.deps.store.sandboxes().await else {
+            return;
+        };
+        for sandbox in sandboxes {
+            let root = self.sandbox_dir(&sandbox.id);
+            let Ok(homes) = std::fs::read_dir(root.join("codex")) else {
+                continue;
+            };
+            for home in homes.flatten() {
+                let Some(account) = home
+                    .file_name()
+                    .to_str()
+                    .and_then(|name| AccountId::parse(name).ok())
+                else {
+                    continue;
+                };
+                if !matches!(read_codex_auth(&root, &account), Ok(Some(_))) {
+                    continue;
+                }
+                let kept = self.keep_codex_refresh(&root, &account).await;
+                self.remove_codex_auth_unless_used(None, &sandbox.id, &root, &account, None, kept)
+                    .await;
+            }
+        }
     }
 
     /// Account usage update from transcripts or providers. The subscription reads `limited`
@@ -6324,6 +6392,14 @@ impl Drop for CodexLeftover {
             });
         }
     }
+}
+
+/// What a Codex write-back left ([`App::keep_codex_refresh`]): the credential the account holds,
+/// and the bytes of a run's `auth.json` that lost to another credential.
+#[derive(Default)]
+struct KeptCodexAuth {
+    holds: Option<Secret>,
+    lost: Option<Vec<u8>>,
 }
 
 /// Removes the `auth.json` of `account`'s Codex home below `root`, opened without following a
