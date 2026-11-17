@@ -37,8 +37,8 @@ and the gain measured. A run's critical path is its longest job.
     whose last run was one of its members' own runs (the last member first), then one whose last
     run was a candidate sharing a member. A pull request's run prefers the lane of its own
     previous run. With none free, it takes the first free lane as before.
-  - Each job's output says which build its checkout starts from ("lane 1: its checkouts last
-    built pr/12, which this run builds on"), so durations can be compared by it.
+  - Each job's output says which build its checkout starts from ("lane 1, last taken by pr/12,
+    which this run builds on"), so durations can be compared by it.
 
 ## Alternatives
 

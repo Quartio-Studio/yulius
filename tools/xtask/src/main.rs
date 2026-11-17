@@ -184,6 +184,8 @@ fn execute(task: &str) -> io::Result<()> {
                 println!("quarantined as flaky, left out: {quarantined}");
                 args.extend(["-E", filter.as_str()]);
             }
+            // Its own stage, so the test stage's history goes on in the shards' job (SPEC-137).
+            stage("test");
             // A shard of a matrix job (`matrix = "1/2 2/2"`) runs its part of the tests, by a hash
             // of each test's name; the doctests run in the first (SPEC-497 SHR-001).
             let shard = shard_of(&env::var("YULIUS_CI_MATRIX").unwrap_or_default());
@@ -213,7 +215,10 @@ fn execute(task: &str) -> io::Result<()> {
         }
         "ci" => {
             for gate in ["doctor", "check", "lint", "macos", "test", "deps"] {
-                stage(gate);
+                // `test` names its own stage.
+                if gate != "test" {
+                    stage(gate);
+                }
                 execute(gate)?;
             }
             stage("docs");

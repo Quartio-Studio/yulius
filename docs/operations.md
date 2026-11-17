@@ -1556,8 +1556,8 @@ involved.
   keeps its own job checkouts and caches (`ci/jobs/<job>[.<n>]@<lane>`, `ci/cache/<job>[.<n>]@<lane>`), so
   budget its disk too. A run takes the free lane whose checkouts last built what it builds on: a
   merge candidate's run a lane of its members' own runs, a pull request's run the lane of its
-  previous head's. Each job's output names it (`[yulius] lane 1: its checkouts last built pr/12,
-  which this run builds on`; ADR-0358).
+  previous head's. Each job's output names it (`[yulius] lane 1, last taken by pr/12, which
+  this run builds on`; ADR-0358).
 - **Shards**: a job split with `matrix = "1/2 2/2"` runs one job per value side by side, each in
   its own checkout, with the value in `YULIUS_CI_MATRIX`; the run passes only when every shard
   passed. The test runner reads the shard, for example

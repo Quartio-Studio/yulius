@@ -1686,11 +1686,13 @@ impl App {
                 lane
             };
             let before = last.iter().find(|(l, _)| *l == lane).map(|(_, r)| r.key());
+            // What the dispatcher knows is the lane's last run, not that it built (it may have
+            // been cancelled before its jobs started): "taken" (review round 1).
             let note = match &before {
-                Some(key) if preferred.first() == Some(&lane) => {
-                    format!("lane {lane}: its checkouts last built {key}, which this run builds on")
+                Some(key) if preferred.contains(&lane) => {
+                    format!("lane {lane}, last taken by {key}, which this run builds on")
                 }
-                Some(key) => format!("lane {lane}: its checkouts last built {key}"),
+                Some(key) => format!("lane {lane}, last taken by {key}"),
                 None => format!("lane {lane}"),
             };
             if let Ok(mut map) = self.ci.lane_runs.lock() {

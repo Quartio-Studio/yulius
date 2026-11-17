@@ -1321,7 +1321,11 @@ command = 'if [ "$YULIUS_CI_MATRIX" = 2 ]; then exit "$YULIUS_CI_SKIP_CODE"; fi'
 /// for the other's (bounded), so a shard that ran alone says so and fails.
 #[tokio::test]
 async fn a_sharded_job_runs_its_shards_side_by_side() -> TestResult {
-    let f = fixture_with(false, |data| {
+    // One run at a time: two runs' shards each half-admitted would wait for each other (review
+    // round 1: each shard needs half the budget).
+    let f = fixture_tuned(
+        false,
+        |data| {
         let marks = data.join("shard-marks");
         let marks = marks.to_string_lossy();
         let dir = format!("{marks}/$YULIUS_CI_SHA");
@@ -1333,7 +1337,10 @@ async fn a_sharded_job_runs_its_shards_side_by_side() -> TestResult {
              if [ -e two.txt ] && [ $i = 2 ]; then echo \"shard 2 fails\"; exit 1; fi"
         );
         format!("[[ci.jobs]]\nname = \"test\"\nmatrix = \"1/2 2/2\"\ncommand = '{script}'\n")
-    })
+        },
+        None,
+        |config| config.ci.lanes = 1,
+    )
     .await?;
     sync_and_settle(&f).await?;
     let one = f.get("/api/sandboxes/s1/ci").await?;
@@ -1390,6 +1397,9 @@ async fn a_run_takes_the_lane_that_last_built_its_pull_request() -> TestResult {
         |config| config.ci.lanes = 2,
     )
     .await?;
+    // `dev` and #1 first, so #2's lane does not depend on which of them ends first (review
+    // round 1): they end, and #2 takes the first free lane.
+    sync_and_settle(&f).await?;
     open_pull(&f, 2, "feat/two", "origin/dev", "two.txt")?;
     sync_and_settle(&f).await?;
     let lane_of = |job: &Value| {
@@ -1443,9 +1453,7 @@ async fn a_run_takes_the_lane_that_last_built_its_pull_request() -> TestResult {
     for (number, head, lane) in heads {
         assert_eq!(
             lane_of(&job_of(&f, "sha", &head).await?),
-            format!(
-                "[yulius] lane {lane}: its checkouts last built pr/{number}, which this run builds on"
-            )
+            format!("[yulius] lane {lane}, last taken by pr/{number}, which this run builds on")
         );
     }
     Ok(())

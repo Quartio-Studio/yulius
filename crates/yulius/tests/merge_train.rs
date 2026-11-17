@@ -1716,6 +1716,44 @@ async fn formed_again(project: Project) -> TestResult {
     Ok(())
 }
 
+/// SPEC-497 SHR-002 (slice D review round 1): a merge candidate's run takes a lane its members'
+/// own runs took, and its job's output says so.
+#[tokio::test]
+async fn a_candidates_run_takes_a_lane_of_its_members() -> TestResult {
+    let f = fixture_with(Project::Standard, Some(2)).await?;
+    let app = f.h.app.clone();
+    let sandbox = app.deps.store.sandbox(&f.sandbox).await?.ok_or("s1")?;
+    let one = f.task(1, &[("a.txt", "x\n")]).await?;
+    let two = f.task(2, &[("b.txt", "x\n")]).await?;
+    app.ci_sync_sandbox(&sandbox).await?;
+    f.arm(1, &one).await?;
+    f.arm(2, &two).await?;
+    f.advance_dev("other.txt")?;
+    app.ci_sync_sandbox(&sandbox).await?;
+    // The members' own runs run first and leave their lanes; the candidate forms after them.
+    f.settle(&app).await?;
+    app.merge_armed(&f.sandbox).await;
+    let train = f
+        .train_runs(&app)
+        .await?
+        .into_iter()
+        .next()
+        .ok_or("no candidate")?;
+    run_candidate(&f, &app, &train.id).await?;
+    let jobs = app.deps.store.ci_jobs(&train.id, true).await?;
+    let output = jobs.first().map(|j| j.output.clone()).unwrap_or_default();
+    let lane = output
+        .lines()
+        .find(|l| l.starts_with("[yulius] lane "))
+        .unwrap_or_default();
+    assert!(
+        (lane.contains("last taken by pr/1,") || lane.contains("last taken by pr/2,"))
+            && lane.ends_with("which this run builds on"),
+        "{output}"
+    );
+    Ok(())
+}
+
 /// SPEC-497 MQW-002 (slice C review round 2): a member's own run that fails while the passed
 /// candidate merges the members before it is read again before its own merge: #1 merges, #2's
 /// own run fails exactly then (the pass held at its pause point), and #2 is not merged.

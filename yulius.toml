@@ -34,16 +34,17 @@ NEXTEST_TEST_THREADS = "{cpus}"
 RUST_TEST_THREADS = "{cpus}"
 
 # macOS has no Yulius runner: the gate compiles every target for macOS (ADR-0169); run
-# `scripts/dev ci` on a Mac before a release to link and test there. Each job gets an
-# equal share of CI's budget (five jobs: a fifth each, ADR-0350); CI's measured use, not the
-# shares, decides when a job starts (ADR-0353).
+# `scripts/dev ci` on a Mac before a release to link and test there. Each job without `cpus`
+# gets an equal share of CI's budget (ADR-0350); CI's measured use, not the shares, decides when
+# a job starts (ADR-0353).
 # The gate but its tests, and the tests in two shards beside it (SPEC-497 SHR-001): each value of
 # the matrix is its own job, with its own checkout and build, run side by side where CI's budget
 # allows; `scripts/dev test` runs shard i of n for a value `i/n`. Locally, `scripts/dev ci` runs
-# everything in one go.
+# everything in one go. A pull request still behind the `dev` that added `checks` runs these jobs
+# with its own older xtask: there `quality` runs the whole `ci`, and each shard all the tests.
 [[ci.jobs]]
 name = "quality"
-command = "python3 scripts/bootstrap.py --install-rustup && scripts/dev checks"
+command = "python3 scripts/bootstrap.py --install-rustup && if scripts/dev help | grep -q '^  checks '; then scripts/dev checks; else scripts/dev ci; fi"
 
 [[ci.jobs]]
 name = "test"
@@ -53,8 +54,12 @@ command = "python3 scripts/bootstrap.py --install-rustup && scripts/dev test"
 # The browser's system libraries are installed once in the sandbox (onboarding); installing them
 # on every run (`--with-deps`, apt) raced the other CI lane and agents for the dpkg lock and
 # failed runs before any test (F 2026-10-13).
+# Its workers are half its CPUs (e2e.config.ts): 18 CPUs, the share it had beside two other jobs,
+# keep its 9 workers now that the run has five (review round 1 of slice D: 5 workers took 8.6
+# min against 5.2).
 [[ci.jobs]]
 name = "e2e"
+cpus = 18
 command = "cd e2e && npm ci --ignore-scripts && npx e2e-web install chromium && E2E_TELEMETRY_DISABLED=1 npx e2e run --reporter list,junit"
 
 # The Vidoc security scan on vidoc-1 (SPEC-195, ADR-0157) of pull request heads: the files the pull
