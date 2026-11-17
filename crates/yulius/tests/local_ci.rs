@@ -3737,6 +3737,55 @@ async fn no_quarantine_when_the_integration_branch_or_a_shared_commit_fails_it()
         issue_titles(&f)?.is_empty(),
         "one change in two pull requests"
     );
+    // Both merge a newer `dev` commit: their heads then have two merge bases, the shared commit
+    // and that one, and plain `git merge-base` names only the latter (review round 2).
+    f.push_dev("newer.txt", Some("newer\n"))?;
+    for (number, branch) in [(1, "feat/one"), (2, "feat/two")] {
+        git(&f.work, &["checkout", "-q", branch])?;
+        git(&f.work, &["merge", "-q", "--no-edit", "origin/dev"])?;
+        git(&f.work, &["push", "-q", "origin", branch])?;
+        let head = git(&f.work, &["rev-parse", "HEAD"])?;
+        if let Ok(mut pulls) = f.h.github.pulls.lock()
+            && let Some(pull) = pulls.iter_mut().find(|p| p.number == number)
+        {
+            pull.head_sha = head;
+        }
+    }
+    git(&f.work, &["checkout", "-q", "feat/one"])?;
+    sync_and_settle(&f).await?;
+    let merged = git(&f.work, &["rev-parse", "feat/two"])?;
+    let job = job_of(&f, "sha", &merged).await?;
+    assert_eq!(job["state"], "failed", "{job}");
+    assert!(issue_titles(&f)?.is_empty(), "still one change");
+    // A head the clone does not have cannot be compared: no quarantine rests on it.
+    let runs = f.h.store.ci_runs(&f.sandbox.id, 20).await?;
+    let first = runs
+        .iter()
+        .find(|r| r.reference.key() == "pr/1")
+        .ok_or("pr/1's run")?
+        .clone();
+    let job =
+        f.h.store
+            .ci_jobs(&first.id, false)
+            .await?
+            .into_iter()
+            .next()
+            .ok_or("job")?;
+    let mut unknown = first.clone();
+    unknown.id = "unknown-head".into();
+    unknown.reference = yulius_domain::ci::CiRef::PullRequest(9);
+    unknown.sha = "0123456789abcdef0123456789abcdef01234567".into();
+    let noted =
+        f.h.app
+            .ci_note_failing_tests(
+                &f.sandbox,
+                &unknown,
+                &job,
+                "FAIL [   0.004s] (1/1) app tests::flaky\n  stdout ───\n",
+            )
+            .await;
+    assert!(!noted.quarantined, "{noted:?}");
+    assert!(issue_titles(&f)?.is_empty(), "an unknown head");
     Ok(())
 }
 

@@ -720,6 +720,11 @@ impl GitPort for GitAdapter {
         blocking(move || Ok(git.merge_base(&repo, &a, &b).ok())).await
     }
 
+    async fn merge_bases(&self, repo: &Path, a: &str, b: &str) -> AppResult<Vec<String>> {
+        let (git, repo, a, b) = (self.git(), repo.to_path_buf(), a.to_owned(), b.to_owned());
+        blocking(move || git.merge_bases(&repo, &a, &b)).await
+    }
+
     async fn merge_integration(
         &self,
         worktree: &Path,

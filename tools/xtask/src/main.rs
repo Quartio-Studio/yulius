@@ -159,7 +159,12 @@ fn execute(task: &str) -> io::Result<()> {
             let quarantined = if names.trim().is_empty() {
                 String::new()
             } else {
+                println!(
+                    "+ cargo nextest list --list-type binaries-only (the binaries this head \
+                     builds, to leave the quarantined tests out in theirs)"
+                );
                 let mut list = Command::new(&cargo);
+                list.stderr(std::process::Stdio::inherit());
                 list.args(["nextest", "list"]).args(&args[2..]).args([
                     "--list-type",
                     "binaries-only",
@@ -168,7 +173,6 @@ fn execute(task: &str) -> io::Result<()> {
                 ]);
                 let listed = list.output()?;
                 if !listed.status.success() {
-                    eprintln!("{}", String::from_utf8_lossy(&listed.stderr));
                     return Err(io::Error::other("cargo nextest list failed"));
                 }
                 quarantine_filter(&names, &String::from_utf8_lossy(&listed.stdout))

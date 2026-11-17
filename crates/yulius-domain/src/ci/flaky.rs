@@ -28,8 +28,9 @@ pub const QUARANTINE_ENV: &str = "YULIUS_CI_QUARANTINE";
 /// The variable holding a nextest filter matching every quarantined test (empty: none).
 pub const QUARANTINE_NEXTEST_ENV: &str = "YULIUS_CI_QUARANTINE_NEXTEST";
 
-/// Longest test name quarantined.
-const MAX_NAME_BYTES: usize = 300;
+/// Longest test name quarantined: its issue's title ("Flaky test quarantined: " and the name)
+/// stays within GitHub's 256 (review round 2).
+const MAX_NAME_BYTES: usize = 200;
 
 /// One failure of a test: the reference whose run failed it (`pr/<n>`, `branch/<name>`), the
 /// commit that run tested, and when.
@@ -100,7 +101,7 @@ pub fn is_flaky(
 
 /// Whether `name` (a failing test as its block names it) may be quarantined: letters, digits,
 /// `_ : - . /`, and at most one space between a binary and its test, so it is safe in a filter,
-/// an issue's text and a job's environment (no backtick, `@`, control character), at most 300
+/// an issue's text and a job's environment (no backtick, `@`, control character), at most 200
 /// bytes.
 ///
 /// # Examples
@@ -278,6 +279,7 @@ mod tests {
         ] {
             assert!(!quarantinable(bad), "{bad:?}");
         }
-        assert!(!quarantinable(&format!("app tests::{}", "a".repeat(300))));
+        assert!(quarantinable(&format!("app tests::{}", "a".repeat(189))));
+        assert!(!quarantinable(&format!("app tests::{}", "a".repeat(190))));
     }
 }

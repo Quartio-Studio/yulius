@@ -115,16 +115,24 @@ impl App {
                 .map(|p| format!("#{}", p.trim_start_matches("pr/")))
                 .collect::<Vec<_>>()
                 .join(", ");
-            // One at a time, looked at again under the lock: two jobs failing it at once file one
-            // issue (review round 1).
-            let _one = self.ci.quarantine.lock().await;
+            // One at a time per sandbox, looked at again under the lock: two jobs failing it at
+            // once file one issue (review round 1).
+            let lock = self
+                .ci
+                .quarantine_locks
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .entry(sandbox.id.as_str().to_owned())
+                .or_default()
+                .clone();
+            let _one = lock.lock().await;
             let Ok(quarantined) = store.quarantined_tests(Some(&sandbox.id)).await else {
                 continue;
             };
             if let Some(entry) = quarantined.iter().find(|q| q.test == test) {
                 noted.lines.push(format!(
-                    "[yulius] `{test}` is quarantined as flaky{}: this job's gate did not leave \
-                     it out (${QUARANTINE_ENV}, SPEC-497)",
+                    "[yulius] `{test}` is quarantined as flaky{}: a job started before that, or a \
+                     gate that does not read ${QUARANTINE_ENV}, still runs it (SPEC-497)",
                     entry
                         .issue
                         .as_ref()
@@ -178,12 +186,23 @@ impl App {
                 if ref_a == ref_b {
                     continue;
                 }
-                let shared = match self.deps.git.merge_base(&repo, a, b).await {
-                    Ok(None) => false,
-                    Ok(Some(common)) => !matches!(
-                        self.deps.git.is_ancestor(&repo, &common, &base).await,
-                        Ok(true)
-                    ),
+                // Every merge base: a chained pair that both merged a newer integration commit
+                // has that commit and the shared one as bases (review round 2).
+                let shared = match self.deps.git.merge_bases(&repo, a, b).await {
+                    Ok(bases) if bases.is_empty() => false,
+                    Ok(bases) => {
+                        let mut outside = false;
+                        for common in &bases {
+                            if !matches!(
+                                self.deps.git.is_ancestor(&repo, common, &base).await,
+                                Ok(true)
+                            ) {
+                                outside = true;
+                                break;
+                            }
+                        }
+                        outside
+                    }
                     Err(_) => true,
                 };
                 related.insert(ordered(a, b), shared);
