@@ -225,6 +225,115 @@ product project's 21 jobs pinned to 3 CPUs are its `yulius.toml`.
 - Open: how many of the 20 % re-approving rounds followed one of the messages of C4 (asked of
   the person; FST-001 is free whatever the answer).
 
+## Companion requests (for the person to start in each project)
+
+What every project gets from this task's skills without a change of its own: CI alone is no
+request for changes; the author proves each fix; mutation testing beside the first review and on
+each fix's lines; the quick checks before each published commit; Yulius's messages keep an
+approval across 20 product lines. What only the project itself can change:
+
+### quartio-v2
+
+> Request: "Make the cheap checks one command and keep whole suites in CI (SPEC-506 of Yulius)."
+>
+> - Name one quick command in AGENTS.md (and in `scripts/`) that runs, in seconds, the format
+>   check, the repository-contract test and the palette test, and run it first in the CI job that
+>   runs them now. Evidence: on the afternoon of 17 Nov, 5 of 7 pull requests had a failed Yulius
+>   CI run on their own change (a format check, a repository-contract test, a palette test), each
+>   a whole CI run of 8 to 15 minutes.
+> - AGENTS.md: the whole web suite runs in CI only (its two hash shards, 7 to 8 minutes each); a
+>   task runs the tests its change touches. #253 ran the whole suite locally: 22.5 minutes at
+>   `nice 19` with 4 threads. Where a local run is needed (reproducing a CI failure), it uses the
+>   session's budget (`YULIUS_CPUS`, 22), not 4 threads at `nice 19`.
+> - `scripts/mutants` (ADR 0256, #261): it starts when the first review is asked for and runs
+>   beside it; after a later round's fix it runs on that fix's lines alone. 17 Nov: 23 runs,
+>   757 minutes, 1.2 minutes a mutant one at a time, 0.4 of 22 CPUs used, up to three runs a pull
+>   request (#249: 40, 48 and 71 minutes). Check that #261's side-by-side run uses the budget.
+
+### product
+
+> Request: "CI jobs use the CPUs the host has (SPEC-506 of Yulius)."
+>
+> - CI is 46 % of its tasks' active time; its runs have 21 jobs pinned to `cpus = 3`. Remove the
+>   pins where a job's length is only a matter of CPUs (a build, a test runner with threads), so
+>   CI's measured use decides when a job starts (ADR-0350, ADR-0353 of Yulius), and give its
+>   longest jobs shards (`matrix = "1/2 2/2"`, ADR-0358). Measure a run before and after on
+>   the same commit; keep a pin only where a tool misbehaves with more CPUs.
+
+### VistulaValley
+
+> Request: "Run the whole gate in CI only (SPEC-506 of Yulius)."
+>
+> - 16 local gate runs in two sessions took 59 minutes (17 Nov). AGENTS.md: while iterating, run
+>   the checks the change touches; the whole gate is Yulius CI's (it runs while the reviewer
+>   reads), except to reproduce a CI failure. Name one quick command (format and repository
+>   checks, seconds) and run it before each published commit.
+
+## Report to the person
+
+### Built (merged into dev, each on green Yulius CI)
+
+| Pull request | What changed | Expected per pull request | How sure |
+|---|---|---|---|
+| #1394 (PR 1) | Yulius's notices after a red run, a failed or dropped merge and on a green head say both cases: with an approval, `delivery_merge` with the approved head (it carries across 20 product lines); with none, review first. A reviewer does not ask for changes because of CI alone. The author proves each fix (the test that fails without it, the whole last report checked, mutation on the fix's lines) before asking again. ADR-0362. | fewer needless re-approvals (up to 0.6 rounds × 5 to 15 min); about 1 to 2 min from CI-only blocks; 4 to 5 min if half the "untested or partial fix" re-blocks are caught | medium |
+| #1396 (PR 2) | Mutation testing starts with the first review and runs beside it, then on each fix's lines alone. `scripts/dev mutants` runs one job per 8 mutants (2 to 7, a third of the session's CPUs, within them). ADR-0347 amended. | the run's wall time on the first ask (11 % of this repository's task time, 33 % of quartio-v2's, a median 30 min there), less one CI run after an approving round 1; a whole change's run 1.8 times as fast | high on "beside", measured on jobs |
+| #1397 (PR 3) | `scripts/dev quick` (16 s) runs first in `quality`; every project's author runs its quick checks before each published commit; the checker's Python tests run beside the Rust gates (no more CPU). ADR-0363. | a format or contract failure costs seconds instead of a CI run (5 to 15 min); `quality` 138 → 108 to 114 s after a small change | medium |
+| PR 4 | The Review card and `GET /api/analytics/reviews` count re-reviews after a request for changes that ask again, and rounds after an approval (re-approvals) | the numbers of this request readable in the product a week later | — |
+
+### Measured on a busy host
+
+- Mutation jobs: CPU of a run grows with jobs by their cold builds (one per job); the run now
+  keeps to the session's CPUs (jobserver 22 tasks, test threads shared). At load 196 to 343, a
+  2-job run took 18 to 37 % longer than at load 63 to 148. This repository's mutation runs start no
+  container, so they never count against CI's admission.
+- The checker's tests beside the Rust gates: 3 to 7 CPU-seconds in 68 s, so nothing more on a busy
+  host.
+- What bounds agent-side Docker engine use: only the sandbox's `cpu.max` and the engine leaf's
+  weight (100, as agents; CI 400). CI admission (ADR-0353) counts the whole engine as CI use and
+  cannot tell an agent's containers from CI's, though CI's own containers carry the
+  `yulius.ci.job` label since ADR-0359. Counting only labelled containers as CI would stop agent
+  work from holding back CI starts, but it would admit more CI on a host already busy with that
+  work: it moves waiting, so it is your decision, not built.
+
+### Not built, and why
+
+- Splitting `quality` into two jobs: adds a checkout, a bootstrap and a host build (more CPU on a
+  busy host) for a run the test shards and e2e already bound; the CPU-free part (the Python tests
+  beside) is built instead.
+- A `[commands] quick` key in `yulius.toml`: the running instance's parser refuses an unknown key
+  (ADR-0360); possible once the instance runs the new code.
+- A hook that runs the quick checks before Yulius pushes: Yulius pushes outside containment with
+  hooks off (#54); a Stop hook inside the session is possible; wait a week for the number of CI
+  runs still failing on a check of seconds.
+
+### Waiting for your decision (candidates 8 to 11)
+
+- 8, the same reviewer continues after a fix: needs your session's blind replay (the same fixes
+  re-reviewed by the same and a new reviewer, graded against what was really wrong).
+- 9, smaller changes: rounds 2.0 (≤ 20 lines) to 4.1 (> 300); whether splitting saves time once
+  each part has its own review and CI run is not known; a replay of split pull requests would say.
+- 10, fewer defects at the first review: needs a study of what first reviews find (your data).
+- 11, a cap on rounds or no re-review after a small fix: costs 4 to 25 % of requests for changes
+  (the request's replay); yours to decide.
+- The 20 % re-approving rounds: your split by cause (asked 17 Nov) says how much of them PR 1's
+  notices remove.
+
+### Companion requests (for you to start in each project)
+
+See the spec's "Companion requests" section: quartio-v2 (one quick command; whole suites in CI
+only; `scripts/mutants` beside the review within the budget), product (21 jobs pinned to 3 CPUs),
+VistulaValley (the whole gate in CI only; a quick command).
+
+### How to read the numbers a week later
+
+- Pipeline tab, Review card: re-reviews that asked again, re-approvals, rounds per pull request,
+  first review asked for changes (or `GET /api/analytics/reviews?from&to`).
+- `SELECT detail FROM audit_log WHERE action IN ('delivery.agent.merge',
+  'delivery.agent.merge_armed') AND detail LIKE '%since then%product line%'`: merges that used the
+  20-line bound.
+- Pipeline tab, `quality` stages: how often `quick` is the first failed stage, and the stage times.
+- Reviewer reports containing "CI still has to": approvals with CI still to pass.
+
 ## Evidence
 
 ### Pull request 1 (FST-001 to FST-003)
