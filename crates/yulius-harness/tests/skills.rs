@@ -7,7 +7,8 @@ use std::path::{Path, PathBuf};
 use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
 
 use yulius_harness::skills::{
-    MANAGED_MARKER, MAX_SKILL_BYTES, SkillDir, SkillsError, install_skills, refresh_skills,
+    MANAGED_MARKER, MAX_SKILL_BYTES, MAX_SKILL_DEPTH, MAX_SKILL_ENTRIES, SkillDir, SkillsError,
+    install_skills, refresh_skills,
 };
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -394,5 +395,103 @@ fn a_refresh_validates_its_sources_first() -> TestResult {
         Err(SkillsError::MissingSkillMd(name)) if name == "empty"
     ));
     assert!(!home(dir.path()).exists());
+    Ok(())
+}
+
+/// SPEC-507 review round 1: the refresh reads a source with the install's own rules (modes, links
+/// inside and outside the skill, a FIFO, an empty folder, markers at both depths), so a copy the
+/// install just wrote matches and no start rewrites it again.
+#[test]
+fn a_refresh_reads_a_source_as_the_install_copies_it() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let odd = skill(dir.path(), "odd", "o")?;
+    let src = &odd.path;
+    fs::write(src.join("run.sh"), "#!/bin/sh\n")?;
+    fs::set_permissions(src.join("run.sh"), fs::Permissions::from_mode(0o755))?;
+    fs::write(src.join("private.md"), "p")?;
+    fs::set_permissions(src.join("private.md"), fs::Permissions::from_mode(0o600))?;
+    std::os::unix::fs::symlink(src.join("references/guide.md"), src.join("alias.md"))?;
+    fs::write(dir.path().join("outside.txt"), "x")?;
+    std::os::unix::fs::symlink(dir.path().join("outside.txt"), src.join("escape.md"))?;
+    std::os::unix::fs::symlink(src.join("missing.md"), src.join("dangling.md"))?;
+    std::os::unix::fs::symlink(src.join("references"), src.join("folder-link"))?;
+    nix::unistd::mkfifo(&src.join("pipe"), nix::sys::stat::Mode::S_IRWXU)?;
+    fs::create_dir_all(src.join("empty"))?;
+    fs::write(src.join(MANAGED_MARKER), "source marker")?;
+    fs::write(src.join("references").join(MANAGED_MARKER), "deeper marker")?;
+    let only = std::slice::from_ref(&odd);
+
+    install_skills(only, dir.path(), Path::new(SKILLS))?;
+    assert!(
+        refresh_skills(only, dir.path(), Path::new(SKILLS))?.is_empty(),
+        "after an install"
+    );
+    fs::remove_dir_all(home(dir.path()).join("odd"))?;
+    assert_eq!(
+        refresh_skills(only, dir.path(), Path::new(SKILLS))?.changed,
+        ["odd"]
+    );
+    assert!(
+        refresh_skills(only, dir.path(), Path::new(SKILLS))?.is_empty(),
+        "after a refresh"
+    );
+    Ok(())
+}
+
+/// SPEC-507 review round 1: a source beyond the bound fails the refresh and keeps the copy there;
+/// a copy beyond a bound (bytes, entries, depth) counts as different and is replaced.
+#[test]
+fn a_refresh_keeps_the_install_bounds() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let claude = home(dir.path());
+    let review = skill(dir.path(), "review", "v1")?;
+    let only = std::slice::from_ref(&review);
+    install_skills(only, dir.path(), Path::new(SKILLS))?;
+    let copy = claude.join("review");
+
+    type Grow = Box<dyn Fn(&Path) -> std::io::Result<()>>;
+    let grows: Vec<(&str, Grow)> = vec![
+        (
+            "bytes",
+            Box::new(|c| fs::File::create(c.join("blob.bin"))?.set_len(MAX_SKILL_BYTES + 1)),
+        ),
+        (
+            "entries",
+            Box::new(|c| {
+                fs::create_dir_all(c.join("many"))?;
+                (0..=MAX_SKILL_ENTRIES).try_for_each(|n| fs::write(c.join(format!("many/{n}")), ""))
+            }),
+        ),
+        (
+            "depth",
+            Box::new(|c| {
+                let deep: PathBuf = (0..=MAX_SKILL_DEPTH + 1).map(|n| format!("d{n}")).collect();
+                fs::create_dir_all(c.join(deep))
+            }),
+        ),
+    ];
+    for (what, grow) in grows {
+        grow(&copy)?;
+        assert_eq!(
+            refresh_skills(only, dir.path(), Path::new(SKILLS))?.changed,
+            ["review"],
+            "{what}"
+        );
+        assert!(
+            refresh_skills(only, dir.path(), Path::new(SKILLS))?.is_empty(),
+            "{what}"
+        );
+    }
+
+    fs::File::create(review.path.join("blob.bin"))?.set_len(MAX_SKILL_BYTES + 1)?;
+    fs::write(review.path.join("SKILL.md"), "---\nname: review\n---\nv2\n")?;
+    assert!(matches!(
+        refresh_skills(only, dir.path(), Path::new(SKILLS)),
+        Err(SkillsError::TooLarge(name)) if name == "review"
+    ));
+    assert!(
+        fs::read_to_string(copy.join("SKILL.md"))?.contains("v1"),
+        "the copy is kept"
+    );
     Ok(())
 }

@@ -2,9 +2,9 @@
 //! server's start, after the catalog is extracted, and when a skill is switched for a sandbox,
 //! not only at a run's start there.
 //!
-//! The run start's install (`prepare_run_extras` in the supervisor) writes every skill; a refresh writes only
-//! the copies that differ, so a start with nothing changed writes nothing and says nothing. Both
-//! hold the launch lock, so two installs never meet in one home.
+//! The run start's install (`prepare_run_extras` in the supervisor) writes every skill; a refresh
+//! writes only the copies that differ, so a start with nothing changed writes nothing and says
+//! nothing. Both hold the launch lock, so two installs never meet in one home.
 
 use std::path::{Path, PathBuf};
 
@@ -67,9 +67,18 @@ impl App {
     ) -> Option<SkillsRefresh> {
         let root = self.sandbox_dir(&sandbox.id);
         let home = self.sandbox_home(&sandbox.id);
-        // A home is a folder the first run makes; a link there is refused by the install.
-        if !std::fs::symlink_metadata(&home).is_ok_and(|meta| meta.is_dir()) {
-            return None;
+        // A home is a folder the first run makes; anything else there is never written through.
+        match std::fs::symlink_metadata(&home) {
+            Ok(meta) if meta.is_dir() => {}
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return None,
+            Ok(_) => {
+                tracing::warn!(sandbox = %sandbox.slug, "skill refresh failed: the home is not a folder");
+                return None;
+            }
+            Err(err) => {
+                tracing::warn!(error = %err, sandbox = %sandbox.slug, "skill refresh failed");
+                return None;
+            }
         }
         let skills = match self.skills_for_run(sandbox).await {
             Ok(skills) => skills,
@@ -79,12 +88,13 @@ impl App {
             }
         };
         let skills_dir = skills_dir_below(&root, &home);
-        let report = {
-            let _one_install_at_a_time = self.launch_lock().await;
-            let harness = self.deps.harness.clone();
-            tokio::task::spawn_blocking(move || harness.refresh_skills(&skills, &root, &skills_dir))
-                .await
-        };
+        let one_install_at_a_time = self.launch_lock().await;
+        let harness = self.deps.harness.clone();
+        let report = tokio::task::spawn_blocking(move || {
+            let _held = one_install_at_a_time;
+            harness.refresh_skills(&skills, &root, &skills_dir)
+        })
+        .await;
         let report = match report {
             Ok(Ok(report)) => report,
             Ok(Err(err)) => {

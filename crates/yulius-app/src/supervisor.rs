@@ -786,7 +786,8 @@ const LIVE_WITH_A_RUN: [TaskStatus; 4] = [
 #[derive(Default)]
 pub struct SupervisorState {
     runtimes: Mutex<HashMap<TaskId, Arc<TaskRuntime>>>,
-    launch: tokio::sync::Mutex<()>,
+    /// Shared, so an install on the blocking pool can own its guard (SPEC-507 SKR-005).
+    launch: Arc<tokio::sync::Mutex<()>>,
     /// The task the one launch under `launch` works on: `Starting` with no run on record yet,
     /// which the start-up reconciliation must not take for a dead server's (SPEC-458 RUN-001).
     launching: Mutex<Option<TaskId>>,
@@ -1360,9 +1361,10 @@ impl App {
     }
 
     /// The lock every launch holds; a skill refresh takes it too, so it never installs into a
-    /// home while a launch does (SPEC-507 SKR-005).
-    pub(crate) async fn launch_lock(&self) -> tokio::sync::MutexGuard<'_, ()> {
-        self.supervisor.launch.lock().await
+    /// home while a launch does (SPEC-507 SKR-005). Owned: the install that holds it runs on the
+    /// blocking pool and keeps it until it ends, even when the request that started it is gone.
+    pub(crate) async fn launch_lock(&self) -> tokio::sync::OwnedMutexGuard<()> {
+        Arc::clone(&self.supervisor.launch).lock_owned().await
     }
 
     pub(crate) fn sandbox_home(&self, sandbox: &SandboxId) -> PathBuf {

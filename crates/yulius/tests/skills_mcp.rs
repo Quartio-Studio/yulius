@@ -76,7 +76,6 @@ async fn a_server_start_refreshes_every_sandboxs_skills() -> TestResult {
     use yulius_domain::task::TaskStatus;
     let w = world(false).await?;
     add_sandbox(&w.h, "s2", "homeless", 20100).await?;
-    add_sandbox(&w.h, "s3", "linked", 20200).await?;
     let data = w.h.app.config.data_dir.clone();
     w.h.app.install_skill_catalog().await?;
 
@@ -102,7 +101,30 @@ async fn a_server_start_refreshes_every_sandboxs_skills() -> TestResult {
     assert!(std::fs::read_to_string(skills.join("om-fix/SKILL.md"))?.contains("the old rules"));
     write(&skills.join("personal/SKILL.md"), "the agent's own")?;
     let review_before = inode(&skills.join("om-code-review"))?;
-    // linked: the agent made `.claude` a link to a host folder.
+    // linked, made before studio so its failure comes first: the agent made `.claude` a link to
+    // a host folder.
+    w.h.store
+        .insert_sandbox(&yulius_app::model::SandboxRecord {
+            id: SandboxId::parse("s3")?,
+            slug: "linked".into(),
+            repo_name: "linked".into(),
+            port_base: 20200,
+            created_at: yulius_domain::time::Timestamp(0),
+            ..studio.clone()
+        })
+        .await?;
+    let listed: Vec<String> =
+        w.h.store
+            .sandboxes()
+            .await?
+            .into_iter()
+            .map(|s| s.slug)
+            .collect();
+    assert_eq!(
+        listed.first().map(String::as_str),
+        Some("linked"),
+        "{listed:?}"
+    );
     let outside = tempfile::tempdir()?;
     std::fs::create_dir_all(data.join("sandboxes/s3/home"))?;
     std::os::unix::fs::symlink(outside.path(), data.join("sandboxes/s3/home/.claude"))?;

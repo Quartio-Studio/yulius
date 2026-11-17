@@ -156,8 +156,9 @@ pub fn install_skills(
 ///
 /// A copy is compared by a digest of its files read through folder handles, never through a link
 /// and within the install's bounds; a link, a FIFO or anything else that is not a regular file or
-/// a folder in a copy, a copy without [`MANAGED_MARKER`] and a copy beyond a bound all count as
-/// different (SKR-002).
+/// a folder in a copy, a copy without [`MANAGED_MARKER`] and a copy beyond a bound (a folder in it
+/// too long to list included) all count as different (SKR-002). The skills folder itself is listed
+/// within its own bound, as the install lists it: beyond it the refresh fails.
 ///
 /// # Errors
 /// As [`install_skills`]: an invalid source, a link or a file on the way from `root` to
@@ -269,7 +270,8 @@ fn hash_source(
             hash_name(hasher, b'f', file_name.as_bytes());
             hasher.update(file_mode(meta.permissions().mode()).to_le_bytes());
             let input = fs::File::open(&path).map_err(io_error(name))?;
-            hash_content(hasher, input, MAX_SKILL_BYTES).map_err(io_error(name))?;
+            let left = MAX_SKILL_BYTES - budget.bytes + meta.len();
+            hash_content(hasher, input, left).map_err(io_error(name))?;
         }
     }
     Ok(())
@@ -307,7 +309,10 @@ fn hash_installed(
     if depth > MAX_SKILL_DEPTH {
         return Ok(false);
     }
-    let mut names = entries(dir)?;
+    // A folder too long to list is no copy the install wrote.
+    let Ok(mut names) = entries(dir) else {
+        return Ok(false);
+    };
     names.sort();
     for entry in names {
         if depth == 0 && entry == MANAGED_MARKER {
@@ -350,7 +355,9 @@ fn hash_installed(
                 }
                 hash_name(hasher, b'f', entry.as_bytes());
                 hasher.update(file_mode(stat.st_mode).to_le_bytes());
-                hash_content(hasher, fs::File::from(fd), MAX_SKILL_BYTES)?;
+                // At most what the bound has left: a file grown after the check reads differently.
+                let left = MAX_SKILL_BYTES - budget.bytes + len;
+                hash_content(hasher, fs::File::from(fd), left)?;
             }
             // A link, a FIFO, a socket or a device: never installed, so the copy differs.
             Some(_) => return Ok(false),

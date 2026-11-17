@@ -312,14 +312,26 @@ pub fn parse_frontmatter(text: &str) -> SkillMeta {
 }
 
 /// Reads at most `limit` bytes of a regular file as lossy UTF-8 (special files such as FIFOs
-/// are refused so a hostile repository cannot block the reader).
+/// are refused so a hostile repository cannot block the reader; see [`open_regular`]).
 fn read_bounded(path: &Path, limit: u64) -> io::Result<String> {
-    if !fs::metadata(path)?.is_file() {
+    let mut bytes = Vec::new();
+    open_regular(path)?.take(limit).read_to_end(&mut bytes)?;
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
+}
+
+/// Opens the regular file `path` for reading. The open itself refuses a link (`O_NOFOLLOW`) and
+/// never waits (`O_NONBLOCK`), and the type is checked on the handle: a repository's file an agent
+/// swaps for a FIFO after a check by path cannot block the reader (SPEC-507 review round 1).
+fn open_regular(path: &Path) -> io::Result<fs::File> {
+    use std::os::unix::fs::OpenOptionsExt as _;
+    let file = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(nix::libc::O_NOFOLLOW | nix::libc::O_NONBLOCK | nix::libc::O_NOCTTY)
+        .open(path)?;
+    if !file.metadata()?.is_file() {
         return Err(io::Error::other("not a regular file"));
     }
-    let mut bytes = Vec::new();
-    fs::File::open(path)?.take(limit).read_to_end(&mut bytes)?;
-    Ok(String::from_utf8_lossy(&bytes).into_owned())
+    Ok(file)
 }
 
 /// Lists skill directories under `dir` whose `SKILL.md` resolves inside `boundary`.
@@ -671,8 +683,12 @@ impl App {
             )
             .await?;
         // The sandbox's home follows the switch at once, not at its next run (SPEC-507 SKR-003).
-        if let Some(record) = self.deps.store.sandbox(&sid).await? {
-            self.refresh_sandbox_skills(&record, "skill switched").await;
+        match self.deps.store.sandbox(&sid).await {
+            Ok(Some(record)) => {
+                self.refresh_sandbox_skills(&record, "skill switched").await;
+            }
+            Ok(None) => {}
+            Err(err) => tracing::warn!(error = %err, sandbox = %sid, "skill refresh failed"),
         }
         Ok(())
     }
@@ -751,6 +767,35 @@ mod tests {
         assert_eq!(unterminated.description.as_deref(), Some("open"));
         let bom = parse_frontmatter("\u{feff}---\r\nname: x\r\n---\r\n");
         assert_eq!(bom.name.as_deref(), Some("x"));
+    }
+
+    /// SPEC-507 review round 1: a `SKILL.md` an agent swaps for a FIFO between the type check
+    /// and the open never blocks the reader (the server's start reads every sandbox's repository
+    /// skills): the open itself refuses anything but a regular file, at once.
+    #[test]
+    fn a_fifo_is_refused_by_the_open_itself() -> TestResult {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        let dir = tempfile::tempdir()?;
+        let fifo = dir.path().join("SKILL.md");
+        nix::unistd::mkfifo(&fifo, nix::sys::stat::Mode::S_IRWXU)?;
+        let (tx, rx) = std::sync::mpsc::channel();
+        let path = fifo.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(open_regular(&path).map(|_| ()));
+        });
+        let opened = rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .map_err(|_| "opening a FIFO blocked")?;
+        assert!(opened.is_err(), "a FIFO is not a regular file");
+        // A writer unblocks a reader left behind by a failing build of this test.
+        let _ = fs::OpenOptions::new()
+            .write(true)
+            .custom_flags(nix::libc::O_NONBLOCK)
+            .open(&fifo);
+        fs::remove_file(&fifo)?;
+        fs::write(&fifo, "---\nname: x\n---\n")?;
+        assert!(read_bounded(&fifo, 64)?.contains("name: x"));
+        Ok(())
     }
 
     #[test]
