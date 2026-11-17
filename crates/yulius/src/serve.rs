@@ -588,22 +588,6 @@ fn codex_cli(adapter: HarnessAdapter, data_dir: &std::path::Path) -> HarnessAdap
     }
 }
 
-/// Installs the provided Codex CLI in the background when Codex accounts exist, so the first
-/// Codex task does not wait for it (SPEC-503 CLI-001).
-fn warm_codex_cli(app: &Arc<App>) {
-    let app = Arc::clone(app);
-    tokio::spawn(async move {
-        let codex = app.deps.store.accounts().await.is_ok_and(|accounts| {
-            accounts
-                .iter()
-                .any(|a| a.provider == yulius_domain::harness::Provider::OpenAi)
-        });
-        if codex && let Err(error) = app.deps.harness.provide_codex(true).await {
-            tracing::warn!(%error, "the Codex CLI is not ready; the next Codex start tries again");
-        }
-    });
-}
-
 /// Runs the server until SIGINT/SIGTERM.
 pub async fn serve(args: ServeArgs) -> Result<(), String> {
     let _ = rustls::crypto::ring::default_provider().install_default();
@@ -616,7 +600,8 @@ pub async fn serve(args: ServeArgs) -> Result<(), String> {
         return Err("the internal listener must bind a loopback address".into());
     }
     let (app, browser_network) = build_app(&args)?;
-    warm_codex_cli(&app);
+    // The Codex CLI is installed in the background when Codex subscriptions exist (SPEC-503).
+    app.warm_codex_cli();
     // An update in progress keeps every task paused from the first hook call (ADR-18).
     app.restore_update_hold().await;
     // The runs people paused stay paused across the restart (SPEC-191 PER-003).

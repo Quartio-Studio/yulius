@@ -156,7 +156,7 @@ impl HarnessPort for HarnessAdapter {
                 cli.ready().and_then(|ready| {
                     ready.ok_or_else(|| {
                         crate::wiring::claude_cli::UpdateError::new(
-                            "it is still being installed; try again in a minute",
+                            "it is not installed yet; a Codex start installs it",
                         )
                     })
                 })
@@ -164,7 +164,7 @@ impl HarnessPort for HarnessAdapter {
             match provided {
                 Ok(provided) => Ok(Some(provided)),
                 Err(error) if self.host_codex.is_some() => {
-                    tracing::warn!(%error, "the Codex CLI could not be installed; runs use the host's codex");
+                    tracing::warn!(%error, "the Codex CLI is not ready; runs use the host's codex");
                     Ok(None)
                 }
                 Err(error) => Err(AppError::Upstream(format!(

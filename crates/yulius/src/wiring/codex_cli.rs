@@ -229,6 +229,9 @@ impl CodexCli {
         tokio::fs::create_dir_all(&release)
             .await
             .map_err(|e| UpdateError::new(format!("cannot create {}: {e}", staging.display())))?;
+        // Only Yulius enters the staging folder, whatever the umask: nobody swaps the hashed
+        // tarball before it is unpacked.
+        set_mode(staging, 0o700).await?;
         set_mode(&release, 0o755).await?;
         let tarball = staging.join("download.tgz");
         let url = format!("{}{}", self.registry, platform.tarball_path());
