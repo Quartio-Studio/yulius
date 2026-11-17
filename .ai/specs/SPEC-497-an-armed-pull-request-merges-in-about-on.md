@@ -118,10 +118,12 @@ mode.
 - **OFC-001** A job that ended for an infrastructure reason (no free Docker address pool, the
   Docker socket's EOF or reset, killed for memory, its process host lost) is run again once by
   itself, its output saying why; a second infrastructure failure ends it error.
-- **OFC-002** A test that fails in the runs of two different pull requests within 48 hours
-  while the integration branch's last run passed it is flaky: Yulius quarantines it at once (its
-  failure alone no longer fails a job, the job's output says so), files one issue in the
-  project's repository and tells the project. It is never rerun until green.
+- **OFC-002** A test that fails in the same job in the runs of two different pull requests
+  within 48 hours, while the integration branch did not fail it then, is flaky: Yulius
+  quarantines it at once, files one issue in the project's repository, says so in the job's
+  output and tells every later job of the project in its environment (`YULIUS_CI_QUARANTINE`, a
+  nextest filter in `YULIUS_CI_QUARANTINE_NEXTEST`), so the project's gate leaves it out; closing
+  the issue ends the quarantine. It is never rerun until green.
 - **OFC-003** CI minutes are counted by outcome (passed, failed in the change, failed outside
   it, cancelled) per project and day, and read with the merge queue's numbers
   (`GET /api/analytics/merge-queue`, the Pipeline tab's Merge queue card), with the job minutes
@@ -210,7 +212,8 @@ mode.
 
   Hence measured use plus starting jobs for room, twice the budget for the worst case, the
   kernel's CPU pressure against contention, and jobs that fit passing one that does not, within
-  10 minutes.
+  10 minutes. Amended 17 Nov 2026 by the operator (slice A3): three times the budget, and no
+  pressure rule (a job pinned to a few CPUs showed pressure while the host idled).
 - **The budget counts measured use, not only declarations** (slice A): a job's `cpus` is a
   promise the job does not keep (its tools and containers use what is free), so admitting by
   declarations let four 16-CPU jobs take 18.8 min each. Measuring per job would need each
@@ -220,6 +223,13 @@ mode.
   31 networks per engine, which side-by-side test runs use up; /24 networks out of the same ranges
   give 4,096 without touching an address the sandbox did not already give Docker. The wait for 32
   free is the budget's part for an engine that was started with the old pools or leaks networks.
+- **A flaky test is told to the project's gate, not turned into a pass by Yulius** (slice B,
+  [ADR-0356](../../docs/decisions/0356-a-test-failing-on-two-pull-requests-is-quarantined-with-an-issue.md)):
+  passing a failed job whose failing tests are all quarantined would need every failure read from
+  its output, and a build error or a runner's own failure missed there would pass a run that gates
+  a merge. The gate knows what it ran. The environment, not a file in the job's home, carries the
+  list: the job could have linked such a file elsewhere. Two pull requests, not one pull request's
+  repeated runs: only an unrelated change shows the failure is not the change's.
 - **`YULIUS_CI_LANES` keeps its default** (slice A): it bounds checkouts per sandbox (each lane
   keeps its own job folders and caches, a disk cost), and the budget now decides the load, so a
   lower default would only make a small project's runs queue behind each other for nothing.
@@ -547,6 +557,28 @@ mode.
   summary (`" 0 failing"` as a whole word); a failure on an unfinished last line is seen (unit
   `a_failure_on_the_unfinished_last_line_is_seen`). Still read only, not tested through the
   executor: a second start that cannot be made, and the mapping of a lost host.
+
+### Slice B (second pull request): flaky tests quarantined with an issue
+
+- OFC-002: `yulius_domain::ci::flaky::{is_flaky, nextest_filter}` (doctests; units
+  `a_test_failing_on_two_pull_requests_is_flaky`: one pull request's three runs, a failure older
+  than 48 hours, the integration branch failing it and another branch's failure do not count;
+  `the_quarantine_is_a_nextest_filter`: a name with `)` or `|` is left out). Migration 0065
+  (`ci_test_failures`, `ci_quarantine`); store unit `failing_tests_and_the_quarantine_are_kept`
+  (by job and time, forgotten past the keep, quarantined once, per sandbox, released).
+  `App::ci_note_failing_tests` at a failed job's end, `ci_quarantine` (the issue through the
+  GitHub port, audited `ci.test.quarantined`), `ci_quarantine_env` in every job's plan,
+  `ci_release_quarantines` in the hourly prune (`GitHubPort::issue_open`; audited
+  `ci.test.released`); unit `the_issue_names_the_test_its_pull_requests_and_how_it_ends`.
+  `local_ci::a_test_failing_on_two_pull_requests_is_quarantined_with_an_issue` (real Git and
+  jobs, a fake GitHub): the test fails in #1's run (nothing quarantined), then in #2's: one issue
+  "Flaky test quarantined: app tests::flaky", #2's output says it is quarantined (issue #101);
+  dev's next job gets `YULIUS_CI_QUARANTINE_NEXTEST=(binary_id(app) & test(=tests::flaky))`;
+  the issue closed, the release leaves no quarantine.
+- This repository's gate leaves the quarantine out: `cargo xtask test` adds
+  `-E "not ($YULIUS_CI_QUARANTINE_NEXTEST)"` and prints what it left out.
+- ADR-0356; architecture (CI job states), `api.md` (the job's variables), `operations.md`,
+  `changes.md`.
 
 ### Slice A3: the operator's amendment to the admission (its own pull request, first)
 

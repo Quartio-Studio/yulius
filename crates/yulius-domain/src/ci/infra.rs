@@ -104,9 +104,11 @@ fn named(line: &str) -> Option<Infra> {
     if !line.contains("docker.sock") {
         return None;
     }
-    // The client's words begin the line (after an `error:` it may put first): a container's log
-    // (`app-1  | dial unix …`) quotes them after its own prefix (review round 4).
+    // The client's words begin the line (after the `error:` it may put first, or an older
+    // client's `docker:`): a container's log (`app-1  | dial unix …`) quotes them after its own
+    // prefix (review round 4).
     let own = line.trim_start();
+    let own = own.strip_prefix("docker:").map_or(own, str::trim_start);
     let own = own.strip_prefix("error:").map_or(own, str::trim_start);
     let client = own.starts_with("cannot connect to the docker daemon")
         || (CLIENT_WORDS.iter().any(|words| own.starts_with(words))
@@ -334,6 +336,20 @@ mod tests {
             ),
             Some(Infra::DockerSocket)
         );
+        // Older clients put `docker:` first for `docker run` and `docker create` (review of the
+        // reruns, round 4).
+        for older in [
+            "docker: Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the \
+             docker daemon running?",
+            "docker: error during connect: Post \"http://%2Fvar%2Frun%2Fdocker.sock/v1.41/\
+             containers/create\": EOF",
+        ] {
+            assert_eq!(
+                infrastructure(exited, older, false, false),
+                Some(Infra::DockerSocket),
+                "{older}"
+            );
+        }
         // Mocha's "10 failing" is no passing summary (review round 4).
         assert!(reads_as_failure("  10 failing"));
         assert!(!reads_as_failure("  0 failing"));

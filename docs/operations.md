@@ -1530,7 +1530,7 @@ involved.
 
   Merge trains' jobs go first, then pull requests', then branches'. A job that cannot start lets
   later ones pass for 10 minutes at most. A waiting job's reason in `ci_status` (and the run's API)
-  says what it waits for: contention, the worst case, CPUs, memory, a slot or Docker networks
+  says what it waits for: the worst case, CPUs, memory, a slot or Docker networks
   ([ADR-0353](decisions/0353-ci-jobs-start-by-what-ci-uses-within-a-bounded-worst-case.md),
   [ADR-0350](decisions/0350-ci-jobs-are-admitted-by-what-ci-really-holds-on-the-host.md)). A job's
   default share (no `cpus`) is an equal share of that budget among its run's jobs: what it may use
@@ -1542,6 +1542,13 @@ involved.
   `docker0`), and a network takes at most 253 containers: a project that needs another range or more sets its
   own `subnet`. A CI job waits while its engine can make fewer than 32 more; networks no container
   used for 10 minutes are pruned first.
+- A test that fails in the same job on two different pull requests within 48 hours, while the
+  integration branch did not fail it, is quarantined with an issue labelled `flaky test`. Every
+  later job of the project gets the quarantined names in `YULIUS_CI_QUARANTINE` (one per line) and
+  a nextest filter in `YULIUS_CI_QUARANTINE_NEXTEST`. A project's gate leaves them out, for example
+  `cargo nextest run ${YULIUS_CI_QUARANTINE_NEXTEST:+-E "not ($YULIUS_CI_QUARANTINE_NEXTEST)"}`;
+  Yulius never passes a failed job for it. Closing the issue ends the quarantine within an hour
+  ([ADR-0356](decisions/0356-a-test-failing-on-two-pull-requests-is-quarantined-with-an-issue.md)).
 - `YULIUS_CI_LANES` (host-sized, a [resource limit](#resource-limits); 2 below 32 CPUs) runs of one sandbox take a checkout at once; the CI budget, not the lanes, decides how many of their jobs run. Each lane past the first
   keeps its own job checkouts and caches (`ci/jobs/<job>[.<n>]@<lane>`, `ci/cache/<job>[.<n>]@<lane>`), so
   budget its disk too.
