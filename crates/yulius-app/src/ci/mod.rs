@@ -2300,6 +2300,67 @@ impl App {
 }
 
 #[cfg(test)]
+mod ran_as_tests {
+    use super::{CiJobRecord, Job, RunState, ran_as};
+    use yulius_domain::resources::Need;
+
+    /// SPEC-504 review round 5: a record is a job's run only where every field that changes how
+    /// it runs is the same; a change to any one of them is a change.
+    #[test]
+    fn a_record_ran_a_job_only_with_all_of_its_definition() {
+        let job = Job {
+            name: "check".into(),
+            key: "check".into(),
+            command: "echo same".into(),
+            matrix: Some("a".into()),
+            need: Need {
+                cpus: Some(2),
+                memory_mb: Some(1024),
+            },
+            secrets: vec!["TOKEN".into()],
+            timeout_minutes: Some(30),
+            exclusive: true,
+            paths: vec!["crates/**".into()],
+        };
+        let record = |job: &Job| CiJobRecord {
+            id: "j".into(),
+            run_id: "r".into(),
+            ordinal: 0,
+            name: job.name.clone(),
+            key: job.key.clone(),
+            command: job.command.clone(),
+            matrix: job.matrix.clone(),
+            state: RunState::Passed,
+            reason: None,
+            exit_code: Some(0),
+            output: String::new(),
+            failures: None,
+            started_at: None,
+            ended_at: None,
+            need: job.need,
+            timeout_minutes: job.timeout_minutes,
+            exclusive: job.exclusive,
+            waited_ms: None,
+        };
+        assert!(ran_as(&record(&job), &job));
+        let changes: [(&str, fn(&mut Job)); 7] = [
+            ("key", |j| j.key = "lint".into()),
+            ("command", |j| j.command = "echo new".into()),
+            ("matrix", |j| j.matrix = Some("b".into())),
+            ("cpus", |j| j.need.cpus = Some(4)),
+            ("memory", |j| j.need.memory_mb = Some(2048)),
+            ("time limit", |j| j.timeout_minutes = Some(20)),
+            ("exclusive", |j| j.exclusive = false),
+        ];
+        for (what, change) in changes {
+            let mut ran = job.clone();
+            change(&mut ran);
+            assert!(!ran_as(&record(&ran), &job), "another {what}");
+        }
+    }
+}
+
+#[cfg(test)]
 mod lane_tests {
     use super::{
         busy_in, forget_idle_turn, lane_note, preferred_lanes, reserve_run, reuse_source,
