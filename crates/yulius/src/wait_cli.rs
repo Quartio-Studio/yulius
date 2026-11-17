@@ -157,13 +157,13 @@ pub fn settled(now: &WaitState, before: Option<&WaitState>) -> Option<String> {
     {
         return Some(format!(
             "The checks at {} failed{}: the merge you armed cannot happen. Read why with \
-             `ci_status`, fix it test-first, get the review of the new head and call \
-             `delivery_merge` again.",
+             `ci_status`, fix it test-first, commit, then {}.",
             short(&now.head),
             now.checks_detail
                 .as_deref()
                 .map(|d| format!(" ({d})"))
-                .unwrap_or_default()
+                .unwrap_or_default(),
+            yulius_domain::review::KEEP_APPROVAL
         ));
     }
     // CI could not run at this head (disk, a timeout, the host): not the code. An armed merge
@@ -614,7 +614,7 @@ mod tests {
             assert!(
                 line.starts_with("The checks at 012345678 failed (websites exited 1): the merge you armed cannot happen.")
                     && line.contains("`ci_status`")
-                    && line.contains("`delivery_merge` again"),
+                    && line.contains(yulius_domain::review::KEEP_APPROVAL),
                 "{line}"
             );
         }

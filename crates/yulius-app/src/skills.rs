@@ -1433,4 +1433,51 @@ mod tests {
         );
         Ok(())
     }
+
+    /// SPEC-506 FST-001 (AC-1): no message Yulius types after a red run, a failed merge
+    /// candidate, a dropped armed merge or failed checks sends the author to a new round: each
+    /// names `delivery_merge` with the approved head and the 20-line bound
+    /// ([`yulius_domain::review::KEEP_APPROVAL`]). Only a conflict's messages ask for the review
+    /// of the new head, since a merge that resolved a conflict needs one (ADR-0345).
+    #[test]
+    fn no_typed_message_asks_for_a_round_the_count_makes_needless() -> TestResult {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let keep = yulius_domain::review::KEEP_APPROVAL;
+        assert!(
+            keep.contains("`delivery_merge` with the approved head")
+                && keep.contains("at most 20 product lines"),
+            "the sentence names the call and the bound: {keep}"
+        );
+        for (rel, uses) in [
+            ("crates/yulius-app/src/pr_watch.rs", 1),
+            ("crates/yulius-app/src/merge_train.rs", 2),
+            ("crates/yulius-app/src/agent_wait.rs", 2),
+            ("crates/yulius/src/wait_cli.rs", 1),
+        ] {
+            let text = fs::read_to_string(root.join(rel))?;
+            let source = match text.find("#[cfg(test)]\nmod tests") {
+                Some(at) => &text[..at],
+                None => text.as_str(),
+            };
+            // Each message is a string literal; a line continuation joins its lines.
+            let joined = source.replace("\\\n", " ");
+            let normal: String = joined.split_whitespace().collect::<Vec<_>>().join(" ");
+            for literal in normal.split('"').skip(1).step_by(2) {
+                if literal.contains("review of the new head")
+                    || literal.contains("its review approved it")
+                {
+                    assert!(
+                        literal.contains("conflict"),
+                        "{rel} sends the author to a new round the count makes needless: \
+                         {literal}"
+                    );
+                }
+            }
+            assert!(
+                source.matches("KEEP_APPROVAL").count() >= uses,
+                "{rel} does not name delivery_merge with the approved head {uses} time(s)"
+            );
+        }
+        Ok(())
+    }
 }

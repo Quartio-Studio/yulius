@@ -280,11 +280,11 @@ fn red_run_text(run: &CiRunRecord, jobs: &[CiJobRecord]) -> String {
     format!(
         "Its Yulius CI run {} at {} failed: {}. Read the log with {log}, fix it test-first on \
          this branch, commit and end your turn so Yulius pushes; a failed run drops an armed \
-         merge, so once the new head passed and its review approved it, call `delivery_merge` \
-         again.",
+         merge, so once the new head passed, {}.",
         run.id,
         short(&run.sha),
-        failed_jobs(jobs)
+        failed_jobs(jobs),
+        yulius_domain::review::KEEP_APPROVAL
     )
 }
 
@@ -1354,8 +1354,10 @@ mod tests {
              tests::t1, app tests::t2, app tests::t3, app tests::t4, app tests::t5 and 2 more); \
              `websites` exited 1. Read the log with `ci_status` with run_id r1 and job \
              `quality`, fix it test-first on this branch, commit and end your turn so Yulius \
-             pushes; a failed run drops an armed merge, so once the new head passed and its \
-             review approved it, call `delivery_merge` again."
+             pushes; a failed run drops an armed merge, so once the new head passed, call \
+             `delivery_merge` with the approved head as `reviewed_head`: an approval carries \
+             across a fix of at most 20 product lines (tests and documents do not count), and \
+             the call says when the fix needs a new round."
         );
         let errored = RunState::Error;
         let text = errored_run_text(&CiRunRecord {

@@ -34,6 +34,13 @@ one). Work read-only: do not edit, commit, stash, check out, reset or push. Mark
 code or pre-existing, with its severity, place and a concrete failure. End your report with a last \
 line that is exactly `Verdict: approve` or `Verdict: request changes`.";
 
+/// What Yulius tells an author after a red run, a failed merge candidate or a dropped armed
+/// merge, once the fix is committed (SPEC-506 FST-001): the approval it had still counts across a
+/// small fix, so it calls `delivery_merge` again instead of asking for a new round (ADR-0345).
+pub const KEEP_APPROVAL: &str = "call `delivery_merge` with the approved head as `reviewed_head`: \
+an approval carries across a fix of at most 20 product lines (tests and documents do not count), \
+and the call says when the fix needs a new round";
+
 /// The model of each reviewer agent, by name.
 pub const REVIEWER_MODELS: [(&str, &str); 2] = [
     (REVIEWER_AGENT, REVIEW_CLAUDE_MODEL),
