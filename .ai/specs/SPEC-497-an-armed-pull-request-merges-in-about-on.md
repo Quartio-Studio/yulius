@@ -769,6 +769,10 @@ mode.
   own run fails at the point, #2 is not merged, `member_failed`); with only that read undone it
   fails 3 of 3. The racing assertion is gone; ADR-0357's long line wrapped.
 - ADR-0358; architecture, operations (lanes, shards), development, AGENTS.md, `changes.md`.
+- Checks run on this head: `cargo fmt --check`; `cargo clippy --workspace --all-targets -D
+  warnings`; `scripts/check_repository.py`; the unit tests of `yulius-app`, `yulius-domain`,
+  `xtask` (1,173 passed); `local_ci::`, `merge_train::`, `analytics::` (149 passed).
+  `scripts/dev mutants`: 27 listed, 26 caught, 0 missed, 0 timed out, 1 unviable (524 s).
 
 ### Slice A3: the operator's amendment to the admission (its own pull request, first)
 
