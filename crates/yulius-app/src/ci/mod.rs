@@ -1740,8 +1740,15 @@ impl App {
                         let _ = self.deps.session_host.terminate(&dir);
                         let _ = std::fs::remove_dir_all(&dir);
                     }
-                    // A restart ended it: what it left goes too (SPEC-504 CLB-004).
-                    self.ci_job_end(&run.sandbox_id, &job.id).await;
+                    // A restart ended it: what it left goes too (SPEC-504 CLB-004), in a task
+                    // of its own: an engine that never answers must not hold CI's start (review
+                    // round 1).
+                    if let Some(isolation) = self.isolation.get() {
+                        let (isolation, sandbox) = (Arc::clone(isolation), run.sandbox_id.clone());
+                        tokio::spawn(
+                            async move { isolation.ci_job_ended(&sandbox, &job.id).await },
+                        );
+                    }
                 }
             }
             match self

@@ -2948,6 +2948,8 @@ async fn running_ci_jobs_weigh_on_their_sandbox_until_they_end() -> TestResult {
 #[derive(Default)]
 struct Grouping {
     calls: std::sync::Mutex<Vec<(&'static str, String)>>,
+    /// Its removal never ends (an engine that never answers).
+    hangs: bool,
 }
 
 impl Grouping {
@@ -2991,6 +2993,9 @@ impl SandboxIsolation for Grouping {
         assert_eq!(sandbox.as_str(), "s1");
         if let Ok(mut calls) = self.calls.lock() {
             calls.push(("ended", job.to_owned()));
+        }
+        if self.hangs {
+            std::future::pending::<()>().await;
         }
     }
 }
@@ -3091,9 +3096,17 @@ async fn every_ci_job_is_grouped_and_its_end_told_whatever_the_outcome() -> Test
 }
 
 /// SPEC-504 CLB-004: a job a restart of Yulius ended (its run recorded as running, with no
-/// executor) is told ended to the isolation when CI starts again, before its run is queued again.
+/// executor) is told ended to the isolation when CI starts again; a removal that never ends
+/// (an engine that never answers) does not hold the run's requeue or CI's start (review round 1).
 #[tokio::test]
 async fn a_job_a_restart_ended_is_told_ended() -> TestResult {
+    for hangs in [false, true] {
+        a_job_a_restart_ended_is_told_ended_with(hangs).await?;
+    }
+    Ok(())
+}
+
+async fn a_job_a_restart_ended_is_told_ended_with(hangs: bool) -> TestResult {
     use yulius_app::ci::{CiJobRecord, CiRunRecord};
     use yulius_domain::ci::{CiRef, GateSource};
     use yulius_domain::time::Timestamp;
@@ -3101,7 +3114,10 @@ async fn a_job_a_restart_ended_is_told_ended() -> TestResult {
         "[[ci.jobs]]\nname = \"check\"\ncommand = \"true\"\n".to_owned()
     })
     .await?;
-    let grouping = Arc::new(Grouping::default());
+    let grouping = Arc::new(Grouping {
+        hangs,
+        ..Grouping::default()
+    });
     assert!(f.h.app.set_isolation(grouping.clone()));
     let run = CiRunRecord {
         id: "run-1".into(),
@@ -3142,13 +3158,25 @@ async fn a_job_a_restart_ended_is_told_ended() -> TestResult {
     f.h.store.insert_ci_run(&run, &[job]).await?;
     f.h.app.start_ci();
     let deadline = tokio::time::Instant::now() + WAIT;
-    while !grouping.calls().contains(&("ended", "job-1".to_owned())) {
+    loop {
+        let requeued =
+            f.h.store
+                .ci_runs(&f.sandbox.id, 10)
+                .await?
+                .iter()
+                .any(|r| r.id == "run-1" && r.state != RunState::Running);
+        if requeued && grouping.calls().contains(&("ended", "job-1".to_owned())) {
+            return Ok(());
+        }
         if tokio::time::Instant::now() > deadline {
-            return Err(format!("never told: {:?}", grouping.calls()).into());
+            return Err(format!(
+                "hangs {hangs}: requeued {requeued}, told {:?}",
+                grouping.calls()
+            )
+            .into());
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
-    Ok(())
 }
 
 /// A sandbox limited to 4 CPUs (a CI budget of 3) whose CI and Docker engine use `millis`

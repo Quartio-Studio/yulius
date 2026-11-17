@@ -1898,7 +1898,7 @@ impl Manager {
             .collect();
         let current = self.bases.current();
         let mut in_use = Vec::new();
-        let mut engines = Vec::new();
+        let mut sandboxes = Vec::new();
         for (sandbox, entry) in entries {
             let mut state = entry.lock().await;
             if let Some(live) = &state.live {
@@ -1978,16 +1978,17 @@ impl Manager {
                 }
             }
             self.refresh_usage(&sandbox, &mut state);
-            if state.live.as_ref().is_some_and(Live::serves_engine) {
-                engines.push(sandbox);
-            }
+            // Every sandbox's emptied job groups go; only a serving engine is asked for
+            // leftovers (`remove_ci_leftovers` finds no socket otherwise).
+            sandboxes.push(sandbox);
         }
         self.maybe_build(in_use);
-        self.sweep_in_background(engines);
+        self.sweep_in_background(sandboxes);
     }
 
-    /// Sweeps the CI jobs' leftovers of `sandboxes` one after another in a task of its own, so
-    /// an engine slow to answer holds no tick; none while the last one still runs.
+    /// Sweeps the CI jobs' leftovers and emptied job groups of `sandboxes` one after another in a
+    /// task of its own, so an engine slow to answer holds no tick; none while the last one still
+    /// runs.
     fn sweep_in_background(self: &Arc<Self>, sandboxes: Vec<String>) {
         use std::sync::atomic::Ordering;
         if sandboxes.is_empty()

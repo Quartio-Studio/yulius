@@ -127,6 +127,17 @@ impl Gate {
         hangup_check: Duration,
         close_grace: Duration,
     ) -> Arc<Self> {
+        Self::built(max, floor, (hangup_check, close_grace), None)
+    }
+
+    /// A gate of `max` places giving way after `floor`, with these bounds, telling CI jobs by
+    /// `caller` when given.
+    fn built(
+        max: usize,
+        floor: Duration,
+        (hangup_check, close_grace): (Duration, Duration),
+        caller: Option<Caller>,
+    ) -> Arc<Self> {
         Arc::new(Self {
             places: Places::new(max, floor),
             max,
@@ -138,18 +149,21 @@ impl Gate {
             hangup_check,
             close_grace,
             state_every: STATE_EVERY,
-            caller: None,
+            caller,
         })
     }
 
-    /// This gate telling CI jobs' connections by `caller`, before it serves (SPEC-504 CLB-002):
-    /// their creates are labelled ([`crate::docker_label`]).
+    /// A gate of [`MAX_CONNECTIONS`] places and the production bounds that tells CI jobs'
+    /// connections by `caller` (SPEC-504 CLB-002): their creates are labelled
+    /// ([`crate::docker_label`]).
     #[must_use]
-    pub fn telling_jobs(mut self: Arc<Self>, caller: Caller) -> Arc<Self> {
-        if let Some(gate) = Arc::get_mut(&mut self) {
-            gate.caller = Some(caller);
-        }
-        self
+    pub fn telling_jobs(caller: Caller) -> Arc<Self> {
+        Self::built(
+            MAX_CONNECTIONS,
+            IDLE_FLOOR,
+            (HANGUP_CHECK, CLOSE_GRACE),
+            Some(caller),
+        )
     }
 
     /// The CI job `client`'s process belongs to, by its peer credentials.

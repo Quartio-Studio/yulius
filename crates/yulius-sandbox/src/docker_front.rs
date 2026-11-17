@@ -327,7 +327,7 @@ pub fn run(spec_path: &Path) -> Result<(), String> {
         let (state, sysfs) = (paths.dir.clone(), paths.engine_sysfs());
         let prepare: Prepare = Box::new(move || prepare_engine(&state, &sysfs));
         // CI jobs' connections are told by their caller's cgroup (SPEC-504 CLB-002).
-        let gate = Gate::new().telling_jobs(Arc::new(move |pid| {
+        let gate = Gate::telling_jobs(Arc::new(move |pid| {
             proc.as_ref()
                 .and_then(|proc| crate::docker_label::caller_job(proc, pid))
         }));
@@ -658,7 +658,7 @@ mod tests {
                 io::Result::Ok(got)
             });
             let me = std::process::id();
-            let gate = Gate::new().telling_jobs(Arc::new(move |pid| {
+            let gate = Gate::telling_jobs(Arc::new(move |pid| {
                 (pid == me).then(|| job.map(str::to_owned)).flatten()
             }));
             let front = Front::start_through(
@@ -761,7 +761,7 @@ mod real_engine {
     /// A relaying front before the real engine whose every caller is CI job `job` (or none).
     fn front(dir: &Path, engine: &Path, job: Option<String>) -> io::Result<(StatePaths, Front)> {
         let paths = StatePaths::new(dir.to_path_buf());
-        let gate = Gate::new().telling_jobs(Arc::new(move |_| job.clone()));
+        let gate = Gate::telling_jobs(Arc::new(move |_| job.clone()));
         let front = Front::start_through(
             &paths,
             &DockerServe::Relay {

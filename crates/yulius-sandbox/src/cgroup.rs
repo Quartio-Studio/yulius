@@ -739,7 +739,16 @@ impl Delegation {
         let group = self.sandbox_paths(sandbox).ci.join(name);
         match std::fs::create_dir(&group) {
             Ok(()) => Ok(group),
-            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => Ok(group),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+                // The same job again (a requeued run, a rerun) after its group stayed: made
+                // fresh, so the sweep does not take it as an old empty one before the job joins
+                // (review round 1). One that still holds a process cannot go, and the sweep
+                // keeps it while it does.
+                if std::fs::remove_dir(&group).is_ok() {
+                    std::fs::create_dir(&group)?;
+                }
+                Ok(group)
+            }
             Err(error) => Err(error),
         }
     }
@@ -1376,6 +1385,22 @@ mod tests {
         delegation.sweep_ci_job_groups("s1");
         assert!(!fresh.exists(), "an old, empty job group goes");
         assert!(other.exists(), "not a job's");
+        Ok(())
+    }
+
+    /// Review round 1 (minor): a job id runs again (a requeued run, a rerun for the
+    /// infrastructure) after its group could not be removed; its group is made fresh, so the
+    /// sweep does not take it, as an old empty one, before the job joins it.
+    #[test]
+    fn a_job_group_made_again_is_fresh_for_the_sweep() -> Result<(), Box<dyn std::error::Error>> {
+        let (_root, delegation, _dir) = fake_sandbox("cpu memory pids\n")?;
+        delegation.sandbox_group("s1", &Limits::default())?;
+        let group = delegation.ci_job_group("s1", "again")?;
+        std::fs::File::open(&group)?
+            .set_modified(std::time::SystemTime::now() - CI_JOB_GROUP_KEPT * 2)?;
+        assert_eq!(delegation.ci_job_group("s1", "again")?, group);
+        delegation.sweep_ci_job_groups("s1");
+        assert!(group.exists(), "made again: not old");
         Ok(())
     }
 
