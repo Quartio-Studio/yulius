@@ -271,6 +271,10 @@ const CODEX_NOT_SHARED: &str =
 
 const API_KEY_NO_WINDOWS: &str =
     "An API-key account has no plan usage windows; its runs report the rate limits.";
+/// What an Antigravity subscription's usage reading says: Yulius reads its limits from its runs
+/// (SPEC-505, ADR-0361).
+const ANTIGRAVITY_NO_WINDOWS: &str =
+    "Antigravity shows no usage windows; its limits are learnt from its tasks";
 
 /// Claude's `{"five_hour": {"utilization", "resets_at"}, "seven_day": {...},
 /// "seven_day_opus": {...}|null, "seven_day_sonnet": {...}|null}`.
@@ -534,6 +538,12 @@ impl UsageProbe for ProviderUsage {
                     parse_codex(&body, now()).map_err(UsageFailure::new)
                 }
             },
+            // No usage source of an Antigravity subscription was verified: its limits come from
+            // its runs' transcripts (SPEC-505, ADR-0361).
+            Provider::Google => Err(UsageFailure::of(
+                UsageFailureKind::NotShared,
+                ANTIGRAVITY_NO_WINDOWS,
+            )),
         }
     }
 
@@ -572,6 +582,9 @@ impl UsageProbe for ProviderUsage {
             Provider::OpenAi => Err(UsageFailure::new(
                 "a Codex subscription has no model limit to ask about",
             )),
+            Provider::Google => Err(UsageFailure::new(
+                "an Antigravity subscription has no model limit to ask about",
+            )),
         }
     }
 
@@ -596,6 +609,8 @@ impl UsageProbe for ProviderUsage {
                 }
                 CodexIdentity::ApiKey => Ok(None),
             },
+            // The Google sign-in's token file is the CLI's, opaque to Yulius (SPEC-505).
+            Provider::Google => Ok(None),
         }
     }
 }

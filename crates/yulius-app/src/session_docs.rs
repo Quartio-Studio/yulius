@@ -310,6 +310,7 @@ impl App {
                 session_id,
             ),
             Harness::Codex => self.codex_rollout(&task.sandbox_id, session_id),
+            Harness::Antigravity => self.antigravity_transcript(&task.sandbox_id, session_id),
         }
     }
 

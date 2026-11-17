@@ -1,7 +1,9 @@
 //! Provider transcript locations and session discovery (SPEC-002 §7.2, SPEC-001 HRN-004).
 //!
 //! Claude Code: `<CLAUDE_CONFIG_DIR>/projects/<cwd-slug>/<sessionId>.jsonl`. Codex (SPEC-503):
-//! `<CODEX_HOME>/sessions/YYYY/MM/DD/rollout-<timestamp>-<sessionId>.jsonl`. Directory walks are
+//! `<CODEX_HOME>/sessions/YYYY/MM/DD/rollout-<timestamp>-<sessionId>.jsonl`. Antigravity
+//! (SPEC-505): `<HOME>/.gemini/antigravity-cli/brain/<conversation>/.system_generated/logs/
+//! transcript.jsonl`. Directory walks are
 //! bounded by [`MAX_WALK_ENTRIES`] and never follow symbolic links below the given root.
 
 use std::fs;
@@ -43,6 +45,48 @@ pub fn claude_transcript_path(config_dir: &Path, cwd: &Path, session_id: &str) -
 }
 
 pub use yulius_domain::harness::valid_session_id;
+
+/// The Antigravity CLI's folder of conversations below its `.gemini` folder (1.5.10).
+pub const ANTIGRAVITY_BRAIN: &str = "antigravity-cli/brain";
+/// Its folder of conversation databases below `.gemini`.
+pub const ANTIGRAVITY_CONVERSATIONS: &str = "antigravity-cli/conversations";
+/// The file naming each workspace's last conversation, below `.gemini`.
+const ANTIGRAVITY_LAST_CONVERSATIONS: &str = "antigravity-cli/cache/last_conversations.json";
+/// The largest `last_conversations.json` read.
+const ANTIGRAVITY_LAST_CONVERSATIONS_MAX: u64 = 1024 * 1024;
+
+/// `<brain>/<conversation>/.system_generated/logs/transcript.jsonl` (SPEC-505 AGY-004).
+#[must_use]
+pub fn antigravity_transcript_path(brain: &Path, conversation: &str) -> PathBuf {
+    brain
+        .join(conversation)
+        .join(".system_generated/logs/transcript.jsonl")
+}
+
+/// The conversation the Antigravity CLI last ran in `worktree`, from its
+/// `cache/last_conversations.json` below `gemini_dir` (SPEC-505 AGY-005): `None` without one, for
+/// an id Yulius would not pass on, or for a file that is a link, larger than 1 MiB or not a JSON
+/// object.
+#[must_use]
+pub fn antigravity_last_conversation(gemini_dir: &Path, worktree: &Path) -> Option<String> {
+    use std::io::Read as _;
+    let path = gemini_dir.join(ANTIGRAVITY_LAST_CONVERSATIONS);
+    let meta = fs::symlink_metadata(&path).ok()?;
+    if !meta.is_file() || meta.len() > ANTIGRAVITY_LAST_CONVERSATIONS_MAX {
+        return None;
+    }
+    let mut text = String::new();
+    fs::File::open(&path)
+        .ok()?
+        .take(ANTIGRAVITY_LAST_CONVERSATIONS_MAX)
+        .read_to_string(&mut text)
+        .ok()?;
+    let map: serde_json::Map<String, serde_json::Value> = serde_json::from_str(&text).ok()?;
+    map.get(worktree.to_str()?)?
+        .as_str()
+        .filter(|id| valid_session_id(id))
+        .map(str::to_owned)
+}
 
 fn walk_limit_error() -> io::Error {
     io::Error::other("directory walk limit exceeded")

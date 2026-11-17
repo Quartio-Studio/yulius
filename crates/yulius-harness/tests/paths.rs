@@ -5,8 +5,8 @@ use std::path::Path;
 use std::time::{Duration, SystemTime};
 
 use yulius_harness::paths::{
-    claude_project_dir, claude_transcript_path, find_codex_rollout, newest_claude_session,
-    recent_codex_rollouts,
+    antigravity_last_conversation, antigravity_transcript_path, claude_project_dir,
+    claude_transcript_path, find_codex_rollout, newest_claude_session, recent_codex_rollouts,
 };
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -143,5 +143,64 @@ fn recent_codex_rollouts_are_newest_first_and_filtered_by_time() -> TestResult {
         vec![newest, newer]
     );
     assert!(recent_codex_rollouts(&dir.path().join("absent"), at(0))?.is_empty());
+    Ok(())
+}
+
+/// SPEC-505 AGY-004: a conversation's transcript lies in its brain folder.
+#[test]
+fn antigravity_transcripts_lie_in_the_brain_folder() {
+    assert_eq!(
+        antigravity_transcript_path(Path::new("/s/antigravity/shared/brain"), "c-1"),
+        Path::new("/s/antigravity/shared/brain/c-1/.system_generated/logs/transcript.jsonl")
+    );
+}
+
+/// SPEC-505 AGY-005: the CLI's last conversation of a worktree, from `last_conversations.json`;
+/// nothing for another worktree, an unsafe id, a broken, linked or oversized file.
+#[test]
+fn the_last_conversation_of_a_worktree() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let gemini = dir.path().join(".gemini");
+    let cache = gemini.join("antigravity-cli/cache");
+    fs::create_dir_all(&cache)?;
+    let file = cache.join("last_conversations.json");
+    assert_eq!(
+        antigravity_last_conversation(&gemini, Path::new("/w/t1")),
+        None
+    );
+    fs::write(
+        &file,
+        r#"{"/w/t1": "0bb76935-ee61-4895-9082-1aea3f3976ee", "/w/t2": "../x"}"#,
+    )?;
+    assert_eq!(
+        antigravity_last_conversation(&gemini, Path::new("/w/t1")).as_deref(),
+        Some("0bb76935-ee61-4895-9082-1aea3f3976ee")
+    );
+    assert_eq!(
+        antigravity_last_conversation(&gemini, Path::new("/w/t2")),
+        None
+    );
+    assert_eq!(
+        antigravity_last_conversation(&gemini, Path::new("/w/t3")),
+        None
+    );
+    fs::write(&file, "{broken")?;
+    assert_eq!(
+        antigravity_last_conversation(&gemini, Path::new("/w/t1")),
+        None
+    );
+    fs::write(&file, vec![b' '; 2 * 1024 * 1024])?;
+    assert_eq!(
+        antigravity_last_conversation(&gemini, Path::new("/w/t1")),
+        None
+    );
+    fs::remove_file(&file)?;
+    let elsewhere = dir.path().join("elsewhere.json");
+    fs::write(&elsewhere, r#"{"/w/t1": "abc"}"#)?;
+    std::os::unix::fs::symlink(&elsewhere, &file)?;
+    assert_eq!(
+        antigravity_last_conversation(&gemini, Path::new("/w/t1")),
+        None
+    );
     Ok(())
 }

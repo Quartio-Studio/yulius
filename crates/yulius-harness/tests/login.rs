@@ -295,3 +295,76 @@ fn a_refresh_must_be_of_the_same_signed_in_user() {
     let bare = br#"{"auth_mode":"chatgpt","tokens":{"access_token":"a","account_id":"workspace-1"},"last_refresh":"2026-11-09T11:00:00Z"}"#;
     assert!(!codex_auth_replaces(bare, &stored, now));
 }
+
+/// SPEC-505 AGY-008: an API key and a token file each make an envelope Yulius reads back; text
+/// that cannot be a key, an empty or oversized file and anything else are refused; `Debug` shows
+/// neither.
+#[test]
+fn antigravity_credentials_round_trip() {
+    use yulius_harness::login::{
+        ANTIGRAVITY_TOKEN_MAX_BYTES, AntigravityCredential, antigravity_api_key_credential,
+        antigravity_sign_in_credential, parse_antigravity_credential,
+    };
+    let key = "SYNTHETIC-gemini-api-key-0123456789";
+    let envelope = antigravity_api_key_credential(&format!("  {key}\n")).unwrap_or_default();
+    assert_eq!(
+        parse_antigravity_credential(&envelope),
+        Some(AntigravityCredential::ApiKey(key.into()))
+    );
+    for bad in [
+        "",
+        "short",
+        "has a space in it 0123456789",
+        "x\u{7f}0123456789012345",
+    ] {
+        assert_eq!(antigravity_api_key_credential(bad), None, "{bad:?}");
+    }
+    let token = b"SYNTHETIC token file \x00\x01 bytes";
+    let envelope = antigravity_sign_in_credential(token).unwrap_or_default();
+    assert_eq!(
+        parse_antigravity_credential(&envelope),
+        Some(AntigravityCredential::SignIn(token.to_vec()))
+    );
+    assert_eq!(antigravity_sign_in_credential(b""), None);
+    assert_eq!(
+        antigravity_sign_in_credential(&vec![b'x'; ANTIGRAVITY_TOKEN_MAX_BYTES + 1]),
+        None
+    );
+    for bad in [
+        &b"not json"[..],
+        br#"{"kind":"other"}"#,
+        br#"{"kind":"google_sign_in","token_file":"%%%"}"#,
+        br#"{"kind":"gemini_api_key","api_key":"short"}"#,
+    ] {
+        assert_eq!(parse_antigravity_credential(bad), None);
+    }
+    let shown = format!("{:?}", AntigravityCredential::ApiKey(key.into()));
+    assert!(!shown.contains("SYNTHETIC"), "{shown}");
+}
+
+/// SPEC-505 AGY-008: after a run, a changed token file of a sign-in is kept; the same file, an
+/// empty one, or any file of an API-key account is not.
+#[test]
+fn an_antigravity_refresh_is_kept() {
+    use yulius_harness::login::{
+        AntigravityCredential, antigravity_api_key_credential, antigravity_refreshed_credential,
+        antigravity_sign_in_credential, parse_antigravity_credential,
+    };
+    let stored = antigravity_sign_in_credential(b"SYNTHETIC-old").unwrap_or_default();
+    let kept = antigravity_refreshed_credential(b"SYNTHETIC-new", &stored);
+    assert_eq!(
+        kept.as_deref().and_then(parse_antigravity_credential),
+        Some(AntigravityCredential::SignIn(b"SYNTHETIC-new".to_vec()))
+    );
+    assert_eq!(
+        antigravity_refreshed_credential(b"SYNTHETIC-old", &stored),
+        None
+    );
+    assert_eq!(antigravity_refreshed_credential(b"", &stored), None);
+    let key =
+        antigravity_api_key_credential("SYNTHETIC-gemini-api-key-0123456789").unwrap_or_default();
+    assert_eq!(
+        antigravity_refreshed_credential(b"SYNTHETIC-new", &key),
+        None
+    );
+}

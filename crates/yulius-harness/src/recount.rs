@@ -13,7 +13,7 @@ use yulius_domain::time::Timestamp;
 use crate::observe::{Observed, UsageAccumulator};
 use crate::subagents::{LinesSince, SubagentTails};
 use crate::tail::{DEFAULT_MAX_LINE_BYTES, TranscriptTail};
-use crate::{claude, codex};
+use crate::{antigravity, claude, codex};
 
 /// Folds the lines of `transcript` from `since` (the first line when `None`) to `until` (the end
 /// of the file when `None`), with its sub-agents' usage over the same window. `None` when the
@@ -45,6 +45,25 @@ pub fn count_codex_run(
         since,
         until,
         |line| (codex::observe_line(line), None),
+        false,
+    )
+}
+
+/// [`count_run`] for an Antigravity transcript (SPEC-505 AGY-004): its own lines only; the CLI
+/// keeps its subagents' steps in their own conversations.
+///
+/// # Errors
+/// I/O errors reading the transcript.
+pub fn count_antigravity_run(
+    transcript: &Path,
+    since: Option<Timestamp>,
+    until: Option<Timestamp>,
+) -> io::Result<Option<UsageAccumulator>> {
+    count_with(
+        transcript,
+        since,
+        until,
+        |line| (antigravity::observe_line(line), None),
         false,
     )
 }

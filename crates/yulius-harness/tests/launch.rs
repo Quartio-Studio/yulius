@@ -45,6 +45,8 @@ fn claude_request(mode: LaunchMode, contained: bool) -> LaunchRequest {
         run_dir: PathBuf::from("/data/runs/a1"),
         codex_home: None,
         codex_program: None,
+        antigravity_home: None,
+        antigravity_program: None,
         model: Some("claude-opus-4-1".into()),
         effort: Some("high".into()),
         contained,
@@ -1267,6 +1269,8 @@ fn codex_request(mode: LaunchMode, contained: bool) -> LaunchRequest {
         run_dir: PathBuf::from("/data/runs/a1"),
         codex_home: Some(PathBuf::from("/data/sandboxes/s1/codex/acc-1")),
         codex_program: None,
+        antigravity_home: None,
+        antigravity_program: None,
         model: None,
         effort: Some("xhigh".into()),
         contained,
@@ -1527,4 +1531,260 @@ fn codex_plans_refuse_a_missing_home_or_another_credential() {
         plan_launch(&request),
         Err(LaunchError::Invalid("credential"))
     );
+}
+
+const AGY_HOME: &str = "/data/sandboxes/s1/antigravity/acc-1";
+const AGY_API_KEY: &str = "SYNTHETIC-gemini-api-key-0123456789";
+const AGY_TOKEN_FILE: &[u8] = b"SYNTHETIC-agy-oauth-token-file";
+
+fn agy_request(mode: LaunchMode, contained: bool, credential: Vec<u8>) -> LaunchRequest {
+    LaunchRequest {
+        harness: Harness::Antigravity,
+        mode,
+        worktree: PathBuf::from("/data/sandboxes/s1/worktrees/t1"),
+        sandbox_home: PathBuf::from("/data/sandboxes/s1/home"),
+        run_dir: PathBuf::from("/data/runs/a1"),
+        codex_home: None,
+        codex_program: None,
+        antigravity_home: Some(PathBuf::from(AGY_HOME)),
+        antigravity_program: None,
+        model: None,
+        effort: None,
+        contained,
+        yulius_exe: PathBuf::from("/opt/yulius/bin/yulius"),
+        yulius_url: "http://127.0.0.1:7801/".into(),
+        mcp_servers: servers(),
+        credential: Credential::Antigravity(Secret::new(credential)),
+        disabled_plugins: Vec::new(),
+    }
+}
+
+fn agy_api_key() -> Result<Vec<u8>, String> {
+    yulius_harness::login::antigravity_api_key_credential(AGY_API_KEY)
+        .ok_or_else(|| "an API key credential".to_owned())
+}
+
+fn agy_sign_in() -> Result<Vec<u8>, String> {
+    yulius_harness::login::antigravity_sign_in_credential(AGY_TOKEN_FILE)
+        .ok_or_else(|| "a sign-in credential".to_owned())
+}
+
+/// SPEC-505 AGY-002: a new Antigravity session on an API key runs `agy` on Gemini 4 Carbon at
+/// high effort, the approval bypass only when contained, its prompt as one `=` argument (a
+/// leading dash stays the prompt); auto-update off; the key only in the secret environment; the
+/// home's settings trust the worktree and skip the first-run screens; Yulius's hooks and MCP in
+/// the home's config.
+#[test]
+fn antigravity_new_session_on_an_api_key() -> TestResult {
+    let plan = plan_launch(&agy_request(
+        LaunchMode::New {
+            session_id: None,
+            prompt: Some("-Build the login page".into()),
+        },
+        true,
+        agy_api_key()?,
+    ))?;
+    assert_eq!(
+        plan.argv,
+        [
+            "agy",
+            "--model",
+            "gemini-4-carbon",
+            "--effort",
+            "high",
+            "--dangerously-skip-permissions",
+            "--prompt-interactive=-Build the login page",
+        ]
+    );
+    assert_eq!(plan.session_id, None, "agy names its own conversation");
+    assert_eq!(
+        plan.env,
+        [
+            ("AGY_CLI_DISABLE_AUTO_UPDATE".to_owned(), "true".to_owned()),
+            ("YULIUS_URL".to_owned(), "http://127.0.0.1:7801".to_owned()),
+            (
+                "YULIUS_TASK_WORKTREE".to_owned(),
+                "/data/sandboxes/s1/worktrees/t1".to_owned()
+            ),
+            ("TMPDIR".to_owned(), "/tmp".to_owned()),
+        ],
+        "a contained run keeps the sandbox's HOME; its .gemini is bound over"
+    );
+    assert_eq!(
+        plan.secret_env,
+        [("GEMINI_API_KEY".to_owned(), AGY_API_KEY.to_owned())]
+    );
+    assert!(!plan.argv.iter().any(|a| a.contains(AGY_API_KEY)));
+    for planned in &plan.files {
+        assert_eq!(planned.mode, PRIVATE_FILE_MODE);
+        assert!(planned.path.starts_with(AGY_HOME), "{:?}", planned.path);
+        assert!(
+            !String::from_utf8_lossy(&planned.contents).contains(AGY_API_KEY),
+            "the key in {:?}",
+            planned.path
+        );
+    }
+    assert!(
+        !plan
+            .files
+            .iter()
+            .any(|f| f.path.ends_with("antigravity-oauth-token")),
+        "an API key account has no token file"
+    );
+    let settings = json_of(file(&plan, ".gemini/antigravity-cli/settings.json")?)?;
+    assert_eq!(
+        settings,
+        json!({
+            "modelProvider": "gemini",
+            "colorScheme": "terminal",
+            "showTips": false,
+            "showFeedbackSurvey": false,
+            "notifications": false,
+            "trustedWorkspaces": ["/data/sandboxes/s1/worktrees/t1"],
+        })
+    );
+    assert_eq!(
+        json_of(file(
+            &plan,
+            ".gemini/antigravity-cli/cache/onboarding.json"
+        )?)?,
+        json!({
+            "consumerOnboardingComplete": true,
+            "enterpriseOnboardingComplete": true,
+            "onboardingComplete": true,
+        })
+    );
+    let hooks = json_of(file(&plan, ".gemini/config/hooks.json")?)?;
+    for (event, timeout) in [
+        ("SessionStart", 15),
+        ("PreInvocation", 694_800),
+        ("Stop", 694_800),
+    ] {
+        assert_eq!(
+            hooks["yulius"][event],
+            json!([{
+                "type": "command",
+                "command": format!("'/opt/yulius/bin/yulius' hook antigravity {event}"),
+                "timeout": timeout
+            }])
+        );
+    }
+    assert_eq!(
+        hooks["yulius"]["PreToolUse"],
+        json!([{ "matcher": "^run_command$", "hooks": [{
+            "type": "command",
+            "command": "'/opt/yulius/bin/yulius' hook antigravity PreToolUse",
+            "timeout": 60
+        }] }])
+    );
+    let mcp = json_of(file(&plan, ".gemini/config/mcp_config.json")?)?;
+    assert_eq!(
+        mcp,
+        json!({ "mcpServers": {
+            "yulius": { "command": "/opt/yulius/bin/yulius", "args": ["mcp"] },
+            "apify": {
+                "command": "sh",
+                "args": [
+                    "-c",
+                    "export APIFY_TOKEN=\"$YULIUS_MCP_APIFY_APIFY_TOKEN\"; exec \"$@\"",
+                    "mcp-apify",
+                    "npx",
+                    "-y",
+                    "@apify/actors-mcp-server"
+                ]
+            }
+        }}),
+        "agy expands no variable in a header: a server that needs a bearer token is left out"
+    );
+    Ok(())
+}
+
+/// SPEC-505 AGY-002, AGY-008: a Google sign-in's token file is written into the home (0600), the
+/// settings name no provider; a resume names the conversation and the task's model and effort;
+/// one past a limit asks agy to go on; an uncontained run sets HOME to the Antigravity home and
+/// keeps agy's own approvals.
+#[test]
+fn antigravity_resume_on_a_google_sign_in() -> TestResult {
+    let mut request = agy_request(
+        LaunchMode::Resume {
+            session_id: "0bb76935-ee61-4895-9082-1aea3f3976ee".into(),
+            prompt: Some("ignored".into()),
+            continue_interrupted: true,
+        },
+        false,
+        agy_sign_in()?,
+    );
+    request.model = Some("gemini-4-hydrogen".into());
+    request.effort = Some("xhigh".into());
+    request.antigravity_program = Some(PathBuf::from(
+        "/data/antigravity-cli/1.5.10-linux-x64/antigravity",
+    ));
+    let plan = plan_launch(&request)?;
+    assert_eq!(
+        plan.argv,
+        [
+            "/data/antigravity-cli/1.5.10-linux-x64/antigravity",
+            "--model",
+            "gemini-4-hydrogen",
+            "--effort",
+            "xhigh",
+            "--conversation",
+            "0bb76935-ee61-4895-9082-1aea3f3976ee",
+            "--prompt-interactive=Continue from where you left off.",
+        ]
+    );
+    assert_eq!(
+        plan.session_id.as_deref(),
+        Some("0bb76935-ee61-4895-9082-1aea3f3976ee")
+    );
+    assert!(plan.env.contains(&("HOME".to_owned(), AGY_HOME.to_owned())));
+    assert!(plan.secret_env.is_empty());
+    let token = file(&plan, ".gemini/antigravity-cli/antigravity-oauth-token")?;
+    assert_eq!(token.contents, AGY_TOKEN_FILE);
+    assert_eq!(token.mode, PRIVATE_FILE_MODE);
+    let settings = json_of(file(&plan, ".gemini/antigravity-cli/settings.json")?)?;
+    assert_eq!(settings.get("modelProvider"), None);
+    assert_secret_absent(&plan, "SYNTHETIC-agy-oauth-token-file");
+    // A plain resume sends its prompt, or none.
+    let mut plain = request.clone();
+    plain.mode = LaunchMode::Resume {
+        session_id: "0bb76935-ee61-4895-9082-1aea3f3976ee".into(),
+        prompt: None,
+        continue_interrupted: false,
+    };
+    let plan = plan_launch(&plain)?;
+    assert_eq!(
+        plan.argv.last().map(String::as_str),
+        Some("0bb76935-ee61-4895-9082-1aea3f3976ee")
+    );
+    Ok(())
+}
+
+/// SPEC-505 AGY-002: an Antigravity plan needs its home, its own credential, an absolute
+/// program; a credential that is neither form is refused without echoing it.
+#[test]
+fn antigravity_plans_refuse_what_they_cannot_run() -> TestResult {
+    let mode = LaunchMode::New {
+        session_id: None,
+        prompt: None,
+    };
+    let mut request = agy_request(mode.clone(), true, agy_api_key()?);
+    request.antigravity_home = None;
+    assert_eq!(
+        plan_launch(&request),
+        Err(LaunchError::MissingAntigravityHome)
+    );
+    let mut request = agy_request(mode.clone(), true, agy_api_key()?);
+    request.credential = Credential::ClaudeOauthToken(Secret::new(CLAUDE_TOKEN.into()));
+    assert_eq!(
+        plan_launch(&request),
+        Err(LaunchError::CredentialMismatch(Harness::Antigravity))
+    );
+    let request = agy_request(mode.clone(), true, b"SYNTHETIC-not-an-envelope".to_vec());
+    let refused = plan_launch(&request).err().ok_or("refused")?;
+    assert!(!refused.to_string().contains("SYNTHETIC"), "{refused}");
+    let mut request = agy_request(mode, true, agy_api_key()?);
+    request.antigravity_program = Some(PathBuf::from("bin/agy"));
+    assert!(plan_launch(&request).is_err());
+    Ok(())
 }

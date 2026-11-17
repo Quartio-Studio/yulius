@@ -1,4 +1,5 @@
-//! Launch plans for Claude Code and Codex sessions (SPEC-002 §7.2, ADR-05, ADR-07; SPEC-503).
+//! Launch plans for Claude Code, Codex and Antigravity sessions (SPEC-002 §7.2, ADR-05, ADR-07;
+//! SPEC-503; SPEC-505).
 //!
 //! [`plan_launch`] is pure: it turns a [`LaunchRequest`] into the argv, environment and config
 //! files of one run. The caller (supervisor) writes [`LaunchPlan::files`], adds the common
@@ -28,6 +29,22 @@ pub const CODEX_HOOK_EVENTS: [&str; 4] = ["SessionStart", "UserPromptSubmit", "S
 /// The prompt a Codex session resumed after a usage limit gets: Codex has no way to continue the
 /// cut turn by itself.
 pub const CODEX_CONTINUE_PROMPT: &str = "Continue from where you left off.";
+/// Antigravity CLI executable name (resolved through `PATH` by the spawner; SPEC-505).
+pub const ANTIGRAVITY_PROGRAM: &str = "agy";
+/// Hook events registered for Antigravity (SPEC-505 AGY-006): its session start, the model call
+/// that opens a turn (its `UserPromptSubmit`) and the end of a turn; `PreToolUse` apart.
+pub const ANTIGRAVITY_HOOK_EVENTS: [&str; 3] = ["SessionStart", "PreInvocation", "Stop"];
+/// The variable and value that keep the Antigravity CLI from updating itself (1.5.10 reads
+/// `true` only).
+pub const ANTIGRAVITY_NO_UPDATE_ENV: (&str, &str) = ("AGY_CLI_DISABLE_AUTO_UPDATE", "true");
+/// The variable an API-key run of the Antigravity CLI reads its Gemini API key from.
+pub const GEMINI_API_KEY_ENV: &str = "GEMINI_API_KEY";
+/// The Antigravity CLI's folder below its home.
+pub const ANTIGRAVITY_DIR: &str = ".gemini";
+/// Where the Antigravity CLI keeps a Google sign-in when no keyring is reachable, below its home
+/// (1.5.10, seen with `strace`).
+pub const ANTIGRAVITY_TOKEN_FILE: &str = ".gemini/antigravity-cli/antigravity-oauth-token";
+pub use yulius_domain::harness::{DEFAULT_ANTIGRAVITY_EFFORT, DEFAULT_ANTIGRAVITY_MODEL};
 /// Codex caps the timeout of its `SessionEnd` hook at 3 s (0.167).
 pub const CODEX_SESSION_END_TIMEOUT_SECONDS: u64 = 3;
 /// Environment variable holding the per-attempt Yulius bearer token (set by the supervisor).
@@ -163,6 +180,9 @@ pub enum Credential {
     ClaudeOauthToken(Secret<String>),
     /// Contents of a Codex `auth.json` (SPEC-503 CDX-005).
     CodexAuthJson(Secret<Vec<u8>>),
+    /// An Antigravity credential, as [`crate::login::antigravity_api_key_credential`] or
+    /// [`crate::login::antigravity_sign_in_credential`] made it (SPEC-505 AGY-008).
+    Antigravity(Secret<Vec<u8>>),
 }
 
 /// Everything needed to plan one run.
@@ -183,6 +203,12 @@ pub struct LaunchRequest {
     /// The Codex CLI Yulius provides, an absolute path (SPEC-503 CLI-002); `None`: [`CODEX_PROGRAM`]
     /// from `PATH`.
     pub codex_program: Option<PathBuf>,
+    /// Antigravity home of the (sandbox, account) pair, the folder holding its `.gemini`;
+    /// required for Antigravity (SPEC-505 AGY-003).
+    pub antigravity_home: Option<PathBuf>,
+    /// The Antigravity CLI Yulius provides, an absolute path (SPEC-505 AGY-007); `None`:
+    /// [`ANTIGRAVITY_PROGRAM`] from `PATH`.
+    pub antigravity_program: Option<PathBuf>,
     /// Model override.
     pub model: Option<String>,
     /// Reasoning effort override.
@@ -303,6 +329,9 @@ pub enum LaunchError {
     /// Codex needs a `CODEX_HOME`.
     #[error("codex launch requires codex_home")]
     MissingCodexHome,
+    /// Antigravity needs its home.
+    #[error("antigravity launch requires antigravity_home")]
+    MissingAntigravityHome,
     /// A path that must appear in argv or config is not valid UTF-8.
     #[error("path {0} is not valid UTF-8")]
     NonUtf8Path(&'static str),
@@ -441,6 +470,7 @@ pub fn plan_launch(request: &LaunchRequest) -> Result<LaunchPlan, LaunchError> {
     match request.harness {
         Harness::ClaudeCode => plan_claude(request),
         Harness::Codex => plan_codex(request),
+        Harness::Antigravity => plan_antigravity(request),
     }
 }
 
@@ -962,6 +992,216 @@ fn plan_codex(request: &LaunchRequest) -> Result<LaunchPlan, LaunchError> {
         ],
         // Codex names its own session (no `--session-id`): a new one is learnt from its hook or
         // its rollout.
+        session_id,
+    })
+}
+
+/// The `settings.json` of an Antigravity home: the worktree trusted and the first-run screens
+/// (colour scheme, tips, survey) left out, so the session starts at its prompt; an API key's
+/// provider (SPEC-505 AGY-002). The CLI rewrites the file at its start; Yulius writes it again
+/// before each run.
+fn antigravity_settings(worktree: &str, api_key: bool) -> Value {
+    let mut settings = Map::new();
+    if api_key {
+        settings.insert("modelProvider".into(), json!("gemini"));
+    }
+    settings.insert("colorScheme".into(), json!("terminal"));
+    settings.insert("showTips".into(), json!(false));
+    settings.insert("showFeedbackSurvey".into(), json!(false));
+    settings.insert("notifications".into(), json!(false));
+    settings.insert("trustedWorkspaces".into(), json!([worktree]));
+    Value::Object(settings)
+}
+
+/// A sandbox MCP server in the Antigravity CLI's `mcp_config.json`: a stdio server inherits the
+/// run's environment, so one with renamed variables is started through the same `sh` wrapper as
+/// Codex's; an HTTP server that needs a bearer token is left out, since the CLI expands no
+/// variable in a header (1.5.10) and its value would be written to the file.
+fn antigravity_mcp_entry(server: &McpServerSpec) -> Option<Value> {
+    match &server.transport {
+        McpTransport::Stdio {
+            command,
+            args,
+            env_vars,
+        } if env_vars.is_empty() => Some(json!({ "command": command, "args": args })),
+        McpTransport::Stdio {
+            command,
+            args,
+            env_vars,
+        } => {
+            let (shell, shell_args, _) = codex_stdio_wrapper(&server.name, command, args, env_vars);
+            Some(json!({ "command": shell, "args": shell_args }))
+        }
+        McpTransport::Http {
+            url,
+            bearer_env: None,
+        } => Some(json!({ "url": url })),
+        McpTransport::Http { .. } => None,
+    }
+}
+
+fn plan_antigravity(request: &LaunchRequest) -> Result<LaunchPlan, LaunchError> {
+    use crate::login::{AntigravityCredential, parse_antigravity_credential};
+    let Credential::Antigravity(envelope) = &request.credential else {
+        return Err(LaunchError::CredentialMismatch(request.harness));
+    };
+    let credential = parse_antigravity_credential(envelope.expose())
+        .ok_or(LaunchError::Invalid("credential"))?;
+    let home = request
+        .antigravity_home
+        .as_ref()
+        .ok_or(LaunchError::MissingAntigravityHome)?;
+    let home_text = utf8(home, "antigravity_home")?;
+    let worktree = utf8(&request.worktree, "worktree")?;
+    let program = match &request.antigravity_program {
+        Some(path) => {
+            check(path.is_absolute(), "antigravity_program")?;
+            utf8(path, "antigravity_program")?.to_owned()
+        }
+        None => ANTIGRAVITY_PROGRAM.to_owned(),
+    };
+
+    // The same hook client as Claude Code's (`yulius hook antigravity <event>`), which translates
+    // the CLI's payloads and answers; the turn boundaries may be held while no subscription has
+    // capacity (ADR-17). The CLI runs each through `sh -c` with its own environment.
+    let mut hooks = Map::new();
+    for event in ANTIGRAVITY_HOOK_EVENTS {
+        let timeout = if matches!(event, "PreInvocation" | "Stop") {
+            CLAUDE_HELD_HOOK_TIMEOUT_SECONDS
+        } else {
+            CLAUDE_HOOK_TIMEOUT_SECONDS
+        };
+        hooks.insert(
+            event.to_owned(),
+            json!([{
+                "type": "command",
+                "command": hook_command(request, "antigravity", event)?,
+                "timeout": timeout
+            }]),
+        );
+    }
+    // Its shell tool is `run_command` with the command in `CommandLine` (1.5.10).
+    hooks.insert(
+        "PreToolUse".to_owned(),
+        json!([{ "matcher": "^run_command$", "hooks": [{
+            "type": "command",
+            "command": hook_command(request, "antigravity", "PreToolUse")?,
+            "timeout": CLAUDE_TOOL_HOOK_TIMEOUT_SECONDS
+        }] }]),
+    );
+    let hooks_json = json!({ YULIUS_MCP_NAME: hooks });
+
+    // Yulius's own tools through the `yulius mcp` stdio bridge, which reads its URL and the
+    // run's token from the environment the CLI passes on.
+    let mut servers = Map::new();
+    servers.insert(
+        YULIUS_MCP_NAME.to_owned(),
+        json!({ "command": utf8(&request.yulius_exe, "yulius_exe")?, "args": ["mcp"] }),
+    );
+    for server in &request.mcp_servers {
+        if let Some(entry) = antigravity_mcp_entry(server) {
+            servers.insert(server.name.clone(), entry);
+        }
+    }
+    let mcp_json = json!({ "mcpServers": servers });
+
+    // The model on every launch: without it the CLI runs the account's saved one (1.5.10).
+    let model = request
+        .model
+        .clone()
+        .unwrap_or_else(|| DEFAULT_ANTIGRAVITY_MODEL.to_owned());
+    let effort = request
+        .effort
+        .clone()
+        .unwrap_or_else(|| DEFAULT_ANTIGRAVITY_EFFORT.to_owned());
+    let mut argv = vec![program, "--model".into(), model, "--effort".into(), effort];
+    if request.contained {
+        argv.push("--dangerously-skip-permissions".into());
+    }
+    let (session_id, prompt) = match &request.mode {
+        LaunchMode::New { prompt, .. } => (None, prompt.clone()),
+        LaunchMode::Resume {
+            session_id,
+            prompt,
+            continue_interrupted,
+        } => {
+            argv.extend(["--conversation".into(), session_id.clone()]);
+            let prompt = if *continue_interrupted {
+                Some(CODEX_CONTINUE_PROMPT.to_owned())
+            } else {
+                prompt.clone()
+            };
+            (Some(session_id.clone()), prompt)
+        }
+    };
+    // One argument with `=`: a prompt starting with `-` is never read as an option.
+    if let Some(prompt) = prompt.filter(|p| !p.is_empty()) {
+        argv.push(format!("--prompt-interactive={prompt}"));
+    }
+
+    let mut env = vec![
+        (
+            ANTIGRAVITY_NO_UPDATE_ENV.0.into(),
+            ANTIGRAVITY_NO_UPDATE_ENV.1.into(),
+        ),
+        (YULIUS_URL_ENV.into(), base_url(request).to_owned()),
+        (TASK_WORKTREE_ENV.into(), worktree.to_owned()),
+        (TMPDIR_ENV.0.into(), TMPDIR_ENV.1.into()),
+    ];
+    // The CLI reads only `$HOME/.gemini`. A contained run binds the home's `.gemini` over the
+    // sandbox home's, so the agent's shell keeps the sandbox's HOME; an uncontained one has no
+    // such bind (SPEC-505 AGY-003).
+    if !request.contained {
+        env.push(("HOME".into(), home_text.to_owned()));
+    }
+    let mut secret_env = Vec::new();
+    let gemini = home.join(ANTIGRAVITY_DIR);
+    let mut files = vec![
+        PlannedFile {
+            path: gemini.join("antigravity-cli/settings.json"),
+            contents: pretty(&antigravity_settings(
+                worktree,
+                matches!(credential, AntigravityCredential::ApiKey(_)),
+            )),
+            mode: PRIVATE_FILE_MODE,
+        },
+        PlannedFile {
+            path: gemini.join("antigravity-cli/cache/onboarding.json"),
+            contents: pretty(&json!({
+                "consumerOnboardingComplete": true,
+                "enterpriseOnboardingComplete": true,
+                "onboardingComplete": true,
+            })),
+            mode: PRIVATE_FILE_MODE,
+        },
+        PlannedFile {
+            path: gemini.join("config/hooks.json"),
+            contents: pretty(&hooks_json),
+            mode: PRIVATE_FILE_MODE,
+        },
+        PlannedFile {
+            path: gemini.join("config/mcp_config.json"),
+            contents: pretty(&mcp_json),
+            mode: PRIVATE_FILE_MODE,
+        },
+    ];
+    match credential {
+        AntigravityCredential::ApiKey(key) => {
+            secret_env.push((GEMINI_API_KEY_ENV.to_owned(), key));
+        }
+        AntigravityCredential::SignIn(token) => files.push(PlannedFile {
+            path: home.join(ANTIGRAVITY_TOKEN_FILE),
+            contents: token,
+            mode: PRIVATE_FILE_MODE,
+        }),
+    }
+    Ok(LaunchPlan {
+        argv,
+        cwd: request.worktree.clone(),
+        env,
+        secret_env,
+        files,
+        // The CLI names its own conversation: a new one is learnt from its hook or its cache.
         session_id,
     })
 }
