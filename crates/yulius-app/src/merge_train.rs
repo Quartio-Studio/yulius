@@ -121,6 +121,14 @@ struct Suspect {
     run: String,
 }
 
+impl Suspect {
+    /// Whether `passed`, a train that passed, shows that this member breaks the combination: it
+    /// is exactly the others, on the same base as the red train.
+    fn proven_by(&self, passed: &Train) -> bool {
+        self.base == passed.base && self.others == numbers(&passed.members)
+    }
+}
+
 impl SandboxTrains {
     fn is_empty(&self) -> bool {
         *self == Self::default()
@@ -547,8 +555,7 @@ impl App {
             RunState::Passed => {
                 state.limit = None;
                 if let Some(suspect) = state.suspect.take()
-                    && suspect.base == train.base
-                    && suspect.others == numbers(&train.members)
+                    && suspect.proven_by(&train)
                 {
                     self.tell_suspect(sandbox, &suspect, &train).await;
                 }
@@ -1675,6 +1682,33 @@ mod tests {
         }
     }
 
+    /// SPEC-497 MQW-003: a left-out member is blamed only by the others passing without it on the
+    /// red train's base; another set of members or another base proves nothing.
+    #[test]
+    fn a_suspect_is_proven_only_by_the_others_on_the_same_base() {
+        let suspect = Suspect {
+            task: "c".to_owned(),
+            pr: 13,
+            head: "head-c".to_owned(),
+            armed_at: 1,
+            base: "base".to_owned(),
+            others: vec![11, 12],
+            run: "red".to_owned(),
+        };
+        let mut passed = train();
+        passed.members.truncate(2);
+        assert!(suspect.proven_by(&passed));
+        let mut moved = passed.clone();
+        moved.base = "later".to_owned();
+        assert!(!suspect.proven_by(&moved), "another base");
+        let mut fewer = passed.clone();
+        fewer.members.truncate(1);
+        assert!(!suspect.proven_by(&fewer), "#12 untested");
+        let mut itself = passed;
+        itself.members = vec![member("c", 13, "t3")];
+        assert!(!suspect.proven_by(&itself), "it passed alone");
+    }
+
     /// SPEC-493 MQC-005: each reason this module dissolves a train for names its why.
     #[test]
     fn the_why_of_each_dissolve() {
@@ -1788,6 +1822,15 @@ mod tests {
             held_back: vec![("a".to_owned(), 1)],
             unformed: None,
             limit: Some(2),
+            suspect: Some(Suspect {
+                task: "c".to_owned(),
+                pr: 13,
+                head: "head-c".to_owned(),
+                armed_at: 1,
+                base: "base".to_owned(),
+                others: vec![11, 12],
+                run: "red".to_owned(),
+            }),
         };
         let text = serde_json::to_string(&state)?;
         assert_eq!(serde_json::from_str::<SandboxTrains>(&text)?, state);
