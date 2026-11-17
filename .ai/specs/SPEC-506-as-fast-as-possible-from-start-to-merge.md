@@ -226,4 +226,6 @@ product project's 21 jobs pinned to 3 CPUs are its `yulius.toml`.
 - Review round 1 (Fable 5.2) asked for changes: one major (the red-run notice reached authors with
   no approval), five minors and two nits, all own code; each fixed in the next commit with the
   tests named there.
+- The round 1 fixes' lines alone (`scripts/dev mutants --base 1031920ed`, 2 jobs): `mutants: 14
+  listed, 14 caught, 0 missed, 0 timed out, 0 unviable, 0 not reached (bound 30 min, took 836 s)`.
 
