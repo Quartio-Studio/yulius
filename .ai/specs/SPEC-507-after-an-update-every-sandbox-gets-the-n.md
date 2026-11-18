@@ -1,11 +1,11 @@
 ---
 yulius-task: 6b9db65e-20f8-4698-9efb-de305674b21d
-status: in-progress
+status: done
 ---
 
 # SPEC-507: After an update, every sandbox gets the new skills at once
 
-Status: in-progress
+Status: done
 Date: 2026-11-17
 Owner: Yulius task #489
 Scope authorization: task #489, the person's request of 2026-11-17 ("Make the skills reach every
@@ -87,7 +87,7 @@ What the code does (read on `dev` at 06289c6ee):
 - [x] Switching a skill on or off installs the sandbox's skills at once
 - [x] The reviewer agents' prompt holds only a contract no update changes
 - [x] Operations, architecture and changes documents say what an update refreshes
-- [ ] Independent review approved and its findings answered
+- [x] Independent review approved and its findings answered
 
 ## Acceptance criteria
 
@@ -106,6 +106,12 @@ What the code does (read on `dev` at 06289c6ee):
   the other sandboxes are refreshed.
 - **AC-6** (SKR-006) A test holds `REVIEWER_PROMPT` to the contract and the CI rule to
   `om-code-review`.
+- **AC-7** (SKR-005) A test: while a refresh holds the launch lock, a launch in its sandbox does
+  not reach its subscription choice; it goes on once the refresh ended. A switch whose request is
+  dropped while its refresh waits for the lock still refreshes the home and audits it.
+- **AC-8** (SKR-001, review round 1 and 2) A repository `SKILL.md` swapped for a FIFO right before
+  the catalog opens it never holds the server's start; a `SKILL.md` linked inside its own skill is
+  still shown.
 
 ## Test plan
 
@@ -137,3 +143,48 @@ What the code does (read on `dev` at 06289c6ee):
   too, a skill switched), not only an update; one entry per sandbox, targeted by slug as the
   sandbox's other entries are, is found the same way for all of them. The Update page's run is
   unchanged.
+
+## Evidence
+
+Head after review round 2: see the pull request (#1404). Commands run in the task's worktree
+(Linux, the pinned toolchain from `scripts/bootstrap.py`):
+
+- `cargo nextest run -p yulius -E 'binary_id(yulius::main) & (test(/^skills_mcp::/) | test(/a_launch_waits_for_a_skill_refresh/))'`:
+  10 passed, among them `skills_mcp::a_server_start_refreshes_every_sandboxs_skills` (AC-1, AC-2,
+  AC-4, AC-5: a sandbox with a running task and a live run gets the changed `om-fix` at the
+  start, a matching copy keeps its inode, the agent's own skill stays, a homeless sandbox stays
+  without a home, a sandbox whose `.claude` is a link and is listed first fails alone, one
+  `skills.refreshed` entry "server start at …; installed om-fix", none at a second start, the
+  switch off and on), `a_skill_md_swapped_for_a_fifo_never_holds_the_start`,
+  `a_linked_skill_md_inside_its_skill_is_shown`,
+  `a_switch_dropped_while_it_waits_still_refreshes_the_home` and
+  `task_done::a_launch_waits_for_a_skill_refresh_of_its_home` (AC-7, AC-8).
+- `cargo nextest run -p yulius-harness -E 'binary(skills) | test(/skills::tests/)'`: 16 passed
+  (AC-3: every kind of difference, a source read as the install copies it, the bounds).
+- `cargo nextest run -p yulius-domain -E 'test(/review/)'` and `-p yulius-app -E 'test(/skills/)'`:
+  passed (AC-6; `a_fifo_is_refused_by_the_open_itself`).
+- `cargo clippy -p yulius-harness -p yulius-app -p yulius --all-targets -- -D warnings` and
+  `scripts/dev quick`: clean.
+- Undone by hand, each test fails: the refresh loop over sandboxes, the refresh on a switch, a
+  loop that stops at the first failed sandbox (`a_server_start_refreshes_every_sandboxs_skills`);
+  `O_NONBLOCK` taken off (`a_skill_md_swapped_for_a_fifo_never_holds_the_start`, 20 s timeout);
+  the path of a linked `SKILL.md` not resolved (`a_linked_skill_md_inside_its_skill_is_shown`);
+  the switch's refresh not in a task of its own (`a_switch_dropped_while_it_waits_still_refreshes_the_home`);
+  the lock released before the install (`a_launch_waits_for_a_skill_refresh_of_its_home`); the
+  entry or the depth bound removed (`the_read_of_a_copy_stops_at_its_bounds`); the old reviewer
+  prompt (`the_reviewer_prompt_is_a_contract_without_review_rules`).
+- `scripts/dev mutants` (whole change, 119 mutants) and `--base f14f65331` (34): **not usable as
+  proof**. Review round 2 found, and the logs confirm, that every "caught" mutant was killed by
+  `xtask::cli security_is_listed_and_needs_a_vidoc_key` alone: in cargo-mutants' copy under
+  `/tmp`, which has no `.git`, `xtask security` stops at "not a Git repository" before its key
+  check, and nextest stops at that failure. Pre-existing, tracked as #1364 and #1374; the hand
+  undo checks above stand in for it.
+- `yulius security-scan`: exit 2, not run (Vidoc refused the instance key, HTTP 401); the CI
+  `security` job was skipped for the same reason. Not a pass.
+- Yulius CI run `2e035c7f` of 7a2839765: every job but `e2e` passed or was cancelled by it; `e2e`
+  failed in `subscriptions.e2e.ts` "a card stops saying Limit reached the moment its window
+  resets", started at 23:55 UTC: the known midnight flake #1334, in a page this change does not
+  touch.
+- Not tested here: a real update on a production host (the helper's install and the resume); the
+  start's order in `serve.rs` is held by reading (the refresh runs before `start_background` and
+  `start_update_loop`).
