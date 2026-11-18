@@ -131,7 +131,7 @@ Six pull requests, each merged into `dev` on green before the next begins.
 - [x] Slice C2: Antigravity limits, google_connected and moves within Antigravity subscriptions
 - [ ] Slice C2: review findings fixed and the slice delivered
 - [x] Slice D: the UI offers Antigravity with Gemini 4 Carbon (High) by default
-- [ ] Slice D: SPEC-001/002/003 and the documents say Antigravity is accepted
+- [x] Slice D: SPEC-001/002/003 and the documents say Antigravity is accepted
 - [ ] Slice D: review findings fixed and the slice delivered
 - [ ] Slice E: a task without a chosen agent is drawn at random and records the draw
 - [ ] Slice E: the composer and automations offer Random or a chosen agent, and the export reports the draw
@@ -495,3 +495,8 @@ Six pull requests, each merged into `dev` on green before the next begins.
   `yulius-contracts`, `yulius-domain` 1473 passed; `yulius` integration files `antigravity*`,
   `codex*`, `accounts`, `account_token`, `account_email`, `claude_gate`, `ui_contract`,
   `claude_updates` 139 passed. Clippy clean.
+- The documents say Antigravity is accepted: SPEC-001 (the `F 2026-11-17 Antigravity` source,
+  vision, glossary, J3, TSK-001/003, ROT-001/004, AC-ROT-8, changelog), SPEC-002 (principle 1,
+  evidence table, changelog), SPEC-003 (§6 item 90, changelog), `docs/product.md` and
+  `AGENTS.md`; each says the random draw follows in slice E. `index.html` preloads `agents.js`
+  (`check_repository.py --sync-brand`); `scripts/dev quick` passed.

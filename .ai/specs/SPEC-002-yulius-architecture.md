@@ -55,9 +55,10 @@ flowchart LR
 Principles:
 
 1. **Agents are real CLIs in PTYs.** Yulius never re-implements an agent; it launches, observes
-   and resumes native Claude Code and Codex sessions (SPEC-001 HRN-001, P(5); Codex deferred by
-   F 2026-10-08 and back by F 2026-11-16 Codex, [SPEC-503](SPEC-503-accept-outside-pr-1146-codex-returns-as.md),
-   ADR-0355).
+   and resumes native Claude Code, Codex and Antigravity sessions (SPEC-001 HRN-001, P(5); Codex
+   deferred by F 2026-10-08 and back by F 2026-11-16 Codex, [SPEC-503](SPEC-503-accept-outside-pr-1146-codex-returns-as.md),
+   ADR-0355; Antigravity by F 2026-11-17 Antigravity, [SPEC-505](SPEC-505-implement-antigravity-cli-next-to-claude.md),
+   ADR-0361).
 2. **Sessions outlive the web server.** Each run is owned by a detached `ptyhost` process; the
    server reattaches after restart (NFR-001).
 3. **GitHub is the authority** for repositories and permissions (ACC-007), with one exception:
@@ -2645,6 +2646,7 @@ cargo-deny, machete, rustdoc) is the evidence until it runs.
 | Hooks, briefing, discipline (COM-004, DSC-003) | `crates/yulius/tests/agent_hooks.rs` over the internal HTTP listener. |
 | Live Claude Code 2.1.292 | `tests/live_claude.rs` (opt-in): hooks fire, Yulius MCP `steps_set` with the task bearer token, session id and transcript path as predicted. `supervision.rs::real_claude_tui_reaches_the_prompt_inside_ptyhost` (opt-in): the real TUI in the real ptyhost reaches its prompt without first-run screens. |
 | Codex | Back since F 2026-11-16 Codex (SPEC-503, ADR-0355; removed by F 2026-10-08): a Codex task's launch, rollout, rotation, resume, write-back, hooks, sign-ins, usage and the provided CLI are covered by `codex.rs`, `codex_cli.rs`, `accounts.rs`, `account_token.rs`, `account_usage.rs`, `claude_gate.rs`, `agent_hooks.rs`, the `yulius-harness` tests (rollouts real Codex 0.169.0 wrote) and e2e `codex.e2e.ts`. |
+| Antigravity | Since F 2026-11-17 Antigravity (SPEC-505, ADR-0361): an Antigravity task's launch, transcript, hooks, rotation, resume, write-back, sign-ins and the provided CLI are covered by `antigravity.rs`, `antigravity_cli.rs`, `accounts.rs`, `claude_gate.rs`, `agent_hooks.rs`, the `yulius-harness` tests (a transcript real agy 1.5.10 wrote against a local Gemini stub) and e2e `antigravity.e2e.ts`; a live Google account is not verified. |
 | Real adapters | `tests/git_adapter.rs` (real git); GitHub adapter unit-tested against recorded HTTP (no real App configured). |
 | Areas | `accounts.rs`, `analytics.rs`, `automations.rs`, `skills_mcp.rs`, `delivery.rs`, `projects.rs`, `import_server.rs`, `browser.rs`, `editor.rs`, `shells.rs`, `http_auth.rs`, `mcp_coordination.rs`. |
 | UI in a real browser (2026-10-07) | Headless Google Chrome (isolated profile, CDP driver) against a temporary local `yulius serve`: setup wizard with both non-recoverable confirmations, workspace shell (thin sandbox tab row, sidebar without Settings, no top usage bar, "not contained" badge), GitHub connection page and manifest endpoint (real adapter: org form URL with state, callback URLs, permissions), users/accounts pages, status panel with live machine metrics. Task views through the UI's mock backend served by the real server: step strip, xterm terminal, browser panel with per-sandbox tabs and a user-action tab, phone layout (390×844) with quick-input bar whose input reaches the terminal. No console errors. Sandbox-backed pages with real data need a GitHub App (not exercised). The UI/API contract is enforced by `ui_contract.rs`. |
@@ -2667,6 +2669,14 @@ cargo-deny, machete, rustdoc) is the evidence until it runs.
 | Not exercised | Real GitHub App/OAuth, deployment (out of scope). Linux results: see the container runs below. `yulius onboard` against a deployed instance with real `~/.claude` stores. |
 
 ## 15. Changelog
+
+- 2026-11-18 (`F 2026-11-17 Antigravity`, task #487; SPEC-505, ADR-0361): Antigravity is a third
+  harness: an Antigravity adapter in `yulius-harness` (launch plan, transcript observation, hook
+  translation, sign-in envelope), a home per run linked to the sandbox's shared conversations,
+  the token write-back as a compare-and-swap of the credential the launch gave, Antigravity
+  subscriptions in the API and the UI, and the pinned Antigravity CLI 1.5.10 installed into
+  `<data>/antigravity-cli`; principle 1 and the evidence table say so; ADR-06 (no translation)
+  unchanged.
 
 - 2026-11-17 (`F 2026-11-16 Codex`, task #485; SPEC-503, ADR-0355, from outside pull request
   #1146 by studenciak00owl): Codex returns as a second harness: a Codex adapter in
