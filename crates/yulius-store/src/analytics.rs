@@ -45,6 +45,7 @@ fn task_row(row: &Row<'_>) -> rusqlite::Result<AnalyticsTask> {
         number: to_u32(row.get("number")?),
         title: row.get("title")?,
         harness: harness(&harness_text)?,
+        harness_drawn: row.get("harness_drawn")?,
         status: TaskStatus::parse(&status).ok_or_else(|| bad_column("status", &status))?,
         activity: activity.as_deref().and_then(Activity::parse),
         origin: TaskOrigin::parse(&origin),
@@ -133,7 +134,9 @@ fn read(conn: &Connection, query: &AnalyticsQuery) -> AppResult<AnalyticsData> {
         conn,
         &format!(
             "SELECT t.id, t.sandbox_id, s.slug, t.number, t.title, t.harness, t.status, t.activity, \
-             t.origin, t.created_at, t.closed_at FROM tasks t JOIN sandboxes s ON s.id = t.sandbox_id \
+             t.origin, t.created_at, t.closed_at, \
+             EXISTS(SELECT 1 FROM task_harness_draws d WHERE d.task_id = t.id) AS harness_drawn \
+             FROM tasks t JOIN sandboxes s ON s.id = t.sandbox_id \
              WHERE {filter} ORDER BY t.created_at DESC, t.id DESC LIMIT {}",
             u64::from(limit) + 1
         ),

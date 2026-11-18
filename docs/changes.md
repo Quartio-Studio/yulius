@@ -6,6 +6,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-18
 
+- Antigravity, slice E (SPEC-505 pull request 6, task #487): a task created without a chosen
+  agent is drawn at random between Claude Code and Antigravity, among those with a usable
+  subscription; a model given picks its agent. Random is the composer's and the automation
+  editor's default (an automation draws for each run), a task says whether its agent was drawn
+  (`harness_choice`), and the analytics export lists it, so the two agents can be compared.
+
 - Antigravity, slice D (SPEC-505 pull request 5, task #487): the UI offers Antigravity. The
   composer's model menu has Gemini 4 Carbon under Google (high effort by default), an
   automation's agent can be Antigravity, and Subscriptions adds an Antigravity subscription by

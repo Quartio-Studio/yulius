@@ -1,11 +1,11 @@
 ---
 yulius-task: f3ef7d63-9ca5-49a8-bce2-706f2f3e21c0
-status: in-progress
+status: done
 ---
 
 # SPEC-505: Antigravity CLI as a third harness, picked at random by default
 
-Status: in-progress (delivered in six slices)
+Status: done (delivered in six slices: pull requests #1395, #1399, #1402, #1405, #1406, #1407)
 Date: 2026-11-17
 Owner: Yulius task #487
 Scope authorization: the person's request of 2026-11-17 (task #487), verbatim: "Implement
@@ -108,9 +108,9 @@ selection bias of people picking one for certain work.
 | AGY-008 | An Antigravity account signs in from Subscriptions by Google (the CLI's own sign-in in a server-owned terminal with a temporary home; the token file it writes is sealed in the vault) or with a Gemini API key; credentials are never returned, logged or audited. A run writes back a changed token file of its own account after it ends. | `tests/accounts.rs`; `tests/antigravity.rs` |
 | AGY-009 | Rotation, a person's move and a removal of a subscription keep an Antigravity task on Antigravity subscriptions; with none usable it waits, its notices naming Antigravity. | `tests/antigravity.rs` |
 | AGY-010 | The UI offers Antigravity: the composer's model menu has a Google group (Gemini 4 Carbon first, high effort by default), automations take the agent, Subscriptions adds an Antigravity subscription (Google sign-in or API key); the mock serves the same. | `e2e/tests/antigravity.e2e.ts` |
-| RND-001 | A task created without a harness (or with `auto`) gets Claude Code or Antigravity, drawn uniformly at random among those two that have a usable subscription (Claude Code when neither has); `claude`, `codex` or `antigravity` given is kept. The task records `harness_choice` `random` or `chosen`, shown in its summary and kept with it for life. | `tests/harness_draw.rs`; domain unit tests |
-| RND-002 | The composer's agent defaults to Random and can be set to a chosen agent; an automation's agent may be Random, drawn for each run. | `e2e/tests/antigravity.e2e.ts`; `tests/automations.rs` |
-| RND-003 | The analytics export lists each task's harness, model and `harness_choice`, so the two agents can be compared on drawn tasks. | `tests/analytics.rs` |
+| RND-001 | A task created without a harness (or with `auto`) gets Claude Code or Antigravity, drawn uniformly at random among those two that have a usable subscription (Claude Code when neither has); `claude`, `codex` or `antigravity` given is kept, and so is the agent a model given without one implies (Antigravity for `gemini-*`, else Claude Code), as `chosen`. The task records `harness_choice` `random` or `chosen`, shown in its summary and kept with it for life. | `tests/harness_draw.rs`; domain unit tests |
+| RND-002 | The composer's agent defaults to Random and can be set to a chosen agent; an automation's agent may be Random, drawn for each run. | `e2e/tests/antigravity.e2e.ts`; `tests/harness_draw.rs` |
+| RND-003 | The analytics export lists each task's harness, model and `harness_choice`, so the two agents can be compared on drawn tasks. | `tests/harness_draw.rs` |
 
 ## Plan
 
@@ -132,11 +132,11 @@ Six pull requests, each merged into `dev` on green before the next begins.
 - [x] Slice C2: review findings fixed and the slice delivered
 - [x] Slice D: the UI offers Antigravity with Gemini 4 Carbon (High) by default
 - [x] Slice D: SPEC-001/002/003 and the documents say Antigravity is accepted
-- [ ] Slice D: review findings fixed and the slice delivered
-- [ ] Slice E: a task without a chosen agent is drawn at random and records the draw
-- [ ] Slice E: the composer and automations offer Random or a chosen agent, and the export reports the draw
-- [ ] Independent review in a fresh session, findings fixed test-first
-- [ ] Every gate green, docs and the changes log updated
+- [x] Slice D: review findings fixed and the slice delivered
+- [x] Slice E: a task without a chosen agent is drawn at random and records the draw
+- [x] Slice E: the composer and automations offer Random or a chosen agent, and the export reports the draw
+- [x] Independent review in a fresh session, findings fixed test-first
+- [x] Every gate green, docs and the changes log updated
 
 ## Acceptance criteria
 
@@ -515,3 +515,79 @@ Six pull requests, each merged into `dev` on green before the next begins.
   left: the sessions page labels assistant entries "Claude" (session search and import are
   Claude Code's only, ADR-0361 Consequences). e2e `antigravity.e2e.ts` 8 passed; `yulius-app`
   611 passed; `ui_contract`, `antigravity` 22 passed; clippy clean; `scripts/dev quick` passed.
+
+### Slice E (the draw)
+
+- A task created without an agent (or with `auto`) takes the agent its model implies
+  (`Harness::implied_by`: Antigravity for `gemini-*`, else Claude Code), and without a model is
+  drawn (`App::draw_harness`): Claude Code or Antigravity uniformly among those with a usable
+  subscription (`Harness::drawn` over a random byte, even over its 256 values), Claude Code when
+  neither has one, whose start is then refused as before. A drawn task is recorded in
+  `task_harness_draws` (migration 0066; a task absent there was chosen, as every older task
+  was), and `TaskSummary.harness_choice` says `random` or `chosen`. The agents' `task_create`
+  tool takes an optional `harness` with the same default.
+- Tests: `harness_draw::*` (queued rolls pick each agent; `auto`; agents given or implied by a
+  model are kept and say `chosen`; Codex only when chosen; the draw among usable agents only;
+  neither usable refused naming Claude; an agent's `task_create` drawn unless it names one) 3
+  passed; the domain's `the_draw_picks_among_the_usable_agents`; the whole workspace 4984
+  passed. Clippy clean.
+- An automation's agent may be `auto` (the default, stored as `auto`; `AutomationRecord.harness`
+  is `None`): each run draws its task's agent and records the draw; an agent's
+  `automation_create` without `harness` is `auto` too (it took the agent's own before). The
+  analytics export's `harness_choice` (JSON and the CSV column after `harness`) says `random` or
+  `chosen`. The composer starts with Random ("Random agent", the menu's first item: Claude Code
+  or Antigravity, drawn for each task), the automation editor's Agent with Random, and a task's
+  overview says "(drawn at random)"; the mock draws the same way (`harnessRolls` queues rolls).
+- Tests: `harness_draw::an_automation_without_an_agent_draws_one_for_each_run`,
+  `the_export_says_which_agents_were_drawn`; `automations::agents_manage_automations_through_mcp_tools`
+  now expects `auto`. e2e `antigravity.e2e.ts` `a task started without choosing an agent is
+  drawn, and says so`; the whole e2e suite 1095 passed (1 skipped); the whole workspace passed
+  before the export change, and `harness_draw`, `analytics`, `automation` 58 passed after it.
+- CI run 1627fc16 on 383f4b625 failed two tests:
+  - `ui_contract::the_ui_describes_default_as_the_model_and_effort_a_launch_uses` still pinned the
+    old "Default" item; own code. The Random item and the composer's chip now name each drawn
+    agent's default model ("Claude Code (Opus 5.5) or Antigravity (Gemini 4 Carbon)"), and the
+    test holds that wording.
+  - `local_ci::a_second_run_that_finds_no_network_room_is_not_made` hit its job's 8 s limit on a
+    1-CPU budget. It passes alone, and this change does not touch local CI. Filed as #1408.
+- Mutation testing (`scripts/dev mutants`, on 383f4b625): `mutants: 96 listed, 15 caught,
+  0 missed, 0 timed out, 81 unviable, 0 not reached (bound 30 min, took 549 s)`.
+- Review round 1 (yulius-reviewer, head 383f4b625, request changes; own code), answered:
+  1. Blocker: the CI failure of `ui_contract`, fixed in 880ad4a9e (above).
+  2. Major: with only Antigravity usable, a mixed request on Random was refused for want of a
+     Claude account, because the split card took "no `harness`" for Claude. A Random request
+     while Antigravity is usable is now created as one task when the split proposal cannot be
+     made. e2e `a mixed request on Random with only Antigravity usable is created as one drawn
+     task` failed before the fix and passes after it.
+  3. Tests added: `harness_draw::an_agent_without_a_usable_account_is_not_drawn` (relogin and
+     not signed in), `deleting_a_drawn_task_removes_its_draw`, and
+     `an_automation_changes_to_auto_and_back_and_templates_draw`.
+  4. Spec truth: RND-001 and ADR-0361 say that a model given picks the agent as `chosen`;
+     RND-002 and RND-003 name `tests/harness_draw.rs`; this mutants line; the D Plan box.
+  5. `sandbox_task_create` takes `harness`. Nits: models.js comments say Random, a failed read
+     of the draw is logged, the automations test's message, and api.md's default model
+     (`claude-opus-5-5`, which was already stale before this slice).
+  - Kept: the composer says "Random agent" also on an instance without Antigravity, where the
+    draw always gives Claude Code. The label names the default the server applies.
+- After round 1: the whole workspace 4989 passed. e2e `antigravity`, `codex`, `intake`,
+  `claude-connect` 48 passed. Clippy clean; `scripts/dev quick` passed.
+- Review round 2 (head eed6f74bb, request changes; own code), answered:
+  1. Major: `sandbox_task_create` listed `harness` in its schema, but its checked arguments
+     (`CrossTaskArgs`, `deny_unknown_fields`) refused it. It now takes `harness`, the request
+     shows it among its options ("Agent: …", `OPTIONS`, `agent.js` `OPTION_LABELS`), and the
+     approved task runs it as `chosen`. `cross_sandbox::a_request_names_the_agent_of_its_task`
+     failed before the fix and passes after it.
+  2. Nits: ADR-0361's edited line is wrapped. The round 1 fix's Rust product lines are a JSON
+     schema literal and a log call; mutation tooling finds nothing to change in either, so the
+     mutants run on 383f4b625 stands for the slice.
+- After round 2: `cross_sandbox` 36 passed, `harness_draw` 8 passed.
+- Review round 3 (head e5c934913): approve. It also checked the whole task and found every
+  requirement, AGY-001..010 and RND-001..003, with code and a test. Its notes, fixed after:
+  e2e `superagent-requests.e2e.ts` checks that the card shows "Agent: antigravity" and that the
+  approved task runs it (it failed with the label line removed, per the reviewer's probe); the
+  mock's approval honours the request's agent. Kept: an unknown agent name is refused only after
+  the person approves, as an unknown `mode` already is. `superagent-requests.e2e.ts` 19 passed.
+- Not verified without a live Google account (ADR-0361 Consequences): a real Google sign-in and
+  its token file, refresh and write-back, a plan's real quota texts and reset times. Antigravity
+  subscriptions show no usage windows. Claude-only features stay Claude-only for Antigravity
+  tasks.

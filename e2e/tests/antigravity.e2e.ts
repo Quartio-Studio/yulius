@@ -1,6 +1,6 @@
 import { test } from '@e2e-dev/web';
 import { expect } from 'e2e';
-import { axeViolations, failOnPageErrors, firstShown, mock, touchTask } from './support.ts';
+import { axeViolations, eventsConnected, failOnPageErrors, firstShown, mock, touchTask } from './support.ts';
 
 failOnPageErrors();
 
@@ -10,7 +10,8 @@ failOnPageErrors();
 
 type Mocked = {
   __yuliusMock: {
-    tasks: { harness: string; model: string; effort: string }[];
+    tasks: { harness: string; harness_choice?: string; model: string; effort: string }[];
+    harnessRolls: number[];
     accounts: { label: string; provider: string; status: string }[];
     automations: { name: string; harness: string }[];
     connectAntigravity: () => void;
@@ -159,6 +160,8 @@ test('the composer asks for Claude only while no Antigravity account is usable e
 
   await app.open(mock('/s/studio', '&claude=0'));
   await firstShown(browser.locator('.claude-connect'));
+  // The announcement reaches a page that hears announcements.
+  await eventsConnected(browser);
   await browser.evaluate(() => (window as unknown as Mocked).__yuliusMock.connectAntigravity());
   await expect(browser.locator('.claude-connect')).toHaveCount(0);
 });
@@ -168,4 +171,65 @@ test('an unknown add in the address opens no dialog', async ({ app, browser, scr
   await app.open(mock('/admin/accounts?add=constructor', '&ambient=0'));
   await firstShown(screen.getByRole('button', 'Add subscription').first());
   await expect(browser.locator('dialog.modal')).toHaveCount(0);
+});
+
+// SPEC-505 RND-001/002: the composer starts with Random: a task started without choosing an agent
+// is drawn among the usable ones (here Antigravity's roll) and its details say so; an automation's
+// agent is Random by default.
+test('a task started without choosing an agent is drawn, and says so', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio'));
+  await browser.evaluate(() => {
+    const m = (window as unknown as Mocked).__yuliusMock;
+    m.accounts.push({ id: 'acc_google', provider: 'google', label: 'Antigravity #1', status: 'ok' } as never);
+    m.harnessRolls.push(1);
+  });
+  await firstShown(screen.getByRole('button', 'Model: Random agent'));
+  await screen.getByRole('button', /^Model:/).click();
+  await expect(screen.getByRole('menuitemradio', /^Random/)).toHaveAttribute('aria-checked', 'true');
+  await browser.keyboard.press('Escape');
+  const prompt = screen.getByRole('textbox', 'Task prompt');
+  await prompt.fill('Add a health check');
+  await prompt.press('ControlOrMeta+Enter');
+  await expect(browser).toHaveURL(/#\/s\/studio\/t\/\d+$/);
+  const task = await browser.evaluate(() => {
+    const tasks = (window as unknown as Mocked).__yuliusMock.tasks;
+    const last = tasks[tasks.length - 1];
+    return { harness: last.harness, choice: last.harness_choice };
+  });
+  expect(task).toEqual({ harness: 'antigravity', choice: 'random' });
+  // Its overview (the same page, not a reload: the mock keeps the task) says it was drawn.
+  await browser.evaluate(() => { location.hash = location.hash.replace('/t/', '/tasks/'); });
+  await expect(browser.locator('main')).toContainText('Antigravity (drawn at random)');
+
+  await app.open(mock('/s/studio/automations/new'));
+  await firstShown(screen.getByRole('radiogroup', 'Agent'));
+  await expect(screen.getByRole('radiogroup', 'Agent').getByRole('radio', 'Random')).toHaveAttribute('aria-checked', 'true');
+});
+
+// SPEC-505 RND-001 (slice E review): a split proposal is Claude's to make. With only Antigravity
+// usable, a request the composer would split, started on Random, is created as one task drawn to
+// Antigravity instead of being refused for want of a Claude account.
+test('a mixed request on Random with only Antigravity usable is created as one drawn task', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio', '&claude=0'));
+  await firstShown(browser.locator('.claude-connect'));
+  await eventsConnected(browser);
+  await browser.evaluate(() => (window as unknown as Mocked).__yuliusMock.connectAntigravity());
+  await expect(browser.locator('.claude-connect')).toHaveCount(0);
+  await expect(screen.getByRole('button', 'Model: Random agent')).toBeVisible();
+  const prompt = screen.getByRole('textbox', 'Task prompt');
+  await prompt.fill([
+    'Finish the release before Friday, all of this has to land together please.',
+    '1. Make the attention bar opaque over the terminal and keep its colours readable.',
+    '2. Stop the tools rail pills from overflowing the rail on narrow windows.',
+    '3. Route new tasks past exhausted accounts in the backend subscription pool.',
+  ].join('\n'));
+  await prompt.press('ControlOrMeta+Enter');
+  await expect(browser).toHaveURL(/#\/s\/studio\/t\/\d+$/);
+  await expect(browser.locator('.toast-error')).toHaveCount(0);
+  const task = await browser.evaluate(() => {
+    const tasks = (window as unknown as Mocked).__yuliusMock.tasks;
+    const last = tasks[tasks.length - 1];
+    return { harness: last.harness, choice: last.harness_choice };
+  });
+  expect(task).toEqual({ harness: 'antigravity', choice: 'random' });
 });

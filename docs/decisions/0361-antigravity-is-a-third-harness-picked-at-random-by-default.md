@@ -27,8 +27,9 @@ provider switching and session translation stay removed (SPEC-002 ADR-06).
   keeps its harness for life; rotation, moves and removals stay within the provider.
 - **Draw.** A task created without a harness (or with `auto`) runs Claude Code or Antigravity,
   drawn uniformly among those two with a usable subscription (Claude Code when neither has one);
-  a harness given is kept. The task records `harness_choice` (`random` or `chosen`). Codex runs
-  only when chosen.
+  a harness given is kept, and so is the one a model given without one implies (Antigravity for
+  a Gemini model, else Claude Code). An automation without an agent draws for each run. The
+  task records `harness_choice` (`random` or `chosen`). Codex runs only when chosen.
 - **Model.** An Antigravity task that names no model runs `gemini-4-carbon` at effort `high`,
   passed on every launch.
 - **Homes.** Each run has its own home in its run directory, `<run>/antigravity-home`, whose

@@ -1,8 +1,9 @@
 // Models and effort levels the new-task composer offers (SPEC-001 UI-021). Grouped by provider so
 // another harness's models can join the list; each provider names the harness that runs them.
 // Yulius runs Claude Code, Codex (SPEC-503) and Antigravity (SPEC-505). A Claude model id goes to
-// Claude Code's `--model` and a level to `--effort`; choosing "Default" sends neither and the task
-// runs Yulius's default, Opus 5.5 at high effort (SPEC-023, SPEC-462, SPEC-493). The first model
+// Claude Code's `--model` and a level to `--effort`; choosing "Random" sends no model and no agent,
+// so the server draws Claude Code (on Yulius's default, Opus 5.5 at high effort; SPEC-023,
+// SPEC-462, SPEC-493) or Antigravity among the usable agents (SPEC-505 RND-001). The first model
 // listed is the default, as on the server. Choosing Codex sends `harness: codex` and no model:
 // Codex runs its account's default model at the chosen effort. Choosing a Gemini model sends
 // `harness: antigravity` and the model; Antigravity's default is Gemini 4 Carbon at high effort.
@@ -67,7 +68,7 @@ export function fallbackLine(model, fallback) {
   return `${modelLabel(model)} is used up on every subscription: tasks set to it run on ${modelLabel(fallback)} until it can run again`;
 }
 
-/** The request fields of a model choice: `{model?, harness?}` (none for "Default"). */
+/** The request fields of a model choice: `{model?, harness?}` (none for "Random"). */
 export function modelFields(id) {
   const found = findModel(id);
   if (!found) return {};
@@ -109,7 +110,9 @@ export function findEffort(id) {
 /** Menu items to pick a model (grouped by provider); `onPick(id|null)`. */
 export function modelMenuItems(selected, onPick) {
   return [
-    { label: 'Default', description: 'Opus 5.5', checked: selected === null, onSelect: () => onPick(null) },
+    // No model chosen: the agent is drawn for each task, Claude Code (on Opus 5.5) or Antigravity
+    // (on Gemini 4 Carbon), among those with a usable subscription (SPEC-505 RND-001).
+    { label: 'Random', description: 'Claude Code (Opus 5.5) or Antigravity (Gemini 4 Carbon), drawn for each task', checked: selected === null, onSelect: () => onPick(null) },
     ...PROVIDERS.flatMap((provider) => [
       { header: provider.name },
       ...provider.models.map((model) => ({ label: model.name, description: model.description, checked: model.id === selected, onSelect: () => onPick(model.id) })),
