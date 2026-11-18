@@ -1,6 +1,6 @@
 import { test } from '@e2e-dev/web';
 import { expect } from 'e2e';
-import { axeViolations, failOnPageErrors, mock } from './support.ts';
+import { axeViolations, failOnPageErrors, firstShown, mock, touchTask } from './support.ts';
 
 failOnPageErrors();
 
@@ -13,12 +13,13 @@ type Mocked = {
     tasks: { harness: string; model: string; effort: string }[];
     accounts: { label: string; provider: string; status: string }[];
     automations: { name: string; harness: string }[];
-    touchTask: (sandbox: string, number: number, fields: Record<string, unknown>) => void;
+    connectAntigravity: () => void;
   };
 };
 
 test('an Antigravity subscription is added with a Gemini API key', async ({ app, browser, screen }) => {
   await app.open(mock('/admin/accounts', '&ambient=0'));
+  await firstShown(screen.getByRole('button', 'Add subscription').first());
   await screen.getByRole('button', 'Add subscription').first().click();
   await browser.locator('dialog.modal .seg label:has-text("Antigravity")').click();
   const add = screen.getByRole('dialog', 'Add an Antigravity subscription');
@@ -44,6 +45,7 @@ test('an Antigravity subscription is added with a Gemini API key', async ({ app,
   expect(added).toMatchObject({ provider: 'google', status: 'ok' });
   // Its card offers no token paste or auth.json import, and speaks of Antigravity.
   const card = browser.locator('main .account-card:has-text("Gemini key")');
+  await expect(card).toBeVisible();
   await expect(browser.locator('main .card:has-text("Gemini key") button:has-text("Paste a new token")')).toHaveCount(0);
   await expect(browser.locator('main .card:has-text("Gemini key") button:has-text("Import auth.json")')).toHaveCount(0);
   await screen.getByRole('button', 'Refresh usage of Gemini key').click();
@@ -54,6 +56,7 @@ test('an Antigravity subscription is added with a Gemini API key', async ({ app,
 test('an Antigravity subscription signs in with Google in the login terminal', async ({ app, browser, screen }) => {
   await app.open(mock('/admin/accounts?add=antigravity', '&ambient=0'));
   const add = screen.getByRole('dialog', 'Add an Antigravity subscription');
+  await firstShown(add);
   await expect(add.getByRole('radio', 'Google sign-in')).toBeChecked();
   await add.getByRole('textbox', /^Name/).fill('Antigravity dev');
   await add.getByRole('button', 'Continue to sign-in').click();
@@ -63,9 +66,10 @@ test('an Antigravity subscription signs in with Google in the login terminal', a
   await expect(terminal).toContainText('Sign in with Google');
   await expect(terminal).not.toContainText('Claude');
   // The 704-character link stays on one row of the 1024-column terminal.
-  const rows = await browser.evaluate(() => [...document.querySelectorAll('.login-terminal .xterm-rows > div')].map((row) => row.textContent || ''));
-  const link = rows.find((row) => row.includes('https://accounts.google.com/'));
-  expect(link && link.trim().length).toBe(704);
+  await expect.poll(() => browser.evaluate(() => {
+    const rows = [...document.querySelectorAll('.login-terminal .xterm-rows > div')].map((row) => (row.textContent || '').trim());
+    return (rows.find((row) => row.startsWith('https://accounts.google.com/')) || '').length;
+  })).toBe(704);
   const waiting = await browser.evaluate(() => (window as unknown as Mocked).__yuliusMock.accounts.find((a) => a.label === 'Antigravity dev'));
   expect(waiting).toMatchObject({ provider: 'google', status: 'pending_login' });
   await expect(browser.locator('.login-terminal .xterm-helper-textarea')).toBeFocused();
@@ -77,6 +81,7 @@ test('an Antigravity subscription signs in with Google in the login terminal', a
 test('choosing Gemini 4 Carbon in the composer starts an Antigravity task at high effort', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio'));
   await browser.evaluate(() => (window as unknown as Mocked).__yuliusMock.accounts.push({ id: 'acc_google', provider: 'google', label: 'Antigravity #1', status: 'ok' } as never));
+  await firstShown(screen.getByRole('button', /^Model:/));
   await screen.getByRole('button', /^Model:/).click();
   await expect(screen.getByText('Google', { exact: true })).toBeVisible();
   await screen.getByRole('menuitemradio', /^Gemini 4 Carbon/).click();
@@ -95,6 +100,7 @@ test('choosing Gemini 4 Carbon in the composer starts an Antigravity task at hig
 
 test('an automation can run its tasks on Antigravity', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/automations/new'));
+  await firstShown(screen.getByRole('textbox', 'Automation name'));
   await screen.getByRole('textbox', 'Automation name').fill('Nightly Gemini review');
   await screen.getByRole('textbox', 'What the task does').fill('Review yesterday’s commits.');
   const agent = screen.getByRole('radiogroup', 'Agent');
@@ -110,10 +116,10 @@ test('an Antigravity task runs only on Antigravity subscriptions and names its a
   await browser.evaluate(() => {
     const m = (window as unknown as Mocked).__yuliusMock;
     m.accounts.push({ id: 'acc_google_1', provider: 'google', label: 'Antigravity #1', status: 'ok' } as never, { id: 'acc_google_2', provider: 'google', label: 'Antigravity #2', status: 'ok' } as never);
-    m.touchTask('sb_studio', 12, { harness: 'antigravity', account_label: 'Antigravity #1', account_id: 'acc_google_1' });
   });
+  await touchTask(browser, 'sb_studio', 12, { harness: 'antigravity', account_label: 'Antigravity #1', account_id: 'acc_google_1' });
   const chip = browser.locator('.taskview .stepstrip-main button.account-chip');
-  await expect(chip).toHaveText('Antigravity #1');
+  await firstShown(chip, 'Antigravity #1');
   await chip.click();
   await expect(screen.getByRole('menuitem', /^Antigravity #2/)).toBeVisible();
   await expect(screen.getByRole('menuitem', /^Claude #/)).toHaveCount(0);
@@ -125,10 +131,41 @@ test('an Antigravity task runs only on Antigravity subscriptions and names its a
 // a start that failed for want of one.
 test('an Antigravity task waiting for or failing without an account names Antigravity', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/t/12', '&ambient=0'));
-  await browser.evaluate(() => (window as unknown as Mocked).__yuliusMock.touchTask('sb_studio', 12, { harness: 'antigravity' }));
-  await browser.evaluate(() => (window as unknown as Mocked).__yuliusMock.touchTask('sb_studio', 12, { status: 'waiting_capacity', activity: null, account_label: null, waits_for_account: true }));
-  await expect(browser.locator('.strip-status')).toHaveText('Paused · waits for an Antigravity account');
-  await browser.evaluate(() => (window as unknown as Mocked).__yuliusMock.touchTask('sb_studio', 12, { status: 'failed_no_account', waits_for_account: false }));
+  await touchTask(browser, 'sb_studio', 12, { harness: 'antigravity', status: 'waiting_capacity', activity: null, account_label: null, waits_for_account: true });
+  await firstShown(browser.locator('.strip-status'), 'Paused · waits for an Antigravity account');
+  // Its line in the lists and its time's tooltip say so too.
+  await expect(screen.getByRole('link', /, Waiting for an Antigravity account: none is usable/).first()).toBeVisible();
+  await expect(browser.locator('[title^="Waiting for an Antigravity account since"]').first()).toBeAttached();
+  await touchTask(browser, 'sb_studio', 12, { status: 'failed_no_account', waits_for_account: false });
   await expect(browser.locator('main')).toContainText('The task couldn’t start because no Antigravity account was usable.');
   await expect(screen.getByText('Failed (no Antigravity account)').first()).toBeVisible();
+});
+
+// With no Claude account usable, the composer asks to connect Claude only until an Antigravity
+// account is usable; an Antigravity start refused for want of one offers Connect Antigravity,
+// which opens the Antigravity dialog.
+test('the composer asks for Claude only while no Antigravity account is usable either', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio', '&claude=0'));
+  await firstShown(browser.locator('.claude-connect'));
+  await screen.getByRole('button', /^Model:/).click();
+  await screen.getByRole('menuitemradio', /^Gemini 4 Carbon/).click();
+  await screen.getByRole('textbox', 'Task prompt').fill('Add a health check');
+  await screen.getByRole('button', 'Start task').click();
+  const toast = browser.locator('.toast-error');
+  await expect(toast).toContainText('Connect an Antigravity account first');
+  await toast.getByRole('button', { name: 'Connect Antigravity' }).click();
+  await expect(screen.getByRole('dialog', 'Add an Antigravity subscription')).toBeVisible();
+  await expect(screen.getByRole('radio', 'Google sign-in')).toBeChecked();
+
+  await app.open(mock('/s/studio', '&claude=0'));
+  await firstShown(browser.locator('.claude-connect'));
+  await browser.evaluate(() => (window as unknown as Mocked).__yuliusMock.connectAntigravity());
+  await expect(browser.locator('.claude-connect')).toHaveCount(0);
+});
+
+// Only the agents' names open the Add dialog from the address: any other `add` opens nothing.
+test('an unknown add in the address opens no dialog', async ({ app, browser, screen }) => {
+  await app.open(mock('/admin/accounts?add=constructor', '&ambient=0'));
+  await firstShown(screen.getByRole('button', 'Add subscription').first());
+  await expect(browser.locator('dialog.modal')).toHaveCount(0);
 });

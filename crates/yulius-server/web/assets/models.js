@@ -38,8 +38,7 @@ export const PROVIDERS = [
     id: 'google',
     name: 'Google',
     harness: 'antigravity',
-    // Without an effort chosen, an Antigravity task runs at this one (the server's default).
-    defaultEffort: 'high',
+    // Without an effort chosen, the server runs an Antigravity task at high effort.
     models: [
       { id: 'gemini-4-carbon', name: 'Gemini 4 Carbon', description: 'Antigravity CLI on an Antigravity account, high effort by default' },
     ],

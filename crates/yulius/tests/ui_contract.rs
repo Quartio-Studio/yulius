@@ -521,7 +521,7 @@ fn resolve(file: &str, spec: &str) -> String {
 }
 
 /// SPEC-505 AGY-010: the composer offers Antigravity in a Google group whose first model is the
-/// server's default for an Antigravity task, chosen at its default effort.
+/// server's default for an Antigravity task (whose effort the server sets when none is chosen).
 #[test]
 fn the_composer_offers_antigravity_on_its_default_model() -> TestResult {
     use yulius_domain::harness::{DEFAULT_ANTIGRAVITY_EFFORT, DEFAULT_ANTIGRAVITY_MODEL};
@@ -541,10 +541,11 @@ fn the_composer_offers_antigravity_on_its_default_model() -> TestResult {
         )),
         "models.js does not list {DEFAULT_ANTIGRAVITY_MODEL} first for Antigravity"
     );
-    assert!(
-        models.contains(&format!("defaultEffort: '{DEFAULT_ANTIGRAVITY_EFFORT}'")),
-        "models.js does not say Antigravity's default effort"
+    assert_eq!(
+        DEFAULT_ANTIGRAVITY_EFFORT, "high",
+        "the menu's description says high"
     );
+    assert!(google.contains("high effort by default"));
     Ok(())
 }
 

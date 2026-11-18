@@ -129,7 +129,7 @@ Six pull requests, each merged into `dev` on green before the next begins.
 - [x] Slice C1: review findings fixed and the slice delivered
 - [x] Slice C2: Antigravity subscriptions sign in with Google or a Gemini API key
 - [x] Slice C2: Antigravity limits, google_connected and moves within Antigravity subscriptions
-- [ ] Slice C2: review findings fixed and the slice delivered
+- [x] Slice C2: review findings fixed and the slice delivered
 - [x] Slice D: the UI offers Antigravity with Gemini 4 Carbon (High) by default
 - [x] Slice D: SPEC-001/002/003 and the documents say Antigravity is accepted
 - [ ] Slice D: review findings fixed and the slice delivered
@@ -498,5 +498,20 @@ Six pull requests, each merged into `dev` on green before the next begins.
 - The documents say Antigravity is accepted: SPEC-001 (the `F 2026-11-17 Antigravity` source,
   vision, glossary, J3, TSK-001/003, ROT-001/004, AC-ROT-8, changelog), SPEC-002 (principle 1,
   evidence table, changelog), SPEC-003 (§6 item 90, changelog), `docs/product.md` and
-  `AGENTS.md`; each says the random draw follows in slice E. `index.html` preloads `agents.js`
+  `AGENTS.md`; SPEC-001's changelog, SPEC-003 item 90 and `docs/product.md` say the random draw
+  follows in slice E, and the others name only what is delivered. `index.html` preloads `agents.js`
   (`check_repository.py --sync-brand`); `scripts/dev quick` passed.
+- Mutation testing (`scripts/dev mutants`, on c9a973115): `mutants: 26 listed, 9 caught,
+  0 missed, 0 timed out, 17 unviable, 0 not reached (bound 30 min, took 306 s)`.
+- Review round 1 (yulius-reviewer, head c9a973115): approve, with minors fixed after (own code):
+  an unknown `?add=` (`constructor`) opens no dialog (`Object.hasOwn`; e2e `an unknown add in
+  the address opens no dialog`); Subscriptions' heading and empty state name Antigravity; e2e
+  for Connect Antigravity on a refused start and the Connect Claude step leaving once an
+  Antigravity account is usable, the list line's and the time tooltip's article (the three
+  tests fail with the reviewer's hand mutations put back); the tests use `touchTask` and
+  `firstShown` from `support.ts`; SPEC-003 item 90 defers the draw to slice E; nits: the web
+  README's 1024 columns, ROT-001's comma, `defaultEffort` removed (nothing read it), the
+  reserved token buffer, the C2 Plan box, the architecture diagram's `agy`. Pre-existing and
+  left: the sessions page labels assistant entries "Claude" (session search and import are
+  Claude Code's only, ADR-0361 Consequences). e2e `antigravity.e2e.ts` 8 passed; `yulius-app`
+  611 passed; `ui_contract`, `antigravity` 22 passed; clippy clean; `scripts/dev quick` passed.
