@@ -1,11 +1,11 @@
 ---
 yulius-task: f3ef7d63-9ca5-49a8-bce2-706f2f3e21c0
-status: in-progress
+status: done
 ---
 
 # SPEC-505: Antigravity CLI as a third harness, picked at random by default
 
-Status: in-progress (delivered in six slices)
+Status: done (delivered in six slices: pull requests #1395, #1399, #1402, #1405, #1406, #1407)
 Date: 2026-11-17
 Owner: Yulius task #487
 Scope authorization: the person's request of 2026-11-17 (task #487), verbatim: "Implement
@@ -135,8 +135,8 @@ Six pull requests, each merged into `dev` on green before the next begins.
 - [x] Slice D: review findings fixed and the slice delivered
 - [x] Slice E: a task without a chosen agent is drawn at random and records the draw
 - [x] Slice E: the composer and automations offer Random or a chosen agent, and the export reports the draw
-- [ ] Independent review in a fresh session, findings fixed test-first
-- [ ] Every gate green, docs and the changes log updated
+- [x] Independent review in a fresh session, findings fixed test-first
+- [x] Every gate green, docs and the changes log updated
 
 ## Acceptance criteria
 
@@ -581,3 +581,13 @@ Six pull requests, each merged into `dev` on green before the next begins.
      schema literal and a log call; mutation tooling finds nothing to change in either, so the
      mutants run on 383f4b625 stands for the slice.
 - After round 2: `cross_sandbox` 36 passed, `harness_draw` 8 passed.
+- Review round 3 (head e5c934913): approve. It also checked the whole task and found every
+  requirement, AGY-001..010 and RND-001..003, with code and a test. Its notes, fixed after:
+  e2e `superagent-requests.e2e.ts` checks that the card shows "Agent: antigravity" and that the
+  approved task runs it (it failed with the label line removed, per the reviewer's probe); the
+  mock's approval honours the request's agent. Kept: an unknown agent name is refused only after
+  the person approves, as an unknown `mode` already is. `superagent-requests.e2e.ts` 19 passed.
+- Not verified without a live Google account (ADR-0361 Consequences): a real Google sign-in and
+  its token file, refresh and write-back, a plan's real quota texts and reset times. Antigravity
+  subscriptions show no usage windows. Claude-only features stay Claude-only for Antigravity
+  tasks.
