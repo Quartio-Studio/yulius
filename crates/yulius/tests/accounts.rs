@@ -29,6 +29,7 @@ use yulius_app::ports::session::{
     RunWelcome, RunWriter, SessionHost, SpawnedRun,
 };
 use yulius_app::ports::store::{AccountStore, AuditStore, TaskStore};
+use yulius_contracts::ptyhost::MAX_DIMENSION;
 use yulius_contracts::terminal::{KIND_OUTPUT, KIND_SNAPSHOT, decode_binary};
 use yulius_domain::harness::Harness;
 use yulius_domain::ids::{AccountId, AttemptId, SandboxId, TaskId, UserId};
@@ -179,6 +180,14 @@ impl SessionHost for FakeHost {
         _token: &[u8; 32],
         size: (u16, u16),
     ) -> AppResult<SpawnedRun> {
+        // The process host refuses a launch larger than the wire allows (`LaunchSpec::validate`),
+        // so a terminal size it would refuse fails here too (#1414).
+        if size.0 > MAX_DIMENSION || size.1 > MAX_DIMENSION {
+            return Err(yulius_app::error::AppError::internal(format!(
+                "terminal size {}x{} outside the process host's 1..={MAX_DIMENSION}",
+                size.0, size.1
+            )));
+        }
         for file in &plan.files {
             std::fs::write(&file.path, &file.contents)
                 .map_err(yulius_app::error::AppError::internal)?;
@@ -2048,6 +2057,10 @@ async fn an_antigravity_sign_in_ends_once_its_token_file_is_written() -> TestRes
     let plans = s.host.plans();
     let (_, _, (cols, _)) = plans.first().ok_or("spawned")?;
     assert!(*cols >= 704, "{cols} columns break the sign-in link");
+    assert!(
+        *cols <= MAX_DIMENSION,
+        "{cols} columns are refused by the process host"
+    );
     let settled = account_settled(&mut events, &account_id).await?;
     assert_eq!(settled["status"], "ok", "{settled}");
     let log = s.host.log.lock().map_err(|_| "log")?.clone();
