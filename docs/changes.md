@@ -6,6 +6,10 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-18
 
+- Subscription sign-ins start again (SPEC-509, task #491, #1414): login terminals are 1000
+  columns wide, the process host's limit, instead of 1024, which it refused for every sign-in
+  ("invalid launch spec field `cols`"). The Google sign-in link (704 characters) stays whole.
+
 - Antigravity, slice E (SPEC-505 pull request 6, task #487): a task created without a chosen
   agent is drawn at random between Claude Code and Antigravity, among those with a usable
   subscription; a model given picks its agent. Random is the composer's and the automation

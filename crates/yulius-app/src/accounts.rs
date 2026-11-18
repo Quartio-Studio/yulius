@@ -59,8 +59,9 @@ pub const LOGIN_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 /// after printing the token.
 pub const TOKEN_EXIT_GRACE: Duration = Duration::from_secs(5);
 /// PTY width of login terminals: wide enough that tokens and URLs never wrap (the Antigravity
-/// CLI's Google sign-in link is 704 characters, and the CLI breaks it at the width; SPEC-505).
-pub const LOGIN_COLS: u16 = 1024;
+/// CLI's Google sign-in link is 704 characters, and the CLI breaks it at the width; SPEC-505),
+/// and no wider than the process host accepts (#1414).
+pub const LOGIN_COLS: u16 = yulius_contracts::ptyhost::MAX_DIMENSION;
 /// PTY height of login terminals.
 pub const LOGIN_ROWS: u16 = 40;
 /// Raw output kept in memory for token extraction (the newest bytes win).

@@ -409,7 +409,7 @@ fn login_dir(s: &Setup, login_id: &str) -> PathBuf {
 #[tokio::test]
 async fn claude_login_masks_the_token_for_viewers_and_seals_it() -> TestResult {
     let s = setup().await?;
-    // The token is split across three chunks; the PTY never wraps it (1024 columns).
+    // The token is split across three chunks; the PTY never wraps it (1000 columns).
     s.host.push(Script {
         chunks: vec![
             "Browser didn't open? Use the url below to sign in:\r\nhttps://claude.ai/oauth/authorize?code=true\r\n".into(),
@@ -431,7 +431,7 @@ async fn claude_login_masks_the_token_for_viewers_and_seals_it() -> TestResult {
     let plans = s.host.plans();
     let (run_dir, plan, size) = plans.first().ok_or("spawned")?;
     assert_eq!(plan.argv, ["claude", "setup-token"]);
-    assert_eq!(*size, (1024, 40));
+    assert_eq!(*size, (1000, 40));
     assert_eq!(*run_dir, login_dir(&s, &login_id));
     assert_eq!(plan.containment, Containment::None);
     assert!(plan.secret_env.is_empty());
@@ -459,7 +459,7 @@ async fn claude_login_masks_the_token_for_viewers_and_seals_it() -> TestResult {
     let state = serde_json::to_value(terminal.state())?;
     assert_eq!(
         (state["cols"].as_u64(), state["can_write"].as_bool()),
-        (Some(1024), Some(true))
+        (Some(1000), Some(true))
     );
     let mut sub = terminal.subscribe();
     terminal.input(b"pasted-code\r").await?;
@@ -1723,7 +1723,7 @@ async fn login_terminal_websocket_streams_masked_output_and_accepts_input() -> T
                 tungstenite::Message::Text(text) => {
                     let v: Value = serde_json::from_str(&text)?;
                     if v["type"] == "state" && !released {
-                        assert_eq!(v["cols"], 1024);
+                        assert_eq!(v["cols"], 1000);
                         assert_eq!(v["can_write"], true);
                         ws.send(tungstenite::Message::Text(
                             json!({"type": "hello", "last_seq": null, "cols": 120, "rows": 30})

@@ -35,8 +35,8 @@ started: invalid launch spec field `cols`: must be within 1..=1000" (issue #1414
 ## Plan
 
 - [x] Reproduce the defect and find its root cause
-- [ ] Write the fix spec and the regression test that fails
-- [ ] Fix the cause until the regression test and every gate pass
+- [x] Write the fix spec and the regression test that fails
+- [x] Fix the cause until the regression test and every gate pass
 - [ ] Independent review in a fresh session, findings fixed test-first
 
 ## Acceptance criteria
