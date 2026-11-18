@@ -543,3 +543,10 @@ Six pull requests, each merged into `dev` on green before the next begins.
   now expects `auto`. e2e `antigravity.e2e.ts` `a task started without choosing an agent is
   drawn, and says so`; the whole e2e suite 1095 passed (1 skipped); the whole workspace passed
   before the export change, and `harness_draw`, `analytics`, `automation` 58 passed after it.
+- CI run 1627fc16 on 383f4b625 failed two tests:
+  - `ui_contract::the_ui_describes_default_as_the_model_and_effort_a_launch_uses` still pinned the
+    old "Default" item; own code. The Random item and the composer's chip now name each drawn
+    agent's default model ("Claude Code (Opus 5.5) or Antigravity (Gemini 4 Carbon)"), and the
+    test holds that wording.
+  - `local_ci::a_second_run_that_finds_no_network_room_is_not_made` hit its job's 8 s limit on a
+    1-CPU budget. It passes alone, and this change does not touch local CI. Filed as #1408.

@@ -590,7 +590,8 @@ fn the_ui_names_the_fallback_model_a_launch_uses() -> TestResult {
 
 /// SPEC-462 EFF-003: the composer and Settings describe "Default" as the model and effort a
 /// launch really uses (`yulius_domain::harness`), so a changed constant cannot leave the labels
-/// behind.
+/// behind. Since SPEC-505 RND-001 the model menu's no-choice item is Random, which names each
+/// drawn agent's default model.
 #[test]
 fn the_ui_describes_default_as_the_model_and_effort_a_launch_uses() -> TestResult {
     use yulius_domain::harness::{DEFAULT_CLAUDE_EFFORT, DEFAULT_CLAUDE_MODEL};
@@ -605,9 +606,13 @@ fn the_ui_describes_default_as_the_model_and_effort_a_launch_uses() -> TestResul
             .ok_or(format!("models.js does not list {id}"))
     };
     let name = named(DEFAULT_CLAUDE_MODEL)?;
+    let gemini = named(yulius_domain::harness::DEFAULT_ANTIGRAVITY_MODEL)?;
+    let random = format!("Claude Code ({name}) or Antigravity ({gemini})");
     assert!(
-        models.contains(&format!("{{ label: 'Default', description: '{name}',")),
-        "the model menu's Default is not {name}"
+        models.contains(&format!(
+            "{{ label: 'Random', description: '{random}, drawn for each task',"
+        )),
+        "the model menu's Random does not name {random}"
     );
     let level = named(DEFAULT_CLAUDE_EFFORT)?;
     assert!(
@@ -622,7 +627,7 @@ fn the_ui_describes_default_as_the_model_and_effort_a_launch_uses() -> TestResul
     );
     let composer = std::fs::read_to_string(web_dir().join("assets/taskview.js"))?;
     assert!(
-        composer.contains(&format!("'Model: default, {name}'")),
+        composer.contains(&format!("'Agent: drawn for each task, {random}'")),
         "the composer's model chip names another default"
     );
     Ok(())

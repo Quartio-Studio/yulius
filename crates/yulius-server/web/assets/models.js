@@ -111,7 +111,7 @@ export function modelMenuItems(selected, onPick) {
   return [
     // No model chosen: the agent is drawn for each task, Claude Code (on Opus 5.5) or Antigravity
     // (on Gemini 4 Carbon), among those with a usable subscription (SPEC-505 RND-001).
-    { label: 'Random', description: 'Claude Code or Antigravity, drawn for each task', checked: selected === null, onSelect: () => onPick(null) },
+    { label: 'Random', description: 'Claude Code (Opus 5.5) or Antigravity (Gemini 4 Carbon), drawn for each task', checked: selected === null, onSelect: () => onPick(null) },
     ...PROVIDERS.flatMap((provider) => [
       { header: provider.name },
       ...provider.models.map((model) => ({ label: model.name, description: model.description, checked: model.id === selected, onSelect: () => onPick(model.id) })),
