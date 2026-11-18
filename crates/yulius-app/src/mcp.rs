@@ -693,7 +693,7 @@ pub fn tool_descriptors() -> Vec<ToolDescriptor> {
                 "cron": {"type": "string", "description": "Five-field cron expression, e.g. \"0 9 * * *\" (daily at 09:00) or \"0 9 * * MON-FRI\""},
                 "utc_offset_minutes": {"type": "integer", "description": "UTC offset of the user's time zone in minutes (e.g. 120 for UTC+2); default 0"},
                 "prompt": {"type": "string", "description": "What each created task should do"},
-                "harness": {"type": "string", "enum": ["claude", "codex", "antigravity"], "description": "Agent for created tasks: claude (Claude Code, the default), codex (Codex, on a Codex subscription) or antigravity (Antigravity, on a Google subscription)"},
+                "harness": {"type": "string", "enum": ["auto", "claude", "codex", "antigravity"], "description": "Agent for created tasks: auto (the default: Claude Code or Antigravity drawn for each run), claude (Claude Code), codex (Codex, on a Codex subscription) or antigravity (Antigravity, on a Google subscription)"},
                 "workflow": {"type": "string", "description": "Workflow id or name from workflows_list (optional)"},
                 "enabled": {"type": "boolean", "description": "Default true"},
                 "after_task": {"type": "integer", "description": "Created tasks wait until this task number is done (once it has ended: the rule \"#N done\")"},

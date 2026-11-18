@@ -109,7 +109,9 @@ export function findEffort(id) {
 /** Menu items to pick a model (grouped by provider); `onPick(id|null)`. */
 export function modelMenuItems(selected, onPick) {
   return [
-    { label: 'Default', description: 'Opus 5.5', checked: selected === null, onSelect: () => onPick(null) },
+    // No model chosen: the agent is drawn for each task, Claude Code (on Opus 5.5) or Antigravity
+    // (on Gemini 4 Carbon), among those with a usable subscription (SPEC-505 RND-001).
+    { label: 'Random', description: 'Claude Code or Antigravity, drawn for each task', checked: selected === null, onSelect: () => onPick(null) },
     ...PROVIDERS.flatMap((provider) => [
       { header: provider.name },
       ...provider.models.map((model) => ({ label: model.name, description: model.description, checked: model.id === selected, onSelect: () => onPick(model.id) })),

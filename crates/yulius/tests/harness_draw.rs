@@ -230,3 +230,142 @@ async fn a_task_an_agent_creates_is_drawn_unless_it_names_an_agent() -> TestResu
     }
     Ok(())
 }
+
+/// RND-002: an automation without an agent says `auto` and draws its task's agent for each run
+/// (recorded as drawn); one with an agent keeps it.
+#[tokio::test]
+async fn an_automation_without_an_agent_draws_one_for_each_run() -> TestResult {
+    let (h, alice) = world().await?;
+    usable(&h, "a-claude", Provider::Anthropic).await?;
+    usable(&h, "a-google", Provider::Google).await?;
+    let mut runs = Vec::new();
+    for (name, harness) in [
+        ("Drawn one", None),
+        ("Drawn two", None),
+        ("Named", Some("claude")),
+    ] {
+        let mut body = json!({"name": name, "cron": "0 9 1 1 *", "utc_offset_minutes": 0, "prompt": "Review yesterday's commits", "enabled": false});
+        if let Some(harness) = harness {
+            body["harness"] = json!(harness);
+        }
+        let r = call(
+            &h.router,
+            Method::POST,
+            "/api/sandboxes/s1/automations",
+            Some(body),
+            &alice,
+        )
+        .await?;
+        assert_eq!(r.status, StatusCode::CREATED, "{:?}", r.body);
+        assert_eq!(
+            r.body["harness"],
+            json!(harness.unwrap_or("auto")),
+            "{:?}",
+            r.body
+        );
+        runs.push(r.body["id"].as_str().ok_or("id")?.to_owned());
+    }
+    h.app.queue_harness_rolls(&[1, 0]);
+    let mut got = Vec::new();
+    for id in &runs {
+        let run = call(
+            &h.router,
+            Method::POST,
+            &format!("/api/automations/{id}/run"),
+            None,
+            &alice,
+        )
+        .await?;
+        assert_eq!(run.body["state"], "task_created", "{:?}", run.body);
+        let task = run.body["task_id"].as_str().ok_or("task")?;
+        let shown = call(
+            &h.router,
+            Method::GET,
+            &format!("/api/tasks/{task}"),
+            None,
+            &alice,
+        )
+        .await?;
+        got.push((
+            shown.body["harness"]
+                .as_str()
+                .unwrap_or_default()
+                .to_owned(),
+            shown.body["harness_choice"]
+                .as_str()
+                .unwrap_or_default()
+                .to_owned(),
+        ));
+    }
+    assert_eq!(
+        got,
+        [
+            pair("antigravity", "random"),
+            pair("claude", "random"),
+            pair("claude", "chosen")
+        ]
+    );
+    Ok(())
+}
+
+/// RND-003: the analytics export lists each task's agent and whether it was drawn, as JSON and
+/// as a CSV column after `harness`, so the two agents can be compared on drawn tasks.
+#[tokio::test]
+async fn the_export_says_which_agents_were_drawn() -> TestResult {
+    let (h, alice) = world().await?;
+    usable(&h, "a-claude", Provider::Anthropic).await?;
+    usable(&h, "a-google", Provider::Google).await?;
+    h.app.queue_harness_rolls(&[1]);
+    created(&h, &alice, json!({"prompt": "Drawn", "title": "Drawn"})).await?;
+    created(
+        &h,
+        &alice,
+        json!({"prompt": "Named", "title": "Named", "harness": "claude"}),
+    )
+    .await?;
+    let json_rows = call(
+        &h.router,
+        Method::GET,
+        "/api/analytics/tasks?format=json&sandbox=s1",
+        None,
+        &alice,
+    )
+    .await?;
+    assert_eq!(json_rows.status, StatusCode::OK, "{:?}", json_rows.body);
+    let rows = json_rows.body.as_array().ok_or("rows")?;
+    let row = |title: &str| {
+        rows.iter()
+            .find(|r| r["title"] == title)
+            .cloned()
+            .unwrap_or_default()
+    };
+    assert_eq!(
+        (
+            row("Drawn")["harness"].clone(),
+            row("Drawn")["harness_choice"].clone()
+        ),
+        (json!("antigravity"), json!("random"))
+    );
+    assert_eq!(
+        (
+            row("Named")["harness"].clone(),
+            row("Named")["harness_choice"].clone()
+        ),
+        (json!("claude"), json!("chosen"))
+    );
+    let columns = yulius_contracts::api::analytics::TASK_ROW_COLUMNS;
+    let at = columns
+        .iter()
+        .position(|c| *c == "harness")
+        .ok_or("harness column")?;
+    assert_eq!(columns.get(at + 1), Some(&"harness_choice"));
+    let csv = yulius_app::analytics::tasks_csv(&serde_json::from_value::<Vec<_>>(
+        json_rows.body.clone(),
+    )?);
+    let drawn = csv
+        .lines()
+        .find(|l| l.contains(",Drawn,"))
+        .ok_or("the drawn row")?;
+    assert!(drawn.contains(",antigravity,random,"), "{drawn}");
+    Ok(())
+}

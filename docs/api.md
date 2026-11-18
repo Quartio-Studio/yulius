@@ -1133,7 +1133,7 @@ and the bundled packs (`yulius`, `open-mercato`, `superpowers`) have no write AP
 read-only in the UI.
 | GET/POST | `/api/sandboxes/{sid}/workflows` | read/write | `Workflow`; POST → 201. `"scope":"instance"` creates an instance workflow (instance admins). |
 | PUT/DELETE | `/api/workflows/{id}` | write (instance: admin) | PUT replaces name, description, steps, instructions, gates → `Workflow`; DELETE → 204. A default workflow (`builtin`) → 409 `conflict` ("duplicate it to customise"). |
-| GET/POST | `/api/sandboxes/{sid}/automations` | read/write | `Automation`; POST → 201 |
+| GET/POST | `/api/sandboxes/{sid}/automations` | read/write | `Automation`; POST → 201. `harness` `auto` (the default) draws each run's agent as a task created without one is (SPEC-505 RND-002), and the agents' `automation_create` takes the same default |
 | PUT/DELETE | `/api/automations/{id}` | write | PUT replaces the editable fields → `Automation`; DELETE → 204 (removes run history; tasks stay) |
 | POST | `/api/automations/{id}/run` | write | creates one run now (also when disabled) → `AutomationRun`; an optional body `RunAutomation` is this run's start choice (checked like `Automation`'s, 422 when invalid, not stored; SPEC-093), none uses the stored one |
 | GET | `/api/automations/{id}/runs` | read | `[AutomationRun]`, newest first (at most 100) |
@@ -1148,7 +1148,7 @@ Workflow = {"id","name","description","steps":["Write the spec","Implement","Tes
             "instructions":"…","gates":{"require_spec":true,"require_tests":true},"scope":"instance|sandbox",
             "builtin":false,"when_to_use":""}
 Automation = {"id","name","cron":"0 9 * * *","utc_offset_minutes":120,"prompt","workflow_id|null",
-              "harness":"claude","enabled":true,"supertask":false,"after_task_id":"…|null",
+              "harness":"auto|claude|codex|antigravity","enabled":true,"supertask":false,"after_task_id":"…|null",
               "after_task_number":12|null,"start_rule":"#12 done|null","prepared":false,
               "created_via":"ui|agent",
               "next_run_at":"…|null","last_run":AutomationRun|null}
@@ -1782,7 +1782,7 @@ AnalyticsSummary = {
 }
 Tokens = {"runs": 3, "tasks": 2, "input": 100, "output": 50, "cache_read": 10,
           "cache_write": null, "unknown_usage_runs": 2}
-TaskRow = {"task_id","sandbox","number","title","status","origin","harness","harnesses",
+TaskRow = {"task_id","sandbox","number","title","status","origin","harness","harness_choice":"random|chosen","harnesses",
   "models","accounts","created_at","closed_at|null (the close the task is in; null while not closed)","attempts","wall_ms","active_ms|null",
   "input_tokens|null","output_tokens|null","cache_read_tokens|null","cache_write_tokens|null",
   "unknown_usage_runs","switches","feedback":"correct|incorrect|null","feedback_correct",

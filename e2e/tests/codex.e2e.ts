@@ -124,7 +124,8 @@ test('an automation chooses the agent of its tasks', async ({ app, browser, scre
   await screen.getByRole('textbox', 'Automation name').fill('Nightly Codex review');
   await screen.getByRole('textbox', 'What the task does').fill('Review yesterday’s commits.');
   const agent = screen.getByRole('radiogroup', 'Agent');
-  await expect(agent.getByRole('radio', 'Claude Code')).toHaveAttribute('aria-checked', 'true');
+  // Random is the default (SPEC-505 RND-002).
+  await expect(agent.getByRole('radio', 'Random')).toHaveAttribute('aria-checked', 'true');
   await agent.getByRole('radio', 'Codex').click();
   await expect(agent.getByRole('radio', 'Codex')).toHaveAttribute('aria-checked', 'true');
   expect(await axeViolations(browser)).toEqual([]);

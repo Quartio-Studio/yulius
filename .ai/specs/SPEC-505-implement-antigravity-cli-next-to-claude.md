@@ -134,7 +134,7 @@ Six pull requests, each merged into `dev` on green before the next begins.
 - [x] Slice D: SPEC-001/002/003 and the documents say Antigravity is accepted
 - [ ] Slice D: review findings fixed and the slice delivered
 - [x] Slice E: a task without a chosen agent is drawn at random and records the draw
-- [ ] Slice E: the composer and automations offer Random or a chosen agent, and the export reports the draw
+- [x] Slice E: the composer and automations offer Random or a chosen agent, and the export reports the draw
 - [ ] Independent review in a fresh session, findings fixed test-first
 - [ ] Every gate green, docs and the changes log updated
 
@@ -531,3 +531,15 @@ Six pull requests, each merged into `dev` on green before the next begins.
   neither usable refused naming Claude; an agent's `task_create` drawn unless it names one) 3
   passed; the domain's `the_draw_picks_among_the_usable_agents`; the whole workspace 4984
   passed. Clippy clean.
+- An automation's agent may be `auto` (the default, stored as `auto`; `AutomationRecord.harness`
+  is `None`): each run draws its task's agent and records the draw; an agent's
+  `automation_create` without `harness` is `auto` too (it took the agent's own before). The
+  analytics export's `harness_choice` (JSON and the CSV column after `harness`) says `random` or
+  `chosen`. The composer starts with Random ("Random agent", the menu's first item: Claude Code
+  or Antigravity, drawn for each task), the automation editor's Agent with Random, and a task's
+  overview says "(drawn at random)"; the mock draws the same way (`harnessRolls` queues rolls).
+- Tests: `harness_draw::an_automation_without_an_agent_draws_one_for_each_run`,
+  `the_export_says_which_agents_were_drawn`; `automations::agents_manage_automations_through_mcp_tools`
+  now expects `auto`. e2e `antigravity.e2e.ts` `a task started without choosing an agent is
+  drawn, and says so`; the whole e2e suite 1095 passed (1 skipped); the whole workspace passed
+  before the export change, and `harness_draw`, `analytics`, `automation` 58 passed after it.

@@ -117,8 +117,9 @@ important task").
 ### J3 — Build a feature by vibe-coding
 
 1. The user clicks "New task" and writes "make me an online store" (or a feature request); the task
-   runs Claude Code, or Codex or Antigravity when chosen (T 11:28, T 22:00; F 2026-10-08,
-   F 2026-11-16 Codex, F 2026-11-17 Antigravity).
+   runs Claude Code or Antigravity, drawn at random among those with a usable subscription
+   unless the user chooses an agent (Claude Code, Codex or Antigravity) (T 11:28, T 22:00;
+   F 2026-10-08, F 2026-11-16 Codex, F 2026-11-17 Antigravity).
 2. The center of the screen becomes that agent's native terminal (T 4:36, T 10:48–11:13).
 3. Guided by Yulius' briefing and skills, the agent decides and documents the technology
    (T 20:00–20:34), writes the task spec with a plan of todos (T 17:49–18:00), and Yulius shows the
@@ -275,7 +276,7 @@ area, right "Web | Editor", plus a top usage bar and a "AI Coding Agent | Termin
 | --- | --- | --- | --- | --- |
 | TSK-001 | One task is exactly one Claude Code, Codex or Antigravity session. | T 11:25, P(5), F 2026-10-08, F 2026-11-16 Codex, F 2026-11-17 Antigravity | C | AC-TSK-1 |
 | TSK-002 | The harness is chosen when creating the task; different tasks may use different harnesses. | T 11:28, P(5) | E | AC-TSK-1 |
-| TSK-003 | Claude Code, Codex and Antigravity are supported (Codex was deferred by F 2026-10-08 and is back, SPEC-503; Antigravity, SPEC-505): Codex and Antigravity on the CLI releases Yulius pins (Codex 0.169.0, Antigravity 1.5.10) and provides itself, an Antigravity task on Gemini 4 Carbon at high effort unless it names a Gemini model, each task on the harness it was created with for its whole life; the harness port keeps room for another harness. | T 11:32, F 2026-10-08 (supersedes "Claude Code and Codex"), F 2026-11-16 Codex (supersedes F 2026-10-08 for Codex), F 2026-11-17 Antigravity | C + D | AC-TSK-1 |
+| TSK-003 | Claude Code, Codex and Antigravity are supported (Codex was deferred by F 2026-10-08 and is back, SPEC-503; Antigravity, SPEC-505): Codex and Antigravity on the CLI releases Yulius pins (Codex 0.169.0, Antigravity 1.5.10) and provides itself, an Antigravity task on Gemini 4 Carbon at high effort unless it names a Gemini model, each task on the harness it was created with for its whole life; a task or automation run without a chosen agent (and without a model that implies one) is drawn uniformly between Claude Code and Antigravity among those with a usable subscription, and says whether its agent was drawn (SPEC-505 RND-001..003); the harness port keeps room for another harness. | T 11:32, F 2026-10-08 (supersedes "Claude Code and Codex"), F 2026-11-16 Codex (supersedes F 2026-10-08 for Codex), F 2026-11-17 Antigravity | C + D | AC-TSK-1 |
 | HRN-001 | The center shows the agent's **native terminal interface** (the real TUI), exactly like a local Claude Code session — not a re-rendered chat. | T 10:48–11:20, P(5) "seriously TUI" | E | AC-TSK-2 |
 | HRN-002 | The task terminal is dedicated to the agent: the user cannot drop to a shell; leaving the agent session (e.g., `/exit`) closes the task. A separate general terminal is not part of the task view. When a task closes because the user left the session, the UI returns to the graphical task list, closes the task view and removes the task from the Active tasks list (it remains under Tasks with Continue). | T 11:06–11:20, F 2026-10-07 | E | AC-TSK-3 |
 | HRN-003 | Native commands work: `/model`, `/effort`, `/fast` and other slash commands of the harness. | T 14:18 | E | AC-TSK-2 |
@@ -991,9 +992,9 @@ observed. Live provider compatibility and deployment are reported separately fro
 - 2026-11-18 (`F 2026-11-17 Antigravity`, task #487, MrFishPL): Antigravity is a third harness on
   the Antigravity CLI Yulius pins (1.5.10) and provides, on Gemini 4 Carbon at high effort by
   default, with Antigravity (Google) subscriptions a pool of their own; a task keeps its harness
-  (TSK-001, TSK-003, ROT-001, ROT-004, AC-ROT-8, J3, the glossary; SPEC-505, ADR-0361). The
-  random choice between Claude Code and Antigravity for a task without a chosen agent follows
-  in SPEC-505 slice E.
+  (TSK-001, TSK-003, ROT-001, ROT-004, AC-ROT-8, J3, the glossary; SPEC-505, ADR-0361). A task
+  or automation run without a chosen agent is drawn between Claude Code and Antigravity among
+  those with a usable subscription, and says so (TSK-003, J3).
 
 - 2026-11-17 (`F 2026-11-16 Codex`, task #485: MrFishPL accepted outside pull request #1146 by
   studenciak00owl): Codex returns as a second harness on the Codex CLI Yulius pins (0.169.0) and
