@@ -15,6 +15,7 @@ import { limitsNow, needsSignIn, works } from '../usage.js';
 import { pageFrame, loader, dataTable, createButton } from './common.js';
 import { recoveryCodeCard } from './auth.js';
 import { BRAND } from '../brand.js';
+import { agentOfProvider } from '../agents.js';
 import { withReauth } from './secrets.js';
 
 function forbidden(ctx, what) {
@@ -220,6 +221,8 @@ function authJsonInput() {
 
 /** What it says while Codex's device sign-in runs (SPEC-503). */
 const CODEX_SIGN_IN_RUNNING = 'Finish Codex’s sign-in: open the link in the terminal below, sign in with ChatGPT and enter the one-time code it shows. This window closes by itself once the subscription is connected.';
+/** What it says while the Antigravity CLI's Google sign-in runs (SPEC-505 AGY-008). */
+const ANTIGRAVITY_SIGN_IN_RUNNING = 'Finish Antigravity’s sign-in: choose Google in the terminal below, open the link it shows and sign in with Google. This window closes by itself once the subscription is connected.';
 
 /** A server sentence as the start of a sentence. */
 const sentence = (text) => text.charAt(0).toUpperCase() + text.slice(1);
@@ -237,8 +240,9 @@ export function openLoginTerminal(ctx, { loginId, account, onFinish }) {
   // connection (reconnecting gave up; the sign-in may still run).
   let phase = 'running';
   let closed = false;
-  const codex = account.provider === 'openai';
-  const status = h('span', { class: 'muted small' }, codex ? CODEX_SIGN_IN_RUNNING : SIGN_IN_RUNNING);
+  const agent = agentOfProvider(account.provider);
+  const RUNNING = { openai: CODEX_SIGN_IN_RUNNING, google: ANTIGRAVITY_SIGN_IN_RUNNING };
+  const status = h('span', { class: 'muted small' }, RUNNING[account.provider] || SIGN_IN_RUNNING);
   const outcome = h('div', { class: 'banner banner-danger', role: 'alert', hidden: true });
   const host = h('div', { class: 'login-terminal' });
   const modal = openModal({
@@ -284,7 +288,7 @@ export function openLoginTerminal(ctx, { loginId, account, onFinish }) {
     if (!now || !now.email) now = (await update.promise) || now;
     update.stop();
     const email = now && now.email && !now.email_typed ? ` as ${now.email}` : '';
-    toast(`${account.label} is connected${email}. ${codex ? 'Codex tasks' : 'Tasks'} can use it now.`, { kind: 'ok', timeout: 8000 });
+    toast(`${account.label} is connected${email}. ${agent.provider === 'anthropic' ? 'Tasks' : `${agent.name} tasks`} can use it now.`, { kind: 'ok', timeout: 8000 });
   }
 
   /** Cancels sign-in `id` and says how it ended, from the server's answer (LGN-006). */
@@ -326,7 +330,7 @@ export function openLoginTerminal(ctx, { loginId, account, onFinish }) {
    */
   function failed(why) {
     phase = 'error';
-    const reason = why ? sentence(why).replace(/\.$/, '') : (codex ? 'Codex’s sign-in ended without a credential' : 'Claude’s sign-in ended without a credential');
+    const reason = why ? sentence(why).replace(/\.$/, '') : `${agent.name}’s sign-in ended without a credential`;
     ended('Sign-in failed', `${reason}. Try again, or close this window and sign in later from the subscription’s card.`);
   }
 
@@ -354,7 +358,7 @@ export function openLoginTerminal(ctx, { loginId, account, onFinish }) {
 
   function start() {
     modal.setActions([{ label: 'Cancel sign-in' }]);
-    // The login PTY is a fixed 500 columns so tokens and URLs never wrap; the view scrolls
+    // The login PTY is a fixed 1024 columns so tokens and URLs never wrap; the view scrolls
     // horizontally instead of resizing it. state.status: running → ok | error | cancelled.
     const view = createTerminalView({
       transport: ctx.transport,
@@ -537,12 +541,12 @@ export function mountAccountsPage(ctx, route) {
   let reading = 0;
   let readingAll = false;
   /** What the card says when a reading asked for came back without one (SPEC-473, SPEC-503). */
-  const noNewReading = (account) => (account && account.provider === 'openai'
-    ? 'Codex gave no new usage reading: this subscription’s usage comes from its running tasks.'
+  const noNewReading = (account) => (account && account.provider !== 'anthropic'
+    ? `${agentOfProvider(account.provider).name} gave no new usage reading: this subscription’s usage comes from its running tasks.`
     : 'Claude gave no new usage reading: it shares this subscription’s usage only with its running tasks.');
   /** Who gave no reading: Claude, Codex, or both kinds among `accounts`. */
   const giver = (accounts) => {
-    const kinds = new Set(accounts.map((a) => (a && a.provider === 'openai' ? 'Codex' : 'Claude')));
+    const kinds = new Set(accounts.map((a) => agentOfProvider(a && a.provider).name));
     return kinds.size === 1 ? [...kinds][0] : 'The providers';
   };
   /** Draws again what the card of `id` says about its reading (the card asks the queue). */
@@ -704,9 +708,13 @@ export function mountAccountsPage(ctx, route) {
           } }, 'Sign in again') : null,
           // Or a token made with `claude setup-token` elsewhere (SPEC-502 TKP-009); a Codex
           // subscription takes a new auth.json from a `codex login` elsewhere (SPEC-503 CDX-011).
+          // An Antigravity subscription signs in again with Google or takes a new key: neither
+          // is pasted here (SPEC-505).
           account.provider === 'openai'
             ? h('button', { type: 'button', class: 'btn btn-sm', onClick: () => importInto(account) }, 'Import auth.json')
-            : h('button', { type: 'button', class: 'btn btn-sm', onClick: () => pasteNewToken(ctx, account, reload) }, 'Paste a new token'),
+            : account.provider === 'anthropic'
+              ? h('button', { type: 'button', class: 'btn btn-sm', onClick: () => pasteNewToken(ctx, account, reload) }, 'Paste a new token')
+              : null,
           // Removal always works: the tasks on it move to another subscription (SPEC-447 MOV-003).
           h('button', { type: 'button', class: 'btn btn-sm btn-quiet-danger', dataset: { focusKey: `account:${account.id}:remove` }, title: account.in_use_by > 0 ? `${account.in_use_by} live task${account.in_use_by === 1 ? '' : 's'} on this subscription move to another one` : null, onClick: async () => {
             const moving = account.in_use_by > 0 ? ` ${account.in_use_by === 1 ? 'The task' : `The ${account.in_use_by} tasks`} on it ${account.in_use_by === 1 ? 'moves' : 'move'} to another subscription in the same session, or ${account.in_use_by === 1 ? 'waits' : 'wait'} for one.` : '';
@@ -726,20 +734,26 @@ export function mountAccountsPage(ctx, route) {
   // sign-in in a terminal here (the default), or a token made with `claude setup-token` on any
   // computer. Codex: ChatGPT's device sign-in in a terminal here (the default), the auth.json of a
   // `codex login` made elsewhere, or an OpenAI API key; the last two need no sign-in here.
+  // Antigravity: the Antigravity CLI's Google sign-in in a terminal here (the default), or a Gemini
+  // API key, which needs none (SPEC-505 AGY-008).
   function add(initial = 'anthropic') {
     const label = h('input', { class: 'input', placeholder: 'Claude #3', maxlength: 80, autofocus: true });
     const token = tokenField();
     const importer = authJsonInput();
     const apiKey = h('input', { class: 'input mono', type: 'password', autocomplete: 'off', autocapitalize: 'off', spellcheck: 'false', placeholder: 'sk-…' });
     const keyField = field('OpenAI API key', apiKey, 'Stored encrypted and never shown again. Usage windows come from the tasks that run on it.');
+    const geminiKey = h('input', { class: 'input mono', type: 'password', autocomplete: 'off', autocapitalize: 'off', spellcheck: 'false', placeholder: 'AIza…' });
+    const geminiField = field('Gemini API key', geminiKey, 'Stored encrypted and never shown again. Limits are learnt from the tasks that run on it.');
     let provider = initial;
     const radio = (name, value, text, onPick) => h('label', null, h('input', { type: 'radio', name, value, checked: value === initial || value === 'here', onChange: () => onPick(value) }), text);
     const ways = (name, choices) => h('div', { class: 'seg', role: 'radiogroup', 'aria-label': 'How to connect it' }, choices.map(([value, text]) => radio(name, value, text, () => show())));
     const claudeWays = ways('add-subscription-way', [['here', 'Sign in here'], ['paste', 'Paste token']]);
     const codexWays = ways('add-subscription-codex-way', [['here', 'ChatGPT sign-in'], ['import', 'Import auth.json'], ['api_key', 'API key']]);
+    const googleWays = ways('add-subscription-google-way', [['here', 'Google sign-in'], ['api_key', 'Gemini API key']]);
     const agents = h('div', { class: 'seg', role: 'radiogroup', 'aria-label': 'Agent' },
       radio('add-subscription-agent', 'anthropic', 'Claude Code', (value) => { provider = value; show(); }),
-      radio('add-subscription-agent', 'openai', 'Codex', (value) => { provider = value; show(); }));
+      radio('add-subscription-agent', 'openai', 'Codex', (value) => { provider = value; show(); }),
+      radio('add-subscription-agent', 'google', 'Antigravity', (value) => { provider = value; show(); }));
     const note = h('p', { class: 'muted small' });
     const modal = openModal({
       title: 'Add a Claude subscription',
@@ -748,10 +762,10 @@ export function mountAccountsPage(ctx, route) {
         field('Name', label, 'Shown on usage bars and in task details; you can rename it later.'),
         // A group of radios is named by its own label, never wrapped in a <label>.
         h('div', { class: 'field' }, h('span', { class: 'field-label', 'aria-hidden': 'true' }, 'Agent'), agents),
-        claudeWays, codexWays, note, token.el, keyField, importer.node),
+        claudeWays, codexWays, googleWays, note, token.el, keyField, geminiField, importer.node),
     });
     const named = () => label.value.trim() || invalid(label, 'Give the subscription a name.');
-    const connected = (account) => toast(`${account.label} is connected${account.email ? ` (${account.email})` : ''}. ${provider === 'openai' ? 'Codex tasks' : 'Tasks'} can use it now.`, { kind: 'ok', timeout: 8000 });
+    const connected = (account) => toast(`${account.label} is connected${account.email ? ` (${account.email})` : ''}. ${provider === 'anthropic' ? 'Tasks' : `${agentOfProvider(provider).name} tasks`} can use it now.`, { kind: 'ok', timeout: 8000 });
     const signInHere = { label: 'Continue to sign-in', kind: 'primary', run: async () => {
       if (!named()) return false;
       const result = await ctx.api.post('/api/admin/accounts', { provider, label: label.value.trim() });
@@ -786,30 +800,43 @@ export function mountAccountsPage(ctx, route) {
       reload();
       return true;
     } };
+    const giveGeminiKey = { label: 'Connect', kind: 'primary', run: async () => {
+      if (!named()) return false;
+      if (!geminiKey.value.trim()) return invalid(geminiKey, 'Paste the Gemini API key.');
+      const result = await ctx.api.post('/api/admin/accounts', { provider: 'google', label: label.value.trim(), api_key: geminiKey.value.trim() });
+      geminiKey.value = '';
+      connected((result && result.account) || { label: label.value.trim() });
+      reload();
+      return true;
+    } };
     const NOTES = {
       'anthropic:here': 'Next, a terminal opens with Claude’s own sign-in (claude setup-token). Tasks waiting for capacity continue on it as soon as it is signed in.',
       'anthropic:paste': 'The subscription is connected at once; tasks waiting for capacity continue on it.',
       'openai:here': 'Next, a terminal opens with Codex’s own sign-in (codex login --device-auth): open the link it shows and enter its one-time code. Codex tasks waiting for capacity continue on it as soon as it is signed in.',
       'openai:import': `The file is the subscription’s sign-in at once; Codex tasks can use it right away, and ${BRAND.name} keeps the tokens Codex refreshes.`,
       'openai:api_key': 'The key is the subscription’s credential at once; Codex tasks can use it right away.',
+      'google:here': 'Next, a terminal opens with the Antigravity CLI’s own sign-in: choose Google, open the link it shows and sign in. Antigravity tasks waiting for capacity continue on it as soon as it is signed in.',
+      'google:api_key': 'The key is the subscription’s credential at once; Antigravity tasks run Gemini with it right away.',
     };
-    const ACTIONS = { 'anthropic:here': signInHere, 'anthropic:paste': pasteToken, 'openai:here': signInHere, 'openai:import': importFile, 'openai:api_key': giveKey };
+    const ACTIONS = { 'anthropic:here': signInHere, 'anthropic:paste': pasteToken, 'openai:here': signInHere, 'openai:import': importFile, 'openai:api_key': giveKey, 'google:here': signInHere, 'google:api_key': giveGeminiKey };
+    const WAYS = { anthropic: claudeWays, openai: codexWays, google: googleWays };
+    const PLACEHOLDERS = { anthropic: 'Claude #3', openai: 'Codex #1', google: 'Antigravity #1' };
     function show() {
       // The last attempt's failure was the other way's: the way chosen now has not been tried.
       const failed = modal.dialog.querySelector('.modal-error');
       if (failed) failed.hidden = true;
-      const codex = provider === 'openai';
-      const seg = codex ? codexWays : claudeWays;
+      const seg = WAYS[provider];
       const way = `${provider}:${(seg.querySelector('input:checked') || { value: 'here' }).value}`;
-      claudeWays.hidden = codex;
-      codexWays.hidden = !codex;
+      for (const [of, ways] of Object.entries(WAYS)) ways.hidden = of !== provider;
       token.el.hidden = way !== 'anthropic:paste';
       importer.node.hidden = way !== 'openai:import';
       keyField.hidden = way !== 'openai:api_key';
+      geminiField.hidden = way !== 'google:api_key';
       note.textContent = NOTES[way];
-      label.placeholder = codex ? 'Codex #1' : 'Claude #3';
+      label.placeholder = PLACEHOLDERS[provider];
       // The dialog is named after the agent chosen.
-      const title = `Add a ${codex ? 'Codex' : 'Claude'} subscription`;
+      const agent = agentOfProvider(provider);
+      const title = `Add ${agent.article} ${agent.name} subscription`;
       modal.dialog.setAttribute('aria-label', title);
       const heading = modal.dialog.querySelector('.modal-title');
       if (heading) heading.textContent = title;
@@ -847,11 +874,12 @@ export function mountAccountsPage(ctx, route) {
     for (const { done } of queued.splice(0)) done({});
     off();
   };
-  // Settings → "Add subscription" lands here with ?add=1 (?add=codex for a Codex one, SPEC-503):
-  // open the dialog right away.
+  // Settings → "Add subscription" lands here with ?add=1 (?add=codex for a Codex one, SPEC-503;
+  // ?add=antigravity for an Antigravity one, SPEC-505): open the dialog right away.
   const adding = route && route.query ? route.query.get('add') : null;
-  if (adding === '1' || adding === 'codex') {
-    setTimeout(() => add(adding === 'codex' ? 'openai' : 'anthropic'), 0);
+  const ADDING = { 1: 'anthropic', codex: 'openai', antigravity: 'google' };
+  if (ADDING[adding]) {
+    setTimeout(() => add(ADDING[adding]), 0);
     ctx.navigate('/admin/accounts', { replace: true });
   }
   return { el: frame.el, key: 'admin:accounts', destroy };

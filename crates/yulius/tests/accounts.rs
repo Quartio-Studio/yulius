@@ -400,7 +400,7 @@ fn login_dir(s: &Setup, login_id: &str) -> PathBuf {
 #[tokio::test]
 async fn claude_login_masks_the_token_for_viewers_and_seals_it() -> TestResult {
     let s = setup().await?;
-    // The token is split across three chunks; the PTY never wraps it (500 columns).
+    // The token is split across three chunks; the PTY never wraps it (1024 columns).
     s.host.push(Script {
         chunks: vec![
             "Browser didn't open? Use the url below to sign in:\r\nhttps://claude.ai/oauth/authorize?code=true\r\n".into(),
@@ -422,7 +422,7 @@ async fn claude_login_masks_the_token_for_viewers_and_seals_it() -> TestResult {
     let plans = s.host.plans();
     let (run_dir, plan, size) = plans.first().ok_or("spawned")?;
     assert_eq!(plan.argv, ["claude", "setup-token"]);
-    assert_eq!(*size, (500, 40));
+    assert_eq!(*size, (1024, 40));
     assert_eq!(*run_dir, login_dir(&s, &login_id));
     assert_eq!(plan.containment, Containment::None);
     assert!(plan.secret_env.is_empty());
@@ -450,7 +450,7 @@ async fn claude_login_masks_the_token_for_viewers_and_seals_it() -> TestResult {
     let state = serde_json::to_value(terminal.state())?;
     assert_eq!(
         (state["cols"].as_u64(), state["can_write"].as_bool()),
-        (Some(500), Some(true))
+        (Some(1024), Some(true))
     );
     let mut sub = terminal.subscribe();
     terminal.input(b"pasted-code\r").await?;
@@ -1714,7 +1714,7 @@ async fn login_terminal_websocket_streams_masked_output_and_accepts_input() -> T
                 tungstenite::Message::Text(text) => {
                     let v: Value = serde_json::from_str(&text)?;
                     if v["type"] == "state" && !released {
-                        assert_eq!(v["cols"], 500);
+                        assert_eq!(v["cols"], 1024);
                         assert_eq!(v["can_write"], true);
                         ws.send(tungstenite::Message::Text(
                             json!({"type": "hello", "last_seq": null, "cols": 120, "rows": 30})
@@ -2043,6 +2043,11 @@ async fn an_antigravity_sign_in_ends_once_its_token_file_is_written() -> TestRes
     });
     let mut events = s.h.app.events.subscribe();
     let (account_id, login_id) = create(&s, "google", "Antigravity #2").await?;
+    // agy 1.5.10's Google sign-in link is 704 characters, and it breaks a link at the width
+    // (seen with the real CLI): the terminal is wide enough to keep it on one row.
+    let plans = s.host.plans();
+    let (_, _, (cols, _)) = plans.first().ok_or("spawned")?;
+    assert!(*cols >= 704, "{cols} columns break the sign-in link");
     let settled = account_settled(&mut events, &account_id).await?;
     assert_eq!(settled["status"], "ok", "{settled}");
     let log = s.host.log.lock().map_err(|_| "log")?.clone();
@@ -2140,7 +2145,12 @@ async fn setup_with_antigravity(
 #[tokio::test]
 async fn an_antigravity_sign_in_runs_the_provided_cli() -> TestResult {
     let root = tempfile::tempdir()?;
-    let program = root.path().join("1.5.10-linux-x64/antigravity");
+    let platform =
+        yulius_domain::agent_cli::antigravity::platform("linux", "x86_64").ok_or("x64")?;
+    let program = root
+        .path()
+        .join(platform.install_name())
+        .join(yulius_domain::agent_cli::antigravity::BINARY);
     std::fs::create_dir_all(program.parent().ok_or("dir")?)?;
     std::fs::write(&program, b"installed")?;
     let s = setup_with_antigravity(unreachable_antigravity_cli(root.path())?).await?;
@@ -2196,6 +2206,52 @@ async fn the_antigravity_cli_installs_for_a_new_google_account() -> TestResult {
     })
     .await;
     assert!(tried.is_ok(), "no install was started");
+    Ok(())
+}
+
+/// SPEC-505 AGY-007 (review round 2 of slice C2): a Google sign-in's CLI is installed before its
+/// account exists, so a request that goes away while the install runs leaves no account waiting
+/// for a sign-in that never starts.
+#[tokio::test]
+async fn a_google_sign_in_given_up_during_the_install_leaves_no_account() -> TestResult {
+    let installs = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let gate = Arc::new(Semaphore::new(0));
+    let host = Arc::new(FakeHost::default());
+    let h = support::harness_with(support::HarnessOptions {
+        git: Some(Arc::new(yulius::wiring::pending::UnavailableGit)),
+        session_host: Some(host.clone()),
+        harness: Some(Arc::new(support::agents::FakeAgentHarness::new(
+            "/bin/yulius".into(),
+            "/bin/false".into(),
+            support::agents::FakeAgentOptions {
+                antigravity_installs: Some(Arc::clone(&installs)),
+                antigravity_gate: Some(Arc::clone(&gate)),
+                ..Default::default()
+            },
+        ))),
+        ..support::HarnessOptions::default()
+    })?;
+    let admin = setup_superadmin_creds(&h).await?;
+    let ctx = ctx_of(&h, &admin).await?;
+    let app = Arc::clone(&h.app);
+    let request = tokio::spawn(async move {
+        let req: yulius_contracts::api::admin::CreateAccount =
+            serde_json::from_value(json!({"provider": "google", "label": "Antigravity gone"}))?;
+        app.create_account(&ctx, req)
+            .await
+            .map(|_| ())
+            .map_err(|err| -> Box<dyn std::error::Error + Send + Sync> { err.to_string().into() })
+    });
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while installs.load(Ordering::SeqCst) == 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await?;
+    request.abort();
+    let _ = request.await;
+    assert!(h.store.accounts().await?.is_empty(), "no account is left");
+    assert!(host.plans().is_empty(), "no sign-in ran");
     Ok(())
 }
 

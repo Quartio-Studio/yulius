@@ -6,6 +6,7 @@
 
 import { relLong, resetLabel } from './format.js';
 import { PROVIDERS, fallbackOf } from './models.js';
+import { agentOfProvider } from './agents.js';
 
 /** A subscription works while it reads `ok` or `limited`: the server's one rule (`AccountStatus::healthy`). */
 export const works = (account) => account.status === 'ok' || account.status === 'limited';
@@ -115,8 +116,8 @@ export function limitsNow(account, now = Date.now()) {
   const ofSubscription = full.some((w) => w.key === 'primary' || w.key === 'secondary');
   const reported = limitInEffect(usage, now);
   const limited = reported || ofSubscription || full.some((w) => w.window === own);
-  // A Codex subscription's limits are Codex's words (SPEC-503 CDX-013).
-  const agent = account.provider === 'openai' ? 'Codex' : 'Claude';
+  // A Codex or Antigravity subscription's limits are its agent's words (SPEC-503 CDX-013, SPEC-505).
+  const agent = agentOfProvider(account.provider).name;
   const lines = full.map((w) => ({ key: w.key, text: `${w.name} used up · ${when(w.window.resets_at, now, agent)}` }));
   if (reported && !ofSubscription) {
     lines.push({ key: 'reported', text: usage.limit_resets_at ? `${agent} reported a usage limit · ${when(usage.limit_resets_at, now, agent)}` : `${agent} reported a usage limit without saying when it resets` });

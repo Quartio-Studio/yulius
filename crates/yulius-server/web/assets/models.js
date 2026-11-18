@@ -1,10 +1,11 @@
 // Models and effort levels the new-task composer offers (SPEC-001 UI-021). Grouped by provider so
 // another harness's models can join the list; each provider names the harness that runs them.
-// Yulius runs Claude Code and Codex (SPEC-503). A Claude model id goes to Claude Code's `--model`
-// and a level to `--effort`; choosing "Default" sends neither and the task runs Yulius's default,
-// Opus 5.5 at high effort (SPEC-023, SPEC-462, SPEC-493). The first model listed is the default,
-// as on the server. Choosing Codex sends `harness: codex` and no model: Codex runs its account's
-// default model at the chosen effort.
+// Yulius runs Claude Code, Codex (SPEC-503) and Antigravity (SPEC-505). A Claude model id goes to
+// Claude Code's `--model` and a level to `--effort`; choosing "Default" sends neither and the task
+// runs Yulius's default, Opus 5.5 at high effort (SPEC-023, SPEC-462, SPEC-493). The first model
+// listed is the default, as on the server. Choosing Codex sends `harness: codex` and no model:
+// Codex runs its account's default model at the chosen effort. Choosing a Gemini model sends
+// `harness: antigravity` and the model; Antigravity's default is Gemini 4 Carbon at high effort.
 
 /** This browser's defaults for new tasks (the composer and Settings share them). */
 export const MODEL_PREF_KEY = 'yulius.composer.model';
@@ -31,6 +32,16 @@ export const PROVIDERS = [
     models: [
       // No model id: Codex picks its account's default model (`harnessOnly`).
       { id: 'codex', name: 'Codex', description: 'OpenAI Codex CLI on a Codex account, its default model', harnessOnly: true },
+    ],
+  },
+  {
+    id: 'google',
+    name: 'Google',
+    harness: 'antigravity',
+    // Without an effort chosen, an Antigravity task runs at this one (the server's default).
+    defaultEffort: 'high',
+    models: [
+      { id: 'gemini-4-carbon', name: 'Gemini 4 Carbon', description: 'Antigravity CLI on an Antigravity account, high effort by default' },
     ],
   },
 ];

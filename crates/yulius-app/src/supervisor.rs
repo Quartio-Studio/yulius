@@ -6769,11 +6769,14 @@ pub(crate) fn read_antigravity_token_in(root: &Path, home: &str) -> AppResult<Op
     if !file.metadata().map_err(AppError::internal)?.is_file() {
         return Ok(None);
     }
+    // A copy that is not taken (half read, or past the bound) is zeroed before it is freed.
     let mut bytes = Vec::new();
-    file.take(ANTIGRAVITY_TOKEN_MAX + 1)
-        .read_to_end(&mut bytes)
-        .map_err(AppError::internal)?;
+    if let Err(err) = file.take(ANTIGRAVITY_TOKEN_MAX + 1).read_to_end(&mut bytes) {
+        zeroize::Zeroize::zeroize(&mut bytes);
+        return Err(AppError::internal(err));
+    }
     if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > ANTIGRAVITY_TOKEN_MAX {
+        zeroize::Zeroize::zeroize(&mut bytes);
         return Ok(None);
     }
     Ok(Some(bytes))

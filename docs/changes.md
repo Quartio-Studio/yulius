@@ -6,6 +6,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-18
 
+- Antigravity, slice D (SPEC-505 pull request 5, task #487): the UI offers Antigravity. The
+  composer's model menu has Gemini 4 Carbon under Google (high effort by default), an
+  automation's agent can be Antigravity, and Subscriptions adds an Antigravity subscription by
+  Google sign-in or a Gemini API key. Every page names a task's or subscription's own agent.
+  Login terminals are 1024 columns wide, so the Google sign-in link (704 characters) stays whole.
+
 - Antigravity, slice C2 (SPEC-505 pull request 4, task #487): an administrator adds an
   Antigravity subscription (`provider: google`) with a Gemini API key or by the Antigravity CLI's
   own Google sign-in in a server-owned terminal, whose token file is sealed. `/api/me` says

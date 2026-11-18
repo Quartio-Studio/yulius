@@ -2,6 +2,7 @@
 
 import { BRAND } from './brand.js';
 import { resetLabel, whenLabel } from './format.js';
+import { aName, agentOfHarness } from './agents.js';
 
 /** Statuses with a live process or pending start. */
 export const LIVE_STATUSES = new Set(['queued', 'starting', 'running', 'switching', 'waiting_capacity', 'stopping']);
@@ -16,8 +17,11 @@ const STOP_LABELS = {
   stopped_server_lost: 'Stopped (server restarted)',
 };
 
-/** The agent a task runs, by name: Codex for a Codex task, else Claude (SPEC-503 CDX-013). */
-export const agentOf = (task) => (task && task.harness === 'codex' ? 'Codex' : 'Claude');
+/** The agent a task runs, by name: Codex, Antigravity, else Claude (SPEC-503 CDX-013, SPEC-505). */
+export const agentOf = (task) => agentOfHarness(task && task.harness).name;
+
+/** The CLI a task runs, by name: Claude Code, Codex or Antigravity. */
+export const cliOf = (task) => agentOfHarness(task && task.harness).cli;
 
 const FAIL_LABELS = {
   failed_spawn_error: 'Failed to start',
@@ -64,8 +68,9 @@ export function endedMessage(status, cause, harness) {
     return { tone: 'warn', text: LIMIT_MESSAGES[cause] };
   }
   const message = ENDED_MESSAGES[status] || { tone: 'info', text: `The agent's session ended. ${SAFE}` };
-  // A Codex task's messages name Codex (SPEC-503 CDX-013).
-  return harness === 'codex' ? { ...message, text: message.text.replaceAll('Claude Code', 'Codex').replaceAll('Claude', 'Codex') } : message;
+  // A Codex or Antigravity task's messages name its own agent (SPEC-503 CDX-013, SPEC-505).
+  const agent = agentOfHarness(harness);
+  return agent.harness !== 'claude' ? { ...message, text: message.text.replaceAll('Claude Code', agent.cli).replaceAll('Claude', agent.name) } : message;
 }
 
 /** True while a task has (or is about to have) a running session. */
@@ -267,7 +272,7 @@ export function resetAround(iso) {
 export function pausedLine(task) {
   // Not capacity: no account of its agent is usable (none connected, or every one must sign in
   // again), so it waits for one (SPEC-246, SPEC-503).
-  if (task.waits_for_account) return `Waiting for a ${agentOf(task)} account: none is usable (Subscriptions)`;
+  if (task.waits_for_account) return `Waiting for ${aName(agentOfHarness(task.harness))} account: none is usable (Subscriptions)`;
   const reset = resetAround(task.resumes_at);
   return `Paused: no subscription has capacity left${reset ? ` (${reset})` : ''}`;
 }

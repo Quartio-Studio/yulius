@@ -101,7 +101,7 @@ export function mountTasksPage(ctx, sandbox) {
   const viewRadio = (id, label, iconName) => h('label', null,
     h('input', { type: 'radio', name: viewName, value: id, checked: view === id, onChange: () => { view = id; render(); } }), icon(iconName, { size: 14 }), label);
   const viewSwitch = h('div', { class: ['seg', 'tl-view'], role: 'radiogroup', 'aria-label': 'View' }, viewRadio('list', 'List', 'menu'), viewRadio('graph', 'Graph', 'workflow'));
-  const frame = pageFrame({ title: 'Tasks', sub: 'each task is a Claude Code or Codex session on its own branch', actions: [
+  const frame = pageFrame({ title: 'Tasks', sub: 'each task is a Claude Code, Codex or Antigravity session on its own branch', actions: [
     viewSwitch,
     h('button', { type: 'button', class: 'tl-find', 'aria-keyshortcuts': '/', 'aria-label': 'Search tasks', onClick: () => openSearch() }, icon('search', { size: 14 }), h('span', { class: 'tl-find-text', 'aria-hidden': 'true' }, 'Press', h('span', { class: 'kbd' }, '/'), 'to search')),
     h('button', { type: 'button', class: 'btn btn-primary', disabled: !canStart, title: canStart ? null : 'Requires write access', onClick: () => ctx.openNewTask && ctx.openNewTask() }, icon('plus', { size: 14 }), 'New task', h('span', { class: 'kbd kbd-on-accent' }, NEW_TASK_KEYS)),

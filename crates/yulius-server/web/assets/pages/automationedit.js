@@ -11,6 +11,7 @@ import { enc } from '../api.js';
 import { h, icon, setChildren, placeholder, loadError, confirmDialog, toast, invalid, badge, bar } from '../dom.js';
 import { href, navigate, guardLeave } from '../router.js';
 import { allows } from '../status.js';
+import { AGENTS } from '../agents.js';
 import { openRuleEditor, ruleFromText, ruleText } from '../ruleeditor.js';
 import { openStartMenu, renderStartChip, startKind } from '../startchoice.js';
 import { describeCron, cronValid, utcOffset, dateTime, relLong, startPhrase } from '../format.js';
@@ -30,8 +31,8 @@ const DAY_SHORT = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const DAY_LONG = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 const TIMES = ['07:00', '08:00', '09:00', '12:00', '17:00', '20:00'];
 const MINUTES = [0, 15, 30, 45];
-/** The agents a created task can run (SPEC-503): wire name and label. */
-const HARNESSES = [['claude', 'Claude Code'], ['codex', 'Codex']];
+/** The agents a created task can run (SPEC-503, SPEC-505): wire name and label. */
+const HARNESSES = AGENTS.map((agent) => [agent.harness, agent.cli]);
 const RUN_TONE = { scheduled: 'warn', task_created: 'ok', skipped_previous_active: '', skipped_disabled: '', failed: 'danger' };
 const RUN_LABEL = { scheduled: 'scheduled', task_created: 'task created', skipped_previous_active: 'skipped: previous task still active', skipped_disabled: 'skipped: disabled', failed: 'failed' };
 
@@ -217,7 +218,8 @@ export function mountAutomationEditor(ctx, sandbox, id) {
   function whatSection() {
     const prompt = h('textarea', { class: 'textarea au-prompt', rows: 4, value: state.prompt, readOnly: !write, placeholder: 'What the task should do each time, e.g. “Implement yesterday’s customer feedback from the Quartio MCP.”', 'aria-label': 'What the task does', onInput: (e) => { state.prompt = e.target.value; changed(); } });
     const pick = (value, label) => chip(label, (state.workflow_id || null) === value, () => { state.workflow_id = value; render(); }, { role: 'radio', 'aria-checked': String((state.workflow_id || null) === value), 'aria-pressed': null });
-    // The agent each created task runs (SPEC-503): Claude Code or Codex, on its own accounts.
+    // The agent each created task runs (SPEC-503, SPEC-505): Claude Code, Codex or Antigravity,
+    // on its own accounts.
     const agent = (value, label) => chip(label, state.harness === value, () => { state.harness = value; render(); }, { role: 'radio', 'aria-checked': String(state.harness === value), 'aria-pressed': null });
     return section('The task', null, h('div', { class: 'stack-sm' }, prompt,
       h('div', { class: 'au-row' }, h('span', { class: 'wf-label' }, 'Agent'),

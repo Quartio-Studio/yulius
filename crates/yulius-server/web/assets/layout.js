@@ -3,6 +3,7 @@
 
 import { DRAG_TAB_HINT, h, icon, iconButton, openMenu, setChildren, statusMark, popoverFocus, keepFocus, loadError, coalesce, pollPaused, prChip, skeleton, bar, skeletonOf } from './dom.js';
 import { bytes, duration, dateTime, resetLabel, compact, accountEmail, plausibleEmail } from './format.js';
+import { agentOfProvider } from './agents.js';
 import { limitsNow, needsSignIn, percentNow, placingModel } from './usage.js';
 import { REVIEW_MODEL, fallbackLine } from './models.js';
 import { sparkline, usd } from './charts.js';
@@ -737,7 +738,7 @@ const USAGE_KEYS = ['primary', 'secondary', 'weekly_opus', 'weekly_sonnet', 'wee
  * `yulius:usage-changed` event on the card.
  */
 export function accountUsage(account, { foldable = false, open = false, rename = null, setEmail = null, showEmail = false, refresh = null, note = null } = {}) {
-  const provider = account.provider === 'anthropic' ? 'Claude' : account.provider === 'openai' ? 'Codex' : account.provider;
+  const provider = agentOfProvider(account.provider).name;
   const label = () => account.label || account.id;
   // Usage not read yet: a shimmering bar where the reset time will be (SPEC-092).
   const reading = () => [h('span', { class: 'skeleton-line', 'aria-hidden': 'true' }), h('span', { class: 'sr-only' }, 'Reading usage…')];
