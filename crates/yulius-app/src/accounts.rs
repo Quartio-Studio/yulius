@@ -287,9 +287,9 @@ impl LoginTerminal {
 /// The largest `auth.json` a Codex sign-in may leave (`yulius_harness::login`'s bound).
 const CODEX_LOGIN_AUTH_MAX: usize = 1024 * 1024;
 
-/// The credentials file a sign-in of `agent` ("Codex", "Antigravity") wrote at `path`, when it is
-/// a plain file within [`CODEX_LOGIN_AUTH_MAX`] and `problem` finds none in it; a refused copy is
-/// scrubbed (SPEC-503 CDX-005, SPEC-505 AGY-008). The bound is checked before reading, and the
+/// The credentials file a sign-in of `agent` ("Codex") wrote at `path`, when it is a plain file
+/// within [`CODEX_LOGIN_AUTH_MAX`] and `problem` finds none in it; a refused copy is scrubbed
+/// (SPEC-503 CDX-005). The bound is checked before reading, and the
 /// read itself is bounded too: the sign-in's process writes it.
 fn read_login_file(
     path: &Path,
@@ -1289,7 +1289,9 @@ impl App {
             tokio::spawn(async move {
                 let provided = match provider {
                     Provider::Google => app.deps.harness.provide_antigravity(true).await,
-                    _ => app.deps.harness.provide_codex(true).await,
+                    Provider::OpenAi => app.deps.harness.provide_codex(true).await,
+                    // A Claude account takes no API key or file: it never gets here.
+                    Provider::Anthropic => Ok(None),
                 };
                 if let Err(err) = provided {
                     tracing::warn!(error = %err, "the agent CLI is not ready; the next start tries again");
@@ -2094,7 +2096,8 @@ impl App {
             // The Antigravity CLI keeps its sign-in in a file of its home when no keyring is
             // reachable (none is: no D-Bus session here), and must not update itself (SPEC-505).
             Provider::Google => {
-                env.push(("AGY_CLI_DISABLE_AUTO_UPDATE".to_owned(), "true".to_owned()))
+                let (name, value) = yulius_domain::agent_cli::antigravity::NO_UPDATE_ENV;
+                env.push((name.to_owned(), value.to_owned()));
             }
         }
         LaunchPlan {
@@ -2267,26 +2270,25 @@ impl App {
         }
     }
 
-    /// The token file the Antigravity sign-in of `session` wrote in its home (SPEC-505 AGY-008).
+    /// The token file the Antigravity sign-in of `session` wrote in its home (SPEC-505 AGY-008),
+    /// read below the sign-in's folder without following a link or waiting on a FIFO, bounded:
+    /// the sign-in's process could make any of its folders a link out of its home.
     fn antigravity_login_token(&self, session: &LoginSession) -> Result<Vec<u8>, String> {
-        read_login_file(
-            &session
-                .dir
-                .join("home/.gemini/antigravity-cli/antigravity-oauth-token"),
-            "Antigravity",
-            |bytes| {
-                self.deps
-                    .harness
-                    .antigravity_sign_in_credential(bytes)
-                    .map_or_else(
-                        || Some("the Antigravity sign-in file is not usable".into()),
-                        |mut envelope| {
-                            envelope.zeroize();
-                            None
-                        },
-                    )
-            },
-        )
+        let bytes = match crate::supervisor::read_antigravity_token_in(&session.dir, "home") {
+            Ok(Some(bytes)) => bytes,
+            Ok(None) => return Err("the Antigravity sign-in did not store credentials".into()),
+            Err(_) => return Err("the Antigravity credentials file could not be read".into()),
+        };
+        match self.deps.harness.antigravity_sign_in_credential(&bytes) {
+            Some(mut envelope) => {
+                envelope.zeroize();
+                Ok(bytes)
+            }
+            None => {
+                scrub(Some(bytes));
+                Err("the Antigravity sign-in file is not usable".into())
+            }
+        }
     }
 
     /// The `auth.json` the Codex sign-in of `session` wrote, validated (SPEC-503 CDX-005).

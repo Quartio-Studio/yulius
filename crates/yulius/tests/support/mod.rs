@@ -1828,6 +1828,31 @@ pub async fn seed_task_with_prompt(
     worktree: Option<&std::path::Path>,
     prompt: &str,
 ) -> Result<yulius_app::model::TaskRecord, Box<dyn std::error::Error>> {
+    seed_task_of(
+        h,
+        id,
+        sandbox,
+        created_by,
+        status,
+        worktree,
+        prompt,
+        yulius_domain::harness::Harness::ClaudeCode,
+    )
+    .await
+}
+
+/// [`seed_task_with_prompt`] for a task of `harness`.
+#[allow(clippy::too_many_arguments)]
+pub async fn seed_task_of(
+    h: &Harness,
+    id: &str,
+    sandbox: &str,
+    created_by: &str,
+    status: yulius_domain::task::TaskStatus,
+    worktree: Option<&std::path::Path>,
+    prompt: &str,
+    harness: yulius_domain::harness::Harness,
+) -> Result<yulius_app::model::TaskRecord, Box<dyn std::error::Error>> {
     use yulius_app::ports::store::TaskStore;
     use yulius_domain::ids::{SandboxId, TaskId, UserId};
     let now = h.app.now();
@@ -1837,7 +1862,7 @@ pub async fn seed_task_with_prompt(
         number: 0,
         title: format!("task {id}"),
         prompt: prompt.into(),
-        harness: yulius_domain::harness::Harness::ClaudeCode,
+        harness,
         model: None,
         effort: None,
         workflow_id: None,

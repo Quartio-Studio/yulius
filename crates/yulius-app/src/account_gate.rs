@@ -161,10 +161,16 @@ impl App {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use crate::model::{AccountStatus, Sealed};
+    use yulius_domain::ids::AccountId;
+    use yulius_domain::time::Timestamp;
+
+    type TestResult = Result<(), Box<dyn std::error::Error>>;
+
     /// SPEC-505: what a task of Antigravity is told names it with its article.
     #[test]
     fn antigravity_is_an_antigravity_account() {
-        use super::*;
         assert_eq!(a_kind(Provider::Google), "an Antigravity");
         assert_eq!(a_kind(Provider::OpenAi), "a Codex");
         assert_eq!(a_kind(Provider::Anthropic), "a Claude");
@@ -180,13 +186,6 @@ mod tests {
                 .starts_with("Sign an Antigravity subscription in again"),
         );
     }
-
-    use super::*;
-    use crate::model::{AccountStatus, Sealed};
-    use yulius_domain::ids::AccountId;
-    use yulius_domain::time::Timestamp;
-
-    type TestResult = Result<(), Box<dyn std::error::Error>>;
 
     fn account(
         id: &str,

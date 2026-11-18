@@ -684,6 +684,13 @@ pub mod antigravity {
     pub const HOST: &str = "storage.googleapis.com";
     /// The binary in a tarball and below an installed release's directory.
     pub const BINARY: &str = "antigravity";
+    /// The variable and value that keep the CLI from updating itself (1.5.10 reads `true` only).
+    pub const NO_UPDATE_ENV: (&str, &str) = ("AGY_CLI_DISABLE_AUTO_UPDATE", "true");
+    /// The folders below its home where the CLI keeps a Google sign-in when no keyring is
+    /// reachable (1.5.10, seen with `strace`).
+    pub const TOKEN_DIRS: [&str; 2] = [".gemini", "antigravity-cli"];
+    /// That sign-in file's name, in the last of [`TOKEN_DIRS`].
+    pub const TOKEN_NAME: &str = "antigravity-oauth-token";
 
     /// A platform's tarball of the pinned release.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]

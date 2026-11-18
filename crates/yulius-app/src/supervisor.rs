@@ -16,6 +16,7 @@ use std::time::Duration;
 
 use tokio::sync::{broadcast, oneshot};
 use yulius_contracts::events::UiEvent;
+use yulius_domain::agent_cli::antigravity;
 use yulius_domain::harness::{DEFAULT_CLAUDE_MODEL, Harness, claude_model_name};
 use yulius_domain::ids::{AccountId, AttemptId, SandboxId, TaskId};
 use yulius_domain::request::Paste;
@@ -3145,9 +3146,9 @@ impl App {
         // Signed out since it was chosen: the start needs a connected account (SPEC-246 CLA-005).
         let sealed = account.credential.as_ref().ok_or_else(|| {
             AppError::AccountRequired(format!(
-                "Connect a {} account first: {} is not signed in. An instance administrator \
+                "Connect {} account first: {} is not signed in. An instance administrator \
                  signs it in again in Subscriptions ({}).",
-                crate::account_gate::account_kind(account.provider),
+                crate::account_gate::a_kind(account.provider),
                 account.label,
                 crate::account_gate::CONNECT_PATH
             ))
@@ -6669,7 +6670,7 @@ fn write_private(file: &crate::ports::session::PlannedFile) -> std::io::Result<(
 
 /// The Antigravity home of the run whose folder is `run_dir` (SPEC-505 AGY-003).
 fn antigravity_run_home(run_dir: &Path) -> PathBuf {
-    run_dir.join("antigravity-home")
+    run_dir.join(ANTIGRAVITY_RUN_HOME)
 }
 
 /// The bind of a contained Antigravity run: its home's `.gemini`, in the server's run directory,
@@ -6685,7 +6686,9 @@ fn antigravity_bind(run_home: &Path, sandbox_home: &Path) -> crate::ports::sessi
 /// Where the Antigravity CLI keeps a Google sign-in in the run's home (1.5.10). The same path as
 /// `yulius_harness::launch::ANTIGRAVITY_TOKEN_FILE`, which the plan writes.
 fn antigravity_token_path(run_dir: &Path) -> PathBuf {
-    antigravity_run_home(run_dir).join(".gemini/antigravity-cli/antigravity-oauth-token")
+    let mut path = antigravity_run_home(run_dir);
+    path.extend(antigravity::TOKEN_DIRS);
+    path.join(antigravity::TOKEN_NAME)
 }
 
 /// The token file a launch wrote into its run's home, removed when the launch ends before its run
@@ -6705,22 +6708,21 @@ impl Drop for AntigravityToken {
 /// bound `.gemini`, SPEC-505 AGY-008).
 const ANTIGRAVITY_GIVEN: &str = "antigravity-given";
 
-/// The folders of the Antigravity token file below the run directory, and its name.
-const ANTIGRAVITY_TOKEN_DIRS: [&str; 3] = ["antigravity-home", ".gemini", "antigravity-cli"];
-const ANTIGRAVITY_TOKEN: &str = "antigravity-oauth-token";
+/// The run's home below its run directory, as [`antigravity_run_home`] names it.
+const ANTIGRAVITY_RUN_HOME: &str = "antigravity-home";
 /// Largest Antigravity token file read back from a run, as
 /// `yulius_harness::login::ANTIGRAVITY_TOKEN_MAX_BYTES`.
 const ANTIGRAVITY_TOKEN_MAX: u64 = 64 * 1024;
 
-/// The folder holding the token file of the run whose folder is `run_dir`, opened without
-/// following a link (the run's agent could change what lies below its `.gemini`); `None` when it
-/// is missing.
-fn antigravity_token_dir(run_dir: &Path) -> AppResult<Option<std::os::fd::OwnedFd>> {
-    let names: Vec<&std::ffi::OsStr> = ANTIGRAVITY_TOKEN_DIRS
-        .iter()
+/// The folder holding the token file of the Antigravity home `home` below `root`, opened without
+/// following a link (the CLI's process could change what lies below its `.gemini`); `None` when
+/// it is missing.
+fn antigravity_token_dir(root: &Path, home: &str) -> AppResult<Option<std::os::fd::OwnedFd>> {
+    let names: Vec<&std::ffi::OsStr> = std::iter::once(home)
+        .chain(antigravity::TOKEN_DIRS)
         .map(std::ffi::OsStr::new)
         .collect();
-    match crate::files::open_dirs_below(run_dir, &names, false) {
+    match crate::files::open_dirs_below(root, &names, false) {
         Ok(dir) => Ok(Some(dir)),
         // Missing, or a folder the run's agent made a link or a file: no token of the run's.
         Err(nix::errno::Errno::ENOENT | nix::errno::Errno::ELOOP | nix::errno::Errno::ENOTDIR) => {
@@ -6734,8 +6736,14 @@ fn antigravity_token_dir(run_dir: &Path) -> AppResult<Option<std::os::fd::OwnedF
 /// on a FIFO, bounded; `None` when there is none or it is no plain file within the bound
 /// (SPEC-505 AGY-008).
 fn read_antigravity_token(run_dir: &Path) -> AppResult<Option<Vec<u8>>> {
+    read_antigravity_token_in(run_dir, ANTIGRAVITY_RUN_HOME)
+}
+
+/// The token file the Antigravity CLI left in the home `home` below `root` (a run's, or a
+/// sign-in's), read as [`read_antigravity_token`] says.
+pub(crate) fn read_antigravity_token_in(root: &Path, home: &str) -> AppResult<Option<Vec<u8>>> {
     use std::io::Read as _;
-    let Some(dir) = antigravity_token_dir(run_dir)? else {
+    let Some(dir) = antigravity_token_dir(root, home)? else {
         return Ok(None);
     };
     let flags = nix::fcntl::OFlag::O_RDONLY
@@ -6744,7 +6752,7 @@ fn read_antigravity_token(run_dir: &Path) -> AppResult<Option<Vec<u8>>> {
         | nix::fcntl::OFlag::O_CLOEXEC;
     let fd = match nix::fcntl::openat(
         &dir,
-        ANTIGRAVITY_TOKEN,
+        antigravity::TOKEN_NAME,
         flags,
         nix::sys::stat::Mode::empty(),
     ) {
@@ -6768,12 +6776,12 @@ fn read_antigravity_token(run_dir: &Path) -> AppResult<Option<Vec<u8>>> {
 
 /// Removes the token file of the run whose folder is `run_dir`.
 fn remove_antigravity_token(run_dir: &Path) -> AppResult<()> {
-    let Some(dir) = antigravity_token_dir(run_dir)? else {
+    let Some(dir) = antigravity_token_dir(run_dir, ANTIGRAVITY_RUN_HOME)? else {
         return Ok(());
     };
     match nix::unistd::unlinkat(
         &dir,
-        ANTIGRAVITY_TOKEN,
+        antigravity::TOKEN_NAME,
         nix::unistd::UnlinkatFlags::NoRemoveDir,
     ) {
         Ok(()) | Err(nix::errno::Errno::ENOENT) => Ok(()),

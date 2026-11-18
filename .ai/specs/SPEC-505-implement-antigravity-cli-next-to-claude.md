@@ -433,3 +433,37 @@ Six pull requests, each merged into `dev` on green before the next begins.
   `yulius-harness`, `yulius-contracts` 892 passed; `yulius` integration files `antigravity`,
   `antigravity_cli`, `codex`, `codex_cli`, `accounts`, `account_token`, `claude_gate`, `moves`,
   `rotation`, `cockpit` 165 passed. Clippy clean.
+- Mutation testing (`scripts/dev mutants`, on d005f833a): `mutants: 80 listed, 49 caught,
+  0 missed, 0 timed out, 31 unviable, 0 not reached (bound 30 min, took 1081 s)`.
+- Review round 1 (yulius-reviewer, head d005f833a, request changes; own code unless said),
+  answered:
+  1. Major, the Google arm of `holds_credential` held by no test: the real TUI never exits, so
+     `accounts::an_antigravity_sign_in_ends_once_its_token_file_is_written` runs on after the
+     file (the fake host's `after` output) and asserts the stop, `ok`, the seal and the wipe.
+  2. Major, the provided CLI's path for a sign-in: `an_antigravity_sign_in_runs_the_provided_cli`.
+     Both tests fail with their arm mutated (checked by hand).
+  3. The installs before a sign-in and after an API-key account:
+     `the_antigravity_cli_installs_for_a_new_google_account` (an install that fails with no host
+     `agy` is 502 and leaves no account; an API key starts the install). The background install's
+     match is exhaustive.
+  4. The sign-in's token file is read as a run's is (`read_antigravity_token_in`: folders opened
+     below the sign-in's folder without following links, `O_NOFOLLOW|O_NONBLOCK`, `fstat`,
+     64 KiB): `an_antigravity_sign_in_without_its_own_token_file_fails` (no file, and the CLI
+     folder made a link out of the home, both `error` with nothing sealed).
+  5. "Connect an Antigravity account first" (`open_credential` uses `a_kind`).
+  6. ADR-0361 and `docs/architecture.md` say the Google sign-in is the whole TUI on the host,
+     stopped 5 s after its token file appears, and why that is acceptable; a sign-in that asks
+     more after the file is not seen without a live account (ADR Consequences).
+  7. Pre-existing, reachable from this slice: a waiting task's `waits_for_account` now follows
+     every agent's accounts (`Harness::ALL`;
+     `claude_gate::a_waiting_antigravity_task_is_shown_again_when_a_google_account_is_connected`).
+  8. Nits: the no-update variable and the token file's folders and name are
+     `yulius_domain::agent_cli::antigravity` constants used by the harness, the supervisor and
+     the sign-in (`the_antigravity_token_file_is_the_domains`); the article test sits below the
+     module's imports. Kept: `/api/me` asks the store once per agent (three small reads, as
+     before for two). The Plan line's `google_connected` stays as worded, matching its step; the
+     field is `antigravity_connected`.
+- After round 1: `yulius-app`, `yulius-harness`, `yulius-contracts`, `yulius-domain` 1462
+  passed; `yulius` integration files `antigravity*`, `codex*`, `accounts`, `account_token`,
+  `claude_gate`, `moves`, `rotation`, `cockpit`, `subscription_moves`, `pool_supervision`,
+  `supervision` 233 passed. Clippy clean.

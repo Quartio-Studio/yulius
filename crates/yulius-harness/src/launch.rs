@@ -36,13 +36,15 @@ pub const ANTIGRAVITY_PROGRAM: &str = "agy";
 pub const ANTIGRAVITY_HOOK_EVENTS: [&str; 3] = ["SessionStart", "PreInvocation", "Stop"];
 /// The variable and value that keep the Antigravity CLI from updating itself (1.5.10 reads
 /// `true` only).
-pub const ANTIGRAVITY_NO_UPDATE_ENV: (&str, &str) = ("AGY_CLI_DISABLE_AUTO_UPDATE", "true");
+pub const ANTIGRAVITY_NO_UPDATE_ENV: (&str, &str) =
+    yulius_domain::agent_cli::antigravity::NO_UPDATE_ENV;
 /// The variable an API-key run of the Antigravity CLI reads its Gemini API key from.
 pub const GEMINI_API_KEY_ENV: &str = "GEMINI_API_KEY";
 /// The Antigravity CLI's folder below its home.
 pub const ANTIGRAVITY_DIR: &str = ".gemini";
 /// Where the Antigravity CLI keeps a Google sign-in when no keyring is reachable, below its home
-/// (1.5.10, seen with `strace`).
+/// (1.5.10, seen with `strace`): `yulius_domain::agent_cli::antigravity`'s `TOKEN_DIRS` and
+/// `TOKEN_NAME` (a test keeps them equal).
 pub const ANTIGRAVITY_TOKEN_FILE: &str = ".gemini/antigravity-cli/antigravity-oauth-token";
 pub use yulius_domain::harness::{DEFAULT_ANTIGRAVITY_EFFORT, DEFAULT_ANTIGRAVITY_MODEL};
 /// Codex caps the timeout of its `SessionEnd` hook at 3 s (0.167).
@@ -1467,6 +1469,19 @@ fn pretty(value: &Value) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// SPEC-505: the token file the plan writes is where the server reads it back.
+    #[test]
+    fn the_antigravity_token_file_is_the_domains() {
+        use yulius_domain::agent_cli::antigravity;
+        let parts = [
+            antigravity::TOKEN_DIRS[0],
+            antigravity::TOKEN_DIRS[1],
+            antigravity::TOKEN_NAME,
+        ];
+        assert_eq!(ANTIGRAVITY_TOKEN_FILE, parts.join("/"));
+        assert_eq!(ANTIGRAVITY_DIR, antigravity::TOKEN_DIRS[0]);
+    }
 
     /// SPEC-503 CDX-002: the wrapper really gives the server its variable under the server's
     /// name, from the run variable, and passes its arguments untouched.

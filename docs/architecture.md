@@ -614,6 +614,14 @@ The sign-in runs on the host, not in a sandbox. It has a fixed argv, new empty H
 folders, and input from instance administrators only. Its raw output is one allocation that never
 grows and is zeroed whole once the token is extracted
 ([decision 0256](decisions/0256-a-sign-in-runs-on-the-host-and-its-raw-output-is-one-wiped-allocation.md)).
+Codex (`codex login --device-auth`) and Antigravity sign in the same way but leave a file instead
+of printing a token: `auth.json`, or the Antigravity CLI's token file below
+`.gemini/antigravity-cli`, read without following a link and sealed. The Antigravity CLI has no
+sign-in-only command: its sign-in is the whole agent TUI (auto-update off), which never exits on
+its own, so it is stopped 5 s after its token file appears. Once signed in, that TUI can run a
+shell command typed into it, which an instance administrator can do anyway (an MCP server's
+Test), and Yulius types nothing into it
+([decision 0361](decisions/0361-antigravity-is-a-third-harness-picked-at-random-by-default.md)).
 
 ```mermaid
 stateDiagram-v2
