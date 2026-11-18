@@ -129,9 +129,9 @@ Six pull requests, each merged into `dev` on green before the next begins.
 - [x] Slice C1: review findings fixed and the slice delivered
 - [x] Slice C2: Antigravity subscriptions sign in with Google or a Gemini API key
 - [x] Slice C2: Antigravity limits, google_connected and moves within Antigravity subscriptions
-- [ ] Slice C2: review findings fixed and the slice delivered
-- [ ] Slice D: the UI offers Antigravity with Gemini 4 Carbon (High) by default
-- [ ] Slice D: SPEC-001/002/003 and the documents say Antigravity is accepted
+- [x] Slice C2: review findings fixed and the slice delivered
+- [x] Slice D: the UI offers Antigravity with Gemini 4 Carbon (High) by default
+- [x] Slice D: SPEC-001/002/003 and the documents say Antigravity is accepted
 - [ ] Slice D: review findings fixed and the slice delivered
 - [ ] Slice E: a task without a chosen agent is drawn at random and records the draw
 - [ ] Slice E: the composer and automations offer Random or a chosen agent, and the export reports the draw
@@ -467,3 +467,51 @@ Six pull requests, each merged into `dev` on green before the next begins.
   passed; `yulius` integration files `antigravity*`, `codex*`, `accounts`, `account_token`,
   `claude_gate`, `moves`, `rotation`, `cockpit`, `subscription_moves`, `pool_supervision`,
   `supervision` 233 passed. Clippy clean.
+- Review round 2 (head ee9e854a4): approve. Its notes, fixed in slice D's pull request: the
+  install before a Google sign-in's account exists is held
+  (`accounts::a_google_sign_in_given_up_during_the_install_leaves_no_account`, an install gate
+  held while the request goes away; it fails with the install removed); a token copy that is
+  not taken is zeroed; `read_login_file` is Codex's alone again; the sign-in's folders come from
+  `TOKEN_DIRS`; the provided-CLI test names the release by `install_name()`.
+
+### Slice D (the UI)
+
+- `agents.js` names each agent (harness, provider, CLI, short name, article) for every page:
+  Run on…, waiting and failed lines, the task's start screens and details, a subscription's
+  usage words, the composer's Connect step, a refused start's Connect action (Connect
+  Antigravity opens `?add=antigravity`).
+- The composer's model menu has a Google group, Gemini 4 Carbon first (`harness: antigravity`,
+  `model: gemini-4-carbon`; the server's effort default, high), kept equal to the server's
+  default by `ui_contract::the_composer_offers_antigravity_on_its_default_model`. Automations
+  take Antigravity as their agent. Subscriptions adds an Antigravity subscription by Google
+  sign-in (the default) or a Gemini API key; its card offers neither token paste nor import.
+- Login terminals are 1024 columns wide: the real CLI's Google link is 704 characters and the
+  CLI breaks a link at the width (seen by the round 1 reviewer with agy 1.5.10);
+  `accounts::an_antigravity_sign_in_ends_once_its_token_file_is_written` asserts the width.
+- The mock serves Antigravity accounts, tasks and its Google sign-in (a 704-character link).
+- Tests: e2e `antigravity.e2e.ts` 6 passed; `codex`, `subscriptions`, `claude-connect`,
+  `consistency`, `model-fallback`, `automations` 98 passed (the Codex test's API-key locator
+  is scoped to the shown choices, as two agents now offer one). `yulius-app`, `yulius-harness`,
+  `yulius-contracts`, `yulius-domain` 1473 passed; `yulius` integration files `antigravity*`,
+  `codex*`, `accounts`, `account_token`, `account_email`, `claude_gate`, `ui_contract`,
+  `claude_updates` 139 passed. Clippy clean.
+- The documents say Antigravity is accepted: SPEC-001 (the `F 2026-11-17 Antigravity` source,
+  vision, glossary, J3, TSK-001/003, ROT-001/004, AC-ROT-8, changelog), SPEC-002 (principle 1,
+  evidence table, changelog), SPEC-003 (§6 item 90, changelog), `docs/product.md` and
+  `AGENTS.md`; SPEC-001's changelog, SPEC-003 item 90 and `docs/product.md` say the random draw
+  follows in slice E, and the others name only what is delivered. `index.html` preloads `agents.js`
+  (`check_repository.py --sync-brand`); `scripts/dev quick` passed.
+- Mutation testing (`scripts/dev mutants`, on c9a973115): `mutants: 26 listed, 9 caught,
+  0 missed, 0 timed out, 17 unviable, 0 not reached (bound 30 min, took 306 s)`.
+- Review round 1 (yulius-reviewer, head c9a973115): approve, with minors fixed after (own code):
+  an unknown `?add=` (`constructor`) opens no dialog (`Object.hasOwn`; e2e `an unknown add in
+  the address opens no dialog`); Subscriptions' heading and empty state name Antigravity; e2e
+  for Connect Antigravity on a refused start and the Connect Claude step leaving once an
+  Antigravity account is usable, the list line's and the time tooltip's article (the three
+  tests fail with the reviewer's hand mutations put back); the tests use `touchTask` and
+  `firstShown` from `support.ts`; SPEC-003 item 90 defers the draw to slice E; nits: the web
+  README's 1024 columns, ROT-001's comma, `defaultEffort` removed (nothing read it), the
+  reserved token buffer, the C2 Plan box, the architecture diagram's `agy`. Pre-existing and
+  left: the sessions page labels assistant entries "Claude" (session search and import are
+  Claude Code's only, ADR-0361 Consequences). e2e `antigravity.e2e.ts` 8 passed; `yulius-app`
+  611 passed; `ui_contract`, `antigravity` 22 passed; clippy clean; `scripts/dev quick` passed.

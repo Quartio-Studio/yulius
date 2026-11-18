@@ -151,7 +151,8 @@ pub struct TokenTotalsView {
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CreateAccount {
-    /// Provider: `anthropic` (Claude) or `openai` (Codex, SPEC-503).
+    /// Provider: `anthropic` (Claude), `openai` (Codex, SPEC-503) or `google` (Antigravity,
+    /// SPEC-505).
     pub provider: String,
     /// Label.
     pub label: String,
@@ -159,8 +160,9 @@ pub struct CreateAccount {
     /// created signed in with it, with no login terminal. Absent: the login terminal starts.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub token: Option<String>,
-    /// An OpenAI API key for an `openai` account: stored as its credential at once, no sign-in
-    /// runs (SPEC-503 CDX-005). Never returned.
+    /// An OpenAI API key for an `openai` account, or a Gemini API key for a `google` one: stored
+    /// as its credential at once, no sign-in runs (SPEC-503 CDX-005, SPEC-505 AGY-008). Never
+    /// returned.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub api_key: Option<String>,
     /// The `auth.json` of a ChatGPT sign-in made with `codex login` elsewhere, for an `openai`

@@ -35,7 +35,7 @@ flowchart LR
   CI -->|"jobs in its ci/ leaf, job slots"| SB
   SUP <-->|"Unix socket"| PH["yulius ptyhost (per run)"]
   subgraph SB["Sandbox (namespace holder)"]
-    PH --> AG["claude or codex TUI"]
+    PH --> AG["claude, codex or agy TUI"]
     AG -->|"/run/yulius/docker"| DF["Docker front"]
     DF --> DE["Docker engine (on demand)"]
   end

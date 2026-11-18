@@ -10,6 +10,7 @@ import { taskActions, taskInfo, allows, isLive, otherOwner } from './status.js';
 import { relLong, whenLabel, localInputValue, fromLocalInput, dateTime, shortSha } from './format.js';
 import { limitInEffect, limitsNow, modelWindow, needsSignIn, placingModel, usedUp } from './usage.js';
 import { BRAND } from './brand.js';
+import { agentOfHarness } from './agents.js';
 import { createMarkdownEditor } from './mdeditor.js';
 import { openAttachment } from './filedrop.js';
 import { inlineCount } from './promptparts.js';
@@ -225,14 +226,14 @@ function useLine(account) {
 }
 
 /**
- * "Run on…" (SPEC-447 MOV-001): every subscription of the task's provider (Claude, or Codex for a
- * Codex task: a task never changes harness, SPEC-503 CDX-013) with its use, the task's own marked
+ * "Run on…" (SPEC-447 MOV-001): every subscription of the task's provider (Claude, Codex or
+ * Antigravity: a task never changes harness, SPEC-503 CDX-013, SPEC-505) with its use, the task's own marked
  * and one that cannot take it disabled with why. A running or waiting task moves to the choice in
  * its session; an ended one continues there.
  */
 export async function openSubscriptionMenu(ctx, anchor, task) {
-  const codex = task.harness === 'codex';
-  const kind = codex ? 'Codex' : 'Claude';
+  const agent = agentOfHarness(task.harness);
+  const kind = agent.name;
   let accounts;
   let model = task.model || null;
   try {
@@ -244,7 +245,7 @@ export async function openSubscriptionMenu(ctx, anchor, task) {
       ctx.api.get('/api/status'),
       model ? null : ctx.api.get(`/api/tasks/${enc(task.id)}`).catch(() => null),
     ]);
-    accounts = (status.accounts || []).filter((a) => a.id && a.provider === (codex ? 'openai' : 'anthropic'));
+    accounts = (status.accounts || []).filter((a) => a.id && a.provider === agent.provider);
     model = model || (detail && detail.model) || null;
   } catch (error) {
     errorToast(error, 'Couldn’t read the subscriptions');

@@ -520,6 +520,35 @@ fn resolve(file: &str, spec: &str) -> String {
     format!("/{}", parts.join("/"))
 }
 
+/// SPEC-505 AGY-010: the composer offers Antigravity in a Google group whose first model is the
+/// server's default for an Antigravity task (whose effort the server sets when none is chosen).
+#[test]
+fn the_composer_offers_antigravity_on_its_default_model() -> TestResult {
+    use yulius_domain::harness::{DEFAULT_ANTIGRAVITY_EFFORT, DEFAULT_ANTIGRAVITY_MODEL};
+    let models = std::fs::read_to_string(web_dir().join("assets/models.js"))?;
+    let google = models
+        .split_once("    id: 'google',")
+        .map(|(_, rest)| rest)
+        .ok_or("models.js has no google provider")?;
+    assert!(
+        google.starts_with("\n    name: 'Google',\n    harness: 'antigravity',\n"),
+        "{}",
+        &google[..google.len().min(120)]
+    );
+    assert!(
+        google.contains(&format!(
+            "    models: [\n      {{ id: '{DEFAULT_ANTIGRAVITY_MODEL}', name: 'Gemini 4 Carbon'"
+        )),
+        "models.js does not list {DEFAULT_ANTIGRAVITY_MODEL} first for Antigravity"
+    );
+    assert_eq!(
+        DEFAULT_ANTIGRAVITY_EFFORT, "high",
+        "the menu's description says high"
+    );
+    assert!(google.contains("high effort by default"));
+    Ok(())
+}
+
 /// SPEC-482 FBK-001: the pages name the fallback model the server launches (the Status line, the
 /// Capacity panel and "Run #N on…" work out from it what the pool does), and offer it.
 #[test]

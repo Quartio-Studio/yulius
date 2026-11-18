@@ -2,7 +2,7 @@
 //!
 //! Claude: `claude setup-token` runs in a server-owned PTY; the long-lived OAuth token is
 //! captured from its output with [`extract_claude_oauth_token`] while [`TokenMasker`] hides it
-//! from viewers. Run the PTY wide (for example 500 columns) so the TUI does not wrap the token
+//! from viewers. Run the PTY wide (for example 1024 columns) so the TUI does not wrap the token
 //! across lines; a wrapped token is neither captured nor fully masked.
 //!
 //! Codex (SPEC-503 CDX-005): `codex login --device-auth` runs with a fresh temporary `CODEX_HOME`

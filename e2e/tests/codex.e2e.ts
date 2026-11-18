@@ -28,7 +28,7 @@ test('a Codex subscription is added with an OpenAI API key, without a sign-in', 
   await expect(add.getByRole('radio', 'ChatGPT sign-in')).toBeChecked();
   // A pasted token is Claude's way in only (SPEC-503 CDX-015).
   await expect(add.getByRole('radio', 'Paste token')).toHaveCount(0);
-  await browser.locator('dialog.modal .seg label:has-text("API key")').click();
+  await browser.locator('dialog.modal .seg:not([hidden]) label:has-text("API key")').click();
   await expect(add.getByRole('radio', 'API key')).toBeChecked();
   await add.getByRole('textbox', /^Name/).fill('Codex key');
   expect(await axeViolations(browser)).toEqual([]);

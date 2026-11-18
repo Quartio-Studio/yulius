@@ -32,6 +32,7 @@
 
 import { counter, taskInfo } from './status.js';
 import { plausibleEmail } from './format.js';
+import { agentOfHarness, agentOfProvider, aName } from './agents.js';
 import { parsePrompt } from './promptparts.js';
 import { apply as applyOp, transform as transformOp, isNoop as noopOp, replacement } from './livetext.js';
 
@@ -941,12 +942,12 @@ route('POST', '/api/auth/logout', ({ db }) => { db.signedIn = false; for (const 
 const usableOf = (db, provider) => db.accounts.some((a) => (a.provider || 'anthropic') === provider && (a.status === 'ok' || a.status === 'limited'));
 const claudeUsable = (db) => usableOf(db, 'anthropic');
 // A person's start of an agent without one is refused, with where to connect one (CLA-002); a
-// Codex task needs a Codex account (SPEC-503).
+// Codex task needs a Codex account (SPEC-503), an Antigravity task an Antigravity one (SPEC-505).
 const needClaude = (db, provider = 'anthropic') => {
-  const kind = provider === 'openai' ? 'Codex' : 'Claude';
-  if (!usableOf(db, provider)) fail(409, 'claude_account_required', `Connect a ${kind} account first: no ${kind} account is connected, so no agent can start. An instance administrator connects one in Subscriptions (/admin/accounts).`);
+  const agent = agentOfProvider(provider);
+  if (!usableOf(db, provider)) fail(409, 'claude_account_required', `Connect ${aName(agent)} account first: no ${agent.name} account is connected, so no agent can start. An instance administrator connects one in Subscriptions (/admin/accounts).`);
 };
-route('GET', '/api/me', ({ db }) => ({ ...db.me, instance: { ...db.me.instance, claude_connected: claudeUsable(db), codex_connected: usableOf(db, 'openai'), vidoc: Boolean(db.vidoc.key || db.vidoc.config) && !db.vidoc.offAt } }));
+route('GET', '/api/me', ({ db }) => ({ ...db.me, instance: { ...db.me.instance, claude_connected: claudeUsable(db), codex_connected: usableOf(db, 'openai'), antigravity_connected: usableOf(db, 'google'), vidoc: Boolean(db.vidoc.key || db.vidoc.config) && !db.vidoc.offAt } }));
 // Superadmin recovery (ACC-011): a code is set, three attempts left. A test can hold the answers
 // (`__yuliusMock.holdRecovery = promise`; `recoveryWaiting` counts the reads waiting there), so a
 // page that asked can be left before it answers (#581). `recoveryAnswered` counts the answers: a
@@ -1477,8 +1478,10 @@ route('POST', `/api/sandboxes/${ID}/tasks`, async ({ db, p, body }) => {
   const sandbox = sandboxOf(db, p[0]);
   need(sandbox, 'write');
   if (!body.prompt || !body.prompt.trim()) fail(422, 'invalid', 'The prompt is empty.');
-  if (body.harness && !['claude', 'codex'].includes(body.harness)) fail(422, 'invalid', 'harness must be claude or codex');
+  if (body.harness && !['claude', 'codex', 'antigravity'].includes(body.harness)) fail(422, 'invalid', 'harness must be claude, codex or antigravity');
   const harness = body.harness || 'claude';
+  // Antigravity runs Google's Gemini models only, as on the server (SPEC-505).
+  if (harness === 'antigravity' && body.model && !body.model.startsWith('gemini-')) fail(422, 'invalid', 'an Antigravity task takes a Gemini model (such as gemini-4-carbon)');
   if (body.mode && !['goal', 'prompt', 'auto'].includes(body.mode)) fail(422, 'invalid', 'mode must be goal, prompt or auto');
   const visible = db.workflows.filter((w) => w.scope === 'instance' || w.sandbox === sandbox.id);
   if (body.workflow_id && body.workflow_id !== 'auto' && !visible.some((w) => w.id === body.workflow_id)) fail(422, 'invalid', `unknown workflow \`${body.workflow_id}\``);
@@ -1493,7 +1496,7 @@ route('POST', `/api/sandboxes/${ID}/tasks`, async ({ db, p, body }) => {
   const prepared = body.prepared === true || Boolean(body.start_at);
   if (prepared && (body.after_task_id || body.supertask || (body.start_rule && body.start_rule.trim()))) fail(422, 'invalid', 'a prepared task starts when you decide or at its time: it cannot also run after a task, by a rule or as a supertask');
   const startAt = body.start_at ? mockStartAt(body.start_at) : null;
-  if (!prepared) needClaude(db, harness === 'codex' ? 'openai' : 'anthropic');
+  if (!prepared) needClaude(db, agentOfHarness(harness).provider);
   let rule = null;
   if (body.start_rule && body.start_rule.trim()) {
     if (body.after_task_id) fail(422, 'invalid', 'give a task to run after or a start rule, not both');
@@ -1523,7 +1526,7 @@ route('POST', `/api/sandboxes/${ID}/tasks`, async ({ db, p, body }) => {
     origin: 'ui', created_by: { login: db.me.user.login, id: db.me.user.id }, created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
     archived: false, account_label: null,
     stepsList: wf ? wf.steps.map((title2, i) => ({ id: `${id}-s${i + 1}`, ordinal: i + 1, title: title2, status: 'pending', note: '', updated_by: 'workflow', updated_at: new Date().toISOString() })) : [],
-    model: body.model || 'claude-opus-4', effort: body.effort || 'default', prompt: body.prompt,
+    model: body.model || (harness === 'antigravity' ? 'gemini-4-carbon' : 'claude-opus-4'), effort: body.effort || (harness === 'antigravity' ? 'high' : 'default'), prompt: body.prompt,
     delivery: null, mode: choice ? choice.mode : body.mode || 'goal', auto: choice ? choice.auto : null,
     supertask: body.supertask === true,
   };
@@ -1805,11 +1808,11 @@ route('POST', `/api/tasks/${ID}/stop`, ({ db, p }) => {
   later(() => touch(db, task, { status: 'stopped_cancelled', account_label: null }), 1400);
   return summary(task);
 });
-// A task runs on subscriptions of its harness's provider only (SPEC-503 CDX-013).
-const providerOfTask = (task) => (task.harness === 'codex' ? 'openai' : 'anthropic');
-const kindOf = (provider) => (provider === 'openai' ? 'Codex' : 'Claude');
+// A task runs on subscriptions of its harness's provider only (SPEC-503 CDX-013, SPEC-505).
+const providerOfTask = (task) => agentOfHarness(task.harness).provider;
+const kindOf = (provider) => agentOfProvider(provider).name;
 const refuseOtherProvider = (task, account) => {
-  if (account && (account.provider || 'anthropic') !== providerOfTask(task)) fail(429, 'capacity', `${account.label} is not a ${kindOf(providerOfTask(task))} subscription, so it cannot take the task.`);
+  if (account && (account.provider || 'anthropic') !== providerOfTask(task)) fail(429, 'capacity', `${account.label} is not ${aName(agentOfProvider(providerOfTask(task)))} subscription, so it cannot take the task.`);
 };
 const continueHandler = ({ db, p, body }) => {
   const task = taskOf(db, p[0]);
@@ -4013,7 +4016,7 @@ function signedInByPaste(db, account) {
 // With a pasted `token` it is `ok` at once and there is no `login_id` (SPEC-502 TKP-001).
 route('POST', '/api/admin/accounts', ({ db, body }) => {
   adminOnly(db);
-  if (!['anthropic', 'openai'].includes(body.provider)) fail(422, 'invalid', 'provider must be anthropic (Claude) or openai (Codex)');
+  if (!['anthropic', 'openai', 'google'].includes(body.provider)) fail(422, 'invalid', 'provider must be anthropic (Claude), openai (Codex) or google (Antigravity)');
   if (!body.label || body.label.length > 80) fail(422, 'invalid', 'label must be 1–80 characters');
   if (body.token !== undefined && body.token !== null) {
     if (body.provider !== 'anthropic') fail(422, 'invalid', 'a pasted token is only for an anthropic (Claude) account');
@@ -4030,14 +4033,18 @@ route('POST', '/api/admin/accounts', ({ db, body }) => {
   if (body.api_key !== undefined && !String(body.api_key).trim()) fail(422, 'invalid', 'the API key is empty');
   if (body.auth_json !== undefined && !String(body.auth_json).trim()) fail(422, 'invalid', 'the auth.json is empty');
   if (body.api_key && body.auth_json) fail(422, 'invalid', 'give either an API key or an auth.json, not both');
-  if ((body.api_key || body.auth_json) && body.provider !== 'openai') fail(422, 'invalid', 'an API key or an auth.json is only for an openai (Codex) account');
-  if (body.api_key && !/^sk-[A-Za-z0-9_-]{20,512}$/.test(body.api_key.trim())) fail(422, 'invalid', 'the API key is not an OpenAI API key (sk-…)');
+  // A Gemini API key makes an Antigravity account at once (SPEC-505 AGY-008).
+  if (body.api_key && body.provider === 'anthropic') fail(422, 'invalid', 'an API key is only for an openai (Codex) or google (Antigravity) account, an auth.json only for an openai one');
+  if (body.auth_json && body.provider !== 'openai') fail(422, 'invalid', 'an API key is only for an openai (Codex) or google (Antigravity) account, an auth.json only for an openai one');
+  if (body.api_key && body.provider === 'openai' && !/^sk-[A-Za-z0-9_-]{20,512}$/.test(body.api_key.trim())) fail(422, 'invalid', 'the API key is not an OpenAI API key (sk-…)');
+  if (body.api_key && body.provider === 'google' && !/^[!-~]{16,256}$/.test(body.api_key.trim())) fail(422, 'invalid', 'the API key is not a Gemini API key');
   if (body.auth_json) mockCodexImport(body.auth_json);
   const immediate = Boolean(body.api_key || body.auth_json);
   db.nextId += 1;
   const account = { id: `acc_${db.nextId}`, provider: body.provider, label: body.label, email: null, email_typed: false, status: immediate ? 'ok' : 'pending_login', usage: { primary: null, secondary: null, observed_at: null }, last_error: null, in_use_by: 0 };
   db.accounts.push(account);
   if (immediate) {
+    // A key's subscription has no usage windows to read (SPEC-503 CDX-008, SPEC-505).
     if (body.api_key) db.codexKeyAccounts.add(account.id);
     emit(db, { type: 'account.updated', account });
     return json(201, { account });
@@ -6571,8 +6578,11 @@ function startLogin(db, accountId) {
   return loginId;
 }
 
+/** A Google sign-in link as long as the Antigravity CLI 1.5.10's (704 characters), synthetic. */
+const GOOGLE_SIGN_IN_URL = `https://accounts.google.com/o/oauth2/v2/auth?access_type=offline&client_id=mock.apps.googleusercontent.com&code_challenge_method=S256&prompt=consent&redirect_uri=http%3A%2F%2Flocalhost%3A1455%2Foauth2callback&response_type=code&scope=${encodeURIComponent('openid email profile https://www.googleapis.com/auth/cloud-platform https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/userinfo.profile')}&state=`.padEnd(704, 'x');
+
 /**
- * Fake provider login for the account login terminal: a fixed 500×40 PTY; `state.status`
+ * Fake provider login for the account login terminal: a fixed 1024×40 PTY; `state.status`
  * goes running → ok | error | cancelled and the exit frame carries the same status. Tokens are
  * masked. Enter signs in; the code `fail` makes the sign-in fail as the CLI's would (SPEC-243).
  */
@@ -6605,8 +6615,18 @@ class LoginSession {
       this.ws = ws;
       ws.push(JSON.stringify(this.state()));
       this.seq += 1;
-      // A Codex subscription's sign-in is Codex's device code (SPEC-503), a Claude one Claude's.
-      ws.push(terminalFrame(2, this.seq, (this.codex() ? [
+      // A Codex subscription's sign-in is Codex's device code (SPEC-503), an Antigravity one the
+      // Antigravity CLI's Google sign-in with its 704-character link (SPEC-505), a Claude one
+      // Claude's.
+      ws.push(terminalFrame(2, this.seq, (this.google() ? [
+        bold('Antigravity CLI'),
+        '',
+        ' You are currently not signed in. Sign in with Google:',
+        ` ${c(39, GOOGLE_SIGN_IN_URL)}`,
+        '',
+        'Press Enter once signed in (in mock mode; "fail" fails):',
+        '> ',
+      ] : this.codex() ? [
         bold('codex login --device-auth'),
         '',
         'Follow these steps to sign in with ChatGPT using device code authorization:',
@@ -6633,6 +6653,12 @@ class LoginSession {
     }
   }
 
+  /** Whether the account signing in is an Antigravity subscription. */
+  google() {
+    const account = this.db.accounts.find((a) => a.id === this.accountId);
+    return Boolean(account && account.provider === 'google');
+  }
+
   /** Whether the account signing in is a Codex subscription. */
   codex() {
     const account = this.db.accounts.find((a) => a.id === this.accountId);
@@ -6640,7 +6666,7 @@ class LoginSession {
   }
 
   state() {
-    return { type: 'state', attempt_seq: null, harness: this.codex() ? 'codex' : 'claude', cols: 500, rows: 40, can_write: !this.done, controller: true, status: this.status };
+    return { type: 'state', attempt_seq: null, harness: this.google() ? 'antigravity' : this.codex() ? 'codex' : 'claude', cols: 1024, rows: 40, can_write: !this.done, controller: true, status: this.status };
   }
 
   finish() {
@@ -6660,7 +6686,7 @@ class LoginSession {
       this.end('error', 1, SIGN_IN_FAILED);
       return;
     }
-    this.out(this.codex() ? `\r\n${c(114, '✔')} Successfully logged in.\r\n` : `\r\nToken: sk-ant-oat01-[REDACTED]\r\n${c(114, '✔')} Logged in. Credentials stored encrypted for this account.\r\n`);
+    this.out(this.google() ? `\r\n${c(114, '✔')} Signed in with Google.\r\n` : this.codex() ? `\r\n${c(114, '✔')} Successfully logged in.\r\n` : `\r\nToken: sk-ant-oat01-[REDACTED]\r\n${c(114, '✔')} Logged in. Credentials stored encrypted for this account.\r\n`);
     if (account) {
       this.db.unsignedAccounts.delete(account.id);
       Object.assign(account, { status: 'ok', last_error: null, usage: { primary: { used_percent: 3.0, resets_at: isoIn(5 * HOUR), window_minutes: 300 }, secondary: { used_percent: 1.0, resets_at: isoIn(7 * DAY), window_minutes: 10080 }, observed_at: new Date().toISOString() } });
@@ -7128,6 +7154,16 @@ export function createMockTransport(params) {
   db.connectCodex = () => {
     db.nextId += 1;
     const account = { id: `acc_${db.nextId}`, provider: 'openai', label: 'Codex', email: null, status: 'ok', usage: { primary: null, secondary: null, observed_at: null }, last_error: null, in_use_by: 0 };
+    db.accounts.push(account);
+    emit(db, { type: 'account.updated', account });
+  };
+  // An Antigravity account signed in elsewhere (`connectAntigravity()`, SPEC-505).
+  db.connectAntigravity = () => {
+    db.nextId += 1;
+    const account = {
+      id: `acc_${db.nextId}`, provider: 'google', label: 'Antigravity', email: null, status: 'ok',
+      usage: { primary: null, secondary: null, observed_at: null }, last_error: null, in_use_by: 0,
+    };
     db.accounts.push(account);
     emit(db, { type: 'account.updated', account });
   };

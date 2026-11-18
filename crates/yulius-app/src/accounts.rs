@@ -58,8 +58,9 @@ pub const LOGIN_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 /// stopped and the token sealed (SPEC-243 LGN-001). `claude setup-token` exits by itself 500 ms
 /// after printing the token.
 pub const TOKEN_EXIT_GRACE: Duration = Duration::from_secs(5);
-/// PTY width of login terminals: wide enough that tokens and URLs never wrap.
-pub const LOGIN_COLS: u16 = 500;
+/// PTY width of login terminals: wide enough that tokens and URLs never wrap (the Antigravity
+/// CLI's Google sign-in link is 704 characters, and the CLI breaks it at the width; SPEC-505).
+pub const LOGIN_COLS: u16 = 1024;
 /// PTY height of login terminals.
 pub const LOGIN_ROWS: u16 = 40;
 /// Raw output kept in memory for token extraction (the newest bytes win).
@@ -287,15 +288,15 @@ impl LoginTerminal {
 /// The largest `auth.json` a Codex sign-in may leave (`yulius_harness::login`'s bound).
 const CODEX_LOGIN_AUTH_MAX: usize = 1024 * 1024;
 
-/// The credentials file a sign-in of `agent` ("Codex") wrote at `path`, when it is a plain file
-/// within [`CODEX_LOGIN_AUTH_MAX`] and `problem` finds none in it; a refused copy is scrubbed
+/// The credentials file a Codex sign-in wrote at `path`, when it is a plain file within
+/// [`CODEX_LOGIN_AUTH_MAX`] and `problem` finds none in it; a refused copy is scrubbed
 /// (SPEC-503 CDX-005). The bound is checked before reading, and the
 /// read itself is bounded too: the sign-in's process writes it.
 fn read_login_file(
     path: &Path,
-    agent: &str,
     problem: impl FnOnce(&[u8]) -> Option<String>,
 ) -> Result<Vec<u8>, String> {
+    let agent = "Codex";
     use std::io::Read as _;
     let meta = std::fs::symlink_metadata(path)
         .map_err(|_| format!("the {agent} sign-in did not store credentials"))?;
@@ -1992,8 +1993,10 @@ impl App {
         }
         // The Antigravity CLI keeps its sign-in in `$HOME/.gemini/antigravity-cli` (SPEC-505).
         if account.provider == Provider::Google {
-            for d in [home.join(".gemini"), home.join(".gemini/antigravity-cli")] {
-                create_private_dir(&d)?;
+            let mut folder = home.clone();
+            for name in yulius_domain::agent_cli::antigravity::TOKEN_DIRS {
+                folder.push(name);
+                create_private_dir(&folder)?;
             }
         }
         let mut plan = self.login_plan(account.provider, &home, &config_dir);
@@ -2293,11 +2296,9 @@ impl App {
 
     /// The `auth.json` the Codex sign-in of `session` wrote, validated (SPEC-503 CDX-005).
     fn codex_login_auth(&self, session: &LoginSession) -> Result<Vec<u8>, String> {
-        read_login_file(
-            &session.dir.join("codex").join("auth.json"),
-            "Codex",
-            |bytes| self.deps.harness.codex_auth_problem(bytes),
-        )
+        read_login_file(&session.dir.join("codex").join("auth.json"), |bytes| {
+            self.deps.harness.codex_auth_problem(bytes)
+        })
     }
 
     /// The credential in the whole raw output, which is wiped afterwards, with the temporary
@@ -2539,7 +2540,7 @@ mod tests {
         let path = dir.path().join("auth.json");
         std::fs::write(&path, br#"{"OPENAI_API_KEY":"sk-x"}"#)?;
         assert_eq!(
-            read_login_file(&path, "Codex", usable).as_deref(),
+            read_login_file(&path, usable).as_deref(),
             Ok(&br#"{"OPENAI_API_KEY":"sk-x"}"#[..])
         );
         let large = std::fs::File::create(&path)?;
@@ -2549,12 +2550,12 @@ mod tests {
             read.set(true);
             None
         };
-        assert!(read_login_file(&path, "Codex", watched).is_err());
+        assert!(read_login_file(&path, watched).is_err());
         assert!(!read.get(), "a file over the bound is not read");
         let link = dir.path().join("link.json");
         std::os::unix::fs::symlink(&path, &link)?;
-        assert!(read_login_file(&link, "Codex", usable).is_err());
-        assert!(read_login_file(dir.path(), "Codex", usable).is_err());
+        assert!(read_login_file(&link, usable).is_err());
+        assert!(read_login_file(dir.path(), usable).is_err());
         Ok(())
     }
     use std::cell::Cell;

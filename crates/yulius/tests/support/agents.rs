@@ -198,6 +198,8 @@ pub struct FakeAgentOptions {
     /// Each answer about the Codex CLI waits for a permit of this gate (a test watches the task
     /// before its start goes on).
     pub codex_gate: Option<std::sync::Arc<tokio::sync::Semaphore>>,
+    /// The same for the Antigravity CLI.
+    pub antigravity_gate: Option<std::sync::Arc<tokio::sync::Semaphore>>,
 }
 
 /// See the module docs.
@@ -245,7 +247,13 @@ impl HarnessPort for FakeAgentHarness {
             count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         }
         let provided = self.options.provided_antigravity.clone();
-        Box::pin(async move { Ok(provided) })
+        let gate = self.options.antigravity_gate.clone();
+        Box::pin(async move {
+            if let Some(gate) = gate {
+                let _permit = gate.acquire_owned().await;
+            }
+            Ok(provided)
+        })
     }
 
     fn plan(&self, launch: &HarnessLaunch) -> AppResult<HarnessPlan> {

@@ -15,6 +15,16 @@ decision `F 2026-10-08`; provider switching and session translation stay out
 ([SPEC-503](../.ai/specs/SPEC-503-accept-outside-pr-1146-codex-returns-as.md),
 [ADR-0355](decisions/0355-codex-returns-as-a-second-harness-with-a-pinned-cli.md)).
 
+It runs native Antigravity CLI sessions on Antigravity (Google) subscriptions too, on Gemini 4
+Carbon at high effort unless a task names another Gemini model, chosen per task or automation
+(`F 2026-11-17 Antigravity`, task #487). An Antigravity subscription signs in with the CLI's own
+Google sign-in or a Gemini API key, an Antigravity task moves only between Antigravity
+subscriptions, and Yulius provides the pinned Antigravity CLI (1.5.10). The person asked for the
+agent to be drawn at random by default, so the two can be compared on the same mix of work; that
+draw follows in SPEC-505 slice E
+([SPEC-505](../.ai/specs/SPEC-505-implement-antigravity-cli-next-to-claude.md),
+[ADR-0361](decisions/0361-antigravity-is-a-third-harness-picked-at-random-by-default.md)).
+
 The authoritative product brief is [SPEC-001](../.ai/specs/SPEC-001-yulius-product.md); this
 page is the short version for anyone who must know the whole product before building.
 
@@ -377,8 +387,8 @@ watching, steering and unblocking.
   as the new owner, and whoever handed it over can take it back at any time without asking. No administrator takes a task
   without asking; only a task whose owner can no longer act (a disabled account, no write
   access) passes to the first person who asks.
-- **Subscription pool**: Claude accounts are used as one self-managing pool, and Codex accounts
-  as one of their own (SPEC-503); switches and pauses are invisible to agents. Each task shows the subscription it runs on, and a person can
+- **Subscription pool**: Claude accounts are used as one self-managing pool, and Codex and
+  Antigravity accounts each as one of their own (SPEC-503, SPEC-505); switches and pauses are invisible to agents. Each task shows the subscription it runs on, and a person can
   run it on another from the task ("Run #N on…"); removing a subscription moves its tasks, and a
   subscription Claude refuses (cancelled, downgraded) is taken out of the pool and says why. A
   task that moved for either reason says so in its terminal, and one with nothing usable left is
