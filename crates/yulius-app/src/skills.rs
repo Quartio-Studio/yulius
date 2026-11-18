@@ -15,6 +15,7 @@
 //! names must be safe directory names. Disk work runs on blocking threads.
 
 pub mod pack;
+pub mod refresh;
 
 use std::collections::{BTreeSet, HashMap};
 use std::fs;
@@ -311,14 +312,27 @@ pub fn parse_frontmatter(text: &str) -> SkillMeta {
 }
 
 /// Reads at most `limit` bytes of a regular file as lossy UTF-8 (special files such as FIFOs
-/// are refused so a hostile repository cannot block the reader).
+/// are refused so a hostile repository cannot block the reader; see [`open_regular`]).
 fn read_bounded(path: &Path, limit: u64) -> io::Result<String> {
-    if !fs::metadata(path)?.is_file() {
+    let mut bytes = Vec::new();
+    open_regular(path)?.take(limit).read_to_end(&mut bytes)?;
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
+}
+
+/// Opens the regular file `path` for reading. The open itself refuses a link (`O_NOFOLLOW`) and
+/// never waits (`O_NONBLOCK`), and the type is checked on the handle: a repository's file an agent
+/// swaps for a FIFO after a check by path cannot block the reader (SPEC-507 review round 1).
+fn open_regular(path: &Path) -> io::Result<fs::File> {
+    use std::os::unix::fs::OpenOptionsExt as _;
+    crate::race::reached(crate::race::Point::SkillFileOpen, path);
+    let file = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(nix::libc::O_NOFOLLOW | nix::libc::O_NONBLOCK | nix::libc::O_NOCTTY)
+        .open(path)?;
+    if !file.metadata()?.is_file() {
         return Err(io::Error::other("not a regular file"));
     }
-    let mut bytes = Vec::new();
-    fs::File::open(path)?.take(limit).read_to_end(&mut bytes)?;
-    Ok(String::from_utf8_lossy(&bytes).into_owned())
+    Ok(file)
 }
 
 /// Lists skill directories under `dir` whose `SKILL.md` resolves inside `boundary`.
@@ -616,10 +630,18 @@ impl App {
         let sid = SandboxId::parse(sandbox).map_err(|_| AppError::NotFound)?;
         self.require_for(ctx, &sid, Action::View).await?;
         let skill = self.find_skill(&sid, name).await?;
-        let path = skill.dir.join("SKILL.md");
-        let content = blocking(move || read_bounded(&path, MAX_SKILL_MD_BYTES))
-            .await?
-            .map_err(|_| AppError::NotFound)?;
+        // Resolved as the catalog resolved it: a link to a file of the skill's own folder is read
+        // there (the open follows no link), any other place is not shown.
+        let dir = skill.dir.clone();
+        let content = blocking(move || {
+            let real = dir.join("SKILL.md").canonicalize()?;
+            if !real.starts_with(&dir) {
+                return Err(io::Error::other("SKILL.md leaves its skill"));
+            }
+            read_bounded(&real, MAX_SKILL_MD_BYTES)
+        })
+        .await?
+        .map_err(|_| AppError::NotFound)?;
         Ok(SkillContent {
             name: skill.name,
             content,
@@ -633,7 +655,7 @@ impl App {
     /// # Errors
     /// Access errors, `NotFound`, `Invalid` for repository skills.
     pub async fn set_skill_enabled(
-        &self,
+        self: &std::sync::Arc<Self>,
         ctx: &AuthContext,
         sandbox: &str,
         name: &str,
@@ -668,7 +690,24 @@ impl App {
                 Some(sid.as_str()),
                 Some(&skill.name),
             )
-            .await
+            .await?;
+        // The sandbox's home follows the switch at once, not at its next run (SPEC-507 SKR-003).
+        match self.deps.store.sandbox(&sid).await {
+            Ok(Some(record)) => {
+                // In a task of its own, which the request waits for: a request dropped meanwhile
+                // (the person left) leaves the refresh and its audit to finish (SKR-003, SKR-004).
+                let app = std::sync::Arc::clone(self);
+                let refresh = tokio::spawn(async move {
+                    app.refresh_sandbox_skills(&record, "skill switched").await;
+                });
+                if let Err(err) = refresh.await {
+                    tracing::warn!(error = %err, sandbox = %sid, "skill refresh failed");
+                }
+            }
+            Ok(None) => {}
+            Err(err) => tracing::warn!(error = %err, sandbox = %sid, "skill refresh failed"),
+        }
+        Ok(())
     }
 
     /// Enabled instance and bundled skills for a run in `sandbox`, as (name, directory)
@@ -745,6 +784,35 @@ mod tests {
         assert_eq!(unterminated.description.as_deref(), Some("open"));
         let bom = parse_frontmatter("\u{feff}---\r\nname: x\r\n---\r\n");
         assert_eq!(bom.name.as_deref(), Some("x"));
+    }
+
+    /// SPEC-507 review round 1: a `SKILL.md` an agent swaps for a FIFO between the type check
+    /// and the open never blocks the reader (the server's start reads every sandbox's repository
+    /// skills): the open itself refuses anything but a regular file, at once.
+    #[test]
+    fn a_fifo_is_refused_by_the_open_itself() -> TestResult {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        let dir = tempfile::tempdir()?;
+        let fifo = dir.path().join("SKILL.md");
+        nix::unistd::mkfifo(&fifo, nix::sys::stat::Mode::S_IRWXU)?;
+        let (tx, rx) = std::sync::mpsc::channel();
+        let path = fifo.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(open_regular(&path).map(|_| ()));
+        });
+        let opened = rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .map_err(|_| "opening a FIFO blocked")?;
+        assert!(opened.is_err(), "a FIFO is not a regular file");
+        // A writer unblocks a reader left behind by a failing build of this test.
+        let _ = fs::OpenOptions::new()
+            .write(true)
+            .custom_flags(nix::libc::O_NONBLOCK)
+            .open(&fifo);
+        fs::remove_file(&fifo)?;
+        fs::write(&fifo, "---\nname: x\n---\n")?;
+        assert!(read_bounded(&fifo, 64)?.contains("name: x"));
+        Ok(())
     }
 
     #[test]
@@ -1503,7 +1571,8 @@ mod tests {
     }
 
     /// SPEC-506 FST-002 (AC-2): a reviewer does not ask for changes because of CI alone, the
-    /// same everywhere the review is described and in the reviewer agents' prompt; the old
+    /// same everywhere the review is described, and the reviewer agents' prompt leaves it to
+    /// `om-code-review` (SPEC-507 SKR-006); the old
     /// wording that made any failed job a blocker is gone.
     #[test]
     fn every_place_says_ci_alone_is_no_request_for_changes() -> TestResult {
@@ -1549,11 +1618,12 @@ mod tests {
                 assert!(!text.contains(&normal(old)), "{rel} keeps {old:?}");
             }
         }
+        // The reviewer agents' prompt, which a session keeps across an update, sends the
+        // reviewer to `om-code-review` for the rule instead of saying it (SPEC-507 SKR-006).
         let prompt = normal(yulius_domain::review::REVIEWER_PROMPT);
         assert!(
-            prompt.contains("do not ask for changes because of ci alone")
-                && prompt.contains("a failure the change causes is a blocker"),
-            "the reviewer agents' prompt does not say the rule"
+            prompt.contains("load the skill `om-code-review`") && !prompt.contains(" ci "),
+            "the reviewer agents' prompt does not leave the rule to the skill"
         );
         Ok(())
     }

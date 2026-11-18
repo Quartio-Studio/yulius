@@ -54,7 +54,8 @@ Three things in the product sent work to a new round that the round could not ch
   (its own test, format or lint, or a contract its files break) is a blocker." Where CI cannot
   run, an unexecuted gate command still keeps the verdict at request changes. Stated in
   `om-code-review` (and its checklist and output format), `delivery-pipeline`, `yulius-review`,
-  `workflow.md` and, in short, the reviewer agents' prompt.
+  `workflow.md` and, in short, the reviewer agents' prompt (that prompt now leaves it to
+  `om-code-review`: [ADR-0364](0364-a-server-start-refreshes-every-sandboxs-skills-and-the-reviewers-prompt-is-a-contract.md)).
 - **The author proves each fix.** "Before asking for another round, answer each finding of the last
   report with the test that fails without its fix (or why no test can), check every finding of
   that report against the new head, and run the project's mutation command on the lines of the fix
