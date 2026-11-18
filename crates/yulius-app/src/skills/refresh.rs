@@ -80,6 +80,10 @@ impl App {
                 return None;
             }
         }
+        crate::race::reached(crate::race::Point::SkillsRefreshQueued, &root);
+        // The set is read under the lock, as a launch reads it: of two switches in a row, the
+        // refresh that runs last installs what was stored last.
+        let one_install_at_a_time = self.launch_lock().await;
         let skills = match self.skills_for_run(sandbox).await {
             Ok(skills) => skills,
             Err(err) => {
@@ -88,8 +92,6 @@ impl App {
             }
         };
         let skills_dir = skills_dir_below(&root, &home);
-        crate::race::reached(crate::race::Point::SkillsRefreshQueued, &root);
-        let one_install_at_a_time = self.launch_lock().await;
         let harness = self.deps.harness.clone();
         let report = tokio::task::spawn_blocking(move || {
             let _held = one_install_at_a_time;

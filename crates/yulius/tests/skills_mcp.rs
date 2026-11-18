@@ -381,6 +381,56 @@ async fn a_switch_dropped_while_it_waits_still_refreshes_the_home() -> TestResul
     Ok(())
 }
 
+/// SPEC-507 SKR-003 (review round 3): two switches in a row leave the home as the last one
+/// stored, whichever refresh runs last: a refresh reads the skills under the launch lock.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_home_follows_the_last_of_two_switches() -> TestResult {
+    use yulius_app::race::{Point, on};
+    let w = world(false).await?;
+    let data = w.h.app.config.data_dir.clone();
+    let sandbox_dir = data.join("sandboxes/s1");
+    let skills = sandbox_dir.join("home/.claude/skills");
+    std::fs::create_dir_all(sandbox_dir.join("home"))?;
+    w.h.app.skills_at_start().await;
+    assert!(skills.join("om-fix/SKILL.md").is_file());
+    let switch = |enabled: bool| {
+        let (router, alice) = (w.h.router.clone(), w.alice.clone());
+        tokio::spawn(async move {
+            call(
+                &router,
+                Method::PUT,
+                "/api/sandboxes/s1/skills/om-fix",
+                Some(json!({ "enabled": enabled })),
+                &alice,
+            )
+            .await
+            .map(|r| r.status)
+            .map_err(|e| e.to_string())
+        })
+    };
+
+    // The first switch (off) waits before its refresh asks for the lock.
+    let (held_tx, held_rx) = std::sync::mpsc::channel();
+    let (go_tx, go_rx) = std::sync::mpsc::channel::<()>();
+    on(Point::SkillsRefreshQueued, &sandbox_dir, move || {
+        let _ = held_tx.send(());
+        let _ = go_rx.recv_timeout(std::time::Duration::from_secs(60));
+    });
+    let first = switch(false);
+    tokio::task::spawn_blocking(move || held_rx.recv_timeout(std::time::Duration::from_secs(60)))
+        .await?
+        .map_err(|_| "the first switch's refresh never queued")?;
+    // The second (on) is stored and refreshed meanwhile.
+    assert_eq!(switch(true).await??, StatusCode::NO_CONTENT);
+    go_tx.send(())?;
+    assert_eq!(first.await??, StatusCode::NO_CONTENT);
+    assert!(
+        skills.join("om-fix/SKILL.md").is_file(),
+        "om-fix is on, as the last switch stored"
+    );
+    Ok(())
+}
+
 #[tokio::test]
 async fn skill_catalog_sources_toggles_and_run_set() -> TestResult {
     let w = world(false).await?;

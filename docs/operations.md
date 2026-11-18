@@ -2557,8 +2557,7 @@ session reads the new skill at its next use. Each sandbox it changed gets an aud
 ffa950b0c; installed om-fix, om-code-review`); a start that changed nothing writes none. A
 sandbox whose refresh fails (a link on the way to its skills folder, say) is logged as `skill
 refresh failed`; the skills it installed before the failure stay, the others wait for its next run,
-and the start goes on. A plain restart does
-the same, and switching a skill on or off for a sandbox (its Skills page) installs or removes it
+and the start goes on. A plain restart does the same, and switching a skill on or off for a sandbox (its Skills page) installs or removes it
 there at once. To see what the last update refreshed: `sudo -u yulius sqlite3 /var/lib/yulius/yulius.db "SELECT
 at, target, detail FROM audit_log WHERE action = 'skills.refreshed' ORDER BY at DESC LIMIT 20"`.
 

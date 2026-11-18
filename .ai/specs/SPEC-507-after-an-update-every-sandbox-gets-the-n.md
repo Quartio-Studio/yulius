@@ -173,6 +173,11 @@ Head after review round 2: see the pull request (#1404). Commands run in the tas
   the lock released before the install (`a_launch_waits_for_a_skill_refresh_of_its_home`); the
   entry or the depth bound removed (`the_read_of_a_copy_stops_at_its_bounds`); the old reviewer
   prompt (`the_reviewer_prompt_is_a_contract_without_review_rules`).
+- Review round 3 (Opus 5.5) approved 7d18714a7 with one minor: a refresh read its set before the
+  launch lock, so of two switches in a row the earlier one's refresh could run last with a stale
+  set. Fixed after the approval: the set is read under the lock;
+  `skills_mcp::the_home_follows_the_last_of_two_switches` (11 tests in the filter above) failed
+  before the fix ("om-fix is on, as the last switch stored") and passes after it.
 - `scripts/dev mutants` (whole change, 119 mutants) and `--base f14f65331` (34): **not usable as
   proof**. Review round 2 found, and the logs confirm, that every "caught" mutant was killed by
   `xtask::cli security_is_listed_and_needs_a_vidoc_key` alone: in cargo-mutants' copy under
