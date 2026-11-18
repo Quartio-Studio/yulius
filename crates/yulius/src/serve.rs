@@ -616,8 +616,9 @@ pub async fn serve(args: ServeArgs) -> Result<(), String> {
         return Err("the internal listener must bind a loopback address".into());
     }
     let (app, browser_network) = build_app(&args)?;
-    // The Codex CLI is installed in the background when Codex subscriptions exist (SPEC-503).
-    app.warm_codex_cli();
+    // The Codex and Antigravity CLIs are installed in the background when subscriptions of
+    // their providers exist (SPEC-503, SPEC-505).
+    app.warm_agent_clis();
     // An update in progress keeps every task paused from the first hook call (ADR-18).
     app.restore_update_hold().await;
     // The runs people paused stay paused across the restart (SPEC-191 PER-003).

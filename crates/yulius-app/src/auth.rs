@@ -527,6 +527,7 @@ impl App {
                 upload_max_bytes: self.config.upload_max_bytes,
                 claude_connected: self.claude_connected().await?,
                 codex_connected: self.codex_connected().await?,
+                antigravity_connected: self.antigravity_connected().await?,
                 // The Add sandbox dialog's Vidoc box: a key, and Vidoc on for the instance.
                 vidoc: self.vidoc_key().is_some() && self.vidoc_enabled(),
             },

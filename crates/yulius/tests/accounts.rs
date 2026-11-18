@@ -716,7 +716,6 @@ async fn a_codex_account_can_be_added_with_an_api_key() -> TestResult {
     for body in [
         json!({"provider": "openai", "label": "Bad key", "api_key": "not-a-key"}),
         json!({"provider": "anthropic", "label": "Claude key", "api_key": key}),
-        json!({"provider": "google", "label": "Gemini"}),
         // Given but empty: refused, not taken for a request without one (a device sign-in).
         json!({"provider": "openai", "label": "Empty key", "api_key": ""}),
         json!({"provider": "openai", "label": "Blank key", "api_key": "   "}),
@@ -1938,5 +1937,119 @@ async fn a_login_terminal_closes_once_its_sign_in_or_administration_ends() -> Te
         login_terminal_closed(&mut by_bob).await?,
         (4003, "access revoked".to_owned())
     );
+    Ok(())
+}
+
+/// SPEC-505 AGY-008: an Antigravity account signs in with Google through the Antigravity CLI's
+/// own sign-in in a temporary home with no keyring (its link shown to the person); the token
+/// file it writes is sealed into the account, and the temporary home is wiped.
+#[tokio::test]
+async fn an_antigravity_google_sign_in_seals_the_token_file() -> TestResult {
+    let s = setup().await?;
+    s.host.push(Script {
+        chunks: vec![
+            " Welcome to the Antigravity CLI. You are currently not signed in.\r\n".into(),
+            " Your browser should open automatically. If not:\r\n https://accounts.google.com/o/oauth2/auth?client_id=SYNTHETIC\r\n".into(),
+        ],
+        writes: vec![(
+            "home/.gemini/antigravity-cli/antigravity-oauth-token".into(),
+            "SYNTHETIC-agy-token".into(),
+        )],
+        exit: Some(0),
+        gated: true,
+    });
+    let mut events = s.h.app.events.subscribe();
+    let (account_id, login_id) = create(&s, "google", "Antigravity #1").await?;
+    let plans = s.host.plans();
+    let (_, plan, _) = plans.first().ok_or("spawned")?;
+    assert_eq!(plan.argv, ["agy"]);
+    let home = login_dir(&s, &login_id).join("home");
+    for (name, value) in [
+        ("HOME", home.to_string_lossy().into_owned()),
+        ("AGY_CLI_DISABLE_AUTO_UPDATE", "true".to_owned()),
+    ] {
+        assert!(
+            plan.env.iter().any(|(k, v)| k == name && *v == value),
+            "{name}: {:?}",
+            plan.env
+        );
+    }
+    let ctx = ctx_of(&s.h, &s.admin).await?;
+    let terminal = s.h.app.login_terminal(&ctx, &login_id)?;
+    let mut sub = terminal.subscribe();
+    s.host.release.add_permits(1);
+    let (shown, status, _) = viewer_output(&mut sub).await?;
+    terminal.unsubscribe();
+    assert!(shown.contains("accounts.google.com"), "{shown}");
+    assert_eq!(status, "ok");
+    let settled = account_settled(&mut events, &account_id).await?;
+    assert_eq!(settled["status"], "ok", "{settled}");
+    assert_eq!(settled["provider"], "google", "{settled}");
+    let stored = stored_credential(&s, &account_id).await?;
+    assert_eq!(
+        stored.as_bytes(),
+        yulius_harness::login::antigravity_sign_in_credential(b"SYNTHETIC-agy-token")
+            .ok_or("envelope")?
+    );
+    assert!(
+        !login_dir(&s, &login_id).exists(),
+        "the temporary home is wiped"
+    );
+    Ok(())
+}
+
+/// SPEC-505 AGY-008: an Antigravity account takes a Gemini API key at once, sealed, never
+/// returned or audited; text that cannot be a key, a Codex `auth.json` or a Claude token is
+/// refused for it, and a Gemini key is refused for another provider.
+#[tokio::test]
+async fn an_antigravity_account_can_be_added_with_a_gemini_api_key() -> TestResult {
+    let s = setup().await?;
+    let key = concat!("AIza", "SYNTHETIC0123456789abcdefghij");
+    let r = call(
+        &s.h.router,
+        Method::POST,
+        "/api/admin/accounts",
+        Some(json!({"provider": "google", "label": "Gemini key", "api_key": key})),
+        &s.admin,
+    )
+    .await?;
+    assert_eq!(r.status, StatusCode::CREATED, "{}", r.body);
+    assert_eq!(r.body["account"]["status"], "ok");
+    assert_eq!(r.body["account"]["provider"], "google");
+    assert!(r.body.get("login_id").is_none(), "{}", r.body);
+    assert!(
+        !r.body.to_string().contains(key),
+        "the key is never returned"
+    );
+    assert!(s.host.plans().is_empty(), "no sign-in ran");
+    let id = r.body["account"]["id"].as_str().ok_or("id")?;
+    let stored: Value = serde_json::from_str(&stored_credential(&s, id).await?)?;
+    assert_eq!(stored["kind"], "gemini_api_key");
+    assert_eq!(stored["api_key"], key);
+    let audit = s.h.store.audit_details(id, "account.created", 5).await?;
+    assert_eq!(audit, ["provider=google label=\"Gemini key\" via=api_key"]);
+    for body in [
+        json!({"provider": "google", "label": "Bad key", "api_key": "short"}),
+        json!({"provider": "google", "label": "Codex file", "auth_json": CODEX_AUTH}),
+        json!({"provider": "google", "label": "Token", "token": concat!("sk-ant-oat01-", "SYNTHETIC_token_value_for_tests_only_0123456789")}),
+        json!({"provider": "anthropic", "label": "Claude key", "api_key": key}),
+    ] {
+        let refused = call(
+            &s.h.router,
+            Method::POST,
+            "/api/admin/accounts",
+            Some(body.clone()),
+            &s.admin,
+        )
+        .await?;
+        assert_eq!(
+            refused.status,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "{body}: {}",
+            refused.body
+        );
+        assert!(!refused.body.to_string().contains(key));
+    }
+    assert!(s.host.plans().is_empty(), "no sign-in ran");
     Ok(())
 }

@@ -18,6 +18,8 @@ use yulius_domain::time::Timestamp;
 pub struct FakeAgentOptions {
     /// Counts the Codex CLI installs asked of the harness (`provide_codex(true)`, SPEC-503).
     pub codex_installs: Option<std::sync::Arc<std::sync::atomic::AtomicUsize>>,
+    /// Count the Antigravity CLI installs asked for (`provide_antigravity(true)`).
+    pub antigravity_installs: Option<std::sync::Arc<std::sync::atomic::AtomicUsize>>,
     /// Write a Claude-shaped transcript at the path Yulius watches.
     pub transcript: bool,
     /// Report a usage limit after this many turns.
@@ -238,7 +240,10 @@ impl HarnessPort for FakeAgentHarness {
         })
     }
 
-    fn provide_antigravity(&self, _install: bool) -> yulius_app::ports::harness::ProvideFuture<'_> {
+    fn provide_antigravity(&self, install: bool) -> yulius_app::ports::harness::ProvideFuture<'_> {
+        if let (true, Some(count)) = (install, &self.options.antigravity_installs) {
+            count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
         let provided = self.options.provided_antigravity.clone();
         Box::pin(async move { Ok(provided) })
     }
@@ -600,6 +605,12 @@ impl HarnessPort for FakeAgentHarness {
     ) -> Option<String> {
         self.inner
             .discover_antigravity_session(gemini_dir, brain, worktree, since)
+    }
+    fn antigravity_api_key_credential(&self, key: &str) -> Option<Vec<u8>> {
+        self.inner.antigravity_api_key_credential(key)
+    }
+    fn antigravity_sign_in_credential(&self, token_file: &[u8]) -> Option<Vec<u8>> {
+        self.inner.antigravity_sign_in_credential(token_file)
     }
     fn antigravity_refreshed_credential(&self, fresh: &[u8], stored: &[u8]) -> Option<Vec<u8>> {
         self.inner.antigravity_refreshed_credential(fresh, stored)

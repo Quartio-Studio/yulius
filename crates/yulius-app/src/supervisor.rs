@@ -6984,8 +6984,8 @@ fn refused_choice(
         }
         DecisionReason::ManualRefused(Refusal::ProviderMismatch) => {
             format!(
-                "{name} is not a {} subscription, so it cannot take the task.",
-                crate::account_gate::account_kind(provider)
+                "{name} is not {} subscription, so it cannot take the task.",
+                crate::account_gate::a_kind(provider)
             )
         }
         _ => "No other subscription can take the task right now.".into(),

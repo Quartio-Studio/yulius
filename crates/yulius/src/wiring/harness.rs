@@ -416,6 +416,14 @@ impl HarnessPort for HarnessAdapter {
         (written >= to_system(since)).then_some(id)
     }
 
+    fn antigravity_api_key_credential(&self, key: &str) -> Option<Vec<u8>> {
+        login::antigravity_api_key_credential(key)
+    }
+
+    fn antigravity_sign_in_credential(&self, token_file: &[u8]) -> Option<Vec<u8>> {
+        login::antigravity_sign_in_credential(token_file)
+    }
+
     fn antigravity_refreshed_credential(&self, fresh: &[u8], stored: &[u8]) -> Option<Vec<u8>> {
         login::antigravity_refreshed_credential(fresh, stored)
     }

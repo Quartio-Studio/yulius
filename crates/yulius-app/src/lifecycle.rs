@@ -528,9 +528,9 @@ impl App {
                 }
                 Some(record) if record.provider != provider => {
                     return Err(AppError::Capacity(format!(
-                        "{} is not a {} subscription, so it cannot take the task.",
+                        "{} is not {} subscription, so it cannot take the task.",
                         record.label,
-                        crate::account_gate::account_kind(provider)
+                        crate::account_gate::a_kind(provider)
                     )));
                 }
                 Some(_) => {}

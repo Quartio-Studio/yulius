@@ -53,6 +53,18 @@ pub(crate) fn account_kind(provider: Provider) -> &'static str {
     }
 }
 
+/// [`account_kind`] with its article: "a Claude", "a Codex", "an Antigravity" (SPEC-505).
+#[must_use]
+pub(crate) fn a_kind(provider: Provider) -> String {
+    let kind = account_kind(provider);
+    let article = if kind.starts_with(['A', 'E', 'I', 'O', 'U']) {
+        "an"
+    } else {
+        "a"
+    };
+    format!("{article} {kind}")
+}
+
 /// The refusal of a start of a `provider` agent for `state` (CLA-002), `None` when the start may
 /// go on.
 pub(crate) fn refusal(state: AgentAccounts, provider: Provider) -> Option<AppError> {
@@ -63,8 +75,9 @@ pub(crate) fn refusal(state: AgentAccounts, provider: Provider) -> Option<AppErr
         AgentAccounts::NeedSignIn => format!("every {kind} account must sign in again"),
     };
     Some(AppError::AccountRequired(format!(
-        "Connect a {kind} account first: {reason}, so no agent can start. An instance \
-         administrator connects one in Subscriptions ({CONNECT_PATH})."
+        "Connect {} account first: {reason}, so no agent can start. An instance \
+         administrator connects one in Subscriptions ({CONNECT_PATH}).",
+        a_kind(provider)
     )))
 }
 
@@ -126,6 +139,14 @@ impl App {
         Ok(self.agent_accounts(Provider::OpenAi).await? == AgentAccounts::Usable)
     }
 
+    /// Whether an Antigravity account is usable (`GET /api/me` `antigravity_connected`, SPEC-505).
+    ///
+    /// # Errors
+    /// Store failures.
+    pub async fn antigravity_connected(&self) -> AppResult<bool> {
+        Ok(self.agent_accounts(Provider::Google).await? == AgentAccounts::Usable)
+    }
+
     /// Refuses a person's start of an agent while no account of `provider` is usable (CLA-002).
     ///
     /// # Errors
@@ -140,6 +161,26 @@ impl App {
 
 #[cfg(test)]
 mod tests {
+    /// SPEC-505: what a task of Antigravity is told names it with its article.
+    #[test]
+    fn antigravity_is_an_antigravity_account() {
+        use super::*;
+        assert_eq!(a_kind(Provider::Google), "an Antigravity");
+        assert_eq!(a_kind(Provider::OpenAi), "a Codex");
+        assert_eq!(a_kind(Provider::Anthropic), "a Claude");
+        let said = refusal(AgentAccounts::None, Provider::Google)
+            .map(|err| err.to_string())
+            .unwrap_or_default();
+        assert!(
+            said.contains("Connect an Antigravity account first"),
+            "{said}"
+        );
+        assert!(
+            crate::moves::no_subscription_action(Provider::Google)
+                .starts_with("Sign an Antigravity subscription in again"),
+        );
+    }
+
     use super::*;
     use crate::model::{AccountStatus, Sealed};
     use yulius_domain::ids::AccountId;

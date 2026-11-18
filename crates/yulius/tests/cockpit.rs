@@ -1400,6 +1400,12 @@ impl HarnessPort for RecordingHarness {
         self.inner
             .discover_antigravity_session(gemini_dir, brain, worktree, since)
     }
+    fn antigravity_api_key_credential(&self, key: &str) -> Option<Vec<u8>> {
+        self.inner.antigravity_api_key_credential(key)
+    }
+    fn antigravity_sign_in_credential(&self, token_file: &[u8]) -> Option<Vec<u8>> {
+        self.inner.antigravity_sign_in_credential(token_file)
+    }
     fn antigravity_refreshed_credential(&self, fresh: &[u8], stored: &[u8]) -> Option<Vec<u8>> {
         self.inner.antigravity_refreshed_credential(fresh, stored)
     }

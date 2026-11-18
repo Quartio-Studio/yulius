@@ -482,6 +482,18 @@ pub trait HarnessPort: Send + Sync {
         let _ = (fresh, stored);
         None
     }
+    /// The credential of an Antigravity account made of a Gemini API key, `None` for text that
+    /// cannot be one (SPEC-505 AGY-008).
+    fn antigravity_api_key_credential(&self, key: &str) -> Option<Vec<u8>> {
+        let _ = key;
+        None
+    }
+    /// The credential of an Antigravity account made of the token file its Google sign-in wrote,
+    /// `None` for an empty or oversized one (SPEC-505 AGY-008).
+    fn antigravity_sign_in_credential(&self, token_file: &[u8]) -> Option<Vec<u8>> {
+        let _ = token_file;
+        None
+    }
     /// The rollout of the Codex session `session_id` below `sessions_dir` (SPEC-503 CDX-003).
     ///
     /// # Errors

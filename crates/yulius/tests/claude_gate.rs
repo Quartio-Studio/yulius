@@ -293,6 +293,60 @@ async fn a_codex_account_alone_is_codex_connected_not_claude_connected() -> Test
     Ok(())
 }
 
+/// SPEC-505: a usable Google account makes `/api/me` say `antigravity_connected`, and only it.
+#[tokio::test]
+async fn a_google_account_alone_is_antigravity_connected() -> TestResult {
+    let (h, alice) = world().await?;
+    let me = call(&h.router, Method::GET, "/api/me", None, &alice).await?;
+    assert_eq!(
+        me.body["instance"]["antigravity_connected"],
+        json!(false),
+        "{:?}",
+        me.body
+    );
+    h.store
+        .insert_account(&AccountRecord {
+            id: AccountId::parse("a-google")?,
+            provider: Provider::Google,
+            label: "Antigravity".into(),
+            credential: Some(
+                h.app
+                    .deps
+                    .crypto
+                    .seal(br#"{"kind":"gemini_api_key","api_key":"SYNTHETIC-0123456789abcdef"}"#)?,
+            ),
+            status: AccountStatus::Ok,
+            usage_json: None,
+            last_error: None,
+            email: None,
+            email_checked_at: None,
+            email_typed: false,
+            created_at: Timestamp(1),
+            updated_at: Timestamp(1),
+        })
+        .await?;
+    let me = call(&h.router, Method::GET, "/api/me", None, &alice).await?;
+    assert_eq!(
+        me.body["instance"]["antigravity_connected"],
+        json!(true),
+        "{:?}",
+        me.body
+    );
+    assert_eq!(
+        me.body["instance"]["claude_connected"],
+        json!(false),
+        "{:?}",
+        me.body
+    );
+    assert_eq!(
+        me.body["instance"]["codex_connected"],
+        json!(false),
+        "{:?}",
+        me.body
+    );
+    Ok(())
+}
+
 /// CLA-004: a start by machinery that finds no account waits `waiting_capacity` and tells its
 /// viewers that no Claude account is connected and where to connect one; with an account that is
 /// only out of capacity it says that instead.

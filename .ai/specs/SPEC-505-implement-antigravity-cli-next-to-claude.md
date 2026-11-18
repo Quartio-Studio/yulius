@@ -127,8 +127,8 @@ Six pull requests, each merged into `dev` on green before the next begins.
 - [x] Slice C1: an Antigravity task runs in the supervisor (homes, session id, hooks, write-back, rotation)
 - [x] Slice C1: the fake agent speaks Antigravity and integration tests cover an Antigravity task
 - [x] Slice C1: review findings fixed and the slice delivered
-- [ ] Slice C2: Antigravity subscriptions sign in with Google or a Gemini API key
-- [ ] Slice C2: Antigravity limits, google_connected and moves within Antigravity subscriptions
+- [x] Slice C2: Antigravity subscriptions sign in with Google or a Gemini API key
+- [x] Slice C2: Antigravity limits, google_connected and moves within Antigravity subscriptions
 - [ ] Slice C2: review findings fixed and the slice delivered
 - [ ] Slice D: the UI offers Antigravity with Gemini 4 Carbon (High) by default
 - [ ] Slice D: SPEC-001/002/003 and the documents say Antigravity is accepted
@@ -408,3 +408,28 @@ Six pull requests, each merged into `dev` on green before the next begins.
   the run's `.gemini` is asserted on the plan itself, where any host runs it
   (`a_contained_antigravity_plan_binds_the_runs_home`, a recording session host); an
   unreadable `antigravity-given` is logged. `antigravity::*` now 10 tests, all passed.
+
+### Slice C2 (Antigravity subscriptions)
+
+- `POST /api/admin/accounts` takes `provider: google`: with `api_key` (a Gemini API key) the
+  account is `ok` at once, sealed as `{"kind":"gemini_api_key"}` and audited `via=api_key`
+  (`accounts::an_antigravity_account_can_be_added_with_a_gemini_api_key`); without one the
+  Antigravity CLI's own sign-in runs in a temporary home with `AGY_CLI_DISABLE_AUTO_UPDATE=true`,
+  and the token file it writes in `.gemini/antigravity-cli` is sealed as
+  `{"kind":"google_sign_in"}` (`accounts::an_antigravity_google_sign_in_seals_the_token_file`).
+  `{"provider":"google"}` left the refusal list.
+- `/api/me` says `instance.antigravity_connected` for a usable Google account
+  (`claude_gate::a_google_account_alone_is_antigravity_connected`); the CLI installs in the
+  background at start only when a Google subscription exists
+  (`codex_cli::the_clis_are_installed_at_start_only_for_their_subscriptions`, `warm_agent_clis`).
+- What a task says names its provider with its article (`account_gate::a_kind`: "a Claude", "a
+  Codex", "an Antigravity"): a person's move to the Claude subscription is refused ("… is not an
+  Antigravity subscription"), a removal moves the task to the other Google account in the same
+  conversation, and with none left it waits under Needs you ("Sign an Antigravity subscription
+  in again …"), its notices never naming Claude
+  (`antigravity::an_antigravity_task_moves_only_between_antigravity_subscriptions`). The limit
+  move was proven in C1 (`an_antigravity_task_at_its_limit_moves_to_another_google_account`).
+- Tests: `antigravity::*` 11 tests, 3 of 3 under `--stress-count 3`; `yulius-app`,
+  `yulius-harness`, `yulius-contracts` 892 passed; `yulius` integration files `antigravity`,
+  `antigravity_cli`, `codex`, `codex_cli`, `accounts`, `account_token`, `claude_gate`, `moves`,
+  `rotation`, `cockpit` 165 passed. Clippy clean.
