@@ -358,7 +358,7 @@ export function openLoginTerminal(ctx, { loginId, account, onFinish }) {
 
   function start() {
     modal.setActions([{ label: 'Cancel sign-in' }]);
-    // The login PTY is a fixed 1024 columns so tokens and URLs never wrap; the view scrolls
+    // The login PTY is a fixed 1000 columns so tokens and URLs never wrap; the view scrolls
     // horizontally instead of resizing it. state.status: running → ok | error | cancelled.
     const view = createTerminalView({
       transport: ctx.transport,
