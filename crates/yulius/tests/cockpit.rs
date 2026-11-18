@@ -1455,6 +1455,14 @@ impl HarnessPort for RecordingHarness {
     ) -> AppResult<()> {
         self.inner.install_skills(skills, root, skills_dir)
     }
+    fn refresh_skills(
+        &self,
+        skills: &[(String, PathBuf)],
+        root: &Path,
+        skills_dir: &Path,
+    ) -> AppResult<yulius_app::ports::harness::SkillsRefresh> {
+        self.inner.refresh_skills(skills, root, skills_dir)
+    }
 }
 
 /// A contained server whose Cockpit launches are recorded and refused, with alice (write) on `s1`

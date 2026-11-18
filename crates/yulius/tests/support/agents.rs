@@ -661,6 +661,14 @@ impl HarnessPort for FakeAgentHarness {
     ) -> AppResult<()> {
         self.inner.install_skills(skills, root, skills_dir)
     }
+    fn refresh_skills(
+        &self,
+        skills: &[(String, PathBuf)],
+        root: &Path,
+        skills_dir: &Path,
+    ) -> AppResult<yulius_app::ports::harness::SkillsRefresh> {
+        self.inner.refresh_skills(skills, root, skills_dir)
+    }
 }
 
 /// What is wrong with a resume after a usage limit (SPEC-034): the launch in `run_dir` must be a

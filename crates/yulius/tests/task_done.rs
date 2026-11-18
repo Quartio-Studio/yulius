@@ -4292,6 +4292,78 @@ fn a_stop_settles_a_run_no_server_holds() -> TestResult {
     Ok(())
 }
 
+/// SPEC-507 SKR-005 (review round 2): a skill refresh holds the launch lock while it installs
+/// into a sandbox's home, so a launch there (whose install writes the same folder) waits for it
+/// and goes on once it ended.
+#[test]
+fn a_launch_waits_for_a_skill_refresh_of_its_home() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let (app, _host, id) = gated_goal_task(&data, &fake).await?;
+        stop_on_worker(&app, &id).await?;
+        expect_stopped(&app, &id).await?;
+        let sandbox_dir = data
+            .join("sandboxes")
+            .join(task(&app, &id).await?.sandbox_id.as_str());
+        let (held, at_lock) = std::sync::mpsc::channel();
+        let (go, wait) = std::sync::mpsc::channel::<()>();
+        yulius_app::race::on(
+            yulius_app::race::Point::SkillsRefreshLocked,
+            &sandbox_dir,
+            move || {
+                let _ = held.send(());
+                let _ = wait.recv_timeout(Duration::from_secs(60));
+            },
+        );
+        let refresh = {
+            let app = app.clone();
+            tokio::spawn(async move { app.skills_at_start().await })
+        };
+        tokio::task::spawn_blocking(move || at_lock.recv_timeout(Duration::from_secs(60)))
+            .await?
+            .map_err(|_| "the refresh never took the launch lock")?;
+        let (chosen, at_chosen) = std::sync::mpsc::channel();
+        yulius_app::race::on(
+            yulius_app::race::Point::AccountChosen,
+            Path::new(id.as_str()),
+            move || {
+                let _ = chosen.send(());
+            },
+        );
+        let start = {
+            let (app, id) = (app.clone(), id.clone());
+            tokio::spawn(async move { resume(&app, &id).await })
+        };
+        // The launch cannot pass the lock while the refresh holds it.
+        let (early, at_chosen) = tokio::task::spawn_blocking(move || {
+            (at_chosen.recv_timeout(Duration::from_secs(2)), at_chosen)
+        })
+        .await?;
+        let _ = go.send(());
+        assert!(
+            early.is_err(),
+            "the launch went on while a refresh held the lock"
+        );
+        refresh.await?;
+        tokio::task::spawn_blocking(move || at_chosen.recv_timeout(Duration::from_secs(60)))
+            .await?
+            .map_err(|_| "the launch never went on after the refresh")?;
+        start.await??;
+        wait_for("the run", Duration::from_secs(60), || async {
+            task(&app, &id)
+                .await
+                .is_ok_and(|t| t.status == TaskStatus::Running)
+        })
+        .await?;
+        app.stop_task_now(&id).await?;
+        Ok::<(), BoxError>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
 /// SPEC-458 RUN-001 (#439): the start-up reconciliation runs while a task launches (the queue
 /// starts one as soon as a lost run frees its slot), between `Starting` and its run's record. The
 /// task is not taken for one a dead server left starting: it used to rest `stopped_server_lost`

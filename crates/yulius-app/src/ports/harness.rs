@@ -544,4 +544,33 @@ pub trait HarnessPort: Send + Sync {
         root: &Path,
         skills_dir: &Path,
     ) -> AppResult<()>;
+    /// [`HarnessPort::install_skills`], writing only what differs from the installed copies
+    /// (SPEC-507 SKR-001): the skills installed again and the managed copies removed, both empty
+    /// when every copy matched.
+    ///
+    /// # Errors
+    /// As [`HarnessPort::install_skills`].
+    fn refresh_skills(
+        &self,
+        skills: &[(String, PathBuf)],
+        root: &Path,
+        skills_dir: &Path,
+    ) -> AppResult<SkillsRefresh>;
+}
+
+/// What [`HarnessPort::refresh_skills`] changed in a skills folder.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SkillsRefresh {
+    /// Skills whose copy was missing or differed, installed again.
+    pub changed: Vec<String>,
+    /// Managed copies removed because their skill left the set.
+    pub removed: Vec<String>,
+}
+
+impl SkillsRefresh {
+    /// Whether nothing was written.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.changed.is_empty() && self.removed.is_empty()
+    }
 }

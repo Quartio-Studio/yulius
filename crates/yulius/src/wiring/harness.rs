@@ -8,8 +8,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use yulius_app::error::{AppError, AppResult};
 use yulius_app::ports::harness::{
     CockpitLaunch, HarnessLaunch, HarnessPlan, HarnessPort, McpAttachment, Observation,
-    OutputMasker, ProvideFuture, ProvidedCli, SessionMode, TranscriptWatch, UsageSnapshot,
-    WatchFrom,
+    OutputMasker, ProvideFuture, ProvidedCli, SessionMode, SkillsRefresh, TranscriptWatch,
+    UsageSnapshot, WatchFrom,
 };
 use yulius_app::ports::session::{Containment, LaunchPlan, PlannedFile};
 use yulius_domain::harness::Harness;
@@ -599,21 +599,39 @@ impl HarnessPort for HarnessAdapter {
 
     fn install_skills(
         &self,
-        skill_dirs: &[(String, PathBuf)],
+        skill_dirs_in: &[(String, PathBuf)],
         root: &Path,
         skills_dir: &Path,
     ) -> AppResult<()> {
-        let dirs: Vec<skills::SkillDir> = skill_dirs
-            .iter()
-            .map(|(name, path)| skills::SkillDir {
-                name: name.clone(),
-                path: path.clone(),
-            })
-            .collect();
-        skills::install_skills(&dirs, root, skills_dir)
+        skills::install_skills(&skill_dirs(skill_dirs_in), root, skills_dir)
             .map(|_| ())
             .map_err(AppError::internal)
     }
+
+    fn refresh_skills(
+        &self,
+        skill_dirs_in: &[(String, PathBuf)],
+        root: &Path,
+        skills_dir: &Path,
+    ) -> AppResult<SkillsRefresh> {
+        skills::refresh_skills(&skill_dirs(skill_dirs_in), root, skills_dir)
+            .map(|report| SkillsRefresh {
+                changed: report.changed,
+                removed: report.removed,
+            })
+            .map_err(AppError::internal)
+    }
+}
+
+/// The catalog's skills as the installer takes them.
+fn skill_dirs(skills: &[(String, PathBuf)]) -> Vec<skills::SkillDir> {
+    skills
+        .iter()
+        .map(|(name, path)| skills::SkillDir {
+            name: name.clone(),
+            path: path.clone(),
+        })
+        .collect()
 }
 
 /// The sandbox's shared Codex sessions directory, `<sandbox>/codex/sessions`, from its home

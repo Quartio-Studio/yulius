@@ -4306,6 +4306,28 @@ flowchart LR
     src -.->|check_repository.py: deployments equal sources| gate["scripts/dev check"]
 ```
 
+The instance's skills (its own and the bundled packs, extracted to `<data>/skills` at every
+start) reach a sandbox through its home, `<sandbox>/home/.claude/skills`: a run's start installs
+the sandbox's set there, and so does every server start and every switch of a skill for the
+sandbox, writing only the copies that differ (a SHA-256 of the catalog skill against the copy read
+through folder handles), under the launch lock, so a session already running reads the new skill
+at its next use ([SPEC-507](../.ai/specs/SPEC-507-after-an-update-every-sandbox-gets-the-n.md),
+[ADR-0364](decisions/0364-a-server-start-refreshes-every-sandboxs-skills-and-the-reviewers-prompt-is-a-contract.md)).
+What a session got at its launch (its briefing, run settings and the reviewer agents' prompt)
+stays until it is launched again, so those carry no review rule.
+
+```mermaid
+flowchart LR
+    start["server start (update, restart)"] --> cat["extract packs to data/skills"]
+    cat --> each["each sandbox with a home"]
+    sw["skill switched"] --> one["that sandbox"]
+    run["run start"] --> inst["install_skills: every skill"]
+    each --> cmp{"copy = catalog?"}
+    one --> cmp
+    cmp -- no --> ref["refresh_skills: stage and swap that skill; audit skills.refreshed"]
+    cmp -- yes --> keep["left as it is"]
+```
+
 ## Runtime
 
 - Each task run is owned by a detached `ptyhost`; the server reattaches after restart.

@@ -787,7 +787,8 @@ const LIVE_WITH_A_RUN: [TaskStatus; 4] = [
 #[derive(Default)]
 pub struct SupervisorState {
     runtimes: Mutex<HashMap<TaskId, Arc<TaskRuntime>>>,
-    launch: tokio::sync::Mutex<()>,
+    /// Shared, so an install on the blocking pool can own its guard (SPEC-507 SKR-005).
+    launch: Arc<tokio::sync::Mutex<()>>,
     /// The task the one launch under `launch` works on: `Starting` with no run on record yet,
     /// which the start-up reconciliation must not take for a dead server's (SPEC-458 RUN-001).
     launching: Mutex<Option<TaskId>>,
@@ -1360,6 +1361,13 @@ impl App {
         self.sandbox_dir(sandbox).join("repo")
     }
 
+    /// The lock every launch holds; a skill refresh takes it too, so it never installs into a
+    /// home while a launch does (SPEC-507 SKR-005). Owned: the install that holds it runs on the
+    /// blocking pool and keeps it until it ends, even when the request that started it is gone.
+    pub(crate) async fn launch_lock(&self) -> tokio::sync::OwnedMutexGuard<()> {
+        Arc::clone(&self.supervisor.launch).lock_owned().await
+    }
+
     pub(crate) fn sandbox_home(&self, sandbox: &SandboxId) -> PathBuf {
         self.sandbox_dir(sandbox).join("home")
     }
@@ -1627,13 +1635,10 @@ impl App {
     async fn prepare_run_extras(&self, sandbox: &SandboxRecord, home: &Path) {
         match self.skills_for_run(sandbox).await {
             Ok(skills) if !skills.is_empty() => {
-                // The agent owns its home: the skills folder is reached from the sandbox
-                // directory without following links (#657).
+                // Under the launch lock (held by the launch): a refresh never meets this
+                // install in the same home (SPEC-507 SKR-005).
                 let root = self.sandbox_dir(&sandbox.id);
-                let skills_dir = home
-                    .strip_prefix(&root)
-                    .unwrap_or(Path::new("home"))
-                    .join(".claude/skills");
+                let skills_dir = crate::skills::refresh::skills_dir_below(&root, home);
                 if let Err(err) = self
                     .deps
                     .harness

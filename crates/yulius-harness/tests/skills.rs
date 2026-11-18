@@ -4,8 +4,11 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+
 use yulius_harness::skills::{
-    MANAGED_MARKER, MAX_SKILL_BYTES, SkillDir, SkillsError, install_skills,
+    MANAGED_MARKER, MAX_SKILL_BYTES, MAX_SKILL_DEPTH, MAX_SKILL_ENTRIES, SkillDir, SkillsError,
+    install_skills, refresh_skills,
 };
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -204,5 +207,291 @@ fn a_linked_skills_folder_is_never_written_through() -> TestResult {
     std::os::unix::fs::symlink(&outside, dir.path().join("home/.claude"))?;
     assert!(install_skills(&[review], dir.path(), Path::new(SKILLS)).is_err());
     assert!(!outside.join("skills").exists());
+    Ok(())
+}
+
+/// The inode of a folder: a copy swapped in again gets a new one.
+fn inode(path: &Path) -> std::io::Result<u64> {
+    Ok(fs::symlink_metadata(path)?.ino())
+}
+
+/// SPEC-507 SKR-001 (AC-3): a refresh rewrites only the copies that differ from the catalog, and
+/// writes nothing when every copy matches.
+#[test]
+fn a_refresh_rewrites_only_the_copies_that_differ() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let claude = home(dir.path());
+    let a = skill(dir.path(), "a-skill", "a")?;
+    let b = skill(dir.path(), "b-skill", "b")?;
+    let both = [a.clone(), b.clone()];
+    install_skills(&both, dir.path(), Path::new(SKILLS))?;
+    let (a_before, b_before) = (
+        inode(&claude.join("a-skill"))?,
+        inode(&claude.join("b-skill"))?,
+    );
+
+    let report = refresh_skills(&both, dir.path(), Path::new(SKILLS))?;
+    assert!(report.is_empty(), "{report:?}");
+    assert_eq!(
+        inode(&claude.join("a-skill"))?,
+        a_before,
+        "a matching copy stays"
+    );
+    assert_eq!(
+        inode(&claude.join("b-skill"))?,
+        b_before,
+        "a matching copy stays"
+    );
+
+    fs::write(b.path.join("SKILL.md"), "---\nname: b-skill\n---\nv2\n")?;
+    let report = refresh_skills(&both, dir.path(), Path::new(SKILLS))?;
+    assert_eq!(report.changed, ["b-skill"]);
+    assert!(report.removed.is_empty());
+    assert_eq!(
+        inode(&claude.join("a-skill"))?,
+        a_before,
+        "the other copy stays"
+    );
+    assert!(fs::read_to_string(claude.join("b-skill/SKILL.md"))?.contains("v2"));
+    assert!(claude.join("b-skill").join(MANAGED_MARKER).is_file());
+    assert!(refresh_skills(&both, dir.path(), Path::new(SKILLS))?.is_empty());
+    Ok(())
+}
+
+/// SPEC-507 SKR-001, SKR-002 (AC-3): every way a copy can differ from the catalog is found and
+/// repaired; a skill the agent added under another name is left alone.
+#[test]
+fn a_refresh_finds_every_kind_of_difference() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let claude = home(dir.path());
+    let review = skill(dir.path(), "review", "r")?;
+    let gone = skill(dir.path(), "gone", "g")?;
+    install_skills(&[review.clone(), gone], dir.path(), Path::new(SKILLS))?;
+    fs::create_dir_all(claude.join("personal"))?;
+    fs::write(claude.join("personal/SKILL.md"), "mine")?;
+    let only = std::slice::from_ref(&review);
+    let copy = claude.join("review");
+
+    // A managed copy of a skill that left the set.
+    let report = refresh_skills(only, dir.path(), Path::new(SKILLS))?;
+    assert!(report.changed.is_empty(), "{report:?}");
+    assert_eq!(report.removed, ["gone"]);
+    assert!(!claude.join("gone").exists());
+    assert!(
+        claude.join("personal/SKILL.md").is_file(),
+        "the agent's own skill stays"
+    );
+
+    type Spoil = Box<dyn Fn(&Path) -> std::io::Result<()>>;
+    let spoils: Vec<(&str, Spoil)> = vec![
+        (
+            "changed content",
+            Box::new(|c| fs::write(c.join("references/guide.md"), "edited")),
+        ),
+        (
+            "a file more",
+            Box::new(|c| fs::write(c.join("extra.md"), "x")),
+        ),
+        (
+            "a file less",
+            Box::new(|c| fs::remove_file(c.join("references/guide.md"))),
+        ),
+        (
+            "a folder less",
+            Box::new(|c| fs::remove_dir_all(c.join("references"))),
+        ),
+        ("the copy missing", Box::new(|c| fs::remove_dir_all(c))),
+        (
+            "no marker",
+            Box::new(|c| fs::remove_file(c.join(MANAGED_MARKER))),
+        ),
+        (
+            "another mode",
+            Box::new(|c| {
+                fs::set_permissions(c.join("SKILL.md"), fs::Permissions::from_mode(0o755))
+            }),
+        ),
+        (
+            "a link instead of a file",
+            Box::new(|c| {
+                fs::remove_file(c.join("references/guide.md"))?;
+                std::os::unix::fs::symlink("/etc/hostname", c.join("references/guide.md"))
+            }),
+        ),
+        (
+            "a FIFO instead of a file",
+            Box::new(|c| {
+                fs::remove_file(c.join("references/guide.md"))?;
+                nix::unistd::mkfifo(
+                    &c.join("references/guide.md"),
+                    nix::sys::stat::Mode::S_IRWXU,
+                )
+                .map_err(std::io::Error::from)
+            }),
+        ),
+        (
+            "the copy is a link",
+            Box::new(|c| {
+                fs::remove_dir_all(c)?;
+                std::os::unix::fs::symlink("/etc", c)
+            }),
+        ),
+    ];
+    for (what, spoil) in spoils {
+        spoil(&copy)?;
+        let report = refresh_skills(only, dir.path(), Path::new(SKILLS))?;
+        assert_eq!(report.changed, ["review"], "{what}");
+        assert_eq!(
+            fs::read_to_string(copy.join("references/guide.md"))?,
+            "guide",
+            "{what}"
+        );
+        assert!(copy.join(MANAGED_MARKER).is_file(), "{what}");
+        assert!(!copy.join("extra.md").exists(), "{what}");
+        assert!(
+            refresh_skills(only, dir.path(), Path::new(SKILLS))?.is_empty(),
+            "{what}: repaired"
+        );
+    }
+    assert!(
+        claude.join("personal/SKILL.md").is_file(),
+        "the agent's own skill stays"
+    );
+    Ok(())
+}
+
+/// SPEC-507 SKR-002 (AC-3): a link on the way to the skills folder fails the refresh, as it fails
+/// a run's install, and nothing is written where it points.
+#[test]
+fn a_refresh_through_a_linked_folder_fails() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let review = skill(dir.path(), "review", "r")?;
+    let outside = dir.path().join("host");
+    fs::create_dir_all(&outside)?;
+    fs::create_dir_all(dir.path().join("home"))?;
+    std::os::unix::fs::symlink(&outside, dir.path().join("home/.claude"))?;
+    let result = refresh_skills(std::slice::from_ref(&review), dir.path(), Path::new(SKILLS));
+    assert!(result.is_err(), "{result:?}");
+    assert_eq!(
+        fs::read_dir(&outside)?.count(),
+        0,
+        "nothing written outside"
+    );
+    Ok(())
+}
+
+/// SPEC-507 SKR-001: the refresh validates its sources as the install does, before any write.
+#[test]
+fn a_refresh_validates_its_sources_first() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let good = skill(dir.path(), "good", "g")?;
+    let empty = SkillDir {
+        name: "empty".into(),
+        path: dir.path().join("catalog/empty"),
+    };
+    fs::create_dir_all(&empty.path)?;
+    assert!(matches!(
+        refresh_skills(&[good, empty], dir.path(), Path::new(SKILLS)),
+        Err(SkillsError::MissingSkillMd(name)) if name == "empty"
+    ));
+    assert!(!home(dir.path()).exists());
+    Ok(())
+}
+
+/// SPEC-507 review round 1: the refresh reads a source with the install's own rules (modes, links
+/// inside and outside the skill, a FIFO, an empty folder, markers at both depths), so a copy the
+/// install just wrote matches and no start rewrites it again.
+#[test]
+fn a_refresh_reads_a_source_as_the_install_copies_it() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let odd = skill(dir.path(), "odd", "o")?;
+    let src = &odd.path;
+    fs::write(src.join("run.sh"), "#!/bin/sh\n")?;
+    fs::set_permissions(src.join("run.sh"), fs::Permissions::from_mode(0o755))?;
+    fs::write(src.join("private.md"), "p")?;
+    fs::set_permissions(src.join("private.md"), fs::Permissions::from_mode(0o600))?;
+    std::os::unix::fs::symlink(src.join("references/guide.md"), src.join("alias.md"))?;
+    fs::write(dir.path().join("outside.txt"), "x")?;
+    std::os::unix::fs::symlink(dir.path().join("outside.txt"), src.join("escape.md"))?;
+    std::os::unix::fs::symlink(src.join("missing.md"), src.join("dangling.md"))?;
+    std::os::unix::fs::symlink(src.join("references"), src.join("folder-link"))?;
+    nix::unistd::mkfifo(&src.join("pipe"), nix::sys::stat::Mode::S_IRWXU)?;
+    fs::create_dir_all(src.join("empty"))?;
+    fs::write(src.join(MANAGED_MARKER), "source marker")?;
+    fs::write(src.join("references").join(MANAGED_MARKER), "deeper marker")?;
+    let only = std::slice::from_ref(&odd);
+
+    install_skills(only, dir.path(), Path::new(SKILLS))?;
+    assert!(
+        refresh_skills(only, dir.path(), Path::new(SKILLS))?.is_empty(),
+        "after an install"
+    );
+    fs::remove_dir_all(home(dir.path()).join("odd"))?;
+    assert_eq!(
+        refresh_skills(only, dir.path(), Path::new(SKILLS))?.changed,
+        ["odd"]
+    );
+    assert!(
+        refresh_skills(only, dir.path(), Path::new(SKILLS))?.is_empty(),
+        "after a refresh"
+    );
+    Ok(())
+}
+
+/// SPEC-507 review round 1: a source beyond the bound fails the refresh and keeps the copy there;
+/// a copy beyond a bound (bytes, entries, depth) counts as different and is replaced.
+#[test]
+fn a_refresh_keeps_the_install_bounds() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let claude = home(dir.path());
+    let review = skill(dir.path(), "review", "v1")?;
+    let only = std::slice::from_ref(&review);
+    install_skills(only, dir.path(), Path::new(SKILLS))?;
+    let copy = claude.join("review");
+
+    type Grow = Box<dyn Fn(&Path) -> std::io::Result<()>>;
+    let grows: Vec<(&str, Grow)> = vec![
+        (
+            "bytes",
+            Box::new(|c| fs::File::create(c.join("blob.bin"))?.set_len(MAX_SKILL_BYTES + 1)),
+        ),
+        (
+            "entries",
+            Box::new(|c| {
+                fs::create_dir_all(c.join("many"))?;
+                (0..=MAX_SKILL_ENTRIES).try_for_each(|n| fs::write(c.join(format!("many/{n}")), ""))
+            }),
+        ),
+        (
+            "depth",
+            Box::new(|c| {
+                let deep: PathBuf = (0..=MAX_SKILL_DEPTH + 1).map(|n| format!("d{n}")).collect();
+                fs::create_dir_all(c.join(deep))
+            }),
+        ),
+    ];
+    for (what, grow) in grows {
+        grow(&copy)?;
+        assert_eq!(
+            refresh_skills(only, dir.path(), Path::new(SKILLS))?.changed,
+            ["review"],
+            "{what}"
+        );
+        assert!(
+            refresh_skills(only, dir.path(), Path::new(SKILLS))?.is_empty(),
+            "{what}"
+        );
+    }
+
+    fs::File::create(review.path.join("blob.bin"))?.set_len(MAX_SKILL_BYTES + 1)?;
+    fs::write(review.path.join("SKILL.md"), "---\nname: review\n---\nv2\n")?;
+    assert!(matches!(
+        refresh_skills(only, dir.path(), Path::new(SKILLS)),
+        Err(SkillsError::TooLarge(name)) if name == "review"
+    ));
+    assert!(
+        fs::read_to_string(copy.join("SKILL.md"))?.contains("v1"),
+        "the copy is kept"
+    );
     Ok(())
 }
