@@ -349,7 +349,8 @@ impl App {
         };
         let request = CreateTask {
             prompt: prompt.to_owned(),
-            harness: "claude".into(),
+            // No agent named: the one the model implies, else drawn (SPEC-505 RND-001).
+            harness: opt_str(args, "harness")?.unwrap_or_else(|| "auto".into()),
             workflow_id,
             model: opt_str(args, "model")?,
             effort: opt_str(args, "effort")?,

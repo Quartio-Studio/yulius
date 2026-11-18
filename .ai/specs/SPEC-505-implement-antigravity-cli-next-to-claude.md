@@ -133,7 +133,7 @@ Six pull requests, each merged into `dev` on green before the next begins.
 - [x] Slice D: the UI offers Antigravity with Gemini 4 Carbon (High) by default
 - [x] Slice D: SPEC-001/002/003 and the documents say Antigravity is accepted
 - [ ] Slice D: review findings fixed and the slice delivered
-- [ ] Slice E: a task without a chosen agent is drawn at random and records the draw
+- [x] Slice E: a task without a chosen agent is drawn at random and records the draw
 - [ ] Slice E: the composer and automations offer Random or a chosen agent, and the export reports the draw
 - [ ] Independent review in a fresh session, findings fixed test-first
 - [ ] Every gate green, docs and the changes log updated
@@ -515,3 +515,19 @@ Six pull requests, each merged into `dev` on green before the next begins.
   left: the sessions page labels assistant entries "Claude" (session search and import are
   Claude Code's only, ADR-0361 Consequences). e2e `antigravity.e2e.ts` 8 passed; `yulius-app`
   611 passed; `ui_contract`, `antigravity` 22 passed; clippy clean; `scripts/dev quick` passed.
+
+### Slice E (the draw)
+
+- A task created without an agent (or with `auto`) takes the agent its model implies
+  (`Harness::implied_by`: Antigravity for `gemini-*`, else Claude Code), and without a model is
+  drawn (`App::draw_harness`): Claude Code or Antigravity uniformly among those with a usable
+  subscription (`Harness::drawn` over a random byte, even over its 256 values), Claude Code when
+  neither has one, whose start is then refused as before. A drawn task is recorded in
+  `task_harness_draws` (migration 0066; a task absent there was chosen, as every older task
+  was), and `TaskSummary.harness_choice` says `random` or `chosen`. The agents' `task_create`
+  tool takes an optional `harness` with the same default.
+- Tests: `harness_draw::*` (queued rolls pick each agent; `auto`; agents given or implied by a
+  model are kept and say `chosen`; Codex only when chosen; the draw among usable agents only;
+  neither usable refused naming Claude; an agent's `task_create` drawn unless it names one) 3
+  passed; the domain's `the_draw_picks_among_the_usable_agents`; the whole workspace 4984
+  passed. Clippy clean.

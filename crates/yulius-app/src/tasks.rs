@@ -211,12 +211,15 @@ impl App {
         let not_started =
             task.status == TaskStatus::Closed && !store.has_attempts(&task.id).await?;
         let awaits_start_onboarding = not_started && self.is_awaited_onboarding(task).await?;
+        // Whether the agent was drawn (SPEC-505 RND-001); a failed read says chosen.
+        let drawn = store.harness_drawn(&task.id).await.unwrap_or(false);
         Ok(TaskSummary {
             id: task.id.to_string(),
             sandbox_id: task.sandbox_id.to_string(),
             number: task.number,
             title: task.title.clone(),
             harness: task.harness.as_str().to_owned(),
+            harness_choice: if drawn { "random" } else { "chosen" }.into(),
             status: task.status.as_str().to_owned(),
             activity: task.activity.map(|a| a.as_str().to_owned()),
             branch: task.branch.clone(),

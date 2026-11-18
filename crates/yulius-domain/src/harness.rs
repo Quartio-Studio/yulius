@@ -125,6 +125,33 @@ impl Harness {
     /// All supported harnesses.
     pub const ALL: [Self; 3] = [Self::ClaudeCode, Self::Codex, Self::Antigravity];
 
+    /// The agents a task created without one is drawn between (SPEC-505 RND-001): the two the
+    /// person compares. Codex runs only when chosen.
+    pub const DRAWN: [Self; 2] = [Self::ClaudeCode, Self::Antigravity];
+
+    /// The agent `roll` draws among `usable` (those of [`Self::DRAWN`] with a usable
+    /// subscription, in that order), uniformly for a uniform roll over an even range; Claude Code
+    /// when none is usable, whose start is then refused for want of an account (SPEC-505 RND-001).
+    #[must_use]
+    pub fn drawn(usable: &[Self], roll: u8) -> Self {
+        if usable.is_empty() {
+            Self::ClaudeCode
+        } else {
+            usable[usize::from(roll) % usable.len()]
+        }
+    }
+
+    /// The agent a model given without one implies: Antigravity for a Gemini model, else Claude
+    /// Code (Codex takes no model of Yulius's; SPEC-505 RND-001).
+    #[must_use]
+    pub fn implied_by(model: &str) -> Self {
+        if model.trim().to_ascii_lowercase().starts_with("gemini-") {
+            Self::Antigravity
+        } else {
+            Self::ClaudeCode
+        }
+    }
+
     /// The provider whose accounts this harness uses.
     #[must_use]
     pub fn provider(self) -> Provider {
@@ -231,6 +258,27 @@ pub fn valid_session_id(id: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// SPEC-505 RND-001: a roll picks among the usable agents in their order, evenly over a
+    /// byte; with none usable it is Claude Code.
+    #[test]
+    fn the_draw_picks_among_the_usable_agents() {
+        let both = Harness::DRAWN;
+        assert_eq!(Harness::drawn(&both, 0), Harness::ClaudeCode);
+        assert_eq!(Harness::drawn(&both, 1), Harness::Antigravity);
+        assert_eq!(Harness::drawn(&both, 255), Harness::Antigravity);
+        let picks = (0..=255u8).filter(|r| Harness::drawn(&both, *r) == Harness::Antigravity);
+        assert_eq!(picks.count(), 128, "even over a byte");
+        assert_eq!(
+            Harness::drawn(&[Harness::Antigravity], 0),
+            Harness::Antigravity
+        );
+        assert_eq!(Harness::drawn(&[], 1), Harness::ClaudeCode);
+        assert_eq!(Harness::implied_by("gemini-4-carbon"), Harness::Antigravity);
+        assert_eq!(Harness::implied_by(" Gemini-3.1-pro"), Harness::Antigravity);
+        assert_eq!(Harness::implied_by("claude-opus-5-5"), Harness::ClaudeCode);
+        assert_eq!(Harness::implied_by("opus"), Harness::ClaudeCode);
+    }
 
     /// SPEC-493 MDL-001: a task that names no model runs Opus 5.5, the first model offered;
     /// Fable 5.2, chosen for the review, is offered too, so every Claude Code release is read
