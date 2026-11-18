@@ -33,6 +33,17 @@ async fn world() -> Result<(Harness, Creds), Error> {
 
 /// A usable account `id` of `provider`.
 async fn usable(h: &Harness, id: &str, provider: Provider) -> TestResult {
+    account(h, id, provider, AccountStatus::Ok, true).await
+}
+
+/// An account `id` of `provider` in `status`, signed in when `signed_in`.
+async fn account(
+    h: &Harness,
+    id: &str,
+    provider: Provider,
+    status: AccountStatus,
+    signed_in: bool,
+) -> TestResult {
     let credential: &[u8] = match provider {
         Provider::Google => br#"{"kind":"gemini_api_key","api_key":"SYNTHETIC-0123456789abcdef"}"#,
         _ => b"synthetic-subscription-credential",
@@ -42,8 +53,12 @@ async fn usable(h: &Harness, id: &str, provider: Provider) -> TestResult {
             id: AccountId::parse(id)?,
             provider,
             label: id.into(),
-            credential: Some(h.app.deps.crypto.seal(credential)?),
-            status: AccountStatus::Ok,
+            credential: if signed_in {
+                Some(h.app.deps.crypto.seal(credential)?)
+            } else {
+                None
+            },
+            status,
             usage_json: None,
             last_error: None,
             email: None,
@@ -367,5 +382,114 @@ async fn the_export_says_which_agents_were_drawn() -> TestResult {
         .find(|l| l.contains(",Drawn,"))
         .ok_or("the drawn row")?;
     assert!(drawn.contains(",antigravity,random,"), "{drawn}");
+    Ok(())
+}
+
+/// RND-001 (slice E review): an agent whose accounts must all sign in again, or hold no sign-in,
+/// is left out of the draw.
+#[tokio::test]
+async fn an_agent_without_a_usable_account_is_not_drawn() -> TestResult {
+    let (h, alice) = world().await?;
+    usable(&h, "a-claude", Provider::Anthropic).await?;
+    account(
+        &h,
+        "a-google-relogin",
+        Provider::Google,
+        AccountStatus::Relogin,
+        true,
+    )
+    .await?;
+    account(
+        &h,
+        "a-google-pending",
+        Provider::Google,
+        AccountStatus::Ok,
+        false,
+    )
+    .await?;
+    h.app.queue_harness_rolls(&[1]);
+    assert_eq!(
+        created(&h, &alice, json!({"prompt": "One"})).await?,
+        pair("claude", "random")
+    );
+    Ok(())
+}
+
+/// RND-001 (slice E review): deleting a drawn task removes its draw.
+#[tokio::test]
+async fn deleting_a_drawn_task_removes_its_draw() -> TestResult {
+    use yulius_app::ports::store::TaskStore as _;
+    let (h, alice) = world().await?;
+    usable(&h, "a-claude", Provider::Anthropic).await?;
+    let r = call(
+        &h.router,
+        Method::POST,
+        CREATE,
+        Some(json!({"prompt": "One"})),
+        &alice,
+    )
+    .await?;
+    let id = yulius_domain::ids::TaskId::parse(r.body["id"].as_str().ok_or("id")?)?;
+    assert!(h.store.harness_drawn(&id).await?);
+    assert!(h.store.delete_task(&id).await?);
+    assert!(
+        !h.store.harness_drawn(&id).await?,
+        "the draw went with the task"
+    );
+    Ok(())
+}
+
+/// RND-002 (slice E review): an automation's agent changes to `auto` and back, stored so, and a
+/// ready-made automation draws its tasks' agent.
+#[tokio::test]
+async fn an_automation_changes_to_auto_and_back_and_templates_draw() -> TestResult {
+    let (h, alice) = world().await?;
+    let body = json!({"name": "Review", "cron": "0 9 1 1 *", "utc_offset_minutes": 0, "prompt": "Review yesterday's commits", "enabled": false, "harness": "claude"});
+    let r = call(
+        &h.router,
+        Method::POST,
+        "/api/sandboxes/s1/automations",
+        Some(body.clone()),
+        &alice,
+    )
+    .await?;
+    let id = r.body["id"].as_str().ok_or("id")?.to_owned();
+    for harness in ["auto", "antigravity", "claude"] {
+        let mut changed = body.clone();
+        changed["harness"] = json!(harness);
+        let put = call(
+            &h.router,
+            Method::PUT,
+            &format!("/api/automations/{id}"),
+            Some(changed),
+            &alice,
+        )
+        .await?;
+        assert_eq!(put.status, StatusCode::OK, "{:?}", put.body);
+        let listed = call(
+            &h.router,
+            Method::GET,
+            "/api/sandboxes/s1/automations",
+            None,
+            &alice,
+        )
+        .await?;
+        let stored = listed
+            .body
+            .as_array()
+            .and_then(|l| l.iter().find(|a| a["id"] == json!(id)).cloned())
+            .ok_or("listed")?;
+        assert_eq!(stored["harness"], json!(harness));
+    }
+    let template = call(
+        &h.router,
+        Method::POST,
+        "/api/sandboxes/s1/automation-templates/docs-up-to-date/enable",
+        None,
+        &alice,
+    )
+    .await?;
+    assert_eq!(template.status, StatusCode::CREATED, "{:?}", template.body);
+    assert_eq!(template.body["harness"], "auto");
     Ok(())
 }

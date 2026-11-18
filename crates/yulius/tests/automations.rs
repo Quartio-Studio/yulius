@@ -325,9 +325,10 @@ async fn workflows_defaults_scope_permissions_and_task_steps() -> TestResult {
     )
     .await?;
     assert_eq!(quick.body["steps"]["total"], 0);
+    // No agent and no Antigravity subscription: the draw leaves Claude Code (SPEC-505 RND-001).
     assert_eq!(
         quick.body["harness"], "claude",
-        "Claude Code is the default harness"
+        "Claude Code is the only usable agent here"
     );
     let other = call(
         &w.h.router,

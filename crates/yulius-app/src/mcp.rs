@@ -271,6 +271,7 @@ fn cockpit_only_tool_descriptors() -> Vec<ToolDescriptor> {
             input_schema: schema(json!({
                 "sandbox": {"type": "string", "description": "The sandbox's slug (or owner/name) from sandboxes_list; not this one"},
                 "prompt": {"type": "string", "description": "The request for the new task, complete (what, why, where, done when)"},
+                "harness": {"type": "string", "enum": ["auto", "claude", "codex", "antigravity"], "description": "Agent: auto (default) draws Claude Code or Antigravity"},
                 "title": {"type": "string", "description": "Short title (derived from the prompt when absent)"},
                 "workflow": {"type": "string", "description": "Workflow id or name of that sandbox, or \"auto\""},
                 "mode": {"type": "string", "enum": ["goal", "prompt", "auto"]},

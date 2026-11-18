@@ -212,7 +212,10 @@ impl App {
             task.status == TaskStatus::Closed && !store.has_attempts(&task.id).await?;
         let awaits_start_onboarding = not_started && self.is_awaited_onboarding(task).await?;
         // Whether the agent was drawn (SPEC-505 RND-001); a failed read says chosen.
-        let drawn = store.harness_drawn(&task.id).await.unwrap_or(false);
+        let drawn = store.harness_drawn(&task.id).await.unwrap_or_else(|err| {
+            tracing::warn!(error = %err, task = %task.id, "harness draw not read");
+            false
+        });
         Ok(TaskSummary {
             id: task.id.to_string(),
             sandbox_id: task.sandbox_id.to_string(),

@@ -1790,8 +1790,9 @@ export function mountComposer(ctx, sandbox) {
       }),
       keep: () => busyRun(autoStage(), async () => opened(await createTask(bodyFor(value)))),
       close: () => clearSplit(),
-      // A task of another agent runs without a Claude account (SPEC-503, SPEC-505).
-      codex: Boolean(bodyFor(value).harness),
+      // A task of another agent runs without a Claude account (SPEC-503, SPEC-505), and so does
+      // a Random one while Antigravity is usable: it is drawn among the usable agents (RND-001).
+      codex: Boolean(bodyFor(value).harness) || (!findModel(modelId) && antigravityConnected(ctx.store.state.me)),
     });
     setChildren(intakeSlot, split.el);
     const calm = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
