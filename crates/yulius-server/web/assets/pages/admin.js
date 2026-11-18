@@ -467,7 +467,8 @@ export function mountAccountsPage(ctx, route) {
   // Reads every signed-in subscription again (SPEC-473 RFR-014). Off, without losing the
   // keyboard, while it runs and when none is signed in.
   const refreshAllButton = h('button', { type: 'button', class: 'btn refresh-all', onClick: () => refreshAll() }, icon('refresh', { size: 14 }), h('span', null, 'Refresh all'));
-  const frame = pageFrame({ title: 'Subscriptions', sub: `Claude, Codex and Antigravity subscriptions, each agent in its own pool: ${BRAND.name} places, switches and pauses tasks by itself`, actions: [refreshAllButton, createButton('Add subscription', () => add())] });
+  const sub = `Claude, Codex and Antigravity subscriptions, each agent in its own pool: ${BRAND.name} places, switches and pauses tasks by itself`;
+  const frame = pageFrame({ title: 'Subscriptions', sub, actions: [refreshAllButton, createButton('Add subscription', () => add())] });
   const capacityHost = h('section', { class: 'card card-pad stack', 'aria-label': 'Capacity' },
     h('h2', { class: 'card-title' }, 'Capacity'), skeleton('Loading the capacity…', 3));
   const host = h('div');
@@ -661,7 +662,12 @@ export function mountAccountsPage(ctx, route) {
     const accounts = (Array.isArray(list) ? list : []).sort((a, b) => (a.label || '').localeCompare(b.label || ''));
     shown.clear();
     for (const account of accounts) shown.set(account.id, account);
-    if (accounts.length === 0) return emptyState({ iconName: 'user', title: 'No subscriptions yet', text: 'Add a Claude, Codex or Antigravity subscription for the agents: finish the agent’s own sign-in in a terminal here, paste a token made with claude setup-token, give Codex an auth.json or an OpenAI API key, or give Antigravity a Gemini API key.', action: createButton('Add subscription', () => add()) });
+    if (accounts.length === 0) {
+      const text = 'Add a Claude, Codex or Antigravity subscription for the agents: finish the agent’s own '
+        + 'sign-in in a terminal here, paste a token made with claude setup-token, give Codex an '
+        + 'auth.json or an OpenAI API key, or give Antigravity a Gemini API key.';
+      return emptyState({ iconName: 'user', title: 'No subscriptions yet', text, action: createButton('Add subscription', () => add()) });
+    }
     return h('div', { class: 'grid-2' }, accounts.map((account) => {
       // The name is edited in place (SPEC-244 SUB-001); the server trims and validates it.
       const rename = async (label) => {

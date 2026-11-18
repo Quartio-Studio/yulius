@@ -7160,7 +7160,10 @@ export function createMockTransport(params) {
   // An Antigravity account signed in elsewhere (`connectAntigravity()`, SPEC-505).
   db.connectAntigravity = () => {
     db.nextId += 1;
-    const account = { id: `acc_${db.nextId}`, provider: 'google', label: 'Antigravity', email: null, status: 'ok', usage: { primary: null, secondary: null, observed_at: null }, last_error: null, in_use_by: 0 };
+    const account = {
+      id: `acc_${db.nextId}`, provider: 'google', label: 'Antigravity', email: null, status: 'ok',
+      usage: { primary: null, secondary: null, observed_at: null }, last_error: null, in_use_by: 0,
+    };
     db.accounts.push(account);
     emit(db, { type: 'account.updated', account });
   };
