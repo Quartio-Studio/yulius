@@ -29,6 +29,7 @@ use yulius_app::ports::session::{
     RunWelcome, RunWriter, SessionHost, SpawnedRun,
 };
 use yulius_app::ports::store::{AccountStore, AuditStore, TaskStore};
+use yulius_contracts::ptyhost::MAX_DIMENSION;
 use yulius_contracts::terminal::{KIND_OUTPUT, KIND_SNAPSHOT, decode_binary};
 use yulius_domain::harness::Harness;
 use yulius_domain::ids::{AccountId, AttemptId, SandboxId, TaskId, UserId};
@@ -179,6 +180,14 @@ impl SessionHost for FakeHost {
         _token: &[u8; 32],
         size: (u16, u16),
     ) -> AppResult<SpawnedRun> {
+        // The process host refuses a launch larger than the wire allows (`LaunchSpec::validate`),
+        // so a terminal size it would refuse fails here too (#1414).
+        if size.0 > MAX_DIMENSION || size.1 > MAX_DIMENSION {
+            return Err(yulius_app::error::AppError::internal(format!(
+                "terminal size {}x{} outside the process host's 1..={MAX_DIMENSION}",
+                size.0, size.1
+            )));
+        }
         for file in &plan.files {
             std::fs::write(&file.path, &file.contents)
                 .map_err(yulius_app::error::AppError::internal)?;
@@ -400,7 +409,7 @@ fn login_dir(s: &Setup, login_id: &str) -> PathBuf {
 #[tokio::test]
 async fn claude_login_masks_the_token_for_viewers_and_seals_it() -> TestResult {
     let s = setup().await?;
-    // The token is split across three chunks; the PTY never wraps it (1024 columns).
+    // The token is split across three chunks; the PTY never wraps it (1000 columns).
     s.host.push(Script {
         chunks: vec![
             "Browser didn't open? Use the url below to sign in:\r\nhttps://claude.ai/oauth/authorize?code=true\r\n".into(),
@@ -422,7 +431,7 @@ async fn claude_login_masks_the_token_for_viewers_and_seals_it() -> TestResult {
     let plans = s.host.plans();
     let (run_dir, plan, size) = plans.first().ok_or("spawned")?;
     assert_eq!(plan.argv, ["claude", "setup-token"]);
-    assert_eq!(*size, (1024, 40));
+    assert_eq!(*size, (1000, 40));
     assert_eq!(*run_dir, login_dir(&s, &login_id));
     assert_eq!(plan.containment, Containment::None);
     assert!(plan.secret_env.is_empty());
@@ -450,7 +459,7 @@ async fn claude_login_masks_the_token_for_viewers_and_seals_it() -> TestResult {
     let state = serde_json::to_value(terminal.state())?;
     assert_eq!(
         (state["cols"].as_u64(), state["can_write"].as_bool()),
-        (Some(1024), Some(true))
+        (Some(1000), Some(true))
     );
     let mut sub = terminal.subscribe();
     terminal.input(b"pasted-code\r").await?;
@@ -1714,7 +1723,7 @@ async fn login_terminal_websocket_streams_masked_output_and_accepts_input() -> T
                 tungstenite::Message::Text(text) => {
                     let v: Value = serde_json::from_str(&text)?;
                     if v["type"] == "state" && !released {
-                        assert_eq!(v["cols"], 1024);
+                        assert_eq!(v["cols"], 1000);
                         assert_eq!(v["can_write"], true);
                         ws.send(tungstenite::Message::Text(
                             json!({"type": "hello", "last_seq": null, "cols": 120, "rows": 30})
@@ -2048,6 +2057,10 @@ async fn an_antigravity_sign_in_ends_once_its_token_file_is_written() -> TestRes
     let plans = s.host.plans();
     let (_, _, (cols, _)) = plans.first().ok_or("spawned")?;
     assert!(*cols >= 704, "{cols} columns break the sign-in link");
+    assert!(
+        *cols <= MAX_DIMENSION,
+        "{cols} columns are refused by the process host"
+    );
     let settled = account_settled(&mut events, &account_id).await?;
     assert_eq!(settled["status"], "ok", "{settled}");
     let log = s.host.log.lock().map_err(|_| "log")?.clone();

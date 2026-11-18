@@ -99,7 +99,7 @@ const ANSWER_HERE = 'The terminal has the keyboard: answer there.';
  *   exitActions(exit)          optional [{label, run}] shown in the exit banner
  *   exitMessage(exit)          optional {tone, text} for the exit banner (status.js endedMessage)
  *   followServerSize           render at the PTY size from `state` and never ask the server
- *                              to resize (account login terminals: fixed 1024 columns so
+ *                              to resize (account login terminals: fixed 1000 columns so
  *                              tokens and URLs never wrap; the view scrolls horizontally)
  *   emptyMessage(state)        optional {title, text, busy} shown over a blank screen (e.g. a task
  *                              that has not started yet); hidden as soon as there is output

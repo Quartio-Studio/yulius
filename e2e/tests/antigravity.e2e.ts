@@ -66,7 +66,7 @@ test('an Antigravity subscription signs in with Google in the login terminal', a
   const terminal = browser.locator('.login-terminal');
   await expect(terminal).toContainText('Sign in with Google');
   await expect(terminal).not.toContainText('Claude');
-  // The 704-character link stays on one row of the 1024-column terminal.
+  // The 704-character link stays on one row of the 1000-column terminal.
   await expect.poll(() => browser.evaluate(() => {
     const rows = [...document.querySelectorAll('.login-terminal .xterm-rows > div')].map((row) => (row.textContent || '').trim());
     return (rows.find((row) => row.startsWith('https://accounts.google.com/')) || '').length;

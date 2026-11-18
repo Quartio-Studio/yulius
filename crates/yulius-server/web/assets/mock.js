@@ -6600,7 +6600,7 @@ function startLogin(db, accountId) {
 const GOOGLE_SIGN_IN_URL = `https://accounts.google.com/o/oauth2/v2/auth?access_type=offline&client_id=mock.apps.googleusercontent.com&code_challenge_method=S256&prompt=consent&redirect_uri=http%3A%2F%2Flocalhost%3A1455%2Foauth2callback&response_type=code&scope=${encodeURIComponent('openid email profile https://www.googleapis.com/auth/cloud-platform https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/userinfo.profile')}&state=`.padEnd(704, 'x');
 
 /**
- * Fake provider login for the account login terminal: a fixed 1024×40 PTY; `state.status`
+ * Fake provider login for the account login terminal: a fixed 1000×40 PTY; `state.status`
  * goes running → ok | error | cancelled and the exit frame carries the same status. Tokens are
  * masked. Enter signs in; the code `fail` makes the sign-in fail as the CLI's would (SPEC-243).
  */
@@ -6684,7 +6684,7 @@ class LoginSession {
   }
 
   state() {
-    return { type: 'state', attempt_seq: null, harness: this.google() ? 'antigravity' : this.codex() ? 'codex' : 'claude', cols: 1024, rows: 40, can_write: !this.done, controller: true, status: this.status };
+    return { type: 'state', attempt_seq: null, harness: this.google() ? 'antigravity' : this.codex() ? 'codex' : 'claude', cols: 1000, rows: 40, can_write: !this.done, controller: true, status: this.status };
   }
 
   finish() {
