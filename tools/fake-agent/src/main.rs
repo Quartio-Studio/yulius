@@ -427,6 +427,9 @@ struct Options {
     workflow_limit_model: Option<String>,
     /// Transcripts and hooks shaped like Codex's (`--transcript-kind codex`).
     codex: bool,
+    /// Transcripts and hooks shaped like the Antigravity CLI's (`--transcript-kind antigravity`,
+    /// SPEC-505).
+    antigravity: bool,
 }
 
 fn parse_number<T: std::str::FromStr>(flag: &str, value: Option<String>) -> Result<T, String> {
@@ -502,6 +505,7 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Options, String>
         workflow_limit: false,
         workflow_limit_model: None,
         codex: false,
+        antigravity: false,
     };
     while let Some(flag) = args.next() {
         match flag.as_str() {
@@ -529,10 +533,13 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Options, String>
                 options.transcript = Some(args.next().ok_or("--transcript needs a path")?.into());
             }
             "--transcript-kind" => {
-                options.codex = match args.next().as_deref() {
-                    Some("claude") => false,
-                    Some("codex") => true,
-                    _ => return Err("--transcript-kind must be claude or codex".into()),
+                (options.codex, options.antigravity) = match args.next().as_deref() {
+                    Some("claude") => (false, false),
+                    Some("codex") => (true, false),
+                    Some("antigravity") => (false, true),
+                    _ => {
+                        return Err("--transcript-kind must be claude, codex or antigravity".into());
+                    }
                 };
             }
             "--report-env" => {
@@ -871,6 +878,12 @@ struct Transcript {
     codex: bool,
     /// Codex: the session's tokens so far (`total_token_usage`).
     total_tokens: u64,
+    /// An Antigravity transcript (SPEC-505): one step per line.
+    antigravity: bool,
+    /// Antigravity: the conversation's steps so far.
+    steps: u64,
+    /// Antigravity: the turn's prompt step is written already (before its prompt hook).
+    prompt_written: bool,
 }
 
 impl Transcript {
@@ -889,7 +902,57 @@ impl Transcript {
             last_uuid: None,
             codex: false,
             total_tokens: 0,
+            antigravity: false,
+            steps: 0,
+            prompt_written: false,
         })
+    }
+
+    /// An Antigravity transcript at `path` (SPEC-505); a resumed conversation's steps go on from
+    /// the ones it has.
+    fn open_antigravity(path: PathBuf, session_id: &str) -> io::Result<Self> {
+        let mut transcript = Self::open(path, session_id)?;
+        transcript.antigravity = true;
+        transcript.steps =
+            std::fs::read_to_string(&transcript.path).map_or(0, |text| text.lines().count() as u64);
+        Ok(transcript)
+    }
+
+    /// One Antigravity step: its index, source, type and fields.
+    fn agy_step(&mut self, source: &str, kind: &str, fields: Value) -> io::Result<()> {
+        let mut step = json!({"step_index": self.steps, "source": source, "type": kind,
+            "status": "DONE", "created_at": rfc3339(now_ms())});
+        if let (Some(step), Some(fields)) = (step.as_object_mut(), fields.as_object()) {
+            step.extend(fields.clone());
+        }
+        self.steps += 1;
+        self.append(&[step])
+    }
+
+    /// The step of a typed prompt, written once per turn.
+    fn agy_prompt(&mut self, prompt: &str) -> io::Result<()> {
+        if self.prompt_written {
+            return Ok(());
+        }
+        self.prompt_written = true;
+        self.agy_step(
+            "USER_EXPLICIT",
+            "USER_INPUT",
+            json!({"content": format!("<USER_REQUEST>\n{prompt}\n</USER_REQUEST>")}),
+        )
+    }
+
+    /// The model's answer that ends an Antigravity turn, with its tokens.
+    fn agy_answer(&mut self, prompt: &str, answer: &str) -> io::Result<()> {
+        self.agy_prompt(prompt)?;
+        self.prompt_written = false;
+        self.agy_step(
+            "MODEL",
+            "PLANNER_RESPONSE",
+            json!({"model": "gemini-4-carbon-high", "input_tokens": 10 + prompt.len() as u64,
+                "cache_read_tokens": 0, "output_tokens": 4 + answer.len() as u64,
+                "content": answer}),
+        )
     }
 
     /// A Codex rollout at `path` (SPEC-503).
@@ -1005,6 +1068,10 @@ impl Transcript {
     }
 
     fn turn(&mut self, prompt: &str, answer: &str) -> io::Result<()> {
+        if self.antigravity {
+            self.turns += 1;
+            return self.agy_answer(prompt, answer);
+        }
         if self.codex {
             self.turns += 1;
             self.codex_begin(prompt)?;
@@ -1056,6 +1123,10 @@ impl Transcript {
 
     /// The user line of a turn that takes a while (`/work`).
     fn begin(&mut self, prompt: &str) -> io::Result<()> {
+        if self.antigravity {
+            self.turns += 1;
+            return self.agy_prompt(prompt);
+        }
         if self.codex {
             self.turns += 1;
             return self.codex_begin(prompt);
@@ -1131,6 +1202,9 @@ impl Transcript {
 
     /// The answer that ends a `/work` turn.
     fn answer(&mut self, prompt: &str, answer: &str) -> io::Result<()> {
+        if self.antigravity {
+            return self.agy_answer(prompt, answer);
+        }
         if self.codex {
             return self.codex_answer(prompt, answer);
         }
@@ -1486,6 +1560,15 @@ impl Transcript {
     }
 
     fn limit(&mut self) -> io::Result<()> {
+        if self.antigravity {
+            // The plan's quota, as the CLI writes it at an attempt (one step per attempt).
+            self.prompt_written = false;
+            return self.agy_step(
+                "SYSTEM",
+                "ERROR_MESSAGE",
+                json!({"error": "Individual quota reached. Your quota resets in 5 hours."}),
+            );
+        }
         if self.codex {
             // Codex: the account's window is full, and the turn ends with the limit's error.
             let timestamp = rfc3339(now_ms());
@@ -1626,21 +1709,99 @@ fn run_hook(exe: &Path, harness: &str, event: &str, input: &Value) -> String {
 struct Hooks {
     exe: PathBuf,
     session_id: String,
-    /// `claude` or `codex` (SPEC-503).
+    /// `claude`, `codex` (SPEC-503) or `antigravity` (SPEC-505).
     harness: &'static str,
     /// Codex: SessionStart ran (Codex runs it at the session's first turn).
     started: Arc<AtomicBool>,
+    /// Antigravity: the transcript its prompt step is written to before the prompt hook, and
+    /// whose full copy its hooks name (none without `--transcript`).
+    transcript: Option<Arc<Mutex<Transcript>>>,
 }
 
 impl Hooks {
+    /// Runs the hook `event` (Claude Code's name and input) and returns its answer in Claude
+    /// Code's shape. For Antigravity the hook is the CLI's own event, sent and answered as the
+    /// Antigravity CLI 1.5.10 does (SPEC-505): `PreInvocation` for a prompt (its step written
+    /// first), `Stop` with `continuationActive`; the others it does not have send nothing.
+    fn call(&self, event: &str, input: &Value) -> String {
+        if self.harness != "antigravity" {
+            return run_hook(&self.exe, self.harness, event, input);
+        }
+        let transcript = self
+            .transcript
+            .as_ref()
+            .and_then(|t| t.lock().ok().map(|t| t.path.clone()))
+            .map(|path| path.with_file_name("transcript_full.jsonl"))
+            .map_or(String::new(), |path| path.display().to_string());
+        let cwd = std::env::current_dir()
+            .map(|p| p.display().to_string())
+            .unwrap_or_default();
+        let mut payload = json!({"conversationId": self.session_id, "cwd": cwd,
+            "transcriptPath": transcript, "modelName": "gemini-4-carbon-high"});
+        let agy_event = match event {
+            "SessionStart" => "SessionStart",
+            "UserPromptSubmit" => {
+                let prompt = input
+                    .get("prompt")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                let steps = self.transcript.as_ref().and_then(|t| {
+                    let mut t = t.lock().ok()?;
+                    t.agy_prompt(prompt).ok()?;
+                    Some(t.steps)
+                });
+                payload["lastUserInput"] = json!(prompt);
+                payload["invocationNum"] = json!(0);
+                payload["initialNumSteps"] = json!(steps.unwrap_or(0));
+                "PreInvocation"
+            }
+            "Stop" if input.get("error").is_some() => {
+                payload["terminationReason"] = json!("ERROR");
+                payload["error"] = input["error"].clone();
+                payload["continuationActive"] = json!(false);
+                payload["fullyIdle"] = json!(true);
+                "Stop"
+            }
+            "Stop" => {
+                payload["terminationReason"] = json!("NO_TOOL_CALL");
+                payload["continuationActive"] = input
+                    .get("stop_hook_active")
+                    .cloned()
+                    .unwrap_or(json!(false));
+                payload["fullyIdle"] = json!(true);
+                "Stop"
+            }
+            _ => return String::new(),
+        };
+        payload["hookEventName"] = json!(agy_event);
+        let answer = run_hook(&self.exe, "antigravity", agy_event, &payload);
+        let Ok(value) = serde_json::from_str::<Value>(&answer) else {
+            return String::new();
+        };
+        let context = value
+            .pointer("/injectSteps/0/systemMessage/systemMessage")
+            .and_then(Value::as_str);
+        let refused = value
+            .pointer("/injectSteps/0/errorMessage/userMessage")
+            .and_then(Value::as_str);
+        let claude = if value.get("decision").and_then(Value::as_str) == Some("continue") {
+            json!({"decision": "block", "reason": value.get("reason").cloned().unwrap_or_default()})
+        } else if let Some(reason) = refused {
+            json!({"decision": "block", "reason": reason})
+        } else if let Some(context) = context {
+            json!({"hookSpecificOutput": {"hookEventName": event, "additionalContext": context}})
+        } else {
+            json!({})
+        };
+        claude.to_string()
+    }
+
     /// `UserPromptSubmit`; `Some(reason)` when the hook blocks the prompt.
     fn prompt(&self, prompt: &str) -> Option<String> {
         if self.harness == "codex" && !self.started.swap(true, Ordering::SeqCst) {
             self.session_start();
         }
-        let answer = run_hook(
-            &self.exe,
-            self.harness,
+        let answer = self.call(
             "UserPromptSubmit",
             &json!({"session_id": self.session_id, "hook_event_name": "UserPromptSubmit",
                 "prompt": prompt}),
@@ -1669,9 +1830,7 @@ impl Hooks {
 
     /// `SessionStart` with `source` (`startup`, or `compact` after a compaction).
     fn session_start_from(&self, source: &str) {
-        run_hook(
-            &self.exe,
-            self.harness,
+        self.call(
             "SessionStart",
             &json!({"session_id": self.session_id, "hook_event_name": "SessionStart",
                 "source": source}),
@@ -1680,9 +1839,7 @@ impl Hooks {
 
     /// `Notification` of `kind` (its `notification_type`), as when Claude Code asks the person.
     fn notification(&self, kind: &str) {
-        run_hook(
-            &self.exe,
-            self.harness,
+        self.call(
             "Notification",
             &json!({"session_id": self.session_id, "hook_event_name": "Notification",
                 "notification_type": kind, "message": "Claude needs your permission to use Bash"}),
@@ -1691,9 +1848,7 @@ impl Hooks {
 
     /// The Agent tool's `PreToolUse` for a subagent of `kind`: what the hook answered.
     fn agent(&self, kind: &str) -> String {
-        run_hook(
-            &self.exe,
-            self.harness,
+        self.call(
             "PreToolUse",
             &json!({"session_id": self.session_id, "hook_event_name": "PreToolUse",
                 "tool_name": "Agent", "tool_use_id": "toolu_fake_agent",
@@ -1704,9 +1859,7 @@ impl Hooks {
 
     /// `SubagentStart` of subagent `agent_id` of type `kind`.
     fn subagent_start(&self, agent_id: &str, kind: &str) {
-        run_hook(
-            &self.exe,
-            self.harness,
+        self.call(
             "SubagentStart",
             &json!({"session_id": self.session_id, "hook_event_name": "SubagentStart",
                 "agent_id": agent_id, "agent_type": kind}),
@@ -1715,9 +1868,7 @@ impl Hooks {
 
     /// `SessionEnd` with `reason`.
     fn session_end(&self, reason: &str) {
-        run_hook(
-            &self.exe,
-            self.harness,
+        self.call(
             "SessionEnd",
             &json!({"session_id": self.session_id, "hook_event_name": "SessionEnd",
                 "reason": reason}),
@@ -1736,7 +1887,7 @@ impl Hooks {
         {
             input["rate_limits"] = limits;
         }
-        let line = run_hook(&self.exe, self.harness, "StatusLine", &input);
+        let line = self.call("StatusLine", &input);
         say(&format!("STATUS {}", line.trim_end()))
     }
 
@@ -1749,9 +1900,7 @@ impl Hooks {
 
     /// What the Stop hook answered; `active` says a Stop of this turn was blocked before.
     fn stop_answer(&self, active: bool) -> String {
-        run_hook(
-            &self.exe,
-            self.harness,
+        self.call(
             "Stop",
             &json!({"session_id": self.session_id, "hook_event_name": "Stop",
                 "stop_hook_active": active}),
@@ -2773,6 +2922,9 @@ fn echo_loop(options: &Options, session_id: &str) -> io::Result<i32> {
             path.clone(),
             session_id,
         )?))),
+        Some(path) if options.antigravity => Some(Arc::new(Mutex::new(
+            Transcript::open_antigravity(path.clone(), session_id)?,
+        ))),
         Some(path) => Some(Arc::new(Mutex::new(Transcript::open(
             path.clone(),
             session_id,
@@ -2788,8 +2940,15 @@ fn echo_loop(options: &Options, session_id: &str) -> io::Result<i32> {
     let mut hooks = options.hooks.as_ref().map(|exe| Hooks {
         exe: exe.clone(),
         session_id: session_id.to_owned(),
-        harness: if options.codex { "codex" } else { "claude" },
+        harness: if options.codex {
+            "codex"
+        } else if options.antigravity {
+            "antigravity"
+        } else {
+            "claude"
+        },
         started: Arc::new(AtomicBool::new(false)),
+        transcript: transcript.clone().filter(|_| options.antigravity),
     });
     if options.trust_prompt {
         trust_prompt()?;
@@ -2869,6 +3028,35 @@ fn echo_loop(options: &Options, session_id: &str) -> io::Result<i32> {
             "/crash" => {
                 say("CRASHING")?;
                 return Ok(3);
+            }
+            // Antigravity: a typed turn whose model API fails for good, as agy 1.5.10 ends one:
+            // an error step per attempt, then its Stop with `terminationReason: ERROR`.
+            "/apierror" if options.antigravity => {
+                if let Some(hooks) = &hooks {
+                    let _ = hooks.prompt(&line);
+                }
+                if let Some(transcript) = &transcript
+                    && let Ok(mut t) = transcript.lock()
+                {
+                    t.agy_prompt(&line)?;
+                    t.prompt_written = false;
+                    for attempt in [1, 8] {
+                        t.agy_step(
+                            "SYSTEM",
+                            "ERROR_MESSAGE",
+                            json!({"error": format!(
+                                "API error (attempt {attempt}): Error 503, Status: UNAVAILABLE")}),
+                        )?;
+                    }
+                }
+                if let Some(hooks) = &hooks {
+                    hooks.call(
+                        "Stop",
+                        &json!({"stop_hook_active": false,
+                            "error": "Error 503, Status: UNAVAILABLE"}),
+                    );
+                }
+                say("API ERROR")?;
             }
             "/size" => say(&format!("SIZE {}", terminal_size()))?,
             "/tool" => {

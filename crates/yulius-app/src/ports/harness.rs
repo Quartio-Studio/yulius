@@ -463,6 +463,25 @@ pub trait HarnessPort: Send + Sync {
     /// The transcript of the Antigravity conversation `session_id` in the conversations folder
     /// `brain` (SPEC-505 AGY-004).
     fn antigravity_transcript(&self, brain: &Path, session_id: &str) -> PathBuf;
+    /// The conversation the Antigravity CLI last ran in `worktree` with the `.gemini` folder
+    /// `gemini_dir`, when its transcript in `brain` was written at or after `since` (SPEC-505
+    /// AGY-005: for a run whose SessionStart hook named none).
+    fn discover_antigravity_session(
+        &self,
+        gemini_dir: &Path,
+        brain: &Path,
+        worktree: &Path,
+        since: Timestamp,
+    ) -> Option<String> {
+        let _ = (gemini_dir, brain, worktree, since);
+        None
+    }
+    /// The credential to keep after an Antigravity run of a Google sign-in left `fresh` as its
+    /// token file, `stored` being the account's (SPEC-505 AGY-008); `None` keeps the stored one.
+    fn antigravity_refreshed_credential(&self, fresh: &[u8], stored: &[u8]) -> Option<Vec<u8>> {
+        let _ = (fresh, stored);
+        None
+    }
     /// The rollout of the Codex session `session_id` below `sessions_dir` (SPEC-503 CDX-003).
     ///
     /// # Errors

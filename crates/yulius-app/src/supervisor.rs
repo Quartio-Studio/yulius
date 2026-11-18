@@ -1372,8 +1372,8 @@ impl App {
     /// AGY-003).
     pub(crate) fn antigravity_brain(&self, sandbox: &SandboxId) -> PathBuf {
         self.sandbox_dir(sandbox)
-            .join("antigravity")
-            .join("shared")
+            .join(ANTIGRAVITY_DIR)
+            .join(ANTIGRAVITY_SHARED_DIR)
             .join("brain")
     }
 
@@ -1382,6 +1382,50 @@ impl App {
         self.deps
             .harness
             .antigravity_transcript(&self.antigravity_brain(sandbox), session_id)
+    }
+
+    /// The Antigravity home of a run, `<run_dir>/antigravity-home` (SPEC-505 AGY-003): the folder
+    /// holding the `.gemini` the CLI reads, in the run's own folder, which only the server writes
+    /// before the run (so a contained run binds a path no agent of the sandbox could have swapped
+    /// for a link). Its `antigravity-cli/brain` and `conversations` link to the sandbox's shared
+    /// ones, made through handles from the sandbox directory, so a conversation resumes on any
+    /// Antigravity account; the links are absolute, made anew for each run.
+    fn antigravity_home(&self, sandbox: &SandboxId, run_dir: &Path) -> AppResult<PathBuf> {
+        use std::ffi::OsStr;
+        let root = self.sandbox_dir(sandbox);
+        std::fs::create_dir_all(&root).map_err(AppError::internal)?;
+        for shared in ANTIGRAVITY_SHARED {
+            crate::files::open_dirs_below(
+                &root,
+                &[
+                    OsStr::new(ANTIGRAVITY_DIR),
+                    OsStr::new(ANTIGRAVITY_SHARED_DIR),
+                    OsStr::new(shared),
+                ],
+                true,
+            )
+            .map_err(|err| match err {
+                nix::errno::Errno::ELOOP | nix::errno::Errno::ENOTDIR => AppError::internal(
+                    "the sandbox's Antigravity folder is a link or not a folder: Yulius follows no \
+                     links",
+                ),
+                other => crate::files::errno_error(other),
+            })?;
+        }
+        let home = antigravity_run_home(run_dir);
+        let gemini = home.join(".gemini");
+        for dir in [gemini.join("config"), gemini.join("antigravity-cli/cache")] {
+            std::fs::create_dir_all(dir).map_err(AppError::internal)?;
+        }
+        let shared = root.join(ANTIGRAVITY_DIR).join(ANTIGRAVITY_SHARED_DIR);
+        for name in ANTIGRAVITY_SHARED {
+            std::os::unix::fs::symlink(
+                shared.join(name),
+                gemini.join("antigravity-cli").join(name),
+            )
+            .map_err(AppError::internal)?;
+        }
+        Ok(home)
     }
 
     /// The Codex home of `account` in `sandbox`, `<sandbox>/codex/<account>`, opened without
@@ -1642,10 +1686,17 @@ impl App {
             self.settle_resting_run(task_id).await?;
             // The Codex CLI is installed before the launch lock, so a first install does not hold
             // other tasks' starts (SPEC-503 CLI-002); the launch asks again and reports a failure.
-            if let Ok(Some(task)) = self.deps.store.task(task_id).await
-                && task.harness == Harness::Codex
-            {
-                let _ = self.deps.harness.provide_codex(true).await;
+            if let Ok(Some(task)) = self.deps.store.task(task_id).await {
+                match task.harness {
+                    Harness::Codex => {
+                        let _ = self.deps.harness.provide_codex(true).await;
+                    }
+                    // The same for the Antigravity CLI (SPEC-505 AGY-007).
+                    Harness::Antigravity => {
+                        let _ = self.deps.harness.provide_antigravity(true).await;
+                    }
+                    Harness::ClaudeCode => {}
+                }
             }
             let guard = self.supervisor.launch.lock().await;
             let task = self
@@ -1888,6 +1939,12 @@ impl App {
             Harness::Codex => Some(self.codex_home(&sandbox.id, &account.id)?),
             Harness::ClaudeCode | Harness::Antigravity => None,
         };
+        // The Antigravity CLI Yulius provides, by its absolute path (SPEC-505 AGY-007); under the
+        // launch lock only what the install before it left.
+        let antigravity_cli = match harness {
+            Harness::Antigravity => self.deps.harness.provide_antigravity(false).await?,
+            Harness::ClaudeCode | Harness::Codex => None,
+        };
         // The Codex CLI Yulius provides, by its absolute path (SPEC-503 CLI-002).
         let codex_cli = match harness {
             // Under the launch lock: only what the install before it left, never a download.
@@ -1910,7 +1967,9 @@ impl App {
         // Codex takes `/goal` only typed, never as its launch prompt, and records goals its own
         // way: a Codex task gets its whole request, the definition of done included, as its first
         // message, and its turns end it as a prompt-mode task's do (SPEC-503).
-        let codex = harness == Harness::Codex;
+        // Antigravity has its own `/goal`, never given by Yulius: an Antigravity task gets its
+        // request as its first message, as a Codex task does (SPEC-505).
+        let first_message_only = matches!(harness, Harness::Codex | Harness::Antigravity);
         let goal_mode = task.follows_goal();
         // A prompt-mode first message with attached images is typed into the TUI, not given on
         // the command line: Claude Code attaches only a pasted image natively (SPEC-030).
@@ -2007,7 +2066,7 @@ impl App {
                 use yulius_domain::request::{Opening, Request};
                 let prompt = match prompt {
                     Some(prompt) => Some(prompt),
-                    None if codex && task.mode == TaskMode::Goal => {
+                    None if first_message_only && task.mode == TaskMode::Goal => {
                         match self.write_task_request(&sandbox, &task, &home).await {
                             Ok(goal) => Some(goal.launch),
                             Err(err) => {
@@ -2017,7 +2076,9 @@ impl App {
                         }
                     }
                     // Codex attaches no pasted image: each file is mentioned where it sits.
-                    None if codex => Some(Request::parse(&task.prompt).first_message()),
+                    None if first_message_only => {
+                        Some(Request::parse(&task.prompt).first_message())
+                    }
                     None if goal_mode => {
                         match self.write_task_request(&sandbox, &task, &home).await {
                             Ok(goal) => Some(format!("{GOAL_COMMAND}{}", goal.launch)),
@@ -2067,7 +2128,9 @@ impl App {
         // also when the run opens with the prompt that resumes its workflows (SPEC-486); a Codex
         // rollout has no step-back (SPEC-503).
         let stepped_back = match (&start, &mode) {
-            (RunStart::AfterLimit, SessionMode::Resume { session_id, .. }) if !codex => {
+            (RunStart::AfterLimit, SessionMode::Resume { session_id, .. })
+                if !first_message_only =>
+            {
                 Some(session_id.clone())
             }
             _ => None,
@@ -2076,6 +2139,11 @@ impl App {
             AttemptId::parse(&self.deps.crypto.new_id()).map_err(AppError::internal)?;
         let run_dir = self.config.data_dir.join("runs").join(attempt_id.as_str());
         std::fs::create_dir_all(&run_dir).map_err(AppError::internal)?;
+        // An Antigravity run has a home of its own in its run directory (SPEC-505 AGY-003).
+        let antigravity_home = match harness {
+            Harness::Antigravity => Some(self.antigravity_home(&sandbox.id, &run_dir)?),
+            Harness::ClaudeCode | Harness::Codex => None,
+        };
         // The repository's `.mcp.json` servers join the sandbox's first (SPEC-095 PMC-001).
         self.import_project_mcp(&sandbox).await;
         // One read of the servers: what the run gets is what it is recorded to hold (MSC-009).
@@ -2084,6 +2152,13 @@ impl App {
             .await?;
         if let Ok(mut held) = self.runtime(&task.id).personal_mcp_of.lock() {
             *held = personal_mcp.then(|| task.owner.clone());
+        }
+        // The Antigravity CLI expands no variable in an MCP server's headers, so a server that
+        // needs a token is left out of its runs rather than written to a file (SPEC-505): said.
+        if harness == Harness::Antigravity
+            && let Some(said) = tokened_servers_left_out(&mcp)
+        {
+            self.runtime(&task.id).hub.notice(said);
         }
         // The run directory says it too: a restarted server has no other record (RST-001). A
         // mark that cannot be written fails the launch: the run would hold a person's servers
@@ -2109,8 +2184,8 @@ impl App {
             credential,
             codex_home: codex_home.as_ref().map(|(path, _)| path.clone()),
             codex_program: codex_cli.as_ref().map(|cli| cli.program.clone()),
-            antigravity_home: None,
-            antigravity_program: None,
+            antigravity_home: antigravity_home.clone(),
+            antigravity_program: antigravity_cli.as_ref().map(|cli| cli.program.clone()),
         })?;
         if let Some(session_id) = &stepped_back {
             self.step_back_transcript(&task.sandbox_id, &home, &worktree, session_id)
@@ -2125,6 +2200,30 @@ impl App {
             codex_leftover = Some(CodexLeftover::new(self, &task.id, &account.id));
             write_codex_files(dir, path, &mut launch.files)?;
         }
+        // The Antigravity home's files are the run's own, in the server's run directory: written
+        // now and taken out of the plan (a contained run binds the whole `.gemini`). A launch that
+        // ends before its run is live takes the sign-in's token file away again (AGY-008).
+        let mut antigravity_token = None;
+        if let Some(agy_home) = &antigravity_home {
+            let (own, rest): (Vec<_>, Vec<_>) = std::mem::take(&mut launch.files)
+                .into_iter()
+                .partition(|f| f.path.starts_with(agy_home));
+            launch.files = rest;
+            for file in own {
+                write_private(&file).map_err(AppError::internal)?;
+            }
+            antigravity_token = Some(AntigravityToken(Some(antigravity_token_path(&run_dir))));
+            // What this run was given, beside its home (out of the bound `.gemini`): its end
+            // takes back a refresh only of this, and only while the account still holds it.
+            if let Some(given) = &account.credential {
+                write_private(&crate::ports::session::PlannedFile {
+                    path: run_dir.join(ANTIGRAVITY_GIVEN),
+                    contents: given.0.clone(),
+                    mode: 0o600,
+                })
+                .map_err(AppError::internal)?;
+            }
+        }
         let task_token = hex_token(&self.deps.crypto.random_bytes());
         let host_token = self.deps.crypto.random_bytes();
         launch
@@ -2136,6 +2235,12 @@ impl App {
             .env
             .extend(self.variables_env(&task.sandbox_id).await?);
         launch.env.extend(self.base_env(&sandbox, &home, &worktree));
+        // An uncontained Antigravity run reads its `.gemini` from its own home (AGY-003).
+        if let (Some(agy_home), false) = (&antigravity_home, self.config.contained) {
+            launch
+                .env
+                .push(("HOME".into(), agy_home.to_string_lossy().into_owned()));
+        }
         // Agent secrets: placeholders, the Bash redaction wrapper and the egress proxy
         // (SPEC-002 ADR-20). A vault that cannot be read fails the start, never a run without
         // redaction.
@@ -2182,10 +2287,19 @@ impl App {
                     .chain(run_files)
                     // The provided Codex CLI, at its own path (SPEC-503 CLI-002).
                     .chain(codex_cli.iter().map(|cli| cli.dir.clone()))
+                    // The provided Antigravity CLI, at its own path (SPEC-505 AGY-007).
+                    .chain(antigravity_cli.iter().map(|cli| cli.dir.clone()))
                     .collect(),
                 binds: join
                     .iter()
                     .flat_map(|j| j.extra_binds.iter().cloned())
+                    // The run's `.gemini` over the sandbox home's: the agent's shell keeps the
+                    // sandbox's HOME (SPEC-505 AGY-003).
+                    .chain(
+                        antigravity_home
+                            .iter()
+                            .map(|agy| antigravity_bind(agy, &home)),
+                    )
                     .collect(),
                 identity: None,
                 join: join.map(Box::new),
@@ -2202,10 +2316,20 @@ impl App {
         // A Codex task without a model runs its subscription's default: no Claude model is
         // recorded for it, and the Claude models' fallbacks say nothing (SPEC-503 CDX-013).
         let codex_default = harness == Harness::Codex && task.model.is_none();
+        // An Antigravity task runs Gemini: its own model, else the default (SPEC-505 AGY-002).
+        let model = match harness {
+            Harness::Antigravity => task
+                .model
+                .as_deref()
+                .unwrap_or(yulius_domain::harness::DEFAULT_ANTIGRAVITY_MODEL),
+            Harness::ClaudeCode | Harness::Codex => model,
+        };
         // Said once per change of the model (SPEC-482 FBK-008): at the launch that falls back,
         // and at the first one that runs the task's own model again.
         let before = earlier.last().and_then(|run| run.model.as_deref());
-        if let Some(said) = model_change_notice(own, before, model).filter(|_| !codex_default) {
+        if let Some(said) = model_change_notice(own, before, model)
+            .filter(|_| !codex_default && harness != Harness::Antigravity)
+        {
             self.runtime(&task.id).hub.notice(said);
         }
         // Past the limit of a model the session's person switched it to (SPEC-493 MDL-002): said
@@ -2337,6 +2461,9 @@ impl App {
         // The run is live: its end takes the Codex home's credentials back (CDX-006).
         if let Some(leftover) = &mut codex_leftover {
             leftover.disarm();
+        }
+        if let Some(token) = &mut antigravity_token {
+            token.0 = None;
         }
         let current = store.task(&task.id).await?.ok_or(AppError::NotFound)?;
         // Control passed during the launch, after its fingerprint file was computed: the file a
@@ -3164,6 +3291,73 @@ impl App {
         });
     }
 
+    /// After an Antigravity run ended or was lost (SPEC-505 AGY-008): the token file its CLI left
+    /// in the run's home replaces the account's sign-in when it is a refresh of the one the launch
+    /// gave the run and the account still holds that one (a sign-in a person made meanwhile, or
+    /// another run's refresh, stays). The file is removed once that is settled; a refresh that
+    /// could not be stored stays in the run directory, which no agent reaches after the run. The
+    /// run's own agent could have written the file (ADR-0361).
+    async fn antigravity_run_ended(&self, attempt_id: &AttemptId) {
+        let Ok(Some(attempt)) = self.deps.store.attempt(attempt_id).await else {
+            return;
+        };
+        let Some(account_id) = attempt
+            .account_id
+            .filter(|_| attempt.harness == Harness::Antigravity)
+        else {
+            return;
+        };
+        let run_dir = PathBuf::from(&attempt.run_dir);
+        let fresh = match read_antigravity_token(&run_dir) {
+            Ok(Some(fresh)) => fresh,
+            Ok(None) => return,
+            Err(err) => {
+                tracing::warn!(account = %account_id, error = %err, "the Antigravity run's sign-in could not be read");
+                return;
+            }
+        };
+        // Only a refresh of what the launch gave this run counts, and only while the account
+        // still holds that: a sign-in a person made meanwhile, or another run's refresh, stays.
+        let given = std::fs::read(run_dir.join(ANTIGRAVITY_GIVEN))
+            .inspect_err(|err| {
+                tracing::warn!(account = %account_id, error = %err, "what an Antigravity run was given is unknown: its sign-in is not taken back");
+            })
+            .ok()
+            .map(crate::model::Sealed);
+        let refreshed = given.as_ref().and_then(|sealed| {
+            let plain = self.deps.crypto.open(sealed).ok()?;
+            self.deps
+                .harness
+                .antigravity_refreshed_credential(&fresh, &plain)
+        });
+        let kept = match (given, refreshed) {
+            (Some(given), Some(refreshed)) => match self.deps.crypto.seal(&refreshed) {
+                Ok(sealed) => match self
+                    .deps
+                    .store
+                    .refresh_account_credential(&account_id, &given, &sealed, self.now())
+                    .await
+                {
+                    // Stored, or the account holds another sign-in now: the file is done.
+                    Ok(_) => true,
+                    Err(err) => {
+                        tracing::warn!(account = %account_id, error = %err, "a refreshed Antigravity sign-in could not be stored");
+                        false
+                    }
+                },
+                Err(err) => {
+                    tracing::error!(error = %err, "could not seal a refreshed Antigravity sign-in");
+                    false
+                }
+            },
+            // Unchanged, not a sign-in's, or nothing given: nothing to keep.
+            _ => true,
+        };
+        if kept && let Err(err) = remove_antigravity_token(&run_dir) {
+            tracing::warn!(account = %account_id, error = %err, "the Antigravity run's sign-in could not be removed");
+        }
+    }
+
     /// The write-back of a launch that ended before its run was live (`CodexLeftover`): as
     /// [`Self::codex_run_ended`], with no run of its own to leave out.
     async fn write_back_codex_auth(&self, task_id: &TaskId, account_id: &AccountId) {
@@ -3704,6 +3898,7 @@ impl App {
         // A lost Codex run's processes are gone too: its refresh is kept and its file goes, as
         // after a run that ended (SPEC-503 CDX-006).
         self.codex_run_ended(task_id, attempt_id).await;
+        self.antigravity_run_ended(attempt_id).await;
         let mut reason = reason;
         if let Some(rt) = &runtime
             && let Ok(mut intent) = rt.intent.lock()
@@ -3848,6 +4043,7 @@ impl App {
         self.claude_code_run_ended(task_id, attempt_id, session_started, intent.is_none())
             .await;
         self.codex_run_ended(task_id, attempt_id).await;
+        self.antigravity_run_ended(attempt_id).await;
         // The snapshot is the run's once its watcher read the run's transcript to its end;
         // otherwise it is empty or partial, and the transcript is counted (SPEC-143 RDM-001).
         let read = runtime
@@ -5649,6 +5845,21 @@ impl App {
                     let _ = self.deps.store.set_attempt_session(&attempt.id, &id).await;
                     named = Some(id);
                 }
+                // An Antigravity run whose SessionStart named nothing: its CLI's last
+                // conversation of the worktree, written since the run began (SPEC-505 AGY-005).
+                if named.is_none()
+                    && session_id.is_none()
+                    && attempt.harness == Harness::Antigravity
+                    && let Some(id) = self.deps.harness.discover_antigravity_session(
+                        &antigravity_run_home(Path::new(&attempt.run_dir)).join(".gemini"),
+                        &self.antigravity_brain(&sandbox.id),
+                        &worktree,
+                        attempt.started_at,
+                    )
+                {
+                    let _ = self.deps.store.set_attempt_session(&attempt.id, &id).await;
+                    named = Some(id);
+                }
                 if let Some(id) = named
                     && session_id.as_deref() != Some(id.as_str())
                 {
@@ -6409,6 +6620,167 @@ fn ensure_sessions_link(dir: &std::os::fd::OwnedFd) -> AppResult<()> {
     }
 }
 
+/// What an Antigravity run says of the MCP servers it is given without: the HTTP servers that
+/// need a token (SPEC-505), `None` when there is none.
+fn tokened_servers_left_out(mcp: &[crate::ports::harness::McpAttachment]) -> Option<String> {
+    let names: Vec<&str> = mcp
+        .iter()
+        .filter_map(|server| match server {
+            crate::ports::harness::McpAttachment::Http {
+                name,
+                bearer: Some(_),
+                ..
+            } => Some(name.as_str()),
+            _ => None,
+        })
+        .collect();
+    (!names.is_empty()).then(|| {
+        format!(
+            "Antigravity runs without the MCP servers that need a token ({}): it cannot be \
+             given one without writing it to a file.",
+            names.join(", ")
+        )
+    })
+}
+
+/// The sandbox's Antigravity folder (SPEC-505 AGY-003).
+const ANTIGRAVITY_DIR: &str = "antigravity";
+/// The folder below it shared by the homes.
+const ANTIGRAVITY_SHARED_DIR: &str = "shared";
+/// The CLI's folders below `.gemini/antigravity-cli` that every run's home links to the shared
+/// ones.
+const ANTIGRAVITY_SHARED: [&str; 2] = ["brain", "conversations"];
+
+/// Writes a planned file of the server's own run directory (no agent wrote there yet), with its
+/// mode from its creation on.
+fn write_private(file: &crate::ports::session::PlannedFile) -> std::io::Result<()> {
+    use std::io::Write as _;
+    use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
+    let mut out = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(file.mode)
+        .custom_flags(nix::fcntl::OFlag::O_NOFOLLOW.bits())
+        .open(&file.path)?;
+    out.set_permissions(std::fs::Permissions::from_mode(file.mode))?;
+    out.write_all(&file.contents)
+}
+
+/// The Antigravity home of the run whose folder is `run_dir` (SPEC-505 AGY-003).
+fn antigravity_run_home(run_dir: &Path) -> PathBuf {
+    run_dir.join("antigravity-home")
+}
+
+/// The bind of a contained Antigravity run: its home's `.gemini`, in the server's run directory,
+/// over the sandbox home's `.gemini` (SPEC-505 AGY-003).
+fn antigravity_bind(run_home: &Path, sandbox_home: &Path) -> crate::ports::session::Bind {
+    crate::ports::session::Bind {
+        source: run_home.join(".gemini"),
+        dest: sandbox_home.join(".gemini"),
+        writable: true,
+    }
+}
+
+/// Where the Antigravity CLI keeps a Google sign-in in the run's home (1.5.10). The same path as
+/// `yulius_harness::launch::ANTIGRAVITY_TOKEN_FILE`, which the plan writes.
+fn antigravity_token_path(run_dir: &Path) -> PathBuf {
+    antigravity_run_home(run_dir).join(".gemini/antigravity-cli/antigravity-oauth-token")
+}
+
+/// The token file a launch wrote into its run's home, removed when the launch ends before its run
+/// is live (a failed spawn, a subscription removed just after it was chosen); emptied once the
+/// run is live, whose end takes it back (SPEC-505 AGY-008).
+struct AntigravityToken(Option<PathBuf>);
+
+impl Drop for AntigravityToken {
+    fn drop(&mut self) {
+        if let Some(path) = self.0.take() {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+}
+
+/// The sealed credential an Antigravity launch gave its run, in the run directory (out of the
+/// bound `.gemini`, SPEC-505 AGY-008).
+const ANTIGRAVITY_GIVEN: &str = "antigravity-given";
+
+/// The folders of the Antigravity token file below the run directory, and its name.
+const ANTIGRAVITY_TOKEN_DIRS: [&str; 3] = ["antigravity-home", ".gemini", "antigravity-cli"];
+const ANTIGRAVITY_TOKEN: &str = "antigravity-oauth-token";
+/// Largest Antigravity token file read back from a run, as
+/// `yulius_harness::login::ANTIGRAVITY_TOKEN_MAX_BYTES`.
+const ANTIGRAVITY_TOKEN_MAX: u64 = 64 * 1024;
+
+/// The folder holding the token file of the run whose folder is `run_dir`, opened without
+/// following a link (the run's agent could change what lies below its `.gemini`); `None` when it
+/// is missing.
+fn antigravity_token_dir(run_dir: &Path) -> AppResult<Option<std::os::fd::OwnedFd>> {
+    let names: Vec<&std::ffi::OsStr> = ANTIGRAVITY_TOKEN_DIRS
+        .iter()
+        .map(std::ffi::OsStr::new)
+        .collect();
+    match crate::files::open_dirs_below(run_dir, &names, false) {
+        Ok(dir) => Ok(Some(dir)),
+        // Missing, or a folder the run's agent made a link or a file: no token of the run's.
+        Err(nix::errno::Errno::ENOENT | nix::errno::Errno::ELOOP | nix::errno::Errno::ENOTDIR) => {
+            Ok(None)
+        }
+        Err(err) => Err(crate::files::errno_error(err)),
+    }
+}
+
+/// The token file an Antigravity run left in its home, read without following a link or waiting
+/// on a FIFO, bounded; `None` when there is none or it is no plain file within the bound
+/// (SPEC-505 AGY-008).
+fn read_antigravity_token(run_dir: &Path) -> AppResult<Option<Vec<u8>>> {
+    use std::io::Read as _;
+    let Some(dir) = antigravity_token_dir(run_dir)? else {
+        return Ok(None);
+    };
+    let flags = nix::fcntl::OFlag::O_RDONLY
+        | nix::fcntl::OFlag::O_NOFOLLOW
+        | nix::fcntl::OFlag::O_NONBLOCK
+        | nix::fcntl::OFlag::O_CLOEXEC;
+    let fd = match nix::fcntl::openat(
+        &dir,
+        ANTIGRAVITY_TOKEN,
+        flags,
+        nix::sys::stat::Mode::empty(),
+    ) {
+        Ok(fd) => fd,
+        Err(nix::errno::Errno::ENOENT | nix::errno::Errno::ELOOP) => return Ok(None),
+        Err(err) => return Err(crate::files::errno_error(err)),
+    };
+    let file = std::fs::File::from(fd);
+    if !file.metadata().map_err(AppError::internal)?.is_file() {
+        return Ok(None);
+    }
+    let mut bytes = Vec::new();
+    file.take(ANTIGRAVITY_TOKEN_MAX + 1)
+        .read_to_end(&mut bytes)
+        .map_err(AppError::internal)?;
+    if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > ANTIGRAVITY_TOKEN_MAX {
+        return Ok(None);
+    }
+    Ok(Some(bytes))
+}
+
+/// Removes the token file of the run whose folder is `run_dir`.
+fn remove_antigravity_token(run_dir: &Path) -> AppResult<()> {
+    let Some(dir) = antigravity_token_dir(run_dir)? else {
+        return Ok(());
+    };
+    match nix::unistd::unlinkat(
+        &dir,
+        ANTIGRAVITY_TOKEN,
+        nix::unistd::UnlinkatFlags::NoRemoveDir,
+    ) {
+        Ok(()) | Err(nix::errno::Errno::ENOENT) => Ok(()),
+        Err(err) => Err(crate::files::errno_error(err)),
+    }
+}
+
 /// Largest Codex `auth.json` read back from a run (SPEC-503 CDX-006).
 const CODEX_AUTH_MAX: u64 = 1024 * 1024;
 
@@ -6642,6 +7014,99 @@ fn interrupts_first(reason: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    /// SPEC-505 AGY-003: a contained Antigravity run binds the `.gemini` of its run's own home,
+    /// in the server's run directory, over the sandbox home's.
+    #[test]
+    fn an_antigravity_run_binds_its_own_home() {
+        let run_dir = std::path::Path::new("/data/runs/a1");
+        let bind = super::antigravity_bind(
+            &super::antigravity_run_home(run_dir),
+            std::path::Path::new("/data/sandboxes/s1/home"),
+        );
+        assert_eq!(
+            bind.source,
+            std::path::Path::new("/data/runs/a1/antigravity-home/.gemini")
+        );
+        assert_eq!(
+            bind.dest,
+            std::path::Path::new("/data/sandboxes/s1/home/.gemini")
+        );
+        assert!(bind.writable);
+    }
+
+    /// SPEC-505 AGY-008: a run's token file is read only when it is a plain file within its
+    /// bound, never through a link (its agent could change what lies below its `.gemini`) or a
+    /// FIFO, and removed without following one either.
+    #[test]
+    fn an_antigravity_token_is_read_without_following_links()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let run_dir = dir.path();
+        let token = super::antigravity_token_path(run_dir);
+        assert_eq!(super::read_antigravity_token(run_dir)?, None, "no home");
+        std::fs::create_dir_all(token.parent().ok_or("parent")?)?;
+        std::fs::write(&token, b"SYNTHETIC-token")?;
+        assert_eq!(
+            super::read_antigravity_token(run_dir)?.as_deref(),
+            Some(&b"SYNTHETIC-token"[..])
+        );
+        std::fs::write(&token, vec![b'x'; 64 * 1024 + 1])?;
+        assert_eq!(super::read_antigravity_token(run_dir)?, None, "oversize");
+        std::fs::remove_file(&token)?;
+        let elsewhere = dir.path().join("elsewhere");
+        std::fs::write(&elsewhere, b"SYNTHETIC-not-the-run's")?;
+        std::os::unix::fs::symlink(&elsewhere, &token)?;
+        assert_eq!(super::read_antigravity_token(run_dir)?, None, "a link");
+        super::remove_antigravity_token(run_dir)?;
+        assert!(elsewhere.exists(), "the link went, not its target");
+        nix::unistd::mkfifo(&token, nix::sys::stat::Mode::S_IRWXU)?;
+        assert_eq!(super::read_antigravity_token(run_dir)?, None, "a FIFO");
+        std::fs::remove_file(&token)?;
+        // A folder on the way that is a link is not followed.
+        let cli = token.parent().ok_or("parent")?;
+        std::fs::remove_dir_all(cli)?;
+        let other = dir.path().join("other");
+        std::fs::create_dir_all(&other)?;
+        std::fs::write(other.join("antigravity-oauth-token"), b"SYNTHETIC")?;
+        std::os::unix::fs::symlink(&other, cli)?;
+        assert_eq!(
+            super::read_antigravity_token(run_dir)?,
+            None,
+            "a linked folder"
+        );
+        Ok(())
+    }
+
+    /// SPEC-505: an Antigravity run names the MCP servers it is given without (those needing a
+    /// token), and says nothing when it is given them all.
+    #[test]
+    fn an_antigravity_run_names_the_servers_it_leaves_out() {
+        use crate::ports::harness::McpAttachment;
+        let http = |name: &str, bearer: Option<&str>| McpAttachment::Http {
+            name: name.into(),
+            url: "https://mcp.example.test".into(),
+            bearer: bearer.map(str::to_owned),
+        };
+        let stdio = McpAttachment::Stdio {
+            name: "local".into(),
+            command: "x".into(),
+            args: Vec::new(),
+            env: vec![("K".into(), "SYNTHETIC".into())],
+        };
+        assert_eq!(
+            super::tokened_servers_left_out(&[stdio.clone(), http("open", None)]),
+            None
+        );
+        let said = super::tokened_servers_left_out(&[
+            stdio,
+            http("linear", Some("SYNTHETIC")),
+            http("sentry", Some("SYNTHETIC")),
+        ])
+        .unwrap_or_default();
+        assert!(said.contains("(linear, sentry)"), "{said}");
+        assert!(!said.contains("SYNTHETIC"), "{said}");
+    }
+
     /// SPEC-482 FBK-008: the terminal says a change of the model once, at the launch that
     /// makes it: onto the fallback, and back to the task's own model after a run on it.
     #[test]

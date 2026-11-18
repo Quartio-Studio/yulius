@@ -113,6 +113,10 @@ pub struct HookInput {
     /// Model of the session, when the CLI reports it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    /// The error that ended the turn (`Stop` of an Antigravity turn its model API failed,
+    /// SPEC-505): such a turn ends and is never continued.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
     /// Why the session ends (`SessionEnd`, see [`session_end`]).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,

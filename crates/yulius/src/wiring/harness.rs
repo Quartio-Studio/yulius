@@ -400,6 +400,26 @@ impl HarnessPort for HarnessAdapter {
         paths::antigravity_transcript_path(brain, session_id)
     }
 
+    fn discover_antigravity_session(
+        &self,
+        gemini_dir: &Path,
+        brain: &Path,
+        worktree: &Path,
+        since: Timestamp,
+    ) -> Option<String> {
+        let id = paths::antigravity_last_conversation(gemini_dir, worktree)?;
+        let written = std::fs::symlink_metadata(paths::antigravity_transcript_path(brain, &id))
+            .ok()
+            .filter(std::fs::Metadata::is_file)?
+            .modified()
+            .ok()?;
+        (written >= to_system(since)).then_some(id)
+    }
+
+    fn antigravity_refreshed_credential(&self, fresh: &[u8], stored: &[u8]) -> Option<Vec<u8>> {
+        login::antigravity_refreshed_credential(fresh, stored)
+    }
+
     fn find_codex_rollout(
         &self,
         sessions_dir: &Path,
@@ -1085,6 +1105,51 @@ impl TranscriptWatch for Watch {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// SPEC-505 AGY-005: a run whose SessionStart named nothing takes the CLI's last
+    /// conversation of its worktree, only when its transcript was written since the run began.
+    #[test]
+    fn an_antigravity_conversation_is_found_only_when_written_since_the_run_began()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let gemini = dir.path().join("home/.gemini");
+        let brain = dir.path().join("shared/brain");
+        let worktree = dir.path().join("worktrees/t1");
+        std::fs::create_dir_all(gemini.join("antigravity-cli/cache"))?;
+        std::fs::write(
+            gemini.join("antigravity-cli/cache/last_conversations.json"),
+            format!(r#"{{"{}": "c-1"}}"#, worktree.display()),
+        )?;
+        let adapter = HarnessAdapter::new("/bin/yulius".into(), "http://127.0.0.1:1");
+        let since = Timestamp(
+            i64::try_from(
+                std::time::SystemTime::now()
+                    .duration_since(UNIX_EPOCH)?
+                    .as_millis(),
+            )? - 60_000,
+        );
+        assert_eq!(
+            adapter.discover_antigravity_session(&gemini, &brain, &worktree, since),
+            None,
+            "no transcript yet"
+        );
+        let transcript = paths::antigravity_transcript_path(&brain, "c-1");
+        std::fs::create_dir_all(transcript.parent().ok_or("parent")?)?;
+        std::fs::write(&transcript, b"{}\n")?;
+        assert_eq!(
+            adapter
+                .discover_antigravity_session(&gemini, &brain, &worktree, since)
+                .as_deref(),
+            Some("c-1")
+        );
+        let later = Timestamp(since.0 + 3_600_000);
+        assert_eq!(
+            adapter.discover_antigravity_session(&gemini, &brain, &worktree, later),
+            None,
+            "written before the run began"
+        );
+        Ok(())
+    }
 
     /// SPEC-471 CCQ-001: a run that resumed a session reads the lines recorded from its own
     /// start on, so an `enqueue` the run before left behind (its process ended with the prompt

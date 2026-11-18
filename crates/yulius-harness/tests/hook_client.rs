@@ -1075,8 +1075,8 @@ fn an_antigravity_wake_up_is_no_prompt() -> TestResult {
 }
 
 /// SPEC-505 AGY-006: a turn the model API ended with an error (agy's Stop with
-/// `terminationReason` `ERROR`, after its retries) reaches Yulius as the turn's end, but no
-/// answer continues it: agy would only try the failing model again.
+/// `terminationReason` `ERROR`, after its retries) reaches Yulius as the turn's end with its
+/// error, and no answer continues it: agy would only try the failing model again.
 #[test]
 fn an_antigravity_turn_ended_by_an_error_is_never_continued() -> TestResult {
     let (url, server) = serve_once(ok_response(
@@ -1100,6 +1100,8 @@ fn an_antigravity_turn_ended_by_an_error_is_never_continued() -> TestResult {
         request.line.trim_end(),
         "POST /hooks/antigravity/Stop HTTP/1.1"
     );
+    let sent: serde_json::Value = serde_json::from_slice(&request.body)?;
+    assert_eq!(sent["error"], "Error 503 UNAVAILABLE");
     Ok(())
 }
 

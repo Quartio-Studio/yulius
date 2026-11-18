@@ -100,9 +100,9 @@ selection bias of people picking one for certain work.
 | --- | --- | --- |
 | AGY-001 | `Harness::Antigravity` (`antigravity`, "Antigravity") and `Provider::Google` (`google`) exist; tasks, automations and accounts accept them once slice C opens the paths; other names stay 422. | domain tests; `tests/accounts.rs`, `tests/automations.rs` |
 | AGY-002 | An Antigravity run is `<agy> --model <model> --effort <effort> [--dangerously-skip-permissions] [--conversation <id>] [--prompt-interactive=<prompt>]`, model `gemini-4-carbon` and effort `high` when the task names none, with `AGY_CLI_DISABLE_AUTO_UPDATE=true`, the Yulius MCP as the `yulius mcp` stdio bridge in `config/mcp_config.json`, Yulius's hooks in `config/hooks.json`, `settings.json` written by Yulius (API key: `modelProvider: gemini`), the API key only in the secret environment, and no secret in argv or in a file other than the account's token file (0600). | `yulius-harness/tests/launch.rs` |
-| AGY-003 | Each (sandbox, account) has an Antigravity home `<sandbox>/antigravity/<account>` whose `.gemini/antigravity-cli/{brain,conversations}` link to the sandbox's shared ones, so a conversation resumes on any Antigravity account. A contained run binds that home's `.gemini` over `<sandbox home>/.gemini`, so the agent's shell keeps its `HOME`; an uncontained run gets `HOME=<antigravity home>`. Homes are opened without following links. | supervisor tests; `tests/antigravity.rs` |
+| AGY-003 | Each Antigravity run has its own home in its run directory, `<run>/antigravity-home`, whose `.gemini/antigravity-cli/{brain,conversations}` link to the sandbox's shared ones (`<sandbox>/antigravity/shared`, made through handles), so a conversation resumes on any Antigravity account. A contained run binds that `.gemini` (a path only the server wrote) over `<sandbox home>/.gemini`, so the agent's shell keeps its `HOME`; an uncontained run gets `HOME=<run>/antigravity-home`. | `supervisor.rs` `an_antigravity_run_binds_its_own_home`; `tests/antigravity.rs` `an_antigravity_task_runs_in_its_home` |
 | AGY-004 | The transcript is observed: typed prompts (`USER_INPUT` from `USER_EXPLICIT`), model responses (tokens per step, counted once per step, keyed by its `step_index` and `created_at`, model), agent work, and a reached limit (an `ERROR_MESSAGE` with a 429/`RESOURCE_EXHAUSTED` or a plan-quota text: a limit of the subscription). Unknown types are ignored, malformed lines counted. | `yulius-harness` unit tests on a transcript real agy 1.5.10 wrote |
-| AGY-005 | The session id is the `conversationId` of the run's `SessionStart` hook, else the worktree's entry in `cache/last_conversations.json` written after the run started. | `tests/antigravity.rs` |
+| AGY-005 | The session id is the `conversationId` of the run's `SessionStart` hook, else the worktree's entry in the run home's `cache/last_conversations.json` whose transcript was written after the run started. | `tests/antigravity.rs`; `wiring/harness.rs` `an_antigravity_conversation_is_found_only_when_written_since_the_run_began` |
 | AGY-006 | Antigravity hooks reach Yulius as Claude Code's (`yulius hook antigravity <event>`): `SessionStart` (briefing as an injected system message, session id), the first `PreInvocation` of a turn as `UserPromptSubmit`, `Stop` (gate, holds, `continue`) and `PreToolUse` of `run_command` as `Bash` (guard). The client translates the payload and the answer; a `PreToolUse` it cannot ask Yulius about answers `allow`, so a Yulius outage never denies the agent's tools. | `yulius-harness/tests/hook_client.rs`; `tests/agent_hooks.rs` |
 | AGY-007 | Yulius installs the pinned `agy` 1.5.10 into `<data>/antigravity-cli/1.5.10-<platform>` from the URL and sha512 in the source (Linux x86-64 and arm64), bounded, unpacked under a temporary name and renamed into place, one install at a time; runs and sign-ins start it by its absolute path, a contained run binds its directory read-only; without it a host `agy` is used, else the start fails with the reason. | `tests/antigravity_cli.rs` |
 | AGY-008 | An Antigravity account signs in from Subscriptions by Google (the CLI's own sign-in in a server-owned terminal with a temporary home; the token file it writes is sealed in the vault) or with a Gemini API key; credentials are never returned, logged or audited. A run writes back a changed token file of its own account after it ends. | `tests/accounts.rs`; `tests/antigravity.rs` |
@@ -124,9 +124,9 @@ Six pull requests, each merged into `dev` on green before the next begins.
 - [x] Slice A: review findings fixed and the slice delivered
 - [x] Slice B: Yulius installs the pinned agy 1.5.10 into its data directory
 - [x] Slice B: review findings fixed and the slice delivered
-- [ ] Slice C1: an Antigravity task runs in the supervisor (homes, session id, hooks, write-back, rotation)
-- [ ] Slice C1: the fake agent speaks Antigravity and integration tests cover an Antigravity task
-- [ ] Slice C1: review findings fixed and the slice delivered
+- [x] Slice C1: an Antigravity task runs in the supervisor (homes, session id, hooks, write-back, rotation)
+- [x] Slice C1: the fake agent speaks Antigravity and integration tests cover an Antigravity task
+- [x] Slice C1: review findings fixed and the slice delivered
 - [ ] Slice C2: Antigravity subscriptions sign in with Google or a Gemini API key
 - [ ] Slice C2: Antigravity limits, google_connected and moves within Antigravity subscriptions
 - [ ] Slice C2: review findings fixed and the slice delivered
@@ -189,10 +189,13 @@ Six pull requests, each merged into `dev` on green before the next begins.
   agent for life).
 - **Gemini 4 Carbon at high effort** is the default of an Antigravity task, by the person's
   request; passed on every launch, since `agy` otherwise picks the account's saved model.
-- **The home is `$HOME`.** `agy` reads only `$HOME/.gemini`; a contained run binds the account's
-  `.gemini` over the sandbox home's, so the agent's tools keep the sandbox home (git, gh, ssh). An
-  uncontained run (development hosts without bubblewrap) sets `HOME` to the Antigravity home
-  instead: its shell then sees that `HOME` (a known limit of uncontained runs).
+- **The home is `$HOME`, one per run.** `agy` reads only `$HOME/.gemini`; each run has its own
+  home in its run directory (the review of slice C1: a home in the sandbox tree could be swapped
+  for a link by another run of the sandbox before bwrap binds it), and a contained run binds its
+  `.gemini` over the sandbox home's, so the agent's tools keep the sandbox home (git, gh, ssh).
+  The conversations live in the sandbox, shared by every run. An uncontained run (development
+  hosts without bubblewrap) sets `HOME` to its Antigravity home instead: its shell then sees
+  that `HOME` (a known limit of uncontained runs).
 - **Hook translation in the client** (inside the sandbox): the server keeps one Claude-shaped hook
   contract; the client maps Antigravity's events and answers. Its fail-open answer for
   `PreToolUse` is `allow`, because `agy` denies a tool on an empty answer, and the hook command
@@ -202,10 +205,11 @@ Six pull requests, each merged into `dev` on green before the next begins.
   the turn the CLI opens itself after a background command is the agent's work, as Claude Code's
   wake-ups are, so it neither undoes an achieved goal nor counts as a prompt.
 - **Which Stop is a turn's end.** A Stop after the model API failed (`terminationReason`
-  `ERROR`) reaches Yulius as the turn's end, but no answer continues it (agy would only try the
-  failing model again); the transcript's limit steps move the task. A Stop after a prompt Yulius
-  refused (`TERMINAL_CUSTOM_HOOK`) asks nothing, so nothing continues the refused prompt; its
-  `USER_INPUT` step stays in the conversation, as agy wrote it before the hook ran. A Stop with
+  `ERROR`) or after a prompt Yulius refused (`TERMINAL_CUSTOM_HOOK`) asks Yulius nothing, so no
+  answer continues it (Claude Code runs no Stop hook for either). The transcript's error step
+  ends such a turn as an interrupt does: a limit's moves the task, any other leaves it waiting
+  (slice C1). A refused prompt's `USER_INPUT` step stays in the conversation, as agy wrote it
+  before the hook ran. A Stop with
   `fullyIdle` false is a turn's end like Claude Code's with background agents still running: the
   CLI's own wake-up later is agent work.
 - **A resume gets no new briefing.** The CLI fires no `SessionStart` on `--conversation`; the
@@ -226,7 +230,12 @@ Six pull requests, each merged into `dev` on green before the next begins.
 - **The Google sign-in credential is the CLI's own token file**, captured from a temporary home
   after the CLI's sign-in, opaque to Yulius (its format is not documented, and no live account was
   available to read one); written back after a run when it changed, as the account's own file.
-  Known limit: not verified live; an agent can spoil its own account's file (as with Codex).
+  Known limit: not verified live, and the file cannot be checked (unlike Codex's `auth.json`,
+  whose write-back keeps only a refresh of the same sign-in): the agent of a run can replace its
+  account's stored sign-in with any file it writes there, spoiling it until a person signs in
+  again. Only that run's agent reaches the file (it lies in the run's own home, not in the
+  sandbox), and a sign-in a person made meanwhile, or another run's refresh, is never replaced:
+  a run's file counts only as a refresh of the credential its launch gave it.
 - **No usage windows** for Antigravity subscriptions in this delivery: the only source is
   `/usage` of a signed-in CLI, whose output was not seen live. A limit is learnt from the
   transcript, with an unknown reset (the pool's default wait).
@@ -323,3 +332,79 @@ Six pull requests, each merged into `dev` on green before the next begins.
   `../escape` or an absolute path are refused with nothing left behind, "an Antigravity start",
   the module doc and the by-hand test's `AGY_CLI_DISABLE_AUTO_UPDATE=true`. The CI security job
   did not run (Vidoc refused the key, exit 78): unrun, not passed.
+
+### Slice C1 (Antigravity tasks)
+
+- `harness: antigravity` is accepted for tasks and automations; a model that is not `gemini-*`
+  is refused (422), and a task without a Google account says "no Antigravity account is
+  connected" (409) (`task_delete::tasks_run_claude_code_or_codex`).
+- The supervisor makes `<sandbox>/antigravity/<account>` through folder handles, its
+  `antigravity-cli/{brain,conversations}` linking (absolutely) to `<sandbox>/antigravity/shared`,
+  writes the plan's files there through handles, provides the CLI (installed before the launch
+  lock, its folder bound read-only), binds the account's `.gemini` over the sandbox home's in a
+  contained run or sets `HOME` in an uncontained one, gives a goal task its request as its first
+  message, records `gemini-4-carbon` as the run's model when the task names none, learns the
+  conversation from SessionStart (else from `last_conversations.json` written since the run
+  began), writes back a changed token file and removes it once no run of the account is left,
+  and says which token-needing MCP servers a run goes without.
+- From the slice A review's notes: a non-limit error step ends the turn as an interrupt does (a
+  refused prompt, a model API failure after the retries), and an `ERROR` Stop asks Yulius
+  nothing again (`an_agy_error_that_is_no_limit_ends_the_turn`,
+  `an_antigravity_turn_ended_by_an_error_is_never_continued`). Steps' whole-second `created_at`
+  needs no change: a typed prompt reaches Yulius through its prompt hook, which counts.
+- The fake agent speaks Antigravity (`--transcript-kind antigravity`): numbered steps, the
+  typed prompt's step before its prompt hook, hooks sent and answered through
+  `yulius hook antigravity` in the CLI's shapes.
+- Tests: `antigravity::*` (runs in its home with its conversation from SessionStart; moves to
+  another Google account at a quota by resuming the conversation; a goal task's first message;
+  a refreshed sign-in kept and removed; a failed turn leaves the task waiting): 5 passed, and
+  5 of 5 times under `--stress-count 5`. `yulius-app`, `yulius-harness`, `yulius-domain` and
+  `fake-agent`: 1438 passed. The `yulius` integration files `antigravity`, `codex*`,
+  `agent_hooks`, `accounts`, `task_delete`, `automations`, `supervision`, `pool_supervision` and
+  `first_message`: 186 passed. Clippy clean.
+- Mutation testing (`scripts/dev mutants`, on 46771a073): `mutants: 153 listed, 73 caught,
+  0 missed, 0 timed out, 80 unviable, 0 not reached (bound 30 min, took 1327 s)`.
+- Review round 1 (yulius-reviewer, head 46771a073, request changes; all own code), answered:
+  1. Blocker, the bind source in the sandbox tree: each run's home is now
+     `<run>/antigravity-home` in the server's run directory (`an_antigravity_run_binds_its_own_home`;
+     `an_antigravity_task_runs_in_its_home` asserts the home is not below the sandbox).
+  2. A goal task got `/goal` typed: `follows_goal` is Claude Code's only; the goal test asserts no
+     goal markers and Gemini as the shown model.
+  3. Each attempt's error step ended the turn: only the refusal step (`SYSTEM_SDK`) ends one; a
+     turn its model API failed ends with its `ERROR` Stop, sent with `error`, which the server
+     settles without a gate or nudge (`HookInput.error`; `agent_hooks::a_stop_of_a_failed_turn_is_never_blocked`,
+     `only_a_refused_agy_prompt_ends_the_turn_by_itself`, `an_antigravity_turn_ended_by_an_error_is_never_continued`,
+     `a_failed_antigravity_turn_leaves_its_task_waiting` through the fake's `/apierror`).
+  4. Token write-back: per run now, so no launch overwrites another run's refresh and nothing is
+     shared; a launch that ends before live removes its file (`AntigravityToken`); the file is
+     removed only once the account holds it (stored or unchanged).
+  5. Tests added: the AGY-005 fallback and its time guard, the token read (link, FIFO, oversize,
+     linked folder), the bind, the uncontained `HOME` (its length in the fake's report).
+  6. The task view shows `gemini-4-carbon` at `high` for an Antigravity task without a model.
+  7. `docs/api.md` names `antigravity`. 8. Gone with the per-run home (links made anew each run).
+  9. The spec and ADR say what the opaque token file allows. 10. A limit is read only from
+  `SYSTEM` steps. 11. The automation tool takes `antigravity`. 12–13. Fixed (`first_message_only`,
+  `model_of_its_harness`). 14. The two places point at each other.
+- After round 1: `yulius-app`, `yulius-harness`, `yulius-domain`, `yulius-contracts`, `fake-agent`
+  1494 passed; `yulius --lib` 651; the `yulius` integration files above with `mcp*` 197.
+- Review round 2 (head 3d1e91699, request changes; own code), answered:
+  1. A run's file could replace a newer sign-in: the launch keeps the sealed credential it gave
+     the run beside its home (`<run>/antigravity-given`, out of the bound `.gemini`); the run's
+     end takes only a refresh of that, and swaps only while the account still holds it
+     (`a_run_never_replaces_a_newer_antigravity_sign_in`: a person's new sign-in during the run
+     stays, with the run's file refreshed or not).
+  2. Tests: the supervisor's fallback branch (`an_antigravity_conversation_is_found_without_its_session_start`),
+     a link at `<sandbox>/antigravity/shared` failing the start with nothing spawned or made
+     through it (`a_linked_antigravity_folder_fails_the_start`), and a contained run seeing its
+     home's hooks at the sandbox home's (`a_contained_antigravity_run_sees_its_home_at_the_sandbox_homes`;
+     skipped here, bwrap cannot create namespaces in this sandbox).
+  3. Only an Antigravity run's Stop skips the gate for its `error`
+     (`agent_hooks::only_antigravity_skips_the_gate_for_a_failed_turn`).
+- After round 2: `antigravity::*` 9 tests, 3 of 3 under `--stress-count 3`; `yulius-app`,
+  `yulius-harness`, `yulius-contracts` 891 passed; `yulius` integration files `antigravity`,
+  `codex*`, `agent_hooks`, `accounts`, `task_delete`, `supervision`, `pool_supervision` 156
+  passed. Clippy clean.
+- Review round 3 (head 22a92e712): approve. Its notes, fixed after: a contained plan's bind of
+  the run's `.gemini` is asserted on the plan itself, where any host runs it
+  (`a_contained_antigravity_plan_binds_the_runs_home`, a recording session host); an
+  unreadable `antigravity-given` is logged. `antigravity::*` now 10 tests, all passed.

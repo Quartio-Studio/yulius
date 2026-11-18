@@ -903,3 +903,36 @@ fn an_antigravity_run_counts_its_own_window() -> Result<(), Box<dyn std::error::
     assert!(yulius_harness::recount::count_antigravity_run(&missing, None, None)?.is_none());
     Ok(())
 }
+
+/// SPEC-505 AGY-004, AGY-006: a prompt Yulius refused ends its turn as an interrupt does (its
+/// error step comes from `SYSTEM_SDK`, whatever it says). A model API error step is no turn's
+/// end: agy writes one per attempt and goes on (its Stop ends a turn that failed for good).
+#[test]
+fn only_a_refused_agy_prompt_ends_the_turn_by_itself() {
+    let step = |source: &str, error: &str| {
+        serde_json::json!({
+            "step_index": 1, "source": source, "type": "ERROR_MESSAGE", "status": "DONE",
+            "error": error, "created_at": "2026-11-17T17:09:21Z"
+        })
+        .to_string()
+    };
+    for error in [
+        "Paused by Yulius: no subscription has capacity",
+        "Individual quota reached",
+    ] {
+        assert!(
+            matches!(
+                antigravity::observe_line(&step("SYSTEM_SDK", error)).as_slice(),
+                [Observed::TurnInterrupted { at: Some(_) }]
+            ),
+            "{error}"
+        );
+    }
+    assert!(
+        antigravity::observe_line(&step(
+            "SYSTEM",
+            "API error (attempt 1): Error 503, Status: UNAVAILABLE"
+        ))
+        .is_empty()
+    );
+}
