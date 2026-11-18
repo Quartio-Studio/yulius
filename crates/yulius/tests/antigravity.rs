@@ -389,6 +389,182 @@ fn an_antigravity_task_at_its_limit_moves_to_another_google_account() -> TestRes
     Ok(())
 }
 
+/// The notices said so far on a watch of the task's terminal.
+fn notices(watch: &mut tokio::sync::broadcast::Receiver<yulius_app::hub::HubFrame>) -> Vec<String> {
+    let mut said = Vec::new();
+    while let Ok(frame) = watch.try_recv() {
+        if let yulius_app::hub::HubFrame::Notice(text) = frame {
+            said.push(text);
+        }
+    }
+    said
+}
+
+/// SPEC-505 AGY-009, AC-2, with SPEC-447 (MOV-001, MOV-003, MOV-006): an Antigravity task moves
+/// only between Antigravity subscriptions. A person's move to the Claude subscription is refused
+/// naming why; removing its subscription moves it to the other Google one in the same
+/// conversation, never to the Claude one that has room; removing that one too leaves it waiting,
+/// asking for an Antigravity subscription. Its notices never speak of Claude.
+#[test]
+fn an_antigravity_task_moves_only_between_antigravity_subscriptions() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = temp()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let agent = FakeAgentOptions {
+            transcript: true,
+            hooks: true,
+            ..FakeAgentOptions::default()
+        };
+        let app = build_hooked(&data, &fake, agent).await?;
+        let (sandbox, user) = seed_records(&app).await?;
+        let ctx = yulius_app::auth::AuthContext {
+            user: app.deps.store.user(&user).await?.ok_or("user")?,
+            csrf_token: None,
+            session_hash: None,
+            token: None,
+        };
+        add_google_account(&app, "a-google-1", &api_key()?).await?;
+        add_google_account(&app, "a-google-2", &api_key()?).await?;
+        seed_repo(&data, &sandbox)?;
+        let id = new_agy_task(&app, &sandbox, &user, "Antigravity moves", TaskMode::Prompt).await?;
+        wait_for("the banner", Duration::from_secs(30), || {
+            screen_contains(&app, &id, "FAKE-AGENT READY")
+        })
+        .await?;
+        wait_for("the conversation", Duration::from_secs(30), || async {
+            app.deps
+                .store
+                .attempts(&id)
+                .await
+                .is_ok_and(|a| a.first().is_some_and(|a| a.provider_session_id.is_some()))
+        })
+        .await?;
+        let first = app.deps.store.attempts(&id).await?;
+        let on = first[0].account_id.clone().ok_or("the first account")?;
+        let other = if on.as_str() == "a-google-1" {
+            "a-google-2"
+        } else {
+            "a-google-1"
+        };
+
+        let refused = app
+            .switch_task(
+                &ctx,
+                id.as_str(),
+                &yulius_contracts::api::tasks::ContinueTask {
+                    account_id: Some("a-claude".into()),
+                },
+            )
+            .await;
+        match refused {
+            Err(yulius_app::error::AppError::Capacity(text)) => {
+                assert!(
+                    text.contains("is not an Antigravity subscription"),
+                    "{text}"
+                );
+            }
+            other => return Err(format!("expected a refusal, got {other:?}").into()),
+        }
+        assert_eq!(
+            app.deps.store.attempts(&id).await?.len(),
+            1,
+            "nothing moved"
+        );
+
+        let mut watch = app.runtime(&id).hub.watch();
+        app.delete_account(&ctx, on.as_str()).await?;
+        let mut said = Vec::new();
+        wait_for(
+            "the move to the other Antigravity subscription",
+            Duration::from_secs(60),
+            || {
+                said.extend(notices(&mut watch));
+                let app = app.clone();
+                let id = id.clone();
+                async move {
+                    let attempts = app.deps.store.attempts(&id).await.unwrap_or_default();
+                    attempts.len() == 2 && !attempts[1].state.is_terminal()
+                }
+            },
+        )
+        .await?;
+        let attempts = app.deps.store.attempts(&id).await?;
+        assert_eq!(
+            attempts[1].account_id.as_ref().map(AccountId::as_str),
+            Some(other)
+        );
+        assert_eq!(
+            attempts[1].harness,
+            Harness::Antigravity,
+            "the task keeps its harness"
+        );
+        assert_eq!(
+            attempts[1].provider_session_id,
+            attempts[0].provider_session_id
+        );
+        wait_for("the removal's notice", Duration::from_secs(10), || {
+            said.extend(notices(&mut watch));
+            let done = said
+                .iter()
+                .any(|n| n.contains("was removed: this session continues on Antigravity"));
+            async move { done }
+        })
+        .await?;
+
+        app.delete_account(&ctx, other).await?;
+        wait_for(
+            "the wait and its request",
+            Duration::from_secs(60),
+            || async {
+                task(&app, &id)
+                    .await
+                    .is_ok_and(|t| t.status == TaskStatus::WaitingCapacity)
+                    && app
+                        .deps
+                        .store
+                        .task_needs_you(&id)
+                        .await
+                        .is_ok_and(|r| r.is_some())
+            },
+        )
+        .await?;
+        let runs = app.deps.store.attempts(&id).await?;
+        assert!(
+            runs.iter()
+                .all(|a| a.account_id.as_ref().map(AccountId::as_str) != Some("a-claude")),
+            "never on the Claude subscription: {runs:?}"
+        );
+        let request = app
+            .deps
+            .store
+            .task_needs_you(&id)
+            .await?
+            .ok_or("Needs you")?;
+        assert!(
+            request.action.contains("Antigravity subscription"),
+            "{}",
+            request.action
+        );
+        wait_for("the stranded notice", Duration::from_secs(10), || {
+            said.extend(notices(&mut watch));
+            let done = said
+                .iter()
+                .any(|n| n.contains("No Antigravity subscription is left"));
+            async move { done }
+        })
+        .await?;
+        assert!(
+            !said.iter().any(|n| n.contains("Claude")),
+            "an Antigravity task's notices never speak of Claude: {said:?}"
+        );
+        support::stop_tasks(&app, &[&id]).await?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
 /// SPEC-505: an Antigravity goal task gets its whole request as its first message, never a
 /// `/goal` Yulius types (the CLI's own `/goal` is its own).
 #[test]

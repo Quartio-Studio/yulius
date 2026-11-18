@@ -76,5 +76,12 @@ provider switching and session translation stay removed (SPEC-002 ADR-06).
   first message and is settled by its turns.
 - An uncontained run's shell sees the Antigravity home as `HOME`.
 - A sandbox MCP server that needs a bearer token is not offered to Antigravity runs.
+- A Google sign-in is the whole `agy` TUI on the host (it has no sign-in-only command), stopped
+  5 s after its token file appears. Once signed in, it could run a shell command an
+  administrator types into it, which an instance administrator can already do with an MCP
+  server's Test (SPEC-218); unlike ADR-0256's sign-ins it is not a login-only command. A sign-in
+  that asks more after writing the file (a billing or project choice, not seen without a live
+  account) is cut then; the run's own TUI asks it again, and the run's write-back keeps what it
+  stores.
 - A resumed conversation gets no new briefing (the CLI runs no `SessionStart` then); its first
   start's briefing stays in its history.

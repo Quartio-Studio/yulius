@@ -127,8 +127,8 @@ Six pull requests, each merged into `dev` on green before the next begins.
 - [x] Slice C1: an Antigravity task runs in the supervisor (homes, session id, hooks, write-back, rotation)
 - [x] Slice C1: the fake agent speaks Antigravity and integration tests cover an Antigravity task
 - [x] Slice C1: review findings fixed and the slice delivered
-- [ ] Slice C2: Antigravity subscriptions sign in with Google or a Gemini API key
-- [ ] Slice C2: Antigravity limits, google_connected and moves within Antigravity subscriptions
+- [x] Slice C2: Antigravity subscriptions sign in with Google or a Gemini API key
+- [x] Slice C2: Antigravity limits, google_connected and moves within Antigravity subscriptions
 - [ ] Slice C2: review findings fixed and the slice delivered
 - [ ] Slice D: the UI offers Antigravity with Gemini 4 Carbon (High) by default
 - [ ] Slice D: SPEC-001/002/003 and the documents say Antigravity is accepted
@@ -408,3 +408,62 @@ Six pull requests, each merged into `dev` on green before the next begins.
   the run's `.gemini` is asserted on the plan itself, where any host runs it
   (`a_contained_antigravity_plan_binds_the_runs_home`, a recording session host); an
   unreadable `antigravity-given` is logged. `antigravity::*` now 10 tests, all passed.
+
+### Slice C2 (Antigravity subscriptions)
+
+- `POST /api/admin/accounts` takes `provider: google`: with `api_key` (a Gemini API key) the
+  account is `ok` at once, sealed as `{"kind":"gemini_api_key"}` and audited `via=api_key`
+  (`accounts::an_antigravity_account_can_be_added_with_a_gemini_api_key`); without one the
+  Antigravity CLI's own sign-in runs in a temporary home with `AGY_CLI_DISABLE_AUTO_UPDATE=true`,
+  and the token file it writes in `.gemini/antigravity-cli` is sealed as
+  `{"kind":"google_sign_in"}` (`accounts::an_antigravity_google_sign_in_seals_the_token_file`).
+  `{"provider":"google"}` left the refusal list.
+- `/api/me` says `instance.antigravity_connected` for a usable Google account
+  (`claude_gate::a_google_account_alone_is_antigravity_connected`); the CLI installs in the
+  background at start only when a Google subscription exists
+  (`codex_cli::the_clis_are_installed_at_start_only_for_their_subscriptions`, `warm_agent_clis`).
+- What a task says names its provider with its article (`account_gate::a_kind`: "a Claude", "a
+  Codex", "an Antigravity"): a person's move to the Claude subscription is refused ("… is not an
+  Antigravity subscription"), a removal moves the task to the other Google account in the same
+  conversation, and with none left it waits under Needs you ("Sign an Antigravity subscription
+  in again …"), its notices never naming Claude
+  (`antigravity::an_antigravity_task_moves_only_between_antigravity_subscriptions`). The limit
+  move was proven in C1 (`an_antigravity_task_at_its_limit_moves_to_another_google_account`).
+- Tests: `antigravity::*` 11 tests, 3 of 3 under `--stress-count 3`; `yulius-app`,
+  `yulius-harness`, `yulius-contracts` 892 passed; `yulius` integration files `antigravity`,
+  `antigravity_cli`, `codex`, `codex_cli`, `accounts`, `account_token`, `claude_gate`, `moves`,
+  `rotation`, `cockpit` 165 passed. Clippy clean.
+- Mutation testing (`scripts/dev mutants`, on d005f833a): `mutants: 80 listed, 49 caught,
+  0 missed, 0 timed out, 31 unviable, 0 not reached (bound 30 min, took 1081 s)`.
+- Review round 1 (yulius-reviewer, head d005f833a, request changes; own code unless said),
+  answered:
+  1. Major, the Google arm of `holds_credential` held by no test: the real TUI never exits, so
+     `accounts::an_antigravity_sign_in_ends_once_its_token_file_is_written` runs on after the
+     file (the fake host's `after` output) and asserts the stop, `ok`, the seal and the wipe.
+  2. Major, the provided CLI's path for a sign-in: `an_antigravity_sign_in_runs_the_provided_cli`.
+     Both tests fail with their arm mutated (checked by hand).
+  3. The installs before a sign-in and after an API-key account:
+     `the_antigravity_cli_installs_for_a_new_google_account` (an install that fails with no host
+     `agy` is 502 and leaves no account; an API key starts the install). The background install's
+     match is exhaustive.
+  4. The sign-in's token file is read as a run's is (`read_antigravity_token_in`: folders opened
+     below the sign-in's folder without following links, `O_NOFOLLOW|O_NONBLOCK`, `fstat`,
+     64 KiB): `an_antigravity_sign_in_without_its_own_token_file_fails` (no file, and the CLI
+     folder made a link out of the home, both `error` with nothing sealed).
+  5. "Connect an Antigravity account first" (`open_credential` uses `a_kind`).
+  6. ADR-0361 and `docs/architecture.md` say the Google sign-in is the whole TUI on the host,
+     stopped 5 s after its token file appears, and why that is acceptable; a sign-in that asks
+     more after the file is not seen without a live account (ADR Consequences).
+  7. Pre-existing, reachable from this slice: a waiting task's `waits_for_account` now follows
+     every agent's accounts (`Harness::ALL`;
+     `claude_gate::a_waiting_antigravity_task_is_shown_again_when_a_google_account_is_connected`).
+  8. Nits: the no-update variable and the token file's folders and name are
+     `yulius_domain::agent_cli::antigravity` constants used by the harness, the supervisor and
+     the sign-in (`the_antigravity_token_file_is_the_domains`); the article test sits below the
+     module's imports. Kept: `/api/me` asks the store once per agent (three small reads, as
+     before for two). The Plan line's `google_connected` stays as worded, matching its step; the
+     field is `antigravity_connected`.
+- After round 1: `yulius-app`, `yulius-harness`, `yulius-contracts`, `yulius-domain` 1462
+  passed; `yulius` integration files `antigravity*`, `codex*`, `accounts`, `account_token`,
+  `claude_gate`, `moves`, `rotation`, `cockpit`, `subscription_moves`, `pool_supervision`,
+  `supervision` 233 passed. Clippy clean.

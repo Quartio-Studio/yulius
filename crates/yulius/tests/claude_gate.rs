@@ -293,6 +293,60 @@ async fn a_codex_account_alone_is_codex_connected_not_claude_connected() -> Test
     Ok(())
 }
 
+/// SPEC-505: a usable Google account makes `/api/me` say `antigravity_connected`, and only it.
+#[tokio::test]
+async fn a_google_account_alone_is_antigravity_connected() -> TestResult {
+    let (h, alice) = world().await?;
+    let me = call(&h.router, Method::GET, "/api/me", None, &alice).await?;
+    assert_eq!(
+        me.body["instance"]["antigravity_connected"],
+        json!(false),
+        "{:?}",
+        me.body
+    );
+    h.store
+        .insert_account(&AccountRecord {
+            id: AccountId::parse("a-google")?,
+            provider: Provider::Google,
+            label: "Antigravity".into(),
+            credential: Some(
+                h.app
+                    .deps
+                    .crypto
+                    .seal(br#"{"kind":"gemini_api_key","api_key":"SYNTHETIC-0123456789abcdef"}"#)?,
+            ),
+            status: AccountStatus::Ok,
+            usage_json: None,
+            last_error: None,
+            email: None,
+            email_checked_at: None,
+            email_typed: false,
+            created_at: Timestamp(1),
+            updated_at: Timestamp(1),
+        })
+        .await?;
+    let me = call(&h.router, Method::GET, "/api/me", None, &alice).await?;
+    assert_eq!(
+        me.body["instance"]["antigravity_connected"],
+        json!(true),
+        "{:?}",
+        me.body
+    );
+    assert_eq!(
+        me.body["instance"]["claude_connected"],
+        json!(false),
+        "{:?}",
+        me.body
+    );
+    assert_eq!(
+        me.body["instance"]["codex_connected"],
+        json!(false),
+        "{:?}",
+        me.body
+    );
+    Ok(())
+}
+
 /// CLA-004: a start by machinery that finds no account waits `waiting_capacity` and tells its
 /// viewers that no Claude account is connected and where to connect one; with an account that is
 /// only out of capacity it says that instead.
@@ -375,5 +429,72 @@ async fn a_waiting_task_is_shown_again_when_an_account_is_connected() -> TestRes
     }
     assert_eq!(shown, Some(false), "shown again, waiting for capacity now");
     assert_eq!(status(&h, "t-wait").await?, TaskStatus::WaitingCapacity);
+    Ok(())
+}
+
+/// SPEC-505 (review round 1 of slice C2): a paused Antigravity task's `waits_for_account` follows
+/// the Google accounts as a Claude task's follows the Claude ones: once a Google account is
+/// connected (with no capacity left, so it keeps waiting) the next resume pass shows it again.
+#[tokio::test]
+async fn a_waiting_antigravity_task_is_shown_again_when_a_google_account_is_connected() -> TestResult
+{
+    let (h, _) = world().await?;
+    support::seed_task_of(
+        &h,
+        "t-agy",
+        "s1",
+        "u-alice",
+        TaskStatus::Queued,
+        None,
+        "do things",
+        yulius_domain::harness::Harness::Antigravity,
+    )
+    .await?;
+    let id = TaskId::parse("t-agy")?;
+    h.app.pause_task(&id, PauseKind::Start, None, None).await?;
+    h.app.resume_round().await;
+    let summary = h
+        .app
+        .task_summary(&h.store.task(&id).await?.ok_or("task")?)
+        .await?;
+    assert!(summary.waits_for_account, "{summary:?}");
+    let mut events = h.app.events.subscribe();
+    let resets = h.app.now().plus_millis(6 * 24 * 3_600_000).0;
+    let usage = json!({
+        "primary": {"used_percent": 100.0, "window_minutes": 300, "resets_at": resets},
+        "observed_at": null,
+    });
+    h.store
+        .insert_account(&AccountRecord {
+            id: AccountId::parse("a-google-full")?,
+            provider: Provider::Google,
+            label: "Antigravity (full)".into(),
+            credential: Some(
+                h.app
+                    .deps
+                    .crypto
+                    .seal(br#"{"kind":"gemini_api_key","api_key":"SYNTHETIC-0123456789abcdef"}"#)?,
+            ),
+            status: AccountStatus::Limited,
+            usage_json: Some(usage.to_string()),
+            last_error: None,
+            email: None,
+            email_checked_at: None,
+            email_typed: false,
+            created_at: Timestamp(1),
+            updated_at: Timestamp(1),
+        })
+        .await?;
+    h.app.resume_round().await;
+    let mut shown = None;
+    while let Ok(envelope) = events.try_recv() {
+        if let yulius_contracts::events::UiEvent::TaskUpdated { task } = envelope.event
+            && task.id == "t-agy"
+        {
+            shown = Some(task.waits_for_account);
+        }
+    }
+    assert_eq!(shown, Some(false), "shown again, waiting for capacity now");
+    assert_eq!(status(&h, "t-agy").await?, TaskStatus::WaitingCapacity);
     Ok(())
 }

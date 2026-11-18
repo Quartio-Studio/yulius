@@ -4,6 +4,15 @@ Notable changes, newest first. Per-change detail lives in the merged pull reques
 evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-architecture.md)
 (sections 14 and 15).
 
+## 2026-11-18
+
+- Antigravity, slice C2 (SPEC-505 pull request 4, task #487): an administrator adds an
+  Antigravity subscription (`provider: google`) with a Gemini API key or by the Antigravity CLI's
+  own Google sign-in in a server-owned terminal, whose token file is sealed. `/api/me` says
+  `antigravity_connected`; the CLI installs at start when a Google subscription exists. An
+  Antigravity task moves only between Antigravity subscriptions, and its notices and Needs you
+  name Antigravity ("an Antigravity subscription"). The UI offers it in the next slice.
+
 ## 2026-11-17
 
 - Every sandbox gets the new skills at a server start, not at its next task's start (SPEC-507,
