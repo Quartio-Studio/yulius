@@ -1,6 +1,6 @@
 import { test } from '@e2e-dev/web';
 import { expect } from 'e2e';
-import { axeViolations, failOnPageErrors, firstShown, mock, touchTask } from './support.ts';
+import { axeViolations, eventsConnected, failOnPageErrors, firstShown, mock, touchTask } from './support.ts';
 
 failOnPageErrors();
 
@@ -160,6 +160,8 @@ test('the composer asks for Claude only while no Antigravity account is usable e
 
   await app.open(mock('/s/studio', '&claude=0'));
   await firstShown(browser.locator('.claude-connect'));
+  // The announcement reaches a page that hears announcements.
+  await eventsConnected(browser);
   await browser.evaluate(() => (window as unknown as Mocked).__yuliusMock.connectAntigravity());
   await expect(browser.locator('.claude-connect')).toHaveCount(0);
 });
