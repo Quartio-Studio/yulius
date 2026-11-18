@@ -59,6 +59,8 @@ pub struct AnalyticsTask {
     pub title: String,
     /// Current harness.
     pub harness: Harness,
+    /// Whether the harness was drawn at creation (SPEC-505 RND-003).
+    pub harness_drawn: bool,
     /// Status.
     pub status: TaskStatus,
     /// Activity while running.
@@ -514,6 +516,7 @@ pub fn task_rows(data: &AnalyticsData, now: Timestamp) -> Vec<TaskRow> {
                     .map_or(t.harness, |r| r.harness)
                     .as_str()
                     .to_owned(),
+                harness_choice: if t.harness_drawn { "random" } else { "chosen" }.into(),
                 harnesses: harnesses.join(";"),
                 models: models.join(";"),
                 accounts: accounts.join(";"),
@@ -573,6 +576,7 @@ pub fn tasks_csv(rows: &[TaskRow]) -> String {
             csv_text(&r.status),
             csv_text(&r.origin),
             csv_text(&r.harness),
+            csv_text(&r.harness_choice),
             csv_text(&r.harnesses),
             csv_text(&r.models),
             csv_text(&r.accounts),
@@ -869,6 +873,7 @@ mod tests {
                 number: 1,
                 title: name.into(),
                 harness: Harness::ClaudeCode,
+                harness_drawn: false,
                 status: TaskStatus::Closed,
                 activity: None,
                 origin: TaskOrigin::Ui,

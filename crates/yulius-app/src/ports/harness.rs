@@ -463,6 +463,37 @@ pub trait HarnessPort: Send + Sync {
     /// The transcript of the Antigravity conversation `session_id` in the conversations folder
     /// `brain` (SPEC-505 AGY-004).
     fn antigravity_transcript(&self, brain: &Path, session_id: &str) -> PathBuf;
+    /// The conversation the Antigravity CLI last ran in `worktree` with the `.gemini` folder
+    /// `gemini_dir`, when its transcript in `brain` was written at or after `since` (SPEC-505
+    /// AGY-005: for a run whose SessionStart hook named none).
+    fn discover_antigravity_session(
+        &self,
+        gemini_dir: &Path,
+        brain: &Path,
+        worktree: &Path,
+        since: Timestamp,
+    ) -> Option<String> {
+        let _ = (gemini_dir, brain, worktree, since);
+        None
+    }
+    /// The credential to keep after an Antigravity run of a Google sign-in left `fresh` as its
+    /// token file, `stored` being the account's (SPEC-505 AGY-008); `None` keeps the stored one.
+    fn antigravity_refreshed_credential(&self, fresh: &[u8], stored: &[u8]) -> Option<Vec<u8>> {
+        let _ = (fresh, stored);
+        None
+    }
+    /// The credential of an Antigravity account made of a Gemini API key, `None` for text that
+    /// cannot be one (SPEC-505 AGY-008).
+    fn antigravity_api_key_credential(&self, key: &str) -> Option<Vec<u8>> {
+        let _ = key;
+        None
+    }
+    /// The credential of an Antigravity account made of the token file its Google sign-in wrote,
+    /// `None` for an empty or oversized one (SPEC-505 AGY-008).
+    fn antigravity_sign_in_credential(&self, token_file: &[u8]) -> Option<Vec<u8>> {
+        let _ = token_file;
+        None
+    }
     /// The rollout of the Codex session `session_id` below `sessions_dir` (SPEC-503 CDX-003).
     ///
     /// # Errors
@@ -513,4 +544,33 @@ pub trait HarnessPort: Send + Sync {
         root: &Path,
         skills_dir: &Path,
     ) -> AppResult<()>;
+    /// [`HarnessPort::install_skills`], writing only what differs from the installed copies
+    /// (SPEC-507 SKR-001): the skills installed again and the managed copies removed, both empty
+    /// when every copy matched.
+    ///
+    /// # Errors
+    /// As [`HarnessPort::install_skills`].
+    fn refresh_skills(
+        &self,
+        skills: &[(String, PathBuf)],
+        root: &Path,
+        skills_dir: &Path,
+    ) -> AppResult<SkillsRefresh>;
+}
+
+/// What [`HarnessPort::refresh_skills`] changed in a skills folder.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SkillsRefresh {
+    /// Skills whose copy was missing or differed, installed again.
+    pub changed: Vec<String>,
+    /// Managed copies removed because their skill left the set.
+    pub removed: Vec<String>,
+}
+
+impl SkillsRefresh {
+    /// Whether nothing was written.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.changed.is_empty() && self.removed.is_empty()
+    }
 }

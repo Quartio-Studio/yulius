@@ -235,6 +235,30 @@ async fn an_approved_request_creates_the_task_in_the_other_sandbox() -> TestResu
     Ok(())
 }
 
+/// SPEC-505 RND-001 (slice E review round 2): a request names the agent of its task; the person
+/// sees it among the options, and the approved task runs it, chosen.
+#[tokio::test]
+async fn a_request_names_the_agent_of_its_task() -> TestResult {
+    let w = world(60_000).await?;
+    let call_ = ask(
+        &w,
+        json!({"sandbox": "website", "prompt": "Port the docs search", "harness": "antigravity", "prepared": true}),
+    )?;
+    let listed = waiting(&w, 1).await?;
+    let request = &listed[0];
+    assert_eq!(request["options"]["harness"], "antigravity", "{request}");
+    let id = request["id"].as_str().ok_or("id")?;
+    let approved = answer(&w, &w.alice, "s1", id, true).await?;
+    assert_eq!(approved.status, StatusCode::OK, "{:?}", approved.body);
+    let outcome = call_.await??;
+    let id = TaskId::parse(outcome["task"]["task_id"].as_str().ok_or("task_id")?)?;
+    let task = w.h.store.task(&id).await?.ok_or("task")?;
+    assert_eq!(task.harness, yulius_domain::harness::Harness::Antigravity);
+    let summary = w.h.app.task_summary(&task).await?;
+    assert_eq!(summary.harness_choice, "chosen");
+    Ok(())
+}
+
 /// AC-XSR-2: a declined request creates nothing and the call says so.
 #[tokio::test]
 async fn a_declined_request_creates_nothing() -> TestResult {

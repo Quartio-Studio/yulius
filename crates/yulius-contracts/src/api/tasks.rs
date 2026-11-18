@@ -40,8 +40,11 @@ pub struct TaskSummary {
     pub number: u32,
     /// Title.
     pub title: String,
-    /// Harness wire name (`claude` or `codex`, SPEC-503).
+    /// Harness wire name (`claude`, `codex` or `antigravity`; SPEC-503, SPEC-505).
     pub harness: String,
+    /// `random` when the harness was drawn at creation, else `chosen` (SPEC-505 RND-001).
+    #[serde(default = "chosen")]
+    pub harness_choice: String,
     /// Status wire name (domain `TaskStatus::as_str`).
     pub status: String,
     /// `working`, `waiting`, `needs_attention`, `done` (the goal is achieved and the turn ended,
@@ -321,7 +324,11 @@ fn default_mode() -> String {
 }
 
 fn default_harness() -> String {
-    "claude".into()
+    "auto".into()
+}
+
+fn chosen() -> String {
+    "chosen".into()
 }
 
 /// `POST /api/sandboxes/{sid}/tasks`.
@@ -329,7 +336,9 @@ fn default_harness() -> String {
 pub struct CreateTask {
     /// Initial prompt.
     pub prompt: String,
-    /// Harness: `claude` (the default) or `codex` (SPEC-503).
+    /// Harness: `claude`, `codex` (SPEC-503) or `antigravity` (SPEC-505); `auto` (the default)
+    /// draws Claude Code or Antigravity among those with a usable subscription, unless `model`
+    /// implies one (SPEC-505 RND-001).
     #[serde(default = "default_harness")]
     pub harness: String,
     /// Workflow to seed steps/instructions; `auto` lets Jev choose one or none (TSK-015).

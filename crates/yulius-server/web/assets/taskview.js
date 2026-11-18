@@ -7,7 +7,7 @@ import { openRuleEditor, ruleText } from './ruleeditor.js';
 import { openStartMenu, renderStartChip, startKind, waitingStartChip, SUPERTASK_HELP, WHEN_I_DECIDE_HELP } from './startchoice.js';
 import { createTerminalView } from './terminal.js';
 import { createWatchView } from './watchview.js';
-import { taskInfo, isLive, allows, taskActions, otherOwner, endedMessage, agentOf, limitCause, pausedLine, pauseLine, planGrowth, resetAround, shellsLine, heldBy, supertaskLine, preparedLine } from './status.js';
+import { taskInfo, isLive, allows, taskActions, otherOwner, endedMessage, agentOf, cliOf, limitCause, pausedLine, pauseLine, planGrowth, resetAround, shellsLine, heldBy, supertaskLine, preparedLine } from './status.js';
 import { heldPromptCard, splitCard, supertaskCard, checkRequest, intakeStatus } from './intake.js';
 import { createMarkdownEditor } from './mdeditor.js';
 import { SUBMIT_KEYS, SUBMIT_ARIA } from './shortcuts.js';
@@ -22,7 +22,8 @@ import { findModel, findEffort, modelFields, modelMenuItems, effortMenuItems, MO
 import { randomQuote } from './quotes.js';
 import { brandSmoke } from './brandfx.js';
 import { BRAND } from './brand.js';
-import { claudeConnected, codexConnected, connectClaudeStep } from './claude.js';
+import { antigravityConnected, claudeConnected, codexConnected, connectClaudeStep } from './claude.js';
+import { aName, agentOfHarness } from './agents.js';
 import { isPhone } from './theme.js';
 import { draftFor, saveDraft, clearDraft, attachToDraft, onDraftChange } from './drafts.js';
 
@@ -101,12 +102,12 @@ function readOnlyText(sandbox) {
 function emptyTerminalMessage(task) {
   switch (task.status) {
     case 'queued': return { title: 'Queued', text: 'The agent starts as soon as a session slot is free.', busy: true };
-    case 'starting': return { title: `Starting ${agentOf(task) === 'Codex' ? 'Codex' : 'Claude Code'}…`, text: 'The session appears here in a moment.', busy: true };
+    case 'starting': return { title: `Starting ${cliOf(task)}…`, text: 'The session appears here in a moment.', busy: true };
     case 'switching': return { title: 'Continuing…', text: 'The session picks up where it left off in a moment.', busy: true };
     case 'waiting_capacity': return task.waits_for_account
       ? { title: `Waiting for ${agentOf(task)}`, text: `${pausedLine(task)}. It starts by itself once an instance administrator connects one or signs one in again.` }
       : { title: 'Paused', text: `${pausedLine(task)}. It continues by itself.` };
-    case 'running': return { title: `${agentOf(task) === 'Codex' ? 'Codex' : 'Claude Code'} is starting…`, text: 'The session appears here in a moment.', busy: true };
+    case 'running': return { title: `${cliOf(task)} is starting…`, text: 'The session appears here in a moment.', busy: true };
     case 'chained': {
       const after = task.after;
       if (after && after.blocked) return { title: 'Waiting for you', text: after.blocked };
@@ -835,7 +836,7 @@ export function mountTaskView(ctx, sandbox, task) {
     progress.hidden = !total;
     statusEl.dataset.tone = info.tone;
     // Waiting for an account of its agent to be connected has no reset to wait for (SPEC-246).
-    const reset = current.status !== 'waiting_capacity' ? '' : current.waits_for_account ? `waits for a ${agentOf(current)} account` : resetAround(current.resumes_at);
+    const reset = current.status !== 'waiting_capacity' ? '' : current.waits_for_account ? `waits for ${aName(agentOfHarness(current.harness))} account` : resetAround(current.resumes_at);
     statusEl.title = [info.label, reset, info.detail].filter(Boolean).join(' · ');
     setChildren(statusEl,
       statusMark(info),
@@ -1333,8 +1334,8 @@ export function mountComposer(ctx, sandbox) {
     startButton.setAttribute('aria-label', startAction());
     startButton.title = write ? `${startAction()} (${SUBMIT_KEYS})` : 'Requires write access';
     const found = findModel(modelId);
-    setChildren(modelChip, h('span', { class: 'sr-only' }, 'Model: '), h('span', { class: 'chip-label' }, found ? found.model.name : 'Default model'), icon('down', { size: 12 }));
-    modelChip.title = found ? `${found.provider.name} · ${found.model.name}` : 'Model: default, Opus 5.5';
+    setChildren(modelChip, h('span', { class: 'sr-only' }, 'Model: '), h('span', { class: 'chip-label' }, found ? found.model.name : 'Random agent'), icon('down', { size: 12 }));
+    modelChip.title = found ? `${found.provider.name} · ${found.model.name}` : 'Agent: drawn for each task, Claude Code (Opus 5.5) or Antigravity (Gemini 4 Carbon)';
     // A model without effort levels (Haiku) hides the effort choice and sends none.
     const effortless = Boolean(found && found.model.effort === false);
     effortChip.hidden = effortless;
@@ -1536,8 +1537,9 @@ export function mountComposer(ctx, sandbox) {
     el.classList.toggle('gated', preparing);
     if (!write) items.push(h('div', { class: 'banner' }, icon('lock'), h('span', { class: 'banner-text' }, 'Read-only (GitHub: read). You can watch tasks but not start them.')));
     // A task needs an agent: without a Claude account the composer says so first (SPEC-246).
-    // Codex tasks start on a Codex account alone (SPEC-503 CDX-014): no Claude step then.
-    else if (!connected && !codexConnected(me) && !preparing) items.push(connectClaudeStep(me, 'Tasks start once one is usable.'));
+    // Codex and Antigravity tasks start on their own accounts alone (SPEC-503 CDX-014,
+    // SPEC-505): no Claude step then.
+    else if (!connected && !codexConnected(me) && !antigravityConnected(me) && !preparing) items.push(connectClaudeStep(me, 'Tasks start once one is usable.'));
     setChildren(banner, items);
     startButton.disabled = !write;
     prompt.disabled = !write;
@@ -1788,7 +1790,9 @@ export function mountComposer(ctx, sandbox) {
       }),
       keep: () => busyRun(autoStage(), async () => opened(await createTask(bodyFor(value)))),
       close: () => clearSplit(),
-      codex: bodyFor(value).harness === 'codex',
+      // A task of another agent runs without a Claude account (SPEC-503, SPEC-505), and so does
+      // a Random one while Antigravity is usable: it is drawn among the usable agents (RND-001).
+      codex: Boolean(bodyFor(value).harness) || (!findModel(modelId) && antigravityConnected(ctx.store.state.me)),
     });
     setChildren(intakeSlot, split.el);
     const calm = window.matchMedia('(prefers-reduced-motion: reduce)').matches;

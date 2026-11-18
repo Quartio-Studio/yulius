@@ -60,6 +60,377 @@ fn by_name<'a>(list: &'a Value, name: &str) -> Option<&'a Value> {
     list.as_array()?.iter().find(|s| s["name"] == name)
 }
 
+fn inode(path: &Path) -> std::io::Result<u64> {
+    use std::os::unix::fs::MetadataExt as _;
+    Ok(std::fs::symlink_metadata(path)?.ino())
+}
+
+/// SPEC-507 AC-1, AC-2, AC-4, AC-5: a server start with a changed skill refreshes the copy in a
+/// sandbox whose task is running, rewrites nothing else, leaves the agent's own skill alone, skips
+/// a sandbox without a home, logs a sandbox whose skills folder is behind a link and goes on, and
+/// audits what it did; a switched skill reaches the home at once.
+#[tokio::test]
+async fn a_server_start_refreshes_every_sandboxs_skills() -> TestResult {
+    use yulius_app::ports::store::{AuditStore, TaskStore};
+    use yulius_app::skills::refresh::REFRESHED_AUDIT;
+    use yulius_domain::task::TaskStatus;
+    let w = world(false).await?;
+    add_sandbox(&w.h, "s2", "homeless", 20100).await?;
+    let data = w.h.app.config.data_dir.clone();
+    w.h.app.install_skill_catalog().await?;
+
+    // The build before had other rules in om-fix; studio's task started under it and runs on.
+    let catalog_fix = data.join("skills/open-mercato/om-fix/SKILL.md");
+    let new_rules = std::fs::read_to_string(&catalog_fix)?;
+    std::fs::write(&catalog_fix, "---\nname: om-fix\n---\nthe old rules\n")?;
+    support::seed_task(&w.h, "t-run", "s1", "u-alice", TaskStatus::Running, None).await?;
+    support::seed_live_attempt(&w.h, "t-run", "token-run").await?;
+    let studio =
+        w.h.store
+            .sandbox(&SandboxId::parse("s1")?)
+            .await?
+            .ok_or("s1")?;
+    let sandbox_dir = data.join("sandboxes/s1");
+    let skills = sandbox_dir.join("home/.claude/skills");
+    std::fs::create_dir_all(sandbox_dir.join("home"))?;
+    let set = w.h.app.skills_for_run(&studio).await?;
+    w.h.app
+        .deps
+        .harness
+        .install_skills(&set, &sandbox_dir, Path::new("home/.claude/skills"))?;
+    assert!(std::fs::read_to_string(skills.join("om-fix/SKILL.md"))?.contains("the old rules"));
+    write(&skills.join("personal/SKILL.md"), "the agent's own")?;
+    let review_before = inode(&skills.join("om-code-review"))?;
+    // linked, made before studio so its failure comes first: the agent made `.claude` a link to
+    // a host folder.
+    w.h.store
+        .insert_sandbox(&yulius_app::model::SandboxRecord {
+            id: SandboxId::parse("s3")?,
+            slug: "linked".into(),
+            repo_name: "linked".into(),
+            port_base: 20200,
+            created_at: yulius_domain::time::Timestamp(0),
+            ..studio.clone()
+        })
+        .await?;
+    let listed: Vec<String> =
+        w.h.store
+            .sandboxes()
+            .await?
+            .into_iter()
+            .map(|s| s.slug)
+            .collect();
+    assert_eq!(
+        listed.first().map(String::as_str),
+        Some("linked"),
+        "{listed:?}"
+    );
+    let outside = tempfile::tempdir()?;
+    std::fs::create_dir_all(data.join("sandboxes/s3/home"))?;
+    std::os::unix::fs::symlink(outside.path(), data.join("sandboxes/s3/home/.claude"))?;
+
+    // The new build starts: its catalog has the new om-fix.
+    w.h.app.skills_at_start().await;
+    assert_eq!(std::fs::read_to_string(&catalog_fix)?, new_rules);
+    assert_eq!(
+        std::fs::read_to_string(skills.join("om-fix/SKILL.md"))?,
+        new_rules,
+        "the running task's sandbox has the new skill"
+    );
+    assert_eq!(
+        inode(&skills.join("om-code-review"))?,
+        review_before,
+        "a matching copy is not rewritten"
+    );
+    assert_eq!(
+        std::fs::read_to_string(skills.join("personal/SKILL.md"))?,
+        "the agent's own"
+    );
+    assert!(
+        !data.join("sandboxes/s2/home").exists(),
+        "a sandbox with no home waits for its first run"
+    );
+    assert_eq!(
+        std::fs::read_dir(outside.path())?.count(),
+        0,
+        "nothing written through a link"
+    );
+    let task =
+        w.h.store
+            .task(&yulius_domain::ids::TaskId::parse("t-run")?)
+            .await?
+            .ok_or("task")?;
+    assert_eq!(task.status, TaskStatus::Running);
+    let audited =
+        w.h.store
+            .audit_details("studio", REFRESHED_AUDIT, 10)
+            .await?;
+    assert_eq!(audited.len(), 1, "{audited:?}");
+    assert!(
+        audited[0].starts_with("server start at ") && audited[0].ends_with("; installed om-fix"),
+        "{audited:?}"
+    );
+    assert!(
+        w.h.store
+            .audit_details("linked", REFRESHED_AUDIT, 10)
+            .await?
+            .is_empty()
+    );
+
+    // A start with nothing changed writes nothing.
+    w.h.app.skills_at_start().await;
+    assert_eq!(
+        w.h.store
+            .audit_details("studio", REFRESHED_AUDIT, 10)
+            .await?
+            .len(),
+        1
+    );
+
+    // A switched skill reaches the home at once (SKR-003).
+    let off = call(
+        &w.h.router,
+        Method::PUT,
+        "/api/sandboxes/s1/skills/om-fix",
+        Some(json!({"enabled": false})),
+        &w.alice,
+    )
+    .await?;
+    assert_eq!(off.status, StatusCode::NO_CONTENT);
+    assert!(
+        !skills.join("om-fix").exists(),
+        "switched off: the copy is gone"
+    );
+    let on = call(
+        &w.h.router,
+        Method::PUT,
+        "/api/sandboxes/s1/skills/om-fix",
+        Some(json!({"enabled": true})),
+        &w.alice,
+    )
+    .await?;
+    assert_eq!(on.status, StatusCode::NO_CONTENT);
+    assert_eq!(
+        std::fs::read_to_string(skills.join("om-fix/SKILL.md"))?,
+        new_rules
+    );
+    let audited =
+        w.h.store
+            .audit_details("studio", REFRESHED_AUDIT, 10)
+            .await?;
+    assert_eq!(audited.len(), 3, "{audited:?}");
+    assert!(
+        audited[1].starts_with("skill switched at ") && audited[1].ends_with("; removed om-fix")
+    );
+    assert!(audited[0].ends_with("; installed om-fix"), "{audited:?}");
+    Ok(())
+}
+
+/// Waits until `done` holds, at most 30 s (a condition, not a sleep: it is looked at again
+/// every 50 ms).
+async fn until<F, Fut>(what: &str, mut done: F) -> Result<(), Error>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = bool>,
+{
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while !done().await {
+        if std::time::Instant::now() > deadline {
+            return Err(format!("timed out waiting for {what}").into());
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    Ok(())
+}
+
+/// SPEC-507 review round 2: a repository `SKILL.md` an agent swaps for a FIFO after the catalog
+/// checked it, right before the open, never holds the server's start.
+#[tokio::test]
+async fn a_skill_md_swapped_for_a_fifo_never_holds_the_start() -> TestResult {
+    use std::os::unix::fs::OpenOptionsExt as _;
+    let w = world(false).await?;
+    let data = w.h.app.config.data_dir.clone();
+    let repo = data.join("sandboxes/s1/repo");
+    let md = repo.join(".agents/skills/alpha/SKILL.md");
+    write(&md, "---\nname: alpha\n---\n")?;
+    std::fs::create_dir_all(data.join("sandboxes/s1/home"))?;
+    let fifo = md.clone();
+    yulius_app::race::on(yulius_app::race::Point::SkillFileOpen, &repo, move || {
+        let _ = std::fs::remove_file(&fifo);
+        let _ = nix::unistd::mkfifo(&fifo, nix::sys::stat::Mode::S_IRWXU);
+    });
+    let started = tokio::time::timeout(
+        std::time::Duration::from_secs(20),
+        w.h.app.skills_at_start(),
+    )
+    .await;
+    // A reader that a failing build left waiting is let go.
+    let _ = std::fs::OpenOptions::new()
+        .write(true)
+        .custom_flags(nix::libc::O_NONBLOCK)
+        .open(&md);
+    assert!(started.is_ok(), "the start waited on a FIFO");
+    assert!(
+        data.join("sandboxes/s1/home/.claude/skills/om-fix/SKILL.md")
+            .is_file(),
+        "the sandbox got its skills all the same"
+    );
+    Ok(())
+}
+
+/// SPEC-507 review round 2: a `SKILL.md` that is a link to a file in its own skill is listed and
+/// shown, as before the catalog opened files without following links.
+#[tokio::test]
+async fn a_linked_skill_md_inside_its_skill_is_shown() -> TestResult {
+    let w = world(false).await?;
+    let data = w.h.app.config.data_dir.clone();
+    let skill = data.join("sandboxes/s1/repo/.agents/skills/beta");
+    write(
+        &skill.join("real.md"),
+        "---\nname: beta\ndescription: Linked\n---\nBody\n",
+    )?;
+    std::os::unix::fs::symlink("real.md", skill.join("SKILL.md"))?;
+    let shown = call(
+        &w.h.router,
+        Method::GET,
+        "/api/sandboxes/s1/skills/beta",
+        None,
+        &w.bob,
+    )
+    .await?;
+    assert_eq!(shown.status, StatusCode::OK, "{:?}", shown.body);
+    assert!(
+        shown.body["content"]
+            .as_str()
+            .is_some_and(|c| c.contains("Body"))
+    );
+    Ok(())
+}
+
+/// SPEC-507 SKR-003, SKR-004 (review round 2): a switch whose request is dropped while its
+/// refresh waits for the launch lock still refreshes the home and audits it.
+#[tokio::test]
+async fn a_switch_dropped_while_it_waits_still_refreshes_the_home() -> TestResult {
+    use yulius_app::ports::store::AuditStore;
+    use yulius_app::race::{Point, on};
+    use yulius_app::skills::refresh::REFRESHED_AUDIT;
+    let w = world(false).await?;
+    let data = w.h.app.config.data_dir.clone();
+    let sandbox_dir = data.join("sandboxes/s1");
+    let skills = sandbox_dir.join("home/.claude/skills");
+    std::fs::create_dir_all(sandbox_dir.join("home"))?;
+    w.h.app.skills_at_start().await;
+    assert!(skills.join("om-fix/SKILL.md").is_file());
+
+    // A start's refresh holds the launch lock.
+    let (held_tx, held_rx) = std::sync::mpsc::channel();
+    let (go_tx, go_rx) = std::sync::mpsc::channel::<()>();
+    on(Point::SkillsRefreshLocked, &sandbox_dir, move || {
+        let _ = held_tx.send(());
+        let _ = go_rx.recv_timeout(std::time::Duration::from_secs(60));
+    });
+    let start = {
+        let app = w.h.app.clone();
+        tokio::spawn(async move { app.skills_at_start().await })
+    };
+    tokio::task::spawn_blocking(move || held_rx.recv_timeout(std::time::Duration::from_secs(60)))
+        .await?
+        .map_err(|_| "the start's refresh never took the lock")?;
+
+    // The switch's refresh waits for it; its request is dropped meanwhile.
+    let (queued_tx, queued_rx) = std::sync::mpsc::channel();
+    on(Point::SkillsRefreshQueued, &sandbox_dir, move || {
+        let _ = queued_tx.send(());
+    });
+    let switch = {
+        let (router, alice) = (w.h.router.clone(), w.alice.clone());
+        tokio::spawn(async move {
+            call(
+                &router,
+                Method::PUT,
+                "/api/sandboxes/s1/skills/om-fix",
+                Some(json!({"enabled": false})),
+                &alice,
+            )
+            .await
+            .map(|r| r.status)
+            .map_err(|e| e.to_string())
+        })
+    };
+    tokio::task::spawn_blocking(move || queued_rx.recv_timeout(std::time::Duration::from_secs(60)))
+        .await?
+        .map_err(|_| "the switch's refresh never queued")?;
+    switch.abort();
+    go_tx.send(())?;
+    start.await?;
+    let store = w.h.store.clone();
+    until("the switch's refresh", || {
+        let store = store.clone();
+        let gone = !skills.join("om-fix").exists();
+        async move {
+            gone && store
+                .audit_details("studio", REFRESHED_AUDIT, 10)
+                .await
+                .is_ok_and(|d| {
+                    d.iter()
+                        .any(|e| e.starts_with("skill switched") && e.ends_with("removed om-fix"))
+                })
+        }
+    })
+    .await?;
+    Ok(())
+}
+
+/// SPEC-507 SKR-003 (review round 3): two switches in a row leave the home as the last one
+/// stored, whichever refresh runs last: a refresh reads the skills under the launch lock.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_home_follows_the_last_of_two_switches() -> TestResult {
+    use yulius_app::race::{Point, on};
+    let w = world(false).await?;
+    let data = w.h.app.config.data_dir.clone();
+    let sandbox_dir = data.join("sandboxes/s1");
+    let skills = sandbox_dir.join("home/.claude/skills");
+    std::fs::create_dir_all(sandbox_dir.join("home"))?;
+    w.h.app.skills_at_start().await;
+    assert!(skills.join("om-fix/SKILL.md").is_file());
+    let switch = |enabled: bool| {
+        let (router, alice) = (w.h.router.clone(), w.alice.clone());
+        tokio::spawn(async move {
+            call(
+                &router,
+                Method::PUT,
+                "/api/sandboxes/s1/skills/om-fix",
+                Some(json!({ "enabled": enabled })),
+                &alice,
+            )
+            .await
+            .map(|r| r.status)
+            .map_err(|e| e.to_string())
+        })
+    };
+
+    // The first switch (off) waits before its refresh asks for the lock.
+    let (held_tx, held_rx) = std::sync::mpsc::channel();
+    let (go_tx, go_rx) = std::sync::mpsc::channel::<()>();
+    on(Point::SkillsRefreshQueued, &sandbox_dir, move || {
+        let _ = held_tx.send(());
+        let _ = go_rx.recv_timeout(std::time::Duration::from_secs(60));
+    });
+    let first = switch(false);
+    tokio::task::spawn_blocking(move || held_rx.recv_timeout(std::time::Duration::from_secs(60)))
+        .await?
+        .map_err(|_| "the first switch's refresh never queued")?;
+    // The second (on) is stored and refreshed meanwhile.
+    assert_eq!(switch(true).await??, StatusCode::NO_CONTENT);
+    go_tx.send(())?;
+    assert_eq!(first.await??, StatusCode::NO_CONTENT);
+    assert!(
+        skills.join("om-fix/SKILL.md").is_file(),
+        "om-fix is on, as the last switch stored"
+    );
+    Ok(())
+}
+
 #[tokio::test]
 async fn skill_catalog_sources_toggles_and_run_set() -> TestResult {
     let w = world(false).await?;

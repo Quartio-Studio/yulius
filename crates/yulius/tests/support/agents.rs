@@ -18,6 +18,8 @@ use yulius_domain::time::Timestamp;
 pub struct FakeAgentOptions {
     /// Counts the Codex CLI installs asked of the harness (`provide_codex(true)`, SPEC-503).
     pub codex_installs: Option<std::sync::Arc<std::sync::atomic::AtomicUsize>>,
+    /// Count the Antigravity CLI installs asked for (`provide_antigravity(true)`).
+    pub antigravity_installs: Option<std::sync::Arc<std::sync::atomic::AtomicUsize>>,
     /// Write a Claude-shaped transcript at the path Yulius watches.
     pub transcript: bool,
     /// Report a usage limit after this many turns.
@@ -189,11 +191,15 @@ pub struct FakeAgentOptions {
     /// The Codex CLI the harness says it provides (SPEC-503 CLI-002); its program is recorded in
     /// `fake-launch.txt`, the fake agent runs instead.
     pub provided_codex: Option<yulius_app::ports::harness::ProvidedCli>,
+    /// The Antigravity CLI the harness provides (SPEC-505 AGY-007); `None`: the host's `agy`.
+    pub provided_antigravity: Option<yulius_app::ports::harness::ProvidedCli>,
     /// The Codex CLI cannot be provided, for this reason (SPEC-503 CLI-002).
     pub codex_unavailable: Option<String>,
     /// Each answer about the Codex CLI waits for a permit of this gate (a test watches the task
     /// before its start goes on).
     pub codex_gate: Option<std::sync::Arc<tokio::sync::Semaphore>>,
+    /// The same for the Antigravity CLI.
+    pub antigravity_gate: Option<std::sync::Arc<tokio::sync::Semaphore>>,
 }
 
 /// See the module docs.
@@ -236,6 +242,20 @@ impl HarnessPort for FakeAgentHarness {
         })
     }
 
+    fn provide_antigravity(&self, install: bool) -> yulius_app::ports::harness::ProvideFuture<'_> {
+        if let (true, Some(count)) = (install, &self.options.antigravity_installs) {
+            count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+        let provided = self.options.provided_antigravity.clone();
+        let gate = self.options.antigravity_gate.clone();
+        Box::pin(async move {
+            if let Some(gate) = gate {
+                let _permit = gate.acquire_owned().await;
+            }
+            Ok(provided)
+        })
+    }
+
     fn plan(&self, launch: &HarnessLaunch) -> AppResult<HarnessPlan> {
         if self
             .options
@@ -268,10 +288,11 @@ impl HarnessPort for FakeAgentHarness {
         };
         let resumed_session = resumed.is_some();
         let codex = launch.harness == Harness::Codex;
+        let antigravity = launch.harness == Harness::Antigravity;
         // Codex names its own session: a new fake one takes the run directory's name (the
         // attempt id), which Yulius learns from the rollout's `session_meta` or the hook.
         let session = plan.session_id.clone().or(resumed).unwrap_or_else(|| {
-            if codex {
+            if codex || antigravity {
                 launch
                     .run_dir
                     .file_name()
@@ -303,6 +324,17 @@ impl HarnessPort for FakeAgentHarness {
                 argv.extend(["--transcript".into(), path.to_string_lossy().into_owned()]);
             }
             argv.extend(["--transcript-kind".into(), "codex".into()]);
+        } else if let (true, Some(home)) = (antigravity, &launch.antigravity_home) {
+            // The conversation lives in the sandbox's shared brain, reached through the home's
+            // `brain` link as the CLI reaches it (SPEC-505 AGY-003).
+            let path = yulius_harness::paths::antigravity_transcript_path(
+                &home.join(".gemini/antigravity-cli/brain"),
+                &session,
+            );
+            if self.options.transcript {
+                argv.extend(["--transcript".into(), path.to_string_lossy().into_owned()]);
+            }
+            argv.extend(["--transcript-kind".into(), "antigravity".into()]);
         } else if self.options.transcript {
             let path =
                 self.inner
@@ -476,7 +508,9 @@ impl HarnessPort for FakeAgentHarness {
         {
             argv.extend(["--prompt".into(), prompt.clone()]);
         }
-        if self.options.hooks && !self.options.no_session_start {
+        // The Antigravity CLI runs no SessionStart for a resumed conversation (SPEC-505).
+        if self.options.hooks && !self.options.no_session_start && !(antigravity && resumed_session)
+        {
             argv.push("--session-start".into());
         }
         // A continued resume (CLAUDE_CODE_RESUME_INTERRUPTED_TURN) opens with the turn Claude
@@ -570,6 +604,25 @@ impl HarnessPort for FakeAgentHarness {
         self.inner
             .recount(harness, sandbox_home, worktree, session_id, from, until)
     }
+    fn discover_antigravity_session(
+        &self,
+        gemini_dir: &Path,
+        brain: &Path,
+        worktree: &Path,
+        since: Timestamp,
+    ) -> Option<String> {
+        self.inner
+            .discover_antigravity_session(gemini_dir, brain, worktree, since)
+    }
+    fn antigravity_api_key_credential(&self, key: &str) -> Option<Vec<u8>> {
+        self.inner.antigravity_api_key_credential(key)
+    }
+    fn antigravity_sign_in_credential(&self, token_file: &[u8]) -> Option<Vec<u8>> {
+        self.inner.antigravity_sign_in_credential(token_file)
+    }
+    fn antigravity_refreshed_credential(&self, fresh: &[u8], stored: &[u8]) -> Option<Vec<u8>> {
+        self.inner.antigravity_refreshed_credential(fresh, stored)
+    }
     fn antigravity_transcript(&self, brain: &Path, session: &str) -> PathBuf {
         self.inner.antigravity_transcript(brain, session)
     }
@@ -615,6 +668,14 @@ impl HarnessPort for FakeAgentHarness {
         skills_dir: &Path,
     ) -> AppResult<()> {
         self.inner.install_skills(skills, root, skills_dir)
+    }
+    fn refresh_skills(
+        &self,
+        skills: &[(String, PathBuf)],
+        root: &Path,
+        skills_dir: &Path,
+    ) -> AppResult<yulius_app::ports::harness::SkillsRefresh> {
+        self.inner.refresh_skills(skills, root, skills_dir)
     }
 }
 

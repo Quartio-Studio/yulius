@@ -58,8 +58,9 @@ pub const LOGIN_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 /// stopped and the token sealed (SPEC-243 LGN-001). `claude setup-token` exits by itself 500 ms
 /// after printing the token.
 pub const TOKEN_EXIT_GRACE: Duration = Duration::from_secs(5);
-/// PTY width of login terminals: wide enough that tokens and URLs never wrap.
-pub const LOGIN_COLS: u16 = 500;
+/// PTY width of login terminals: wide enough that tokens and URLs never wrap (the Antigravity
+/// CLI's Google sign-in link is 704 characters, and the CLI breaks it at the width; SPEC-505).
+pub const LOGIN_COLS: u16 = 1024;
 /// PTY height of login terminals.
 pub const LOGIN_ROWS: u16 = 40;
 /// Raw output kept in memory for token extraction (the newest bytes win).
@@ -287,19 +288,21 @@ impl LoginTerminal {
 /// The largest `auth.json` a Codex sign-in may leave (`yulius_harness::login`'s bound).
 const CODEX_LOGIN_AUTH_MAX: usize = 1024 * 1024;
 
-/// The `auth.json` at `path` when it is a plain file within [`CODEX_LOGIN_AUTH_MAX`] and
-/// `problem` finds none in it; a refused copy is scrubbed (SPEC-503 CDX-005). The bound is
-/// checked before reading, and the read itself is bounded too: the sign-in's process writes it.
-fn read_codex_login_auth(
+/// The credentials file a Codex sign-in wrote at `path`, when it is a plain file within
+/// [`CODEX_LOGIN_AUTH_MAX`] and `problem` finds none in it; a refused copy is scrubbed
+/// (SPEC-503 CDX-005). The bound is checked before reading, and the
+/// read itself is bounded too: the sign-in's process writes it.
+fn read_login_file(
     path: &Path,
     problem: impl FnOnce(&[u8]) -> Option<String>,
 ) -> Result<Vec<u8>, String> {
+    let agent = "Codex";
     use std::io::Read as _;
     let meta = std::fs::symlink_metadata(path)
-        .map_err(|_| "the Codex sign-in did not store credentials".to_owned())?;
-    let too_large = || "the Codex credentials file is too large".to_owned();
+        .map_err(|_| format!("the {agent} sign-in did not store credentials"))?;
+    let too_large = || format!("the {agent} credentials file is too large");
     if !meta.is_file() {
-        return Err("the Codex credentials file is not usable".into());
+        return Err(format!("the {agent} credentials file is not usable"));
     }
     if meta.len() > CODEX_LOGIN_AUTH_MAX as u64 {
         return Err(too_large());
@@ -310,7 +313,7 @@ fn read_codex_login_auth(
             file.take(CODEX_LOGIN_AUTH_MAX as u64 + 1)
                 .read_to_end(&mut bytes)
         })
-        .map_err(|_| "the Codex credentials file could not be read".to_owned())?;
+        .map_err(|_| format!("the {agent} credentials file could not be read"))?;
     if bytes.len() > CODEX_LOGIN_AUTH_MAX {
         scrub(Some(bytes));
         return Err(too_large());
@@ -1116,21 +1119,24 @@ impl App {
             .await;
     }
 
-    /// Installs the Codex CLI Yulius provides in the background when a Codex subscription
-    /// exists, so the first Codex task does not wait for its download (SPEC-503 CLI-001); an
-    /// instance without one downloads nothing. The install runs on its own task: the server's
-    /// start never waits for it.
-    pub fn warm_codex_cli(self: &Arc<Self>) -> tokio::task::JoinHandle<()> {
+    /// Installs the agent CLIs Yulius provides in the background, each when a subscription of
+    /// its provider exists, so the first Codex or Antigravity task does not wait for its download
+    /// (SPEC-503 CLI-001, SPEC-505 AGY-007); an instance without one downloads nothing. The
+    /// installs run on their own task: the server's start never waits for them.
+    pub fn warm_agent_clis(self: &Arc<Self>) -> tokio::task::JoinHandle<()> {
         let app = Arc::clone(self);
         tokio::spawn(async move {
-            let codex = app
-                .deps
-                .store
-                .accounts()
-                .await
-                .is_ok_and(|accounts| accounts.iter().any(|a| a.provider == Provider::OpenAi));
-            if codex && let Err(error) = app.deps.harness.provide_codex(true).await {
+            let accounts = app.deps.store.accounts().await.unwrap_or_default();
+            let has = |provider: Provider| accounts.iter().any(|a| a.provider == provider);
+            if has(Provider::OpenAi)
+                && let Err(error) = app.deps.harness.provide_codex(true).await
+            {
                 tracing::warn!(%error, "the Codex CLI is not ready; the next Codex start tries again");
+            }
+            if has(Provider::Google)
+                && let Err(error) = app.deps.harness.provide_antigravity(true).await
+            {
+                tracing::warn!(%error, "the Antigravity CLI is not ready; the next Antigravity start tries again");
             }
         })
     }
@@ -1155,14 +1161,12 @@ impl App {
         let api_key = req.api_key.take().map(Zeroizing::new);
         let auth_json = req.auth_json.take().map(Zeroizing::new);
         self.require_instance_admin(ctx)?;
-        // Google (Antigravity) accounts come with slice C2 of SPEC-505: refused as unknown until
-        // then.
-        let provider = Provider::parse(req.provider.trim())
-            .ok()
-            .filter(|p| *p != Provider::Google)
-            .ok_or_else(|| {
-                AppError::Invalid("provider must be anthropic (Claude) or openai (Codex)".into())
-            })?;
+        let provider = Provider::parse(req.provider.trim()).map_err(|_| {
+            AppError::Invalid(
+                "provider must be anthropic (Claude), openai (Codex) or google (Antigravity)"
+                    .into(),
+            )
+        })?;
         let label = validate_label(&req.label)?;
         if let Some(token) = token {
             // A pasted token is a Claude credential (SPEC-502); a Codex account takes an API key
@@ -1196,9 +1200,22 @@ impl App {
                     "give either an API key or an auth.json, not both".into(),
                 ));
             }
+            // A Gemini API key is an Antigravity account's credential at once (SPEC-505
+            // AGY-008).
+            (Some(key), None) if provider == Provider::Google => Some((
+                self.deps
+                    .harness
+                    .antigravity_api_key_credential(key.trim())
+                    .ok_or_else(|| {
+                        AppError::Invalid("the API key is not a Gemini API key".into())
+                    })?,
+                "api_key",
+            )),
             _ if provider != Provider::OpenAi => {
                 return Err(AppError::Invalid(
-                    "an API key or an auth.json is only for an openai (Codex) account".into(),
+                    "an API key is only for an openai (Codex) or google (Antigravity) account, \
+                     an auth.json only for an openai one"
+                        .into(),
                 ));
             }
             (Some(key), None) => Some((
@@ -1225,6 +1242,10 @@ impl App {
         // that waits for it and goes away leaves no account without a sign-in (SPEC-503 CLI-002).
         if sealed.is_none() && provider == Provider::OpenAi {
             self.deps.harness.provide_codex(true).await?;
+        }
+        // An Antigravity sign-in needs its CLI the same way (SPEC-505 AGY-007).
+        if sealed.is_none() && provider == Provider::Google {
+            self.deps.harness.provide_antigravity(true).await?;
         }
         let store = &self.deps.store;
         let now = self.now();
@@ -1263,12 +1284,18 @@ impl App {
             let view = account_view(&account, &[]);
             self.publish_account(view.clone());
             self.capacity_changed();
-            // No sign-in installed the Codex CLI: its install starts now, so the account's first
-            // task does not wait for it (SPEC-503 CLI-001).
+            // No sign-in installed the CLI: its install starts now, so the account's first task
+            // does not wait for it (SPEC-503 CLI-001, SPEC-505 AGY-007).
             let app = Arc::clone(self);
             tokio::spawn(async move {
-                if let Err(err) = app.deps.harness.provide_codex(true).await {
-                    tracing::warn!(error = %err, "the Codex CLI is not ready; the next Codex start tries again");
+                let provided = match provider {
+                    Provider::Google => app.deps.harness.provide_antigravity(true).await,
+                    Provider::OpenAi => app.deps.harness.provide_codex(true).await,
+                    // A Claude account takes no API key or file: it never gets here.
+                    Provider::Anthropic => Ok(None),
+                };
+                if let Err(err) = provided {
+                    tracing::warn!(error = %err, "the agent CLI is not ready; the next start tries again");
                 }
             });
             return Ok(AccountLoginStarted {
@@ -1923,8 +1950,14 @@ impl App {
                 .provide_codex(true)
                 .await?
                 .map(|cli| cli.program),
-            // Google accounts are refused before a sign-in until SPEC-505 slice C2.
-            Provider::Anthropic | Provider::Google => None,
+            // Antigravity signs in with the CLI Yulius provides too (SPEC-505 AGY-007).
+            Provider::Google => self
+                .deps
+                .harness
+                .provide_antigravity(true)
+                .await?
+                .map(|cli| cli.program),
+            Provider::Anthropic => None,
         };
         let _serialized = self.logins.start.lock().await;
         self.prune_logins();
@@ -1957,6 +1990,14 @@ impl App {
         create_private_dir(&self.logins_dir())?;
         for d in [&dir, &home, &config_dir] {
             create_private_dir(d)?;
+        }
+        // The Antigravity CLI keeps its sign-in in `$HOME/.gemini/antigravity-cli` (SPEC-505).
+        if account.provider == Provider::Google {
+            let mut folder = home.clone();
+            for name in yulius_domain::agent_cli::antigravity::TOKEN_DIRS {
+                folder.push(name);
+                create_private_dir(&folder)?;
+            }
         }
         let mut plan = self.login_plan(account.provider, &home, &config_dir);
         if let (Some(program), Some(first)) = (program, plan.argv.first_mut()) {
@@ -2055,8 +2096,12 @@ impl App {
                     mode: 0o600,
                 });
             }
-            // Google accounts are refused before a sign-in until SPEC-505 slice C2.
-            Provider::Google => {}
+            // The Antigravity CLI keeps its sign-in in a file of its home when no keyring is
+            // reachable (none is: no D-Bus session here), and must not update itself (SPEC-505).
+            Provider::Google => {
+                let (name, value) = yulius_domain::agent_cli::antigravity::NO_UPDATE_ENV;
+                env.push((name.to_owned(), value.to_owned()));
+            }
         }
         LaunchPlan {
             argv: self.deps.harness.login_argv(provider.harness()),
@@ -2217,14 +2262,41 @@ impl App {
                 }
                 Err(_) => false,
             },
-            // Google accounts are refused before a sign-in until SPEC-505 slice C2.
-            Provider::Google => false,
+            // The Antigravity CLI's sign-in is the token file it writes in its home (AGY-008).
+            Provider::Google => match self.antigravity_login_token(session) {
+                Ok(bytes) => {
+                    scrub(Some(bytes));
+                    true
+                }
+                Err(_) => false,
+            },
+        }
+    }
+
+    /// The token file the Antigravity sign-in of `session` wrote in its home (SPEC-505 AGY-008),
+    /// read below the sign-in's folder without following a link or waiting on a FIFO, bounded:
+    /// the sign-in's process could make any of its folders a link out of its home.
+    fn antigravity_login_token(&self, session: &LoginSession) -> Result<Vec<u8>, String> {
+        let bytes = match crate::supervisor::read_antigravity_token_in(&session.dir, "home") {
+            Ok(Some(bytes)) => bytes,
+            Ok(None) => return Err("the Antigravity sign-in did not store credentials".into()),
+            Err(_) => return Err("the Antigravity credentials file could not be read".into()),
+        };
+        match self.deps.harness.antigravity_sign_in_credential(&bytes) {
+            Some(mut envelope) => {
+                envelope.zeroize();
+                Ok(bytes)
+            }
+            None => {
+                scrub(Some(bytes));
+                Err("the Antigravity sign-in file is not usable".into())
+            }
         }
     }
 
     /// The `auth.json` the Codex sign-in of `session` wrote, validated (SPEC-503 CDX-005).
     fn codex_login_auth(&self, session: &LoginSession) -> Result<Vec<u8>, String> {
-        read_codex_login_auth(&session.dir.join("codex").join("auth.json"), |bytes| {
+        read_login_file(&session.dir.join("codex").join("auth.json"), |bytes| {
             self.deps.harness.codex_auth_problem(bytes)
         })
     }
@@ -2250,8 +2322,14 @@ impl App {
                 let auth = self.codex_login_auth(session).ok();
                 auth.and_then(|bytes| String::from_utf8(bytes).ok())
             }
-            // Google accounts are refused before a sign-in until SPEC-505 slice C2.
-            Provider::Google => None,
+            Provider::Google => self
+                .antigravity_login_token(session)
+                .ok()
+                .and_then(|mut token| {
+                    let envelope = self.deps.harness.antigravity_sign_in_credential(&token);
+                    token.zeroize();
+                    envelope.and_then(|bytes| String::from_utf8(bytes).ok())
+                }),
         };
         raw.wipe();
         found
@@ -2462,7 +2540,7 @@ mod tests {
         let path = dir.path().join("auth.json");
         std::fs::write(&path, br#"{"OPENAI_API_KEY":"sk-x"}"#)?;
         assert_eq!(
-            read_codex_login_auth(&path, usable).as_deref(),
+            read_login_file(&path, usable).as_deref(),
             Ok(&br#"{"OPENAI_API_KEY":"sk-x"}"#[..])
         );
         let large = std::fs::File::create(&path)?;
@@ -2472,12 +2550,12 @@ mod tests {
             read.set(true);
             None
         };
-        assert!(read_codex_login_auth(&path, watched).is_err());
+        assert!(read_login_file(&path, watched).is_err());
         assert!(!read.get(), "a file over the bound is not read");
         let link = dir.path().join("link.json");
         std::os::unix::fs::symlink(&path, &link)?;
-        assert!(read_codex_login_auth(&link, usable).is_err());
-        assert!(read_codex_login_auth(dir.path(), usable).is_err());
+        assert!(read_login_file(&link, usable).is_err());
+        assert!(read_login_file(dir.path(), usable).is_err());
         Ok(())
     }
     use std::cell::Cell;

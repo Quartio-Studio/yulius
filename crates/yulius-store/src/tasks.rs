@@ -580,6 +580,7 @@ impl TaskStore for SqliteStore {
                 "DELETE FROM messages WHERE from_task = ?1 OR to_task = ?1",
                 "DELETE FROM step_events WHERE task_id = ?1",
                 "DELETE FROM steps WHERE task_id = ?1",
+                "DELETE FROM task_harness_draws WHERE task_id = ?1",
                 "DELETE FROM switch_decisions WHERE task_id = ?1",
                 "DELETE FROM capacity_pauses WHERE task_id = ?1",
                 "DELETE FROM spans WHERE subject_kind = 'task' AND subject_id = ?1",
@@ -1200,6 +1201,32 @@ impl TaskStore for SqliteStore {
             .await?
             .into_iter()
             .next())
+    }
+
+    async fn record_harness_draw(&self, task: &TaskId, at: Timestamp) -> AppResult<()> {
+        let task = task.as_str().to_owned();
+        self.call(move |c| {
+            c.execute(
+                "INSERT OR IGNORE INTO task_harness_draws (task_id, drawn_at) VALUES (?1, ?2)",
+                params![task, at.0],
+            )
+            .map(|_| ())
+            .map_err(db)
+        })
+        .await
+    }
+
+    async fn harness_drawn(&self, task: &TaskId) -> AppResult<bool> {
+        let task = task.as_str().to_owned();
+        self.call(move |c| {
+            c.query_row(
+                "SELECT EXISTS(SELECT 1 FROM task_harness_draws WHERE task_id = ?1)",
+                params![task],
+                |row| row.get::<_, bool>(0),
+            )
+            .map_err(db)
+        })
+        .await
     }
 
     async fn has_attempts(&self, task: &TaskId) -> AppResult<bool> {

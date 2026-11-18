@@ -26,16 +26,15 @@ pub const LATE_ROUND: u32 = 3;
 /// often, 35 of 62 first reviews).
 pub const REVIEWER_EFFORT: &str = "high";
 
-/// What a reviewer is told, whatever its model: its contract.
+/// What a reviewer is told, whatever its model: its contract. A session gets it at its launch
+/// (`--agents`) and keeps it across an update, so it holds no review rule: the rules are in
+/// `om-code-review`, which a server start brings to every sandbox (SPEC-507 SKR-006, ADR-0364).
 pub const REVIEWER_PROMPT: &str = "You are the independent code reviewer of one change. You have \
 no shared context with its author: review only the diff range, the spec and the instructions you \
 are given, and load the skill `om-code-review` (and the repository's own review skill when it has \
-one). Work read-only: do not edit, commit, stash, check out, reset or push. Mark every finding own \
-code or pre-existing, with its severity, place and a concrete failure. Do not ask for changes \
-because of CI alone: when you found nothing to fix and the head's Yulius CI run is still going or \
-failed in a way the change does not cause, approve and say what CI still has to do (the merge \
-needs it green); a failure the change causes is a blocker. End your report with a last line that is \
-exactly `Verdict: approve` or `Verdict: request changes`.";
+one): its rules decide your verdict. Work read-only: do not edit, commit, stash, check out, reset or \
+push. Mark every finding own code or pre-existing, with its severity, place and a concrete failure. \
+End your report with a last line that is exactly `Verdict: approve` or `Verdict: request changes`.";
 
 /// What Yulius tells an author about the review whenever it says to call `delivery_merge` (after a
 /// red run, a failed merge candidate, a dropped armed merge, or on a green head with no merge
@@ -297,6 +296,25 @@ mod tests {
             assert_eq!(Verdict::parse(verdict.as_str()), Some(verdict));
         }
         assert!(REVIEWER_PROMPT.contains("`Verdict: approve` or `Verdict: request changes`"));
+    }
+
+    /// SPEC-507 SKR-006 (ADR-0364): the prompt reaches a session only at its launch, so a
+    /// session launched before an update keeps it. It holds the reviewer's contract (who, the
+    /// skill, read-only, own code or pre-existing, the verdict line the code parses) and no review
+    /// rule: the rules live in `om-code-review`, which an update brings to every sandbox at once.
+    #[test]
+    fn the_reviewer_prompt_is_a_contract_without_review_rules() {
+        const CONTRACT: &str = "You are the independent code reviewer of one change. You have no \
+shared context with its author: review only the diff range, the spec and the instructions you are \
+given, and load the skill `om-code-review` (and the repository's own review skill when it has one): \
+its rules decide your verdict. Work read-only: do not edit, commit, stash, check out, reset or push. \
+Mark every finding own code or pre-existing, with its severity, place and a concrete failure. End \
+your report with a last line that is exactly `Verdict: approve` or `Verdict: request changes`.";
+        assert_eq!(
+            REVIEWER_PROMPT, CONTRACT,
+            "a change here reaches only sessions launched after the update: put a review rule \
+             in `om-code-review` (ADR-0364)"
+        );
     }
 
     /// SPEC-493 REV-006: the numbers of the request, from the rounds of merged pull requests.

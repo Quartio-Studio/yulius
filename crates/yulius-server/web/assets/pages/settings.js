@@ -47,7 +47,7 @@ export function mountSettingsPage(ctx) {
   const effortButton = h('button', { type: 'button', class: 'chip-btn', 'aria-haspopup': 'menu' });
   const renderPicks = () => {
     const found = findModel(modelId);
-    modelButton.replaceChildren(h('span', { class: 'sr-only' }, 'Model for new tasks: '), h('span', { class: 'chip-label' }, found ? found.model.name : 'Default model'), icon('down', { size: 12 }));
+    modelButton.replaceChildren(h('span', { class: 'sr-only' }, 'Model for new tasks: '), h('span', { class: 'chip-label' }, found ? found.model.name : 'Random agent'), icon('down', { size: 12 }));
     const effort = findEffort(effortId);
     effortButton.replaceChildren(h('span', { class: 'sr-only' }, 'Effort for new tasks: '), h('span', { class: 'chip-label' }, effort ? effort.name : 'Default effort'), icon('down', { size: 12 }));
   };
@@ -135,10 +135,10 @@ export function mountSettingsPage(ctx) {
       // Unavailable: the reason is written on the tile (not only in a tooltip) and the text stays readable.
       : h('div', { class: 'settings-tile disabled', 'aria-disabled': 'true' }, icon(iconName, { size: 18 }), h('div', null, h('div', { class: 'settings-tile-title' }, title), h('div', { class: 'muted xs' }, `${description} — open a sandbox first`)));
     frame.body.append(section('shield', 'Administration', `this ${BRAND.name} instance`,
-      row('user', 'Add a subscription', 'A Claude or Codex subscription for the agents: the agent’s own sign-in in a terminal here, a token made with claude setup-token, or for Codex an auth.json or an OpenAI API key', h('a', { class: 'btn btn-primary btn-sm', href: href('/admin/accounts?add=1'), dataset: { route: '/admin/accounts?add=1' } }, icon('plus', { size: 14 }), 'Add subscription')),
+      row('user', 'Add a subscription', 'A Claude, Codex or Antigravity subscription for the agents: the agent’s own sign-in in a terminal here, a token made with claude setup-token, for Codex an auth.json or an OpenAI API key, or for Antigravity a Gemini API key', h('a', { class: 'btn btn-primary btn-sm', href: href('/admin/accounts?add=1'), dataset: { route: '/admin/accounts?add=1' } }, icon('plus', { size: 14 }), 'Add subscription')),
       h('div', { class: 'settings-tiles' },
         tile('users', 'Users', superadmin ? 'Who may sign in' : 'Who may sign in, and resetting a lost two-factor', '/admin/users'),
-        tile('user', 'Subscriptions', 'Claude and Codex subscriptions, their usage and when to add more', '/admin/accounts'),
+        tile('user', 'Subscriptions', 'Claude, Codex and Antigravity subscriptions, their usage and when to add more', '/admin/accounts'),
         superadmin ? tile('github', 'GitHub connection', 'The GitHub App and its installations', '/admin/github') : null,
         superadmin ? tile('download', 'Instance', 'Version, updates, the Jev and Vidoc keys', '/admin/instance') : null,
         tile('plug', 'MCP for every sandbox', 'Tool servers attached in every sandbox', slug ? `/s/${slug}/mcp?scope=instance` : null),

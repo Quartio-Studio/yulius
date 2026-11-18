@@ -195,6 +195,9 @@ pub struct TaskRow {
     pub origin: String,
     /// Harness of the first run (current harness when the task never ran).
     pub harness: String,
+    /// `random` when the task's harness was drawn at creation, else `chosen` (SPEC-505 RND-003).
+    #[serde(default)]
+    pub harness_choice: String,
     /// Harnesses used, in order of first use, `;`-separated.
     pub harnesses: String,
     /// Models used, `;`-separated.
@@ -240,6 +243,7 @@ pub const TASK_ROW_COLUMNS: &[&str] = &[
     "status",
     "origin",
     "harness",
+    "harness_choice",
     "harnesses",
     "models",
     "accounts",

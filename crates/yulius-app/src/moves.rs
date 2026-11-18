@@ -24,8 +24,8 @@ use crate::supervisor::RunStart;
 /// itself when the task gets a subscription again.
 pub(crate) fn no_subscription_action(provider: Provider) -> String {
     format!(
-        "Sign a {} subscription in again or add one in Subscriptions",
-        account_kind(provider)
+        "Sign {} subscription in again or add one in Subscriptions",
+        crate::account_gate::a_kind(provider)
     )
 }
 

@@ -211,12 +211,18 @@ impl App {
         let not_started =
             task.status == TaskStatus::Closed && !store.has_attempts(&task.id).await?;
         let awaits_start_onboarding = not_started && self.is_awaited_onboarding(task).await?;
+        // Whether the agent was drawn (SPEC-505 RND-001); a failed read says chosen.
+        let drawn = store.harness_drawn(&task.id).await.unwrap_or_else(|err| {
+            tracing::warn!(error = %err, task = %task.id, "harness draw not read");
+            false
+        });
         Ok(TaskSummary {
             id: task.id.to_string(),
             sandbox_id: task.sandbox_id.to_string(),
             number: task.number,
             title: task.title.clone(),
             harness: task.harness.as_str().to_owned(),
+            harness_choice: if drawn { "random" } else { "chosen" }.into(),
             status: task.status.as_str().to_owned(),
             activity: task.activity.map(|a| a.as_str().to_owned()),
             branch: task.branch.clone(),
@@ -731,18 +737,22 @@ impl App {
         let cli_moves_to = moves_to.map(|newest| newest.to_string());
         // A Codex task without a model runs its subscription's default, which is no Claude
         // model: none is named (SPEC-503 CDX-013), and its effort is its own.
-        let codex = task.harness == yulius_domain::harness::Harness::Codex;
-        let model = task.model.clone().unwrap_or_else(|| {
-            if codex {
-                String::new()
-            } else {
-                DEFAULT_CLAUDE_MODEL.to_owned()
-            }
+        // An Antigravity task without one runs Gemini 4 Carbon at high effort (SPEC-505 AGY-002).
+        use yulius_domain::harness::{
+            DEFAULT_ANTIGRAVITY_EFFORT, DEFAULT_ANTIGRAVITY_MODEL, Harness,
+        };
+        let model = task.model.clone().unwrap_or_else(|| match task.harness {
+            Harness::Codex => String::new(),
+            Harness::Antigravity => DEFAULT_ANTIGRAVITY_MODEL.to_owned(),
+            Harness::ClaudeCode => DEFAULT_CLAUDE_MODEL.to_owned(),
         });
-        let effort = if codex {
-            task.effort.clone()
-        } else {
-            claude_effort(&model, task.effort.as_deref()).map(str::to_owned)
+        let effort = match task.harness {
+            Harness::Codex => task.effort.clone(),
+            Harness::Antigravity => task
+                .effort
+                .clone()
+                .or_else(|| Some(DEFAULT_ANTIGRAVITY_EFFORT.to_owned())),
+            Harness::ClaudeCode => claude_effort(&model, task.effort.as_deref()).map(str::to_owned),
         };
         // The model its live run was launched with, when the pool placed it with the fallback
         // (SPEC-482 FBK-009).

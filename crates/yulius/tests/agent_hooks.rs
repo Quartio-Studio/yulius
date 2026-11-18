@@ -469,6 +469,23 @@ async fn stored_messages_reach_no_hook() -> TestResult {
     Ok(())
 }
 
+/// SPEC-505 AGY-006: only an Antigravity run's Stop of a failed turn skips the gate (its
+/// `error`; `antigravity::a_failed_antigravity_turn_leaves_its_task_waiting`): the same field
+/// from another harness's hook changes nothing.
+#[tokio::test]
+async fn only_antigravity_skips_the_gate_for_a_failed_turn() -> TestResult {
+    let f = fixture().await?;
+    std::fs::write(f.worktree.join("api.rs"), "fn main() {}\n")?;
+    let body = hook(
+        &f,
+        "Stop",
+        json!({"stop_hook_active": false, "error": "Error 503, Status: UNAVAILABLE"}),
+    )
+    .await?;
+    assert_eq!(body["decision"], "block", "{body:?}");
+    Ok(())
+}
+
 #[tokio::test]
 async fn stop_gate_blocks_three_times_then_needs_attention() -> TestResult {
     let f = fixture().await?;

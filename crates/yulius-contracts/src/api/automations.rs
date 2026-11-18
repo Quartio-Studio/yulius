@@ -33,7 +33,8 @@ pub struct Automation {
     /// Workflow for created tasks.
     #[serde(default)]
     pub workflow_id: Option<String>,
-    /// Harness: `claude` (the default) or `codex` (SPEC-503).
+    /// Harness: `auto` (the default: drawn for each run, SPEC-505 RND-002), `claude`, `codex`
+    /// (SPEC-503) or `antigravity` (SPEC-505).
     #[serde(default = "default_harness")]
     pub harness: String,
     /// Enabled.
@@ -89,7 +90,7 @@ pub struct RunAutomation {
 }
 
 fn default_harness() -> String {
-    "claude".into()
+    "auto".into()
 }
 
 fn default_true() -> bool {

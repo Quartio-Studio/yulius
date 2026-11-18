@@ -606,23 +606,25 @@ async fn codex_runs_get_the_provided_cli_or_a_reason() -> TestResult {
     Ok(())
 }
 
-/// CLI-001: at start, Yulius installs the Codex CLI in the background only when a Codex
-/// subscription exists: an instance with none, or with Claude subscriptions only, downloads
-/// nothing.
+/// CLI-001 (and SPEC-505 AGY-007): at start, Yulius installs the Codex CLI in the background
+/// only when a Codex subscription exists, and the Antigravity CLI only when a Google one does:
+/// an instance with none, or with Claude subscriptions only, downloads nothing.
 #[tokio::test]
-async fn the_cli_is_installed_at_start_only_for_codex_subscriptions() -> TestResult {
+async fn the_clis_are_installed_at_start_only_for_their_subscriptions() -> TestResult {
     use yulius_app::model::{AccountRecord, AccountStatus};
     use yulius_app::ports::store::AccountStore as _;
     use yulius_domain::harness::Provider;
     use yulius_domain::ids::AccountId;
     use yulius_domain::time::Timestamp;
     let installs = Arc::new(AtomicUsize::new(0));
+    let antigravity = Arc::new(AtomicUsize::new(0));
     let h = crate::support::harness_with(crate::support::HarnessOptions {
         harness: Some(Arc::new(crate::support::agents::FakeAgentHarness::new(
             "/bin/yulius".into(),
             "/bin/false".into(),
             crate::support::agents::FakeAgentOptions {
                 codex_installs: Some(Arc::clone(&installs)),
+                antigravity_installs: Some(Arc::clone(&antigravity)),
                 ..Default::default()
             },
         ))),
@@ -642,17 +644,33 @@ async fn the_cli_is_installed_at_start_only_for_codex_subscriptions() -> TestRes
         created_at: Timestamp(1),
         updated_at: Timestamp(1),
     };
-    h.app.warm_codex_cli().await?;
+    h.app.warm_agent_clis().await?;
     h.store
         .insert_account(&account("claude-1", Provider::Anthropic))
         .await?;
-    h.app.warm_codex_cli().await?;
+    h.app.warm_agent_clis().await?;
     assert_eq!(installs.load(Ordering::SeqCst), 0, "no Codex subscription");
+    assert_eq!(
+        antigravity.load(Ordering::SeqCst),
+        0,
+        "no Google subscription"
+    );
     h.store
         .insert_account(&account("codex-1", Provider::OpenAi))
         .await?;
-    h.app.warm_codex_cli().await?;
+    h.app.warm_agent_clis().await?;
     assert_eq!(installs.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        antigravity.load(Ordering::SeqCst),
+        0,
+        "no Google subscription"
+    );
+    h.store
+        .insert_account(&account("google-1", Provider::Google))
+        .await?;
+    h.app.warm_agent_clis().await?;
+    assert_eq!(installs.load(Ordering::SeqCst), 2);
+    assert_eq!(antigravity.load(Ordering::SeqCst), 1);
     Ok(())
 }
 

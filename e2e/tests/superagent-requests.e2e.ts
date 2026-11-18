@@ -21,7 +21,7 @@ type Asking = {
     withdrawSuperagentRequest: (source: string, id: string) => void;
     amendSuperagentRequest: (source: string, id: string, prompt: string) => void;
     askBrowserSignIn: () => boolean;
-    tasks: { sandbox_id: string; number: number; title: string; prompt: string; status: string }[];
+    tasks: { sandbox_id: string; number: number; title: string; prompt: string; status: string; harness: string }[];
   };
 };
 
@@ -34,13 +34,13 @@ async function ask(browser: Browser, source: string, request: Record<string, unk
 }
 
 const productTasks = (browser: Browser) => browser.evaluate(() => (window as unknown as Asking).__yuliusMock.tasks
-  .filter((t) => t.sandbox_id === 'sb_product').map((t) => ({ title: t.title, prompt: t.prompt, status: t.status })));
+  .filter((t) => t.sandbox_id === 'sb_product').map((t) => ({ title: t.title, prompt: t.prompt, status: t.status, harness: t.harness })));
 
 test('a request shows in full above the Superagent and Create task starts it in that sandbox', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/tasks'));
   await openSuperagent(browser, screen);
   const before = await productTasks(browser);
-  await ask(browser, 'sb_studio', { sandbox: 'product', prompt: PROMPT, title: 'API client v2', options: { prepared: true, workflow: 'Feature' } });
+  await ask(browser, 'sb_studio', { sandbox: 'product', prompt: PROMPT, title: 'API client v2', options: { prepared: true, workflow: 'Feature', harness: 'antigravity' } });
 
   const card = screen.getByRole('group', 'Your Superagent asks to start a task in product');
   await expect(card).toBeVisible();
@@ -50,6 +50,8 @@ test('a request shows in full above the Superagent and Create task starts it in 
   expect(await browser.evaluate(() => document.querySelector('.agent-request-prompt')?.textContent ?? null)).toBe(PROMPT);
   await expect(card).toHaveText(/Prepared: waits for Start now/);
   await expect(card).toHaveText(/Workflow: Feature/);
+  // The agent it names shows too, before the person approves (SPEC-505 RND-001).
+  await expect(card).toHaveText(/Agent: antigravity/);
   expect(await axeViolations(browser)).toEqual([]);
   // Nothing reached the other sandbox yet.
   expect(await productTasks(browser)).toEqual(before);
@@ -58,7 +60,7 @@ test('a request shows in full above the Superagent and Create task starts it in 
   await expect(card).toBeHidden();
   const created = await productTasks(browser);
   expect(created.length).toBe(before.length + 1);
-  expect(created[created.length - 1]).toEqual({ title: 'API client v2', prompt: PROMPT, status: 'prepared' });
+  expect(created[created.length - 1]).toEqual({ title: 'API client v2', prompt: PROMPT, status: 'prepared', harness: 'antigravity' });
   // The toast names the task and opens it ("in product" alone also matches the error toast).
   await expect(browser.locator('.toast:has-text("Created #"):has-text("in product")')).toBeVisible();
   await browser.locator('.toast:has-text("Created #"):has-text("in product") button:has-text("Open")').click();

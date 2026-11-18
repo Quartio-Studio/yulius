@@ -57,28 +57,59 @@ pub struct NewTask {
     pub supertask: bool,
 }
 
-/// Codex runs OpenAI's models: a Claude model, given at creation or set later, would make its run
-/// fail at start (SPEC-503).
-pub(crate) fn codex_takes_no_claude_model(harness: Harness, model: Option<&str>) -> AppResult<()> {
-    if harness == Harness::Codex
-        && model.is_some_and(|m| m.trim().to_ascii_lowercase().starts_with("claude"))
-    {
-        return Err(AppError::Invalid(
+/// Codex runs OpenAI's models and Antigravity Google's Gemini models: another provider's model,
+/// given at creation or set later, would make its run fail at start (SPEC-503, SPEC-505).
+pub(crate) fn model_of_its_harness(harness: Harness, model: Option<&str>) -> AppResult<()> {
+    let Some(model) = model.map(|m| m.trim().to_ascii_lowercase()) else {
+        return Ok(());
+    };
+    match harness {
+        Harness::Codex if model.starts_with("claude") => Err(AppError::Invalid(
             "a Codex task takes an OpenAI model, not a Claude one".into(),
-        ));
+        )),
+        Harness::Antigravity if !model.starts_with("gemini-") => Err(AppError::Invalid(
+            "an Antigravity task takes a Gemini model (such as gemini-4-carbon)".into(),
+        )),
+        _ => Ok(()),
     }
-    Ok(())
+}
+
+impl App {
+    /// The agent of a task created without one: Claude Code or Antigravity, drawn uniformly
+    /// among those with a usable subscription, Claude Code when neither has one (SPEC-505
+    /// RND-001, ADR-0361).
+    ///
+    /// # Errors
+    /// Store failures.
+    pub(crate) async fn draw_harness(&self) -> AppResult<Harness> {
+        let mut usable = Vec::with_capacity(Harness::DRAWN.len());
+        for harness in Harness::DRAWN {
+            if self.agent_accounts(harness.provider()).await?
+                == crate::account_gate::AgentAccounts::Usable
+            {
+                usable.push(harness);
+            }
+        }
+        let queued = self
+            .harness_rolls
+            .lock()
+            .ok()
+            .and_then(|mut rolls| rolls.pop_front());
+        let roll = queued.unwrap_or_else(|| self.deps.crypto.random_bytes()[0]);
+        Ok(Harness::drawn(&usable, roll))
+    }
+
+    /// Queues the rolls of the next harness draws, in order (tests: a draw is otherwise random).
+    pub fn queue_harness_rolls(&self, rolls: &[u8]) {
+        if let Ok(mut queued) = self.harness_rolls.lock() {
+            queued.extend(rolls);
+        }
+    }
 }
 
 pub(crate) fn parse_harness(text: &str) -> AppResult<Harness> {
-    match Harness::parse(text) {
-        // Antigravity's adapter is in place, its runs are not yet (SPEC-505 slice A): refused as
-        // unknown until slice C opens the path.
-        Ok(Harness::Antigravity) | Err(_) => {
-            Err(AppError::Invalid("harness must be claude or codex".into()))
-        }
-        Ok(harness) => Ok(harness),
-    }
+    Harness::parse(text)
+        .map_err(|_| AppError::Invalid("harness must be claude, codex or antigravity".into()))
 }
 
 /// A prepared task has one way to start (SPEC-105 PRP-001).
@@ -346,8 +377,20 @@ impl App {
     ) -> AppResult<TaskRecord> {
         let sid = sid.clone();
         self.require(user, &sid, Action::Work).await?;
-        let harness = parse_harness(&req.harness)?;
-        codex_takes_no_claude_model(harness, req.model.as_deref())?;
+        // No agent given (or `auto`): the one the model implies, else a draw (SPEC-505 RND-001).
+        let model = req
+            .model
+            .as_deref()
+            .map(str::trim)
+            .filter(|m| !m.is_empty());
+        let (harness, drawn) = match req.harness.trim() {
+            "" | AUTO => match model {
+                Some(model) => (Harness::implied_by(model), false),
+                None => (self.draw_harness().await?, true),
+            },
+            text => (parse_harness(text)?, false),
+        };
+        model_of_its_harness(harness, req.model.as_deref())?;
         // New tasks run in goal mode unless the user picks prompt mode (TSK-010); `auto` lets Jev
         // choose (TSK-015).
         let mode = match req.mode.as_deref().map(str::trim) {
@@ -425,6 +468,18 @@ impl App {
                 prepared,
             )
             .await?;
+        if drawn {
+            // The task exists and runs: a failed record only says "chosen" for a drawn agent.
+            if let Err(err) = self
+                .deps
+                .store
+                .record_harness_draw(&task.id, self.now())
+                .await
+            {
+                tracing::warn!(error = %err, task = %task.id, "harness draw not recorded");
+            }
+            self.publish_task(&task.id).await;
+        }
         if choice.is_auto() {
             // The task exists and runs: a failed record only loses the "Auto →" label.
             let actor = self.login_of(&user.id).await;
@@ -530,9 +585,9 @@ impl App {
                 }
                 Some(record) if record.provider != provider => {
                     return Err(AppError::Capacity(format!(
-                        "{} is not a {} subscription, so it cannot take the task.",
+                        "{} is not {} subscription, so it cannot take the task.",
                         record.label,
-                        crate::account_gate::account_kind(provider)
+                        crate::account_gate::a_kind(provider)
                     )));
                 }
                 Some(_) => {}

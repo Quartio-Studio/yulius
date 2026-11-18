@@ -172,7 +172,7 @@ impl App {
         let task = self.load_task(ctx, id, Action::Work).await?;
         let model = setting(model, "model", model_shaped)?;
         let effort = setting(effort, "effort", effort_shaped)?;
-        crate::lifecycle::codex_takes_no_claude_model(
+        crate::lifecycle::model_of_its_harness(
             task.harness,
             model.as_ref().and_then(|m| m.as_deref()),
         )?;

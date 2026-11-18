@@ -616,8 +616,9 @@ pub async fn serve(args: ServeArgs) -> Result<(), String> {
         return Err("the internal listener must bind a loopback address".into());
     }
     let (app, browser_network) = build_app(&args)?;
-    // The Codex CLI is installed in the background when Codex subscriptions exist (SPEC-503).
-    app.warm_codex_cli();
+    // The Codex and Antigravity CLIs are installed in the background when subscriptions of
+    // their providers exist (SPEC-503, SPEC-505).
+    app.warm_agent_clis();
     // An update in progress keeps every task paused from the first hook call (ADR-18).
     app.restore_update_hold().await;
     // The runs people paused stay paused across the restart (SPEC-191 PER-003).
@@ -682,14 +683,13 @@ pub async fn serve(args: ServeArgs) -> Result<(), String> {
         .await
         .map_err(|e| format!("cannot bind {}: {e}", args.internal_bind))?;
     tracing::info!(public = %args.bind, internal = %args.internal_bind, "yulius listening");
+    // The catalog, and every sandbox's installed copies of it, before anything starts a run or
+    // resumes the tasks an update froze (SPEC-507 SKR-001).
+    app.skills_at_start().await;
     app.start_background();
     app.start_update_loop();
     // Long polling of the saved bot, if any, and the notifier (SPEC-498 TGC-003).
     app.start_channel().await;
-    match app.install_skill_catalog().await {
-        Ok(files) => tracing::debug!(files, "skill catalog ready"),
-        Err(err) => tracing::error!(error = %err, "cannot install the skill catalog"),
-    }
     let scheduler = app.start_automation_scheduler();
     // Agent runs' egress proxy shares the internal listener (SPEC-002 ADR-20). Wired before the
     // shells are adopted: a Superagent they start again gets the proxy (SPEC-186 SAV-001).

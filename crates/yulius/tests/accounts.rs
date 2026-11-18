@@ -54,6 +54,10 @@ struct Script {
     /// Files the process writes below its run directory after its output, before it exits
     /// (Codex stores its sign-in in `codex/auth.json`).
     writes: Vec<(String, String)>,
+    /// Folders below its run directory it replaces by links to these targets after its writes.
+    links: Vec<(String, PathBuf)>,
+    /// Output chunks emitted after its writes (a CLI that runs on after storing its sign-in).
+    after: Vec<String>,
 }
 
 struct Run {
@@ -244,6 +248,21 @@ impl SessionHost for FakeHost {
             for (path, contents) in &script.writes {
                 let _ = std::fs::write(emitter_dir.join(path), contents);
             }
+            for (path, target) in &script.links {
+                let at = emitter_dir.join(path);
+                let _ = std::fs::remove_dir_all(&at);
+                let _ = std::os::unix::fs::symlink(target, &at);
+            }
+            let first = script.chunks.len() as u64 + 1;
+            for (i, chunk) in script.after.iter().enumerate() {
+                let event = RunEvent::Output {
+                    seq: first + i as u64,
+                    bytes: chunk.as_bytes().to_vec(),
+                };
+                if emitter_tx.send(event).await.is_err() {
+                    return;
+                }
+            }
             if let Some(code) = script.exit
                 && !emitter_exited.swap(true, Ordering::SeqCst)
             {
@@ -381,7 +400,7 @@ fn login_dir(s: &Setup, login_id: &str) -> PathBuf {
 #[tokio::test]
 async fn claude_login_masks_the_token_for_viewers_and_seals_it() -> TestResult {
     let s = setup().await?;
-    // The token is split across three chunks; the PTY never wraps it (500 columns).
+    // The token is split across three chunks; the PTY never wraps it (1024 columns).
     s.host.push(Script {
         chunks: vec![
             "Browser didn't open? Use the url below to sign in:\r\nhttps://claude.ai/oauth/authorize?code=true\r\n".into(),
@@ -393,6 +412,8 @@ async fn claude_login_masks_the_token_for_viewers_and_seals_it() -> TestResult {
         exit: Some(0),
         gated: true,
         writes: Vec::new(),
+        links: Vec::new(),
+        after: Vec::new(),
     });
     let mut events = s.h.app.events.subscribe();
     let (account_id, login_id) = create(&s, "anthropic", "Claude #1").await?;
@@ -401,7 +422,7 @@ async fn claude_login_masks_the_token_for_viewers_and_seals_it() -> TestResult {
     let plans = s.host.plans();
     let (run_dir, plan, size) = plans.first().ok_or("spawned")?;
     assert_eq!(plan.argv, ["claude", "setup-token"]);
-    assert_eq!(*size, (500, 40));
+    assert_eq!(*size, (1024, 40));
     assert_eq!(*run_dir, login_dir(&s, &login_id));
     assert_eq!(plan.containment, Containment::None);
     assert!(plan.secret_env.is_empty());
@@ -429,7 +450,7 @@ async fn claude_login_masks_the_token_for_viewers_and_seals_it() -> TestResult {
     let state = serde_json::to_value(terminal.state())?;
     assert_eq!(
         (state["cols"].as_u64(), state["can_write"].as_bool()),
-        (Some(500), Some(true))
+        (Some(1024), Some(true))
     );
     let mut sub = terminal.subscribe();
     terminal.input(b"pasted-code\r").await?;
@@ -517,6 +538,7 @@ async fn codex_device_login_seals_the_auth_file() -> TestResult {
         writes: vec![("codex/auth.json".into(), CODEX_AUTH.into())],
         exit: Some(0),
         gated: true,
+        ..Script::default()
     });
     let mut events = s.h.app.events.subscribe();
     let (account_id, login_id) = create(&s, "openai", "Codex #1").await?;
@@ -716,7 +738,6 @@ async fn a_codex_account_can_be_added_with_an_api_key() -> TestResult {
     for body in [
         json!({"provider": "openai", "label": "Bad key", "api_key": "not-a-key"}),
         json!({"provider": "anthropic", "label": "Claude key", "api_key": key}),
-        json!({"provider": "google", "label": "Gemini"}),
         // Given but empty: refused, not taken for a request without one (a device sign-in).
         json!({"provider": "openai", "label": "Empty key", "api_key": ""}),
         json!({"provider": "openai", "label": "Blank key", "api_key": "   "}),
@@ -1641,6 +1662,8 @@ async fn login_terminal_websocket_streams_masked_output_and_accepts_input() -> T
         exit: Some(0),
         gated: true,
         writes: Vec::new(),
+        links: Vec::new(),
+        after: Vec::new(),
     });
     let (_, login_id) = create(&s, "anthropic", "Claude WS").await?;
 
@@ -1691,7 +1714,7 @@ async fn login_terminal_websocket_streams_masked_output_and_accepts_input() -> T
                 tungstenite::Message::Text(text) => {
                     let v: Value = serde_json::from_str(&text)?;
                     if v["type"] == "state" && !released {
-                        assert_eq!(v["cols"], 500);
+                        assert_eq!(v["cols"], 1024);
                         assert_eq!(v["can_write"], true);
                         ws.send(tungstenite::Message::Text(
                             json!({"type": "hello", "last_seq": null, "cols": 120, "rows": 30})
@@ -1938,5 +1961,352 @@ async fn a_login_terminal_closes_once_its_sign_in_or_administration_ends() -> Te
         login_terminal_closed(&mut by_bob).await?,
         (4003, "access revoked".to_owned())
     );
+    Ok(())
+}
+
+/// SPEC-505 AGY-008: an Antigravity account signs in with Google through the Antigravity CLI's
+/// own sign-in in a temporary home with no keyring (its link shown to the person); the token
+/// file it writes is sealed into the account, and the temporary home is wiped.
+#[tokio::test]
+async fn an_antigravity_google_sign_in_seals_the_token_file() -> TestResult {
+    let s = setup().await?;
+    s.host.push(Script {
+        chunks: vec![
+            " Welcome to the Antigravity CLI. You are currently not signed in.\r\n".into(),
+            " Your browser should open automatically. If not:\r\n https://accounts.google.com/o/oauth2/auth?client_id=SYNTHETIC\r\n".into(),
+        ],
+        writes: vec![(
+            "home/.gemini/antigravity-cli/antigravity-oauth-token".into(),
+            "SYNTHETIC-agy-token".into(),
+        )],
+        exit: Some(0),
+        gated: true,
+        ..Script::default()
+    });
+    let mut events = s.h.app.events.subscribe();
+    let (account_id, login_id) = create(&s, "google", "Antigravity #1").await?;
+    let plans = s.host.plans();
+    let (_, plan, _) = plans.first().ok_or("spawned")?;
+    assert_eq!(plan.argv, ["agy"]);
+    let home = login_dir(&s, &login_id).join("home");
+    for (name, value) in [
+        ("HOME", home.to_string_lossy().into_owned()),
+        ("AGY_CLI_DISABLE_AUTO_UPDATE", "true".to_owned()),
+    ] {
+        assert!(
+            plan.env.iter().any(|(k, v)| k == name && *v == value),
+            "{name}: {:?}",
+            plan.env
+        );
+    }
+    let ctx = ctx_of(&s.h, &s.admin).await?;
+    let terminal = s.h.app.login_terminal(&ctx, &login_id)?;
+    let mut sub = terminal.subscribe();
+    s.host.release.add_permits(1);
+    let (shown, status, _) = viewer_output(&mut sub).await?;
+    terminal.unsubscribe();
+    assert!(shown.contains("accounts.google.com"), "{shown}");
+    assert_eq!(status, "ok");
+    let settled = account_settled(&mut events, &account_id).await?;
+    assert_eq!(settled["status"], "ok", "{settled}");
+    assert_eq!(settled["provider"], "google", "{settled}");
+    let stored = stored_credential(&s, &account_id).await?;
+    assert_eq!(
+        stored.as_bytes(),
+        yulius_harness::login::antigravity_sign_in_credential(b"SYNTHETIC-agy-token")
+            .ok_or("envelope")?
+    );
+    assert!(
+        !login_dir(&s, &login_id).exists(),
+        "the temporary home is wiped"
+    );
+    Ok(())
+}
+
+/// SPEC-505 AGY-008: the Antigravity CLI never exits after its sign-in (its TUI runs on): the
+/// sign-in ends once the token file it wrote has been there for the grace, the process is
+/// stopped, and the file is sealed.
+#[tokio::test]
+async fn an_antigravity_sign_in_ends_once_its_token_file_is_written() -> TestResult {
+    let s = setup().await?;
+    s.h.app
+        .set_account_login_token_grace(Duration::from_millis(50));
+    s.host.push(Script {
+        chunks: vec![" Sign in with Google: https://accounts.google.com/o/oauth2/auth\r\n".into()],
+        writes: vec![(
+            "home/.gemini/antigravity-cli/antigravity-oauth-token".into(),
+            "SYNTHETIC-agy-token-2".into(),
+        )],
+        after: vec![" Signed in. Ask anything\r\n".into()],
+        exit: None,
+        ..Script::default()
+    });
+    let mut events = s.h.app.events.subscribe();
+    let (account_id, login_id) = create(&s, "google", "Antigravity #2").await?;
+    // agy 1.5.10's Google sign-in link is 704 characters, and it breaks a link at the width
+    // (seen with the real CLI): the terminal is wide enough to keep it on one row.
+    let plans = s.host.plans();
+    let (_, _, (cols, _)) = plans.first().ok_or("spawned")?;
+    assert!(*cols >= 704, "{cols} columns break the sign-in link");
+    let settled = account_settled(&mut events, &account_id).await?;
+    assert_eq!(settled["status"], "ok", "{settled}");
+    let log = s.host.log.lock().map_err(|_| "log")?.clone();
+    assert!(log.iter().any(|l| l == "signal:Terminate"), "{log:?}");
+    assert_eq!(
+        stored_credential(&s, &account_id).await?.as_bytes(),
+        yulius_harness::login::antigravity_sign_in_credential(b"SYNTHETIC-agy-token-2")
+            .ok_or("envelope")?
+    );
+    assert!(
+        !login_dir(&s, &login_id).exists(),
+        "the temporary home is wiped"
+    );
+    Ok(())
+}
+
+/// SPEC-505 AGY-008: an Antigravity sign-in that ends without a token file fails the account,
+/// and so does one whose CLI folder became a link out of its home: the file there is never read.
+#[tokio::test]
+async fn an_antigravity_sign_in_without_its_own_token_file_fails() -> TestResult {
+    let s = setup().await?;
+    let elsewhere = tempfile::tempdir()?;
+    std::fs::write(
+        elsewhere.path().join("antigravity-oauth-token"),
+        "SYNTHETIC-planted-token",
+    )?;
+    s.host.push(Script {
+        chunks: vec![" Sign-in cancelled.\r\n".into()],
+        exit: Some(1),
+        ..Script::default()
+    });
+    s.host.push(Script {
+        chunks: vec![" Sign in with Google\r\n".into()],
+        links: vec![(
+            "home/.gemini/antigravity-cli".into(),
+            elsewhere.path().to_path_buf(),
+        )],
+        exit: Some(0),
+        ..Script::default()
+    });
+    let mut events = s.h.app.events.subscribe();
+    for label in ["Antigravity none", "Antigravity linked"] {
+        let (account_id, _) = create(&s, "google", label).await?;
+        let failed = account_settled(&mut events, &account_id).await?;
+        assert_eq!(failed["status"], "error", "{label}: {failed}");
+        assert!(
+            s.h.store
+                .account(&AccountId::parse(&account_id)?)
+                .await?
+                .ok_or("account")?
+                .credential
+                .is_none(),
+            "{label}: nothing sealed"
+        );
+    }
+    Ok(())
+}
+
+/// The Antigravity CLI provider of `root` over an unreachable server: an install fails at once.
+fn unreachable_antigravity_cli(
+    root: &Path,
+) -> Result<Arc<yulius::wiring::pinned_cli::PinnedCli>, Box<dyn std::error::Error>> {
+    let platform =
+        yulius_domain::agent_cli::antigravity::platform("linux", "x86_64").ok_or("x64")?;
+    Ok(Arc::new(
+        yulius::wiring::pinned_cli::PinnedCli::antigravity_from(
+            root.to_path_buf(),
+            "http://127.0.0.1:1".into(),
+            Some(platform),
+            false,
+        )?,
+    ))
+}
+
+/// A setup whose harness provides the Antigravity CLI `cli`, with no host `agy` to fall back on.
+async fn setup_with_antigravity(
+    cli: Arc<yulius::wiring::pinned_cli::PinnedCli>,
+) -> Result<Setup, Box<dyn std::error::Error>> {
+    let mut adapter =
+        yulius::wiring::harness::HarnessAdapter::new("/bin/false".into(), "http://127.0.0.1:1")
+            .with_antigravity_cli(cli);
+    adapter.host_antigravity = None;
+    let host = Arc::new(FakeHost::default());
+    let h = support::harness_with(support::HarnessOptions {
+        git: Some(Arc::new(yulius::wiring::pending::UnavailableGit)),
+        session_host: Some(host.clone()),
+        harness: Some(Arc::new(adapter)),
+        ..support::HarnessOptions::default()
+    })?;
+    let admin = setup_superadmin_creds(&h).await?;
+    Ok(Setup { h, host, admin })
+}
+
+/// SPEC-505 AGY-007: the Google sign-in starts the Antigravity CLI Yulius provides, by its path.
+#[tokio::test]
+async fn an_antigravity_sign_in_runs_the_provided_cli() -> TestResult {
+    let root = tempfile::tempdir()?;
+    let platform =
+        yulius_domain::agent_cli::antigravity::platform("linux", "x86_64").ok_or("x64")?;
+    let program = root
+        .path()
+        .join(platform.install_name())
+        .join(yulius_domain::agent_cli::antigravity::BINARY);
+    std::fs::create_dir_all(program.parent().ok_or("dir")?)?;
+    std::fs::write(&program, b"installed")?;
+    let s = setup_with_antigravity(unreachable_antigravity_cli(root.path())?).await?;
+    s.host.push(Script {
+        chunks: vec![" Sign in with Google\r\n".into()],
+        gated: true,
+        ..Script::default()
+    });
+    create(&s, "google", "Antigravity provided").await?;
+    let plans = s.host.plans();
+    let (_, plan, _) = plans.first().ok_or("spawned")?;
+    assert_eq!(plan.argv, [program.to_string_lossy().into_owned()]);
+    Ok(())
+}
+
+/// SPEC-505 AGY-007: a Google sign-in whose CLI cannot be installed (and no host `agy`) is
+/// refused before the account exists; an account with a Gemini API key starts the CLI's install
+/// in the background, so its first task does not wait for it.
+#[tokio::test]
+async fn the_antigravity_cli_installs_for_a_new_google_account() -> TestResult {
+    let root = tempfile::tempdir()?;
+    let cli = unreachable_antigravity_cli(root.path())?;
+    let s = setup_with_antigravity(Arc::clone(&cli)).await?;
+    let refused = call(
+        &s.h.router,
+        Method::POST,
+        "/api/admin/accounts",
+        Some(json!({"provider": "google", "label": "Antigravity sign-in"})),
+        &s.admin,
+    )
+    .await?;
+    assert_eq!(refused.status, StatusCode::BAD_GATEWAY, "{}", refused.body);
+    assert!(s.h.store.accounts().await?.is_empty(), "no account");
+    assert!(s.host.plans().is_empty(), "no sign-in ran");
+
+    let other = tempfile::tempdir()?;
+    let fresh = unreachable_antigravity_cli(other.path())?;
+    let s = setup_with_antigravity(Arc::clone(&fresh)).await?;
+    assert_eq!(fresh.ready(), Ok(None), "nothing tried yet");
+    let r = call(
+        &s.h.router,
+        Method::POST,
+        "/api/admin/accounts",
+        Some(json!({"provider": "google", "label": "Gemini key", "api_key": concat!("AIza", "SYNTHETIC0123456789abcdefghij")})),
+        &s.admin,
+    )
+    .await?;
+    assert_eq!(r.status, StatusCode::CREATED, "{}", r.body);
+    let tried = tokio::time::timeout(Duration::from_secs(10), async {
+        while fresh.ready().is_ok() {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+    assert!(tried.is_ok(), "no install was started");
+    Ok(())
+}
+
+/// SPEC-505 AGY-007 (review round 2 of slice C2): a Google sign-in's CLI is installed before its
+/// account exists, so a request that goes away while the install runs leaves no account waiting
+/// for a sign-in that never starts.
+#[tokio::test]
+async fn a_google_sign_in_given_up_during_the_install_leaves_no_account() -> TestResult {
+    let installs = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let gate = Arc::new(Semaphore::new(0));
+    let host = Arc::new(FakeHost::default());
+    let h = support::harness_with(support::HarnessOptions {
+        git: Some(Arc::new(yulius::wiring::pending::UnavailableGit)),
+        session_host: Some(host.clone()),
+        harness: Some(Arc::new(support::agents::FakeAgentHarness::new(
+            "/bin/yulius".into(),
+            "/bin/false".into(),
+            support::agents::FakeAgentOptions {
+                antigravity_installs: Some(Arc::clone(&installs)),
+                antigravity_gate: Some(Arc::clone(&gate)),
+                ..Default::default()
+            },
+        ))),
+        ..support::HarnessOptions::default()
+    })?;
+    let admin = setup_superadmin_creds(&h).await?;
+    let ctx = ctx_of(&h, &admin).await?;
+    let app = Arc::clone(&h.app);
+    let request = tokio::spawn(async move {
+        let req: yulius_contracts::api::admin::CreateAccount =
+            serde_json::from_value(json!({"provider": "google", "label": "Antigravity gone"}))?;
+        app.create_account(&ctx, req)
+            .await
+            .map(|_| ())
+            .map_err(|err| -> Box<dyn std::error::Error + Send + Sync> { err.to_string().into() })
+    });
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while installs.load(Ordering::SeqCst) == 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await?;
+    request.abort();
+    let _ = request.await;
+    assert!(h.store.accounts().await?.is_empty(), "no account is left");
+    assert!(host.plans().is_empty(), "no sign-in ran");
+    Ok(())
+}
+
+/// SPEC-505 AGY-008: an Antigravity account takes a Gemini API key at once, sealed, never
+/// returned or audited; text that cannot be a key, a Codex `auth.json` or a Claude token is
+/// refused for it, and a Gemini key is refused for another provider.
+#[tokio::test]
+async fn an_antigravity_account_can_be_added_with_a_gemini_api_key() -> TestResult {
+    let s = setup().await?;
+    let key = concat!("AIza", "SYNTHETIC0123456789abcdefghij");
+    let r = call(
+        &s.h.router,
+        Method::POST,
+        "/api/admin/accounts",
+        Some(json!({"provider": "google", "label": "Gemini key", "api_key": key})),
+        &s.admin,
+    )
+    .await?;
+    assert_eq!(r.status, StatusCode::CREATED, "{}", r.body);
+    assert_eq!(r.body["account"]["status"], "ok");
+    assert_eq!(r.body["account"]["provider"], "google");
+    assert!(r.body.get("login_id").is_none(), "{}", r.body);
+    assert!(
+        !r.body.to_string().contains(key),
+        "the key is never returned"
+    );
+    assert!(s.host.plans().is_empty(), "no sign-in ran");
+    let id = r.body["account"]["id"].as_str().ok_or("id")?;
+    let stored: Value = serde_json::from_str(&stored_credential(&s, id).await?)?;
+    assert_eq!(stored["kind"], "gemini_api_key");
+    assert_eq!(stored["api_key"], key);
+    let audit = s.h.store.audit_details(id, "account.created", 5).await?;
+    assert_eq!(audit, ["provider=google label=\"Gemini key\" via=api_key"]);
+    for body in [
+        json!({"provider": "google", "label": "Bad key", "api_key": "short"}),
+        json!({"provider": "google", "label": "Codex file", "auth_json": CODEX_AUTH}),
+        json!({"provider": "google", "label": "Token", "token": concat!("sk-ant-oat01-", "SYNTHETIC_token_value_for_tests_only_0123456789")}),
+        json!({"provider": "anthropic", "label": "Claude key", "api_key": key}),
+    ] {
+        let refused = call(
+            &s.h.router,
+            Method::POST,
+            "/api/admin/accounts",
+            Some(body.clone()),
+            &s.admin,
+        )
+        .await?;
+        assert_eq!(
+            refused.status,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "{body}: {}",
+            refused.body
+        );
+        assert!(!refused.body.to_string().contains(key));
+    }
+    assert!(s.host.plans().is_empty(), "no sign-in ran");
     Ok(())
 }

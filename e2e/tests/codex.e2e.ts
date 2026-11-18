@@ -28,7 +28,7 @@ test('a Codex subscription is added with an OpenAI API key, without a sign-in', 
   await expect(add.getByRole('radio', 'ChatGPT sign-in')).toBeChecked();
   // A pasted token is Claude's way in only (SPEC-503 CDX-015).
   await expect(add.getByRole('radio', 'Paste token')).toHaveCount(0);
-  await browser.locator('dialog.modal .seg label:has-text("API key")').click();
+  await browser.locator('dialog.modal .seg:not([hidden]) label:has-text("API key")').click();
   await expect(add.getByRole('radio', 'API key')).toBeChecked();
   await add.getByRole('textbox', /^Name/).fill('Codex key');
   expect(await axeViolations(browser)).toEqual([]);
@@ -124,7 +124,8 @@ test('an automation chooses the agent of its tasks', async ({ app, browser, scre
   await screen.getByRole('textbox', 'Automation name').fill('Nightly Codex review');
   await screen.getByRole('textbox', 'What the task does').fill('Review yesterday’s commits.');
   const agent = screen.getByRole('radiogroup', 'Agent');
-  await expect(agent.getByRole('radio', 'Claude Code')).toHaveAttribute('aria-checked', 'true');
+  // Random is the default (SPEC-505 RND-002).
+  await expect(agent.getByRole('radio', 'Random')).toHaveAttribute('aria-checked', 'true');
   await agent.getByRole('radio', 'Codex').click();
   await expect(agent.getByRole('radio', 'Codex')).toHaveAttribute('aria-checked', 'true');
   expect(await axeViolations(browser)).toEqual([]);

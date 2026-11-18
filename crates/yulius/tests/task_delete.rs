@@ -180,7 +180,8 @@ async fn tasks_run_claude_code_or_codex() -> TestResult {
         "{:?}",
         other.body
     );
-    // SPEC-505 slice A: Antigravity's adapter exists, its tasks do not yet.
+    // SPEC-505 AGY-001: an Antigravity task that would start needs an Antigravity account, and
+    // takes a Gemini model only.
     let antigravity = call(
         &h.router,
         Method::POST,
@@ -191,10 +192,34 @@ async fn tasks_run_claude_code_or_codex() -> TestResult {
     .await?;
     assert_eq!(
         antigravity.status,
-        StatusCode::UNPROCESSABLE_ENTITY,
+        StatusCode::CONFLICT,
         "{:?}",
         antigravity.body
     );
+    assert!(
+        antigravity
+            .body
+            .to_string()
+            .contains("no Antigravity account is connected"),
+        "{:?}",
+        antigravity.body
+    );
+    for model in ["claude-opus-5-5", "gpt-5"] {
+        let other_model = call(
+            &h.router,
+            Method::POST,
+            "/api/sandboxes/s1/tasks",
+            Some(json!({"prompt": "x", "harness": "antigravity", "model": model})),
+            &alice,
+        )
+        .await?;
+        assert_eq!(
+            other_model.status,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "{model}: {:?}",
+            other_model.body
+        );
+    }
     let settings = call(&h.router, Method::GET, "/api/admin/settings", None, &alice).await?;
     assert_eq!(settings.status, StatusCode::NOT_FOUND);
     Ok(())

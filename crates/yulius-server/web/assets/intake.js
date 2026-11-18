@@ -51,8 +51,8 @@ function preview(prompt) {
  * Claude prepares the proposal the rows shimmer and Keep as one task already works; without a
  * usable proposal the card calls `keep()` by itself (one task, as asked).
  * `create(list, chain)` creates the tasks; `keep()` the original one; `close()` withdraws.
- * `codex`: the task runs Codex, which needs no Claude account (SPEC-503): a proposal refused for
- * want of one leaves it one task.
+ * `codex`: the task runs another agent (Codex or Antigravity), which needs no Claude account
+ * (SPEC-503, SPEC-505): a proposal refused for want of one leaves it one task.
  */
 export function splitCard(ctx, sandbox, prompt, { create, keep, close, codex = false }) {
   const controller = new AbortController();

@@ -104,6 +104,10 @@ pub struct InstanceInfo {
     /// Whether a Codex account is usable, so Codex tasks can start (SPEC-503 CDX-014).
     #[serde(default)]
     pub codex_connected: bool,
+    /// Whether an Antigravity (Google) account is usable, so Antigravity tasks can start
+    /// (SPEC-505).
+    #[serde(default)]
+    pub antigravity_connected: bool,
     /// Whether the instance has a Vidoc key and Vidoc is on for it, so new projects scan by default
     /// (SPEC-338 VOF-004, SPEC-356 VIO-005).
     #[serde(default)]

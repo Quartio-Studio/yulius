@@ -4,7 +4,44 @@ Notable changes, newest first. Per-change detail lives in the merged pull reques
 evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-architecture.md)
 (sections 14 and 15).
 
+## 2026-11-18
+
+- Antigravity, slice E (SPEC-505 pull request 6, task #487): a task created without a chosen
+  agent is drawn at random between Claude Code and Antigravity, among those with a usable
+  subscription; a model given picks its agent. Random is the composer's and the automation
+  editor's default (an automation draws for each run), a task says whether its agent was drawn
+  (`harness_choice`), and the analytics export lists it, so the two agents can be compared.
+
+- Antigravity, slice D (SPEC-505 pull request 5, task #487): the UI offers Antigravity. The
+  composer's model menu has Gemini 4 Carbon under Google (high effort by default), an
+  automation's agent can be Antigravity, and Subscriptions adds an Antigravity subscription by
+  Google sign-in or a Gemini API key. Every page names a task's or subscription's own agent.
+  Login terminals are 1024 columns wide, so the Google sign-in link (704 characters) stays whole.
+
+- Antigravity, slice C2 (SPEC-505 pull request 4, task #487): an administrator adds an
+  Antigravity subscription (`provider: google`) with a Gemini API key or by the Antigravity CLI's
+  own Google sign-in in a server-owned terminal, whose token file is sealed. `/api/me` says
+  `antigravity_connected`; the CLI installs at start when a Google subscription exists. An
+  Antigravity task moves only between Antigravity subscriptions, and its notices and Needs you
+  name Antigravity ("an Antigravity subscription"). The UI offers it in the next slice.
+
 ## 2026-11-17
+
+- Every sandbox gets the new skills at a server start, not at its next task's start (SPEC-507,
+  task #489, ADR-0364): an update or a restart installs, before any task resumes, the skills that
+  differ from the instance's into every sandbox's home, running tasks or not, and audits each
+  sandbox as `skills.refreshed`; switching a skill does the same for its sandbox at once. The
+  reviewer agents' prompt, which a session keeps across an update, now holds only the reviewer's
+  contract; the CI rule is in `om-code-review` alone. `docs/operations.md` says what an update
+  reaches in a running session and what waits for its next launch.
+- Antigravity, slice C1 (SPEC-505 pull request 3, task #487): a task created with
+  `harness: antigravity` runs the native `agy` TUI on a Google account, on Gemini 4 Carbon at high
+  effort unless it names a Gemini model. Each run has its own home in its run directory, with
+  the sandbox's conversations shared, so a task resumes on another Google account at a limit.
+  Yulius learns its conversation from its SessionStart and reads its transcript; a turn its model
+  API failed ends without a gate. A goal task gets its request as its first message, and a
+  Google sign-in the run refreshed is kept unless a newer one came meanwhile. Google
+  subscriptions are added in the next slice.
 
 - The Review card counts what the next study needs (SPEC-506 pull request 4, task #488): the
   Pipeline tab's Review card and `GET /api/analytics/reviews` give the rounds after a request for

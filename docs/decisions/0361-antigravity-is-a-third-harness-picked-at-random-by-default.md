@@ -27,19 +27,24 @@ provider switching and session translation stay removed (SPEC-002 ADR-06).
   keeps its harness for life; rotation, moves and removals stay within the provider.
 - **Draw.** A task created without a harness (or with `auto`) runs Claude Code or Antigravity,
   drawn uniformly among those two with a usable subscription (Claude Code when neither has one);
-  a harness given is kept. The task records `harness_choice` (`random` or `chosen`). Codex runs
-  only when chosen.
+  a harness given is kept, and so is the one a model given without one implies (Antigravity for
+  a Gemini model, else Claude Code). An automation without an agent draws for each run. The
+  task records `harness_choice` (`random` or `chosen`). Codex runs only when chosen.
 - **Model.** An Antigravity task that names no model runs `gemini-4-carbon` at effort `high`,
   passed on every launch.
-- **Homes.** Each (sandbox, account) has `<sandbox>/antigravity/<account>`, a home whose
-  `.gemini/antigravity-cli/{brain,conversations}` link to the sandbox's shared ones. A contained
-  run binds that `.gemini` over the sandbox home's; an uncontained one sets `HOME` to it.
+- **Homes.** Each run has its own home in its run directory, `<run>/antigravity-home`, whose
+  `.gemini/antigravity-cli/{brain,conversations}` link to the sandbox's shared ones
+  (`<sandbox>/antigravity/shared`). A contained run binds that `.gemini` over the sandbox home's
+  (a path only the server wrote, never one an agent of the sandbox could swap for a link); an
+  uncontained one sets `HOME` to it.
 - **Hooks.** `yulius hook antigravity <event>` translates Antigravity's payloads and answers to
   the Claude-shaped contract the server already serves; its fail-open answer to `PreToolUse` is
   `allow`.
 - **Credentials.** A Gemini API key (secret environment, `modelProvider: gemini`) or the token
   file the CLI's own Google sign-in writes in a temporary home, sealed in the vault, written into
-  the run's home and written back when the run changed it.
+  the run's home and written back when the run changed it; the file is opaque, so the run's own
+  agent can replace the account's sign-in with a file of its making (a sign-in a person made
+  meanwhile is never replaced).
 - **CLI.** Yulius installs `agy` 1.5.10 from the URL and sha512 in its source into
   `<data>/antigravity-cli/1.5.10-<platform>` (Linux x86-64 and arm64), with auto-update off, and
   starts it by its absolute path.
@@ -72,5 +77,12 @@ provider switching and session translation stay removed (SPEC-002 ADR-06).
   first message and is settled by its turns.
 - An uncontained run's shell sees the Antigravity home as `HOME`.
 - A sandbox MCP server that needs a bearer token is not offered to Antigravity runs.
+- A Google sign-in is the whole `agy` TUI on the host (it has no sign-in-only command), stopped
+  5 s after its token file appears. Once signed in, it could run a shell command an
+  administrator types into it, which an instance administrator can already do with an MCP
+  server's Test (SPEC-218); unlike ADR-0256's sign-ins it is not a login-only command. A sign-in
+  that asks more after writing the file (a billing or project choice, not seen without a live
+  account) is cut then; the run's own TUI asks it again, and the run's write-back keeps what it
+  stores.
 - A resumed conversation gets no new briefing (the CLI runs no `SessionStart` then); its first
   start's briefing stays in its history.

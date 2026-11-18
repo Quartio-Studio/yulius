@@ -26,6 +26,7 @@ use nix::errno::Errno;
 use nix::fcntl::{AtFlags, OFlag, openat, renameat};
 use nix::sys::stat::{Mode, SFlag, fchmod, fstatat, mkdirat};
 use nix::unistd::{UnlinkatFlags, unlinkat};
+use sha2::{Digest as _, Sha256};
 
 /// File written into every Yulius-installed skill copy.
 pub const MANAGED_MARKER: &str = ".yulius-managed";
@@ -64,6 +65,24 @@ pub struct InstallReport {
     pub removed: Vec<String>,
     /// Symbolic links skipped because they escape the skill or point to a directory.
     pub skipped_links: usize,
+}
+
+/// What [`refresh_skills`] did: nothing at all when it is empty.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RefreshReport {
+    /// Skills whose copy was missing or differed from the catalog, installed again (in catalog
+    /// order).
+    pub changed: Vec<String>,
+    /// Managed copies removed because their skill left the catalog.
+    pub removed: Vec<String>,
+}
+
+impl RefreshReport {
+    /// Whether every copy matched, so nothing was written.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.changed.is_empty() && self.removed.is_empty()
+    }
 }
 
 /// Why skills could not be installed. Nothing is swapped in for a skill that fails.
@@ -117,6 +136,60 @@ pub fn install_skills(
     root: &Path,
     skills_dir: &Path,
 ) -> Result<InstallReport, SkillsError> {
+    let names = validated_names(sources)?;
+    let mut report = InstallReport::default();
+    let dir = open_skills_dir(root, skills_dir).map_err(io_error(""))?;
+    clean_leftovers(&dir).map_err(io_error(""))?;
+    for skill in sources {
+        report.skipped_links += install_one(skill, &dir)?;
+        report.installed.push(skill.name.clone());
+    }
+    report.removed = prune(&dir, &names).map_err(io_error(""))?;
+    report.removed.sort();
+    Ok(report)
+}
+
+/// Brings `skills_dir` (relative to `root`, as for [`install_skills`]) to the catalog `sources`,
+/// writing only what differs: a skill whose copy is missing or differs from its source is installed
+/// as [`install_skills`] installs it (staged, swapped in by rename), and managed copies of skills
+/// no longer listed are removed. Copies that match are left as they are (SPEC-507 SKR-001).
+///
+/// A copy is compared by a digest of its files read through folder handles, never through a link
+/// and within the install's bounds; a link, a FIFO or anything else that is not a regular file or
+/// a folder in a copy, a copy without [`MANAGED_MARKER`] and a copy beyond a bound (a folder in it
+/// too long to list included) all count as different (SKR-002). The skills folder itself is listed
+/// within its own bound, as the install lists it: beyond it the refresh fails.
+///
+/// # Errors
+/// As [`install_skills`]: an invalid source, a link or a file on the way from `root` to
+/// `skills_dir`, or an I/O failure. A skill that fails stops the refresh; the skills before it
+/// were refreshed.
+pub fn refresh_skills(
+    sources: &[SkillDir],
+    root: &Path,
+    skills_dir: &Path,
+) -> Result<RefreshReport, SkillsError> {
+    let names = validated_names(sources)?;
+    let mut report = RefreshReport::default();
+    let dir = open_skills_dir(root, skills_dir).map_err(io_error(""))?;
+    clean_leftovers(&dir).map_err(io_error(""))?;
+    for skill in sources {
+        let wanted = source_digest(skill)?;
+        let installed =
+            installed_digest(&dir, OsStr::new(&skill.name)).map_err(io_error(&skill.name))?;
+        if installed != Some(wanted) {
+            install_one(skill, &dir)?;
+            report.changed.push(skill.name.clone());
+        }
+    }
+    report.removed = prune(&dir, &names).map_err(io_error(""))?;
+    report.removed.sort();
+    Ok(report)
+}
+
+/// The names of `sources`, each checked to be a safe directory name, listed once and holding a
+/// `SKILL.md`.
+fn validated_names(sources: &[SkillDir]) -> Result<Vec<&str>, SkillsError> {
     let mut names: Vec<&str> = Vec::new();
     for skill in sources {
         if !valid_name(&skill.name) || names.contains(&skill.name.as_str()) {
@@ -128,16 +201,201 @@ pub fn install_skills(
             return Err(SkillsError::MissingSkillMd(skill.name.clone()));
         }
     }
-    let mut report = InstallReport::default();
-    let dir = open_skills_dir(root, skills_dir).map_err(io_error(""))?;
-    clean_leftovers(&dir).map_err(io_error(""))?;
-    for skill in sources {
-        report.skipped_links += install_one(skill, &dir)?;
-        report.installed.push(skill.name.clone());
+    Ok(names)
+}
+
+/// The digest of what [`install_one`] would install from `skill`: the same files, links and
+/// bounds as [`copy_tree`].
+fn source_digest(skill: &SkillDir) -> Result<[u8; 32], SkillsError> {
+    let root = fs::canonicalize(&skill.path).map_err(io_error(&skill.name))?;
+    let mut hasher = Sha256::new();
+    let mut budget = Budget {
+        bytes: 0,
+        entries: 0,
+    };
+    hash_source(&root, &root, &mut hasher, 0, &mut budget, &skill.name)?;
+    Ok(hasher.finalize().into())
+}
+
+fn hash_source(
+    root: &Path,
+    from: &Path,
+    hasher: &mut Sha256,
+    depth: usize,
+    budget: &mut Budget,
+    name: &str,
+) -> Result<(), SkillsError> {
+    use std::os::unix::ffi::OsStrExt as _;
+    use std::os::unix::fs::PermissionsExt as _;
+    if depth > MAX_SKILL_DEPTH {
+        return Err(SkillsError::TooLarge(name.to_owned()));
     }
-    report.removed = prune(&dir, &names).map_err(io_error(""))?;
-    report.removed.sort();
-    Ok(report)
+    let mut entries: Vec<fs::DirEntry> = fs::read_dir(from)
+        .map_err(io_error(name))?
+        .collect::<io::Result<_>>()
+        .map_err(io_error(name))?;
+    entries.sort_by_key(fs::DirEntry::file_name);
+    for entry in entries {
+        budget.entries += 1;
+        if budget.entries > MAX_SKILL_ENTRIES {
+            return Err(SkillsError::TooLarge(name.to_owned()));
+        }
+        let file_name = entry.file_name();
+        if file_name == MANAGED_MARKER {
+            continue;
+        }
+        let source = entry.path();
+        let kind = entry.file_type().map_err(io_error(name))?;
+        let file = if kind.is_dir() {
+            hash_name(hasher, b'd', file_name.as_bytes());
+            hash_source(root, &source, hasher, depth + 1, budget, name)?;
+            hasher.update(b"u");
+            None
+        } else if kind.is_file() {
+            Some(source)
+        } else if kind.is_symlink() {
+            match fs::canonicalize(&source) {
+                Ok(real) if real.starts_with(root) && real.is_file() => Some(real),
+                _ => None,
+            }
+        } else {
+            None
+        };
+        if let Some(path) = file {
+            let meta = fs::metadata(&path).map_err(io_error(name))?;
+            budget.bytes = budget.bytes.saturating_add(meta.len());
+            if budget.bytes > MAX_SKILL_BYTES {
+                return Err(SkillsError::TooLarge(name.to_owned()));
+            }
+            hash_name(hasher, b'f', file_name.as_bytes());
+            hasher.update(file_mode(meta.permissions().mode()).to_le_bytes());
+            let input = fs::File::open(&path).map_err(io_error(name))?;
+            let left = MAX_SKILL_BYTES - budget.bytes + meta.len();
+            hash_content(hasher, input, left).map_err(io_error(name))?;
+        }
+    }
+    Ok(())
+}
+
+/// The digest of the installed copy `name` in `dir`, read through folder handles without
+/// following a link; `None` when it is missing, is not a folder, has no [`MANAGED_MARKER`], holds
+/// anything but regular files and folders, or exceeds a bound: a copy that differs.
+fn installed_digest(dir: &OwnedFd, name: &OsStr) -> io::Result<Option<[u8; 32]>> {
+    let copy = match open_dir_at(dir, name, false) {
+        Ok(copy) => copy,
+        Err(Errno::ENOENT | Errno::ELOOP | Errno::ENOTDIR) => return Ok(None),
+        Err(err) => return Err(err.into()),
+    };
+    if kind(&copy, OsStr::new(MANAGED_MARKER))? != Some(SFlag::S_IFREG) {
+        return Ok(None);
+    }
+    let mut hasher = Sha256::new();
+    let mut budget = Budget {
+        bytes: 0,
+        entries: 0,
+    };
+    Ok(hash_installed(&copy, &mut hasher, 0, &mut budget)?.then(|| hasher.finalize().into()))
+}
+
+/// Hashes the folder `dir` of an installed copy as [`hash_source`] hashes its source; `false` when
+/// it holds something no install writes or exceeds a bound.
+fn hash_installed(
+    dir: &OwnedFd,
+    hasher: &mut Sha256,
+    depth: usize,
+    budget: &mut Budget,
+) -> io::Result<bool> {
+    use std::os::unix::ffi::OsStrExt as _;
+    if depth > MAX_SKILL_DEPTH {
+        return Ok(false);
+    }
+    // A folder too long to list is no copy the install wrote.
+    let Ok(mut names) = entries(dir) else {
+        return Ok(false);
+    };
+    names.sort();
+    for entry in names {
+        if depth == 0 && entry == MANAGED_MARKER {
+            continue;
+        }
+        budget.entries += 1;
+        if budget.entries > MAX_SKILL_ENTRIES {
+            return Ok(false);
+        }
+        match kind(dir, &entry)? {
+            Some(SFlag::S_IFDIR) => {
+                let Ok(folder) = open_dir_at(dir, &entry, false) else {
+                    return Ok(false);
+                };
+                hash_name(hasher, b'd', entry.as_bytes());
+                if !hash_installed(&folder, hasher, depth + 1, budget)? {
+                    return Ok(false);
+                }
+                hasher.update(b"u");
+            }
+            Some(SFlag::S_IFREG) => {
+                // Non-blocking, so a FIFO swapped in after the check is never waited on; the
+                // handle's own type is checked again.
+                let flags = OFlag::O_RDONLY
+                    | OFlag::O_NOFOLLOW
+                    | OFlag::O_NONBLOCK
+                    | OFlag::O_NOCTTY
+                    | OFlag::O_CLOEXEC;
+                let Ok(fd) = openat(dir, entry.as_os_str(), flags, Mode::empty()) else {
+                    return Ok(false);
+                };
+                let stat = nix::sys::stat::fstat(&fd)?;
+                if SFlag::from_bits_truncate(stat.st_mode) & SFlag::S_IFMT != SFlag::S_IFREG {
+                    return Ok(false);
+                }
+                let len = u64::try_from(stat.st_size).unwrap_or(u64::MAX);
+                budget.bytes = budget.bytes.saturating_add(len);
+                if budget.bytes > MAX_SKILL_BYTES {
+                    return Ok(false);
+                }
+                hash_name(hasher, b'f', entry.as_bytes());
+                hasher.update(file_mode(stat.st_mode).to_le_bytes());
+                // At most what the bound has left: a file grown after the check reads differently.
+                let left = MAX_SKILL_BYTES - budget.bytes + len;
+                hash_content(hasher, fs::File::from(fd), left)?;
+            }
+            // A link, a FIFO, a socket or a device: never installed, so the copy differs.
+            Some(_) => return Ok(false),
+            // Removed meanwhile.
+            None => return Ok(false),
+        }
+    }
+    Ok(true)
+}
+
+/// The permission bits a copy keeps of its source's mode (`mode_t` is 16 bits on macOS).
+fn file_mode(mode: impl Into<u32>) -> u32 {
+    mode.into() & 0o777
+}
+
+fn hash_name(hasher: &mut Sha256, tag: u8, name: &[u8]) {
+    hasher.update([tag]);
+    hasher.update((name.len() as u64).to_le_bytes());
+    hasher.update(name);
+}
+
+/// Hashes at most `limit` bytes of `input` and their count.
+fn hash_content(hasher: &mut Sha256, input: fs::File, limit: u64) -> io::Result<()> {
+    let mut input = io::Read::take(input, limit);
+    let mut content = Sha256::new();
+    let mut buf = [0u8; 16 * 1024];
+    let mut total: u64 = 0;
+    loop {
+        let read = io::Read::read(&mut input, &mut buf)?;
+        if read == 0 {
+            break;
+        }
+        content.update(&buf[..read]);
+        total += read as u64;
+    }
+    hasher.update(total.to_le_bytes());
+    hasher.update(content.finalize());
+    Ok(())
 }
 
 /// Opens `skills_dir` below `root` one folder at a time without following links, creating the
@@ -473,6 +731,54 @@ mod tests {
         };
         let result = install_skills(&[skill], dir.path(), Path::new("home/.claude/skills"));
         assert!(result.is_err(), "{result:?}");
+        Ok(())
+    }
+
+    /// SPEC-507 review round 2: the read of a copy the agent filled stops at the bound, without
+    /// listing or counting what lies beyond it.
+    #[test]
+    fn the_read_of_a_copy_stops_at_its_bounds() -> Result<(), Box<dyn std::error::Error>> {
+        let open = |path: &Path| nix::fcntl::open(path, DIR_FLAGS, Mode::empty());
+        let wide = tempfile::tempdir()?;
+        for n in 0..MAX_SKILL_ENTRIES + 10 {
+            fs::write(wide.path().join(format!("f{n:05}")), "")?;
+        }
+        let mut budget = Budget {
+            bytes: 0,
+            entries: 0,
+        };
+        let mut hasher = Sha256::new();
+        assert!(!hash_installed(
+            &open(wide.path())?,
+            &mut hasher,
+            0,
+            &mut budget
+        )?);
+        assert_eq!(
+            budget.entries,
+            MAX_SKILL_ENTRIES + 1,
+            "stopped at the entry bound"
+        );
+
+        let deep = tempfile::tempdir()?;
+        let bottom: PathBuf = (0..MAX_SKILL_DEPTH + 3).map(|n| format!("d{n}")).collect();
+        fs::create_dir_all(deep.path().join(&bottom))?;
+        fs::write(deep.path().join(&bottom).join("f"), "")?;
+        let mut budget = Budget {
+            bytes: 0,
+            entries: 0,
+        };
+        assert!(!hash_installed(
+            &open(deep.path())?,
+            &mut hasher,
+            0,
+            &mut budget
+        )?);
+        assert_eq!(
+            budget.entries,
+            MAX_SKILL_DEPTH + 1,
+            "nothing counted below the depth bound"
+        );
         Ok(())
     }
 

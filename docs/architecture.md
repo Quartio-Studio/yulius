@@ -35,7 +35,7 @@ flowchart LR
   CI -->|"jobs in its ci/ leaf, job slots"| SB
   SUP <-->|"Unix socket"| PH["yulius ptyhost (per run)"]
   subgraph SB["Sandbox (namespace holder)"]
-    PH --> AG["claude or codex TUI"]
+    PH --> AG["claude, codex or agy TUI"]
     AG -->|"/run/yulius/docker"| DF["Docker front"]
     DF --> DE["Docker engine (on demand)"]
   end
@@ -85,6 +85,36 @@ Rotation picks only accounts of the task's provider, so a Codex task moves only 
 accounts, by `codex resume <id>`: at a usage limit, when a person moves it and when its
 subscription is removed (SPEC-447); it waits when none has capacity, and with no Codex
 subscription usable it asks for one.
+
+A task created without an agent (or a model that implies one) is drawn between Claude Code and
+Antigravity among those with a usable subscription (`App::draw_harness`, `Harness::drawn`), and
+so is each run of an automation without one; the draw is kept in `task_harness_draws` and shown
+as `harness_choice` (SPEC-505 RND-001..003).
+
+An Antigravity task ([decision 0361](decisions/0361-antigravity-is-a-third-harness-picked-at-random-by-default.md))
+runs the `agy` TUI on a Google account with a home of its own in its run directory,
+`<run>/antigravity-home`, the folder whose `.gemini` the CLI reads: Yulius writes its
+`settings.json` (the worktree trusted, the first-run screens skipped, `modelProvider: gemini` for
+a Gemini API key), `config/hooks.json`, `config/mcp_config.json` and, for a Google sign-in, the
+CLI's token file. Its `antigravity-cli/brain` and `conversations` link to
+`<sandbox>/antigravity/shared`, so a conversation resumes on any Antigravity account by
+`--conversation <id>`. A contained run binds that `.gemini` over the sandbox home's (the agent's
+shell keeps the sandbox's `HOME`); an uncontained one sets `HOME` to the run's Antigravity home.
+`yulius hook antigravity <event>` translates its hooks (SessionStart, the first model call of a
+typed turn, Stop, `run_command`) to Yulius's; its transcript gives prompts, tokens and limits, and
+a turn its model API failed ends with a Stop Yulius settles without a gate. When its run ends, a
+token file the CLI refreshed replaces the stored sign-in and is removed.
+
+```mermaid
+flowchart LR
+  GACC["google account (vault: API key or token file)"] -->|"written before each run"| AHOME["run/antigravity-home/.gemini: settings, hooks, MCP, token"]
+  AHOME -->|"brain, conversations links"| ASH["sandbox/antigravity/shared (conversations)"]
+  AGY["agy TUI (ptyhost)"] -->|"HOME or bind of .gemini"| AHOME
+  AGY -->|"transcript.jsonl"| ASH
+  AGY -->|"yulius hook antigravity, yulius mcp"| INT3["Internal listener"]
+  ASH -->|"prompts, tokens, limits"| SUP3["Supervisor"]
+  SUP3 -->|"a refreshed token file"| GACC
+```
 
 ## Codex and Antigravity CLIs
 
@@ -589,6 +619,14 @@ The sign-in runs on the host, not in a sandbox. It has a fixed argv, new empty H
 folders, and input from instance administrators only. Its raw output is one allocation that never
 grows and is zeroed whole once the token is extracted
 ([decision 0256](decisions/0256-a-sign-in-runs-on-the-host-and-its-raw-output-is-one-wiped-allocation.md)).
+Codex (`codex login --device-auth`) and Antigravity sign in the same way but leave a file instead
+of printing a token: `auth.json`, or the Antigravity CLI's token file below
+`.gemini/antigravity-cli`, read without following a link and sealed. The Antigravity CLI has no
+sign-in-only command: its sign-in is the whole agent TUI (auto-update off), which never exits on
+its own, so it is stopped 5 s after its token file appears. Once signed in, that TUI can run a
+shell command typed into it, which an instance administrator can do anyway (an MCP server's
+Test), and Yulius types nothing into it
+([decision 0361](decisions/0361-antigravity-is-a-third-harness-picked-at-random-by-default.md)).
 
 ```mermaid
 stateDiagram-v2
@@ -4271,6 +4309,28 @@ flowchart LR
     a --> yulius["Yulius skill discovery (REPOSITORY_SKILL_DIRS)"]
     c --> yulius
     src -.->|check_repository.py: deployments equal sources| gate["scripts/dev check"]
+```
+
+The instance's skills (its own and the bundled packs, extracted to `<data>/skills` at every
+start) reach a sandbox through its home, `<sandbox>/home/.claude/skills`: a run's start installs
+the sandbox's set there, and so does every server start and every switch of a skill for the
+sandbox, writing only the copies that differ (a SHA-256 of the catalog skill against the copy read
+through folder handles), under the launch lock, so a session already running reads the new skill
+at its next use ([SPEC-507](../.ai/specs/SPEC-507-after-an-update-every-sandbox-gets-the-n.md),
+[ADR-0364](decisions/0364-a-server-start-refreshes-every-sandboxs-skills-and-the-reviewers-prompt-is-a-contract.md)).
+What a session got at its launch (its briefing, run settings and the reviewer agents' prompt)
+stays until it is launched again, so those carry no review rule.
+
+```mermaid
+flowchart LR
+    start["server start (update, restart)"] --> cat["extract packs to data/skills"]
+    cat --> each["each sandbox with a home"]
+    sw["skill switched"] --> one["that sandbox"]
+    run["run start"] --> inst["install_skills: every skill"]
+    each --> cmp{"copy = catalog?"}
+    one --> cmp
+    cmp -- no --> ref["refresh_skills: stage and swap that skill; audit skills.refreshed"]
+    cmp -- yes --> keep["left as it is"]
 ```
 
 ## Runtime

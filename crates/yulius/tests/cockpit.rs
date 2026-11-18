@@ -1390,6 +1390,25 @@ impl HarnessPort for RecordingHarness {
         self.inner
             .recount(harness, sandbox_home, worktree, session_id, from, until)
     }
+    fn discover_antigravity_session(
+        &self,
+        gemini_dir: &Path,
+        brain: &Path,
+        worktree: &Path,
+        since: Timestamp,
+    ) -> Option<String> {
+        self.inner
+            .discover_antigravity_session(gemini_dir, brain, worktree, since)
+    }
+    fn antigravity_api_key_credential(&self, key: &str) -> Option<Vec<u8>> {
+        self.inner.antigravity_api_key_credential(key)
+    }
+    fn antigravity_sign_in_credential(&self, token_file: &[u8]) -> Option<Vec<u8>> {
+        self.inner.antigravity_sign_in_credential(token_file)
+    }
+    fn antigravity_refreshed_credential(&self, fresh: &[u8], stored: &[u8]) -> Option<Vec<u8>> {
+        self.inner.antigravity_refreshed_credential(fresh, stored)
+    }
     fn antigravity_transcript(&self, brain: &Path, session: &str) -> PathBuf {
         self.inner.antigravity_transcript(brain, session)
     }
@@ -1435,6 +1454,14 @@ impl HarnessPort for RecordingHarness {
         skills_dir: &Path,
     ) -> AppResult<()> {
         self.inner.install_skills(skills, root, skills_dir)
+    }
+    fn refresh_skills(
+        &self,
+        skills: &[(String, PathBuf)],
+        root: &Path,
+        skills_dir: &Path,
+    ) -> AppResult<yulius_app::ports::harness::SkillsRefresh> {
+        self.inner.refresh_skills(skills, root, skills_dir)
     }
 }
 

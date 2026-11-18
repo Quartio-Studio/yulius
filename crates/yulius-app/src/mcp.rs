@@ -271,6 +271,7 @@ fn cockpit_only_tool_descriptors() -> Vec<ToolDescriptor> {
             input_schema: schema(json!({
                 "sandbox": {"type": "string", "description": "The sandbox's slug (or owner/name) from sandboxes_list; not this one"},
                 "prompt": {"type": "string", "description": "The request for the new task, complete (what, why, where, done when)"},
+                "harness": {"type": "string", "enum": ["auto", "claude", "codex", "antigravity"], "description": "Agent: auto (default) draws Claude Code or Antigravity"},
                 "title": {"type": "string", "description": "Short title (derived from the prompt when absent)"},
                 "workflow": {"type": "string", "description": "Workflow id or name of that sandbox, or \"auto\""},
                 "mode": {"type": "string", "enum": ["goal", "prompt", "auto"]},
@@ -440,9 +441,10 @@ pub fn tool_descriptors() -> Vec<ToolDescriptor> {
         },
         ToolDescriptor {
             name: "task_create".into(),
-            description: "Create and start a new task in this project (another Claude Code session with its own branch), e.g. when the user says \"create a task from that\" or a follow-up should run separately. It is created like New task in the UI, on behalf of the person you work for; write the prompt as a complete request (what, why, where, done when). With after_task it waits until that task is done: its agent finished, no work it declared is left (its plan is complete and its spec, if any, says done) and its pull request is merged, or open and would merge as it is, with nothing of it left to come (a merge Yulius is about to make, or one its agent was not told of yet, is not done); with start_rule until the rule is true (`#12 merged` when the merge itself matters); with after_all_tasks until every task of the project with work still coming is done; prepared, it waits until the person starts it, or until start_at. The answer's start_rule is the rule as stored. A supertask (for broad work such as security hardening or one-shotting the product) waits for the project's running tasks, then runs alone: every other task of the project waits for it, so create one only when the person asks. Tools create at most 20 tasks an hour per project.".into(),
+            description: "Create and start a new task in this project (another agent session with its own branch: Claude Code or Antigravity drawn at random unless harness or a model names one), e.g. when the user says \"create a task from that\" or a follow-up should run separately. It is created like New task in the UI, on behalf of the person you work for; write the prompt as a complete request (what, why, where, done when). With after_task it waits until that task is done: its agent finished, no work it declared is left (its plan is complete and its spec, if any, says done) and its pull request is merged, or open and would merge as it is, with nothing of it left to come (a merge Yulius is about to make, or one its agent was not told of yet, is not done); with start_rule until the rule is true (`#12 merged` when the merge itself matters); with after_all_tasks until every task of the project with work still coming is done; prepared, it waits until the person starts it, or until start_at. The answer's start_rule is the rule as stored. A supertask (for broad work such as security hardening or one-shotting the product) waits for the project's running tasks, then runs alone: every other task of the project waits for it, so create one only when the person asks. Tools create at most 20 tasks an hour per project.".into(),
             input_schema: schema(json!({
                 "prompt": {"type": "string", "description": "The request for the new task"},
+                "harness": {"type": "string", "enum": ["auto", "claude", "codex", "antigravity"], "description": "Agent: auto (default) draws Claude Code or Antigravity among those with a usable subscription"},
                 "title": {"type": "string", "description": "Short title (derived from the prompt when absent)"},
                 "workflow": {"type": "string", "description": "Workflow id or name from workflows_list, or \"auto\" to let Yulius choose"},
                 "mode": {"type": "string", "enum": ["goal", "prompt", "auto"], "description": "goal (default): the task works until its definition of done holds; prompt: one plain prompt"},
@@ -692,7 +694,7 @@ pub fn tool_descriptors() -> Vec<ToolDescriptor> {
                 "cron": {"type": "string", "description": "Five-field cron expression, e.g. \"0 9 * * *\" (daily at 09:00) or \"0 9 * * MON-FRI\""},
                 "utc_offset_minutes": {"type": "integer", "description": "UTC offset of the user's time zone in minutes (e.g. 120 for UTC+2); default 0"},
                 "prompt": {"type": "string", "description": "What each created task should do"},
-                "harness": {"type": "string", "enum": ["claude", "codex"], "description": "Agent for created tasks: claude (Claude Code, the default) or codex (Codex, on a Codex subscription)"},
+                "harness": {"type": "string", "enum": ["auto", "claude", "codex", "antigravity"], "description": "Agent for created tasks: auto (the default: Claude Code or Antigravity drawn for each run), claude (Claude Code), codex (Codex, on a Codex subscription) or antigravity (Antigravity, on a Google subscription)"},
                 "workflow": {"type": "string", "description": "Workflow id or name from workflows_list (optional)"},
                 "enabled": {"type": "boolean", "description": "Default true"},
                 "after_task": {"type": "integer", "description": "Created tasks wait until this task number is done (once it has ended: the rule \"#N done\")"},

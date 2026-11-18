@@ -484,6 +484,7 @@ function createLink(ctx, sandbox, restart) {
 
 /** Start options a request shows, in the composer's words. */
 const OPTION_LABELS = {
+  harness: (v) => `Agent: ${v}`,
   workflow: (v) => `Workflow: ${v}`,
   mode: (v) => `Mode: ${v}`,
   after_task: (v) => `After #${v}`,
