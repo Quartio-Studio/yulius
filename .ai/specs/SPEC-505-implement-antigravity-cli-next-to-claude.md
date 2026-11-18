@@ -571,3 +571,13 @@ Six pull requests, each merged into `dev` on green before the next begins.
     draw always gives Claude Code. The label names the default the server applies.
 - After round 1: the whole workspace 4989 passed. e2e `antigravity`, `codex`, `intake`,
   `claude-connect` 48 passed. Clippy clean; `scripts/dev quick` passed.
+- Review round 2 (head eed6f74bb, request changes; own code), answered:
+  1. Major: `sandbox_task_create` listed `harness` in its schema, but its checked arguments
+     (`CrossTaskArgs`, `deny_unknown_fields`) refused it. It now takes `harness`, the request
+     shows it among its options ("Agent: …", `OPTIONS`, `agent.js` `OPTION_LABELS`), and the
+     approved task runs it as `chosen`. `cross_sandbox::a_request_names_the_agent_of_its_task`
+     failed before the fix and passes after it.
+  2. Nits: ADR-0361's edited line is wrapped. The round 1 fix's Rust product lines are a JSON
+     schema literal and a log call; mutation tooling finds nothing to change in either, so the
+     mutants run on 383f4b625 stands for the slice.
+- After round 2: `cross_sandbox` 36 passed, `harness_draw` 8 passed.

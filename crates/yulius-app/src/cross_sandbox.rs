@@ -63,6 +63,8 @@ pub const MAX_QUESTION_BYTES: usize = 4096;
 struct CrossTaskArgs {
     sandbox: String,
     prompt: String,
+    /// The task's agent (SPEC-505 RND-001); absent: drawn.
+    harness: Option<String>,
     title: Option<String>,
     workflow: Option<String>,
     mode: Option<String>,
@@ -279,7 +281,8 @@ impl Named {
 }
 
 /// The start options a request shows when set (XSR-005).
-const OPTIONS: [&str; 9] = [
+const OPTIONS: [&str; 10] = [
+    "harness",
     "workflow",
     "mode",
     "after_task",
