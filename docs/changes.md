@@ -13,6 +13,15 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   reviewer agents' prompt, which a session keeps across an update, now holds only the reviewer's
   contract; the CI rule is in `om-code-review` alone. `docs/operations.md` says what an update
   reaches in a running session and what waits for its next launch.
+- Antigravity, slice C1 (SPEC-505 pull request 3, task #487): a task created with
+  `harness: antigravity` runs the native `agy` TUI on a Google account, on Gemini 4 Carbon at high
+  effort unless it names a Gemini model. Each run has its own home in its run directory, with
+  the sandbox's conversations shared, so a task resumes on another Google account at a limit.
+  Yulius learns its conversation from its SessionStart and reads its transcript; a turn its model
+  API failed ends without a gate. A goal task gets its request as its first message, and a
+  Google sign-in the run refreshed is kept unless a newer one came meanwhile. Google
+  subscriptions are added in the next slice.
+
 - The Review card counts what the next study needs (SPEC-506 pull request 4, task #488): the
   Pipeline tab's Review card and `GET /api/analytics/reviews` give the rounds after a request for
   changes and how many asked again, and the rounds after an approval and how many asked for

@@ -1390,6 +1390,19 @@ impl HarnessPort for RecordingHarness {
         self.inner
             .recount(harness, sandbox_home, worktree, session_id, from, until)
     }
+    fn discover_antigravity_session(
+        &self,
+        gemini_dir: &Path,
+        brain: &Path,
+        worktree: &Path,
+        since: Timestamp,
+    ) -> Option<String> {
+        self.inner
+            .discover_antigravity_session(gemini_dir, brain, worktree, since)
+    }
+    fn antigravity_refreshed_credential(&self, fresh: &[u8], stored: &[u8]) -> Option<Vec<u8>> {
+        self.inner.antigravity_refreshed_credential(fresh, stored)
+    }
     fn antigravity_transcript(&self, brain: &Path, session: &str) -> PathBuf {
         self.inner.antigravity_transcript(brain, session)
     }
