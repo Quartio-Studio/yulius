@@ -324,6 +324,7 @@ fn read_bounded(path: &Path, limit: u64) -> io::Result<String> {
 /// swaps for a FIFO after a check by path cannot block the reader (SPEC-507 review round 1).
 fn open_regular(path: &Path) -> io::Result<fs::File> {
     use std::os::unix::fs::OpenOptionsExt as _;
+    crate::race::reached(crate::race::Point::SkillFileOpen, path);
     let file = fs::OpenOptions::new()
         .read(true)
         .custom_flags(nix::libc::O_NOFOLLOW | nix::libc::O_NONBLOCK | nix::libc::O_NOCTTY)
@@ -629,10 +630,18 @@ impl App {
         let sid = SandboxId::parse(sandbox).map_err(|_| AppError::NotFound)?;
         self.require_for(ctx, &sid, Action::View).await?;
         let skill = self.find_skill(&sid, name).await?;
-        let path = skill.dir.join("SKILL.md");
-        let content = blocking(move || read_bounded(&path, MAX_SKILL_MD_BYTES))
-            .await?
-            .map_err(|_| AppError::NotFound)?;
+        // Resolved as the catalog resolved it: a link to a file of the skill's own folder is read
+        // there (the open follows no link), any other place is not shown.
+        let dir = skill.dir.clone();
+        let content = blocking(move || {
+            let real = dir.join("SKILL.md").canonicalize()?;
+            if !real.starts_with(&dir) {
+                return Err(io::Error::other("SKILL.md leaves its skill"));
+            }
+            read_bounded(&real, MAX_SKILL_MD_BYTES)
+        })
+        .await?
+        .map_err(|_| AppError::NotFound)?;
         Ok(SkillContent {
             name: skill.name,
             content,
@@ -646,7 +655,7 @@ impl App {
     /// # Errors
     /// Access errors, `NotFound`, `Invalid` for repository skills.
     pub async fn set_skill_enabled(
-        &self,
+        self: &std::sync::Arc<Self>,
         ctx: &AuthContext,
         sandbox: &str,
         name: &str,
@@ -685,7 +694,15 @@ impl App {
         // The sandbox's home follows the switch at once, not at its next run (SPEC-507 SKR-003).
         match self.deps.store.sandbox(&sid).await {
             Ok(Some(record)) => {
-                self.refresh_sandbox_skills(&record, "skill switched").await;
+                // In a task of its own, which the request waits for: a request dropped meanwhile
+                // (the person left) leaves the refresh and its audit to finish (SKR-003, SKR-004).
+                let app = std::sync::Arc::clone(self);
+                let refresh = tokio::spawn(async move {
+                    app.refresh_sandbox_skills(&record, "skill switched").await;
+                });
+                if let Err(err) = refresh.await {
+                    tracing::warn!(error = %err, sandbox = %sid, "skill refresh failed");
+                }
             }
             Ok(None) => {}
             Err(err) => tracing::warn!(error = %err, sandbox = %sid, "skill refresh failed"),

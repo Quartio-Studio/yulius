@@ -201,6 +201,15 @@ pub enum Point {
     /// The time a session restarted on a newer Claude Code had to start there passed (SPEC-461),
     /// and whether that version gets other sessions was decided. The path is the task id.
     ClaudeMoveStartJudged,
+    /// The skill catalog is about to open a `SKILL.md` it resolved and checked (SPEC-507 review
+    /// round 2): nothing is opened yet. The path is the file. Reached on a blocking thread.
+    SkillFileOpen,
+    /// A refresh of a sandbox's installed skills knows its set and has not asked for the launch
+    /// lock yet (SPEC-507 SKR-005). The path is the sandbox directory.
+    SkillsRefreshQueued,
+    /// A refresh holds the launch lock; nothing of the home is read yet (SPEC-507 SKR-005). The
+    /// path is the sandbox directory. Reached on a blocking thread.
+    SkillsRefreshLocked,
 }
 
 #[cfg(feature = "test-support")]

@@ -45,7 +45,7 @@ impl App {
             }
         };
         let mut refreshed = 0_usize;
-        for sandbox in sandboxes.iter().filter(|s| s.removed_at.is_none()) {
+        for sandbox in &sandboxes {
             if let Some(report) = self.refresh_sandbox_skills(sandbox, "server start").await
                 && !report.is_empty()
             {
@@ -88,10 +88,12 @@ impl App {
             }
         };
         let skills_dir = skills_dir_below(&root, &home);
+        crate::race::reached(crate::race::Point::SkillsRefreshQueued, &root);
         let one_install_at_a_time = self.launch_lock().await;
         let harness = self.deps.harness.clone();
         let report = tokio::task::spawn_blocking(move || {
             let _held = one_install_at_a_time;
+            crate::race::reached(crate::race::Point::SkillsRefreshLocked, &root);
             harness.refresh_skills(&skills, &root, &skills_dir)
         })
         .await;

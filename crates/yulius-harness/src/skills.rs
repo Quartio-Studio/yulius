@@ -734,6 +734,54 @@ mod tests {
         Ok(())
     }
 
+    /// SPEC-507 review round 2: the read of a copy the agent filled stops at the bound, without
+    /// listing or counting what lies beyond it.
+    #[test]
+    fn the_read_of_a_copy_stops_at_its_bounds() -> Result<(), Box<dyn std::error::Error>> {
+        let open = |path: &Path| nix::fcntl::open(path, DIR_FLAGS, Mode::empty());
+        let wide = tempfile::tempdir()?;
+        for n in 0..MAX_SKILL_ENTRIES + 10 {
+            fs::write(wide.path().join(format!("f{n:05}")), "")?;
+        }
+        let mut budget = Budget {
+            bytes: 0,
+            entries: 0,
+        };
+        let mut hasher = Sha256::new();
+        assert!(!hash_installed(
+            &open(wide.path())?,
+            &mut hasher,
+            0,
+            &mut budget
+        )?);
+        assert_eq!(
+            budget.entries,
+            MAX_SKILL_ENTRIES + 1,
+            "stopped at the entry bound"
+        );
+
+        let deep = tempfile::tempdir()?;
+        let bottom: PathBuf = (0..MAX_SKILL_DEPTH + 3).map(|n| format!("d{n}")).collect();
+        fs::create_dir_all(deep.path().join(&bottom))?;
+        fs::write(deep.path().join(&bottom).join("f"), "")?;
+        let mut budget = Budget {
+            bytes: 0,
+            entries: 0,
+        };
+        assert!(!hash_installed(
+            &open(deep.path())?,
+            &mut hasher,
+            0,
+            &mut budget
+        )?);
+        assert_eq!(
+            budget.entries,
+            MAX_SKILL_DEPTH + 1,
+            "nothing counted below the depth bound"
+        );
+        Ok(())
+    }
+
     #[test]
     fn names() {
         assert!(valid_name("om-code-review"));
