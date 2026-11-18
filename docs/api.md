@@ -1731,10 +1731,10 @@ keeps its idle session but no longer holds the subscription.
 
 **Login terminal.** Each login runs Claude Code's own sign-in (`claude setup-token`), Codex's
 (`codex login --device-auth`) or the Antigravity CLI's Google sign-in, with a temporary config
-directory or home, in a server-owned PTY 1000 columns wide (the process host's limit) so tokens and URLs never wrap
-(the Google sign-in link is 704 characters). It uses the terminal protocol above: `resize` and
-`take_control` only re-send `state` (the size is fixed), `input` is forwarded while the login
-runs. `state.status` is `running`, then `ok|error|cancelled`; the `exit` frame carries the same
+directory or home, in a server-owned PTY 1000 columns wide (the process host's limit) so
+tokens and URLs never wrap (the Google sign-in link is 704 characters). It uses the terminal
+protocol above: `resize` and `take_control` only re-send `state` (the size is fixed), `input`
+is forwarded while the login runs. `state.status` is `running`, then `ok|error|cancelled`; the `exit` frame carries the same
 status, the CLI's exit code and, for `error`, why the sign-in failed (`cause`). Output is masked before it reaches any viewer (Claude tokens
 become `sk-ant-oat01-[REDACTED]`). On exit the credential (the Claude token from the output) is sealed
 into the account (`ok`, `account.updated`), and the temporary directory

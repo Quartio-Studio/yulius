@@ -1,6 +1,6 @@
 ---
 yulius-task: d127ec64-2008-464e-a0f8-a622a6af5dcd
-status: in-progress
+status: done
 ---
 
 # SPEC-509: subscription sign-ins start again (login terminal within the host's 1000 columns)
@@ -37,7 +37,7 @@ started: invalid launch spec field `cols`: must be within 1..=1000" (issue #1414
 - [x] Reproduce the defect and find its root cause
 - [x] Write the fix spec and the regression test that fails
 - [x] Fix the cause until the regression test and every gate pass
-- [ ] Independent review in a fresh session, findings fixed test-first
+- [x] Independent review in a fresh session, findings fixed test-first
 
 ## Acceptance criteria
 
@@ -61,3 +61,25 @@ started: invalid launch spec field `cols`: must be within 1..=1000" (issue #1414
   terminal frames and the fuzzing generator; 1000 columns already exceed the 704-character link
   with room to spare. Tying the constant to `MAX_DIMENSION` keeps the two from drifting apart
   again. Raising the wire bound would be a protocol change for no user-visible gain.
+
+## Evidence
+
+- Red at 5d2736cd2 (regression test only):
+  `cargo nextest run -p yulius -E 'binary_id(yulius::main) & test(/^accounts::/)'`:
+  27 run, 6 passed, 21 failed; each create call answers 500 `internal` instead of 201.
+- Green at 9476119e7 (fix): the same command, 27 passed; `cargo nextest run -p yulius-app -E
+  'test(/accounts|login/)'`: 12 passed; `scripts/dev quick`: passed.
+- Yulius CI run e597e2f7 on 9476119e7 (quality, test 1/2, test 2/2, e2e): passed. Security
+  (Vidoc) skipped, exit 78, as on dev ac2b917a1.
+- Review round 1 (yulius-reviewer, Fable 5.2) approved 9476119e7 and reproduced red and green
+  on its own copies. Answers:
+  - Minor, own code: five comments and docs still said 1024 columns (`yulius-harness`
+    `login.rs`, web `README.md`, `admin.js`, `terminal-core.js`, `e2e/README.md`). Fixed: they
+    say 1000.
+  - Nit, own code: the edited `docs/api.md` paragraph was wrapped past 100 columns. Rewrapped.
+  - Nit, own code: optional compile-time `const` assertion of 704 <= `LOGIN_COLS` <=
+    `MAX_DIMENSION`. Not added: `LOGIN_COLS` is `MAX_DIMENSION` itself, the fake host refuses
+    any size above it, and the exact `(1000, 40)` and `cols >= 704` test assertions catch either
+    bound moving.
+- Not testable here: a sign-in through the real process host and real provider CLIs on the
+  instance; the bound is the host's own `LaunchSpec::validate`, which the fake host now mirrors.

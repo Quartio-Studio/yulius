@@ -352,7 +352,7 @@ The source of truth for paths and methods is the route table in
   from `assets/vendor/monaco`) shows the 409 of an uncloned repository as a message.
 - **Terminals.** Task terminals, sandbox shells and account logins share one protocol client
   (`termsocket.js`). Writers are controllers (the server sets `controller = can_write`); a
-  4003 close (access revoked) is final; the login terminal renders the fixed 1024-column PTY and
+  4003 close (access revoked) is final; the login terminal renders the fixed 1000-column PTY and
   scrolls horizontally instead of resizing it; a shell's `exit` frame ends it for good.
 - **Browser.** An `upstream` error followed by a 1011 close (Chromium missing or stopped) shows
   the reason with a Retry button instead of reconnecting in a loop.
