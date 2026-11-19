@@ -323,6 +323,7 @@ impl App {
                 // own waits for it ends, also after a prompt that starts no turn. A key typed
                 // after this submit is a draft of its own, and both stay.
                 if !self.persons_draft_holds(&ctx.task.id) {
+                    crate::race::reached(crate::race::Point::DraftMarkCleanup, run_dir);
                     runtime.draft_marked.store(false, Ordering::SeqCst);
                     crate::supervisor::clear_person_typed(run_dir);
                     self.settle_draft_flag(&ctx.task.id).await;

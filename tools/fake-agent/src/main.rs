@@ -729,6 +729,7 @@ const TUI_KEEP: usize = 500;
 
 /// The full-screen drawing of `--tui`: the transcript and the session id.
 struct Tui {
+    draft: Mutex<String>,
     lines: Mutex<Vec<String>>,
     session: String,
 }
@@ -775,16 +776,24 @@ impl Tui {
                 screen.push_str(&format!("\x1b[{};1H{}", 4 + i, fit(line)));
             }
         }
+        let draft = self
+            .draft
+            .lock()
+            .map_err(|_| io::Error::other("draft lock"))?;
         let status = format!(" → fixture git:(main) · {cols}×{rows}");
         screen.push_str(&format!(
-            "\x1b[{};1H{rule}\x1b[{};1H❯ \x1b[{};1H{rule}\x1b[{};1H{}",
+            "\x1b[{};1H{rule}\x1b[{};1H❯ {draft}\x1b[{};1H{rule}\x1b[{};1H{}",
             rows - 3,
             rows - 2,
             rows - 1,
             rows,
             fit(&status)
         ));
-        screen.push_str(&format!("\x1b[{};3H\x1b[?25h", rows - 2));
+        screen.push_str(&format!(
+            "\x1b[{};{}H\x1b[?25h",
+            rows - 2,
+            3 + draft.chars().count()
+        ));
         let mut out = io::stdout().lock();
         out.write_all(screen.as_bytes())?;
         out.flush()
@@ -793,9 +802,14 @@ impl Tui {
 
 /// Starts the TUI and its redraw-on-resize thread.
 fn start_tui(session: &str) -> io::Result<()> {
+    // Deliver the stash key (Ctrl+S) to the fixture as an input byte.
+    if !Command::new("stty").arg("-ixon").status()?.success() {
+        return Err(io::Error::other("could not enable the stash key"));
+    }
     let resized = Arc::new(AtomicBool::new(false));
     signal_hook::flag::register(signal_hook::consts::SIGWINCH, Arc::clone(&resized))?;
     let tui = TUI.get_or_init(|| Tui {
+        draft: Mutex::default(),
         lines: Mutex::new(Vec::new()),
         session: session.to_owned(),
     });
@@ -3017,7 +3031,22 @@ fn echo_loop(options: &Options, session_id: &str) -> io::Result<i32> {
             to_drop -= 1;
             continue;
         }
+        // A stashed draft returns after the next submit, including a local command.
+        let mut restore = None;
+        let mut line = line;
+        if let Some(tui) = TUI.get() {
+            let mut draft = tui
+                .draft
+                .lock()
+                .map_err(|_| io::Error::other("draft lock"))?;
+            line.insert_str(0, &std::mem::take(&mut *draft));
+            if let Some((stashed, submit)) = line.split_once('\x13') {
+                restore = Some(stashed.to_owned());
+                line = submit.to_owned();
+            }
+        }
         match line.as_str() {
+            "/color" if options.tui => say("Color changed")?,
             "/exit" => {
                 if let Some(hooks) = &hooks {
                     hooks.session_end("prompt_input_exit");
@@ -3197,6 +3226,12 @@ fn echo_loop(options: &Options, session_id: &str) -> io::Result<i32> {
                 &mut state,
                 entered.as_ref(),
             )?,
+        }
+        if let (Some(tui), Some(draft)) = (TUI.get(), restore) {
+            *tui.draft
+                .lock()
+                .map_err(|_| io::Error::other("draft lock"))? = draft;
+            tui.draw()?;
         }
     }
     Ok(0)
