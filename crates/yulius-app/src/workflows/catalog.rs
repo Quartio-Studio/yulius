@@ -155,7 +155,8 @@ mod tests {
             "A defect is fixed, not filed",
             "even as a question or a screenshot",
             "fix it in this task",
-            "add the Fix workflow's steps to your plan",
+            "add the Fix workflow's steps (`workflows_list`) to your plan",
+            "`om-root-cause`, then `om-fix`",
             "ask with `needs_you`",
             "never file it as an issue and stop",
             "Name every issue you opened in your answer",
@@ -165,6 +166,11 @@ mod tests {
         assert!(
             !instructions.contains("When the answer reveals work, record it as an issue"),
             "{instructions}"
+        );
+        assert!(
+            !research.description.contains("no code changes"),
+            "{}",
+            research.description
         );
         Ok(())
     }

@@ -135,14 +135,27 @@ impl ChosenBy {
     }
 }
 
-/// The mode: Jev's confident answer (`fix` is a goal), else Goal.
+/// The mode: Jev's confident answer, else Goal. `goal` and `fix` are both goals, so Jev is
+/// confident of Goal when its choice is either and the two together reach the threshold.
 #[must_use]
 pub fn mode_choice(answer: Option<&ChoiceAnswer>) -> (ModeChoice, ChosenBy) {
-    match answer.and_then(|a| a.confident(MODE_THRESHOLD)) {
-        Some("prompt") => (ModeChoice::Prompt, ChosenBy::Jev),
-        Some("goal" | FIX_KEY) => (ModeChoice::Goal, ChosenBy::Jev),
-        _ => (ModeChoice::Goal, ChosenBy::Default),
+    if let Some(a) = answer {
+        if let Some((top, _)) = a.top().filter(|(top, _)| *top == a.choice) {
+            if top == "prompt" && a.probability("prompt") >= MODE_THRESHOLD {
+                return (ModeChoice::Prompt, ChosenBy::Jev);
+            }
+            if matches!(top, "goal" | FIX_KEY) && goal_probability(a) >= MODE_THRESHOLD {
+                return (ModeChoice::Goal, ChosenBy::Jev);
+            }
+        }
     }
+    (ModeChoice::Goal, ChosenBy::Default)
+}
+
+/// How sure Jev is of Goal: `goal` and `fix` together.
+#[must_use]
+pub fn goal_probability(answer: &ChoiceAnswer) -> f64 {
+    answer.probability("goal") + answer.probability(FIX_KEY)
 }
 
 /// Whether Jev's mode answer says, confidently, that the request reports a defect (SPEC-517
@@ -382,6 +395,16 @@ mod tests {
         }
         assert_eq!(
             mode_choice(Some(&unsure)),
+            (ModeChoice::Goal, ChosenBy::Jev),
+            "goal and fix together are 90 %"
+        );
+        // A goal/fix split is still Jev's Goal (both are goals), but no defect.
+        let split = answer("goal", &[("goal", 0.5), (FIX_KEY, 0.45), ("prompt", 0.05)]);
+        assert_eq!(mode_choice(Some(&split)), (ModeChoice::Goal, ChosenBy::Jev));
+        assert!(!reports_defect(Some(&split)));
+        let torn = answer("goal", &[("goal", 0.4), (FIX_KEY, 0.2), ("prompt", 0.4)]);
+        assert_eq!(
+            mode_choice(Some(&torn)),
             (ModeChoice::Goal, ChosenBy::Default)
         );
         assert!(

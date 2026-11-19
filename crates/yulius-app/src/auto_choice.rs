@@ -103,13 +103,15 @@ fn mode_choice(mode: TaskMode) -> ModeChoice {
 }
 
 fn percent(answer: Option<&ChoiceAnswer>, key: &str) -> String {
+    answer.map_or_else(String::new, |a| percent_of(a.probability(key)))
+}
+
+fn percent_of(probability: f64) -> String {
     // 0..=100 after the clamp, so the cast is exact.
-    answer.map_or_else(String::new, |a| {
-        format!(
-            " {}%",
-            (a.probability(key) * 100.0).round().clamp(0.0, 100.0) as u32
-        )
-    })
+    format!(
+        " {}%",
+        (probability * 100.0).round().clamp(0.0, 100.0) as u32
+    )
 }
 
 impl App {
@@ -203,17 +205,18 @@ impl App {
             Some(mode) => (mode, None),
             None => {
                 let (chosen, by) = rules::mode_choice(mode_answer.as_ref());
-                let (said, key) = if defect {
-                    (", reports a defect", rules::FIX_KEY)
-                } else {
-                    ("", chosen.as_str())
+                let said = if defect { ", reports a defect" } else { "" };
+                // How sure Jev was: of the defect, of Goal (goal and fix together) or of Prompt.
+                let sure = match (mode_answer.as_ref(), chosen) {
+                    (Some(a), _) if defect => percent_of(a.probability(rules::FIX_KEY)),
+                    (Some(a), ModeChoice::Goal) => percent_of(rules::goal_probability(a)),
+                    (answer, _) => percent(answer, chosen.as_str()),
                 };
                 let _ = write!(
                     detail,
-                    "mode {}{said} ({}{})",
+                    "mode {}{said} ({}{sure})",
                     chosen.as_str(),
                     by.as_str(),
-                    percent(mode_answer.as_ref(), key)
                 );
                 (task_mode(chosen), Some(by))
             }

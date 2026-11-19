@@ -79,7 +79,19 @@ impl ChoiceEvaluator for FakeJev {
                 } else {
                     "goal"
                 };
-                Ok(answer(question, winner, if unsure { 0.55 } else { 0.9 }))
+                if !unsure {
+                    return Ok(answer(question, winner, 0.9));
+                }
+                // Unsure: the other side of goal/prompt is close behind (goal and fix count
+                // together for Goal, so an even spread would make Goal sure).
+                let other = if winner == "prompt" { "goal" } else { "prompt" };
+                let mut unsure = answer(question, winner, 0.55);
+                for (key, p) in &mut unsure.probabilities {
+                    if key != winner {
+                        *p = if key == other { 0.4 } else { 0.05 };
+                    }
+                }
+                Ok(unsure)
             }
             "workflow" => {
                 let wanted = if state.contains("spec it anyway") {
@@ -240,7 +252,8 @@ async fn auto_chooses_goal_and_a_workflow_from_the_store() -> TestResult {
         audit.iter().any(|e| e.action == "task.auto_choice"
             && e.detail
                 .as_deref()
-                .is_some_and(|d| d.contains("mode goal (jev 90%)")
+                // Goal and fix together: 90 % + 5 %.
+                .is_some_and(|d| d.contains("mode goal (jev 95%)")
                     && d.contains("workflow Feature (jev 85%)"))),
         "{audit:?}"
     );

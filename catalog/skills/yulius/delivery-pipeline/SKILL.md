@@ -32,10 +32,11 @@ Work starts from one concern with acceptance criteria. A GitHub issue is **ready
 Missing labels are created with the issue, never skipped (in Yulius: `issue_create`). A bug you
 find in code the change did not introduce, and a flaky test the change did not cause, become their
 own issues instead of widening the current task, named in the task's summary; a finding in the
-change's own code never does (section 4), and neither does a defect the task's own request
-reports, also one asked as a question ("why is this broken?", a screenshot of a fault) or
-confirmed while answering it: the task fixes it, its plan growing the fixing steps, or asks the
-person whether to when the fix is clearly beyond the request. A true question (how something
+change's own code never does (section 4). A defect the task's own request reports, also one
+asked as a question ("why is this broken?", a screenshot of a fault) or confirmed while answering
+it, is fixed in the task, never filed instead (its issue, if one is opened, closes with the fix's
+`Fixes #N`): the plan grows the fixing steps, or the task asks the person whether to fix it when
+the fix is clearly beyond the request. A true question (how something
 works, what it would cost) is answered without a pull request.
 
 Before designing, know the product: read the docs index (AGENTS.md, product summary,

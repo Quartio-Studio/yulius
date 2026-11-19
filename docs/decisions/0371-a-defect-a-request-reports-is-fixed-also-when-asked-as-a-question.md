@@ -27,7 +27,8 @@ stands.
 
 - **Auto asks about a fault.** Jev's mode question has a third answer, `fix`: the request reports
   something wrong in the product (a bug, an error, a broken, missing or confusing behaviour, a
-  screenshot of a fault), also when asked as a question. A confident `fix` runs as a goal. Its
+  screenshot of a fault), also when asked as a question. A confident `fix` runs as a goal; `goal`
+  and `fix` together count as Jev's confidence of Goal. Its
   workflow is never one that needs no spec: Jev's pick of such a workflow (Research / Question), or
   an unsure answer, becomes the workflow named "Fix" (the sandbox's own first; else the default
   Feature). Jev's spec-first pick and its confident "none" stand. The workflow question says the
@@ -36,8 +37,9 @@ stands.
   report nothing wrong. A defect the request reports, or one the investigation confirms in what it
   asks about, is fixed in the same task: the Fix workflow's steps join the plan. When the fix is
   clearly beyond the request, or it is unclear whether the person wants an answer or a fix, the
-  agent asks with `needs_you` (a decision) and answers meanwhile. It never files the defect and
-  stops.
+  agent asks with `needs_you` (a decision) and answers meanwhile. It never files the defect
+  instead of fixing it; an issue opened for it (as the Fix workflow does, DSC-016) closes with the
+  fix's `Fixes #N`.
 - **Filing stays for what lies outside.** A second, unrelated defect met on the way (a flaky test,
   a fault outside the task) is still an issue, and the task's summary names it. The briefing, the
   `issue_create` description and the `delivery-pipeline` skill say so. The Fix workflow still files
@@ -61,8 +63,13 @@ stands.
 
 - A question-shaped bug report on Auto starts with the Fix workflow's steps and ends in a pull
   request. A question task that confirms a defect grows its plan, or asks the person.
-- A task whose person picked "Research / Question" by hand gets the same rule through the
-  workflow's instructions.
+- A task whose person picked "Research / Question" by hand, or whose mode was picked (the API's
+  default Goal, an agent's `task_create` with only the workflow on Auto, so no mode question is
+  asked), gets the rule through the workflow question's text and the workflow's instructions,
+  not through the override.
+- Docs and Chore need no spec either, so a confident Docs pick for a reported fault ("the README's
+  install command is wrong") also becomes Fix, with its spec and regression test: accepted, since
+  the request reports something wrong and the Fix path is the one that proves it fixed.
 - How the real Jev splits `goal`, `fix` and `prompt` is not tested here: a fake stands in, as in
   every Auto test. Whether agents follow the instructions is model behaviour.
 - The briefing's header is shorter ("Yulius coordinates this repository's agents by the discipline

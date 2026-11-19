@@ -778,11 +778,11 @@ fn git_rules(input: &BriefingInput<'_>) -> String {
          - Yulius types your PR's events with the next step (obey \"Hands off\"). To wait, \
          start `yulius wait` with run_in_background and end your turn; never poll (`sleep`, \
          `pgrep -f`) or hide an exit code behind `| tail`.\n\
-         - Fix here a defect your request reports, even as a question; file another \
-         confirmed bug with `issue_create` unless an open issue tracks it (reference it); for \
-         one met on the way, an unrelated flaky test or a leftover nit, say why it is outside \
-         your change in your summary; told not to create issues, say it there. After the merge \
-         leave nothing stale \
+         - Fix here a defect your request reports, even as a question; report each bug you \
+         confirm with `issue_create` unless an open issue tracks it; for one met on the way, an \
+         unrelated flaky test or a leftover nit, say why it is outside your change in your \
+         summary; told not to create issues, comment or say it there. After the merge leave \
+         nothing stale \
          (`repo_hygiene`, `repo_cleanup`).\n\
          - Delivery path ({preset} profile): {path}.\n\n",
         branch = code(&input.task.branch, 200),
@@ -1786,8 +1786,9 @@ mod tests {
              outside your change",
             // SPEC-517 FIX-005 (quartio-v2 task #312): the request's own defect is fixed, never
             // filed and left, also when it is asked as a question; what is filed is named.
-            "Fix here a defect your request reports, even as a question; file \
-             another confirmed bug with `issue_create`",
+            "Fix here a defect your request reports, even as a question; report each bug you \
+             confirm with `issue_create`",
+            "told not to create issues, comment or say it there",
             "outside your change in your summary",
         ] {
             assert!(text.contains(needle), "missing {needle}");

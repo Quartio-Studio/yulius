@@ -68,11 +68,11 @@ outside the change), the briefing (`crates/yulius-domain/src/briefing.rs`, 9,500
 
 | ID | Requirement | Verification |
 | --- | --- | --- |
-| FIX-001 | Auto's mode question offers a third answer, `fix`: the request reports something wrong in the product (a bug, an error, a broken, missing or confusing behaviour, a screenshot of a fault), also when it is asked as a question. A confident `fix` runs the task as a goal; `goal` and `prompt` keep their meaning, and a true question (how something works, what it would cost) is a `prompt`. | domain unit test, `tests/auto_choice.rs` |
+| FIX-001 | Auto's mode question offers a third answer, `fix`: the request reports something wrong in the product (a bug, an error, a broken, missing or confusing behaviour, a screenshot of a fault), also when it is asked as a question. A confident `fix` runs the task as a goal (`goal` and `fix` together count as Jev's confidence of Goal); `goal` and `prompt` keep their meaning, and a true question (how something works, what it would cost) is a `prompt`. | domain unit test, `tests/auto_choice.rs` |
 | FIX-002 | For a task whose mode answer is a confident `fix`, Auto's workflow is never one that needs no spec: Jev's pick of such a workflow (Research / Question), or an unsure answer, becomes the workflow named "Fix" (the sandbox's own first), else the default; Jev's spec-first pick and its confident "none" are kept. The task therefore starts with the fixing steps. The audit detail says the request reports a defect. | domain unit test, `tests/auto_choice.rs` |
 | FIX-003 | The workflow question says that a request reporting something wrong in the product is a fix also when asked as a question, never a research or question workflow. | domain unit test |
 | FIX-004 | The "Research / Question" workflow is for questions that report nothing wrong, and its instructions say: a defect the request reports, or one the investigation confirms in what it asks about, is fixed in the same task (the plan grows the Fix workflow's steps); when the fix is clearly outside the request, or it is unclear whether the person wants an answer or a fix, the agent asks with `needs_you` instead of guessing; it never files the defect as an issue and stops. Only a second, unrelated defect becomes an issue, and the answer names every issue opened. The "Fix" workflow's "when to use" covers a fault asked as a question or shown in a screenshot. | catalog test |
-| FIX-005 | The briefing says the same in the line on `issue_create`: a defect the request reports, even asked as a question, is fixed in the task, never filed and left; one met on the way may be filed and is named in the summary. The `issue_create` tool's description says it is never for the defect the task's own request reports, and that every issue opened is named in the summary. | briefing test, MCP test |
+| FIX-005 | The briefing says the same in the line on `issue_create`: a defect the request reports, even asked as a question, is fixed in the task; each confirmed bug is still reported (DSC-016), and one met on the way is named in the summary. The `issue_create` tool's description says the defect the task's own request reports is fixed in the task, never filed instead (the issue the Fix workflow opens for it closes with `Fixes #<number>`), and that every issue opened is named in the summary; the Fix workflow's own reporting rule is asserted beside it. | briefing test, MCP test |
 
 ## Plan
 
@@ -129,5 +129,9 @@ outside the change), the briefing (`crates/yulius-domain/src/briefing.rs`, 9,500
 - **Ask, do not guess.** When the agent cannot tell whether the person wants an answer or a fix, or
   the fix is clearly outside the request, it asks with `needs_you` (decision) and answers in the
   meantime; the person on a question-shaped task is there to answer.
+- **Review round 1.** The texts now agree with the Fix workflow and DSC-016: the request's own bug
+  is fixed, never filed *instead*, and the issue opened for it closes with the fix. A goal/fix
+  split counts both for Goal. A picked mode (no mode question) and a Docs or Chore pick for a
+  reported fault are covered as ADR-0371's Consequences say.
 - **The Fix workflow still reports the bug it fixes** (`issue_create`, then `Fixes #N`): that issue
   closes with the merge, so it does not add to the open list.
