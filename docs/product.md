@@ -622,7 +622,8 @@ watching, steering and unblocking.
   the window and filter as people type when they are long; the start menu shows five tasks at a
   time and says how many more it scrolls to. Scrolling a task's terminal past its top offers the
   whole session from its first message, which Claude Code no longer shows after a compaction
-  (SPEC-326). Messages are
+  (SPEC-326). A wheel gesture on a full-screen task with mouse reporting off leaves the prompt alone
+  (SPEC-529). Messages are
   withdrawn for now (SPEC-028): agents learn about checks, delivery and armed merges from
   `yulius wait`, `ci_status` and `delivery_status`. A Yulius restart is invisible to a session:
   its Yulius tools and `yulius wait` hold on until Yulius is back, and a task that went idle

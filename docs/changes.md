@@ -13,6 +13,9 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   task, and the owner withdraws a name there; answering a parked task's question resumes it. An answer to a question replaced or withdrawn
   meanwhile is refused, saying so (ADR-0379). Also: a parked task's Resume no longer repeats its
   Telegram notice, and the Dashboard's Outcomes say Parked (#1412 follow-up).
+- Scrolling a full-screen task with mouse reporting off can no longer recall an earlier prompt
+  or trigger “Needs your action” for an unsent draft. Scrolling up still offers the session
+  history (SPEC-529, #1446).
 
 - Parked sessions (SPEC-512 part 1, task #494, #1412): a task whose turn ended and that waits for
   a person gives its idle session up after 30 minutes (`YULIUS_PARK_AFTER_MINUTES`, 0 never): the
