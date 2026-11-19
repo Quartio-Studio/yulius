@@ -8,8 +8,8 @@ use serde::Deserialize;
 use yulius_app::auth::{GitHubSignInError, NewSession, local_return_path};
 use yulius_app::model::Secret;
 use yulius_contracts::api::auth::{
-    DeviceApprove, DevicePoll, DevicePollRequest, DeviceStart, Me, PasswordLogin, RecoverRequest,
-    RecoveryCode, RecoveryStatus, RegenerateRecovery, SetupRequest, SetupStatus,
+    ControlChoice, DeviceApprove, DevicePoll, DevicePollRequest, DeviceStart, Me, PasswordLogin,
+    RecoverRequest, RecoveryCode, RecoveryStatus, RegenerateRecovery, SetupRequest, SetupStatus,
 };
 
 use crate::AppState;
@@ -275,6 +275,16 @@ pub async fn logout(State(app): State<AppState>, Auth(ctx): Auth) -> ApiResult<R
 
 pub async fn me(State(app): State<AppState>, Auth(ctx): Auth) -> ApiResult<Json<Me>> {
     Ok(Json(app.me(&ctx.user, ctx.csrf_token.clone()).await?))
+}
+
+/// `PUT /api/me/control` (SPEC-510 TKC-003): whether teammates ask before taking control of the
+/// caller's tasks.
+pub async fn me_control(
+    State(app): State<AppState>,
+    Auth(ctx): Auth,
+    Json(req): Json<ControlChoice>,
+) -> ApiResult<Json<ControlChoice>> {
+    Ok(Json(app.set_control_ask_first(&ctx, req.ask_first).await?))
 }
 
 /// CLI device sign-in start, limited per client like password sign-in (#169).

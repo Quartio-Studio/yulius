@@ -456,6 +456,8 @@ async fn a_guest_tidies_only_their_own_tasks() -> TestResult {
         (Method::POST, "/stop"),
         (Method::POST, "/archive"),
         (Method::DELETE, ""),
+        // Nor does a guest take control of the maker's task (SPEC-510 TKC-007).
+        (Method::POST, "/control/take"),
     ] {
         let path = format!("/api/tasks/{}{rest}", makers.id);
         let refused = call(&w.h.router, method.clone(), &path, None, &guest).await?;

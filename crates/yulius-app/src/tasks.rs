@@ -248,6 +248,7 @@ impl App {
                 }),
                 None => None,
             },
+            owner_asks_first: store.control_ask_first(&task.owner).await?,
             created_at: rfc3339(task.created_at),
             updated_at: rfc3339(task.updated_at),
             state_since: times.map(|t| rfc3339(t.state_at)),
@@ -553,9 +554,22 @@ impl App {
     /// The refusal of control of `task` (SPEC-490 OWN-004): whose it is, why, how to ask, and
     /// what anyone may still do.
     async fn not_the_owner(&self, task: &TaskRecord) -> AppError {
+        // How control is got (SPEC-510 TKC-006): taken, unless the owner chose to be asked. A
+        // store failure says to ask, which works either way.
+        let how = if self
+            .deps
+            .store
+            .control_ask_first(&task.owner)
+            .await
+            .unwrap_or(true)
+        {
+            "Ask them for control on the task's page."
+        } else {
+            "Take control on the task's page to steer it."
+        };
         AppError::Forbidden(format!(
-            "Task #{} is @{}'s and only they steer it: it acts on GitHub as them. Ask them for \
-             control on the task's page. You can still stop, archive or delete it.",
+            "Task #{} is @{}'s and only they steer it: it acts on GitHub as them. {how} You can \
+             still stop, archive or delete it.",
             task.number,
             self.login_of(&task.owner).await
         ))

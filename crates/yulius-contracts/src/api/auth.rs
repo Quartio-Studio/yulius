@@ -66,9 +66,21 @@ pub struct MeUser {
     pub is_instance_admin: bool,
     /// Whether a GitHub identity is linked.
     pub github_linked: bool,
+    /// Whether teammates ask before taking control of this user's tasks (SPEC-510 TKC-003);
+    /// absent from an older server, where they always asked.
+    #[serde(default)]
+    pub control_ask_first: bool,
     /// For a playground's guest (SPEC-410 GST-006): the one playground they reach and until when.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub guest: Option<MeGuest>,
+}
+
+/// `PUT /api/me/control` and its answer (SPEC-510 TKC-003): whether teammates ask before taking
+/// control of the caller's tasks.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ControlChoice {
+    /// True: they request control and the caller hands over or declines; false: they take it.
+    pub ask_first: bool,
 }
 
 /// The playground a guest was let into (SPEC-410).

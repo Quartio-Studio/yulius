@@ -160,12 +160,12 @@ fn steering(task: &str) -> Vec<(Method, String, Option<serde_json::Value>)> {
     ]
 }
 
-/// What the refusal of control says (SPEC-490 OWN-004): whose the task is, how to ask, and what
-/// is open to everyone.
+/// What the refusal of control says (SPEC-490 OWN-004, SPEC-510 TKC-006): whose the task is, how
+/// to get control, and what is open to everyone.
 fn says_whose_and_how(message: &str) -> bool {
     message.contains("@alice")
         && message.contains("only they steer it")
-        && message.contains("Ask them for control")
+        && message.contains("Take control on the task's page")
         && message.contains("You can still stop, archive or delete it")
 }
 
@@ -1216,5 +1216,186 @@ async fn taking_back_ends_when_control_moves_again() -> TestResult {
     assert_eq!(take_back(&f, &f.bob).await?.status, 403);
     let task = f.h.store.task(&f.task.id).await?.ok_or("task")?;
     assert_eq!(task.owner.as_str(), "u-a");
+    Ok(())
+}
+
+async fn take(
+    f: &Fixture,
+    who: &Creds,
+) -> Result<crate::support::Resp, Box<dyn std::error::Error>> {
+    call(
+        &f.h.router,
+        Method::POST,
+        &format!("/api/tasks/{}/control/take", id_of(f)),
+        None,
+        who,
+    )
+    .await
+}
+
+async fn ask_first(
+    h: &Harness,
+    who: &Creds,
+    on: bool,
+) -> Result<crate::support::Resp, Box<dyn std::error::Error>> {
+    call(
+        &h.router,
+        Method::PUT,
+        "/api/me/control",
+        Some(json!({"ask_first": on})),
+        who,
+    )
+    .await
+}
+
+/// SPEC-510 TKC-001, TKC-002, AC1: Bob takes Alice's task without asking. It acts on GitHub as
+/// him, Carol's waiting request is dropped, Alice is told wherever she is and takes it back, and
+/// the terminal and the audit say so.
+#[tokio::test]
+async fn a_teammate_takes_control_at_once() -> TestResult {
+    let f = fixture().await?;
+    let carol = seed_github_user(&f.h, "u-c", "carol").await?;
+    f.h.github.set_perm("carol", "acme/repo", perms("write"));
+    assert_eq!(control(&f, Method::POST, "", &carol).await?.status, 200);
+    let mut watch = f.h.app.runtime(&f.task.id).hub.watch();
+    let mut events = f.h.app.events.subscribe();
+    let taken = take(&f, &f.bob).await?;
+    assert_eq!(taken.status, 200, "{}", taken.body);
+    assert_eq!(taken.body["owner"]["login"], "bob");
+    assert_eq!(taken.body["control_from"]["login"], "alice");
+    assert_eq!(taken.body["control_request"], serde_json::Value::Null);
+    assert_eq!(taken.body["owner_asks_first"], false);
+    assert_eq!(github_actor(&f.h, "tt").await?, "bob");
+    assert_eq!(audited(&f.h, "t1", "task.control_taken").await?, 1);
+    let said = notices(&mut watch);
+    assert!(
+        said.iter()
+            .any(|n| n.contains("@bob took control of this task from @alice")
+                && n.contains("acts on GitHub as @bob")
+                && n.contains("@alice can take it back")),
+        "{said:?}"
+    );
+    let mut told = Vec::new();
+    while let Ok(envelope) = events.try_recv() {
+        if let yulius_contracts::events::UiEvent::ControlTaken { task_id, by, .. } = &envelope.event
+        {
+            told.push((envelope.user.clone(), task_id.clone(), by.clone()));
+        }
+    }
+    assert_eq!(
+        told,
+        vec![(
+            Some(UserId::parse("u-a")?),
+            id_of(&f).to_owned(),
+            "bob".to_owned()
+        )]
+    );
+    let (alice, bob) = (auth(&f.h, "u-a").await?, auth(&f.h, "u-b").await?);
+    assert!(f.h.app.can_work(&bob, &f.task.id).await);
+    assert!(!f.h.app.can_work(&alice, &f.task.id).await);
+    let back = take_back(&f, &f.alice).await?;
+    assert_eq!(back.status, 200, "{}", back.body);
+    assert_eq!(github_actor(&f.h, "tt").await?, "alice");
+    Ok(())
+}
+
+/// SPEC-510 TKC-003, AC2: Alice chooses to be asked. Bob's take is refused naming her and the
+/// task stays hers; his request waits for her answer. The choice is hers alone and is read back
+/// from `/api/me`.
+#[tokio::test]
+async fn an_owner_who_asks_first_is_asked() -> TestResult {
+    let f = fixture().await?;
+    let me = call(&f.h.router, Method::GET, "/api/me", None, &f.alice).await?;
+    assert_eq!(me.body["user"]["control_ask_first"], false, "{}", me.body);
+    let saved = ask_first(&f.h, &f.alice, true).await?;
+    assert_eq!(saved.status, 200, "{}", saved.body);
+    assert_eq!(saved.body["ask_first"], true);
+    let me = call(&f.h.router, Method::GET, "/api/me", None, &f.alice).await?;
+    assert_eq!(me.body["user"]["control_ask_first"], true, "{}", me.body);
+    let detail = call(
+        &f.h.router,
+        Method::GET,
+        &format!("/api/tasks/{}", id_of(&f)),
+        None,
+        &f.bob,
+    )
+    .await?;
+    assert_eq!(detail.body["owner_asks_first"], true, "{}", detail.body);
+
+    let refused = take(&f, &f.bob).await?;
+    assert_eq!(refused.status, 409, "{}", refused.body);
+    let message = refused.body["error"]["message"]
+        .as_str()
+        .unwrap_or_default();
+    assert!(
+        message.contains("@alice") && message.contains("request control"),
+        "{message}"
+    );
+    assert_eq!(github_actor(&f.h, "tt").await?, "alice");
+    // Steering her task, Bob is told to ask her (TKC-006).
+    let continued = call(
+        &f.h.router,
+        Method::POST,
+        &format!("/api/tasks/{}/continue", id_of(&f)),
+        Some(json!({})),
+        &f.bob,
+    )
+    .await?;
+    assert_eq!(continued.status, 403, "{}", continued.body);
+    assert!(
+        continued.body.to_string().contains("Ask them for control"),
+        "{}",
+        continued.body
+    );
+    assert_eq!(control(&f, Method::POST, "", &f.bob).await?.status, 200);
+    let handed = control(&f, Method::POST, "/accept", &f.alice).await?;
+    assert_eq!(handed.body["owner"]["login"], "bob", "{}", handed.body);
+    // She changes her mind: teammates take control of her tasks again.
+    assert_eq!(ask_first(&f.h, &f.alice, false).await?.status, 200);
+    let me = call(&f.h.router, Method::GET, "/api/me", None, &f.alice).await?;
+    assert_eq!(me.body["user"]["control_ask_first"], false, "{}", me.body);
+    Ok(())
+}
+
+/// SPEC-510 TKC-004, AC3: an owner who can no longer act holds no task, whatever they chose.
+#[tokio::test]
+async fn an_absent_owner_who_asks_first_loses_the_task_to_a_take() -> TestResult {
+    let f = fixture().await?;
+    assert_eq!(ask_first(&f.h, &f.alice, true).await?.status, 200);
+    disable(&f.h, "u-a").await?;
+    let taken = take(&f, &f.bob).await?;
+    assert_eq!(taken.status, 200, "{}", taken.body);
+    assert_eq!(taken.body["owner"]["login"], "bob");
+    // Nobody gone takes anything back.
+    assert_eq!(taken.body["control_from"], serde_json::Value::Null);
+    assert_eq!(github_actor(&f.h, "tt").await?, "bob");
+    Ok(())
+}
+
+/// SPEC-510 TKC-007, AC4: the owner, a reader and a disabled account take nothing.
+#[tokio::test]
+async fn a_take_is_refused_to_whoever_may_not_take() -> TestResult {
+    let f = fixture().await?;
+    let own = take(&f, &f.alice).await?;
+    assert_eq!(own.status, 409, "{}", own.body);
+    let reader = seed_github_user(&f.h, "u-r", "rita").await?;
+    f.h.github.set_perm("rita", "acme/repo", perms("read"));
+    let read = take(&f, &reader).await?;
+    assert!(
+        read.status == 403 || read.status == 404,
+        "{}: {}",
+        read.status,
+        read.body
+    );
+    disable(&f.h, "u-b").await?;
+    let disabled = take(&f, &f.bob).await?;
+    assert!(
+        disabled.status == 401 || disabled.status == 403,
+        "{}: {}",
+        disabled.status,
+        disabled.body
+    );
+    assert_eq!(github_actor(&f.h, "tt").await?, "alice");
+    assert_eq!(audited(&f.h, "t1", "task.control_taken").await?, 0);
     Ok(())
 }
