@@ -938,6 +938,27 @@ test('a wheel over a full-screen task without mouse tracking leaves the prompt a
   await expect.poll(sent).toEqual(['\x1b[A']);
 });
 
+test('an independent shell keeps its full-screen wheel navigation', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/t/12', '&still=1'));
+  await firstShown(screen.getByRole('heading', { level: 1 }), '#12 Checkout API');
+  await screen.getByRole('button', /^Show tools/).click();
+  await screen.getByRole('button', 'Shell').click();
+  const shell = '.term-views .term-slot:not([hidden])';
+  const output = browser.locator(`${shell} .xterm-rows`);
+  await expect(output).toHaveText(/Contained sandbox shell/);
+  await browser.evaluate(() => {
+    type Shell = { session?: { out(text: string): void } };
+    const { shells } = (window as unknown as { __yuliusMock: { shells: Map<string, Shell> } }).__yuliusMock;
+    [...shells.values()].find((s) => s.session)!.session!.out('\x1b[?1049h\x1b[HFull-screen shell');
+  });
+  await expect(output).toHaveText(/Full-screen shell/);
+  const point = (await spot(browser, 'Full-screen shell', shell))!;
+  await turn(browser, point, 160);
+  await turn(browser, point, -160);
+  // The mock shell echoes the printable bytes of the Down and Up sequences.
+  await expect(output).toHaveText(/Full-screen shell\[B\[A/);
+});
+
 test('an old run on the classic renderer, with nothing above its screen, offers the whole session at once (#911)', async ({ app, browser, screen }) => {
   const point = await classicTask12(app, browser);
   const sent = await recordInput(browser);
