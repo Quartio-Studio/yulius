@@ -19,6 +19,7 @@ Issue #1286 reports a timeout waiting for attempt two on plain dev under load. S
 - RST-547-2. A controlled ordering reproduces the failure. The integration test waits on observable conditions with bounded deadlines.
 - RST-547-3. A capacity pass that finds the old pause during the hand-over defers that task and continues through the pool. A later pass checks that the same pause is still open.
 - RST-547-4. When a replayed refusal belongs to a revoked account, the restart uses an available subscription. When it belongs to a model selected inside the CLI, the replacement reports its return to the configured model.
+- RST-547-5. When no subscription can take a required hand-over, the old host stops. A model refusal without a known reset stays in the pool’s retry history when the hand-over succeeds.
 
 ## Plan
 
@@ -27,7 +28,8 @@ Issue #1286 reports a timeout waiting for attempt two on plain dev under load. S
 - [x] Restore reliable restart and normal CI coverage
 - [x] Verify the restart under 48 busy loops
 - [x] Protect the persisted pause during startup hand-over
-- [ ] Preserve replayed subscription and model refusals through hand-over
+- [x] Preserve replayed subscription and model refusals through hand-over
+- [ ] Preserve failed hand-over and bounded retries when capacity runs out
 - [ ] Ready the independently reviewed fix for the green CI merge
 
 ## Acceptance criteria
@@ -55,3 +57,6 @@ Reconciliation takes the task’s move lock before attaching the host. It releas
 - Independent review of 1113a4157 found that the startup capacity pass could also claim the persisted pause. Holding the hand-over after preflight and calling resume_round reproduced it in 7.1 seconds. The task was already Running when the hand-over still owned a WaitingCapacity pause.
 - After the capacity fix, all 57 pool supervision, subscription pool and workflow limit integration tests passed, including the controlled preflight capacity pass.
 - Review of 3d948255e found two replay cases. Before their fixes, the revoked-account case stopped instead of running after 5.0 s. The switched-model case resumed but omitted the Fable-to-Opus terminal notice after 6.8 s.
+- With both replay fixes, 91/91 pool supervision, subscription pool, workflow limit and usage credit integration tests passed. The merged dev base also passed the three startup regressions.
+- First review mutation campaign: 11 listed, 1 caught, 0 missed, 0 timed out, 10 unviable, 0 not reached (bound 30 min, took 1595 s).
+- Before the final compatibility fixes, an exhausted pool left the hand-over in WaitingCapacity instead of stopping it (3.8 s). Once each move finished, refreshing the first account after the second account spent its retry launched a fourth attempt instead of leaving the third waiting (6.2 s).
