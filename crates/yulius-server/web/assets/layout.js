@@ -780,7 +780,7 @@ export function accountUsage(account, { foldable = false, open = false, rename =
         h('span', { class: ['agent-badge', showEmail ? null : 'account-sub'], title: `${agent.cli} subscription · ${agent.vendor}` }, provider),
         !showEmail ? null
           : setEmail && !foldable ? editableEmail(account, setEmail)
-            : h('span', { class: ['account-sub', account.email ? null : 'account-email-unknown'], title: account.email ? `${provider} account` : `Shown after the subscription’s next sign-in, when ${provider} shares it` }, accountEmail(account.email)))),
+            : h('span', { class: ['account-sub', account.email ? null : 'account-email-unknown'], title: account.email ? `${account.email} · ${provider} account` : `Shown after the subscription’s next sign-in, when ${provider} shares it` }, accountEmail(account.email)))),
     stateHost,
     glanceHost,
     foldable ? icon('down', { size: 14 }) : null,
