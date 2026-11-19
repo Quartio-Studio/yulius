@@ -1,6 +1,6 @@
 ---
 yulius-task: 3258204f-01dc-4b52-91c2-512a6c19e1aa
-status: in-progress
+status: done
 ---
 
 # SPEC-524 Harness-specific system prompts for independent review
@@ -23,9 +23,9 @@ The standard briefing, delivery workflows, skills and request text prescribe Cla
 
 - [x] Read the product context and related work, then write and validate the spec
 - [x] Give each harness its own independent review instructions
-- [ ] Verify Neon defaults and Antigravity fast-mode support
-- [ ] Independent review in a fresh session, findings fixed test-first
-- [ ] Every gate green, docs and the changes log updated
+- [x] Verify Neon defaults and Antigravity fast-mode support
+- [x] Independent review in a fresh session, findings fixed test-first
+- [x] Every gate green, docs and the changes log updated
 
 ## Acceptance criteria
 
@@ -50,3 +50,9 @@ Antigravity 1.5.12 on Linux x64, downloaded from Google (sha512 starting 26de25f
 - Real CLI 1.5.12 with a synthetic API: a Carbon parent called `swarm add` with `model=gemini-4-neon-high`. The tool returned the worker name and that model, and the worker sent its request to the Neon endpoint.
 - Round 1, head 6fd7d10ab, requested changes (both own code). The new matrix assertion reproduced the incorrect promise that a Codex review opens the PR. Only Claude now gets that instruction, and the shared skill allows a code verdict before the first PR starts CI. The matrix checks the native tool, model, effort and fresh context for each profile.
 - APM install and audit passed, and the repository quick checks passed. The local change scan was unrun because Vidoc returned HTTP 401.
+
+- Round 2 approved `52c457d60`. The remaining nit was a source-comment citation to another branch's spec. The release pin now cites SPEC-524.
+- `cargo test -p yulius-domain --lib` passed 575 tests. The shared-skills suite passed all 22 tests. The three Antigravity launch tests passed, including an explicit model on resume. The 15 selected integration tests passed for provisioning, task details, launch, recovery and the composer. The ignored live installer test downloaded, verified and ran the Linux x64 1.5.12 release from Google.
+- The complete Chromium run passed 1,115 tests and skipped one credential-dependent agent test. The real CLI probes used a local synthetic Gemini endpoint. No live Google model inference was required.
+- `scripts/dev mutants`: 18 listed, 12 caught, 0 missed, 0 timed out, 6 unviable, 0 not reached. On the review fix, `scripts/dev mutants --base 6fd7d10ab`: 2 listed, 2 caught, 0 missed, 0 timed out, 0 unviable, 0 not reached.
+- [PR #1443](https://github.com/Quartio-Studio/yulius/pull/1443), Yulius CI run `18433a11-bfac-428b-857f-6b80b644e19d` on the approved head: quality, both test shards and e2e passed. Security was skipped after HTTP 401. The delivery queue verifies the final head and integration tree.

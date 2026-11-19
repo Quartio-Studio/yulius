@@ -675,7 +675,7 @@ pub mod codex {
 /// The Antigravity CLI Yulius pins and provides to Antigravity runs (SPEC-505 AGY-007, ADR-0361):
 /// Google's release tarballs, one per platform, each holding the single binary `antigravity`.
 pub mod antigravity {
-    /// The pinned release: verified with all offered Gemini models and efforts (SPEC-521).
+    /// The pinned release supports Gemini 4 Neon at high effort on Google API keys (SPEC-524).
     pub const VERSION: &str = "1.5.12";
     /// The release's build, part of its download path.
     pub const BUILD: &str = "1.5.12-5281398513336320";
