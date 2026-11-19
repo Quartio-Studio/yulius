@@ -156,9 +156,32 @@ test('at phone width the widest badge stays whole beside a state, with the name\
       expect(row.badgeInRow, where).toBe(true);
       expect(row.overflows, where).toBe(false);
       expect(row.nameShown, where).toBeGreaterThanOrEqual(Math.min(row.nameFull, 64) - 0.5);
-      // At least the address's start and its ellipsis (SUBK-003).
-      expect(row.email ?? 0, where).toBeGreaterThanOrEqual(24);
+      // At least the address's 4 em start (SUBK-003: 44 px at the caption's 11 px).
+      expect(row.email ?? 0, where).toBeGreaterThanOrEqual(44);
     }
   }
   expect(await axeViolations(browser)).toEqual([]);
+});
+
+test('at phone width the open email field and its refusal take the whole line under the name', async ({ app, browser, screen }) => {
+  await browser.setViewport({ width: 360, height: 780 });
+  await app.open(mock('/admin/accounts', '&ambient=0'));
+  await firstShown(browser.locator('main .account-card').first());
+  // Claude #5 is at its limit: its head shows a state beside the name (review round 2).
+  await screen.getByRole('button', 'Change the email of Claude #5').click();
+  const field = screen.getByRole('textbox', 'Email of Claude #5');
+  await expect(field).toBeFocused();
+  await field.fill('not an address');
+  await field.press('Enter');
+  await expect(browser.locator('main .account-card:has-text("Limit reached") .field-error')).toHaveText('Type an address like name@example.com.');
+  const sizes = await browser.evaluate(() => {
+    const card = document.querySelector('.account-email-input')!.closest('.account-card')!;
+    const who = card.querySelector('.account-who')!.getBoundingClientRect();
+    const input = card.querySelector('.account-email-input')!.getBoundingClientRect();
+    const error = card.querySelector('.account-email-edit .field-error')!.getBoundingClientRect();
+    return { who: who.width, whoRight: who.right, input: input.width, errorRight: error.right };
+  });
+  // The field has the line to itself, less its pencil-wide controls, as before the badge.
+  expect(sizes.input).toBeGreaterThanOrEqual(sizes.who * 0.6);
+  expect(sizes.errorRight).toBeLessThanOrEqual(sizes.whoRight + 0.5);
 });

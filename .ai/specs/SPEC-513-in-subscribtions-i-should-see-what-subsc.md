@@ -43,12 +43,13 @@ subscription as Claude's.
 - SUBK-003: The badge never replaces the name, the plan badge or the email, and takes no room from
   the name: a folded row at phone width keeps the name's 64 px (SPEC-172 GLN-004). The badge stays
   whole; the email shortens with an ellipsis and goes to its own line only when not even its start
-  (4 em) fits beside the badge. The email's title is the whole address, so a shortened one can be
-  read.
-- SUBK-005: Nothing in the line under the name clips: the email's pencil and field keep their
-  whole focus ring.
+  (4 em) fits beside the badge. On a folded row, where the email is read-only, its title is the
+  whole address, so a shortened one can be read; on the Subscriptions page the open field shows
+  it. Open, the email field and its refusal take the whole line under the badge.
 - SUBK-004: The web mock's `GET /api/capacity` carries each subscription's `provider`, as the
   server's `CapacityAccount` does.
+- SUBK-005: Nothing in the line under the name clips: the email's pencil and field keep their
+  whole focus ring.
 
 ## Plan
 
@@ -73,9 +74,11 @@ subscription as Claude's.
 - The same file: the Status panel shows each agent for an administrator and for a member (whose
   line is the badge alone); the email's pencil and field have no clipping ancestor within their
   4 px focus ring; at 360 px an Antigravity subscription at its limit with an old reading (the
-  widest line) keeps its badge whole, the name's room and at least 24 px of its email, in the
+  widest line) keeps its badge whole, the name's room and at least 44 px (4 em) of its email, in the
   Dashboard and the Status panel; axe passes on each. The ring and phone tests fail on the round-1
-  CSS (`overflow: hidden` on the line, no wrap).
+  CSS (`overflow: hidden` on the line, no wrap). At 360 px on a card at its limit, the open email
+  field and its refusal stay inside the column under the name (review round 2; fails without the
+  open field's own line).
 - The existing subscription e2e files (`subscriptions`, `subscription-names`,
   `subscription-touch`, `codex`, `antigravity`) still pass: the name and email selectors are
   unchanged.

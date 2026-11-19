@@ -715,6 +715,8 @@ body.resizing iframe, body.resizing canvas { pointer-events: none; }
    keeps the accent. */
 .account-subline { display: flex; flex-wrap: wrap; align-items: baseline; column-gap: 6px; row-gap: 2px; min-width: 0; }
 .account-subline > .account-sub:not(.agent-badge), .account-subline > .account-email-edit { flex: 1 1 4em; min-width: 0; }
+/* Open, the email field and its refusal take the whole line, under the badge. */
+.account-subline > .account-email-edit:has(> .account-email-input) { flex-basis: 100%; }
 .agent-badge { display: inline-flex; align-items: center; box-sizing: border-box; height: 16px; max-width: 100%; padding: 0 4px; border: 1px solid var(--border-strong); border-radius: var(--radius-full); color: var(--muted); font-size: var(--fs-xs); line-height: var(--lh-xs); font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: none; }
 .plan-badge { display: inline-flex; align-items: center; height: 18px; padding: 0 6px; border-radius: var(--radius-full); background: var(--accent-soft); color: var(--accent-fg); font-size: var(--fs-xs); line-height: var(--lh-xs); font-weight: 600; letter-spacing: 0.02em; white-space: nowrap; flex: none; }
 .account-state { display: inline-flex; align-items: center; gap: 4px; height: 20px; padding: 0 8px; border-radius: var(--radius-full); font-size: var(--fs-xs); line-height: var(--lh-xs); font-weight: 600; white-space: nowrap; flex: none; }
