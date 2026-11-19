@@ -1,5 +1,5 @@
 //! The pinned Codex CLI Yulius provides to Codex runs (SPEC-503 CLI-001): a registry stub serves
-//! a platform tarball laid out as `@openai/codex@0.169.0-linux-x64` is, whose `bin/codex` is a
+//! a platform tarball laid out as `@openai/codex@0.170.0-linux-x64` is, whose `bin/codex` is a
 //! synthetic ELF header. No test reaches npm.
 
 use std::os::unix::fs::PermissionsExt as _;
@@ -24,7 +24,7 @@ use yulius_domain::agent_cli::codex::{self, Platform};
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
 const TRIPLE: &str = "x86_64-unknown-linux-musl";
-const TARBALL: &str = "/@openai/codex/-/codex-0.169.0-linux-x64.tgz";
+const TARBALL: &str = "/@openai/codex/-/codex-0.170.0-linux-x64.tgz";
 
 /// An ELF64 header for `machine`, then filler.
 fn elf(machine: u16) -> Vec<u8> {
@@ -75,7 +75,7 @@ fn tarball_of(entries: &[Entry]) -> std::io::Result<Vec<u8>> {
     builder.into_inner().and_then(GzEncoder::finish)
 }
 
-/// The release as npm publishes its linux-x64 package (the layout of 0.169.0).
+/// The release as npm publishes its linux-x64 package (the layout of 0.170.0).
 fn release_entries() -> Vec<Entry> {
     let vendor = format!("package/vendor/{TRIPLE}");
     vec![
@@ -86,7 +86,7 @@ fn release_entries() -> Vec<Entry> {
         file(
             &format!("{vendor}/codex-package.json"),
             0o644,
-            br#"{"layoutVersion":1,"version":"0.169.0","entrypoint":"bin/codex"}"#,
+            br#"{"layoutVersion":1,"version":"0.170.0","entrypoint":"bin/codex"}"#,
         ),
         file(&format!("{vendor}/codex-resources/bwrap"), 0o755, &elf(62)),
     ]
@@ -196,7 +196,7 @@ fn entries(root: &Path) -> Vec<String> {
 }
 
 /// CLI-001: the pinned release is downloaded once, checked and unpacked as its own tree into
-/// `<root>/0.169.0-linux-x64` (the binary, its `rg` and resources, nothing outside `vendor/`),
+/// `<root>/0.170.0-linux-x64` (the binary, its `rg` and resources, nothing outside `vendor/`),
 /// readable and runnable by every sandbox user; callers at the same time wait for one install;
 /// an earlier release and an interrupted install's leftovers go.
 #[tokio::test]
@@ -230,7 +230,7 @@ async fn the_pinned_release_is_installed_once_as_its_own_tree() -> TestResult {
         provided.push(caller.await??);
     }
     assert_eq!(s.stub.downloads.load(Ordering::SeqCst), 1, "one download");
-    let dir = s.root.join("0.169.0-linux-x64");
+    let dir = s.root.join("0.170.0-linux-x64");
     for one in &provided {
         assert_eq!(one.dir, dir);
         assert_eq!(one.program, dir.join("bin/codex"));
@@ -243,7 +243,7 @@ async fn the_pinned_release_is_installed_once_as_its_own_tree() -> TestResult {
     assert_eq!(mode(&dir.join("codex-resources"))?, 0o755);
     assert!(dir.join("codex-resources/bwrap").is_file());
     assert!(!dir.join("package.json").exists(), "only the vendor tree");
-    assert_eq!(entries(&s.root), ["0.169.0-linux-x64"]);
+    assert_eq!(entries(&s.root), ["0.170.0-linux-x64"]);
     // Installed: no download again.
     assert_eq!(cli.ensure().await?, provided[0]);
     assert_eq!(s.stub.downloads.load(Ordering::SeqCst), 1);
@@ -298,7 +298,7 @@ fn the_release_is_open_to_sandbox_users_whatever_the_umask() -> TestResult {
 async fn an_earlier_release_goes_once_nothing_runs_it() -> TestResult {
     let tarball = tarball_of(&release_entries())?;
     let s = setup(tarball.clone(), false).await?;
-    let current = s.root.join("0.169.0-linux-x64/bin");
+    let current = s.root.join("0.170.0-linux-x64/bin");
     std::fs::create_dir_all(&current)?;
     std::fs::write(current.join("codex"), elf(62))?;
     std::fs::create_dir_all(s.root.join("0.160.1-linux-x64/bin"))?;
@@ -311,7 +311,7 @@ async fn an_earlier_release_goes_once_nothing_runs_it() -> TestResult {
         }
     })
     .await?;
-    assert_eq!(entries(&s.root), ["0.169.0-linux-x64"]);
+    assert_eq!(entries(&s.root), ["0.170.0-linux-x64"]);
     assert_eq!(s.stub.downloads.load(Ordering::SeqCst), 0);
     Ok(())
 }
@@ -444,7 +444,7 @@ async fn an_earlier_release_a_process_runs_is_kept() -> TestResult {
         .spawn()?;
     let cli_now = Arc::new(cli(&s, pinned(&tarball)?)?);
     cli_now.ensure().await?;
-    assert_eq!(entries(&s.root), ["0.160.1-linux-x64", "0.169.0-linux-x64"]);
+    assert_eq!(entries(&s.root), ["0.160.1-linux-x64", "0.170.0-linux-x64"]);
     running.kill().await?;
     let _ = running.wait().await;
     // The next process looks once for earlier releases, now that nothing runs it.
@@ -458,7 +458,7 @@ async fn an_earlier_release_a_process_runs_is_kept() -> TestResult {
         tokio::task::yield_now().await;
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
-    assert_eq!(entries(&s.root), ["0.169.0-linux-x64"]);
+    assert_eq!(entries(&s.root), ["0.170.0-linux-x64"]);
     Ok(())
 }
 
@@ -555,7 +555,7 @@ async fn codex_runs_get_the_provided_cli_or_a_reason() -> TestResult {
     let adapter = HarnessAdapter::new("/bin/yulius".into(), "http://127.0.0.1:1")
         .with_codex_cli(Arc::new(cli(&s, pinned(&tarball)?)?));
     let provided = adapter.provide_codex(true).await?.ok_or("provided")?;
-    assert_eq!(provided.program, s.root.join("0.169.0-linux-x64/bin/codex"));
+    assert_eq!(provided.program, s.root.join("0.170.0-linux-x64/bin/codex"));
 
     let broken = setup(b"not a tarball".to_vec(), false).await?;
     let mut failing = HarnessAdapter::new("/bin/yulius".into(), "http://127.0.0.1:1")
@@ -575,7 +575,7 @@ async fn codex_runs_get_the_provided_cli_or_a_reason() -> TestResult {
     // release, the recent failure's reason, or, before any install, that it is not installed.
     assert_eq!(
         adapter.provide_codex(false).await?.map(|cli| cli.program),
-        Some(s.root.join("0.169.0-linux-x64/bin/codex"))
+        Some(s.root.join("0.170.0-linux-x64/bin/codex"))
     );
     failing.host_codex = None;
     assert!(
