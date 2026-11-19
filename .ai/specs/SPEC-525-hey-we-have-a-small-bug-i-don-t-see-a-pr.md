@@ -118,6 +118,12 @@ antigravity when it's Michal's task, in opus it works good"). Fixes #1440.
   its tracking on; an Antigravity command on a dotenv file passes it to later `manage_task` reads
   (over-redaction on the safe side). Escapes in a script separate words; a function-style
   `apply_patch` (`{"input": …}`) and a path one level down (`call_mcp_tool`'s `Arguments`) are read.
+- **Antigravity background results and loose session ids** (review round 3): a command that goes
+  on as a task reports its result as a system message (`Task id "…" finished with result: …`),
+  redacted as dotenv content once a command on a dotenv file ran; a script that calls
+  `write_stdin` continues any tracked session id it names, however (`[7, 9].map(session_id => …)`,
+  a variable). JSON is read out only when it is a code-mode result (a `chunk_id`, a settled
+  promise, an MCP `{content, isError}`), with a settled `value` shown; other JSON is shown whole.
 - **Sessions the old reader passed are indexed again** (schema version 69): the index had recorded
   Codex and Antigravity sessions as indexed with no passages; migration 0069 resets their index so
   search finds them, Claude Code sessions keep theirs.

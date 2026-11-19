@@ -196,17 +196,11 @@ fn continues_tracked(name: &str, input: &Value, env_calls: &EnvCalls) -> bool {
             .get("session_id")
             .and_then(id_of)
             .is_some_and(|id| known(format!("session:{id}"))),
-        (_, Value::String(script)) => script
-            .split("write_stdin(")
-            .skip(1)
-            .filter_map(|call| call.split_once("session_id:"))
-            .map(|(_, rest)| {
-                rest.trim_start()
-                    .chars()
-                    .take_while(char::is_ascii_alphanumeric)
-                    .collect::<String>()
-            })
-            .any(|id| !id.is_empty() && known(format!("session:{id}"))),
+        // A script names its sessions as it likes (`[7, 9].map(session_id => …)`, a variable):
+        // any tracked session id in a script that writes to a session continues it.
+        (_, Value::String(script)) if script.contains("write_stdin(") => script
+            .split(|c: char| !c.is_ascii_alphanumeric())
+            .any(|word| !word.is_empty() && known(format!("session:{word}"))),
         _ => false,
     }
 }
@@ -605,16 +599,18 @@ fn codex_item(
 
 /// A Codex tool output's parts as one text. A code-mode `exec` prints each command's result as
 /// JSON (`{"chunk_id", "exit_code", "output", …}`), also nested (a `Promise.allSettled` list,
-/// `{status, value}`, a list of strings, an MCP tool's `{content, isError}`): the texts in it
-/// are read out, so a dotenv file printed there reads as lines. JSON with no such text is kept
-/// as it is, its strings redacted as dotenv content when the call read a dotenv file (`env`).
+/// `{status, value}`, an MCP tool's `{content, isError}`): the texts in it are read out, so a
+/// dotenv file printed there reads as lines. Other JSON is kept as it is, its strings redacted as
+/// dotenv content when the call read a dotenv file (`env`).
 fn output_text(parts: &[String], env: bool) -> String {
     let mut lines = Vec::new();
     for part in parts {
         match serde_json::from_str::<Value>(part) {
             Ok(value @ (Value::Object(_) | Value::Array(_))) => {
                 let mut texts = Vec::new();
-                json_texts(&value, &mut texts);
+                if is_code_mode_result(&value) {
+                    json_texts(&value, &mut texts);
+                }
                 if !texts.is_empty() {
                     lines.push(joined(texts.into_iter().map(str::to_owned)));
                 } else if env {
@@ -632,7 +628,8 @@ fn output_text(parts: &[String], env: bool) -> String {
 }
 
 /// The texts a code-mode result holds: each `output`, an MCP result's `content[].text`, a
-/// rejected promise's `reason` or `error`, the strings of a list; other objects are searched.
+/// settled promise's `value`, `reason` or `error`, the strings of a list; other objects are
+/// searched.
 fn json_texts<'a>(value: &'a Value, texts: &mut Vec<&'a str>) {
     match value {
         Value::Object(map) => {
@@ -641,7 +638,7 @@ fn json_texts<'a>(value: &'a Value, texts: &mut Vec<&'a str>) {
             } else if let Some(Value::Array(content)) = map.get("content") {
                 texts.extend(content.iter().filter_map(|item| str_field(item, "text")));
             } else {
-                for key in ["reason", "error"] {
+                for key in ["value", "reason", "error"] {
                     if let Some(Value::String(text)) = map.get(key) {
                         texts.push(text);
                     }
@@ -660,6 +657,25 @@ fn json_texts<'a>(value: &'a Value, texts: &mut Vec<&'a str>) {
             }
         }
         _ => {}
+    }
+}
+
+/// Whether JSON is a code-mode result: it holds a command's result (`chunk_id`), a settled
+/// promise (`status` `fulfilled` or `rejected`) or an MCP tool's result (`content` and
+/// `isError`). Other JSON is shown as it is.
+fn is_code_mode_result(value: &Value) -> bool {
+    match value {
+        Value::Object(map) => {
+            map.contains_key("chunk_id")
+                || matches!(
+                    map.get("status").and_then(Value::as_str),
+                    Some("fulfilled" | "rejected")
+                )
+                || (map.get("content").is_some_and(Value::is_array) && map.contains_key("isError"))
+                || map.values().any(is_code_mode_result)
+        }
+        Value::Array(items) => items.iter().any(is_code_mode_result),
+        _ => false,
     }
 }
 
@@ -767,7 +783,16 @@ fn antigravity_entry(line: u64, step: &Value, env_calls: &mut EnvCalls) -> Optio
             "assistant"
         }
         (_, Some("SYSTEM_MESSAGE")) => {
-            blocks.push(meta_block(content?, MAX_RESULT_CHARS));
+            // A command that went on as a task reports its result as a system message
+            // (`Task id "…" finished with result: …`): redacted as dotenv content once a command
+            // on a dotenv file ran.
+            let text = content?;
+            let env = env_calls.commands_touched_env && text.contains("finished with result");
+            let (text, truncated) = cut(text, MAX_RESULT_CHARS);
+            blocks.push(TranscriptBlock::Meta {
+                text: clean(&text, env),
+                truncated,
+            });
             "system"
         }
         (Some("MODEL"), _) | (_, Some("ERROR_MESSAGE")) => {
