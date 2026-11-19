@@ -498,9 +498,9 @@ mod tests {
         }
         let store = SqliteStore::open(&path)?;
         let drawn = store.automation("a-auto").await?.ok_or("a-auto")?;
-        assert_eq!(drawn.harness, Harness::ClaudeCode);
+        assert_eq!(drawn.harness, Some(Harness::ClaudeCode));
         let named = store.automation("a-gemini").await?.ok_or("a-gemini")?;
-        assert_eq!(named.harness, Harness::Antigravity);
+        assert_eq!(named.harness, Some(Harness::Antigravity));
         Ok(())
     }
 

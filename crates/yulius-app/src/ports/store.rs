@@ -389,8 +389,9 @@ pub trait TaskStore: Send + Sync {
     ) -> AppResult<bool>;
     /// Since when `task` is in its current state and working (SPEC-087 TIM-001), if it exists.
     async fn task_times(&self, task: &TaskId) -> AppResult<Option<TaskTimes>>;
-    /// Whether `task`'s harness was drawn at creation (SPEC-505 RND-001): only tasks created
-    /// before SPEC-514 were (ADR-0368), and they keep saying so.
+    /// Records that `task`'s harness was drawn at creation (SPEC-505 RND-001, SPEC-520 RHM-003).
+    async fn record_harness_draw(&self, task: &TaskId, at: Timestamp) -> AppResult<()>;
+    /// Whether `task`'s harness was drawn at creation (SPEC-505 RND-001, SPEC-520 RHM-003).
     async fn harness_drawn(&self, task: &TaskId) -> AppResult<bool>;
     /// Records the start of `task`'s working stretch, or its end with `None` (SPEC-087
     /// TIM-002). The task's other times stay.

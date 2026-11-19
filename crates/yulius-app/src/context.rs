@@ -297,6 +297,9 @@ pub struct App {
     pub(crate) move_helper: OnceLock<Arc<dyn crate::ports::migration::MoveHelper>>,
     /// One ask for a move at a time: what it finds and what it writes belong together.
     pub(crate) move_asks: tokio::sync::Mutex<()>,
+    /// Rolls queued for the next harness draws ([`App::queue_harness_rolls`], tests); empty:
+    /// each draw uses unbiased rejection sampling over random bytes (SPEC-520 RHM-001).
+    pub(crate) harness_rolls: Mutex<std::collections::VecDeque<u8>>,
     /// Secrets vault runtime state (SPEC-002 ADR-20).
     pub(crate) vault: crate::vault::VaultState,
     /// Yulius-run CI and repository hygiene (SPEC-002 ADR-21).
@@ -394,6 +397,7 @@ impl App {
             updates: crate::updates::UpdateState::default(),
             move_helper: OnceLock::new(),
             move_asks: tokio::sync::Mutex::new(()),
+            harness_rolls: Mutex::default(),
             vault: crate::vault::VaultState::default(),
             ci: crate::ci::CiState::default(),
             isolation: OnceLock::new(),

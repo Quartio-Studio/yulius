@@ -129,6 +129,22 @@ async fn a_task_without_an_agent_draws_across_all_harnesses_and_keeps_explicit_c
 -> TestResult {
     let (h, alice) = world().await?;
     uneven_all_available(&h).await?;
+    // Even with 5 Claude subscriptions against 1 Codex and 1 Antigravity, the candidate list is
+    // `[claude, codex, antigravity]`: rolls 0..6 cycle 1:1:1 across the three harnesses.
+    h.app.queue_harness_rolls(&[0, 1, 2, 3, 4, 5]);
+    for expected in [
+        "claude",
+        "codex",
+        "antigravity",
+        "claude",
+        "codex",
+        "antigravity",
+    ] {
+        assert_eq!(
+            created(&h, &alice, json!({"prompt": format!("Roll {expected}")})).await?,
+            pair(expected, "random")
+        );
+    }
     let mut seen = BTreeSet::new();
     for n in 0..36 {
         let body = if n % 2 == 0 {
@@ -283,6 +299,17 @@ async fn finished_and_missing_harnesses_are_excluded_while_another_has_capacity(
             .await?,
             pair("antigravity", "random"),
             "finished Claude and Codex accounts must be skipped"
+        );
+    }
+
+    // Adding one roomy Claude subscription beside the two finished ones puts Claude back in the
+    // draw with one equal slot (`[claude, antigravity]`), while finished Codex stays out.
+    available(&h, "a-claude-roomy", Provider::Anthropic).await?;
+    h.app.queue_harness_rolls(&[0, 1, 2, 3]);
+    for expected in ["claude", "antigravity", "claude", "antigravity"] {
+        assert_eq!(
+            created(&h, &alice, json!({"prompt": format!("Partial {expected}")})).await?,
+            pair(expected, "random")
         );
     }
     Ok(())
@@ -505,7 +532,13 @@ async fn an_automation_defaults_to_auto_draws_each_run_and_keeps_its_agent_on_pa
     assert_eq!(created_auto.status, StatusCode::CREATED);
     assert_eq!(created_auto.body["harness"], "auto");
     let auto_id = created_auto.body["id"].as_str().ok_or("id")?.to_owned();
-    assert_eq!(run_agent(&h, &alice, &auto_id).await?.1, "random");
+    h.app.queue_harness_rolls(&[0, 1, 2]);
+    for expected in ["claude", "codex", "antigravity"] {
+        assert_eq!(
+            run_agent(&h, &alice, &auto_id).await?,
+            pair(expected, "random")
+        );
+    }
 
     // Partial PUT (omitting `harness`) on an `auto` automation keeps `auto`.
     let mut toggled = base.clone();
