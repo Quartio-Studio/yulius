@@ -25,6 +25,7 @@ SPEC-468 CCF-010 protects the draft until a prompt from the box goes through. SP
 - [x] Reproduce draft, goal and question regressions
 - [x] Classify scheduled submissions and verify typed submissions
 - [x] Review and deliver the fix on green CI
+- [x] Verify Chromium completes the interrupted navigation before teardown
 
 ## Acceptance criteria
 
@@ -61,3 +62,5 @@ The whole-branch mutation run reported `TIMEOUT Unmutated baseline in 1018s buil
 The second review-fix mutation run stopped at its unmutated baseline in the existing instance-migration estimate test. It tested none of the 17 listed mutants. The scoped Clippy run at the approved head passed for the app, harness and fake agent with warnings denied.
 
 The scheduled integration tests (5/5) and classifier tests (9/9) also passed after the clean merge of dev at `e90a4a743`. The final review-fix mutation run passed its unmutated baseline (3,131 tests). Its summary was `mutants: 33 listed, 15 caught, 6 missed, 0 timed out, 2 unviable, 10 not reached (bound 30 min, took 1802 s)`. Five missed mutations let an unrelated typed hook lose its ordinary effects. Strengthened controls require the exact origin. The sixth retired the next queue item on an ordinary prompt record. A control with two ordinary prompts ahead of a schedule now exercises that case. Replaying each of the six cargo-mutants diffs against the strengthened tests failed. The unchanged classifier passed all ten tests. Ten mutations remain untested within the campaign’s 30-minute bound.
+
+CI run `716424e1-a005-4fa4-82ef-83b8d2a6f2cb` failed in the existing initial-load browser test. The trace showed the second intentionally aborted navigation committing Chromium’s error document during the teardown error check. The failure reproduced in four of eight runs at the approved head. The test now waits for that specific main-frame navigation while still requiring both connection resets. All 16 focused repetitions and all five tests in `tests/initial-load.e2e.ts` passed with retries disabled.

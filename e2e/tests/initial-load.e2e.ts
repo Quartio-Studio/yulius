@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from '@e2e-dev/web';
 import { expect } from 'e2e';
 import { surface } from '../chromium.ts';
-import { failOnPageErrors, mock } from './support.ts';
+import { failOnPageErrors, FIRST_LOAD_MS, mock } from './support.ts';
 
 failOnPageErrors();
 
@@ -55,6 +55,14 @@ test('a later open and an explicit reload each surface their own interruption', 
   const requests = await interruptRequests(document, 2, true);
   await assert.rejects(browser.reload(), /ERR_CONNECTION_RESET/);
   await browser.waitForURL('chrome-error://chromewebdata/');
-  await assert.rejects(app.open(path), /ERR_CONNECTION_RESET/);
+  // Both failures commit the same URL. Observe the second commit before teardown reads the page.
+  const page = surface.page();
+  await Promise.all([
+    page.waitForEvent('framenavigated', {
+      predicate: (frame) => frame === page.mainFrame() && frame.url() === 'chrome-error://chromewebdata/',
+      timeout: FIRST_LOAD_MS,
+    }),
+    assert.rejects(app.open(path), /ERR_CONNECTION_RESET/),
+  ]);
   expect(requests()).toBe(2);
 });
