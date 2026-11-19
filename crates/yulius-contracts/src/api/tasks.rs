@@ -62,8 +62,8 @@ pub struct TaskSummary {
     /// A person's request for control that waits for the owner's answer (SPEC-070), or null.
     #[serde(default)]
     pub control_request: Option<ControlRequestView>,
-    /// Who handed the task over on request and may take it back without asking (SPEC-490
-    /// OWN-009), or null.
+    /// Who handed the task over on request, or had it taken (SPEC-510), and may take it back
+    /// without asking (SPEC-490 OWN-009), or null.
     #[serde(default)]
     pub control_from: Option<UserRef>,
     /// Whether the owner chose to be asked before anyone takes control (SPEC-510 TKC-005):

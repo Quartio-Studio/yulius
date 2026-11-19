@@ -457,8 +457,8 @@ pub trait TaskStore: Send + Sync {
     ) -> AppResult<bool>;
     /// Passes control of `task` from `from` to `to`, who takes it without asking (SPEC-510
     /// TKC-001), and drops any waiting request, in one statement: false unless `from` still owns
-    /// the task and has not chosen to be asked first. `from` becomes the giver who may take it back, unless `to` is the giver
-    /// recorded (it is taken back): then nobody is.
+    /// the task and has not chosen to be asked first. `from` becomes the giver who may take it
+    /// back, unless `to` is the giver recorded (it is taken back): then nobody is.
     async fn seize_control(
         &self,
         task: &TaskId,
