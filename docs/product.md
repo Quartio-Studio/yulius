@@ -432,7 +432,8 @@ watching, steering and unblocking.
 - **Subscription pool**: Claude accounts are used as one self-managing pool, and Codex and
   Antigravity accounts each as one of their own (SPEC-503, SPEC-505); switches and pauses are invisible to agents. Each task shows the subscription it runs on, and a person can
   run it on another from the task ("Run #N on…"); removing a subscription moves its tasks, and a
-  subscription Claude refuses (cancelled, downgraded) is taken out of the pool and says why. A
+  subscription Claude refuses (cancelled, downgraded) is taken out of the pool and says why.
+  If a person has already signed it in again, the new sign-in stays available. A
   task that moved for either reason says so in its terminal, and one with nothing usable left is
   under Needs you. A subscription out of a model's usage credits (Fable runs on a weekly
   allowance of them) is at that model's limit: its tasks of that model move on or
@@ -494,7 +495,8 @@ watching, steering and unblocking.
   because the integration branch moved; armed and green, it merges at once when up to date, else
   Yulius tests it once on top of the current integration branch, together with the others
   waiting (a merge candidate, halved when red), and merges them in order as soon as that run
-  passed, without waiting for their own runs (SPEC-497). The Pipeline tab says why each recent
+  passed, without waiting for their own runs (SPEC-497). If a candidate rebuilds a tree that
+  recently failed in this queue, bisection uses the original run (SPEC-542). The Pipeline tab says why each recent
   candidate was dissolved. Every armed pull
   request says where it stands, and a merge at a head whose own Yulius CI run passed counts as
   merged on green, whoever made it.
@@ -604,7 +606,9 @@ watching, steering and unblocking.
   nightly at 03:00 CEST. An automation's tasks start like New task's: now, as a supertask, after
   another task or when a rule is true, or wait prepared until the person presses Start now ("When
   I decide"), picked with New task's start chip beside Run now and Save;
-  Run now starts its task the way the chip shows.
+  Run now starts its task the way the chip shows. Each task runs as the automation creator.
+  Only the creator can save changes, toggle the schedule or use Run now. Project writers can
+  delete the automation and create a replacement of their own. [ADR-0381](decisions/0381-automation-creators-authorize-edits-and-starts.md)
 - **Notes**: in the tools rail, a notepad per sandbox and one for the whole team, shared and saved
   while people type; a teammate's edit shows up live, and two edits at once end in a choice. A
   third, **Me**, is each person's own: nobody else sees it, and it is the same in every sandbox.
