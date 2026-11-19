@@ -1,6 +1,6 @@
 ---
 yulius-task: bb4cd7dc-afb4-4a1f-8e89-556a66a9be72
-status: in-progress
+status: done
 ---
 
 # SPEC-543 Preserve an automation name entered while recipes load
@@ -24,13 +24,12 @@ Issue #1416 records a saved name of “Daily feedbackNightly Codex review”. Th
 - [x] Specify the delayed workflow regression
 - [x] Demonstrate the name race in the Codex browser test
 - [x] Preserve the entered name and verify the editor
-- [ ] Independently review the fix
+- [x] Independently review the fix
 
 ## Acceptance criteria
 
 - **AC-1** With the workflow read held, enter another recipe's name. Once the read completes, the field retains that name, the first recipe is selected and creating the automation stores the entered name and the selected Codex agent. While the read is held the button is disabled and pressing the save shortcut leaves the form open without an error.
 - **AC-2** Opening a fresh editor gives its first recipe the usual name, prompt and schedule. Changing recipes still updates a suggested name and preserves a custom one.
-
 - **AC-3** Select the name while workflows are held, release the read, then type “Nightly Codex review”. The field contains exactly the replacement.
 
 ## Test plan
@@ -47,3 +46,5 @@ Initialize the suggested name before the field accepts input. The workflow respo
 - With the suggested name available at mount, the held-workflow test also exposed an enabled Create button before its required prompt control existed. The editor now gates the button and keyboard shortcut on the existing loaded state.
 - `npx e2e run automations --grep 'between selecting the name|suggests recipe names'` passed both browser scenarios, including selection across the workflow response and explicit recipe picks.
 - `npx e2e run codex --grep 'an automation chooses the agent' --repeat-each 6 --workers 3` passed all six runs with workflows held and retries disabled. The test submitted the exact entered name and Codex harness after release.
+- Independent review approved `eda858787` after exercising the cleared name, replacement selection, default recipe and save behavior in Chromium. Its coverage finding was addressed in the browser suite. On dev the empty-name assertion observed “Daily feedback”, and the unchanged defaults passed. On the fix all three automation regression and compatibility scenarios passed, including the prompt and cron assertions.
+- `scripts/dev quick` passed the repository contracts and formatting check. `scripts/dev security` reported that Vidoc is disabled. `scripts/dev mutants` reported no Rust code changed against origin/dev. The pre-fix Chromium runs above exercised the changed JavaScript behavior.
