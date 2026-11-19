@@ -2574,25 +2574,45 @@ async fn a_member_that_cannot_merge_is_told_instead_of_tested_again() -> TestRes
     let app = f.h.app.clone();
     let worktree = f.task(1, &[("a.txt", "x\n")]).await?;
     f.arm(1, &worktree).await?;
+    let (_, armed_at) = saved_armed(&app, 1)?.ok_or("armed")?;
     f.record_passed(&app, 1, &git(&worktree, &["rev-parse", "HEAD"])?)
         .await?;
     f.advance_dev("other.txt")?;
     app.merge_armed(&f.sandbox).await;
-    assert_eq!(f.train_runs(&app).await?.len(), 1);
-    // While the train's run is still queued: the end of the run decides the member in the
-    // background, and an owner disabled only after it may find the member merged already.
+    let trains = f.train_runs(&app).await?;
+    let [train] = trains.as_slice() else {
+        return Err(format!("expected one candidate: {trains:?}").into());
+    };
     f.h.store
         .update_user_flags(&UserId::parse("u-alice")?, Some(Some(app.now())), None)
         .await?;
-    f.settle(&app).await?;
-    f.decide_until(&app, || async {
-        Ok(f.wait(1, &worktree).await?["merge_armed"] == false)
-    })
-    .await?;
-    let outcome = f.wait(1, &worktree).await?["merge_outcome"]
-        .as_str()
-        .unwrap_or_default()
-        .to_owned();
+    // Record the passed run without its background merge pass. Inspect the train's decision
+    // after exactly one pass, before a later pass prunes the now-disarmed member.
+    let ended = yulius_app::ci::CiRunUpdate {
+        started_at: Some(app.now()),
+        ended_at: Some(app.now()),
+        ..Default::default()
+    };
+    assert!(
+        app.deps
+            .store
+            .transition_ci_run(&train.id, &[RunState::Queued], RunState::Passed, &ended)
+            .await?
+    );
+    app.merge_armed(&f.sandbox).await;
+    let reasons = dissolved(&app).await?;
+    assert!(
+        reasons
+            .iter()
+            .any(|r| r.contains("the owner of #1 can no longer act")),
+        "{reasons:?}"
+    );
+    let trains: Value = serde_json::from_str(&f.trains_file(&app))?;
+    assert_eq!(trains["s1"]["held_back"], json!([["t1", armed_at]]));
+    assert!(!f.merged(&app, 1).await?);
+    let state = f.wait(1, &worktree).await?;
+    assert_eq!(state["merge_armed"], false, "{state}");
+    let outcome = state["merge_outcome"].as_str().unwrap_or_default();
     assert!(outcome.contains("owner can no longer act"), "{outcome}");
     app.merge_armed(&f.sandbox).await;
     assert_eq!(f.train_runs(&app).await?.len(), 1, "not tested again");
