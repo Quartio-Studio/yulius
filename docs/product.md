@@ -432,7 +432,8 @@ watching, steering and unblocking.
 - **Subscription pool**: Claude accounts are used as one self-managing pool, and Codex and
   Antigravity accounts each as one of their own (SPEC-503, SPEC-505); switches and pauses are invisible to agents. Each task shows the subscription it runs on, and a person can
   run it on another from the task ("Run #N on…"); removing a subscription moves its tasks, and a
-  subscription Claude refuses (cancelled, downgraded) is taken out of the pool and says why. A
+  subscription Claude refuses (cancelled, downgraded) is taken out of the pool and says why.
+  If a person has already signed it in again, the new sign-in stays available. A
   task that moved for either reason says so in its terminal, and one with nothing usable left is
   under Needs you. A subscription out of a model's usage credits (Fable runs on a weekly
   allowance of them) is at that model's limit: its tasks of that model move on or
