@@ -1789,7 +1789,8 @@ AnalyticsSummary = {
                   "total_active": 600000, "median_active": 600000, "p90_active": 600000},
   "tokens": Tokens,
   "tokens_by_model": [{"model": "claude-opus|unknown", …Tokens}],
-  "tokens_by_harness": [{"harness": "claude", …Tokens}],
+  "tokens_by_harness": [{"harness": "claude", "finished_runs": 2, "median_wall_ms": 900000|null,
+                         "p90_wall_ms": 1200000|null, …Tokens}],
   "tokens_by_account": [{"account_id": "…|null", "account_label": "…|null", "account_email?": "…", …Tokens}],
   "switches": {"total": 2},
   "feedback": {"correct": 1, "incorrect": 1},
@@ -1803,6 +1804,10 @@ TaskRow = {"task_id","sandbox","number","title","status","origin","harness","har
   "unknown_usage_runs","switches","feedback":"correct|incorrect|null","feedback_correct",
   "feedback_incorrect"}
 ```
+
+`tasks.by_harness` counts current task assignments. Each `tokens_by_harness` row counts attempts on
+the executing harness. Its median and nearest-rank p90 measure elapsed wall milliseconds for its
+`finished_runs` ended attempts, including idle time. Both are null when all its attempts are live.
 
 `tasks_per_day` lists every day of a range up to 366 days (zero-task days included), otherwise only
 days with tasks, runs or switches (never a day outside the range). A day's `active_ms`, `input` and `output` are of the cohort's runs
