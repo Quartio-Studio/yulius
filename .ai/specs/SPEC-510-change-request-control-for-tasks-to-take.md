@@ -154,5 +154,10 @@ Decline.
   `cargo clippy --workspace --all-targets` clean; `cargo fmt --all --check` and
   `scripts/dev quick` exit 0; `npx e2e run` of ownership, playground-guests, watching,
   consistency, api-tokens, telegram and notifications: 73 passed.
+- Mutation run on the round-2 fix lines (`scripts/dev mutants --base 58019c127`): "mutants: 9
+  listed, 1 caught, 0 missed, 0 timed out, 8 unviable, 0 not reached". The follow-up review
+  (yulius-reviewer, Fable 5.2) approved a9186dac8; its minor test gap is answered by the
+  asks-first case in `taking_control_back_from_the_taker_leaves_no_giver`.
 - Not tested: a real Telegram chat and a real GitHub push after a take (the fakes in
-  `tests/telegram.rs` and `github_actor` stand in); the Vidoc scan (no key on this instance).
+  `tests/telegram.rs` and `github_actor` stand in); the Vidoc scan (CI's security job skipped:
+  Vidoc refused the instance key, HTTP 401).
