@@ -1040,13 +1040,15 @@ fn a_limit_nothing_says_the_end_of_is_retried_once_then_asks_a_person() -> TestR
             )
             .await?;
         app.send_input(&id, b"once more\r").await?;
+        // The refused move is recorded after the pause it leads to: both are waited for.
         wait_for(
-            "the goal pause's request",
+            "the goal pause's request and the refused move",
             Duration::from_secs(30),
-            || async { pauses_audited(&app, &id).await == 1 },
+            || async {
+                pauses_audited(&app, &id).await == 1 && refused_moves(&app, &id).await == 2
+            },
         )
         .await?;
-        assert_eq!(refused_moves(&app, &id).await, 2);
         let pause = app.deps.store.task_needs_you(&id).await?.ok_or("request")?;
         assert_eq!(
             pause.happened.as_deref(),

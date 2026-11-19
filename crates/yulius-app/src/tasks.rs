@@ -751,19 +751,22 @@ impl App {
             .map(|(_, newest)| newest);
         let cli_moves_stopped = moves_to.is_some_and(|to| self.claude_moves_stopped_for(to));
         let cli_moves_to = moves_to.map(|newest| newest.to_string());
-        // A Codex task without a model runs its subscription's default, which is no Claude
-        // model: none is named (SPEC-503 CDX-013), and its effort is its own.
-        // An Antigravity task without one runs Gemini 4 Carbon at high effort (SPEC-505 AGY-002).
+        // A Codex task without a model or effort runs GPT-6.2 Astra at high effort (SPEC-511
+        // CXD-002), an Antigravity one Gemini 4 Carbon at high effort (SPEC-505 AGY-002).
         use yulius_domain::harness::{
-            DEFAULT_ANTIGRAVITY_EFFORT, DEFAULT_ANTIGRAVITY_MODEL, Harness,
+            DEFAULT_ANTIGRAVITY_EFFORT, DEFAULT_ANTIGRAVITY_MODEL, DEFAULT_CODEX_EFFORT,
+            DEFAULT_CODEX_MODEL, Harness,
         };
         let model = task.model.clone().unwrap_or_else(|| match task.harness {
-            Harness::Codex => String::new(),
+            Harness::Codex => DEFAULT_CODEX_MODEL.to_owned(),
             Harness::Antigravity => DEFAULT_ANTIGRAVITY_MODEL.to_owned(),
             Harness::ClaudeCode => DEFAULT_CLAUDE_MODEL.to_owned(),
         });
         let effort = match task.harness {
-            Harness::Codex => task.effort.clone(),
+            Harness::Codex => task
+                .effort
+                .clone()
+                .or_else(|| Some(DEFAULT_CODEX_EFFORT.to_owned())),
             Harness::Antigravity => task
                 .effort
                 .clone()
