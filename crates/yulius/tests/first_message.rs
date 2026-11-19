@@ -256,7 +256,7 @@ async fn goal_in_a_continued_turn(
     let (sandbox, user) = seed(app, data, &["a-first", "b-second"]).await?;
     let id = new_task(app, &sandbox, &user, "Make the header blue", TaskMode::Goal).await?;
     wait_for("the first goal's turn", Duration::from_secs(60), || async {
-        screen(app, &id).contains("GOAL SET") && activity(app, &id).await == Some(Activity::Working)
+        app.goal_is_open(&id) && activity(app, &id).await == Some(Activity::Working)
     })
     .await?;
     let ctx = AuthContext {
@@ -1268,23 +1268,42 @@ fn typed_goal_marker(run_dir: &str) -> PathBuf {
 /// is long over when the 12 s turn ends).
 #[test]
 fn a_goal_still_to_be_typed_at_a_restart_is_flagged() -> TestResult {
+    let flagged = restart_before_goal_is_typed(FakeAgentOptions {
+        forget_goal: true,
+        ..opening_turn()
+    })?;
+    assert!(flagged, "a goal the session never took needs its person");
+    Ok(())
+}
+
+/// A restored goal's opening-turn verdict satisfies the restarted server's goal watch.
+#[test]
+fn a_restored_goal_is_not_flagged_when_the_server_restarts_before_typing_it() -> TestResult {
+    let flagged = restart_before_goal_is_typed(opening_turn())?;
+    assert!(!flagged, "the restored goal received its verdict");
+    Ok(())
+}
+
+fn restart_before_goal_is_typed(agent: FakeAgentOptions) -> Result<bool, BoxError> {
     let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
     let (_dir, data) = data_dir()?;
     let first = runtime()?;
+    let restored = !agent.forget_goal;
     let (port, id) = first.block_on(async {
         let probe = Arc::new(ScriptedUsage::default());
-        let (app, port) = start(&data, &fake, opening_turn(), 0, probe).await?;
+        let (app, port) = start(&data, &fake, agent.clone(), 0, probe).await?;
         let (id, _ctx, _attach) = goal_in_a_continued_turn(&app, &data).await?;
         let attempt = app.deps.store.live_attempt(&id).await?.ok_or("run")?;
         assert!(typed_goal_marker(&attempt.run_dir).is_file());
+        assert_eq!(screen(&app, &id).contains("GOAL RESTORED"), restored);
         Ok::<_, BoxError>((port, id))
     })?;
     first.shutdown_timeout(Duration::from_secs(5));
 
     let rt = runtime()?;
-    rt.block_on(async {
+    let flagged = rt.block_on(async {
         let probe = Arc::new(ScriptedUsage::default());
-        let (app, _) = start_with(&data, &fake, opening_turn(), port, probe, |config| {
+        let (app, _) = start_with(&data, &fake, agent, port, probe, |config| {
             config.launch_goal_ms = 3_000;
             config.goal_ready_ms = 4_000;
         })
@@ -1303,26 +1322,29 @@ fn a_goal_still_to_be_typed_at_a_restart_is_flagged() -> TestResult {
         // Not flagged inside the turn: the watch's time starts at the turn's end.
         assert_ne!(activity(&app, &id).await, Some(Activity::NeedsAttention));
         assert!(notices(&mut watch).iter().all(|n| !n.contains("goal")));
-        wait_for("the flag", Duration::from_secs(45), || async {
-            activity(&app, &id).await == Some(Activity::NeedsAttention)
-        })
-        .await?;
-        let said = notices(&mut watch);
-        assert!(
-            said.iter()
-                .any(|n| n.contains("Yulius restarted before it set this task's goal")),
-            "{said:?}"
-        );
-        // Flagged once: no later restart flags it again.
+        // The watch ends once, whether it observed a verdict or flagged the missing goal.
         let marker = typed_goal_marker(&attempt.run_dir);
-        wait_for("the marker's removal", Duration::from_secs(10), || async {
+        wait_for("the marker's removal", Duration::from_secs(45), || async {
             !marker.exists()
         })
         .await?;
-        stop(&app, &id).await
+        let said = notices(&mut watch);
+        let flagged = activity(&app, &id).await == Some(Activity::NeedsAttention);
+        assert_eq!(
+            said.iter()
+                .any(|n| n.contains("Yulius restarted before it set this task's goal")),
+            flagged,
+            "{said:?}"
+        );
+        assert!(
+            !screen(&app, &id).contains("GOAL SET"),
+            "the typist ended with the first server"
+        );
+        stop(&app, &id).await?;
+        Ok::<_, BoxError>(flagged)
     })?;
     rt.shutdown_timeout(Duration::from_secs(5));
-    Ok(())
+    Ok(flagged)
 }
 
 /// SPEC-483 RST-002: Claude Code recorded the typed goal, and the server stopped before it
