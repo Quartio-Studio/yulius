@@ -43,12 +43,12 @@ because it's unpredictable. A harness is set for a task".
 
 ## Plan
 
-- [ ] Read the product context and related work, then write and validate the spec
-- [ ] A task created without an agent runs Claude Code or its model's agent, never a drawn one
-- [ ] An agent's task_create and automation_create without an agent keep the calling task's agent
-- [ ] An automation runs the agent it names: stored auto becomes Claude Code (migration 0068)
-- [ ] The composer, Settings and automation editor default to Claude Code; the mock matches
-- [ ] ADR-0368 and the documents say a task's agent is set, never drawn
+- [x] Read the product context and related work, then write and validate the spec
+- [x] A task created without an agent runs Claude Code or its model's agent, never a drawn one
+- [x] An agent's task_create and automation_create without an agent keep the calling task's agent
+- [x] An automation runs the agent it names: stored auto becomes Claude Code (migration 0068)
+- [x] The composer, Settings and automation editor default to Claude Code; the mock matches
+- [x] ADR-0368 and the documents say a task's agent is set, never drawn
 - [ ] Independent review in a fresh session, findings fixed test-first
 - [ ] Every gate green, docs and the changes log updated
 

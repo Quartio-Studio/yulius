@@ -4,6 +4,14 @@ Notable changes, newest first. Per-change detail lives in the merged pull reques
 evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-architecture.md)
 (sections 14 and 15).
 
+## 2026-11-19
+
+- A task's agent is set, never drawn (SPEC-514, task #496, ADR-0368): a task started without
+  choosing an agent runs Claude Code (or the agent its model implies) instead of Claude Code or
+  Antigravity at random; a follow-up an agent creates runs that agent's own, and an automation
+  runs the agent it names, the ones saved as Random now Claude Code. The composer's no-choice
+  item is Default again and the automation editor has no Random. Tasks drawn before still say so.
+
 ## 2026-11-18
 
 - Subscription sign-ins start again (SPEC-509, task #491, #1414): login terminals are 1000
