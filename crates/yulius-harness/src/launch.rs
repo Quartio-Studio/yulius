@@ -786,9 +786,14 @@ fn plan_claude(request: &LaunchRequest) -> Result<LaunchPlan, LaunchError> {
 /// updates (the operator installs it, #45) nor asks to trust the worktree. The agent's shell keeps
 /// the run's environment (Codex's default) except `CODEX_HOME`: a `codex` the agent runs there
 /// uses its own home, never this one with Yulius's hooks (SPEC-281 SSN-002).
-fn codex_config(worktree: &str) -> Vec<u8> {
+fn codex_config(worktree: &str, pro_500: bool) -> Vec<u8> {
+    let speed = if pro_500 {
+        "service_tier = \"ultrafast\"\n"
+    } else {
+        ""
+    };
     format!(
-        "cli_auth_credentials_store = \"file\"\ncheck_for_update_on_startup = false\n\n\
+        "cli_auth_credentials_store = \"file\"\ncheck_for_update_on_startup = false\n{speed}\n\
          [shell_environment_policy]\nignore_default_excludes = true\nexclude = [\"CODEX_HOME\"]\n\n\
          [projects.{}]\ntrust_level = \"trusted\"\n",
         toml_string(worktree)
@@ -985,7 +990,7 @@ fn plan_codex(request: &LaunchRequest) -> Result<LaunchPlan, LaunchError> {
             },
             PlannedFile {
                 path: codex_home.join("config.toml"),
-                contents: codex_config(worktree),
+                contents: codex_config(worktree, crate::login::codex_pro_500(auth.expose())),
                 mode: PRIVATE_FILE_MODE,
             },
             PlannedFile {

@@ -6,7 +6,8 @@
 //!
 //! Contract:
 //! - what a task says about itself (`App::waits_why`) is what its page shows: the list's
-//!   group, the task's request (`needs_you`), the reason of its flag, a held prompt, a pause.
+//!   group, the task's request (`needs_you`), the reason of its flag, a held prompt, a pause,
+//!   and what a queued task waits for (`queue_reason`, SPEC-512 PRK-007).
 //!   It is read by everyone who reads the task list, a task's agent included (without a held
 //!   prompt's words); the texts are an agent's, Claude Code's or a person's own words, each
 //!   shown as one bounded line without what hides or reverses text;
@@ -14,13 +15,12 @@
 //!   write access checked at the call;
 //! - a request is ended only while it still asks what was read: one asked meanwhile stays.
 
-use std::collections::HashSet;
 use std::sync::Arc;
 
 use serde_json::{Value, json};
 use yulius_contracts::api::intake::{HeldPromptOutcome, ResolveHeldPrompt};
 use yulius_domain::permission::Action;
-use yulius_domain::task::TaskGroup;
+use yulius_domain::task::{AttentionFacts, PullSignal, TaskGroup};
 
 use crate::auth::AuthContext;
 use crate::context::App;
@@ -50,20 +50,24 @@ pub fn group_name(group: TaskGroup) -> &'static str {
     }
 }
 
-impl App {
-    /// The group the task list shows `task` in, among the sandbox's pending requests
-    /// `requested` ([`App::browser_requests`]).
-    ///
-    /// # Errors
-    /// Store failures.
-    pub(crate) async fn shown_group(
-        &self,
-        task: &TaskRecord,
-        requested: &HashSet<String>,
-    ) -> AppResult<TaskGroup> {
-        self.task_group(task, requested).await
+/// Explains a Needs you classification that has no stored question, flag, or held prompt.
+fn derived_wait_reason(facts: &AttentionFacts) -> Option<&'static str> {
+    if facts.browser_request {
+        Some("A request for a person was pending when the task list was read.")
+    } else if facts.pull == Some(PullSignal::Failing) {
+        Some("The agent stopped and its pull request checks are failing.")
+    } else if facts.plan_open {
+        Some("The agent stopped with unfinished steps in its plan.")
+    } else if facts.spec_unfinished {
+        Some("The agent stopped before its spec was finished.")
+    } else if facts.goal_unfinished {
+        Some("The agent stopped before its goal was achieved.")
+    } else {
+        None
     }
+}
 
+impl App {
     /// Why `task` waits for a person, or is held, as its page shows it (QST-001): the fields a
     /// task's brief adds, each only when there is one. `needs_you`: what its agent asked;
     /// `attention`: the reason of its flag; `held_prompt`: a typed prompt Yulius held for a
@@ -75,6 +79,7 @@ impl App {
         &self,
         task: &TaskRecord,
         person: bool,
+        facts: &AttentionFacts,
     ) -> serde_json::Map<String, Value> {
         // What the task's summary shows, also for a task that ended: a prompt held before its
         // end is still decided on its card.
@@ -132,6 +137,21 @@ impl App {
                 .await
                 .and_then(|pause| serde_json::to_value(pause).ok()),
         );
+        // What a queued task waits for (SPEC-512 PRK-007): a supertask's hold is said by the
+        // brief's own fields.
+        if task.status == yulius_domain::task::TaskStatus::Queued {
+            let held = self.supertask_holders(task).await.unwrap_or_default();
+            add(
+                "queue_reason",
+                self.queue_reason_of(task, &held).await.map(Value::String),
+            );
+        }
+        if facts.group() == TaskGroup::NeedsYou
+            && why.is_empty()
+            && let Some(reason) = derived_wait_reason(facts)
+        {
+            why.insert("wait_reason".into(), json!(reason));
+        }
         why
     }
 
@@ -247,6 +267,19 @@ impl App {
 mod tests {
     use super::group_name;
     use yulius_domain::task::TaskGroup;
+
+    /// A request can be dismissed after the grouping snapshot. Its membership alone
+    /// cannot tell us whether it came from the browser or the agent.
+    #[test]
+    fn a_request_snapshot_without_details_does_not_attribute_it_to_the_browser() {
+        use yulius_domain::task::{Activity, AttentionFacts, TaskStatus};
+        let mut facts = AttentionFacts::new(TaskStatus::Running, Some(Activity::Working));
+        facts.browser_request = true;
+        assert_eq!(
+            super::derived_wait_reason(&facts),
+            Some("A request for a person was pending when the task list was read.")
+        );
+    }
 
     #[test]
     fn every_group_has_its_name() {

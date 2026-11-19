@@ -115,12 +115,21 @@ impl App {
         task: &TaskRecord,
         requested: &HashSet<String>,
     ) -> AppResult<TaskGroup> {
+        Ok(self.task_attention_facts(task, requested).await?.group())
+    }
+
+    /// The facts that place the task in its sidebar group and explain a derived wait.
+    pub(crate) async fn task_attention_facts(
+        &self,
+        task: &TaskRecord,
+        requested: &HashSet<String>,
+    ) -> AppResult<AttentionFacts> {
         let store = &self.deps.store;
         if task.status.is_resting() || task.status == TaskStatus::Stopping {
             let mut facts = AttentionFacts::new(task.status, task.activity);
             facts.awaits_start_onboarding =
                 self.is_awaited_onboarding(task).await? && !store.has_attempts(&task.id).await?;
-            return Ok(facts.group());
+            return Ok(facts);
         }
         let held_prompt = store.pending_hold(&task.id).await?.is_some();
         let chain_blocked = task.status == TaskStatus::Chained
@@ -128,10 +137,14 @@ impl App {
                 .chain(&task.id)
                 .await?
                 .is_some_and(|chain| chain.blocked_reason.is_some());
-        let finished = task.status == TaskStatus::Running
-            && task
-                .activity
-                .is_some_and(yulius_domain::task::Activity::is_idle);
+        // A parked task is idle without its session (SPEC-512 PRK-004): its pull request, plan
+        // and goal speak as an idle running task's do; the live overlays (shells, `yulius wait`,
+        // an armed merge) need a session, so `live` keeps them off.
+        let idle = task
+            .activity
+            .is_some_and(yulius_domain::task::Activity::is_idle);
+        let finished = matches!(task.status, TaskStatus::Running | TaskStatus::Parked) && idle;
+        let live = task.status == TaskStatus::Running && idle;
         // The pull request, the plan and the goal matter only after a finished turn: with no step
         // open and no unfinished goal, an idle agent answered (SPEC-429).
         let (pull, plan_open, spec_unfinished) = if finished {
@@ -157,38 +170,43 @@ impl App {
             chain_blocked,
             plan_open,
             spec_unfinished,
-            goal_unfinished: finished && self.goal_unfinished(&task.id),
-            background_shells: finished
+            goal_unfinished: finished && self.goal_unfinished_of(task).await,
+            background_shells: live
                 && self
                     .background_shells_of(&task.id)
                     .is_some_and(|count| count > 0),
-            yulius_wait: finished
+            yulius_wait: live
                 && (self.agent_waits_on_yulius(&task.id) || self.pr_news_due(task).await),
             pull,
             paused: self.is_paused(task).await,
             awaits_start_onboarding: false,
-            merge_armed: finished && self.merge_is_armed(&task.id),
-        }
-        .group())
+            merge_armed: live && self.merge_is_armed(&task.id),
+        })
     }
 
     /// Tasks with a pending request for a person to act: in the sandbox's browser (BRW-004),
     /// read from its tabs (none while the browser does not run: its requests went with it), or
     /// through `needs_you` (SPEC-134 CDT-004).
     pub(crate) async fn browser_requests(&self, sandbox: &SandboxId) -> HashSet<String> {
-        let mut requested: HashSet<String> = match self.deps.browser.running(sandbox).await {
+        let mut requested = self.browser_tab_requests(sandbox).await;
+        match self.deps.store.needs_you_tasks(sandbox).await {
+            Ok(tasks) => requested.extend(tasks.into_iter().map(|id| id.to_string())),
+            Err(err) => tracing::warn!(error = %err, "reading needs_you requests failed"),
+        }
+        requested
+    }
+
+    /// Tasks with a pending request for a person to act in the sandbox's browser (BRW-004), read
+    /// from its tabs: none while the browser does not run.
+    pub(crate) async fn browser_tab_requests(&self, sandbox: &SandboxId) -> HashSet<String> {
+        match self.deps.browser.running(sandbox).await {
             Some(session) => session
                 .tabs()
                 .into_iter()
                 .filter_map(|tab| tab.action_requested.and_then(|request| request.task_id))
                 .collect(),
             None => HashSet::new(),
-        };
-        match self.deps.store.needs_you_tasks(sandbox).await {
-            Ok(tasks) => requested.extend(tasks.into_iter().map(|id| id.to_string())),
-            Err(err) => tracing::warn!(error = %err, "reading needs_you requests failed"),
         }
-        requested
     }
 
     /// Sandboxes visible to the caller.

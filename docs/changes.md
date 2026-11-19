@@ -6,7 +6,50 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-19
 
-- Task briefings now request a native reviewer for each harness. Codex uses GPT-6.2 Astra at high effort and Antigravity uses Gemini 4 Neon (High) in every round. Claude Code keeps its Fable and Opus round policy. Gemini tasks default to Neon on Antigravity CLI 1.5.12 (SPEC-524).
+- Task briefings now request a native reviewer for each harness. Codex uses GPT-6.2 Astra at high effort and Antigravity uses Gemini 4 Neon (High) in every round. Claude Code keeps its Fable and Opus round policy. Gemini task launches use the Neon default delivered in SPEC-519 (review instructions in SPEC-524).
+- Parked sessions (SPEC-512 part 1, task #494, #1412): a task whose turn ended and that waits for
+  a person gives its idle session up after 30 minutes (`YULIUS_PARK_AFTER_MINUTES`, 0 never): the
+  process ends, so it holds no session slot and no memory, and the task stays where the list
+  showed it, marked "parked", with its question and pull request. A message (`task_message`) or
+  Resume continues the same session with its history. A queued task says what it waits for, and
+  the Capacity card shows working, parked, idle and queued sessions apart (ADR-0367).
+- Antigravity offers Gemini 4 Neon and runs it at high effort by default (SPEC-519, task #501,
+  [ADR-0373](decisions/0373-gemini-4-neon-is-antigravitys-default-model-on-agy-1-5-12.md)):
+  confirmed end to end in a live Antigravity session on a Google sign-in subscription. An
+  Antigravity task that names no model launches with `--model gemini-4-neon --effort high`, records
+  `gemini-4-neon` on its attempt and names it in its details; the composer and Settings list Gemini
+  4 Neon first under Google and keep Gemini 4 Carbon second while unnamed `Random` continues to draw
+  across available harnesses (`SPEC-520`). The pinned Antigravity CLI moves from 1.5.10 to 1.5.12 so
+  Gemini 4 Neon works on `GEMINI_API_KEY` subscriptions too.
+- Watchers see Codex and Antigravity sessions (SPEC-525, task #507, #1440): someone else's Codex
+  or Antigravity task showed "Codex is starting…" / "Antigravity is starting…" for its whole run,
+  because the transcript reader knew only Claude Code's lines. It now reads Codex rollouts and
+  Antigravity transcripts into the same entries (prompts, answers, reasoning, tool calls and
+  results, redacted the same way, dotenv reads included), so the watch view, the Sessions page,
+  session search and `session_read` show them. Schema version 69 indexes the Codex and Antigravity
+  sessions already passed with no passages again from their start.
+- Random harness selection across all harnesses with available subscriptions (SPEC-520, task #502,
+  #1437, ADR-0377): restores `Random` (`Random agent` in the composer and Settings, `Random` /
+  `auto` in the automation editor) as the default, drawing uniformly (`1 / k`, unbiased over random
+  bytes) across `claude`, `codex`, and `antigravity` that currently have at least one healthy
+  non-exhausted subscription — equal chance per eligible harness regardless of subscription count,
+  excluding harnesses with zero or only finished subscriptions while another has capacity (falling
+  back to healthy `Usable` pools when every connected pool is temporarily limited). Drawn tasks keep
+  their harness for life (`harness_choice: random`); a running task agent's unadorned `task_create`
+  and `automation_create` still keep the calling task's harness.
+- Antigravity tasks show Working while a background command runs and when its completion
+  starts another model turn. If the agent stops with unfinished steps, its task brief explains
+  why it needs a person. Fixes #1444 (SPEC-528, task #510).
+- Codex defaults to Ultrafast on supported models when the assigned subscription is ChatGPT
+  Pro 500. Each launch reads the current sign-in (SPEC-523, task #505).
+- Finished tasks shown Done, not closed (SPEC-518, task #500, findings only): six goal-achieved
+  tasks with merged pull requests were shown Done (by the fields read) and stayed open, because no rule closes a Done
+  task whose session lives. Claude Code's idle compaction changed nothing. No behaviour changed;
+  closing finished tasks by themselves is recorded as an option.
+- The composer and Settings now list 11 Codex models and eight Gemini models in searchable provider groups. The effort menu follows the selected model and clears incompatible saved effort. Codex 0.170.0 includes GPT-6.2 delegation metadata and Antigravity 1.5.12 supports Neon (SPEC-521, ADR-0372).
+- Dashboard → Harnesses compares assigned tasks, runs, median and p90 elapsed time, and reported input,
+  output and cache tokens for the selected sandbox and period. Each harness shows the number of ended
+  runs and the number reporting usage (SPEC-522, task #504).
 
 - Answer a teammate's Needs you (SPEC-516, task #498, ADR-0370): on someone else's task whose
   agent asks a person for something, Reply answers it without taking control. The agent gets the

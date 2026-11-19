@@ -49,6 +49,12 @@ pub struct ServeArgs {
     /// memory, SPEC-459; Settings → Instance shows and changes it).
     #[arg(long, env = "YULIUS_MAX_SESSIONS")]
     pub max_live_sessions: Option<u32>,
+    /// Minutes a task whose turn ended and that waits for a person keeps its idle session before
+    /// it is parked: the session ends, and the task resumes in it when someone writes to it
+    /// (SPEC-512 PRK-002). 0: never.
+    #[arg(long, env = "YULIUS_PARK_AFTER_MINUTES", default_value_t = 30,
+          value_parser = clap::value_parser!(u32).range(0..=10_080))]
+    pub park_after_minutes: u32,
     /// CPUs an agent session, terminal or Cockpit plans for (`YULIUS_CPUS` in its environment;
     /// SPEC-082). Default: a third of a sandbox's CPUs, at least 2.
     #[arg(long, env = "YULIUS_AGENT_CPUS",
@@ -515,6 +521,7 @@ pub fn build_app(
     // The numbers until `App::load_limits` sizes the limits from the host (SPEC-459).
     let fixed = |limit: Limit| u32::try_from(limit.fixed()).unwrap_or(u32::MAX);
     config.max_live_sessions = args.max_live_sessions.unwrap_or(fixed(Limit::Sessions));
+    config.park_after_ms = u64::from(args.park_after_minutes) * 60_000;
     config.agent_cpus = args.agent_cpus;
     config.contained = args.contained;
     config.upload_max_bytes = args.upload_max_mb * 1024 * 1024;

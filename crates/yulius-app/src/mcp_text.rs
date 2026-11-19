@@ -890,6 +890,9 @@ fn waits_why(task: &Value) -> Vec<String> {
     let mut parts = Vec::new();
     if text(task, "shows") == Some("needs_you") {
         parts.push("NEEDS ITS PERSON".to_owned());
+        if let Some(reason) = text(task, "wait_reason") {
+            parts.push(reason.to_owned());
+        }
     }
     if let Some(asked) = task.get("needs_you").filter(|v| v.is_object()) {
         let verb = if asked.get("decision").and_then(Value::as_bool) == Some(true) {

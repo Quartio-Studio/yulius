@@ -1,7 +1,7 @@
-//! The pinned Antigravity CLI Yulius provides to Antigravity runs (SPEC-505 AGY-007): a stub of
-//! Google's release storage serves a tarball laid out as agy 1.5.10's is (one file,
-//! `antigravity`), whose binary is a synthetic ELF header. No test reaches Google, except the
-//! ignored one that installs the real release.
+//! The pinned Antigravity CLI Yulius provides to Antigravity runs (SPEC-505 AGY-007, SPEC-519
+//! NEO-003): a stub of Google's release storage serves a tarball laid out as agy 1.5.12's is (one
+//! file, `antigravity`), whose binary is a synthetic ELF header. No test reaches Google, except
+//! the ignored one that installs the real release.
 
 use std::os::unix::fs::PermissionsExt as _;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -147,9 +147,9 @@ fn cli(s: &Setup, platform: Platform) -> Result<PinnedCli, Box<dyn std::error::E
     )?)
 }
 
-/// AGY-007: the pinned release is downloaded once for callers at the same time, checked against
-/// its pinned sha512 and installed as `<root>/1.5.12-linux-x64/antigravity`, runnable by every
-/// sandbox user, with nothing else left in the root.
+/// AGY-007, NEO-003: the pinned release is downloaded once for callers at the same time, checked
+/// against its pinned sha512 and installed as `<root>/1.5.12-linux-x64/antigravity`, runnable by
+/// every sandbox user, with nothing else left in the root.
 #[tokio::test]
 async fn the_pinned_antigravity_cli_installs_once() -> TestResult {
     let tarball = release()?;
@@ -286,7 +286,8 @@ async fn antigravity_runs_get_the_provided_cli_or_a_reason() -> TestResult {
     Ok(())
 }
 
-/// AGY-007, by hand: the real pinned release installs from Google and is the pinned binary.
+/// AGY-007, NEO-003, by hand: the real pinned release installs from Google and is the 1.5.12
+/// binary.
 #[tokio::test]
 #[ignore = "downloads about 100 MB from Google's release storage"]
 async fn the_real_pinned_release_installs_from_google() -> TestResult {

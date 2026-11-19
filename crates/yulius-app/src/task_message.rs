@@ -86,6 +86,15 @@ pub fn message_paste_behind_draft(login: &str, channel: Channel, text: &str) -> 
     paste(login, channel, text, "\n\n")
 }
 
+/// The prompt a parked task resumes with for a (cleaned) message from `login` sent through
+/// `channel` (SPEC-512 PRK-005): the label and text a typed message has, unpasted.
+#[must_use]
+pub fn message_prompt(login: &str, channel: Channel, text: &str) -> String {
+    let login = clean_message(login);
+    let through = through(channel);
+    format!("Message from {login} (through {through}):\n\n{text}")
+}
+
 fn paste(login: &str, channel: Channel, text: &str, before: &str) -> Vec<u8> {
     let login = clean_message(login);
     let through = through(channel);
@@ -265,7 +274,30 @@ impl App {
                 task.number
             )));
         }
-        let delivered = if task.status == TaskStatus::Running {
+        // A session being parked takes nothing typed: the message would end with it (SPEC-512
+        // PRK-003).
+        if self.parking(&task.id) {
+            return Err(AppError::Conflict(format!(
+                "task #{} is parking its idle session: send the message again in a few \
+                 seconds and it resumes the task",
+                task.number
+            )));
+        }
+        let delivered = if task.status == TaskStatus::Parked {
+            // Writing to a parked task resumes it in its own session, with the message as its
+            // first prompt; it is the person's answer, so the request it had open ends (SPEC-512
+            // PRK-005, TMS-006).
+            let login = self.login_of(&caller.user).await;
+            let prompt = message_prompt(&login, caller.channel, &text);
+            if !self.resume_parked(&task.id, Some(prompt)).await? {
+                return Err(AppError::Conflict(format!(
+                    "task #{} changed while it was resumed: try again",
+                    task.number
+                )));
+            }
+            self.end_needs_you(&task.id).await;
+            "resumed"
+        } else if task.status == TaskStatus::Running {
             let login = self.login_of(&caller.user).await;
             let from = if with_draft {
                 Sender::OwnerPastDraft
@@ -318,6 +350,10 @@ impl App {
                  prompt box: both were submitted as one prompt, and the box is empty again."
             }
             "sent" => "Typed into the task's session: its agent reads it as soon as it can.",
+            "resumed" => {
+                "The task was parked: it resumes in its own session with your message as its \
+                 first prompt (it waits in the queue while every session is in use)."
+            }
             _ => "Added to the task's request: its agent reads it when the task starts.",
         };
         let task = self
@@ -499,6 +535,13 @@ impl App {
         let runtime = self.existing_runtime(&task.id).ok_or_else(|| {
             AppError::Conflict(format!("task #{} has no live session", task.number))
         })?;
+        // Its session is ending for a park (SPEC-512 PRK-003): what is typed now is lost.
+        if self.parking(&task.id) {
+            return Err(AppError::Conflict(format!(
+                "task #{} is parking its idle session: try again in a few seconds",
+                task.number
+            )));
+        }
         if runtime.typing_opening.load(Ordering::SeqCst) {
             return Err(AppError::Conflict(format!(
                 "Yulius is still typing task #{}'s first message: try again in a minute",

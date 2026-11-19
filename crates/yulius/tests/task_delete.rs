@@ -219,6 +219,14 @@ async fn tasks_run_claude_code_or_codex() -> TestResult {
             "{model}: {:?}",
             other_model.body
         );
+        assert!(
+            other_model
+                .body
+                .to_string()
+                .contains("takes a Gemini model (such as gemini-4-neon)"),
+            "{model}: {:?}",
+            other_model.body
+        );
     }
     let settings = call(&h.router, Method::GET, "/api/admin/settings", None, &alice).await?;
     assert_eq!(settings.status, StatusCode::NOT_FOUND);

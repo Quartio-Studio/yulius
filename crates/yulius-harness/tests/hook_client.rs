@@ -935,11 +935,13 @@ fn an_antigravity_stop_is_continued_or_let_pass() -> TestResult {
         serde_json::json!({ "decision": "continue", "reason": "Run the gate" })
     );
     let sent: serde_json::Value = serde_json::from_slice(&join(server)?.body)?;
+    assert_eq!(sent["fully_idle"], true);
     assert_eq!(sent["stop_hook_active"], true);
     assert_eq!(sent["hook_event_name"], "Stop");
 
     let (url, server) = serve_once(ok_response(b""))?;
     let mut output = Vec::new();
+    let payload = agy_payload("Stop", serde_json::json!({"fullyIdle": false}));
     run_hook(
         "antigravity",
         "Stop",
@@ -948,7 +950,8 @@ fn an_antigravity_stop_is_continued_or_let_pass() -> TestResult {
         &env_with(url, Some("task-token-SYNTHETIC")),
     );
     assert_eq!(json_out(&output)?, serde_json::json!({}));
-    join(server)?;
+    let sent: serde_json::Value = serde_json::from_slice(&join(server)?.body)?;
+    assert_eq!(sent["fully_idle"], false);
     Ok(())
 }
 
@@ -1034,8 +1037,8 @@ fn an_antigravity_command_is_allowed_unless_the_guard_refuses_it() -> TestResult
 
 /// SPEC-505 AGY-006: agy wakes itself when a background command ends, with a model call that
 /// opens a turn but no typed prompt (the step before it is a system message, and
-/// `lastUserInput` is still the earlier prompt): Yulius is not asked about a prompt then, nor
-/// when the transcript cannot be read.
+/// `lastUserInput` is still the earlier prompt). It reports work without a prompt; a missing
+/// transcript does not identify a wake-up.
 #[test]
 fn an_antigravity_wake_up_is_no_prompt() -> TestResult {
     let dir = tempfile::tempdir()?;
@@ -1048,25 +1051,47 @@ fn an_antigravity_wake_up_is_no_prompt() -> TestResult {
             "SYSTEM_MESSAGE",
         ],
     )?;
-    for path in [
-        transcript,
-        dir.path()
-            .join("missing/transcript_full.jsonl")
-            .to_string_lossy()
-            .into_owned(),
+    let (url, server) = serve_once_within(ok_response(b"{}"), Duration::from_secs(2))?;
+    let mut output = Vec::new();
+    let payload = agy_payload(
+        "PreInvocation",
+        serde_json::json!({"invocationNum": 0, "initialNumSteps": 4, "transcriptPath": transcript}),
+    );
+    run_hook(
+        "antigravity",
+        "PreInvocation",
+        &mut &payload[..],
+        &mut output,
+        &env_with(url, Some("task-token-SYNTHETIC")),
+    );
+    assert_eq!(json_out(&output)?, serde_json::json!({}));
+    let request = join(server)?;
+    assert_eq!(
+        request.line.trim_end(),
+        "POST /hooks/antigravity/PreInvocation HTTP/1.1"
+    );
+    let sent: serde_json::Value = serde_json::from_slice(&request.body)?;
+    assert!(sent.get("prompt").is_none());
+
+    let (url, listener) = untouched_listener()?;
+    let env = env_with(url, Some("task-token-SYNTHETIC"));
+    let missing = dir.path().join("missing.jsonl");
+    for (invocation, steps, path) in [
+        (0, 4, missing.as_path()),
+        (1, 4, std::path::Path::new(&transcript)),
+        (0, 3, std::path::Path::new(&transcript)),
     ] {
-        let (url, listener) = untouched_listener()?;
-        let mut output = Vec::new();
         let payload = agy_payload(
             "PreInvocation",
-            serde_json::json!({"invocationNum": 0, "initialNumSteps": 4, "transcriptPath": path}),
+            serde_json::json!({"invocationNum": invocation, "initialNumSteps": steps, "transcriptPath": path}),
         );
+        let mut output = Vec::new();
         run_hook(
             "antigravity",
             "PreInvocation",
             &mut &payload[..],
             &mut output,
-            &env_with(url, Some("task-token-SYNTHETIC")),
+            &env,
         );
         assert_eq!(json_out(&output)?, serde_json::json!({}));
         assert_no_connection(&listener);

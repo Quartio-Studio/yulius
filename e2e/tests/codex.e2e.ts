@@ -110,7 +110,7 @@ test('choosing Codex in the composer starts a Codex task', async ({ app, browser
   await screen.getByRole('button', /^Model:/).click();
   await expect(screen.getByRole('menuitemradio', /^Codex/)).toContainText('GPT-6.2 Astra at high effort by default');
   await screen.getByRole('menuitemradio', /^Codex/).click();
-  await expect(screen.getByRole('button', 'Model: Codex')).toBeVisible();
+  await expect(screen.getByRole('button', 'Model: Codex default')).toBeVisible();
   const prompt = screen.getByRole('textbox', 'Task prompt');
   await prompt.fill('Add a health check');
   await prompt.press('ControlOrMeta+Enter');
@@ -128,7 +128,7 @@ test('choosing Codex in the composer starts a Codex task', async ({ app, browser
     const dt = [...document.querySelectorAll('.ti-kv dt')].find((el) => (el as HTMLElement).innerText === 'Model');
     return dt ? (dt.nextElementSibling as HTMLElement).innerText : null;
   });
-  await expect.poll(model).toBe('gpt-6.2-astra (default) · High effort');
+  await expect.poll(model).toBe('GPT-6.2 Astra (default) · High effort');
 });
 
 test('an automation chooses the agent of its tasks', async ({ app, browser, screen }) => {
@@ -136,8 +136,8 @@ test('an automation chooses the agent of its tasks', async ({ app, browser, scre
   await screen.getByRole('textbox', 'Automation name').fill('Nightly Codex review');
   await screen.getByRole('textbox', 'What the task does').fill('Review yesterday’s commits.');
   const agent = screen.getByRole('radiogroup', 'Agent');
-  // Claude Code is the default, never a drawn agent (SPEC-514 PIN-003).
-  await expect(agent.getByRole('radio', 'Claude Code')).toHaveAttribute('aria-checked', 'true');
+  // Random is the default (SPEC-520 RHM-006).
+  await expect(agent.getByRole('radio', 'Random')).toHaveAttribute('aria-checked', 'true');
   await agent.getByRole('radio', 'Codex').click();
   await expect(agent.getByRole('radio', 'Codex')).toHaveAttribute('aria-checked', 'true');
   expect(await axeViolations(browser)).toEqual([]);

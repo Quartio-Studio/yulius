@@ -610,10 +610,10 @@ pub fn to_remove(installed: &[Version], current: Version) -> Vec<Version> {
 /// release pinned with the sha512 of each platform package, so what runs is what the harness was
 /// checked against. Bumping it means checking the harness against the new release.
 pub mod codex {
-    /// The npm package; its platform packages are versions of it (`0.169.0-linux-x64`).
+    /// The npm package; its platform packages are versions of it (`0.170.0-linux-x64`).
     pub const PACKAGE: &str = "@openai/codex";
-    /// The pinned release: the newest on 2026-11-16, checked against the harness then (SPEC-503).
-    pub const VERSION: &str = "0.169.0";
+    /// The pinned release: bundles the offered model and delegation metadata (SPEC-521).
+    pub const VERSION: &str = "0.170.0";
     /// The native binary below an installed release's directory.
     pub const BINARY: &str = "bin/codex";
 
@@ -659,13 +659,13 @@ pub mod codex {
                 suffix: "linux-x64",
                 triple: "x86_64-unknown-linux-musl",
                 machine: 62,
-                integrity: "sha512-o05NyAOCDygSPRo1yinzxvkRSdmsZyBD9E7mbpmjRanSfM8lypqWtQgEo4XfNkwhuCR2aFu8mlGOsQGFXVbVww==",
+                integrity: "sha512-6cCZJaZL17tiTAvhd1Pirt8vsV1dP8CfG94+IHygUO4m24oYLQrIInJJLyKzcMv/uUonbu1dF2JmcXhA/s5bsg==",
             }),
             ("linux", "aarch64") => Some(Platform {
                 suffix: "linux-arm64",
                 triple: "aarch64-unknown-linux-musl",
                 machine: 183,
-                integrity: "sha512-NZ/DaQUpcQmxmqee7Z9uC1rzw3GhSbooawcaTe1LN5Yk+WlinUKGdTXJgClRT/9ogQEEM9TWxYzvxPfj5G/xFg==",
+                integrity: "sha512-mJLm5eia/GcukCrRfVEnYVD5dOXGE7cmpd9dJ/ixkSiKifzDAPaGq83ZEmwVhk3PxbdTPUSLRpnXZQKbNS5HoA==",
             }),
             _ => None,
         }
@@ -675,7 +675,9 @@ pub mod codex {
 /// The Antigravity CLI Yulius pins and provides to Antigravity runs (SPEC-505 AGY-007, ADR-0361):
 /// Google's release tarballs, one per platform, each holding the single binary `antigravity`.
 pub mod antigravity {
-    /// The pinned release supports Gemini 4 Neon at high effort on Google API keys (SPEC-524).
+    /// The pinned release: 1.5.12, verified with all offered Gemini models and efforts including
+    /// Gemini 4 Neon on `GEMINI_API_KEY` connections (SPEC-519 NEO-003, SPEC-521; 1.5.10 before,
+    /// SPEC-505).
     pub const VERSION: &str = "1.5.12";
     /// The release's build, part of its download path.
     pub const BUILD: &str = "1.5.12-5281398513336320";
@@ -752,8 +754,9 @@ pub mod antigravity {
 mod tests {
     use super::*;
 
-    /// SPEC-505 AGY-007: the pinned agy release is published per Linux platform at Google's path,
-    /// each with a full sha512; other hosts get none.
+    /// SPEC-505 AGY-007, SPEC-519 NEO-003: the pinned agy 1.5.12 is published per Linux platform
+    /// at Google's path, each with the full sha512 from Google's release manifest; other hosts
+    /// get none.
     #[test]
     fn the_pinned_antigravity_cli_names_its_tarballs() {
         let x64 = antigravity::platform("linux", "x86_64");
@@ -768,12 +771,26 @@ mod tests {
             x64.map(|p| p.install_name()).as_deref(),
             Some("1.5.12-linux-x64")
         );
+        assert_eq!(
+            x64.map(|p| p.sha512),
+            Some(
+                "26de25fccb3fbf0b093e090ce14a14ac1df1ec3e90ef4ea6106887d3a81b0cc9\
+                 edb0dadea7b9101d07f9606eba159062a6fb7b78e91b73f7520684a24db73428"
+            )
+        );
         let arm = antigravity::platform("linux", "aarch64");
         assert_eq!(
             arm.map(|p| p.tarball_path()).as_deref(),
             Some(
                 "/antigravity-public/antigravity-cli/1.5.12-5281398513336320/linux-arm/\
                  cli_linux_arm64.tar.gz"
+            )
+        );
+        assert_eq!(
+            arm.map(|p| p.sha512),
+            Some(
+                "1030d89ce9e5cb39509e272cb89b71fde0e0d5d6527b7392525d5ef2683da54f\
+                 b49230449107486d91c02ded39a678faaa649b2041304a6cf82a3a332d5819d9"
             )
         );
         for platform in [x64, arm].into_iter().flatten() {
@@ -1700,23 +1717,23 @@ mod tests {
         assert!(to_remove(&[v("2.1.311")], v("2.1.311")).is_empty());
     }
 
-    /// SPEC-503 CLI-001: the pinned release is 0.169.0, the newest when the contribution was
-    /// accepted (2026-11-16), with the registry's sha512 of each Linux package as published.
+    /// SPEC-503 CLI-001: the pinned release bundles the SPEC-521 model catalog, with the registry's
+    /// sha512 of each Linux package as published.
     #[test]
     fn the_pinned_codex_release_has_linux_packages() {
         let x64 = codex::platform("linux", "x86_64").unwrap_or_else(|| panic!("x64"));
         assert_eq!(
             x64.tarball_path(),
-            "/@openai/codex/-/codex-0.169.0-linux-x64.tgz"
+            "/@openai/codex/-/codex-0.170.0-linux-x64.tgz"
         );
         assert_eq!(
             x64.vendor_dir(),
             "package/vendor/x86_64-unknown-linux-musl/"
         );
-        assert_eq!(x64.install_name(), "0.169.0-linux-x64");
+        assert_eq!(x64.install_name(), "0.170.0-linux-x64");
         assert_eq!(
             x64.integrity,
-            "sha512-o05NyAOCDygSPRo1yinzxvkRSdmsZyBD9E7mbpmjRanSfM8lypqWtQgEo4XfNkwhuCR2aFu8mlGOsQGFXVbVww=="
+            "sha512-6cCZJaZL17tiTAvhd1Pirt8vsV1dP8CfG94+IHygUO4m24oYLQrIInJJLyKzcMv/uUonbu1dF2JmcXhA/s5bsg=="
         );
         assert_eq!(x64.machine, 62);
         let arm = codex::platform("linux", "aarch64").unwrap_or_else(|| panic!("arm64"));
@@ -1727,7 +1744,7 @@ mod tests {
         assert_eq!(arm.machine, 183);
         assert_eq!(
             arm.integrity,
-            "sha512-NZ/DaQUpcQmxmqee7Z9uC1rzw3GhSbooawcaTe1LN5Yk+WlinUKGdTXJgClRT/9ogQEEM9TWxYzvxPfj5G/xFg=="
+            "sha512-mJLm5eia/GcukCrRfVEnYVD5dOXGE7cmpd9dJ/ixkSiKifzDAPaGq83ZEmwVhk3PxbdTPUSLRpnXZQKbNS5HoA=="
         );
         for platform in [x64, arm] {
             assert!(platform.integrity.starts_with("sha512-"), "{platform:?}");
