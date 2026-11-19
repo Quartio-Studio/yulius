@@ -2084,6 +2084,7 @@ mod tests {
         let dir = tempfile::tempdir()?;
         let path = write_lines(dir.path(), lines)?;
         let (_, kept) = read_page_at(File::open(&path)?, None, 0, 1, MAX_PAGE_CHARS)?;
+        let last = u64::try_from(lines.len())? - 1;
         let reads = [
             (
                 "start",
@@ -2098,6 +2099,10 @@ mod tests {
                 read_page_at(File::open(&path)?, Some(&kept), 1, 100, MAX_PAGE_CHARS)?.0,
             ),
             ("tail", read_tail(File::open(&path)?, 1, MAX_PAGE_CHARS)?),
+            (
+                "last line",
+                read_page(File::open(&path)?, last, 100, MAX_PAGE_CHARS)?,
+            ),
         ];
         for (how, page) in reads {
             assert!(!page.entries.is_empty(), "{name} ({how}): no entries");
@@ -2223,6 +2228,244 @@ mod tests {
                 "assistant thinking Check the cart first.",
                 "assistant call step-0-0 read_file: /w/src/cart.ts",
             ]
+        );
+        Ok(())
+    }
+
+    fn exec_call(id: &str, script: &str) -> Value {
+        json!({"type": "response_item", "payload": {"type": "custom_tool_call", "status": "completed", "call_id": id, "name": "exec", "input": script}})
+    }
+
+    fn exec_output(id: &str, parts: &[Value]) -> Value {
+        let mut list = vec![
+            json!({"type": "input_text", "text": "Script completed\nWall time 0.1 seconds\nOutput:\n"}),
+        ];
+        for part in parts {
+            let text = match part {
+                Value::String(text) => text.clone(),
+                other => other.to_string(),
+            };
+            list.push(json!({"type": "input_text", "text": text}));
+        }
+        json!({"type": "response_item", "payload": {"type": "custom_tool_call_output", "call_id": id, "output": list}})
+    }
+
+    fn chunk(output: &str) -> Value {
+        json!({"chunk_id": "ab12cd", "wall_time_seconds": 0.01, "exit_code": 0, "original_token_count": 9, "output": output})
+    }
+
+    /// SPEC-525 WCX-003, review round 2: a code-mode script prints its results nested (a
+    /// `Promise.allSettled` list, `{status, value}` one by one, a list of wrappers or of strings,
+    /// an MCP tool's `{content, isError}`), quotes its command with escapes, or yields and is read
+    /// on by a later `wait` or `write_stdin`; a patch can come as a function call; an
+    /// Antigravity command can go on as a task read by `manage_task` after the next response, and
+    /// an MCP tool keeps its path inside `Arguments`. Every one hides the dotenv values.
+    #[test]
+    fn dotenv_reads_nested_escaped_or_continued_are_redacted() -> TestResult {
+        let env = format!("{ENV_TWO}\n");
+        let all = "const r = await Promise.allSettled([tools.exec_command({cmd:`cat .env`}), tools.exec_command({cmd:`ls`})]);\ntext(r)\n";
+        let cases: Vec<(&str, Vec<Value>)> = vec![
+            (
+                "allSettled list",
+                vec![
+                    exec_call("c1", all),
+                    exec_output(
+                        "c1",
+                        &[
+                            json!([{"status": "fulfilled", "value": chunk(&env)}, {"status": "fulfilled", "value": chunk("src\n")}]),
+                        ],
+                    ),
+                ],
+            ),
+            (
+                "allSettled one by one",
+                vec![
+                    exec_call("c1", all),
+                    exec_output(
+                        "c1",
+                        &[
+                            json!({"status": "fulfilled", "value": chunk(&env)}),
+                            json!({"status": "fulfilled", "value": chunk("src\n")}),
+                        ],
+                    ),
+                ],
+            ),
+            (
+                "list of wrappers",
+                vec![
+                    exec_call("c1", all),
+                    exec_output("c1", &[json!([chunk(&env), chunk("src\n")])]),
+                ],
+            ),
+            (
+                "list of strings",
+                vec![exec_call("c1", all), exec_output("c1", &[json!([env])])],
+            ),
+            (
+                "an unknown JSON shape",
+                vec![
+                    exec_call("c1", all),
+                    exec_output("c1", &[json!({"results": {"first": {"text_of_it": env}}})]),
+                ],
+            ),
+            (
+                "MCP result",
+                vec![
+                    exec_call(
+                        "c1",
+                        "text(await tools.mcp__fs__read_file({path:`/w/.env`}))\n",
+                    ),
+                    exec_output(
+                        "c1",
+                        &[json!({"content": [{"type": "text", "text": env}], "isError": false})],
+                    ),
+                ],
+            ),
+            (
+                "double quotes and a newline escape",
+                vec![
+                    exec_call(
+                        "c1",
+                        "text(await tools.exec_command({cmd:\"cat .env\\ncat package.json\"}))\n",
+                    ),
+                    exec_output("c1", &[chunk(&env)]),
+                ],
+            ),
+            (
+                "escaped quotes around the file",
+                vec![
+                    exec_call(
+                        "c1",
+                        "text(await tools.exec_command({cmd:\"cat \\\".env\\\"\"}))\n",
+                    ),
+                    exec_output("c1", &[chunk(&env)]),
+                ],
+            ),
+            (
+                "bash -lc with escaped quotes",
+                vec![
+                    exec_call(
+                        "c1",
+                        "text(await tools.exec_command({cmd:\"bash -lc \\\"cat .env\\\"\"}))\n",
+                    ),
+                    exec_output("c1", &[chunk(&env)]),
+                ],
+            ),
+            (
+                "write_stdin continuation",
+                vec![
+                    exec_call(
+                        "c1",
+                        "text(await tools.exec_command({cmd:`sleep 2; cat .env`, yield_time_ms: 1000}))\n",
+                    ),
+                    exec_output(
+                        "c1",
+                        &[
+                            json!({"chunk_id": "a", "wall_time_seconds": 1.0, "session_id": 7, "original_token_count": 0, "output": ""}),
+                        ],
+                    ),
+                    exec_call(
+                        "c2",
+                        "text(await tools.write_stdin({session_id: 7, chars: ``, yield_time_ms: 3000}))\n",
+                    ),
+                    exec_output("c2", &[chunk(&env)]),
+                ],
+            ),
+            (
+                "wait continuation",
+                vec![
+                    exec_call(
+                        "c1",
+                        "text(await tools.exec_command({cmd:`sleep 20; cat .env`}))\n",
+                    ),
+                    exec_output("c1", &[json!("Script running with cell ID 5")]),
+                    json!({"type": "response_item", "payload": {"type": "function_call", "name": "wait", "arguments": "{\"cell_id\":\"5\",\"yield_time_ms\":10000}", "call_id": "w1"}}),
+                    json!({"type": "response_item", "payload": {"type": "function_call_output", "call_id": "w1", "output": [{"type": "input_text", "text": "Script completed\nOutput:\n"}, {"type": "input_text", "text": chunk(&env).to_string()}]}}),
+                ],
+            ),
+            (
+                "patch heredoc in double quotes",
+                vec![
+                    exec_call(
+                        "c1",
+                        "text(await tools.exec_command({cmd:\"apply_patch <<'PATCH'\\n*** Begin Patch\\n*** Add File: .env\\n+SHOP_REGION=eu-north-7b\\n+MAIL_DOMAIN=mg.shop.example\\n*** End Patch\\nPATCH\"}))\n",
+                    ),
+                    exec_output("c1", &[chunk("Success.\n")]),
+                ],
+            ),
+            (
+                "function-style apply_patch",
+                vec![
+                    json!({"type": "response_item", "payload": {"type": "function_call", "name": "apply_patch", "arguments": json!({"input": "*** Begin Patch\n*** Add File: .env\n+SHOP_REGION=eu-north-7b\n+MAIL_DOMAIN=mg.shop.example\n*** End Patch"}).to_string(), "call_id": "p1"}}),
+                    json!({"type": "response_item", "payload": {"type": "function_call_output", "call_id": "p1", "output": "Success."}}),
+                ],
+            ),
+            (
+                "unparsed shell arguments",
+                vec![
+                    json!({"type": "response_item", "payload": {"type": "function_call", "name": "shell_command", "arguments": "cat .env", "call_id": "u1"}}),
+                    json!({"type": "response_item", "payload": {"type": "function_call_output", "call_id": "u1", "output": env.clone()}}),
+                ],
+            ),
+            (
+                "local_shell_call",
+                vec![
+                    json!({"type": "response_item", "payload": {"type": "local_shell_call", "call_id": "l1", "status": "completed", "action": {"type": "exec", "command": ["bash", "-lc", "cat .env"]}}}),
+                    json!({"type": "response_item", "payload": {"type": "local_shell_call_output", "call_id": "l1", "output": env.clone()}}),
+                ],
+            ),
+            (
+                "agy async command read by manage_task",
+                vec![
+                    json!({"step_index": 0, "source": "MODEL", "type": "PLANNER_RESPONSE", "status": "DONE", "tool_calls": [{"name": "run_command", "args": {"CommandLine": "\"sleep 9; cat .env\"", "WaitMsBeforeAsync": "1000"}}]}),
+                    json!({"step_index": 1, "source": "MODEL", "type": "GENERIC", "status": "RUNNING", "content": "Command is running as task t1."}),
+                    json!({"step_index": 2, "source": "MODEL", "type": "PLANNER_RESPONSE", "status": "DONE", "tool_calls": [{"name": "manage_task", "args": {"Action": "\"status\"", "TaskId": "\"t1\""}}]}),
+                    json!({"step_index": 3, "source": "MODEL", "type": "GENERIC", "status": "DONE", "content": format!("Command output:\n{ENV_TWO}")}),
+                ],
+            ),
+            (
+                "agy call_mcp_tool",
+                vec![
+                    json!({"step_index": 0, "source": "MODEL", "type": "PLANNER_RESPONSE", "status": "DONE", "tool_calls": [{"name": "call_mcp_tool", "args": {"ServerName": "\"fs\"", "ToolName": "\"read\"", "Arguments": "{\"path\":\"/w/.env\"}"}}]}),
+                    json!({"step_index": 1, "source": "MODEL", "type": "GENERIC", "status": "DONE", "content": ENV_TWO}),
+                ],
+            ),
+        ];
+        for (name, lines) in cases {
+            assert_env_hidden(name, &lines)?;
+        }
+        Ok(())
+    }
+
+    /// SPEC-525, review round 2: nested results read as the commands' own output (not JSON), and
+    /// an Antigravity request with nothing in it is no entry.
+    #[test]
+    fn nested_code_mode_results_read_as_their_outputs() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let path = write_lines(
+            dir.path(),
+            &[
+                exec_call(
+                    "c1",
+                    "text(await Promise.allSettled([tools.exec_command({cmd:`ls`}), tools.exec_command({cmd:`false`})]))\n",
+                ),
+                exec_output(
+                    "c1",
+                    &[
+                        json!([{"status": "fulfilled", "value": chunk("src\n")}, {"status": "rejected", "reason": "exit 1"}]),
+                    ],
+                ),
+                json!({"step_index": 0, "source": "USER_EXPLICIT", "type": "USER_INPUT", "status": "DONE", "content": "<USER_REQUEST>\n</USER_REQUEST>"}),
+            ],
+        )?;
+        let page = read_page(File::open(&path)?, 0, 100, MAX_PAGE_CHARS)?;
+        assert_eq!(page.entries.len(), 2, "{:?}", shape(&page.entries));
+        let TranscriptBlock::ToolResult { text, .. } = &page.entries[1].blocks[0] else {
+            return Err("the output".into());
+        };
+        assert_eq!(
+            text,
+            "Script completed\nWall time 0.1 seconds\nOutput:\nsrc\nexit 1"
         );
         Ok(())
     }
