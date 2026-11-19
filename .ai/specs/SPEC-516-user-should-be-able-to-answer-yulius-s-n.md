@@ -1,6 +1,6 @@
 ---
 yulius-task: cce283f4-7d22-4859-95d6-0f2ba4dbf318
-status: in-progress
+status: done
 ---
 
 # SPEC-516: A teammate answers a task's Needs you without taking control
@@ -71,8 +71,8 @@ as them. Nothing else of the task is opened to the answerer.
 - [x] A teammate answers a task's Needs you over the API, control unchanged
 - [x] The task view's Reply answers a teammate's Needs you without taking control
 - [x] ADR-0370, API, architecture and product documents say who answers a Needs you
-- [ ] Independent review in a fresh session, findings fixed test-first
-- [ ] Every gate green, docs and the changes log updated
+- [x] Independent review in a fresh session, findings fixed test-first
+- [x] Every gate green, docs and the changes log updated
 
 ## Acceptance criteria
 
@@ -128,3 +128,41 @@ as them. Nothing else of the task is opened to the answerer.
   would press unseen; that stays the owner's (or a taker's).
 - **No separate notification to the owner.** The request ends as when they answer it themselves;
   the transcript and audit keep the answer. A notification could follow if owners ask for it.
+
+## Evidence
+
+- Review: round 1 (Fable 5.2, head `25a65a947`) requested changes: one major (no test for the
+  owner's personal MCP servers) and minors (a task snapshot older than the access check, Reply
+  on a task that is not running, weak audit assertions, untested owner, guest, oversize and
+  phone cases, an unreachable disabled-account branch, ADR-0331's status, the audit action's
+  form). All were fixed test-first in `7d51e3d5d`, `5101a1850` and `c89779c85`. Round 2 (Fable
+  5.2) approved head `c89779c85`. Its three minors (the request stays open and nothing is
+  audited when typing is refused; the guest's Reply e2e; product.md's "answer what it asks in
+  its terminal") were added after it as tests and documents.
+- Round 2 nits answered in words, not changed: two answers within milliseconds can both be
+  typed (each labelled and audited, nothing corrupted); the refusal for a flagged task says
+  "asks in its terminal" for Yulius's own flags too; the not-the-owner refusal does not list
+  answering. All three wordings stay as they are.
+- `cargo test -p yulius --test main -- needs_you answer task_ownership:: task_message::
+  playground_guests::`: 83 passed, among them
+  `task_message::a_teammate_answers_a_needs_you_without_taking_control` and
+  `a_run_holding_the_owners_personal_server_takes_only_the_owners_answer` (real ptyhost and
+  fake agent), plus `task_ownership::a_needs_you_answer_is_refused_where_it_must_not_reach_the_agent`,
+  `the_owners_personal_mcp_server_keeps_a_teammates_answer_out`,
+  `an_automations_task_is_answered_whatever_its_owners_personal_secrets` and
+  `an_answer_decides_on_the_task_as_it_is_after_the_access_check` (GitHub access held).
+- `cargo test -p yulius-domain --lib task_access` (6 passed); `cargo test -p yulius-app --lib
+  task_message` (3 passed); `cargo clippy -p yulius-domain -p yulius-app -p yulius-server -p
+  yulius --all-targets -- -D warnings` clean; `scripts/dev quick` passed.
+- e2e: `npx e2e run tests/reply.e2e.ts` 18 passed (5 for SPEC-516), `tests/playground-guests.e2e.ts`
+  8 passed, `tests/ownership.e2e.ts tests/attention.e2e.ts tests/shared-needs-you.e2e.ts` 29
+  passed.
+- Mutation checks, each restored after: the personal-reach refusal off, then its configured-MCP
+  half and its run-held half each off, each failed its test. The automation early return
+  survived and was removed as redundant (`Holder::Nobody` finds nothing). The task view
+  without the change, without the running gate and without the guest term each failed their
+  e2e case.
+- Security: Yulius CI's `security` job (Vidoc) runs on the head; the instance key was refused
+  (401) on round 1's run, so that scan ended unrun (skipped, exit 78), not passed.
+- Not tested: a real browser against a real server with two signed-in people. The mock covers
+  the page and the integration tests cover the server, separately.

@@ -371,7 +371,7 @@ watching, steering and unblocking.
   people look elsewhere, also across a reload, until it starts.
   A task is its owner's: Yulius acts on GitHub for it with their credentials (the agent's own Git
   and `gh` use a narrowed App token), so only they steer it: type into it, send it messages,
-  answer what it asks, continue, start, pause or deliver it. Anyone who may work in the project
+  answer what it asks in its terminal, continue, start, pause or deliver it. Anyone who may work in the project
   can **stop, archive, restore and delete** any of its tasks (a playground's guest only their
   own), from the task's page, the lists and the sidebar; stopping or deleting someone else's task asks first and names its owner, and
   the audit says who did it (SPEC-490). Its owner can **pause** a running task and resume it later: the agent

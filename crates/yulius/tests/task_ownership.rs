@@ -1626,6 +1626,14 @@ async fn an_automations_task_is_answered_whatever_its_owners_personal_secrets() 
     let said = reached.body.to_string();
     assert!(said.contains("no live session"), "{said}");
     assert!(!said.contains("personal"), "{said}");
+    // Refused where it is typed: the request stays open and nothing is audited (review round 2).
+    assert!(
+        f.h.store
+            .task_needs_you(&TaskId::parse("t3")?)
+            .await?
+            .is_some()
+    );
+    assert_eq!(audited(&f.h, "t3", "task.needs_you.answered").await?, 0);
     Ok(())
 }
 
