@@ -1354,7 +1354,7 @@ repository's own `.claude/agents/yulius-reviewer.md` would outrank it, and the r
 then shows the model that answered
 ([decision 0341](decisions/0341-yulius-picks-the-model-of-each-review-round.md)).
 
-The agent always asks for `yulius-reviewer`. The Agent tool's `PreToolUse` (matcher
+The task briefing selects the review instructions from the active attempt’s harness ([ADR-0376](decisions/0376-review-instructions-follow-the-active-harness.md)). Codex requests GPT-6.2 Astra at high effort and Antigravity requests Gemini 4 Neon (High) for each round. Claude Code asks for `yulius-reviewer`. The Agent tool's `PreToolUse` (matcher
 `Agent|Task`) reaches Yulius with the tool's whole input (`guard_client::agent_request`), and
 `App::review_gate` numbers the round among the rounds of the task's open pull request (a round
 counts once it ended with a report; a reviewer started again for a round without one keeps its

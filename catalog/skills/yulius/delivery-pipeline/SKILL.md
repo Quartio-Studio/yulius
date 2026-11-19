@@ -74,9 +74,7 @@ outage). Commit and push with `om-check-and-commit`, and claim nothing without f
 
 ## 4. Independent review in a fresh session
 
-The author never reviews alone. Start the independent code review with the Agent tool and the
-`yulius-reviewer` agent: Yulius picks the round's model (Fable 5.2 for a pull request's first two
-rounds, then Opus 5.5). It has **no shared context**: give it only the diff range
+The author never reviews alone. Follow the task briefing for the reviewer and model of the active harness. It has **no shared context**: give it only the diff range
 (`<integration>...HEAD`), the spec path and the `om-code-review` skill, and for a later round the
 author's answers to the last report (outside Yulius: a subagent
 or a new session with no shared context). It is read-only: no edits, commits or label changes. It
@@ -96,7 +94,7 @@ is a blocker.
   where it can take them.
 - After an approval, fix the remaining nits within 20 product lines and merge without another round:
   `delivery_merge` with the approved head counts them (tests and documents do not count). More than
-  that, or a file leaving the change, needs a new round. A usage limit can cut a reviewer off before its report: resume that same reviewer with SendMessage to its agent id, never start a new one for the same round. A reviewer runs at high effort, never max.
+  that, or a file leaving the change, needs a new round. A usage limit can cut a reviewer off before its report: resume that same reviewer by its agent id, never start a new one for the same round. A reviewer runs at high effort, never max.
 
 **Findings in the change's own code are fixed, never deferred.**
 
