@@ -4,8 +4,10 @@
 
 Accepted (2026-11-19). Specified in
 [SPEC-512](../../.ai/specs/SPEC-512-marcin-s-five-issues-1412-1418-1413-1107.md) part 2; task #494,
-issue #1418. Builds on [ADR-0370](0370-a-teammate-answers-a-tasks-needs-you-without-taking-control.md)
-(a teammate answers without taking control) and keeps
+issue #1418. Builds on and amends [ADR-0370](0370-a-teammate-answers-a-tasks-needs-you-without-taking-control.md)
+(a teammate answers without taking control): it reverses, for the time a question is open that
+names the person or nobody, the alternative ADR-0370 rejected ("let any person's Superagent
+`task_message` a teammate's task"), which here carries only that answer. It keeps
 [ADR-0331](0331-anyone-tidies-a-task-and-only-its-owners-consent-passes-control.md) and
 [ADR-0365](0365-a-teammate-takes-control-unless-the-owner-chose-to-be-asked.md) as they are.
 

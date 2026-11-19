@@ -285,6 +285,10 @@ pub struct NeedsYouView {
     pub link: Option<String>,
     /// When it was asked (RFC 3339).
     pub at: String,
+    /// When it was asked, in milliseconds: what an answer names as the request it answers
+    /// (SPEC-512 ANS-004).
+    #[serde(default)]
+    pub at_ms: i64,
     /// The sandbox-level problem it is about (`docker`), shared with the sandbox's other tasks
     /// that name it: one card shows them all (SPEC-494 DFJ-011).
     #[serde(default)]
@@ -612,10 +616,10 @@ pub struct QueueMessage {
 pub struct AnswerNeedsYou {
     /// The answer, typed into the task's session as one labelled message.
     pub text: String,
-    /// The request it answers, as its `at` reads (SPEC-512 ANS-004): one replaced since is not
-    /// answered by it.
+    /// The request it answers, as its `at_ms` reads (SPEC-512 ANS-004): one replaced since is
+    /// not answered by it.
     #[serde(default)]
-    pub asked_at: Option<String>,
+    pub asked_at_ms: Option<i64>,
 }
 
 /// `POST /api/tasks/{tid}/needs-you/withdraw` (SPEC-512 ANS-005): the owner withdraws a person

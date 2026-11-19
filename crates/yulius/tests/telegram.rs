@@ -1082,6 +1082,36 @@ async fn a_parked_tasks_resume_is_no_news() -> TestResult {
     Ok(())
 }
 
+/// SPEC-512 (review of part 2): a task told it stopped abnormally, continued and stopped the
+/// same way again, is told again: a start ends what was told of the run before.
+#[tokio::test]
+async fn a_failure_after_a_restart_is_told_again() -> TestResult {
+    let w = world().await?;
+    set_bot(&w, TOKEN_A).await?;
+    link(&w, &w.alice, 100).await?;
+    link(&w, &w.carol, 300).await?;
+    let alice = user_id(&w, "alice").await?;
+    let chose = api(
+        &w,
+        Method::PUT,
+        "/api/me/telegram/choices",
+        Some(json!({"needs_you": true, "done": false, "failed": true, "account": false})),
+        &w.alice,
+    )
+    .await?;
+    assert_eq!(chose.body["choices"]["failed"], true, "{}", chose.body);
+    seed_task(&w.h, "t1", "s1", &alice, TaskStatus::Running, None).await?;
+    let crashed = TaskStatus::Stopped(yulius_domain::task::StopReason::Crashed);
+    move_to(&w, "t1", crashed, None).await?;
+    w.fake.wait_sent(100, 2).await?;
+    move_to(&w, "t1", TaskStatus::Starting, None).await?;
+    barrier(&w, "c1").await?;
+    move_to(&w, "t1", crashed, None).await?;
+    let sent = w.fake.wait_sent(100, 3).await?;
+    assert!(sent[2].contains("crashed"), "{sent:?}");
+    Ok(())
+}
+
 /// TGC-026: tasks asking about their sandbox's Docker (SPEC-494) send one message per episode,
 /// as the notification center shows one entry, not one per task; a new episode is told again.
 #[tokio::test]

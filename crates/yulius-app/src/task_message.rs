@@ -33,7 +33,7 @@ use yulius_domain::task::{Activity, TaskStatus};
 use yulius_domain::task_access::TaskAction;
 
 use crate::attention::AttentionRecord;
-use crate::auth::{AuthContext, rfc3339};
+use crate::auth::AuthContext;
 use crate::context::App;
 use crate::coordination::{Channel, ProjectCaller};
 use crate::error::{AppError, AppResult};
@@ -254,11 +254,35 @@ impl App {
                 .get("text")
                 .and_then(Value::as_str)
                 .ok_or_else(|| AppError::Invalid("missing string argument `text`".into()))?;
-            let answered = self
-                .answer_needs_you(&ctx, task.id.as_str(), text, None)
+            self.answer_needs_you(&ctx, task.id.as_str(), text, None)
                 .await?;
+            // Audited as a message too, with the channel it came through (TMS-005).
+            let named = json!({
+                "task": format!("#{} {}", task.number, task.title),
+                "delivered": "answered",
+            });
+            if let Err(err) = self
+                .deps
+                .store
+                .audit(
+                    self.now(),
+                    &caller.actor,
+                    "task.messaged",
+                    Some(task.id.as_str()),
+                    Some(&tool_detail(caller, &named)),
+                )
+                .await
+            {
+                tracing::warn!(task = %task.id, error = %err, "task message audit failed");
+            }
+            let task = self
+                .deps
+                .store
+                .task(&task.id)
+                .await?
+                .ok_or(AppError::NotFound)?;
             return Ok(json!({
-                "task": format!("#{} {}", answered.number, answered.title),
+                "task": self.task_brief(&task).await?,
                 "delivered": "answered",
                 "note": "The task asked a question you may answer: your message was typed into \
                     its session as your answer, and its question is closed. The task stays its \
@@ -414,7 +438,7 @@ impl App {
         ctx: &AuthContext,
         id: &str,
         text: &str,
-        asked_at: Option<&str>,
+        asked_at_ms: Option<i64>,
     ) -> AppResult<TaskSummary> {
         // A disabled account has no access to any project, so this refuses it too.
         let task = self.load_task_to(ctx, id, TaskAction::Answer).await?;
@@ -451,7 +475,7 @@ impl App {
             )));
         };
         // The answer is to the request its person read (SPEC-512 ANS-004).
-        if asked_at.is_some_and(|at| at != rfc3339(yulius_domain::time::Timestamp(asked.at))) {
+        if asked_at_ms.is_some_and(|at| at != asked.at) {
             return Err(AppError::Conflict(format!(
                 "the question you answered on task #{} was replaced by a new one: read it and \
                  answer again",
@@ -499,7 +523,16 @@ impl App {
         let paste = answer_paste(&login, &owner, mine, &text);
         self.type_into_session(&task, &paste, Typed::Prompt, Sender::Person)
             .await?;
-        self.end_needs_you(&task.id).await;
+        // The answer ends the request it answers, not one asked while it was typed (ANS-004).
+        if self
+            .deps
+            .store
+            .task_needs_you(&task.id)
+            .await?
+            .is_some_and(|open| open.at == asked.at)
+        {
+            self.end_needs_you(&task.id).await;
+        }
         let detail = json!({
             "task": format!("#{} {}", task.number, task.title),
             "owner": owner,

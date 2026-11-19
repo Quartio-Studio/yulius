@@ -1693,11 +1693,11 @@ async fn agent_asks(
     mcp_tool(h, "tt", "needs_you", args).await
 }
 
-/// The request's `at` as the task's summary shows it, and whom it names.
+/// The request's `at_ms` as the task's summary shows it, and whom it names.
 async fn asked_of(
     f: &Fixture,
     who: &Creds,
-) -> Result<(String, Vec<String>), Box<dyn std::error::Error>> {
+) -> Result<(i64, Vec<String>), Box<dyn std::error::Error>> {
     let shown = call(
         &f.h.router,
         Method::GET,
@@ -1707,7 +1707,7 @@ async fn asked_of(
     )
     .await?;
     let asked = &shown.body["needs_you"];
-    let at = asked["at"].as_str().ok_or("no request")?.to_owned();
+    let at = asked["at_ms"].as_i64().ok_or("no request")?;
     let named = asked["who"]
         .as_array()
         .map(|list| {
@@ -1881,7 +1881,7 @@ async fn an_answer_to_a_replaced_or_withdrawn_request_is_refused() -> TestResult
         &f.h.router,
         Method::POST,
         &format!("/api/tasks/{t1}/needs-you/answer"),
-        Some(json!({"text": "M1: yes", "asked_at": first})),
+        Some(json!({"text": "M1: yes", "asked_at_ms": first})),
         &f.bob,
     )
     .await?;
@@ -1896,7 +1896,7 @@ async fn an_answer_to_a_replaced_or_withdrawn_request_is_refused() -> TestResult
         &f.h.router,
         Method::POST,
         &format!("/api/tasks/{t1}/needs-you/answer"),
-        Some(json!({"text": "M2: yes", "asked_at": current})),
+        Some(json!({"text": "M2: yes", "asked_at_ms": current})),
         &f.bob,
     )
     .await?;
@@ -1949,5 +1949,56 @@ async fn a_named_person_steers_nothing_else() -> TestResult {
     }
     let stop = task_call(&f, Method::POST, "/stop", &f.bob).await?;
     assert!(stop.status.is_success(), "{}", stop.body);
+    Ok(())
+}
+
+/// SPEC-512 ANS-001, ANS-005 (review of part 2): more than ten names, or a disabled person,
+/// refuse the request; a withdrawal with no request, or of a login it does not name, is 409; a
+/// withdrawn person's own agent is refused too.
+#[tokio::test]
+async fn naming_and_withdrawing_refuse_what_cannot_hold() -> TestResult {
+    let f = fixture().await?;
+    let t1 = id_of(&f).to_owned();
+    let eleven: Vec<String> = (0..11).map(|i| format!("p{i}")).collect();
+    let many = agent_asks(&f.h, json!({"action": "Decide", "who": eleven})).await?;
+    assert_eq!(many["isError"], true, "{many}");
+    assert!(many.to_string().contains("at most 10"), "{many}");
+    let erin = seed_github_user(&f.h, "u-e", "erin").await?;
+    let _ = erin;
+    f.h.github.set_perm("erin", "acme/repo", perms("write"));
+    disable(&f.h, "u-e").await?;
+    let disabled = agent_asks(&f.h, json!({"action": "Decide", "who": ["erin"]})).await?;
+    assert_eq!(disabled["isError"], true, "{disabled}");
+    assert!(disabled.to_string().contains("@erin"), "{disabled}");
+    // Nothing asked: nobody to withdraw.
+    assert_eq!(withdraw_bob(&f, &f.alice).await?.status, 409);
+    // A request that does not name Bob.
+    agent_asks(&f.h, json!({"action": "Decide", "who": []})).await?;
+    let not_named = withdraw_bob(&f, &f.alice).await?;
+    assert_eq!(not_named.status, 409, "{}", not_named.body);
+    assert!(
+        not_named.body.to_string().contains("does not name @bob"),
+        "{}",
+        not_named.body
+    );
+    // Bob named, then withdrawn: his own agent's message is refused saying so.
+    agent_asks(&f.h, json!({"action": "Decide", "who": ["bob"]})).await?;
+    assert_eq!(withdraw_bob(&f, &f.alice).await?.status, 200);
+    let caller = yulius_app::coordination::ProjectCaller {
+        sandbox: yulius_domain::ids::SandboxId::parse("s1")?,
+        user: UserId::parse("u-b")?,
+        task: None,
+        channel: yulius_app::coordination::Channel::Remote,
+        actor: "remote:bob".into(),
+        detail: json!({"via": "remote"}),
+    };
+    let refused =
+        f.h.app
+            .tool_task_message(&caller, &json!({"task_id": t1, "text": "M1: yes"}))
+            .await;
+    assert!(
+        matches!(&refused, Err(yulius_app::error::AppError::Forbidden(m)) if m.contains("withdrew you")),
+        "{refused:?}"
+    );
     Ok(())
 }

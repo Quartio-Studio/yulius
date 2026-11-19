@@ -97,6 +97,7 @@ impl NeedsYouRecord {
             decision: self.decision,
             link: self.link.clone(),
             at: rfc3339(Timestamp(self.at)),
+            at_ms: self.at,
             cause: self.cause.clone(),
             episode: None,
             who: self.named.who.clone(),
@@ -312,10 +313,27 @@ impl App {
         for login in &named {
             let user = self.deps.store.user_by_login(login).await?;
             let writes = match &user {
-                Some(user) => {
-                    user.disabled_at.is_none() && self.can_work_in(user, &task.sandbox_id).await
+                Some(user) if user.disabled_at.is_none() => {
+                    // No access is a refusal; a GitHub that did not answer is no verdict.
+                    match self
+                        .require(
+                            user,
+                            &task.sandbox_id,
+                            yulius_domain::permission::Action::Work,
+                        )
+                        .await
+                    {
+                        Ok(_) => true,
+                        Err(AppError::NotFound | AppError::Forbidden(_)) => false,
+                        Err(err) => {
+                            return Err(AppError::Upstream(format!(
+                                "who: @{login}'s access to this project could not be checked \
+                                 now ({err}); ask again in a minute (nothing was asked)"
+                            )));
+                        }
+                    }
                 }
-                None => false,
+                _ => false,
             };
             if !writes {
                 let why = if user.is_none() {

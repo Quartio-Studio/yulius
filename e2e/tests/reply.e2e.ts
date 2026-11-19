@@ -461,7 +461,7 @@ test("on a phone a teammate's Reply opens the field and sends the answer (SPEC-5
 
 /** A request of task #12 that names `who` (as the server sends it). */
 const askNamed = (browser: Browser, who: string[]) => touchTask(browser, 'sb_studio', 12, {
-  needs_you: { action: 'Decide M1-M6', problem: 'the review waits', decision: true, at: '2026-11-19T09:00:00.000Z', who, named: true },
+  needs_you: { action: 'Decide M1-M6', problem: 'the review waits', decision: true, at: '2026-11-19T09:00:00.000Z', at_ms: 1795165200000, who, named: true },
 });
 
 test("a named request says whom it asks, and the person it names answers it (SPEC-512 ANS-001..004)", async ({ app, browser, screen }) => {
@@ -475,8 +475,8 @@ test("a named request says whom it asks, and the person it names answers it (SPE
   await browser.keyboard.press('Enter');
   await expect.poll(() => answers(browser)).toEqual(['M1: yes']);
   const asked = await browser.evaluate(() =>
-    ((window as unknown as { __yuliusMock: { needsYouAnswers?: { asked_at?: string }[] } }).__yuliusMock.needsYouAnswers ?? []).map((a) => a.asked_at ?? null));
-  expect(asked).toEqual(['2026-11-19T09:00:00.000Z']);
+    ((window as unknown as { __yuliusMock: { needsYouAnswers?: { asked_at_ms?: number }[] } }).__yuliusMock.needsYouAnswers ?? []).map((a) => a.asked_at_ms ?? null));
+  expect(asked).toEqual([1795165200000]);
   expect(await axeViolations(browser)).toEqual([]);
 });
 
@@ -497,4 +497,33 @@ test("the owner withdraws a person a request names (SPEC-512 ANS-005)", async ({
   await expect(bar).toContainText('Asks @carol');
   await expect(bar).not.toContainText('@bob');
   expect(await axeViolations(browser)).toEqual([]);
+});
+
+test("an answer typed while the question is replaced goes to no other question (SPEC-512 ANS-004, review)", async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/t/12', '&ambient=0'));
+  await touchTask(browser, 'sb_studio', 12, { owner: { login: 'anna-q' } });
+  await askNamed(browser, ['mkarp']);
+  await screen.getByRole('button', 'Reply').click();
+  const field = screen.getByRole('textbox', 'Reply to the agent');
+  await browser.keyboard.type('M1: yes');
+  // The agent replaces its question while the field is open.
+  await touchTask(browser, 'sb_studio', 12, {
+    needs_you: { action: 'Decide the release date', decision: true, at: '2026-11-19T09:05:00.000Z', at_ms: 1795165500000, who: ['mkarp'], named: true },
+  });
+  // The page shows the new question, with the field still open and its words kept.
+  await expect(browser.locator('.attention-bar')).toContainText('Decide the release date');
+  await expect(field).toHaveValue('M1: yes');
+  await field.focus();
+  await browser.keyboard.press('Enter');
+  await expect(screen.getByText(/was replaced by a new one/)).toBeVisible();
+  await expect(field).toHaveValue('M1: yes');
+  expect(await answers(browser)).toEqual([]);
+});
+
+test("a request whose names were all withdrawn offers a teammate no Reply (SPEC-512 ANS-002, review)", async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/t/12', '&ambient=0'));
+  await touchTask(browser, 'sb_studio', 12, { owner: { login: 'anna-q' } });
+  await askNamed(browser, []);
+  await expect(browser.locator('.attention-bar')).toContainText('Needs your decision');
+  await expect(screen.getByRole('button', 'Reply')).toHaveCount(0);
 });

@@ -90,6 +90,17 @@ impl NotifierState {
         !once.insert(subject)
     }
 
+    /// Forgets what was told of `subject` when it was a failure (`failed:…`).
+    fn forget_failure(&self, subject: &str) {
+        if let Ok(mut told) = self.told.lock()
+            && told
+                .get(subject)
+                .is_some_and(|said| said.starts_with("failed:"))
+        {
+            told.remove(subject);
+        }
+    }
+
     fn forget(&self, subject: &str) {
         if let Ok(mut told) = self.told.lock() {
             told.remove(subject);
@@ -413,6 +424,11 @@ impl App {
         let Some(task) = store.task(&id).await? else {
             return Ok(None);
         };
+        // A start ends what was told of the run before when that was its end: the next end is
+        // news again. What a parked task asked is kept, so its resume is no news (SPEC-512).
+        if task.status == yulius_domain::task::TaskStatus::Starting {
+            services.notifier.forget_failure(&format!("task:{id}"));
+        }
         let requested = self.browser_requests(&task.sandbox_id).await;
         let Some(TaskReading {
             kind,

@@ -239,23 +239,31 @@ impl App {
         let task = self.load_task(ctx, id, Action::Work).await?;
         let store = &self.deps.store;
         let login = login.trim().trim_start_matches('@').to_lowercase();
-        let Some(mut request) = store.task_needs_you(&task.id).await? else {
+        let Some(read) = store.task_needs_you(&task.id).await? else {
             return Err(AppError::Conflict(format!(
                 "task #{} asks nobody anything now: there is nobody to withdraw",
                 task.number
             )));
         };
-        if !request.named.who.contains(&login) {
+        if !read.named.who.contains(&login) {
             return Err(AppError::Conflict(format!(
                 "task #{}'s question does not name @{login}",
                 task.number
             )));
         }
+        let mut request = read.clone();
         request.named.who.retain(|named| named != &login);
         request.named.withdrawn.push(login.clone());
-        store
-            .set_task_needs_you(&task.id, Some(&request), self.now())
-            .await?;
+        // Only the request read: a new one, an answer or another withdrawal meanwhile wins.
+        if !store
+            .replace_task_needs_you(&task.id, &read, &request, self.now())
+            .await?
+        {
+            return Err(AppError::Conflict(format!(
+                "task #{}'s question changed meanwhile: read it again",
+                task.number
+            )));
+        }
         if let Err(err) = store
             .audit(
                 self.now(),

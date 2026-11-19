@@ -303,10 +303,10 @@ export async function takeControl(ctx, task) {
  * answer typed into its session; the task stays its owner's. The updated task, or null when refused
  * (the reason is shown).
  */
-export function answerNeedsYou(ctx, task, text) {
-  // Which request it answers (SPEC-512 ANS-004): one replaced meanwhile is not answered by it.
-  const askedAt = task.needs_you && task.needs_you.at;
-  return taskPost(ctx, task, 'answer', () => ctx.api.post(`/api/tasks/${enc(task.id)}/needs-you/answer`, { text, asked_at: askedAt || null }), `Answered #${task.number}`);
+export function answerNeedsYou(ctx, task, text, askedAtMs = null) {
+  // Which request it answers (SPEC-512 ANS-004): the one its person opened Reply on; one
+  // replaced meanwhile is not answered by it.
+  return taskPost(ctx, task, 'answer', () => ctx.api.post(`/api/tasks/${enc(task.id)}/needs-you/answer`, { text, asked_at_ms: Number.isFinite(askedAtMs) ? askedAtMs : null }), `Answered #${task.number}`);
 }
 
 /** The owner withdraws `login` from the people the task's request names (SPEC-512 ANS-005). */

@@ -312,7 +312,7 @@ pub async fn answer_needs_you(
     Json(req): Json<yulius_contracts::api::tasks::AnswerNeedsYou>,
 ) -> ApiResult<Json<TaskSummary>> {
     Ok(Json(
-        app.answer_needs_you(&ctx, &tid, &req.text, req.asked_at.as_deref())
+        app.answer_needs_you(&ctx, &tid, &req.text, req.asked_at_ms)
             .await?,
     ))
 }

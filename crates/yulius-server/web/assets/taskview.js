@@ -369,11 +369,15 @@ export function mountTaskView(ctx, sandbox, task) {
   // its own cursor. Phones have the quick input for it. The field stays in the bar (hidden when not
   // replying), so the bar's updates never take it out from under someone typing (IME, readers).
   let replying = false;
+  // The request a reply to someone else's task answers, as it was when Reply opened (SPEC-512
+  // ANS-004): the agent may replace it while the field is open.
+  let replyAskedAtMs = null;
   const replyInput = h('input', { class: 'input', type: 'text', placeholder: 'Reply to the agent…', autocomplete: 'off', enterkeyhint: 'send', 'aria-label': 'Reply to the agent' });
   const replyButton = h('button', { type: 'button', class: 'btn btn-sm', onClick: () => {
     // Someone else's task has no terminal to type in: its Needs you is answered in the field
     // (SPEC-516).
     if (isPhone() && !owner()) { quickInput.focus(); return; }
+    replyAskedAtMs = current.needs_you && Number.isFinite(current.needs_you.at_ms) ? current.needs_you.at_ms : null;
     replying = true;
     renderAttention();
     replyInput.focus();
@@ -393,7 +397,7 @@ export function mountTaskView(ctx, sandbox, task) {
       // into the session; control stays with the owner. Refused, the field keeps its text.
       answering = true;
       replyInput.readOnly = true;
-      const answered = await answerNeedsYou(ctx, current, text).finally(() => {
+      const answered = await answerNeedsYou(ctx, current, text, replyAskedAtMs).finally(() => {
         answering = false;
         replyInput.readOnly = false;
       });

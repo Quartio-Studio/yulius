@@ -244,6 +244,11 @@ issue's acceptance criteria.
   probe's last answer; before ending a session the park probes it again and treats no answer as
   work running, as a move does (SPEC-483 SWT-001), and asks Claude Code's queue (SPEC-471). A
   park whose session cannot be ended gives up and the session goes on.
+- **A withdrawal splits the request's wait span.** The spans trigger (migration 0028) starts a
+  new `needs_you` span on any change of the stored request; a withdrawal changes its `who`, so
+  the Pipeline shows the wait as two spans from the same start (the first ended "replaced").
+  Kept: a migration of the trigger for this alone is not worth its risk now; the wait's total is
+  unchanged.
 - **Known limits.** The park's intent lives in the server's memory: a restart between the
   decision and the session's end records the end as a clean exit (`closed`) or a crash. A person
   who only reads the terminal does not hold a park; a keystroke or draft does. On the web,
@@ -274,7 +279,7 @@ issue's acceptance criteria.
 What a person sees. Before: a request on someone else's task offered every teammate Reply, and
 their own agent's `task_message` was refused ("only they steer it"). After: the request says
 "Asks @bob"; Bob gets Reply (and his agent's message is his answer), others get none; the owner
-sees "Withdraw @bob". Refusals say "task #43 asks @alice, @bob, not you", "the question you
+sees "Withdraw @bob". Refusals say "task #43 asks @alice and @bob, not you", "the question you
 answered on task #43 was replaced by a new one: read it and answer again", "@alice withdrew you
 from task #43's question".
 
@@ -282,6 +287,21 @@ Commands (2026-11-19): `cargo test -p yulius --test main -- task_ownership:: tas
 telegram:: docker_trouble_notices:: agent_hooks:: cockpit:: parking::` → 221 passed;
 `cargo test -p yulius-app --lib` → 626 passed; e2e `reply`, `parked`, `attention`, `ownership`,
 `watching`, `notifications` → 79 passed; `scripts/dev quick`, `lint`, `cargo doc` passed.
+
+Review round 1 of #1459 (request changes at dd7b25b38), answered test-first:
+
+| Finding | Answer | Test that fails without it |
+| --- | --- | --- |
+| Web sent the `at` of the question shown at Enter, not the one Reply opened on | the page keeps the question's `at_ms` from when Reply opened and sends it (`asked_at_ms`) | e2e `reply.e2e.ts` "an answer typed while the question is replaced goes to no other question" (fails when the page reads the request at send time: checked by mutation) |
+| Withdraw read-modify-write could overwrite a newer request | `replace_task_needs_you`: one conditional statement on the request's `at`, action and `who`; 409 "changed meanwhile" otherwise | `needs_you::tests::a_request_is_replaced_only_while_it_is_the_one_read` (store) |
+| A start hid a repeated failure from Telegram | a start forgets a told failure (`failed:…`) and keeps the rest, so a parked task's resume stays no news | `telegram::a_failure_after_a_restart_is_told_again`; `telegram::a_parked_tasks_resume_is_no_news` still holds |
+| `asked_at` compared as a second-precision string | compared as the stored milliseconds (`at_ms` in the view, `asked_at_ms` in the answer) | `task_ownership::an_answer_to_a_replaced_or_withdrawn_request_is_refused` |
+| `task_message`'s answered reply and audit | returns the task's brief like every other outcome and is audited `task.messaged` with its channel too; `docs/api.md` describes it | `task_message::a_named_person_answers_through_their_own_agent` |
+| Untested lines | eleven names, a disabled person, the withdraw 409s, a withdrawn person's own agent; a request with all names withdrawn offers no Reply | `task_ownership::naming_and_withdrawing_refuse_what_cannot_hold`; e2e "a request whose names were all withdrawn offers a teammate no Reply" |
+| ADR-0379 "builds on" 0370 | it says it amends 0370's rejected alternative | — |
+| Spans split by a withdrawal | recorded in Decisions (kept) | — |
+| Pre-existing: an answer ended a request asked while it was typed | the answer ends the request only while it is still the one it answered | covered by the replaced-request tests' paths |
+| Nits | GitHub errors while checking `who` say so instead of "no write access"; the mock checks in the server's order with its words; CSS gap for the names; the Evidence quotes the server's words | — |
 
 Also in this pull request, the two follow-ups the review of part 1 left: a parked task's Resume
 is no Telegram news (`telegram::a_parked_tasks_resume_is_no_news`, failed before: the notice was
