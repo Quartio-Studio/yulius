@@ -1,11 +1,11 @@
 ---
 yulius-task: 198f6d63-a78b-462e-ae91-4905a69d1240
-status: in-progress
+status: done
 ---
 
 # SPEC-519: Gemini 4 Neon is offered and becomes Antigravity's default model (on agy 1.5.12)
 
-Status: in-progress
+Status: done
 Date: 2026-11-19
 Owner: Yulius task #501
 Scope authorization: the person's request of 2026-11-19 (task #501), verbatim: "this is a test
@@ -80,7 +80,7 @@ stays Yulius's unnamed-agent default (`F 2026-11-19 Harness`, SPEC-514).
 - [x] Independent review in a fresh session, findings fixed test-first
 - [x] Every gate green, docs and the changes log updated
 - [x] Resolve SPEC-521 merge conflicts, verify model pickers and review merged head
-- [ ] Resolve origin/dev (#1436, #1450) merge conflict in docs/product.md and review merged head
+- [x] Resolve origin/dev (#1436, #1450) merge conflict in docs/product.md and review merged head
 
 ## Acceptance criteria
 
@@ -193,6 +193,11 @@ stays Yulius's unnamed-agent default (`F 2026-11-19 Harness`, SPEC-514).
   `models.js`, `agent_cli.rs`, `antigravity_cli.rs`, `docs/{architecture,product}.md` and
   `docs/decisions/README.md`; verified `antigravity.e2e.ts` (12/12), `model-choices.e2e.ts` (4/4),
   `codex.e2e.ts` (13/13) and `model-fallback.e2e.ts` (4/4).
+- **Merge of `#1436`/`#1450` and review round 4** (`yulius-reviewer` fresh session, head
+  `3528e3626`, approve; 0 findings): resolved the `docs/product.md` citation conflict with
+  `SPEC-528` (`#1450`) and numeric ADR ordering with `ADR-0375` (`#1436`), verified repository
+  contracts, scoped Rust suites (`yulius-domain`, `yulius-harness`, `antigravity`, `agent_hooks`)
+  and browser e2e suites.
 - **Not tested:** a live `GEMINI_API_KEY` call to Google's production endpoint (stubbed locally
   against `agy` 1.5.12), and `linux-arm64` binary execution (verified by pinned manifest `sha512`
   and tarball inspection).
