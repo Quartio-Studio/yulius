@@ -186,9 +186,9 @@ const MIGRATIONS: &[&str] = &[
     include_str!("migrations/0065_ci_flaky_tests.sql"),
     // Schema version 66 (SPEC-505 RND-001).
     include_str!("migrations/0066_task_harness_draws.sql"),
-    // Schema version 67 (SPEC-514 PIN-003). The file is 0068, the number `record_number` gave
-    // this task; it goes after every migration `dev` had when it merged (the position is the
-    // version).
+    // Schema version 67 (SPEC-510 TKC-003).
+    include_str!("migrations/0067_control_ask_first.sql"),
+    // Schema version 68 (SPEC-514 PIN-003).
     include_str!("migrations/0068_automation_agent_named.sql"),
 ];
 
@@ -456,8 +456,9 @@ mod tests {
             ),
             (65, include_str!("migrations/0065_ci_flaky_tests.sql")),
             (66, include_str!("migrations/0066_task_harness_draws.sql")),
+            (67, include_str!("migrations/0067_control_ask_first.sql")),
             (
-                67,
+                68,
                 include_str!("migrations/0068_automation_agent_named.sql"),
             ),
         ];
@@ -468,25 +469,25 @@ mod tests {
                 "schema version {version}"
             );
         }
-        assert_eq!(MIGRATIONS.len(), 67, "a new migration is pinned here too");
+        assert_eq!(MIGRATIONS.len(), 68, "a new migration is pinned here too");
     }
 
-    /// SPEC-514 PIN-003: a version-66 database's automations saved as `auto` (drawn for each
-    /// run, SPEC-505 RND-002) run Claude Code from version 67 on, and say so; one that names an
+    /// SPEC-514 PIN-003: a version-67 database's automations saved as `auto` (drawn for each
+    /// run, SPEC-505 RND-002) run Claude Code from version 68 on, and say so; one that names an
     /// agent keeps it.
     #[tokio::test]
-    async fn version_sixty_six_automations_on_auto_run_claude_code()
+    async fn version_sixty_seven_automations_on_auto_run_claude_code()
     -> Result<(), Box<dyn std::error::Error>> {
         use yulius_app::ports::store_ext::AutomationStore as _;
         use yulius_domain::harness::Harness;
         let dir = tempfile::tempdir()?;
-        let path = dir.path().join("v66.db");
+        let path = dir.path().join("v67.db");
         {
             let conn = rusqlite::Connection::open(&path)?;
-            for sql in &MIGRATIONS[..66] {
+            for sql in &MIGRATIONS[..67] {
                 conn.execute_batch(sql)?;
             }
-            conn.pragma_update(None, "user_version", 66)?;
+            conn.pragma_update(None, "user_version", 67)?;
             conn.execute_batch(
                 "INSERT INTO users (id, display_name, is_superadmin, is_instance_admin, created_at) VALUES ('u1', 'U', 0, 0, 1);
                  INSERT INTO sandboxes (id, slug, repo_owner, repo_name, default_branch, profile, port_base, port_count, created_by, onboarding_state, created_at) VALUES ('s1', 's', 'o', 'r', 'main', '{}', 20000, 10, 'u1', 'not_needed', 1);

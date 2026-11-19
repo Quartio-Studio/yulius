@@ -219,6 +219,16 @@ export function createNotificationCenter(ctx) {
     toast(title, { kind: 'info', action: route ? { label: 'Open', run: () => ctx.navigate(route) } : undefined });
   });
 
+  // Someone took control of the viewer's task without asking (SPEC-510 TKC-002): told wherever
+  // they are, as above.
+  watch('control-taken', (event) => {
+    const task = ctx.store.findTask(event.task_id) || { id: event.task_id, sandbox_id: event.sandbox_id, number: event.number };
+    const title = `@${event.by} took control of #${event.number} ${event.title || 'Task'}`;
+    const route = taskRoute(task);
+    add({ kind: 'info', title, detail: 'It acts on GitHub as them now; you can take it back', route });
+    toast(title, { kind: 'info', action: route ? { label: 'Open', run: () => ctx.navigate(route) } : undefined });
+  });
+
   // The sandbox-level problems a Needs you may name (SPEC-494): their tasks share one entry.
   const SHARED_CAUSES = { docker: 'its Docker needs you' };
 

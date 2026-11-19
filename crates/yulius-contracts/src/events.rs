@@ -22,6 +22,21 @@ pub enum UiEvent {
         /// Task id.
         task_id: String,
     },
+    /// Someone took control of a task without asking (SPEC-510 TKC-002): sent only to the
+    /// person it was taken from, so they hear of it wherever they are.
+    #[serde(rename = "task.control_taken")]
+    ControlTaken {
+        /// Task id.
+        task_id: String,
+        /// Its sandbox.
+        sandbox_id: String,
+        /// Its number in the sandbox.
+        number: u32,
+        /// Its title.
+        title: String,
+        /// Who took it.
+        by: String,
+    },
     /// The person who handed a task over took it back (SPEC-490 OWN-010): sent only to the
     /// person it was taken from, so they hear of it wherever they are.
     #[serde(rename = "task.control_taken_back")]

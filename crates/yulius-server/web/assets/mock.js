@@ -150,6 +150,8 @@ function seed(params) {
       user: {
         id: 'usr_1', login: 'mkarp', display_name: 'Michal Karp', avatar_url: null,
         is_superadmin: role === 'superadmin', is_instance_admin: role !== 'member', github_linked: linked,
+        // Whether teammates ask before taking control of mkarp's tasks (SPEC-510 TKC-003).
+        control_ask_first: false,
       },
       csrf_token: 'mock-csrf-token',
       instance: { owner_login: 'Quartio-Studio', owner_kind: 'org', public_url: ORIGIN, github_configured: params.get('github') !== '0', contained: params.get('contained') !== '0', upload_max_bytes: 1024 * 1024 * 1024 },
@@ -522,6 +524,8 @@ function summary(task) {
     owner: { ...ownerOf(task) }, control_request: task.controlRequest ? { by: { ...task.controlRequest.by }, at: task.controlRequest.at } : null,
     // Who handed it over on request and may take it back (SPEC-490 OWN-009).
     control_from: task.controlFrom ? { ...task.controlFrom } : null,
+    // Whether its owner wants to be asked before anyone takes control (SPEC-510 TKC-005).
+    owner_asks_first: Boolean(task.ownerAsksFirst),
     // What the agent asked a person to do (`needs_you`, SPEC-134).
     needs_you: task.needs_you ? { ...task.needs_you } : null,
     // Why it reads needs_attention (SPEC-472): the flag's reason, only while it reads that flag.
@@ -1899,8 +1903,25 @@ route('POST', `/api/tasks/${ID}/control-request/accept`, ({ db, p }) => {
   // The giver may take it back, unless it goes back to the one who gave it (SPEC-490 OWN-009).
   const to = task.controlRequest.by;
   const controlFrom = task.controlFrom && task.controlFrom.login === to.login ? null : { login: ownerOf(task).login };
-  touch(db, task, { owner: { ...to }, controlRequest: null, controlFrom });
+  touch(db, task, { owner: { ...to }, controlRequest: null, controlFrom, ownerAsksFirst: false });
   return summary(task);
+});
+// Take control without asking (SPEC-510 TKC-001): the previous owner may take it back.
+route('POST', `/api/tasks/${ID}/control/take`, ({ db, p }) => {
+  const task = taskOf(db, p[0]);
+  need(sandboxOf(db, task.sandbox_id), 'write');
+  const me = db.me.user.login;
+  const owner = ownerOf(task).login;
+  if (owner === me) fail(409, 'conflict', 'you already own this task');
+  if (db.me.user.guest) fail(403, 'forbidden', `Task #${task.number} is @${owner}'s: a guest takes control of no other person's task on this playground.`);
+  if (task.ownerAsksFirst) fail(409, 'conflict', `@${owner} wants to be asked before anyone takes control of their tasks: request control of task #${task.number} instead`);
+  const controlFrom = task.controlFrom && task.controlFrom.login === me ? null : { login: owner };
+  touch(db, task, { owner: { login: me }, controlRequest: null, controlFrom, ownerAsksFirst: false });
+  return summary(task);
+});
+route('PUT', '/api/me/control', ({ db, body }) => {
+  db.me.user.control_ask_first = Boolean(body.ask_first);
+  return { ask_first: db.me.user.control_ask_first };
 });
 route('POST', `/api/tasks/${ID}/control/take-back`, ({ db, p }) => {
   const task = taskOf(db, p[0]);
@@ -7153,6 +7174,14 @@ export function createMockTransport(params) {
     const task = db.tasks.find((t) => t.sandbox_id === sandboxId && t.number === number);
     touch(db, task, { owner: { login: by }, controlRequest: null, controlFrom: null });
     emit(db, { type: 'task.control_taken_back', task_id: task.id, sandbox_id: sandboxId, number, title: task.title, by });
+  };
+  // Someone takes control of the viewer's task without asking (SPEC-510 TKC-002): the task changes
+  // and the server tells the viewer, as `App::take_task_control` does.
+  db.takeControl = (sandboxId, number, by) => {
+    const task = db.tasks.find((t) => t.sandbox_id === sandboxId && t.number === number);
+    const from = ownerOf(task).login;
+    touch(db, task, { owner: { login: by }, controlRequest: null, controlFrom: { login: from }, ownerAsksFirst: false });
+    emit(db, { type: 'task.control_taken', task_id: task.id, sandbox_id: sandboxId, number, title: task.title, by });
   };
   db.touchTask = (sandboxId, number, changes) => touch(db, db.tasks.find((t) => t.sandbox_id === sandboxId && t.number === number), changes);
   // An administrator connects a Claude account elsewhere (another tab, SPEC-246): it is signed in.

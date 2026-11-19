@@ -12,6 +12,13 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   runs the agent it names, the ones saved as Random now Claude Code. The composer's no-choice
   item is Default again and the automation editor has no Random. Tasks drawn before still say so.
 
+- Take control (SPEC-510, task #492, ADR-0365): on a teammate's task, Take control (in the task
+  view and the task menu, after a confirmation naming the owner) makes the task yours at once:
+  it acts on GitHub as you from then on. The previous owner is told wherever they are (their
+  Telegram chat too, as for a take-back) and can take it back. A playground's guest still asks. A person who wants to be asked first turns on "Ask me before taking control of
+  my tasks" in Settings; others then request control and they hand it over or decline, as
+  before. `POST /api/tasks/{tid}/control/take`, `PUT /api/me/control`, schema 67.
+
 ## 2026-11-18
 
 - Subscription sign-ins start again (SPEC-509, task #491, #1414): login terminals are 1000
