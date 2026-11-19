@@ -121,7 +121,9 @@ disable`); CI sets it.
 Every test also fails when the page reports an error: an uncaught exception, an unhandled
 rejection or `console.error` (`failOnPageErrors()` in `tests/support.ts`). In those files
 `app.open` and `browser.reload` of a mock page return once the mock is installed, so a test can
-use `window.__yuliusMock` right away. A test that calls `window.monaco.editor` waits for
+use `window.__yuliusMock` right away. If Chromium reports `net::ERR_NETWORK_CHANGED` for the
+initial mock document or one of its startup scripts and the mock cannot start, the harness logs
+the interruption and loads that page once more. A second interruption fails the test (ADR-0385). A test that calls `window.monaco.editor` waits for
 `editorShown(browser)` first: the Editor's first opening loads Monaco (its own budget,
 `MONACO_LOAD_MS`), and an API call while it loads breaks the editor (#394, ADR-0122). The editor
 shows nothing before its first file's model is set (#1087), so `editorShown` is also when that

@@ -46,6 +46,15 @@ test('a second interruption of the initial load fails after one recovery', async
 
 test('an ordinary script failure still surfaces on the first open', async ({ app }) => {
   const requests = await interruptRequests(entryScript, 1, false);
-  await assert.rejects(app.open(path), /mock was never installed/);
+  await assert.rejects(app.open(path), /__yuliusMock was never installed/);
   expect(requests()).toBe(1);
+});
+
+test('a later open and an explicit reload each surface their own interruption', async ({ app, browser }) => {
+  await app.open(path);
+  const requests = await interruptRequests(document, 2, true);
+  await assert.rejects(browser.reload(), /ERR_CONNECTION_RESET/);
+  await browser.waitForURL('chrome-error://chromewebdata/');
+  await assert.rejects(app.open(path), /ERR_CONNECTION_RESET/);
+  expect(requests()).toBe(2);
 });
