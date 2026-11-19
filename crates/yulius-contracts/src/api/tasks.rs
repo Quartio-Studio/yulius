@@ -42,8 +42,8 @@ pub struct TaskSummary {
     pub title: String,
     /// Harness wire name (`claude`, `codex` or `antigravity`; SPEC-503, SPEC-505).
     pub harness: String,
-    /// `random` when the harness was drawn at creation (only before SPEC-514), else `chosen`
-    /// (SPEC-505 RND-001).
+    /// `random` when the harness was drawn at creation, else `chosen` (SPEC-505 RND-001,
+    /// SPEC-520 RHM-003).
     #[serde(default = "chosen")]
     pub harness_choice: String,
     /// Status wire name (domain `TaskStatus::as_str`).
@@ -347,7 +347,8 @@ pub struct CreateTask {
     /// Initial prompt.
     pub prompt: String,
     /// Harness: `claude`, `codex` (SPEC-503) or `antigravity` (SPEC-505); `auto` (the default)
-    /// is the one `model` implies, else Claude Code; never drawn (SPEC-514 PIN-001).
+    /// draws uniformly across harnesses with non-exhausted subscriptions, unless `model` implies
+    /// one (SPEC-520 RHM-001).
     #[serde(default = "default_harness")]
     pub harness: String,
     /// Workflow to seed steps/instructions; `auto` lets Jev choose one or none (TSK-015).

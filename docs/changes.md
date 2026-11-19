@@ -12,6 +12,30 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   showed it, marked "parked", with its question and pull request. A message (`task_message`) or
   Resume continues the same session with its history. A queued task says what it waits for, and
   the Capacity card shows working, parked, idle and queued sessions apart (ADR-0367).
+- Antigravity offers Gemini 4 Neon and runs it at high effort by default (SPEC-519, task #501,
+  [ADR-0373](decisions/0373-gemini-4-neon-is-antigravitys-default-model-on-agy-1-5-12.md)):
+  confirmed end to end in a live Antigravity session on a Google sign-in subscription. An
+  Antigravity task that names no model launches with `--model gemini-4-neon --effort high`, records
+  `gemini-4-neon` on its attempt and names it in its details; the composer and Settings list Gemini
+  4 Neon first under Google and keep Gemini 4 Carbon second while unnamed `Random` continues to draw
+  across available harnesses (`SPEC-520`). The pinned Antigravity CLI moves from 1.5.10 to 1.5.12 so
+  Gemini 4 Neon works on `GEMINI_API_KEY` subscriptions too.
+- Watchers see Codex and Antigravity sessions (SPEC-525, task #507, #1440): someone else's Codex
+  or Antigravity task showed "Codex is starting…" / "Antigravity is starting…" for its whole run,
+  because the transcript reader knew only Claude Code's lines. It now reads Codex rollouts and
+  Antigravity transcripts into the same entries (prompts, answers, reasoning, tool calls and
+  results, redacted the same way, dotenv reads included), so the watch view, the Sessions page,
+  session search and `session_read` show them. Schema version 69 indexes the Codex and Antigravity
+  sessions already passed with no passages again from their start.
+- Random harness selection across all harnesses with available subscriptions (SPEC-520, task #502,
+  #1437, ADR-0377): restores `Random` (`Random agent` in the composer and Settings, `Random` /
+  `auto` in the automation editor) as the default, drawing uniformly (`1 / k`, unbiased over random
+  bytes) across `claude`, `codex`, and `antigravity` that currently have at least one healthy
+  non-exhausted subscription — equal chance per eligible harness regardless of subscription count,
+  excluding harnesses with zero or only finished subscriptions while another has capacity (falling
+  back to healthy `Usable` pools when every connected pool is temporarily limited). Drawn tasks keep
+  their harness for life (`harness_choice: random`); a running task agent's unadorned `task_create`
+  and `automation_create` still keep the calling task's harness.
 - Antigravity tasks show Working while a background command runs and when its completion
   starts another model turn. If the agent stops with unfinished steps, its task brief explains
   why it needs a person. Fixes #1444 (SPEC-528, task #510).

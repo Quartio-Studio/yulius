@@ -47,7 +47,7 @@ export function mountSettingsPage(ctx) {
   const effortRow = row('pulse', 'Default effort for new tasks', 'How hard the agent thinks by default', effortButton);
   const renderPicks = () => {
     const found = findModel(picks.model);
-    modelButton.replaceChildren(h('span', { class: 'sr-only' }, 'Model for new tasks: '), h('span', { class: 'chip-label' }, found ? found.model.name : 'Default model'), icon('down', { size: 12 }));
+    modelButton.replaceChildren(h('span', { class: 'sr-only' }, 'Model for new tasks: '), h('span', { class: 'chip-label' }, found ? found.model.name : 'Random agent'), icon('down', { size: 12 }));
     effortRow.hidden = found?.model.efforts?.length === 0;
     const effort = findEffort(picks.effort);
     effortButton.replaceChildren(h('span', { class: 'sr-only' }, 'Effort for new tasks: '), h('span', { class: 'chip-label' }, effort ? effort.name : 'Default effort'), icon('down', { size: 12 }));

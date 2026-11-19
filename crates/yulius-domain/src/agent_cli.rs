@@ -675,7 +675,9 @@ pub mod codex {
 /// The Antigravity CLI Yulius pins and provides to Antigravity runs (SPEC-505 AGY-007, ADR-0361):
 /// Google's release tarballs, one per platform, each holding the single binary `antigravity`.
 pub mod antigravity {
-    /// The pinned release: verified with all offered Gemini models and efforts (SPEC-521).
+    /// The pinned release: 1.5.12, verified with all offered Gemini models and efforts including
+    /// Gemini 4 Neon on `GEMINI_API_KEY` connections (SPEC-519 NEO-003, SPEC-521; 1.5.10 before,
+    /// SPEC-505).
     pub const VERSION: &str = "1.5.12";
     /// The release's build, part of its download path.
     pub const BUILD: &str = "1.5.12-5281398513336320";
@@ -752,8 +754,9 @@ pub mod antigravity {
 mod tests {
     use super::*;
 
-    /// SPEC-505 AGY-007: the pinned agy release is published per Linux platform at Google's path,
-    /// each with a full sha512; other hosts get none.
+    /// SPEC-505 AGY-007, SPEC-519 NEO-003: the pinned agy 1.5.12 is published per Linux platform
+    /// at Google's path, each with the full sha512 from Google's release manifest; other hosts
+    /// get none.
     #[test]
     fn the_pinned_antigravity_cli_names_its_tarballs() {
         let x64 = antigravity::platform("linux", "x86_64");
@@ -768,12 +771,26 @@ mod tests {
             x64.map(|p| p.install_name()).as_deref(),
             Some("1.5.12-linux-x64")
         );
+        assert_eq!(
+            x64.map(|p| p.sha512),
+            Some(
+                "26de25fccb3fbf0b093e090ce14a14ac1df1ec3e90ef4ea6106887d3a81b0cc9\
+                 edb0dadea7b9101d07f9606eba159062a6fb7b78e91b73f7520684a24db73428"
+            )
+        );
         let arm = antigravity::platform("linux", "aarch64");
         assert_eq!(
             arm.map(|p| p.tarball_path()).as_deref(),
             Some(
                 "/antigravity-public/antigravity-cli/1.5.12-5281398513336320/linux-arm/\
                  cli_linux_arm64.tar.gz"
+            )
+        );
+        assert_eq!(
+            arm.map(|p| p.sha512),
+            Some(
+                "1030d89ce9e5cb39509e272cb89b71fde0e0d5d6527b7392525d5ef2683da54f\
+                 b49230449107486d91c02ded39a678faaa649b2041304a6cf82a3a332d5819d9"
             )
         );
         for platform in [x64, arm].into_iter().flatten() {

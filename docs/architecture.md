@@ -92,15 +92,20 @@ accounts, by `codex resume <id>`: at a usage limit, when a person moves it and w
 subscription is removed (SPEC-447); it waits when none has capacity, and with no Codex
 subscription usable it asks for one.
 
-A task's agent is set at creation and never drawn (SPEC-514, ADR-0368): without an agent (or
-with `auto`) it is the one its model implies, else Claude Code (`Harness::unnamed`); an agent's
-`task_create` and `automation_create` pass the calling task's own; an automation stores the agent
-it names (`auto` saves as `claude`; migration 0068 turned stored `auto` into `claude`). Tasks
-drawn while SPEC-505 RND-001 drew stay in `task_harness_draws`, shown as `harness_choice`
-`random`.
+A task's agent is assigned at creation and kept for life (SPEC-520, ADR-0377, superseding the
+no-draw part of SPEC-514 / ADR-0368): without an explicit agent (or with `auto`) it takes the one
+its model implies, else draws uniformly (`1 / k`, rejection-sampled over `random_bytes`) across the
+harnesses in `Harness::ALL` (`claude`, `codex`, `antigravity`) that have at least one healthy
+non-exhausted subscription for their default model (falling back to healthy `Usable` pools when
+every connected pool is temporarily limited, else `ClaudeCode`), recorded in `task_harness_draws`
+(`harness_choice: random`). A running task agent's `task_create` and `automation_create` without
+`harness` (or `model`) keep the calling task's agent (`chosen`), while explicit `auto`, Superagent
+calls and `auto` automations draw per created task.
 
-An Antigravity task ([decision 0361](decisions/0361-antigravity-is-a-third-harness-picked-at-random-by-default.md))
-runs the `agy` TUI on a Google account with a home of its own in its run directory,
+An Antigravity task ([decision 0361](decisions/0361-antigravity-is-a-third-harness-picked-at-random-by-default.md),
+[decision 0373](decisions/0373-gemini-4-neon-is-antigravitys-default-model-on-agy-1-5-12.md))
+runs the `agy` TUI on a Google account, on its own model and effort or else `--model gemini-4-neon
+--effort high` (SPEC-519), with a home of its own in its run directory,
 `<run>/antigravity-home`, the folder whose `.gemini` the CLI reads: Yulius writes its
 `settings.json` (the worktree trusted, the first-run screens skipped, `modelProvider: gemini` for
 a Gemini API key), `config/hooks.json`, `config/mcp_config.json` and, for a Google sign-in, the
@@ -130,7 +135,8 @@ flowchart LR
 
 The Codex CLI and the Antigravity CLI are Yulius's own
 ([decision 0355](decisions/0355-codex-returns-as-a-second-harness-with-a-pinned-cli.md),
-[decision 0361](decisions/0361-antigravity-is-a-third-harness-picked-at-random-by-default.md)):
+[decision 0361](decisions/0361-antigravity-is-a-third-harness-picked-at-random-by-default.md),
+[decision 0373](decisions/0373-gemini-4-neon-is-antigravitys-default-model-on-agy-1-5-12.md)):
 each pinned release (Codex 0.170.0, Antigravity 1.5.12) is downloaded once (Codex from npm,
 Antigravity from Google's release storage), checked against the sha512 in the source
 (`yulius_domain::agent_cli::{codex, antigravity}`) and unpacked into
@@ -1749,8 +1755,10 @@ The reads the server still made by path there go the same way
 ([decision 0315](decisions/0315-what-the-host-reads-in-a-sandbox-it-reads-through-handles.md)):
 a session's transcript is opened from the sandbox directory folder by folder, without following
 a link or waiting on a FIFO, and only a regular file is read (`transcripts::open`, used by the
-transcript pages, `session_read` and the search index; the run watcher's tail opens it the same
-way at its name); the sandbox adapter reads the system layer's `passwd` and `group` itself, at
+transcript pages, `session_read` and the search index, which read a Claude Code session, a Codex
+rollout and an Antigravity transcript into the same entries, the format told by each line's
+shape ([SPEC-525](../.ai/specs/SPEC-525-hey-we-have-a-small-bug-i-don-t-see-a-pr.md)); the run
+watcher's tail opens it the same way at its name); the sandbox adapter reads the system layer's `passwd` and `group` itself, at
 most 1 MiB of a regular file, and hands people's identity files the text; `record_number` lists
 a numbered directory from the sandbox directory down; the quota's disk usage is measured from
 folder handles; and the task review reads an untracked file from the worktree's folder.

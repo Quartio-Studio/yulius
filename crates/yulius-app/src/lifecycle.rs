@@ -67,9 +67,10 @@ pub(crate) fn model_of_its_harness(harness: Harness, model: Option<&str>) -> App
         Harness::Codex if model.starts_with("claude") => Err(AppError::Invalid(
             "a Codex task takes an OpenAI model, not a Claude one".into(),
         )),
-        Harness::Antigravity if !model.starts_with("gemini-") => Err(AppError::Invalid(
-            "an Antigravity task takes a Gemini model (such as gemini-4-carbon)".into(),
-        )),
+        Harness::Antigravity if !model.starts_with("gemini-") => Err(AppError::Invalid(format!(
+            "an Antigravity task takes a Gemini model (such as {})",
+            yulius_domain::harness::DEFAULT_ANTIGRAVITY_MODEL
+        ))),
         _ => Ok(()),
     }
 }
@@ -77,6 +78,102 @@ pub(crate) fn model_of_its_harness(harness: Harness, model: Option<&str>) -> App
 pub(crate) fn parse_harness(text: &str) -> AppResult<Harness> {
     Harness::parse(text)
         .map_err(|_| AppError::Invalid("harness must be claude, codex or antigravity".into()))
+}
+
+/// Whether `account` has non-exhausted capacity right now for a default-model task of `harness`
+/// (SPEC-520 RHM-001/002). A bare `Limited` status without usage data is treated as exhausted;
+/// with usage data, the rotation policy's own exhaustion check decides.
+pub(crate) fn harness_account_available(
+    account: &crate::model::AccountRecord,
+    harness: Harness,
+    now: Timestamp,
+) -> bool {
+    if account.provider != harness.provider()
+        || account.credential.is_none()
+        || !account.status.healthy()
+        || (account.status == crate::model::AccountStatus::Limited && account.usage_json.is_none())
+    {
+        return false;
+    }
+    let default_model = match harness {
+        Harness::Codex => Some(yulius_domain::harness::DEFAULT_CODEX_MODEL),
+        Harness::Antigravity => Some(yulius_domain::harness::DEFAULT_ANTIGRAVITY_MODEL),
+        Harness::ClaudeCode => None,
+    };
+    let family = crate::capacity::model_family(default_model);
+    let fallback = crate::capacity::fallback_of(default_model)
+        .map(|fb| crate::capacity::model_family(Some(fb)));
+    let usage = crate::accounts::account_usage(account);
+    let threshold = yulius_domain::rotation::THRESHOLD;
+    !usage.exhausted_for(now, threshold, family)
+        || fallback.is_some_and(|fb| !usage.exhausted_for(now, threshold, fb))
+}
+
+/// Harnesses eligible for a random draw at `now` (SPEC-520 RHM-001/002): every harness with at
+/// least one non-exhausted subscription gets one equal entry regardless of how many subscriptions
+/// it has; when every connected pool is currently exhausted, harnesses with healthy signed-in
+/// accounts waiting to reset are returned so the task queues instead of failing with no-account.
+pub(crate) fn eligible_harnesses(
+    accounts: &[crate::model::AccountRecord],
+    now: Timestamp,
+) -> Vec<Harness> {
+    let available: Vec<Harness> = Harness::ALL
+        .into_iter()
+        .filter(|&h| {
+            accounts
+                .iter()
+                .any(|a| harness_account_available(a, h, now))
+        })
+        .collect();
+    if !available.is_empty() {
+        return available;
+    }
+    Harness::ALL
+        .into_iter()
+        .filter(|&h| {
+            crate::account_gate::agent_accounts(accounts, h.provider())
+                == crate::account_gate::AgentAccounts::Usable
+        })
+        .collect()
+}
+
+impl App {
+    /// Draws a harness uniformly across [`eligible_harnesses`] (`ClaudeCode` when no harness has
+    /// any healthy subscription; SPEC-520 RHM-001/002, ADR-0377).
+    ///
+    /// # Errors
+    /// Store failures.
+    pub(crate) async fn draw_harness(&self) -> AppResult<Harness> {
+        let accounts = self.deps.store.accounts().await?;
+        let candidates = eligible_harnesses(&accounts, self.now());
+        let queued = self
+            .harness_rolls
+            .lock()
+            .ok()
+            .and_then(|mut rolls| rolls.pop_front());
+        if let Some(roll) = queued {
+            return Ok(Harness::drawn(&candidates, roll));
+        }
+        if candidates.is_empty() {
+            return Ok(Harness::ClaudeCode);
+        }
+        let mut last = 0_u8;
+        for _ in 0..8 {
+            let bytes = self.deps.crypto.random_bytes();
+            last = bytes[0];
+            if let Some(idx) = Harness::unbiased_index(candidates.len(), &bytes) {
+                return Ok(candidates[idx]);
+            }
+        }
+        Ok(Harness::drawn(&candidates, last))
+    }
+
+    /// Queues the rolls of the next harness draws, in order (tests: a draw is otherwise random).
+    pub fn queue_harness_rolls(&self, rolls: &[u8]) {
+        if let Ok(mut queued) = self.harness_rolls.lock() {
+            queued.extend(rolls);
+        }
+    }
 }
 
 /// A prepared task has one way to start (SPEC-105 PRP-001).
@@ -138,6 +235,18 @@ impl App {
         after: Option<&TaskRecord>,
         rule: Option<&Rule>,
         prepared: Option<Option<Timestamp>>,
+    ) -> AppResult<TaskRecord> {
+        self.create_task_drawn(req, after, rule, prepared, false)
+            .await
+    }
+
+    pub(crate) async fn create_task_drawn(
+        self: &Arc<Self>,
+        req: NewTask,
+        after: Option<&TaskRecord>,
+        rule: Option<&Rule>,
+        prepared: Option<Option<Timestamp>>,
+        harness_drawn: bool,
     ) -> AppResult<TaskRecord> {
         let store = &self.deps.store;
         if prepared.is_some() && (after.is_some() || rule.is_some() || req.supertask) {
@@ -272,6 +381,9 @@ impl App {
             }
             store.replace_steps(&task.id, &steps, "system", now).await?;
         }
+        if harness_drawn {
+            store.record_harness_draw(&task.id, now).await?;
+        }
         store
             .audit(
                 now,
@@ -344,13 +456,21 @@ impl App {
     ) -> AppResult<TaskRecord> {
         let sid = sid.clone();
         self.require(user, &sid, Action::Work).await?;
-        // No agent given (or `auto`): the one the model implies, else Claude Code; never drawn
-        // (SPEC-514 PIN-001). An agent's tool names its own task's agent itself (PIN-002).
-        let harness = match req.harness.trim() {
-            "" | AUTO => Harness::unnamed(req.model.as_deref(), None),
-            text => parse_harness(text)?,
+        // No agent given (or `auto`): the one `model` implies when given, else drawn uniformly
+        // across harnesses with non-exhausted subscriptions once inputs validate (SPEC-520
+        // RHM-001..003).
+        let model = req
+            .model
+            .as_deref()
+            .map(str::trim)
+            .filter(|m| !m.is_empty());
+        let explicit_harness = match req.harness.trim() {
+            "" | AUTO => model.map(Harness::implied_by),
+            text => Some(parse_harness(text)?),
         };
-        model_of_its_harness(harness, req.model.as_deref())?;
+        if let Some(harness) = explicit_harness {
+            model_of_its_harness(harness, req.model.as_deref())?;
+        }
         // New tasks run in goal mode unless the user picks prompt mode (TSK-010); `auto` lets Jev
         // choose (TSK-015).
         let mode = match req.mode.as_deref().map(str::trim) {
@@ -394,6 +514,10 @@ impl App {
                 "the prompt must be 1 byte to 64 KiB".into(),
             ));
         }
+        let (harness, drawn) = match explicit_harness {
+            Some(harness) => (harness, false),
+            None => (self.draw_harness().await?, true),
+        };
         // A task that starts (now, after a task, by a rule) needs an agent: refused without a
         // usable account before anything is created (SPEC-246 CLA-002); a prepared one starts
         // only when a person says so.
@@ -402,7 +526,7 @@ impl App {
         }
         let choice = self.auto_choose(&sid, prompt, mode, workflow).await?;
         let task = self
-            .create_task_held(
+            .create_task_drawn(
                 NewTask {
                     sandbox: sid,
                     created_by: user.id.clone(),
@@ -426,6 +550,7 @@ impl App {
                 after.as_ref(),
                 rule.as_ref(),
                 prepared,
+                drawn,
             )
             .await?;
         if choice.is_auto() {
