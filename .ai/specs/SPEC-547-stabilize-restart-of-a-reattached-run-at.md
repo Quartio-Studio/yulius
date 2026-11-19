@@ -22,9 +22,9 @@ Issue #1286 reports a timeout waiting for attempt two on plain dev under load. S
 
 - [x] Isolate the failing reattach and restart ordering
 - [x] Prove the ordering with a failing regression
-- [ ] Restore reliable restart and normal CI coverage
+- [x] Restore reliable restart and normal CI coverage
 - [ ] Verify the restart under 48 busy loops
-- [ ] Obtain independent review and deliver on green CI
+- [ ] Ready the independently reviewed fix for the green CI merge
 
 ## Acceptance criteria
 
@@ -37,11 +37,12 @@ Exercise two server runtimes, a detached fake agent, and real subscription and h
 
 ## Decisions
 
-Reconciliation takes the task’s move lock before attaching the host. It releases the lock once ownership is checked, or transfers it to the required hand-over until that restart returns. Dropping either future releases the lock. Transcript replay can record the limit and complete while the deferred move waits. The move compares the reporting attempt with the attached attempt after acquiring the lock. ADR-0389 records the decision. The quarantine is managed by Yulius and released when tracking issue #1431 closes (ADR-0356). The separate regression runs in CI while that quarantine is active.
-
+Reconciliation takes the task’s move lock before attaching the host. It releases the lock once ownership is checked, or transfers it to the required hand-over until that restart returns. Dropping either future releases the lock. Transcript replay can record the limit and complete while the deferred move waits. The move compares the reporting attempt with the attached attempt after acquiring the lock. [ADR-0389](../../docs/decisions/0389-a-reattach-finishes-its-hand-over-before-a-limit-moves-the-run.md) records the decision. The quarantine is managed by Yulius and released when tracking issue #1431 closes (ADR-0356). The separate regression runs in CI while that quarantine is active.
 
 ## Evidence
 
 - On dev 8d05c25b with diagnostic logging, nextest failed iteration 2 of 12 beside 48 busy loops. The hand-over logged a concurrent state change, the pool logged a stop during its switch, and the test timed out after 65.4 seconds. SQLite showed one killed attempt and a cancelled switch.
 - A temporary task-keyed probe held the hand-over after preflight until the pool move finished. The task ended Stopped(Cancelled) in 6.3 seconds.
 - The retained regression held the replayed limit move until the hand-over completed. Releasing it created attempt three. The two-attempt assertion failed in 7.9 seconds.
+- Seven targeted nextest cases passed, including the original fixture and the delayed limit move, replay with unchanged ownership and hand-over without a recorded limit.
+- Eleven adjacent workflow-limit, refused-subscription and failed hand-over cases passed. These cover the pool’s ordinary limit moves, workflow resumption after restart, and stopping an old owner’s run when the required restart genuinely fails.

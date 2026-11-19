@@ -1206,18 +1206,18 @@ fn reattach_at_limit(delay_limit_move: bool) -> TestResult {
             support::point_reached(finished).await?;
         }
         let attempts = app.deps.store.attempts(&id).await?;
+        let resumed = attempts.last().ok_or("no attempt after the hand-over")?;
+        let run_dir = Path::new(&resumed.run_dir);
+        let owner = std::fs::read_to_string(run_dir.join("personal-mcp-of"));
+        let problems = limit_resume_problems(run_dir, &data);
         stop(&app, &id).await?;
         assert_eq!(attempts.len(), 2, "one replacement for the limited run");
-        assert_eq!(attempts[1].state, yulius_domain::task::AttemptState::Live);
+        assert_eq!(resumed.state, yulius_domain::task::AttemptState::Live);
         assert_eq!(
-            attempts[1].account_id.as_ref().map(AccountId::as_str),
+            resumed.account_id.as_ref().map(AccountId::as_str),
             Some("b-second")
         );
-        assert_eq!(
-            std::fs::read_to_string(Path::new(&attempts[1].run_dir).join("personal-mcp-of"))?,
-            admin.as_str()
-        );
-        let problems = limit_resume_problems(Path::new(&attempts[1].run_dir), &data);
+        assert_eq!(owner?, admin.as_str());
         assert!(problems.is_empty(), "{problems:?}");
         Ok::<_, Box<dyn std::error::Error>>(())
     })?;

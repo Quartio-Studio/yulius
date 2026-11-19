@@ -6,6 +6,8 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-19
 
+- After a server restart, a run at its usage limit can resume on an available subscription with its new owner’s MCP servers. A delayed move for the old attempt leaves the replacement running (SPEC-547, #1286).
+
 - Task briefings now request a native reviewer for each harness. Codex uses GPT-6.2 Astra at high effort and Antigravity uses Gemini 4 Neon (High) in every round. Claude Code keeps its Fable and Opus round policy. Gemini task launches use the Neon default delivered in SPEC-519 (review instructions in SPEC-524).
 - A question names who answers it (SPEC-512 part 2, task #494, #1418): an agent's `needs_you`
   can name the people besides the owner it waits for (`who`, each with write access to the

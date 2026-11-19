@@ -219,6 +219,9 @@ pub struct TaskRuntime {
     /// that is submitted, never as holding none. A new run holds none
     /// ([`Self::run_starts`]).
     pub(crate) prompt_held: AtomicBool,
+    /// A reattach owns the old attempt's recovery until any required hand-over finishes.
+    /// A limit move from its transcript waits here before deciding which attempt to move.
+    reattach_move: Arc<tokio::sync::Mutex<()>>,
     /// Whose personal MCP servers the current run was started with (SPEC-332 MSC-009): a live
     /// run keeps its MCP configuration, so a hand-over restarts it, and only that person messages
     /// it meanwhile.
@@ -600,6 +603,7 @@ impl TaskRuntime {
             submit_emptied_ms: AtomicI64::new(0),
             prompt_held: AtomicBool::new(false),
             typed_by: Mutex::new(None),
+            reattach_move: Arc::default(),
             personal_mcp_of: Mutex::new(None),
             goal_achieved: AtomicBool::new(false),
             goal_submitted: AtomicBool::new(false),
@@ -5661,6 +5665,7 @@ impl App {
             // The run's transcript so far is history: its watcher catches up on it (TSK-014).
             // Until it did, what waits in Claude Code's queue is not known (SPEC-471 CCQ-001).
             let runtime = self.runtime(&attempt.task_id);
+            let recovery = runtime.reattach_move.clone().lock_owned().await;
             runtime.replay_transcript.store(true, Ordering::SeqCst);
             runtime.queue_unread.store(true, Ordering::SeqCst);
             // Before the run is attached, so no message is typed meanwhile (SPEC-230): when it
@@ -5789,6 +5794,7 @@ impl App {
                     tokio::spawn(async move {
                         // How the run is resumed (past a usage limit, with the workflows it
                         // left) is read from its transcript: the restart waits for the replay.
+                        let _recovery = recovery;
                         let asked = tokio::time::Instant::now();
                         while app.runtime(&task_id).queue_unread.load(Ordering::SeqCst)
                             && asked.elapsed() < REPLAY_WAIT
@@ -6418,8 +6424,10 @@ impl App {
                 let tid = task_id.clone();
                 let account = attempt.account_id.clone();
                 let provider = attempt.harness.provider();
+                let attempt_id = attempt.id.clone();
                 tokio::spawn(async move {
-                    app.rotate(&tid, account, Trigger::LimitReached).await;
+                    app.rotate_limited_attempt(&tid, &attempt_id, account, false, None)
+                        .await;
                     // Said in one line, with a Needs you when nothing is left (SPEC-447 MOV-006).
                     if let Some(label) = refused {
                         let left = crate::moves::Left::Refused {
@@ -6685,15 +6693,42 @@ impl App {
         let app = self.clone();
         let tid = task_id.clone();
         let account = attempt.account_id.clone();
+        let attempt_id = attempt.id.clone();
         tokio::spawn(async move {
             crate::race::reached(crate::race::Point::LimitMoveReady, Path::new(tid.as_str()));
-            app.rotate_past(&tid, account, Trigger::LimitReached, blind, ran)
+            app.rotate_limited_attempt(&tid, &attempt_id, account, blind, ran)
                 .await;
             crate::race::reached(
                 crate::race::Point::LimitMoveFinished,
                 Path::new(tid.as_str()),
             );
         });
+    }
+
+    /// Reconciliation can replace a run holding the previous owner's servers after reading
+    /// this limit. Apply the pool decision only if the reporting attempt still owns the run.
+    async fn rotate_limited_attempt(
+        self: &Arc<Self>,
+        task_id: &TaskId,
+        attempt_id: &AttemptId,
+        account: Option<AccountId>,
+        blind: bool,
+        ran: Option<ModelFamily>,
+    ) {
+        let Some(runtime) = self.existing_runtime(task_id) else {
+            return;
+        };
+        let _recovery = runtime.reattach_move.lock().await;
+        let current = runtime
+            .run
+            .lock()
+            .await
+            .as_ref()
+            .is_some_and(|run| &run.attempt_id == attempt_id);
+        if current {
+            self.rotate_past(task_id, account, Trigger::LimitReached, blind, ran)
+                .await;
+        }
     }
 
     /// Applies the pool policy for a running task and acts on the decision (SPEC-001 §7.4):
