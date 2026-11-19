@@ -6,6 +6,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-19
 
+- Git integration tests now install fake Git executables and hooks in a separate process so concurrent forks cannot keep the executable open for writing (#1332, SPEC-548).
 - Browser tests recover their initial mock page once when Chromium reports a network change during startup. The test output records the recovery (#1331, SPEC-545).
 - The new automation editor keeps the name you enter while workflows load, including names that match a recipe (#1416, SPEC-543).
 - Mutation testing now checks the same workspace tests on the baseline and each mutant.
