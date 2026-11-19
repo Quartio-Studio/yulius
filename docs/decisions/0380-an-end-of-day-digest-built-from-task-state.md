@@ -26,9 +26,10 @@ personal Telegram channel); changes neither.
 - **Once a day from the background tick.** Due when today's time passed and it has not run
   since; the run is taken with one conditional write of `digest_ran_at`, so restarts and ticks
   never send it twice. Turning it on never sends at once.
-- **Built from task state and the transcript, no model.** Per person, in order: tasks waiting for
-  them (an open `needs_you`, a question in the terminal, or another person's request that names
-  them), tasks parked since the last digest with how they ended and the end of the agent's last
+- **Built from task state and the transcript, no model.** Per person who can see the task's
+  project (the notifier's rule), in order: tasks waiting for them (an open `needs_you`, a
+  question in the terminal, or another person's request that names them), tasks parked since
+  the last digest's listing (its own mark, kept apart from the run's claim and the setting) with how they ended and the end of the agent's last
   message (300 characters), and how many still work (ten named). Nothing to report: no digest.
   Every text is redacted as the sandbox's transcripts are.
 - **Its parks are narrower than ADR-0367's.** With a threshold, it first parks running tasks
