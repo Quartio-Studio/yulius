@@ -6,7 +6,8 @@
 //!
 //! Contract:
 //! - what a task says about itself (`App::waits_why`) is what its page shows: the list's
-//!   group, the task's request (`needs_you`), the reason of its flag, a held prompt, a pause.
+//!   group, the task's request (`needs_you`), the reason of its flag, a held prompt, a pause,
+//!   and what a queued task waits for (`queue_reason`, SPEC-512 PRK-007).
 //!   It is read by everyone who reads the task list, a task's agent included (without a held
 //!   prompt's words); the texts are an agent's, Claude Code's or a person's own words, each
 //!   shown as one bounded line without what hides or reverses text;
@@ -132,6 +133,15 @@ impl App {
                 .await
                 .and_then(|pause| serde_json::to_value(pause).ok()),
         );
+        // What a queued task waits for (SPEC-512 PRK-007): a supertask's hold is said by the
+        // brief's own fields.
+        if task.status == yulius_domain::task::TaskStatus::Queued {
+            let held = self.supertask_holders(task).await.unwrap_or_default();
+            add(
+                "queue_reason",
+                self.queue_reason_of(task, &held).await.map(Value::String),
+            );
+        }
         why
     }
 

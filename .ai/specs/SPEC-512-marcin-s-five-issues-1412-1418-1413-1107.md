@@ -119,7 +119,7 @@ each from its issue's acceptance criteria.
 - [x] A parked status: transitions, store, list group on the server and the web
 - [x] Idle sessions park after the grace period, decided under the launch lock
 - [x] Writing to a parked task resumes it: task_message and the web's Resume
-- [ ] A queued task says what it waits for
+- [x] A queued task says what it waits for
 - [ ] The Capacity card shows working, parked, idle and queued sessions
 - [ ] Docs for parking: product, architecture, api, operations, changes
 - [ ] Review of the #1412 pull request answered test-first

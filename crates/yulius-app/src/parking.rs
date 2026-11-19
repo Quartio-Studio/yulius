@@ -220,9 +220,69 @@ pub(crate) async fn audit_parked(app: &App, task: &TaskRecord) {
     }
 }
 
+/// What a queued task waits for (SPEC-512 PRK-007), when it is not a supertask's hold (the
+/// task says that itself, `held_by`): an update, or a free session while `in_use` of `limit` are
+/// taken; `None` when it starts at the queue's next pass.
+#[must_use]
+pub fn queue_reason(update: bool, held: bool, in_use: u32, limit: u32) -> Option<String> {
+    if held {
+        None
+    } else if update {
+        Some("Waiting for the Yulius update to finish".into())
+    } else if in_use >= limit {
+        Some(format!(
+            "Waiting for a free session: {in_use} of {limit} in use"
+        ))
+    } else {
+        Some("Starting: a session is free".into())
+    }
+}
+
+impl App {
+    /// [`queue_reason`] for `task` now: `None` unless it is queued.
+    pub(crate) async fn queue_reason_of(
+        &self,
+        task: &TaskRecord,
+        held_by: &[u32],
+    ) -> Option<String> {
+        if task.status != TaskStatus::Queued {
+            return None;
+        }
+        let in_use = self.sessions_in_use().await.unwrap_or(u32::MAX);
+        queue_reason(
+            self.update_holds_starts(),
+            !held_by.is_empty(),
+            in_use,
+            self.max_live_sessions(),
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// PRK-007: a queued task says what it waits for; a supertask's hold says it itself.
+    #[test]
+    fn a_queued_task_says_what_it_waits_for() {
+        assert_eq!(
+            queue_reason(false, false, 8, 8).as_deref(),
+            Some("Waiting for a free session: 8 of 8 in use")
+        );
+        assert_eq!(
+            queue_reason(false, false, 9, 8).as_deref(),
+            Some("Waiting for a free session: 9 of 8 in use")
+        );
+        assert_eq!(
+            queue_reason(true, false, 1, 8).as_deref(),
+            Some("Waiting for the Yulius update to finish")
+        );
+        assert_eq!(queue_reason(true, true, 8, 8), None);
+        assert_eq!(
+            queue_reason(false, false, 2, 8).as_deref(),
+            Some("Starting: a session is free")
+        );
+    }
 
     fn idle() -> ParkFacts {
         ParkFacts {

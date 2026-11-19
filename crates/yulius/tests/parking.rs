@@ -135,9 +135,17 @@ fn an_answered_task_parks_and_its_slot_starts_a_queued_task() -> TestResult {
             TaskMode::Prompt,
         )
         .await?;
-        // An answered agent is not Done locally: it holds the only slot.
+        // An answered agent is not Done locally: it holds the only slot, and the queued task
+        // says so (PRK-007).
         app.drain_queue_now().await;
         assert_eq!(status_of(&app, &second).await.0, Some(TaskStatus::Queued));
+        let queued = TaskStore::task(app.deps.store.as_ref(), &second)
+            .await?
+            .ok_or("task")?;
+        assert_eq!(
+            app.task_summary(&queued).await?.queue_reason.as_deref(),
+            Some("Waiting for a free session: 1 of 1 in use")
+        );
         parked(&app, &first).await?;
         wait_for(
             "the queued task to start",

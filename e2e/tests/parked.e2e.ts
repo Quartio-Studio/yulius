@@ -54,3 +54,25 @@ test('a parked task reads as it did, marked parked, and resumes from its menu (u
     },
   });
 });
+
+// SPEC-512 PRK-007: a queued task says what it waits for; a supertask's hold keeps its own line.
+test('a queued task says what it waits for (unit, in the page)', async ({ app, browser }) => {
+  await app.open(mock('/s/studio'));
+  const read = await browser.evaluate(async () => {
+    const statusUrl = '/assets/status.js';
+    const { taskInfo, activityLine } = await import(statusUrl);
+    const full = { status: 'queued', queue_reason: 'Waiting for a free session: 8 of 8 in use' };
+    const held = { status: 'queued', held_by: [3], queue_reason: null };
+    const plain = { status: 'queued' };
+    return {
+      full: [activityLine(full), taskInfo(full, null, null).detail],
+      held: activityLine(held),
+      plain: activityLine(plain),
+    };
+  });
+  expect(read).toEqual({
+    full: ['Waiting for a free session: 8 of 8 in use', 'Waiting for a free session: 8 of 8 in use'],
+    held: 'It starts once #3 is done: a supertask runs alone in this project.',
+    plain: 'Queued',
+  });
+});

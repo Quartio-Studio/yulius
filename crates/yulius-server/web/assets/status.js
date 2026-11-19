@@ -210,7 +210,8 @@ export function statusInfo(task) {
     const held = heldBy(task);
     if (held.length && task.supertask) return { glyph: '⧗', icon: 'st-queued', tone: 'queued', label: `Supertask · waits for ${numbers(held)}`, group: 'working' };
     if (held.length) return { glyph: '⧗', icon: 'st-queued', tone: 'queued', label: `Queued after supertask #${held[0]}`, group: 'working' };
-    return { glyph: '⧗', icon: 'st-queued', tone: 'queued', label: 'Queued', group: 'working' };
+    // What it waits for, when the server says (SPEC-512 PRK-007).
+    return { glyph: '⧗', icon: 'st-queued', tone: 'queued', label: 'Queued', group: 'working', detail: task.queue_reason || undefined };
   }
   if (status === 'starting') return { glyph: '◌', icon: 'st-starting', tone: 'queued', label: 'Starting', group: 'working' };
   // The pool moves the session to another subscription at a turn end (ROT-003): under the hood,
@@ -344,6 +345,7 @@ export function activityLine(task, info = statusInfo(task)) {
   if (task.status === 'prepared') return preparedLine(task);
   if (task.status === 'waiting_capacity') return pausedLine(task);
   if (task.status === 'queued' && heldBy(task).length) return supertaskLine(task);
+  if (task.status === 'queued' && task.queue_reason) return task.queue_reason;
   if (info.group === 'ended' && steps.total) return `${info.label} · ${steps.done || 0}/${steps.total} steps`;
   return info.label;
 }

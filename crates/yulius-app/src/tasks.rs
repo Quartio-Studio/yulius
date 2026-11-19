@@ -216,6 +216,15 @@ impl App {
             tracing::warn!(error = %err, task = %task.id, "harness draw not read");
             false
         });
+        let held_by = if task.status == TaskStatus::Queued {
+            match project {
+                Some(project) => self.supertask_holders_among(task, project).await,
+                None => self.supertask_holders(task).await,
+            }
+            .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
         Ok(TaskSummary {
             id: task.id.to_string(),
             sandbox_id: task.sandbox_id.to_string(),
@@ -279,15 +288,8 @@ impl App {
             auto: self.auto_choice_view(&task.id).await,
             supertask: task.supertask,
             start_at: self.prepared_start_at(task).await.map(rfc3339),
-            held_by: if task.status == TaskStatus::Queued {
-                match project {
-                    Some(project) => self.supertask_holders_among(task, project).await,
-                    None => self.supertask_holders(task).await,
-                }
-                .unwrap_or_default()
-            } else {
-                Vec::new()
-            },
+            queue_reason: self.queue_reason_of(task, &held_by).await,
+            held_by,
             background_shells: (task.status == TaskStatus::Running
                 && task.activity.is_some_and(Activity::is_idle))
             .then(|| self.background_shells_of(&task.id))
