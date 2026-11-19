@@ -83,7 +83,7 @@ export function createNotificationCenter(ctx) {
    * Records a notification. A `key` keeps one entry per subject (a task, a browser tab): a new
    * one replaces it and is unread again; with `once`, an existing entry is left as it is.
    */
-  function add({ kind = 'info', title, detail = null, route = null, key = null, once = false }) {
+  function add({ kind = 'info', title, detail = null, route = null, key = null, once = false, at = null }) {
     if (key) {
       const index = items.findIndex((n) => n.key === key);
       if (index >= 0) {
@@ -92,7 +92,7 @@ export function createNotificationCenter(ctx) {
       }
     }
     seq += 1;
-    items.unshift({ id: `${Date.now().toString(36)}-${seq}`, kind, title, detail, route, key, at: new Date().toISOString(), read: false });
+    items.unshift({ id: `${Date.now().toString(36)}-${seq}`, kind, title, detail, route, key, at: at || new Date().toISOString(), read: false });
     if (items.length > MAX_ITEMS) items.length = MAX_ITEMS;
     save();
     render();
@@ -201,10 +201,14 @@ export function createNotificationCenter(ctx) {
   watch('task', (task) => heardRequest(task, true));
 
   // The end-of-day digest (SPEC-512 DIG-005): one entry per digest that opens /digest, also for
-  // one made while no page was open (read when the page opens).
+  // one made while no page was open (read when the page opens). The last digest heard is
+  // remembered apart from the list, so a cleared or dropped entry does not come back on the next
+  // load (review round 1); the entry carries the digest's own time.
+  const digestSeenKey = `yulius.digest.seen.${user.id || user.login || 'anonymous'}`;
   function heardDigest(digest) {
-    if (!digest || typeof digest.id !== 'string') return;
-    add({ kind: 'info', title: 'Your end-of-day digest', detail: digestSummary(digest), route: '/digest', key: `digest:${digest.id}`, once: true });
+    if (!digest || typeof digest.id !== 'string' || readJson(digestSeenKey, null) === digest.id) return;
+    writeJson(digestSeenKey, digest.id);
+    add({ kind: 'info', title: 'Your end-of-day digest', detail: digestSummary(digest), route: '/digest', key: `digest:${digest.id}`, once: true, at: digest.created_at });
   }
   watch('digest', heardDigest);
   if (ctx.api) ctx.api.get('/api/me/digest').then(heardDigest, () => {});

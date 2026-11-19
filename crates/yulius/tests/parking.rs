@@ -1265,6 +1265,9 @@ fn a_named_persons_message_resumes_a_parked_task() -> TestResult {
     Ok(())
 }
 
+/// An agent secret's value, built so no scanner takes it for a real credential.
+const DIGEST_SECRET: &str = concat!("sunflower", "-digest-", "7f3a9c2e");
+
 /// The digest the owner last got, as JSON.
 async fn latest_digest(
     app: &App,
@@ -1288,11 +1291,39 @@ fn the_digest_parks_a_quiet_task_that_asks_nobody_and_lists_its_last_message() -
     let rt = runtime()?;
     rt.block_on(async {
         let app = app(&data, 8, 0).await?;
-        let (id, caller) = answered(&app, &data).await?;
-        let since = app.now().0 - 60_000;
+        // Its agent echoes an agent secret: the digest shows its name, never its value.
+        let (sandbox, user) = seed(&app, &data, &["a-only"]).await?;
+        // A set-up instance keeps where each digest's listing ended.
+        rusqlite::Connection::open(data.join("yulius.db"))?.execute_batch(
+            "INSERT OR IGNORE INTO instance (singleton, public_url) VALUES (1, 'https://yulius.test')",
+        )?;
+        let ctx = AuthContext {
+            user: app.deps.store.user(&user).await?.ok_or("user")?,
+            csrf_token: None,
+            session_hash: None,
+            token: None,
+        };
+        app.create_agent_secret(
+            &ctx,
+            sandbox.as_str(),
+            &yulius_contracts::api::secrets::AgentSecretInput {
+                name: "DIGEST_KEY".into(),
+                value: DIGEST_SECRET.into(),
+                ..Default::default()
+            },
+        )
+        .await?;
+        let prompt = format!("Budget {DIGEST_SECRET}: answer with an echo");
+        let id = new_task(&app, &sandbox, &user, &prompt, TaskMode::Prompt).await?;
+        wait_for("the turn's end", Duration::from_secs(30), || async {
+            screen(&app, &id).contains("ECHO: Budget")
+                && status_of(&app, &id).await.1 == Some(Activity::Waiting)
+        })
+        .await?;
+        let caller = superagent(&sandbox, &user, "admin");
         ask(&app, &id).await?;
         past_the_grace(&app, &id).await?;
-        let run = app.send_digests_now(since, Some(1)).await;
+        let run = app.send_digests_now(Some(1)).await;
         assert_eq!((run.sent, run.parked), (1, 0), "it asks");
         let digest = latest_digest(&app, &caller.user).await?;
         assert_eq!(
@@ -1306,7 +1337,7 @@ fn the_digest_parks_a_quiet_task_that_asks_nobody_and_lists_its_last_message() -
             .set_task_needs_you(&id, None, app.now())
             .await?;
         past_the_grace(&app, &id).await?;
-        let run = app.send_digests_now(since, Some(1)).await;
+        let run = app.send_digests_now(Some(1)).await;
         assert_eq!((run.sent, run.parked), (1, 1));
         wait_for("the digest's park", Duration::from_secs(30), || async {
             status_of(&app, &id).await.0 == Some(TaskStatus::Parked)
@@ -1317,11 +1348,21 @@ fn the_digest_parks_a_quiet_task_that_asks_nobody_and_lists_its_last_message() -
             .as_str()
             .ok_or("parked detail")?;
         assert!(
-            left.starts_with("Waits for your turn. Last message: "),
+            // The list shows an answered task under Done: the digest says so.
+            left.starts_with("Finished. Last message: "),
             "{left}"
         );
-        assert!(left.contains("ECHO: Budget: answer with an echo"), "{left}");
+        assert!(left.contains("ECHO: Budget [secret:DIGEST_KEY]"), "{left}");
+        assert!(!left.contains(DIGEST_SECRET), "{left}");
         assert_eq!(audited(&data, "task.parked", &id)?, ["yulius"]);
+        // The next digest does not list it as parked again (review round 1): nothing to report.
+        let run = app.send_digests_now(Some(1)).await;
+        assert_eq!(
+            (run.sent, run.parked),
+            (0, 0),
+            "{}",
+            latest_digest(&app, &caller.user).await?
+        );
 
         let answer = app
             .tool_task_message(

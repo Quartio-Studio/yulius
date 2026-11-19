@@ -44,7 +44,12 @@ export function mountDigestPage(ctx) {
   const frame = pageFrame({ title: 'Digest', sub: 'what waits for you, what was parked and what still works' });
   const host = h('div', { class: 'stack' }, h('p', { class: 'muted' }, 'Loading…'));
   frame.body.append(host);
-  ctx.api.get('/api/me/digest').then((digest) => {
+  // A digest that arrives while the page is open replaces the one shown.
+  const off = ctx.store.on('digest', (digest) => show(digest));
+  ctx.api.get('/api/me/digest').then((digest) => show(digest), (error) => {
+    setChildren(host, h('div', { class: 'banner banner-danger', role: 'alert' }, icon('warn'), h('span', { class: 'banner-text' }, `Couldn’t load the digest: ${error.message}`)));
+  });
+  function show(digest) {
     if (!digest) {
       setChildren(host, h('p', { class: 'muted' }, 'No digest yet. When an administrator turns it on, one comes at the end of each day with something to report.'));
       return;
@@ -55,10 +60,8 @@ export function mountDigestPage(ctx) {
       digestSection('digest-parked', `Parked (${digest.parked.length})`, digest.parked),
       digestSection('digest-working', `Still working (${digest.working_count})`, digest.working,
         digest.working_count > digest.working.length ? h('p', { class: 'muted small' }, `The first ${digest.working.length} of ${digest.working_count}.`) : null));
-  }, (error) => {
-    setChildren(host, h('div', { class: 'banner banner-danger', role: 'alert' }, icon('warn'), h('span', { class: 'banner-text' }, `Couldn’t load the digest: ${error.message}`)));
-  });
-  return { el: frame.el };
+  }
+  return { el: frame.el, destroy: off };
 }
 
 /** Settings: the instance's digest (instance administrators), off by default. */

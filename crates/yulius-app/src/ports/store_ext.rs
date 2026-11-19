@@ -722,6 +722,13 @@ pub trait DigestStore: Send + Sync {
     /// Takes the day's run: records `now` as the last run only while it is still `seen`;
     /// `false` when another took it (DIG-002).
     async fn take_digest_run(&self, seen: Option<Timestamp>, now: Timestamp) -> AppResult<bool>;
+    /// Where the last digest's listing ended (DIG-004): it listed what was parked before it.
+    async fn digest_listed_at(&self) -> AppResult<Option<Timestamp>>;
+    /// Records where a digest's listing ended.
+    ///
+    /// # Errors
+    /// `Conflict` while the instance is not set up.
+    async fn set_digest_listed_at(&self, at: Timestamp) -> AppResult<()>;
     /// Keeps `digest` for `user`, and only their last seven.
     async fn put_digest(&self, user: &UserId, digest: &StoredDigest) -> AppResult<()>;
     /// The person's latest digest.

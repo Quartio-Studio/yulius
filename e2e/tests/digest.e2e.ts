@@ -61,3 +61,16 @@ test("the day's digest arrives while the page is open (SPEC-512 DIG-005)", async
   await screen.getByRole('button', /^Notifications \(1 unread\)/).click();
   await expect(screen.getByRole('dialog', 'Notifications').getByRole('button', /^Unread: Your end-of-day digest/)).toBeVisible();
 });
+
+test('a cleared digest entry does not come back on the next load (SPEC-512 DIG-005, review)', async ({ app, browser, screen }) => {
+  await app.open(mock('/settings', '&digest=1'));
+  const bell = screen.getByRole('button', /^Notifications \(1 unread\)/);
+  await firstShown(bell);
+  await bell.click();
+  await screen.getByRole('dialog', 'Notifications').getByRole('button', 'Clear').click();
+  await app.open(mock('/settings', '&digest=1'));
+  // The bell reads the digest when the page opens: wait until it has, then look once.
+  await expect.poll(() => browser.evaluate(() => Object.keys(localStorage).some((k) => k.startsWith('yulius.digest.seen.')))).toBe(true);
+  await firstShown(screen.getByRole('button', /^Notifications$/));
+  await expect(screen.getByRole('button', /^Notifications \(\d+ unread\)/)).toHaveCount(0);
+});

@@ -33,8 +33,8 @@ pub const MAX_PARK_IDLE_HOURS: u32 = 720;
 pub const LAST_WORDS: usize = 300;
 /// How many working tasks a digest names.
 const WORKING_NAMED: usize = 10;
-/// A Telegram message's bound, with room to spare.
-const TELEGRAM_CHARS: usize = 3_900;
+/// How long a run waits for the sessions it parks to end before it lists them.
+const PARKS_SETTLE_MS: u64 = 60_000;
 const HOUR_MS: i64 = 3_600_000;
 const DAY_MS: i64 = 24 * HOUR_MS;
 
@@ -42,7 +42,8 @@ const DAY_MS: i64 = 24 * HOUR_MS;
 #[must_use]
 pub fn minute_of(at: &str) -> Option<i64> {
     let (h, m) = at.trim().split_once(':')?;
-    if h.is_empty() || h.len() > 2 || m.len() != 2 {
+    let digits = |part: &str| part.bytes().all(|b| b.is_ascii_digit());
+    if h.is_empty() || h.len() > 2 || m.len() != 2 || !digits(h) || !digits(m) {
         return None;
     }
     let (h, m) = (h.parse::<i64>().ok()?, m.parse::<i64>().ok()?);
@@ -50,14 +51,23 @@ pub fn minute_of(at: &str) -> Option<i64> {
 }
 
 /// Whether the day's digest is due at `now_ms` (DIG-002): it is on, today's time (UTC) has
-/// passed, and it has not run since.
+/// passed, it has not run or been saved since (`ran_at`), and no digest went out today
+/// (`listed_at`), so moving the time later the same day sends no second one.
 #[must_use]
-pub fn run_due(setting: &DigestSetting, now_ms: i64, ran_at: Option<i64>) -> bool {
+pub fn run_due(
+    setting: &DigestSetting,
+    now_ms: i64,
+    ran_at: Option<i64>,
+    listed_at: Option<i64>,
+) -> bool {
     let Some(minute) = minute_of(&setting.at).filter(|_| setting.enabled) else {
         return false;
     };
-    let today_at = now_ms.div_euclid(DAY_MS) * DAY_MS + minute * 60_000;
-    now_ms >= today_at && ran_at.is_none_or(|ran| ran < today_at)
+    let day = now_ms.div_euclid(DAY_MS) * DAY_MS;
+    let today_at = day + minute * 60_000;
+    now_ms >= today_at
+        && ran_at.is_none_or(|ran| ran < today_at)
+        && listed_at.is_none_or(|listed| listed < day)
 }
 
 /// The end of `text` in at most `max` characters, from a word's start, `…` before it when cut.
@@ -107,10 +117,7 @@ pub fn digest_text(digest: &DigestView) -> String {
             ));
         }
     }
-    if out.chars().count() > TELEGRAM_CHARS {
-        out = out.chars().take(TELEGRAM_CHARS - 1).collect::<String>() + "…";
-    }
-    out
+    yulius_domain::notify::truncate(&out)
 }
 
 /// What a run did: how many people got a digest and how many sessions it began to park.
@@ -120,6 +127,14 @@ pub struct DigestRun {
     pub sent: usize,
     /// Parks it began (DIG-003).
     pub parked: usize,
+}
+
+/// A digest's section.
+#[derive(Debug, Clone, Copy)]
+enum Section {
+    Waiting,
+    Parked,
+    Working,
 }
 
 /// One person's digest while it is built.
@@ -208,14 +223,18 @@ impl App {
     /// The background tick's look (DIG-002): runs the day's digest when it is due and this tick
     /// took the run.
     pub async fn digest_tick(self: &Arc<Self>) -> DigestRun {
-        let Ok((setting, ran)) = self.stored_digest_setting().await else {
+        let store = &self.deps.store;
+        let (Ok((setting, ran)), Ok(listed)) = (
+            self.stored_digest_setting().await,
+            store.digest_listed_at().await,
+        ) else {
             return DigestRun::default();
         };
         let now = self.now();
-        if !run_due(&setting, now.0, ran.map(|r| r.0)) {
+        if !run_due(&setting, now.0, ran.map(|r| r.0), listed.map(|l| l.0)) {
             return DigestRun::default();
         }
-        match self.deps.store.take_digest_run(ran, now).await {
+        match store.take_digest_run(ran, now).await {
             Ok(true) => {}
             Ok(false) => return DigestRun::default(),
             Err(err) => {
@@ -223,23 +242,32 @@ impl App {
                 return DigestRun::default();
             }
         }
-        let since = ran.map_or(now.0 - DAY_MS, |r| r.0);
         let park_after_ms = setting.park_idle_hours.map(|h| u64::from(h) * 3_600_000);
-        self.send_digests_now(since, park_after_ms).await
+        self.send_digests_now(park_after_ms).await
     }
 
-    /// Parks what waits for nobody quiet for `park_after_ms` (DIG-003), then builds, keeps,
-    /// publishes and sends each person's digest (DIG-004 to DIG-006), listing as parked what was
-    /// parked since `since_ms`.
-    pub async fn send_digests_now(
-        self: &Arc<Self>,
-        since_ms: i64,
-        park_after_ms: Option<u64>,
-    ) -> DigestRun {
+    /// Parks what waits for nobody quiet for `park_after_ms` (DIG-003), waits for those sessions
+    /// to end, then builds, keeps, publishes and sends each person's digest (DIG-004 to
+    /// DIG-006), listing as parked what was parked since the last digest's listing (24 hours
+    /// before the first), and records where this listing ended.
+    pub async fn send_digests_now(self: &Arc<Self>, park_after_ms: Option<u64>) -> DigestRun {
+        let store = &self.deps.store;
         let parked_now = match park_after_ms {
             Some(after_ms) => self.digest_park(after_ms).await,
             None => HashSet::new(),
         };
+        self.parks_settled(&parked_now).await;
+        let since_ms = match store.digest_listed_at().await {
+            Ok(listed) => listed.map_or(self.now().0 - DAY_MS, |at| at.0),
+            Err(err) => {
+                tracing::warn!(error = %err, "the digest's last listing could not be read");
+                return DigestRun {
+                    sent: 0,
+                    parked: parked_now.len(),
+                };
+            }
+        };
+        let listed_at = self.now();
         let drafts = match self.digest_drafts(since_ms, &parked_now).await {
             Ok(drafts) => drafts,
             Err(err) => {
@@ -250,6 +278,9 @@ impl App {
                 };
             }
         };
+        if let Err(err) = store.set_digest_listed_at(listed_at).await {
+            tracing::warn!(error = %err, "the digest's listing could not be recorded");
+        }
         let mut sent = 0;
         for (user, draft) in drafts {
             if draft.waiting.is_empty() && draft.parked.is_empty() && draft.working.is_empty() {
@@ -267,7 +298,33 @@ impl App {
         }
     }
 
-    /// DIG-003: the running tasks the digest parks.
+    /// Waits, at most [`PARKS_SETTLE_MS`], until the sessions this run parks have ended, so
+    /// they are listed now and their `state_at` falls before this listing's end, never in the
+    /// next digest's window (review round 1).
+    async fn parks_settled(&self, parked: &HashSet<TaskId>) {
+        let deadline =
+            tokio::time::Instant::now() + std::time::Duration::from_millis(PARKS_SETTLE_MS);
+        let mut left: Vec<&TaskId> = parked.iter().collect();
+        while !left.is_empty() && tokio::time::Instant::now() < deadline {
+            let mut still = Vec::new();
+            for id in left {
+                let settled = match self.deps.store.task(id).await {
+                    // Stopping is still on its way: the end settles the task as parked.
+                    Ok(Some(task)) => !task.status.is_live(),
+                    _ => true,
+                };
+                if !settled {
+                    still.push(id);
+                }
+            }
+            left = still;
+            if !left.is_empty() {
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+        }
+    }
+
+    /// DIG-003: the running tasks the digest parks, the cheap facts first.
     async fn digest_park(self: &Arc<Self>, after_ms: u64) -> HashSet<TaskId> {
         let mut parked = HashSet::new();
         let Ok(running) = self
@@ -278,8 +335,17 @@ impl App {
         else {
             return parked;
         };
+        let now = self.now().0;
         for task in running {
             if task.activity != Some(Activity::Waiting) {
+                continue;
+            }
+            let quiet = matches!(
+                self.deps.store.task_times(&task.id).await,
+                Ok(Some(times)) if i64::try_from(after_ms)
+                    .is_ok_and(|after| now.saturating_sub(times.state_at.0) >= after)
+            );
+            if !quiet {
                 continue;
             }
             match self
@@ -296,7 +362,8 @@ impl App {
         parked
     }
 
-    /// Each person's sections (DIG-004), redacted (DIG-006).
+    /// Each person's sections (DIG-004), redacted (DIG-006), for the people who can see each
+    /// task's project; a task that cannot be read is left out, not the whole digest.
     async fn digest_drafts(
         &self,
         since_ms: i64,
@@ -304,101 +371,136 @@ impl App {
     ) -> AppResult<HashMap<UserId, Draft>> {
         let store = &self.deps.store;
         let mut people: HashMap<String, UserId> = HashMap::new();
-        let mut enabled: HashSet<UserId> = HashSet::new();
+        let mut enabled: HashMap<UserId, crate::model::UserRecord> = HashMap::new();
         for user in store.users().await? {
             if user.disabled_at.is_none() {
-                enabled.insert(user.id.clone());
                 if let Some(login) = &user.github_login {
-                    people.insert(login.to_lowercase(), user.id);
+                    people.insert(login.to_lowercase(), user.id.clone());
                 }
+                enabled.insert(user.id.clone(), user);
             }
         }
-        let mut drafts: HashMap<UserId, Draft> = HashMap::new();
+        let mut sees: HashMap<(UserId, SandboxId), bool> = HashMap::new();
         let mut requests: HashMap<SandboxId, HashSet<String>> = HashMap::new();
+        let mut drafts: HashMap<UserId, Draft> = HashMap::new();
         let tasks = store
             .tasks_with_status(&[
                 TaskStatus::Running,
                 TaskStatus::Parked,
                 TaskStatus::Starting,
                 TaskStatus::Switching,
+                TaskStatus::WaitingCapacity,
             ])
             .await?;
         for task in tasks {
             if task.archived_at.is_some() {
                 continue;
             }
-            let asked = store.task_needs_you(&task.id).await?;
-            let waiting = asked.is_some() || task.activity == Some(Activity::NeedsAttention);
-            if waiting {
-                let detail = asked.as_ref().map_or_else(
-                    || "a question in its terminal".to_owned(),
-                    |a| a.action.clone(),
-                );
-                let item = self.digest_item(&task, Some(detail)).await?;
-                let mut to = vec![task.owner.clone()];
-                if let Some(asked) = &asked {
-                    to.extend(
-                        asked
-                            .named
-                            .who
-                            .iter()
-                            .filter_map(|login| people.get(&login.to_lowercase()).cloned()),
-                    );
+            let placed = self
+                .digest_place(&task, since_ms, parked_now, &people, &mut requests)
+                .await;
+            let (section, item, to) = match placed {
+                Ok(Some(placed)) => placed,
+                Ok(None) => continue,
+                Err(err) => {
+                    tracing::warn!(task = %task.id, error = %err, "a task was left out of the digest");
+                    continue;
                 }
-                to.dedup();
-                for user in to.into_iter().filter(|u| enabled.contains(u)) {
-                    drafts.entry(user).or_default().waiting.push(item.clone());
-                }
-                continue;
-            }
-            if !enabled.contains(&task.owner) {
-                continue;
-            }
-            let parked_since = task.status == TaskStatus::Parked
-                && store
-                    .task_times(&task.id)
-                    .await?
-                    .is_some_and(|times| times.state_at.0 >= since_ms);
-            if parked_now.contains(&task.id) || parked_since {
-                let ended = if task.activity == Some(Activity::Done) {
-                    "Finished"
-                } else {
-                    "Waits for your turn"
-                };
-                let detail = match self.last_agent_words(&task).await {
-                    Some(words) => format!("{ended}. Last message: {words}"),
-                    None => ended.to_owned(),
-                };
-                let item = self.digest_item(&task, Some(detail)).await?;
-                drafts
-                    .entry(task.owner.clone())
-                    .or_default()
-                    .parked
-                    .push(item);
-                continue;
-            }
-            let working = match task.status {
-                TaskStatus::Running => {
-                    if !requests.contains_key(&task.sandbox_id) {
-                        let read = self.browser_requests(&task.sandbox_id).await;
-                        requests.insert(task.sandbox_id.clone(), read);
-                    }
-                    let requested = requests.get(&task.sandbox_id).cloned().unwrap_or_default();
-                    self.task_group(&task, &requested).await? == TaskGroup::Working
-                }
-                TaskStatus::Starting | TaskStatus::Switching => true,
-                _ => false,
             };
-            if working {
-                let item = self.digest_item(&task, None).await?;
-                drafts
-                    .entry(task.owner.clone())
-                    .or_default()
-                    .working
-                    .push(item);
+            for user in to {
+                let Some(person) = enabled.get(&user) else {
+                    continue;
+                };
+                let key = (user.clone(), task.sandbox_id.clone());
+                let visible = match sees.get(&key) {
+                    Some(visible) => *visible,
+                    None => {
+                        let visible = self.can_view(person, &task.sandbox_id).await;
+                        sees.insert(key, visible);
+                        visible
+                    }
+                };
+                if !visible {
+                    continue;
+                }
+                let draft = drafts.entry(user).or_default();
+                match section {
+                    Section::Waiting => draft.waiting.push(item.clone()),
+                    Section::Parked => draft.parked.push(item.clone()),
+                    Section::Working => draft.working.push(item.clone()),
+                }
             }
         }
         Ok(drafts)
+    }
+
+    /// Where `task` goes in a digest and to whom (before the visibility check), or nowhere.
+    async fn digest_place(
+        &self,
+        task: &TaskRecord,
+        since_ms: i64,
+        parked_now: &HashSet<TaskId>,
+        people: &HashMap<String, UserId>,
+        requests: &mut HashMap<SandboxId, HashSet<String>>,
+    ) -> AppResult<Option<(Section, DigestItem, Vec<UserId>)>> {
+        let store = &self.deps.store;
+        let asked = store.task_needs_you(&task.id).await?;
+        if asked.is_some() || task.activity == Some(Activity::NeedsAttention) {
+            let detail = asked.as_ref().map_or_else(
+                || "a question in its terminal".to_owned(),
+                |a| a.action.clone(),
+            );
+            let mut to = vec![task.owner.clone()];
+            if let Some(asked) = &asked {
+                to.extend(
+                    asked
+                        .named
+                        .who
+                        .iter()
+                        .filter(|login| !asked.named.withdrawn.contains(login))
+                        .filter_map(|login| people.get(&login.to_lowercase()).cloned()),
+                );
+            }
+            to.sort_unstable_by(|a, b| a.as_str().cmp(b.as_str()));
+            to.dedup();
+            let item = self.digest_item(task, Some(detail)).await?;
+            return Ok(Some((Section::Waiting, item, to)));
+        }
+        if !requests.contains_key(&task.sandbox_id) {
+            let read = self.browser_requests(&task.sandbox_id).await;
+            requests.insert(task.sandbox_id.clone(), read);
+        }
+        let requested = requests.get(&task.sandbox_id).cloned().unwrap_or_default();
+        let parked_since = task.status == TaskStatus::Parked
+            && store
+                .task_times(&task.id)
+                .await?
+                .is_some_and(|times| times.state_at.0 > since_ms);
+        if parked_now.contains(&task.id) || parked_since {
+            let ended = if self.task_group(task, &requested).await? == TaskGroup::Done {
+                "Finished"
+            } else {
+                "Waits for your turn"
+            };
+            let detail = match self.last_agent_words(task).await {
+                Some(words) => format!("{ended}. Last message: {words}"),
+                None => ended.to_owned(),
+            };
+            let item = self.digest_item(task, Some(detail)).await?;
+            return Ok(Some((Section::Parked, item, vec![task.owner.clone()])));
+        }
+        let working = match task.status {
+            TaskStatus::Running | TaskStatus::WaitingCapacity => {
+                self.task_group(task, &requested).await? == TaskGroup::Working
+            }
+            TaskStatus::Starting | TaskStatus::Switching => true,
+            _ => false,
+        };
+        if !working {
+            return Ok(None);
+        }
+        let item = self.digest_item(task, None).await?;
+        Ok(Some((Section::Working, item, vec![task.owner.clone()])))
     }
 
     async fn digest_item(
@@ -551,32 +653,46 @@ mod tests {
     fn the_digest_is_due_once_a_day_after_its_time() {
         let at = DAY0 + 18 * HOUR_MS;
         assert!(
-            !run_due(&on("18:00"), at - 1, Some(DAY0 - DAY_MS)),
+            !run_due(&on("18:00"), at - 1, Some(DAY0 - DAY_MS), None),
             "before its time"
         );
         assert!(
-            run_due(&on("18:00"), at, Some(DAY0 - DAY_MS)),
+            run_due(&on("18:00"), at, Some(DAY0 - DAY_MS), None),
             "at its time"
         );
         assert!(
-            run_due(&on("18:00"), at + 5 * HOUR_MS, Some(at - 1)),
+            run_due(&on("18:00"), at + 5 * HOUR_MS, Some(at - 1), None),
             "a server back later"
         );
-        assert!(!run_due(&on("18:00"), at + 60_000, Some(at)), "ran already");
         assert!(
-            !run_due(&on("18:00"), at + HOUR_MS, Some(at + 30 * 60_000)),
+            !run_due(&on("18:00"), at + 60_000, Some(at), None),
+            "ran already"
+        );
+        assert!(
+            !run_due(&on("18:00"), at + HOUR_MS, Some(at + 30 * 60_000), None),
             "turned on after its time: the first is tomorrow"
         );
         assert!(
-            run_due(&on("18:00"), at + DAY_MS, Some(at + 30 * 60_000)),
+            run_due(&on("18:00"), at + DAY_MS, Some(at + 30 * 60_000), None),
             "tomorrow"
         );
         let off = DigestSetting {
             enabled: false,
             ..on("18:00")
         };
-        assert!(!run_due(&off, at, None));
+        assert!(!run_due(&off, at, None, None));
         assert!(!DigestSetting::default().enabled, "off by default");
+        // Sent at 08:00, then moved to 18:00 the same day (a save writes the run's claim): no
+        // second digest today, one tomorrow (review round 1).
+        let morning = DAY0 + 8 * HOUR_MS;
+        let saved = DAY0 + 9 * HOUR_MS;
+        assert!(!run_due(&on("18:00"), at, Some(saved), Some(morning)));
+        assert!(run_due(
+            &on("18:00"),
+            at + DAY_MS,
+            Some(saved),
+            Some(morning)
+        ));
     }
 
     /// DIG-004: a long last message keeps its end, from a word's start.
@@ -624,6 +740,6 @@ mod tests {
             waiting: (0..200).map(|n| item(n, Some(&"x".repeat(100)))).collect(),
             ..view
         };
-        assert!(digest_text(&huge).chars().count() <= TELEGRAM_CHARS);
+        assert!(digest_text(&huge).chars().count() <= yulius_domain::notify::MAX_MESSAGE_CHARS);
     }
 }

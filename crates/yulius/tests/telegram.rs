@@ -1549,11 +1549,25 @@ async fn a_digest_lists_what_waits_first_redacted_and_reaches_the_chat() -> Test
     w.h.store
         .set_task_needs_you(&TaskId::parse("t1")?, Some(&request), w.h.app.now())
         .await?;
+    // A secret in a title is redacted too (review round 1).
+    w.h.store
+        .update_task(
+            &TaskId::parse("t2")?,
+            &yulius_app::ports::store::TaskFieldUpdate {
+                title: Some(format!("Pay with {SECRET}")),
+                ..Default::default()
+            },
+            w.h.app.now(),
+        )
+        .await?;
+    // Saving the setting before the first digest keeps its 24-hour look back (review round 1:
+    // a save shortened the window to the save).
+    let saved = set_digest(&w, json!({"enabled": true, "at": "18:00"}), &w.alice).await?;
+    assert_eq!(saved.status, StatusCode::OK, "{}", saved.body);
     let before = w.fake.sent_to(100).len();
 
-    let since = w.h.app.now().0 - 24 * 60 * MINUTE_MS;
     assert_eq!(
-        w.h.app.send_digests_now(since, None).await.sent,
+        w.h.app.send_digests_now(None).await.sent,
         1,
         "bob has nothing"
     );
@@ -1569,6 +1583,11 @@ async fn a_digest_lists_what_waits_first_redacted_and_reaches_the_chat() -> Test
     assert_eq!(digest["parked"][0]["detail"], "Finished", "{digest}");
     assert_eq!(digest["working_count"], 1, "{digest}");
     assert_eq!(digest["working"][0]["number"], 2, "{digest}");
+    let title = digest["working"][0]["title"].as_str().ok_or("title")?;
+    assert!(
+        title.starts_with("Pay with") && !title.contains(SECRET),
+        "{title}"
+    );
     assert_eq!(
         digest["waiting"][0]["link"],
         "https://yulius.test/s/app/t/1"
@@ -1603,11 +1622,13 @@ async fn a_digest_lists_what_waits_first_redacted_and_reaches_the_chat() -> Test
     .await?;
     assert_eq!(r.body["choices"]["digest"], false, "{}", r.body);
     let told = w.fake.sent_to(100).len();
-    assert_eq!(w.h.app.send_digests_now(since, None).await.sent, 1);
+    assert_eq!(w.h.app.send_digests_now(None).await.sent, 1);
     barrier(&w, "d1").await?;
     assert_eq!(w.fake.sent_to(100).len(), told, "{:?}", w.fake.sent_to(100));
     let again = api(&w, Method::GET, "/api/me/digest", None, &w.alice).await?;
     assert_ne!(again.body["id"], digest["id"]);
+    // What the first digest listed as parked is not listed again (review round 1).
+    assert_eq!(again.body["parked"], json!([]), "{}", again.body);
     Ok(())
 }
 
@@ -1643,5 +1664,87 @@ async fn the_digest_runs_once_a_day_after_its_time() -> TestResult {
         .0
         .store(day + 42 * 60 * MINUTE_MS + 1, Ordering::SeqCst);
     assert_eq!(w.h.app.digest_tick().await.sent, 1, "the next day");
+    Ok(())
+}
+
+/// A request on `task` naming `who` (and `withdrawn`), changed in the store.
+async fn ask_named(w: &World, task: &str, who: &[&str], withdrawn: &[&str]) -> TestResult {
+    let request = NeedsYouRecord {
+        action: "Pick the release date".into(),
+        happened: None,
+        problem: None,
+        decision: true,
+        link: None,
+        at: 1,
+        cause: None,
+        named: yulius_app::needs_you::Named {
+            who: who.iter().map(|s| (*s).to_owned()).collect(),
+            withdrawn: withdrawn.iter().map(|s| (*s).to_owned()).collect(),
+        },
+    };
+    w.h.store
+        .set_task_needs_you(&TaskId::parse(task)?, Some(&request), w.h.app.now())
+        .await?;
+    Ok(())
+}
+
+async fn digest_of(w: &World, who: &Creds) -> Result<Value, Box<dyn std::error::Error>> {
+    Ok(api(w, Method::GET, "/api/me/digest", None, who).await?.body)
+}
+
+/// SPEC-512 DIG-004 (review round 1): a digest reaches only people who can see the project: not
+/// an owner who lost access, not a named person without access; a named person who can see it
+/// gets the request, a withdrawn one does not, and a disabled owner gets nothing while the named
+/// person still does.
+#[tokio::test]
+async fn a_digest_reaches_only_people_who_can_see_the_project() -> TestResult {
+    let w = world().await?;
+    let alice = user_id(&w, "alice").await?;
+    let bob = user_id(&w, "bob").await?;
+    // Bob owns a task of s1, which he cannot see; it names carol, who reads s2 only.
+    seed_task(&w.h, "t1", "s1", &bob, TaskStatus::Running, None).await?;
+    ask_named(&w, "t1", &["carol"], &[]).await?;
+    assert_eq!(w.h.app.send_digests_now(None).await.sent, 0);
+    assert_eq!(digest_of(&w, &w.bob).await?, Value::Null);
+    assert_eq!(digest_of(&w, &w.carol).await?, Value::Null);
+
+    // Alice's task of s2 names carol, who reads s2.
+    w.h.github.set_perm("alice", "acme/other", perms("write"));
+    w.h.store.delete_task(&TaskId::parse("t1")?).await?;
+    seed_task(&w.h, "t2", "s2", &alice, TaskStatus::Running, None).await?;
+    ask_named(&w, "t2", &["carol"], &[]).await?;
+    assert_eq!(w.h.app.send_digests_now(None).await.sent, 2);
+    let carols = digest_of(&w, &w.carol).await?;
+    assert_eq!(
+        carols["waiting"][0]["detail"], "Pick the release date",
+        "{carols}"
+    );
+
+    // Withdrawn, carol gets nothing more.
+    ask_named(&w, "t2", &[], &["carol"]).await?;
+    let before = digest_of(&w, &w.carol).await?;
+    assert_eq!(w.h.app.send_digests_now(None).await.sent, 1, "alice only");
+    assert_eq!(digest_of(&w, &w.carol).await?["id"], before["id"]);
+
+    // Alice disabled: carol, named again, still gets it; alice gets no new one.
+    use yulius_app::ports::store_ext::DigestStore as _;
+    ask_named(&w, "t2", &["carol"], &[]).await?;
+    let alice_id = yulius_domain::ids::UserId::parse(&alice)?;
+    let alices_last =
+        w.h.store
+            .latest_digest(&alice_id)
+            .await?
+            .ok_or("alice had one")?
+            .id;
+    w.h.store
+        .update_user_flags(&alice_id, Some(Some(w.h.app.now())), None)
+        .await?;
+    let carol_before = digest_of(&w, &w.carol).await?;
+    assert_eq!(w.h.app.send_digests_now(None).await.sent, 1, "carol only");
+    assert_ne!(digest_of(&w, &w.carol).await?["id"], carol_before["id"]);
+    assert_eq!(
+        w.h.store.latest_digest(&alice_id).await?.ok_or("alice")?.id,
+        alices_last
+    );
     Ok(())
 }

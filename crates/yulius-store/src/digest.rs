@@ -61,6 +61,37 @@ impl DigestStore for SqliteStore {
         .await
     }
 
+    async fn digest_listed_at(&self) -> AppResult<Option<Timestamp>> {
+        self.call(|c| {
+            let at = c
+                .query_row(
+                    "SELECT digest_listed_at FROM instance WHERE singleton = 1",
+                    [],
+                    |r| r.get::<_, Option<i64>>(0),
+                )
+                .optional()
+                .map_err(db)?;
+            Ok(at.flatten().map(Timestamp))
+        })
+        .await
+    }
+
+    async fn set_digest_listed_at(&self, at: Timestamp) -> AppResult<()> {
+        self.call(move |c| {
+            let changed = c
+                .execute(
+                    "UPDATE instance SET digest_listed_at = ?1 WHERE singleton = 1",
+                    [at.0],
+                )
+                .map_err(db)?;
+            if changed == 0 {
+                return Err(AppError::Conflict("the instance is not set up yet".into()));
+            }
+            Ok(())
+        })
+        .await
+    }
+
     async fn put_digest(&self, user: &UserId, digest: &StoredDigest) -> AppResult<()> {
         let user = user.as_str().to_owned();
         let digest = digest.clone();
@@ -154,6 +185,11 @@ mod tests {
         );
         assert!(!store.take_digest_run(None, Timestamp(22)).await?);
         assert_eq!(store.digest_setting().await?.1, Some(Timestamp(20)));
+        // Where the listing ended is its own mark: saving the setting leaves it.
+        assert_eq!(store.digest_listed_at().await?, None);
+        store.set_digest_listed_at(Timestamp(25)).await?;
+        store.set_digest_setting("{}", Timestamp(30)).await?;
+        assert_eq!(store.digest_listed_at().await?, Some(Timestamp(25)));
         Ok(())
     }
 
