@@ -3326,8 +3326,13 @@ impl App {
         let sessions = self.codex_sessions(sandbox);
         match self.deps.harness.find_codex_rollout(&sessions, session_id) {
             Ok(Some(path)) => path,
-            Ok(None) | Err(_) => sessions.join(format!("missing-{session_id}.jsonl")),
+            Ok(None) | Err(_) => Self::missing_codex_rollout(&sessions, session_id),
         }
+    }
+
+    /// Path recorded while a Codex session has no discoverable rollout (SPEC-538).
+    pub(crate) fn missing_codex_rollout(sessions: &Path, session_id: &str) -> PathBuf {
+        sessions.join(format!("missing-{session_id}.jsonl"))
     }
 
     /// After a Codex run ended or was lost (SPEC-503 CDX-006): its home's `auth.json` replaces the

@@ -63,7 +63,9 @@ The supervisor writes the home's `auth.json` (the account's sealed credential), 
 `hooks.json` through handles that follow no link, and reads the rollout from the sandbox's shared
 `codex/sessions`; its hooks reach Yulius as `yulius hook codex <event>`. After the run, a
 refreshed `auth.json` goes back into the vault, and the file leaves the sandbox once no run of the
-account is left there.
+account is left there. If a session document predates its rollout, transcript reads look up the
+file by session ID and the next index refresh saves its path on the same document.
+[SPEC-538](../.ai/specs/SPEC-538-repair-codex-session-documents-when-the.md)
 
 ```mermaid
 flowchart LR

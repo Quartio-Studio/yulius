@@ -7,6 +7,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 ## 2026-11-19
 
 - After a server restart, a run at its usage limit can resume on an available subscription with its new owner’s MCP servers. A delayed move for the old attempt leaves the replacement running (SPEC-547, #1286).
+- Codex session documents created before the first turn now show and index the rollout when it appears (#1454, SPEC-538).
 - A task can deliver a follow-up that appends to a list after incorporating an append from
   `dev`. Delivery compares the two trees when the task contains the integration commit.
   An equal tree keeps the previous pull request marked as merged. [#1299](https://github.com/Quartio-Studio/yulius/issues/1299)
