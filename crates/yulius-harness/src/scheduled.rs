@@ -109,7 +109,7 @@ fn origin_in<'a>(
             ("assistant", _, _) | ("user", _, _)
                 if r.kind == "assistant" || r.prompt_source.is_some() =>
             {
-                Some(Event::Turn)
+                Some(Event::Turn(r.scheduled_fire_id))
             }
             ("queue-operation", _, Some("dequeue")) => Some(Event::Dequeue),
             ("queue-operation", _, Some("remove" | "popOne" | "popAll")) => Some(Event::Removal(
@@ -141,30 +141,29 @@ fn hand_over(
         match event {
             Event::Fire(uuid) => fires.push_back(uuid),
             Event::Enqueue(text) => {
-                let scheduled = fires
-                    .pop_front()
-                    .is_some_and(|uuid| !finished.contains(uuid));
-                waiting.push_back((text, scheduled));
+                waiting.push_back((text, fires.pop_front()));
             }
             Event::Dequeue => {
-                match waiting.pop_front() {
-                    Some((Some(text), true)) if text == prompt => {
-                        handed_on = SubmitOrigin::Scheduled
-                    }
-                    Some((Some(text), false))
-                        if clipped && text == prompt && handed_on == SubmitOrigin::Unmarked =>
-                    {
-                        handed_on = SubmitOrigin::UnidentifiedHandOver;
-                    }
-                    // Claude can leave a background notice counted forever (SPEC-493).
-                    Some((Some(text), _))
-                        if text.trim_start().starts_with("<task-notification>")
-                            && waiting.iter().any(|(text, scheduled)| {
-                                text.as_deref() == Some(prompt) && *scheduled
-                            })
-                            && handed_on == SubmitOrigin::Unmarked =>
-                    {
-                        handed_on = SubmitOrigin::UnidentifiedHandOver;
+                // A notice can remain in the transcript's queue after Claude hands on other
+                // entries (SPEC-493). When both are visible, consume the next plain entry,
+                // preserving personal state for a matching hand-over of uncertain origin.
+                let plain = waiting.iter().position(|(text, _)| {
+                    !text
+                        .as_deref()
+                        .is_some_and(|text| text.trim_start().starts_with("<task-notification>"))
+                });
+                let skipped_notice = plain.is_some_and(|index| index > 0);
+                match waiting.remove(plain.unwrap_or(0)) {
+                    Some((Some(text), fire)) if text == prompt => {
+                        if fire.is_some_and(|uuid| !finished.contains(uuid)) {
+                            handed_on = if skipped_notice {
+                                SubmitOrigin::UnidentifiedHandOver
+                            } else {
+                                SubmitOrigin::Scheduled
+                            };
+                        } else if clipped && fire.is_none() && handed_on == SubmitOrigin::Unmarked {
+                            handed_on = SubmitOrigin::UnidentifiedHandOver;
+                        }
                     }
                     None if clipped && handed_on == SubmitOrigin::Unmarked => {
                         handed_on = SubmitOrigin::UnidentifiedHandOver;
@@ -172,7 +171,16 @@ fn hand_over(
                     _ => {}
                 }
             }
-            Event::Turn => handed_on = SubmitOrigin::Unmarked,
+            Event::Turn(fire) => {
+                // The actual prompt identifies its fire even when the unlabelled dequeue
+                // could have taken a different entry. Retire it before the next tick.
+                if let Some(uuid) = fire
+                    && let Some(i) = waiting.iter().position(|(_, fire)| *fire == Some(uuid))
+                {
+                    waiting.remove(i);
+                }
+                handed_on = SubmitOrigin::Unmarked;
+            }
             Event::Removal(removed) => {
                 if let Some(i) = waiting
                     .iter()
@@ -189,7 +197,7 @@ fn hand_over(
 enum Event<'a> {
     Fire(&'a str),
     Enqueue(Option<String>),
-    Turn,
+    Turn(Option<&'a str>),
     Dequeue,
     Removal(Option<String>),
 }
@@ -200,7 +208,7 @@ impl Event<'_> {
             Self::Fire(..) => 0,
             Self::Enqueue(_) => 1,
             Self::Dequeue | Self::Removal(_) => 2,
-            Self::Turn => 3,
+            Self::Turn(_) => 3,
         }
     }
 }
@@ -418,6 +426,57 @@ mod tests {
             SubmitOrigin::UnidentifiedHandOver
         );
         assert!(!classified(&records, "p", "other", 13));
+    }
+
+    #[test]
+    fn successive_ticks_behind_a_stranded_notice_keep_personal_state() {
+        use serde_json::json;
+        let mut records = vec![record(
+            "queue-operation",
+            0,
+            json!({"operation":"enqueue","content":"<task-notification>old</task-notification>"}),
+        )];
+        for (at, fire) in [(10, "first"), (20, "second")] {
+            records.extend([
+                record(
+                    "system",
+                    at,
+                    json!({"subtype":"scheduled_task_fire","uuid":fire}),
+                ),
+                record(
+                    "queue-operation",
+                    at + 1,
+                    json!({"operation":"enqueue","content":"check"}),
+                ),
+                record("queue-operation", at + 2, json!({"operation":"dequeue"})),
+            ]);
+            let lines = records.iter().map(ToString::to_string).collect::<Vec<_>>();
+            assert_ne!(
+                origin_in(
+                    lines.iter().map(String::as_bytes),
+                    "s",
+                    fire,
+                    "check",
+                    Timestamp(0)..=Timestamp(at + 3),
+                    false
+                ),
+                SubmitOrigin::Unmarked,
+                "{fire} tick"
+            );
+            records.push(record("user", at+4, json!({"promptId":fire,"scheduledFireId":fire,"promptSource":"system","isMeta":true})));
+        }
+        let lines = records.iter().map(ToString::to_string).collect::<Vec<_>>();
+        assert_eq!(
+            origin_in(
+                lines.iter().map(String::as_bytes),
+                "s",
+                "typed",
+                "check",
+                Timestamp(0)..=Timestamp(30),
+                false
+            ),
+            SubmitOrigin::Unmarked
+        );
     }
 
     #[test]
