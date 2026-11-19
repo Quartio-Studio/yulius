@@ -676,7 +676,9 @@ watching, steering and unblocking.
 Agents are real CLIs; sessions outlive the server; GitHub is the authority for permissions (a playground's guests, let
 in through an expiring link, are the one exception);
 coordination goes through one MCP and hook protocol; every queue, stream, retry and wait is
-bounded and owned; features have specs, research and questions do not.
+bounded and owned; features have specs, research and questions do not; a defect a request
+reports is fixed in its task, also when it is asked as a question, never filed and left
+([decision 0371](decisions/0371-a-defect-a-request-reports-is-fixed-also-when-asked-as-a-question.md)).
 
 ## Where to read more
 

@@ -6,6 +6,13 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-19
 
+- A task that finds a bug fixes it (SPEC-517, ADR-0371, task #499): a request that reports
+  something wrong in the product, also asked as a question ("What", "why is this broken"), runs on
+  Auto as a goal with the Fix workflow's steps instead of Research / Question; a question task that
+  confirms a defect grows the fixing steps or asks the person with `needs_you`, never files it and
+  stops; the briefing, `issue_create` and `delivery-pipeline` say so, and an issue filed for an
+  unrelated defect is named in the summary. Quartio-v2 task #312 had filed its PDF bug as an issue.
+
 - Subscription cards name their agent (SPEC-513, task #495): on the Subscriptions page, the
   Status panel and the Dashboard, a badge under each subscription's name reads Claude, Codex or
   Antigravity (the vendor, such as Google Gemini, on hover), before the email. The web mock's

@@ -53,9 +53,11 @@ token), so the evidence is the plan quoted in this task's request, set against t
    `issue_create` unless an open issue tracks it", with no word on fixing a bug the request itself
    reports, and "Work that changes no file ends with its result".
 
-Whether #312's mode and workflow came from Auto or from the person's own pick is recorded only in
-its sandbox (its `auto` line); this task asked the owner for it with `needs_you`. The change below
-closes both paths: Auto no longer routes a reported defect to a question workflow, and the
+The owner's Superagent read #312 for this task (`sandbox_task_get`, 2026-11-19): three steps,
+all done, the second with the note "Reproduced on dev: soffice exit 77 as uid 997 (no passwd
+entry); issue #1392". The agent had confirmed the defect, then filed it, as the workflow said. The
+cross-sandbox read does not show the mode, the workflow or the `auto` line, so whether Auto or the
+person picked "Research / Question" stays unknown. The change below closes both paths: Auto no longer routes a reported defect to a question workflow, and the
 question workflow itself no longer ends a confirmed defect in an issue.
 
 **Related work.** TSK-015 and SPEC-002 ADR-16 item 5 (Auto mode and workflow), the workflow catalog
