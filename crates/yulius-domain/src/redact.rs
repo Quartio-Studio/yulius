@@ -1346,6 +1346,25 @@ mod tests {
         assert_eq!(redacted("A=1\nB=2"), "A=1\nB=2");
     }
 
+    /// SPEC-525: Antigravity's `read_file` numbers lines as `1: KEY=value`, and a patch adds or
+    /// removes them as `+KEY=value` / `-KEY=value`: the values go, the prefixes stay.
+    #[test]
+    fn env_lines_numbered_by_antigravity_or_marked_by_a_patch_lose_their_values() {
+        let read = "Showing lines 1-3 of 3\n1: SHOP_REGION=eu-north-7b\n2: PORT=3000\n3: # note";
+        assert_eq!(
+            redact_env(read).map(|r| r.text).unwrap_or_default(),
+            "Showing lines 1-3 of 3\n1: SHOP_REGION=[REDACTED:env-value]\n2: PORT=3000\n3: # note"
+        );
+        let patch = "*** Update File: .env\n@@\n-MAIL_DOMAIN=old.shop.example\n+MAIL_DOMAIN=mg.shop.example\n PORT=3000";
+        assert_eq!(
+            redact_env(patch).map(|r| r.text).unwrap_or_default(),
+            "*** Update File: .env\n@@\n-MAIL_DOMAIN=[REDACTED:env-value]\n+MAIL_DOMAIN=[REDACTED:env-value]\n PORT=3000"
+        );
+        // Outside dotenv content nothing changes: a diff's lines are no dotenv block.
+        let diff = "+APP_NAME=shop\n+SMTP_HOST=mail.example.org\n+SMTP_USER=team";
+        assert_eq!(redacted(diff), diff);
+    }
+
     #[test]
     fn env_file_names() {
         for yes in [

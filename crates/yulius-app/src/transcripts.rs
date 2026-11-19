@@ -1991,4 +1991,156 @@ mod tests {
         }
         Ok(())
     }
+
+    /// Two dotenv values no generic pattern catches: only dotenv redaction hides them.
+    const ENV_TWO: &str = "SHOP_REGION=eu-north-7b\nMAIL_DOMAIN=mg.shop.example";
+
+    /// Reads `lines` from the start, from a page after the call (line 1, without and with the
+    /// cursor a first read kept) and as a tail, and checks the dotenv values never show.
+    fn assert_env_hidden(name: &str, lines: &[Value]) -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let path = write_lines(dir.path(), lines)?;
+        let (_, kept) = read_page_at(File::open(&path)?, None, 0, 1, MAX_PAGE_CHARS)?;
+        let reads = [
+            (
+                "start",
+                read_page(File::open(&path)?, 0, 100, MAX_PAGE_CHARS)?,
+            ),
+            (
+                "page",
+                read_page(File::open(&path)?, 1, 100, MAX_PAGE_CHARS)?,
+            ),
+            (
+                "kept cursor",
+                read_page_at(File::open(&path)?, Some(&kept), 1, 100, MAX_PAGE_CHARS)?.0,
+            ),
+            ("tail", read_tail(File::open(&path)?, 1, MAX_PAGE_CHARS)?),
+        ];
+        for (how, page) in reads {
+            assert!(!page.entries.is_empty(), "{name} ({how}): no entries");
+            let text = serde_json::to_string(&page.entries)?;
+            assert!(
+                !text.contains("eu-north-7b") && !text.contains("mg.shop.example"),
+                "{name} ({how}): {text}"
+            );
+        }
+        Ok(())
+    }
+
+    /// SPEC-525 WCX-003, on the shapes the real CLIs write (review round 1): Codex 0.169 runs
+    /// commands from a code-mode `exec` script whose output parts wrap the command's in JSON,
+    /// `shell_command` is the bundled models' shell, a patch adds dotenv lines with `+`;
+    /// Antigravity 1.5.10 names a file `Path` and numbers `read_file`'s lines `1: `.
+    #[test]
+    fn dotenv_reads_in_the_real_cli_shapes_are_redacted() -> TestResult {
+        let wrapped = serde_json::to_string(
+            &json!({"chunk_id": "ab12cd", "wall_time_seconds": 0.01, "exit_code": 0, "original_token_count": 9, "output": format!("{ENV_TWO}\n")}),
+        )?;
+        assert_env_hidden(
+            "codex exec",
+            &[
+                json!({"type": "response_item", "payload": {"type": "custom_tool_call", "status": "completed", "call_id": "c1", "name": "exec", "input": "text(await tools.exec_command({cmd:`cat .env`}))\n"}}),
+                json!({"type": "response_item", "payload": {"type": "custom_tool_call_output", "call_id": "c1", "output": [{"type": "input_text", "text": "Script completed\nWall time 0.1 seconds\nOutput:\n"}, {"type": "input_text", "text": wrapped}]}}),
+            ],
+        )?;
+        assert_env_hidden(
+            "codex shell_command",
+            &[
+                json!({"type": "response_item", "payload": {"type": "function_call", "name": "shell_command", "arguments": "{\"command\":\"cat .env\",\"workdir\":\"/w\"}", "call_id": "s1"}}),
+                json!({"type": "response_item", "payload": {"type": "function_call_output", "call_id": "s1", "output": format!("Exit code: 0\nWall time: 0.1 seconds\nOutput:\n{ENV_TWO}\n")}}),
+            ],
+        )?;
+        for patch in [
+            "*** Begin Patch\n*** Add File: .env\n+SHOP_REGION=eu-north-7b\n+MAIL_DOMAIN=mg.shop.example\n*** End Patch",
+            "*** Begin Patch\n*** Update File: apps/web/.env.local\n@@\n-SHOP_REGION=us-east\n+SHOP_REGION=eu-north-7b\n MAIL_DOMAIN=mg.shop.example\n*** End Patch",
+        ] {
+            assert_env_hidden(
+                "codex apply_patch",
+                &[
+                    json!({"type": "response_item", "payload": {"type": "custom_tool_call", "status": "completed", "call_id": "p1", "name": "apply_patch", "input": patch}}),
+                    json!({"type": "response_item", "payload": {"type": "custom_tool_call_output", "call_id": "p1", "output": "Success."}}),
+                ],
+            )?;
+        }
+        let stamps = "Created At: 2026-11-19T15:18:15Z\nCompleted At: 2026-11-19T15:18:15Z\n";
+        assert_env_hidden(
+            "agy read_file",
+            &[
+                json!({"step_index": 0, "source": "MODEL", "type": "PLANNER_RESPONSE", "status": "DONE", "tool_calls": [{"name": "read_file", "args": {"Path": "\"/w/.env\""}}]}),
+                json!({"step_index": 1, "source": "MODEL", "type": "GENERIC", "status": "DONE", "content": format!("{stamps}Showing lines 1-2 of 2\n1: SHOP_REGION=eu-north-7b\n2: MAIL_DOMAIN=mg.shop.example")}),
+            ],
+        )?;
+        assert_env_hidden(
+            "agy write_file",
+            &[
+                json!({"step_index": 0, "source": "MODEL", "type": "PLANNER_RESPONSE", "status": "DONE", "tool_calls": [{"name": "write_file", "args": {"Path": "\"/w/.env\"", "Overwrite": "true", "Content": serde_json::to_string(&format!("{ENV_TWO}\n"))?}}]}),
+                json!({"step_index": 1, "source": "MODEL", "type": "GENERIC", "status": "DONE", "content": format!("{stamps}Created file.")}),
+            ],
+        )?;
+        assert_env_hidden(
+            "agy edit_file",
+            &[
+                json!({"step_index": 0, "source": "MODEL", "type": "PLANNER_RESPONSE", "status": "DONE", "tool_calls": [{"name": "edit_file", "args": {"Path": "\"/w/.env\"", "Target": "\"SHOP_REGION=us-east\"", "Replacement": "\"SHOP_REGION=eu-north-7b\\nMAIL_DOMAIN=mg.shop.example\""}}]}),
+                json!({"step_index": 1, "source": "MODEL", "type": "GENERIC", "status": "DONE", "content": format!("{stamps}Edited file.")}),
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// SPEC-525, review round 1: the real shapes read cleanly. A code-mode call's summary is its
+    /// command and its result the command's output; Antigravity's thinking is shown and its file
+    /// tools name their file; an empty compaction is no entry; a typed prompt that opens with a
+    /// tag stays a prompt when the rollout has no provenance.
+    #[test]
+    fn the_real_cli_shapes_read_as_commands_outputs_and_thinking() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let wrapped = serde_json::to_string(
+            &json!({"chunk_id": "ab12cd", "exit_code": 0, "output": "lib.rs\nmain.rs\n"}),
+        )?;
+        let path = write_lines(
+            dir.path(),
+            &[
+                json!({"type": "response_item", "payload": {"type": "custom_tool_call", "call_id": "c1", "name": "exec", "input": "text(await tools.exec_command({cmd:`ls src`, yield_time_ms: 1000}))\n"}}),
+                json!({"type": "response_item", "payload": {"type": "custom_tool_call_output", "call_id": "c1", "output": [{"type": "input_text", "text": "Script completed\nWall time 0.1 seconds\nOutput:\n"}, {"type": "input_text", "text": wrapped}]}}),
+                json!({"type": "compacted", "payload": {"message": "", "replacement_history": []}}),
+                json!({"type": "response_item", "payload": {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "<div> breaks the layout"}]}}),
+                json!({"type": "response_item", "payload": {"type": "custom_tool_call", "call_id": "c2", "name": "exec", "input": "const a = 1;\ntext(String(a))\n"}}),
+            ],
+        )?;
+        let page = read_page(File::open(&path)?, 0, 100, MAX_PAGE_CHARS)?;
+        assert_eq!(
+            shape(&page.entries),
+            vec![
+                "assistant call c1 exec: ls src",
+                "user result c1 Script completed\nWall time 0.1 seconds\nOu",
+                "user text <div> breaks the layout",
+                "assistant call c2 exec: const a = 1; text(String(a))",
+            ]
+        );
+        let TranscriptBlock::ToolResult { text, .. } = &page.entries[1].blocks[0] else {
+            return Err("the output".into());
+        };
+        assert!(
+            text.ends_with("Output:\nlib.rs\nmain.rs\n"),
+            "the command's own output: {text:?}"
+        );
+
+        let agy = dir.path().join("agy");
+        std::fs::create_dir_all(&agy)?;
+        let path = write_lines(
+            &agy,
+            &[
+                json!({"step_index": 0, "source": "MODEL", "type": "PLANNER_RESPONSE", "status": "DONE", "thinking": "Check the cart first.", "tool_calls": [{"name": "read_file", "args": {"Path": "\"/w/src/cart.ts\"", "StartLine": "1"}}]}),
+            ],
+        )?;
+        let page = read_page(File::open(&path)?, 0, 100, MAX_PAGE_CHARS)?;
+        assert_eq!(
+            shape(&page.entries),
+            vec![
+                "assistant thinking Check the cart first.",
+                "assistant call step-0-0 read_file: /w/src/cart.ts",
+            ]
+        );
+        Ok(())
+    }
 }
