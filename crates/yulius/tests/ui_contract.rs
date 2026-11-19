@@ -587,8 +587,7 @@ fn the_composer_says_codex_runs_its_default_model() -> TestResult {
         .ok_or("models.js has no openai provider before google")?;
     assert!(
         openai.contains(
-            "{ id: 'codex', name: 'Codex', description: 'OpenAI Codex CLI on a Codex account, \
-             GPT-6.2 Astra at high effort by default', harnessOnly: true }"
+            "{ id: 'codex', name: 'Codex default', description: 'GPT-6.2 Astra at high effort by default', harnessOnly: true }"
         ),
         "{openai}"
     );
@@ -674,9 +673,7 @@ fn the_ui_describes_default_as_the_model_and_effort_a_launch_uses() -> TestResul
     );
     let level = named(DEFAULT_CLAUDE_EFFORT)?;
     assert!(
-        models.contains(&format!(
-            "{{ label: 'Default', description: '{level} (none for Haiku)',"
-        )),
+        models.contains(&format!("{{ label: 'Default', description: '{level}',")),
         "the effort menu's Default is not {level}"
     );
     assert!(

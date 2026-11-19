@@ -4,46 +4,73 @@
 // Claude Code's `--model` and a level to `--effort`; choosing "Default" sends no model and no agent,
 // so the task runs Claude Code on Yulius's default, Opus 5.5 at high effort (SPEC-023, SPEC-462,
 // SPEC-493), never an agent drawn at random (SPEC-514 PIN-001). The first model
-// listed is the default, as on the server. Choosing Codex sends `harness: codex` and no model:
-// the server runs GPT-6.2 Astra, at high effort unless one is chosen (SPEC-511). Choosing a
+// listed is the default, as on the server. Choosing Codex default sends `harness: codex` and no model:
+// the server runs GPT-6.2 Astra, at high effort unless one is chosen (SPEC-511). An explicit Codex model sends its id. Choosing a
 // Gemini model sends `harness: antigravity` and the model; Antigravity's default is Gemini 4
 // Neon at high effort (SPEC-519; Gemini 4 Carbon before, SPEC-505).
+
+import { readJson, writeJson } from './store.js';
 
 /** This browser's defaults for new tasks (the composer and Settings share them). */
 export const MODEL_PREF_KEY = 'yulius.composer.model';
 export const EFFORT_PREF_KEY = 'yulius.composer.effort';
+
+const STANDARD = ['low', 'medium', 'high'];
+const EXTRA_HIGH = [...STANDARD, 'xhigh'];
+const MAX = [...EXTRA_HIGH, 'max'];
+const ULTRA = [...MAX, 'ultra'];
 
 export const PROVIDERS = [
   {
     id: 'anthropic',
     name: 'Anthropic',
     harness: 'claude',
+    efforts: MAX,
     models: [
       { id: 'claude-opus-5-5', name: 'Opus 5.5', description: 'Complex coding and agentic work' },
       { id: 'claude-fable-5-2', name: 'Fable 5.2', description: 'Most capable, for the hardest long-running work (needs Fable access)' },
       { id: 'claude-fable-5-1', name: 'Fable 5.1', description: 'The previous Fable (needs Fable access)' },
       { id: 'claude-sonnet-5-5', name: 'Sonnet 5.5', description: 'Fast and capable for everyday coding' },
       // Haiku 4.5 takes no effort level.
-      { id: 'claude-haiku-4-5', name: 'Haiku 4.5', description: 'Fastest, for small and quick tasks', effort: false },
+      { id: 'claude-haiku-4-5', name: 'Haiku 4.5', description: 'Fastest, for small and quick tasks', efforts: [] },
     ],
   },
   {
     id: 'openai',
     name: 'OpenAI',
     harness: 'codex',
+    efforts: ULTRA,
     models: [
       // No model id: the server runs its Codex default, GPT-6.2 Astra (`harnessOnly`, SPEC-511).
-      { id: 'codex', name: 'Codex', description: 'OpenAI Codex CLI on a Codex account, GPT-6.2 Astra at high effort by default', harnessOnly: true },
+      { id: 'codex', name: 'Codex default', description: 'GPT-6.2 Astra at high effort by default', harnessOnly: true },
+      { id: 'gpt-6.2-astra', name: 'GPT-6.2 Astra' },
+      { id: 'gpt-6.2-sol', name: 'GPT-6.2 Sol' },
+      { id: 'gpt-6.1-sol', name: 'GPT-6.1 Sol' },
+      { id: 'gpt-6.1-terra', name: 'GPT-6.1 Terra' },
+      { id: 'gpt-6-astra', name: 'GPT-6 Astra' },
+      { id: 'gpt-6-sol', name: 'GPT-6 Sol' },
+      { id: 'gpt-6-luna', name: 'GPT-6 Luna', efforts: MAX },
+      { id: 'gpt-5.6-sol', name: 'GPT-5.6 Sol' },
+      { id: 'gpt-5.6-terra', name: 'GPT-5.6 Terra' },
+      { id: 'gpt-5.6-luna', name: 'GPT-5.6 Luna', efforts: MAX },
+      { id: 'gpt-5.5', name: 'GPT-5.5', efforts: EXTRA_HIGH },
     ],
   },
   {
     id: 'google',
     name: 'Google',
     harness: 'antigravity',
+    efforts: STANDARD,
     // Without an effort chosen, the server runs an Antigravity task at high effort.
     models: [
-      { id: 'gemini-4-neon', name: 'Gemini 4 Neon', description: 'Antigravity CLI on an Antigravity account, high effort by default' },
-      { id: 'gemini-4-carbon', name: 'Gemini 4 Carbon', description: 'The previous Gemini 4 on an Antigravity account, high effort by default' },
+      { id: 'gemini-4-neon', name: 'Gemini 4 Neon', description: 'Antigravity, high effort by default', efforts: EXTRA_HIGH },
+      { id: 'gemini-4-carbon', name: 'Gemini 4 Carbon' },
+      { id: 'gemini-4-hydrogen', name: 'Gemini 4 Hydrogen', efforts: EXTRA_HIGH },
+      { id: 'gemini-4-argon', name: 'Gemini 4 Argon' },
+      { id: 'gemini-3.8-flash', name: 'Gemini 3.8 Flash' },
+      { id: 'gemini-3.7-flash', name: 'Gemini 3.7 Flash', description: 'Enterprise' },
+      { id: 'gemini-3.6-flash', name: 'Gemini 3.6 Flash', description: 'Enterprise' },
+      { id: 'gemini-3.1-pro', name: 'Gemini 3.1 Pro', description: 'Enterprise', efforts: ['low', 'high'] },
     ],
   },
 ];
@@ -84,7 +111,8 @@ export const EFFORTS = [
   { id: 'medium', name: 'Medium', description: 'Balanced speed and depth' },
   { id: 'high', name: 'High', description: 'Thorough reasoning' },
   { id: 'xhigh', name: 'Extra high', description: 'Deep reasoning, best for most coding' },
-  { id: 'max', name: 'Max', description: 'Deepest reasoning, slowest' },
+  { id: 'max', name: 'Max', description: 'More time for complex work' },
+  { id: 'ultra', name: 'Ultra', description: 'Deep reasoning with automatic delegation' },
 ];
 
 /** A model id as people say it: "Opus 5.5" for a listed model, "Opus 4" for claude-opus-4. */
@@ -109,22 +137,46 @@ export function findEffort(id) {
   return EFFORTS.find((e) => e.id === id) || null;
 }
 
+function effortLevels(modelId) {
+  const found = findModel(modelId);
+  return found?.model.efforts ?? found?.provider.efforts ?? MAX;
+}
+
+/** A browser's new-task picks, shared by Settings and the composer. */
+export function modelPreferences() {
+  const model = findModel(readJson(MODEL_PREF_KEY, null))?.model.id ?? null;
+  const saved = readJson(EFFORT_PREF_KEY, null);
+  return {
+    model,
+    effort: effortLevels(model).includes(saved) ? saved : null,
+    setModel(id) {
+      this.model = id;
+      writeJson(MODEL_PREF_KEY, id);
+      this.setEffort(this.effort);
+    },
+    setEffort(id) {
+      this.effort = effortLevels(this.model).includes(id) ? id : null;
+      writeJson(EFFORT_PREF_KEY, this.effort);
+    },
+  };
+}
+
 /** Menu items to pick a model (grouped by provider); `onPick(id|null)`. */
 export function modelMenuItems(selected, onPick) {
   return [
     // No model chosen: Claude Code on Yulius's default model, for every task (SPEC-514 PIN-001).
     { label: 'Default', description: 'Claude Code, Opus 5.5', checked: selected === null, onSelect: () => onPick(null) },
-    ...PROVIDERS.flatMap((provider) => [
-      { header: provider.name },
-      ...provider.models.map((model) => ({ label: model.name, description: model.description, checked: model.id === selected, onSelect: () => onPick(model.id) })),
-    ]),
+    ...PROVIDERS.map((provider) => ({
+      header: provider.name,
+      items: provider.models.map((model) => ({ label: model.name, description: model.description, checked: model.id === selected, onSelect: () => onPick(model.id) })),
+    })),
   ];
 }
 
 /** Menu items to pick an effort level; `onPick(id|null)`. */
-export function effortMenuItems(selected, onPick) {
+export function effortMenuItems(model, selected, onPick) {
   return [
-    { label: 'Default', description: 'High (none for Haiku)', checked: selected === null, onSelect: () => onPick(null) },
-    ...EFFORTS.map((effort) => ({ label: effort.name, description: effort.description, checked: effort.id === selected, onSelect: () => onPick(effort.id) })),
+    { label: 'Default', description: 'High', checked: selected === null, onSelect: () => onPick(null) },
+    ...effortLevels(model).map(findEffort).map((effort) => ({ label: effort.name, description: effort.description, checked: effort.id === selected, onSelect: () => onPick(effort.id) })),
   ];
 }

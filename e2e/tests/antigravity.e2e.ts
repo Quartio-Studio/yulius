@@ -138,11 +138,12 @@ test('choosing Gemini 4 Neon or Gemini 4 Carbon in the composer starts an Antigr
   await screen.getByRole('button', /^Model:/).click();
   await expect(screen.getByText('Google', { exact: true })).toBeVisible();
   const googleModels = await browser.evaluate(() => {
-    const items = [...document.querySelectorAll('[role="menu"] > *')];
-    const header = items.findIndex((el) => (el.textContent || '').trim() === 'Google');
-    return header < 0 ? [] : items.slice(header + 1).map((el) => (el.querySelector('.menu-label') || el).textContent?.trim());
+    const group = [...document.querySelectorAll('.menu-group[role="group"]')].find(
+      (el) => document.getElementById(el.getAttribute('aria-labelledby') || '')?.textContent?.trim() === 'Google',
+    );
+    return group ? [...group.querySelectorAll('.menu-label')].map((el) => el.textContent?.trim()) : [];
   });
-  expect(googleModels).toEqual(['Gemini 4 Neon', 'Gemini 4 Carbon']);
+  expect(googleModels.slice(0, 2)).toEqual(['Gemini 4 Neon', 'Gemini 4 Carbon']);
   await screen.getByRole('menuitemradio', /^Gemini 4 Neon/).click();
   await expect(screen.getByRole('button', 'Model: Gemini 4 Neon')).toBeVisible();
   const prompt = screen.getByRole('textbox', 'Task prompt');

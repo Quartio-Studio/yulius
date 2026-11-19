@@ -1,11 +1,11 @@
 ---
 yulius-task: 198f6d63-a78b-462e-ae91-4905a69d1240
-status: done
+status: in-progress
 ---
 
 # SPEC-519: Gemini 4 Neon is offered and becomes Antigravity's default model (on agy 1.5.12)
 
-Status: done
+Status: in-progress
 Date: 2026-11-19
 Owner: Yulius task #501
 Scope authorization: the person's request of 2026-11-19 (task #501), verbatim: "this is a test
@@ -35,11 +35,12 @@ stays Yulius's unnamed-agent default (`F 2026-11-19 Harness`, SPEC-514).
     through `yulius hook antigravity PreToolUse`, and the `yulius mcp` stdio bridge served
     `steps_get`, `step_update`, `tasks_list`, `task_get`, `sessions_search` and `record_number`
     with the task's token (AGY-002, AGY-005, AGY-006).
-- **Current Antigravity model list and default (SPEC-505 AGY-002, AGY-010).**
+- **Current Antigravity model list and default (SPEC-505 AGY-002, AGY-010; SPEC-521).**
   `DEFAULT_ANTIGRAVITY_MODEL` in `yulius-domain::harness` is `"gemini-4-carbon"` and
-  `DEFAULT_ANTIGRAVITY_EFFORT` is `"high"`. The web UI's `models.js` lists only
-  `gemini-4-carbon` ("Gemini 4 Carbon") under the `google` provider (`harness: 'antigravity'`), and
-  the browser mock (`mock.js`) defaults an Antigravity task without `model` to `gemini-4-carbon`.
+  `DEFAULT_ANTIGRAVITY_EFFORT` is `"high"`. The web UI's `models.js` lists
+  `gemini-4-carbon` ("Gemini 4 Carbon") first under the `google` provider (`harness: 'antigravity'`),
+  and the browser mock (`mock.js`) defaults an Antigravity task without `model` to
+  `gemini-4-carbon`.
 - **Gemini 4 Neon in the Antigravity CLI (`1.5.10` vs `1.5.12`).**
   - On the live Google sign-in subscription in this session, `antigravity models` and native swarm
     model enumeration list `gemini-4-neon-{low,medium,high,xhigh}` ("Gemini 4 Neon (Low|Medium|High|XHigh)").
@@ -78,6 +79,7 @@ stays Yulius's unnamed-agent default (`F 2026-11-19 Harness`, SPEC-514).
 - [x] Record ADR-0373 and update product, architecture and API documentation
 - [x] Independent review in a fresh session, findings fixed test-first
 - [x] Every gate green, docs and the changes log updated
+- [ ] Resolve SPEC-521 merge conflicts, verify model pickers and review merged head
 
 ## Acceptance criteria
 

@@ -299,6 +299,9 @@ async fn the_real_pinned_release_installs_from_google() -> TestResult {
         .env("HOME", dir.path())
         .env("AGY_CLI_DISABLE_AUTO_UPDATE", "true")
         .output()?;
-    assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "1.5.12");
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout).trim(),
+        antigravity::VERSION
+    );
     Ok(())
 }
