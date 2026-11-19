@@ -1,11 +1,11 @@
 ---
 yulius-task: 198f6d63-a78b-462e-ae91-4905a69d1240
-status: in-progress
+status: done
 ---
 
 # SPEC-519: Gemini 4 Neon is offered and becomes Antigravity's default model (on agy 1.5.12)
 
-Status: in-progress
+Status: done
 Date: 2026-11-19
 Owner: Yulius task #501
 Scope authorization: the person's request of 2026-11-19 (task #501), verbatim: "this is a test
@@ -79,7 +79,7 @@ stays Yulius's unnamed-agent default (`F 2026-11-19 Harness`, SPEC-514).
 - [x] Record ADR-0373 and update product, architecture and API documentation
 - [x] Independent review in a fresh session, findings fixed test-first
 - [x] Every gate green, docs and the changes log updated
-- [ ] Resolve SPEC-521 merge conflicts, verify model pickers and review merged head
+- [x] Resolve SPEC-521 merge conflicts, verify model pickers and review merged head
 
 ## Acceptance criteria
 
@@ -186,6 +186,12 @@ stays Yulius's unnamed-agent default (`F 2026-11-19 Harness`, SPEC-514).
 - **Review round 2** (`yulius-reviewer` fresh session, head `a5e3b42a1`, approve; 0 findings):
   confirmed the Round 1 redaction, clean `origin/dev` merge, repository contracts, scoped Rust
   nextest suites and `antigravity.e2e.ts` (12/12).
+- **Merge of `SPEC-521` and review round 3** (`yulius-reviewer` fresh session, head `bf9dd7de2`,
+  approve; 0 blockers/majors, 1 own-code doc minor in `SPEC-002:2652` and 1 pre-existing doc nit in
+  `SPEC-001:281` fixed in the closing spec commit): resolved the `SPEC-521` (`#1439`) conflicts in
+  `models.js`, `agent_cli.rs`, `antigravity_cli.rs`, `docs/{architecture,product}.md` and
+  `docs/decisions/README.md`; verified `antigravity.e2e.ts` (12/12), `model-choices.e2e.ts` (4/4),
+  `codex.e2e.ts` (13/13) and `model-fallback.e2e.ts` (4/4).
 - **Not tested:** a live `GEMINI_API_KEY` call to Google's production endpoint (stubbed locally
   against `agy` 1.5.12), and `linux-arm64` binary execution (verified by pinned manifest `sha512`
   and tarball inspection).
