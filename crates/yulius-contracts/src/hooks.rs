@@ -13,6 +13,8 @@ pub mod events {
     pub const SESSION_START: &str = "SessionStart";
     /// The user submitted a prompt; output may carry message digests.
     pub const USER_PROMPT_SUBMIT: &str = "UserPromptSubmit";
+    /// Antigravity started a turn after a system message (no typed prompt).
+    pub const PRE_INVOCATION: &str = "PreInvocation";
     /// The agent finished its turn; output may block with a reason (discipline gate).
     pub const STOP: &str = "Stop";
     /// Claude Code notification (for example a permission prompt).
@@ -94,6 +96,9 @@ pub struct HookInput {
     /// `true` when the agent is already continuing because of a Stop hook block.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stop_hook_active: Option<bool>,
+    /// Whether Antigravity had also finished its background work at Stop.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fully_idle: Option<bool>,
     /// Notification text (`Notification`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,

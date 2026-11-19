@@ -1,11 +1,11 @@
 ---
 yulius-task: 198f6d63-a78b-462e-ae91-4905a69d1240
-status: done
+status: in-progress
 ---
 
 # SPEC-519: Gemini 4 Neon is offered and becomes Antigravity's default model (on agy 1.5.12)
 
-Status: done
+Status: in-progress
 Date: 2026-11-19
 Owner: Yulius task #501
 Scope authorization: the person's request of 2026-11-19 (task #501), verbatim: "this is a test
@@ -80,6 +80,7 @@ stays Yulius's unnamed-agent default (`F 2026-11-19 Harness`, SPEC-514).
 - [x] Independent review in a fresh session, findings fixed test-first
 - [x] Every gate green, docs and the changes log updated
 - [x] Resolve SPEC-521 merge conflicts, verify model pickers and review merged head
+- [ ] Resolve origin/dev (#1436, #1450) merge conflict in docs/product.md and review merged head
 
 ## Acceptance criteria
 

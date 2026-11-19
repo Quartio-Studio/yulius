@@ -42,7 +42,7 @@ use yulius_domain::ids::TaskId;
 use yulius_domain::task::{Activity, GoalOutcome, TaskStatus};
 
 use crate::context::App;
-use crate::error::AppResult;
+use crate::error::{AppError, AppResult};
 use crate::model::TaskRecord;
 use crate::ports::harness::Observation;
 use crate::ports::session::StrayProcess;
@@ -832,6 +832,38 @@ impl App {
         let runtime = self.runtime(task_id);
         runtime.goal_achieved.store(false, Ordering::SeqCst);
         runtime.verdict_stop_ms.clear();
+    }
+
+    /// The CLI still has work, or has woken itself. A wake has no typed prompt and
+    /// does not answer a person's pending request or discipline flag (SPEC-528).
+    pub(crate) async fn antigravity_work(
+        self: &Arc<Self>,
+        task_id: &TaskId,
+        sent: i64,
+    ) -> AppResult<()> {
+        let runtime = self.runtime(task_id);
+        // A flag raised while this hook is being handled must keep its reason.
+        let _attention = runtime.attention_lock.lock().await;
+        let task = self
+            .deps
+            .store
+            .task(task_id)
+            .await?
+            .ok_or(AppError::NotFound)?;
+        if task.status == TaskStatus::Running
+            && !matches!(
+                task.activity,
+                Some(Activity::NeedsAttention | Activity::Working)
+            )
+        {
+            self.resume_working(
+                &task,
+                Activity::Working,
+                Some(yulius_domain::time::Timestamp(sent)),
+            )
+            .await;
+        }
+        Ok(())
     }
 
     /// The agent produced work (an assistant line that is not a turn's end, at `at`): when the

@@ -8,7 +8,8 @@ Yulius develops itself with Yulius.
 It also runs native Codex CLI sessions on Codex (OpenAI) subscriptions, chosen per task or
 automation, on GPT-6.2 Astra at high effort unless a task names another model or effort (task
 #493, [SPEC-511](../.ai/specs/SPEC-511-default-model-for-codex-should-be-astra.md)); a task keeps
-its agent for life, and a Codex task moves only between Codex subscriptions. A Codex
+its agent for life, and a Codex task moves only between Codex subscriptions. On ChatGPT Pro 500,
+Codex defaults to Ultrafast for models that support it. A Codex
 subscription signs in by device code, by an imported `auth.json` of a `codex login` made elsewhere,
 or with an OpenAI API key, and Yulius provides the pinned Codex CLI
 (0.170.0) to every Codex run. The founders accepted this on 2026-11-16 (`F 2026-11-16 Codex`,
@@ -26,7 +27,9 @@ moves only between Antigravity subscriptions, and Yulius provides the pinned Ant
 ([SPEC-505](../.ai/specs/SPEC-505-implement-antigravity-cli-next-to-claude.md),
 [SPEC-519](../.ai/specs/SPEC-519-this-is-a-test-task-confirm-everything-w.md),
 [ADR-0361](decisions/0361-antigravity-is-a-third-harness-picked-at-random-by-default.md),
-[ADR-0373](decisions/0373-gemini-4-neon-is-antigravitys-default-model-on-agy-1-5-12.md)). A
+[ADR-0373](decisions/0373-gemini-4-neon-is-antigravitys-default-model-on-agy-1-5-12.md)). An
+Antigravity task stays Working while its command runs in the background or its agent resumes by
+itself ([SPEC-528](../.ai/specs/SPEC-528-antigravity-tasks-show-needs-its-person.md)). A
 task's agent is set, never drawn: the one chosen, else the one its model implies, else Claude Code
 (the composer's Default); a follow-up an agent creates runs that agent's own, and an automation
 always runs the agent it names (`F 2026-11-19 Harness`,

@@ -57,6 +57,8 @@ flowchart LR
 A Codex task runs `codex --no-daemon` in its worktree with `CODEX_HOME=<sandbox>/codex/<account>`,
 on its own model and effort or else `-m gpt-6.2-astra -c model_reasoning_effort="high"` (SPEC-511,
 [decision 0366](decisions/0366-a-codex-task-runs-gpt-6-2-astra-at-high-effort-by-default.md)).
+For a ChatGPT Pro 500 sign-in, the launch planner writes `service_tier = "ultrafast"` as the
+home default ([decision 0375](decisions/0375-codex-selects-ultrafast-for-pro-500.md)).
 The supervisor writes the home's `auth.json` (the account's sealed credential), `config.toml` and
 `hooks.json` through handles that follow no link, and reads the rollout from the sandbox's shared
 `codex/sessions`; its hooks reach Yulius as `yulius hook codex <event>`. After the run, a
@@ -109,8 +111,10 @@ CLI's token file. Its `antigravity-cli/brain` and `conversations` link to
 `--conversation <id>`. A contained run binds that `.gemini` over the sandbox home's (the agent's
 shell keeps the sandbox's `HOME`); an uncontained one sets `HOME` to the run's Antigravity home.
 `yulius hook antigravity <event>` translates its hooks (SessionStart, the first model call of a
-typed turn, Stop, `run_command`) to Yulius's; its transcript gives prompts, tokens and limits, and
-a turn its model API failed ends with a Stop Yulius settles without a gate. When its run ends, a
+turn, Stop, `run_command`) to Yulius's; its transcript gives prompts, tokens and limits, and
+a turn its model API failed ends with a Stop Yulius settles without a gate. A successful Stop
+with `fullyIdle: false` keeps the task Working while its command runs. A first invocation
+following a system message signals activity without submitting a prompt ([SPEC-528](../.ai/specs/SPEC-528-antigravity-tasks-show-needs-its-person.md)). When its run ends, a
 token file the CLI refreshed replaces the stored sign-in and is removed.
 
 ```mermaid

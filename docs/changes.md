@@ -14,6 +14,11 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   4 Neon first under Google and keep Gemini 4 Carbon second while unnamed `Default` stays Claude
   Code (`Opus 5.5`). The pinned Antigravity CLI moves from 1.5.10 to 1.5.12 so Gemini 4 Neon works
   on `GEMINI_API_KEY` subscriptions too.
+- Antigravity tasks show Working while a background command runs and when its completion
+  starts another model turn. If the agent stops with unfinished steps, its task brief explains
+  why it needs a person. Fixes #1444 (SPEC-528, task #510).
+- Codex defaults to Ultrafast on supported models when the assigned subscription is ChatGPT
+  Pro 500. Each launch reads the current sign-in (SPEC-523, task #505).
 - Finished tasks shown Done, not closed (SPEC-518, task #500, findings only): six goal-achieved
   tasks with merged pull requests were shown Done (by the fields read) and stayed open, because no rule closes a Done
   task whose session lives. Claude Code's idle compaction changed nothing. No behaviour changed;
