@@ -1,6 +1,6 @@
 ---
 yulius-task: bdf4e0d3-9aa9-43ec-92a1-336758489cf5
-status: in-progress
+status: done
 ---
 
 # SPEC-523. Default to Ultrafast on a Codex Pro 500 subscription
@@ -30,7 +30,7 @@ and [OpenAI's Pro tiers](https://help.openai.com/en/articles/9793128-about-chatg
 - [x] Read the product context and related work, then write and validate the spec
 - [x] Select Ultrafast from the assigned Codex subscription on each launch
 - [x] Independent review in a fresh session, findings fixed test-first
-- [ ] Every gate green, docs and the changes log updated
+- [x] Every gate green, docs and the changes log updated
 
 ## Acceptance criteria
 
@@ -66,3 +66,19 @@ apply project overrides, session choices, model capabilities and feature setting
   launch assertion failed on the padded Pro 500 fixture. Plan detection now uses Codex's strict
   base64url decoding, while the existing credential refresh comparison keeps its prior behavior.
 - Local Vidoc scan exited 2. Vidoc rejected the instance key (HTTP 401).
+- A synthetic Responses endpoint observed the pinned CLI send `service_tier: ultrafast` for a
+  GPT-6.2 Astra catalog fixture advertising Ultrafast and omit the field for the same model
+  without that tier. This exercised the actual request without billing a provider account.
+- `cargo clippy -p yulius-harness --all-targets -- -D warnings` passed after the review fix.
+- Focused cargo-mutants run of the entire final harness change at `0cfad1ff0`, with the
+  240 harness tests: 17 mutants tested, 16 caught, 1 unviable, 0 missed. This run isolates the
+  feature from the workspace mutation copy's unrelated Vidoc test failure
+  ([issue #1364](https://github.com/Quartio-Studio/yulius/issues/1364)).
+- Initial `scripts/dev mutants`: 17 listed, 16 caught, 0 missed, 0 timed out, 1 unviable,
+  0 not reached (bound 30 min, took 721 s). The harness-only result above verifies the viable
+  mutations independently of issue #1364.
+- Review-fix `scripts/dev mutants --base 00b7ccef9`: 5 listed, 5 caught, 0 missed, 0 timed
+  out, 0 unviable, 0 not reached (bound 30 min, took 531 s).
+- Yulius CI run `0e97e2bf-3e5b-4f0c-9c27-066bbcc03783` passed on the reviewed fix
+  `0cfad1ff0` in [PR #1436](https://github.com/Quartio-Studio/yulius/pull/1436).
+  The security job was skipped. The merge queue checks the final documentation commit.
