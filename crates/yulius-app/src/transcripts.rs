@@ -1,6 +1,8 @@
 //! Claude Code transcripts as read-only documents (SPEC-001 SES-002..005): one JSONL line →
 //! one [`TranscriptEntry`] of messages, tool calls, results and diffs, redacted and bounded;
-//! paged reading, index passages and the plain-text rendering agents read.
+//! paged reading, index passages and the plain-text rendering agents read. Codex rollouts and
+//! Antigravity transcripts read into the same entries (SPEC-525): each line's shape tells its
+//! format.
 //!
 //! Every text that leaves this module went through [`yulius_domain::redact`]: provider tokens,
 //! keys and secret assignments everywhere, and every value of a dotenv file that a tool read or
@@ -111,25 +113,74 @@ fn str_field<'a>(value: &'a Value, key: &str) -> Option<&'a str> {
 #[derive(Debug, Default, Clone)]
 pub struct EnvCalls {
     ids: HashSet<String>,
+    /// An Antigravity model response called a tool on a dotenv file: its steps name no call, so
+    /// the tool steps up to the next response are redacted as dotenv content (SPEC-525).
+    steps_touch_env: bool,
 }
 
 impl EnvCalls {
     fn touches_env(name: &str, input: &Value) -> bool {
         match name {
-            "Bash" => str_field(input, "command").is_some_and(mentions_env_file),
-            _ => ["file_path", "path", "notebook_path"]
-                .iter()
-                .filter_map(|key| str_field(input, key))
-                .any(is_env_file),
+            "Bash" | "exec_command" | "shell" | "run_command" => {
+                command_of(input).is_some_and(|command| mentions_env_file(&command))
+            }
+            "apply_patch" => patch_files(input).iter().any(|path| is_env_file(path)),
+            _ => [
+                "file_path",
+                "path",
+                "notebook_path",
+                "AbsolutePath",
+                "TargetFile",
+            ]
+            .iter()
+            .filter_map(|key| str_field(input, key))
+            .any(is_env_file),
         }
     }
+}
+
+/// The command line of a shell tool's input: Claude's `command`, Codex's `cmd` or `command` (an
+/// argument list for `shell`), Antigravity's `CommandLine`.
+fn command_of(input: &Value) -> Option<String> {
+    ["command", "cmd", "CommandLine"]
+        .iter()
+        .find_map(|key| match input.get(*key)? {
+            Value::String(text) => Some(text.clone()),
+            Value::Array(parts) => Some(
+                parts
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .collect::<Vec<_>>()
+                    .join(" "),
+            ),
+            _ => None,
+        })
+}
+
+/// The files a Codex `apply_patch` names (`*** Update File: <path>` and its kin).
+fn patch_files(input: &Value) -> Vec<&str> {
+    let Value::String(patch) = input else {
+        return Vec::new();
+    };
+    patch
+        .lines()
+        .filter_map(|line| {
+            ["*** Add File: ", "*** Update File: ", "*** Delete File: "]
+                .iter()
+                .find_map(|prefix| line.strip_prefix(prefix))
+        })
+        .map(str::trim)
+        .collect()
 }
 
 /// One-line description of a tool call.
 fn tool_summary(name: &str, input: &Value) -> String {
     let field = |key| str_field(input, key).map(one_line);
     let summary = match name {
-        "Bash" => field("command"),
+        "Bash" | "exec_command" | "shell" | "run_command" => {
+            command_of(input).map(|c| one_line(&c))
+        }
+        "apply_patch" => Some(patch_files(input).join(", ")).filter(|files| !files.is_empty()),
         "Read" | "Write" | "Edit" | "MultiEdit" => field("file_path"),
         "NotebookEdit" => field("notebook_path"),
         "Glob" | "Grep" => field("pattern").map(|pattern| {
@@ -234,6 +285,9 @@ fn is_meta_text(text: &str) -> bool {
 /// operations, progress) and lines without visible content.
 #[must_use]
 pub fn entry_of(line: u64, record: &Value, env_calls: &mut EnvCalls) -> Option<TranscriptEntry> {
+    if record.get("step_index").is_some() && record.get("source").is_some() {
+        return antigravity_entry(line, record, env_calls);
+    }
     let kind = str_field(record, "type")?;
     let at = str_field(record, "timestamp").map(str::to_owned);
     let sidechain = record
@@ -271,8 +325,35 @@ pub fn entry_of(line: u64, record: &Value, env_calls: &mut EnvCalls) -> Option<T
             }
             kind
         }
+        // A Codex rollout (SPEC-525): its items; `event_msg` lines repeat them or count.
+        "response_item" => {
+            let (role, item) = codex_item(record.get("payload")?, env_calls)?;
+            blocks.push(item);
+            role
+        }
+        "compacted" => {
+            let text = record
+                .get("payload")
+                .and_then(|p| str_field(p, "message"))?;
+            let (text, truncated) = cut(text, MAX_TEXT_CHARS);
+            blocks.push(TranscriptBlock::Text {
+                text: clean(&text, false),
+                truncated,
+            });
+            "summary"
+        }
         _ => return None,
     };
+    entry(line, role, at, sidechain, blocks)
+}
+
+fn entry(
+    line: u64,
+    role: &str,
+    at: Option<String>,
+    sidechain: bool,
+    blocks: Vec<TranscriptBlock>,
+) -> Option<TranscriptEntry> {
     if blocks.is_empty() {
         return None;
     }
@@ -283,6 +364,246 @@ pub fn entry_of(line: u64, record: &Value, env_calls: &mut EnvCalls) -> Option<T
         sidechain,
         blocks,
     })
+}
+
+/// One Codex `response_item` payload as a block and its role: a message (developer instructions
+/// left out, context Codex added shown quietly), a reasoning summary, a tool call or its output.
+fn codex_item(
+    payload: &Value,
+    env_calls: &mut EnvCalls,
+) -> Option<(&'static str, TranscriptBlock)> {
+    match str_field(payload, "type")? {
+        "message" => {
+            let role = match str_field(payload, "role")? {
+                "user" => "user",
+                "assistant" => "assistant",
+                _ => return None,
+            };
+            let text = codex_texts(payload.get("content")).join("\n\n");
+            if text.trim().is_empty() {
+                return None;
+            }
+            let added = role == "user" && codex_added(payload, &text);
+            Some((
+                role,
+                if added {
+                    meta_block(&text, MAX_RESULT_CHARS)
+                } else {
+                    text_block(&text, false)
+                },
+            ))
+        }
+        "reasoning" => {
+            let summary = payload.get("summary").and_then(Value::as_array)?;
+            let text = summary
+                .iter()
+                .filter_map(|part| str_field(part, "text"))
+                .collect::<Vec<_>>()
+                .join("\n\n");
+            if text.trim().is_empty() {
+                return None;
+            }
+            let (text, truncated) = cut(&text, MAX_THINKING_CHARS);
+            Some((
+                "assistant",
+                TranscriptBlock::Thinking {
+                    text: clean(&text, false),
+                    truncated,
+                },
+            ))
+        }
+        "function_call" | "custom_tool_call" | "local_shell_call" => {
+            let id = str_field(payload, "call_id")
+                .or_else(|| str_field(payload, "id"))
+                .unwrap_or("");
+            let name = str_field(payload, "name").unwrap_or("shell");
+            let input = match payload.get("arguments") {
+                Some(Value::String(text)) => {
+                    serde_json::from_str(text).unwrap_or_else(|_| Value::String(text.clone()))
+                }
+                Some(value) => value.clone(),
+                None => payload
+                    .get("input")
+                    .or_else(|| payload.get("action"))
+                    .cloned()
+                    .unwrap_or(Value::Null),
+            };
+            Some(("assistant", tool_call(id, name, input, env_calls)))
+        }
+        "function_call_output" | "custom_tool_call_output" | "local_shell_call_output" => {
+            let tool_use_id = str_field(payload, "call_id").unwrap_or("").to_owned();
+            let raw = match payload.get("output") {
+                Some(Value::Object(output)) => ["content", "output"]
+                    .iter()
+                    .find_map(|key| output.get(*key))
+                    .map_or_else(String::new, |value| codex_texts(Some(value)).join("\n")),
+                other => codex_texts(other).join("\n"),
+            };
+            let env = env_calls.ids.contains(&tool_use_id);
+            let (text, truncated) = cut(&raw, MAX_RESULT_CHARS);
+            Some((
+                "user",
+                TranscriptBlock::ToolResult {
+                    text: clean(&text, env),
+                    is_error: false,
+                    tool_use_id,
+                    truncated,
+                },
+            ))
+        }
+        _ => None,
+    }
+}
+
+/// The texts of a Codex content value: a string, or the text parts of a list.
+fn codex_texts(content: Option<&Value>) -> Vec<String> {
+    match content {
+        Some(Value::String(text)) => vec![text.clone()],
+        Some(Value::Array(parts)) => parts
+            .iter()
+            .filter_map(|part| str_field(part, "text").map(str::to_owned))
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// Whether Codex added a user-role message (its environment context, a blocking hook's
+/// continuation) rather than a person typing it: its provenance says so when Codex wrote one
+/// (0.169: `harness` or `user`), else a text that opens with a tag or Codex's AGENTS.md heading.
+fn codex_added(payload: &Value, text: &str) -> bool {
+    let kinds: Vec<&str> = payload
+        .get("internal_chat_message_metadata_passthrough")
+        .and_then(|meta| meta.get("content_item_metadata"))
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| item.get("provenance")?.get("type")?.as_str())
+                .filter(|kind| *kind != "unknown")
+                .collect()
+        })
+        .unwrap_or_default();
+    if !kinds.is_empty() {
+        return !kinds.contains(&"user");
+    }
+    let trimmed = text.trim_start();
+    trimmed.starts_with('<') || trimmed.starts_with("# AGENTS.md instructions")
+}
+
+/// One Antigravity transcript step (SPEC-525): the person's request without the CLI's wrapper,
+/// the model's answer and tool calls, a system message, an API error, a tool step.
+fn antigravity_entry(line: u64, step: &Value, env_calls: &mut EnvCalls) -> Option<TranscriptEntry> {
+    let at = str_field(step, "created_at").map(str::to_owned);
+    let index = step
+        .get("step_index")
+        .and_then(Value::as_u64)
+        .unwrap_or(line);
+    let content = str_field(step, "content").filter(|text| !text.trim().is_empty());
+    let error = str_field(step, "error").filter(|text| !text.trim().is_empty());
+    let mut blocks = Vec::new();
+    let role = match (str_field(step, "source"), str_field(step, "type")) {
+        (_, Some("USER_INPUT")) => {
+            blocks.push(text_block(&user_request(content?), false));
+            "user"
+        }
+        (_, Some("PLANNER_RESPONSE")) => {
+            env_calls.steps_touch_env = false;
+            if let Some(text) = content {
+                blocks.push(text_block(text, false));
+            }
+            let calls = step.get("tool_calls").and_then(Value::as_array);
+            for (n, call) in calls.into_iter().flatten().enumerate() {
+                let name = str_field(call, "name").unwrap_or("tool");
+                let input = antigravity_args(call.get("args"));
+                if EnvCalls::touches_env(name, &input) {
+                    env_calls.steps_touch_env = true;
+                }
+                blocks.push(tool_call(
+                    &format!("step-{index}-{n}"),
+                    name,
+                    input,
+                    env_calls,
+                ));
+            }
+            "assistant"
+        }
+        (_, Some("SYSTEM_MESSAGE")) => {
+            blocks.push(meta_block(content?, MAX_RESULT_CHARS));
+            "system"
+        }
+        (Some("MODEL"), _) | (_, Some("ERROR_MESSAGE")) => {
+            let raw = error.or(content)?;
+            let is_error = error.is_some() || str_field(step, "status") == Some("ERROR");
+            let (text, truncated) = cut(raw, MAX_RESULT_CHARS);
+            blocks.push(TranscriptBlock::ToolResult {
+                tool_use_id: format!("step-{index}"),
+                text: clean(&text, env_calls.steps_touch_env),
+                is_error,
+                truncated,
+            });
+            "user"
+        }
+        _ => {
+            blocks.push(meta_block(content.or(error)?, MAX_RESULT_CHARS));
+            "system"
+        }
+    };
+    entry(line, role, at, false, blocks)
+}
+
+/// The person's words in an Antigravity `USER_INPUT`: the text inside `<USER_REQUEST>`, without
+/// the metadata the CLI adds after it; the whole content when there is no such tag.
+fn user_request(content: &str) -> String {
+    content
+        .split_once("<USER_REQUEST>")
+        .and_then(|(_, rest)| rest.split_once("</USER_REQUEST>"))
+        .map_or(content, |(request, _)| request)
+        .trim()
+        .to_owned()
+}
+
+/// An Antigravity tool call's arguments: each value is written as JSON text (`"\"ls\""`), read
+/// back as the value it holds.
+fn antigravity_args(args: Option<&Value>) -> Value {
+    match args {
+        Some(Value::Object(map)) => Value::Object(
+            map.iter()
+                .map(|(key, value)| {
+                    let value = match value {
+                        Value::String(text) => {
+                            serde_json::from_str(text).unwrap_or_else(|_| value.clone())
+                        }
+                        other => other.clone(),
+                    };
+                    (key.clone(), value)
+                })
+                .collect(),
+        ),
+        Some(other) => other.clone(),
+        None => Value::Null,
+    }
+}
+
+/// A tool call block: its input redacted (as dotenv content when it touches a dotenv file, whose
+/// result is then redacted the same way) and summarized.
+fn tool_call(id: &str, name: &str, mut input: Value, env_calls: &mut EnvCalls) -> TranscriptBlock {
+    let env = EnvCalls::touches_env(name, &input);
+    if env && !id.is_empty() {
+        env_calls.ids.insert(id.to_owned());
+    }
+    redact_value(&mut input, env);
+    // A patch is text: shown as written, not as a JSON string.
+    let pretty = match &input {
+        Value::String(text) => text.clone(),
+        other => serde_json::to_string_pretty(other).unwrap_or_default(),
+    };
+    TranscriptBlock::ToolCall {
+        summary: tool_summary(name, &input),
+        diff: diff_of(name, &input),
+        input: bounded(&pretty, MAX_INPUT_CHARS),
+        id: id.to_owned(),
+        name: name.to_owned(),
+    }
 }
 
 fn text_block(text: &str, meta: bool) -> TranscriptBlock {
@@ -313,24 +634,12 @@ fn content_block(part: &Value, meta: bool, env_calls: &mut EnvCalls) -> Option<T
                 truncated,
             })
         }
-        "tool_use" | "server_tool_use" => {
-            let id = str_field(part, "id").unwrap_or("").to_owned();
-            let name = str_field(part, "name").unwrap_or("tool").to_owned();
-            let mut input = part.get("input").cloned().unwrap_or(Value::Null);
-            let env = EnvCalls::touches_env(&name, &input);
-            if env && !id.is_empty() {
-                env_calls.ids.insert(id.clone());
-            }
-            redact_value(&mut input, env);
-            let pretty = serde_json::to_string_pretty(&input).unwrap_or_default();
-            Some(TranscriptBlock::ToolCall {
-                summary: tool_summary(&name, &input),
-                diff: diff_of(&name, &input),
-                input: bounded(&pretty, MAX_INPUT_CHARS),
-                id,
-                name,
-            })
-        }
+        "tool_use" | "server_tool_use" => Some(tool_call(
+            str_field(part, "id").unwrap_or(""),
+            str_field(part, "name").unwrap_or("tool"),
+            part.get("input").cloned().unwrap_or(Value::Null),
+            env_calls,
+        )),
         "tool_result" => {
             let tool_use_id = str_field(part, "tool_use_id").unwrap_or("").to_owned();
             let env = env_calls.ids.contains(&tool_use_id);
@@ -737,8 +1046,20 @@ pub fn read_tail(file: File, limit: usize, max_chars: usize) -> io::Result<Page>
     Ok(page)
 }
 
+/// Whether a line before a page can change the dotenv tracking: a tool call (Claude Code's
+/// `tool_use`, Codex's calls, Antigravity's `tool_calls`) or an Antigravity model response, which
+/// ends the tracking of the one before it.
 fn memchr_tool_use(line: &[u8]) -> bool {
-    line.windows(10).any(|window| window == b"\"tool_use\"")
+    const NEEDLES: [&[u8]; 5] = [
+        b"\"tool_use\"",
+        b"\"function_call\"",
+        b"\"custom_tool_call\"",
+        b"\"local_shell_call\"",
+        b"\"PLANNER_RESPONSE\"",
+    ];
+    NEEDLES
+        .iter()
+        .any(|needle| line.windows(needle.len()).any(|window| window == *needle))
 }
 
 /// Passages read for the index from a byte offset.
@@ -1434,7 +1755,13 @@ mod tests {
 
     /// An entry as one line per block: `role kind text`, the text cut to 40 characters.
     fn shape(entries: &[TranscriptEntry]) -> Vec<String> {
-        let short = |text: &str| text.chars().take(40).collect::<String>();
+        let short = |text: &str| {
+            text.chars()
+                .take(40)
+                .collect::<String>()
+                .trim_end()
+                .to_owned()
+        };
         entries
             .iter()
             .flat_map(|entry| {
@@ -1577,7 +1904,7 @@ mod tests {
         );
         assert_eq!(
             shapes[7],
-            "user error step-7 API error (attempt 1): Error 429, Messa"
+            "user error step-7 API error (attempt 1): Error 429, Messag"
         );
         assert_eq!(quota.entries[0].at.as_deref(), Some("2026-11-17T17:09:20Z"));
 
@@ -1589,12 +1916,12 @@ mod tests {
         assert_eq!(
             shape(&tool.entries),
             vec![
-                "user error step-5 invalid arguments:\n- missing property 'to",
+                "user error step-5 invalid arguments:\n- missing property 't",
                 "assistant text Hello from the stub.",
                 "user text run a command",
                 "system meta The following is a <SYSTEM_MESSAGE> not",
                 "assistant call step-9-0 run_command: echo probe-ran",
-                "user error step-10 tool call denied by pre-tool hook: ",
+                "user error step-10 tool call denied by pre-tool hook:",
                 "assistant text Hello from the stub.",
             ]
         );
