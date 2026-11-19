@@ -1,6 +1,6 @@
 ---
 yulius-task: 981593dc-56cc-4a0c-9ff6-d8ffacb5e012
-status: in-progress
+status: done
 ---
 
 # SPEC-545 Recover the browser test’s initial load after a network change
@@ -24,7 +24,7 @@ Issue #1331 records failed script requests in runs `2e3cac12` and `f897cb92`. Ch
 - [x] Trace the interrupted initial asset load
 - [x] Prove interrupted opens and ordinary failures in the harness
 - [x] Recover the initial mock load once
-- [ ] Review the recovery and merge on green CI
+- [x] Approve the recovery for delivery
 
 ## Acceptance criteria
 
@@ -48,3 +48,5 @@ Observe Chromium's request failure during mock startup ([ADR-0385](../../docs/de
 - The repeated-interruption case exposed a runner evaluation still recorded as pending when the last readiness sample met the poll deadline. The bounded poll now reads the page directly through the worker's Playwright surface.
 - `npx e2e run tests/initial-load.e2e.ts tests/mock-ready.e2e.ts` passed all eight tests. The five recovery cases cover the initial document, the entry script, the one-recovery cap, an ordinary reset, and subsequent navigation and reload. The real-interface probe also passed with this version in 2.10 seconds.
 - `scripts/dev quick` passed the repository contracts and Rust format check.
+- `scripts/dev security` reported that Vidoc was disabled in Yulius. Nothing was scanned. `scripts/dev mutants` reported “No Rust code changed against origin/dev: nothing to mutate.”
+- The independent reviewer approved `824c2c501` with no findings and reran all eight Chromium harness tests successfully. Both original issue cases also passed at that head. The full gate belongs to the PR's Yulius CI run.
