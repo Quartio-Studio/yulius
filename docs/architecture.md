@@ -1970,6 +1970,38 @@ quoted from its end, and its new entries go there. A changes folder (`[docs] cha
 `/`, or naming a directory) is quoted as its newest notes, by the date in their names, and each
 task adds one new note there ([decision 0248](decisions/0248-change-notes-may-be-a-folder-of-one-file-per-change.md)).
 
+### Parked sessions
+
+A task whose turn ended and that waits for a person gives its idle session up
+(`yulius-app/src/parking.rs`,
+[SPEC-512](../.ai/specs/SPEC-512-marcin-s-five-issues-1412-1418-1413-1107.md) part 1,
+[decision 0367](decisions/0367-an-idle-session-is-parked-and-resumed-by-a-message.md)). The
+background tick (every minute) reads the `running` tasks whose activity is `waiting` or `done`
+and parks one once `ParkFacts::parkable` holds for `YULIUS_PARK_AFTER_MINUTES` (default 30, 0
+off) counted from `state_at`: the list shows it under Needs you or Done, no turn runs, it left no
+background shell, subagent or dynamic workflow, does not wait in `yulius wait`, has no merge
+armed or pull request news due, no held prompt, no request in the sandbox browser, no pause, no
+possible draft or keystroke within the grace period, and is not an onboarding task.
+`park_task_now` asks again under the launch lock, sets the run's end intent `Park` and ends the
+session as a close does (graceful shutdown, then the escalation). The run's end, by its exit or
+its loss, makes the task `parked` with its activity (`settle_parked`) and audits `task.parked`.
+`parked` is neither live nor resting: no slot (`sessions_in_use` counts live runs only), its
+worktree, claims, `needs_you` and delivery stay, and the list groups it as an idle run with no
+live overlay. While the park is under way nothing is typed into the session. A message
+(`task_message`) or the web's Resume (`/continue`) resumes it through `start_run` with
+`RunStart::Resume`, in the same provider session; at the limit the resume waits `queued` with its
+prompt. A queued task's summary carries `queue_reason` (the session limit or an update), and
+`GET /api/capacity` counts working, idle, parked and queued sessions for the Capacity card.
+
+```mermaid
+stateDiagram-v2
+  running --> parked: idle past the grace period, nothing goes on (session ended)
+  parked --> starting: task_message or Resume (same session)
+  parked --> queued: resume at the session limit
+  parked --> closed: archive or close
+  parked --> stopped_cancelled: Stop
+```
+
 ### Supertasks
 
 Every run starts through `App::start_run`: a new task, the queue, a released chain or rule,

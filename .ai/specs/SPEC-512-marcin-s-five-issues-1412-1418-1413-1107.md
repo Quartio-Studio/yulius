@@ -121,7 +121,7 @@ each from its issue's acceptance criteria.
 - [x] Writing to a parked task resumes it: task_message and the web's Resume
 - [x] A queued task says what it waits for
 - [x] The Capacity card shows working, parked, idle and queued sessions
-- [ ] Docs for parking: product, architecture, api, operations, changes
+- [x] Docs for parking: product, architecture, api, operations, changes
 - [ ] Review of the #1412 pull request answered test-first
 - [ ] needs_you names who it waits for, refused for logins without write access
 - [ ] A named person answers an open needs_you on the web and with task_message

@@ -340,6 +340,13 @@ watching, steering and unblocking.
   (it reads "Waiting for checks or merge" then, not Done). The tools show a waiting task's rule
   whole, and "after all current tasks" (`after_all_tasks`) waits for every task with work
   still coming (SPEC-487).
+  A task whose turn ended and that waits for a person (Needs you, Done) is **parked** after
+  half an hour with nothing going on (`YULIUS_PARK_AFTER_MINUTES`): its Claude Code process ends,
+  so it holds neither a session slot nor memory, and it stays in the list where it was, marked
+  "parked", with its transcript, question and pull request. Writing to it, or Resume, continues
+  the same session with its history (SPEC-512). A queued task says what it waits for ("Waiting
+  for a free session: 8 of 8 in use"), and the Capacity card shows working, parked, idle and
+  queued sessions apart.
   A task that waits and has not started yet takes queued messages: each is added to its request,
   so the agent gets the correction when the task starts. The request and the message box show
   files as placeholders (`Image N`) that open on a click (a double-click in the box); images pasted or dropped into a message

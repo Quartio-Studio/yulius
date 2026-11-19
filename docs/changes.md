@@ -4,6 +4,15 @@ Notable changes, newest first. Per-change detail lives in the merged pull reques
 evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-architecture.md)
 (sections 14 and 15).
 
+## 2026-11-19
+
+- Parked sessions (SPEC-512 part 1, task #494, #1412): a task whose turn ended and that waits for
+  a person gives its idle session up after 30 minutes (`YULIUS_PARK_AFTER_MINUTES`, 0 never): the
+  process ends, so it holds no session slot and no memory, and the task stays where the list
+  showed it, marked "parked", with its question and pull request. A message (`task_message`) or
+  Resume continues the same session with its history. A queued task says what it waits for, and
+  the Capacity card shows working, parked, idle and queued sessions apart (ADR-0367).
+
 ## 2026-11-18
 
 - Subscription sign-ins start again (SPEC-509, task #491, #1414): login terminals are 1000

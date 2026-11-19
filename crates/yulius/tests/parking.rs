@@ -331,3 +331,55 @@ fn a_task_parks_only_after_its_grace_period_and_never_with_parking_off() -> Test
     rt.shutdown_timeout(Duration::from_secs(5));
     Ok(())
 }
+
+/// PRK-003: a message that comes while a park is ending the session is refused with what to do,
+/// never typed into the session that ends; sent again once the task parked, it resumes it.
+#[test]
+fn a_message_during_a_park_is_refused_and_resumes_the_task_once_parked() -> TestResult {
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let app = app(&data, 8, 1).await?;
+        let (id, caller) = answered(&app, &data).await?;
+        let refused = Arc::new(std::sync::Mutex::new(None));
+        {
+            let (app, caller, refused) = (app.clone(), caller.clone(), refused.clone());
+            let handle = tokio::runtime::Handle::current();
+            yulius_app::race::on(
+                yulius_app::race::Point::ParkDecided,
+                Path::new(id.as_str()),
+                move || {
+                    let answer = tokio::task::block_in_place(|| {
+                        handle.block_on(app.tool_task_message(
+                            &caller,
+                            &json!({"number": 1, "text": "Late: answer with an echo"}),
+                        ))
+                    });
+                    if let Ok(mut slot) = refused.lock() {
+                        *slot = Some(answer.map(|_| ()).map_err(|err| err.to_string()));
+                    }
+                },
+            );
+        }
+        parked(&app, &id).await?;
+        let answer = refused.lock().map_err(|_| "poisoned")?.clone();
+        assert!(
+            matches!(&answer, Some(Err(why)) if why.contains("is parking its idle session")),
+            "{answer:?}"
+        );
+        let again = app
+            .tool_task_message(
+                &caller,
+                &json!({"number": 1, "text": "Late: answer with an echo"}),
+            )
+            .await?;
+        assert_eq!(again["delivered"], "resumed");
+        wait_for("the resumed answer", Duration::from_secs(60), || async {
+            screen(&app, &id).contains("Late: answer with an echo")
+        })
+        .await?;
+        Ok::<_, Error>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
