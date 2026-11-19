@@ -10,8 +10,9 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   or Antigravity task showed "Codex is starting…" / "Antigravity is starting…" for its whole run,
   because the transcript reader knew only Claude Code's lines. It now reads Codex rollouts and
   Antigravity transcripts into the same entries (prompts, answers, reasoning, tool calls and
-  results, redacted the same way), so the watch view, the Sessions page, session search and
-  `session_read` show them.
+  results, redacted the same way, dotenv reads included), so the watch view, the Sessions page,
+  session search and `session_read` show them. Schema version 69 indexes the Codex and Antigravity
+  sessions already passed with no passages again from their start.
 - Dashboard → Harnesses compares assigned tasks, runs, median and p90 elapsed time, and reported input,
   output and cache tokens for the selected sandbox and period. Each harness shows the number of ended
   runs and the number reporting usage (SPEC-522, task #504).

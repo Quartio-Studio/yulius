@@ -33,7 +33,8 @@ antigravity when it's Michal's task, in opus it works good"). Fixes #1440.
 - **What else the cause breaks.** The same reader serves the Sessions page of a task's session
   (`GET /api/sessions/{id}/transcript`), session search (the index reads `read_for_index`) and
   `session_read` for agents: a Codex or Antigravity task's session is empty in all of them. The fix
-  in the reader repairs them together.
+  in the reader repairs them together; the index had already passed those sessions with no
+  passages, so a migration indexes them again.
 - **The formats.** Codex rollouts (`crates/yulius-harness/tests/fixtures/codex/`, Codex CLI
   0.167–0.169): `response_item` payloads are `message` (roles `developer`, `user`, `assistant`;
   `input_text`/`output_text` parts; a user message Codex added is marked by provenance `harness`
@@ -108,7 +109,20 @@ antigravity when it's Michal's task, in opus it works good"). Fixes #1440.
   read by the rollout observer and the transcript reader alike: a prompt without provenance is
   shown quietly only when it opens as Codex's own context does, so a typed `<div> …` stays a prompt
   (`render_text` and the index drop meta blocks).
-- **Pre-existing, filed:** #1453 (the index's dotenv tracking restarts each batch), #1454 (a Codex
+- **Code-mode results are read out at any depth, and continuations are tracked** (review round 2):
+  a script prints results nested (`Promise.allSettled` lists, `{status, value}`, lists of wrappers
+  or strings, an MCP tool's `{content, isError}`), so every `output`, `content[].text`, `reason` and
+  list string is read out as lines; JSON with none of them is kept, its strings redacted as dotenv
+  content when the call read a dotenv file. A tracked call that yields (`Script running with cell
+  ID n`, read by `wait`) or leaves a command running (`session_id`, read by `write_stdin`) passes
+  its tracking on; an Antigravity command on a dotenv file passes it to later `manage_task` reads
+  (over-redaction on the safe side). Escapes in a script separate words; a function-style
+  `apply_patch` (`{"input": …}`) and a path one level down (`call_mcp_tool`'s `Arguments`) are read.
+- **Sessions the old reader passed are indexed again** (schema version 69): the index had recorded
+  Codex and Antigravity sessions as indexed with no passages; migration 0069 resets their index so
+  search finds them, Claude Code sessions keep theirs.
+- **Pre-existing, filed:** #1457 (Claude Code's `BashOutput` of a background dotenv read),
+  #1453 (the index's dotenv tracking restarts each batch), #1454 (a Codex
   session document can keep a `missing-<id>.jsonl` path), #1455 (assistant entries are announced as
   "Claude").
 - **A Codex message Codex added is shown quietly, not hidden.** Its provenance (`harness`) says so

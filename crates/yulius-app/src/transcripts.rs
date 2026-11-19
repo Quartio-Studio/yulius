@@ -117,29 +117,41 @@ pub struct EnvCalls {
     /// An Antigravity model response called a tool on a dotenv file: its steps name no call, so
     /// the tool steps up to the next response are redacted as dotenv content (SPEC-525).
     steps_touch_env: bool,
+    /// An Antigravity command on a dotenv file ran: one that went on as a task is read by a later
+    /// `manage_task`, whose steps are then redacted as dotenv content too.
+    commands_touched_env: bool,
+    /// What a tracked Codex call goes on as: `cell:<id>` (a code-mode script that yielded, read by
+    /// `wait`) and `session:<id>` (a command still running, read by `write_stdin`).
+    continuations: HashSet<String>,
 }
 
 impl EnvCalls {
     fn touches_env(name: &str, input: &Value) -> bool {
         match (name, input) {
+            // A free-text call: a Codex code-mode `exec` script (`tools.exec_command({cmd:…})`),
+            // a patch, or arguments that did not parse.
+            (_, Value::String(script)) => script_mentions_env(script),
+            ("apply_patch", _) => patch_files(input).iter().any(|path| is_env_file(path)),
             (SHELL_TOOLS!(), _) => {
                 command_of(input).is_some_and(|command| mentions_env_file(&command))
             }
-            ("apply_patch", _) => patch_files(input).iter().any(|path| is_env_file(path)),
-            // A free-text call: a Codex code-mode `exec` script (`tools.exec_command({cmd:…})`)
-            // or a patch Codex names otherwise.
-            (_, Value::String(script)) => script_mentions_env(script),
-            _ => [
-                "file_path",
-                "path",
-                "notebook_path",
-                "Path",
-                "AbsolutePath",
-                "TargetFile",
-            ]
-            .iter()
-            .filter_map(|key| str_field(input, key))
-            .any(is_env_file),
+            // A file tool's path, also one level down (Antigravity's `call_mcp_tool` keeps its
+            // tool's arguments in `Arguments`).
+            _ => std::iter::once(input)
+                .chain(input.as_object().into_iter().flat_map(|map| map.values()))
+                .flat_map(|value| {
+                    [
+                        "file_path",
+                        "path",
+                        "notebook_path",
+                        "Path",
+                        "AbsolutePath",
+                        "TargetFile",
+                    ]
+                    .iter()
+                    .filter_map(move |key| str_field(value, key))
+                })
+                .any(is_env_file),
         }
     }
 }
@@ -147,20 +159,92 @@ impl EnvCalls {
 /// Whether a script names a dotenv file, its words split at quotes, backticks and brackets too
 /// (`{cmd:`cat .env`}`).
 fn script_mentions_env(script: &str) -> bool {
-    let words: String = script
-        .chars()
-        .map(|c| {
-            if matches!(
-                c,
-                '`' | '"' | '\'' | '{' | '}' | '[' | ']' | ',' | ':' | '='
-            ) {
-                ' '
-            } else {
-                c
-            }
-        })
-        .collect();
+    let mut words = String::with_capacity(script.len());
+    let mut chars = script.chars();
+    while let Some(c) = chars.next() {
+        if c == '\\' {
+            // An escape (`\n`, `\"`, `\\`) separates words as what it stands for does.
+            chars.next();
+            words.push(' ');
+        } else if matches!(
+            c,
+            '`' | '"' | '\'' | '{' | '}' | '[' | ']' | ',' | ':' | '='
+        ) {
+            words.push(' ');
+        } else {
+            words.push(c);
+        }
+    }
     mentions_env_file(&words)
+}
+
+/// Whether a Codex call reads on from a tracked one: a `wait` for a script that yielded, or a
+/// `write_stdin` (a function call, or in a code-mode script) to a command still running.
+fn continues_tracked(name: &str, input: &Value, env_calls: &EnvCalls) -> bool {
+    let id_of = |value: &Value| match value {
+        Value::String(text) => Some(text.clone()),
+        Value::Number(number) => Some(number.to_string()),
+        _ => None,
+    };
+    let known = |key: String| env_calls.continuations.contains(&key);
+    match (name, input) {
+        ("wait", _) => input
+            .get("cell_id")
+            .and_then(id_of)
+            .is_some_and(|id| known(format!("cell:{id}"))),
+        ("write_stdin", _) => input
+            .get("session_id")
+            .and_then(id_of)
+            .is_some_and(|id| known(format!("session:{id}"))),
+        (_, Value::String(script)) => script
+            .split("write_stdin(")
+            .skip(1)
+            .filter_map(|call| call.split_once("session_id:"))
+            .map(|(_, rest)| {
+                rest.trim_start()
+                    .chars()
+                    .take_while(char::is_ascii_alphanumeric)
+                    .collect::<String>()
+            })
+            .any(|id| !id.is_empty() && known(format!("session:{id}"))),
+        _ => false,
+    }
+}
+
+/// Keeps what a tracked Codex call's output says it goes on as (see [`EnvCalls`]).
+fn keep_continuations(parts: &[String], env_calls: &mut EnvCalls) {
+    for part in parts {
+        if let Some((_, rest)) = part.split_once("Script running with cell ID ") {
+            let id: String = rest
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '-')
+                .collect();
+            if !id.is_empty() {
+                env_calls.continuations.insert(format!("cell:{id}"));
+            }
+        }
+        if let Ok(value) = serde_json::from_str::<Value>(part) {
+            let mut stack = vec![&value];
+            while let Some(value) = stack.pop() {
+                match value {
+                    Value::Object(map) => {
+                        match map.get("session_id") {
+                            Some(Value::Number(id)) => {
+                                env_calls.continuations.insert(format!("session:{id}"));
+                            }
+                            Some(Value::String(id)) => {
+                                env_calls.continuations.insert(format!("session:{id}"));
+                            }
+                            _ => {}
+                        }
+                        stack.extend(map.values());
+                    }
+                    Value::Array(items) => stack.extend(items),
+                    _ => {}
+                }
+            }
+        }
+    }
 }
 
 /// The first command of a Codex code-mode script: the quoted `cmd` of its first
@@ -206,7 +290,8 @@ fn command_of(input: &Value) -> Option<String> {
 
 /// The files a Codex `apply_patch` names (`*** Update File: <path>` and its kin).
 fn patch_files(input: &Value) -> Vec<&str> {
-    let Value::String(patch) = input else {
+    // A custom tool's text, or a function call's `{"input": …}`.
+    let Some(patch) = input.as_str().or_else(|| str_field(input, "input")) else {
         return Vec::new();
     };
     patch
@@ -482,22 +567,27 @@ fn codex_item(
                     .cloned()
                     .unwrap_or(Value::Null),
             };
+            let continued = continues_tracked(name, &input, env_calls);
             let (block, env) = tool_call(id, name, input);
-            if env && !id.is_empty() {
+            if (env || continued) && !id.is_empty() {
                 env_calls.ids.insert(id.to_owned());
             }
             Some(("assistant", block))
         }
         "function_call_output" | "custom_tool_call_output" | "local_shell_call_output" => {
             let tool_use_id = str_field(payload, "call_id").unwrap_or("").to_owned();
-            let raw = match payload.get("output") {
+            let env = env_calls.ids.contains(&tool_use_id);
+            let parts = match payload.get("output") {
                 Some(Value::Object(output)) => ["content", "output"]
                     .iter()
                     .find_map(|key| output.get(*key))
-                    .map_or_else(String::new, |value| output_text(codex_texts(Some(value)))),
-                other => output_text(codex_texts(other)),
+                    .map_or_else(Vec::new, |value| codex_texts(Some(value))),
+                other => codex_texts(other),
             };
-            let env = env_calls.ids.contains(&tool_use_id);
+            if env {
+                keep_continuations(&parts, env_calls);
+            }
+            let raw = output_text(&parts, env);
             let (text, truncated) = cut(&raw, MAX_RESULT_CHARS);
             Some((
                 "user",
@@ -513,19 +603,80 @@ fn codex_item(
     }
 }
 
-/// A Codex tool output's parts as one text. A code-mode `exec` writes each command's result as a
-/// JSON part (`{"chunk_id", "exit_code", "output", …}`): its `output` is the text, so a dotenv
-/// file printed there reads as lines.
-fn output_text(parts: Vec<String>) -> String {
-    let mut text = String::new();
+/// A Codex tool output's parts as one text. A code-mode `exec` prints each command's result as
+/// JSON (`{"chunk_id", "exit_code", "output", …}`), also nested (a `Promise.allSettled` list,
+/// `{status, value}`, a list of strings, an MCP tool's `{content, isError}`): the texts in it
+/// are read out, so a dotenv file printed there reads as lines. JSON with no such text is kept
+/// as it is, its strings redacted as dotenv content when the call read a dotenv file (`env`).
+fn output_text(parts: &[String], env: bool) -> String {
+    let mut lines = Vec::new();
     for part in parts {
-        let part = match serde_json::from_str::<Value>(&part) {
-            Ok(Value::Object(wrapper)) if wrapper.contains_key("chunk_id") => wrapper
-                .get("output")
-                .and_then(Value::as_str)
-                .map_or(part, str::to_owned),
-            _ => part,
-        };
+        match serde_json::from_str::<Value>(part) {
+            Ok(value @ (Value::Object(_) | Value::Array(_))) => {
+                let mut texts = Vec::new();
+                json_texts(&value, &mut texts);
+                if !texts.is_empty() {
+                    lines.push(joined(texts.into_iter().map(str::to_owned)));
+                } else if env {
+                    let mut value = value;
+                    redact_strings_as_env(&mut value);
+                    lines.push(value.to_string());
+                } else {
+                    lines.push(part.clone());
+                }
+            }
+            _ => lines.push(part.clone()),
+        }
+    }
+    joined(lines.into_iter())
+}
+
+/// The texts a code-mode result holds: each `output`, an MCP result's `content[].text`, a
+/// rejected promise's `reason` or `error`, the strings of a list; other objects are searched.
+fn json_texts<'a>(value: &'a Value, texts: &mut Vec<&'a str>) {
+    match value {
+        Value::Object(map) => {
+            if let Some(Value::String(output)) = map.get("output") {
+                texts.push(output);
+            } else if let Some(Value::Array(content)) = map.get("content") {
+                texts.extend(content.iter().filter_map(|item| str_field(item, "text")));
+            } else {
+                for key in ["reason", "error"] {
+                    if let Some(Value::String(text)) = map.get(key) {
+                        texts.push(text);
+                    }
+                }
+                for item in map.values().filter(|v| v.is_object() || v.is_array()) {
+                    json_texts(item, texts);
+                }
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                match item {
+                    Value::String(text) => texts.push(text),
+                    other => json_texts(other, texts),
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Every string of a JSON value redacted as dotenv content.
+fn redact_strings_as_env(value: &mut Value) {
+    match value {
+        Value::String(text) => *text = clean(text, true),
+        Value::Array(items) => items.iter_mut().for_each(redact_strings_as_env),
+        Value::Object(map) => map.values_mut().for_each(redact_strings_as_env),
+        _ => {}
+    }
+}
+
+/// Texts one after another, each on its own line.
+fn joined(texts: impl Iterator<Item = String>) -> String {
+    let mut text = String::new();
+    for part in texts {
         if !text.is_empty() && !text.ends_with('\n') {
             text.push('\n');
         }
@@ -581,7 +732,11 @@ fn antigravity_entry(line: u64, step: &Value, env_calls: &mut EnvCalls) -> Optio
     let mut blocks = Vec::new();
     let role = match (str_field(step, "source"), str_field(step, "type")) {
         (_, Some("USER_INPUT")) => {
-            blocks.push(text_block(&user_request(content?), false));
+            let request = user_request(content?);
+            if request.is_empty() {
+                return None;
+            }
+            blocks.push(text_block(&request, false));
             "user"
         }
         (_, Some("PLANNER_RESPONSE")) => {
@@ -601,7 +756,12 @@ fn antigravity_entry(line: u64, step: &Value, env_calls: &mut EnvCalls) -> Optio
                 let name = str_field(call, "name").unwrap_or("tool");
                 let input = antigravity_args(call.get("args"));
                 let (block, env) = tool_call(&format!("step-{index}-{n}"), name, input);
-                env_calls.steps_touch_env |= env;
+                if env && name == "run_command" {
+                    env_calls.commands_touched_env = true;
+                }
+                // A command that went on as a task is read by `manage_task`.
+                env_calls.steps_touch_env |=
+                    env || (name == "manage_task" && env_calls.commands_touched_env);
                 blocks.push(block);
             }
             "assistant"
@@ -667,6 +827,13 @@ fn antigravity_args(args: Option<&Value>) -> Value {
 /// result is then redacted the same way) and summarized; with whether it touches one.
 fn tool_call(id: &str, name: &str, mut input: Value) -> (TranscriptBlock, bool) {
     let env = EnvCalls::touches_env(name, &input);
+    // A script that writes a dotenv file in a quoted string (`"…\n+KEY=value\n…"`, with `\n`
+    // escapes) has its lines apart, so each is redacted as a line.
+    if let (true, Value::String(script)) = (env, &mut input)
+        && script.contains("\\n")
+    {
+        *script = script.replace("\\n", "\n");
+    }
     redact_value(&mut input, env);
     // A patch is text: shown as written, not as a JSON string.
     let pretty = match &input {
@@ -1130,8 +1297,9 @@ pub fn read_tail(file: File, limit: usize, max_chars: usize) -> io::Result<Page>
 }
 
 /// Whether a line before a page can change the dotenv tracking: a tool call (Claude Code's
-/// `tool_use`, Codex's calls) or an Antigravity model response (its `tool_calls` start the
-/// tracking, and each response ends the one before). One pass over the line's quotes.
+/// `tool_use`, Codex's calls), an Antigravity model response (its `tool_calls` start the
+/// tracking, and each response ends the one before), or a Codex output naming a continuation.
+/// One pass over the line.
 fn may_change_env_tracking(line: &[u8]) -> bool {
     const NEEDLES: [&[u8]; 5] = [
         b"\"tool_use\"",
@@ -1140,8 +1308,13 @@ fn may_change_env_tracking(line: &[u8]) -> bool {
         b"\"local_shell_call\"",
         b"\"PLANNER_RESPONSE\"",
     ];
+    // A tracked call's output that says what it goes on as (`keep_continuations`).
+    const CONTINUATIONS: [&[u8]; 2] = [b"Script running with cell ID", b"session_id"];
     line.iter().enumerate().any(|(at, byte)| {
-        *byte == b'"' && NEEDLES.iter().any(|needle| line[at..].starts_with(needle))
+        (*byte == b'"' && NEEDLES.iter().any(|needle| line[at..].starts_with(needle)))
+            || CONTINUATIONS
+                .iter()
+                .any(|needle| line[at..].starts_with(needle))
     })
 }
 
