@@ -110,6 +110,7 @@ mod tests {
             link: None,
             at: 200,
             cause: None,
+            named: Default::default(),
         }
     }
 

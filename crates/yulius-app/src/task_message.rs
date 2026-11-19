@@ -33,7 +33,7 @@ use yulius_domain::task::{Activity, TaskStatus};
 use yulius_domain::task_access::TaskAction;
 
 use crate::attention::AttentionRecord;
-use crate::auth::AuthContext;
+use crate::auth::{AuthContext, rfc3339};
 use crate::context::App;
 use crate::coordination::{Channel, ProjectCaller};
 use crate::error::{AppError, AppResult};
@@ -60,6 +60,16 @@ pub fn clean_message(text: &str) -> String {
         .collect::<String>()
         .trim()
         .to_owned()
+}
+
+/// `prefix` and the logins `who` as `@a, @b` (SPEC-512 ANS-002); empty for nobody.
+fn names(who: &[String], prefix: &str) -> String {
+    if who.is_empty() {
+        String::new()
+    } else {
+        let listed: Vec<String> = who.iter().map(|login| format!("@{login}")).collect();
+        format!("{prefix}{}", listed.join(", "))
+    }
 }
 
 /// How the label names the channel a message came through (SPEC-322).
@@ -235,6 +245,26 @@ impl App {
         if caller.task.as_ref().is_some_and(|own| own.id == task.id) {
             return Err(AppError::Forbidden("a task cannot message itself".into()));
         }
+        // From someone else, while the task asks a question they may answer, the message is that
+        // answer (SPEC-512 ANS-003): the page's answer, with its label, guards and audit.
+        if !crate::tasks::owns(&task, &caller.user)
+            && self.deps.store.task_needs_you(&task.id).await?.is_some()
+        {
+            let text = args
+                .get("text")
+                .and_then(Value::as_str)
+                .ok_or_else(|| AppError::Invalid("missing string argument `text`".into()))?;
+            let answered = self
+                .answer_needs_you(&ctx, task.id.as_str(), text, None)
+                .await?;
+            return Ok(json!({
+                "task": format!("#{} {}", answered.number, answered.title),
+                "delivered": "answered",
+                "note": "The task asked a question you may answer: your message was typed into \
+                    its session as your answer, and its question is closed. The task stays its \
+                    owner's.",
+            }));
+        }
         // A message steers the task, so it is its owner's (SPEC-490 OWN-004): queued into a
         // request, typed into a session, past a draft or not. That also keeps another person's
         // words from an agent holding the owner's personal secrets or MCP servers (SPEC-245,
@@ -384,6 +414,7 @@ impl App {
         ctx: &AuthContext,
         id: &str,
         text: &str,
+        asked_at: Option<&str>,
     ) -> AppResult<TaskSummary> {
         // A disabled account has no access to any project, so this refuses it too.
         let task = self.load_task_to(ctx, id, TaskAction::Answer).await?;
@@ -413,11 +444,37 @@ impl App {
                 task.status.as_str()
             )));
         }
-        if self.deps.store.task_needs_you(&task.id).await?.is_none() {
+        let Some(asked) = self.deps.store.task_needs_you(&task.id).await? else {
             return Err(AppError::Conflict(format!(
                 "task #{} asks nobody anything now: there is nothing to answer",
                 task.number
             )));
+        };
+        // The answer is to the request its person read (SPEC-512 ANS-004).
+        if asked_at.is_some_and(|at| at != rfc3339(yulius_domain::time::Timestamp(asked.at))) {
+            return Err(AppError::Conflict(format!(
+                "the question you answered on task #{} was replaced by a new one: read it and \
+                 answer again",
+                task.number
+            )));
+        }
+        // A request that names people is theirs and its owner's (ANS-002).
+        if !crate::tasks::owns(&task, &ctx.user.id) && asked.named.narrows() {
+            let login = self.login_of(&ctx.user.id).await.to_lowercase();
+            if asked.named.withdrawn.contains(&login) {
+                return Err(AppError::Forbidden(format!(
+                    "@{owner} withdrew you from task #{}'s question: only they{} answer it now",
+                    task.number,
+                    names(&asked.named.who, " and ")
+                )));
+            }
+            if !asked.named.who.contains(&login) {
+                return Err(AppError::Forbidden(format!(
+                    "task #{} asks @{owner}{}, not you: its question is theirs to answer",
+                    task.number,
+                    names(&asked.named.who, " and ")
+                )));
+            }
         }
         // A permission menu or a question in the terminal is answered with keys the paste would
         // press unseen (NYA-004).

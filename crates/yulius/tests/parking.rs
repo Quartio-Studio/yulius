@@ -118,6 +118,7 @@ async fn ask(app: &App, id: &TaskId) -> TestResult {
         link: None,
         at: 1,
         cause: None,
+        named: Default::default(),
     };
     app.deps
         .store

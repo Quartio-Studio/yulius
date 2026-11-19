@@ -11,7 +11,7 @@ import { taskInfo, isLive, allows, taskActions, otherOwner, endedMessage, agentO
 import { heldPromptCard, splitCard, supertaskCard, checkRequest, intakeStatus } from './intake.js';
 import { createMarkdownEditor } from './mdeditor.js';
 import { SUBMIT_KEYS, SUBMIT_ARIA } from './shortcuts.js';
-import { openTaskMenu, openSubscriptionMenu, continueTask, deliveryStrip, startNow, stopTask, resumeTask, requestControl, takeControl, answerNeedsYou, dropControlRequest, handOverTask, takeBackTask, openScheduleDialog, rescheduleTask } from './actions.js';
+import { openTaskMenu, openSubscriptionMenu, continueTask, deliveryStrip, startNow, stopTask, resumeTask, requestControl, takeControl, answerNeedsYou, withdrawNeedsYou, dropControlRequest, handOverTask, takeBackTask, openScheduleDialog, rescheduleTask } from './actions.js';
 import { attachTerminalDrop, attachPromptDrop, draftAttachments, taskAttachments, withAttachments, openAttachment } from './filedrop.js';
 import { createPromptInput, ATOM, FILE_MARK, FILE_MARK_END, PLACE_TYPE, placeFiles, withoutMarks } from './promptinput.js';
 import { mentionOf, parsePrompt } from './promptparts.js';
@@ -503,11 +503,18 @@ export function mountTaskView(ctx, sandbox, task) {
       const asksInTerminal = current.activity === 'needs_attention';
       // Someone else's task: anyone who may work there but a guest answers it without taking
       // control (SPEC-516), while it runs and unless the agent asks in its terminal.
-      const answers = !owner() || (current.status === 'running' && allows(access, 'write') && !(ctx.guest && ctx.guest()) && !asksInTerminal);
+      // A request that names people is theirs and its owner's (SPEC-512 ANS-002).
+      const named = asked.named === true;
+      const who = Array.isArray(asked.who) ? asked.who : [];
+      const forMe = !named || who.includes(String(me() || '').toLowerCase());
+      const answers = !owner() || (current.status === 'running' && allows(access, 'write') && !(ctx.guest && ctx.guest()) && !asksInTerminal && forMe);
       textAnswer = answers && !asksInTerminal;
       asksPerson = true;
       replyButton.title = owner() ? 'Answers the agent without taking control of the task' : '';
-      content = [icon('st-attention', { size: 16 }), needsYouText(asked),
+      // Whom it asks besides the owner, whom the owner withdraws (SPEC-512 ANS-005).
+      const asks = who.length ? h('div', { class: 'needs-you-who small' }, `Asks ${who.map((login) => `@${login}`).join(', ')}`,
+        owner() ? null : who.map((login) => h('button', { type: 'button', class: 'btn btn-sm btn-ghost', 'aria-label': `Withdraw @${login}`, title: `@${login} no longer answers this question`, onClick: () => withdrawNeedsYou(ctx, current, login) }, `Withdraw @${login}`))) : null;
+      content = [icon('st-attention', { size: 16 }), needsYouText(asked), asks,
         asked.link ? openLink(asked.link) : null,
         !answers ? null : asksInTerminal ? terminalReply : replying ? null : replyButton];
     } else if (info.request) {

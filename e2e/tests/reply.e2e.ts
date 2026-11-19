@@ -454,3 +454,47 @@ test("on a phone a teammate's Reply opens the field and sends the answer (SPEC-5
   await expect.poll(() => answers(browser)).toEqual(['Ruleset added']);
   await expect(field).toBeHidden();
 });
+
+// SPEC-512 part 2 (#1418): a request names whom it waits for. Its page says so; whom it names
+// answers it, sending which request it answers; anyone else is offered no Reply; the owner
+// withdraws a name.
+
+/** A request of task #12 that names `who` (as the server sends it). */
+const askNamed = (browser: Browser, who: string[]) => touchTask(browser, 'sb_studio', 12, {
+  needs_you: { action: 'Decide M1-M6', problem: 'the review waits', decision: true, at: '2026-11-19T09:00:00.000Z', who, named: true },
+});
+
+test("a named request says whom it asks, and the person it names answers it (SPEC-512 ANS-001..004)", async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/t/12', '&ambient=0'));
+  await touchTask(browser, 'sb_studio', 12, { owner: { login: 'anna-q' } });
+  await askNamed(browser, ['mkarp']);
+  const bar = browser.locator('.attention-bar');
+  await expect(bar).toContainText('Asks @mkarp');
+  await screen.getByRole('button', 'Reply').click();
+  await browser.keyboard.type('M1: yes');
+  await browser.keyboard.press('Enter');
+  await expect.poll(() => answers(browser)).toEqual(['M1: yes']);
+  const asked = await browser.evaluate(() =>
+    ((window as unknown as { __yuliusMock: { needsYouAnswers?: { asked_at?: string }[] } }).__yuliusMock.needsYouAnswers ?? []).map((a) => a.asked_at ?? null));
+  expect(asked).toEqual(['2026-11-19T09:00:00.000Z']);
+  expect(await axeViolations(browser)).toEqual([]);
+});
+
+test("a request that names others offers no Reply to anyone else (SPEC-512 ANS-002)", async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/t/12', '&ambient=0'));
+  await touchTask(browser, 'sb_studio', 12, { owner: { login: 'anna-q' } });
+  await askNamed(browser, ['bob']);
+  await expect(browser.locator('.attention-bar')).toContainText('Asks @bob');
+  await expect(screen.getByRole('button', 'Reply')).toHaveCount(0);
+});
+
+test("the owner withdraws a person a request names (SPEC-512 ANS-005)", async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/t/12', '&ambient=0'));
+  await askNamed(browser, ['bob', 'carol']);
+  const bar = browser.locator('.attention-bar');
+  await expect(bar).toContainText('Asks @bob, @carol');
+  await screen.getByRole('button', 'Withdraw @bob').click();
+  await expect(bar).toContainText('Asks @carol');
+  await expect(bar).not.toContainText('@bob');
+  expect(await axeViolations(browser)).toEqual([]);
+});

@@ -71,6 +71,7 @@ fn a_sandboxs_tasks_hear_of_its_docker_trouble_once_and_of_its_end() -> TestResu
             link: None,
             at: 1,
             cause: None,
+            named: Default::default(),
         };
         app.deps
             .store
@@ -115,6 +116,7 @@ fn a_sandboxs_tasks_hear_of_its_docker_trouble_once_and_of_its_end() -> TestResu
             link: None,
             at: 1,
             cause: None,
+            named: Default::default(),
         };
         app.deps
             .store
@@ -187,6 +189,7 @@ fn requests_naming_the_sandboxs_docker_are_answered_together() -> TestResult {
                 link: None,
                 at,
                 cause: cause.map(str::to_owned),
+                named: Default::default(),
             };
         let ask = |id: &yulius_domain::ids::TaskId, at: i64, cause: Option<&'static str>| {
             let app = std::sync::Arc::clone(&app);
@@ -405,6 +408,7 @@ fn continuing_a_stopped_task_answers_no_other_tasks_request() -> TestResult {
             link: None,
             at,
             cause: Some("docker".into()),
+            named: Default::default(),
         };
         let now = app.now().0;
         for (id, at) in [(&stopped, now - 2_000), (&working, now - 1_000)] {

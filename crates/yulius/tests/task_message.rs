@@ -224,6 +224,7 @@ fn a_running_task_gets_the_message_typed_into_its_session() -> TestResult {
             link: None,
             at: 1,
             cause: None,
+            named: Default::default(),
         };
         app.deps
             .store
@@ -325,6 +326,7 @@ fn region_asked() -> NeedsYouRecord {
         link: None,
         at: 1,
         cause: None,
+        named: Default::default(),
     }
 }
 
@@ -371,7 +373,7 @@ fn a_run_holding_the_owners_personal_server_takes_only_the_owners_answer() -> Te
             .await?;
         let bob = teammate(&app, &sandbox).await?;
         let refused = app
-            .answer_needs_you(&bob, id.as_str(), "Frankfurt")
+            .answer_needs_you(&bob, id.as_str(), "Frankfurt", None)
             .await
             .err();
         assert!(
@@ -381,7 +383,7 @@ fn a_run_holding_the_owners_personal_server_takes_only_the_owners_answer() -> Te
         assert!(app.deps.store.task_needs_you(&id).await?.is_some());
 
         let after = app
-            .answer_needs_you(&owner, id.as_str(), "Frankfurt")
+            .answer_needs_you(&owner, id.as_str(), "Frankfurt", None)
             .await?;
         assert!(after.needs_you.is_none());
         wait_for("the answer", Duration::from_secs(30), || {
@@ -423,6 +425,7 @@ fn a_teammate_answers_a_needs_you_without_taking_control() -> TestResult {
             link: None,
             at: 1,
             cause: None,
+            named: Default::default(),
         };
         app.deps
             .store
@@ -431,7 +434,7 @@ fn a_teammate_answers_a_needs_you_without_taking_control() -> TestResult {
         let ctx = teammate(&app, &owner.sandbox).await?;
 
         let after = app
-            .answer_needs_you(&ctx, id.as_str(), "Frankfurt, please.\r\nNot Dublin.")
+            .answer_needs_you(&ctx, id.as_str(), "Frankfurt, please.\r\nNot Dublin.", None)
             .await?;
         assert_eq!(after.owner.login, "admin");
         assert!(after.needs_you.is_none());
@@ -486,6 +489,7 @@ fn a_remote_message_names_the_persons_own_agent() -> TestResult {
             link: None,
             at: 1,
             cause: None,
+            named: Default::default(),
         };
         app.deps
             .store
@@ -2095,4 +2099,63 @@ async fn what_cannot_take_a_message_is_refused() -> TestResult {
         .prompt;
     assert_eq!(request, "do things");
     Ok(())
+}
+
+/// SPEC-512 ANS-003 (#1418): bob, whom the request names, answers it through his own agent: the
+/// message reaches the agent as his labelled answer, the request ends, the task stays admin's.
+#[test]
+fn a_named_person_answers_through_their_own_agent() -> TestResult {
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let app = app(&data, fake_agent()).await?;
+        let (id, owner) = running(&app, &data).await?;
+        teammate(&app, &owner.sandbox).await?;
+        let asked = NeedsYouRecord {
+            action: "Decide M1-M6".into(),
+            happened: None,
+            problem: None,
+            decision: true,
+            link: None,
+            at: 1,
+            cause: None,
+            named: yulius_app::needs_you::Named {
+                who: vec!["bob".into()],
+                withdrawn: Vec::new(),
+            },
+        };
+        app.deps
+            .store
+            .set_task_needs_you(&id, Some(&asked), app.now())
+            .await?;
+        let bobs_agent = ProjectCaller {
+            sandbox: owner.sandbox.clone(),
+            user: UserId::parse("u-bob")?,
+            task: None,
+            channel: Channel::Remote,
+            actor: "remote:bob".into(),
+            detail: json!({"via": "remote"}),
+        };
+        let answer = app
+            .tool_task_message(
+                &bobs_agent,
+                &json!({"task_id": id.as_str(), "text": "M1: yes, M2: no"}),
+            )
+            .await?;
+        assert_eq!(answer["delivered"], "answered", "{answer}");
+        wait_for("the answer", Duration::from_secs(30), || {
+            let app = app.clone();
+            let id = id.clone();
+            async move { screen(&app, &id).contains("ECHO: Answer from bob") }
+        })
+        .await?;
+        assert!(screen(&app, &id).contains("M1: yes, M2: no"));
+        assert!(app.deps.store.task_needs_you(&id).await?.is_none());
+        let task = app.deps.store.task(&id).await?.ok_or("task")?;
+        assert_eq!(task.owner, owner.user);
+        let rows = answers_audited(&data, &id)?;
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert_eq!(rows[0].0, "bob", "{rows:?}");
+        stop(&app, &id).await
+    })
 }

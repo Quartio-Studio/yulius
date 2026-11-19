@@ -19,6 +19,7 @@ use crate::auth::rfc3339;
 use crate::context::App;
 use crate::coordination::AgentContext;
 use crate::error::{AppError, AppResult};
+use crate::model::TaskRecord;
 
 /// Longest `action`, in characters.
 pub const MAX_ACTION_CHARS: usize = 200;
@@ -50,7 +51,34 @@ pub struct NeedsYouRecord {
     /// name it: they show as one card and are answered together (SPEC-494 DFJ-011).
     #[serde(default)]
     pub cause: Option<String>,
+    /// Whom besides the owner it waits for (SPEC-512 ANS-001).
+    #[serde(default, flatten)]
+    pub named: Named,
 }
+
+/// The people a request names (SPEC-512 ANS-001, ANS-005): those it still waits for, and those
+/// its owner withdrew. A request that named someone, even all withdrawn since, is answered only
+/// by its owner and whom it still names (ANS-002).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Named {
+    /// GitHub logins it waits for besides the owner.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub who: Vec<String>,
+    /// Logins the owner withdrew.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub withdrawn: Vec<String>,
+}
+
+impl Named {
+    /// Whether the request names anyone, now or before a withdrawal.
+    #[must_use]
+    pub fn narrows(&self) -> bool {
+        !self.who.is_empty() || !self.withdrawn.is_empty()
+    }
+}
+
+/// The most people a request names besides the owner (SPEC-512 ANS-001).
+pub const MAX_NAMED: usize = 10;
 
 /// The audit action of a request naming the sandbox's Docker (SPEC-494 DFJ-013).
 pub const DOCKER_NEEDS_YOU: &str = "task.needs_you.docker";
@@ -71,6 +99,8 @@ impl NeedsYouRecord {
             at: rfc3339(Timestamp(self.at)),
             cause: self.cause.clone(),
             episode: None,
+            who: self.named.who.clone(),
+            named: self.named.narrows(),
         }
     }
 
@@ -117,6 +147,9 @@ struct Args {
     link: Option<String>,
     #[serde(default)]
     resolved: bool,
+    /// Whom besides the owner it waits for (SPEC-512 ANS-001).
+    #[serde(default)]
+    who: Option<Vec<String>>,
     #[serde(default)]
     cause: Option<String>,
 }
@@ -212,6 +245,9 @@ impl App {
                 )));
             }
         };
+        let who = self
+            .named_people(&ctx.task, args.who.as_deref().unwrap_or_default())
+            .await?;
         let record = NeedsYouRecord {
             action: action.clone(),
             happened,
@@ -220,6 +256,10 @@ impl App {
             link: link.clone(),
             at: self.now().0,
             cause: cause.clone(),
+            named: Named {
+                who: who.clone(),
+                withdrawn: Vec::new(),
+            },
         };
         // The request itself puts the task in Needs you (`AttentionFacts`, `taskInfo`), whatever the
         // agent does meanwhile; its activity is left to its turns.
@@ -240,11 +280,56 @@ impl App {
         };
         Ok(json!({
             "asked": action,
+            "who": who,
             "print": record.printed(),
             "link": link,
             "cause": cause,
             "next": next,
         }))
+    }
+
+    /// The logins `asked` names, cleaned (`@`, case, the owner and repeats dropped), each a person
+    /// of the instance with write access to `task`'s project (SPEC-512 ANS-001).
+    ///
+    /// # Errors
+    /// `Invalid` for more than [`MAX_NAMED`] names, or one who is no person of the instance or
+    /// may not write to the project.
+    async fn named_people(&self, task: &TaskRecord, asked: &[String]) -> AppResult<Vec<String>> {
+        let owner = self.login_of(&task.owner).await.to_lowercase();
+        let mut named: Vec<String> = Vec::new();
+        for login in asked {
+            let login = login.trim().trim_start_matches('@').to_lowercase();
+            if login.is_empty() || login == owner || named.contains(&login) {
+                continue;
+            }
+            named.push(login);
+        }
+        if named.len() > MAX_NAMED {
+            return Err(AppError::Invalid(format!(
+                "who names at most {MAX_NAMED} people besides the task's owner"
+            )));
+        }
+        for login in &named {
+            let user = self.deps.store.user_by_login(login).await?;
+            let writes = match &user {
+                Some(user) => {
+                    user.disabled_at.is_none() && self.can_work_in(user, &task.sandbox_id).await
+                }
+                None => false,
+            };
+            if !writes {
+                let why = if user.is_none() {
+                    "is no person of this Yulius"
+                } else {
+                    "has no write access to this project"
+                };
+                return Err(AppError::Invalid(format!(
+                    "who: @{login} {why}, so they could never answer; name people who have \
+                     write access to the project, or leave them out (nothing was asked)"
+                )));
+            }
+        }
+        Ok(named)
     }
 
     async fn needs_you_audit(&self, ctx: &AgentContext, action: &str, detail: &str) {

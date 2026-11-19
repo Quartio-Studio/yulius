@@ -304,7 +304,14 @@ export async function takeControl(ctx, task) {
  * (the reason is shown).
  */
 export function answerNeedsYou(ctx, task, text) {
-  return taskPost(ctx, task, 'answer', () => ctx.api.post(`/api/tasks/${enc(task.id)}/needs-you/answer`, { text }), `Answered #${task.number}`);
+  // Which request it answers (SPEC-512 ANS-004): one replaced meanwhile is not answered by it.
+  const askedAt = task.needs_you && task.needs_you.at;
+  return taskPost(ctx, task, 'answer', () => ctx.api.post(`/api/tasks/${enc(task.id)}/needs-you/answer`, { text, asked_at: askedAt || null }), `Answered #${task.number}`);
+}
+
+/** The owner withdraws `login` from the people the task's request names (SPEC-512 ANS-005). */
+export function withdrawNeedsYou(ctx, task, login) {
+  return taskPost(ctx, task, 'withdraw', () => ctx.api.post(`/api/tasks/${enc(task.id)}/needs-you/withdraw`, { login }), `@${login} no longer answers #${task.number}`);
 }
 
 /** Ask the task's owner for control: the task would act on GitHub as you (SPEC-070). */

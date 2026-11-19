@@ -5512,6 +5512,7 @@ fn the_agents_own_request_stays_when_the_session_works_after_a_goal_pause() -> T
             link: None,
             at: 1,
             cause: None,
+            named: Default::default(),
         };
         app.deps
             .store

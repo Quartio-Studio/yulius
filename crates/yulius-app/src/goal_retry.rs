@@ -436,6 +436,7 @@ impl App {
                 link: None,
                 at: now.0,
                 cause: None,
+                named: Default::default(),
             };
             if let Err(err) = store.set_task_needs_you(&task.id, Some(&record), now).await {
                 tracing::warn!(task = %task.id, error = %err, "could not record a goal's spent retries");

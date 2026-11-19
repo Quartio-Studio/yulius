@@ -250,6 +250,7 @@ impl App {
             link: Some(crate::account_gate::CONNECT_PATH.into()),
             at: self.now().0,
             cause: None,
+            named: Default::default(),
         };
         match store
             .set_task_needs_you(task_id, Some(&request), self.now())
@@ -305,6 +306,7 @@ impl App {
                 link: Some(crate::account_gate::CONNECT_PATH.into()),
                 at: now.0,
                 cause: None,
+                named: Default::default(),
             };
             if let Err(err) = store
                 .set_task_needs_you(&task.id, Some(&request), now)
