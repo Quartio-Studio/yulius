@@ -57,6 +57,17 @@ test('Settings preserves compatible effort and clears incompatible choices in th
   await app.open(mock('/s/studio'));
   await expect(screen.getByRole('button', 'Effort: Max')).toBeVisible();
   await screen.getByRole('button', /^Model:/).click();
+  await screen.getByRole('menuitemradio', /^Random/).click();
+  await expect(screen.getByRole('button', 'Effort: Default effort')).toBeVisible();
+  await screen.getByRole('button', /^Effort:/).click();
+  const randomEfforts = await browser.evaluate(() => Array.from(document.querySelectorAll('.menu .menu-label'), (el) => el.textContent));
+  expect(randomEfforts).toEqual(['Default', 'Low', 'Medium', 'High']);
+  await screen.getByRole('menuitemradio', /^Default/).press('Escape');
+  await screen.getByRole('button', /^Model:/).click();
+  await screen.getByRole('menuitemradio', /^GPT-6 Luna/).click();
+  await screen.getByRole('button', /^Effort:/).click();
+  await screen.getByRole('menuitemradio', /^Max/).click();
+  await screen.getByRole('button', /^Model:/).click();
   await screen.getByRole('menuitemradio', /^Gemini 4 Carbon/).click();
   await expect(screen.getByRole('button', 'Effort: Default effort')).toBeVisible();
   await screen.getByRole('button', /^Effort:/).click();

@@ -1,6 +1,6 @@
 ---
 yulius-task: 5f9512b5-168c-4d48-996b-cc0bc5b0de62
-status: in-progress
+status: done
 ---
 
 # SPEC-520: Random harness selection across all harnesses with available subscriptions
@@ -38,7 +38,7 @@ Restore the random harness feature as the default for new tasks and automations,
 - [x] Restore Random in the composer, Settings, automation editor, and browser mock
 - [x] Record ADR-0377 and update product, architecture, API, and spec documentation
 - [x] Independent review in a fresh session, findings fixed test-first
-- [ ] Reconcile merge with SPEC-521 (#1439), verify UI and Rust suites, and review resolved head
+- [x] Reconcile merge with SPEC-521 (#1439), verify UI and Rust suites, and review resolved head
 
 ## Acceptance criteria
 
@@ -74,12 +74,13 @@ Restore the random harness feature as the default for new tasks and automations,
   - `scripts/dev quick` → passed (`check_repository.py` + `cargo fmt --all -- --check`).
 - **Browser end-to-end verification**:
   - `cd e2e && E2E_TELEMETRY_DISABLED=1 npx e2e run tests/antigravity.e2e.ts tests/codex.e2e.ts tests/automations.e2e.ts` → `3 test files passed, 38 passed`.
-  - Post-merge (`origin/dev` `57849bf87`) + post-review: `tests/harness-comparison.e2e.ts`, `tests/antigravity.e2e.ts`, `tests/codex.e2e.ts`, `tests/superagent-requests.e2e.ts` passed.
+  - Post-merge (`origin/dev` `57849bf87` and `68ca1fdd2` SPEC-521 #1439) + post-review: `tests/harness-comparison.e2e.ts`, `tests/antigravity.e2e.ts`, `tests/codex.e2e.ts`, `tests/superagent-requests.e2e.ts`, and `tests/model-choices.e2e.ts` (including `Random` effort-tier restriction `['Default', 'Low', 'Medium', 'High']` and `Max` → `Random` effort reset) all passed.
 - **Mutation testing** (`scripts/dev mutants --base origin/dev`):
   - `mutants: 108 listed, 38 caught, 0 missed, 0 timed out, 70 unviable, 0 not reached (bound 30 min, took 1032 s)`
 - **Security scan** (`scripts/dev security`):
   - Exited 2 (not run, Vidoc off in Yulius for this project/instance; nothing sent).
 - **Independent code review**:
-  - Round 1 (`yulius-reviewer` on `5cac9313273b2c7cb19a7ab40d9cb2680c6f3ed0`): `Verdict: approve` with 0 blockers/majors/minors and 3 nits (`docs/decisions/README.md` numeric ordering after `origin/dev` merge, stale comment in `crates/yulius/tests/automations.rs:328`, and cross-sandbox `auto` fallback in `mock.js:3863`), all addressed within the post-approval allowance (`6` lines in `mock.js`, `0` product lines in docs/tests).
+  - Round 1 (`yulius-reviewer` on `5cac9313273b2c7cb19a7ab40d9cb2680c6f3ed0`): `Verdict: approve` with 0 blockers/majors/minors and 3 nits (`docs/decisions/README.md` numeric ordering after `origin/dev` merge, stale comment in `crates/yulius/tests/automations.rs:328`, and cross-sandbox `auto` fallback in `mock.js:3863`), all fixed in `0dfa61433`.
+  - Round 2 (`yulius-reviewer` on `3f08d498b8fc8c93587cfc76985297b5dfa85a50` after resolving merge with SPEC-521 #1439): `Verdict: approve` with 1 minor test-only item (`e2e/tests/model-choices.e2e.ts` direct assertion on `Random`'s `STANDARD` effort menu and `Max` reset), added with `0` product lines changed since `reviewed_head`.
 - **Untested live limits**:
   - Live Anthropic, OpenAI/Codex, and Google/Antigravity OAuth/usage API responses were exercised through synthetic `AgentAccountRecord` fixtures and the mock harness rather than live external provider accounts.
