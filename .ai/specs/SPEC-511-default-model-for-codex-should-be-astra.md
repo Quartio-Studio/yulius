@@ -1,0 +1,81 @@
+---
+yulius-task: 8156a710-48d9-42b5-b65f-019c1476aba1
+status: in-progress
+---
+
+# SPEC-511: A Codex task runs GPT-6.2 Astra at high effort by default
+
+Status: in-progress
+Date: 2026-11-19
+Owner: Yulius task #493
+Scope authorization: the person's request of 2026-11-19 (task #493), verbatim: "default model for
+codex should be astra 6.2 effort high".
+ADR: [0366](../../docs/decisions/0366-a-codex-task-runs-gpt-6-2-astra-at-high-effort-by-default.md).
+
+## Goal
+
+A Codex task that names no model runs GPT-6.2 Astra (`gpt-6.2-astra`), and one that names no
+effort runs at high effort, instead of whatever the Codex account or the CLI would pick. The run
+records that model, the task view names it, and the composer says so. A task that names its own
+model or effort keeps it.
+
+## Context
+
+- **Today (SPEC-503 CDX-013).** A Codex task without a model is launched with no `-m` and no
+  `model_reasoning_effort`, so Codex runs its account's default model at its own default effort;
+  the run records no model (`attempts.model` is `NULL`) and the task view shows an empty model.
+  The composer's OpenAI group offers one entry, "Codex", with no model id (`harnessOnly`).
+- **Antigravity already does this (SPEC-505 AGY-002).** `DEFAULT_ANTIGRAVITY_MODEL` and
+  `DEFAULT_ANTIGRAVITY_EFFORT` in `yulius-domain::harness`; the launch plan fills them in when the
+  request has none; the supervisor records the model; the task view shows both. Codex follows the
+  same seams.
+- **The model id.** Checked on 2026-11-19 in the Codex CLI's bundled model catalog: release
+  0.170.0 lists `"slug": "gpt-6.2-astra"`, `"display_name": "GPT-6.2-Astra"`, reasoning levels
+  `low`, `medium`, `high`, `xhigh`, `max`, `ultra` (default `low`), `"minimal_client_version":
+  "0.166.0"`, `"supported_in_api": true`. Yulius pins Codex 0.169.0 (ADR-0355), whose bundled
+  catalog stops at `gpt-6.1-*`; 0.169.0 asks the server's `/v1/models` with its `client_version`
+  and runs an unlisted model on fallback metadata, and the server serves `gpt-6.2-astra` to clients
+  from 0.166.0. So the pinned CLI runs it; no CLI bump is needed.
+- **Effort.** `-c model_reasoning_effort="high"`, the key Yulius already writes for a chosen
+  effort (`plan_codex`).
+
+## Requirements
+
+| ID | Requirement | Verification |
+|---|---|---|
+| CXD-001 | A Codex launch without a model passes `-m gpt-6.2-astra`; without an effort, `-c model_reasoning_effort="high"`. A model or effort of the task's own is passed instead. | `crates/yulius-harness/tests/launch.rs` `codex_defaults_to_gpt_6_2_astra_at_high_effort`, `codex_resume_argv` |
+| CXD-002 | The run of a Codex task without a model records `gpt-6.2-astra`; the task view names `gpt-6.2-astra` with `model_default: true` and effort `high` (its own effort when it has one). | `crates/yulius/tests/codex.rs` (the goal-mode test's CDX-013 part) |
+| CXD-003 | The composer's Codex entry says it runs GPT-6.2 Astra at high effort by default; the browser mock creates a Codex task without a model on `gpt-6.2-astra` at `high`. | `crates/yulius/tests/ui_contract.rs` `the_composer_says_codex_runs_its_default_model` |
+
+## Plan
+
+- [x] Spec and ADR record that a Codex task defaults to GPT-6.2 Astra at high effort
+- [x] A Codex task without a model or effort launches and records GPT-6.2 Astra at high effort
+- [ ] The composer, the mock and the docs name Codex's default
+- [ ] Independent review of the change
+
+## Acceptance criteria
+
+- AC-511-1: `codex … -c model_reasoning_effort="high" … -m gpt-6.2-astra …` for a Codex task that
+  names neither (CXD-001).
+- AC-511-2: The attempt and the task view of such a task name `gpt-6.2-astra` at `high` (CXD-002).
+- AC-511-3: The composer's Codex entry names GPT-6.2 Astra at high effort by default (CXD-003).
+
+## Test plan
+
+- Unit: the Codex launch plan's argv with neither, and with the task's own model and effort.
+- Integration: a Codex task without a model run on the fake agent records the default model, and
+  its detail names it and high effort.
+- UI contract: the composer's Codex description names the server's default.
+- The real CLI: not run against a real Codex account (none is connected to this sandbox); the
+  model id and its support from client 0.166.0 come from the CLI's own bundled catalog.
+
+## Decisions
+
+- **The server applies the default, the composer sends no model for Codex.** The Codex entry keeps
+  its id `codex` and `harnessOnly`, so a browser's saved choice keeps working and the default has
+  one source (`DEFAULT_CODEX_MODEL`), as Antigravity's effort does. Alternative: a model entry
+  `gpt-6.2-astra` in the OpenAI group; rejected, it would orphan the saved `codex` choice and put a
+  second copy of the default in the page.
+- **No Codex CLI bump.** 0.169.0 runs the model (see Context); moving the pin is its own change.
+- **Lasting decision** in ADR-0366.
