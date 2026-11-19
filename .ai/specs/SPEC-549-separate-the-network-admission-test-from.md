@@ -1,6 +1,6 @@
 ---
 yulius-task: 8011053b-1b32-4e33-95cf-f22494349369
-status: in-progress
+status: done
 ---
 
 # SPEC-549 — Separate network admission testing from job timeout
@@ -24,8 +24,8 @@ Make the local CI integration test reliably observe the refusal to retry a job w
 - [x] Trace the deadline that masks the network refusal
 - [x] Prove the fixture allows the job deadline to expire
 - [x] Give network refusal its full observation budget
-- [ ] Exercise both checkouts with one admission slot
-- [ ] Independently review the single-slot fixture for delivery
+- [x] Exercise both checkouts with one admission slot
+- [x] Independently review the single-slot fixture for delivery
 
 ## Acceptance criteria
 
@@ -46,3 +46,6 @@ Scope the job timeout override to this test. Give each run the network pool in t
 - Under `YULIUS_CPUS=1 taskset -c 0`, the two-job barrier hit the start bound (run `52467848`). Staging the runs exposed checkout reuse (run `3ec446f5`). A diagnostic run found two attempt lines in one checkout-keyed file. The final fixture counts by run ID.
 - The independent reviews of the timeout override (`ceb0b8742`) and the staged fixture (`a73c2c9ee`) approved with no findings.
 - `scripts/dev quick` passed repository contracts and formatting. The mutation runs found no mutant in the changed Rust lines. `scripts/dev security` reported that Vidoc was disabled.
+- Independent review approved the run-keyed fixture at `70ccd431c`. The helper comment now describes counts per attempt file for both checkout-keyed and run-keyed callers.
+- Final fixture, `YULIUS_CPUS=1 taskset -c 0 cargo nextest run --stress-count 5` with the target test filter and its prebuilt binary: 5/5 passed in 52 seconds (run `19336fa0`).
+- A separate one-CPU run held each job at its existing release-file poll for 12 seconds using a temporary PATH wrapper. It logged two distinct CI run IDs. The test passed in 36 seconds with the exact refusal reason and one attempt per run (run `c3eb2672`).

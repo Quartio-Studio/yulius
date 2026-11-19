@@ -4085,7 +4085,7 @@ fn attempts(data: &Path, first: &str, again: &str) -> String {
     )
 }
 
-/// How many times each checkout's job ran.
+/// The number of attempts recorded in each attempt file.
 fn attempts_of(f: &Fixture) -> BoxResult<Vec<usize>> {
     let mut counts = Vec::new();
     for entry in std::fs::read_dir(&f.data)? {
