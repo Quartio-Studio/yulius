@@ -86,10 +86,12 @@ accounts, by `codex resume <id>`: at a usage limit, when a person moves it and w
 subscription is removed (SPEC-447); it waits when none has capacity, and with no Codex
 subscription usable it asks for one.
 
-A task created without an agent (or a model that implies one) is drawn between Claude Code and
-Antigravity among those with a usable subscription (`App::draw_harness`, `Harness::drawn`), and
-so is each run of an automation without one; the draw is kept in `task_harness_draws` and shown
-as `harness_choice` (SPEC-505 RND-001..003).
+A task's agent is set at creation and never drawn (SPEC-514, ADR-0368): without an agent (or
+with `auto`) it is the one its model implies, else Claude Code (`Harness::unnamed`); an agent's
+`task_create` and `automation_create` pass the calling task's own; an automation stores the agent
+it names (`auto` saves as `claude`; migration 0068 turned stored `auto` into `claude`). Tasks
+drawn while SPEC-505 RND-001 drew stay in `task_harness_draws`, shown as `harness_choice`
+`random`.
 
 An Antigravity task ([decision 0361](decisions/0361-antigravity-is-a-third-harness-picked-at-random-by-default.md))
 runs the `agy` TUI on a Google account with a home of its own in its run directory,
@@ -622,16 +624,21 @@ grows and is zeroed whole once the token is extracted
 Codex (`codex login --device-auth`) and Antigravity sign in the same way but leave a file instead
 of printing a token: `auth.json`, or the Antigravity CLI's token file below
 `.gemini/antigravity-cli`, read without following a link and sealed. The Antigravity CLI has no
-sign-in-only command: its sign-in is the whole agent TUI (auto-update off), which never exits on
-its own, so it is stopped 5 s after its token file appears. Once signed in, that TUI can run a
-shell command typed into it, which an instance administrator can do anyway (an MCP server's
-Test), and Yulius types nothing into it
+sign-in-only command: its sign-in is the whole agent TUI (auto-update off). It writes its token
+file before the rest of its setup (the data-use choice and more), so it is not stopped then. The
+terminal's state says `signed_in`, and the dialog offers Done. Done or closing the dialog (the
+cancel, answering `ok`), the CLI's exit or the timeout end it and seal the token file
+([decision 0369](decisions/0369-a-google-sign-in-runs-until-the-person-is-done.md)). Once signed
+in, that TUI can run a shell command typed into it, which an instance administrator can do anyway
+(an MCP server's Test), and Yulius types nothing into it
 ([decision 0361](decisions/0361-antigravity-is-a-third-harness-picked-at-random-by-default.md)).
 
 ```mermaid
 stateDiagram-v2
   [*] --> running: Add subscription / Sign in again
   running --> ok: token sealed (CLI exit, or 5 s after the token)
+  running --> signed_in: Antigravity token file written, its setup goes on (ADR-0369)
+  signed_in --> ok: token file sealed (Done or dialog closed, CLI exit, or 15 min timeout)
   running --> error: no token at exit, or 15 min timeout
   running --> cancelled: dialog closed (cancel) before a token, replaced, or subscription removed
   ok --> [*]: dialog closes, toast "… is connected"
@@ -2762,7 +2769,9 @@ Each person can get their notifications in their own Telegram chat
   active (`App::seed_notices`), so only later changes are told. As the
   notification center does, a switching task is skipped without touching that memory, a request
   naming a sandbox-wide cause (`docker`) is told once per episode (`App::shared_episode`), and a
-  waiting request for control goes to the task's owner only, once per request. For each linked
+  waiting request for control goes to the task's owner only, once per request; a take of a task
+  (`task.control_taken`) or a take-back (`task.control_taken_back`) goes to the person it was
+  taken from only (`yulius_domain::notify::taken_text`, SPEC-510). For each linked
   person who chose that kind it applies `App::envelope_reaches`, the same function that filters
   `WS /api/events`, then the person's `Throttle` (5 a minute, the rest folded into a summary). Text
   passes `App::redact_for_sandbox` (account text: the shape-based `redact`).
@@ -3262,14 +3271,19 @@ to `load_task` means control, so a new task function is the owner's unless it as
 name. Nothing else compares a task's owner: the terminal's write grant, shells and files in a
 worktree, the queue's order, a Superagent's message, a restore of attachments into a task and
 Start onboarding all ask the same rule. A playground's guest tidies only their own tasks
-(`TaskRefusal::Guest`). Anyone else who may work in the project asks for control, from the
-task's page or its menu; the owner hears of it wherever they are (a notification, a toast, a
-mark on the sidebar row) and hands it over or declines, and an absent owner's task passes at
-once. A hand-over on request records its giver (`tasks.control_from`, schema 60), who takes the
-task back without asking (`App::take_back_task_control`, one conditional update) until control
-moves again: handed on, handed back to the giver, or passed from an absent owner, which clear
-or replace it. An onboarding task that never ran passes to whoever
-starts onboarding.
+(`TaskRefusal::Guest`). Anyone else who may work in the project (not a guest) takes control at
+once from the task's page or its menu (`App::take_task_control`, `seize_control`,
+[SPEC-510](../.ai/specs/SPEC-510-change-request-control-for-tasks-to-take.md),
+[decision 0365](decisions/0365-a-teammate-takes-control-unless-the-owner-chose-to-be-asked.md)),
+and the previous owner gets `task.control_taken` wherever they are. An owner who turned on
+"Ask me before taking control of my tasks" (`users.control_ask_first`, schema 67; each
+`TaskSummary` says `owner_asks_first`) is asked instead: they hear of a request wherever they are
+(a notification, a toast, a mark on the sidebar row) and hand it over or decline. An absent
+owner's task passes at once either way. A take or a hand-over on request records its giver
+(`tasks.control_from`, schema 60), who takes the task back without asking
+(`App::take_back_task_control`, one conditional update) until control moves again: handed on,
+handed back to the giver, or passed from an absent owner, which clear or replace it. An
+onboarding task that never ran passes to whoever starts onboarding.
 
 ```mermaid
 flowchart LR
@@ -3278,8 +3292,10 @@ flowchart LR
   RULE -->|"tidy: write access"| TIDY["stop, close out, archive,<br/>restore, delete"]
   TIDY --> AUD[("audit: who, and the owner")]
   RULE -->|"control: write access + owner"| CTRL["terminal, messages, answers,<br/>start, pause, deliver, worktree"]
-  RULE -->|"control, not the owner"| ASK["403: ask the owner for control"]
-  ASK -->|"POST /control-request"| REQ[("tasks.control_requested_by")]
+  RULE -->|"control, not the owner"| ASK["403: take control, or ask"]
+  ASK -->|"POST /control/take<br/>(owner does not ask first)"| SEIZE["seize_control"]
+  SEIZE --> OWN
+  ASK -->|"POST /control-request<br/>(owner asks first)"| REQ[("tasks.control_requested_by")]
   REQ -->|"owner absent"| PASS["pass_control"]
   A["Owner: Hand over"] -->|"POST /control-request/accept"| PASS
   A -->|"DELETE: decline"| REQ

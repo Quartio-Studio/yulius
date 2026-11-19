@@ -2,7 +2,9 @@
 
 ## Status
 
-Accepted. Specified in [SPEC-490](../../.ai/specs/SPEC-490-users-may-stop-archive-and-delete-other.md);
+Accepted; amended by [0365](0365-a-teammate-takes-control-unless-the-owner-chose-to-be-asked.md)
+(2026-11-19): a teammate takes control at once unless the owner chose to be asked, and consent
+below holds for those owners. Specified in [SPEC-490](../../.ai/specs/SPEC-490-users-may-stop-archive-and-delete-other.md);
 task #473. The person's decision of 2026-11-14: "users should be able to delete stop and
 archive tasks of other users, but not take control without the consent". Amends
 [0060](0060-a-task-is-owned-by-one-person.md): its rule "only the owner changes a task" becomes

@@ -11,10 +11,11 @@ failOnPageErrors();
 type Mocked = {
   __yuliusMock: {
     tasks: { harness: string; harness_choice?: string; model: string; effort: string }[];
-    harnessRolls: number[];
     accounts: { label: string; provider: string; status: string }[];
     automations: { name: string; harness: string }[];
     connectAntigravity: () => void;
+    loginCancels: string[];
+    logins: Map<string, { accountId: string; done: boolean; ws: { push: (frame: string) => void } | null }>;
   };
 };
 
@@ -75,8 +76,58 @@ test('an Antigravity subscription signs in with Google in the login terminal', a
   expect(waiting).toMatchObject({ provider: 'google', status: 'pending_login' });
   await expect(browser.locator('.login-terminal .xterm-helper-textarea')).toBeFocused();
   await browser.keyboard.press('Enter');
+  // The CLI's setup goes on after the code (SPEC-515, #1421): the window stays open until Done,
+  // and says so as a status, which a screen reader announces with the focus in the terminal.
+  await expect(dialog.getByText(/^Antigravity is signed in\. Finish the rest of its setup in the terminal below/)).toBeVisible();
+  await expect(browser.locator('dialog [role="status"]:has-text("Antigravity is signed in")')).toBeVisible();
+  expect(await axeViolations(browser)).toEqual([]);
+  await expect(terminal).toContainText('Help improve Antigravity');
+  const signedIn = await browser.evaluate(() => (window as unknown as Mocked).__yuliusMock.accounts.find((a) => a.label === 'Antigravity dev'));
+  expect(signedIn).toMatchObject({ status: 'pending_login' });
+  await browser.keyboard.type('n');
+  await expect(terminal).toContainText('(y/N) *');
+  await browser.keyboard.press('Enter');
+  await expect(dialog.getByRole('button', 'Cancel sign-in')).toHaveCount(0);
+  await dialog.getByRole('button', 'Done').click();
   await expect(dialog).toBeHidden();
   await expect(browser.locator('.toast-ok .toast-msg:has-text("Antigravity dev is connected")')).toContainText('Antigravity tasks can use it now.');
+  expect(await browser.evaluate(() => (window as unknown as Mocked).__yuliusMock.loginCancels.length)).toBe(1);
+});
+
+test('Try again after a signed-in Antigravity sign-in was lost starts over and offers Done again', async ({ app, browser, screen }) => {
+  await app.open(mock('/admin/accounts?add=antigravity', '&ambient=0'));
+  const add = screen.getByRole('dialog', 'Add an Antigravity subscription');
+  await firstShown(add);
+  await add.getByRole('textbox', /^Name/).fill('Antigravity retry');
+  await add.getByRole('button', 'Continue to sign-in').click();
+  const dialog = screen.getByRole('dialog', 'Sign in · Antigravity retry');
+  await expect(browser.locator('.login-terminal')).toContainText('Sign in with Google');
+  await expect(browser.locator('.login-terminal .xterm-helper-textarea')).toBeFocused();
+  await browser.keyboard.press('Enter');
+  await expect(dialog.getByText(/^Antigravity is signed in\./)).toBeVisible();
+  // The server lost this sign-in while its setup ran (a restart): its terminal is refused in band
+  // with `not_found`, as the server refuses one it no longer has (SPEC-515).
+  await browser.evaluate(() => {
+    const db = (window as unknown as Mocked).__yuliusMock;
+    const account = db.accounts.find((a) => a.label === 'Antigravity retry') as unknown as { id: string };
+    for (const session of db.logins.values()) {
+      if (session.accountId !== account.id || session.done) continue;
+      session.done = true;
+      if (session.ws) session.ws.push(JSON.stringify({ type: 'error', code: 'not_found', message: 'not found' }));
+    }
+  });
+  await expect(dialog.getByText('This sign-in is no longer available')).toBeVisible();
+  await dialog.getByRole('button', 'Try again').click();
+  await expect(dialog.getByText(/^Finish Antigravity’s sign-in: choose Google in the terminal below/)).toBeVisible();
+  await expect(dialog.getByText(/^Antigravity is signed in\./)).toHaveCount(0);
+  await expect(dialog.getByRole('button', 'Cancel sign-in')).toBeVisible();
+  await expect(browser.locator('.login-terminal')).toContainText('Sign in with Google');
+  await expect(browser.locator('.login-terminal .xterm-helper-textarea')).toBeFocused();
+  await browser.keyboard.press('Enter');
+  await expect(dialog.getByText(/^Antigravity is signed in\./)).toBeVisible();
+  await dialog.getByRole('button', 'Done').click();
+  await expect(dialog).toBeHidden();
+  await expect(browser.locator('.toast-ok .toast-msg:has-text("Antigravity retry is connected")')).toBeVisible();
 });
 
 test('choosing Gemini 4 Carbon in the composer starts an Antigravity task at high effort', async ({ app, browser, screen }) => {
@@ -173,19 +224,19 @@ test('an unknown add in the address opens no dialog', async ({ app, browser, scr
   await expect(browser.locator('dialog.modal')).toHaveCount(0);
 });
 
-// SPEC-505 RND-001/002: the composer starts with Random: a task started without choosing an agent
-// is drawn among the usable ones (here Antigravity's roll) and its details say so; an automation's
-// agent is Random by default.
-test('a task started without choosing an agent is drawn, and says so', async ({ app, browser, screen }) => {
+// SPEC-514 PIN-001/004: a task's agent is set, never drawn. With Claude Code and Antigravity both
+// usable, the composer starts on Default and a task started so is a Claude Code task, chosen, its
+// overview not saying "drawn"; an automation's agent starts on Claude Code, with no Random.
+test('a task started without choosing an agent runs Claude Code, never a drawn agent', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio'));
   await browser.evaluate(() => {
     const m = (window as unknown as Mocked).__yuliusMock;
     m.accounts.push({ id: 'acc_google', provider: 'google', label: 'Antigravity #1', status: 'ok' } as never);
-    m.harnessRolls.push(1);
   });
-  await firstShown(screen.getByRole('button', 'Model: Random agent'));
+  await firstShown(screen.getByRole('button', 'Model: Default model'));
   await screen.getByRole('button', /^Model:/).click();
-  await expect(screen.getByRole('menuitemradio', /^Random/)).toHaveAttribute('aria-checked', 'true');
+  await expect(screen.getByRole('menuitemradio', /^Default/)).toHaveAttribute('aria-checked', 'true');
+  await expect(screen.getByRole('menuitemradio', /^Random/)).toHaveCount(0);
   await browser.keyboard.press('Escape');
   const prompt = screen.getByRole('textbox', 'Task prompt');
   await prompt.fill('Add a health check');
@@ -196,40 +247,43 @@ test('a task started without choosing an agent is drawn, and says so', async ({ 
     const last = tasks[tasks.length - 1];
     return { harness: last.harness, choice: last.harness_choice };
   });
-  expect(task).toEqual({ harness: 'antigravity', choice: 'random' });
-  // Its overview (the same page, not a reload: the mock keeps the task) says it was drawn.
+  expect(task).toEqual({ harness: 'claude', choice: 'chosen' });
+  // Its overview (the same page, not a reload: the mock keeps the task) names its agent only.
   await browser.evaluate(() => { location.hash = location.hash.replace('/t/', '/tasks/'); });
-  await expect(browser.locator('main')).toContainText('Antigravity (drawn at random)');
+  await expect(browser.locator('main')).toContainText('Claude Code');
+  await expect(browser.locator('main')).not.toContainText('drawn at random');
 
   await app.open(mock('/s/studio/automations/new'));
-  await firstShown(screen.getByRole('radiogroup', 'Agent'));
-  await expect(screen.getByRole('radiogroup', 'Agent').getByRole('radio', 'Random')).toHaveAttribute('aria-checked', 'true');
+  const agent = screen.getByRole('radiogroup', 'Agent');
+  await firstShown(agent);
+  await expect(agent.getByRole('radio', 'Claude Code')).toHaveAttribute('aria-checked', 'true');
+  await expect(agent.getByRole('radio', 'Random')).toHaveCount(0);
 });
 
-// SPEC-505 RND-001 (slice E review): a split proposal is Claude's to make. With only Antigravity
-// usable, a request the composer would split, started on Random, is created as one task drawn to
-// Antigravity instead of being refused for want of a Claude account.
-test('a mixed request on Random with only Antigravity usable is created as one drawn task', async ({ app, browser, screen }) => {
+// SPEC-514 PIN-005: a task drawn at random before SPEC-514 still says so in its overview.
+test('a task drawn before still says it was drawn', async ({ app, browser }) => {
+  await app.open(mock('/s/studio'));
+  await browser.evaluate(() => {
+    const tasks = (window as unknown as Mocked).__yuliusMock.tasks as unknown as { sandbox_id: string; number: number; harness: string; harness_choice?: string }[];
+    const task = tasks.find((t) => t.sandbox_id === 'sb_studio' && t.number === 13);
+    if (task) Object.assign(task, { harness: 'antigravity', harness_choice: 'random' });
+    location.hash = '#/s/studio/tasks/13';
+  });
+  await expect(browser.locator('main')).toContainText('Antigravity (drawn at random)');
+});
+
+// SPEC-514 PIN-001: with only Antigravity usable, a task started on Default is still Claude Code's,
+// so it is refused for want of a Claude account instead of running on Gemini.
+test('a task on Default with only Antigravity usable is refused, not moved to Antigravity', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio', '&claude=0'));
   await firstShown(browser.locator('.claude-connect'));
   await eventsConnected(browser);
   await browser.evaluate(() => (window as unknown as Mocked).__yuliusMock.connectAntigravity());
   await expect(browser.locator('.claude-connect')).toHaveCount(0);
-  await expect(screen.getByRole('button', 'Model: Random agent')).toBeVisible();
-  const prompt = screen.getByRole('textbox', 'Task prompt');
-  await prompt.fill([
-    'Finish the release before Friday, all of this has to land together please.',
-    '1. Make the attention bar opaque over the terminal and keep its colours readable.',
-    '2. Stop the tools rail pills from overflowing the rail on narrow windows.',
-    '3. Route new tasks past exhausted accounts in the backend subscription pool.',
-  ].join('\n'));
-  await prompt.press('ControlOrMeta+Enter');
-  await expect(browser).toHaveURL(/#\/s\/studio\/t\/\d+$/);
-  await expect(browser.locator('.toast-error')).toHaveCount(0);
-  const task = await browser.evaluate(() => {
-    const tasks = (window as unknown as Mocked).__yuliusMock.tasks;
-    const last = tasks[tasks.length - 1];
-    return { harness: last.harness, choice: last.harness_choice };
-  });
-  expect(task).toEqual({ harness: 'antigravity', choice: 'random' });
+  const before = await browser.evaluate(() => (window as unknown as Mocked).__yuliusMock.tasks.length);
+  await expect(screen.getByRole('button', 'Model: Default model')).toBeVisible();
+  await screen.getByRole('textbox', 'Task prompt').fill('Add a health check');
+  await screen.getByRole('button', 'Start task').click();
+  await expect(browser.locator('.toast-error')).toContainText('Connect a Claude account first');
+  expect(await browser.evaluate(() => (window as unknown as Mocked).__yuliusMock.tasks.length)).toBe(before);
 });

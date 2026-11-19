@@ -6,15 +6,56 @@ failOnPageErrors();
 
 // A task is owned by one person, whose GitHub credentials it uses (SPEC-070). Someone else's task
 // can be stopped, archived and deleted by anyone who may work in its project, and is otherwise
-// read-only with a way to ask for control (SPEC-490); the owner hands it over or declines. The
-// mock signs in as mkarp: product #3 is anna-q's, studio #12 mkarp's.
+// read-only with a way to take control (SPEC-510), or to ask an owner who chose to be asked
+// (SPEC-490); they hand it over or decline. The mock signs in as mkarp: product #3 is anna-q's,
+// studio #12 mkarp's.
 
-test("someone else's task is read-only, and its owner can hand it over", async ({ app, browser, screen }) => {
+// SPEC-510 TKC-001, TKC-005 (AC5): control of someone else's task is taken after a confirmation
+// naming its owner; the task is the viewer's at once.
+test("someone else's task is taken after a confirmation naming its owner", async ({ app, browser, screen }) => {
   await app.open(mock('/s/product/t/3'));
   await firstShown(screen.getByText("You are watching @anna-q's task."));
+  await expect(browser.locator('.attention-bar .attention-text').first()).toHaveText("You are watching @anna-q's task. You can stop, archive or delete it; to type in it or change it, take control.");
+  await browser.locator('.taskview .stepstrip-main [aria-label="Task actions"]').click();
+  await expect(screen.getByRole('menuitem', 'Continue @anna-q owns this task: take control to do this')).toBeDisabled();
+  await expect(screen.getByRole('menuitem', /^Take control/)).toBeEnabled();
+  await browser.keyboard.press('Escape');
+  await screen.getByRole('button', 'Take control').click();
+  const dialog = screen.getByRole('dialog', "Take control of @anna-q's task #3?");
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByText(/@anna-q is told and can take it back\.$/)).toBeVisible();
+  expect(await axeViolations(browser)).toEqual([]);
+  await dialog.getByRole('button', 'Take control').click();
+  await expect(screen.getByText('#3 is yours now')).toBeVisible();
+  await expect(screen.getByText("You are watching @anna-q's task.")).toBeHidden();
+  await browser.locator('.taskview .stepstrip-main [aria-label="Task actions"]').click();
+  await expect(screen.getByRole('menuitem', /^Continue/)).toBeEnabled();
+});
+
+// SPEC-510 review round 1: the owner chose to be asked after the page read the task; the take is
+// refused with why, and the page then offers Request control.
+test('a take refused because the owner now asks first leaves Request control', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/product/t/3'));
+  await firstShown(screen.getByRole('button', 'Take control'));
+  // Changed on the server without an event, as for a page that read the task before.
+  await browser.evaluate(() => { (window as unknown as { __yuliusMock: { tasks: { number: number; sandbox_id: string; ownerAsksFirst?: boolean }[] } }).__yuliusMock.tasks.find((t) => t.sandbox_id === 'sb_product' && t.number === 3)!.ownerAsksFirst = true; });
+  await screen.getByRole('button', 'Take control').click();
+  await screen.getByRole('dialog', "Take control of @anna-q's task #3?").getByRole('button', 'Take control').click();
+  await expect(browser.locator('.toast').filter({ hasText: 'wants to be asked' })).toBeVisible();
+  await expect(screen.getByRole('button', 'Request control')).toBeVisible();
+  await expect(screen.getByRole('button', 'Take control')).toHaveCount(0);
+});
+
+test("an owner who asks first is asked, and can hand the task over", async ({ app, browser, screen }) => {
+  await app.open(mock('/s/product/t/3'));
+  await touchTask(browser, 'sb_product', 3, { ownerAsksFirst: true });
+  await firstShown(screen.getByText("You are watching @anna-q's task."));
+  await expect(browser.locator('.attention-bar .attention-text').first()).toHaveText(/ask @anna-q for control\.$/);
+  await expect(screen.getByRole('button', 'Take control')).toHaveCount(0);
   await browser.locator('.taskview .stepstrip-main [aria-label="Task actions"]').click();
   // Steering is disabled, saying why and how to get it; putting the task away is not.
   await expect(screen.getByRole('menuitem', 'Continue @anna-q owns this task: request control to do this')).toBeDisabled();
+  await expect(screen.getByRole('menuitem', /^Take control/)).toHaveCount(0);
   await expect(screen.getByRole('menuitem', /^Archive/)).toBeEnabled();
   await expect(screen.getByRole('menuitem', /^Delete permanently/)).toBeEnabled();
   await browser.keyboard.press('Escape');
@@ -41,9 +82,9 @@ test("someone else's running task is stopped after a confirmation naming its own
   await app.open(mock('/s/product/t/4', '&ambient=0'));
   await touchTask(browser, 'sb_product', 4, { owner: { login: 'anna-q' } });
   await firstShown(screen.getByText("You are watching @anna-q's task."));
-  await expect(browser.locator('.attention-bar .attention-text').first()).toHaveText("You are watching @anna-q's task. You can stop, archive or delete it; to type in it or change it, ask @anna-q for control.");
+  await expect(browser.locator('.attention-bar .attention-text').first()).toHaveText("You are watching @anna-q's task. You can stop, archive or delete it; to type in it or change it, take control.");
   await taskMenu(browser);
-  await expect(screen.getByRole('menuitem', 'Pause @anna-q owns this task: request control to do this')).toBeDisabled();
+  await expect(screen.getByRole('menuitem', 'Pause @anna-q owns this task: take control to do this')).toBeDisabled();
   await screen.getByRole('menuitem', /^Stop/).click();
   const dialog = screen.getByRole('dialog', "Stop @anna-q's task #4?");
   await expect(dialog).toBeVisible();
@@ -53,7 +94,7 @@ test("someone else's running task is stopped after a confirmation naming its own
   // Stopped, and still anna-q's: mkarp cannot continue it.
   await expect(browser.locator('.taskview .stepstrip-main')).toHaveText(/Stopped/);
   await taskMenu(browser);
-  await expect(screen.getByRole('menuitem', 'Continue @anna-q owns this task: request control to do this')).toBeDisabled();
+  await expect(screen.getByRole('menuitem', 'Continue @anna-q owns this task: take control to do this')).toBeDisabled();
 });
 
 // SPEC-490 OWN-006: the sidebar's quick archive and the menu's Delete work on someone else's
@@ -73,7 +114,7 @@ test("someone else's task is archived from the sidebar and deleted from its menu
   await expect(browser.locator('.task-row:has-text("Payment webhook") .task-owner')).toBeVisible();
   await stopped.hover();
   await stopped.getByRole('button', 'Task actions').click();
-  await expect(screen.getByRole('menuitem', 'Continue @anna-q owns this task: request control to do this')).toBeDisabled();
+  await expect(screen.getByRole('menuitem', 'Continue @anna-q owns this task: take control to do this')).toBeDisabled();
   await screen.getByRole('menuitem', /^Delete permanently/).click();
   const dialog = screen.getByRole('dialog', "Delete @anna-q's task #4 permanently?");
   await expect(dialog).toBeVisible();
@@ -101,7 +142,8 @@ test("Archive all leaves other people's Done tasks", async ({ app, browser, scre
   await expect(theirs).toBeVisible();
 });
 
-// SPEC-490 OWN-007: control is asked for from the task's menu wherever it opens, here the sidebar.
+// SPEC-490 OWN-007, SPEC-510 TKC-005: control is taken, or asked for from an owner who asks first,
+// from the task's menu wherever it opens, here the sidebar.
 test('control is asked for and the request withdrawn from the task menu in the sidebar', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio', '&ambient=0'));
   await touchTask(browser, 'sb_studio', 12, { owner: { login: 'anna-q' } });
@@ -110,6 +152,12 @@ test('control is asked for and the request withdrawn from the task menu in the s
   // The menu is built from the task the page holds: wait until it shows this one as @anna-q's.
   await expect(browser.locator('.task-row:has-text("Checkout API") .task-owner')).toBeVisible();
   const menu = async () => { await row.hover(); await row.getByRole('button', 'Task actions').click(); };
+  await menu();
+  await expect(screen.getByRole('menuitem', /^Take control/)).toBeEnabled();
+  await expect(screen.getByRole('menuitem', /^Request control/)).toHaveCount(0);
+  await browser.keyboard.press('Escape');
+  await touchTask(browser, 'sb_studio', 12, { ownerAsksFirst: true });
+  await expect.poll(async () => { await menu(); const n = await screen.getByRole('menuitem', /^Request control/).count(); await browser.keyboard.press('Escape'); return n; }, { message: 'the menu offers Request control' }).toBe(1);
   await menu();
   await screen.getByRole('menuitem', /^Request control/).click();
   await expect(screen.getByText('Asked for control of #12')).toBeVisible();
@@ -141,7 +189,7 @@ test('the owner is asked for control and hands the task over', async ({ app, bro
 
   await screen.getByRole('button', 'Hand over').click();
   // The giver may take it back without asking (SPEC-490 OWN-009) instead of requesting it.
-  await expect(screen.getByText('You handed this task to @anna-q.')).toBeVisible();
+  await expect(screen.getByText('@anna-q has control of this task now.')).toBeVisible();
   await expect(screen.getByRole('button', 'Take back')).toBeVisible();
   // mkarp now watches it: the session as its transcript, no terminal to send anything to (SPEC-179).
   await expect(browser.locator('.taskview .watch .ss-tui')).toBeVisible();
@@ -195,7 +243,7 @@ test('a read answered before a hand-over and arriving after it changes nothing b
   await browser.evaluate(() => (window as unknown as Holding).__releaseDetail?.());
   await expect(browser.locator('.taskview .step-item').first()).toBeVisible();
   await expect(screen.getByText("You are watching @anna-q's task.")).toBeVisible();
-  await expect(screen.getByRole('button', 'Request control')).toBeVisible();
+  await expect(screen.getByRole('button', 'Take control')).toBeVisible();
 });
 
 // SPEC-490 OWN-008 (AC-8): a request for control reaches the owner wherever they are: a toast
@@ -228,8 +276,8 @@ test('the giver takes the task back, and whoever had it hears so', async ({ app,
   await terminalShown(browser);
   await touchTask(browser, 'sb_studio', 12, { controlRequest: { by: { login: 'anna-q' }, at: new Date().toISOString() } });
   await screen.getByRole('button', 'Hand over').click();
-  const bar = browser.locator('.attention-bar .attention-text').filter({ hasText: 'You handed this task to @anna-q.' });
-  await expect(bar).toHaveText('You handed this task to @anna-q. It acts on GitHub as them; you can take it back at any time.');
+  const bar = browser.locator('.attention-bar .attention-text').filter({ hasText: '@anna-q has control of this task now.' });
+  await expect(bar).toHaveText('@anna-q has control of this task now. It acts on GitHub as them; you can take it back at any time.');
   expect(await axeViolations(browser)).toEqual([]);
   await screen.getByRole('button', 'Take back').click();
   await expect(screen.getByText('#12 is yours again')).toBeVisible();
@@ -272,4 +320,42 @@ test('a waiting request is heard once a failed task list loads', async ({ app, b
   });
   await firstShown(browser.locator('.task-row:has-text("Checkout API")'));
   await expect(screen.getByRole('button', /^Notifications \(1 unread\)/)).toBeVisible();
+});
+
+// SPEC-510 TKC-002 (AC5): a teammate takes the viewer's task without asking: they hear of it
+// wherever they are, and the task's bar offers Take back, which returns it.
+test('whoever a task is taken from hears so and takes it back', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio', '&ambient=0'));
+  await eventsConnected(browser);
+  await firstShown(browser.locator('.task-row:has-text("Checkout API")'));
+  await browser.evaluate(() => (window as unknown as { __yuliusMock: { takeControl: (s: string, n: number, by: string) => void } }).__yuliusMock.takeControl('sb_studio', 12, 'anna-q'));
+  const taken = '@anna-q took control of #12 Checkout API';
+  await expect(browser.locator('.toast').filter({ hasText: taken })).toBeVisible();
+  await screen.getByRole('button', /^Notifications \(\d+ unread\)/).click();
+  await expect(screen.getByRole('dialog', 'Notifications').getByRole('button', new RegExp(`^Unread: ${taken}`))).toBeVisible();
+  await browser.keyboard.press('Escape');
+  await browser.locator('.toast').filter({ hasText: taken }).getByRole('button', 'Open').click();
+  await expect(screen.getByText('@anna-q has control of this task now.')).toBeVisible();
+  // Its menu offers Take back too, not a take that would read as a new one (review round 2).
+  await browser.locator('.taskview .stepstrip-main [aria-label="Task actions"]').click();
+  await expect(screen.getByRole('menuitem', /^Take back/)).toBeEnabled();
+  await expect(screen.getByRole('menuitem', /^Take control/)).toHaveCount(0);
+  await browser.keyboard.press('Escape');
+  await screen.getByRole('button', 'Take back').click();
+  await expect(screen.getByText('#12 is yours again')).toBeVisible();
+});
+
+// SPEC-510 TKC-003 (AC5): the person chooses in Settings whether teammates ask first.
+test('Settings saves whether teammates ask before taking control', async ({ app, browser, screen }) => {
+  await app.open(mock('/settings'));
+  const ask = screen.getByRole('switch', 'Ask me before taking control of my tasks');
+  await firstShown(ask);
+  await expect(ask).not.toBeChecked();
+  expect(await axeViolations(browser)).toEqual([]);
+  await ask.click();
+  await expect(screen.getByText('Teammates now ask you for control of your tasks.')).toBeVisible();
+  await expect.poll(() => browser.evaluate(() => (window as unknown as { __yuliusMock: { me: { user: { control_ask_first: boolean } } } }).__yuliusMock.me.user.control_ask_first)).toBe(true);
+  await ask.click();
+  await expect(screen.getByText('Teammates now take control of your tasks at once.')).toBeVisible();
+  await expect.poll(() => browser.evaluate(() => (window as unknown as { __yuliusMock: { me: { user: { control_ask_first: boolean } } } }).__yuliusMock.me.user.control_ask_first)).toBe(false);
 });

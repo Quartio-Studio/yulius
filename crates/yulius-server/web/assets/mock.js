@@ -150,6 +150,8 @@ function seed(params) {
       user: {
         id: 'usr_1', login: 'mkarp', display_name: 'Michal Karp', avatar_url: null,
         is_superadmin: role === 'superadmin', is_instance_admin: role !== 'member', github_linked: linked,
+        // Whether teammates ask before taking control of mkarp's tasks (SPEC-510 TKC-003).
+        control_ask_first: false,
       },
       csrf_token: 'mock-csrf-token',
       instance: { owner_login: 'Quartio-Studio', owner_kind: 'org', public_url: ORIGIN, github_configured: params.get('github') !== '0', contained: params.get('contained') !== '0', upload_max_bytes: 1024 * 1024 * 1024 },
@@ -250,8 +252,6 @@ function seed(params) {
     unsignedAccounts: new Set(),
     // Codex subscriptions made with an OpenAI API key: no usage windows (SPEC-503 CDX-008).
     codexKeyAccounts: new Set(),
-    // Rolls of the next harness draws, in order (tests; SPEC-505 RND-001).
-    harnessRolls: [],
   };
   // Product: the product preset with a dev-vm deploy command (so it is "custom"): exercises
   // command runs plus manual confirmation. Studio: continuous, no environments.
@@ -524,6 +524,8 @@ function summary(task) {
     owner: { ...ownerOf(task) }, control_request: task.controlRequest ? { by: { ...task.controlRequest.by }, at: task.controlRequest.at } : null,
     // Who handed it over on request and may take it back (SPEC-490 OWN-009).
     control_from: task.controlFrom ? { ...task.controlFrom } : null,
+    // Whether its owner wants to be asked before anyone takes control (SPEC-510 TKC-005).
+    owner_asks_first: Boolean(task.ownerAsksFirst),
     // What the agent asked a person to do (`needs_you`, SPEC-134).
     needs_you: task.needs_you ? { ...task.needs_you } : null,
     // Why it reads needs_attention (SPEC-472): the flag's reason, only while it reads that flag.
@@ -1482,9 +1484,8 @@ route('POST', `/api/sandboxes/${ID}/tasks`, async ({ db, p, body }) => {
   need(sandbox, 'write');
   if (!body.prompt || !body.prompt.trim()) fail(422, 'invalid', 'The prompt is empty.');
   if (body.harness && !['auto', 'claude', 'codex', 'antigravity'].includes(body.harness)) fail(422, 'invalid', 'harness must be claude, codex or antigravity');
-  // No agent (or `auto`): the one the model implies, else drawn among the usable (SPEC-505 RND-001).
-  const drawn = (!body.harness || body.harness === 'auto') && !body.model;
-  const harness = drawn ? drawHarness(db) : body.harness && body.harness !== 'auto' ? body.harness : impliedHarness(body.model);
+  // No agent (or `auto`): the one the model implies, else Claude Code; never drawn (SPEC-514).
+  const harness = body.harness && body.harness !== 'auto' ? body.harness : impliedHarness(body.model);
   // Antigravity runs Google's Gemini models only, as on the server (SPEC-505).
   if (harness === 'antigravity' && body.model && !body.model.startsWith('gemini-')) fail(422, 'invalid', 'an Antigravity task takes a Gemini model (such as gemini-4-carbon)');
   if (body.mode && !['goal', 'prompt', 'auto'].includes(body.mode)) fail(422, 'invalid', 'mode must be goal, prompt or auto');
@@ -1526,7 +1527,7 @@ route('POST', `/api/sandboxes/${ID}/tasks`, async ({ db, p, body }) => {
   const wf = choice ? choice.workflow : db.workflows.find((w) => w.id === body.workflow_id);
   const id = `tsk_${sandbox.id.slice(3)}_${number}`;
   const task = {
-    id, sandbox_id: sandbox.id, number, title, harness, harness_choice: drawn ? 'random' : 'chosen', status: waitsFor ? 'chained' : 'queued', activity: null,
+    id, sandbox_id: sandbox.id, number, title, harness, harness_choice: 'chosen', status: waitsFor ? 'chained' : 'queued', activity: null,
     branch: `feat/${title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40) || `task-${number}`}`,
     origin: 'ui', created_by: { login: db.me.user.login, id: db.me.user.id }, created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
     archived: false, account_label: null,
@@ -1813,18 +1814,9 @@ route('POST', `/api/tasks/${ID}/stop`, ({ db, p }) => {
   later(() => touch(db, task, { status: 'stopped_cancelled', account_label: null }), 1400);
   return summary(task);
 });
-// The agent drawn for a task without one: Claude Code or Antigravity among those with a usable
-// subscription, Claude Code when neither has one (SPEC-505 RND-001). `__yuliusMock.harnessRolls`
-// queues the rolls (tests); otherwise a roll is random.
-function drawHarness(db) {
-  const usable = ['claude', 'antigravity'].filter((h) => usableOf(db, agentOfHarness(h).provider));
-  if (usable.length === 0) return 'claude';
-  const roll = db.harnessRolls && db.harnessRolls.length ? db.harnessRolls.shift() : Math.floor(Math.random() * 256);
-  return usable[roll % usable.length];
-}
 const impliedHarness = (model) => (String(model || '').trim().toLowerCase().startsWith('gemini-') ? 'antigravity' : 'claude');
-// An automation without an agent draws one for each run (SPEC-505 RND-002).
-const automationHarness = (db, a) => (!a.harness || a.harness === 'auto' ? { harness: drawHarness(db), harness_choice: 'random' } : { harness: a.harness, harness_choice: 'chosen' });
+// An automation runs the agent it names; `auto` (or none) is Claude Code (SPEC-514 PIN-003).
+const namedHarness = (harness) => (!harness || harness === 'auto' ? 'claude' : harness);
 // A task runs on subscriptions of its harness's provider only (SPEC-503 CDX-013, SPEC-505).
 const providerOfTask = (task) => agentOfHarness(task.harness).provider;
 const kindOf = (provider) => agentOfProvider(provider).name;
@@ -1911,8 +1903,25 @@ route('POST', `/api/tasks/${ID}/control-request/accept`, ({ db, p }) => {
   // The giver may take it back, unless it goes back to the one who gave it (SPEC-490 OWN-009).
   const to = task.controlRequest.by;
   const controlFrom = task.controlFrom && task.controlFrom.login === to.login ? null : { login: ownerOf(task).login };
-  touch(db, task, { owner: { ...to }, controlRequest: null, controlFrom });
+  touch(db, task, { owner: { ...to }, controlRequest: null, controlFrom, ownerAsksFirst: false });
   return summary(task);
+});
+// Take control without asking (SPEC-510 TKC-001): the previous owner may take it back.
+route('POST', `/api/tasks/${ID}/control/take`, ({ db, p }) => {
+  const task = taskOf(db, p[0]);
+  need(sandboxOf(db, task.sandbox_id), 'write');
+  const me = db.me.user.login;
+  const owner = ownerOf(task).login;
+  if (owner === me) fail(409, 'conflict', 'you already own this task');
+  if (db.me.user.guest) fail(403, 'forbidden', `Task #${task.number} is @${owner}'s: a guest takes control of no other person's task on this playground.`);
+  if (task.ownerAsksFirst) fail(409, 'conflict', `@${owner} wants to be asked before anyone takes control of their tasks: request control of task #${task.number} instead`);
+  const controlFrom = task.controlFrom && task.controlFrom.login === me ? null : { login: owner };
+  touch(db, task, { owner: { login: me }, controlRequest: null, controlFrom, ownerAsksFirst: false });
+  return summary(task);
+});
+route('PUT', '/api/me/control', ({ db, body }) => {
+  db.me.user.control_ask_first = Boolean(body.ask_first);
+  return { ask_first: db.me.user.control_ask_first };
 });
 route('POST', `/api/tasks/${ID}/control/take-back`, ({ db, p }) => {
   const task = taskOf(db, p[0]);
@@ -3088,7 +3097,7 @@ route('POST', `/api/sandboxes/${ID}/automations`, ({ db, p, body }) => {
   need(sandboxOf(db, p[0]), 'write');
   if (Math.abs(Number(body.utc_offset_minutes) || 0) > 1080) fail(422, 'invalid', 'utc_offset_minutes must be within ±1080');
   db.nextId += 1;
-  const a = { id: `aut_${db.nextId}`, sandbox: p[0], ...body, ...automationStart(db, p[0], body), created_via: 'ui', next_run_at: body.enabled ? isoIn(5 * HOUR) : null, last_run: null };
+  const a = { id: `aut_${db.nextId}`, sandbox: p[0], ...body, harness: namedHarness(body.harness), ...automationStart(db, p[0], body), created_via: 'ui', next_run_at: body.enabled ? isoIn(5 * HOUR) : null, last_run: null };
   db.automations.push(a);
   const { sandbox: _s, ...out } = a;
   return json(201, out);
@@ -3099,7 +3108,7 @@ route('PUT', `/api/automations/${ID}`, ({ db, p, body }) => {
   // The stored choice sent back unchanged is kept unchecked, as the server does (SPEC-078).
   const same = Boolean(body.supertask) === Boolean(a.supertask) && (body.after_task_id || null) === (a.after_task_id || null) && (body.start_rule || null) === (a.start_rule || null) && Boolean(body.prepared) === Boolean(a.prepared);
   const start = same ? { supertask: Boolean(a.supertask), after_task_id: a.after_task_id || null, after_task_number: a.after_task_number ?? null, start_rule: a.start_rule || null, prepared: Boolean(a.prepared) } : automationStart(db, a.sandbox, body);
-  Object.assign(a, body, start, { next_run_at: body.enabled ? isoIn(5 * HOUR) : null });
+  Object.assign(a, body, start, { harness: namedHarness(body.harness || a.harness), next_run_at: body.enabled ? isoIn(5 * HOUR) : null });
   const { sandbox: _s, ...out } = a;
   return out;
 });
@@ -3130,7 +3139,7 @@ function automationTask(db, a, start) {
     : start.after_task_id ? db.tasks.find((t) => t.id === start.after_task_id) : null;
   const now = new Date().toISOString();
   const task = {
-    id, sandbox_id: a.sandbox, number, title: a.name, ...automationHarness(db, a), status: before ? 'chained' : start.prepared ? 'prepared' : 'queued', activity: null,
+    id, sandbox_id: a.sandbox, number, title: a.name, harness: namedHarness(a.harness), harness_choice: 'chosen', status: before ? 'chained' : start.prepared ? 'prepared' : 'queued', activity: null,
     branch: `feat/${number}-automation`, origin: 'automation', created_by: { login: db.me.user.login }, created_at: now, updated_at: now,
     archived: false, account_label: null, stepsList: [], model: 'claude-opus-4', effort: 'default', prompt: a.prompt,
     delivery: null, mode: 'goal', auto: null, supertask: start.supertask,
@@ -4205,7 +4214,9 @@ route('POST', `/api/admin/accounts/login/${ID}/cancel`, ({ db, p }) => {
   if (!session) fail(404, 'not_found', 'not found');
   if (!session.done) {
     db.loginCancels.push(p[0]);
-    session.end('cancelled', null);
+    // Like the server, a sign-in that already holds its credential is sealed (SPEC-515).
+    if (session.status === 'signed_in') session.succeed();
+    else session.end('cancelled', null);
   }
   return { status: session.status };
 });
@@ -5626,7 +5637,7 @@ route('GET', '/api/capacity', ({ db }) => {
     resumes_at: null,
     fallback_model: fallback ? 'claude-opus-5-5' : null,
     accounts: db.accounts.map((a) => ({
-      label: a.label, status: a.status, usage: a.usage, available: isAvailable(a),
+      label: a.label, provider: a.provider || 'anthropic', status: a.status, usage: a.usage, available: isAvailable(a),
       ...(admin ? { id: a.id, in_use_by: a.in_use_by, ...(a.email ? { email: a.email } : {}) } : {}),
     })),
     tokens: poolTokens(),
@@ -6589,7 +6600,8 @@ class ShellSession {
 
 /** Starts a sign-in for `accountId`, replacing (cancelling) one still running, as the server does. */
 function startLogin(db, accountId) {
-  for (const session of db.logins.values()) if (session.accountId === accountId && !session.done) session.end('cancelled', null);
+  // Like the server, a replaced sign-in that already holds its credential is sealed (SPEC-515).
+  for (const session of db.logins.values()) if (session.accountId === accountId && !session.done) { if (session.status === 'signed_in') session.succeed(); else session.end('cancelled', null); }
   db.nextId += 1;
   const loginId = `login_${accountId}_${db.nextId}`;
   db.logins.set(loginId, new LoginSession(db, accountId));
@@ -6603,6 +6615,8 @@ const GOOGLE_SIGN_IN_URL = `https://accounts.google.com/o/oauth2/v2/auth?access_
  * Fake provider login for the account login terminal: a fixed 1000×40 PTY; `state.status`
  * goes running → ok | error | cancelled and the exit frame carries the same status. Tokens are
  * masked. Enter signs in; the code `fail` makes the sign-in fail as the CLI's would (SPEC-243).
+ * An Antigravity sign-in says `signed_in` instead and runs on for the CLI's setup until it is
+ * ended through the cancel route, which then answers `ok` (SPEC-515).
  */
 /** Why the mock's sign-in fails: what the server's exit frame and a first sign-in's error say. */
 const SIGN_IN_FAILED = 'the sign-in ended without producing a token (exit code 1)';
@@ -6688,6 +6702,8 @@ class LoginSession {
   }
 
   finish() {
+    // The Antigravity CLI's setup after the sign-in takes its answers (SPEC-515).
+    if (this.status === 'signed_in') { this.input = ''; this.out('\r\n'); return; }
     const account = this.db.accounts.find((a) => a.id === this.accountId);
     if (this.input === 'fail') {
       this.out(`\r\n${c(203, this.codex() ? 'Error logging in with device code: the code was not approved.' : 'OAuth error: the authorization code was not accepted.')}\r\n`);
@@ -6704,7 +6720,21 @@ class LoginSession {
       this.end('error', 1, SIGN_IN_FAILED);
       return;
     }
-    this.out(this.google() ? `\r\n${c(114, '✔')} Signed in with Google.\r\n` : this.codex() ? `\r\n${c(114, '✔')} Successfully logged in.\r\n` : `\r\nToken: sk-ant-oat01-[REDACTED]\r\n${c(114, '✔')} Logged in. Credentials stored encrypted for this account.\r\n`);
+    if (this.google()) {
+      // Like agy: the token file is written now, and its setup goes on (SPEC-515).
+      this.input = '';
+      this.status = 'signed_in';
+      this.out(`\r\n${c(114, '✔')} Signed in with Google.\r\n Help improve Antigravity: may Google use your data to improve its models? (y/N) `);
+      if (this.ws) this.ws.push(JSON.stringify(this.state()));
+      return;
+    }
+    this.succeed();
+  }
+
+  /** The credential is sealed: the account is connected and the sign-in ends `ok`. */
+  succeed() {
+    const account = this.db.accounts.find((a) => a.id === this.accountId);
+    this.out(this.google() ? `\r\n${c(114, '✔')} Antigravity is set up.\r\n` : this.codex() ? `\r\n${c(114, '✔')} Successfully logged in.\r\n` : `\r\nToken: sk-ant-oat01-[REDACTED]\r\n${c(114, '✔')} Logged in. Credentials stored encrypted for this account.\r\n`);
     if (account) {
       this.db.unsignedAccounts.delete(account.id);
       Object.assign(account, { status: 'ok', last_error: null, usage: { primary: { used_percent: 3.0, resets_at: isoIn(5 * HOUR), window_minutes: 300 }, secondary: { used_percent: 1.0, resets_at: isoIn(7 * DAY), window_minutes: 10080 }, observed_at: new Date().toISOString() } });
@@ -7165,6 +7195,14 @@ export function createMockTransport(params) {
     const task = db.tasks.find((t) => t.sandbox_id === sandboxId && t.number === number);
     touch(db, task, { owner: { login: by }, controlRequest: null, controlFrom: null });
     emit(db, { type: 'task.control_taken_back', task_id: task.id, sandbox_id: sandboxId, number, title: task.title, by });
+  };
+  // Someone takes control of the viewer's task without asking (SPEC-510 TKC-002): the task changes
+  // and the server tells the viewer, as `App::take_task_control` does.
+  db.takeControl = (sandboxId, number, by) => {
+    const task = db.tasks.find((t) => t.sandbox_id === sandboxId && t.number === number);
+    const from = ownerOf(task).login;
+    touch(db, task, { owner: { login: by }, controlRequest: null, controlFrom: { login: from }, ownerAsksFirst: false });
+    emit(db, { type: 'task.control_taken', task_id: task.id, sandbox_id: sandboxId, number, title: task.title, by });
   };
   db.touchTask = (sandboxId, number, changes) => touch(db, db.tasks.find((t) => t.sandbox_id === sandboxId && t.number === number), changes);
   // An administrator connects a Claude account elsewhere (another tab, SPEC-246): it is signed in.

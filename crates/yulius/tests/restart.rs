@@ -690,10 +690,14 @@ fn wait_paced(port: u16, total: Duration, backoff_cap: Duration) -> (i32, String
 /// MSB-005: a wait whose deadline passes while Yulius is down ends 1, saying so.
 #[test]
 fn a_wait_ends_at_its_deadline_while_yulius_is_down() -> TestResult {
-    let port = std::net::TcpListener::bind("127.0.0.1:0")?
-        .local_addr()?
-        .port();
+    // A port bound and not listening refuses connections, as a stopped Yulius does, and stays
+    // this test's: a freed one was taken by another test's server, whose answer refused the
+    // token instead.
+    let down = tokio::net::TcpSocket::new_v4()?;
+    down.bind("127.0.0.1:0".parse()?)?;
+    let port = down.local_addr()?.port();
     let (code, said, _) = wait_at(port, Duration::from_secs(1));
+    drop(down);
     assert_eq!(code, 1, "{said}");
     assert!(said.contains("could not be reached for"), "{said}");
     Ok(())

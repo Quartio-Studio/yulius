@@ -4,6 +4,30 @@ Notable changes, newest first. Per-change detail lives in the merged pull reques
 evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-architecture.md)
 (sections 14 and 15).
 
+## 2026-11-19
+
+- The Antigravity sign-in window stays open for the CLI's setup (SPEC-515, task #497, #1421):
+  after the Google code, the Antigravity CLI goes on asking (its data-use choice and more), so the
+  server no longer stops it 5 s after its token file appears. The window says Antigravity is
+  signed in and offers Done, which seals the token file and connects the subscription (ADR-0369).
+- Subscription cards name their agent (SPEC-513, task #495): on the Subscriptions page, the
+  Status panel and the Dashboard, a badge under each subscription's name reads Claude, Codex or
+  Antigravity (the vendor, such as Google Gemini, on hover), before the email. The web mock's
+  capacity view carries each subscription's provider, as the server's does.
+- A task's agent is set, never drawn (SPEC-514, task #496, ADR-0368): a task started without
+  choosing an agent runs Claude Code (or the agent its model implies) instead of Claude Code or
+  Antigravity at random; a follow-up an agent creates runs that agent's own, and an automation
+  runs the agent it names, the ones saved as Random now Claude Code. The composer's no-choice
+  item is Default again and the automation editor has no Random. Tasks drawn before still say so.
+
+- Take control (SPEC-510, task #492, ADR-0365): on a teammate's task, Take control (in the task
+  view and the task menu, after a confirmation naming the owner) makes the task yours at once: it
+  acts on GitHub as you from then on. The previous owner is told wherever they are (their Telegram
+  chat too, as for a take-back) and can take it back. A playground's guest still asks. A person
+  who wants to be asked first turns on "Ask me before taking control of my tasks" in Settings;
+  others then request control and they hand it over or decline, as before.
+  `POST /api/tasks/{tid}/control/take`, `PUT /api/me/control`, schema 67.
+
 ## 2026-11-18
 
 - Subscription sign-ins start again (SPEC-509, task #491, #1414): login terminals are 1000

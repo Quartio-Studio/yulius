@@ -854,6 +854,34 @@ impl TaskStore for SqliteStore {
         .await
     }
 
+    async fn seize_control(
+        &self,
+        task: &TaskId,
+        from: &UserId,
+        to: &UserId,
+        at: Timestamp,
+    ) -> AppResult<bool> {
+        let (id, from, to) = (
+            task.as_str().to_owned(),
+            from.as_str().to_owned(),
+            to.as_str().to_owned(),
+        );
+        self.call_access(move |c| {
+            let n = c
+                .execute(
+                    "UPDATE tasks SET owner_id = ?3, control_requested_by = NULL, \
+                     control_requested_at = NULL, updated_at = ?4, \
+                     control_from = CASE WHEN control_from = ?3 THEN NULL ELSE ?2 END \
+                     WHERE id = ?1 AND owner_id = ?2 AND NOT EXISTS \
+                     (SELECT 1 FROM users WHERE id = ?2 AND control_ask_first = 1)",
+                    params![id, from, to, at.0],
+                )
+                .map_err(db)?;
+            Ok(n == 1)
+        })
+        .await
+    }
+
     async fn take_control(
         &self,
         task: &TaskId,
@@ -1201,19 +1229,6 @@ impl TaskStore for SqliteStore {
             .await?
             .into_iter()
             .next())
-    }
-
-    async fn record_harness_draw(&self, task: &TaskId, at: Timestamp) -> AppResult<()> {
-        let task = task.as_str().to_owned();
-        self.call(move |c| {
-            c.execute(
-                "INSERT OR IGNORE INTO task_harness_draws (task_id, drawn_at) VALUES (?1, ?2)",
-                params![task, at.0],
-            )
-            .map(|_| ())
-            .map_err(db)
-        })
-        .await
     }
 
     async fn harness_drawn(&self, task: &TaskId) -> AppResult<bool> {

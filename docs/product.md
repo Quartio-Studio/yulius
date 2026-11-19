@@ -19,13 +19,15 @@ It runs native Antigravity CLI sessions on Antigravity (Google) subscriptions to
 Carbon at high effort unless a task names another Gemini model (`F 2026-11-17 Antigravity`, task
 #487). An Antigravity subscription signs in with the CLI's own Google sign-in or a Gemini API key,
 an Antigravity task moves only between Antigravity subscriptions, and Yulius provides the pinned
-Antigravity CLI (1.5.10). A task or automation run without a chosen agent is drawn at random
-between Claude Code and Antigravity, among those with a usable subscription (the composer's and
-the automation editor's default, Random), so the two can be compared on the same mix of work; a
-task says whether its agent was drawn, and the analytics export lists it. An agent can always be
-chosen instead
+Antigravity CLI (1.5.10)
 ([SPEC-505](../.ai/specs/SPEC-505-implement-antigravity-cli-next-to-claude.md),
-[ADR-0361](decisions/0361-antigravity-is-a-third-harness-picked-at-random-by-default.md)).
+[ADR-0361](decisions/0361-antigravity-is-a-third-harness-picked-at-random-by-default.md)). A
+task's agent is set, never drawn: the one chosen, else the one its model implies, else Claude Code
+(the composer's Default); a follow-up an agent creates runs that agent's own, and an automation
+always runs the agent it names (`F 2026-11-19 Harness`,
+[SPEC-514](../.ai/specs/SPEC-514-make-sure-harnesses-doesnt-change-themse.md),
+[ADR-0368](decisions/0368-a-tasks-agent-is-set-never-drawn.md)). Tasks drawn at random while
+SPEC-505's draw existed still say so, and the analytics export lists it.
 
 The authoritative product brief is [SPEC-001](../.ai/specs/SPEC-001-yulius-product.md); this
 page is the short version for anyone who must know the whole product before building.
@@ -383,12 +385,15 @@ watching, steering and unblocking.
   Others
   watch it as its live transcript (printed as the Sessions view prints a session, in the
   terminal's colours, following its newest lines until they scroll up), see whose it is
-  in the view and in the sidebar, and can ask the owner for control, from the task's page or
-  its menu in a list; the owner hears of the request wherever they are (a notification, a
-  toast and a mark on the task's row) and hands it over or declines; once handed over, it acts
-  as the new owner, and whoever handed it over can take it back at any time without asking. No administrator takes a task
-  without asking; only a task whose owner can no longer act (a disabled account, no write
-  access) passes to the first person who asks.
+  in the view and in the sidebar, and can take control, from the task's page or its menu in a
+  list, after a confirmation naming the owner (SPEC-510): the task then acts on GitHub as them,
+  and the previous owner hears of it wherever they are and can take it back at any time. A
+  person who wants to be asked first turns on "Ask me before taking control of my tasks" in
+  Settings; others then ask them for control, the owner hears of the request wherever they are
+  (a notification, a toast and a mark on the task's row) and hands it over or declines; once
+  handed over, it acts as the new owner, and whoever handed it over can take it back at any time
+  without asking. A task whose owner can no longer act (a disabled account, no write access)
+  passes to the first person who takes or asks.
 - **Subscription pool**: Claude accounts are used as one self-managing pool, and Codex and
   Antigravity accounts each as one of their own (SPEC-503, SPEC-505); switches and pauses are invisible to agents. Each task shows the subscription it runs on, and a person can
   run it on another from the task ("Run #N on…"); removing a subscription moves its tasks, and a
@@ -426,7 +431,9 @@ watching, steering and unblocking.
   is left, how fast it burns, the tokens it used and what they would cost at Claude API list
   prices, with a 7-day chart for each. Administrators rename each subscription in place ("work
   Max", "personal") and see the email of its Claude account wherever it is named; when Claude
-  does not share it, they type it in place under the name (SPEC-463). A subscription is connected
+  does not share it, they type it in place under the name (SPEC-463). Every card says whose
+  subscription it is with a badge under its name (Claude, Codex or Antigravity, the vendor on
+  hover; SPEC-513). A subscription is connected
   with Claude's own sign-in in a terminal on the page, or by pasting the token
   `claude setup-token` printed on any computer (its owner's laptop, say); a card's "Paste a new
   token" signs one in again the same way (SPEC-502). Connecting one
@@ -659,10 +666,10 @@ watching, steering and unblocking.
   token), chooses what reaches it (Needs you by default; Done; failed or stopped; subscription
   problems for administrators) and unlinks there or with `/stop`. Only what their notification
   center would show them is sent (a subscription switch is no news, a project's Docker trouble is
-  one message however many tasks ask, a request for control of their task reaches them under
-  Needs you), with a link to the task, agent secrets removed, at most five
-  messages a minute with the rest in one summary. The server asks Telegram for messages, so no
-  inbound port is needed. Replies and new tasks from Telegram are part 2.
+  one message however many tasks ask, a request for control of their task, or a teammate taking it
+  or taking it back, reaches them under Needs you), with a link to the task, agent secrets
+  removed, at most five messages a minute with the rest in one summary. The server asks Telegram
+  for messages, so no inbound port is needed. Replies and new tasks from Telegram are part 2.
 
 ## Principles
 

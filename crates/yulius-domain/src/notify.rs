@@ -289,6 +289,35 @@ pub fn control_text(
     (headline, truncate(&text))
 }
 
+/// A take of a person's task, for them (SPEC-510 TKC-002): `back` when its giver took it back
+/// (SPEC-490 OWN-010). (headline, text) before redaction, in the notification center's words.
+#[must_use]
+pub fn taken_text(
+    by: &str,
+    number: u32,
+    title: &str,
+    sandbox: &str,
+    link: &str,
+    back: bool,
+) -> (String, String) {
+    let (verb, then) = if back {
+        ("took back control", "It acts on GitHub as them again")
+    } else {
+        (
+            "took control",
+            "It acts on GitHub as them now; you can take it back",
+        )
+    };
+    let headline = format!("@{} {verb} of #{number} {}", one_line(by), one_line(title));
+    let text = [
+        headline.clone(),
+        format!("{then} · {}", one_line(sandbox)),
+        link.to_owned(),
+    ]
+    .join("\n");
+    (headline, truncate(&text))
+}
+
 /// Backticks around code are dropped from plain text (SPEC-327).
 fn plain(text: &str) -> String {
     text.replace('`', "")
@@ -626,6 +655,17 @@ mod tests {
 
     #[test]
     fn a_control_request_names_who_asks() {
+        let taken = taken_text("bob", 7, "Fix\nit", "Shop", "L", false);
+        assert_eq!(
+            taken.1,
+            "@bob took control of #7 Fix it\nIt acts on GitHub as them now; you can take it back · \
+             Shop\nL"
+        );
+        let back = taken_text("bob", 7, "Fix", "Shop", "L", true);
+        assert_eq!(
+            back.1,
+            "@bob took back control of #7 Fix\nIt acts on GitHub as them again · Shop\nL"
+        );
         let (headline, text) = control_text("bob", 7, "Fix\nit", "Shop", "L");
         assert_eq!(headline, "@bob asks for control of #7 Fix it");
         assert_eq!(
