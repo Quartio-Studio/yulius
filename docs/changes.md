@@ -6,6 +6,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-19
 
+- Claude Code's scheduled wake-ups preserve unsent drafts, achieved goals and open requests for a person, including when the hook carries plain text (SPEC-541, #1225).
 - A Claude run refused after its subscription signs in again now moves or waits while the new
   sign-in stays available (SPEC-539, #1365).
 - Stopping a disconnected run now terminates its detached host even when the agent has just

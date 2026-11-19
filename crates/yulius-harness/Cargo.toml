@@ -24,6 +24,7 @@ sha2 = { workspace = true }
 nix = { workspace = true }
 # Unpredictable names of skill staging folders (SPEC-220).
 uuid = { workspace = true }
+serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 # The signed-in user of a Codex `auth.json` (its `id_token` claims, SPEC-503 CDX-006).
