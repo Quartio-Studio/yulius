@@ -76,6 +76,19 @@ test('the shipped automations are the defaults, switched on in place, and Delete
   expect(await namesIn(browser, 'automations-custom')).toEqual(CUSTOM);
 });
 
+test('a new automation suggests recipe names until a custom name is entered', async ({ app, screen }) => {
+  await app.open(mock('/s/studio/automations/new'));
+  const name = screen.getByRole('textbox', 'Automation name');
+  const recipe = screen.getByRole('radiogroup', 'Recipe');
+  await expect(recipe.getByRole('radio', /^Daily feedback/)).toHaveAttribute('aria-checked', 'true');
+  await expect(name).toHaveValue('Daily feedback');
+  await recipe.getByRole('radio', /^Dependency updates/).click();
+  await expect(name).toHaveValue('Dependency updates');
+  await name.fill('My weekly audit');
+  await recipe.getByRole('radio', /^Weekly summary/).click();
+  await expect(name).toHaveValue('My weekly audit');
+});
+
 test('the builder’s Delete of a default says it is reset, of a custom one not (AUT-035)', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/automations/aut_3'));
   await expect(screen.getByRole('textbox', 'Automation name')).toHaveValue('Work through open issues');
