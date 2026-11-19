@@ -1,6 +1,6 @@
 ---
 yulius-task: bad1fa89-4834-4383-9dc9-6d9a976477d4
-status: in-progress
+status: done
 ---
 
 # SPEC-529 — Scrolling a task terminal keeps the prompt untouched
@@ -23,7 +23,7 @@ Task #511 shows the held-message warning on the Codex session for PR #1439. The 
 - [x] Reproduce wheel-generated arrow keys in a task terminal
 - [x] Specify the scroll behavior and commit the failing browser regression
 - [x] Keep passive scrolling out of the task prompt and verify real keyboard input
-- [ ] Independent review and green delivery to dev
+- [x] Independent review and verification for delivery to dev
 
 ## Acceptance criteria
 
@@ -46,3 +46,5 @@ Prevent xterm's synthesized history key at the task view. Labelling that arrow a
 - Review round 1 requested coverage for independent shells. A Chromium shell test passed with the task-only guard. In an isolated copy with that guard removed, the same test failed because the shell received neither wheel arrow.
 - `scripts/dev quick` passed. `scripts/dev mutants` found no Rust changes to mutate. The browser regressions caught the original behavior and the removal of the task-only restriction.
 - The local Vidoc scan was unrun (exit 2, HTTP 401).
+- Independent review approved `3a0580a4709bfa092cb955ee02bc88fc53bc7955` after the reviewer ran five Chromium controls covering the task, shell, native mouse tracking and scrollback. The screenshot does not establish the original gesture or buffer mode.
+- Full browser suite on the fixed product code: 1,119 passed, one model-backed test skipped, zero failures. The independent-shell control added during review also passed separately.
