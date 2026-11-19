@@ -29,7 +29,8 @@ the rest of ADR-0361 stands.
   `automation_create` without an agent, use the calling task's agent; without a calling task
   (the Superagent), Claude Code.
 - **An automation names its agent.** `auto` saves as `claude`; the automations stored as `auto`
-  became `claude` (migration 0068), so every run of an automation runs the same agent.
+  became `claude` (migration 0068), and an update that names no agent (the Automations list's
+  enable switch) keeps the stored one, so every run of an automation runs the same agent.
 - **The UI.** The composer's and Settings' no-choice item is Default (Claude Code, Opus 5.5); the
   automation editor offers Claude Code, Codex and Antigravity, Claude Code first. A chosen model
   stays the browser's default for the next tasks, as before.

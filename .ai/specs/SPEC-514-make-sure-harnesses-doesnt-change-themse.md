@@ -1,6 +1,6 @@
 ---
 yulius-task: 576c1ff0-1205-45e0-83e2-d1af141d2544
-status: in-progress
+status: done
 ---
 
 # SPEC-514: a task's agent is set, never drawn
@@ -49,8 +49,8 @@ because it's unpredictable. A harness is set for a task".
 - [x] An automation runs the agent it names: stored auto becomes Claude Code (migration 0068)
 - [x] The composer, Settings and automation editor default to Claude Code; the mock matches
 - [x] ADR-0368 and the documents say a task's agent is set, never drawn
-- [ ] Independent review in a fresh session, findings fixed test-first
-- [ ] Every gate green, docs and the changes log updated
+- [x] Independent review in a fresh session, findings fixed test-first
+- [x] Every gate green, docs and the changes log updated
 
 ## Acceptance criteria
 
@@ -92,3 +92,26 @@ because it's unpredictable. A harness is set for a task".
   dropping them would relabel those tasks as chosen in the analytics.
 - **`auto` stays accepted** on the API and tools (it was the documented default since slice E) and
   means "the default agent", never a draw.
+
+## Evidence
+
+- Red first: `harness_pin::*` (6 tests) all failed on the base (drawn `antigravity`/`random`,
+  `auto` stored, a no-agent task created with only Antigravity usable);
+  `an_automation_keeps_its_agent_through_an_update` failed before the round-1 fix
+  ("enabled false": `claude` instead of `antigravity`).
+- `cargo nextest` over harness_pin, automations, manage_tools, cross_sandbox, analytics,
+  agent_tools, superagent, ui_contract, task_control and the yulius-store, -domain and -app units
+  after the dev merge: 1368 passed; after the round-1 fixes, harness_pin, automations,
+  manage_tools, ui_contract and the app's automation units: 60 passed.
+- Store: `version_sixty_seven_automations_on_auto_run_claude_code` (an `auto` row becomes
+  `claude`) and the pinned-versions test (0067 at 67, 0068 at 68) pass.
+- e2e: antigravity, codex, superagent-requests 42 passed; antigravity, codex, automations 38
+  passed after round 1.
+- `scripts/dev quick` passed; `cargo clippy -D warnings` on the touched crates passed.
+- Yulius CI on 478d66846 passed (security skipped: Vidoc refused the instance key, HTTP 401;
+  unrun, not passed).
+- Review: round 1 (Fable 5.2) requested changes: an update without an agent reset it to Claude
+  Code (the list's enable switch), no PUT test, two dropped PIN-005 assertions, two nits; all
+  fixed. Round 2 approved d811439de with three nits: the index order and the ADR clause fixed
+  here; `editable()` sending `harness` is kept as harmless (the server test holds the rule).
+- Not tested: a live Antigravity (Google) account; the change only picks the agent at creation.
