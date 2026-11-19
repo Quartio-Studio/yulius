@@ -285,6 +285,10 @@ pub struct NeedsYouView {
     pub link: Option<String>,
     /// When it was asked (RFC 3339).
     pub at: String,
+    /// When it was asked, in milliseconds: what an answer names as the request it answers
+    /// (SPEC-512 ANS-004).
+    #[serde(default)]
+    pub at_ms: i64,
     /// The sandbox-level problem it is about (`docker`), shared with the sandbox's other tasks
     /// that name it: one card shows them all (SPEC-494 DFJ-011).
     #[serde(default)]
@@ -293,6 +297,14 @@ pub struct NeedsYouView {
     /// asked (RFC 3339), the same for all of them: one notification per such episode.
     #[serde(default)]
     pub episode: Option<String>,
+    /// Whom besides the owner it waits for, GitHub logins (SPEC-512 ANS-001): they and the owner
+    /// answer it; empty when it names nobody.
+    #[serde(default)]
+    pub who: Vec<String>,
+    /// Whether it named people, still or before the owner withdrew them: then only its owner
+    /// and `who` answer it (ANS-002).
+    #[serde(default)]
+    pub named: bool,
 }
 
 /// Why a task was flagged `needs_attention` (SPEC-472, ADR-0306).
@@ -604,6 +616,18 @@ pub struct QueueMessage {
 pub struct AnswerNeedsYou {
     /// The answer, typed into the task's session as one labelled message.
     pub text: String,
+    /// The request it answers, as its `at_ms` reads (SPEC-512 ANS-004): one replaced since is
+    /// not answered by it.
+    #[serde(default)]
+    pub asked_at_ms: Option<i64>,
+}
+
+/// `POST /api/tasks/{tid}/needs-you/withdraw` (SPEC-512 ANS-005): the owner withdraws a person
+/// the open request names.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WithdrawNeedsYou {
+    /// The GitHub login to withdraw.
+    pub login: String,
 }
 
 /// Answer to a queued message: the request as the agent will get it.

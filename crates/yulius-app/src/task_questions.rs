@@ -223,6 +223,63 @@ impl App {
         Ok(crate::attention::shown_line(&request.action, SHOWN_TEXT_CHARS).unwrap_or_default())
     }
 
+    /// Withdraws `login` from the people `id`'s open request names (SPEC-512 ANS-005), for the
+    /// task's owner: they no longer answer it, and the request is its owner's and the people
+    /// still named. Audited `task.needs_you.withdrawn`. Answers the request's view.
+    ///
+    /// # Errors
+    /// `Forbidden` for anyone but the owner; `Conflict` with no request open or one that does
+    /// not name `login`.
+    pub async fn withdraw_needs_you(
+        &self,
+        ctx: &AuthContext,
+        id: &str,
+        login: &str,
+    ) -> AppResult<yulius_contracts::api::tasks::NeedsYouView> {
+        let task = self.load_task(ctx, id, Action::Work).await?;
+        let store = &self.deps.store;
+        let login = login.trim().trim_start_matches('@').to_lowercase();
+        let Some(read) = store.task_needs_you(&task.id).await? else {
+            return Err(AppError::Conflict(format!(
+                "task #{} asks nobody anything now: there is nobody to withdraw",
+                task.number
+            )));
+        };
+        if !read.named.who.contains(&login) {
+            return Err(AppError::Conflict(format!(
+                "task #{}'s question does not name @{login}",
+                task.number
+            )));
+        }
+        let mut request = read.clone();
+        request.named.who.retain(|named| named != &login);
+        request.named.withdrawn.push(login.clone());
+        // Only the request read: a new one, an answer or another withdrawal meanwhile wins.
+        if !store
+            .replace_task_needs_you(&task.id, &read, &request, self.now())
+            .await?
+        {
+            return Err(AppError::Conflict(format!(
+                "task #{}'s question changed meanwhile: read it again",
+                task.number
+            )));
+        }
+        if let Err(err) = store
+            .audit(
+                self.now(),
+                &self.login_of(&ctx.user.id).await,
+                "task.needs_you.withdrawn",
+                Some(task.id.as_str()),
+                Some(&json!({"login": login, "action": request.action}).to_string()),
+            )
+            .await
+        {
+            tracing::warn!(task = %task.id, error = %err, "a withdrawal was not audited");
+        }
+        self.publish_task(&task.id).await;
+        Ok(request.view())
+    }
+
     /// Decides the prompt Yulius held in `task` (TSK-013), for the task's owner, as its card
     /// does (QST-005): `action` is one of [`HELD_PROMPT_ACTIONS`]. The page's function runs,
     /// with its checks and its audit.

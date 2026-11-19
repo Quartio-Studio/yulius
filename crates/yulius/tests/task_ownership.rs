@@ -1454,6 +1454,7 @@ async fn ask(h: &Harness, id: &str) -> TestResult {
         link: None,
         at: 1,
         cause: None,
+        named: Default::default(),
     };
     h.store
         .set_task_needs_you(&TaskId::parse(id)?, Some(&asked), h.app.now())
@@ -1672,5 +1673,400 @@ async fn an_answer_decides_on_the_task_as_it_is_after_the_access_check() -> Test
         "{}",
         refused.body
     );
+    Ok(())
+}
+
+/// What `answer` tells about a call that passed every check and reached the session: this
+/// fixture's run has no process, so its typing ends "no live session", or "the task is not
+/// running" once something made the task's runtime.
+fn reached_the_session(r: &crate::support::Resp) -> bool {
+    let said = r.body.to_string();
+    r.status == 409
+        && (said.contains("no live session") || said.contains("the task is not running"))
+}
+
+/// `needs_you` raised by task `t1`'s agent (live run token `tt`) with `args`.
+async fn agent_asks(
+    h: &Harness,
+    args: serde_json::Value,
+) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+    mcp_tool(h, "tt", "needs_you", args).await
+}
+
+/// The request's `at_ms` as the task's summary shows it, and whom it names.
+async fn asked_of(
+    f: &Fixture,
+    who: &Creds,
+) -> Result<(i64, Vec<String>), Box<dyn std::error::Error>> {
+    let shown = call(
+        &f.h.router,
+        Method::GET,
+        &format!("/api/tasks/{}", id_of(f)),
+        None,
+        who,
+    )
+    .await?;
+    let asked = &shown.body["needs_you"];
+    let at = asked["at_ms"].as_i64().ok_or("no request")?;
+    let named = asked["who"]
+        .as_array()
+        .map(|list| {
+            list.iter()
+                .filter_map(|v| v.as_str().map(str::to_owned))
+                .collect()
+        })
+        .unwrap_or_default();
+    Ok((at, named))
+}
+
+/// SPEC-512 ANS-001 (#1418): a request names whom it waits for; a login without write access to
+/// the project, or no person of the instance, refuses the whole request, saying which; the owner
+/// named is no one extra.
+#[tokio::test]
+async fn a_needs_you_names_who_it_waits_for() -> TestResult {
+    let f = fixture().await?;
+    let carol = seed_github_user(&f.h, "u-c", "carol").await?;
+    let _ = carol;
+    f.h.github.set_perm("carol", "acme/repo", perms("read"));
+    let reader = agent_asks(
+        &f.h,
+        json!({"action": "Decide M1-M6", "decision": true, "who": ["bob", "carol"]}),
+    )
+    .await?;
+    assert_eq!(reader["isError"], true, "{reader}");
+    assert!(reader.to_string().contains("@carol"), "{reader}");
+    assert!(reader.to_string().contains("write access"), "{reader}");
+    let nobody = agent_asks(&f.h, json!({"action": "Decide", "who": ["mallory"]})).await?;
+    assert_eq!(nobody["isError"], true, "{nobody}");
+    assert!(nobody.to_string().contains("@mallory"), "{nobody}");
+    assert!(
+        f.h.store.task_needs_you(&f.task.id).await?.is_none(),
+        "a refused request records nothing"
+    );
+    let named = agent_asks(
+        &f.h,
+        json!({"action": "Decide M1-M6", "decision": true, "who": ["@Bob", "alice", "bob"]}),
+    )
+    .await?;
+    assert_eq!(named["isError"], false, "{named}");
+    let (_, who) = asked_of(&f, &f.alice).await?;
+    assert_eq!(who, ["bob"], "the owner is dropped, a name counted once");
+    Ok(())
+}
+
+/// SPEC-512 ANS-002, ANS-003 (#1418): a named request is answered by its owner and whom it
+/// names, on the page and through `task_message`; another writer is refused with whom it asks.
+/// A request that names nobody stays any writer's (ADR-0370).
+#[tokio::test]
+async fn a_named_request_is_answered_by_whom_it_names() -> TestResult {
+    let f = fixture().await?;
+    let t1 = id_of(&f).to_owned();
+    let dave = seed_github_user(&f.h, "u-d", "dave").await?;
+    f.h.github.set_perm("dave", "acme/repo", perms("write"));
+    // Unnamed: any writer answers.
+    ask(&f.h, &t1).await?;
+    assert!(reached_the_session(
+        &answer(&f.h, &t1, &dave, "Frankfurt").await?
+    ));
+    // Named: Bob and the owner answer, Dave is refused.
+    let named = agent_asks(&f.h, json!({"action": "Decide M1-M6", "who": ["bob"]})).await?;
+    assert_eq!(named["isError"], false, "{named}");
+    let refused = answer(&f.h, &t1, &dave, "M1: yes").await?;
+    assert_eq!(refused.status, 403, "{}", refused.body);
+    assert!(
+        refused.body.to_string().contains("@bob"),
+        "{}",
+        refused.body
+    );
+    assert!(reached_the_session(
+        &answer(&f.h, &t1, &f.bob, "M1: yes").await?
+    ));
+    assert!(reached_the_session(
+        &answer(&f.h, &t1, &f.alice, "O6: no").await?
+    ));
+    // Through Bob's own agent or Superagent: the same answer.
+    let caller = |user: &str, login: &str| -> Result<_, Box<dyn std::error::Error>> {
+        Ok(yulius_app::coordination::ProjectCaller {
+            sandbox: yulius_domain::ids::SandboxId::parse("s1")?,
+            user: UserId::parse(user)?,
+            task: None,
+            channel: yulius_app::coordination::Channel::Superagent,
+            actor: format!("cockpit:{login}"),
+            detail: json!({"via": "cockpit", "shell": "sh-test"}),
+        })
+    };
+    let by_bob =
+        f.h.app
+            .tool_task_message(
+                &caller("u-b", "bob")?,
+                &json!({"task_id": t1, "text": "M2: no"}),
+            )
+            .await;
+    assert!(
+        matches!(&by_bob, Err(yulius_app::error::AppError::Conflict(m))
+            if m.contains("no live session") || m.contains("the task is not running")),
+        "{by_bob:?}"
+    );
+    let by_dave =
+        f.h.app
+            .tool_task_message(
+                &caller("u-d", "dave")?,
+                &json!({"task_id": t1, "text": "M2: no"}),
+            )
+            .await;
+    assert!(
+        matches!(&by_dave, Err(yulius_app::error::AppError::Forbidden(m)) if m.contains("@bob")),
+        "{by_dave:?}"
+    );
+    // With nothing asked, a message is the owner's as before.
+    f.h.store
+        .set_task_needs_you(&f.task.id, None, f.h.app.now())
+        .await?;
+    let plain =
+        f.h.app
+            .tool_task_message(
+                &caller("u-b", "bob")?,
+                &json!({"task_id": t1, "text": "go on"}),
+            )
+            .await;
+    assert!(
+        matches!(&plain, Err(yulius_app::error::AppError::Forbidden(m)) if m.contains("@alice")),
+        "{plain:?}"
+    );
+    Ok(())
+}
+
+/// `POST /api/tasks/t1/needs-you/withdraw` of Bob by `who` (SPEC-512 ANS-005).
+async fn withdraw_bob(
+    f: &Fixture,
+    who: &Creds,
+) -> Result<crate::support::Resp, Box<dyn std::error::Error>> {
+    call(
+        &f.h.router,
+        Method::POST,
+        &format!("/api/tasks/{}/needs-you/withdraw", id_of(f)),
+        Some(json!({"login": "bob"})),
+        who,
+    )
+    .await
+}
+
+/// SPEC-512 ANS-004, ANS-005 (#1418): an answer to a request that was replaced, or by a person
+/// the owner withdrew, is refused saying which; only the owner withdraws, and it is audited.
+#[tokio::test]
+async fn an_answer_to_a_replaced_or_withdrawn_request_is_refused() -> TestResult {
+    let f = fixture().await?;
+    let t1 = id_of(&f).to_owned();
+    // An earlier request naming Bob (asked at 1 ms, so the next one's time differs).
+    let earlier = yulius_app::needs_you::NeedsYouRecord {
+        action: "Decide M1".into(),
+        happened: None,
+        problem: None,
+        decision: true,
+        link: None,
+        at: 1,
+        cause: None,
+        named: yulius_app::needs_you::Named {
+            who: vec!["bob".into()],
+            withdrawn: Vec::new(),
+        },
+    };
+    f.h.store
+        .set_task_needs_you(&f.task.id, Some(&earlier), f.h.app.now())
+        .await?;
+    let (first, _) = asked_of(&f, &f.bob).await?;
+    // A new request replaces it.
+    agent_asks(&f.h, json!({"action": "Decide M2", "who": ["bob"]})).await?;
+    let stale = call(
+        &f.h.router,
+        Method::POST,
+        &format!("/api/tasks/{t1}/needs-you/answer"),
+        Some(json!({"text": "M1: yes", "asked_at_ms": first})),
+        &f.bob,
+    )
+    .await?;
+    assert_eq!(stale.status, 409, "{}", stale.body);
+    assert!(
+        stale.body.to_string().contains("replaced"),
+        "{}",
+        stale.body
+    );
+    let (current, _) = asked_of(&f, &f.bob).await?;
+    let fresh = call(
+        &f.h.router,
+        Method::POST,
+        &format!("/api/tasks/{t1}/needs-you/answer"),
+        Some(json!({"text": "M2: yes", "asked_at_ms": current})),
+        &f.bob,
+    )
+    .await?;
+    assert!(reached_the_session(&fresh), "{}", fresh.body);
+    // Only the owner withdraws.
+    assert_eq!(withdraw_bob(&f, &f.bob).await?.status, 403);
+    let withdrawn = withdraw_bob(&f, &f.alice).await?;
+    assert_eq!(withdrawn.status, 200, "{}", withdrawn.body);
+    let (_, named) = asked_of(&f, &f.alice).await?;
+    assert!(named.is_empty(), "{named:?}");
+    let refused = answer(&f.h, &t1, &f.bob, "M2: yes").await?;
+    assert_eq!(refused.status, 403, "{}", refused.body);
+    assert!(
+        refused.body.to_string().contains("withdrew"),
+        "{}",
+        refused.body
+    );
+    assert!(reached_the_session(
+        &answer(&f.h, &t1, &f.alice, "M2: yes").await?
+    ));
+    assert_eq!(
+        audited(&f.h, &t1, "task.needs_you.withdrawn").await?,
+        1,
+        "the withdrawal is audited"
+    );
+    Ok(())
+}
+
+/// SPEC-512 ANS-006 (#1418): a person a request names answers it and nothing else: terminal
+/// input, Continue and merges stay the owner's; a stop is anyone's who may work there
+/// (ADR-0331).
+#[tokio::test]
+async fn a_named_person_steers_nothing_else() -> TestResult {
+    let f = fixture().await?;
+    agent_asks(&f.h, json!({"action": "Decide M1", "who": ["bob"]})).await?;
+    let bob = auth(&f.h, "u-b").await?;
+    let watching = f.h.app.terminal_open(&bob, id_of(&f), None).await?;
+    assert!(!watching.can_write);
+    let typed =
+        f.h.app
+            .terminal_input(&bob, &watching, b"yes\r", false)
+            .await;
+    assert!(typed.is_err(), "{typed:?}");
+    for (method, path, body) in steering(id_of(&f)) {
+        if !(path.ends_with("/continue") || path.ends_with("/delivery/merge")) {
+            continue;
+        }
+        let refused = call(&f.h.router, method.clone(), &path, body, &f.bob).await?;
+        assert_eq!(refused.status, 403, "{method} {path}: {}", refused.body);
+    }
+    let stop = task_call(&f, Method::POST, "/stop", &f.bob).await?;
+    assert!(stop.status.is_success(), "{}", stop.body);
+    Ok(())
+}
+
+/// SPEC-512 ANS-001, ANS-005 (review of part 2): more than ten names, or a disabled person,
+/// refuse the request; a withdrawal with no request, or of a login it does not name, is 409; a
+/// withdrawn person's own agent is refused too.
+#[tokio::test]
+async fn naming_and_withdrawing_refuse_what_cannot_hold() -> TestResult {
+    let f = fixture().await?;
+    let t1 = id_of(&f).to_owned();
+    let eleven: Vec<String> = (0..11).map(|i| format!("p{i}")).collect();
+    let many = agent_asks(&f.h, json!({"action": "Decide", "who": eleven})).await?;
+    assert_eq!(many["isError"], true, "{many}");
+    assert!(many.to_string().contains("at most 10"), "{many}");
+    let erin = seed_github_user(&f.h, "u-e", "erin").await?;
+    let _ = erin;
+    f.h.github.set_perm("erin", "acme/repo", perms("write"));
+    disable(&f.h, "u-e").await?;
+    let disabled = agent_asks(&f.h, json!({"action": "Decide", "who": ["erin"]})).await?;
+    assert_eq!(disabled["isError"], true, "{disabled}");
+    assert!(disabled.to_string().contains("@erin"), "{disabled}");
+    // Nothing asked: nobody to withdraw.
+    assert_eq!(withdraw_bob(&f, &f.alice).await?.status, 409);
+    // A request that does not name Bob.
+    agent_asks(&f.h, json!({"action": "Decide", "who": []})).await?;
+    let not_named = withdraw_bob(&f, &f.alice).await?;
+    assert_eq!(not_named.status, 409, "{}", not_named.body);
+    assert!(
+        not_named.body.to_string().contains("does not name @bob"),
+        "{}",
+        not_named.body
+    );
+    // Bob named, then withdrawn: his own agent's message is refused saying so.
+    agent_asks(&f.h, json!({"action": "Decide", "who": ["bob"]})).await?;
+    assert_eq!(withdraw_bob(&f, &f.alice).await?.status, 200);
+    let caller = yulius_app::coordination::ProjectCaller {
+        sandbox: yulius_domain::ids::SandboxId::parse("s1")?,
+        user: UserId::parse("u-b")?,
+        task: None,
+        channel: yulius_app::coordination::Channel::Remote,
+        actor: "remote:bob".into(),
+        detail: json!({"via": "remote"}),
+    };
+    let refused =
+        f.h.app
+            .tool_task_message(&caller, &json!({"task_id": t1, "text": "M1: yes"}))
+            .await;
+    assert!(
+        matches!(&refused, Err(yulius_app::error::AppError::Forbidden(m)) if m.contains("withdrew you")),
+        "{refused:?}"
+    );
+    Ok(())
+}
+
+/// SPEC-512 ANS-001 (review of part 2): when GitHub does not answer, a named person's access is
+/// not judged "none": the request is refused saying it could not be checked now.
+#[tokio::test]
+async fn a_name_whose_access_cannot_be_checked_is_said_so() -> TestResult {
+    let f = fixture().await?;
+    f.h.github
+        .fail_permissions
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let asked = agent_asks(&f.h, json!({"action": "Decide", "who": ["bob"]})).await?;
+    f.h.github
+        .fail_permissions
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+    assert_eq!(asked["isError"], true, "{asked}");
+    let said = asked.to_string();
+    assert!(said.contains("could not be checked now"), "{said}");
+    assert!(!said.contains("has no write access"), "{said}");
+    Ok(())
+}
+
+/// SPEC-512 ANS-001 (review round 3 of part 2): a person with no usable GitHub sign-in cannot
+/// be named until they sign in again; a task whose run holds the owner's personal secrets
+/// names nobody else, since only its owner can answer it.
+#[tokio::test]
+async fn names_that_could_never_answer_are_refused_with_why() -> TestResult {
+    let f = fixture().await?;
+    // Frank has an account but no GitHub sign-in stored.
+    let frank = yulius_app::model::UserRecord {
+        id: UserId::parse("u-f")?,
+        github_login: Some("frank".into()),
+        github_id: None,
+        display_name: "Frank".into(),
+        avatar_url: None,
+        is_superadmin: false,
+        is_instance_admin: false,
+        password_hash: None,
+        created_at: yulius_domain::time::Timestamp(1),
+        disabled_at: None,
+    };
+    f.h.store.insert_user(&frank).await?;
+    f.h.github.set_perm("frank", "acme/repo", perms("write"));
+    let unsigned = agent_asks(&f.h, json!({"action": "Decide", "who": ["frank"]})).await?;
+    assert_eq!(unsigned["isError"], true, "{unsigned}");
+    assert!(
+        unsigned
+            .to_string()
+            .contains("must sign in to Yulius again"),
+        "{unsigned}"
+    );
+    // Alice's personal secret reaches the run: nobody else can answer, so nobody is named.
+    let secret = call(
+        &f.h.router,
+        Method::POST,
+        "/api/sandboxes/s1/agent-secrets",
+        Some(
+            json!({"scope": "personal", "name": "ALICE_TOKEN", "value": "alice-personal-71c0ffee",
+            "hosts": ["api.alice.test"], "injection": "bearer"}),
+        ),
+        &f.alice,
+    )
+    .await?;
+    assert_eq!(secret.status, 201, "{}", secret.body);
+    let personal = agent_asks(&f.h, json!({"action": "Decide", "who": ["bob"]})).await?;
+    assert_eq!(personal["isError"], true, "{personal}");
+    assert!(personal.to_string().contains("personal"), "{personal}");
+    assert!(f.h.store.task_needs_you(&f.task.id).await?.is_none());
     Ok(())
 }

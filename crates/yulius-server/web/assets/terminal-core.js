@@ -490,6 +490,11 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
   // horizontal swipes stay with the browser (#78): xterm would cancel them even when it does not
   // report them, so they never reach it.
   const programHasMouse = () => term.modes.mouseTrackingMode !== 'none';
+  if (topOffer) {
+    // In a task with no scrollback or mouse reporting, xterm's wheel fallback sends history
+    // keys into the prompt. The viewer can open the session history from the wheel offer.
+    term.attachCustomWheelEventHandler(() => term.buffer.active.type !== 'alternate' || programHasMouse());
+  }
   /** The key that takes the mouse back from the program: Option on macOS, Shift elsewhere (xterm). */
   const pageKey = (event) => (IS_MAC ? event.altKey : event.shiftKey);
   // A plain wheel turn reaches the program as one report per row it covers, as Alacritty, kitty
@@ -503,7 +508,7 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
   // Claude Code shows a session only from its last compaction, and a screen without scrollback
   // has nothing above it: a turn up that moves nothing reached the top (SPEC-326 HIS-001). xterm
   // scrolls a normal buffer itself, so its first line is the top. Elsewhere the program moves the
-  // screen (wheel reports, or arrow keys on the alternate screen): a turn after which the upper half
+  // screen through wheel reports: a turn after which the upper half
   // stays as it was did not move it. The lower half holds the spinner and the prompt, which change
   // while the agent works. Turns closer than TOP_SETTLE_MS are one gesture, compared with the
   // screen at its start and at its last turn: the program's answer to a turn arrives a round trip

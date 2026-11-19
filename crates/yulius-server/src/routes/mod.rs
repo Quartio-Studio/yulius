@@ -163,6 +163,10 @@ pub fn public() -> Router<AppState> {
             "/api/tasks/{tid}/needs-you/answer",
             post(tasks::answer_needs_you),
         )
+        .route(
+            "/api/tasks/{tid}/needs-you/withdraw",
+            post(tasks::withdraw_needs_you),
+        )
         .route("/api/tasks/{tid}/terminal", get(terminal::terminal))
         .route("/api/events", get(events::events))
         .route(

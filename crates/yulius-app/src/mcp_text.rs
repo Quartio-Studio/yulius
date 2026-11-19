@@ -913,6 +913,24 @@ fn waits_why(task: &Value) -> Vec<String> {
         if let Some(link) = text(asked, "link") {
             part.push_str(&format!(" (where: {link})"));
         }
+        // Whom it waits for besides its owner (SPEC-512 ANS-001): only they and the owner answer.
+        if asked.get("named").and_then(Value::as_bool) == Some(true) {
+            let who: Vec<String> = asked
+                .get("who")
+                .and_then(Value::as_array)
+                .map(|list| {
+                    list.iter()
+                        .filter_map(Value::as_str)
+                        .map(|login| format!("@{login}"))
+                        .collect()
+                })
+                .unwrap_or_default();
+            if who.is_empty() {
+                part.push_str(" (answered by its owner only)");
+            } else {
+                part.push_str(&format!(" (answered by its owner and {})", who.join(", ")));
+            }
+        }
         // A problem of the whole sandbox, shared with its other tasks that name it (SPEC-494).
         if let Some(cause) = text(asked, "cause") {
             part.push_str(&format!(" (shared problem of the sandbox: {cause})"));
@@ -1637,6 +1655,8 @@ mod tests {
             task(1, json!({"shows": "needs_you", "needs_you": {"action": "Add DEV_HOST", "happened": "The deploy failed", "problem": null, "decision": false, "link": "https://y.test/s/a/secrets", "at": "2026-11-14T09:00:00Z"}})),
             task(2, json!({"needs_you": {"action": "Pick a region", "decision": true, "problem": "Nothing deploys", "at": "2026-11-14T09:00:00Z"}})),
             task(10, json!({"needs_you": {"action": "Restart Docker", "decision": false, "at": "2026-11-14T09:00:00Z", "cause": "docker"}})),
+            task(11, json!({"needs_you": {"action": "Decide M1-M6", "decision": true, "at": "x", "who": ["bob", "carol"], "named": true}})),
+            task(12, json!({"needs_you": {"action": "Decide O6", "decision": true, "at": "x", "who": [], "named": true}})),
             task(3, json!({"attention": {"kind": "terminal", "problem": "Allow Bash?", "action": null, "link": null}})),
             task(4, json!({"attention": {"kind": "yulius", "problem": "The gate gave up.", "action": "Type a prompt.", "link": null}})),
             task(5, json!({"held_prompt": {"class": "redirect", "excerpt": "Do the other thing", "at": "x"}})),
@@ -1665,6 +1685,11 @@ mod tests {
                 10,
                 "· asks its person to do: \"Restart Docker\" (shared problem of the sandbox: docker)",
             ),
+            (
+                11,
+                "· asks its person to decide: \"Decide M1-M6\" (answered by its owner and @bob, @carol)",
+            ),
+            (12, "(answered by its owner only)"),
             (3, "· Claude Code asks in its terminal: \"Allow Bash?\""),
             (4, "· flagged by Yulius: The gate gave up. Type a prompt."),
             (

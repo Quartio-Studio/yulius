@@ -7,6 +7,17 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 ## 2026-11-19
 
 - Task briefings now request a native reviewer for each harness. Codex uses GPT-6.2 Astra at high effort and Antigravity uses Gemini 4 Neon (High) in every round. Claude Code keeps its Fable and Opus round policy. Gemini task launches use the Neon default delivered in SPEC-519 (review instructions in SPEC-524).
+- A question names who answers it (SPEC-512 part 2, task #494, #1418): an agent's `needs_you`
+  can name the people besides the owner it waits for (`who`, each with write access to the
+  project, checked when it asks). The task's page says "Asks @bob"; only the owner and whom it
+  names answer it, on the page or through their own agent's `task_message`, without taking the
+  task, and the owner withdraws a name there; answering a parked task's question resumes it. An answer to a question replaced or withdrawn
+  meanwhile is refused, saying so (ADR-0379). Also: a parked task's Resume no longer repeats its
+  Telegram notice, and the Dashboard's Outcomes say Parked (#1412 follow-up).
+- Scrolling a full-screen task with mouse reporting off can no longer recall an earlier prompt
+  or trigger “Needs your action” for an unsent draft. Scrolling up still offers the session
+  history (SPEC-529, #1446).
+
 - Parked sessions (SPEC-512 part 1, task #494, #1412): a task whose turn ended and that waits for
   a person gives its idle session up after 30 minutes (`YULIUS_PARK_AFTER_MINUTES`, 0 never): the
   process ends, so it holds no session slot and no memory, and the task stays where the list

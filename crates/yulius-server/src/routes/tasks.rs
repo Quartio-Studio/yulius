@@ -311,7 +311,21 @@ pub async fn answer_needs_you(
     Path(tid): Path<String>,
     Json(req): Json<yulius_contracts::api::tasks::AnswerNeedsYou>,
 ) -> ApiResult<Json<TaskSummary>> {
-    Ok(Json(app.answer_needs_you(&ctx, &tid, &req.text).await?))
+    Ok(Json(
+        app.answer_needs_you(&ctx, &tid, &req.text, req.asked_at_ms)
+            .await?,
+    ))
+}
+
+/// `POST /api/tasks/{tid}/needs-you/withdraw` (SPEC-512 ANS-005): the owner withdraws a person
+/// the open request names.
+pub async fn withdraw_needs_you(
+    State(app): State<AppState>,
+    Auth(ctx): Auth,
+    Path(tid): Path<String>,
+    Json(req): Json<yulius_contracts::api::tasks::WithdrawNeedsYou>,
+) -> ApiResult<Json<yulius_contracts::api::tasks::NeedsYouView>> {
+    Ok(Json(app.withdraw_needs_you(&ctx, &tid, &req.login).await?))
 }
 
 pub async fn queue_message(

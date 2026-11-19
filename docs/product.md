@@ -412,7 +412,11 @@ watching, steering and unblocking.
   terminal's colours, following its newest lines until they scroll up), see whose it is
   in the view and in the sidebar, answer what its agent asks under Needs you with Reply
   without taking control (SPEC-516: the agent gets the answer labelled with their name; not
-  while it asks in its terminal or holds the owner's personal secrets or MCP servers), and can
+  while it asks in its terminal or holds the owner's personal secrets or MCP servers). An agent
+  that needs two people names them (SPEC-512: `needs_you` with `who`, each with write access):
+  the request says "Asks @bob", only its owner and whom it names answer it, from the page or
+  through their own agent's `task_message`, and the owner withdraws a name there; an answer to a
+  question that was replaced or withdrawn meanwhile is refused saying so. And they can
   take control, from the task's page or its menu in a
   list, after a confirmation naming the owner (SPEC-510): the task then acts on GitHub as them,
   and the previous owner hears of it wherever they are and can take it back at any time. A
@@ -618,7 +622,8 @@ watching, steering and unblocking.
   the window and filter as people type when they are long; the start menu shows five tasks at a
   time and says how many more it scrolls to. Scrolling a task's terminal past its top offers the
   whole session from its first message, which Claude Code no longer shows after a compaction
-  (SPEC-326). Messages are
+  (SPEC-326). A wheel gesture on a full-screen task with mouse reporting off leaves the prompt alone
+  (SPEC-529). Messages are
   withdrawn for now (SPEC-028): agents learn about checks, delivery and armed merges from
   `yulius wait`, `ci_status` and `delivery_status`. A Yulius restart is invisible to a session:
   its Yulius tools and `yulius wait` hold on until Yulius is back, and a task that went idle

@@ -1231,6 +1231,8 @@ button.notif-open:hover, button.notif-open:focus-visible { color: var(--text); }
 .attention-bar.replying { flex-wrap: wrap; row-gap: 8px; }
 .attention-bar.replying .attention-text { flex-basis: calc(100% - 28px); }
 .attention-reply { display: flex; flex: 1 1 100%; gap: 8px; }
+/* Whom a request asks besides its owner, and the owner's Withdraw for each (SPEC-512 ANS-005). */
+.needs-you-who { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 .attention-reply[hidden] { display: none; }
 /* The bar holds the keyboard after a reply field closed under typing: it shows it has it. */
 .attention-bar:focus-visible { box-shadow: var(--focus), var(--shadow); }

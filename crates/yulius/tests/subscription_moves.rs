@@ -645,6 +645,7 @@ fn a_removal_keeps_a_request_already_open() -> TestResult {
             link: None,
             at: app.now().0,
             cause: None,
+            named: Default::default(),
         };
         app.deps
             .store

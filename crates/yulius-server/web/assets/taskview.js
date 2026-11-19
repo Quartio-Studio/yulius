@@ -11,7 +11,7 @@ import { taskInfo, isLive, allows, taskActions, otherOwner, endedMessage, agentO
 import { heldPromptCard, splitCard, supertaskCard, checkRequest, intakeStatus } from './intake.js';
 import { createMarkdownEditor } from './mdeditor.js';
 import { SUBMIT_KEYS, SUBMIT_ARIA } from './shortcuts.js';
-import { openTaskMenu, openSubscriptionMenu, continueTask, deliveryStrip, startNow, stopTask, resumeTask, requestControl, takeControl, answerNeedsYou, dropControlRequest, handOverTask, takeBackTask, openScheduleDialog, rescheduleTask } from './actions.js';
+import { openTaskMenu, openSubscriptionMenu, continueTask, deliveryStrip, startNow, stopTask, resumeTask, requestControl, takeControl, answerNeedsYou, withdrawNeedsYou, dropControlRequest, handOverTask, takeBackTask, openScheduleDialog, rescheduleTask } from './actions.js';
 import { attachTerminalDrop, attachPromptDrop, draftAttachments, taskAttachments, withAttachments, openAttachment } from './filedrop.js';
 import { createPromptInput, ATOM, FILE_MARK, FILE_MARK_END, PLACE_TYPE, placeFiles, withoutMarks } from './promptinput.js';
 import { mentionOf, parsePrompt } from './promptparts.js';
@@ -369,11 +369,15 @@ export function mountTaskView(ctx, sandbox, task) {
   // its own cursor. Phones have the quick input for it. The field stays in the bar (hidden when not
   // replying), so the bar's updates never take it out from under someone typing (IME, readers).
   let replying = false;
+  // The request a reply to someone else's task answers, as it was when Reply opened (SPEC-512
+  // ANS-004): the agent may replace it while the field is open.
+  let replyAskedAtMs = null;
   const replyInput = h('input', { class: 'input', type: 'text', placeholder: 'Reply to the agent…', autocomplete: 'off', enterkeyhint: 'send', 'aria-label': 'Reply to the agent' });
   const replyButton = h('button', { type: 'button', class: 'btn btn-sm', onClick: () => {
     // Someone else's task has no terminal to type in: its Needs you is answered in the field
     // (SPEC-516).
     if (isPhone() && !owner()) { quickInput.focus(); return; }
+    replyAskedAtMs = current.needs_you && Number.isFinite(current.needs_you.at_ms) ? current.needs_you.at_ms : null;
     replying = true;
     renderAttention();
     replyInput.focus();
@@ -389,11 +393,20 @@ export function mountTaskView(ctx, sandbox, task) {
     const text = replyInput.value.trim();
     if (!text) { replyInput.focus(); return; }
     if (owner()) {
+      // The question shown is no longer the one the field was opened on (SPEC-512 ANS-004): the
+      // person is told and reads it; the field answers it from the next send on.
+      const shown = current.needs_you && Number.isFinite(current.needs_you.at_ms) ? current.needs_you.at_ms : null;
+      if (shown !== null && replyAskedAtMs !== null && shown !== replyAskedAtMs) {
+        replyAskedAtMs = shown;
+        toast('The question you answered was replaced by a new one: read it and answer again.', { kind: 'warn' });
+        replyInput.focus();
+        return;
+      }
       // Someone else's task (SPEC-516): the answer goes to the server, which types it labelled
       // into the session; control stays with the owner. Refused, the field keeps its text.
       answering = true;
       replyInput.readOnly = true;
-      const answered = await answerNeedsYou(ctx, current, text).finally(() => {
+      const answered = await answerNeedsYou(ctx, current, text, replyAskedAtMs).finally(() => {
         answering = false;
         replyInput.readOnly = false;
       });
@@ -503,11 +516,19 @@ export function mountTaskView(ctx, sandbox, task) {
       const asksInTerminal = current.activity === 'needs_attention';
       // Someone else's task: anyone who may work there but a guest answers it without taking
       // control (SPEC-516), while it runs and unless the agent asks in its terminal.
-      const answers = !owner() || (current.status === 'running' && allows(access, 'write') && !(ctx.guest && ctx.guest()) && !asksInTerminal);
+      // A request that names people is theirs and its owner's (SPEC-512 ANS-002).
+      const named = asked.named === true;
+      const who = Array.isArray(asked.who) ? asked.who : [];
+      const forMe = !named || who.includes(String(me() || '').toLowerCase());
+      // A parked task's question stays open: an answer resumes it (SPEC-512 ANS-002).
+      const answers = !owner() || (['running', 'parked'].includes(current.status) && allows(access, 'write') && !(ctx.guest && ctx.guest()) && !asksInTerminal && forMe);
       textAnswer = answers && !asksInTerminal;
       asksPerson = true;
       replyButton.title = owner() ? 'Answers the agent without taking control of the task' : '';
-      content = [icon('st-attention', { size: 16 }), needsYouText(asked),
+      // Whom it asks besides the owner, whom the owner withdraws (SPEC-512 ANS-005).
+      const asks = who.length ? h('div', { class: 'needs-you-who small' }, `Asks ${who.map((login) => `@${login}`).join(', ')}`,
+        owner() ? null : who.map((login) => h('button', { type: 'button', class: 'btn btn-sm btn-ghost', 'aria-label': `Withdraw @${login}`, title: `@${login} no longer answers this question`, onClick: () => withdrawNeedsYou(ctx, current, login) }, `Withdraw @${login}`))) : null;
+      content = [icon('st-attention', { size: 16 }), needsYouText(asked), asks,
         asked.link ? openLink(asked.link) : null,
         !answers ? null : asksInTerminal ? terminalReply : replying ? null : replyButton];
     } else if (info.request) {

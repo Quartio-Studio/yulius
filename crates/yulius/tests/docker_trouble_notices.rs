@@ -71,6 +71,7 @@ fn a_sandboxs_tasks_hear_of_its_docker_trouble_once_and_of_its_end() -> TestResu
             link: None,
             at: 1,
             cause: None,
+            named: Default::default(),
         };
         app.deps
             .store
@@ -115,6 +116,7 @@ fn a_sandboxs_tasks_hear_of_its_docker_trouble_once_and_of_its_end() -> TestResu
             link: None,
             at: 1,
             cause: None,
+            named: Default::default(),
         };
         app.deps
             .store
@@ -187,6 +189,7 @@ fn requests_naming_the_sandboxs_docker_are_answered_together() -> TestResult {
                 link: None,
                 at,
                 cause: cause.map(str::to_owned),
+                named: Default::default(),
             };
         let ask = |id: &yulius_domain::ids::TaskId, at: i64, cause: Option<&'static str>| {
             let app = std::sync::Arc::clone(&app);
@@ -405,6 +408,7 @@ fn continuing_a_stopped_task_answers_no_other_tasks_request() -> TestResult {
             link: None,
             at,
             cause: Some("docker".into()),
+            named: Default::default(),
         };
         let now = app.now().0;
         for (id, at) in [(&stopped, now - 2_000), (&working, now - 1_000)] {
@@ -431,4 +435,83 @@ fn continuing_a_stopped_task_answers_no_other_tasks_request() -> TestResult {
         stop(&app, &working).await?;
         Ok(())
     })
+}
+
+/// SPEC-512 ANS-004 with DFJ-011 (review round 3 of part 2): an answer on the task's page to a
+/// question about the sandbox's Docker answers the sandbox's other tasks that asked it before.
+#[test]
+fn a_page_answer_to_a_shared_docker_question_answers_the_others() -> TestResult {
+    use yulius_ptyhost::test_support::locate_fake_agent;
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = temp()?;
+    let agent = crate::support::agents::FakeAgentOptions {
+        transcript: true,
+        answers_first_message: true,
+        ..crate::support::agents::FakeAgentOptions::default()
+    };
+    let rt = runtime()?;
+    rt.block_on(async {
+        let app = build_tuned(&data, &fake, agent, |config| config.goal_ready_ms = 2_000)?;
+        let (sandbox, user) = seed(&app, &data, &["a-only"]).await?;
+        let first = new_task(&app, &sandbox, &user, "First").await?;
+        let second = new_task(&app, &sandbox, &user, "Second").await?;
+        for (id, title) in [(&first, "First"), (&second, "Second")] {
+            wait_for("the first answer", Duration::from_secs(30), || {
+                let shown = screen(&app, id);
+                let expected = format!("ECHO: {title}: answer with an echo");
+                async move { shown.contains(&expected) }
+            })
+            .await?;
+        }
+        let now = app.now().0;
+        for (id, at) in [(&first, now - 2_000), (&second, now - 1_000)] {
+            app.deps
+                .store
+                .set_task_needs_you(
+                    id,
+                    Some(&yulius_app::needs_you::NeedsYouRecord {
+                        action: "Restart Docker".into(),
+                        happened: None,
+                        problem: None,
+                        decision: false,
+                        link: None,
+                        at,
+                        cause: Some("docker".into()),
+                        named: Default::default(),
+                    }),
+                    yulius_domain::time::Timestamp(at),
+                )
+                .await?;
+        }
+        let ctx = yulius_app::auth::AuthContext {
+            user: app.deps.store.user(&user).await?.ok_or("user")?,
+            csrf_token: None,
+            session_hash: None,
+            token: None,
+        };
+        // A session in its start window takes no typed text yet: answered again until it does.
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            match app
+                .answer_needs_you(&ctx, first.as_str(), "Docker is fine now", None)
+                .await
+            {
+                Ok(_) => break,
+                Err(yulius_app::error::AppError::Conflict(_))
+                    if std::time::Instant::now() < deadline =>
+                {
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+                }
+                Err(err) => return Err(err.into()),
+            }
+        }
+        assert!(app.deps.store.task_needs_you(&first).await?.is_none());
+        assert!(
+            app.deps.store.task_needs_you(&second).await?.is_none(),
+            "the shared question is answered for the sandbox"
+        );
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
 }
