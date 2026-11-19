@@ -1,6 +1,6 @@
 ---
 yulius-task: 826f97b8-3cc5-432b-abc1-3c6921baa5a6
-status: in-progress
+status: done
 ---
 
 # SPEC-551 Keep the systemd update watcher active after rapid requests
@@ -30,7 +30,7 @@ exercise request handling without running the shipped systemd units.
 - [x] Pin the service start-limit setting in a shipped-unit regression
 - [x] Keep the watcher active and document recovery for existing installations
 - [x] Verify recovery and burst handling against the shipped units
-- [ ] Independent approval for delivery into dev
+- [x] Independent approval for delivery into dev
 
 ## Acceptance criteria
 
@@ -74,3 +74,6 @@ installed update unit in place to preserve site-specific settings.
   six separate starts from 1056.728318 to 1062.242171 s and six refusals. After the sixth
   the path showed `ActiveState=active`, `SubState=waiting`, `Result=success`, and its trigger
   limit was 200 in 2 s. The real helper then answered a fresh request with ID `later-req-1`.
+- `scripts/dev mutants` found no mutant in the changed Rust lines. The independent reviewer
+  approved `3b0e4ab46` with no findings and independently passed all 28 update-helper tests
+  and `git diff --check`.
