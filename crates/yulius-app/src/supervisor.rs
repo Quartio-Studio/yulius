@@ -116,6 +116,14 @@ struct ActiveRun {
     writer: Box<dyn RunWriter>,
 }
 
+/// The durable draft mark and the prompt submission whose hook may be retried.
+#[derive(Default)]
+pub(crate) struct DraftMark {
+    pub(crate) written: bool,
+    /// The submit's wall time and the viewer input sequence at its first request.
+    pub(crate) submit: (i64, u64),
+}
+
 /// Runtime state of one task with a hub that outlives individual runs.
 pub struct TaskRuntime {
     /// Terminal fan-out.
@@ -193,11 +201,12 @@ pub struct TaskRuntime {
     /// message of Yulius's own waits for (SPEC-480 DRF-006): one line per keystroke.
     pub(crate) draft_told_ms: AtomicI64,
     /// The run's folder holds the mark of a person's possible draft (`person-typed`, SPEC-480
-    /// DRF-009), so that a draft's keystrokes write it once.
-    pub(crate) draft_marked: AtomicBool,
-    /// This server saw a person type into the run. Until it did, a draft is known from its
-    /// mark alone, and a prompt that goes on is not known to follow it (DRF-009).
-    pub(crate) typed_seen: AtomicBool,
+    /// DRF-009). The guard orders a key's timestamp and file write with the submit hook's
+    /// check and file removal (SPEC-537).
+    pub(crate) draft_mark: tokio::sync::Mutex<DraftMark>,
+    /// Sequence of the last viewer input in this run. Before the first, only the durable
+    /// mark identifies a possible draft, and a prompt may predate it (DRF-009).
+    pub(crate) typed_seq: AtomicU64,
     /// The task's owner had a message typed behind their possible draft and Yulius is about to
     /// submit both (SPEC-487 TCT-006): the next prompt that goes on from the box carried that
     /// draft to the agent, also one this server knows from its mark alone. The mark is taken
@@ -207,11 +216,9 @@ pub struct TaskRuntime {
     /// Code did not take Yulius's Enter as a submit: the draft would then read as ended
     /// while its text is still in the box.
     pub(crate) sent_past_draft: AtomicBool,
-    /// When the prompt whose hook is being answered emptied the prompt box (ms): worked out at
-    /// its first request and taken into [`Self::box_emptied_ms`] when the prompt goes on, so a
-    /// prompt that is held and then blocked, which Claude Code puts back into the box, empties
-    /// nothing (SPEC-468 CCF-010).
-    pub(crate) submit_emptied_ms: AtomicI64,
+    /// The viewer input sequence when the submit that emptied the box arrived. Keys after that submit
+    /// win ties in the millisecond clock, including while a held prompt is answered.
+    pub(crate) emptied_seq: AtomicU64,
     /// The run's last prompt hook was answered with a hold: the next one is that prompt sent
     /// again by the hook client, not another submit. A hold the CLI gave up (its client holds
     /// for days) leaves this set until the run's next prompt is answered, which then counts as
@@ -501,15 +508,30 @@ impl TaskRuntime {
             .max(self.message_typed_ms.load(Ordering::SeqCst))
     }
 
+    /// The empty time for a strict timestamp comparison. When the two wall times
+    /// coincide, use the order of the submit and key observed by this server.
+    pub(crate) fn empty_time_for_typing(&self) -> i64 {
+        let emptied = self.box_emptied_ms.load(Ordering::SeqCst);
+        if self.typed_at_ms.load(Ordering::SeqCst) == emptied
+            && self.typed_seq.load(Ordering::SeqCst) > self.emptied_seq.load(Ordering::SeqCst)
+        {
+            emptied.saturating_sub(1)
+        } else {
+            emptied
+        }
+    }
+
     /// A run starts at `now_ms`, in a new process: its prompt box is empty, and no prompt of
     /// it is held (one held in the run before went with that run's hook client; SPEC-468
     /// CCF-010). Nothing waits in its queue and no prompt of it went on: what the run before
     /// queued went with its process (SPEC-471 CCQ-001).
-    pub(crate) fn run_starts(&self, now_ms: i64) {
+    pub(crate) async fn run_starts(&self, now_ms: i64) {
+        let mut mark = self.draft_mark.lock().await;
         self.box_emptied_ms.store(now_ms, Ordering::SeqCst);
         // Its folder is new: no draft is marked there (SPEC-480 DRF-009).
-        self.draft_marked.store(false, Ordering::SeqCst);
-        self.typed_seen.store(false, Ordering::SeqCst);
+        *mark = DraftMark::default();
+        self.typed_seq.store(0, Ordering::SeqCst);
+        self.emptied_seq.store(0, Ordering::SeqCst);
         self.sent_past_draft.store(false, Ordering::SeqCst);
         self.prompt_held.store(false, Ordering::SeqCst);
         self.with_queue(|queue| *queue = yulius_domain::agent_cli::Queue::default());
@@ -594,10 +616,10 @@ impl TaskRuntime {
             message_typed_ms: AtomicI64::new(0),
             box_emptied_ms: AtomicI64::new(0),
             draft_told_ms: AtomicI64::new(0),
-            draft_marked: AtomicBool::new(false),
-            typed_seen: AtomicBool::new(false),
+            draft_mark: tokio::sync::Mutex::default(),
+            typed_seq: AtomicU64::new(0),
             sent_past_draft: AtomicBool::new(false),
-            submit_emptied_ms: AtomicI64::new(0),
+            emptied_seq: AtomicU64::new(0),
             prompt_held: AtomicBool::new(false),
             typed_by: Mutex::new(None),
             personal_mcp_of: Mutex::new(None),
@@ -803,6 +825,9 @@ const LIVE_WITH_A_RUN: [TaskStatus; 4] = [
 /// Supervisor-owned per-process state.
 #[derive(Default)]
 pub struct SupervisorState {
+    /// Viewer input order across runs. A hook reads it before looking up its run, so a key
+    /// arriving during that lookup wins a tie in the wall clock (SPEC-537).
+    pub(crate) input_seq: AtomicU64,
     runtimes: Mutex<HashMap<TaskId, Arc<TaskRuntime>>>,
     /// Shared, so an install on the blocking pool can own its guard (SPEC-507 SKR-005).
     launch: Arc<tokio::sync::Mutex<()>>,
@@ -963,6 +988,9 @@ const REPLAY_WAIT: Duration = Duration::from_secs(30);
 /// servers it holds decides who may message it and whether a hand-over restarts it; a restarted
 /// server reads it back for a reattached run (SPEC-483 RST-001).
 const PERSONAL_MCP_FILE: &str = "personal-mcp-of";
+
+/// Digest of the sealed sign-in selected for a Claude run, kept for watcher reattachment.
+const CLAUDE_CREDENTIAL_DIGEST: &str = "claude-credential-sha256";
 
 /// Whose personal MCP servers the run in `run_dir` was started with; `None` for none, and for
 /// a mark that cannot be read (said in the log: the run then counts as holding nobody's).
@@ -2163,6 +2191,13 @@ impl App {
             AttemptId::parse(&self.deps.crypto.new_id()).map_err(AppError::internal)?;
         let run_dir = self.config.data_dir.join("runs").join(attempt_id.as_str());
         std::fs::create_dir_all(&run_dir).map_err(AppError::internal)?;
+        if harness == Harness::ClaudeCode
+            && let Some(sealed) = &account.credential
+        {
+            let digest = self.deps.crypto.sha256_hex(&sealed.0);
+            write_private_file(&run_dir.join(CLAUDE_CREDENTIAL_DIGEST), digest.as_bytes())
+                .map_err(AppError::internal)?;
+        }
         // An Antigravity run has a home of its own in its run directory (SPEC-505 AGY-003).
         let antigravity_home = match harness {
             Harness::Antigravity => Some(self.antigravity_home(&sandbox.id, &run_dir)?),
@@ -2532,7 +2567,7 @@ impl App {
         // Typing from now on, once viewers can write to this run, is a person's draft in it
         // (SPEC-068): its prompt box starts empty (SPEC-468 CCF-010).
         let typed_before = runtime.typed_at_ms.load(Ordering::SeqCst);
-        runtime.run_starts(self.now().0);
+        runtime.run_starts(self.now().0).await;
         self.attach_run(&task.id, &attempt, &host_token).await?;
         runtime.hub.state_changed();
         self.publish_task(&task.id).await;
@@ -3277,8 +3312,13 @@ impl App {
         let sessions = self.codex_sessions(sandbox);
         match self.deps.harness.find_codex_rollout(&sessions, session_id) {
             Ok(Some(path)) => path,
-            Ok(None) | Err(_) => sessions.join(format!("missing-{session_id}.jsonl")),
+            Ok(None) | Err(_) => Self::missing_codex_rollout(&sessions, session_id),
         }
+    }
+
+    /// Path recorded while a Codex session has no discoverable rollout (SPEC-538).
+    pub(crate) fn missing_codex_rollout(sessions: &Path, session_id: &str) -> PathBuf {
+        sessions.join(format!("missing-{session_id}.jsonl"))
     }
 
     /// After a Codex run ended or was lost (SPEC-503 CDX-006): its home's `auth.json` replaces the
@@ -3832,6 +3872,10 @@ impl App {
                 child_alive,
                 ..
             } if host_alive || child_alive => {
+                crate::race::reached(
+                    crate::race::Point::LostRunTermination,
+                    Path::new(&attempt.run_dir),
+                );
                 self.terminate_then_mark_lost(task_id, &attempt, StopReason::Lost)
                     .await;
             }
@@ -5683,10 +5727,13 @@ impl App {
             // box: its mark says since when (SPEC-480 DRF-009). A keystroke this server saw is
             // newer and stays.
             // Never later than now: a time ahead of the clock would never grow old.
-            let drafted = person_typed_marked(Path::new(&attempt.run_dir)).min(self.now().0);
-            if drafted > 0 {
-                runtime.typed_at_ms.fetch_max(drafted, Ordering::SeqCst);
-                runtime.draft_marked.store(true, Ordering::SeqCst);
+            {
+                let mut mark = runtime.draft_mark.lock().await;
+                let drafted = person_typed_marked(Path::new(&attempt.run_dir)).min(self.now().0);
+                if drafted > 0 {
+                    runtime.typed_at_ms.fetch_max(drafted, Ordering::SeqCst);
+                    mark.written = true;
+                }
             }
             if let Some(task) = store.task(&attempt.task_id).await? {
                 self.initialize_run_goal(&task, &attempt, false).await;
@@ -5977,33 +6024,50 @@ impl App {
         }
     }
 
-    /// A subscription the provider refused for good: it needs a new sign-in, with the provider's
-    /// text as its error. The pool no longer places tasks on it, the usage round skips it, and
-    /// paused tasks are reconsidered for the subscriptions left. A usage write under way
-    /// finishes first, so that it never stores what it read before this.
-    pub(crate) async fn record_access_lost(&self, account: &AccountId, message: &str) {
+    /// Marks a refused sign-in while it is still current. The label is for the interrupted
+    /// task's move notice, including when a newer sign-in is already available.
+    async fn record_access_lost(
+        &self,
+        account: &AccountId,
+        run_dir: &Path,
+        message: &str,
+    ) -> Option<String> {
         crate::race::reached(
             crate::race::Point::AccessLostRecord,
             Path::new(account.as_str()),
         );
-        // Under the lock every write of the subscription's usage takes: such a write reads the
-        // status and stores it back with the usage, and would store `ok` over this (#1211).
+        let launched =
+            crate::leftovers::read_small_file(&run_dir.join(CLAUDE_CREDENTIAL_DIGEST), 64);
+        // Claude sign-in takes this lock too. Keep it from the credential check through the
+        // status write, which must also follow any usage write already under way (#1211).
         let _writing = self.capacity.usage_writes.lock().await;
-        if let Err(err) = self
-            .deps
-            .store
-            .set_account_state(
-                account,
-                AccountStatus::Relogin,
-                None,
-                Some(message),
-                self.now(),
-            )
-            .await
+        let record = match self.deps.store.account(account).await {
+            Ok(account) => account?,
+            Err(err) => {
+                tracing::error!(error = %err, "could not read a refused subscription");
+                return None;
+            }
+        };
+        if let (Some(launched), Some(current)) = (launched, &record.credential)
+            && launched == self.deps.crypto.sha256_hex(&current.0)
         {
-            tracing::error!(error = %err, "could not mark a refused subscription");
+            if let Err(err) = self
+                .deps
+                .store
+                .set_account_state(
+                    account,
+                    AccountStatus::Relogin,
+                    None,
+                    Some(message),
+                    self.now(),
+                )
+                .await
+            {
+                tracing::error!(error = %err, "could not mark a refused subscription");
+            }
+            self.capacity_changed();
         }
-        self.capacity_changed();
+        Some(record.label)
     }
 
     /// Install the conversation's goal before a resumed process can send its first Stop.
@@ -6446,21 +6510,17 @@ impl App {
                 self.limit_met(task_id, attempt, limit, at).await;
             }
             Observation::AccessLost { message, at } => {
-                // The subscription no longer works (cancelled, downgraded, revoked): it needs a
-                // new sign-in, so nothing is placed on it again and its usage is no longer read
-                // back to `ok`. The cut turn then moves on like a limit's, to the next working
-                // subscription, or the task waits for one.
+                // The refused turn moves on like a limit's, including after another sign-in.
                 tracing::warn!(task = %task_id, %message, "subscription access refused");
                 runtime.end_turn();
                 runtime.limit_cut_the_turn(at);
-                let mut refused = None;
-                if let Some(account) = &attempt.account_id {
-                    refused = match self.deps.store.account(account).await {
-                        Ok(Some(record)) => Some(record.label),
-                        _ => None,
-                    };
-                    self.record_access_lost(account, &message).await;
-                }
+                let refused = match &attempt.account_id {
+                    Some(account) => {
+                        self.record_access_lost(account, Path::new(&attempt.run_dir), &message)
+                            .await
+                    }
+                    None => None,
+                };
                 let app = self.clone();
                 let tid = task_id.clone();
                 let account = attempt.account_id.clone();
@@ -7521,13 +7581,13 @@ mod tests {
     /// SPEC-468 CCF-010: a run starts with an empty prompt box and holds no prompt: one held
     /// in the run before went with that run's hook client, so the new run's first prompt is a
     /// submit, not that prompt sent again.
-    #[test]
-    fn a_new_run_starts_with_an_empty_prompt_box_and_no_held_prompt() {
+    #[tokio::test]
+    async fn a_new_run_starts_with_an_empty_prompt_box_and_no_held_prompt() {
         use std::sync::atomic::Ordering;
         let runtime = super::TaskRuntime::new();
         runtime.typed_at_ms.store(5_000, Ordering::SeqCst);
         runtime.prompt_held.store(true, Ordering::SeqCst);
-        runtime.run_starts(7_000);
+        runtime.run_starts(7_000).await;
         assert_eq!(runtime.box_emptied_ms.load(Ordering::SeqCst), 7_000);
         assert!(!runtime.prompt_held.load(Ordering::SeqCst));
     }
@@ -7535,8 +7595,8 @@ mod tests {
     /// SPEC-471 CCQ-001: what the run before left in Claude Code's queue went with its process,
     /// and a resumed session does not get it back: a run starts with an empty queue and with
     /// no prompt that just went on.
-    #[test]
-    fn a_new_run_starts_with_an_empty_queue() {
+    #[tokio::test]
+    async fn a_new_run_starts_with_an_empty_queue() {
         use std::sync::atomic::Ordering;
         use yulius_domain::agent_cli::QueueChange;
         let runtime = super::TaskRuntime::new();
@@ -7545,7 +7605,7 @@ mod tests {
         runtime.with_queue(|queue| queue.record(QueueChange::Added, None));
         runtime.prompt_passed_ms.store(6_500, Ordering::SeqCst);
         assert!(runtime.queue().holds());
-        runtime.run_starts(7_000);
+        runtime.run_starts(7_000).await;
         assert_eq!(runtime.queue(), yulius_domain::agent_cli::Queue::default());
         assert_eq!(runtime.prompt_passed_ms.load(Ordering::SeqCst), 0);
         assert!(!runtime.queue_may_hold());
@@ -7553,7 +7613,7 @@ mod tests {
         // which counts as holding; the next launch starts a process whose queue is empty.
         runtime.queue_unread.store(true, Ordering::SeqCst);
         assert!(runtime.queue_may_hold(), "not known counts as holding");
-        runtime.run_starts(8_000);
+        runtime.run_starts(8_000).await;
         assert!(!runtime.queue_may_hold());
     }
 
@@ -7577,8 +7637,8 @@ mod tests {
     /// SPEC-479 SWQ-001, SWQ-002: what a move at a turn's end asks of the queue. An entry that
     /// waits counts until a turn's closing record found it waiting; a queue that is not known
     /// (a reattached run not read yet, a lock a thread died with) counts; a new run has none.
-    #[test]
-    fn a_move_asks_the_queue_for_what_a_turns_end_hands_on() {
+    #[tokio::test]
+    async fn a_move_asks_the_queue_for_what_a_turns_end_hands_on() {
         use std::sync::atomic::Ordering;
         use yulius_domain::agent_cli::{Queue, QueueChange};
         let runtime = std::sync::Arc::new(super::TaskRuntime::new());
@@ -7590,7 +7650,7 @@ mod tests {
         assert!(runtime.queue_may_hold(), "the restart's rule counts it");
         runtime.queue_unread.store(true, Ordering::SeqCst);
         assert!(runtime.queue_may_hand_on(), "not known counts");
-        runtime.run_starts(8_000);
+        runtime.run_starts(8_000).await;
         assert!(!runtime.queue_may_hand_on());
         assert_eq!(runtime.queue().left_over(), 0);
         let dying = std::sync::Arc::clone(&runtime);

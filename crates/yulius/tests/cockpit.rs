@@ -1366,6 +1366,19 @@ impl HarnessPort for RecordingHarness {
     ) -> AppResult<Option<yulius_domain::task::GoalOutcome>> {
         self.inner.last_claude_goal(anchor, path)
     }
+
+    fn submit_origin(
+        &self,
+        file: std::fs::File,
+        session: &str,
+        id: &str,
+        prompt: &str,
+        run_to_submit: std::ops::RangeInclusive<yulius_domain::time::Timestamp>,
+    ) -> yulius_domain::harness::SubmitOrigin {
+        self.inner
+            .submit_origin(file, session, id, prompt, run_to_submit)
+    }
+
     fn step_back_transcript(&self, home: &Path, worktree: &Path, session: &str) -> AppResult<bool> {
         self.inner.step_back_transcript(home, worktree, session)
     }

@@ -844,7 +844,9 @@ SPEC-461), with no root step and no sign-in again:
   person typed into it in the last minute, and while a draft may sit in its prompt box: a person
   typed into it since its last prompt was sent, however long ago (Yulius sees keystrokes and
   sent prompts, not the box, so anything typed and not sent counts, and so does a prompt Yulius
-  holds for its person's choice, which Claude Code keeps in the box). A message Yulius types
+  holds for its person's choice, which Claude Code keeps in the box). A scheduled wake-up or loop
+  can submit plain text while the draft sits there. It leaves the draft, an achieved goal, and
+  any unanswered request for a person in place. A message Yulius types
   into the session (one sent through a Superagent, a pull request's news) counts in the same way
   until Claude Code submits it, which it does at once. A prompt entered while the agent works,
   a person's or such a message, waits in Claude Code's queue until the turn ends (or is taken
@@ -2613,6 +2615,7 @@ WantedBy=multi-user.target
 # /etc/systemd/system/yulius-update.service
 [Unit]
 Description=Yulius update helper
+StartLimitIntervalSec=0
 After=network-online.target
 Wants=network-online.target
 
@@ -2640,6 +2643,20 @@ ReadWritePaths=/var/lib/yulius-update /var/lib/yulius /usr/local/bin /root/.carg
 ReadWritePaths=/etc/modules-load.d -/etc/needrestart/conf.d
 ReadWritePaths=-/etc/opt/chrome/policies/managed -/etc/chromium/policies/managed -/etc/chromium-browser/policies/managed
 UMask=0022
+```
+
+On an existing installation, add `StartLimitIntervalSec=0` under `[Unit]` in
+`/etc/systemd/system/yulius-update.service` and run `systemctl daemon-reload` as root.
+Several quick refusals can otherwise hit the service start limit and stop the path from
+watching new requests. The path unit's own trigger limit still bounds a busy loop.
+
+If `yulius-update.path` has failed with `unit-start-limit-hit`, run these commands as root
+after the reload, then submit the update request again.
+
+```sh
+systemctl reset-failed yulius-update.service yulius-update.path
+systemctl start yulius-update.path
+systemctl status yulius-update.path        # active (waiting)
 ```
 
 A helper unit installed before SPEC-203 lacks the second `ReadWritePaths` line. `yulius host

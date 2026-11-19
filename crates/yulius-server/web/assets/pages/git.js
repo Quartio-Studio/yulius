@@ -191,7 +191,14 @@ export function mountGitPage(ctx, sandbox) {
 
   function drawProtection() {
     // A playground has no GitHub branch to protect.
-    keepFocus(protection, () => setChildren(protection, sb().playground ? null : productionProtectionCard(ctx, sb())));
+    const sandbox = sb();
+    const card = sandbox.playground ? null : productionProtectionCard(ctx, sandbox);
+    const current = protection.firstElementChild;
+    // Replacing an unchanged checkbox between Space keydown and keyup cancels native
+    // activation even if keepFocus focuses the replacement. checked is a live property.
+    if (current && current.isEqualNode(card)
+        && current.querySelector('input').checked === card.querySelector('input').checked) return;
+    keepFocus(protection, () => setChildren(protection, card));
   }
 
   // Messages link to the card with `?show=production-protection`: once the page above it has its

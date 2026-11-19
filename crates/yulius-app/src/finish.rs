@@ -546,8 +546,8 @@ pub fn activity_on_goal_not_met(current: Option<Activity>) -> Option<Activity> {
     matches!(current, Some(Activity::Waiting | Activity::Done)).then_some(Activity::Working)
 }
 
-/// Whether a `UserPromptSubmit` prompt is one a person (or Yulius) typed, not a wake-up Claude
-/// Code generated itself (task notifications and other tagged prompts start with `<`), nor the
+/// Whether the submit text can be typed work, once a scheduled hand-over has been excluded.
+/// Tagged wake-ups start with `<`. This also excludes the
 /// compaction command, which asks for no new work (SPEC-085 STT-005).
 #[must_use]
 pub fn is_typed_prompt(prompt: Option<&str>) -> bool {
@@ -556,9 +556,8 @@ pub fn is_typed_prompt(prompt: Option<&str>) -> bool {
         .is_some_and(|p| !p.is_empty() && !p.starts_with('<') && !is_compact_command(p))
 }
 
-/// Whether a `UserPromptSubmit` prompt came through the session's prompt box, typed by a person
-/// or by Yulius (a command like `/compact` too), which a submit empties; Claude Code's own
-/// wake-ups (they start with `<`) do not pass through it (SPEC-468 CCF-010).
+/// Whether the submit text can come from the prompt box, including commands such as `/compact`.
+/// A scheduled hand-over is excluded separately because its hook contains plain text.
 #[must_use]
 pub fn from_prompt_box(prompt: Option<&str>) -> bool {
     prompt

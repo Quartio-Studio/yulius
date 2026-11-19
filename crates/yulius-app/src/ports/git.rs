@@ -381,9 +381,9 @@ pub trait GitPort: Send + Sync {
         let _ = (repo, ancestor, descendant);
         unsupported("comparing commits")
     }
-    /// Whether what `head` changed since `since` adds anything to `base`: Git's merge of the
-    /// two from `since` (in `worktree`, with the repository's merge drivers) is not `base`'s
-    /// tree; `None` when that merge conflicts (SPEC-425 FUP-002). `base` is read once.
+    /// Whether `head` adds to `base`. When `head` contains `base`, compare their trees directly.
+    /// Otherwise merge from `since` with the repository's merge drivers and compare the result
+    /// to the base tree. A conflict returns `None` (SPEC-425 FUP-002). Resolve `base` once.
     async fn adds_to(
         &self,
         worktree: &Path,

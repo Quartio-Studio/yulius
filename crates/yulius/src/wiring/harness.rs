@@ -402,6 +402,18 @@ impl HarnessPort for HarnessAdapter {
             .map_err(io)
     }
 
+    fn submit_origin(
+        &self,
+        file: std::fs::File,
+        session: &str,
+        id: &str,
+        prompt: &str,
+        run_to_submit: std::ops::RangeInclusive<yulius_domain::time::Timestamp>,
+    ) -> yulius_domain::harness::SubmitOrigin {
+        yulius_harness::scheduled::submit_origin(file, session, id, prompt, run_to_submit)
+            .unwrap_or(yulius_domain::harness::SubmitOrigin::Unmarked)
+    }
+
     fn step_back_transcript(
         &self,
         sandbox_home: &Path,

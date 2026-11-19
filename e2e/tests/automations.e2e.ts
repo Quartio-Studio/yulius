@@ -1,6 +1,6 @@
 import { test } from '@e2e-dev/web';
 import { expect } from 'e2e';
-import { axeViolations, failOnPageErrors, mock } from './support.ts';
+import { axeViolations, failOnPageErrors, firstShown, mock } from './support.ts';
 
 failOnPageErrors();
 
@@ -74,6 +74,43 @@ test('the shipped automations are the defaults, switched on in place, and Delete
   expect((await cardOf(browser, 'Work through open issues'))!).toEqual({ badges: ['Default'], buttons: [], opens: false });
   expect(await namesIn(browser, 'automations-defaults')).toEqual(DEFAULTS);
   expect(await namesIn(browser, 'automations-custom')).toEqual(CUSTOM);
+});
+
+test('loading workflows between selecting the name and typing its replacement preserves the selection', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/automations/new', '&hold=/api/sandboxes/sb_studio/workflows'));
+  const name = screen.getByRole('textbox', 'Automation name');
+  await firstShown(name);
+  await name.press('ControlOrMeta+a');
+  await browser.evaluate(() => (window as unknown as { __yuliusMock: { release(): void } }).__yuliusMock.release());
+  await expect(screen.getByRole('radio', /^Daily feedback/)).toHaveAttribute('aria-checked', 'true');
+  await browser.keyboard.type('Nightly Codex review');
+  await expect(name).toHaveValue('Nightly Codex review');
+});
+
+test('a name cleared while workflows load stays empty', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/automations/new', '&hold=/api/sandboxes/sb_studio/workflows'));
+  const name = screen.getByRole('textbox', 'Automation name');
+  await firstShown(name);
+  await name.fill('');
+  await browser.evaluate(() => (window as unknown as { __yuliusMock: { release(): void } }).__yuliusMock.release());
+  await expect(screen.getByRole('radio', /^Daily feedback/)).toHaveAttribute('aria-checked', 'true');
+  await expect(name).toHaveValue('');
+});
+
+test('a new automation suggests recipe names until a custom name is entered', async ({ app, screen }) => {
+  await app.open(mock('/s/studio/automations/new'));
+  const name = screen.getByRole('textbox', 'Automation name');
+  const recipe = screen.getByRole('radiogroup', 'Recipe');
+  await expect(recipe.getByRole('radio', /^Daily feedback/)).toHaveAttribute('aria-checked', 'true');
+  await expect(name).toHaveValue('Daily feedback');
+  await expect(screen.getByRole('textbox', 'What the task does')).toHaveValue('Implement yesterday’s customer feedback from the Quartio MCP. Open one pull request per change.');
+  await screen.getByText('Advanced: cron', { exact: true }).click();
+  await expect(screen.getByRole('textbox', 'Cron schedule')).toHaveValue('0 9 * * 1-5');
+  await recipe.getByRole('radio', /^Dependency updates/).click();
+  await expect(name).toHaveValue('Dependency updates');
+  await name.fill('My weekly audit');
+  await recipe.getByRole('radio', /^Weekly summary/).click();
+  await expect(name).toHaveValue('My weekly audit');
 });
 
 test('the builder’s Delete of a default says it is reset, of a custom one not (AUT-035)', async ({ app, browser, screen }) => {
@@ -402,4 +439,44 @@ test('When I decide prepares each task: chip, sentence, Run now, Save and the li
   // Opened again, the chip reads it.
   await browser.evaluate(() => { location.hash = '#/s/studio/automations/aut_2'; });
   await expect(chip).toHaveText('Start: When I decide');
+});
+
+test('a writer sees who an automation runs as and can delete a teammate’s automation', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/automations'));
+  await expect(screen.getByRole('heading', /^Custom/)).toBeVisible();
+  await browser.evaluate(() => {
+    const db = (window as unknown as { __yuliusMock: { automations: { id: string; owner_id: string; owner_login: string }[] } }).__yuliusMock;
+    const automation = db.automations.find((a) => a.id === 'aut_2')!;
+    automation.owner_id = 'usr_2';
+    automation.owner_login = 'anna-q';
+    location.hash = '#/s/studio/automations/aut_2';
+  });
+  await expect(screen.getByText('Tasks run as @anna-q. Only the creator can edit, pause, enable, or run this automation.')).toBeVisible();
+  await expect(screen.getByRole('textbox', 'What the task does')).toHaveAttribute('readonly', '');
+  await expect(screen.getByRole('button', 'Run now')).toBeDisabled();
+  await expect(screen.getByRole('button', /^Save$/)).toBeDisabled();
+  await expect(screen.getByRole('button', /^Delete$/)).toBeEnabled();
+
+  await browser.evaluate(() => { location.hash = '#/s/studio/automations'; });
+  const card = browser.locator('.item-card:has([aria-label="Delete Weekly dependency audit"])');
+  await expect(card.getByRole('switch', 'Weekly dependency audit runs on schedule')).toBeDisabled();
+  await expect(card.getByRole('button', 'Run now')).toBeDisabled();
+  await expect(card.getByRole('button', 'Delete Weekly dependency audit')).toBeEnabled();
+});
+
+test('enabling an already-enabled ready-made automation keeps its scheduled time', async ({ app, screen, browser }) => {
+  await app.open(mock('/s/studio/automations'));
+  await expect(screen.getByRole('switch', 'Work through open issues runs on schedule')).toBeChecked();
+  const result = await browser.evaluate(async () => {
+    const db = (window as unknown as { __yuliusMock: {
+      automations: { id: string; next_run_at: string }[];
+      request(method: string, path: string): Promise<number>;
+    } }).__yuliusMock;
+    const automation = db.automations.find((a) => a.id === 'aut_3')!;
+    const before = automation.next_run_at;
+    const status = await db.request('POST', '/api/sandboxes/sb_studio/automation-templates/open-issues/enable');
+    return { status, before, after: automation.next_run_at };
+  });
+  expect(result.status).toBe(200);
+  expect(result.after).toBe(result.before);
 });

@@ -60,6 +60,12 @@ pub struct Automation {
     /// SPEC-105). Not together with the other three.
     #[serde(default)]
     pub prepared: bool,
+    /// Identity that owns the automation and the tasks it starts (read-only).
+    #[serde(default)]
+    pub owner_id: String,
+    /// Display login of the owner (read-only).
+    #[serde(default)]
+    pub owner_login: String,
     /// `ui` or `agent` (read-only).
     #[serde(default)]
     pub created_via: String,
