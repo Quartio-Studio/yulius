@@ -12,3 +12,6 @@ workspace = true
 
 [package.metadata.yulius]
 layer = "tooling"
+
+[dev-dependencies]
+tempfile.workspace = true
