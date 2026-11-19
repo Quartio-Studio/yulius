@@ -6,6 +6,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-19
 
+- An end-of-day digest, off by default (SPEC-512 part 3, task #494, #1413, ADR-0380): an
+  instance administrator turns it on in Settings with a time (UTC) and an optional idle
+  threshold. Once a day each person gets what waits for them, what was parked with the end of its
+  last message, and how many tasks still work, under the bell (`/digest`) and in their Telegram
+  chat; with a threshold it first parks quiet tasks that ask nobody (never Done or waiting ones).
+
 - A question names who answers it (SPEC-512 part 2, task #494, #1418): an agent's `needs_you`
   can name the people besides the owner it waits for (`who`, each with write access to the
   project, checked when it asks). The task's page says "Asks @bob"; only the owner and whom it

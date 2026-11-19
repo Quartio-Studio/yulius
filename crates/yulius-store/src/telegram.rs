@@ -170,7 +170,9 @@ impl ChatLinkStore for SqliteStore {
                  notify_failed = CASE WHEN telegram_links.chat_id = excluded.chat_id \
                  THEN telegram_links.notify_failed ELSE 0 END, \
                  notify_account = CASE WHEN telegram_links.chat_id = excluded.chat_id \
-                 THEN telegram_links.notify_account ELSE 0 END",
+                 THEN telegram_links.notify_account ELSE 0 END, \
+                 notify_digest = CASE WHEN telegram_links.chat_id = excluded.chat_id \
+                 THEN telegram_links.notify_digest ELSE 1 END",
                 params![user, chat, at.0],
             )
             .map_err(db)?;

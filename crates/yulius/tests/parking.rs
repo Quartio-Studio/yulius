@@ -1270,7 +1270,6 @@ async fn latest_digest(
     app: &App,
     user: &yulius_domain::ids::UserId,
 ) -> Result<serde_json::Value, Error> {
-    use yulius_app::ports::store_ext::DigestStore as _;
     let stored = app
         .deps
         .store
