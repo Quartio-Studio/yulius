@@ -31,17 +31,22 @@ test('Harnesses handles task-only and run-only groups, missing usage, capped and
   await app.open(mock('/s/studio/dashboard'));
   await browser.evaluate(() => {
     Object.assign((window as MockWindow).__yuliusMock, { analyticsSummary: {
-      tasks: { total: 2, by_harness: { codex: 2 } },
+      tasks: { total: 3, by_harness: { codex: 2, claude: 1 } },
       tokens_by_harness: [{ harness: 'antigravity', runs: 3, finished_runs: 0,
         median_wall_ms: null, p90_wall_ms: null, input: 0, output: null, cache_read: null,
-        cache_write: null, unknown_usage_runs: 2 }], truncated: true,
+        cache_write: null, unknown_usage_runs: 2 }, { harness: 'claude', runs: 1, finished_runs: 1,
+        median_wall_ms: 600_000, p90_wall_ms: 600_000, input: 17, output: 23, cache_read: 42,
+        cache_write: 64, unknown_usage_runs: 0 }], truncated: true,
     } });
   });
   await screen.getByRole('radio', 'Harnesses').click();
-  await expect(screen.getByText('Showing the newest 2 matching tasks.')).toBeVisible();
+  await expect(screen.getByText('Showing the newest 3 matching tasks.')).toBeVisible();
   const rows = (title: string, harness: string) => browser.locator(`table[aria-label="${title}"] tr:has(th:text-is("${harness}")) td`);
   await expect(rows('Run performance', 'Antigravity')).toHaveText(['0', '3', '0', '—', '—']);
   await expect(rows('Run performance', 'Codex')).toHaveText(['2', '0', '0', '—', '—']);
+  await expect(screen.getByRole('table', 'Token usage').getByRole('columnheader')).toHaveText(
+    [/harness/i, /reporting runs/i, /input/i, /output/i, /cache read/i, /cache write/i]);
+  await expect(rows('Token usage', 'Claude Code')).toHaveText(['1 of 1', '17', '23', '42', '64']);
   await expect(rows('Token usage', 'Antigravity')).toHaveText(['1 of 3', '0', '—', '—', '—']);
   await browser.evaluate(() => { (window as MockWindow).__yuliusMock.analyticsSummary = { tasks: { total: 0, by_harness: {} }, tokens_by_harness: [] }; });
   await screen.getByRole('button', 'Refresh').click();

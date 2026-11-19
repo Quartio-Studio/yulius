@@ -47,3 +47,5 @@ Reuse the analytics summary and its existing authorization, work bound and creat
 - Before implementation, the Rust assertion for the finished count received null. Both browser scenarios failed to find the Harnesses tab.
 - `cargo test --locked -p yulius-app --lib analytics::tests` passed all seven tests. Two closed Codex attempts of 0 and 400 ms produced a median of 200 ms and a p90 of 400 ms. Two live attempts across two harnesses contributed no duration samples.
 - `npx e2e run tests/harness-comparison.e2e.ts` passed all three browser scenarios, including date restoration, missing and measured-zero telemetry, empty and capped cohorts, retry, 360 px layout and an accessibility check.
+- Independent review round 1 found that two unknowns in one row could hide a swapped column. An added row reports 17 input, 23 output, 42 cache-read and 64 cache-write tokens. In an isolated web copy the test failed when Output and Cache read were swapped. On the feature branch all three scenarios passed.
+- `scripts/dev quick` passed. `scripts/dev security` exited 2 because Vidoc refused the instance key (HTTP 401).
