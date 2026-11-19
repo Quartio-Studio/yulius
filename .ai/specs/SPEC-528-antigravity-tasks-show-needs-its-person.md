@@ -39,7 +39,7 @@ Use synthetic Antigravity 1.5.10 hook payloads with a temporary transcript for t
 
 ## Decisions
 
-Use the CLI's explicit idle bit and first-invocation hook as lifecycle evidence. Screen text and assistant prose can be stale. Retain SPEC-505's goal launch, compatibility and provider boundaries. The existing turn-order lock also records the latest Antigravity work hook's send time. Idle settlement checks that time and holds the lock through the write so a delayed Stop cannot overwrite a newer invocation. No additional transcript parser, timer, or persisted flag is needed.
+Use the CLI's explicit idle bit and first-invocation hook as lifecycle evidence. Screen text and assistant prose can be stale. Retain SPEC-505's goal launch, compatibility and provider boundaries. Serialize native turn hooks by task and keep the latest send time. Discard a delayed Stop before it reaches gates, subscription changes or the idle write. A separate lock lets the Stop wait for transcript reads that take the shared turn-order lock. No additional transcript parser, timer, or persisted flag is needed.
 
 ## Evidence
 
@@ -47,3 +47,4 @@ Use the CLI's explicit idle bit and first-invocation hook as lifecycle evidence.
 - `cargo test -p yulius --test main agent_hooks::` passed all 36 tests, including the busy and idle sequences. All 23 hook transport tests passed with `cargo test -p yulius-harness --test hook_client`. The tests use a synthetic Google session and a controlled clock.
 - `scripts/dev quick` passed. The local `scripts/dev security` scan was unrun because Vidoc refused the configured key (HTTP 401). No live Gemini model call was made.
 - Independent review of `28177bd64` identified a delayed Stop and an ambiguous explanation for a request dismissed during a list read. The gated Stop test failed with Waiting after a newer wake. The request test failed with a browser attribution. The fixes order the state writes and use source-neutral wording for a request snapshot. An ordinary MCP call also checks the reason in the default text.
+- The second review reproduced an exhausted discipline gate raising `needs_attention` after an autonomous invocation. The expanded regression failed on `ab75badf8` with that activity. Native hook ordering now covers the full Stop decision. The background sequence also checks the Needs you task list used in the report.

@@ -183,17 +183,33 @@ impl App {
         if ctx.attempt.harness != harness {
             return Err(AppError::Unauthenticated);
         }
+        let runtime = self.runtime(&ctx.task.id);
+        if event == events::STOP {
+            crate::race::reached(
+                crate::race::Point::StopTurnLock,
+                std::path::Path::new(ctx.task.id.as_str()),
+            );
+        }
+        // A timed-out hook may still be here while agy starts its next turn. Order its
+        // Stop before every consequence (gates, rotation, idle, and the answer marker).
+        let _native_order = if harness == Harness::Antigravity
+            && matches!(
+                event,
+                events::STOP | events::PRE_INVOCATION | events::USER_PROMPT_SUBMIT
+            ) {
+            let mut latest = runtime.antigravity_hook_ms.lock().await;
+            if sent < *latest && event != events::USER_PROMPT_SUBMIT {
+                return Ok(HookReply::Output(HookOutput::default()));
+            }
+            *latest = (*latest).max(sent);
+            Some(latest)
+        } else {
+            None
+        };
         if event != events::STOP {
             return self.answer_hook(&ctx, event, input, sent).await;
         }
-        // While Yulius answers a Stop, the record that closes its turn leaves the turn to it, until
-        // the answer is recorded below.
-        let runtime = self.runtime(&ctx.task.id);
         // The agent sent this Stop after every prompt of its turn (SPEC-346 LPH-002).
-        crate::race::reached(
-            crate::race::Point::StopTurnLock,
-            std::path::Path::new(ctx.task.id.as_str()),
-        );
         {
             let _order = runtime.turn_order.lock().await;
             runtime.turn_end_ms.fetch_max(sent, Ordering::SeqCst);
@@ -827,7 +843,7 @@ impl App {
         // and the agent went on, ADR-0115): its turn is over, and what that turn's end decided
         // stands. The transcript still shows the turn. Held until Working is set, so a turn end
         // arriving meanwhile settles after it (SPEC-346 LPH-002).
-        let mut order = runtime.turn_order.lock().await;
+        let _order = runtime.turn_order.lock().await;
         if sent < runtime.turn_end_ms.load(Ordering::SeqCst) {
             tracing::info!(task = %ctx.task.id, "a prompt answered after its turn ended changes nothing");
             return Ok(HookReply::Output(HookOutput::default()));
@@ -865,9 +881,6 @@ impl App {
         } else {
             self.continue_working_stretch(&ctx.task.id).await
         };
-        if ctx.attempt.harness == Harness::Antigravity {
-            order.antigravity_work_ms = order.antigravity_work_ms.max(sent);
-        }
         self.set_task_activity(&task, Activity::Working).await?;
         // Only now, with the task gone from idle to Working by a prompt sent after the pull
         // request watch typed: the turn of that news has begun (SPEC-487 CHN-002). Not for a
@@ -1161,7 +1174,7 @@ impl App {
             if background {
                 self.antigravity_work(&task.id, sent).await?;
             } else {
-                self.clean_stop(task, sent).await?;
+                self.clean_stop(task).await?;
             }
             return Ok(HookReply::Output(HookOutput::default()));
         }

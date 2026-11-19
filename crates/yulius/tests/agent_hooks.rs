@@ -1971,6 +1971,17 @@ async fn agy_brief(f: &Fixture) -> Result<serde_json::Value, Box<dyn std::error:
 async fn antigravity_background_stop_and_autonomous_invocation() -> TestResult {
     let f = antigravity_goal().await?;
     agy_event(&f, "Stop", json!({"fully_idle": false})).await?;
+    let caller = yulius_app::coordination::ProjectCaller {
+        sandbox: f.sandbox.clone(),
+        user: f.h.app.agent_context(TOKEN).await?.task.owner,
+        task: None,
+        channel: yulius_app::coordination::Channel::Superagent,
+        actor: "test viewer".into(),
+        detail: json!({}),
+    };
+    let scope = json!({"scope": "needs_you"});
+    let list = f.h.app.tool_tasks_list(&caller, &scope).await?;
+    assert_eq!(list["tasks"], json!([]), "{list}");
     let busy = agy_brief(&f).await?;
     assert_eq!(busy["shows"], "working", "{busy}");
     agy_event(&f, "PreInvocation", json!({})).await?;
@@ -1982,6 +1993,9 @@ async fn antigravity_background_stop_and_autonomous_invocation() -> TestResult {
     let requested = agy_brief(&f).await?;
     assert_eq!(requested["shows"], "needs_you");
     assert_eq!(requested["needs_you"]["action"], action);
+    let list = f.h.app.tool_tasks_list(&caller, &scope).await?;
+    assert_eq!(list["tasks"][0]["number"], 1);
+    assert_eq!(list["tasks"][0]["needs_you"]["action"], action);
     Ok(())
 }
 
@@ -2057,6 +2071,13 @@ async fn antigravity_idle_stop_with_an_open_step_explains_the_wait() -> TestResu
 /// afterwards owns the activity, even when the task was already Working at its wake.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn antigravity_late_idle_stop_cannot_settle_a_newer_invocation() -> TestResult {
+    for exhausted_gate in [false, true] {
+        late_agy_stop(exhausted_gate).await?;
+    }
+    Ok(())
+}
+
+async fn late_agy_stop(exhausted_gate: bool) -> TestResult {
     use std::time::Duration;
     use yulius_app::race::{Point, on};
     let id = TaskId::parse("t-delayed-agy-stop")?;
@@ -2064,12 +2085,18 @@ async fn antigravity_late_idle_stop_cannot_settle_a_newer_invocation() -> TestRe
         None,
         |task| {
             task.id = id.clone();
+            if exhausted_gate {
+                task.gate_blocks = 3;
+            }
             task.mode = yulius_app::model::TaskMode::Goal;
             task.activity = Some(Activity::Working);
         },
         Agent::Antigravity,
     )
     .await?;
+    if exhausted_gate {
+        std::fs::write(f.worktree.join("api.rs"), "fn main() {}\n")?;
+    }
     let (reached, parked) = tokio::sync::oneshot::channel();
     let (release, released) = std::sync::mpsc::channel();
     let limit = Duration::from_secs(10);
