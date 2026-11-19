@@ -32,6 +32,7 @@ The attached composer screenshot shows one Codex choice and Gemini 4 Carbon. Set
 - [x] Pin the Codex client with GPT-6.2 Ultra delegation metadata
 - [x] Independent review in a fresh session, findings fixed test-first
 - [x] Every gate green, docs and the changes log updated
+- [x] Verify withheld-screen attention after the opening turn finishes
 
 ## Acceptance criteria
 
@@ -65,3 +66,4 @@ Catalog maintenance and default compatibility follow [ADR-0372](../../docs/decis
 - Across all 92 browser test files, 1,119 tests passed and the credential-dependent agent test was skipped. The full local command terminated after 85 files reported. The seven remaining files passed in a separate invocation (196 tests). The tightened request assertions passed in their focused run.
 - `scripts/dev mutants` reported 8 listed, 6 caught, 0 missed, 0 timed out, 2 unviable, 0 not reached. The review fix had no Rust mutations. Its browser mutation failed on the previously uncovered assertion.
 - The hosted check on the submitted head is enforced at merge by Yulius's delivery queue.
+- PR #1439’s first CI run failed in an existing Claude terminal test. The fake agent prints its answer before its Stop hook settles the opening turn. Under eight concurrent workers, 2 of 32 runs lost the attention flag. Waiting for that run’s answered Stop before starting the withheld-screen scenario preserved every original assertion and passed the focused test and all 32 concurrent runs. [Issue #1445](https://github.com/Quartio-Studio/yulius/issues/1445)
