@@ -1,6 +1,6 @@
 ---
 yulius-task: 06a14f9f-537f-4675-8110-e05490d4329f
-status: in-progress
+status: done
 ---
 
 # SPEC-521 — Select a Codex or Gemini model and its effort
@@ -30,8 +30,8 @@ The attached composer screenshot shows one Codex choice and Gemini 4 Carbon. Set
 - [x] Use model-specific effort tiers for task creation and saved preferences
 - [x] Pin the Antigravity client that launches the full Gemini catalog
 - [x] Pin the Codex client with GPT-6.2 Ultra delegation metadata
-- [ ] Independent review in a fresh session, findings fixed test-first
-- [ ] Every gate green, docs and the changes log updated
+- [x] Independent review in a fresh session, findings fixed test-first
+- [x] Every gate green, docs and the changes log updated
 
 ## Acceptance criteria
 
@@ -59,3 +59,9 @@ Catalog maintenance and default compatibility follow [ADR-0372](../../docs/decis
 - Codex 0.169.0 sent a GPT-6.2 Ultra turn at medium on fallback metadata. On 0.170.0 all 11 selected model IDs reached the local endpoint at their highest tier. Ultra runs used their catalog's multi-agent reasoning level (extra high or max). Luna's Max and GPT-5.5's Extra high were sent directly.
 - `cargo test -p yulius-harness --test launch` passed 26 tests. The domain release-pin tests failed on their previous versions before the pin updates.
 - Live subscription entitlements and model-generated answers were outside the synthetic checks.
+- Review round 1 found that the browser test could confuse an omitted effort with explicit High. It now checks the raw request before the mock resolves defaults. Injecting an explicit High made the stale-preference assertion fail. All four browser tests passed on the fix, and round 2 approved commit `e0d4acfe3`.
+- The two domain pin contracts, 12 UI contracts, 11 Codex installer tests and three Antigravity installer tests passed. Both network installer tests also passed on Linux x64, fetching, verifying and running the real releases. ARM64 digests were checked against publisher metadata.
+- Local `scripts/dev quick` passed. Local `scripts/dev security` was unrun because Vidoc rejected the key with HTTP 401.
+- Across all 92 browser test files, 1,119 tests passed and the credential-dependent agent test was skipped. The full local command terminated after 85 files reported. The seven remaining files passed in a separate invocation (196 tests). The tightened request assertions passed in their focused run.
+- `scripts/dev mutants` reported 8 listed, 6 caught, 0 missed, 0 timed out, 2 unviable, 0 not reached. The review fix had no Rust mutations. Its browser mutation failed on the previously uncovered assertion.
+- The hosted check on the submitted head is enforced at merge by Yulius's delivery queue.
