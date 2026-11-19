@@ -221,7 +221,7 @@ pub struct TaskRuntime {
     pub(crate) prompt_held: AtomicBool,
     /// A reattach owns the old attempt's recovery until any required hand-over finishes.
     /// A limit move from its transcript waits here before deciding which attempt to move.
-    reattach_move: Arc<tokio::sync::Mutex<()>>,
+    pub(crate) reattach_move: Arc<tokio::sync::Mutex<()>>,
     /// Whose personal MCP servers the current run was started with (SPEC-332 MSC-009): a live
     /// run keeps its MCP configuration, so a hand-over restarts it, and only that person messages
     /// it meanwhile.

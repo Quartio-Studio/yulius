@@ -2430,7 +2430,8 @@ directory's `personal-mcp-of` gives that back to a server that restarted, which 
 run whose record names someone who is not the task's holder any more, SPEC-483 RST-001); a
 hand-over resumes such a run with the new
 owner's servers. A replayed limit waits for that hand-over and moves only the attempt that
-reported it ([ADR-0389](decisions/0389-a-reattach-finishes-its-hand-over-before-a-limit-moves-the-run.md)).
+reported it. The capacity loop defers the persisted pause while that hand-over runs
+([ADR-0389](decisions/0389-a-reattach-finishes-its-hand-over-before-a-limit-moves-the-run.md)).
 `App::mcp_secret_values` adds the servers' literal secret values to
 `App::matcher_for`, so redaction covers them with the agent secrets (MCP changes bump the vault
 generation).

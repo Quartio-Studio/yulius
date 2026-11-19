@@ -10,7 +10,7 @@ Replaying a usage limit requests a subscription move. Reattaching an attempt tha
 
 ## Decision
 
-Reconciliation takes priority for that task before it attaches the host and starts transcript replay. Replay can record the limit while reconciliation checks the owner and completes any required hand-over. The deferred pool move then checks that the reporting attempt is still attached before it acts on that limit.
+Reconciliation takes priority for that task before it attaches the host and starts transcript replay. Replay can record the limit while reconciliation checks the owner and completes any required hand-over. The deferred pool move then checks that the reporting attempt is still attached before it acts on that limit. The startup capacity loop shares this lock when it acts on a persisted pause. A contended pass continues to the next task and requests a prompt recheck. Once it can proceed, it verifies the pause ID against the task's open pause.
 
 ## Alternatives
 
