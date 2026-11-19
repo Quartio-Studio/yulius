@@ -4523,7 +4523,11 @@ impl App {
     ///
     /// # Errors
     /// Store failures.
-    pub(crate) async fn park_task_now(self: &Arc<Self>, task_id: &TaskId) -> AppResult<bool> {
+    pub(crate) async fn park_task_now(
+        self: &Arc<Self>,
+        task_id: &TaskId,
+        rule: crate::parking::ParkRule,
+    ) -> AppResult<bool> {
         // The list's counters are a probe's last answer: before a session ends, its background
         // work is looked at now, and a look that gives no answer counts as work running, as
         // for a move (SPEC-483 SWT-001, SPEC-461 CCM-013). Looked at before the launch lock, so
@@ -4535,7 +4539,7 @@ impl App {
         let Some(task) = self.deps.store.task(task_id).await? else {
             return Ok(false);
         };
-        if !self.parkable_now(&task).await {
+        if !self.parkable_now(&task, rule).await {
             return Ok(false);
         }
         // A prompt waiting in Claude Code's queue would be lost with the session (SPEC-471).

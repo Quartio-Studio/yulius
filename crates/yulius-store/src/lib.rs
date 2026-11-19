@@ -15,6 +15,7 @@ mod ci;
 mod coordination;
 pub mod crypto;
 mod delivery;
+mod digest;
 mod guests;
 mod imports;
 mod instance;
@@ -192,6 +193,8 @@ const MIGRATIONS: &[&str] = &[
     include_str!("migrations/0068_automation_agent_named.sql"),
     // Schema version 69 (SPEC-525).
     include_str!("migrations/0069_reindex_codex_antigravity_sessions.sql"),
+    // Schema version 70 (SPEC-512 DIG-001).
+    include_str!("migrations/0070_end_of_day_digest.sql"),
 ];
 
 type Job = Box<dyn FnOnce(&mut Connection) + Send + 'static>;
@@ -467,6 +470,7 @@ mod tests {
                 69,
                 include_str!("migrations/0069_reindex_codex_antigravity_sessions.sql"),
             ),
+            (70, include_str!("migrations/0070_end_of_day_digest.sql")),
         ];
         for (version, sql) in pinned {
             assert_eq!(
@@ -475,7 +479,7 @@ mod tests {
                 "schema version {version}"
             );
         }
-        assert_eq!(MIGRATIONS.len(), 69, "a new migration is pinned here too");
+        assert_eq!(MIGRATIONS.len(), 70, "a new migration is pinned here too");
     }
 
     /// SPEC-514 PIN-003: a version-67 database's automations saved as `auto` (drawn for each

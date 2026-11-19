@@ -114,6 +114,8 @@ impl App {
                 // tasks that went idle while Yulius was down have been woken (MSB-007).
                 if started.elapsed() >= PARK_AFTER_START {
                     app.park_idle_sessions_now().await;
+                    // The day's digest, once its time passed (SPEC-512 DIG-002).
+                    app.digest_tick().await;
                 }
                 // Expired and consumed CLI device grants (#169).
                 if let Err(err) = app.purge_device_grants().await {

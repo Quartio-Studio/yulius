@@ -905,6 +905,7 @@ async fn subscription_problems_reach_administrators_and_disabled_people_get_noth
         done: true,
         failed: true,
         account: true,
+        digest: true,
     };
     assert!(w.h.store.set_chat_choices(&bob, &wants_all).await?);
     let secret = concat!("ghp_", "Zx9Telegram0Account1Fixture2Body3456");
@@ -1450,5 +1451,197 @@ async fn a_dropped_remove_is_still_audited() -> TestResult {
     }
     assert!(w.h.store.chat_bot().await?.is_none());
     assert!(!w.h.app.telegram_polling(), "the removed bot polls");
+    Ok(())
+}
+
+async fn set_digest(
+    w: &World,
+    body: Value,
+    who: &Creds,
+) -> Result<support::Resp, Box<dyn std::error::Error>> {
+    api(w, Method::PUT, "/api/admin/digest", Some(body), who).await
+}
+
+/// SPEC-512 DIG-001: the digest is off by default, set by an instance administrator only, its
+/// time `HH:MM` and its threshold 1 to 720 hours; a change is audited.
+#[tokio::test]
+async fn the_digest_is_off_by_default_and_set_by_an_instance_administrator() -> TestResult {
+    let w = world().await?;
+    let view = api(&w, Method::GET, "/api/admin/digest", None, &w.alice).await?;
+    assert_eq!(view.status, StatusCode::OK, "{}", view.body);
+    assert_eq!(
+        view.body,
+        json!({"enabled": false, "at": "18:00", "park_idle_hours": null})
+    );
+    let bob = api(&w, Method::GET, "/api/admin/digest", None, &w.bob).await?;
+    assert_eq!(bob.status, StatusCode::FORBIDDEN);
+    let refused = set_digest(&w, json!({"enabled": true, "at": "18:00"}), &w.bob).await?;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN);
+    for bad in [
+        json!({"enabled": true, "at": "25:00"}),
+        json!({"enabled": true, "at": "18:00", "park_idle_hours": 0}),
+        json!({"enabled": true, "at": "18:00", "park_idle_hours": 721}),
+    ] {
+        let r = set_digest(&w, bad.clone(), &w.alice).await?;
+        assert_eq!(
+            r.status,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "{bad}: {}",
+            r.body
+        );
+    }
+    let r = set_digest(
+        &w,
+        json!({"enabled": true, "at": "7:05", "park_idle_hours": 24}),
+        &w.alice,
+    )
+    .await?;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+    assert_eq!(
+        r.body,
+        json!({"enabled": true, "at": "07:05", "park_idle_hours": 24})
+    );
+    let view = api(&w, Method::GET, "/api/admin/digest", None, &w.admin).await?;
+    assert_eq!(view.body["at"], "07:05");
+    assert_eq!(audits(&w, "digest", "instance.digest.set").await?.len(), 1);
+    // Nothing was sent: the first digest is the next 07:05.
+    let mine = api(&w, Method::GET, "/api/me/digest", None, &w.alice).await?;
+    assert_eq!(mine.body, Value::Null);
+    Ok(())
+}
+
+/// SPEC-512 DIG-004 to DIG-006: one digest per person with something to report: what waits for
+/// them first, what was parked since the last one, how many still work; its texts redacted as
+/// the sandbox's transcripts are; in the browser and the linked chat, unless the person turned
+/// digests off there. A person with nothing gets none.
+#[tokio::test]
+async fn a_digest_lists_what_waits_first_redacted_and_reaches_the_chat() -> TestResult {
+    let w = world().await?;
+    set_bot(&w, TOKEN_A).await?;
+    let created = call(
+        &w.h.router,
+        Method::POST,
+        "/api/sandboxes/s1/agent-secrets",
+        Some(json!({"name": "PAYMENT_KEY", "value": SECRET})),
+        &w.alice,
+    )
+    .await?;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
+    link(&w, &w.alice, 100).await?;
+    link(&w, &w.bob, 200).await?;
+    link(&w, &w.carol, 300).await?;
+    let alice = user_id(&w, "alice").await?;
+    seed_task(&w.h, "t1", "s1", &alice, TaskStatus::Running, None).await?;
+    seed_task(&w.h, "t2", "s1", &alice, TaskStatus::Running, None).await?;
+    seed_task(&w.h, "t3", "s1", &alice, TaskStatus::Running, None).await?;
+    move_to(&w, "t2", TaskStatus::Running, Some(Activity::Working)).await?;
+    move_to(&w, "t3", TaskStatus::Parked, Some(Activity::Done)).await?;
+    let request = NeedsYouRecord {
+        action: format!("Rotate {SECRET} on the server"),
+        happened: None,
+        problem: None,
+        decision: false,
+        link: None,
+        at: 1,
+        cause: None,
+        named: Default::default(),
+    };
+    w.h.store
+        .set_task_needs_you(&TaskId::parse("t1")?, Some(&request), w.h.app.now())
+        .await?;
+    let before = w.fake.sent_to(100).len();
+
+    let since = w.h.app.now().0 - 24 * 60 * MINUTE_MS;
+    assert_eq!(
+        w.h.app.send_digests_now(since, None).await,
+        1,
+        "bob has nothing"
+    );
+    let mine = api(&w, Method::GET, "/api/me/digest", None, &w.alice).await?;
+    let digest = &mine.body;
+    assert_eq!(digest["waiting"][0]["number"], 1, "{digest}");
+    let asked = digest["waiting"][0]["detail"].as_str().ok_or("detail")?;
+    assert!(
+        asked.contains("Rotate") && !asked.contains(SECRET),
+        "{asked}"
+    );
+    assert_eq!(digest["parked"][0]["number"], 3, "{digest}");
+    assert_eq!(digest["parked"][0]["detail"], "Finished", "{digest}");
+    assert_eq!(digest["working_count"], 1, "{digest}");
+    assert_eq!(digest["working"][0]["number"], 2, "{digest}");
+    assert_eq!(
+        digest["waiting"][0]["link"],
+        "https://yulius.test/s/app/t/1"
+    );
+    let bobs = api(&w, Method::GET, "/api/me/digest", None, &w.bob).await?;
+    assert_eq!(bobs.body, Value::Null);
+
+    let sent = w.fake.wait_sent(100, before + 1).await?;
+    let text = sent
+        .iter()
+        .rev()
+        .find(|t| t.starts_with("Your Yulius digest"))
+        .ok_or("no digest sent")?;
+    assert!(text.contains("Waiting for you (1):"), "{text}");
+    assert!(text.contains("Parked (1):"), "{text}");
+    assert!(text.contains("Still working: 1"), "{text}");
+    assert!(!text.contains(SECRET), "redacted: {text}");
+    assert_eq!(
+        w.fake.sent_to(200).len(),
+        1,
+        "bob got only his link's answer"
+    );
+
+    // Turned off in the chat: the browser still gets it, the chat does not.
+    let r = api(
+        &w,
+        Method::PUT,
+        "/api/me/telegram/choices",
+        Some(json!({"needs_you": true, "done": false, "failed": false, "account": false, "digest": false})),
+        &w.alice,
+    )
+    .await?;
+    assert_eq!(r.body["choices"]["digest"], false, "{}", r.body);
+    let told = w.fake.sent_to(100).len();
+    assert_eq!(w.h.app.send_digests_now(since, None).await, 1);
+    barrier(&w, "d1").await?;
+    assert_eq!(w.fake.sent_to(100).len(), told, "{:?}", w.fake.sent_to(100));
+    let again = api(&w, Method::GET, "/api/me/digest", None, &w.alice).await?;
+    assert_ne!(again.body["id"], digest["id"]);
+    Ok(())
+}
+
+/// SPEC-512 DIG-002: the digest runs once its time passed, once a day, and never while off.
+#[tokio::test]
+async fn the_digest_runs_once_a_day_after_its_time() -> TestResult {
+    let w = world().await?;
+    let alice = user_id(&w, "alice").await?;
+    seed_task(&w.h, "t1", "s1", &alice, TaskStatus::Running, None).await?;
+    move_to(&w, "t1", TaskStatus::Running, Some(Activity::Working)).await?;
+    // The harness's day, so the session stays signed in.
+    let day = w.h.app.now().0.div_euclid(24 * 60 * MINUTE_MS) * 24 * 60 * MINUTE_MS;
+    w.h.clock
+        .0
+        .store(day + 10 * 60 * MINUTE_MS, Ordering::SeqCst);
+    assert_eq!(w.h.app.digest_tick().await, 0, "off by default");
+    let r = api(
+        &w,
+        Method::PUT,
+        "/api/admin/digest",
+        Some(json!({"enabled": true, "at": "18:00"})),
+        &w.alice,
+    )
+    .await?;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+    assert_eq!(w.h.app.digest_tick().await, 0, "before its time");
+    w.h.clock
+        .0
+        .store(day + 18 * 60 * MINUTE_MS + 1, Ordering::SeqCst);
+    assert_eq!(w.h.app.digest_tick().await, 1);
+    assert_eq!(w.h.app.digest_tick().await, 0, "once a day");
+    w.h.clock
+        .0
+        .store(day + 42 * 60 * MINUTE_MS + 1, Ordering::SeqCst);
+    assert_eq!(w.h.app.digest_tick().await, 1, "the next day");
     Ok(())
 }

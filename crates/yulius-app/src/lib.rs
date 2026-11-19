@@ -31,6 +31,7 @@ mod creation_refusals;
 pub mod cross_sandbox;
 pub mod delivery;
 pub mod deploy_gate;
+pub mod digest;
 pub mod discipline;
 pub mod disk;
 pub mod docker_trouble;

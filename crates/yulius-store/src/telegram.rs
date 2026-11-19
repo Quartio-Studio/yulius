@@ -12,7 +12,7 @@ use yulius_domain::time::Timestamp;
 use crate::{SqliteStore, bad_column, db};
 
 const LINK_COLUMNS: &str = "user_id, chat_id, linked_at, notify_needs_you, notify_done, \
-                            notify_failed, notify_account";
+                            notify_failed, notify_account, notify_digest";
 
 fn link_row(row: &Row<'_>) -> rusqlite::Result<ChatLink> {
     let id: String = row.get(0)?;
@@ -25,6 +25,7 @@ fn link_row(row: &Row<'_>) -> rusqlite::Result<ChatLink> {
             done: row.get(4)?,
             failed: row.get(5)?,
             account: row.get(6)?,
+            digest: row.get(7)?,
         },
     })
 }
@@ -247,13 +248,15 @@ impl ChatLinkStore for SqliteStore {
             let changed = c
                 .execute(
                     "UPDATE telegram_links SET notify_needs_you = ?2, notify_done = ?3, \
-                     notify_failed = ?4, notify_account = ?5 WHERE user_id = ?1",
+                     notify_failed = ?4, notify_account = ?5, notify_digest = ?6 \
+                     WHERE user_id = ?1",
                     params![
                         user,
                         choices.needs_you,
                         choices.done,
                         choices.failed,
-                        choices.account
+                        choices.account,
+                        choices.digest
                     ],
                 )
                 .map_err(db)?;
@@ -353,6 +356,7 @@ mod tests {
         assert_eq!(store.link_chat(&anna, "100", Timestamp(1)).await?, None);
         let choices = NotifyChoices {
             done: true,
+            digest: false,
             ..NotifyChoices::default()
         };
         assert!(store.set_chat_choices(&anna, &choices).await?);

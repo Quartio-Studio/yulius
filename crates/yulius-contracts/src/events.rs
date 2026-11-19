@@ -86,6 +86,12 @@ pub enum UiEvent {
         /// New account view (boxed: it is by far the largest payload; the JSON is the same).
         account: Box<AccountView>,
     },
+    /// The person's end-of-day digest is ready (SPEC-512 DIG-005), to them only.
+    #[serde(rename = "digest.ready")]
+    DigestReady {
+        /// The digest (boxed: the JSON is the same).
+        digest: Box<crate::api::digest::DigestView>,
+    },
     /// An instance update changed (a new `main` was found, or a run moved): clients refetch
     /// `GET /api/update` (SPEC-002 ADR-18). `phase` is the running update's phase, if any.
     #[serde(rename = "update.updated")]
