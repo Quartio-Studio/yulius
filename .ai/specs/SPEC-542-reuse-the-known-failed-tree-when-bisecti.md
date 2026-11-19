@@ -60,3 +60,12 @@ bounded history and sandbox scope. See ADR-0383.
 - After the fix, nextest ran both new integration tests. Both passed. The four-member
   case observed the original failed run ID at the second bisection.
 - `scripts/dev quick` passed the repository contracts and format check.
+- On 9729061c, all seven targeted nextest cases passed, including passed-tree reuse,
+  path-skipped jobs, bounded waits and cancelled-candidate handling. The independent
+  reviewer ran all 47 merge-train integration tests successfully.
+- Round one requested a test where a newer eligible pass competes with the original
+  candidate failure. The strengthened four-member regression on a26f1cad passed.
+- `scripts/dev security` reported that Vidoc is disabled for this project. No scan ran.
+- In an isolated copy with the lookup order reversed, the strengthened regression failed
+  on `train/3+4` for the same tree ID. The newer pass is an eligible source in that control.
+- `scripts/dev mutants --base 9729061c` found no product mutant in the test-only review fix.
