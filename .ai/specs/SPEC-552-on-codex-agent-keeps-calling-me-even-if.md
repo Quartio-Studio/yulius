@@ -38,8 +38,9 @@ Use synthetic process trees modeled on the sandbox and a browser test with a fai
 
 Apply the existing ownership and wait rules from SPEC-085 and SPEC-130. Use the status that the task view already derives to distinguish a failed PR from a request for a reply.
 
-
 ## Evidence
 
 - Before the fix, the process regression counted zero of two agent-owned waits. The Chromium regression showed the exact reply banner after the live wait ended and the failed checks became visible.
 - The shell tests passed with direct, shell-launched, wrapped and adopted waits. The nested wrapped wait in an adopted process failed first with three waits instead of two.
+- The independent reviewer reproduced one adopted wrapped wait when a missing process start time made ownership unknown. The expanded regression failed at `bfb7bbd8f` with one wait and passes with verified ownership for both forms of wait. The partial-snapshot control also checks ordinary build-shell accounting.
+- The task-status and reply suites reported 49 passing browser tests. The separate local full-browser run received SIGTERM during execution. Vidoc is disabled for the project.

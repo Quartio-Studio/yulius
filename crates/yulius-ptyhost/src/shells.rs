@@ -123,6 +123,13 @@ pub fn count_shells(table: &[ProcessEntry], root: u32) -> u32 {
 /// [`count_shells`], with the shells that only run `yulius wait` counted apart.
 #[must_use]
 pub fn count_background(table: &[ProcessEntry], root: u32) -> ShellCount {
+    // Per wrapper, keep its ownership and whether it runs a wait, another command, or both.
+    #[derive(Default)]
+    struct Wrapper {
+        owned: bool,
+        waits: bool,
+        other: bool,
+    }
     let mut children: HashMap<u32, Vec<&ProcessEntry>> = HashMap::new();
     let mut inits = HashSet::new();
     for entry in table {
@@ -133,8 +140,7 @@ pub fn count_background(table: &[ProcessEntry], root: u32) -> ShellCount {
             inits.insert(entry.pid);
         }
     }
-    // Per counted shell: whether a `yulius wait` and whether anything else runs below it.
-    let mut shells: HashMap<u32, (bool, bool)> = HashMap::new();
+    let mut shells: HashMap<u32, Wrapper> = HashMap::new();
     let mut seen = HashSet::from([root]);
     let mut unwrapped_waits = 0;
     let mut queue = VecDeque::from([(root, None::<u32>, 0usize, true)]);
@@ -160,17 +166,23 @@ pub fn count_background(table: &[ProcessEntry], root: u32) -> ShellCount {
             let shell = match shell {
                 Some(top) => {
                     if !child.shell
-                        && let Some((waits, other)) = shells.get_mut(&top)
+                        && let Some(wrapper) = shells.get_mut(&top)
                     {
-                        *waits |= child.waits;
-                        *other |= !child.waits;
+                        wrapper.waits |= child.waits;
+                        wrapper.other |= !child.waits;
                     }
                     Some(top)
                 }
                 // An orphan the sandbox's init adopted: not the agent's (DMD-001).
                 None if child.shell && inits.contains(&pid) => continue,
                 None if child.shell => {
-                    shells.insert(child.pid, (false, false));
+                    shells.insert(
+                        child.pid,
+                        Wrapper {
+                            owned,
+                            ..Wrapper::default()
+                        },
+                    );
                     Some(child.pid)
                 }
                 None => {
@@ -183,15 +195,18 @@ pub fn count_background(table: &[ProcessEntry], root: u32) -> ShellCount {
             queue.push_back((child.pid, shell, depth + 1, owned));
         }
     }
-    let waits = shells
-        .values()
-        .filter(|(waits, other)| *waits && !*other)
-        .count();
-    let count = |n: usize| u32::try_from(n).unwrap_or(u32::MAX);
-    ShellCount {
-        shells: count(shells.len().saturating_sub(waits)),
-        waits: count(waits + unwrapped_waits),
+    let mut count = ShellCount {
+        shells: 0,
+        waits: unwrapped_waits,
+    };
+    for wrapper in shells.into_values() {
+        if wrapper.waits && !wrapper.other {
+            count.waits += u32::from(wrapper.owned);
+        } else {
+            count.shells += 1;
+        }
     }
+    count
 }
 
 /// Background shells left under the agent process `root`; `None` when the process table cannot
@@ -651,8 +666,25 @@ mod tests {
                 ..entry(12, 11, false)
             },
             wait(17, 12),
+            entry(14, 11, false), // adopted, but its sibling's start is unknown
+            entry(22, 14, true),
+            wait(23, 22),
         ];
-        assert_eq!(count_background(&partial, 10).waits, 0, "unknown ownership");
+        assert_eq!(
+            count_background(&partial, 10),
+            ShellCount::default(),
+            "unknown ownership"
+        );
+        let mut building = partial;
+        building[5].waits = false;
+        assert_eq!(
+            count_background(&building, 10),
+            ShellCount {
+                shells: 1,
+                waits: 0
+            },
+            "ordinary wrapper accounting"
+        );
     }
 
     #[test]
