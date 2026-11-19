@@ -246,7 +246,7 @@ impl Event<'_> {
 mod tests {
     use super::*;
 
-    fn classified(records: &[serde_json::Value], id: &str, prompt: &str, at: i64) -> bool {
+    fn origin_of(records: &[serde_json::Value], id: &str, prompt: &str, at: i64) -> SubmitOrigin {
         let lines = records.iter().map(ToString::to_string).collect::<Vec<_>>();
         origin_in(
             lines.iter().map(String::as_bytes),
@@ -255,7 +255,7 @@ mod tests {
             prompt,
             Timestamp(0)..=Timestamp(at),
             false,
-        ) == SubmitOrigin::Scheduled
+        )
     }
 
     fn record(kind: &str, millis: i64, fields: serde_json::Value) -> serde_json::Value {
@@ -288,24 +288,33 @@ mod tests {
             ),
             record("queue-operation", 4, json!({"operation":"dequeue"})),
         ];
-        assert!(!classified(&records, "p", &text, 4));
+        assert_eq!(origin_of(&records, "p", &text, 4), SubmitOrigin::Unmarked);
         records.push(record("queue-operation", 5, json!({"operation":"dequeue"})));
-        assert!(
-            !classified(&records, "p", &text, 4),
+        assert_eq!(
+            origin_of(&records, "p", &text, 4),
+            SubmitOrigin::Unmarked,
             "the hand-over followed this hook"
         );
-        assert!(classified(&records, "p", &text, 5));
-        assert!(!classified(&records, "p", "ordinary", 5));
+        assert_eq!(origin_of(&records, "p", &text, 5), SubmitOrigin::Scheduled);
+        assert_eq!(
+            origin_of(&records, "p", "ordinary", 5),
+            SubmitOrigin::Unmarked
+        );
         records.push(record(
             "user",
             6,
             json!({"isMeta":true,"promptSource":"system","promptId":"p","scheduledFireId":"fire"}),
         ));
-        assert!(
-            classified(&records, "p", &text, 7),
+        assert_eq!(
+            origin_of(&records, "p", &text, 7),
+            SubmitOrigin::Scheduled,
             "replayed scheduled hook"
         );
-        assert!(!classified(&records, "another", &text, 7), "retired fire");
+        assert_eq!(
+            origin_of(&records, "another", &text, 7),
+            SubmitOrigin::Unmarked,
+            "retired fire"
+        );
     }
 
     #[test]
@@ -328,7 +337,11 @@ mod tests {
                 ),
                 record("queue-operation", 3, json!({"operation":"dequeue"})),
             ];
-            assert!(classified(&records, "p", text, 4), "{display}");
+            assert_eq!(
+                origin_of(&records, "p", text, 4),
+                SubmitOrigin::Scheduled,
+                "{display}"
+            );
         }
     }
 
@@ -419,7 +432,10 @@ mod tests {
             ),
             record("queue-operation", 4, json!({"operation":"dequeue"})),
         ];
-        assert!(!classified(&records, "typed", "check", 5));
+        assert_eq!(
+            origin_of(&records, "typed", "check", 5),
+            SubmitOrigin::Unmarked
+        );
     }
     #[test]
     fn a_notice_claude_never_takes_out_does_not_hide_a_scheduled_hand_over() {
@@ -442,19 +458,55 @@ mod tests {
             ),
             record("queue-operation", 12, json!({"operation":"dequeue"})),
         ];
-        let lines = records.iter().map(ToString::to_string).collect::<Vec<_>>();
         assert_eq!(
-            origin_in(
-                lines.iter().map(String::as_bytes),
-                "s",
-                "p",
-                "check",
-                Timestamp(0)..=Timestamp(13),
-                false
-            ),
+            origin_of(&records, "p", "check", 13),
             SubmitOrigin::UnidentifiedHandOver
         );
-        assert!(!classified(&records, "p", "other", 13));
+        assert_eq!(
+            origin_of(&records, "p", "other", 13),
+            SubmitOrigin::Unmarked,
+            "a different typed prompt still has its ordinary effects"
+        );
+    }
+
+    #[test]
+    fn an_identified_queued_prompt_leaves_the_next_queue_entry_in_place() {
+        use serde_json::json;
+        let mut records = vec![
+            record(
+                "queue-operation",
+                1,
+                json!({"operation":"enqueue","content":"first"}),
+            ),
+            record(
+                "queue-operation",
+                2,
+                json!({"operation":"enqueue","content":"second"}),
+            ),
+            record(
+                "system",
+                3,
+                json!({"subtype":"scheduled_task_fire","uuid":"fire"}),
+            ),
+            record(
+                "queue-operation",
+                4,
+                json!({"operation":"enqueue","content":"check"}),
+            ),
+            record("queue-operation", 5, json!({"operation":"dequeue"})),
+            record(
+                "user",
+                6,
+                json!({"promptSource":"queued","message":{"role":"user","content":"first"}}),
+            ),
+            record("queue-operation", 7, json!({"operation":"dequeue"})),
+        ];
+        assert_eq!(origin_of(&records, "p", "check", 7), SubmitOrigin::Unmarked);
+        records.push(record("queue-operation", 8, json!({"operation":"dequeue"})));
+        assert_eq!(
+            origin_of(&records, "p", "check", 8),
+            SubmitOrigin::Scheduled
+        );
     }
 
     #[test]
@@ -485,7 +537,10 @@ mod tests {
             ),
             record("queue-operation", 5, json!({"operation":"dequeue"})),
         ];
-        assert!(classified(&records, "p", "check", 6));
+        assert_eq!(
+            origin_of(&records, "p", "check", 6),
+            SubmitOrigin::Scheduled
+        );
     }
 
     #[test]
