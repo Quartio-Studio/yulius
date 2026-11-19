@@ -4413,7 +4413,10 @@ async fn a_second_run_that_finds_no_network_room_is_not_made() -> TestResult {
             attempts(data, &first, "echo ok")
         },
         None,
-        |config| config.ci.rerun_network_wait = Duration::from_millis(500),
+        |config| {
+            config.ci.job_timeout = WAIT * 3;
+            config.ci.rerun_network_wait = Duration::from_millis(500);
+        },
     )
     .await?;
     // Room for the first start; none once it ran.

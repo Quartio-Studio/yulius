@@ -21,7 +21,7 @@ In [issue #1408](https://github.com/Quartio-Studio/yulius/issues/1408), CI run `
 ## Plan
 
 - [x] Trace the deadline that masks the network refusal
-- [ ] Prove the fixture allows the job deadline to expire
+- [x] Prove the fixture allows the job deadline to expire
 - [ ] Give network refusal its full observation budget
 - [ ] Independently review the fix and deliver it on green CI
 
@@ -37,3 +37,7 @@ Check the budget relationship in the existing integration test. Exercise its rel
 ## Decisions
 
 Scope the override to this test. Both 60-second waits already bound the scenario, so letting the fixture's job outlive them isolates the network refusal without adding a sleep or extending the test's waits.
+
+## Evidence
+
+With the eight-second fixture, a temporary 12-second hold between both first starts and the release file reproduced the original assertion. The actual reason was `timed out: ran 8 s, its time limit` (nextest run `f2e5becc`).
