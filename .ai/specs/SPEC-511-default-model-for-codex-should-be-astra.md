@@ -121,6 +121,16 @@ model or effort keeps it.
   first bullet, and the e2e file's `Mocked.tasks` type.
 - `npx e2e run` of `codex`, `antigravity`, `responsive`, `model-fallback`, `claude-code` and
   `steps`: 71/71 passed.
+- CI run `f9bc4d29` at `20195144d` failed in `usage_credits::a_limit_nothing_says_the_end_of_is_
+  retried_once_then_asks_a_person` (`left: 1, right: 2` refused moves): a race in that test, not
+  this change. The refused switch is recorded after `limit_move_refused` writes the goal pause the
+  test waited for; a 300 ms delay before the insert reproduced it every time, and the test now
+  waits for both (passes with the delay, `usage_credits::` 32/32 without).
+- Merged `origin/dev` (SPEC-514: a task's agent is set, never drawn): `e2e/README.md` and
+  `docs/api.md` conflicted on the same rows and were resolved as dev's text plus this change's
+  Codex default; `codex:: antigravity:: ui_contract:: usage_credits:: subscription_pool::
+  harness_` and `yulius-harness --test launch` pass, e2e `codex`, `antigravity`,
+  `model-fallback` 28/28.
 - Security scan: not run. Yulius CI's `security` job was skipped (exit 78: Vidoc refused the
   instance key, HTTP 401), not caused by the change.
 - Not tested: a real Codex run on a real OpenAI account (no Codex account is connected to this
