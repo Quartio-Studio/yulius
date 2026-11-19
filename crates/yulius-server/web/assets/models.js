@@ -7,7 +7,7 @@
 // listed is the default, as on the server. Choosing Codex sends `harness: codex` and no model:
 // the server runs GPT-6.2 Astra, at high effort unless one is chosen (SPEC-511). Choosing a
 // Gemini model sends `harness: antigravity` and the model; Antigravity's default is Gemini 4
-// Carbon at high effort.
+// Neon at high effort (SPEC-519; Gemini 4 Carbon before, SPEC-505).
 
 /** This browser's defaults for new tasks (the composer and Settings share them). */
 export const MODEL_PREF_KEY = 'yulius.composer.model';
@@ -42,7 +42,8 @@ export const PROVIDERS = [
     harness: 'antigravity',
     // Without an effort chosen, the server runs an Antigravity task at high effort.
     models: [
-      { id: 'gemini-4-carbon', name: 'Gemini 4 Carbon', description: 'Antigravity CLI on an Antigravity account, high effort by default' },
+      { id: 'gemini-4-neon', name: 'Gemini 4 Neon', description: 'Antigravity CLI on an Antigravity account, high effort by default' },
+      { id: 'gemini-4-carbon', name: 'Gemini 4 Carbon', description: 'The previous Gemini 4 on an Antigravity account, high effort by default' },
     ],
   },
 ];

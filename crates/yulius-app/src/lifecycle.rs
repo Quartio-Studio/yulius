@@ -67,9 +67,10 @@ pub(crate) fn model_of_its_harness(harness: Harness, model: Option<&str>) -> App
         Harness::Codex if model.starts_with("claude") => Err(AppError::Invalid(
             "a Codex task takes an OpenAI model, not a Claude one".into(),
         )),
-        Harness::Antigravity if !model.starts_with("gemini-") => Err(AppError::Invalid(
-            "an Antigravity task takes a Gemini model (such as gemini-4-carbon)".into(),
-        )),
+        Harness::Antigravity if !model.starts_with("gemini-") => Err(AppError::Invalid(format!(
+            "an Antigravity task takes a Gemini model (such as {})",
+            yulius_domain::harness::DEFAULT_ANTIGRAVITY_MODEL
+        ))),
         _ => Ok(()),
     }
 }

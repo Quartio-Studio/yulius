@@ -123,7 +123,7 @@ async fn a_task_without_an_agent_runs_claude_code_every_time() -> TestResult {
             "claude",
         ),
         (
-            json!({"prompt": "E", "model": "gemini-4-carbon"}),
+            json!({"prompt": "E", "model": "gemini-4-neon"}),
             "antigravity",
         ),
         (

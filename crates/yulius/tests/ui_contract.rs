@@ -520,8 +520,10 @@ fn resolve(file: &str, spec: &str) -> String {
     format!("/{}", parts.join("/"))
 }
 
-/// SPEC-505 AGY-010: the composer offers Antigravity in a Google group whose first model is the
-/// server's default for an Antigravity task (whose effort the server sets when none is chosen).
+/// SPEC-505 AGY-010, SPEC-519 NEO-004: the composer offers Antigravity in a Google group whose
+/// first model is the server's default for an Antigravity task (Gemini 4 Neon, whose effort the
+/// server sets when none is chosen), keeps Gemini 4 Carbon below it, and the browser mock creates
+/// an Antigravity task without a model on that default.
 #[test]
 fn the_composer_offers_antigravity_on_its_default_model() -> TestResult {
     use yulius_domain::harness::{DEFAULT_ANTIGRAVITY_EFFORT, DEFAULT_ANTIGRAVITY_MODEL};
@@ -535,17 +537,40 @@ fn the_composer_offers_antigravity_on_its_default_model() -> TestResult {
         "{}",
         &google[..google.len().min(120)]
     );
+    assert_eq!(
+        DEFAULT_ANTIGRAVITY_MODEL, "gemini-4-neon",
+        "the menu names Gemini 4 Neon"
+    );
     assert!(
         google.contains(&format!(
-            "    models: [\n      {{ id: '{DEFAULT_ANTIGRAVITY_MODEL}', name: 'Gemini 4 Carbon'"
+            "    models: [\n      {{ id: '{DEFAULT_ANTIGRAVITY_MODEL}', name: 'Gemini 4 Neon'"
         )),
         "models.js does not list {DEFAULT_ANTIGRAVITY_MODEL} first for Antigravity"
+    );
+    assert!(
+        google.contains("{ id: 'gemini-4-carbon', name: 'Gemini 4 Carbon'"),
+        "models.js does not keep Gemini 4 Carbon for Antigravity"
     );
     assert_eq!(
         DEFAULT_ANTIGRAVITY_EFFORT, "high",
         "the menu's description says high"
     );
     assert!(google.contains("high effort by default"));
+    let mock = std::fs::read_to_string(web_dir().join("assets/mock.js"))?;
+    assert!(
+        mock.contains(&format!(
+            "harness === 'antigravity' ? '{DEFAULT_ANTIGRAVITY_MODEL}'"
+        )) && mock.contains(&format!(
+            "harness === 'antigravity' ? '{DEFAULT_ANTIGRAVITY_EFFORT}'"
+        )),
+        "the mock creates an Antigravity task without a model on another default"
+    );
+    assert!(
+        mock.contains(&format!(
+            "an Antigravity task takes a Gemini model (such as {DEFAULT_ANTIGRAVITY_MODEL})"
+        )),
+        "the mock's invalid-model message does not name {DEFAULT_ANTIGRAVITY_MODEL}"
+    );
     Ok(())
 }
 
