@@ -109,7 +109,10 @@ fn origin_in<'a>(
             ("assistant", _, _) | ("user", _, _)
                 if r.kind == "assistant" || r.prompt_source.is_some() =>
             {
-                Some(Event::Turn(r.scheduled_fire_id))
+                Some(Event::Turn {
+                    fire: r.scheduled_fire_id,
+                    source: r.prompt_source,
+                })
             }
             ("queue-operation", _, Some("dequeue")) => Some(Event::Dequeue),
             ("queue-operation", _, Some("remove" | "popOne" | "popAll")) => Some(Event::Removal(
@@ -137,6 +140,11 @@ fn hand_over(
     let mut fires = std::collections::VecDeque::new();
     let mut waiting = std::collections::VecDeque::new();
     let mut handed_on = SubmitOrigin::Unmarked;
+    let mut ambiguous = 0usize;
+    let is_notice = |text: &Option<String>| {
+        text.as_deref()
+            .is_some_and(|text| text.trim_start().starts_with("<task-notification>"))
+    };
     for (_, event) in events {
         match event {
             Event::Fire(uuid) => fires.push_back(uuid),
@@ -144,26 +152,36 @@ fn hand_over(
                 waiting.push_back((text, fires.pop_front()));
             }
             Event::Dequeue => {
-                // A notice can remain in the transcript's queue after Claude hands on other
-                // entries (SPEC-493). When both are visible, consume the next plain entry,
-                // preserving personal state for a matching hand-over of uncertain origin.
-                let plain = waiting.iter().position(|(text, _)| {
-                    !text
-                        .as_deref()
-                        .is_some_and(|text| text.trim_start().starts_with("<task-notification>"))
-                });
-                let skipped_notice = plain.is_some_and(|index| index > 0);
-                match waiting.remove(plain.unwrap_or(0)) {
-                    Some((Some(text), fire)) if text == prompt => {
-                        if fire.is_some_and(|uuid| !finished.contains(uuid)) {
-                            handed_on = if skipped_notice {
-                                SubmitOrigin::UnidentifiedHandOver
-                            } else {
-                                SubmitOrigin::Scheduled
-                            };
-                        } else if clipped && fire.is_none() && handed_on == SubmitOrigin::Unmarked {
-                            handed_on = SubmitOrigin::UnidentifiedHandOver;
-                        }
+                // A dequeue has no text. If Claude might have skipped a stranded notice,
+                // keep both entries until its user record identifies which actually ran.
+                let mut plain = waiting
+                    .iter()
+                    .filter(|(text, _)| !is_notice(text))
+                    .peekable();
+                if waiting.front().is_some_and(|(text, _)| is_notice(text))
+                    && plain.peek().is_some()
+                {
+                    ambiguous = ambiguous.saturating_add(1);
+                    if handed_on == SubmitOrigin::Unmarked
+                        && plain.take(ambiguous).any(|(text, fire)| {
+                            text.as_deref() == Some(prompt)
+                                && fire.map_or(clipped, |uuid| !finished.contains(uuid))
+                        })
+                    {
+                        handed_on = SubmitOrigin::UnidentifiedHandOver;
+                    }
+                    continue;
+                }
+                match waiting.pop_front() {
+                    Some((Some(text), Some(fire)))
+                        if text == prompt && !finished.contains(fire) =>
+                    {
+                        handed_on = SubmitOrigin::Scheduled;
+                    }
+                    Some((Some(text), None))
+                        if clipped && text == prompt && handed_on == SubmitOrigin::Unmarked =>
+                    {
+                        handed_on = SubmitOrigin::UnidentifiedHandOver;
                     }
                     None if clipped && handed_on == SubmitOrigin::Unmarked => {
                         handed_on = SubmitOrigin::UnidentifiedHandOver;
@@ -171,13 +189,21 @@ fn hand_over(
                     _ => {}
                 }
             }
-            Event::Turn(fire) => {
-                // The actual prompt identifies its fire even when the unlabelled dequeue
-                // could have taken a different entry. Retire it before the next tick.
-                if let Some(uuid) = fire
-                    && let Some(i) = waiting.iter().position(|(_, fire)| *fire == Some(uuid))
-                {
-                    waiting.remove(i);
+            Event::Turn { fire, source } => {
+                if ambiguous > 0 {
+                    let entry =
+                        waiting
+                            .iter()
+                            .position(|(text, queued_fire)| match (fire, source) {
+                                (Some(id), _) => *queued_fire == Some(id),
+                                (None, Some("system")) => is_notice(text),
+                                (None, Some("queued")) => !is_notice(text) && queued_fire.is_none(),
+                                _ => false,
+                            });
+                    if let Some(i) = entry {
+                        waiting.remove(i);
+                        ambiguous -= 1;
+                    }
                 }
                 handed_on = SubmitOrigin::Unmarked;
             }
@@ -197,7 +223,10 @@ fn hand_over(
 enum Event<'a> {
     Fire(&'a str),
     Enqueue(Option<String>),
-    Turn(Option<&'a str>),
+    Turn {
+        fire: Option<&'a str>,
+        source: Option<&'a str>,
+    },
     Dequeue,
     Removal(Option<String>),
 }
@@ -208,7 +237,7 @@ impl Event<'_> {
             Self::Fire(..) => 0,
             Self::Enqueue(_) => 1,
             Self::Dequeue | Self::Removal(_) => 2,
-            Self::Turn(_) => 3,
+            Self::Turn { .. } => 3,
         }
     }
 }
@@ -426,6 +455,37 @@ mod tests {
             SubmitOrigin::UnidentifiedHandOver
         );
         assert!(!classified(&records, "p", "other", 13));
+    }
+
+    #[test]
+    fn a_delivered_notification_leaves_the_schedule_for_its_own_hand_over() {
+        use serde_json::json;
+        let notice = "<task-notification>done</task-notification>";
+        let records = [
+            record(
+                "queue-operation",
+                0,
+                json!({"operation":"enqueue","content":notice}),
+            ),
+            record(
+                "system",
+                1,
+                json!({"subtype":"scheduled_task_fire","uuid":"fire"}),
+            ),
+            record(
+                "queue-operation",
+                2,
+                json!({"operation":"enqueue","content":"check"}),
+            ),
+            record("queue-operation", 3, json!({"operation":"dequeue"})),
+            record(
+                "user",
+                4,
+                json!({"promptSource":"system","message":{"role":"user","content":notice}}),
+            ),
+            record("queue-operation", 5, json!({"operation":"dequeue"})),
+        ];
+        assert!(classified(&records, "p", "check", 6));
     }
 
     #[test]
