@@ -3275,8 +3275,8 @@ and the previous owner gets `task.control_taken` wherever they are. An owner who
 owner's task passes at once either way. A take or a hand-over on request records its giver
 (`tasks.control_from`, schema 60), who takes the task back without asking
 (`App::take_back_task_control`, one conditional update) until control moves again: handed on,
-handed back to the giver, or passed from an absent owner, which clear or replace it. An onboarding task that never ran passes to whoever
-starts onboarding.
+handed back to the giver, or passed from an absent owner, which clear or replace it. An
+onboarding task that never ran passes to whoever starts onboarding.
 
 ```mermaid
 flowchart LR

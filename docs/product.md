@@ -662,10 +662,10 @@ watching, steering and unblocking.
   token), chooses what reaches it (Needs you by default; Done; failed or stopped; subscription
   problems for administrators) and unlinks there or with `/stop`. Only what their notification
   center would show them is sent (a subscription switch is no news, a project's Docker trouble is
-  one message however many tasks ask, a request for control of their task, or a teammate taking
-  it or taking it back, reaches them under Needs you), with a link to the task, agent secrets removed, at most five
-  messages a minute with the rest in one summary. The server asks Telegram for messages, so no
-  inbound port is needed. Replies and new tasks from Telegram are part 2.
+  one message however many tasks ask, a request for control of their task, or a teammate taking it
+  or taking it back, reaches them under Needs you), with a link to the task, agent secrets
+  removed, at most five messages a minute with the rest in one summary. The server asks Telegram
+  for messages, so no inbound port is needed. Replies and new tasks from Telegram are part 2.
 
 ## Principles
 

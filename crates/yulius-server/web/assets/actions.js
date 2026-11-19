@@ -54,6 +54,7 @@ export function openTaskMenu(ctx, anchor, task) {
     // Someone else's task: take control, or ask an owner who wants to be asked, from here too
     // (SPEC-490 OWN-007, SPEC-510 TKC-005).
     !can.askControl ? null
+      : task.control_from && task.control_from.login === me ? { label: 'Take back', title: 'It acts on GitHub as you again', onSelect: () => takeBackTask(ctx, task) }
       : !asksFirst ? { label: 'Take control', title: `It would act on GitHub as you; @${owner} is told and can take it back`, onSelect: () => takeControl(ctx, task) }
       : asked ? { label: 'Withdraw request', title: `You asked @${owner} for control of this task`, onSelect: () => dropControlRequest(ctx, task) }
       : { label: 'Request control', disabled: Boolean(request), title: request ? `@${request.by.login} already asked @${owner} for control` : `Asks @${owner} to hand this task over: it would act on GitHub as you`, onSelect: () => requestControl(ctx, task) },

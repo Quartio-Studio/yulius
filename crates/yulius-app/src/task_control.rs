@@ -109,6 +109,10 @@ impl App {
         id: &str,
     ) -> AppResult<TaskSummary> {
         let task = self.load_task(ctx, id, Action::View).await?;
+        // Its giver taking it is a take-back, and told as one (SPEC-490 OWN-009, review round 2).
+        if self.deps.store.control_from(&task.id).await?.as_ref() == Some(&ctx.user.id) {
+            return self.take_back_task_control(ctx, id).await;
+        }
         let (sandbox, _) = self
             .require_for(ctx, &task.sandbox_id, Action::Work)
             .await?;
@@ -209,8 +213,9 @@ impl App {
         self.control_summary(&task).await
     }
 
-    /// `POST /api/tasks/{tid}/control/take-back`: the person who handed the task over on request
-    /// takes it back without asking (SPEC-490 OWN-009), while nobody has moved control since.
+    /// `POST /api/tasks/{tid}/control/take-back`: the person who handed the task over on request,
+    /// or from whom it was taken (SPEC-510), takes it back without asking (SPEC-490 OWN-009),
+    /// while nobody has moved control since.
     ///
     /// # Errors
     /// `Forbidden` for anyone but the giver, a disabled giver or one without write access;

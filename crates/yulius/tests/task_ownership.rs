@@ -1400,9 +1400,9 @@ async fn a_take_is_refused_to_whoever_may_not_take() -> TestResult {
     Ok(())
 }
 
-/// SPEC-510 TKC-002 (review round 1): Alice takes back by taking control herself. She was the
-/// giver, so nobody may take it back afterwards and the notice promises nothing; Bob, from whom
-/// it was taken, is told.
+/// SPEC-510 TKC-002 (review rounds 1 and 2): Alice takes back by taking control herself. She was
+/// the giver, so it is a take-back: nobody may take it back afterwards, nothing promises it, and
+/// Bob, from whom it was taken, is told it was taken back.
 #[tokio::test]
 async fn taking_control_back_from_the_taker_leaves_no_giver() -> TestResult {
     let f = fixture().await?;
@@ -1415,20 +1415,27 @@ async fn taking_control_back_from_the_taker_leaves_no_giver() -> TestResult {
     assert_eq!(back.body["control_from"], serde_json::Value::Null);
     let said = notices(&mut watch);
     assert!(
-        said.iter()
-            .any(|n| n.contains("@alice took control of this task from @bob"))
+        said.iter().any(|n| n.contains("returned to @alice"))
             && !said.iter().any(|n| n.contains("can take it back")),
         "{said:?}"
     );
+    assert_eq!(audited(&f.h, "t1", "task.control_taken_back").await?, 1);
     let mut told = Vec::new();
     while let Ok(envelope) = events.try_recv() {
-        if let yulius_contracts::events::UiEvent::ControlTaken { by, .. } = &envelope.event {
-            told.push((envelope.user.clone(), by.clone()));
+        use yulius_contracts::events::UiEvent;
+        match &envelope.event {
+            UiEvent::ControlTakenBack { by, .. } => {
+                told.push((envelope.user.clone(), "back", by.clone()));
+            }
+            UiEvent::ControlTaken { by, .. } => {
+                told.push((envelope.user.clone(), "taken", by.clone()));
+            }
+            _ => {}
         }
     }
     assert_eq!(
         told,
-        vec![(Some(UserId::parse("u-b")?), "alice".to_owned())]
+        vec![(Some(UserId::parse("u-b")?), "back", "alice".to_owned())]
     );
     // Nobody gave it to Alice: there is nothing to take back.
     assert_eq!(take_back(&f, &f.bob).await?.status, 409);
