@@ -1,6 +1,6 @@
 ---
 yulius-task: cae3b3f1-1b1c-42bf-ab5e-7a7d32dd30eb
-status: in-progress
+status: done
 ---
 
 # SPEC-552 Codex reply alerts during pull request work
@@ -23,7 +23,7 @@ Fixes #1482. The screenshot shows a failing PR check and a terminal reply banner
 - [x] Trace the false Codex reply alert
 - [x] Reproduce active work raising a reply alert
 - [x] Keep Codex work out of the reply queue
-- [ ] Verify and review the fix
+- [x] Verify and review the fix
 
 ## Acceptance criteria
 
@@ -44,3 +44,5 @@ Apply the existing ownership and wait rules from SPEC-085 and SPEC-130. Use the 
 - The shell tests passed with direct, shell-launched, wrapped and adopted waits. The nested wrapped wait in an adopted process failed first with three waits instead of two.
 - The independent reviewer reproduced one adopted wrapped wait when a missing process start time made ownership unknown. The expanded regression failed at `bfb7bbd8f` with one wait and passes with verified ownership for both forms of wait. The partial-snapshot control also checks ordinary build-shell accounting.
 - The task-status and reply suites reported 49 passing browser tests. The separate local full-browser run received SIGTERM during execution. Vidoc is disabled for the project.
+- The independent reviewer approved `28f3eaba3`. `cargo clippy -p yulius-ptyhost --all-targets -- -D warnings` and `scripts/dev quick` passed.
+- The whole-workspace `scripts/dev mutants` run received SIGTERM while building its baseline. The package-scoped run of the review fix tested 15 mutants, catching 14 with one unviable. Across the full fix it tested 33 mutants, catching 30 with two unviable and one missed. A regression for two waits under an unsandboxed command caught the missed mutation. Both mutations in that targeted rerun were caught, and all 16 shell tests passed.

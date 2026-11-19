@@ -688,6 +688,12 @@ mod tests {
     }
 
     #[test]
+    fn an_unsandboxed_command_can_own_more_than_one_wait() {
+        let table = [entry(13, 12, false), wait(17, 13), wait(18, 13)];
+        assert_eq!(count_background(&table, 12).waits, 2);
+    }
+
+    #[test]
     fn the_wrapper_is_recognised_in_raw_and_ps_command_lines() {
         assert!(is_agent_shell(
             b"/bin/bash\0-c\0-l\0source /h/.claude/shell-snapshots/s.sh && eval 'npm run dev' < /dev/null && pwd -P >| /tmp/claude-1a2b-cwd\0"
