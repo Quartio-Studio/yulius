@@ -2788,11 +2788,21 @@ mod tests {
             return Err("the output".into());
         };
         assert!(text.ends_with("Output:\nsrc\npage one"), "{text:?}");
+        let cancelled = format!(
+            "<SYSTEM_MESSAGE> content=Task id \"abc/task-1\" was canceled with result: \
+             Output:\n{ENV_TWO}\n</SYSTEM_MESSAGE>"
+        );
         assert_env_hidden(
             "agy async result of a cancelled task",
             &[
                 json!({"step_index": 0, "source": "MODEL", "type": "PLANNER_RESPONSE", "status": "DONE", "tool_calls": [{"name": "run_command", "args": {"CommandLine": "\"sleep 9; cat .env\""}}]}),
-                json!({"step_index": 1, "source": "SYSTEM", "type": "SYSTEM_MESSAGE", "status": "DONE", "content": format!("<SYSTEM_MESSAGE> content=Task id \"abc/task-1\" was canceled with result: Output:\n{ENV_TWO}\n</SYSTEM_MESSAGE>")}),
+                json!({
+                    "step_index": 1,
+                    "source": "SYSTEM",
+                    "type": "SYSTEM_MESSAGE",
+                    "status": "DONE",
+                    "content": cancelled,
+                }),
             ],
         )
     }
