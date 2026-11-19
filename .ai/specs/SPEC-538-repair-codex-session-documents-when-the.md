@@ -19,10 +19,13 @@ Issue #1454 follows the transcript reader work in SPEC-525. When Codex has repor
 - **RLT-002** A search refresh can discover the rollout independently and index its messages under the original document ID.
 - **RLT-003** Apply the repair to existing Codex task placeholders. Preserve established native paths, stored-copy handling, and Claude Code and Antigravity document behavior.
 
+- **RLT-004** A second refresh acting on an old placeholder preserves the index built by the winning refresh, including if the second request is cancelled immediately afterward.
+
 ## Plan
 
 - [x] Reproduce late rollout discovery through Sessions and search
 - [x] Repair persisted Codex placeholder paths during synchronization
+- [ ] Preserve indexed passages across concurrent path repairs
 - [ ] Verify compatibility and deliver the reviewed fix
 
 ## Acceptance criteria

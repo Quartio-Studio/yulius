@@ -588,6 +588,44 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_repeated_path_repair_keeps_the_winning_refresh_index() -> TestResult {
+        let store = seeded().await?;
+        let doc = doc("dt", "s1", SessionKind::Task, "sess-task")?;
+        store.insert_session_doc(&doc).await?;
+        store
+            .append_session_chunks(&doc.id, &[chunk(0, "previous")], advance(0, 20))
+            .await?;
+        let rollout = "/data/rollout.jsonl";
+        store.set_session_doc_path(&doc.id, rollout).await?;
+        assert!(
+            store
+                .search_session_chunks(&doc.sandbox_id, "previous", 10)
+                .await?
+                .is_empty()
+        );
+        assert!(
+            store
+                .append_session_chunks(&doc.id, &[chunk(0, "narwhal")], advance(0, 42))
+                .await?
+        );
+
+        // A second refresh read the same placeholder before the first one repaired it.
+        // Even if the second request stops here, the first one's passages are searchable.
+        store.set_session_doc_path(&doc.id, rollout).await?;
+        let repaired = store.session_doc(&doc.id).await?.ok_or("document")?;
+        assert_eq!(repaired.transcript_path, rollout);
+        assert_eq!((repaired.indexed_bytes, repaired.indexed_lines), (42, 2));
+        assert_eq!(
+            store
+                .search_session_chunks(&doc.sandbox_id, "narwhal", 10)
+                .await?
+                .len(),
+            1
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn deleting_a_task_removes_its_session_documents_and_frees_continuations() -> TestResult {
         let store = seeded().await?;
         let s1 = SandboxId::parse("s1")?;
