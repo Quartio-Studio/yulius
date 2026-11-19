@@ -157,9 +157,8 @@ pub struct AutomationRecord {
     pub prompt: String,
     /// Workflow of created tasks.
     pub workflow_id: Option<String>,
-    /// Harness of created tasks; `None`: drawn for each run as a task created without one is
-    /// (stored as `auto`, SPEC-505 RND-002).
-    pub harness: Option<Harness>,
+    /// Harness of created tasks: every run's (SPEC-514 PIN-003).
+    pub harness: Harness,
     /// Enabled.
     pub enabled: bool,
     /// How created tasks start.
@@ -259,7 +258,7 @@ struct Fields {
     cron: String,
     utc_offset_minutes: i32,
     prompt: String,
-    harness: Option<Harness>,
+    harness: Harness,
 }
 
 /// Everything needed to insert an automation.
@@ -311,11 +310,12 @@ fn validate_prompt(prompt: &str) -> AppResult<String> {
     Ok(prompt.to_owned())
 }
 
-/// An automation's agent: `None` for `auto` (drawn for each run, SPEC-505 RND-002).
-fn validate_harness(text: &str) -> AppResult<Option<Harness>> {
+/// An automation's agent: `auto` (or none) is `default`, the calling task's agent for a tool,
+/// else Claude Code; never drawn (SPEC-514 PIN-002/003).
+fn validate_harness(text: &str, default: Harness) -> AppResult<Harness> {
     match text.trim() {
-        "" | "auto" => Ok(None),
-        text => crate::lifecycle::parse_harness(text).map(Some),
+        "" | "auto" => Ok(default),
+        text => crate::lifecycle::parse_harness(text),
     }
 }
 
@@ -334,7 +334,7 @@ fn validate(input: &Automation) -> AppResult<Fields> {
         cron: validate_cron(&input.cron)?,
         utc_offset_minutes: validate_offset(i64::from(input.utc_offset_minutes))?,
         prompt: validate_prompt(&input.prompt)?,
-        harness: validate_harness(&input.harness)?,
+        harness: validate_harness(&input.harness, Harness::ClaudeCode)?,
     })
 }
 
@@ -434,7 +434,7 @@ impl App {
             utc_offset_minutes: record.utc_offset_minutes,
             prompt: record.prompt.clone(),
             workflow_id: record.workflow_id.clone(),
-            harness: record.harness.map_or("auto", Harness::as_str).to_owned(),
+            harness: record.harness.as_str().to_owned(),
             enabled: record.enabled,
             supertask,
             after_task_id,
@@ -700,8 +700,8 @@ impl App {
             cron: validate_cron(&template.cron)?,
             utc_offset_minutes: validate_offset(i64::from(template.utc_offset_minutes))?,
             prompt: validate_prompt(&template.prompt)?,
-            // A template's tasks are drawn too, as any task created without an agent (SPEC-505).
-            harness: None,
+            // A template names no agent: Claude Code, as any automation without one (SPEC-514).
+            harness: Harness::ClaudeCode,
         };
         let workflow = self
             .resolve_workflow_id(sid, template.workflow.as_deref())
@@ -1224,18 +1224,14 @@ impl App {
         let (supertask, after, rule) = self.run_start(automation).await?;
         // "When I decide" prepares the task without a time (SPEC-155, SPEC-105).
         let prepared = (automation.start == AutomationStart::Prepared).then_some(None);
-        // An automation without an agent draws one for each run (SPEC-505 RND-002).
-        let (harness, drawn) = match automation.harness {
-            Some(harness) => (harness, false),
-            None => (self.draw_harness().await?, true),
-        };
         let task = self
             .create_task_held(
                 NewTask {
                     sandbox: automation.sandbox_id.clone(),
                     created_by: automation.created_by.clone(),
                     prompt: automation.prompt.clone(),
-                    harness,
+                    // Every run runs the agent the automation names (SPEC-514 PIN-003).
+                    harness: automation.harness,
                     title: Some(automation.name.clone()),
                     workflow_id: automation.workflow_id.clone(),
                     steps,
@@ -1255,18 +1251,6 @@ impl App {
                 prepared,
             )
             .await?;
-        if drawn {
-            // The task exists and runs: a failed record only says "chosen" for a drawn agent.
-            if let Err(err) = self
-                .deps
-                .store
-                .record_harness_draw(&task.id, self.now())
-                .await
-            {
-                tracing::warn!(error = %err, task = %task.id, "harness draw not recorded");
-            }
-            self.publish_task(&task.id).await;
-        }
         Ok(task.id)
     }
 
@@ -1442,11 +1426,15 @@ impl App {
                 .as_i64()
                 .ok_or_else(|| AppError::Invalid("utc_offset_minutes must be an integer".into()))?,
         };
-        // No agent named: drawn for each run (SPEC-505 RND-002).
-        let harness = match args.get("harness").and_then(Value::as_str) {
-            Some(h) => validate_harness(h)?,
-            None => None,
-        };
+        // No agent named (or `auto`): the calling task's own, else Claude Code (SPEC-514 PIN-002).
+        let own = caller
+            .task
+            .as_ref()
+            .map_or(Harness::ClaudeCode, |t| t.harness);
+        let harness = validate_harness(
+            args.get("harness").and_then(Value::as_str).unwrap_or(""),
+            own,
+        )?;
         let fields = Fields {
             name: validate_name(str_arg(args, "name")?)?,
             cron: validate_cron(str_arg(args, "cron")?)?,
@@ -1596,7 +1584,19 @@ mod tests {
         assert!(validate_prompt("   ").is_err());
         assert!(validate_prompt(&"x".repeat(MAX_PROMPT_BYTES + 1)).is_err());
         assert!(validate_name("").is_err());
-        assert!(validate_harness("gpt").is_err());
+        assert!(validate_harness("gpt", Harness::ClaudeCode).is_err());
+        assert_eq!(
+            validate_harness(" auto ", Harness::Antigravity).ok(),
+            Some(Harness::Antigravity)
+        );
+        assert_eq!(
+            validate_harness("", Harness::ClaudeCode).ok(),
+            Some(Harness::ClaudeCode)
+        );
+        assert_eq!(
+            validate_harness("codex", Harness::Antigravity).ok(),
+            Some(Harness::Codex)
+        );
     }
 
     #[test]
