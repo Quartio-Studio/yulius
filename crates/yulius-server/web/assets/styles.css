@@ -2152,6 +2152,8 @@ a.dl-task:hover { text-decoration: underline; }
 .stage.current { color: var(--text); border-color: var(--accent); background: var(--accent-soft); }
 
 /* dashboard */
+.db-harness-table th[scope="row"] { top: auto; left: 0; color: var(--text); font-size: inherit; letter-spacing: normal; text-transform: none; }
+.db-harness-table tr:last-child th[scope="row"] { border-bottom: 0; }
 .stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 8px; }
 .stat { padding: 12px 16px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-lg); display: flex; flex-direction: column; gap: 4px; }
 .stat-label { color: var(--text-2); font-size: var(--fs-sm); line-height: var(--lh-sm); }

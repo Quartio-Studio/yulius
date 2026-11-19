@@ -28,7 +28,7 @@ pub struct TaskCounts {
     /// Count per status wire name, with `done` for a running task whose goal is achieved and
     /// whose turn ended (TSK-014): its session stays open, but it is finished, not running.
     pub by_status: BTreeMap<String, u32>,
-    /// Count per current harness (`claude`).
+    /// Count per current task harness.
     pub by_harness: BTreeMap<String, u32>,
     /// Count per origin (`ui`, `automation`, `import`, `onboarding`, `agent`).
     pub by_origin: BTreeMap<String, u32>,
@@ -109,11 +109,18 @@ pub struct ModelTokens {
     pub tokens: TokenTotals,
 }
 
-/// Tokens of the runs of one harness.
+/// Usage and elapsed time of the runs executed by one harness.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HarnessTokens {
-    /// Harness (`claude`).
+    /// Executing harness.
     pub harness: String,
+    /// Number of ended runs in the elapsed-time distribution.
+    #[serde(default)]
+    pub finished_runs: u32,
+    /// Median wall milliseconds per ended run, including idle time.
+    pub median_wall_ms: Option<u64>,
+    /// Nearest-rank p90 wall milliseconds per ended run.
+    pub p90_wall_ms: Option<u64>,
     /// Totals.
     #[serde(flatten)]
     pub tokens: TokenTotals,

@@ -4334,6 +4334,8 @@ route('GET', '/api/analytics/docker', ({ db, query }) => {
 
 route('GET', '/api/analytics/summary', ({ db, query }) => {
   if (query.get('sandbox') && !db.sandboxes.some((s) => s.id === query.get('sandbox'))) fail(404, 'not_found', 'not found');
+  if (db.failAnalyticsSummary) fail(500, 'internal', 'the mock failed this read');
+  if (db.analyticsSummary) return db.analyticsSummary;
   const fromDay = query.get('from');
   const toDay = query.get('to');
   const to = Date.parse(toDay || new Date().toISOString().slice(0, 10));
@@ -4355,13 +4357,21 @@ route('GET', '/api/analytics/summary', ({ db, query }) => {
   const runs = Math.round(total * 1.3);
   const unknown = Math.round(total * 0.1);
   const n = (v) => Math.round(v * scale);
+  const codexTasks = Math.round(total * 0.3);
+  const googleTasks = Math.round(total * 0.2);
+  const codexRuns = Math.round(runs * 0.3);
+  const googleRuns = Math.round(runs * 0.2);
+  const harnessUsage = (harness, median, p90, tokens) => ({
+    harness, ...tokens, finished_runs: tokens.runs,
+    median_wall_ms: tokens.runs ? median * MIN : null, p90_wall_ms: tokens.runs ? p90 * MIN : null,
+  });
   return {
     range: { sandbox: query.get('sandbox') || null, from: fromDay || null, to: toDay || null },
     tasks: {
       total,
       closed: Math.round(total * 0.62),
       by_status: { closed: Math.round(total * 0.62), stopped_cancelled: Math.round(total * 0.12), running: 3, done: 2, failed_spawn_error: 1, stopped_crashed: 2 },
-      by_harness: { claude: total },
+      by_harness: { claude: total - codexTasks - googleTasks, codex: codexTasks, antigravity: googleTasks },
       by_origin: { ui: Math.round(total * 0.8), automation: Math.round(total * 0.15), import: Math.round(total * 0.05) },
     },
     tasks_per_day: perDay,
@@ -4373,8 +4383,10 @@ route('GET', '/api/analytics/summary', ({ db, query }) => {
       { model: 'unknown', ...tokenTotals(unknown, unknown, null, null, null, null, unknown) },
     ],
     tokens_by_harness: [
-      { harness: 'claude', ...tokenTotals(runs, total, n(41e6), n(5.2e6), n(310e6), null, unknown) },
-    ],
+      harnessUsage('claude', 30, 80, tokenTotals(runs - codexRuns - googleRuns, total - codexTasks - googleTasks, n(25e6), n(3e6), n(250e6), null, 0)),
+      harnessUsage('codex', 18, 45, tokenTotals(codexRuns, codexTasks, n(10e6), n(1.2e6), n(60e6), null, 0)),
+      harnessUsage('antigravity', 24, 64, tokenTotals(googleRuns, googleTasks, n(6e6), n(1e6), null, null, unknown)),
+    ].filter((row) => row.runs),
     tokens_by_account: [
       ...db.accounts.filter((a) => a.status !== 'pending_login').map((a, i) => ({ account_id: a.id, account_label: a.label, ...(isAdmin(db) && a.email ? { account_email: a.email } : {}), ...tokenTotals(Math.round(runs / (i + 2)), Math.round(total / (i + 2)), n(14e6 / (i + 1)), n(1.8e6 / (i + 1)), null, null, 0) })),
       { account_id: 'acc_deleted', account_label: null, ...tokenTotals(2, 1, n(1e6), n(0.1e6), null, null, 0) },

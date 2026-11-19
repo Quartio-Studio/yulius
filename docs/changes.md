@@ -15,6 +15,10 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   back to healthy `Usable` pools when every connected pool is temporarily limited). Drawn tasks keep
   their harness for life (`harness_choice: random`); a running task agent's unadorned `task_create`
   and `automation_create` still keep the calling task's harness.
+- Dashboard → Harnesses compares assigned tasks, runs, median and p90 elapsed time, and reported input,
+  output and cache tokens for the selected sandbox and period. Each harness shows the number of ended
+  runs and the number reporting usage (SPEC-522, task #504).
+
 - Answer a teammate's Needs you (SPEC-516, task #498, ADR-0370): on someone else's task whose
   agent asks a person for something, Reply answers it without taking control. The agent gets the
   answer labelled with your name (and that you are not its owner), the request ends, and the task
