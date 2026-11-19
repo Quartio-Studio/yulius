@@ -279,6 +279,96 @@ async fn session_search_redacts_a_dotenv_result_appended_after_restart() -> Test
     Ok(())
 }
 
+/// A replay that discovers a rewrite at the end of a large prefix uses the refresh budget.
+#[tokio::test]
+async fn stale_index_offsets_recover_within_the_refresh_budget() -> TestResult {
+    use std::io::{Seek as _, SeekFrom, Write as _};
+    use yulius_app::ports::session_docs::{IndexAdvance, SessionChunk};
+    use yulius_app::session_docs::INDEX_BYTES_PER_REFRESH;
+
+    let h = harness()?;
+    support::seed_github_user(&h, "u1", "alice").await?;
+    let sandbox = support::seed_sandbox(&h, "s1", "studio", "u1").await?.id;
+    let author = UserId::parse("u1")?;
+    let data = &h.app.config.data_dir;
+    let path = imported_doc(&h.store, data, &sandbox, "a", "Rewritten", &author, "").await?;
+    imported_doc(
+        &h.store,
+        data,
+        &sandbox,
+        "b",
+        "Next",
+        &author,
+        &imported_transcript("second"),
+    )
+    .await?;
+    let offset = INDEX_BYTES_PER_REFRESH;
+    h.store
+        .append_session_chunks(
+            "a",
+            &[SessionChunk {
+                line: 0,
+                role: "tool".into(),
+                text: "stale".into(),
+            }],
+            IndexAdvance {
+                expected_bytes: 0,
+                bytes: offset,
+                lines: 1,
+                full: false,
+                size: offset,
+                at: Timestamp(51),
+            },
+        )
+        .await?;
+    let mut file = std::fs::OpenOptions::new().write(true).open(path)?;
+    file.seek(SeekFrom::Start(offset))?;
+    writeln!(file)?;
+    write!(file, "{}", imported_transcript("recovered"))?;
+    h.app.refresh_session_index(&sandbox).await?;
+    assert_eq!(
+        h.store
+            .session_doc("a")
+            .await?
+            .ok_or("rewritten")?
+            .indexed_bytes,
+        0
+    );
+    assert!(
+        h.store
+            .search_session_chunks(&sandbox, "stale", 10)
+            .await?
+            .is_empty()
+    );
+    assert_eq!(
+        h.store.session_doc("b").await?.ok_or("next")?.indexed_bytes,
+        0,
+        "failed replay spent the budget"
+    );
+
+    h.app.refresh_session_index(&sandbox).await?; // The oversized first line uses this batch.
+    h.app.refresh_session_index(&sandbox).await?; // Replays that line and indexes the new records.
+    assert!(
+        !h.store
+            .search_session_chunks(&sandbox, "recovered", 10)
+            .await?
+            .is_empty()
+    );
+    assert_eq!(
+        h.store.session_doc("b").await?.ok_or("next")?.indexed_bytes,
+        0,
+        "successful replay spent the budget"
+    );
+    h.app.refresh_session_index(&sandbox).await?;
+    assert!(
+        !h.store
+            .search_session_chunks(&sandbox, "second", 10)
+            .await?
+            .is_empty()
+    );
+    Ok(())
+}
+
 async fn get(w: &World, creds: &Creds, path: &str) -> Result<support::Resp, Error> {
     call(&w.h.router, Method::GET, path, None, creds).await
 }

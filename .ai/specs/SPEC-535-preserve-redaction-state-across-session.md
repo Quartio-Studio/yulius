@@ -24,13 +24,13 @@ The session store commits passages with the byte and line offsets. On resume, `r
 - [x] Specify redaction at the saved index offset
 - [x] Prove the split-batch search regression
 - [ ] Resume indexing with the transcript’s redaction context
-- [ ] Clear passages indexed before the fix
+- [x] Clear passages indexed before the fix
 - [ ] Verify and review the delivery head
 
 ## Acceptance criteria
 
 - **AC-1 (IDX-001)** Reopen a synthetic transcript at a saved split between a dotenv read and its result. The indexed passage shows the names and redaction markers. An ordinary tool result keeps its value.
-- **AC-2 (IDX-001, IDX-002)** A resumed index produces the same passages as one uninterrupted batch across harness-specific call and continuation boundaries. An unfinished suffix can complete on a later refresh.
+- **AC-2 (IDX-001, IDX-002)** A resumed index produces the same passages as one uninterrupted batch across harness-specific call and continuation boundaries. An unfinished suffix can complete on a later refresh. If the saved offsets disagree with the file, a refresh accounts for the failed read and clears that index only while its offset is still current.
 - **AC-3 (IDX-003)** On upgrade, affected documents lose old chunks and full-text matches, their offsets reset, and their transcript files remain available for indexing.
 
 ## Test plan
@@ -45,3 +45,5 @@ Replay the prefix with the existing transcript parser so restart needs only the 
 
 - On the original reader, `cargo test -p yulius-app --lib resumed_index_redacts_dotenv_results_across_a_restart` failed at the missing redaction marker for `SHOP_REGION`.
 - In a synthetic SQLite FTS5 database, migration 0071 removed the sole match for the fixture value and reset the document’s byte offset, line number and full-index flag.
+- The baseline SQLite restart integration test also failed at its missing snippet redaction marker. All 23 transcript unit tests passed with replay, including Claude, Codex and Antigravity fixtures.
+- The SQLite schema-upgrade, migration-position and two session-store tests passed. A synthetic deletion with the FTS trigger disabled showed why the upgrade assertion queries FTS directly: the joined query returned zero while the direct FTS query found one stale match.

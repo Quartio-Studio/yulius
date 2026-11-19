@@ -398,7 +398,9 @@ impl App {
                 continue;
             }
             if size < doc.indexed_bytes {
-                store.reset_session_index(&doc.id).await?;
+                store
+                    .reset_session_index_at(&doc.id, Some(doc.indexed_bytes))
+                    .await?;
                 continue;
             }
             if budget == 0 {
@@ -429,15 +431,29 @@ impl App {
             let anchor = self.sandbox_dir(&doc.sandbox_id);
             let (from_byte, from_line) = (doc.indexed_bytes, doc.indexed_lines);
             let batch = match blocking(move || {
-                transcripts::open(&anchor, &path)
-                    .and_then(|file| {
-                        transcripts::read_for_index(file, from_byte, from_line, allowed, usize::MAX)
-                    })
-                    .map_err(AppError::internal)
+                let file = transcripts::open(&anchor, &path).map_err(AppError::internal)?;
+                Ok(transcripts::read_for_index(
+                    file,
+                    from_byte,
+                    from_line,
+                    allowed,
+                    usize::MAX,
+                ))
             })
             .await
             {
-                Ok(batch) => batch,
+                Ok(Ok(batch)) => batch,
+                Ok(Err(err)) => {
+                    // The reader may already have consumed the entire prefix and suffix allowance.
+                    budget = budget.saturating_sub(from_byte).saturating_sub(allowed);
+                    if err.kind() == std::io::ErrorKind::InvalidData {
+                        store
+                            .reset_session_index_at(&doc.id, Some(from_byte))
+                            .await?;
+                    }
+                    tracing::debug!(doc = %doc.id, error = %err, "transcript index read failed");
+                    continue;
+                }
                 Err(err) => {
                     tracing::debug!(doc = %doc.id, error = %err, "transcript not indexed");
                     continue;

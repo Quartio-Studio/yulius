@@ -560,6 +560,15 @@ mod tests {
                     |row| row.get::<_, i64>(0),
                 )
             };
+            let chunks = |id: &str| {
+                conn.query_row(
+                    "SELECT COUNT(*) FROM session_chunks WHERE doc_id = ?1",
+                    [id],
+                    |row| row.get::<_, i64>(0),
+                )
+            };
+            assert_eq!(chunks("d-claude")?, 1);
+            assert_eq!(chunks("d-codex")?, 0);
             assert_eq!(matches("kept")?, 1);
             assert_eq!(matches("stalecodexpassage")?, 0);
             // A full session must become eligible for lazy reindexing too.
@@ -585,13 +594,13 @@ mod tests {
                 .await?
                 .is_empty()
         );
-        let chunks: i64 = store
-            .call(|conn| {
-                conn.query_row("SELECT COUNT(*) FROM session_chunks", [], |row| row.get(0))
-                    .map_err(db)
-            })
-            .await?;
-        assert_eq!(chunks, 0);
+        let counts: (i64, i64) = store.call(|conn| {
+            conn.query_row(
+                "SELECT (SELECT COUNT(*) FROM session_chunks), (SELECT COUNT(*) FROM session_fts WHERE session_fts MATCH 'kept')",
+                [], |row| Ok((row.get(0)?, row.get(1)?)),
+            ).map_err(db)
+        }).await?;
+        assert_eq!(counts, (0, 0));
         Ok(())
     }
 

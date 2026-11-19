@@ -10,7 +10,7 @@ Session search stores a byte offset and a line number with each batch of passage
 
 ## Decision
 
-When a resumed batch has a complete record, replay the indexed prefix through the transcript parser on the same open file. Only the new records produce passages. Count the replay against the refresh budget and allow the current batch to finish. Clear the derived index once on upgrade so earlier passages are rebuilt under this rule.
+When a resumed batch has a complete record, replay the indexed prefix through the transcript parser on the same open file. Only the new records produce passages. Count the replay against the refresh budget and allow the current batch to finish. A read failure charges the possible replay and new bytes. If the offsets disagree with the file, reset the document’s index with a compare-and-set on the saved byte offset. Clear the derived index once on upgrade so earlier passages are rebuilt under this rule.
 
 ## Alternatives
 

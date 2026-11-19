@@ -338,21 +338,28 @@ impl SessionDocStore for SqliteStore {
         .await
     }
 
-    async fn reset_session_index(&self, doc_id: &str) -> AppResult<()> {
+    async fn reset_session_index_at(
+        &self,
+        doc_id: &str,
+        expected_bytes: Option<u64>,
+    ) -> AppResult<()> {
         let doc = doc_id.to_owned();
         self.call(move |c| {
             let tx = c.transaction().map_err(db)?;
-            tx.execute(
-                "DELETE FROM session_chunks WHERE doc_id = ?1",
-                [doc.as_str()],
-            )
-            .map_err(db)?;
-            tx.execute(
-                "UPDATE session_docs SET indexed_bytes = 0, indexed_lines = 0, index_full = 0 \
-                 WHERE id = ?1",
-                [doc.as_str()],
-            )
-            .map_err(db)?;
+            let changed = tx
+                .execute(
+                    "UPDATE session_docs SET indexed_bytes = 0, indexed_lines = 0, index_full = 0 \
+                 WHERE id = ?1 AND (?2 IS NULL OR indexed_bytes = ?2)",
+                    params![doc, expected_bytes.map(to_i64)],
+                )
+                .map_err(db)?;
+            if changed != 0 {
+                tx.execute(
+                    "DELETE FROM session_chunks WHERE doc_id = ?1",
+                    [doc.as_str()],
+                )
+                .map_err(db)?;
+            }
             tx.commit().map_err(db)?;
             Ok(())
         })
@@ -542,6 +549,8 @@ mod tests {
                 advance(0, 50),
             )
             .await?;
+        // A recovery based on an earlier offset cannot delete a concurrent index advance.
+        store.reset_session_index_at("d1", Some(0)).await?;
         let hits = store
             .search_session_chunks(&s1, "\"checkout\"*", 10)
             .await?;

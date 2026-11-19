@@ -172,7 +172,15 @@ pub trait SessionDocStore: Send + Sync {
         advance: IndexAdvance,
     ) -> AppResult<bool>;
     /// Drops a document's passages and resets its index position (the transcript shrank).
-    async fn reset_session_index(&self, doc_id: &str) -> AppResult<()>;
+    async fn reset_session_index(&self, doc_id: &str) -> AppResult<()> {
+        self.reset_session_index_at(doc_id, None).await
+    }
+    /// Clears passages and offsets together. A supplied offset must still be current.
+    async fn reset_session_index_at(
+        &self,
+        doc_id: &str,
+        expected_bytes: Option<u64>,
+    ) -> AppResult<()>;
     /// Full-text matches in a sandbox's documents, best first, at most `limit`.
     async fn search_session_chunks(
         &self,
