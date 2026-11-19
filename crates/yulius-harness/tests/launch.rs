@@ -6,8 +6,9 @@ use std::path::PathBuf;
 use serde_json::{Value, json};
 use yulius_domain::harness::Harness;
 use yulius_harness::launch::{
-    CockpitRequest, CockpitYulius, Credential, LaunchError, LaunchMode, LaunchPlan, LaunchRequest,
-    McpServerSpec, McpTransport, PRIVATE_FILE_MODE, PlannedFile, plan_cockpit, plan_launch,
+    CockpitRequest, CockpitYulius, Credential, DEFAULT_CODEX_EFFORT, DEFAULT_CODEX_MODEL,
+    LaunchError, LaunchMode, LaunchPlan, LaunchRequest, McpServerSpec, McpTransport,
+    PRIVATE_FILE_MODE, PlannedFile, plan_cockpit, plan_launch,
 };
 use yulius_harness::secret::Secret;
 
@@ -1347,6 +1348,8 @@ fn codex_new_session_argv_snapshot_and_files() -> TestResult {
             "mcp_servers.quartio.bearer_token_env_var=\"QUARTIO_MCP_TOKEN\"",
             "-c",
             "model_reasoning_effort=\"xhigh\"",
+            "-m",
+            "gpt-6.2-astra",
             "--dangerously-bypass-approvals-and-sandbox",
             "--dangerously-bypass-hook-trust",
             "--",
@@ -1420,7 +1423,7 @@ fn codex_new_session_argv_snapshot_and_files() -> TestResult {
 
 /// SPEC-503 CDX-002, CDX-009: a resume is `codex resume <id>` with the model; one past a usage
 /// limit asks Codex to go on, which it does not do by itself; uncontained runs keep Codex's own
-/// approvals.
+/// approvals. Without an effort of its own it runs at high effort (SPEC-511 CXD-001).
 #[test]
 fn codex_resume_argv() -> TestResult {
     let mut request = codex_request(
@@ -1439,6 +1442,8 @@ fn codex_resume_argv() -> TestResult {
     assert_eq!(
         tail,
         [
+            "-c",
+            "model_reasoning_effort=\"high\"",
             "-m",
             "gpt-synthetic-codex",
             "--dangerously-bypass-hook-trust",
@@ -1465,6 +1470,78 @@ fn codex_resume_argv() -> TestResult {
         plan.argv.last().map(String::as_str),
         Some("Continue from where you left off.")
     );
+    Ok(())
+}
+
+/// SPEC-511 CXD-001: a Codex task that names no model runs GPT-6.2 Astra, and one that names no
+/// effort runs at high effort, on every launch; a model or effort of its own is passed instead.
+#[test]
+fn codex_defaults_to_gpt_6_2_astra_at_high_effort() -> TestResult {
+    assert_eq!(DEFAULT_CODEX_MODEL, "gpt-6.2-astra");
+    assert_eq!(DEFAULT_CODEX_EFFORT, "high");
+    let modes = [
+        LaunchMode::New {
+            session_id: None,
+            prompt: Some("Build it".into()),
+        },
+        LaunchMode::Resume {
+            session_id: CODEX_SESSION.into(),
+            prompt: None,
+            continue_interrupted: false,
+        },
+    ];
+    for mode in modes {
+        let mut request = codex_request(mode, true);
+        request.mcp_servers.clear();
+        request.model = None;
+        request.effort = None;
+        let plan = plan_launch(&request)?;
+        let tail: Vec<&str> = plan
+            .argv
+            .iter()
+            .skip(10)
+            .take(4)
+            .map(String::as_str)
+            .collect();
+        assert_eq!(
+            tail,
+            [
+                "-c",
+                "model_reasoning_effort=\"high\"",
+                "-m",
+                "gpt-6.2-astra"
+            ],
+            "{:?}",
+            plan.argv
+        );
+        request.model = Some("gpt-synthetic-codex".into());
+        request.effort = Some("xhigh".into());
+        let plan = plan_launch(&request)?;
+        let tail: Vec<&str> = plan
+            .argv
+            .iter()
+            .skip(10)
+            .take(4)
+            .map(String::as_str)
+            .collect();
+        assert_eq!(
+            tail,
+            [
+                "-c",
+                "model_reasoning_effort=\"xhigh\"",
+                "-m",
+                "gpt-synthetic-codex"
+            ],
+            "{:?}",
+            plan.argv
+        );
+        assert_eq!(
+            plan.argv.iter().filter(|a| a.as_str() == "-m").count(),
+            1,
+            "{:?}",
+            plan.argv
+        );
+    }
     Ok(())
 }
 

@@ -6,6 +6,10 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-19
 
+- Codex runs GPT-6.2 Astra at high effort by default (SPEC-511, task #493): a Codex task that
+  names no model is launched with `-m gpt-6.2-astra`, one that names no effort at high, instead
+  of the account's own default. The run records the model, the task's details name it, and the
+  composer's Codex entry says so (ADR-0366).
 - The Antigravity sign-in window stays open for the CLI's setup (SPEC-515, task #497, #1421):
   after the Google code, the Antigravity CLI goes on asking (its data-use choice and more), so the
   server no longer stops it 5 s after its token file appears. The window says Antigravity is

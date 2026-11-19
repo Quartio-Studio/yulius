@@ -1236,9 +1236,14 @@ fn the_file_stays_while_another_run_of_the_subscription_lives() -> TestResult {
 fn a_codex_goal_task_gets_its_request_as_its_first_message() -> TestResult {
     let fake = locate_fake_agent().ok_or("fake-agent is not built")?;
     let (_dir, data) = temp()?;
+    let gate = Arc::new(tokio::sync::Semaphore::new(0));
+    let agent = FakeAgentOptions {
+        codex_gate: Some(Arc::clone(&gate)),
+        ..FakeAgentOptions::default()
+    };
     let rt = runtime()?;
     rt.block_on(async {
-        let app = build_full(&data, Some(&fake), FakeAgentOptions::default(), 8)?;
+        let app = build_full(&data, Some(&fake), agent, 8)?;
         let (sandbox, user) = seed_records(&app).await?;
         let account =
             add_codex_account(&app, "a-codex", &codex_auth("2026-11-01T10:00:00Z")).await?;
@@ -1251,10 +1256,21 @@ fn a_codex_goal_task_gets_its_request_as_its_first_message() -> TestResult {
             yulius_app::model::TaskMode::Goal,
         )
         .await?;
+        // Watched before the start may go on, so what its launch says is heard.
+        let mut watch = app.runtime(&id).hub.watch();
+        gate.add_permits(8);
         wait_for("the banner", Duration::from_secs(30), || {
             screen_contains(&app, &id, "FAKE-AGENT READY")
         })
         .await?;
+        // Its default is no Claude model of the fallback's: nothing says one is used up.
+        let said = notices(&mut watch);
+        assert!(
+            !said
+                .iter()
+                .any(|n| n.contains("used up on every subscription")),
+            "{said:?}"
+        );
         let attempt = app
             .deps
             .store
@@ -1271,13 +1287,20 @@ fn a_codex_goal_task_gets_its_request_as_its_first_message() -> TestResult {
         for marker in ["launch-goal-pending", "typed-goal-pending"] {
             assert!(!run_dir.join(marker).exists(), "{marker}");
         }
-        // Without a model of its own it runs its subscription's default: no Claude model is
-        // recorded for the run or named for the task (CDX-013).
-        assert_eq!(attempt.model, None);
+        // Without a model or effort of its own it runs GPT-6.2 Astra at high effort, recorded for
+        // the run and named for the task, never a Claude model (SPEC-511 CXD-002, CDX-013).
+        assert_eq!(attempt.model.as_deref(), Some("gpt-6.2-astra"));
         let ctx = admin_ctx(&app, &user).await?;
         let detail = app.task_detail(&ctx, id.as_str()).await?;
-        assert!(!detail.model.starts_with("claude"), "{}", detail.model);
+        assert_eq!(detail.model, "gpt-6.2-astra");
         assert!(detail.model_default);
+        assert_eq!(detail.effort.as_deref(), Some("high"));
+        // The pool weighs the task by the model its run was launched with, so a subscription
+        // it is at the limit of is left out (SPEC-511 review): one family for both.
+        let record = task(&app, &id).await?;
+        let input = app.rotation_input(&record, Some(account.clone())).await?;
+        assert_eq!(input.running, Some(input.family));
+        assert_eq!(input.family, yulius_domain::usage::ModelFamily::Any);
         // Its turns end it as a prompt-mode task's do: with every Codex subscription used up, a
         // turn's Stop is not held for capacity as a goal's would be, so the next line is read.
         let full = yulius_domain::usage::AccountUsage {
