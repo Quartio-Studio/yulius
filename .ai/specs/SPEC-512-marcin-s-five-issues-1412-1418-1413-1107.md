@@ -115,10 +115,10 @@ each from its issue's acceptance criteria.
 
 ## Plan
 
-- [ ] Spec SPEC-512 and ADR-0367 for parked sessions written
-- [ ] A parked status: transitions, store, list group on the server and the web
-- [ ] Idle sessions park after the grace period, decided under the launch lock
-- [ ] Writing to a parked task resumes it: task_message and the web's Resume
+- [x] Spec SPEC-512 and ADR-0367 for parked sessions written
+- [x] A parked status: transitions, store, list group on the server and the web
+- [x] Idle sessions park after the grace period, decided under the launch lock
+- [x] Writing to a parked task resumes it: task_message and the web's Resume
 - [ ] A queued task says what it waits for
 - [ ] The Capacity card shows working, parked, idle and queued sessions
 - [ ] Docs for parking: product, architecture, api, operations, changes

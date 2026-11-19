@@ -30,6 +30,9 @@ pub struct AppConfig {
     pub contained: bool,
     /// Maximum concurrently live sessions.
     pub max_live_sessions: u32,
+    /// How long a task whose turn ended and that waits for a person keeps its idle session
+    /// before it is parked (SPEC-512 PRK-002, `YULIUS_PARK_AFTER_MINUTES`); 0: never.
+    pub park_after_ms: u64,
     /// Maximum queued tasks.
     pub queue_max: u32,
     /// Web session lifetime.
@@ -183,6 +186,7 @@ impl AppConfig {
             yulius_exe,
             contained: false,
             max_live_sessions: 8,
+            park_after_ms: crate::parking::DEFAULT_PARK_AFTER_MS,
             queue_max: 32,
             session_ttl_ms: 30 * 24 * 3600 * 1000,
             permission_ttl_ms: 5 * 60 * 1000,

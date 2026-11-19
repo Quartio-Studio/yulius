@@ -578,7 +578,8 @@ pub fn close_refusal(number: u32, facts: CloseFacts) -> Option<String> {
              merge, or a merge not told yet): it goes on by itself, and tasks chained after it \
              wait for that. Stop it (task_stop) to end it anyway"
         )),
-        TaskStatus::Running => None,
+        // A parked task has no session to end: it is closed at once (SPEC-512 PRK-001).
+        TaskStatus::Running | TaskStatus::Parked => None,
         status if status.is_resting() => Some(format!(
             "task #{number} has ended ({what}): nothing is left to close"
         )),
@@ -695,6 +696,11 @@ mod tests {
             news: false,
         };
         let running = |activity| facts(TaskStatus::Running, activity);
+        // A parked task has no session to end: it is closed at once (SPEC-512 PRK-001).
+        assert_eq!(
+            close_refusal(7, facts(TaskStatus::Parked, Some(Activity::Waiting))),
+            None
+        );
         for idle in [Activity::Waiting, Activity::Done, Activity::NeedsAttention] {
             assert_eq!(close_refusal(7, running(Some(idle))), None, "{idle:?}");
             // Mid-turn, whatever the activity reads.

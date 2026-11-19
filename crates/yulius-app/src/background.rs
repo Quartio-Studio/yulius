@@ -105,6 +105,8 @@ impl App {
                 app.advance_all_chains().await;
                 // Prepared tasks start at their time (SPEC-105 PRP-003).
                 app.release_due_prepared().await;
+                // Idle sessions past their grace period are parked (SPEC-512 PRK-002).
+                app.park_idle_sessions_now().await;
                 // Expired and consumed CLI device grants (#169).
                 if let Err(err) = app.purge_device_grants().await {
                     tracing::warn!(error = %err, "device grants could not be purged");

@@ -217,7 +217,8 @@ export function mountTaskView(ctx, sandbox, task) {
         // The exit can arrive before the task's new status: write access is enough, but an archived
         // task is restored first, as in its menu (taskActions).
         if (allows(sandbox.access, 'write') && !owner() && !current.archived) {
-          actions.push({ label: message.retry ? 'Try again' : 'Continue', run: () => continueTask(ctx, current) });
+          // A parked task resumes in its session (SPEC-512 PRK-005).
+          actions.push({ label: message.retry ? 'Try again' : message.resume ? 'Resume' : 'Continue', run: () => continueTask(ctx, current) });
         }
         return actions;
       },

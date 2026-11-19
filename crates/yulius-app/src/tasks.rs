@@ -867,7 +867,8 @@ impl App {
         if archive && done && task.origin == TaskOrigin::Onboarding {
             // Its run's end decides whether onboarding is over, which the check below reads.
             self.close_task_and_wait(&task.id).await?;
-        } else if archive && done {
+        } else if archive && (done || task.status == TaskStatus::Parked) {
+            // A parked task is closed at once: it has no session to end (SPEC-512 PRK-001).
             self.close_task_now(&task.id).await?;
         } else if archive && !task.status.is_resting() {
             return Err(AppError::Conflict(

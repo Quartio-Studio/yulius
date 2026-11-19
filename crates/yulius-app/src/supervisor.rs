@@ -75,6 +75,9 @@ enum EndIntent {
     Cancel,
     /// A finished task is closed (archived when Done): it ends as a clean exit, `closed`.
     Close,
+    /// An idle task's session is parked (SPEC-512 PRK-003): it ends as a close does and the task
+    /// becomes `parked`, keeping its activity.
+    Park,
     /// Account/provider switch; the sender is told when the old run has exited, or why the switch
     /// was overtaken.
     Switch(oneshot::Sender<SwitchEnd>),
@@ -1865,7 +1868,8 @@ impl App {
                 TaskStatus::WaitingCapacity => TaskStatus::WaitingCapacity
                     .apply(TaskEvent::CapacityGranted)
                     .unwrap_or(TaskStatus::Starting),
-                s if s.is_resting() => s
+                // A parked task resumes as a resting one continues (SPEC-512 PRK-005).
+                s if s.is_resting() || s == TaskStatus::Parked => s
                     .apply(TaskEvent::ContinueRequested)
                     .unwrap_or(TaskStatus::Starting),
                 other => return Err(AppError::Conflict(format!("task is {}", other.as_str()))),
@@ -3629,10 +3633,12 @@ impl App {
         // A stop or close that came while the run was launching found no run to ask: it asks now,
         // so the run ends as asked instead of at the escalation (SPEC-140 STP-001, #464). One that
         // comes later finds the run itself; the host takes a second request as the first.
-        let ending = runtime
-            .intent
-            .lock()
-            .is_ok_and(|intent| matches!(*intent, Some(EndIntent::Cancel | EndIntent::Close)));
+        let ending = runtime.intent.lock().is_ok_and(|intent| {
+            matches!(
+                *intent,
+                Some(EndIntent::Cancel | EndIntent::Close | EndIntent::Park)
+            )
+        });
         if ending {
             // The stop may have come before this run existed, so it armed no escalation for it.
             self.arm_escalation(task_id, Some(attempt.id.clone()));
@@ -3906,6 +3912,7 @@ impl App {
         self.codex_run_ended(task_id, attempt_id).await;
         self.antigravity_run_ended(attempt_id).await;
         let mut reason = reason;
+        let mut parking = false;
         if let Some(rt) = &runtime
             && let Ok(mut intent) = rt.intent.lock()
         {
@@ -3914,21 +3921,31 @@ impl App {
             if matches!(*intent, Some(EndIntent::SwitchTimeout)) {
                 reason = StopReason::SwitchTimeout;
             }
+            parking = matches!(*intent, Some(EndIntent::Park));
             // No exit will consume it: the next run must not inherit it.
             replace_intent(&mut intent, None, SwitchEnd::Lost);
         }
-        // A finished task lost nothing with its idle session: it is Closed (SPEC-229 RBT-001).
-        self.settle_ended(task_id, now, |task| {
-            task.status.after_loss(task.activity, reason).ok()
-        })
-        .await;
+        if parking {
+            // The idle session being parked was lost on its way out: the task lost nothing a
+            // park would have kept, so it is parked all the same (SPEC-512 PRK-003).
+            self.settle_parked(task_id, now).await;
+        } else {
+            // A finished task lost nothing with its idle session: it is Closed (SPEC-229
+            // RBT-001).
+            self.settle_ended(task_id, now, |task| {
+                task.status.after_loss(task.activity, reason).ok()
+            })
+            .await;
+        }
         self.end_pause(task_id, "ended").await;
         if let Some(rt) = &runtime {
             rt.watcher_alive.store(false, Ordering::SeqCst);
             *rt.run.lock().await = None;
             // What the store recorded, whoever won the transition.
             let ended = match self.deps.store.task(task_id).await {
-                Ok(Some(task)) if task.status.is_resting() => task.status,
+                Ok(Some(task)) if task.status.is_resting() || task.status == TaskStatus::Parked => {
+                    task.status
+                }
                 _ => TaskStatus::Stopped(reason),
             };
             rt.hub.exit(ended.as_str(), None);
@@ -3971,6 +3988,48 @@ impl App {
             }
         }
         tracing::warn!(task = %task_id, "the ended run's task kept changing; left as it is");
+    }
+
+    /// The task whose parked run ended (SPEC-512 PRK-003): a running one is `parked` with its
+    /// activity and audited `task.parked`; one that changed meanwhile ends as a close would
+    /// leave it (a switch the park overtook gave up, as for a close: SPEC-250 STW-006).
+    async fn settle_parked(&self, task_id: &TaskId, now: Timestamp) {
+        for _ in 0..STOP_ROUNDS {
+            let Ok(Some(task)) = self.deps.store.task(task_id).await else {
+                return;
+            };
+            crate::race::reached(crate::race::Point::EndDecided, Path::new(task_id.as_str()));
+            let (to, activity) = match task.status.apply(TaskEvent::Parked) {
+                Ok(parked) => (parked, task.activity),
+                Err(_) => match task
+                    .status
+                    .apply(TaskEvent::SwitchCompleted)
+                    .and_then(|running| running.apply(TaskEvent::Exited { normal: true }))
+                {
+                    Ok(closed) => (closed, None),
+                    Err(_) => return,
+                },
+            };
+            match self
+                .deps
+                .store
+                .transition_task(task_id, Some(task.status), to, activity, now)
+                .await
+            {
+                Ok(false) => {}
+                Ok(true) => {
+                    if to == TaskStatus::Parked {
+                        crate::parking::audit_parked(self, &task).await;
+                    }
+                    return;
+                }
+                Err(err) => {
+                    tracing::warn!(task = %task_id, error = %err, "the parked run's task was not moved");
+                    return;
+                }
+            }
+        }
+        tracing::warn!(task = %task_id, "the parked run's task kept changing; left as it is");
     }
 
     /// Records the end of a run exactly once and moves the task to its next state.
@@ -4023,6 +4082,7 @@ impl App {
                 (_, true) => "spawn_failed".into(),
                 (Some(EndIntent::Cancel), _) => "cancelled".into(),
                 (Some(EndIntent::Close), _) => "closed".into(),
+                (Some(EndIntent::Park), _) => "parked".into(),
                 (Some(EndIntent::Switch(_)), _) => "switched".into(),
                 (Some(EndIntent::SwitchTimeout), _) => "switch_timeout".into(),
                 (None, _) if exit.is_clean() => "exited".into(),
@@ -4102,6 +4162,7 @@ impl App {
                 })
                 .await;
             }
+            Some(EndIntent::Park) => self.settle_parked(task_id, now).await,
             Some(EndIntent::Cancel) => {
                 // A stop's run ended: its task is stopped, also while still live when the run ended
                 // before the stop's status change was made (SPEC-250 STW-003).
@@ -4307,6 +4368,9 @@ impl App {
             .task(task_id)
             .await?
             .ok_or(AppError::NotFound)?;
+        if task.status == TaskStatus::Parked {
+            return self.close_parked(&task).await;
+        }
         if task.status != TaskStatus::Running {
             return Err(AppError::Conflict(format!(
                 "task is {}",
@@ -4326,6 +4390,112 @@ impl App {
         self.end_person_pause(task_id).await;
         request_shutdown(&runtime).await;
         Ok(())
+    }
+
+    /// Closes a parked task (SPEC-512 PRK-001): it has no session to end, so it is `closed` at
+    /// once, as a close leaves a running one, and tasks chained after it learn it.
+    ///
+    /// # Errors
+    /// `Conflict` when it is no longer parked.
+    async fn close_parked(self: &Arc<Self>, task: &TaskRecord) -> AppResult<()> {
+        let closed = TaskStatus::Parked
+            .apply(TaskEvent::CloseRequested)
+            .map_err(|err| AppError::Conflict(err.to_string()))?;
+        if !self
+            .deps
+            .store
+            .transition_task(&task.id, Some(TaskStatus::Parked), closed, None, self.now())
+            .await?
+        {
+            return Err(AppError::Conflict(
+                "the task changed meanwhile; try again".into(),
+            ));
+        }
+        self.publish_task(&task.id).await;
+        self.advance_chains(&task.id).await;
+        Ok(())
+    }
+
+    /// Parks the idle session of a running task (SPEC-512 PRK-003) when
+    /// [`App::parkable_now`] still says so under the launch lock, so no start, turn or message
+    /// that came meanwhile is overtaken: its session ends as a close ends it, and the run's end
+    /// makes the task `parked`. `false` when it was not parked.
+    ///
+    /// # Errors
+    /// Store failures.
+    pub(crate) async fn park_task_now(self: &Arc<Self>, task_id: &TaskId) -> AppResult<bool> {
+        let _guard = self.supervisor.launch.lock().await;
+        let Some(task) = self.deps.store.task(task_id).await? else {
+            return Ok(false);
+        };
+        if !self.parkable_now(&task).await {
+            return Ok(false);
+        }
+        let Some(run) = self.live_attempt_id(task_id).await else {
+            return Ok(false);
+        };
+        let runtime = self.runtime(task_id);
+        if let Ok(mut intent) = runtime.intent.lock() {
+            // Any other end under way owns the run's end.
+            if intent.is_some() {
+                return Ok(false);
+            }
+            *intent = Some(EndIntent::Park);
+        }
+        crate::race::reached(crate::race::Point::ParkDecided, Path::new(task_id.as_str()));
+        self.arm_escalation(task_id, Some(run));
+        request_shutdown(&runtime).await;
+        Ok(true)
+    }
+
+    /// Whether a park of the task's session is under way (SPEC-512 PRK-003): nothing is typed
+    /// into a session that is ending.
+    pub(crate) fn parking(&self, task_id: &TaskId) -> bool {
+        self.existing_runtime(task_id).is_some_and(|runtime| {
+            runtime
+                .intent
+                .lock()
+                .is_ok_and(|intent| matches!(*intent, Some(EndIntent::Park)))
+        })
+    }
+
+    /// Resumes a parked task in its own session (SPEC-512 PRK-005), with `prompt` as the turn it
+    /// opens with, or with nothing typed: a prompt-mode session that gets nothing reads as it
+    /// did, idle, from its launch on ([`IdleRest`]). At the session limit it waits in the queue
+    /// with its prompt. `false` when the task was no longer parked.
+    ///
+    /// # Errors
+    /// As [`App::start_run`].
+    pub(crate) async fn resume_parked(
+        self: &Arc<Self>,
+        task_id: &TaskId,
+        prompt: Option<String>,
+    ) -> AppResult<bool> {
+        let task = self
+            .deps
+            .store
+            .task(task_id)
+            .await?
+            .ok_or(AppError::NotFound)?;
+        let rest = task
+            .activity
+            .filter(|activity| {
+                activity.is_idle() && prompt.is_none() && task.mode == TaskMode::Prompt
+            })
+            .map(|activity| IdleRest {
+                activity,
+                goal_unfinished: self
+                    .existing_runtime(task_id)
+                    .is_some_and(|runtime| runtime.goal_unfinished.load(Ordering::SeqCst)),
+            });
+        self.start_run_if(
+            task_id,
+            RunStart::Resume { prompt },
+            None,
+            Some(TaskStatus::Parked),
+            rest,
+        )
+        .await
     }
 
     /// Closes a finished, running task like [`Self::close_task_now`] and waits until its run has
@@ -4506,9 +4676,11 @@ impl App {
             self.end_stopped_run(task_id).await;
             return Ok(true);
         }
+        // A parked task has no run either (SPEC-512 PRK-001).
         if task.status == TaskStatus::Queued
             || task.status == TaskStatus::Chained
             || task.status == TaskStatus::Prepared
+            || task.status == TaskStatus::Parked
             || task.status == TaskStatus::WaitingCapacity
                 && store.live_attempt(task_id).await?.is_none()
         {
@@ -4822,7 +4994,8 @@ impl App {
             let taken = match runtime.intent.lock() {
                 Ok(mut intent) => match *intent {
                     Some(EndIntent::Cancel) => Some(SwitchEnd::Stopped),
-                    Some(EndIntent::Close) => Some(SwitchEnd::Closed),
+                    // A park ends the run as a close does (SPEC-512 PRK-003).
+                    Some(EndIntent::Close | EndIntent::Park) => Some(SwitchEnd::Closed),
                     _ => {
                         *intent = Some(EndIntent::Switch(tx));
                         None
@@ -5139,7 +5312,7 @@ impl App {
             .intent
             .lock()
             .map(|intent| match *intent {
-                Some(EndIntent::Close) => Some(true),
+                Some(EndIntent::Close | EndIntent::Park) => Some(true),
                 Some(EndIntent::Cancel) => Some(false),
                 _ => None,
             })

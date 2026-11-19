@@ -32,6 +32,9 @@ const FAIL_LABELS = {
 const SAFE = 'Its branch and changes are safe.';
 const ENDED_MESSAGES = {
   closed: { tone: 'info', text: 'This task is closed. Its branch and changes are kept.' },
+  // Its idle session was ended to free its place and memory (SPEC-512 PRK-003): it goes on in the
+  // same session when resumed.
+  parked: { tone: 'info', text: `${BRAND.name} parked this idle session to free its place and memory. Resume it, or write to it, and it goes on in the same session with its history.`, resume: true },
   stopped_cancelled: { tone: 'info', text: `You stopped this task. ${SAFE}` },
   stopped_crashed: { tone: 'warn', text: `The agent stopped unexpectedly. ${SAFE}` },
   stopped_killed: { tone: 'warn', text: `The agent's process was ended outside ${BRAND.name} (for example killed). ${SAFE}` },
@@ -163,6 +166,9 @@ const SPEC_UNFINISHED = 'Every step is finished, but its spec does not say done:
  * the text fallback.
  */
 export function statusInfo(task) {
+  // A parked task reads as the idle running task it was (SPEC-512 PRK-004): nothing of a session
+  // goes on in it, so no background shell, `yulius wait` or pause counts.
+  if (task.status === 'parked') return { ...statusInfo(asIdleRun(task)), parked: true };
   const status = task.status;
   const activity = task.activity;
   // Its live run is paused (SPEC-191): an update holds it, or a person paused it. Whatever the
@@ -245,6 +251,14 @@ export function statusInfo(task) {
   return { glyph: '?', icon: 'st-stopped', tone: 'stopped', label: 'Unknown state', group: 'ended', detail: status };
 }
 
+/** A parked task as the idle running task it was, with no live overlay (SPEC-512 PRK-004). */
+function asIdleRun(task) {
+  return { ...task, status: 'running', background_shells: 0, yulius_wait: false, merge_armed: false, pause: null };
+}
+
+/** What a parked task's row says (SPEC-512 PRK-005). */
+export const PARKED_LINE = 'Parked to free its session · resumes when you write to it';
+
 /** What a queued task waits for because of a supertask (SPEC-071): task numbers, or []. */
 export function heldBy(task) {
   return Array.isArray(task.held_by) ? task.held_by.filter(Number.isInteger) : [];
@@ -293,6 +307,7 @@ export function pauseLine(pause) {
  * should do, in words — the reason of a browser request, the current step, or the state.
  */
 export function activityLine(task, info = statusInfo(task)) {
+  if (task.status === 'parked') return PARKED_LINE;
   if (info.paused) return pauseLine(info.paused);
   if (info.request) return info.request.reason || 'Do something in the sandbox browser';
   if (info.held) return 'A prompt was held · choose what to do';
@@ -363,6 +378,11 @@ export function supertaskLine(task) {
  * act.
  */
 export function taskInfo(task, actionRequests, pr) {
+  // A parked task is shown where it was, as its idle run would be, marked parked (SPEC-512 PRK-004).
+  if (task.status === 'parked') {
+    const shown = taskInfo(asIdleRun(task), actionRequests, pr);
+    return { ...shown, label: `${shown.label} · parked`, parked: true };
+  }
   let info = taskInfoOf(task, actionRequests, pr);
   // Another live task claims paths this one claims (SPEC-493 SCO-002): said beside the rest, a
   // stalled pull request's mark too; the detail names them when nothing else is said.

@@ -69,7 +69,9 @@ pub fn owner_of(
         TaskStatus::Queued
         | TaskStatus::Chained
         | TaskStatus::Prepared
-        | TaskStatus::WaitingCapacity => Some(idle()),
+        | TaskStatus::WaitingCapacity
+        // A parked task is an idle one without its process (SPEC-512 PRK-001).
+        | TaskStatus::Parked => Some(idle()),
         TaskStatus::Running if activity.is_some_and(Activity::is_idle) && !background_shells => {
             Some(idle())
         }

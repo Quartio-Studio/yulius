@@ -558,6 +558,28 @@ impl App {
         req: &ContinueTask,
     ) -> AppResult<TaskSummary> {
         let task = self.load_task(ctx, id, Action::Work).await?;
+        // A parked task resumes in its session (SPEC-512 PRK-005): with nothing typed, its
+        // request stays until the person writes.
+        if task.status == TaskStatus::Parked {
+            self.ensure_agent_account(task.harness.provider()).await?;
+            if parse_account(req)?.is_some() {
+                return Err(AppError::Invalid(
+                    "a parked task resumes where it ran; move it after it resumed".into(),
+                ));
+            }
+            if !self.resume_parked(&task.id, None).await? {
+                return Err(AppError::Conflict(
+                    "the task changed while it was resumed; try again".into(),
+                ));
+            }
+            let task = self
+                .deps
+                .store
+                .task(&task.id)
+                .await?
+                .ok_or(AppError::NotFound)?;
+            return self.task_summary(&task).await;
+        }
         if !task.status.is_resting() {
             return Err(AppError::Conflict(format!(
                 "the task is {}",
