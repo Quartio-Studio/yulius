@@ -7,6 +7,9 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 ## 2026-11-19
 
 - The composer and Settings now list 11 Codex models and eight Gemini models in searchable provider groups. The effort menu follows the selected model and clears incompatible saved effort. Codex 0.170.0 includes GPT-6.2 delegation metadata and Antigravity 1.5.12 supports Neon (SPEC-521, ADR-0372).
+- Dashboard → Harnesses compares assigned tasks, runs, median and p90 elapsed time, and reported input,
+  output and cache tokens for the selected sandbox and period. Each harness shows the number of ended
+  runs and the number reporting usage (SPEC-522, task #504).
 
 - Answer a teammate's Needs you (SPEC-516, task #498, ADR-0370): on someone else's task whose
   agent asks a person for something, Reply answers it without taking control. The agent gets the
