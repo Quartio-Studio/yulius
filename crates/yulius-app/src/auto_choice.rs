@@ -4,7 +4,9 @@
 //! at once, within one deadline) and the domain's fixed rules turn the answers, or their absence,
 //! into the task's mode and workflow. Without Jev, or when it fails or is unsure, the defaults
 //! apply: Goal, and the workflow named "Feature" — none for a prompt-mode task or when there is
-//! none. The decision is stored with the task, audited, and shown in the task's summary.
+//! none. A request Jev says reports a defect runs as a goal and never gets a workflow that needs
+//! no spec: the workflow named "Fix" instead (SPEC-517). The decision is stored with the task,
+//! audited, and shown in the task's summary.
 
 use std::fmt::Write as _;
 use std::time::Duration;
@@ -195,16 +197,23 @@ impl App {
         );
 
         let mut detail = String::new();
+        // A request that reports a defect, also asked as a question (SPEC-517 FIX-001).
+        let defect = rules::reports_defect(mode_answer.as_ref());
         let (mode, mode_by) = match mode {
             Some(mode) => (mode, None),
             None => {
                 let (chosen, by) = rules::mode_choice(mode_answer.as_ref());
+                let (said, key) = if defect {
+                    (", reports a defect", rules::FIX_KEY)
+                } else {
+                    ("", chosen.as_str())
+                };
                 let _ = write!(
                     detail,
-                    "mode {} ({}{})",
+                    "mode {}{said} ({}{})",
                     chosen.as_str(),
                     by.as_str(),
-                    percent(mode_answer.as_ref(), chosen.as_str())
+                    percent(mode_answer.as_ref(), key)
                 );
                 (task_mode(chosen), Some(by))
             }
@@ -216,6 +225,7 @@ impl App {
                     workflow_answer.as_ref(),
                     &candidates,
                     mode_choice(mode),
+                    defect,
                 );
                 let key = index.map_or_else(
                     || rules::NO_WORKFLOW_KEY.to_owned(),
