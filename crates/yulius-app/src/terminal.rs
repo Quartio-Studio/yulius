@@ -217,12 +217,14 @@ impl App {
                 tracing::debug!(task = %attach.task_id, error = %err, "typist's size not applied");
             }
             // A prompt submitted soon after is this person's (TSK-013).
+            let mut mark = attach.runtime.draft_mark.lock().await;
             self.record_typing(&attach.task_id, &ctx.user.id);
             // What they type may stay in the prompt box, unsent: the run's folder keeps that
             // for a restarted server (SPEC-480 DRF-009). Before the key is passed on, so the
             // prompt it may submit removes the mark after it was written.
-            if !attach.runtime.draft_marked.swap(true, Ordering::SeqCst) {
-                self.mark_draft(&attach.task_id, &attach.runtime).await;
+            if !mark.written {
+                let typed = attach.runtime.typed_at_ms.load(Ordering::SeqCst);
+                mark.written = self.mark_draft(&attach.task_id, typed).await;
             }
         }
         self.send_input(&attach.task_id, data).await
@@ -230,9 +232,8 @@ impl App {
 
     /// Writes the mark of a person's possible draft into the folder of the task's live run
     /// (SPEC-480 DRF-009). A mark that could not be written is tried again at the next key.
-    async fn mark_draft(&self, task_id: &TaskId, runtime: &TaskRuntime) {
-        let typed = runtime.typed_at_ms.load(Ordering::SeqCst);
-        let marked = match self.deps.store.live_attempt(task_id).await {
+    async fn mark_draft(&self, task_id: &TaskId, typed: i64) -> bool {
+        match self.deps.store.live_attempt(task_id).await {
             Ok(Some(attempt)) => {
                 crate::supervisor::mark_person_typed(Path::new(&attempt.run_dir), typed)
             }
@@ -241,9 +242,6 @@ impl App {
                 tracing::warn!(task = %task_id, error = %err, "could not find the run to record a person's draft in");
                 false
             }
-        };
-        if !marked {
-            runtime.draft_marked.store(false, Ordering::SeqCst);
         }
     }
 

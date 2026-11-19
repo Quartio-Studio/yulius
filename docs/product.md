@@ -196,7 +196,10 @@ watching, steering and unblocking.
   sends it through the remote MCP, SPEC-322), unless someone typed there in the last minute, text
   they typed and did not send may still be in its prompt box (however old, SPEC-480: such a
   message is not typed behind a person's draft, and for a message of Yulius's own the task
-  says so after ten minutes), or the task still asks a person whether to trust its folder (SPEC-230). When a usage limit cuts its
+  says so after ten minutes), or the task still asks a person whether to trust its folder (SPEC-230).
+  A draft visible in Claude Code’s input also holds the message, including one restored from
+  a stash. The sender is told at once. An automatic message flags the session for its person
+  ([SPEC-537](../.ai/specs/SPEC-537-preserve-restored-drafts-when-typing-int.md)). When a usage limit cuts its
   turn, it moves to a subscription with capacity and goes on with the turn, as a task does; the
   panel follows it. It has the project's MCP servers, as a task does, and an agent secret one of
   them or a command prints shows there as `[secret:NAME]` (SPEC-147). It uses the agent vault as
@@ -602,7 +605,9 @@ watching, steering and unblocking.
   nightly at 03:00 CEST. An automation's tasks start like New task's: now, as a supertask, after
   another task or when a rule is true, or wait prepared until the person presses Start now ("When
   I decide"), picked with New task's start chip beside Run now and Save;
-  Run now starts its task the way the chip shows.
+  Run now starts its task the way the chip shows. Each task runs as the automation creator.
+  Only the creator can save changes, toggle the schedule or use Run now. Project writers can
+  delete the automation and create a replacement of their own. [ADR-0381](decisions/0381-automation-creators-authorize-edits-and-starts.md)
 - **Notes**: in the tools rail, a notepad per sandbox and one for the whole team, shared and saved
   while people type; a teammate's edit shows up live, and two edits at once end in a choice. A
   third, **Me**, is each person's own: nobody else sees it, and it is the same in every sandbox.

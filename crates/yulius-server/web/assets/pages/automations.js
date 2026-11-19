@@ -61,7 +61,7 @@ export function mountAutomationsPage(ctx, sandbox) {
       body);
     return h('div', { class: 'stack' },
       defaults.length ? section('automations-defaults', 'Defaults', `ship with ${BRAND.name}, on or off per project`, h('div', { class: 'item-list' }, defaults.map(({ template, automation }) => (automation ? automationCard(automation, template) : shippedCard(template))))) : null,
-      section('automations-custom', 'Custom', 'yours to change', custom.length
+      section('automations-custom', 'Custom', 'created in this project', custom.length
         ? h('div', { class: 'item-list' }, custom.map((a) => automationCard(a)))
         : emptyState({ iconName: 'zap', title: 'No custom automations yet', text: 'Start tasks on a schedule — for example, every day at 09:00 a task that works through yesterday’s customer feedback.', action: write ? createButton('New automation', create) : null })));
   }, { shape: 'items' });
@@ -106,6 +106,7 @@ export function mountAutomationsPage(ctx, sandbox) {
 
   /** A project automation; `template` when it is a shipped one (a default). */
   function automationCard(a, template = null) {
+    const canEdit = write && a.owner_id === ctx.store.state.me.user.id;
     const meta = h('div', { class: 'item-meta' },
       a.enabled && a.next_run_at ? h('span', { title: dateTime(a.next_run_at) }, `Next run ${relLong(a.next_run_at)}`) : h('span', null, a.enabled ? 'Not scheduled' : 'Paused'),
       a.last_run ? [' · last ', h('span', { title: dateTime(a.last_run.scheduled_for) }, relLong(a.last_run.scheduled_for)), ': ', runBadge(a.last_run.state), ' ', taskLink(a.last_run.task_id)] : ' · never ran');
@@ -116,7 +117,7 @@ export function mountAutomationsPage(ctx, sandbox) {
       description: schedule(a, startPhrase(a) ? ` · ${startPhrase(a)}` : ''),
       extra: template ? [h('div', { class: 'item-meta' }, template.description), meta] : meta,
       controls: [
-        toggle({ checked: a.enabled, disabled: !write, label: `${a.name} runs on schedule`, onChange: async (checked, input) => {
+        toggle({ checked: a.enabled, disabled: !canEdit, label: `${a.name} runs on schedule`, onChange: async (checked, input) => {
           try {
             await ctx.api.put(`/api/automations/${enc(a.id)}`, { ...editable(a), enabled: checked });
             a.enabled = checked;
@@ -127,12 +128,12 @@ export function mountAutomationsPage(ctx, sandbox) {
             errorToast(error, 'Couldn’t update automation');
           }
         } }),
-        h('button', { type: 'button', class: 'btn btn-sm', disabled: !write, title: write ? 'Create a task from this automation now' : 'Requires write access', onClick: () => runNow(a) }, 'Run now'),
+        h('button', { type: 'button', class: 'btn btn-sm', disabled: !canEdit, title: canEdit ? 'Create a task from this automation now' : 'Requires the creator and write access', onClick: () => runNow(a) }, 'Run now'),
         iconButton('clock', `Run history of ${a.name}`, () => history(a)),
         iconButton('trash', `Delete ${a.name}`, () => remove(a, template), { class: 'btn-quiet-danger', disabled: !write }),
       ],
       onOpen: () => navigate(`${base}/${encodeURIComponent(a.id)}`),
-      openLabel: write ? `Edit ${a.name}` : `Open ${a.name}`,
+      openLabel: canEdit ? `Edit ${a.name}` : `Open ${a.name}`,
       dim: !a.enabled,
     });
   }

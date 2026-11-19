@@ -63,7 +63,9 @@ The supervisor writes the home's `auth.json` (the account's sealed credential), 
 `hooks.json` through handles that follow no link, and reads the rollout from the sandbox's shared
 `codex/sessions`; its hooks reach Yulius as `yulius hook codex <event>`. After the run, a
 refreshed `auth.json` goes back into the vault, and the file leaves the sandbox once no run of the
-account is left there.
+account is left there. If a session document predates its rollout, transcript reads look up the
+file by session ID and the next index refresh saves its path on the same document.
+[SPEC-538](../.ai/specs/SPEC-538-repair-codex-session-documents-when-the.md)
 
 ```mermaid
 flowchart LR
@@ -2265,7 +2267,10 @@ however long ago; the task's owner alone sends past their own with `with_draft`,
 sender is told, and for a message of Yulius's own, which waits in its watch, the task is flagged
 and its terminal says so once the person's last key is ten minutes old; the key that begins a
 possible draft leaves `person-typed` in the run folder, removed when a prompt is submitted from
-the box and read by `reconcile` for a reattached run), while Claude Code's
+the box and read by `reconcile` for a reattached run). Before a paste, visible input in
+Claude Code’s conversation box also holds a message. This catches restores that generated no
+key. An automatic message flags the task immediately in this case
+([ADR-0384](decisions/0384-visible-prompt-text-holds-session-messages.md)). Messages also wait while Claude Code's
 folder-trust dialog shows
 (`trust_prompt_shown`), while Yulius types the first message or while anything else
 is typed (`TaskRuntime::typing_message`, held from a line to its Enter by a message,
@@ -3421,6 +3426,8 @@ sequenceDiagram
 
 ## Ready-made automations
 
+Each automation has an immutable creator. HTTP and MCP compare the authenticated person with the creator before saving, re-enabling or starting a run. Task creation uses that same identity. [ADR-0381](decisions/0381-automation-creators-authorize-edits-and-starts.md)
+
 Ready-made automations are a read-only catalog like the default workflows
 ([SPEC-042](../.ai/specs/SPEC-042-create-2-default-automations-that-can-be.md),
 [decision 0034](decisions/0034-ready-made-automations-catalog.md)): `catalog/automations/*.md`,
@@ -3435,9 +3442,9 @@ flowchart LR
   CAT["catalog/automations/*.md"] -->|"build.rs embeds"| TPL["automations::templates"]
   UI["Automations page: Defaults"] -->|"GET automation-templates"| TPL
   UI -->|"POST …/enable"| EN["App::enable_automation_template"]
-  EN -->|"same name exists"| UPD["re-enable it"]
+  EN -->|"same name, paused, caller is creator"| UPD["re-enable it"]
   EN -->|"else"| INS["insert automation (enabled)"]
-  INS --> SCH["Scheduler: one task per slot"]
+  INS --> SCH["Scheduler: one task per slot as creator"]
   UPD --> SCH
 ```
 
