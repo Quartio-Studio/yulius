@@ -49,6 +49,10 @@ pub enum Point {
     /// A switch (SPEC-250): the task is `Switching`; the switch's end intent for the old run is
     /// not set yet. The path is the task id.
     SwitchDecided,
+    /// A limit observation queued a rotation; its task is about to be read.
+    LimitMoveReady,
+    /// The queued limit rotation returned.
+    LimitMoveFinished,
     /// `close_task_now` (SPEC-250): the task was read `Running`; the close's end intent is not set
     /// yet. The path is the task id.
     CloseDecided,

@@ -1118,6 +1118,18 @@ fn a_reattached_run_with_another_persons_servers_is_restarted() -> TestResult {
 /// continued, on a subscription with room), not into the limit's error.
 #[test]
 fn a_reattached_run_at_a_limit_is_restarted_past_it() -> TestResult {
+    reattach_at_limit(false)
+}
+
+/// A pool move delayed after replay belongs to the old attempt. If the hand-over already
+/// replaced it, processing the old limit must leave the replacement running.
+#[test]
+fn a_delayed_limit_move_leaves_the_reattached_runs_replacement_running() -> TestResult {
+    reattach_at_limit(true)
+}
+
+fn reattach_at_limit(delay_limit_move: bool) -> TestResult {
+    use yulius_app::race::Point;
     let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
     let (_dir, data) = temp()?;
     let probe = Arc::new(ScriptedUsage::default());
@@ -1167,16 +1179,46 @@ fn a_reattached_run_at_a_limit_is_restarted_past_it() -> TestResult {
         let app = build()?;
         probe.set("b-second", usage(10.0, 4 * HOUR, 30.0, 100));
         refresh(&app, &admin, "b-second").await?;
+        let delayed = delay_limit_move.then(|| {
+            let (ready, go) = support::hold_point(Point::LimitMoveReady, id.as_str());
+            let (done, finished) = std::sync::mpsc::channel();
+            yulius_app::race::on(
+                Point::LimitMoveFinished,
+                Path::new(id.as_str()),
+                move || {
+                    let _ = done.send(());
+                },
+            );
+            (ready, go, finished)
+        });
         app.reconcile().await?;
-        wait_for("the restarted run", Duration::from_secs(60), || async {
-            let attempts = app.deps.store.attempts(&id).await.unwrap_or_default();
-            attempts.len() == 2 && attempts[1].state == yulius_domain::task::AttemptState::Live
+        wait_for("the hand-over restart", Duration::from_secs(60), || async {
+            app.deps.store.switches(&id).await.is_ok_and(|switches| {
+                switches
+                    .iter()
+                    .any(|s| s.reason == "handover" && s.outcome == "completed")
+            })
         })
         .await?;
+        if let Some((ready, go, finished)) = delayed {
+            support::point_reached(ready).await?;
+            go.send(())?;
+            support::point_reached(finished).await?;
+        }
         let attempts = app.deps.store.attempts(&id).await?;
+        stop(&app, &id).await?;
+        assert_eq!(attempts.len(), 2, "one replacement for the limited run");
+        assert_eq!(attempts[1].state, yulius_domain::task::AttemptState::Live);
+        assert_eq!(
+            attempts[1].account_id.as_ref().map(AccountId::as_str),
+            Some("b-second")
+        );
+        assert_eq!(
+            std::fs::read_to_string(Path::new(&attempts[1].run_dir).join("personal-mcp-of"))?,
+            admin.as_str()
+        );
         let problems = limit_resume_problems(Path::new(&attempts[1].run_dir), &data);
         assert!(problems.is_empty(), "{problems:?}");
-        stop(&app, &id).await?;
         Ok::<_, Box<dyn std::error::Error>>(())
     })?;
     second.shutdown_timeout(Duration::from_secs(5));

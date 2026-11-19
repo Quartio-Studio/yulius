@@ -6686,8 +6686,13 @@ impl App {
         let tid = task_id.clone();
         let account = attempt.account_id.clone();
         tokio::spawn(async move {
+            crate::race::reached(crate::race::Point::LimitMoveReady, Path::new(tid.as_str()));
             app.rotate_past(&tid, account, Trigger::LimitReached, blind, ran)
                 .await;
+            crate::race::reached(
+                crate::race::Point::LimitMoveFinished,
+                Path::new(tid.as_str()),
+            );
         });
     }
 
