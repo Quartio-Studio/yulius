@@ -1135,7 +1135,7 @@ and the bundled packs (`yulius`, `open-mercato`, `superpowers`) have no write AP
 read-only in the UI.
 | GET/POST | `/api/sandboxes/{sid}/workflows` | read/write | `Workflow`; POST → 201. `"scope":"instance"` creates an instance workflow (instance admins). |
 | PUT/DELETE | `/api/workflows/{id}` | write (instance: admin) | PUT replaces name, description, steps, instructions, gates → `Workflow`; DELETE → 204. A default workflow (`builtin`) → 409 `conflict` ("duplicate it to customise"). |
-| GET/POST | `/api/sandboxes/{sid}/automations` | read/write | `Automation`; POST → 201. `harness` `claude`, `codex` or `antigravity` is every run's agent; `auto` (the default) saves as `claude`, and the agents' `automation_create` without one saves the calling task's own agent (SPEC-514 PIN-002/003) |
+| GET/POST | `/api/sandboxes/{sid}/automations` | read/write | `Automation`; POST → 201. `harness` `claude`, `codex` or `antigravity` is every run's agent; `auto` saves as `claude`; absent, a POST saves `claude` and a PUT keeps the stored agent; the agents' `automation_create` without one saves the calling task's own agent (SPEC-514 PIN-002/003) |
 | PUT/DELETE | `/api/automations/{id}` | write | PUT replaces the editable fields → `Automation`; DELETE → 204 (removes run history; tasks stay) |
 | POST | `/api/automations/{id}/run` | write | creates one run now (also when disabled) → `AutomationRun`; an optional body `RunAutomation` is this run's start choice (checked like `Automation`'s, 422 when invalid, not stored; SPEC-093), none uses the stored one |
 | GET | `/api/automations/{id}/runs` | read | `[AutomationRun]`, newest first (at most 100) |

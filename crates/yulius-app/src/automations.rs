@@ -310,12 +310,22 @@ fn validate_prompt(prompt: &str) -> AppResult<String> {
     Ok(prompt.to_owned())
 }
 
-/// An automation's agent: `auto` (or none) is `default`, the calling task's agent for a tool,
-/// else Claude Code; never drawn (SPEC-514 PIN-002/003).
+/// An automation's agent: none is `default` (the stored agent for an update, the calling task's
+/// for a tool, else Claude Code) and `auto` the tool's `default` too; never drawn (SPEC-514
+/// PIN-002/003).
 fn validate_harness(text: &str, default: Harness) -> AppResult<Harness> {
     match text.trim() {
         "" | "auto" => Ok(default),
         text => crate::lifecycle::parse_harness(text),
+    }
+}
+
+/// The agent an HTTP create or update stores: `auto` is Claude Code, none is `unnamed` (Claude
+/// Code for a new automation, the stored agent for an update; SPEC-514 PIN-003).
+fn input_harness(text: &str, unnamed: Harness) -> AppResult<Harness> {
+    match text.trim() {
+        "" => Ok(unnamed),
+        text => validate_harness(text, Harness::ClaudeCode),
     }
 }
 
@@ -328,13 +338,13 @@ fn input_start(input: &Automation) -> AppResult<StartInput> {
     )
 }
 
-fn validate(input: &Automation) -> AppResult<Fields> {
+fn validate(input: &Automation, unnamed: Harness) -> AppResult<Fields> {
     Ok(Fields {
         name: validate_name(&input.name)?,
         cron: validate_cron(&input.cron)?,
         utc_offset_minutes: validate_offset(i64::from(input.utc_offset_minutes))?,
         prompt: validate_prompt(&input.prompt)?,
-        harness: validate_harness(&input.harness, Harness::ClaudeCode)?,
+        harness: input_harness(&input.harness, unnamed)?,
     })
 }
 
@@ -573,7 +583,7 @@ impl App {
     ) -> AppResult<Automation> {
         let sid = SandboxId::parse(sandbox).map_err(|_| AppError::NotFound)?;
         self.require_for(ctx, &sid, Action::Configure).await?;
-        let fields = validate(input)?;
+        let fields = validate(input, Harness::ClaudeCode)?;
         let workflow = self
             .resolve_workflow_id(&sid, input.workflow_id.as_deref())
             .await?;
@@ -787,7 +797,8 @@ impl App {
         let current = self
             .automation_for_change(ctx, id, Action::Configure)
             .await?;
-        let fields = validate(input)?;
+        // An update that sends no agent keeps the stored one (SPEC-514 PIN-003).
+        let fields = validate(input, current.harness)?;
         let workflow_id = self
             .resolve_workflow_id(&current.sandbox_id, input.workflow_id.as_deref())
             .await?;
@@ -1597,6 +1608,16 @@ mod tests {
             validate_harness("codex", Harness::Antigravity).ok(),
             Some(Harness::Codex)
         );
+        // HTTP: none keeps `unnamed` (the stored agent on an update), `auto` is Claude Code.
+        assert_eq!(
+            input_harness("", Harness::Antigravity).ok(),
+            Some(Harness::Antigravity)
+        );
+        assert_eq!(
+            input_harness("auto", Harness::Antigravity).ok(),
+            Some(Harness::ClaudeCode)
+        );
+        assert!(input_harness("gpt", Harness::ClaudeCode).is_err());
     }
 
     #[test]

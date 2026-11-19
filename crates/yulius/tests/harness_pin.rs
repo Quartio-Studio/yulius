@@ -356,6 +356,106 @@ async fn an_automation_runs_the_agent_it_names() -> TestResult {
     Ok(())
 }
 
+/// Runs automation `id` now and returns its task's agent and how it was picked. A run now is keyed
+/// by the time, so the clock moves on first: each call is a run of its own, whose task it stops.
+async fn run_agent(h: &Harness, alice: &Creds, id: &str) -> Result<(String, String), Error> {
+    h.clock
+        .0
+        .fetch_add(60_000, std::sync::atomic::Ordering::SeqCst);
+    let run = call(
+        &h.router,
+        Method::POST,
+        &format!("/api/automations/{id}/run"),
+        None,
+        alice,
+    )
+    .await?;
+    assert_eq!(run.body["state"], "task_created", "{:?}", run.body);
+    let task = run.body["task_id"].as_str().ok_or("task")?;
+    let agent = shown(h, alice, task).await?;
+    // A run is skipped while the previous one's task is active: this one ends here.
+    let stopped = call(
+        &h.router,
+        Method::POST,
+        &format!("/api/tasks/{task}/stop"),
+        None,
+        alice,
+    )
+    .await?;
+    assert_eq!(stopped.status, StatusCode::OK, "{:?}", stopped.body);
+    Ok(agent)
+}
+
+/// PIN-003 (review round 1): an update keeps the automation's agent unless it names another. The
+/// Automations list's enable switch sends no agent: pausing and re-enabling an Antigravity
+/// automation keeps it on Antigravity; `codex` and `antigravity` given are stored and run, and
+/// `auto` stores Claude Code.
+#[tokio::test]
+async fn an_automation_keeps_its_agent_through_an_update() -> TestResult {
+    let (h, alice) = world().await?;
+    all_usable(&h).await?;
+    let body = json!({"name": "Review", "cron": "0 9 1 1 *", "utc_offset_minutes": 0, "prompt": "Review yesterday's commits", "enabled": true, "harness": "antigravity"});
+    let r = call(
+        &h.router,
+        Method::POST,
+        "/api/sandboxes/s1/automations",
+        Some(body.clone()),
+        &alice,
+    )
+    .await?;
+    assert_eq!(r.status, StatusCode::CREATED, "{:?}", r.body);
+    let id = r.body["id"].as_str().ok_or("id")?.to_owned();
+    let put = |body: Value| {
+        let (router, alice, id) = (&h.router, &alice, &id);
+        async move {
+            let r = call(
+                router,
+                Method::PUT,
+                &format!("/api/automations/{id}"),
+                Some(body),
+                alice,
+            )
+            .await?;
+            assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
+            Ok::<Value, Error>(r.body["harness"].clone())
+        }
+    };
+    let mut without = body.clone();
+    without.as_object_mut().ok_or("object")?.remove("harness");
+    for enabled in [false, true] {
+        without["enabled"] = json!(enabled);
+        assert_eq!(
+            put(without.clone()).await?,
+            json!("antigravity"),
+            "enabled {enabled}"
+        );
+        assert_eq!(
+            automation_agent(&h, &alice, "Review").await?,
+            json!("antigravity")
+        );
+    }
+    assert_eq!(
+        run_agent(&h, &alice, &id).await?,
+        pair("antigravity", "chosen")
+    );
+    for (harness, stored) in [
+        ("codex", "codex"),
+        ("auto", "claude"),
+        ("antigravity", "antigravity"),
+    ] {
+        let mut changed = body.clone();
+        changed["harness"] = json!(harness);
+        assert_eq!(put(changed).await?, json!(stored), "{harness}");
+        assert_eq!(automation_agent(&h, &alice, "Review").await?, json!(stored));
+        assert_eq!(
+            run_agent(&h, &alice, &id).await?,
+            pair(stored, "chosen"),
+            "{harness}"
+        );
+    }
+    Ok(())
+}
+
 /// PIN-005 (AC-5): a task drawn before this change still says so, in its summary and the
 /// analytics export; a task created now says chosen; deleting a drawn task removes its draw.
 #[tokio::test]
@@ -395,6 +495,22 @@ async fn a_task_drawn_before_still_says_so() -> TestResult {
     };
     assert_eq!(choice("Drawn"), Some(json!("random")));
     assert_eq!(choice("Now"), Some(json!("chosen")));
+    // The CSV export has `harness_choice` right after `harness` (SPEC-505 RND-003).
+    let csv =
+        yulius_app::analytics::tasks_csv(&serde_json::from_value::<Vec<_>>(rows.body.clone())?);
+    let row = |title: &str| {
+        csv.lines()
+            .find(|l| l.contains(&format!(",{title},")))
+            .map(str::to_owned)
+    };
+    assert!(
+        row("Drawn").is_some_and(|l| l.contains(",claude,random,")),
+        "{csv}"
+    );
+    assert!(
+        row("Now").is_some_and(|l| l.contains(",claude,chosen,")),
+        "{csv}"
+    );
     let task = yulius_domain::ids::TaskId::parse(&id)?;
     assert!(h.store.harness_drawn(&task).await?);
     assert!(h.store.delete_task(&task).await?);

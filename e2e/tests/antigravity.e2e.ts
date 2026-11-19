@@ -208,6 +208,18 @@ test('a task started without choosing an agent runs Claude Code, never a drawn a
   await expect(agent.getByRole('radio', 'Random')).toHaveCount(0);
 });
 
+// SPEC-514 PIN-005: a task drawn at random before SPEC-514 still says so in its overview.
+test('a task drawn before still says it was drawn', async ({ app, browser }) => {
+  await app.open(mock('/s/studio'));
+  await browser.evaluate(() => {
+    const tasks = (window as unknown as Mocked).__yuliusMock.tasks as unknown as { sandbox_id: string; number: number; harness: string; harness_choice?: string }[];
+    const task = tasks.find((t) => t.sandbox_id === 'sb_studio' && t.number === 13);
+    if (task) Object.assign(task, { harness: 'antigravity', harness_choice: 'random' });
+    location.hash = '#/s/studio/tasks/13';
+  });
+  await expect(browser.locator('main')).toContainText('Antigravity (drawn at random)');
+});
+
 // SPEC-514 PIN-001: with only Antigravity usable, a task started on Default is still Claude Code's,
 // so it is refused for want of a Claude account instead of running on Gemini.
 test('a task on Default with only Antigravity usable is refused, not moved to Antigravity', async ({ app, browser, screen }) => {
