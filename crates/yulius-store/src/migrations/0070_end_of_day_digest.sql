@@ -1,4 +1,4 @@
--- Yulius migration 0070, schema version 70 (SPEC-512 DIG-001, DIG-005, ADR-0380): the end-of-day
+-- Yulius migration 0070, schema version 71 (SPEC-512 DIG-001, DIG-005, ADR-0380): the end-of-day
 -- digest. The instance's setting as one JSON document (on or off, the time in UTC, the idle
 -- threshold; NULL: off), the run's claim (`digest_ran_at`, also written when the setting is
 -- saved), when a run was last claimed (`digest_sent_at`, only by a claim: one digest a UTC day)

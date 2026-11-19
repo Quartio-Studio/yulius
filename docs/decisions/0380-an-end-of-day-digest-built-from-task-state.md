@@ -60,5 +60,6 @@ personal Telegram channel); changes neither.
   asked for in their last words.
 - An instance that turned ADR-0367's parking off or set it long can still free quiet sessions
   once a day.
-- A schema change (migration 0070): two `instance` columns, a `digests` table and the Telegram
+- A schema change (migration 0070, schema version 71): four `instance` columns (the setting, the
+  claim, the day it was claimed, the listing mark), a `digests` table and the Telegram
   choice.
