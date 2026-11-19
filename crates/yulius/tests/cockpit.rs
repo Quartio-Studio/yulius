@@ -1359,6 +1359,17 @@ impl HarnessPort for RecordingHarness {
     fn claude_transcript(&self, home: &Path, worktree: &Path, session: &str) -> PathBuf {
         self.inner.claude_transcript(home, worktree, session)
     }
+    fn submit_origin(
+        &self,
+        file: std::fs::File,
+        session: &str,
+        id: &str,
+        prompt: &str,
+        sent: yulius_domain::time::Timestamp,
+    ) -> yulius_domain::harness::SubmitOrigin {
+        self.inner.submit_origin(file, session, id, prompt, sent)
+    }
+
     fn step_back_transcript(&self, home: &Path, worktree: &Path, session: &str) -> AppResult<bool> {
         self.inner.step_back_transcript(home, worktree, session)
     }

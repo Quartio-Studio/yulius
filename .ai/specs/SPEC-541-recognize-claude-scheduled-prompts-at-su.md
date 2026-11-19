@@ -22,7 +22,7 @@ SPEC-468 CCF-010 protects the draft until a prompt from the box goes through. SP
 ## Plan
 
 - [x] Measure scheduled and typed submissions with Claude Code
-- [ ] Reproduce draft, goal and question regressions
+- [x] Reproduce draft, goal and question regressions
 - [ ] Classify scheduled submissions and verify typed submissions
 - [ ] Review and deliver the fix on green CI
 
@@ -43,3 +43,5 @@ The local CLI showed that the current user record cannot identify the submit bef
 ## Evidence
 
 Claude Code 2.1.328 ran in a PTY against a loopback Messages API stub with its own home and config. The typed submit and the scheduled submit carried the same seven keys. The scheduled fire was timestamped at 21:07:00.544 UTC, its enqueue at .546 and dequeue at .571. All three records were readable during the scheduled hook. No user record with its prompt ID appeared during the one-second hold. At Stop the user record had that prompt ID, the fire UUID as `scheduledFireId`, `isMeta: true`, and `promptSource: "system"`. The retained 2.1.322 synthetic run has the same ID links. Its queue writes could still be buffered at hook entry.
+
+On the baseline, both new tests in `cargo test -p yulius --test main scheduled_` failed at the draft assertion. Two additional harness tests reproduced a lost fire outside the bounded read and a background notification still in the queue. An unidentified hand-over preserves the personal state and keeps ordinary scope screening.

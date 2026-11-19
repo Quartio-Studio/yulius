@@ -386,6 +386,18 @@ impl HarnessPort for HarnessAdapter {
         paths::claude_transcript_path(&sandbox_home.join(".claude"), worktree, session_id)
     }
 
+    fn submit_origin(
+        &self,
+        file: std::fs::File,
+        session: &str,
+        id: &str,
+        prompt: &str,
+        sent: yulius_domain::time::Timestamp,
+    ) -> yulius_domain::harness::SubmitOrigin {
+        yulius_harness::scheduled::submit_origin(file, session, id, prompt, sent)
+            .unwrap_or(yulius_domain::harness::SubmitOrigin::Unmarked)
+    }
+
     fn step_back_transcript(
         &self,
         sandbox_home: &Path,

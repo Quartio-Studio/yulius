@@ -426,7 +426,7 @@ impl App {
         })
     }
 
-    /// How many prompts from the prompt box of the task's session went on in its run.
+    /// How many plain-text submit hooks went on in this run, including scheduled hand-overs.
     pub(crate) fn prompts_passed(&self, task_id: &TaskId) -> u64 {
         self.runtime(task_id).prompts_passed.load(Ordering::SeqCst)
     }

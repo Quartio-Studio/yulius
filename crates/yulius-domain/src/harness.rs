@@ -296,6 +296,18 @@ impl fmt::Display for Provider {
     }
 }
 
+/// Evidence from Claude's native transcript at a plain-text submit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SubmitOrigin {
+    /// No scheduled hand-over identified. Apply the existing text rule.
+    Unmarked,
+    /// The prompt matches a scheduled hand-over or an ID-matched system prompt record.
+    Scheduled,
+    /// The queue just handed an entry on, but its enqueue is outside the readable tail.
+    /// Keep personal state until the next identifiable submission.
+    UnidentifiedHandOver,
+}
+
 /// `true` for provider session ids Yulius accepts in paths and argv: 1–128 ASCII letters,
 /// digits, `-` or `_`, not starting with `-`.
 #[must_use]
