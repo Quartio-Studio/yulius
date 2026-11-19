@@ -159,8 +159,9 @@ pub trait SessionDocStore: Send + Sync {
     ) -> AppResult<Vec<ProviderSessionRecord>>;
     /// Deletes a document with its index; `false` when absent.
     async fn delete_session_doc(&self, id: &str) -> AppResult<bool>;
-    /// Points a document at another transcript file and clears its index.
-    async fn set_session_doc_path(&self, id: &str, path: &str) -> AppResult<()>;
+    /// Changes the path and clears the index atomically if the document still has the expected
+    /// path. Returns whether the path changed.
+    async fn set_session_doc_path(&self, id: &str, expected: &str, path: &str) -> AppResult<bool>;
     /// Records the task an imported session was continued in.
     async fn set_session_continued(&self, id: &str, task: &TaskId) -> AppResult<()>;
     /// Appends passages and advances the index position, only while it still equals
