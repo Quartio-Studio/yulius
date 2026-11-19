@@ -268,6 +268,19 @@ Review round 1 (Fable 5.2, request changes at 74c6b7076), answered test-first:
 | `queue_reason_of` per summary | kept: only queued tasks compute it, at most `queue_max` (32) | — |
 | needs_you shared cause (pre-existing condition) | unchanged: answering a parked task resumes it; the others are answered by their own messages | — |
 
+Review round 4 (request changes at e68acb5e2), answered test-first:
+
+| Finding | Answer | Test that fails without it |
+| --- | --- | --- |
+| G1 the parked goal's mark had no test | test with a goal the fake agent leaves failed, parked, then read by a second `App` on the same data (the restart) | `parking::a_parked_unfinished_goal_stays_your_turn_across_a_restart` (removing the `mark_parked_goal` call fails it: checked) |
+| nit: the mark written after the status change | written before it, and removed when the goal is not unfinished | same test |
+| nit: queue test's doc and grace | doc says only what it holds; waits past the grace before its check | — |
+| minor: Resume re-tell | left as said in round 3 (not reproduced); not blocking for the reviewer | — |
+| minor: `goal_unfinished_of` reads the attempts and stats a file per parked task | kept: it runs only for parked tasks, the list reads at most the sandbox's | — |
+
+Commands after round 4: `parking::` and the queue test → 21 passed; `scripts/dev quick`, `lint`
+passed.
+
 Review round 3 (request changes at 87a654b6c), answered test-first:
 
 | Finding | Answer | Test that fails without it |

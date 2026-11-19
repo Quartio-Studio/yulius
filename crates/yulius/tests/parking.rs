@@ -1038,3 +1038,68 @@ fn a_parked_tasks_summary_keeps_its_unfinished_work() -> TestResult {
     rt.shutdown_timeout(Duration::from_secs(5));
     Ok(())
 }
+
+/// PRK-004 (review round 4, G1): a goal task whose goal failed is parked "Your turn", and stays
+/// so for a server started afresh, which has no session that knew the goal: the parked run's
+/// directory keeps it.
+#[test]
+fn a_parked_unfinished_goal_stays_your_turn_across_a_restart() -> TestResult {
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let fake =
+            locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+        let agent = FakeAgentOptions {
+            goal_verdict: Some("failed"),
+            ..hooked()
+        };
+        let (app, _) = start_with(
+            &data,
+            &fake,
+            agent.clone(),
+            0,
+            Arc::new(ScriptedUsage::default()),
+            |config| config.park_after_ms = 1,
+        )
+        .await?;
+        let (sandbox, user) = seed(&app, &data, &["a-only"]).await?;
+        let id = new_task(&app, &sandbox, &user, "Merge on green", TaskMode::Goal).await?;
+        let summary = |app: Arc<App>, id: TaskId| async move {
+            let task = TaskStore::task(app.deps.store.as_ref(), &id)
+                .await?
+                .ok_or("task")?;
+            Ok::<_, Error>(app.task_summary(&task).await?)
+        };
+        wait_for(
+            "the failed goal's turn end",
+            Duration::from_secs(90),
+            || async {
+                summary(app.clone(), id.clone())
+                    .await
+                    .is_ok_and(|s| s.goal_unfinished && s.activity.as_deref() == Some("waiting"))
+            },
+        )
+        .await?;
+        parked(&app, &id).await?;
+        assert!(summary(app.clone(), id.clone()).await?.goal_unfinished);
+        // A server started afresh on the same data: no runtime knows the goal.
+        let (fresh, _) = start_with(
+            &data,
+            &fake,
+            agent,
+            0,
+            Arc::new(ScriptedUsage::default()),
+            |config| config.park_after_ms = 1,
+        )
+        .await?;
+        let shown = summary(fresh.clone(), id.clone()).await?;
+        assert_eq!(shown.status, "parked");
+        assert!(
+            shown.goal_unfinished,
+            "the parked run's directory keeps the goal's state"
+        );
+        Ok::<_, Error>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}

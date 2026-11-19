@@ -4062,6 +4062,10 @@ impl App {
                     Err(_) => return,
                 },
             };
+            // The goal's state is in the run's directory before anyone reads the task parked.
+            if to == TaskStatus::Parked {
+                self.mark_parked_goal(task_id).await;
+            }
             match self
                 .deps
                 .store
@@ -4071,7 +4075,6 @@ impl App {
                 Ok(false) => {}
                 Ok(true) => {
                     if to == TaskStatus::Parked {
-                        self.mark_parked_goal(task_id).await;
                         crate::parking::audit_parked(self, &task).await;
                     }
                     return;
@@ -4088,15 +4091,21 @@ impl App {
     /// Leaves in the parked run's directory whether its goal was unfinished, as the session's
     /// runtime knew it ([`crate::parking::GOAL_UNFINISHED_MARK`]); a failed write is logged.
     async fn mark_parked_goal(&self, task_id: &TaskId) {
-        if !self.goal_unfinished(task_id) {
-            return;
-        }
+        let unfinished = self.goal_unfinished(task_id);
         let Ok(runs) = self.deps.store.attempts(task_id).await else {
             return;
         };
         if let Some(run) = runs.last() {
             let mark = Path::new(&run.run_dir).join(crate::parking::GOAL_UNFINISHED_MARK);
-            if let Err(err) = std::fs::write(&mark, b"") {
+            let written = if unfinished {
+                std::fs::write(&mark, b"")
+            } else {
+                std::fs::remove_file(&mark).or_else(|err| match err.kind() {
+                    std::io::ErrorKind::NotFound => Ok(()),
+                    _ => Err(err),
+                })
+            };
+            if let Err(err) = written {
                 tracing::warn!(task = %task_id, error = %err, "the parked goal was not marked");
             }
         }

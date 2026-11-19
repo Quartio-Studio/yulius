@@ -1812,8 +1812,7 @@ mod moves {
     }
 
     /// SPEC-512 PRK-002 (review round 3 of part 1, Q1): an idle session whose Claude Code queue
-    /// holds a prompt is not parked: the prompt would end with the session. Once the queue is
-    /// handed on and the session is idle again, it parks.
+    /// holds a prompt is not parked: the prompt would end with the session.
     #[test]
     fn a_prompt_in_the_queue_keeps_an_idle_session_from_parking() -> TestResult {
         let (_dir, data) = data_dir()?;
@@ -1842,6 +1841,18 @@ mod moves {
             })
             .await?;
             assert!(s.app.claude_queue_holds(&s.id));
+            // Past the 1 ms grace period, so the pass refuses for what it checks.
+            wait_for("the grace period", Duration::from_secs(10), || async {
+                s.app
+                    .deps
+                    .store
+                    .task_times(&s.id)
+                    .await
+                    .ok()
+                    .flatten()
+                    .is_some_and(|times| s.app.now().0 - times.state_at.0 > 2)
+            })
+            .await?;
             assert_eq!(s.app.park_idle_sessions_now().await, 0);
             let status = s.app.deps.store.task(&s.id).await?.ok_or("task")?.status;
             assert_eq!(status, TaskStatus::Running);
