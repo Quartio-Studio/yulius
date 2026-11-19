@@ -26,10 +26,10 @@ exercise request handling without running the shipped systemd units.
 
 ## Plan
 
-- [ ] Capture the update watcher failure in an isolated systemd VM
+- [x] Capture the update watcher failure in an isolated systemd VM
 - [x] Pin the service start-limit setting in a shipped-unit regression
 - [x] Keep the watcher active and document recovery for existing installations
-- [ ] Verify recovery and burst handling against the shipped units
+- [x] Verify recovery and burst handling against the shipped units
 - [ ] Independent approval for delivery into dev
 
 ## Acceptance criteria
@@ -52,3 +52,25 @@ Apply the move helper's existing service setting to the update helper. The adopt
 a dependency of server startup and has no request-file watcher. The operator can edit the
 installed update unit in place to preserve site-specific settings.
 [SPEC-470](SPEC-470-run-migration-the-button-in-settings-ins.md)
+
+## Evidence
+
+- `cargo test --locked -p yulius --lib update_helper::tests::shipped_update_service_disables_the_start_limit_in_unit_section -- --exact`
+  failed on the original unit with `None` where `Some("0")` was expected. After the fix,
+  `cargo test --locked -p yulius --lib update_helper::tests::` passed all 28 tests, including
+  after merging current dev. `scripts/dev quick` passed. `scripts/dev security` reported
+  that Vidoc was disabled for the project.
+- Ubuntu 26.04.1 in QEMU with systemd 259.5, the shipped units and the real update helper:
+  the data directory owner wrote six malformed requests in 8.097 s on the original units.
+  Only five got a refusal. The service reported `start-limit-hit` and the path reported
+  `failed/failed/unit-start-limit-hit`.
+- From that failed state, installed the corrected service and ran the guide's reload,
+  reset-failed and start commands. `systemctl status yulius-update.path` showed `active (waiting)`.
+  Each of 24 malformed requests with a distinct ID received its own refusal under load. The
+  shortest six-write window in that run was 12.295 s.
+- For the fast-refusal case, used malformed requests without an ID, a temporary in-memory
+  helper state directory, and waited on systemd's path-state signals between writes.
+  Six writes took 5.428 s. `journalctl -u yulius-update.service -o short-monotonic` showed
+  six separate starts from 1056.728318 to 1062.242171 s and six refusals. After the sixth
+  the path showed `ActiveState=active`, `SubState=waiting`, `Result=success`, and its trigger
+  limit was 200 in 2 s. The real helper then answered a fresh request with ID `later-req-1`.
