@@ -320,6 +320,7 @@ async fn ask_about(w: &World, task: &str, problem: &str, cause: Option<&str>) ->
         link: None,
         cause: cause.map(str::to_owned),
         at: w.h.app.now().0,
+        named: Default::default(),
     };
     w.h.store
         .set_task_needs_you(&id, Some(&request), w.h.app.now())
@@ -708,6 +709,7 @@ async fn a_state_entered_before_the_start_is_not_told() -> TestResult {
         link: None,
         cause: None,
         at: w.h.app.now().0,
+        named: Default::default(),
     };
     w.h.store
         .set_task_needs_you(&id, Some(&request), w.h.app.now())
@@ -1034,6 +1036,49 @@ async fn a_subscription_switch_is_no_news() -> TestResult {
     let sent = w.fake.wait_sent(100, 3).await?;
     assert!(sent[2].contains("the key is missing"), "{sent:?}");
     assert_eq!(w.fake.sent_to(100).len(), 3, "{sent:?}");
+    Ok(())
+}
+
+/// SPEC-512 PRK-004 (review of part 1): a parked task's Resume is no news: a "Your turn" told
+/// before the park is not told again when the resumed session reads idle as it did.
+#[tokio::test]
+async fn a_parked_tasks_resume_is_no_news() -> TestResult {
+    let w = world().await?;
+    set_bot(&w, TOKEN_A).await?;
+    link(&w, &w.alice, 100).await?;
+    link(&w, &w.carol, 300).await?;
+    let alice = user_id(&w, "alice").await?;
+    let task = seed_task(&w.h, "t1", "s1", &alice, TaskStatus::Running, None).await?;
+    let now = w.h.app.now();
+    w.h.store
+        .replace_steps(
+            &task.id,
+            &[yulius_app::model::StepRecord {
+                id: yulius_domain::ids::StepId::parse("st-1")?,
+                task_id: task.id.clone(),
+                ordinal: 1,
+                title: "Ship it".into(),
+                status: "pending".into(),
+                note: None,
+                updated_by: Some("system".into()),
+                updated_at: Some(now),
+                effort: 1,
+            }],
+            "system",
+            now,
+        )
+        .await?;
+    move_to(&w, "t1", TaskStatus::Running, Some(Activity::Waiting)).await?;
+    let sent = w.fake.wait_sent(100, 2).await?;
+    assert!(sent[1].starts_with("Needs you · app\n"), "{sent:?}");
+    // Parked, then resumed with nothing typed: starting, then idle again as it was.
+    move_to(&w, "t1", TaskStatus::Parked, Some(Activity::Waiting)).await?;
+    barrier(&w, "p1").await?;
+    move_to(&w, "t1", TaskStatus::Starting, None).await?;
+    barrier(&w, "p2").await?;
+    move_to(&w, "t1", TaskStatus::Running, Some(Activity::Waiting)).await?;
+    barrier(&w, "p3").await?;
+    assert_eq!(w.fake.sent_to(100).len(), 2, "{:?}", w.fake.sent_to(100));
     Ok(())
 }
 

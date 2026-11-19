@@ -296,7 +296,13 @@ impl App {
         task: &TaskRecord,
         requested: &HashSet<String>,
     ) -> AppResult<Option<TaskReading>> {
-        if task.status == yulius_domain::task::TaskStatus::Switching {
+        // A switch is under the hood (TGC-025), and so is a session starting: a parked task's
+        // resume reads idle again as it did, which is no news (SPEC-512 PRK-004). What the task
+        // reads once it runs is compared with what was told before.
+        if matches!(
+            task.status,
+            yulius_domain::task::TaskStatus::Switching | yulius_domain::task::TaskStatus::Starting
+        ) {
             return Ok(None);
         }
         let group = self.task_group(task, requested).await?;

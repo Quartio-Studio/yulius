@@ -12,7 +12,7 @@ test('a parked task reads as it did, marked parked, and resumes from its menu (u
   await app.open(mock('/s/studio'));
   const read = await browser.evaluate(async () => {
     const statusUrl = '/assets/status.js';
-    const { taskInfo, activityLine, taskActions, isLive, endedMessage } = await import(statusUrl);
+    const { taskInfo, activityLine, taskActions, isLive, endedMessage, statusInfo } = await import(statusUrl);
     const parked = { status: 'parked', activity: 'done', steps: { done: 3, total: 3 }, owner: { login: 'me' } };
     const asked = { status: 'parked', activity: 'waiting', steps: { done: 1, total: 3 }, owner: { login: 'me' } };
     const withRequest = { ...asked, needs_you: { action: 'Choose the `colour`', problem: 'Two options' } };
@@ -48,6 +48,8 @@ test('a parked task reads as it did, marked parked, and resumes from its menu (u
       actions: { continue: acts.continue, stop: acts.stop, archive: acts.archive, delete: acts.delete, move: acts.move },
       someoneElses: taskActions(parked, 'write', null, 'other').continue,
       message: endedMessage('parked'),
+      // A status with no activity (the Dashboard's Outcomes bucket) reads Parked, not Running.
+      bucket: [statusInfo({ status: 'parked', activity: null }).label, statusInfo({ status: 'parked', activity: null }).group],
     };
   });
   expect(read).toEqual({
@@ -73,6 +75,7 @@ test('a parked task reads as it did, marked parked, and resumes from its menu (u
       text: 'Yulius parked this idle session to free its place and memory. Resume it, or write to it, and it goes on in the same session with its history.',
       resume: true,
     },
+    bucket: ['Parked', 'needs'],
   });
 });
 
