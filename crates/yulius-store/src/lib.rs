@@ -186,6 +186,8 @@ const MIGRATIONS: &[&str] = &[
     include_str!("migrations/0065_ci_flaky_tests.sql"),
     // Schema version 66 (SPEC-505 RND-001).
     include_str!("migrations/0066_task_harness_draws.sql"),
+    // Schema version 67 (SPEC-510 TKC-003).
+    include_str!("migrations/0067_control_ask_first.sql"),
 ];
 
 type Job = Box<dyn FnOnce(&mut Connection) + Send + 'static>;
@@ -452,6 +454,7 @@ mod tests {
             ),
             (65, include_str!("migrations/0065_ci_flaky_tests.sql")),
             (66, include_str!("migrations/0066_task_harness_draws.sql")),
+            (67, include_str!("migrations/0067_control_ask_first.sql")),
         ];
         for (version, sql) in pinned {
             assert_eq!(
@@ -460,7 +463,7 @@ mod tests {
                 "schema version {version}"
             );
         }
-        assert_eq!(MIGRATIONS.len(), 66, "a new migration is pinned here too");
+        assert_eq!(MIGRATIONS.len(), 67, "a new migration is pinned here too");
     }
 
     /// SPEC-483 slice 35 (QC1): the capacity and accounts views read the runs and pauses of

@@ -1950,7 +1950,7 @@ async fn onboarding_is_started_by_its_tasks_owner_or_becomes_the_starters() -> T
     assert_eq!(refused.status, StatusCode::FORBIDDEN, "{:?}", refused.body);
     let message = text(&refused.body["error"]["message"]);
     assert!(
-        message.contains("@alice") && message.contains("Ask them for control"),
+        message.contains("@alice") && message.contains("Take control"),
         "{message}"
     );
     assert_eq!(remote_heads(&remote)?, before, "nothing pushed");
