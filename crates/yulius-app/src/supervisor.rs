@@ -221,7 +221,7 @@ pub struct TaskRuntime {
     pub(crate) prompt_held: AtomicBool,
     /// A reattach owns the old attempt's recovery until any required hand-over finishes.
     /// A limit move from its transcript waits here before deciding which attempt to move.
-    pub(crate) reattach_move: Arc<tokio::sync::Mutex<()>>,
+    pub(crate) reattach_move: Arc<tokio::sync::Mutex<Option<AttemptId>>>,
     /// Whose personal MCP servers the current run was started with (SPEC-332 MSC-009): a live
     /// run keeps its MCP configuration, so a hand-over restarts it, and only that person messages
     /// it meanwhile.
@@ -5697,7 +5697,8 @@ impl App {
             // The run's transcript so far is history: its watcher catches up on it (TSK-014).
             // Until it did, what waits in Claude Code's queue is not known (SPEC-471 CCQ-001).
             let runtime = self.runtime(&attempt.task_id);
-            let recovery = runtime.reattach_move.clone().lock_owned().await;
+            let mut recovery = runtime.reattach_move.clone().lock_owned().await;
+            *recovery = Some(attempt.id.clone());
             runtime.replay_transcript.store(true, Ordering::SeqCst);
             runtime.queue_unread.store(true, Ordering::SeqCst);
             // Before the run is attached, so no message is typed meanwhile (SPEC-230): when it
@@ -6755,7 +6756,10 @@ impl App {
         let Some(runtime) = self.existing_runtime(task_id) else {
             return;
         };
-        let _recovery = runtime.reattach_move.lock().await;
+        let recovery = runtime.reattach_move.lock().await;
+        // Only the reattached attempt shares its move with startup recovery. A live run
+        // may resume its published pause while its limit handler finishes the notices.
+        let _recovery = (recovery.as_ref() == Some(attempt_id)).then_some(recovery);
         let current = runtime
             .run
             .lock()
