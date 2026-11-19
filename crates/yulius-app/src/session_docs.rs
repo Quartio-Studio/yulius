@@ -360,8 +360,8 @@ impl App {
         Ok(())
     }
 
-    /// Brings the sandbox's index up to date within [`INDEX_BYTES_PER_REFRESH`]: new task
-    /// sessions get documents; grown transcripts are indexed from where indexing stopped.
+    /// Indexes new task sessions and grown transcripts with a shared [`INDEX_BYTES_PER_REFRESH`]
+    /// budget. A started batch finishes its prefix replay and current line even if they exhaust it.
     ///
     /// # Errors
     /// Store failures (unreadable transcripts are skipped).

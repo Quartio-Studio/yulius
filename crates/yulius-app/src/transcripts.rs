@@ -1426,7 +1426,13 @@ pub fn read_for_index(
     let mut read_bytes = 0_u64;
     let mut needs_replay = from_byte != 0 || from_line != 0;
     while read_bytes < max_bytes && batch.chars < max_chars {
-        let used = match read_line(&mut reader, &mut buf, MAX_LINE_BYTES)? {
+        let next = read_line(&mut reader, &mut buf, MAX_LINE_BYTES)?;
+        if needs_replay && next != LineRead::Eof {
+            replay_index_prefix(&mut reader, from_byte, from_line, &mut env_calls)?;
+            batch.replayed_bytes = from_byte;
+            needs_replay = false;
+        }
+        let used = match next {
             LineRead::Eof => {
                 batch.eof = true;
                 return Ok(batch);
@@ -1436,12 +1442,6 @@ pub fn read_for_index(
                 used
             }
             LineRead::Line(used) => {
-                // A partial final line stays pending without replaying the prefix on every refresh.
-                if needs_replay {
-                    replay_index_prefix(&mut reader, from_byte, from_line, &mut env_calls)?;
-                    batch.replayed_bytes = from_byte;
-                    needs_replay = false;
-                }
                 let line = batch.end_line;
                 batch.end_line += 1;
                 if let Ok(record) = serde_json::from_slice::<Value>(&buf)
@@ -1977,6 +1977,23 @@ mod tests {
                 Some(io::ErrorKind::InvalidData)
             );
         }
+        Ok(())
+    }
+
+    #[test]
+    fn an_oversized_complete_suffix_validates_the_saved_index_offsets() -> TestResult {
+        use std::io::Write as _;
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("rewritten.jsonl");
+        let mut file = File::create(&path)?;
+        file.seek(SeekFrom::Start(u64::try_from(MAX_LINE_BYTES)? + 2))?;
+        writeln!(file)?;
+        // The old line ended at byte 1. The rewritten file has no newline in that prefix.
+        let result = read_for_index(File::open(path)?, 1, 1, u64::MAX, usize::MAX);
+        assert_eq!(
+            result.err().map(|err| err.kind()),
+            Some(io::ErrorKind::InvalidData)
+        );
         Ok(())
     }
 

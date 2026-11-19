@@ -47,3 +47,4 @@ Replay the prefix with the existing transcript parser so restart needs only the 
 - In a synthetic SQLite FTS5 database, migration 0071 removed the sole match for the fixture value and reset the document’s byte offset, line number and full-index flag.
 - The baseline SQLite restart integration test also failed at its missing snippet redaction marker. All 23 transcript unit tests passed with replay, including Claude, Codex and Antigravity fixtures.
 - The SQLite schema-upgrade, migration-position and two session-store tests passed. A synthetic deletion with the FTS trigger disabled showed why the upgrade assertion queries FTS directly: the joined query returned zero while the direct FTS query found one stale match.
+- An oversized, newline-terminated synthetic suffix on a rewritten transcript originally advanced past stale offsets. Validating the prefix before either kind of complete line fixes that case. An unterminated suffix still waits for a newline.
