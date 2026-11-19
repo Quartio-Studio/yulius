@@ -2,7 +2,9 @@
 //! claims repository path globs before changing shared areas; overlaps with the claims of other
 //! live tasks are reported to the claiming agent with what the holding task changes, and the
 //! holding task is told once (SPEC-493 SCO-001, ADR-0348, amending MSG-002). Claims never block
-//! file access. Claims of tasks that are no longer live are ignored.
+//! file access. Claims of tasks that are no longer live are ignored, except a parked task's
+//! (SPEC-512 PRK-001): its work goes on when it resumes. A parked holder has no session to be
+//! told in; only the claiming agent hears of the overlap.
 
 use serde_json::{Value, json};
 use yulius_domain::scope::{Pattern, ScopeClaim, conflicts};

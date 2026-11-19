@@ -419,6 +419,9 @@ pub struct TaskRuntime {
     /// The run whose host could not be terminated after its stop or close escalation, and why
     /// (SPEC-065 END-001): it stays live until its processes are gone.
     end_failed: Mutex<Option<(AttemptId, String)>>,
+    /// The activity a park was decided on (SPEC-512 PRK-003): what the parked task keeps when a
+    /// switch it overtook cleared the stored one.
+    parked_activity: Mutex<Option<Activity>>,
 }
 
 /// Counts a run ending as being recorded until dropped (SPEC-065 END-003).
@@ -657,6 +660,7 @@ impl TaskRuntime {
             context: Mutex::new(crate::context_full::ContextEpisode::default()),
             finalizing: tokio::sync::watch::channel(0).0,
             end_failed: Mutex::new(None),
+            parked_activity: Mutex::new(None),
         }
     }
 
@@ -4009,6 +4013,13 @@ impl App {
     /// `parked` with its activity and audited `task.parked`; one a stop or a capacity pause took
     /// meanwhile rests as that run's end leaves it.
     async fn settle_parked(&self, task_id: &TaskId, now: Timestamp) {
+        let decided = self.existing_runtime(task_id).and_then(|runtime| {
+            runtime
+                .parked_activity
+                .lock()
+                .ok()
+                .and_then(|mut kept| kept.take())
+        });
         for _ in 0..STOP_ROUNDS {
             let Ok(Some(task)) = self.deps.store.task(task_id).await else {
                 return;
@@ -4022,8 +4033,9 @@ impl App {
                     .apply(TaskEvent::SwitchCompleted)
                     .and_then(|running| running.apply(TaskEvent::Parked))
             });
+            // A switch's status change cleared the activity: the one the park was decided on.
             let (to, activity) = match parked {
-                Ok(parked) => (parked, task.activity),
+                Ok(parked) => (parked, task.activity.or(decided)),
                 Err(_) => match task.status.apply(TaskEvent::Exited { normal: true }) {
                     Ok(rests) => (rests, None),
                     Err(_) => return,
@@ -4474,6 +4486,9 @@ impl App {
                 return Ok(false);
             }
             *intent = Some(EndIntent::Park);
+        }
+        if let Ok(mut kept) = runtime.parked_activity.lock() {
+            *kept = task.activity;
         }
         crate::race::reached(crate::race::Point::ParkDecided, Path::new(task_id.as_str()));
         self.arm_escalation(task_id, Some(run));

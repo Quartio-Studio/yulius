@@ -712,3 +712,193 @@ fn a_park_that_cannot_end_its_session_gives_up() -> TestResult {
     rt.shutdown_timeout(Duration::from_secs(5));
     Ok(())
 }
+
+/// PRK-003 (review round 2): a switch that starts after the park decided gives way to it: the
+/// task parks with the activity it had, and the switch says why it did not happen.
+#[test]
+fn a_switch_overtaken_by_a_park_parks_with_its_activity() -> TestResult {
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let app = app(&data, 8, 1).await?;
+        let (id, _) = answered(&app, &data).await?;
+        let switched = Arc::new(std::sync::Mutex::new(None));
+        {
+            let (app, target, switched) = (app.clone(), id.clone(), switched.clone());
+            let handle = tokio::runtime::Handle::current();
+            yulius_app::race::on(
+                yulius_app::race::Point::ParkDecided,
+                Path::new(id.as_str()),
+                move || {
+                    let answer = tokio::task::block_in_place(|| {
+                        handle.block_on(app.switch_task_now(&target, None, "manual", None))
+                    });
+                    if let Ok(mut slot) = switched.lock() {
+                        *slot = Some(answer.map_err(|err| err.to_string()));
+                    }
+                },
+            );
+        }
+        parked(&app, &id).await?;
+        assert_eq!(status_of(&app, &id).await.1, Some(Activity::Waiting));
+        let answer = switched.lock().map_err(|_| "poisoned")?.clone();
+        assert!(
+            matches!(&answer, Some(Err(why)) if why.contains("the idle session was parked")),
+            "{answer:?}"
+        );
+        Ok::<_, Error>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// PRK-003 (review round 2): a parked session that does not hear the request to end is ended by
+/// the escalation, and its loss parks the task all the same (`mark_lost` with the park's intent).
+#[test]
+fn a_session_deaf_to_the_park_is_parked_by_the_escalation() -> TestResult {
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let fake =
+            locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+        let host = Arc::new(crate::support::gated::GatedHost::new(
+            std::path::PathBuf::from(env!("CARGO_BIN_EXE_yulius")),
+        ));
+        let agent = FakeAgentOptions {
+            answers_first_message: true,
+            ..hooked()
+        };
+        let (app, _) = start_hosted(
+            &data,
+            &fake,
+            agent,
+            (
+                0,
+                Arc::new(ScriptedUsage::default()),
+                Arc::new(yulius::wiring::clock::SystemClock),
+            ),
+            Some(host.clone()),
+            |config| {
+                config.park_after_ms = 1;
+                config.stop_escalation_ms = 500;
+            },
+        )
+        .await?;
+        let (id, _) = answered(&app, &data).await?;
+        host.deafen(true);
+        parked(&app, &id).await?;
+        let runs = app.deps.store.attempts(&id).await?;
+        assert_eq!(runs[0].exit_reason.as_deref(), Some("lost"));
+        assert_eq!(status_of(&app, &id).await.1, Some(Activity::Waiting));
+        assert_eq!(audited(&data, "task.parked", &id)?, ["yulius"]);
+        Ok::<_, Error>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// PRK-002 (review round 2): a prompt Yulius held for a person's decision keeps the session (it
+/// is back in the prompt box).
+#[test]
+fn a_held_prompt_keeps_the_session() -> TestResult {
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let app = app(&data, 8, 1).await?;
+        let (id, caller) = answered(&app, &data).await?;
+        yulius_app::ports::store_ext::IntakeStore::insert_hold(
+            app.deps.store.as_ref(),
+            &yulius_app::intake::HoldRecord {
+                id: "h-1".into(),
+                task_id: id.clone(),
+                class: yulius_domain::intake::PromptClass::NewScope,
+                prompt: "Also rewrite the billing page".into(),
+                prompt_sha256: "0".repeat(64),
+                percent: 91,
+                typed_by: Some(caller.user.clone()),
+                state: yulius_app::intake::hold_state::PENDING.into(),
+                created_at: app.now(),
+                resolved_by: None,
+                resolved_at: None,
+                new_task_id: None,
+            },
+        )
+        .await?;
+        assert_eq!(app.park_idle_sessions_now().await, 0);
+        assert_eq!(status_of(&app, &id).await.0, Some(TaskStatus::Running));
+        Ok::<_, Error>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// PRK-005 (review round 2): only who steers a task resumes it: another writer's Resume and
+/// message are refused, and the task stays parked.
+#[tokio::test]
+async fn only_its_owner_resumes_a_parked_task() -> TestResult {
+    use crate::support::{call, harness, perms, seed_github_user, seed_sandbox, seed_task};
+    let h = harness()?;
+    crate::support::exhausted_subscription(&h).await?;
+    seed_github_user(&h, "u-alice", "alice").await?;
+    let bob = seed_github_user(&h, "u-bob", "bob").await?;
+    seed_sandbox(&h, "s1", "app", "u-alice").await?;
+    for login in ["alice", "bob"] {
+        h.github.set_perm(login, "acme/app", perms("write"));
+    }
+    seed_task(&h, "t1", "s1", "u-alice", TaskStatus::Parked, None).await?;
+    let resumed = call(
+        &h.router,
+        axum::http::Method::POST,
+        "/api/tasks/t1/continue",
+        Some(json!({})),
+        &bob,
+    )
+    .await?;
+    assert_eq!(
+        resumed.status,
+        axum::http::StatusCode::FORBIDDEN,
+        "{:?}",
+        resumed.body
+    );
+    let caller = yulius_app::coordination::ProjectCaller {
+        sandbox: yulius_domain::ids::SandboxId::parse("s1")?,
+        user: yulius_domain::ids::UserId::parse("u-bob")?,
+        task: None,
+        channel: yulius_app::coordination::Channel::Superagent,
+        actor: "cockpit:bob".into(),
+        detail: json!({"via": "cockpit", "shell": "sh-test"}),
+    };
+    let messaged = h
+        .app
+        .tool_task_message(&caller, &json!({"task_id": "t1", "text": "go on"}))
+        .await;
+    assert!(
+        matches!(&messaged, Err(yulius_app::error::AppError::Forbidden(m)) if m.contains("@alice")),
+        "{messaged:?}"
+    );
+    let task = h.store.task(&TaskId::parse("t1")?).await?.ok_or("task")?;
+    assert_eq!(task.status, TaskStatus::Parked);
+    Ok(())
+}
+
+/// PRK-002 (review round 2): the onboarding task is never parked: its run's end decides the
+/// sandbox's onboarding.
+#[test]
+fn the_onboarding_task_is_not_parked() -> TestResult {
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let app = app(&data, 8, 1).await?;
+        let (id, _) = answered(&app, &data).await?;
+        let db = rusqlite::Connection::open(data.join("yulius.db"))?;
+        db.execute(
+            "UPDATE tasks SET origin = 'onboarding' WHERE id = ?1",
+            [id.as_str()],
+        )?;
+        assert_eq!(app.park_idle_sessions_now().await, 0);
+        assert_eq!(status_of(&app, &id).await.0, Some(TaskStatus::Running));
+        Ok::<_, Error>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}

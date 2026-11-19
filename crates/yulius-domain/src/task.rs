@@ -540,15 +540,16 @@ impl AttentionFacts {
         if self.status.is_resting() || self.status == TaskStatus::Stopping {
             return G::Ended;
         }
+        // A parked task has no run to pause or to go on with (SPEC-512 PRK-004).
+        if self.status == TaskStatus::Parked {
+            return self.parked_group();
+        }
         // A paused run does nothing until it resumes, whatever it waited for (SPEC-191).
         if self.paused {
             return G::Working;
         }
         if self.held_prompt || self.browser_request {
             return G::NeedsYou;
-        }
-        if self.status == TaskStatus::Parked {
-            return self.parked_group();
         }
         let finished =
             self.status == TaskStatus::Running && self.activity.is_some_and(Activity::is_idle);
@@ -610,24 +611,27 @@ impl AttentionFacts {
         }
     }
 
-    /// The group of a parked task (SPEC-512 PRK-004): where an idle run with nothing going on by
-    /// itself is, never Working. Nothing of it goes on by itself, so what would keep a running
-    /// agent busy (its checks running, a conflict its pull request watch tells it of, a CI run
-    /// to run again) waits for a person: they resume it. An achieved goal is Done whatever its
-    /// checks still do; failing checks need a person.
+    /// The group of a parked task (SPEC-512 PRK-004): the group of the idle run it was, with no
+    /// live overlay (shells, `yulius wait`, an armed merge, a pause), and never Working: nothing
+    /// of it goes on by itself, so what would keep a running agent busy (its checks running, a
+    /// conflict its pull request watch tells it of, a CI run to run again, a first turn) waits
+    /// for a person, who resumes it.
     fn parked_group(&self) -> TaskGroup {
-        use TaskGroup as G;
-        let work_left = self.plan_open || self.spec_unfinished;
-        let achieved = self.activity == Some(Activity::Done);
-        match self.pull {
-            Some(PullSignal::Failing | PullSignal::Errored | PullSignal::Conflicting) => {
-                G::NeedsYou
-            }
-            Some(PullSignal::InReview) if achieved && !work_left => G::Done,
-            Some(PullSignal::InReview) => G::NeedsYou,
-            Some(PullSignal::Tested | PullSignal::Merged) if !work_left => G::Done,
-            _ if work_left || self.goal_unfinished => G::NeedsYou,
-            _ => G::Done,
+        // The idle run it was, with nothing of a session going on (review round 2 of SPEC-512
+        // part 1: the web's `asIdleRun` reads it the same way).
+        let run = Self {
+            status: TaskStatus::Running,
+            background_shells: false,
+            yulius_wait: false,
+            merge_armed: false,
+            paused: false,
+            ..*self
+        }
+        .group();
+        if run == TaskGroup::Working {
+            TaskGroup::NeedsYou
+        } else {
+            run
         }
     }
 
@@ -969,6 +973,41 @@ mod tests {
         let mut achieved = parked(Activity::Done);
         achieved.pull = Some(PullSignal::InReview);
         assert_eq!(achieved.group(), TaskGroup::Done);
+        // Review round 2 (N1): it reads as the idle run it was, whatever the facts, and only
+        // what would keep that run Working is a person's: the web's rule (`asIdleRun`) is the
+        // same.
+        for activity in [
+            None,
+            Some(Activity::Waiting),
+            Some(Activity::Done),
+            Some(Activity::NeedsAttention),
+        ] {
+            for pull in signals {
+                for (plan_open, spec_unfinished, goal_unfinished) in [
+                    (false, false, false),
+                    (true, false, false),
+                    (false, true, false),
+                    (false, false, true),
+                ] {
+                    let mut facts = AttentionFacts::new(TaskStatus::Parked, activity);
+                    facts.pull = pull;
+                    facts.plan_open = plan_open;
+                    facts.spec_unfinished = spec_unfinished;
+                    facts.goal_unfinished = goal_unfinished;
+                    let run = AttentionFacts {
+                        status: TaskStatus::Running,
+                        ..facts
+                    }
+                    .group();
+                    let want = if run == TaskGroup::Working {
+                        TaskGroup::NeedsYou
+                    } else {
+                        run
+                    };
+                    assert_eq!(facts.group(), want, "{facts:?}");
+                }
+            }
+        }
     }
 
     #[test]

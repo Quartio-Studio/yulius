@@ -268,6 +268,30 @@ Review round 1 (Fable 5.2, request changes at 74c6b7076), answered test-first:
 | `queue_reason_of` per summary | kept: only queued tasks compute it, at most `queue_max` (32) | — |
 | needs_you shared cause (pre-existing condition) | unchanged: answering a parked task resumes it; the others are answered by their own messages | — |
 
+Review round 2 (Fable 5.2, request changes at e17ffaef3), answered test-first:
+
+| Finding | Answer | Test that fails without it |
+| --- | --- | --- |
+| N1 a parked task with an achieved goal and work left read Needs you (web: Done) | `parked_group` is the idle running rule with the live overlays off, Working read as Needs you, as `status.js` does; checked before a pause | `a_parked_task_stays_in_its_group` asserts that equality over activity × pull × plan × spec × goal |
+| M6 a park overtaking a switch | test of the race | `parking::a_switch_overtaken_by_a_park_parks_with_its_activity` (`ParkDecided` → `switch_task_now`) |
+| minor: parked from `switching` lost its activity | the activity the park was decided on is kept in the run's runtime and used when the stored one was cleared | same test (`activity == waiting`) |
+| M6 `mark_lost` with the park's intent | test | `parking::a_session_deaf_to_the_park_is_parked_by_the_escalation` (`exit_reason` `lost`, parked, audited) |
+| M6 single-guard exclusions | tests for the held prompt and the onboarding task | `parking::a_held_prompt_keeps_the_session`, `parking::the_onboarding_task_is_not_parked` |
+| M6 owner rule | test | `parking::only_its_owner_resumes_a_parked_task` (another writer's `/continue` 403, `task_message` refused naming the owner, still parked) |
+| nits: scopes doc, a parked holder is not told | module doc says both | — |
+
+Not tested, with why: the `queue_may_hold` refusal (the queue's state comes from Claude Code's
+queue records in a transcript, which the fake agent does not write for an idle session; the same
+`queue_may_hold` guards a move, tested in `claude_code_moves`); a probe that answers "work
+running" (it takes the same `!= Some(false)` branch as the tested no-answer case); a request in
+the sandbox browser (no browser runs in the tests); an armed merge (its guard is the same
+`yulius` fact as `yulius wait`, read from `merge_is_armed`); the three-minute start gate (a
+compile-time assertion keeps it past `WAKE_GRACE`).
+
+Commands after round 2: `cargo test -p yulius --test main parking::` → 17 passed; domain 573,
+app 614 passed; `npx e2e run tests/parked.e2e.ts` → 4 passed; `scripts/dev quick`, `lint`,
+`cargo doc` → passed.
+
 Commands after round 1: `cargo test -p yulius --test main parking::` → 12 passed;
 `scope_overlaps:: task_message::` → 26 passed; `cargo test -p yulius-domain -p yulius-app --lib`
 → 573 + 614 passed; `npx e2e run tests/parked.e2e.ts` → 4 passed, four runs in a row;
