@@ -19,7 +19,7 @@ use yulius_contracts::ptyhost::{
 use yulius_domain::stages::ResourceUse;
 use yulius_ptyhost::{
     DEFAULT_SPAWN_TIMEOUT, PtyClient, PtyReader, PtyWriter, RunDirState, SpawnedHost,
-    inspect_run_dir, spawn_host, terminate_recorded, token_sha256_hex,
+    inspect_run_dir, spawn_host, terminate_run_dir, token_sha256_hex,
 };
 use yulius_sandbox::{cgroup, freeze};
 
@@ -269,12 +269,7 @@ impl SessionHost for PtySessionHost {
         if let Ok(mut hosts) = self.hosts.lock() {
             hosts.remove(run_dir);
         }
-        match inspect_run_dir(run_dir) {
-            RunDirState::Recorded { status, .. } => {
-                terminate_recorded(&status).map_err(|e| upstream("cannot terminate the session", e))
-            }
-            _ => Ok(()),
-        }
+        terminate_run_dir(run_dir).map_err(|e| upstream("cannot terminate the session", e))
     }
 
     fn freeze(&self, run_dir: &Path) -> RunFreeze {
@@ -426,6 +421,17 @@ impl RunWriter for Writer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn terminating_a_run_with_unreadable_process_identity_fails()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let host = PtySessionHost::new(PathBuf::new());
+        host.terminate(dir.path())?; // No process was recorded.
+        std::fs::write(dir.path().join(wire::STATUS_FILE), b"invalid record")?;
+        assert!(host.terminate(dir.path()).is_err());
+        Ok(())
+    }
 
     /// SPEC-187 DKR-001: the sandbox's Docker socket reaches a joined run's `bwrap` argv.
     #[test]

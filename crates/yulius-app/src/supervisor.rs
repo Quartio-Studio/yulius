@@ -3863,6 +3863,10 @@ impl App {
                 child_alive,
                 ..
             } if host_alive || child_alive => {
+                crate::race::reached(
+                    crate::race::Point::LostRunTermination,
+                    Path::new(&attempt.run_dir),
+                );
                 self.terminate_then_mark_lost(task_id, &attempt, StopReason::Lost)
                     .await;
             }

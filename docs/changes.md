@@ -6,6 +6,9 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-19
 
+- Stopping a disconnected run now terminates its detached host even when the agent has just
+  exited and the host is waiting to deliver the exit frame. On Linux, settlement also waits
+  for the last host thread to exit (SPEC-550, #1449).
 - Claude transcript pages and tails now hide dotenv values returned by `BashOutput` and
   `TaskOutput`, including when a reader resumes after the background shell started (SPEC-536, #1457).
 - The local CI network-refusal test exercises the branch and pull request in sequence, giving each job time to report a full network pool on a one-CPU runner (SPEC-549, #1408).
