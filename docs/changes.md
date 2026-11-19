@@ -12,6 +12,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   last message, and how many tasks still work, under the bell (`/digest`) and in their Telegram
   chat; with a threshold it first parks quiet tasks that ask nobody (never Done or waiting ones).
 
+- Codex session documents created before the first turn now show and index the rollout when it appears (#1454, SPEC-538).
 - A task can deliver a follow-up that appends to a list after incorporating an append from
   `dev`. Delivery compares the two trees when the task contains the integration commit.
   An equal tree keeps the previous pull request marked as merged. [#1299](https://github.com/Quartio-Studio/yulius/issues/1299)
