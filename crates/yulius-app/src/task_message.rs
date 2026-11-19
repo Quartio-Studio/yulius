@@ -338,10 +338,11 @@ impl App {
     /// session, which ends the request. Control of the task does not move.
     ///
     /// # Errors
-    /// `NotFound`/`Forbidden` without write access (a disabled account has none) or for a guest on
-    /// another person's task; `Invalid` for an empty or oversized text; `Conflict` with nothing to answer,
-    /// a task that is not running, an agent asking in its terminal, the owner's personal secrets
-    /// or MCP servers within the run's reach, or a session that takes no typed text now.
+    /// `NotFound`/`Forbidden` without write access (a disabled account has none) or for a guest
+    /// on another person's task; `Invalid` for an empty or oversized text; `Conflict` with
+    /// nothing to answer, a task that is not running, an agent asking in its terminal, the
+    /// owner's personal secrets or MCP servers within the run's reach, or a session that takes
+    /// no typed text now.
     pub async fn answer_needs_you(
         self: &Arc<Self>,
         ctx: &AuthContext,
@@ -440,10 +441,8 @@ impl App {
     /// personal MCP servers reach the task's run (SPEC-245, SPEC-332): an automation's task holds
     /// none.
     async fn reaches_owners_personal(&self, task: &TaskRecord) -> AppResult<bool> {
+        // An automation's task holds nobody's (`Holder::Nobody`): no read below finds any.
         let holder = Holder::of_task(task);
-        if holder.person().is_none() {
-            return Ok(false);
-        }
         let held = self.existing_runtime(&task.id).is_some_and(|runtime| {
             runtime
                 .personal_mcp_of

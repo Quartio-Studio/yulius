@@ -500,8 +500,8 @@ export function mountTaskView(ctx, sandbox, task) {
       // typed there would pick the menu's options unseen, so Reply goes to the terminal then.
       const asksInTerminal = current.activity === 'needs_attention';
       // Someone else's task: anyone who may work there but a guest answers it without taking
-      // control (SPEC-516), unless the agent asks in its terminal.
-      const answers = !owner() || (allows(access, 'write') && !(ctx.guest && ctx.guest()) && !asksInTerminal);
+      // control (SPEC-516), while it runs and unless the agent asks in its terminal.
+      const answers = !owner() || (current.status === 'running' && allows(access, 'write') && !(ctx.guest && ctx.guest()) && !asksInTerminal);
       textAnswer = answers && !asksInTerminal;
       asksPerson = true;
       replyButton.title = owner() ? 'Answers the agent without taking control of the task' : '';

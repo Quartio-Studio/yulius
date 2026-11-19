@@ -3270,8 +3270,9 @@ Start onboarding all ask the same rule. A fourth, **answer** (`TaskAction::Answe
 [decision 0370](decisions/0370-a-teammate-answers-a-tasks-needs-you-without-taking-control.md)),
 answers what a running task's agent asked a person (`needs_you`) with write access, owner or
 not: `POST /api/tasks/{tid}/needs-you/answer` (`App::answer_needs_you`) types one labelled answer
-through `type_into_session` and ends the request; control does not move. It is refused while the
-agent asks in its terminal and, from anyone but the owner, while the owner's personal agent
+through `type_into_session` and ends the request (audited `task.needs_you.answered`); control
+does not move. The task is read again after the access check. It is refused while the agent asks
+in its terminal and, from anyone but the owner, while the owner's personal agent
 secrets or MCP servers reach the run. A playground's guest tidies and answers only their own
 tasks (`TaskRefusal::Guest`). Anyone else who may work in the project (not a guest) takes control at
 once from the task's page or its menu (`App::take_task_control`, `seize_control`,
@@ -3293,7 +3294,7 @@ flowchart LR
   RULE -->|"view: read access"| READ["detail, transcript, delivery"]
   RULE -->|"tidy: write access"| TIDY["stop, close out, archive,<br/>restore, delete"]
   TIDY --> AUD[("audit: who, and the owner")]
-  RULE -->|"control: write access + owner"| CTRL["terminal, messages, answers,<br/>start, pause, deliver, worktree"]
+  RULE -->|"control: write access + owner"| CTRL["terminal, messages,<br/>start, pause, deliver, worktree"]
   RULE -->|"answer: write access,<br/>owner or not"| ANS["POST /needs-you/answer:<br/>labelled paste, needs_you ends"]
   RULE -->|"control, not the owner"| ASK["403: take control, or ask"]
   ASK -->|"POST /control/take<br/>(owner does not ask first)"| SEIZE["seize_control"]

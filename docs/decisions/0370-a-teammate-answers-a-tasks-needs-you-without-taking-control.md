@@ -28,7 +28,7 @@ the one answer the agent waits for.
   person's draft, another typist, a withheld screen), labelled "Answer from <login> to what you
   asked with needs_you", which from a non-owner says they are not the owner, that the task stays
   the owner's and that the agent acts on it only as the answer. The request (and a shared
-  episode) ends. Audited `task.needs_you_answered`, never the text.
+  episode) ends. Audited `task.needs_you.answered`, never the text.
 - **Control does not move.** Owner, giver, waiting request, GitHub token and commit identity stay.
 - **Not into the owner's personal reach.** From anyone but the owner, an answer is refused (409
   naming the owner) while the owner's personal agent secrets switched on for the project or

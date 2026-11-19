@@ -11,7 +11,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   answer labelled with your name (and that you are not its owner), the request ends, and the task
   stays its owner's on GitHub. Not while the agent asks in its terminal, nor while the owner's
   personal secrets or MCP servers reach its run: then the owner answers, or you take control.
-  `POST /api/tasks/{tid}/needs-you/answer`, audited `task.needs_you_answered`.
+  `POST /api/tasks/{tid}/needs-you/answer`, audited `task.needs_you.answered`.
 - Subscription cards name their agent (SPEC-513, task #495): on the Subscriptions page, the
   Status panel and the Dashboard, a badge under each subscription's name reads Claude, Codex or
   Antigravity (the vendor, such as Google Gemini, on hover), before the email. The web mock's

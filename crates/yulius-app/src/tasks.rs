@@ -457,7 +457,7 @@ impl App {
     /// The task `id` for a sandbox-level `action` by `ctx`'s person: viewing needs access to its
     /// sandbox, and anything more is control, which only its owner has ([`TaskAction::of`],
     /// SPEC-490 OWN-001): a path that changes a task is the owner's unless it asks
-    /// [`App::load_task_to`] for [`TaskAction::Tidy`].
+    /// [`App::load_task_to`] for [`TaskAction::Tidy`] or [`TaskAction::Answer`].
     ///
     /// # Errors
     /// As [`App::load_task_to`].

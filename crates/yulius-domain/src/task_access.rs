@@ -37,8 +37,8 @@ pub enum TaskRefusal {
 
 impl TaskAction {
     /// A sandbox-level action taken on a task: viewing is viewing, and anything more is control
-    /// unless its path names [`TaskAction::Tidy`] itself, so a new way to change a task is the
-    /// owner's (fail closed).
+    /// unless its path names [`TaskAction::Tidy`] or [`TaskAction::Answer`] itself, so a new way
+    /// to change a task is the owner's (fail closed).
     #[must_use]
     pub fn of(action: Action) -> Self {
         match action {

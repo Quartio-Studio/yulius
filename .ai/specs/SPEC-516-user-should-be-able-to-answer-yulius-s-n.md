@@ -53,12 +53,14 @@ as them. Nothing else of the task is opened to the answerer.
 - NYA-004: Refusals, each saying why: no open `needs_you` (409, "nothing to answer"); the task
   not running (409); the agent asks in its terminal (`needs_attention`: 409, its owner answers
   there, or take control); the owner's personal agent secrets or personal MCP servers reach the
-  task's run (409 naming the owner: only they answer, or take control); no access (404), read
-  access (403), a disabled account (403), a guest on another's task (403).
-- NYA-005: Every answer is audited `task.needs_you_answered` (the owner's login and whether the
+  task's run, configured or held by the live run (409 naming the owner: only they answer, or
+  take control; an automation's task holds none); no access (404), read access (403), a guest on
+  another's task (403); a disabled account is signed out (401). The task's state is read after
+  the access check, which may wait on GitHub (review round 1).
+- NYA-005: Every answer is audited `task.needs_you.answered` (the owner's login and whether the
   answerer owns the task, never the text).
-- NYA-006: The task view: on someone else's task whose `needs_you` is open and not asked in the
-  terminal, the bar offers Reply (titled "Answers the agent without taking control of the task")
+- NYA-006: The task view: on someone else's running task whose `needs_you` is open and not
+  asked in the terminal, the bar offers Reply (titled "Answers the agent without taking control of the task")
   to anyone who may work there but a guest; its field sends to the endpoint. On success the field
   closes and empties; on a refusal it stays open with its text and the error shows. The owner's
   Reply is unchanged (typed into the terminal).
@@ -77,17 +79,23 @@ as them. Nothing else of the task is opened to the answerer.
 - AC1 (NYA-001, NYA-002, NYA-003, NYA-005): in `crates/yulius/tests/task_message.rs` (real
   processes), bob, who does not own alice's running task with an open `needs_you`, answers it:
   the agent's screen shows the labelled answer naming bob as not the owner, the `needs_you`
-  ended, the task is still alice's, and the audit has one `task.needs_you_answered` without the
+  ended, the task is still alice's, and the audit has one `task.needs_you.answered` without the
   text.
 - AC2 (NYA-004): in `crates/yulius/tests/task_ownership.rs`, an answer without a `needs_you`, on
   a task that is not running, on one asking in its terminal, with alice's personal agent secret
-  switched on for the project, from a reader, from a disabled bob and with an empty text is
-  refused with its status, and the task's `needs_you` stays.
+  switched on for the project or her personal MCP server, from a reader, from a disabled bob and
+  with an empty or oversized text is refused with its status, and the task's `needs_you` stays;
+  a question opened in the terminal while the access check waits on GitHub is refused; an
+  automation's task is not refused for its owner's personal secret; a guest is refused
+  (`playground_guests.rs`). In `task_message.rs`, a run holding the owner's personal MCP server
+  (deleted from the configuration since) refuses bob and takes the owner's own answer, labelled
+  as theirs and audited `by_owner: true`.
 - AC3 (NYA-001): `yulius_domain::task_access` unit tests: `Answer` needs write access, owner or
   not; a guest answers only their own tasks.
 - AC4 (NYA-006, e2e mock): on someone else's task with a `needs_you`, Reply opens the field,
   Send posts the answer, the request ends and the task stays the owner's; a refused answer keeps
-  the field and its text; the owner's own task keeps the terminal Reply.
+  the field and its text; the owner's own task keeps the terminal Reply; no Reply on a task that
+  is not running or for a reader; at phone width the field opens and sends.
 
 ## Test plan
 
