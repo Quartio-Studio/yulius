@@ -446,8 +446,11 @@ pub fn run(root: &Path, cargo: &str, settings: &Settings) -> io::Result<Option<O
         .args([
             "--test-tool",
             "nextest",
-            "--test-workspace",
-            "true",
+            // 27.1.0 applies --test-workspace only to mutants. Cargo's --workspace
+            // includes every member alongside the -p arguments in both scenarios.
+            // Override test_workspace in .cargo/mutants.toml to avoid passing it twice.
+            "--test-workspace=false",
+            "--cargo-arg=--workspace",
             "--no-shuffle",
         ])
         .args(["--jobs", &jobs.to_string()])
@@ -486,6 +489,12 @@ pub fn run(root: &Path, cargo: &str, settings: &Settings) -> io::Result<Option<O
     };
     // 0: all caught; 2: some missed; 3: some timed out. Anything else, unless the bound ended
     // it, is cargo-mutants' own failure (a baseline that does not pass), not mutants unreached.
+    if !bounded && status.code() == Some(4) {
+        return Err(io::Error::other(format!(
+            "cargo-mutants failed its unmutated baseline; see {}",
+            dir.join("mutants.out/log/baseline.log").display()
+        )));
+    }
     if !bounded && !matches!(status.code(), Some(0 | 2 | 3)) {
         return Err(io::Error::other(format!(
             "cargo-mutants failed ({status}); its log: {}",
@@ -710,6 +719,8 @@ mod tests {
             "[package]\nname = \"observer\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\
              [dev-dependencies]\nfixture = { path = \"../..\" }\n",
         )?;
+        std::fs::create_dir(dir.join(".cargo"))?;
+        std::fs::write(dir.join(".cargo/mutants.toml"), "test_workspace = true\n")?;
         let observer = "tools/observer/src/lib.rs";
         std::fs::write(dir.join(observer), "#[test] fn peer_test() { panic!() }\n")?;
         commit(&dir, "src/lib.rs", &format!("{lib}}}\n"))?;

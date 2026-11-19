@@ -27,7 +27,7 @@ has one package, so it cannot expose the difference. [Issue #1364](https://githu
 
 - [x] Reproduce the Git-free failure and specify the baseline contract
 - [x] Prove baseline failure and missed mutants across workspace members
-- [ ] Run the same workspace tests on clean and mutated code
+- [x] Run the same workspace tests on clean and mutated code
 - [ ] Document historical results and verify the reviewed change
 
 ## Acceptance criteria
@@ -48,3 +48,10 @@ Run the original security test in a Git-free copy, the xtask suite and the repos
 Give the CLI test its own Git fixture so it exercises the real scanner's missing-key contract.
 Pass workspace selection to Cargo for both scenarios. Keep the branch diff, product integration
 filter and campaign bounds defined in [ADR-0347](../../docs/decisions/0347-mutation-testing-runs-once-per-pull-request.md).
+
+## Evidence
+
+- On 8d05c25bf the Git-free CLI test failed at cli.rs line 49. The scanner returned exit 2 with the repository error.
+- Before the fix, the two-member fixture had a passing baseline and reported both mutations caught by the unrelated sibling failure.
+- With the fix, the same sibling failure stopped the baseline before mutation. With a passing sibling test, the clean baseline passed and both replacements of the untested return value were missed. Adding a sibling assertion on the value caught both.
+- The missing-key CLI test passed in the original Git-free copy. The xtask suite passed all 20 tests.
