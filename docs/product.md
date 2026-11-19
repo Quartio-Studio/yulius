@@ -325,7 +325,7 @@ watching, steering and unblocking.
   the person chose: with a mouse or pen each shows a drag grip, as the Notes tabs do, and each
   says it can be clicked or dragged; a dragged tab stays within the row, giving a little at
   either end; its menu moves it too.
-- **Sidebar**: the sandbox pages used every day (Tasks, Git, CI/CD — one page whose CI (tests) and CD (deployment) tabs work like the Secrets page's tabs —, Secrets, Dashboard — with Overview and Pipeline (stages) tabs —; the Superagent is on the right),
+- **Sidebar**: the sandbox pages used every day (Tasks, Git, CI/CD — one page whose CI (tests) and CD (deployment) tabs work like the Secrets page's tabs —, Secrets, Dashboard — with Overview, Pipeline (stages) and Harnesses tabs —; the Superagent is on the right),
   then "More" for Sessions, Workflows, Skills, Automations and MCP, then the active tasks.
 - **Tasks**: each task runs a real Claude Code CLI in a PTY on its own git worktree. Sessions
   outlive server restarts. Yulius keeps that CLI current by itself: a new Claude Code release

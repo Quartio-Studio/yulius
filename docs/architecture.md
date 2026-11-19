@@ -1409,6 +1409,13 @@ sequenceDiagram
     H->>Y: end the round with its verdict
 ```
 
+## Harness comparison
+
+Dashboard → Harnesses reads the sandbox analytics summary for tasks created in the selected UTC period.
+Task counts use the assigned harness. Each run contributes to the executing harness’s token totals and
+reporting coverage. Ended runs also contribute elapsed wall time to that harness’s median and p90.
+[ADR-0374](decisions/0374-compare-harnesses-by-executing-attempt.md)
+
 ## Agent feedback
 
 Yulius has no messages for now ([SPEC-028](../.ai/specs/SPEC-028-delete-message-mechanism-for-now-until-w.md),

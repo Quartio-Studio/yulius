@@ -8,6 +8,7 @@
 // This is the page's Overview tab; its Pipeline (stages) tab is pages/pipeline.js (SPEC-161).
 
 import { h, svgEl, setChildren, icon, iconButton, openMenu, bar } from '../dom.js';
+import { AGENTS } from '../agents.js';
 import { compact, duration, int, accountRef } from '../format.js';
 import { statusInfo } from '../status.js';
 import { sectionedPage, loader } from './common.js';
@@ -35,32 +36,34 @@ const parseDay = (day) => new Date(`${day}T00:00:00Z`);
 // The subtitle says what the page is for (#147); the dates of the chosen range sit with the range.
 const OVERVIEW_SUB = 'what the tasks of this sandbox did, and what it took';
 
-/** Mount the Dashboard page: the Overview at `/s/<slug>/dashboard`, `?section=pipeline` for the Pipeline. */
+/** Mount the sandbox's Overview, Pipeline and Harnesses sections. */
 export function mountDashboardPage(ctx, sandbox, route) {
   const path = `/s/${encodeURIComponent(sandbox.slug)}/dashboard`;
   const page = sectionedPage(ctx, sandbox, route, { title: 'Dashboard', path, sections: [
-    { value: '', label: 'Overview', icon: 'chart', sub: OVERVIEW_SUB, mount: mountOverviewSection },
+    { value: '', label: 'Overview', icon: 'chart', sub: OVERVIEW_SUB, mount: mountAnalyticsSection },
     { value: 'pipeline', label: 'Pipeline (stages)', icon: 'clock', sub: PIPELINE_SUB, mount: mountPipelineSection },
+    { value: 'harnesses', label: 'Harnesses', icon: 'chart', sub: 'compare runs and token usage for tasks created in this period',
+      mount: (...args) => mountAnalyticsSection(...args, true) },
   ] });
   return { ...page, key: `dashboard:${sandbox.id}` };
 }
 
 /**
- * Mount the Overview tab into `section`, with its range, export and refresh in `actions`; returns
+ * Mount a summary-backed tab with its date range and refresh controls. Returns
  * its teardown, which stops its refreshes.
  */
-function mountOverviewSection(ctx, sandbox, route, section, actions) {
+function mountAnalyticsSection(ctx, sandbox, route, section, actions, harnesses = false) {
   // The period is kept in the address, so it comes back with the page (SPEC-113 KST-007).
   const asked = Number(route && route.query.get('days'));
   let days = RANGES.some(([value]) => value === asked) ? asked : 30;
-  const base = `/s/${encodeURIComponent(sandbox.slug)}/dashboard`;
+  const base = `/s/${encodeURIComponent(sandbox.slug)}/dashboard${harnesses ? '?section=harnesses' : ''}`;
   const rangeLabel = h('span', { class: 'db-range' });
-  const exportButton = h('button', { type: 'button', class: 'btn btn-sm', 'aria-haspopup': 'menu', onClick: () => openMenu(exportButton, [
+  const exportButton = harnesses ? null : h('button', { type: 'button', class: 'btn btn-sm', 'aria-haspopup': 'menu', onClick: () => openMenu(exportButton, [
     { label: 'Tasks as CSV', description: 'One row per task, for spreadsheets', onSelect: () => download('csv') },
     { label: 'Tasks as JSON', description: 'The same rows as JSON', onSelect: () => download('json') },
   ], { align: 'end' }) }, icon('download', { size: 14 }), 'Export');
   const range = h('div', { class: 'seg db-seg', role: 'radiogroup', 'aria-label': 'Date range' }, RANGES.map(([value, label]) => h('label', null,
-    h('input', { type: 'radio', name: 'dash-range', value: String(value), checked: value === days, onChange: () => { days = value; replaceQuietly(days === 30 ? base : `${base}?days=${days}`); reload(); } }), label)));
+    h('input', { type: 'radio', name: 'dash-range', value: String(value), checked: value === days, onChange: () => { days = value; replaceQuietly(days === 30 ? base : `${base}${harnesses ? '&' : '?'}days=${days}`); reload(); } }), label)));
   setChildren(actions, rangeLabel, range, exportButton, iconButton('refresh', 'Refresh', () => reload()));
   const host = h('div', { class: 'db' });
   section.append(host);
@@ -91,12 +94,14 @@ function mountOverviewSection(ctx, sandbox, route, section, actions) {
     return data;
   }
 
-  const reload = loader(host, 'the dashboard', async () => {
+  const reload = loader(host, harnesses ? 'the harness comparison' : 'the dashboard', async () => {
     const current = period();
     rangeLabel.textContent = `${SHORT_DATE.format(parseDay(current.from))} – ${SHORT_DATE.format(parseDay(current.to))}`;
+    const summary = ctx.api.get(`/api/analytics/summary?${query(current)}`);
+    if (harnesses) return summary;
     // The previous period only adds the changes; the page still works without it.
     const [now, before, capacity, stages] = await Promise.all([
-      ctx.api.get(`/api/analytics/summary?${query(current)}`),
+      summary,
       ctx.api.get(`/api/analytics/summary?${query(period(1))}`).catch(() => null),
       ctx.api.get('/api/capacity').catch(() => null),
       // The pipeline's overview (SPEC-137), read again at most every 5 minutes (it reads every
@@ -104,7 +109,7 @@ function mountOverviewSection(ctx, sandbox, route, section, actions) {
       pipelineSummary(current),
     ]);
     return { now: now || {}, before, days, capacity, stages };
-  }, ({ now, before, days: n, capacity, stages }) => [renderSummary(now, before, n, capacity), pipelineCard(stages, sandbox, n)], { shape: loadingLayout });
+  }, harnesses ? renderHarnesses : ({ now, before, days: n, capacity, stages }) => [renderSummary(now, before, n, capacity), pipelineCard(stages, sandbox, n)], { shape: harnesses ? 'table' : loadingLayout });
   // Live while open (#31): tokens and runs of tasks in progress change; refresh in place while
   // the tab is visible.
   const live = setInterval(() => {
@@ -167,6 +172,38 @@ function card(title, sub, body, { tools, className } = {}) {
   return h('section', { class: ['card', 'db-card', className] },
     h('header', { class: 'db-card-head' }, h('div', { class: 'db-card-titles' }, h('h2', { class: 'card-title' }, title), sub ? h('span', { class: 'db-card-sub' }, sub) : null), tools || null),
     body);
+}
+
+/** Task assignments and executing harnesses can differ for historical tasks. */
+function renderHarnesses(data) {
+  const assigned = data.tasks.by_harness;
+  const usage = new Map(data.tokens_by_harness.map((row) => [row.harness, row]));
+  const keys = [...new Set([...Object.keys(assigned), ...usage.keys()])].sort();
+  if (!keys.length) return h('p', { class: 'db-empty' }, 'No tasks were created in this period.');
+
+  function table(title, sub, columns, cells) {
+    const headers = columns.map((label) => h('th', { scope: 'col', class: 'num' }, label));
+    const rows = keys.map((key) => {
+      const label = AGENTS.find((agent) => agent.harness === key)?.cli ?? key;
+      const values = cells(key, usage.get(key)).map((value) => h('td', { class: 'num' }, value));
+      return h('tr', null, h('th', { scope: 'row' }, label), values);
+    });
+    return card(title, sub, h('div', { class: 'table-wrap' },
+      h('table', { class: 'table db-harness-table', 'aria-label': title },
+        h('thead', null, h('tr', null, h('th', { scope: 'col' }, 'Harness'), headers)),
+        h('tbody', null, rows))));
+  }
+  return [
+    data.truncated ? h('p', { class: 'db-card-sub' }, `Showing the newest ${int(data.tasks.total)} matching tasks.`) : null,
+    table('Run performance', 'Tasks use their assigned harness. Runs use the harness that executed them. Times include idle time and cover finished runs only.',
+      ['Assigned tasks', 'Runs', 'Finished runs', 'Median elapsed', 'P90 elapsed'],
+      (key, row) => [int(assigned[key] ?? 0), int(row?.runs ?? 0), int(row ? row.finished_runs : 0),
+        duration(row?.median_wall_ms), duration(row?.p90_wall_ms)]),
+    table('Token usage', 'Reporting runs supplied at least one token count. Each column sums the counts reported for that category.',
+      ['Reporting runs', 'Input', 'Output', 'Cache read', 'Cache write'],
+      (_key, row) => [`${int(row ? row.runs - row.unknown_usage_runs : 0)} of ${int(row?.runs ?? 0)}`,
+        compact(row?.input), compact(row?.output), compact(row?.cache_read), compact(row?.cache_write)]),
+  ];
 }
 
 /**
