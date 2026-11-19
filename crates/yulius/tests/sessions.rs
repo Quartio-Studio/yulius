@@ -243,6 +243,131 @@ async fn import(w: &World, creds: &Creds, repo: &str) -> Result<Value, Error> {
     Ok(resp.body)
 }
 
+/// The session ID arrives before Codex writes its dated rollout. Each reader must discover
+/// the file even when the other reader has not been called since it appeared (#1454).
+async fn late_codex_rollout(search_first: bool) -> TestResult {
+    let w = World::new("org").await?;
+    let (user, creds) = w.user("alice", false).await?;
+    ready_repo(&w, "ready")?;
+    w.grant("alice", "ready", "admin");
+    let ready = import(&w, &creds, "Quartio-Studio/ready").await?;
+    let sid = SandboxId::parse(text(&ready["id"]))?;
+    let task = insert_task(
+        &w.h.store,
+        &sid,
+        "t-late",
+        "Late rollout",
+        &user.id,
+        TaskStatus::Closed,
+    )
+    .await?;
+    let session = "0199aaaa-0000-7000-8000-000000000001";
+    w.h.store
+        .upsert_provider_session(&ProviderSessionRecord {
+            id: "p-late".into(),
+            sandbox_id: sid.clone(),
+            task_id: task.id,
+            harness: Harness::Codex,
+            session_id: session.into(),
+            transcript_ref: None,
+            origin: "native".into(),
+            first_seen: Timestamp(10),
+            last_seen: Timestamp(20),
+        })
+        .await?;
+    let list_url = format!("/api/sandboxes/{sid}/sessions");
+    let list = get(&w, &creds, &list_url).await?;
+    assert_eq!(list.status, StatusCode::OK);
+    let id = list.body["sessions"][0]["id"]
+        .as_str()
+        .ok_or("document ID")?;
+    let page_url = format!("/api/sessions/{id}/transcript");
+    let empty = get(&w, &creds, &page_url).await?;
+    assert_eq!(empty.status, StatusCode::OK);
+    assert_eq!(empty.body["entries"], json!([]));
+
+    let sessions = w
+        .data_dir()
+        .join("sandboxes")
+        .join(sid.as_str())
+        .join("codex/sessions");
+    let pending = w.h.store.session_doc(id).await?.ok_or("pending document")?;
+    assert_eq!(
+        Path::new(&pending.transcript_path),
+        sessions.join(format!("missing-{session}.jsonl"))
+    );
+    // Session IDs are scoped by harness. A matching Codex rollout does not supersede
+    // either other harness's transcript or add its text to their search results.
+    let mut other_docs = Vec::new();
+    for harness in [Harness::ClaudeCode, Harness::Antigravity] {
+        let other = SessionDocRecord {
+            id: format!("doc-{}", harness.as_str()),
+            harness,
+            transcript_path: w
+                .scratch
+                .path()
+                .join(format!("{}.jsonl", harness.as_str()))
+                .to_string_lossy()
+                .into_owned(),
+            ..pending.clone()
+        };
+        w.h.store.insert_session_doc(&other).await?;
+        other_docs.push(other);
+    }
+    let path = sessions
+        .join("2026/11/19")
+        .join(format!("rollout-2026-11-19T12-00-00-{session}.jsonl"));
+    write(
+        &path,
+        &line(&json!({
+            "type": "response_item",
+            "payload": {"type": "message", "role": "assistant",
+                        "content": [{"type": "output_text", "text": "Found the narwhal."}]}
+        })),
+    )?;
+    let search_url = format!("{list_url}?q=narwhal");
+    let search = async {
+        let found = get(&w, &creds, &search_url).await?;
+        assert_eq!(found.status, StatusCode::OK);
+        assert_eq!(found.body["sessions"].as_array().map(Vec::len), Some(1));
+        assert_eq!(found.body["sessions"][0]["id"], id, "rollout indexed");
+        assert_eq!(found.body["sessions"][0]["hits"][0]["line"], 0);
+        TestResult::Ok(())
+    };
+    let page = async {
+        let transcript = get(&w, &creds, &page_url).await?;
+        assert_eq!(transcript.status, StatusCode::OK);
+        assert_eq!(
+            transcript.body["entries"][0]["blocks"][0]["text"],
+            "Found the narwhal."
+        );
+        TestResult::Ok(())
+    };
+    if search_first {
+        search.await?;
+        page.await?;
+    } else {
+        page.await?;
+        search.await?;
+    }
+    let doc = w.h.store.session_doc(id).await?.ok_or("document")?;
+    assert_eq!(Path::new(&doc.transcript_path), path);
+    for other in other_docs {
+        assert_eq!(w.h.store.session_doc(&other.id).await?, Some(other));
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn sessions_page_follows_a_late_codex_rollout() -> TestResult {
+    late_codex_rollout(false).await
+}
+
+#[tokio::test]
+async fn sessions_search_follows_a_late_codex_rollout() -> TestResult {
+    late_codex_rollout(true).await
+}
+
 #[tokio::test]
 async fn people_list_search_and_read_sessions_by_sandbox_access() -> TestResult {
     let w = World::new("org").await?;

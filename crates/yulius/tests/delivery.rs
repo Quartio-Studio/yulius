@@ -5881,6 +5881,44 @@ async fn work_committed_after_the_merge_opens_a_new_pull_request() -> TestResult
     Ok(())
 }
 
+/// SPEC-532 (#1299): dev and the task append to the same list since the first PR.
+#[tokio::test]
+async fn a_follow_up_containing_dev_is_judged_by_its_tree() -> TestResult {
+    let (f, wt, _) = merged_task().await?;
+    let agent = live_agent(&f, "t1", "tok-agent").await?;
+
+    // Incorporate the squash, then the next migration that landed on dev.
+    git(&wt, &["fetch", "--quiet", "origin"])?;
+    git(&wt, &["merge", "--quiet", "--no-edit", "origin/dev"])?;
+    let integrated = format!("{FEATURE}0060\n");
+    advance_base(&f, "dev", "feature.txt", &integrated)?;
+    git(&wt, &["fetch", "--quiet", "origin"])?;
+    git(&wt, &["merge", "--quiet", "--no-edit", "origin/dev"])?;
+
+    // An ordinary commit beyond the clean merges, but still exactly dev's tree.
+    git(&wt, &["commit", "--allow-empty", "-m", "Record follow-up"])?;
+    let head = git(&wt, &["rev-parse", "HEAD"])?;
+    let covered = arm_merge(&f, &agent, &head).await?;
+    assert_eq!(covered["merged"], true, "{covered}");
+    assert_eq!(covered["armed"], false, "{covered}");
+    assert_eq!(pulls_opened(&f), 1);
+
+    // The first PR's tree lacks both entries. Replaying the append from there conflicts.
+    commit_file(
+        &wt,
+        "feature.txt",
+        &format!("{integrated}0059\n"),
+        "Add migration",
+    )?;
+    let head = git(&wt, &["rev-parse", "HEAD"])?;
+    f.h.github.set_checks(&head, ChecksState::Pending);
+    let follow_up = arm_merge(&f, &agent, &head).await?;
+    assert_eq!(follow_up["armed"], true, "{follow_up}");
+    assert_eq!(pulls_opened(&f), 2);
+    assert_eq!(f.origin_sha("feat/1-checkout-api")?, head);
+    Ok(())
+}
+
 /// `feature.txt` as task `t1`'s pull request #1 adds it.
 const FEATURE: &str = "a\nb\nc\nd\ne\nf\ng\n";
 
