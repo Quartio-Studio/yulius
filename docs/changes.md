@@ -9,6 +9,8 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 - A prompt-mode task now remembers a person’s open Claude goal across manual subscription
   moves, pool rotations and resumes past a usage limit. Its first clean Stop waits for the
   evaluator before showing “Your turn” (SPEC-540, #1182).
+- Mutation testing now checks the same workspace tests on the baseline and each mutant.
+  Earlier runs could count an unrelated xtask failure as a catch (#1364, SPEC-533).
 
 - Task briefings now request a native reviewer for each harness. Codex uses GPT-6.2 Astra at high effort and Antigravity uses Gemini 4 Neon (High) in every round. Claude Code keeps its Fable and Opus round policy. Gemini task launches use the Neon default delivered in SPEC-519 (review instructions in SPEC-524).
 - A question names who answers it (SPEC-512 part 2, task #494, #1418): an agent's `needs_you`
