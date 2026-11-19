@@ -444,7 +444,9 @@ impl App {
                 }
             };
             let read = batch.end_byte.saturating_sub(from_byte);
-            budget = budget.saturating_sub(read.max(1));
+            budget = budget
+                .saturating_sub(read.max(1))
+                .saturating_sub(batch.replayed_bytes);
             if read == 0 && batch.chunks.is_empty() {
                 continue;
             }

@@ -192,6 +192,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("migrations/0068_automation_agent_named.sql"),
     // Schema version 69 (SPEC-525).
     include_str!("migrations/0069_reindex_codex_antigravity_sessions.sql"),
+    include_str!("migrations/0071_reindex_session_passages.sql"),
 ];
 
 type Job = Box<dyn FnOnce(&mut Connection) + Send + 'static>;
@@ -467,6 +468,10 @@ mod tests {
                 69,
                 include_str!("migrations/0069_reindex_codex_antigravity_sessions.sql"),
             ),
+            (
+                70,
+                include_str!("migrations/0071_reindex_session_passages.sql"),
+            ),
         ];
         for (version, sql) in pinned {
             assert_eq!(
@@ -475,7 +480,7 @@ mod tests {
                 "schema version {version}"
             );
         }
-        assert_eq!(MIGRATIONS.len(), 69, "a new migration is pinned here too");
+        assert_eq!(MIGRATIONS.len(), 70, "a new migration is pinned here too");
     }
 
     /// SPEC-514 PIN-003: a version-67 database's automations saved as `auto` (drawn for each
@@ -557,6 +562,11 @@ mod tests {
             };
             assert_eq!(matches("kept")?, 1);
             assert_eq!(matches("stalecodexpassage")?, 0);
+            // A full session must become eligible for lazy reindexing too.
+            conn.execute(
+                "UPDATE session_docs SET index_full = 1 WHERE id = 'd-claude'",
+                [],
+            )?;
         }
         // SPEC-535: an upgrade clears even a passage already indexed by a version-69 server.
         let store = SqliteStore::open(&path)?;

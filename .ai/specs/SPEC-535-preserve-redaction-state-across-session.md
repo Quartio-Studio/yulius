@@ -40,3 +40,8 @@ Use synthetic JSONL with a neutral assignment name whose value only dotenv-aware
 ## Decisions
 
 Replay the prefix with the existing transcript parser so restart needs only the existing offsets and future changes to the parser’s tracking apply to indexing as well. The session byte limit bounds prefix work. Keep historical cleanup in a one-time migration ([ADR-0382](../../docs/decisions/0382-session-index-resumption-replays-redaction-context.md)).
+
+## Evidence
+
+- On the original reader, `cargo test -p yulius-app --lib resumed_index_redacts_dotenv_results_across_a_restart` failed at the missing redaction marker for `SHOP_REGION`.
+- In a synthetic SQLite FTS5 database, migration 0071 removed the sole match for the fixture value and reset the document’s byte offset, line number and full-index flag.

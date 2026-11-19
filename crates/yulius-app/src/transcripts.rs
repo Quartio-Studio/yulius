@@ -1349,6 +1349,41 @@ fn may_change_env_tracking(line: &[u8]) -> bool {
     })
 }
 
+/// Restore the context at the saved offsets, then return to the new record just read.
+fn replay_index_prefix(
+    reader: &mut BufReader<File>,
+    byte: u64,
+    lines: u64,
+    env_calls: &mut EnvCalls,
+) -> io::Result<()> {
+    let resume = reader.stream_position()?;
+    reader.rewind()?;
+    let mut prefix = reader.by_ref().take(byte);
+    let mut buf = Vec::new();
+    let invalid = || {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "inconsistent session index offsets",
+        )
+    };
+    for line in 0..lines {
+        match read_line(&mut prefix, &mut buf, MAX_LINE_BYTES)? {
+            LineRead::Eof => return Err(invalid()),
+            LineRead::TooLong(_) => {}
+            LineRead::Line(_) => {
+                if let Ok(record) = serde_json::from_slice(&buf) {
+                    let _ = entry_of(line, &record, env_calls);
+                }
+            }
+        }
+    }
+    if prefix.limit() != 0 {
+        return Err(invalid());
+    }
+    reader.seek(SeekFrom::Start(resume))?;
+    Ok(())
+}
+
 /// Passages read for the index from a byte offset.
 #[derive(Debug, Default)]
 pub struct IndexBatch {
@@ -1358,6 +1393,8 @@ pub struct IndexBatch {
     pub end_byte: u64,
     /// Line number after the last complete line read.
     pub end_line: u64,
+    /// Bytes re-read to reconstruct redaction context, charged to the refresh budget.
+    pub replayed_bytes: u64,
     /// Characters of passage text.
     pub chars: usize,
     /// Whether the end of the transcript was reached.
@@ -1365,7 +1402,8 @@ pub struct IndexBatch {
 }
 
 /// Reads complete lines from byte `from_byte` (line number `from_line`) until `max_bytes` were
-/// read or `max_chars` of passage text were produced.
+/// read or `max_chars` of passage text were produced. A resumed batch reconstructs its
+/// redaction context from the indexed prefix before emitting passages.
 ///
 /// # Errors
 /// I/O failures.
@@ -1386,6 +1424,7 @@ pub fn read_for_index(
         ..IndexBatch::default()
     };
     let mut read_bytes = 0_u64;
+    let mut needs_replay = from_byte != 0 || from_line != 0;
     while read_bytes < max_bytes && batch.chars < max_chars {
         let used = match read_line(&mut reader, &mut buf, MAX_LINE_BYTES)? {
             LineRead::Eof => {
@@ -1397,6 +1436,12 @@ pub fn read_for_index(
                 used
             }
             LineRead::Line(used) => {
+                // A partial final line stays pending without replaying the prefix on every refresh.
+                if needs_replay {
+                    replay_index_prefix(&mut reader, from_byte, from_line, &mut env_calls)?;
+                    batch.replayed_bytes = from_byte;
+                    needs_replay = false;
+                }
                 let line = batch.end_line;
                 batch.end_line += 1;
                 if let Ok(record) = serde_json::from_slice::<Value>(&buf)
@@ -1901,8 +1946,10 @@ mod tests {
         let partial = resume()?;
         assert_eq!((partial.end_byte, partial.end_line), (first.end_byte, 1));
         assert!(partial.chunks.is_empty());
+        assert_eq!(partial.replayed_bytes, 0);
         writeln!(growing)?;
         let second = resume()?;
+        assert_eq!(second.replayed_bytes, first.end_byte);
         assert_eq!(second.chunks.len(), 1);
         let passage = &second.chunks[0];
         assert_eq!(passage.line, 1);
@@ -1919,6 +1966,7 @@ mod tests {
         let path = write_transcript(dir.path())?;
         let first = read_for_index(File::open(&path)?, 0, 0, 1, usize::MAX)?;
         for (byte, line) in [
+            (0, first.end_line),
             (first.end_byte - 1, first.end_line),
             (first.end_byte, first.end_line - 1),
             (first.end_byte, first.end_line + 1),
