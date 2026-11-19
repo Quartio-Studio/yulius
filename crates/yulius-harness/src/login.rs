@@ -313,21 +313,57 @@ pub fn codex_auth_replaces(fresh: &[u8], stored: &[u8], now: Timestamp) -> bool 
 /// The signed-in user of a ChatGPT `auth.json`: the `sub` claim of its `id_token` (read, not
 /// verified: it only tells two sign-ins apart).
 fn signed_in_user(auth_json: &[u8]) -> Option<String> {
-    use base64::Engine as _;
     let value: Value = serde_json::from_slice(auth_json).ok()?;
     let token = value.get("tokens")?.get("id_token")?.as_str()?;
-    let payload = token.split('.').nth(1)?;
-    let claims: Value = serde_json::from_slice(
-        &base64::engine::general_purpose::URL_SAFE_NO_PAD
-            .decode(payload.trim_end_matches('='))
-            .ok()?,
-    )
-    .ok()?;
+    let claims = decode_claims(token.split('.').nth(1)?)?;
     claims
         .get("sub")
         .and_then(Value::as_str)
         .filter(|sub| !sub.is_empty())
         .map(str::to_owned)
+}
+
+/// The locally reported plan is a launch preference. OpenAI enforces the entitlement.
+pub(crate) fn codex_pro_500(auth_json: &[u8]) -> bool {
+    let Ok(auth) = serde_json::from_slice::<Value>(auth_json) else {
+        return false;
+    };
+    // Older Codex sign-ins can omit auth_mode. Codex then prefers a stored key over tokens.
+    let chatgpt = match &auth["auth_mode"] {
+        Value::Null => [
+            "OPENAI_API_KEY",
+            "personal_access_token",
+            "bedrock_api_key",
+            "bedrock_access_keys",
+        ]
+        .iter()
+        .all(|key| auth[*key].is_null()),
+        mode => mode == "chatgpt",
+    };
+    chatgpt
+        && auth["tokens"]["id_token"]
+            .as_str()
+            .and_then(plan_claims)
+            .is_some_and(|claims| {
+                claims["https://api.openai.com/auth"]["chatgpt_plan_type"] == "promax"
+            })
+}
+
+fn plan_claims(token: &str) -> Option<Value> {
+    let (header, rest) = token.split_once('.')?;
+    let (payload, signature) = rest.rsplit_once('.')?;
+    if header.is_empty() || signature.is_empty() {
+        return None;
+    }
+    decode_claims(payload)
+}
+
+fn decode_claims(payload: &str) -> Option<Value> {
+    use base64::Engine as _;
+    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(payload.trim_end_matches('='))
+        .ok()?;
+    serde_json::from_slice(&bytes).ok()
 }
 
 /// The last Claude OAuth token in `output`: `sk-ant-oat01-` followed by at least 20 of

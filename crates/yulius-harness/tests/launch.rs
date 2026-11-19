@@ -1473,6 +1473,91 @@ fn codex_resume_argv() -> TestResult {
     Ok(())
 }
 
+/// SPEC-523 SPD-001/002: speed follows the current ChatGPT sign-in on every launch.
+#[test]
+fn codex_ultrafast_follows_the_assigned_subscription() -> TestResult {
+    use base64::Engine as _;
+
+    let sign_in = |claims: Value| {
+        let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(claims.to_string());
+        json!({
+            "auth_mode": "chatgpt",
+            "tokens": {
+                "id_token": format!("h.{payload}.s"), "access_token": "synthetic",
+                "refresh_token": "synthetic", "account_id": "account-1"
+            }
+        })
+    };
+    let subscription =
+        |plan: &str| sign_in(json!({"https://api.openai.com/auth": {"chatgpt_plan_type": plan}}));
+    let ultra = subscription("promax");
+    let mut legacy = ultra.clone();
+    legacy
+        .as_object_mut()
+        .ok_or("fixture must be an object")?
+        .remove("auth_mode");
+    let mut api_key = legacy.clone();
+    api_key["OPENAI_API_KEY"] = json!("synthetic");
+    let mut wrong_mode = ultra.clone();
+    wrong_mode["auth_mode"] = json!("apikey");
+    let mut broken_token = ultra.clone();
+    broken_token["tokens"]["id_token"] = json!("h.invalid.s");
+    let mut truncated = ultra.clone();
+    let token = ultra["tokens"]["id_token"]
+        .as_str()
+        .ok_or("fixture needs a token")?;
+    truncated["tokens"]["id_token"] = json!(token.trim_end_matches(".s"));
+    let mut empty_header = ultra.clone();
+    empty_header["tokens"]["id_token"] = json!(token.trim_start_matches('h'));
+    let mut empty_signature = ultra.clone();
+    empty_signature["tokens"]["id_token"] = json!(token.trim_end_matches('s'));
+
+    for mode in [
+        LaunchMode::New {
+            session_id: None,
+            prompt: None,
+        },
+        LaunchMode::Resume {
+            session_id: CODEX_SESSION.into(),
+            prompt: None,
+            continue_interrupted: true,
+        },
+    ] {
+        let mut request = codex_request(mode, true);
+        for (case, auth, eligible) in [
+            ("Pro 200", subscription("pro"), false),
+            ("upgraded to Pro 500", ultra.clone(), true),
+            ("moved to Pro 100", subscription("prolite"), false),
+            ("legacy ChatGPT", legacy.clone(), true),
+            ("legacy API key", api_key.clone(), false),
+            ("explicit API key mode", wrong_mode.clone(), false),
+            ("unknown plan", subscription("future"), false),
+            ("absent plan", sign_in(json!({})), false),
+            (
+                "wrong namespace",
+                sign_in(json!({"chatgpt_plan_type": "promax"})),
+                false,
+            ),
+            ("unreadable token", broken_token.clone(), false),
+            ("truncated token", truncated.clone(), false),
+            ("empty header", empty_header.clone(), false),
+            ("empty signature", empty_signature.clone(), false),
+        ] {
+            request.credential = Credential::CodexAuthJson(Secret::new(serde_json::to_vec(&auth)?));
+            let plan = plan_launch(&request)?;
+            let config = std::str::from_utf8(&file(&plan, "config.toml")?.contents)?;
+            let tiers: Vec<_> = config
+                .lines()
+                .take_while(|line| !line.starts_with('['))
+                .filter(|line| line.starts_with("service_tier"))
+                .collect();
+            let expected = eligible.then_some("service_tier = \"ultrafast\"");
+            assert_eq!(tiers, expected.as_slice(), "{case}");
+        }
+    }
+    Ok(())
+}
+
 /// SPEC-511 CXD-001: a Codex task that names no model runs GPT-6.2 Astra, and one that names no
 /// effort runs at high effort, on every launch; a model or effort of its own is passed instead.
 #[test]
