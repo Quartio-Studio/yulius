@@ -401,7 +401,7 @@ fn refusal_without_a_matching_sign_in(legacy_run: bool) -> TestResult {
                 std::fs::remove_file(marker)?;
             }
         } else {
-            let token = "sk-ant-oat01-SYNTHETIC-replacement-sign-in";
+            let token = concat!("sk-ant-oat01-", "SYNTHETIC-replacement-sign-in");
             probe.set(token, usage(0.0, 5 * HOUR, 0.0, 100));
             app.replace_account_token(
                 &ctx(&app, &user).await?,

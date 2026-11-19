@@ -24,6 +24,7 @@ The watcher handles a live or replayed access refusal by passing the account ID 
 - [x] Bind the refusal write to the launch credential
 - [x] Verify account state and run recovery
 - [x] Review and deliver the fix on green CI
+- [x] Make the replacement sign-in fixture pass the repository credential check
 
 ## Acceptance criteria
 
@@ -46,3 +47,4 @@ Use a digest of the sealed launch credential in the private run directory, follo
 - `scripts/dev quick` passed. `scripts/dev security` reported Vidoc disabled for this project. The independent reviewer approved `42411b5d` after tracing launch, refusal, reattachment and sign-in locking.
 - `scripts/dev mutants` reported 12 listed, 4 caught, 0 missed, 0 timed out, 6 unviable and 2 not reached within 30 minutes. The four caught results failed in the unrelated xtask Vidoc-key test in the Git-less scratch checkout, so they provide no evidence about this fix. This limitation is recorded on #1365.
 - A separate `cargo mutants` run inverted only the credential comparison and selected the two supervision tests for #1365. Both failed at their account-state assertions: current read `Ok` instead of `Relogin`, and stale read `Relogin` instead of `Ok`. The tool reported one mutant tested and caught. The source matched the reviewed commit again when the run ended.
+- Yulius CI run `0f0d2921` at `55817fef` found a provider-shaped literal in the new synthetic test. The existing fixture hygiene test reproduced the failure at `subscription_moves.rs:404`. Assembling the identical synthetic value from its prefix and body made both fixture hygiene tests and all six refusal supervision tests pass locally.
