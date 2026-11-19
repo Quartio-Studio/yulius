@@ -1,6 +1,6 @@
 ---
 yulius-task: 425a5337-c7c6-4b92-95e4-0bd3bb4b3fc1
-status: in-progress
+status: done
 ---
 
 # SPEC-525: watchers see Codex and Antigravity sessions
@@ -62,7 +62,7 @@ antigravity when it's Michal's task, in opus it works good"). Fixes #1440.
 - [x] Spec SPEC-525 written and valid
 - [x] Codex and Antigravity transcripts read as entries, regression tests first
 - [x] Docs and the changes log updated
-- [ ] Independent review in a fresh session, findings fixed test-first
+- [x] Independent review in a fresh session, findings fixed test-first
 
 ## Acceptance criteria
 
@@ -135,3 +135,38 @@ antigravity when it's Michal's task, in opus it works good"). Fixes #1440.
   when present; otherwise a text opening with one of Codex's injected-context prefixes
   (`<environment_context>`, `<hook_prompt …>`, `# AGENTS.md instructions`, …) does: shown as a meta block, as Claude Code's
   `<system-reminder>` is. Developer messages (Codex's own instructions) are left out.
+
+## Evidence
+
+- **Reproduced (red before the fix):** `transcripts::tests::a_codex_rollout_reads_as_prompts_answers_and_tool_calls`,
+  `an_antigravity_transcript_reads_as_requests_answers_and_tool_steps` and
+  `a_dotenv_read_by_codex_or_antigravity_is_redacted_on_every_page` read zero entries at commit
+  216e14c61; `task_transcript::a_watcher_reads_a_codex_task_s_rollout` (the watch view's request,
+  `GET /api/tasks/{tid}/transcript`) returned the session id with `entries: []`.
+- **Fixed:** the same tests pass. Each review round's findings got tests that failed first:
+  4495fe469 (round 1: real CLI shapes), c9fba3c33 (round 2: nested, escaped, continued reads,
+  migration 0069), 7f1e7f752 (round 3: Antigravity background results, `write_stdin` by any id,
+  result display) and the round-4 test (settled content items, cancelled results).
+- **Local checks:**
+  - `cargo nextest run -p yulius-app -p yulius-store -p yulius-domain -p yulius-harness --lib`:
+    1,413 passed.
+  - `cargo nextest run -p yulius-harness`: 239 passed.
+  - `cargo nextest run -p yulius -E 'binary_id(yulius::main) & test(/^(task_transcript|sessions|session_sync|antigravity|codex)/)'`:
+    55 passed.
+  - `cargo clippy … -- -D warnings`: clean.
+  - `scripts/dev quick`: passed.
+- **Real shapes:** the reviewers' probes (outside the repository, synthetic values) ran over the
+  structures of this host's 23 Codex 0.169 rollouts and Antigravity 1.5.10 transcripts. All 28
+  leak cases print "hidden". Paging with a kept cursor, without one, and the tail give identical
+  entries on every real file. Base against head on 1,142 Claude Code transcripts (716k lines)
+  differs on 2 lines, both redacting more in a dotenv-tracked result.
+- **Independent review:** round 1 (Fable 5.2) and round 2 (Fable 5.2) asked for the dotenv cases on
+  the real shapes; round 3 (Opus 5.5) asked for the Antigravity background result; round 4 (Opus
+  5.5) approved d53670f6 with one minor (settled content items) and one nit (`with result`), fixed
+  after it within the approval's 20 product lines (7 changed).
+- **Security scan:** Yulius CI's `security` job was skipped (exit 78: Vidoc not run on this
+  instance), which is unrun, not passed.
+- **Not tested here:** the watch view against a live Codex or Antigravity run in a browser. The
+  web view needed no change (it renders entries whatever their harness), and the endpoint test
+  covers the request it makes.
+- **Pre-existing, filed:** #1453, #1454, #1455, #1457.
