@@ -6,6 +6,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-19
 
+- On the Git page, pressing Space on the production protection switch still saves the change when the overview redraws during the keypress (SPEC-546, #1157).
 - A message to a Claude Code session waits when its prompt box shows a restored draft. The
   sender or session owner learns why. A new key keeps its recovery mark when an earlier
   prompt finishes ([SPEC-537](../.ai/specs/SPEC-537-preserve-restored-drafts-when-typing-int.md), #1264).
