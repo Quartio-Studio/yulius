@@ -213,6 +213,17 @@ pub(crate) fn run_family(launched: Option<&str>, task_model: Option<&str>) -> Mo
     model_family(launched.or(task_model))
 }
 
+/// The model `task` runs: its own, else its agent's default (SPEC-511, SPEC-505), or `None` for
+/// Claude Code's, which [`model_family`] reads as the default model.
+fn task_model(task: &TaskRecord) -> Option<&str> {
+    use yulius_domain::harness::{DEFAULT_ANTIGRAVITY_MODEL, DEFAULT_CODEX_MODEL, Harness};
+    task.model.as_deref().or(match task.harness {
+        Harness::Codex => Some(DEFAULT_CODEX_MODEL),
+        Harness::Antigravity => Some(DEFAULT_ANTIGRAVITY_MODEL),
+        Harness::ClaudeCode => None,
+    })
+}
+
 impl App {
     /// Wakes the resume loop: usage changed, an account was added or removed, a task paused.
     pub fn capacity_changed(&self) {
@@ -229,7 +240,7 @@ impl App {
         task: &TaskRecord,
         current: Option<AccountId>,
     ) -> AppResult<RotationInput> {
-        let model = task.model.as_deref();
+        let model = task_model(task);
         // A run stays, and its subscription is left out, by the model the run was launched
         // with, which is the fallback's while no subscription could run the task's own.
         let running = match &current {
@@ -258,8 +269,7 @@ impl App {
     /// when its record names none and its task cannot be read.
     pub(crate) async fn run_family_of(&self, run: &crate::model::AttemptRecord) -> ModelFamily {
         let task = self.deps.store.task(&run.task_id).await.ok().flatten();
-        let task_model = task.as_ref().and_then(|task| task.model.as_deref());
-        run_family(run.model.as_deref(), task_model)
+        run_family(run.model.as_deref(), task.as_ref().and_then(task_model))
     }
 
     /// Reads `account`'s stored usage, changes it with `change` and stores what that gives,

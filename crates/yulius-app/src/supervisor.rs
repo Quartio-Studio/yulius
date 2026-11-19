@@ -2333,22 +2333,25 @@ impl App {
         let seq = u32::try_from(earlier.len() + 1).unwrap_or(u32::MAX);
         let own = task.model.as_deref().unwrap_or(DEFAULT_CLAUDE_MODEL);
         let model = fallback.unwrap_or(own);
-        // A Codex task without a model runs its subscription's default: no Claude model is
-        // recorded for it, and the Claude models' fallbacks say nothing (SPEC-503 CDX-013).
-        let codex_default = harness == Harness::Codex && task.model.is_none();
-        // An Antigravity task runs Gemini: its own model, else the default (SPEC-505 AGY-002).
+        // A Codex task runs OpenAI's models and an Antigravity task Gemini: its own model, else
+        // the default (SPEC-511 CXD-002, SPEC-505 AGY-002), which its launch plan passes too.
         let model = match harness {
+            Harness::Codex => task
+                .model
+                .as_deref()
+                .unwrap_or(yulius_domain::harness::DEFAULT_CODEX_MODEL),
             Harness::Antigravity => task
                 .model
                 .as_deref()
                 .unwrap_or(yulius_domain::harness::DEFAULT_ANTIGRAVITY_MODEL),
-            Harness::ClaudeCode | Harness::Codex => model,
+            Harness::ClaudeCode => model,
         };
         // Said once per change of the model (SPEC-482 FBK-008): at the launch that falls back,
-        // and at the first one that runs the task's own model again.
+        // and at the first one that runs the task's own model again. Only Claude models fall
+        // back.
         let before = earlier.last().and_then(|run| run.model.as_deref());
-        if let Some(said) = model_change_notice(own, before, model)
-            .filter(|_| !codex_default && harness != Harness::Antigravity)
+        if let Some(said) =
+            model_change_notice(own, before, model).filter(|_| harness == Harness::ClaudeCode)
         {
             self.runtime(&task.id).hub.notice(said);
         }
@@ -2376,7 +2379,7 @@ impl App {
             account_id: Some(account.id.clone()),
             provider_session_id: plan.session_id.clone(),
             launch_kind,
-            model: (!codex_default).then(|| model.to_owned()),
+            model: Some(model.to_owned()),
             state: AttemptState::Spawning,
             run_dir: run_dir.to_string_lossy().into_owned(),
             token_hash: self.deps.crypto.sha256_hex(task_token.as_bytes()),

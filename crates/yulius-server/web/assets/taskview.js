@@ -11,7 +11,7 @@ import { taskInfo, isLive, allows, taskActions, otherOwner, endedMessage, agentO
 import { heldPromptCard, splitCard, supertaskCard, checkRequest, intakeStatus } from './intake.js';
 import { createMarkdownEditor } from './mdeditor.js';
 import { SUBMIT_KEYS, SUBMIT_ARIA } from './shortcuts.js';
-import { openTaskMenu, openSubscriptionMenu, continueTask, deliveryStrip, startNow, stopTask, resumeTask, requestControl, takeControl, dropControlRequest, handOverTask, takeBackTask, openScheduleDialog, rescheduleTask } from './actions.js';
+import { openTaskMenu, openSubscriptionMenu, continueTask, deliveryStrip, startNow, stopTask, resumeTask, requestControl, takeControl, answerNeedsYou, dropControlRequest, handOverTask, takeBackTask, openScheduleDialog, rescheduleTask } from './actions.js';
 import { attachTerminalDrop, attachPromptDrop, draftAttachments, taskAttachments, withAttachments, openAttachment } from './filedrop.js';
 import { createPromptInput, ATOM, FILE_MARK, FILE_MARK_END, PLACE_TYPE, placeFiles, withoutMarks } from './promptinput.js';
 import { mentionOf, parsePrompt } from './promptparts.js';
@@ -371,7 +371,9 @@ export function mountTaskView(ctx, sandbox, task) {
   let replying = false;
   const replyInput = h('input', { class: 'input', type: 'text', placeholder: 'Reply to the agent…', autocomplete: 'off', enterkeyhint: 'send', 'aria-label': 'Reply to the agent' });
   const replyButton = h('button', { type: 'button', class: 'btn btn-sm', onClick: () => {
-    if (isPhone()) { quickInput.focus(); return; }
+    // Someone else's task has no terminal to type in: its Needs you is answered in the field
+    // (SPEC-516).
+    if (isPhone() && !owner()) { quickInput.focus(); return; }
     replying = true;
     renderAttention();
     replyInput.focus();
@@ -381,10 +383,27 @@ export function mountTaskView(ctx, sandbox, task) {
     renderAttention();
     if (replyButton.isConnected) replyButton.focus();
   };
-  const sendReply = () => {
-    if (!replying) return; // a closed (hidden) field never sends
+  let answering = false; // an answer to someone else's task is on its way
+  const sendReply = async () => {
+    if (!replying || answering) return; // a closed (hidden) field never sends
     const text = replyInput.value.trim();
     if (!text) { replyInput.focus(); return; }
+    if (owner()) {
+      // Someone else's task (SPEC-516): the answer goes to the server, which types it labelled
+      // into the session; control stays with the owner. Refused, the field keeps its text.
+      answering = true;
+      replyInput.readOnly = true;
+      const answered = await answerNeedsYou(ctx, current, text).finally(() => {
+        answering = false;
+        replyInput.readOnly = false;
+      });
+      if (!alive) return;
+      if (!answered) { if (replying) replyInput.focus(); return; }
+      replyInput.value = '';
+      replying = false;
+      renderAttention();
+      return;
+    }
     // The answer is for the terminal, sent or not: why it was not shows there (SPEC-326).
     closeHistory(false);
     if (!typeAndSubmit(text)) return;
@@ -426,11 +445,12 @@ export function mountTaskView(ctx, sandbox, task) {
       // takes control at once once the owner can no longer act.
       const mine = request && request.by.login === me();
       // A playground's guest takes no one's task (TKC-007): they ask, as of an owner who asks first.
-      const asksFirst = Boolean(current.owner_asks_first) || Boolean(ctx.guest && ctx.guest());
+      const guest = Boolean(ctx.guest && ctx.guest());
+      const asksFirst = Boolean(current.owner_asks_first) || guest;
       const take = h('button', { type: 'button', class: 'btn btn-sm btn-primary', title: `It acts on GitHub as you from then on; @${owner()} is told and can take it back`, onClick: () => takeControl(ctx, current) }, 'Take control');
       control = [icon('lock', { size: 16 }), h('span', { class: 'attention-text' },
         mine ? [h('strong', null, `You asked @${owner()} for control. `), 'Until they hand it over, the task acts on GitHub as them.']
-          : [h('strong', null, `You are watching @${owner()}'s task. `), asksFirst ? `You can stop, archive or delete it; to type in it or change it, ask @${owner()} for control.` : 'You can stop, archive or delete it; to type in it or change it, take control.', request ? ` @${request.by.login} asked for control.` : '']),
+          : [h('strong', null, `You are watching @${owner()}'s task. `), guest ? `To type in it or change it, ask @${owner()} for control.` : asksFirst ? `You can stop, archive or delete it; to type in it or change it, ask @${owner()} for control.` : 'You can stop, archive or delete it; to type in it or change it, take control.', request ? ` @${request.by.login} asked for control.` : '']),
       mine && asksFirst ? h('button', { type: 'button', class: 'btn btn-sm', title: `Takes control at once when @${owner()} can no longer act`, onClick: () => requestControl(ctx, current) }, 'Ask again') : null,
       mine ? h('button', { type: 'button', class: 'btn btn-sm', onClick: () => dropControlRequest(ctx, current) }, 'Withdraw') : null,
       !asksFirst ? take : mine || request ? null : h('button', { type: 'button', class: 'btn btn-sm btn-primary', onClick: () => requestControl(ctx, current) }, 'Request control')];
@@ -481,11 +501,15 @@ export function mountTaskView(ctx, sandbox, task) {
       // The request stays while the agent asks something in the terminal (a permission menu): text
       // typed there would pick the menu's options unseen, so Reply goes to the terminal then.
       const asksInTerminal = current.activity === 'needs_attention';
-      textAnswer = !owner() && !asksInTerminal;
+      // Someone else's task: anyone who may work there but a guest answers it without taking
+      // control (SPEC-516), while it runs and unless the agent asks in its terminal.
+      const answers = !owner() || (current.status === 'running' && allows(access, 'write') && !(ctx.guest && ctx.guest()) && !asksInTerminal);
+      textAnswer = answers && !asksInTerminal;
       asksPerson = true;
+      replyButton.title = owner() ? 'Answers the agent without taking control of the task' : '';
       content = [icon('st-attention', { size: 16 }), needsYouText(asked),
         asked.link ? openLink(asked.link) : null,
-        owner() ? null : asksInTerminal ? terminalReply : replying ? null : replyButton];
+        !answers ? null : asksInTerminal ? terminalReply : replying ? null : replyButton];
     } else if (info.request) {
       content = [icon('globe', { size: 16 }), h('span', { class: 'attention-text' }, h('strong', null, 'Action needed in the browser: '), info.request.reason || 'the agent asked you to do something there.'),
         h('button', { type: 'button', class: 'btn btn-sm', onClick: () => ctx.openBrowserTab && ctx.openBrowserTab(sandbox, info.request.tab_id) }, 'Open browser tab')];
@@ -515,6 +539,7 @@ export function mountTaskView(ctx, sandbox, task) {
         ? h('strong', null, `The agent is waiting for @${owner()}'s reply.`)
         : [h('strong', null, 'The agent is waiting for your reply. '), 'Type it in the terminal below.']),
         owner() ? null : replying ? null : replyButton];
+      replyButton.title = '';
       textAnswer = !owner();
     }
     attention.hidden = !content && !control;
@@ -1342,8 +1367,8 @@ export function mountComposer(ctx, sandbox) {
     startButton.setAttribute('aria-label', startAction());
     startButton.title = write ? `${startAction()} (${SUBMIT_KEYS})` : 'Requires write access';
     const found = findModel(modelId);
-    setChildren(modelChip, h('span', { class: 'sr-only' }, 'Model: '), h('span', { class: 'chip-label' }, found ? found.model.name : 'Random agent'), icon('down', { size: 12 }));
-    modelChip.title = found ? `${found.provider.name} · ${found.model.name}` : 'Agent: drawn for each task, Claude Code (Opus 5.5) or Antigravity (Gemini 4 Carbon)';
+    setChildren(modelChip, h('span', { class: 'sr-only' }, 'Model: '), h('span', { class: 'chip-label' }, found ? found.model.name : 'Default model'), icon('down', { size: 12 }));
+    modelChip.title = found ? `${found.provider.name} · ${found.model.name}` : 'Model: default, Claude Code, Opus 5.5';
     // A model without effort levels (Haiku) hides the effort choice and sends none.
     const effortless = Boolean(found && found.model.effort === false);
     effortChip.hidden = effortless;
@@ -1798,9 +1823,8 @@ export function mountComposer(ctx, sandbox) {
       }),
       keep: () => busyRun(autoStage(), async () => opened(await createTask(bodyFor(value)))),
       close: () => clearSplit(),
-      // A task of another agent runs without a Claude account (SPEC-503, SPEC-505), and so does
-      // a Random one while Antigravity is usable: it is drawn among the usable agents (RND-001).
-      codex: Boolean(bodyFor(value).harness) || (!findModel(modelId) && antigravityConnected(ctx.store.state.me)),
+      // A task of another agent runs without a Claude account (SPEC-503, SPEC-505).
+      codex: Boolean(bodyFor(value).harness),
     });
     setChildren(intakeSlot, split.el);
     const calm = window.matchMedia('(prefers-reduced-motion: reduce)').matches;

@@ -97,7 +97,8 @@ impl App {
 
     /// `POST /api/tasks/{tid}/control/take` (SPEC-510 TKC-001): `ctx`'s person takes control of
     /// another person's task at once. The previous owner may take it back and is told wherever
-    /// they are. With the owner absent, control passes as on a request (TKC-004).
+    /// they are. With the owner absent, control passes as on a request (TKC-004). The giver's
+    /// take is a take-back, with its errors.
     ///
     /// # Errors
     /// `NotFound`/`Forbidden` without write access to the project, for a disabled account or a
@@ -109,6 +110,10 @@ impl App {
         id: &str,
     ) -> AppResult<TaskSummary> {
         let task = self.load_task(ctx, id, Action::View).await?;
+        // Its giver taking it is a take-back, and told as one (SPEC-490 OWN-009, review round 2).
+        if self.deps.store.control_from(&task.id).await?.as_ref() == Some(&ctx.user.id) {
+            return self.take_back_task_control(ctx, id).await;
+        }
         let (sandbox, _) = self
             .require_for(ctx, &task.sandbox_id, Action::Work)
             .await?;
@@ -209,8 +214,9 @@ impl App {
         self.control_summary(&task).await
     }
 
-    /// `POST /api/tasks/{tid}/control/take-back`: the person who handed the task over on request
-    /// takes it back without asking (SPEC-490 OWN-009), while nobody has moved control since.
+    /// `POST /api/tasks/{tid}/control/take-back`: the person who handed the task over on request,
+    /// or from whom it was taken (SPEC-510), takes it back without asking (SPEC-490 OWN-009),
+    /// while nobody has moved control since.
     ///
     /// # Errors
     /// `Forbidden` for anyone but the giver, a disabled giver or one without write access;
@@ -471,7 +477,8 @@ impl App {
                 },
                 "task.control_passed",
             ),
-            // Taken back by the one it was taken from, nobody can take it back: the giver says.
+            // A guard: the store clears the giver when the taker was it (a giver's take is a
+            // take-back before it gets here), and then nothing promises a take-back.
             Handover::Taken => (
                 match store.control_from(&task.id).await? {
                     Some(giver) => format!(

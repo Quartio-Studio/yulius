@@ -549,6 +549,38 @@ fn the_composer_offers_antigravity_on_its_default_model() -> TestResult {
     Ok(())
 }
 
+/// SPEC-511 CXD-003: the composer's Codex entry sends no model, so the server's default runs, and
+/// says which: GPT-6.2 Astra at high effort; the browser mock creates such a task on them.
+#[test]
+fn the_composer_says_codex_runs_its_default_model() -> TestResult {
+    use yulius_domain::harness::{DEFAULT_CODEX_EFFORT, DEFAULT_CODEX_MODEL};
+    let models = std::fs::read_to_string(web_dir().join("assets/models.js"))?;
+    let openai = models
+        .split_once("    id: 'openai',")
+        .and_then(|(_, rest)| rest.split_once("    id: 'google',"))
+        .map(|(openai, _)| openai)
+        .ok_or("models.js has no openai provider before google")?;
+    assert!(
+        openai.contains(
+            "{ id: 'codex', name: 'Codex', description: 'OpenAI Codex CLI on a Codex account, \
+             GPT-6.2 Astra at high effort by default', harnessOnly: true }"
+        ),
+        "{openai}"
+    );
+    assert_eq!(
+        DEFAULT_CODEX_MODEL, "gpt-6.2-astra",
+        "the menu says GPT-6.2 Astra"
+    );
+    assert_eq!(DEFAULT_CODEX_EFFORT, "high", "the menu says high");
+    let mock = std::fs::read_to_string(web_dir().join("assets/mock.js"))?;
+    assert!(
+        mock.contains(&format!("harness === 'codex' ? '{DEFAULT_CODEX_MODEL}'"))
+            && mock.contains(&format!("harness === 'codex' ? '{DEFAULT_CODEX_EFFORT}'")),
+        "the mock creates a Codex task without a model on another default"
+    );
+    Ok(())
+}
+
 /// SPEC-482 FBK-001: the pages name the fallback model the server launches (the Status line, the
 /// Capacity panel and "Run #N on…" work out from it what the pool does), and offer it.
 #[test]
@@ -590,8 +622,7 @@ fn the_ui_names_the_fallback_model_a_launch_uses() -> TestResult {
 
 /// SPEC-462 EFF-003: the composer and Settings describe "Default" as the model and effort a
 /// launch really uses (`yulius_domain::harness`), so a changed constant cannot leave the labels
-/// behind. Since SPEC-505 RND-001 the model menu's no-choice item is Random, which names each
-/// drawn agent's default model.
+/// behind. The no-choice item is Claude Code's default, never a drawn agent (SPEC-514 PIN-004).
 #[test]
 fn the_ui_describes_default_as_the_model_and_effort_a_launch_uses() -> TestResult {
     use yulius_domain::harness::{DEFAULT_CLAUDE_EFFORT, DEFAULT_CLAUDE_MODEL};
@@ -606,13 +637,15 @@ fn the_ui_describes_default_as_the_model_and_effort_a_launch_uses() -> TestResul
             .ok_or(format!("models.js does not list {id}"))
     };
     let name = named(DEFAULT_CLAUDE_MODEL)?;
-    let gemini = named(yulius_domain::harness::DEFAULT_ANTIGRAVITY_MODEL)?;
-    let random = format!("Claude Code ({name}) or Antigravity ({gemini})");
     assert!(
         models.contains(&format!(
-            "{{ label: 'Random', description: '{random}, drawn for each task',"
+            "{{ label: 'Default', description: 'Claude Code, {name}',"
         )),
-        "the model menu's Random does not name {random}"
+        "the model menu's Default is not Claude Code on {name}"
+    );
+    assert!(
+        !models.contains("label: 'Random'"),
+        "the model menu offers no drawn agent"
     );
     let level = named(DEFAULT_CLAUDE_EFFORT)?;
     assert!(
@@ -627,7 +660,7 @@ fn the_ui_describes_default_as_the_model_and_effort_a_launch_uses() -> TestResul
     );
     let composer = std::fs::read_to_string(web_dir().join("assets/taskview.js"))?;
     assert!(
-        composer.contains(&format!("'Agent: drawn for each task, {random}'")),
+        composer.contains(&format!("'Model: default, Claude Code, {name}'")),
         "the composer's model chip names another default"
     );
     Ok(())

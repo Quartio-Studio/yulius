@@ -255,6 +255,210 @@ fn a_running_task_gets_the_message_typed_into_its_session() -> TestResult {
     })
 }
 
+/// The audit rows of answers to `id`'s `needs_you` (SPEC-516 NYA-005), as (actor, detail).
+fn answers_audited(data: &Path, id: &TaskId) -> Result<Vec<(String, Value)>, Error> {
+    let db = rusqlite::Connection::open(data.join("yulius.db"))?;
+    let mut query = db.prepare(
+        "SELECT actor, COALESCE(detail, 'null') FROM audit_log \
+         WHERE action = 'task.needs_you.answered' AND target = ?1 ORDER BY id",
+    )?;
+    let rows = query.query_map([id.as_str()], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    })?;
+    let mut out = Vec::new();
+    for row in rows {
+        let (actor, detail) = row?;
+        out.push((actor, serde_json::from_str(&detail)?));
+    }
+    Ok(out)
+}
+
+/// A person who is not `sandbox`'s tasks' owner and may write to it, as `bob`.
+async fn teammate(app: &App, sandbox: &SandboxId) -> Result<AuthContext, Error> {
+    let bob = yulius_app::model::UserRecord {
+        id: UserId::parse("u-bob")?,
+        github_login: Some("bob".into()),
+        github_id: None,
+        display_name: "Bob".into(),
+        avatar_url: None,
+        is_superadmin: false,
+        is_instance_admin: false,
+        password_hash: None,
+        created_at: yulius_domain::time::Timestamp(1),
+        disabled_at: None,
+    };
+    let store = &app.deps.store;
+    yulius_app::ports::store::UserStore::insert_user(&**store, &bob).await?;
+    // Bob may write to the project (a fresh access GitHub gave).
+    yulius_app::ports::store::PermissionStore::put_access(
+        &**store,
+        &bob.id,
+        sandbox,
+        yulius_domain::permission::AccessLevel::Write,
+        app.now(),
+    )
+    .await?;
+    Ok(AuthContext {
+        user: bob,
+        csrf_token: None,
+        session_hash: None,
+        token: None,
+    })
+}
+
+/// What the agent asks a person, for the answer tests.
+fn region_asked() -> NeedsYouRecord {
+    NeedsYouRecord {
+        action: "Choose the staging region".into(),
+        happened: None,
+        problem: None,
+        decision: true,
+        link: None,
+        at: 1,
+        cause: None,
+    }
+}
+
+/// SPEC-516 NYA-004 (review round 1): a run started with its owner's personal MCP server holds
+/// it until it restarts, also once the server is deleted. A teammate's answer is kept out of it;
+/// the owner's own answer goes in, labelled as theirs and audited as the owner's.
+#[test]
+fn a_run_holding_the_owners_personal_server_takes_only_the_owners_answer() -> TestResult {
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let app = app(&data, fake_agent()).await?;
+        let (sandbox, user) = seed(&app, &data, &["a-only"]).await?;
+        let owner = AuthContext {
+            user: app.deps.store.user(&user).await?.ok_or("owner")?,
+            csrf_token: None,
+            session_hash: None,
+            token: None,
+        };
+        let input = serde_json::from_value(json!({
+            "name": "mail", "transport": "http", "url": "https://mail.admin.test/mcp",
+            "scope": "sandbox", "audience": "personal",
+        }))?;
+        let server = app
+            .create_mcp_server(&owner, sandbox.as_str(), &input)
+            .await?;
+        let id = new_task(
+            &app,
+            &sandbox,
+            &user,
+            "Budget: answer with an echo",
+            TaskMode::Prompt,
+        )
+        .await?;
+        wait_for("the first answer", Duration::from_secs(30), || async {
+            screen(&app, &id).contains("ECHO: Budget: answer with an echo")
+        })
+        .await?;
+        // The configuration no longer lists it; the run still holds it.
+        app.delete_mcp_server(&owner, &server.id).await?;
+        app.deps
+            .store
+            .set_task_needs_you(&id, Some(&region_asked()), app.now())
+            .await?;
+        let bob = teammate(&app, &sandbox).await?;
+        let refused = app
+            .answer_needs_you(&bob, id.as_str(), "Frankfurt")
+            .await
+            .err();
+        assert!(
+            matches!(&refused, Some(AppError::Conflict(why)) if why.contains("@admin") && why.contains("personal")),
+            "{refused:?}"
+        );
+        assert!(app.deps.store.task_needs_you(&id).await?.is_some());
+
+        let after = app
+            .answer_needs_you(&owner, id.as_str(), "Frankfurt")
+            .await?;
+        assert!(after.needs_you.is_none());
+        wait_for("the answer", Duration::from_secs(30), || {
+            let app = app.clone();
+            let id = id.clone();
+            async move { screen(&app, &id).contains("ECHO: Answer from admin") }
+        })
+        .await?;
+        let shown = screen(&app, &id);
+        assert!(
+            shown.contains("ECHO: Answer from admin to what you asked with needs_you:"),
+            "{shown}"
+        );
+        assert!(!shown.contains("not this task's owner"), "{shown}");
+        let rows = answers_audited(&data, &id)?;
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert_eq!(rows[0].0, "admin", "{rows:?}");
+        assert_eq!(rows[0].1["by_owner"], true, "{rows:?}");
+        stop(&app, &id).await
+    })
+}
+
+/// SPEC-516 AC-1 (NYA-001, NYA-002, NYA-003, NYA-005): bob, who may work in the project but
+/// does not own the task, answers what its agent asked. The agent gets one labelled answer that
+/// names him as not the owner, the request ends, the task stays admin's (no control request, no
+/// giver), and the audit names him without the text.
+#[test]
+fn a_teammate_answers_a_needs_you_without_taking_control() -> TestResult {
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let app = app(&data, fake_agent()).await?;
+        let (id, owner) = running(&app, &data).await?;
+        let asked = NeedsYouRecord {
+            action: "Choose the staging region".into(),
+            happened: None,
+            problem: None,
+            decision: true,
+            link: None,
+            at: 1,
+            cause: None,
+        };
+        app.deps
+            .store
+            .set_task_needs_you(&id, Some(&asked), app.now())
+            .await?;
+        let ctx = teammate(&app, &owner.sandbox).await?;
+
+        let after = app
+            .answer_needs_you(&ctx, id.as_str(), "Frankfurt, please.\r\nNot Dublin.")
+            .await?;
+        assert_eq!(after.owner.login, "admin");
+        assert!(after.needs_you.is_none());
+        wait_for("the answer", Duration::from_secs(30), || {
+            let app = app.clone();
+            let id = id.clone();
+            async move { screen(&app, &id).contains("ECHO: Answer from bob") }
+        })
+        .await?;
+        let shown = screen(&app, &id);
+        assert!(
+            shown.contains("ECHO: Answer from bob to what you asked with needs_you"),
+            "{shown}"
+        );
+        assert!(shown.contains("not this task's owner"), "{shown}");
+        assert!(shown.contains("Frankfurt, please."), "{shown}");
+        assert!(shown.contains("Not Dublin."), "{shown}");
+
+        let task = app.deps.store.task(&id).await?.ok_or("task")?;
+        assert_eq!(task.owner, owner.user);
+        assert!(app.deps.store.control_request(&id).await?.is_none());
+        assert!(app.deps.store.control_from(&id).await?.is_none());
+        assert!(app.deps.store.task_needs_you(&id).await?.is_none());
+        let rows = answers_audited(&data, &id)?;
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert_eq!(rows[0].0, "bob", "{rows:?}");
+        assert_eq!(rows[0].1["owner"], "admin", "{rows:?}");
+        assert_eq!(rows[0].1["by_owner"], false, "{rows:?}");
+        assert!(
+            !rows[0].1.to_string().contains("Frankfurt"),
+            "the audit holds the text: {rows:?}"
+        );
+        stop(&app, &id).await
+    })
+}
+
 /// SPEC-322 AC-1 (RML-002, RML-004; #789): a message sent through the remote MCP (a person's own
 /// agent, with an `operate` token) is labelled with that channel, not the Superagent; it is
 /// audited as the token's person and ends the task's open `needs_you`, as the Superagent's does.

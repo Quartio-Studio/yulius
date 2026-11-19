@@ -1,6 +1,6 @@
 import { test, type Browser, type Screen } from '@e2e-dev/web';
 import { expect } from 'e2e';
-import { axeViolations, failOnPageErrors, firstShown, mock } from './support.ts';
+import { axeViolations, failOnPageErrors, firstShown, mock, touchTask } from './support.ts';
 
 failOnPageErrors();
 
@@ -149,7 +149,8 @@ test("a guest is not offered to put away the maker's task", async ({ app, browse
 test("a guest is not offered to take control of the maker's task", async ({ app, browser, screen }) => {
   await app.open(mock('/s/lab/t/1', '&guest=1&labtask=1'));
   await firstShown(screen.getByText("You are watching @mkarp's task."));
-  await expect(browser.locator('.attention-bar .attention-text').first()).toHaveText(/ask @mkarp for control\.$/);
+  // Nor are they told they may put it away, which a guest may not (review round 2).
+  await expect(browser.locator('.attention-bar .attention-text').first()).toHaveText("You are watching @mkarp's task. To type in it or change it, ask @mkarp for control.");
   await expect(screen.getByRole('button', 'Take control')).toHaveCount(0);
   await expect(screen.getByRole('button', 'Request control')).toBeVisible();
   await browser.locator('.taskview .stepstrip-main [aria-label="Task actions"]').click();
@@ -157,4 +158,16 @@ test("a guest is not offered to take control of the maker's task", async ({ app,
   await expect(screen.getByRole('menuitem', /^Take control/)).toHaveCount(0);
   await browser.keyboard.press('Escape');
   expect(await axeViolations(browser)).toEqual([]);
+});
+
+// SPEC-516 (review round 2): a guest answers no Needs you of the maker's task: no Reply.
+test("a guest is not offered to answer the maker's task's Needs you", async ({ app, browser, screen }) => {
+  await app.open(mock('/s/lab/t/1', '&guest=1&labtask=1'));
+  await firstShown(screen.getByText("You are watching @mkarp's task."));
+  await touchTask(browser, 'sb_lab', 1, {
+    status: 'running', activity: 'waiting',
+    needs_you: { action: 'Add a ruleset', problem: 'agents can push to main', decision: false, at: new Date().toISOString() },
+  });
+  await expect(browser.locator('.attention-bar')).toContainText('Needs you');
+  await expect(screen.getByRole('button', 'Reply')).toHaveCount(0);
 });

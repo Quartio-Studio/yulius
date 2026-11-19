@@ -74,39 +74,6 @@ pub(crate) fn model_of_its_harness(harness: Harness, model: Option<&str>) -> App
     }
 }
 
-impl App {
-    /// The agent of a task created without one: Claude Code or Antigravity, drawn uniformly
-    /// among those with a usable subscription, Claude Code when neither has one (SPEC-505
-    /// RND-001, ADR-0361).
-    ///
-    /// # Errors
-    /// Store failures.
-    pub(crate) async fn draw_harness(&self) -> AppResult<Harness> {
-        let mut usable = Vec::with_capacity(Harness::DRAWN.len());
-        for harness in Harness::DRAWN {
-            if self.agent_accounts(harness.provider()).await?
-                == crate::account_gate::AgentAccounts::Usable
-            {
-                usable.push(harness);
-            }
-        }
-        let queued = self
-            .harness_rolls
-            .lock()
-            .ok()
-            .and_then(|mut rolls| rolls.pop_front());
-        let roll = queued.unwrap_or_else(|| self.deps.crypto.random_bytes()[0]);
-        Ok(Harness::drawn(&usable, roll))
-    }
-
-    /// Queues the rolls of the next harness draws, in order (tests: a draw is otherwise random).
-    pub fn queue_harness_rolls(&self, rolls: &[u8]) {
-        if let Ok(mut queued) = self.harness_rolls.lock() {
-            queued.extend(rolls);
-        }
-    }
-}
-
 pub(crate) fn parse_harness(text: &str) -> AppResult<Harness> {
     Harness::parse(text)
         .map_err(|_| AppError::Invalid("harness must be claude, codex or antigravity".into()))
@@ -377,18 +344,11 @@ impl App {
     ) -> AppResult<TaskRecord> {
         let sid = sid.clone();
         self.require(user, &sid, Action::Work).await?;
-        // No agent given (or `auto`): the one the model implies, else a draw (SPEC-505 RND-001).
-        let model = req
-            .model
-            .as_deref()
-            .map(str::trim)
-            .filter(|m| !m.is_empty());
-        let (harness, drawn) = match req.harness.trim() {
-            "" | AUTO => match model {
-                Some(model) => (Harness::implied_by(model), false),
-                None => (self.draw_harness().await?, true),
-            },
-            text => (parse_harness(text)?, false),
+        // No agent given (or `auto`): the one the model implies, else Claude Code; never drawn
+        // (SPEC-514 PIN-001). An agent's tool names its own task's agent itself (PIN-002).
+        let harness = match req.harness.trim() {
+            "" | AUTO => Harness::unnamed(req.model.as_deref(), None),
+            text => parse_harness(text)?,
         };
         model_of_its_harness(harness, req.model.as_deref())?;
         // New tasks run in goal mode unless the user picks prompt mode (TSK-010); `auto` lets Jev
@@ -468,18 +428,6 @@ impl App {
                 prepared,
             )
             .await?;
-        if drawn {
-            // The task exists and runs: a failed record only says "chosen" for a drawn agent.
-            if let Err(err) = self
-                .deps
-                .store
-                .record_harness_draw(&task.id, self.now())
-                .await
-            {
-                tracing::warn!(error = %err, task = %task.id, "harness draw not recorded");
-            }
-            self.publish_task(&task.id).await;
-        }
         if choice.is_auto() {
             // The task exists and runs: a failed record only loses the "Auto →" label.
             let actor = self.login_of(&user.id).await;

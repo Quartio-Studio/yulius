@@ -42,7 +42,8 @@ pub struct TaskSummary {
     pub title: String,
     /// Harness wire name (`claude`, `codex` or `antigravity`; SPEC-503, SPEC-505).
     pub harness: String,
-    /// `random` when the harness was drawn at creation, else `chosen` (SPEC-505 RND-001).
+    /// `random` when the harness was drawn at creation (only before SPEC-514), else `chosen`
+    /// (SPEC-505 RND-001).
     #[serde(default = "chosen")]
     pub harness_choice: String,
     /// Status wire name (domain `TaskStatus::as_str`).
@@ -61,8 +62,8 @@ pub struct TaskSummary {
     /// A person's request for control that waits for the owner's answer (SPEC-070), or null.
     #[serde(default)]
     pub control_request: Option<ControlRequestView>,
-    /// Who handed the task over on request and may take it back without asking (SPEC-490
-    /// OWN-009), or null.
+    /// Who handed the task over on request, or had it taken (SPEC-510), and may take it back
+    /// without asking (SPEC-490 OWN-009), or null.
     #[serde(default)]
     pub control_from: Option<UserRef>,
     /// Whether the owner chose to be asked before anyone takes control (SPEC-510 TKC-005):
@@ -346,8 +347,7 @@ pub struct CreateTask {
     /// Initial prompt.
     pub prompt: String,
     /// Harness: `claude`, `codex` (SPEC-503) or `antigravity` (SPEC-505); `auto` (the default)
-    /// draws Claude Code or Antigravity among those with a usable subscription, unless `model`
-    /// implies one (SPEC-505 RND-001).
+    /// is the one `model` implies, else Claude Code; never drawn (SPEC-514 PIN-001).
     #[serde(default = "default_harness")]
     pub harness: String,
     /// Workflow to seed steps/instructions; `auto` lets Jev choose one or none (TSK-015).
@@ -594,6 +594,14 @@ pub struct TaskDetail {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct QueueMessage {
     /// The message, added to the request as it is (trimmed).
+    pub text: String,
+}
+
+/// `POST /api/tasks/{tid}/needs-you/answer` (SPEC-516 NYA-001): the answer to what the task's
+/// agent asked a person, from anyone who may work in its project.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AnswerNeedsYou {
+    /// The answer, typed into the task's session as one labelled message.
     pub text: String,
 }
 

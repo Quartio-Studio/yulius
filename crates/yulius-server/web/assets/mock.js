@@ -252,8 +252,6 @@ function seed(params) {
     unsignedAccounts: new Set(),
     // Codex subscriptions made with an OpenAI API key: no usage windows (SPEC-503 CDX-008).
     codexKeyAccounts: new Set(),
-    // Rolls of the next harness draws, in order (tests; SPEC-505 RND-001).
-    harnessRolls: [],
   };
   // Product: the product preset with a dev-vm deploy command (so it is "custom"): exercises
   // command runs plus manual confirmation. Studio: continuous, no environments.
@@ -727,7 +725,7 @@ function detail(db, task) {
     started: hasStarted(task),
     // What the task asks for, and the Claude Code its latest session runs (SPEC-461 CCM-012).
     model: task.model || 'claude-opus-5-5',
-    model_default: !task.model || task.effort === 'default',
+    model_default: Boolean(task.model_default) || !task.model || task.effort === 'default',
     // The model its run was launched with while no subscription could run its own (SPEC-482).
     ...(task.fallback_model ? { fallback_model: task.fallback_model } : {}),
     ...(task.effort && task.effort !== 'default' ? { effort: task.effort } : { effort: 'high' }),
@@ -1488,9 +1486,8 @@ route('POST', `/api/sandboxes/${ID}/tasks`, async ({ db, p, body }) => {
   need(sandbox, 'write');
   if (!body.prompt || !body.prompt.trim()) fail(422, 'invalid', 'The prompt is empty.');
   if (body.harness && !['auto', 'claude', 'codex', 'antigravity'].includes(body.harness)) fail(422, 'invalid', 'harness must be claude, codex or antigravity');
-  // No agent (or `auto`): the one the model implies, else drawn among the usable (SPEC-505 RND-001).
-  const drawn = (!body.harness || body.harness === 'auto') && !body.model;
-  const harness = drawn ? drawHarness(db) : body.harness && body.harness !== 'auto' ? body.harness : impliedHarness(body.model);
+  // No agent (or `auto`): the one the model implies, else Claude Code; never drawn (SPEC-514).
+  const harness = body.harness && body.harness !== 'auto' ? body.harness : impliedHarness(body.model);
   // Antigravity runs Google's Gemini models only, as on the server (SPEC-505).
   if (harness === 'antigravity' && body.model && !body.model.startsWith('gemini-')) fail(422, 'invalid', 'an Antigravity task takes a Gemini model (such as gemini-4-carbon)');
   if (body.mode && !['goal', 'prompt', 'auto'].includes(body.mode)) fail(422, 'invalid', 'mode must be goal, prompt or auto');
@@ -1532,12 +1529,14 @@ route('POST', `/api/sandboxes/${ID}/tasks`, async ({ db, p, body }) => {
   const wf = choice ? choice.workflow : db.workflows.find((w) => w.id === body.workflow_id);
   const id = `tsk_${sandbox.id.slice(3)}_${number}`;
   const task = {
-    id, sandbox_id: sandbox.id, number, title, harness, harness_choice: drawn ? 'random' : 'chosen', status: waitsFor ? 'chained' : 'queued', activity: null,
+    id, sandbox_id: sandbox.id, number, title, harness, harness_choice: 'chosen', status: waitsFor ? 'chained' : 'queued', activity: null,
     branch: `feat/${title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40) || `task-${number}`}`,
     origin: 'ui', created_by: { login: db.me.user.login, id: db.me.user.id }, created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
     archived: false, account_label: null,
     stepsList: wf ? wf.steps.map((title2, i) => ({ id: `${id}-s${i + 1}`, ordinal: i + 1, title: title2, status: 'pending', note: '', updated_by: 'workflow', updated_at: new Date().toISOString() })) : [],
-    model: body.model || (harness === 'antigravity' ? 'gemini-4-carbon' : 'claude-opus-4'), effort: body.effort || (harness === 'antigravity' ? 'high' : 'default'), prompt: body.prompt,
+    model: body.model || (harness === 'codex' ? 'gpt-6.2-astra' : harness === 'antigravity' ? 'gemini-4-carbon' : 'claude-opus-4'), effort: body.effort || (harness === 'codex' ? 'high' : harness === 'antigravity' ? 'high' : 'default'), prompt: body.prompt,
+    // A task without a model asks for its agent's default, as on the server (`model_default`).
+    model_default: !body.model,
     delivery: null, mode: choice ? choice.mode : body.mode || 'goal', auto: choice ? choice.auto : null,
     supertask: body.supertask === true,
   };
@@ -1819,18 +1818,9 @@ route('POST', `/api/tasks/${ID}/stop`, ({ db, p }) => {
   later(() => touch(db, task, { status: 'stopped_cancelled', account_label: null }), 1400);
   return summary(task);
 });
-// The agent drawn for a task without one: Claude Code or Antigravity among those with a usable
-// subscription, Claude Code when neither has one (SPEC-505 RND-001). `__yuliusMock.harnessRolls`
-// queues the rolls (tests); otherwise a roll is random.
-function drawHarness(db) {
-  const usable = ['claude', 'antigravity'].filter((h) => usableOf(db, agentOfHarness(h).provider));
-  if (usable.length === 0) return 'claude';
-  const roll = db.harnessRolls && db.harnessRolls.length ? db.harnessRolls.shift() : Math.floor(Math.random() * 256);
-  return usable[roll % usable.length];
-}
 const impliedHarness = (model) => (String(model || '').trim().toLowerCase().startsWith('gemini-') ? 'antigravity' : 'claude');
-// An automation without an agent draws one for each run (SPEC-505 RND-002).
-const automationHarness = (db, a) => (!a.harness || a.harness === 'auto' ? { harness: drawHarness(db), harness_choice: 'random' } : { harness: a.harness, harness_choice: 'chosen' });
+// An automation runs the agent it names; `auto` (or none) is Claude Code (SPEC-514 PIN-003).
+const namedHarness = (harness) => (!harness || harness === 'auto' ? 'claude' : harness);
 // A task runs on subscriptions of its harness's provider only (SPEC-503 CDX-013, SPEC-505).
 const providerOfTask = (task) => agentOfHarness(task.harness).provider;
 const kindOf = (provider) => agentOfProvider(provider).name;
@@ -1931,6 +1921,25 @@ route('POST', `/api/tasks/${ID}/control/take`, ({ db, p }) => {
   if (task.ownerAsksFirst) fail(409, 'conflict', `@${owner} wants to be asked before anyone takes control of their tasks: request control of task #${task.number} instead`);
   const controlFrom = task.controlFrom && task.controlFrom.login === me ? null : { login: owner };
   touch(db, task, { owner: { login: me }, controlRequest: null, controlFrom, ownerAsksFirst: false });
+  return summary(task);
+});
+// Answer a task's Needs you, owner or not, without taking control (SPEC-516). Tests read what
+// was answered from `__yuliusMock.needsYouAnswers`; `holdsPersonal` on a task stands for its
+// owner's personal secrets or MCP servers in reach.
+route('POST', `/api/tasks/${ID}/needs-you/answer`, ({ db, p, body }) => {
+  const task = taskOf(db, p[0]);
+  need(sandboxOf(db, task.sandbox_id), 'write');
+  const me = db.me.user.login;
+  const owner = ownerOf(task).login;
+  if (owner !== me && db.me.user.guest) fail(403, 'forbidden', `Task #${task.number} is @${owner}'s: a guest answers the requests of only their own tasks on this playground.`);
+  const text = String(body.text || '').trim();
+  if (!text) fail(422, 'invalid', 'the answer is empty');
+  if (task.status !== 'running') fail(409, 'conflict', `task #${task.number} is not running (${task.status}), so its agent reads no answer now`);
+  if (!task.needs_you) fail(409, 'conflict', `task #${task.number} asks nobody anything now: there is nothing to answer`);
+  if (task.activity === 'needs_attention') fail(409, 'conflict', `task #${task.number}'s agent asks in its terminal now: @${owner} answers there, or take control of the task`);
+  if (owner !== me && task.holdsPersonal) fail(409, 'conflict', `task #${task.number} holds @${owner}'s personal secrets or MCP servers, so only @${owner} answers it; or take control of the task`);
+  (db.needsYouAnswers ||= []).push({ task: task.id, by: me, text });
+  touch(db, task, { needs_you: null });
   return summary(task);
 });
 route('PUT', '/api/me/control', ({ db, body }) => {
@@ -3111,7 +3120,7 @@ route('POST', `/api/sandboxes/${ID}/automations`, ({ db, p, body }) => {
   need(sandboxOf(db, p[0]), 'write');
   if (Math.abs(Number(body.utc_offset_minutes) || 0) > 1080) fail(422, 'invalid', 'utc_offset_minutes must be within ±1080');
   db.nextId += 1;
-  const a = { id: `aut_${db.nextId}`, sandbox: p[0], ...body, ...automationStart(db, p[0], body), created_via: 'ui', next_run_at: body.enabled ? isoIn(5 * HOUR) : null, last_run: null };
+  const a = { id: `aut_${db.nextId}`, sandbox: p[0], ...body, harness: namedHarness(body.harness), ...automationStart(db, p[0], body), created_via: 'ui', next_run_at: body.enabled ? isoIn(5 * HOUR) : null, last_run: null };
   db.automations.push(a);
   const { sandbox: _s, ...out } = a;
   return json(201, out);
@@ -3122,7 +3131,7 @@ route('PUT', `/api/automations/${ID}`, ({ db, p, body }) => {
   // The stored choice sent back unchanged is kept unchecked, as the server does (SPEC-078).
   const same = Boolean(body.supertask) === Boolean(a.supertask) && (body.after_task_id || null) === (a.after_task_id || null) && (body.start_rule || null) === (a.start_rule || null) && Boolean(body.prepared) === Boolean(a.prepared);
   const start = same ? { supertask: Boolean(a.supertask), after_task_id: a.after_task_id || null, after_task_number: a.after_task_number ?? null, start_rule: a.start_rule || null, prepared: Boolean(a.prepared) } : automationStart(db, a.sandbox, body);
-  Object.assign(a, body, start, { next_run_at: body.enabled ? isoIn(5 * HOUR) : null });
+  Object.assign(a, body, start, { harness: namedHarness(body.harness || a.harness), next_run_at: body.enabled ? isoIn(5 * HOUR) : null });
   const { sandbox: _s, ...out } = a;
   return out;
 });
@@ -3153,7 +3162,7 @@ function automationTask(db, a, start) {
     : start.after_task_id ? db.tasks.find((t) => t.id === start.after_task_id) : null;
   const now = new Date().toISOString();
   const task = {
-    id, sandbox_id: a.sandbox, number, title: a.name, ...automationHarness(db, a), status: before ? 'chained' : start.prepared ? 'prepared' : 'queued', activity: null,
+    id, sandbox_id: a.sandbox, number, title: a.name, harness: namedHarness(a.harness), harness_choice: 'chosen', status: before ? 'chained' : start.prepared ? 'prepared' : 'queued', activity: null,
     branch: `feat/${number}-automation`, origin: 'automation', created_by: { login: db.me.user.login }, created_at: now, updated_at: now,
     archived: false, account_label: null, stepsList: [], model: 'claude-opus-4', effort: 'default', prompt: a.prompt,
     delivery: null, mode: 'goal', auto: null, supertask: start.supertask,
@@ -4228,7 +4237,9 @@ route('POST', `/api/admin/accounts/login/${ID}/cancel`, ({ db, p }) => {
   if (!session) fail(404, 'not_found', 'not found');
   if (!session.done) {
     db.loginCancels.push(p[0]);
-    session.end('cancelled', null);
+    // Like the server, a sign-in that already holds its credential is sealed (SPEC-515).
+    if (session.status === 'signed_in') session.succeed();
+    else session.end('cancelled', null);
   }
   return { status: session.status };
 });
@@ -4296,6 +4307,8 @@ route('GET', '/api/analytics/docker', ({ db, query }) => {
 
 route('GET', '/api/analytics/summary', ({ db, query }) => {
   if (query.get('sandbox') && !db.sandboxes.some((s) => s.id === query.get('sandbox'))) fail(404, 'not_found', 'not found');
+  if (db.failAnalyticsSummary) fail(500, 'internal', 'the mock failed this read');
+  if (db.analyticsSummary) return db.analyticsSummary;
   const fromDay = query.get('from');
   const toDay = query.get('to');
   const to = Date.parse(toDay || new Date().toISOString().slice(0, 10));
@@ -4317,13 +4330,21 @@ route('GET', '/api/analytics/summary', ({ db, query }) => {
   const runs = Math.round(total * 1.3);
   const unknown = Math.round(total * 0.1);
   const n = (v) => Math.round(v * scale);
+  const codexTasks = Math.round(total * 0.3);
+  const googleTasks = Math.round(total * 0.2);
+  const codexRuns = Math.round(runs * 0.3);
+  const googleRuns = Math.round(runs * 0.2);
+  const harnessUsage = (harness, median, p90, tokens) => ({
+    harness, ...tokens, finished_runs: tokens.runs,
+    median_wall_ms: tokens.runs ? median * MIN : null, p90_wall_ms: tokens.runs ? p90 * MIN : null,
+  });
   return {
     range: { sandbox: query.get('sandbox') || null, from: fromDay || null, to: toDay || null },
     tasks: {
       total,
       closed: Math.round(total * 0.62),
       by_status: { closed: Math.round(total * 0.62), stopped_cancelled: Math.round(total * 0.12), running: 3, done: 2, failed_spawn_error: 1, stopped_crashed: 2 },
-      by_harness: { claude: total },
+      by_harness: { claude: total - codexTasks - googleTasks, codex: codexTasks, antigravity: googleTasks },
       by_origin: { ui: Math.round(total * 0.8), automation: Math.round(total * 0.15), import: Math.round(total * 0.05) },
     },
     tasks_per_day: perDay,
@@ -4335,8 +4356,10 @@ route('GET', '/api/analytics/summary', ({ db, query }) => {
       { model: 'unknown', ...tokenTotals(unknown, unknown, null, null, null, null, unknown) },
     ],
     tokens_by_harness: [
-      { harness: 'claude', ...tokenTotals(runs, total, n(41e6), n(5.2e6), n(310e6), null, unknown) },
-    ],
+      harnessUsage('claude', 30, 80, tokenTotals(runs - codexRuns - googleRuns, total - codexTasks - googleTasks, n(25e6), n(3e6), n(250e6), null, 0)),
+      harnessUsage('codex', 18, 45, tokenTotals(codexRuns, codexTasks, n(10e6), n(1.2e6), n(60e6), null, 0)),
+      harnessUsage('antigravity', 24, 64, tokenTotals(googleRuns, googleTasks, n(6e6), n(1e6), null, null, unknown)),
+    ].filter((row) => row.runs),
     tokens_by_account: [
       ...db.accounts.filter((a) => a.status !== 'pending_login').map((a, i) => ({ account_id: a.id, account_label: a.label, ...(isAdmin(db) && a.email ? { account_email: a.email } : {}), ...tokenTotals(Math.round(runs / (i + 2)), Math.round(total / (i + 2)), n(14e6 / (i + 1)), n(1.8e6 / (i + 1)), null, null, 0) })),
       { account_id: 'acc_deleted', account_label: null, ...tokenTotals(2, 1, n(1e6), n(0.1e6), null, null, 0) },
@@ -5649,7 +5672,7 @@ route('GET', '/api/capacity', ({ db }) => {
     resumes_at: null,
     fallback_model: fallback ? 'claude-opus-5-5' : null,
     accounts: db.accounts.map((a) => ({
-      label: a.label, status: a.status, usage: a.usage, available: isAvailable(a),
+      label: a.label, provider: a.provider || 'anthropic', status: a.status, usage: a.usage, available: isAvailable(a),
       ...(admin ? { id: a.id, in_use_by: a.in_use_by, ...(a.email ? { email: a.email } : {}) } : {}),
     })),
     tokens: poolTokens(),
@@ -6622,7 +6645,8 @@ class ShellSession {
 
 /** Starts a sign-in for `accountId`, replacing (cancelling) one still running, as the server does. */
 function startLogin(db, accountId) {
-  for (const session of db.logins.values()) if (session.accountId === accountId && !session.done) session.end('cancelled', null);
+  // Like the server, a replaced sign-in that already holds its credential is sealed (SPEC-515).
+  for (const session of db.logins.values()) if (session.accountId === accountId && !session.done) { if (session.status === 'signed_in') session.succeed(); else session.end('cancelled', null); }
   db.nextId += 1;
   const loginId = `login_${accountId}_${db.nextId}`;
   db.logins.set(loginId, new LoginSession(db, accountId));
@@ -6636,6 +6660,8 @@ const GOOGLE_SIGN_IN_URL = `https://accounts.google.com/o/oauth2/v2/auth?access_
  * Fake provider login for the account login terminal: a fixed 1000×40 PTY; `state.status`
  * goes running → ok | error | cancelled and the exit frame carries the same status. Tokens are
  * masked. Enter signs in; the code `fail` makes the sign-in fail as the CLI's would (SPEC-243).
+ * An Antigravity sign-in says `signed_in` instead and runs on for the CLI's setup until it is
+ * ended through the cancel route, which then answers `ok` (SPEC-515).
  */
 /** Why the mock's sign-in fails: what the server's exit frame and a first sign-in's error say. */
 const SIGN_IN_FAILED = 'the sign-in ended without producing a token (exit code 1)';
@@ -6721,6 +6747,8 @@ class LoginSession {
   }
 
   finish() {
+    // The Antigravity CLI's setup after the sign-in takes its answers (SPEC-515).
+    if (this.status === 'signed_in') { this.input = ''; this.out('\r\n'); return; }
     const account = this.db.accounts.find((a) => a.id === this.accountId);
     if (this.input === 'fail') {
       this.out(`\r\n${c(203, this.codex() ? 'Error logging in with device code: the code was not approved.' : 'OAuth error: the authorization code was not accepted.')}\r\n`);
@@ -6737,7 +6765,21 @@ class LoginSession {
       this.end('error', 1, SIGN_IN_FAILED);
       return;
     }
-    this.out(this.google() ? `\r\n${c(114, '✔')} Signed in with Google.\r\n` : this.codex() ? `\r\n${c(114, '✔')} Successfully logged in.\r\n` : `\r\nToken: sk-ant-oat01-[REDACTED]\r\n${c(114, '✔')} Logged in. Credentials stored encrypted for this account.\r\n`);
+    if (this.google()) {
+      // Like agy: the token file is written now, and its setup goes on (SPEC-515).
+      this.input = '';
+      this.status = 'signed_in';
+      this.out(`\r\n${c(114, '✔')} Signed in with Google.\r\n Help improve Antigravity: may Google use your data to improve its models? (y/N) `);
+      if (this.ws) this.ws.push(JSON.stringify(this.state()));
+      return;
+    }
+    this.succeed();
+  }
+
+  /** The credential is sealed: the account is connected and the sign-in ends `ok`. */
+  succeed() {
+    const account = this.db.accounts.find((a) => a.id === this.accountId);
+    this.out(this.google() ? `\r\n${c(114, '✔')} Antigravity is set up.\r\n` : this.codex() ? `\r\n${c(114, '✔')} Successfully logged in.\r\n` : `\r\nToken: sk-ant-oat01-[REDACTED]\r\n${c(114, '✔')} Logged in. Credentials stored encrypted for this account.\r\n`);
     if (account) {
       this.db.unsignedAccounts.delete(account.id);
       Object.assign(account, { status: 'ok', last_error: null, usage: { primary: { used_percent: 3.0, resets_at: isoIn(5 * HOUR), window_minutes: 300 }, secondary: { used_percent: 1.0, resets_at: isoIn(7 * DAY), window_minutes: 10080 }, observed_at: new Date().toISOString() } });

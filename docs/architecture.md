@@ -54,7 +54,9 @@ flowchart LR
 
 ## Codex
 
-A Codex task runs `codex --no-daemon` in its worktree with `CODEX_HOME=<sandbox>/codex/<account>`.
+A Codex task runs `codex --no-daemon` in its worktree with `CODEX_HOME=<sandbox>/codex/<account>`,
+on its own model and effort or else `-m gpt-6.2-astra -c model_reasoning_effort="high"` (SPEC-511,
+[decision 0366](decisions/0366-a-codex-task-runs-gpt-6-2-astra-at-high-effort-by-default.md)).
 The supervisor writes the home's `auth.json` (the account's sealed credential), `config.toml` and
 `hooks.json` through handles that follow no link, and reads the rollout from the sandbox's shared
 `codex/sessions`; its hooks reach Yulius as `yulius hook codex <event>`. After the run, a
@@ -86,10 +88,12 @@ accounts, by `codex resume <id>`: at a usage limit, when a person moves it and w
 subscription is removed (SPEC-447); it waits when none has capacity, and with no Codex
 subscription usable it asks for one.
 
-A task created without an agent (or a model that implies one) is drawn between Claude Code and
-Antigravity among those with a usable subscription (`App::draw_harness`, `Harness::drawn`), and
-so is each run of an automation without one; the draw is kept in `task_harness_draws` and shown
-as `harness_choice` (SPEC-505 RND-001..003).
+A task's agent is set at creation and never drawn (SPEC-514, ADR-0368): without an agent (or
+with `auto`) it is the one its model implies, else Claude Code (`Harness::unnamed`); an agent's
+`task_create` and `automation_create` pass the calling task's own; an automation stores the agent
+it names (`auto` saves as `claude`; migration 0068 turned stored `auto` into `claude`). Tasks
+drawn while SPEC-505 RND-001 drew stay in `task_harness_draws`, shown as `harness_choice`
+`random`.
 
 An Antigravity task ([decision 0361](decisions/0361-antigravity-is-a-third-harness-picked-at-random-by-default.md))
 runs the `agy` TUI on a Google account with a home of its own in its run directory,
@@ -622,16 +626,21 @@ grows and is zeroed whole once the token is extracted
 Codex (`codex login --device-auth`) and Antigravity sign in the same way but leave a file instead
 of printing a token: `auth.json`, or the Antigravity CLI's token file below
 `.gemini/antigravity-cli`, read without following a link and sealed. The Antigravity CLI has no
-sign-in-only command: its sign-in is the whole agent TUI (auto-update off), which never exits on
-its own, so it is stopped 5 s after its token file appears. Once signed in, that TUI can run a
-shell command typed into it, which an instance administrator can do anyway (an MCP server's
-Test), and Yulius types nothing into it
+sign-in-only command: its sign-in is the whole agent TUI (auto-update off). It writes its token
+file before the rest of its setup (the data-use choice and more), so it is not stopped then. The
+terminal's state says `signed_in`, and the dialog offers Done. Done or closing the dialog (the
+cancel, answering `ok`), the CLI's exit or the timeout end it and seal the token file
+([decision 0369](decisions/0369-a-google-sign-in-runs-until-the-person-is-done.md)). Once signed
+in, that TUI can run a shell command typed into it, which an instance administrator can do anyway
+(an MCP server's Test), and Yulius types nothing into it
 ([decision 0361](decisions/0361-antigravity-is-a-third-harness-picked-at-random-by-default.md)).
 
 ```mermaid
 stateDiagram-v2
   [*] --> running: Add subscription / Sign in again
   running --> ok: token sealed (CLI exit, or 5 s after the token)
+  running --> signed_in: Antigravity token file written, its setup goes on (ADR-0369)
+  signed_in --> ok: token file sealed (Done or dialog closed, CLI exit, or 15 min timeout)
   running --> error: no token at exit, or 15 min timeout
   running --> cancelled: dialog closed (cancel) before a token, replaced, or subscription removed
   ok --> [*]: dialog closes, toast "… is connected"
@@ -1397,6 +1406,13 @@ sequenceDiagram
     A->>H: SubagentStop (last_assistant_message)
     H->>Y: end the round with its verdict
 ```
+
+## Harness comparison
+
+Dashboard → Harnesses reads the sandbox analytics summary for tasks created in the selected UTC period.
+Task counts use the assigned harness. Each run contributes to the executing harness’s token totals and
+reporting coverage. Ended runs also contribute elapsed wall time to that harness’s median and p90.
+[ADR-0374](decisions/0374-compare-harnesses-by-executing-attempt.md)
 
 ## Agent feedback
 
@@ -3295,8 +3311,16 @@ whoever owns the task) and **control** (everything that steers it: write access 
 to `load_task` means control, so a new task function is the owner's unless it asks for tidy by
 name. Nothing else compares a task's owner: the terminal's write grant, shells and files in a
 worktree, the queue's order, a Superagent's message, a restore of attachments into a task and
-Start onboarding all ask the same rule. A playground's guest tidies only their own tasks
-(`TaskRefusal::Guest`). Anyone else who may work in the project (not a guest) takes control at
+Start onboarding all ask the same rule. A fourth, **answer** (`TaskAction::Answer`,
+[SPEC-516](../.ai/specs/SPEC-516-user-should-be-able-to-answer-yulius-s-n.md),
+[decision 0370](decisions/0370-a-teammate-answers-a-tasks-needs-you-without-taking-control.md)),
+answers what a running task's agent asked a person (`needs_you`) with write access, owner or
+not: `POST /api/tasks/{tid}/needs-you/answer` (`App::answer_needs_you`) types one labelled answer
+through `type_into_session` and ends the request (audited `task.needs_you.answered`); control
+does not move. The task is read again after the access check. It is refused while the agent asks
+in its terminal and, from anyone but the owner, while the owner's personal agent
+secrets or MCP servers reach the run. A playground's guest tidies and answers only their own
+tasks (`TaskRefusal::Guest`). Anyone else who may work in the project (not a guest) takes control at
 once from the task's page or its menu (`App::take_task_control`, `seize_control`,
 [SPEC-510](../.ai/specs/SPEC-510-change-request-control-for-tasks-to-take.md),
 [decision 0365](decisions/0365-a-teammate-takes-control-unless-the-owner-chose-to-be-asked.md)),
@@ -3307,8 +3331,8 @@ and the previous owner gets `task.control_taken` wherever they are. An owner who
 owner's task passes at once either way. A take or a hand-over on request records its giver
 (`tasks.control_from`, schema 60), who takes the task back without asking
 (`App::take_back_task_control`, one conditional update) until control moves again: handed on,
-handed back to the giver, or passed from an absent owner, which clear or replace it. An onboarding task that never ran passes to whoever
-starts onboarding.
+handed back to the giver, or passed from an absent owner, which clear or replace it. An
+onboarding task that never ran passes to whoever starts onboarding.
 
 ```mermaid
 flowchart LR
@@ -3316,7 +3340,8 @@ flowchart LR
   RULE -->|"view: read access"| READ["detail, transcript, delivery"]
   RULE -->|"tidy: write access"| TIDY["stop, close out, archive,<br/>restore, delete"]
   TIDY --> AUD[("audit: who, and the owner")]
-  RULE -->|"control: write access + owner"| CTRL["terminal, messages, answers,<br/>start, pause, deliver, worktree"]
+  RULE -->|"control: write access + owner"| CTRL["terminal, messages,<br/>start, pause, deliver, worktree"]
+  RULE -->|"answer: write access,<br/>owner or not"| ANS["POST /needs-you/answer:<br/>labelled paste, needs_you ends"]
   RULE -->|"control, not the owner"| ASK["403: take control, or ask"]
   ASK -->|"POST /control/take<br/>(owner does not ask first)"| SEIZE["seize_control"]
   SEIZE --> OWN

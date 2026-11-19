@@ -54,6 +54,7 @@ export function openTaskMenu(ctx, anchor, task) {
     // Someone else's task: take control, or ask an owner who wants to be asked, from here too
     // (SPEC-490 OWN-007, SPEC-510 TKC-005).
     !can.askControl ? null
+      : task.control_from && task.control_from.login === me ? { label: 'Take back', title: 'It acts on GitHub as you again', onSelect: () => takeBackTask(ctx, task) }
       : !asksFirst ? { label: 'Take control', title: `It would act on GitHub as you; @${owner} is told and can take it back`, onSelect: () => takeControl(ctx, task) }
       : asked ? { label: 'Withdraw request', title: `You asked @${owner} for control of this task`, onSelect: () => dropControlRequest(ctx, task) }
       : { label: 'Request control', disabled: Boolean(request), title: request ? `@${request.by.login} already asked @${owner} for control` : `Asks @${owner} to hand this task over: it would act on GitHub as you`, onSelect: () => requestControl(ctx, task) },
@@ -295,6 +296,15 @@ export async function takeControl(ctx, task) {
     const fresh = await ctx.api.get(`/api/tasks/${enc(task.id)}`).catch(() => null);
     if (fresh && fresh.id) ctx.store.upsertTask(fresh);
   }
+}
+
+/**
+ * Answer what someone else's task's agent asked a person (`needs_you`, SPEC-516): one labelled
+ * answer typed into its session; the task stays its owner's. The updated task, or null when refused
+ * (the reason is shown).
+ */
+export function answerNeedsYou(ctx, task, text) {
+  return taskPost(ctx, task, 'answer', () => ctx.api.post(`/api/tasks/${enc(task.id)}/needs-you/answer`, { text }), `Answered #${task.number}`);
 }
 
 /** Ask the task's owner for control: the task would act on GitHub as you (SPEC-070). */

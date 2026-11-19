@@ -10,7 +10,7 @@ use yulius_app::model::TaskRecord;
 use yulius_app::ports::store::{
     InstanceStore as _, PermissionStore as _, TaskStore as _, UserStore as _,
 };
-use yulius_app::ports::store_ext::AutomationStore as _;
+use yulius_app::ports::store_ext::{AutomationStore as _, NeedsYouStore as _};
 use yulius_domain::ids::{TaskId, UserId};
 use yulius_domain::task::TaskStatus;
 
@@ -1400,13 +1400,15 @@ async fn a_take_is_refused_to_whoever_may_not_take() -> TestResult {
     Ok(())
 }
 
-/// SPEC-510 TKC-002 (review round 1): Alice takes back by taking control herself. She was the
-/// giver, so nobody may take it back afterwards and the notice promises nothing; Bob, from whom
-/// it was taken, is told.
+/// SPEC-510 TKC-002 (review rounds 1 and 2): Alice takes back by taking control herself. She was
+/// the giver, so it is a take-back: nobody may take it back afterwards, nothing promises it, and
+/// Bob, from whom it was taken, is told it was taken back.
 #[tokio::test]
 async fn taking_control_back_from_the_taker_leaves_no_giver() -> TestResult {
     let f = fixture().await?;
     assert_eq!(take(&f, &f.bob).await?.status, 200);
+    // Bob asking first does not keep the task from whoever it was taken from (ADR-0365).
+    assert_eq!(ask_first(&f.h, &f.bob, true).await?.status, 200);
     let mut watch = f.h.app.runtime(&f.task.id).hub.watch();
     let mut events = f.h.app.events.subscribe();
     let back = take(&f, &f.alice).await?;
@@ -1415,22 +1417,260 @@ async fn taking_control_back_from_the_taker_leaves_no_giver() -> TestResult {
     assert_eq!(back.body["control_from"], serde_json::Value::Null);
     let said = notices(&mut watch);
     assert!(
-        said.iter()
-            .any(|n| n.contains("@alice took control of this task from @bob"))
+        said.iter().any(|n| n.contains("returned to @alice"))
             && !said.iter().any(|n| n.contains("can take it back")),
         "{said:?}"
     );
+    assert_eq!(audited(&f.h, "t1", "task.control_taken_back").await?, 1);
     let mut told = Vec::new();
     while let Ok(envelope) = events.try_recv() {
-        if let yulius_contracts::events::UiEvent::ControlTaken { by, .. } = &envelope.event {
-            told.push((envelope.user.clone(), by.clone()));
+        use yulius_contracts::events::UiEvent;
+        match &envelope.event {
+            UiEvent::ControlTakenBack { by, .. } => {
+                told.push((envelope.user.clone(), "back", by.clone()));
+            }
+            UiEvent::ControlTaken { by, .. } => {
+                told.push((envelope.user.clone(), "taken", by.clone()));
+            }
+            _ => {}
         }
     }
     assert_eq!(
         told,
-        vec![(Some(UserId::parse("u-b")?), "alice".to_owned())]
+        vec![(Some(UserId::parse("u-b")?), "back", "alice".to_owned())]
     );
     // Nobody gave it to Alice: there is nothing to take back.
     assert_eq!(take_back(&f, &f.bob).await?.status, 409);
+    Ok(())
+}
+
+/// What the agent of task `id` asks a person (SPEC-134), as the `needs_you` tool records it.
+async fn ask(h: &Harness, id: &str) -> TestResult {
+    let asked = yulius_app::needs_you::NeedsYouRecord {
+        action: "Choose the staging region".into(),
+        happened: None,
+        problem: None,
+        decision: true,
+        link: None,
+        at: 1,
+        cause: None,
+    };
+    h.store
+        .set_task_needs_you(&TaskId::parse(id)?, Some(&asked), h.app.now())
+        .await?;
+    Ok(())
+}
+
+/// `POST /api/tasks/{id}/needs-you/answer` (SPEC-516) by `who`.
+async fn answer(
+    h: &Harness,
+    id: &str,
+    who: &Creds,
+    text: &str,
+) -> Result<crate::support::Resp, Box<dyn std::error::Error>> {
+    call(
+        &h.router,
+        Method::POST,
+        &format!("/api/tasks/{id}/needs-you/answer"),
+        Some(json!({"text": text})),
+        who,
+    )
+    .await
+}
+
+/// SPEC-516 NYA-004, AC2: an answer is refused, saying why, with nothing to answer, an empty
+/// text, a task that does not run, an agent asking in its terminal, the owner's personal secret
+/// within the run's reach, a reader and a disabled account; the request stays open and the task
+/// stays its owner's.
+#[tokio::test]
+async fn a_needs_you_answer_is_refused_where_it_must_not_reach_the_agent() -> TestResult {
+    let f = fixture().await?;
+    let t1 = id_of(&f).to_owned();
+    let status = |r: &crate::support::Resp| r.status;
+    let says = |r: &crate::support::Resp, what: &str| {
+        r.body
+            .to_string()
+            .to_lowercase()
+            .contains(&what.to_lowercase())
+    };
+
+    let none = answer(&f.h, &t1, &f.bob, "Frankfurt").await?;
+    assert_eq!(status(&none), 409, "{}", none.body);
+    assert!(says(&none, "nothing to answer"), "{}", none.body);
+
+    ask(&f.h, &t1).await?;
+    let empty = answer(&f.h, &t1, &f.bob, " \u{7} ").await?;
+    assert_eq!(status(&empty), 422, "{}", empty.body);
+    let long = answer(&f.h, &t1, &f.bob, &"x".repeat(64 * 1024 + 1)).await?;
+    assert_eq!(status(&long), 422, "{}", long.body);
+    assert!(says(&long, "longer than 64 KiB"), "{}", long.body);
+
+    seed_task(&f.h, "t2", "s1", "u-a", RESTING, None).await?;
+    ask(&f.h, "t2").await?;
+    let resting = answer(&f.h, "t2", &f.bob, "Frankfurt").await?;
+    assert_eq!(status(&resting), 409, "{}", resting.body);
+    assert!(says(&resting, "not running"), "{}", resting.body);
+
+    f.h.store
+        .set_activity(
+            &f.task.id,
+            Some(yulius_domain::task::Activity::NeedsAttention),
+            f.h.app.now(),
+        )
+        .await?;
+    let terminal = answer(&f.h, &t1, &f.bob, "Frankfurt").await?;
+    assert_eq!(status(&terminal), 409, "{}", terminal.body);
+    assert!(says(&terminal, "terminal"), "{}", terminal.body);
+    f.h.store
+        .set_activity(
+            &f.task.id,
+            Some(yulius_domain::task::Activity::Waiting),
+            f.h.app.now(),
+        )
+        .await?;
+
+    let carol = seed_github_user(&f.h, "u-c", "carol").await?;
+    f.h.github.set_perm("carol", "acme/repo", perms("read"));
+    let reader = answer(&f.h, &t1, &carol, "Frankfurt").await?;
+    assert_eq!(status(&reader), 403, "{}", reader.body);
+
+    let secret = call(
+        &f.h.router,
+        Method::POST,
+        "/api/sandboxes/s1/agent-secrets",
+        Some(
+            json!({"scope": "personal", "name": "ALICE_TOKEN", "value": "alice-personal-71c0ffee",
+            "hosts": ["api.alice.test"], "injection": "bearer"}),
+        ),
+        &f.alice,
+    )
+    .await?;
+    assert_eq!(status(&secret), 201, "{}", secret.body);
+    let personal = answer(&f.h, &t1, &f.bob, "Frankfurt").await?;
+    assert_eq!(status(&personal), 409, "{}", personal.body);
+    assert!(
+        says(&personal, "@alice") && says(&personal, "personal"),
+        "{}",
+        personal.body
+    );
+
+    // A disabled account is signed out: its session no longer authenticates.
+    disable(&f.h, "u-b").await?;
+    let disabled = answer(&f.h, &t1, &f.bob, "Frankfurt").await?;
+    assert_eq!(status(&disabled), 401, "{}", disabled.body);
+
+    assert!(f.h.store.task_needs_you(&f.task.id).await?.is_some());
+    let task = f.h.store.task(&f.task.id).await?.ok_or("task")?;
+    assert_eq!(task.owner, UserId::parse("u-a")?);
+    assert_eq!(audited(&f.h, &t1, "task.needs_you.answered").await?, 0);
+    Ok(())
+}
+
+/// SPEC-516 NYA-004 (review round 1): the owner's personal MCP server for the project keeps a
+/// teammate's answer out as their personal secret does.
+#[tokio::test]
+async fn the_owners_personal_mcp_server_keeps_a_teammates_answer_out() -> TestResult {
+    let f = fixture().await?;
+    let t1 = id_of(&f).to_owned();
+    ask(&f.h, &t1).await?;
+    let server = call(
+        &f.h.router,
+        Method::POST,
+        "/api/sandboxes/s1/mcp",
+        Some(
+            json!({"name": "mail", "transport": "http", "url": "https://mail.alice.test/mcp",
+            "scope": "sandbox", "audience": "personal"}),
+        ),
+        &f.alice,
+    )
+    .await?;
+    assert_eq!(server.status, 201, "{}", server.body);
+    let refused = answer(&f.h, &t1, &f.bob, "Frankfurt").await?;
+    assert_eq!(refused.status, 409, "{}", refused.body);
+    let said = refused.body.to_string();
+    assert!(
+        said.contains("@alice") && said.contains("personal"),
+        "{said}"
+    );
+    assert!(f.h.store.task_needs_you(&f.task.id).await?.is_some());
+    assert_eq!(audited(&f.h, &t1, "task.needs_you.answered").await?, 0);
+    Ok(())
+}
+
+/// SPEC-516 NYA-004 (review round 1): an automation's task holds no person's secrets or servers,
+/// so its owner's personal secret does not keep a teammate's answer out: it goes on to the
+/// session (here none is live, which is the refusal it meets).
+#[tokio::test]
+async fn an_automations_task_is_answered_whatever_its_owners_personal_secrets() -> TestResult {
+    let f = fixture().await?;
+    let mut automated = seed_task(&f.h, "t0", "s1", "u-a", TaskStatus::Running, None).await?;
+    automated.id = TaskId::parse("t3")?;
+    automated.number += 100;
+    automated.origin = yulius_app::model::TaskOrigin::Automation;
+    f.h.store.insert_task(&automated).await?;
+    ask(&f.h, "t3").await?;
+    let secret = call(
+        &f.h.router,
+        Method::POST,
+        "/api/sandboxes/s1/agent-secrets",
+        Some(
+            json!({"scope": "personal", "name": "ALICE_TOKEN", "value": "alice-personal-71c0ffee",
+            "hosts": ["api.alice.test"], "injection": "bearer"}),
+        ),
+        &f.alice,
+    )
+    .await?;
+    assert_eq!(secret.status, 201, "{}", secret.body);
+    let reached = answer(&f.h, "t3", &f.bob, "Frankfurt").await?;
+    assert_eq!(reached.status, 409, "{}", reached.body);
+    let said = reached.body.to_string();
+    assert!(said.contains("no live session"), "{said}");
+    assert!(!said.contains("personal"), "{said}");
+    // Refused where it is typed: the request stays open and nothing is audited (review round 2).
+    assert!(
+        f.h.store
+            .task_needs_you(&TaskId::parse("t3")?)
+            .await?
+            .is_some()
+    );
+    assert_eq!(audited(&f.h, "t3", "task.needs_you.answered").await?, 0);
+    Ok(())
+}
+
+/// SPEC-516 NYA-004 (review round 1): the access check may wait on GitHub; what the task is
+/// doing is decided from a read after it. The agent opens a question in its terminal meanwhile,
+/// and the answer is refused for it rather than typed into the menu.
+#[tokio::test]
+async fn an_answer_decides_on_the_task_as_it_is_after_the_access_check() -> TestResult {
+    let f = fixture().await?;
+    let t1 = id_of(&f).to_owned();
+    ask(&f.h, &t1).await?;
+    let hold = f.h.github.hold_access();
+    let request = answer(&f.h, &t1, &f.bob, "Frankfurt");
+    tokio::pin!(request);
+    let entered = tokio::time::timeout(std::time::Duration::from_secs(30), async {
+        tokio::select! {
+            done = &mut request => Err(format!("answered while GitHub was held: {:?}",
+                done.map(|r| r.body).map_err(|e| e.to_string()))),
+            () = f.h.github.access_entered.notified() => Ok(()),
+        }
+    })
+    .await?;
+    entered?;
+    f.h.store
+        .set_activity(
+            &f.task.id,
+            Some(yulius_domain::task::Activity::NeedsAttention),
+            f.h.app.now(),
+        )
+        .await?;
+    f.h.github.release_access(&hold);
+    let refused = request.await?;
+    assert_eq!(refused.status, 409, "{}", refused.body);
+    assert!(
+        refused.body.to_string().contains("asks in its terminal"),
+        "{}",
+        refused.body
+    );
     Ok(())
 }

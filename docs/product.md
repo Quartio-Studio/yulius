@@ -6,9 +6,11 @@ contained sandboxes on a single Linux VM, and enforces engineering discipline ar
 Yulius develops itself with Yulius.
 
 It also runs native Codex CLI sessions on Codex (OpenAI) subscriptions, chosen per task or
-automation; a task keeps its agent for life, and a Codex task moves only between Codex
-subscriptions. A Codex subscription signs in by device code, by an imported `auth.json` of a
-`codex login` made elsewhere, or with an OpenAI API key, and Yulius provides the pinned Codex CLI
+automation, on GPT-6.2 Astra at high effort unless a task names another model or effort (task
+#493, [SPEC-511](../.ai/specs/SPEC-511-default-model-for-codex-should-be-astra.md)); a task keeps
+its agent for life, and a Codex task moves only between Codex subscriptions. A Codex
+subscription signs in by device code, by an imported `auth.json` of a `codex login` made elsewhere,
+or with an OpenAI API key, and Yulius provides the pinned Codex CLI
 (0.169.0) to every Codex run. The founders accepted this on 2026-11-16 (`F 2026-11-16 Codex`,
 outside pull request #1146 by studenciak00owl), reversing the Codex part of their Claude-only
 decision `F 2026-10-08`; provider switching and session translation stay out
@@ -19,13 +21,15 @@ It runs native Antigravity CLI sessions on Antigravity (Google) subscriptions to
 Carbon at high effort unless a task names another Gemini model (`F 2026-11-17 Antigravity`, task
 #487). An Antigravity subscription signs in with the CLI's own Google sign-in or a Gemini API key,
 an Antigravity task moves only between Antigravity subscriptions, and Yulius provides the pinned
-Antigravity CLI (1.5.10). A task or automation run without a chosen agent is drawn at random
-between Claude Code and Antigravity, among those with a usable subscription (the composer's and
-the automation editor's default, Random), so the two can be compared on the same mix of work; a
-task says whether its agent was drawn, and the analytics export lists it. An agent can always be
-chosen instead
+Antigravity CLI (1.5.10)
 ([SPEC-505](../.ai/specs/SPEC-505-implement-antigravity-cli-next-to-claude.md),
-[ADR-0361](decisions/0361-antigravity-is-a-third-harness-picked-at-random-by-default.md)).
+[ADR-0361](decisions/0361-antigravity-is-a-third-harness-picked-at-random-by-default.md)). A
+task's agent is set, never drawn: the one chosen, else the one its model implies, else Claude Code
+(the composer's Default); a follow-up an agent creates runs that agent's own, and an automation
+always runs the agent it names (`F 2026-11-19 Harness`,
+[SPEC-514](../.ai/specs/SPEC-514-make-sure-harnesses-doesnt-change-themse.md),
+[ADR-0368](decisions/0368-a-tasks-agent-is-set-never-drawn.md)). Tasks drawn at random while
+SPEC-505's draw existed still say so, and the analytics export lists it.
 
 The authoritative product brief is [SPEC-001](../.ai/specs/SPEC-001-yulius-product.md); this
 page is the short version for anyone who must know the whole product before building.
@@ -319,7 +323,7 @@ watching, steering and unblocking.
   the person chose: with a mouse or pen each shows a drag grip, as the Notes tabs do, and each
   says it can be clicked or dragged; a dragged tab stays within the row, giving a little at
   either end; its menu moves it too.
-- **Sidebar**: the sandbox pages used every day (Tasks, Git, CI/CD — one page whose CI (tests) and CD (deployment) tabs work like the Secrets page's tabs —, Secrets, Dashboard — with Overview and Pipeline (stages) tabs —; the Superagent is on the right),
+- **Sidebar**: the sandbox pages used every day (Tasks, Git, CI/CD — one page whose CI (tests) and CD (deployment) tabs work like the Secrets page's tabs —, Secrets, Dashboard — with Overview, Pipeline (stages) and Harnesses tabs —; the Superagent is on the right),
   then "More" for Sessions, Workflows, Skills, Automations and MCP, then the active tasks.
 - **Tasks**: each task runs a real Claude Code CLI in a PTY on its own git worktree. Sessions
   outlive server restarts. Yulius keeps that CLI current by itself: a new Claude Code release
@@ -376,7 +380,7 @@ watching, steering and unblocking.
   people look elsewhere, also across a reload, until it starts.
   A task is its owner's: Yulius acts on GitHub for it with their credentials (the agent's own Git
   and `gh` use a narrowed App token), so only they steer it: type into it, send it messages,
-  answer what it asks, continue, start, pause or deliver it. Anyone who may work in the project
+  answer what it asks in its terminal, continue, start, pause or deliver it. Anyone who may work in the project
   can **stop, archive, restore and delete** any of its tasks (a playground's guest only their
   own), from the task's page, the lists and the sidebar; stopping or deleting someone else's task asks first and names its owner, and
   the audit says who did it (SPEC-490). Its owner can **pause** a running task and resume it later: the agent
@@ -390,7 +394,10 @@ watching, steering and unblocking.
   Others
   watch it as its live transcript (printed as the Sessions view prints a session, in the
   terminal's colours, following its newest lines until they scroll up), see whose it is
-  in the view and in the sidebar, and can take control, from the task's page or its menu in a
+  in the view and in the sidebar, answer what its agent asks under Needs you with Reply
+  without taking control (SPEC-516: the agent gets the answer labelled with their name; not
+  while it asks in its terminal or holds the owner's personal secrets or MCP servers), and can
+  take control, from the task's page or its menu in a
   list, after a confirmation naming the owner (SPEC-510): the task then acts on GitHub as them,
   and the previous owner hears of it wherever they are and can take it back at any time. A
   person who wants to be asked first turns on "Ask me before taking control of my tasks" in
@@ -436,7 +443,9 @@ watching, steering and unblocking.
   is left, how fast it burns, the tokens it used and what they would cost at Claude API list
   prices, with a 7-day chart for each. Administrators rename each subscription in place ("work
   Max", "personal") and see the email of its Claude account wherever it is named; when Claude
-  does not share it, they type it in place under the name (SPEC-463). A subscription is connected
+  does not share it, they type it in place under the name (SPEC-463). Every card says whose
+  subscription it is with a badge under its name (Claude, Codex or Antigravity, the vendor on
+  hover; SPEC-513). A subscription is connected
   with Claude's own sign-in in a terminal on the page, or by pasting the token
   `claude setup-token` printed on any computer (its owner's laptop, say); a card's "Paste a new
   token" signs one in again the same way (SPEC-502). Connecting one
@@ -669,17 +678,19 @@ watching, steering and unblocking.
   token), chooses what reaches it (Needs you by default; Done; failed or stopped; subscription
   problems for administrators) and unlinks there or with `/stop`. Only what their notification
   center would show them is sent (a subscription switch is no news, a project's Docker trouble is
-  one message however many tasks ask, a request for control of their task, or a teammate taking
-  it or taking it back, reaches them under Needs you), with a link to the task, agent secrets removed, at most five
-  messages a minute with the rest in one summary. The server asks Telegram for messages, so no
-  inbound port is needed. Replies and new tasks from Telegram are part 2.
+  one message however many tasks ask, a request for control of their task, or a teammate taking it
+  or taking it back, reaches them under Needs you), with a link to the task, agent secrets
+  removed, at most five messages a minute with the rest in one summary. The server asks Telegram
+  for messages, so no inbound port is needed. Replies and new tasks from Telegram are part 2.
 
 ## Principles
 
 Agents are real CLIs; sessions outlive the server; GitHub is the authority for permissions (a playground's guests, let
 in through an expiring link, are the one exception);
 coordination goes through one MCP and hook protocol; every queue, stream, retry and wait is
-bounded and owned; features have specs, research and questions do not.
+bounded and owned; features have specs, research and questions do not; a defect a request
+reports is fixed in its task, also when it is asked as a question, never filed and left
+([decision 0371](decisions/0371-a-defect-a-request-reports-is-fixed-also-when-asked-as-a-question.md)).
 
 ## Where to read more
 

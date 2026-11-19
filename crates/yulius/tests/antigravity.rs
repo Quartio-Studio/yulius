@@ -575,7 +575,7 @@ fn an_antigravity_goal_task_gets_its_request_as_its_first_message() -> TestResul
     rt.block_on(async {
         let app = build_full(&data, Some(&fake), FakeAgentOptions::default(), 8)?;
         let (sandbox, user) = seed_records(&app).await?;
-        add_google_account(&app, "a-google", &api_key()?).await?;
+        let account = add_google_account(&app, "a-google", &api_key()?).await?;
         seed_repo(&data, &sandbox)?;
         let id = new_agy_task(&app, &sandbox, &user, "Antigravity goal", TaskMode::Goal).await?;
         wait_for("the banner", Duration::from_secs(30), || {
@@ -611,6 +611,12 @@ fn an_antigravity_goal_task_gets_its_request_as_its_first_message() -> TestResul
             "Gemini, not the Claude default"
         );
         assert!(detail.model_default);
+        // The pool weighs it by the model its run was launched with, so a subscription it is at
+        // the limit of is left out (SPEC-511 review): one family for both.
+        let record = app.deps.store.task(&id).await?.ok_or("task")?;
+        let input = app.rotation_input(&record, Some(account)).await?;
+        assert_eq!(input.running, Some(input.family));
+        assert_eq!(input.family, yulius_domain::usage::ModelFamily::Any);
         support::stop_tasks(&app, &[&id]).await?;
         Ok::<_, Box<dyn std::error::Error>>(())
     })?;

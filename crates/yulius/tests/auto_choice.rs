@@ -1,5 +1,6 @@
 //! "Auto" mode and workflow for new tasks (SPEC-001 TSK-015, AC-TSK-14; SPEC-002 ADR-16 item 5):
-//! through the public API, Jev chooses goal or prompt and one of the sandbox's workflows (the
+//! through the public API, Jev chooses goal, fix (a goal: a defect reported, also as a question,
+//! SPEC-517) or prompt and one of the sandbox's workflows (the
 //! catalog's defaults — Feature, Fix, Research / Question — then instance and sandbox workflows) or none; without Jev, or when it fails or is unsure, the task is Goal with the
 //! "Feature" workflow (none for a prompt-mode task); a prompt-mode task never gets a spec-first
 //! workflow from Auto; picked values are never sent to Jev. Jev is a fake: no real call is made.
@@ -22,7 +23,8 @@ use yulius_app::ports::intake::{ChoiceEvaluator, JevFailure};
 use yulius_app::ports::store_ext::AutomationStore;
 use yulius_domain::intake::{ChoiceAnswer, ChoiceQuestion};
 
-/// A fake Jev for the Auto questions. Mode: a request with a question mark is a prompt.
+/// A fake Jev for the Auto questions. Mode: a request that reports a "problem" or something
+/// "broken" is a fix (SPEC-517 FIX-001), else one with a question mark is a prompt.
 /// Workflow (by the option's name): a question gets "Research / Question", "spec it anyway" gets "Feature",
 /// "crash" gets "Fix", "typo" gets none, anything else "Feature". "maybe" makes every answer unsure. Records every question it saw.
 #[derive(Default)]
@@ -71,12 +73,26 @@ impl ChoiceEvaluator for FakeJev {
         let unsure = state.contains("maybe");
         match question.id {
             "mode" => {
-                let winner = if state.contains('?') {
+                let winner = if state.contains("problem") || state.contains("broken") {
+                    "fix"
+                } else if state.contains('?') {
                     "prompt"
                 } else {
                     "goal"
                 };
-                Ok(answer(question, winner, if unsure { 0.55 } else { 0.9 }))
+                if !unsure {
+                    return Ok(answer(question, winner, 0.9));
+                }
+                // Unsure: the other side of goal/prompt is close behind (goal and fix count
+                // together for Goal, so an even spread would make Goal sure).
+                let other = if winner == "prompt" { "goal" } else { "prompt" };
+                let mut unsure = answer(question, winner, 0.55);
+                for (key, p) in &mut unsure.probabilities {
+                    if key != winner {
+                        *p = if key == other { 0.4 } else { 0.05 };
+                    }
+                }
+                Ok(unsure)
             }
             "workflow" => {
                 let wanted = if state.contains("spec it anyway") {
@@ -237,7 +253,8 @@ async fn auto_chooses_goal_and_a_workflow_from_the_store() -> TestResult {
         audit.iter().any(|e| e.action == "task.auto_choice"
             && e.detail
                 .as_deref()
-                .is_some_and(|d| d.contains("mode goal (jev 90%)")
+                // Goal and fix together: 90 % + 5 %.
+                .is_some_and(|d| d.contains("mode goal (jev 95%)")
                     && d.contains("workflow Feature (jev 85%)"))),
         "{audit:?}"
     );
@@ -298,6 +315,70 @@ async fn questions_run_as_prompts_without_a_spec_first_workflow() -> TestResult 
     assert_eq!(
         r.body["auto"],
         json!({"mode": "jev", "workflow": "jev", "workflow_name": "Fix"})
+    );
+    Ok(())
+}
+
+/// SPEC-517 AC-1, AC-2 (quartio-v2 task #312): a defect reported as a question runs as a goal
+/// whose plan is the Fix workflow's steps, though Jev picked "Research / Question" for its
+/// question mark; a true question still runs as a prompt with the Research steps and no fixing
+/// step.
+#[tokio::test]
+async fn a_defect_asked_as_a_question_gets_the_fixing_steps() -> TestResult {
+    let a = auto(true).await?;
+    let fix_steps = workflow_steps(&a, "Fix").await?;
+    let research_steps = workflow_steps(&a, "Research / Question").await?;
+    assert!(
+        fix_steps.iter().any(|s| s.contains("regression test")),
+        "{fix_steps:?}"
+    );
+
+    let r = create(
+        &a,
+        json!({"prompt": "some weird problem with pdf \"i couldnt attach\" but attached. What?", "mode": "auto", "workflow_id": "auto"}),
+    )
+    .await?;
+    assert_eq!(r.status, StatusCode::CREATED, "{:?}", r.body);
+    assert_eq!(r.body["mode"], "goal");
+    assert_eq!(
+        r.body["auto"],
+        json!({"mode": "jev", "workflow": "default", "workflow_name": "Fix"})
+    );
+    assert_eq!(step_titles(&detail(&a, &r.body).await?), fix_steps);
+    let task_id = r.body["id"].as_str().ok_or("id")?;
+    let audit = a.h.store.automation_audit(task_id, 10).await?;
+    assert!(
+        audit.iter().any(|e| e.action == "task.auto_choice"
+            && e.detail
+                .as_deref()
+                .is_some_and(|d| d.contains("mode goal, reports a defect (jev 90%)")
+                    && d.contains("workflow Fix (default"))),
+        "{audit:?}"
+    );
+
+    // Jev was told what a fix is, in both questions.
+    let seen = a.jev.seen.lock().map_err(|_| "lock")?.clone();
+    let mode = seen.iter().find(|(id, _)| id == "mode").ok_or("mode")?;
+    assert!(
+        mode.1
+            .iter()
+            .any(|o| o.starts_with("fix=") && o.contains("asked as a question")),
+        "{mode:?}"
+    );
+
+    let r = create(
+        &a,
+        json!({"prompt": "How does the subscription pool pick an account for a new task?", "mode": "auto", "workflow_id": "auto"}),
+    )
+    .await?;
+    assert_eq!(r.body["mode"], "prompt");
+    let steps = step_titles(&detail(&a, &r.body).await?);
+    assert_eq!(steps, research_steps);
+    assert!(
+        !steps
+            .iter()
+            .any(|s| fix_steps.contains(s) || s.contains("regression")),
+        "{steps:?}"
     );
     Ok(())
 }

@@ -271,7 +271,7 @@ fn cockpit_only_tool_descriptors() -> Vec<ToolDescriptor> {
             input_schema: schema(json!({
                 "sandbox": {"type": "string", "description": "The sandbox's slug (or owner/name) from sandboxes_list; not this one"},
                 "prompt": {"type": "string", "description": "The request for the new task, complete (what, why, where, done when)"},
-                "harness": {"type": "string", "enum": ["auto", "claude", "codex", "antigravity"], "description": "Agent: auto (default) draws Claude Code or Antigravity"},
+                "harness": {"type": "string", "enum": ["auto", "claude", "codex", "antigravity"], "description": "Agent: auto (default) is Claude Code"},
                 "title": {"type": "string", "description": "Short title (derived from the prompt when absent)"},
                 "workflow": {"type": "string", "description": "Workflow id or name of that sandbox, or \"auto\""},
                 "mode": {"type": "string", "enum": ["goal", "prompt", "auto"]},
@@ -441,10 +441,10 @@ pub fn tool_descriptors() -> Vec<ToolDescriptor> {
         },
         ToolDescriptor {
             name: "task_create".into(),
-            description: "Create and start a new task in this project (another agent session with its own branch: Claude Code or Antigravity drawn at random unless harness or a model names one), e.g. when the user says \"create a task from that\" or a follow-up should run separately. It is created like New task in the UI, on behalf of the person you work for; write the prompt as a complete request (what, why, where, done when). With after_task it waits until that task is done: its agent finished, no work it declared is left (its plan is complete and its spec, if any, says done) and its pull request is merged, or open and would merge as it is, with nothing of it left to come (a merge Yulius is about to make, or one its agent was not told of yet, is not done); with start_rule until the rule is true (`#12 merged` when the merge itself matters); with after_all_tasks until every task of the project with work still coming is done; prepared, it waits until the person starts it, or until start_at. The answer's start_rule is the rule as stored. A supertask (for broad work such as security hardening or one-shotting the product) waits for the project's running tasks, then runs alone: every other task of the project waits for it, so create one only when the person asks. Tools create at most 20 tasks an hour per project.".into(),
+            description: "Create and start a new task in this project (another agent session with its own branch, on the agent harness names, else the one a model implies, else your task's own, Claude Code when you have none), e.g. when the user says \"create a task from that\" or a follow-up should run separately. It is created like New task in the UI, on behalf of the person you work for; write the prompt as a complete request (what, why, where, done when). With after_task it waits until that task is done: its agent finished, no work it declared is left (its plan is complete and its spec, if any, says done) and its pull request is merged, or open and would merge as it is, with nothing of it left to come (a merge Yulius is about to make, or one its agent was not told of yet, is not done); with start_rule until the rule is true (`#12 merged` when the merge itself matters); with after_all_tasks until every task of the project with work still coming is done; prepared, it waits until the person starts it, or until start_at. The answer's start_rule is the rule as stored. A supertask (for broad work such as security hardening or one-shotting the product) waits for the project's running tasks, then runs alone: every other task of the project waits for it, so create one only when the person asks. Tools create at most 20 tasks an hour per project.".into(),
             input_schema: schema(json!({
                 "prompt": {"type": "string", "description": "The request for the new task"},
-                "harness": {"type": "string", "enum": ["auto", "claude", "codex", "antigravity"], "description": "Agent: auto (default) draws Claude Code or Antigravity among those with a usable subscription"},
+                "harness": {"type": "string", "enum": ["auto", "claude", "codex", "antigravity"], "description": "Agent: auto (default) is the one a model implies, else your task's own (Claude Code when you have none)"},
                 "title": {"type": "string", "description": "Short title (derived from the prompt when absent)"},
                 "workflow": {"type": "string", "description": "Workflow id or name from workflows_list, or \"auto\" to let Yulius choose"},
                 "mode": {"type": "string", "enum": ["goal", "prompt", "auto"], "description": "goal (default): the task works until its definition of done holds; prompt: one plain prompt"},
@@ -679,7 +679,7 @@ pub fn tool_descriptors() -> Vec<ToolDescriptor> {
         },
         ToolDescriptor {
             name: "issue_create".into(),
-            description: "Open a GitHub issue for what lies outside this change, instead of widening this task: a pre-existing bug (in code this change did not introduce), a flaky test this change did not cause, or a cosmetic nit left after 3 review rounds; say why it is outside, with the evidence (e.g. \"present on dev before this change\"). Never a finding in code or tests this change added or modified: fix that in this pull request, test-first. It must meet the Definition of Ready: exactly one `type: …` label (bug, enhancement, docs, chore, performance), one `priority: …` label (high, medium, low), at least one `area: …` label (add `risk: high` for authentication, permissions, data isolation, migrations, money or shared contracts), and a body with a summary, current and expected behavior and a `## Acceptance criteria` checklist. Missing labels are created.".into(),
+            description: "Open a GitHub issue for what lies outside this change, instead of widening this task: a pre-existing bug (in code this change did not introduce), a flaky test this change did not cause, or a cosmetic nit left after 3 review rounds; say why it is outside, with the evidence (e.g. \"present on dev before this change\"). Never a finding in code or tests this change added or modified: fix that in this pull request, test-first. The defect this task's own request reports (also one asked as a question, or confirmed while answering it) is fixed in this task, never filed instead: the issue the Fix workflow opens for it closes with `Fixes #<number>` in this pull request; when its fix is clearly beyond the request, ask with needs_you. Name every issue you open in your summary to the person. It must meet the Definition of Ready: exactly one `type: …` label (bug, enhancement, docs, chore, performance), one `priority: …` label (high, medium, low), at least one `area: …` label (add `risk: high` for authentication, permissions, data isolation, migrations, money or shared contracts), and a body with a summary, current and expected behavior and a `## Acceptance criteria` checklist. Missing labels are created.".into(),
             input_schema: schema(json!({
                 "title": {"type": "string"},
                 "body": {"type": "string", "description": "Markdown with a ## Acceptance criteria checklist"},
@@ -694,7 +694,7 @@ pub fn tool_descriptors() -> Vec<ToolDescriptor> {
                 "cron": {"type": "string", "description": "Five-field cron expression, e.g. \"0 9 * * *\" (daily at 09:00) or \"0 9 * * MON-FRI\""},
                 "utc_offset_minutes": {"type": "integer", "description": "UTC offset of the user's time zone in minutes (e.g. 120 for UTC+2); default 0"},
                 "prompt": {"type": "string", "description": "What each created task should do"},
-                "harness": {"type": "string", "enum": ["auto", "claude", "codex", "antigravity"], "description": "Agent for created tasks: auto (the default: Claude Code or Antigravity drawn for each run), claude (Claude Code), codex (Codex, on a Codex subscription) or antigravity (Antigravity, on a Google subscription)"},
+                "harness": {"type": "string", "enum": ["auto", "claude", "codex", "antigravity"], "description": "Agent for created tasks: auto (the default: your task's own, Claude Code when you have none), claude (Claude Code), codex (Codex, on a Codex subscription) or antigravity (Antigravity, on a Google subscription)"},
                 "workflow": {"type": "string", "description": "Workflow id or name from workflows_list (optional)"},
                 "enabled": {"type": "boolean", "description": "Default true"},
                 "after_task": {"type": "integer", "description": "Created tasks wait until this task number is done (once it has ended: the rule \"#N done\")"},
@@ -1719,6 +1719,11 @@ mod tests {
             "pre-existing",
             "flaky test this change did not cause",
             "Never a finding in code or tests this change added or modified",
+            // SPEC-517 FIX-005: the defect the task's own request reports is fixed, never filed
+            // instead; the issue the Fix workflow opens for it closes with the fix (DSC-016).
+            "is fixed in this task, never filed instead",
+            "closes with `Fixes #<number>` in this pull request",
+            "Name every issue you open in your summary",
         ] {
             assert!(
                 description.contains(stated),
@@ -1726,6 +1731,15 @@ mod tests {
             );
         }
         assert!(!description.contains("follow-up work"), "{description}");
+        assert!(!description.contains("Never the defect"), "{description}");
+        // The Fix workflow files the bug it fixes; the tool must not forbid that (SPEC-517
+        // review round 1).
+        let fix =
+            crate::workflows::catalog::default_workflow("wf-fix").map(|w| w.instructions.as_str());
+        assert!(
+            fix.is_some_and(|i| i.contains("Once the defect is confirmed, report it")
+                && i.contains("`Fixes #<number>`"))
+        );
     }
 
     /// SPEC-429 ANS-005: `needs_you` says a plain-text question reaches nobody, since a turn that

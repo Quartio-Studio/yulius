@@ -459,7 +459,7 @@ impl App {
     /// The task `id` for a sandbox-level `action` by `ctx`'s person: viewing needs access to its
     /// sandbox, and anything more is control, which only its owner has ([`TaskAction::of`],
     /// SPEC-490 OWN-001): a path that changes a task is the owner's unless it asks
-    /// [`App::load_task_to`] for [`TaskAction::Tidy`].
+    /// [`App::load_task_to`] for [`TaskAction::Tidy`] or [`TaskAction::Answer`].
     ///
     /// # Errors
     /// As [`App::load_task_to`].
@@ -525,10 +525,14 @@ impl App {
             Ok(()) => Ok(level),
             Err(TaskRefusal::NotOwner) => Err(self.not_the_owner(task, guest).await),
             Err(TaskRefusal::Guest) => Err(AppError::Forbidden(format!(
-                "Task #{} is @{}'s: a guest stops, archives and deletes only their own tasks on \
-                 this playground.",
+                "Task #{} is @{}'s: a guest {} only their own tasks on this playground.",
                 task.number,
-                self.login_of(&task.owner).await
+                self.login_of(&task.owner).await,
+                if action == TaskAction::Answer {
+                    "answers the requests of"
+                } else {
+                    "stops, archives and deletes"
+                }
             ))),
             // `require_for` refused a level below the action's already.
             Err(TaskRefusal::Access) => Err(AppError::Forbidden(
@@ -753,19 +757,22 @@ impl App {
             .map(|(_, newest)| newest);
         let cli_moves_stopped = moves_to.is_some_and(|to| self.claude_moves_stopped_for(to));
         let cli_moves_to = moves_to.map(|newest| newest.to_string());
-        // A Codex task without a model runs its subscription's default, which is no Claude
-        // model: none is named (SPEC-503 CDX-013), and its effort is its own.
-        // An Antigravity task without one runs Gemini 4 Carbon at high effort (SPEC-505 AGY-002).
+        // A Codex task without a model or effort runs GPT-6.2 Astra at high effort (SPEC-511
+        // CXD-002), an Antigravity one Gemini 4 Carbon at high effort (SPEC-505 AGY-002).
         use yulius_domain::harness::{
-            DEFAULT_ANTIGRAVITY_EFFORT, DEFAULT_ANTIGRAVITY_MODEL, Harness,
+            DEFAULT_ANTIGRAVITY_EFFORT, DEFAULT_ANTIGRAVITY_MODEL, DEFAULT_CODEX_EFFORT,
+            DEFAULT_CODEX_MODEL, Harness,
         };
         let model = task.model.clone().unwrap_or_else(|| match task.harness {
-            Harness::Codex => String::new(),
+            Harness::Codex => DEFAULT_CODEX_MODEL.to_owned(),
             Harness::Antigravity => DEFAULT_ANTIGRAVITY_MODEL.to_owned(),
             Harness::ClaudeCode => DEFAULT_CLAUDE_MODEL.to_owned(),
         });
         let effort = match task.harness {
-            Harness::Codex => task.effort.clone(),
+            Harness::Codex => task
+                .effort
+                .clone()
+                .or_else(|| Some(DEFAULT_CODEX_EFFORT.to_owned())),
             Harness::Antigravity => task
                 .effort
                 .clone()

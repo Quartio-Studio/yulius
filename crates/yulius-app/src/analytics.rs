@@ -295,6 +295,12 @@ fn bump(map: &mut BTreeMap<String, u32>, key: &str) {
 /// One account's label, email and token totals while summarizing.
 type AccountAcc = (Option<String>, Option<String>, Acc);
 
+#[derive(Default)]
+struct HarnessAcc {
+    tokens: Acc,
+    finished_wall: Vec<u64>,
+}
+
 /// Aggregates a cohort.
 #[must_use]
 pub fn summarize(
@@ -332,7 +338,7 @@ pub fn summarize(
     let in_range = |day: i64| days.is_none_or(|(first, last)| (first..=last).contains(&day));
     let mut all = Acc::default();
     let mut by_model: BTreeMap<String, Acc> = BTreeMap::new();
-    let mut by_harness: BTreeMap<String, Acc> = BTreeMap::new();
+    let mut by_harness: BTreeMap<&str, HarnessAcc> = BTreeMap::new();
     let mut by_account: BTreeMap<Option<String>, AccountAcc> = BTreeMap::new();
     let mut wall_by_task: HashMap<TaskId, u64> = HashMap::new();
     let mut active_by_task: HashMap<TaskId, u64> = HashMap::new();
@@ -346,10 +352,8 @@ pub fn summarize(
             .and_then(|m| m.model.clone())
             .unwrap_or_else(|| "unknown".into());
         by_model.entry(model).or_default().add(run);
-        by_harness
-            .entry(run.harness.as_str().to_owned())
-            .or_default()
-            .add(run);
+        let harness = by_harness.entry(run.harness.as_str()).or_default();
+        harness.tokens.add(run);
         let account = by_account
             .entry(run.account_id.as_ref().map(ToString::to_string))
             .or_insert_with(|| {
@@ -361,6 +365,9 @@ pub fn summarize(
             });
         account.2.add(run);
         let wall = run_wall_ms(run, now);
+        if run.ended_at.is_some() {
+            harness.finished_wall.push(wall);
+        }
         total_wall = total_wall.saturating_add(wall);
         let task_wall = wall_by_task.entry(run.task_id.clone()).or_default();
         *task_wall = task_wall.saturating_add(wall);
@@ -438,9 +445,15 @@ pub fn summarize(
             .collect(),
         tokens_by_harness: by_harness
             .into_iter()
-            .map(|(harness, acc)| HarnessTokens {
-                harness,
-                tokens: acc.totals(),
+            .map(|(harness, mut acc)| {
+                let (median_wall_ms, p90_wall_ms) = median_p90(&mut acc.finished_wall);
+                HarnessTokens {
+                    harness: harness.to_owned(),
+                    tokens: acc.tokens.totals(),
+                    finished_runs: u32::try_from(acc.finished_wall.len()).unwrap_or(u32::MAX),
+                    median_wall_ms,
+                    p90_wall_ms,
+                }
             })
             .collect(),
         tokens_by_account: by_account
@@ -806,6 +819,44 @@ mod tests {
         assert_eq!(s.duration_ms.total_wall, 3_000);
         assert_eq!(s.duration_ms.total_active, None);
         assert_eq!(s.duration_ms.median_active, None, "unknown is not zero");
+        Ok(())
+    }
+
+    #[test]
+    fn harness_durations_measure_finished_attempts() -> Result<(), Box<dyn std::error::Error>> {
+        let task = id("one-task")?;
+        let run = |seq, harness, ended_at: Option<i64>| AnalyticsRun {
+            task_id: task.clone(),
+            seq,
+            harness,
+            account_id: None,
+            account_label: None,
+            account_email: None,
+            started_at: Timestamp(100),
+            ended_at: ended_at.map(Timestamp),
+            metrics: None,
+        };
+        let data = AnalyticsData {
+            runs: vec![
+                run(1, Harness::Codex, Some(100)),
+                run(2, Harness::Codex, Some(500)),
+                run(3, Harness::Codex, None),
+                run(4, Harness::Antigravity, None),
+            ],
+            ..AnalyticsData::default()
+        };
+        let summary = summarize(&data, AnalyticsRange::default(), None, Timestamp(9_000));
+        let rows = serde_json::to_value(summary.tokens_by_harness)?;
+        assert_eq!(rows[0]["harness"], "antigravity");
+        assert_eq!(rows[0]["finished_runs"], 0);
+        assert!(rows[0]["median_wall_ms"].is_null());
+        assert!(rows[0]["p90_wall_ms"].is_null());
+        assert_eq!(rows[1]["harness"], "codex");
+        assert_eq!(rows[1]["runs"], 3);
+        assert_eq!(rows[1]["tasks"], 1);
+        assert_eq!(rows[1]["finished_runs"], 2);
+        assert_eq!(rows[1]["median_wall_ms"], 200);
+        assert_eq!(rows[1]["p90_wall_ms"], 400);
         Ok(())
     }
 

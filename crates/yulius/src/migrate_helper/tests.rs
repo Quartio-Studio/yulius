@@ -752,6 +752,7 @@ fn an_abort_stops_the_run_and_is_handled_after_it() -> TestResult {
   *--abort*) echo aborted >> "$d/order"; exit 0 ;;
 esac
 trap 'echo terminated >> "$d/order"; exit 1' TERM
+: > "$d/trapped"
 while :; do sleep 0.02; done"#,
     )?;
     let moved = MoveRequest {
@@ -765,6 +766,7 @@ while :; do sleep 0.02; done"#,
         env.status()
             .is_some_and(|s| s.state == MoveHelperState::Running)
     })?;
+    until("the move set its trap", || env.bin.join("trapped").exists())?;
 
     // The same request written again, another plan, an unreadable file: the move runs on.
     let path = env.args.data_dir.join(REQUEST_DIR).join(REQUEST_FILE);
@@ -875,6 +877,7 @@ fn a_stop_of_the_helper_ends_the_command_first() -> TestResult {
     let env = Env::new()?;
     env.does(
         r#"trap 'echo terminated >> "$d/order"; exit 1' TERM
+: > "$d/trapped"
 while :; do sleep 0.02; done"#,
     )?;
     env.request(&plan("0123abcd-plan"))?;
@@ -882,9 +885,9 @@ while :; do sleep 0.02; done"#,
     let stop = Arc::new(AtomicBool::new(false));
     helper.stop = Arc::clone(&stop);
     let run = std::thread::spawn(move || helper.run());
-    until("the command runs", || {
-        env.status()
-            .is_some_and(|s| s.state == MoveHelperState::Running)
+    // Running is said once the command started, before its shell set its trap (#1375).
+    until("the command set its trap", || {
+        env.bin.join("trapped").exists()
     })?;
     // A request that waits behind the command is not taken by a helper that was stopped.
     env.request(&plan("0123abcd-next"))?;
