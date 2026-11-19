@@ -18,28 +18,6 @@ use crate::json::{obj_of, owned_str, parse_object, shorten, str_of, u64_of};
 use crate::observe::Observed;
 use crate::time::from_epoch_seconds;
 
-/// Prefixes of user-role messages that Codex injects as context rather than typed prompts, for a
-/// message without provenance (0.167's rollouts; 0.169 marks each content item, see
-/// [`typed_by_provenance`]). From `core/src/context` of `rust-v0.169.0`.
-const INJECTED_CONTEXT_PREFIXES: [&str; 15] = [
-    "<environment_context",
-    "<user_instructions",
-    "# AGENTS.md instructions",
-    "<turn_aborted",
-    "<user_shell_command",
-    "<permissions instructions",
-    // The text a blocking Stop hook makes Codex go on with (`protocol/src/items.rs`).
-    "<hook_prompt",
-    "<subagent_notification",
-    "<skill",
-    "<codex_internal_context",
-    "<goal_context",
-    "<agent_message_board_notification",
-    "<recommended_plugins",
-    "<model_switch",
-    "<current_time_reminder",
-];
-
 /// `task_complete.error.codex_error_info` of a turn a usage limit ended (0.167).
 const USAGE_LIMIT_ERROR: &str = "usage_limit_exceeded";
 
@@ -270,10 +248,7 @@ fn typed_by_provenance(payload: &Map<String, Value>) -> Option<bool> {
 }
 
 fn is_injected_context(text: &str) -> bool {
-    let trimmed = text.trim_start();
-    INJECTED_CONTEXT_PREFIXES
-        .iter()
-        .any(|prefix| trimmed.starts_with(prefix))
+    yulius_domain::harness::is_codex_injected_context(text)
 }
 
 #[cfg(test)]

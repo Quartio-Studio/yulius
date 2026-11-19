@@ -190,6 +190,8 @@ const MIGRATIONS: &[&str] = &[
     include_str!("migrations/0067_control_ask_first.sql"),
     // Schema version 68 (SPEC-514 PIN-003).
     include_str!("migrations/0068_automation_agent_named.sql"),
+    // Schema version 69 (SPEC-525).
+    include_str!("migrations/0069_reindex_codex_antigravity_sessions.sql"),
 ];
 
 type Job = Box<dyn FnOnce(&mut Connection) + Send + 'static>;
@@ -461,6 +463,10 @@ mod tests {
                 68,
                 include_str!("migrations/0068_automation_agent_named.sql"),
             ),
+            (
+                69,
+                include_str!("migrations/0069_reindex_codex_antigravity_sessions.sql"),
+            ),
         ];
         for (version, sql) in pinned {
             assert_eq!(
@@ -469,7 +475,7 @@ mod tests {
                 "schema version {version}"
             );
         }
-        assert_eq!(MIGRATIONS.len(), 68, "a new migration is pinned here too");
+        assert_eq!(MIGRATIONS.len(), 69, "a new migration is pinned here too");
     }
 
     /// SPEC-514 PIN-003: a version-67 database's automations saved as `auto` (drawn for each
@@ -501,6 +507,74 @@ mod tests {
         assert_eq!(drawn.harness, Some(Harness::ClaudeCode));
         let named = store.automation("a-gemini").await?.ok_or("a-gemini")?;
         assert_eq!(named.harness, Some(Harness::Antigravity));
+        Ok(())
+    }
+
+    /// SPEC-525: Codex and Antigravity sessions were indexed with no passages (the reader knew
+    /// only Claude Code's lines), so a version-68 database indexes them again from the start;
+    /// a Claude Code session keeps its index.
+    #[tokio::test]
+    async fn version_sixty_eight_indexes_codex_and_antigravity_sessions_again()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use yulius_app::ports::session_docs::SessionDocStore as _;
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("v68.db");
+        {
+            let conn = rusqlite::Connection::open(&path)?;
+            for sql in &MIGRATIONS[..68] {
+                conn.execute_batch(sql)?;
+            }
+            conn.pragma_update(None, "user_version", 68)?;
+            conn.execute_batch(
+                "INSERT INTO users (id, display_name, is_superadmin, is_instance_admin, created_at) VALUES ('u1', 'U', 0, 0, 1);
+                 INSERT INTO sandboxes (id, slug, repo_owner, repo_name, default_branch, profile, port_base, port_count, created_by, onboarding_state, created_at) VALUES ('s1', 's', 'o', 'r', 'main', '{}', 20000, 10, 'u1', 'not_needed', 1);
+                 INSERT INTO session_docs (id, sandbox_id, kind, harness, session_id, title, transcript_path, indexed_bytes, indexed_lines, index_full, created_at, updated_at) VALUES
+                   ('d-codex', 's1', 'imported', 'codex', 'c', 'C', '/x/c.jsonl', 900, 12, 0, 1, 1),
+                   ('d-agy', 's1', 'imported', 'antigravity', 'a', 'A', '/x/a.jsonl', 700, 9, 1, 1, 1),
+                   ('d-claude', 's1', 'imported', 'claude', 'k', 'K', '/x/k.jsonl', 500, 7, 0, 1, 1);
+                 INSERT INTO session_chunks (doc_id, line, role, text) VALUES ('d-claude', 1, 'user', 'kept passage'),
+                   ('d-codex', 1, 'user', 'stalecodexpassage');",
+            )?;
+        }
+        let store = SqliteStore::open(&path)?;
+        let docs = store
+            .session_docs(&yulius_domain::ids::SandboxId::parse("s1")?)
+            .await?;
+        let index = |id: &str| {
+            docs.iter()
+                .find(|doc| doc.id == id)
+                .map(|doc| (doc.indexed_bytes, doc.indexed_lines, doc.index_full))
+        };
+        assert_eq!(index("d-codex"), Some((0, 0, false)));
+        assert_eq!(index("d-agy"), Some((0, 0, false)));
+        assert_eq!(index("d-claude"), Some((500, 7, false)));
+        let kept: i64 = store
+            .call(|c| {
+                c.query_row(
+                    "SELECT COUNT(*) FROM session_chunks WHERE doc_id = 'd-claude'",
+                    [],
+                    |r| r.get(0),
+                )
+                .map_err(db)
+            })
+            .await?;
+        assert_eq!(kept, 1);
+        let (stale, found): (i64, i64) = store
+            .call(|c| {
+                c.query_row(
+                    "SELECT (SELECT COUNT(*) FROM session_chunks WHERE doc_id = 'd-codex'), \
+                     (SELECT COUNT(*) FROM session_fts WHERE session_fts MATCH 'stalecodexpassage')",
+                    [],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .map_err(db)
+            })
+            .await?;
+        assert_eq!(
+            (stale, found),
+            (0, 0),
+            "a passage of theirs goes, from the search too"
+        );
         Ok(())
     }
 

@@ -340,3 +340,72 @@ async fn a_watcher_s_next_poll_reads_only_what_was_written_since() -> TestResult
     assert_eq!(next.body["end"], 5);
     Ok(())
 }
+
+/// SPEC-525 (#1440): a watcher of someone else's Codex task reads its session. The rollout's lines
+/// read as nothing before, so the watch view said "Codex is starting…" for the whole run.
+#[tokio::test]
+async fn a_watcher_reads_a_codex_task_s_rollout() -> TestResult {
+    let w = World::new("org").await?;
+    let (alice_user, alice) = w.user("alice", false).await?;
+    let (_, carol) = w.user("carol", false).await?;
+    let files = scaffold_files("codexwatch", TemplateKind::Empty);
+    let refs: Vec<(&str, &str)> = files
+        .iter()
+        .map(|(path, contents)| (path.as_str(), contents.as_str()))
+        .collect();
+    w.remote(OWNER, "codexwatch", &refs, &[])?;
+    w.grant("alice", "codexwatch", "admin");
+    w.grant("carol", "codexwatch", "push");
+    let created = call(
+        &w.h.router,
+        Method::POST,
+        "/api/sandboxes",
+        Some(json!({"mode": "import", "repo": "Quartio-Studio/codexwatch"})),
+        &alice,
+    )
+    .await?;
+    assert_eq!(created.status, StatusCode::CREATED, "{:?}", created.body);
+    let sid = SandboxId::parse(created.body["id"].as_str().ok_or("id")?)?;
+    w.h.store.set_onboarding(&sid, "ready", None).await?;
+    let task = insert_task(&w.h.store, &sid, "t-codex", &alice_user.id).await?;
+    let rollout = w.scratch.path().join("rollout.jsonl");
+    let mut text = line(
+        &json!({"timestamp": "2026-11-19T15:00:00.000Z", "type": "session_meta", "payload": {"id": "cdx-1", "cwd": "/w"}}),
+    );
+    text.push_str(&line(&json!({"type": "response_item", "payload": {"type": "message", "role": "developer", "content": [{"type": "input_text", "text": "Codex's own instructions"}]}})));
+    text.push_str(&line(&json!({"timestamp": "2026-11-19T15:00:01.000Z", "type": "response_item", "payload": {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "Fix the cart total"}]}})));
+    text.push_str(&line(
+        &json!({"type": "event_msg", "payload": {"type": "task_started", "turn_id": "1"}}),
+    ));
+    text.push_str(&line(&json!({"type": "response_item", "payload": {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "Reading the cart."}]}})));
+    std::fs::write(&rollout, &text)?;
+    w.h.store
+        .upsert_provider_session(&ProviderSessionRecord {
+            id: "p-cdx-1".into(),
+            sandbox_id: sid.clone(),
+            task_id: task.id.clone(),
+            harness: Harness::Codex,
+            session_id: "cdx-1".into(),
+            transcript_ref: Some(rollout.to_string_lossy().into_owned()),
+            origin: "native".into(),
+            first_seen: Timestamp(10),
+            last_seen: Timestamp(11),
+        })
+        .await?;
+    let tail = get(&w, &carol, &format!("/api/tasks/{}/transcript", task.id)).await?;
+    assert_eq!(tail.status, StatusCode::OK, "{:?}", tail.body);
+    assert_eq!(tail.body["session_id"], "cdx-1");
+    assert_eq!(lines_of(&tail.body), vec![2, 4]);
+    assert_eq!(tail.body["entries"][0]["role"], "user");
+    assert_eq!(
+        tail.body["entries"][0]["blocks"][0]["text"],
+        "Fix the cart total"
+    );
+    assert_eq!(tail.body["entries"][1]["role"], "assistant");
+    assert_eq!(
+        tail.body["entries"][1]["blocks"][0]["text"],
+        "Reading the cart."
+    );
+    assert_eq!(tail.body["end"], 5);
+    Ok(())
+}

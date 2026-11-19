@@ -6,6 +6,13 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-19
 
+- Watchers see Codex and Antigravity sessions (SPEC-525, task #507, #1440): someone else's Codex
+  or Antigravity task showed "Codex is starting…" / "Antigravity is starting…" for its whole run,
+  because the transcript reader knew only Claude Code's lines. It now reads Codex rollouts and
+  Antigravity transcripts into the same entries (prompts, answers, reasoning, tool calls and
+  results, redacted the same way, dotenv reads included), so the watch view, the Sessions page,
+  session search and `session_read` show them. Schema version 69 indexes the Codex and Antigravity
+  sessions already passed with no passages again from their start.
 - Random harness selection across all harnesses with available subscriptions (SPEC-520, task #502,
   #1437, ADR-0377): restores `Random` (`Random agent` in the composer and Settings, `Random` /
   `auto` in the automation editor) as the default, drawing uniformly (`1 / k`, unbiased over random
