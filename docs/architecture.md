@@ -1512,7 +1512,9 @@ request as it is:
   candidate tested the exact merged result (SPEC-497 MQW-002); a member whose own run fails leaves,
   and the candidate is formed again from the others (MQC-002); an errored or cancelled own run
   leaves it to the candidate (MQW-001); a candidate formed again on the same base with the same
-  members takes its tree's passed run (`App::ci_reuse_for_candidate`); a failed candidate waits
+  members takes its tree's passed run. A rebuilt candidate whose tree recently failed in a
+  candidate run takes that failed run ID first, even on a different base with different members
+  (`App::ci_reuse_for_candidate`, SPEC-542). A failed candidate waits
   for its members' own runs before it is bisected;
 - a pull request that changes files under a glob of the integration branch's `[merge_queue]
   apart` (derived files) that an earlier member also changes is held out of the candidate and
@@ -1545,7 +1547,7 @@ flowchart TD
     P -- passed --> U{contains the integration branch?}
     P -- running, behind --> C
     U -- yes --> M[merged now]
-    U -- no --> C[merge candidate: base + armed pull requests, one run beside their own]
+    U -- no --> C[merge candidate on the current base, reusing a known verdict for its tree]
     C -- a member's own run fails --> C
     C -- passed --> L[each brought up to date, verdict recorded, merged in order]
     C -- failed, n >= 2 --> H[first half again]

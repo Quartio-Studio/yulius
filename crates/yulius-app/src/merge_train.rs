@@ -11,7 +11,8 @@
 //! or once it passed, and only when it is behind its base: a green one that is up to date merges
 //! alone, at once. A member whose own run fails leaves (MQC-002); one whose own run errored or
 //! was cancelled stays, decided by the candidate (SPEC-497 MQW-001). A candidate formed again on
-//! the same base with the same members reuses the passed run of its tree. A pull request that
+//! the same base with the same members reuses the passed run of its tree. A candidate that
+//! rebuilds a recently failed candidate tree takes the original failure (SPEC-542). A pull request that
 //! changes derived files an earlier member also changes (`[merge_queue] apart`) waits for the
 //! next candidate (MQW-003).
 //!
@@ -1520,10 +1521,10 @@ impl App {
         }
         // Every one conflicts with the integration branch itself: one by one, where Yulius
         // names the files to resolve (DLV-203).
-        if members.is_empty() {
+        let Some(last) = members.last() else {
             one_by_one(state, key);
             return None;
-        }
+        };
         // The integration branch's jobs, with the members' own changed ones beside them, as for a
         // pull request (`ci_gate_for_head`, SPEC-504 CFG-001).
         let gate = self
@@ -1545,17 +1546,19 @@ impl App {
                     .min()
             })
             .map_or_else(|| self.now(), |first| Timestamp(first - 1));
-        // The same tree passed before (the same members formed again on the same base, after a
-        // dissolve that said nothing about them): its verdict is taken, no run is made
-        // (SPEC-497 MQW-001).
         let reused = self
-            .ci_reuse_for_candidate(sandbox, CiRef::Train(prs.clone()), &built.head, &gate)
-            .await
-            .ok()
-            .flatten();
+            .ci_reuse_for_candidate(
+                sandbox,
+                CiRef::Train(prs.clone()),
+                &built.head,
+                &last.tree,
+                &gate,
+            )
+            .await;
         let queued = match reused {
-            Some(run) => Ok(run),
-            None => {
+            Err(err) => Err(err),
+            Ok(Some(run)) => Ok(run),
+            Ok(None) => {
                 self.ci_queue_placed(
                     sandbox,
                     CiRef::Train(prs.clone()),
@@ -1580,7 +1583,7 @@ impl App {
             sandbox,
             yulius_domain::merge_queue::FORMED,
             &format!(
-                "merge train {} on {} at {}: run {} tests {}{}{}",
+                "merge train {} on {} at {}: run {} decides {}{}{}",
                 listed(&prs),
                 profile.integration_branch,
                 built.base,
