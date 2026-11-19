@@ -789,6 +789,9 @@ which a new sign-in takes too; it is never held across a request to the provider
 recorded while a reading is under way is kept. The write that marks a subscription refused
 (`record_access_lost`) takes the lock as well: a usage write stores the status it read together
 with the usage, and one under way would otherwise store `ok` over "needs a new sign-in" (#1211).
+Under that lock it checks the current sealed credential against the digest recorded at launch.
+A stale refusal or a pre-upgrade run without a digest affects only the interrupted task
+([decision 0387](decisions/0387-bind-claude-refusals-to-the-launch-credential.md)).
 A subscription works while it reads `ok` or `limited` (`AccountStatus::healthy`), and that is
 the one rule: the pool places tasks only on one that works, the background rounds ask only such
 a one for its usage and its e-mail address, and a reading that arrives for any other stores its
@@ -979,7 +982,7 @@ A task leaves its subscription for three reasons besides the pool's own rotation
 [decision 0288](decisions/0288-a-person-moves-a-task-between-subscriptions-and-removing-one-moves-its-tasks.md)):
 a person chooses another from the task (`POST /api/tasks/{tid}/switch`), a person removes the
 subscription (`DELETE /api/admin/accounts/{id}`), or Claude refuses it (`Observed::AccessLost`,
-which marks it `relogin`). All three go through `App::move_task` (`moves.rs`), which picks the
+which marks it `relogin` while the refused sign-in is current). All three go through `App::move_task` (`moves.rs`), which picks the
 switch that fits where the task stands (past a limit, the first message again, a held prompt, a
 cut turn told to go on) and lets the pool pick when no subscription is named; with nowhere to go
 the launch pauses the task. A removal deletes the row first, so `choose_account`, which reads only
@@ -990,7 +993,8 @@ one-line notice and, with nothing usable left, the task's Needs you, which `end_
 flowchart LR
   P["Person: Run #N on…"] -->|"switch_task (Trigger::Manual, < 100 %)"| M["move_task"]
   D["Person: Remove"] -->|"delete row, close Done sessions"| M
-  R["Claude refuses (AccessLost)"] -->|"relogin, rotate"| M
+  R["Claude refuses (AccessLost)"] -->|"rotate the interrupted task"| M
+  R -->|"launch credential still current"| A["Mark subscription relogin"]
   M -->|"switch_from: end run, start_run_if"| C{"choose_account"}
   C -->|"a subscription"| RUN["Same session on it"]
   C -->|"none"| W["waiting_capacity"]

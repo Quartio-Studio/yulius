@@ -21,8 +21,8 @@ The watcher handles a live or replayed access refusal by passing the account ID 
 ## Plan
 
 - [x] Reproduce a refusal after sign-in in a synthetic run
-- [ ] Bind the refusal write to the launch credential
-- [ ] Verify account state and run recovery
+- [x] Bind the refusal write to the launch credential
+- [x] Verify account state and run recovery
 - [ ] Review and deliver the fix on green CI
 
 ## Acceptance criteria
@@ -38,3 +38,8 @@ Drive the refusal from a synthetic agent after its task has started. Use the SQL
 ## Decisions
 
 Use a digest of the sealed launch credential in the private run directory, following the existing per-attempt markers for server recovery. This avoids retaining another copy of a credential, and survives a watcher reattach. Compare under the usage lock shared with Claude sign-in. A pre-upgrade run cannot identify its sign-in, so its refusal only affects the interrupted task.
+
+## Evidence
+
+- Before the fix, `cargo test --locked -p yulius --test main subscription_moves::a_refused_run_` failed both regressions. Each task moved to the second subscription and the original account read `Relogin` where `Ok` was expected.
+- After the fix, six synthetic integration tests passed with `cargo nextest run --locked -p yulius --test main -E 'test(/subscription_moves::a_refused_/) | test(/pool_supervision::a_refused_subscription/) | test(/usage_credits::a_subscription_refused_while/)'`. They cover the pasted replacement token, a missing launch digest, a current refusal and its error, the usage-write race, the move notice and the last subscription's capacity wait.
