@@ -1,6 +1,6 @@
 import { test } from '@e2e-dev/web';
 import { expect } from 'e2e';
-import { axeViolations, failOnPageErrors, mock } from './support.ts';
+import { axeViolations, failOnPageErrors, firstShown, mock } from './support.ts';
 
 failOnPageErrors();
 
@@ -74,6 +74,43 @@ test('the shipped automations are the defaults, switched on in place, and Delete
   expect((await cardOf(browser, 'Work through open issues'))!).toEqual({ badges: ['Default'], buttons: [], opens: false });
   expect(await namesIn(browser, 'automations-defaults')).toEqual(DEFAULTS);
   expect(await namesIn(browser, 'automations-custom')).toEqual(CUSTOM);
+});
+
+test('loading workflows between selecting the name and typing its replacement preserves the selection', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/automations/new', '&hold=/api/sandboxes/sb_studio/workflows'));
+  const name = screen.getByRole('textbox', 'Automation name');
+  await firstShown(name);
+  await name.press('ControlOrMeta+a');
+  await browser.evaluate(() => (window as unknown as { __yuliusMock: { release(): void } }).__yuliusMock.release());
+  await expect(screen.getByRole('radio', /^Daily feedback/)).toHaveAttribute('aria-checked', 'true');
+  await browser.keyboard.type('Nightly Codex review');
+  await expect(name).toHaveValue('Nightly Codex review');
+});
+
+test('a name cleared while workflows load stays empty', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/automations/new', '&hold=/api/sandboxes/sb_studio/workflows'));
+  const name = screen.getByRole('textbox', 'Automation name');
+  await firstShown(name);
+  await name.fill('');
+  await browser.evaluate(() => (window as unknown as { __yuliusMock: { release(): void } }).__yuliusMock.release());
+  await expect(screen.getByRole('radio', /^Daily feedback/)).toHaveAttribute('aria-checked', 'true');
+  await expect(name).toHaveValue('');
+});
+
+test('a new automation suggests recipe names until a custom name is entered', async ({ app, screen }) => {
+  await app.open(mock('/s/studio/automations/new'));
+  const name = screen.getByRole('textbox', 'Automation name');
+  const recipe = screen.getByRole('radiogroup', 'Recipe');
+  await expect(recipe.getByRole('radio', /^Daily feedback/)).toHaveAttribute('aria-checked', 'true');
+  await expect(name).toHaveValue('Daily feedback');
+  await expect(screen.getByRole('textbox', 'What the task does')).toHaveValue('Implement yesterday’s customer feedback from the Quartio MCP. Open one pull request per change.');
+  await screen.getByText('Advanced: cron', { exact: true }).click();
+  await expect(screen.getByRole('textbox', 'Cron schedule')).toHaveValue('0 9 * * 1-5');
+  await recipe.getByRole('radio', /^Dependency updates/).click();
+  await expect(name).toHaveValue('Dependency updates');
+  await name.fill('My weekly audit');
+  await recipe.getByRole('radio', /^Weekly summary/).click();
+  await expect(name).toHaveValue('My weekly audit');
 });
 
 test('the builder’s Delete of a default says it is reset, of a custom one not (AUT-035)', async ({ app, browser, screen }) => {

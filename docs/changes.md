@@ -9,6 +9,9 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 - A task can deliver a follow-up that appends to a list after incorporating an append from
   `dev`. Delivery compares the two trees when the task contains the integration commit.
   An equal tree keeps the previous pull request marked as merged. [#1299](https://github.com/Quartio-Studio/yulius/issues/1299)
+- Git integration tests now install fake Git executables and hooks in a separate process so concurrent forks cannot keep the executable open for writing (#1332, SPEC-548).
+- Browser tests recover their initial mock page once when Chromium reports a network change during startup. The test output records the recovery (#1331, SPEC-545).
+- The new automation editor keeps the name you enter while workflows load, including names that match a recipe (#1416, SPEC-543).
 - Mutation testing now checks the same workspace tests on the baseline and each mutant.
   Earlier runs could count an unrelated xtask failure as a catch (#1364, SPEC-533).
 
