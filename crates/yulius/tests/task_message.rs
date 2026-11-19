@@ -102,6 +102,15 @@ fn a_message_kept_out_of_a_withheld_screen_flags_the_task_once() -> TestResult {
     rt.block_on(async {
         let app = app(&data, fake_agent()).await?;
         let (id, caller) = running(&app, &data).await?;
+        // The fake agent echoes its answer before Stop settles the turn to Waiting. Let that
+        // transition finish before this test raises and restores the withheld-screen flag.
+        let attempt = app.deps.store.live_attempt(&id).await?.ok_or("run")?;
+        let stop_answered =
+            Path::new(&attempt.run_dir).join(yulius_app::outage::STOP_ANSWERED_FILE);
+        wait_for("the opening Stop", Duration::from_secs(30), || async {
+            stop_answered.is_file()
+        })
+        .await?;
         let ctx = AuthContext {
             user: app.deps.store.user(&caller.user).await?.ok_or("user")?,
             csrf_token: None,

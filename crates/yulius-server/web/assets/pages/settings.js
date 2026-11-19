@@ -6,7 +6,7 @@ import { h, icon, toggle, openMenu, toast, errorToast } from '../dom.js';
 import { href } from '../router.js';
 import { readJson, writeJson } from '../store.js';
 import { initials } from '../layout.js';
-import { findModel, findEffort, modelMenuItems, effortMenuItems, MODEL_PREF_KEY, EFFORT_PREF_KEY } from '../models.js';
+import { findModel, findEffort, modelMenuItems, effortMenuItems, modelPreferences } from '../models.js';
 import { pageFrame } from './common.js';
 import { DESKTOP_KEY } from '../notifications.js';
 import { showShortcuts, SHEET_KEYS } from '../shortcuts.js';
@@ -41,18 +41,19 @@ export function mountSettingsPage(ctx) {
   const open = (path, what) => h('a', { class: 'btn btn-sm', href: href(path), dataset: { route: path }, 'aria-label': `Open ${what}` }, 'Open');
 
   // Preferences: the composer's defaults, the tools rail and the notification history.
-  let modelId = findModel(readJson(MODEL_PREF_KEY, null)) ? readJson(MODEL_PREF_KEY, null) : null;
-  let effortId = findEffort(readJson(EFFORT_PREF_KEY, null)) ? readJson(EFFORT_PREF_KEY, null) : null;
+  const picks = modelPreferences();
   const modelButton = h('button', { type: 'button', class: 'chip-btn', 'aria-haspopup': 'menu' });
   const effortButton = h('button', { type: 'button', class: 'chip-btn', 'aria-haspopup': 'menu' });
+  const effortRow = row('pulse', 'Default effort for new tasks', 'How hard the agent thinks by default', effortButton);
   const renderPicks = () => {
-    const found = findModel(modelId);
+    const found = findModel(picks.model);
     modelButton.replaceChildren(h('span', { class: 'sr-only' }, 'Model for new tasks: '), h('span', { class: 'chip-label' }, found ? found.model.name : 'Random agent'), icon('down', { size: 12 }));
-    const effort = findEffort(effortId);
+    effortRow.hidden = found?.model.efforts?.length === 0;
+    const effort = findEffort(picks.effort);
     effortButton.replaceChildren(h('span', { class: 'sr-only' }, 'Effort for new tasks: '), h('span', { class: 'chip-label' }, effort ? effort.name : 'Default effort'), icon('down', { size: 12 }));
   };
-  modelButton.addEventListener('click', () => openMenu(modelButton, modelMenuItems(modelId, (id) => { modelId = id; writeJson(MODEL_PREF_KEY, id); renderPicks(); })));
-  effortButton.addEventListener('click', () => openMenu(effortButton, effortMenuItems(effortId, (id) => { effortId = id; writeJson(EFFORT_PREF_KEY, id); renderPicks(); })));
+  modelButton.addEventListener('click', () => openMenu(modelButton, modelMenuItems(picks.model, (id) => { picks.setModel(id); renderPicks(); })));
+  effortButton.addEventListener('click', () => openMenu(effortButton, effortMenuItems(picks.model, picks.effort, (id) => { picks.setEffort(id); renderPicks(); })));
   renderPicks();
 
   const appearance = h('div', { class: 'seg', role: 'radiogroup', 'aria-label': 'Appearance' }, THEME_CHOICES.map((choice) => h('label', null,
@@ -128,7 +129,7 @@ export function mountSettingsPage(ctx) {
     section('gear', 'Preferences', 'kept in this browser',
       row('contrast', 'Appearance', 'Dark, light, or follow your system', appearance),
       row('target', 'Default model for new tasks', 'What the composer starts with', modelButton),
-      row('pulse', 'Default effort for new tasks', 'How hard the agent thinks by default', effortButton),
+      effortRow,
       row('tools', 'Show the tools rail', 'Browser, Editor and Shell on the right of a sandbox', railToggle)),
     section('key', 'Keyboard and accessibility', 'kept in this browser',
       row('key', 'Keyboard shortcuts', `Every shortcut in one list (${SHEET_KEYS})`, h('button', { type: 'button', class: 'btn btn-sm', onClick: showShortcuts }, 'Show')),

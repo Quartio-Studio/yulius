@@ -18,7 +18,7 @@ import { mentionOf, parsePrompt } from './promptparts.js';
 import { relLong, dateTime, whenLabel } from './format.js';
 import { readJson, writeJson } from './store.js';
 import { href } from './router.js';
-import { findModel, findEffort, modelFields, modelMenuItems, effortMenuItems, MODEL_PREF_KEY, EFFORT_PREF_KEY } from './models.js';
+import { findModel, findEffort, modelFields, modelMenuItems, effortMenuItems, modelPreferences } from './models.js';
 import { randomQuote } from './quotes.js';
 import { brandSmoke } from './brandfx.js';
 import { BRAND } from './brand.js';
@@ -1236,8 +1236,7 @@ export function mountComposer(ctx, sandbox) {
   // `{ at: iso }` starts by itself then; null starts as chosen above.
   let prepare = draft.prepare || null;
   let split = null; // the split card while it shows (TSK-011)
-  let modelId = findModel(readJson(MODEL_PREF_KEY, null)) ? readJson(MODEL_PREF_KEY, null) : null;
-  let effortId = findEffort(readJson(EFFORT_PREF_KEY, null)) ? readJson(EFFORT_PREF_KEY, null) : null;
+  const picks = modelPreferences();
 
   const chip = (label, onOpen, extra = {}) => {
     // The visible value is the accessible name, with a hidden "Mode: " prefix (WCAG 2.5.3).
@@ -1363,13 +1362,12 @@ export function mountComposer(ctx, sandbox) {
     // The send button says what it does: a prepared task is not started (SPEC-105).
     startButton.setAttribute('aria-label', startAction());
     startButton.title = write ? `${startAction()} (${SUBMIT_KEYS})` : 'Requires write access';
-    const found = findModel(modelId);
+    const found = findModel(picks.model);
     setChildren(modelChip, h('span', { class: 'sr-only' }, 'Model: '), h('span', { class: 'chip-label' }, found ? found.model.name : 'Random agent'), icon('down', { size: 12 }));
     modelChip.title = found ? `${found.provider.name} · ${found.model.name}` : 'Agent: drawn for each task, Claude Code (Opus 5.5), Codex (GPT-6.2 Astra) or Antigravity (Gemini 4 Carbon)';
     // A model without effort levels (Haiku) hides the effort choice and sends none.
-    const effortless = Boolean(found && found.model.effort === false);
-    effortChip.hidden = effortless;
-    const effort = findEffort(effortId);
+    effortChip.hidden = found?.model.efforts?.length === 0;
+    const effort = findEffort(picks.effort);
     setChildren(effortChip, h('span', { class: 'sr-only' }, 'Effort: '), h('span', { class: 'chip-label' }, effort ? effort.name : 'Default effort'), icon('down', { size: 12 }));
     // Every choice shown here is the draft's (DRF-003).
     if (draft.mode !== mode || draft.workflowId !== workflowId || draft.afterTaskId !== afterTaskId || draft.startRule !== startRule || draft.supertask !== supertask || draft.prepare !== prepare) {
@@ -1459,11 +1457,11 @@ export function mountComposer(ctx, sandbox) {
   }
 
   function openModelMenu(anchor) {
-    openMenu(anchor, modelMenuItems(modelId, (id) => { modelId = id; writeJson(MODEL_PREF_KEY, id); renderChips(); prompt.focus(); }));
+    openMenu(anchor, modelMenuItems(picks.model, (id) => { picks.setModel(id); renderChips(); prompt.focus(); }));
   }
 
   function openEffortMenu(anchor) {
-    openMenu(anchor, effortMenuItems(effortId, (id) => { effortId = id; writeJson(EFFORT_PREF_KEY, id); renderChips(); prompt.focus(); }));
+    openMenu(anchor, effortMenuItems(picks.model, picks.effort, (id) => { picks.setEffort(id); renderChips(); prompt.focus(); }));
   }
 
 
@@ -1724,9 +1722,8 @@ export function mountComposer(ctx, sandbox) {
     const body = { prompt: text, mode };
     if (title) body.title = title;
     if (workflowId) body.workflow_id = workflowId;
-    const found = findModel(modelId);
-    Object.assign(body, modelFields(modelId));
-    if (effortId && !(found && found.model.effort === false)) body.effort = effortId;
+    Object.assign(body, modelFields(picks.model));
+    if (picks.effort) body.effort = picks.effort;
     return body;
   }
 
@@ -1822,7 +1819,7 @@ export function mountComposer(ctx, sandbox) {
       close: () => clearSplit(),
       // A task of another agent runs without a Claude account (SPEC-503, SPEC-505), and so does a
       // Random one while Codex or Antigravity is usable (SPEC-520 RHM-006).
-      codex: Boolean(bodyFor(value).harness) || (!findModel(modelId) && (codexConnected(ctx.store.state.me) || antigravityConnected(ctx.store.state.me))),
+      codex: Boolean(bodyFor(value).harness) || (!findModel(picks.model) && (codexConnected(ctx.store.state.me) || antigravityConnected(ctx.store.state.me))),
     });
     setChildren(intakeSlot, split.el);
     const calm = window.matchMedia('(prefers-reduced-motion: reduce)').matches;

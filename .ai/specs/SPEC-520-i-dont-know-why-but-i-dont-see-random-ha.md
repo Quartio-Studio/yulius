@@ -1,6 +1,6 @@
 ---
 yulius-task: 5f9512b5-168c-4d48-996b-cc0bc5b0de62
-status: done
+status: in-progress
 ---
 
 # SPEC-520: Random harness selection across all harnesses with available subscriptions
@@ -38,6 +38,7 @@ Restore the random harness feature as the default for new tasks and automations,
 - [x] Restore Random in the composer, Settings, automation editor, and browser mock
 - [x] Record ADR-0377 and update product, architecture, API, and spec documentation
 - [x] Independent review in a fresh session, findings fixed test-first
+- [ ] Reconcile merge with SPEC-521 (#1439), verify UI and Rust suites, and review resolved head
 
 ## Acceptance criteria
 
