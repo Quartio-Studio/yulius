@@ -8,7 +8,7 @@ failOnPageErrors();
 // with no access to github pro. It should be done in Git section". The Git page's Production
 // protection card switches off the requirement of a GitHub ruleset on the production branch.
 
-type Mocked = { __yuliusMock: { sandboxes: { slug: string; profile: { protect_production?: boolean } }[]; release: () => void; resyncNow: () => void } };
+type Mocked = { __yuliusMock: { sandboxes: { slug: string; repo: { url: string }; profile: { protect_production?: boolean } }[]; release: () => void; resyncNow: () => void } };
 
 /** The mock's stored switch of the sandbox `slug`. */
 const switchOf = (browser: Browser, slug: string) => browser.evaluate((s: string) => {
@@ -17,7 +17,7 @@ const switchOf = (browser: Browser, slug: string) => browser.evaluate((s: string
 }, slug);
 
 test('an admin turns the production ruleset requirement off and on in the Git page', async ({ app, browser, screen }) => {
-  await app.open(mock('/s/studio/git'));
+  await app.open(mock('/s/studio/git', '&ambient=0'));
   const card = screen.getByRole('region', 'Production protection');
   const required = card.getByRole('switch', 'Require a GitHub ruleset on main');
   await expect(required).toBeChecked();
@@ -33,12 +33,13 @@ test('an admin turns the production ruleset requirement off and on in the Git pa
   await expect(more).toBeVisible();
   await required.focus();
   await browser.evaluate(() => {
-    document.activeElement!.addEventListener('keydown', () => {
+    document.addEventListener('keydown', () => {
       document.querySelector<HTMLButtonElement>('.dl-col button.link-btn')!.click();
     }, { once: true });
   });
   await browser.keyboard.press('Space');
   await expect(screen.getByText(/Production protection is off/)).toBeVisible();
+  await expect(more).toBeHidden();
   await expect(card.getByRole('switch', 'Require a GitHub ruleset on main')).toBeFocused();
   await expect(card.getByText(/accepted that agents could push to or merge into main/)).toBeVisible();
   await expect(card.getByRole('switch', 'Require a GitHub ruleset on main')).not.toBeChecked();
@@ -69,15 +70,13 @@ test('a refused change shows the stored switch again, also after a redraw while 
   const required = card.getByRole('switch', 'Require a GitHub ruleset on main');
   await expect(required).toBeChecked();
   await required.click();
-  // A live update redraws the page while the change is held: the switch drawn then is a new one.
+  // Change a value the card displays so a live update really redraws it during the write.
   await browser.evaluate(() => {
-    document.querySelector('#production-protection input[role="switch"]')!.setAttribute('data-before', '1');
     const db = (window as unknown as Mocked).__yuliusMock;
-    (db.sandboxes.find((sb) => sb.slug === 'studio') as unknown as { counts: { running: number } }).counts.running += 1;
+    db.sandboxes.find((sb) => sb.slug === 'studio')!.repo.url = 'https://github.com/Quartio-Studio/renamed';
     db.resyncNow();
-    return null;
   });
-  await expect.poll(() => browser.evaluate(() => document.querySelectorAll('#production-protection input[data-before]').length)).toBe(0);
+  await expect(card.getByRole('link', 'Rulesets on GitHub')).toHaveAttribute('href', 'https://github.com/Quartio-Studio/renamed/settings/rules');
   await expect(card.getByRole('switch', 'Require a GitHub ruleset on main')).toBeDisabled();
   await browser.evaluate(() => { (window as unknown as Mocked).__yuliusMock.release(); return null; });
   await expect(screen.getByText(/Couldn’t change the production protection/)).toBeVisible();
