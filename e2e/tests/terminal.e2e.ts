@@ -920,6 +920,24 @@ test('a program that answers the wheel late takes the offer back once its screen
   await expect.poll(() => offerShown(browser), { message: 'no offer while the program scrolls' }).toBe(false);
 });
 
+test('a wheel over a full-screen task without mouse tracking leaves the prompt alone', async ({ app, browser }) => {
+  await classicTask12(app, browser);
+  await browser.evaluate(() => {
+    const session = (window as unknown as HistoryMock).__yuliusMock.sessions.get('tsk_studio_12')!;
+    session.broadcast('\x1b[?1049h\x1b[HFull-screen task');
+  });
+  await expect(rows(browser)).toHaveText(/Full-screen task/);
+  const point = (await spot(browser, 'Full-screen task'))!;
+  await browser.evaluate(() => document.querySelector<HTMLElement>('.taskview .xterm-helper-textarea')!.focus());
+  const sent = await recordInput(browser);
+  await turn(browser, point, 160);
+  await turn(browser, point, -160);
+  await expect(offer(browser)).toBeVisible();
+  // A real key also orders the assertion after the two wheels on the same connection.
+  await browser.keyboard.press('ArrowUp');
+  await expect.poll(sent).toEqual(['\x1b[A']);
+});
+
 test('an old run on the classic renderer, with nothing above its screen, offers the whole session at once (#911)', async ({ app, browser, screen }) => {
   const point = await classicTask12(app, browser);
   const sent = await recordInput(browser);
