@@ -55,3 +55,4 @@ On Linux a PID file descriptor becomes readable when the last thread exits. A ze
 - Independent review approved `252fbd507`. The reviewer observed that deleting the status file between inspection and termination discards its identities on the base revision too. This separate case was recorded on #1449.
 
 - Stress on the first fix failed in iteration 1 of 10. A diagnostic run captured a zombie leader, two threads in the host and a second `waitpid(WNOHANG)` returning `StillAlive` at the loss transition. A syscall trace captured the kill and the host becoming waitable after the loss. #1190's fixture had a single-threaded, fully exited child.
+- The deterministic Linux worker test failed at `908a53098` with “the worker was still running.” With the PID file descriptor check, all three process unit tests passed, including the existing fully exited zombie case.

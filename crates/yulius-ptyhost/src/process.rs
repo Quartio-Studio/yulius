@@ -123,9 +123,20 @@ mod imp {
     }
 
     pub(crate) fn is_zombie(pid: Pid) -> bool {
-        stat_fields(pid.as_raw())
-            .and_then(|f| f.first().cloned())
-            .is_some_and(|state| state == "Z" || state == "X")
+        use rustix::event::{PollFd, PollFlags, Timespec, poll};
+        use rustix::process::{PidfdFlags, pidfd_open};
+
+        // The leader can be a zombie while a worker still runs. A process pidfd
+        // becomes readable once the last thread exits, including before the reap.
+        let Some(id) = rustix::process::Pid::from_raw(pid.as_raw()) else {
+            return false;
+        };
+        let Ok(fd) = pidfd_open(id, PidfdFlags::empty()) else {
+            return false;
+        };
+        let mut fds = [PollFd::new(&fd, PollFlags::IN)];
+        poll(&mut fds, Some(&Timespec::default())).is_ok()
+            && fds[0].revents().contains(PollFlags::IN)
     }
 
     pub(crate) fn start_time_ms(pid: Pid) -> Option<i64> {

@@ -7,7 +7,8 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 ## 2026-11-19
 
 - Stopping a disconnected run now terminates its detached host even when the agent has just
-  exited and the host is waiting to deliver the exit frame (SPEC-550, #1449).
+  exited and the host is waiting to deliver the exit frame. On Linux, settlement also waits
+  for the last host thread to exit (SPEC-550, #1449).
 - Mutation testing now checks the same workspace tests on the baseline and each mutant.
   Earlier runs could count an unrelated xtask failure as a catch (#1364, SPEC-533).
 
