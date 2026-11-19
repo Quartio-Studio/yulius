@@ -510,6 +510,50 @@ mod tests {
         Ok(())
     }
 
+    /// SPEC-534. Upgrading cannot replay a slot whose starter was never recorded.
+    #[tokio::test]
+    async fn legacy_automation_schedules_wait_for_creator_approval()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use yulius_app::automations::RunState;
+        use yulius_app::ports::store_ext::AutomationStore as _;
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("legacy.db");
+        {
+            let conn = rusqlite::Connection::open(&path)?;
+            for sql in &MIGRATIONS[..69] {
+                conn.execute_batch(sql)?;
+            }
+            conn.pragma_update(None, "user_version", 69)?;
+            conn.execute_batch(
+                "INSERT INTO users (id, display_name, is_superadmin, is_instance_admin, created_at) VALUES ('u1', 'U', 0, 0, 1);
+                 INSERT INTO sandboxes (id, slug, repo_owner, repo_name, default_branch, profile, port_base, port_count, created_by, onboarding_state, created_at) VALUES ('s1', 's', 'o', 'r', 'main', '{}', 20000, 10, 'u1', 'not_needed', 1);
+                 INSERT INTO automations (id, sandbox_id, name, cron, utc_offset_minutes, prompt, harness, enabled, created_by, created_via, created_at)
+                 VALUES ('a', 's1', 'Summary', '* * * * *', 0, 'summary', 'claude', 1, 'u1', 'ui', 1);
+                 INSERT INTO automation_runs (automation_id, scheduled_for, state, created_at)
+                 VALUES ('a', 1, 'scheduled', 1), ('a', 2, 'scheduled', 2);
+                 INSERT INTO tasks (id, sandbox_id, number, title, prompt, harness, status, origin, automation_run, created_by, owner_id, created_at, updated_at)
+                 VALUES ('t', 's1', 1, 'Summary', 'summary', 'claude', 'queued', 'automation', 'a@1', 'u1', 'u1', 1, 1);",
+            )?;
+        }
+        let store = SqliteStore::open(&path)?;
+        let saved = store.automation("a").await?.ok_or("automation")?;
+        assert!(!saved.enabled);
+        assert_eq!(saved.prompt, "summary");
+        let runs = store.runs("a", 2).await?;
+        assert_eq!(runs.len(), 2);
+        assert_eq!(runs[0].state, RunState::SkippedDisabled);
+        assert!(runs[0].task_id.is_none());
+        assert_eq!(runs[1].state, RunState::TaskCreated);
+        assert_eq!(
+            runs[1]
+                .task_id
+                .as_ref()
+                .map(yulius_domain::ids::TaskId::as_str),
+            Some("t")
+        );
+        Ok(())
+    }
+
     /// SPEC-525: Codex and Antigravity sessions were indexed with no passages (the reader knew
     /// only Claude Code's lines), so a version-68 database indexes them again from the start;
     /// a Claude Code session keeps its index.
