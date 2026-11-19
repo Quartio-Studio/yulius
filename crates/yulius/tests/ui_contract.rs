@@ -549,6 +549,38 @@ fn the_composer_offers_antigravity_on_its_default_model() -> TestResult {
     Ok(())
 }
 
+/// SPEC-511 CXD-003: the composer's Codex entry sends no model, so the server's default runs, and
+/// says which: GPT-6.2 Astra at high effort; the browser mock creates such a task on them.
+#[test]
+fn the_composer_says_codex_runs_its_default_model() -> TestResult {
+    use yulius_domain::harness::{DEFAULT_CODEX_EFFORT, DEFAULT_CODEX_MODEL};
+    let models = std::fs::read_to_string(web_dir().join("assets/models.js"))?;
+    let openai = models
+        .split_once("    id: 'openai',")
+        .and_then(|(_, rest)| rest.split_once("    id: 'google',"))
+        .map(|(openai, _)| openai)
+        .ok_or("models.js has no openai provider before google")?;
+    assert!(
+        openai.contains(
+            "{ id: 'codex', name: 'Codex', description: 'OpenAI Codex CLI on a Codex account, \
+             GPT-6.2 Astra at high effort by default', harnessOnly: true }"
+        ),
+        "{openai}"
+    );
+    assert_eq!(
+        DEFAULT_CODEX_MODEL, "gpt-6.2-astra",
+        "the menu says GPT-6.2 Astra"
+    );
+    assert_eq!(DEFAULT_CODEX_EFFORT, "high", "the menu says high");
+    let mock = std::fs::read_to_string(web_dir().join("assets/mock.js"))?;
+    assert!(
+        mock.contains(&format!("harness === 'codex' ? '{DEFAULT_CODEX_MODEL}'"))
+            && mock.contains(&format!("harness === 'codex' ? '{DEFAULT_CODEX_EFFORT}'")),
+        "the mock creates a Codex task without a model on another default"
+    );
+    Ok(())
+}
+
 /// SPEC-482 FBK-001: the pages name the fallback model the server launches (the Status line, the
 /// Capacity panel and "Run #N on…" work out from it what the pool does), and offer it.
 #[test]

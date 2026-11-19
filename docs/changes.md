@@ -4,6 +4,13 @@ Notable changes, newest first. Per-change detail lives in the merged pull reques
 evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-architecture.md)
 (sections 14 and 15).
 
+## 2026-11-19
+
+- Codex runs GPT-6.2 Astra at high effort by default (SPEC-511, task #493): a Codex task that
+  names no model is launched with `-m gpt-6.2-astra`, one that names no effort at high, instead
+  of the account's own default. The run records the model, the task's details name it, and the
+  composer's Codex entry says so (ADR-0366).
+
 ## 2026-11-18
 
 - Subscription sign-ins start again (SPEC-509, task #491, #1414): login terminals are 1000

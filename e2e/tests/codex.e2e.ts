@@ -101,22 +101,26 @@ test('a Codex subscription is added by importing an auth.json, pasted or from a 
   await expect(browser.locator('.toast-ok .toast-msg:has-text("Codex laptop is signed in again")')).toBeVisible();
 });
 
+// SPEC-511 CXD-003: the Codex entry names its default, GPT-6.2 Astra at high effort, which a task
+// started with it runs.
 test('choosing Codex in the composer starts a Codex task', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio'));
   // A Codex task needs a Codex subscription (SPEC-246 CLA-002, SPEC-503).
   await browser.evaluate(() => (window as unknown as Mocked).__yuliusMock.accounts.push({ id: 'acc_codex', provider: 'openai', label: 'Codex #1', status: 'ok' } as never));
   await screen.getByRole('button', /^Model:/).click();
+  await expect(screen.getByRole('menuitemradio', /^Codex/)).toContainText('GPT-6.2 Astra at high effort by default');
   await screen.getByRole('menuitemradio', /^Codex/).click();
   await expect(screen.getByRole('button', 'Model: Codex')).toBeVisible();
   const prompt = screen.getByRole('textbox', 'Task prompt');
   await prompt.fill('Add a health check');
   await prompt.press('ControlOrMeta+Enter');
   await expect(browser).toHaveURL(/#\/s\/studio\/t\/\d+$/);
-  const harness = await browser.evaluate(() => {
+  const task = await browser.evaluate(() => {
     const tasks = (window as unknown as Mocked).__yuliusMock.tasks;
-    return tasks[tasks.length - 1].harness;
+    const last = tasks[tasks.length - 1];
+    return { harness: last.harness, model: last.model, effort: last.effort };
   });
-  expect(harness).toBe('codex');
+  expect(task).toEqual({ harness: 'codex', model: 'gpt-6.2-astra', effort: 'high' });
 });
 
 test('an automation chooses the agent of its tasks', async ({ app, browser, screen }) => {

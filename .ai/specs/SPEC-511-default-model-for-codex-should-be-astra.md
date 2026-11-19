@@ -51,7 +51,7 @@ model or effort keeps it.
 
 - [x] Spec and ADR record that a Codex task defaults to GPT-6.2 Astra at high effort
 - [x] A Codex task without a model or effort launches and records GPT-6.2 Astra at high effort
-- [ ] The composer, the mock and the docs name Codex's default
+- [x] The composer, the mock and the docs name Codex's default
 - [ ] Independent review of the change
 
 ## Acceptance criteria
