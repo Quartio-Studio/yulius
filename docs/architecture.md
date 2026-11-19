@@ -1736,8 +1736,10 @@ The reads the server still made by path there go the same way
 ([decision 0315](decisions/0315-what-the-host-reads-in-a-sandbox-it-reads-through-handles.md)):
 a session's transcript is opened from the sandbox directory folder by folder, without following
 a link or waiting on a FIFO, and only a regular file is read (`transcripts::open`, used by the
-transcript pages, `session_read` and the search index; the run watcher's tail opens it the same
-way at its name); the sandbox adapter reads the system layer's `passwd` and `group` itself, at
+transcript pages, `session_read` and the search index, which read a Claude Code session, a Codex
+rollout and an Antigravity transcript into the same entries, the format told by each line's
+shape ([SPEC-525](../.ai/specs/SPEC-525-hey-we-have-a-small-bug-i-don-t-see-a-pr.md)); the run
+watcher's tail opens it the same way at its name); the sandbox adapter reads the system layer's `passwd` and `group` itself, at
 most 1 MiB of a regular file, and hands people's identity files the text; `record_number` lists
 a numbered directory from the sandbox directory down; the quota's disk usage is measured from
 folder handles; and the task review reads an untracked file from the worktree's folder.
