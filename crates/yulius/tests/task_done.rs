@@ -4266,43 +4266,79 @@ fn a_start_settles_a_run_no_server_holds_before_it_starts_the_next() -> TestResu
 /// lost, instead of answering "task is stopped_server_lost" and changing nothing.
 #[test]
 fn a_stop_settles_a_run_no_server_holds() -> TestResult {
+    stop_unheld_run(false)
+}
+
+/// #1449: the agent exits after inspection and the host lingers to deliver its exit frame.
+#[test]
+fn a_stop_settles_a_run_whose_detached_host_lingers() -> TestResult {
+    stop_unheld_run(true)
+}
+
+// The fixture spawned this host. The old runtime may already have reaped it.
+fn fixture_host_exited(host: nix::unistd::Pid) -> bool {
+    use nix::sys::wait::{WaitPidFlag, WaitStatus, waitpid};
+    matches!(
+        waitpid(host, Some(WaitPidFlag::WNOHANG)),
+        Ok(WaitStatus::Exited(..) | WaitStatus::Signaled(..)) | Err(nix::errno::Errno::ECHILD)
+    )
+}
+
+fn stop_unheld_run(delay_host_exit: bool) -> TestResult {
     let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
     let (_dir, data) = data_dir()?;
     let (id, host_pid) = left_by_a_dead_server(&data, &fake)?;
     let rt = runtime()?;
     rt.block_on(async {
         let app = second_server(&data, &fake).await?;
-        // The branch under test: a host that still runs is ended first, then recorded lost.
-        assert!(
-            nix::sys::signal::kill(nix::unistd::Pid::from_raw(host_pid), None).is_ok(),
-            "the run's host must still run before the stop"
-        );
-        // Between inspection and termination, the agent exits. The disconnected host
-        // publishes exit.json and lingers to deliver the Exit frame to a client (#1449).
-        let run = app.deps.store.live_attempt(&id).await?.ok_or("no run")?;
-        let child = nix::unistd::Pid::from_raw(i32::try_from(run.child_pid.ok_or("no child")?)?);
-        let run_dir = Path::new(&run.run_dir);
-        let exit = run_dir.join(yulius_contracts::ptyhost::EXIT_FILE);
-        let handle = tokio::runtime::Handle::current();
-        let (probed, probe) = std::sync::mpsc::channel();
-        yulius_app::race::on(
-            yulius_app::race::Point::LostRunTermination,
-            run_dir,
-            move || {
-                let killed = nix::sys::signal::kill(child, nix::sys::signal::Signal::SIGKILL);
-                let published = wait_in_hook(
-                    &handle,
-                    wait_for(
-                        "the detached host to publish its child's exit",
-                        Duration::from_secs(10),
-                        || async { exit.exists() },
-                    ),
-                );
-                let _ = probed.send(killed.is_ok() && published.is_ok());
-            },
-        );
+        let host = nix::unistd::Pid::from_raw(host_pid);
+        assert!(!fixture_host_exited(host), "the host must run before stop");
+        let (observed, observation) = std::sync::mpsc::channel();
+        if delay_host_exit {
+            let run = app.deps.store.live_attempt(&id).await?.ok_or("no run")?;
+            let child =
+                nix::unistd::Pid::from_raw(i32::try_from(run.child_pid.ok_or("no child")?)?);
+            let run_dir = Path::new(&run.run_dir);
+            let exit = run_dir.join(yulius_contracts::ptyhost::EXIT_FILE);
+            let handle = tokio::runtime::Handle::current();
+            let task_id = id.clone();
+            yulius_app::race::on(
+                yulius_app::race::Point::LostRunTermination,
+                run_dir,
+                move || {
+                    assert!(
+                        nix::sys::signal::kill(child, nix::sys::signal::Signal::SIGKILL).is_ok()
+                    );
+                    let published = wait_in_hook(
+                        &handle,
+                        wait_for(
+                            "the detached host to publish its child's exit",
+                            Duration::from_secs(10),
+                            || async { exit.exists() },
+                        ),
+                    );
+                    assert!(published.is_ok(), "{published:?}");
+                    assert!(
+                        !fixture_host_exited(host),
+                        "the probe needs a lingering host"
+                    );
+                    yulius_app::race::on(
+                        yulius_app::race::Point::LossRecorded,
+                        Path::new(task_id.as_str()),
+                        move || {
+                            let _ = observed.send(fixture_host_exited(host));
+                        },
+                    );
+                },
+            );
+        }
         app.stop_task_now(&id).await?;
-        assert!(probe.try_recv()?, "the child exit probe did not complete");
+        if delay_host_exit {
+            assert!(
+                observation.try_recv()?,
+                "the host still ran when the loss was recorded"
+            );
+        }
         assert!(app.deps.store.live_attempt(&id).await?.is_none());
         let runs = app.deps.store.attempts(&id).await?;
         assert_eq!(runs.len(), 1);
@@ -4311,12 +4347,12 @@ fn a_stop_settles_a_run_no_server_holds() -> TestResult {
             task(&app, &id).await?.status,
             TaskStatus::Stopped(StopReason::ServerLost)
         );
-        // Proven gone before it was recorded (AGENTS.md: a timeout is no proof). An exited
-        // process its parent has not reaped yet is gone too (#1190: under load it is seen so).
-        assert!(
-            process_gone(u32::try_from(host_pid)?),
-            "the run's host still runs"
-        );
+        wait_for(
+            "the stopped host to exit",
+            Duration::from_secs(10),
+            || async { fixture_host_exited(host) },
+        )
+        .await?;
         Ok::<(), BoxError>(())
     })?;
     rt.shutdown_timeout(Duration::from_secs(5));
