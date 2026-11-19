@@ -32,6 +32,20 @@ test("someone else's task is taken after a confirmation naming its owner", async
   await expect(screen.getByRole('menuitem', /^Continue/)).toBeEnabled();
 });
 
+// SPEC-510 review round 1: the owner chose to be asked after the page read the task; the take is
+// refused with why, and the page then offers Request control.
+test('a take refused because the owner now asks first leaves Request control', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/product/t/3'));
+  await firstShown(screen.getByRole('button', 'Take control'));
+  // Changed on the server without an event, as for a page that read the task before.
+  await browser.evaluate(() => { (window as unknown as { __yuliusMock: { tasks: { number: number; sandbox_id: string; ownerAsksFirst?: boolean }[] } }).__yuliusMock.tasks.find((t) => t.sandbox_id === 'sb_product' && t.number === 3)!.ownerAsksFirst = true; });
+  await screen.getByRole('button', 'Take control').click();
+  await screen.getByRole('dialog', "Take control of @anna-q's task #3?").getByRole('button', 'Take control').click();
+  await expect(browser.locator('.toast').filter({ hasText: 'wants to be asked' })).toBeVisible();
+  await expect(screen.getByRole('button', 'Request control')).toBeVisible();
+  await expect(screen.getByRole('button', 'Take control')).toHaveCount(0);
+});
+
 test("an owner who asks first is asked, and can hand the task over", async ({ app, browser, screen }) => {
   await app.open(mock('/s/product/t/3'));
   await touchTask(browser, 'sb_product', 3, { ownerAsksFirst: true });

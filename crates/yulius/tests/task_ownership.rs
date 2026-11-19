@@ -1399,3 +1399,38 @@ async fn a_take_is_refused_to_whoever_may_not_take() -> TestResult {
     assert_eq!(audited(&f.h, "t1", "task.control_taken").await?, 0);
     Ok(())
 }
+
+/// SPEC-510 TKC-002 (review round 1): Alice takes back by taking control herself. She was the
+/// giver, so nobody may take it back afterwards and the notice promises nothing; Bob, from whom
+/// it was taken, is told.
+#[tokio::test]
+async fn taking_control_back_from_the_taker_leaves_no_giver() -> TestResult {
+    let f = fixture().await?;
+    assert_eq!(take(&f, &f.bob).await?.status, 200);
+    let mut watch = f.h.app.runtime(&f.task.id).hub.watch();
+    let mut events = f.h.app.events.subscribe();
+    let back = take(&f, &f.alice).await?;
+    assert_eq!(back.status, 200, "{}", back.body);
+    assert_eq!(back.body["owner"]["login"], "alice");
+    assert_eq!(back.body["control_from"], serde_json::Value::Null);
+    let said = notices(&mut watch);
+    assert!(
+        said.iter()
+            .any(|n| n.contains("@alice took control of this task from @bob"))
+            && !said.iter().any(|n| n.contains("can take it back")),
+        "{said:?}"
+    );
+    let mut told = Vec::new();
+    while let Ok(envelope) = events.try_recv() {
+        if let yulius_contracts::events::UiEvent::ControlTaken { by, .. } = &envelope.event {
+            told.push((envelope.user.clone(), by.clone()));
+        }
+    }
+    assert_eq!(
+        told,
+        vec![(Some(UserId::parse("u-b")?), "alice".to_owned())]
+    );
+    // Nobody gave it to Alice: there is nothing to take back.
+    assert_eq!(take_back(&f, &f.bob).await?.status, 409);
+    Ok(())
+}

@@ -1925,6 +1925,7 @@ route('POST', `/api/tasks/${ID}/control/take`, ({ db, p }) => {
   const me = db.me.user.login;
   const owner = ownerOf(task).login;
   if (owner === me) fail(409, 'conflict', 'you already own this task');
+  if (db.me.user.guest) fail(403, 'forbidden', `Task #${task.number} is @${owner}'s: a guest takes control of no other person's task on this playground.`);
   if (task.ownerAsksFirst) fail(409, 'conflict', `@${owner} wants to be asked before anyone takes control of their tasks: request control of task #${task.number} instead`);
   const controlFrom = task.controlFrom && task.controlFrom.login === me ? null : { login: owner };
   touch(db, task, { owner: { login: me }, controlRequest: null, controlFrom, ownerAsksFirst: false });

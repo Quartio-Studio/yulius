@@ -1,10 +1,11 @@
 //! Control of a task (SPEC-070, ADR-0060): a task acts on GitHub with its owner's token, so only
-//! the owner changes it. Anyone else who may work in the project takes control at once (SPEC-510,
-//! ADR-0365), and the previous owner may take it back; an owner who chose to be asked first is
-//! asked instead: they hand it over or decline, and the asker may withdraw. One request waits per
-//! task. When the owner can no longer act (disabled, deleted, or without write access to the
-//! project), a take or a request passes control at once. A hand-over moves the task's GitHub token, commit identity and
-//! authority to the new owner from its next call on, also in a run that goes on.
+//! the owner changes it. Anyone else who may work in the project takes control at once
+//! (SPEC-510, ADR-0365), and the previous owner may take it back; an owner who chose to be asked
+//! first is asked instead: they hand it over or decline, and the asker may withdraw. One request
+//! waits per task. When the owner can no longer act (disabled, deleted, or without write access
+//! to the project), a take or a request passes control at once. A hand-over moves the task's
+//! GitHub token, commit identity and authority to the new owner from its next call on, also in a
+//! run that goes on.
 
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -380,7 +381,7 @@ impl App {
             && self.holds_personal_mcp(task).await?
         {
             return Err(AppError::Conflict(format!(
-                "task #{} is starting with @{}'s personal MCP servers; ask again once it runs",
+                "task #{} is starting with @{}'s personal MCP servers; try again once it runs",
                 task.number,
                 self.login_of(&task.owner).await
             )));

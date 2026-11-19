@@ -31,8 +31,9 @@ export function openTaskMenu(ctx, anchor, task) {
   const write = allows(access, 'write');
   // Steering is the owner's (SPEC-490): the reason says how to get it. Stop, archive and delete
   // are open to whoever may work here, so theirs is the task's state.
-  // Control is taken, unless its owner chose to be asked first (SPEC-510 TKC-005).
-  const asksFirst = Boolean(task.owner_asks_first);
+  // Control is taken, unless its owner chose to be asked first or the viewer is a playground's
+  // guest, who takes no one's task (SPEC-510 TKC-005, TKC-007).
+  const asksFirst = Boolean(task.owner_asks_first) || guest;
   const why = !write ? 'Requires write access' : owner ? `@${owner} owns this task: ${asksFirst ? 'request' : 'take'} control to do this` : 'Not available in this state';
   const whyTidy = !write ? 'Requires write access' : guest && owner ? `@${owner}'s task: a guest puts away only their own tasks` : 'Not available in this state';
   const request = task.control_request;
@@ -286,7 +287,14 @@ export async function takeControl(ctx, task) {
     message: `From now on it acts on GitHub as you: your token and your commit identity. @${owner} is told and can take it back.`,
     confirmLabel: 'Take control',
   });
-  if (ok) await taskPost(ctx, task, 'take control of', () => ctx.api.post(`/api/tasks/${enc(task.id)}/control/take`), `#${task.number} is yours now`);
+  if (!ok) return;
+  const taken = await taskPost(ctx, task, 'take control of', () => ctx.api.post(`/api/tasks/${enc(task.id)}/control/take`), `#${task.number} is yours now`);
+  // Refused (the owner chose to be asked since the page read the task, or it changed): read it
+  // again, so the page offers what works now (review round 1).
+  if (!taken) {
+    const fresh = await ctx.api.get(`/api/tasks/${enc(task.id)}`).catch(() => null);
+    if (fresh && fresh.id) ctx.store.upsertTask(fresh);
+  }
 }
 
 /** Ask the task's owner for control: the task would act on GitHub as you (SPEC-070). */

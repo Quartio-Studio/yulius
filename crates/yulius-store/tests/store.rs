@@ -858,6 +858,15 @@ async fn a_take_passes_control_from_the_owner_seen_who_may_take_it_back() -> R {
             .await?
     );
     assert_eq!(store.control_from(&t.id).await?, None);
+    // An owner who chose to be asked meanwhile keeps the task: the choice is read in the same
+    // statement (review round 1).
+    store.set_control_ask_first(&alice, true).await?;
+    assert!(
+        !store
+            .seize_control(&t.id, &alice, &bob, Timestamp(14))
+            .await?
+    );
+    assert_eq!(store.task(&t.id).await?.ok_or("task")?.owner, alice);
     Ok(())
 }
 

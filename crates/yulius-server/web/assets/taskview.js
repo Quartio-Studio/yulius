@@ -423,7 +423,8 @@ export function mountTaskView(ctx, sandbox, task) {
       // from an owner who chose to be asked, requested: they may hand it over, and asking again
       // takes control at once once the owner can no longer act.
       const mine = request && request.by.login === me();
-      const asksFirst = Boolean(current.owner_asks_first);
+      // A playground's guest takes no one's task (TKC-007): they ask, as of an owner who asks first.
+      const asksFirst = Boolean(current.owner_asks_first) || Boolean(ctx.guest && ctx.guest());
       const take = h('button', { type: 'button', class: 'btn btn-sm btn-primary', title: `It acts on GitHub as you from then on; @${owner()} is told and can take it back`, onClick: () => takeControl(ctx, current) }, 'Take control');
       control = [icon('lock', { size: 16 }), h('span', { class: 'attention-text' },
         mine ? [h('strong', null, `You asked @${owner()} for control. `), 'Until they hand it over, the task acts on GitHub as them.']
