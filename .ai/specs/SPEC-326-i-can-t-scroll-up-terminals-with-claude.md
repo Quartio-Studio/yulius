@@ -64,10 +64,11 @@ SPEC-310 fixes.
   up) reaches the top when either:
   - xterm scrolls a normal buffer itself (the program has no mouse) and its viewport is already at
     the buffer's first line; or
-  - elsewhere (the program has the mouse, or the alternate screen, where xterm turns the wheel into
-    arrow keys for the program), the upper half of the screen is unchanged 400 ms after the turn.
+  - elsewhere (the program has the mouse, or the task uses the alternate screen), the upper half
+    of the screen is unchanged 400 ms after the turn.
     Turns closer together than that are one gesture. The check compares the screen at the gesture's
-    start and at its last turn.
+    start and at its last turn. A full-screen task without mouse reporting receives no wheel-generated
+    arrow keys ([SPEC-529](SPEC-529-fix-this-this-is-a-fictional-bug.md)).
 
   A turn that moved the screen does not count. If the screen moves after the check showed the offer
   (a program slower than the check), the offer goes. A blank screen, and a task that never started,

@@ -7,7 +7,7 @@ status: in-progress
 
 ## Goal
 
-A person looking for earlier output can scroll a task without making Yulius hold messages for a possible draft.
+A person looking for earlier output can scroll a task without making Yulius hold messages for a possible draft. Fixes #1446.
 
 ## Context
 
@@ -22,7 +22,7 @@ Task #511 shows the held-message warning on the Codex session for PR #1439. The 
 
 - [x] Reproduce wheel-generated arrow keys in a task terminal
 - [x] Specify the scroll behavior and commit the failing browser regression
-- [ ] Keep passive scrolling out of the task prompt and verify real keyboard input
+- [x] Keep passive scrolling out of the task prompt and verify real keyboard input
 - [ ] Independent review and green delivery to dev
 
 ## Acceptance criteria
@@ -41,3 +41,5 @@ Prevent xterm's synthesized history key at the task view. Labelling that arrow a
 ## Evidence
 
 - On the original task view, the Chromium regression sent three frames for two wheel gestures and one physical arrow key. The expected frame list contained only the physical Up. The observed list contained Down, Up, Up. The same xterm and the shipped classifier in isolation classified a wheel-generated Up as typing.
+- After the fix, the new Chromium test and the existing native-wheel, classic-renderer history and normal-scrollback controls passed (4/4). The test observed one physical Up after both wheel gestures.
+- The real-process control `cargo test --locked -p yulius --test main task_message::a_message_of_yulius_waits_for_a_persons_draft_and_tells_them -- --exact` passed (1/1).

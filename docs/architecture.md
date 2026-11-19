@@ -3224,6 +3224,10 @@ flowchart LR
 
 ## Terminal input
 
+Task terminals suppress xterm’s wheel-to-arrow fallback when the alternate buffer has no mouse
+tracking. The existing history offer handles the upward gesture.
+[Decision 0378](decisions/0378-keep-wheel-generated-arrows-out-of-task-prompts.md)
+
 A keystroke goes from xterm to the PTY and its echo comes back without waiting for the database or
 GitHub ([SPEC-118](../.ai/specs/SPEC-118-when-i-write-something-in-a-claude-termi.md),
 [decision 0096](decisions/0096-terminal-input-rides-a-write-grant.md)). Each viewer holds a write

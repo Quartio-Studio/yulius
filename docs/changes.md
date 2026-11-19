@@ -6,6 +6,10 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-19
 
+- Scrolling a full-screen task with mouse reporting off can no longer recall an earlier prompt
+  or trigger “Needs your action” for an unsent draft. Scrolling up still offers the session
+  history (SPEC-529, #1446).
+
 - Dashboard → Harnesses compares assigned tasks, runs, median and p90 elapsed time, and reported input,
   output and cache tokens for the selected sandbox and period. Each harness shows the number of ended
   runs and the number reporting usage (SPEC-522, task #504).
