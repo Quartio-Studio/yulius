@@ -1264,3 +1264,82 @@ fn a_named_persons_message_resumes_a_parked_task() -> TestResult {
     rt.shutdown_timeout(Duration::from_secs(5));
     Ok(())
 }
+
+/// The digest the owner last got, as JSON.
+async fn latest_digest(
+    app: &App,
+    user: &yulius_domain::ids::UserId,
+) -> Result<serde_json::Value, Error> {
+    use yulius_app::ports::store_ext::DigestStore as _;
+    let stored = app
+        .deps
+        .store
+        .latest_digest(user)
+        .await?
+        .ok_or("no digest")?;
+    Ok(serde_json::from_str(&stored.body)?)
+}
+
+/// SPEC-512 DIG-003, DIG-004 (#1413), with part 1's parking off: the digest leaves a task that
+/// asks its person running and lists it first; once nothing is asked, it parks the quiet task,
+/// lists it with what its last message left, and a message resumes it in its own session.
+#[test]
+fn the_digest_parks_a_quiet_task_that_asks_nobody_and_lists_its_last_message() -> TestResult {
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let app = app(&data, 8, 0).await?;
+        let (id, caller) = answered(&app, &data).await?;
+        let since = app.now().0 - 60_000;
+        ask(&app, &id).await?;
+        past_the_grace(&app, &id).await?;
+        assert_eq!(app.send_digests_now(since, Some(1)).await, 1);
+        assert_eq!(
+            status_of(&app, &id).await.0,
+            Some(TaskStatus::Running),
+            "it asks"
+        );
+        let digest = latest_digest(&app, &caller.user).await?;
+        assert_eq!(
+            digest["waiting"][0]["detail"], "Choose the colour",
+            "{digest}"
+        );
+        assert_eq!(digest["parked"], json!([]), "{digest}");
+
+        app.deps
+            .store
+            .set_task_needs_you(&id, None, app.now())
+            .await?;
+        past_the_grace(&app, &id).await?;
+        assert_eq!(app.send_digests_now(since, Some(1)).await, 1);
+        wait_for("the digest's park", Duration::from_secs(30), || async {
+            status_of(&app, &id).await.0 == Some(TaskStatus::Parked)
+        })
+        .await?;
+        let digest = latest_digest(&app, &caller.user).await?;
+        let left = digest["parked"][0]["detail"]
+            .as_str()
+            .ok_or("parked detail")?;
+        assert!(
+            left.starts_with("Waits for your turn. Last message: "),
+            "{left}"
+        );
+        assert!(left.contains("ECHO: Budget: answer with an echo"), "{left}");
+        assert_eq!(audited(&data, "task.parked", &id)?, ["yulius"]);
+
+        let answer = app
+            .tool_task_message(
+                &caller,
+                &json!({"number": 1, "text": "Go on: answer with an echo"}),
+            )
+            .await?;
+        assert_eq!(answer["delivered"], "resumed");
+        wait_for("the resumed message", Duration::from_secs(60), || async {
+            screen(&app, &id).contains("Go on: answer with an echo")
+        })
+        .await?;
+        Ok::<_, Error>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
