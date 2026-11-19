@@ -11,7 +11,7 @@ Keep a Codex task that is waiting on Yulius out of the person's reply queue. Sho
 
 ## Context
 
-The screenshot shows a failing PR check and a terminal reply banner. The task view draws that banner for any idle task in the Needs you group, including one grouped there by the pull request alone. Separately, the process probe recognizes a live `yulius wait` only inside Claude's Bash wrapper. Codex launches commands under its own process without that wrapper. A missed wait makes failed checks appear to need the person while the agent is waiting for Yulius. The screenshot does not expose the process tree of the reported run.
+Fixes #1482. The screenshot shows a failing PR check and a terminal reply banner. The task view draws that banner for any idle task in the Needs you group, including one grouped there by the pull request alone. Separately, the process probe recognizes a live `yulius wait` only inside Claude's Bash wrapper. Codex launches commands under its own process without that wrapper. A missed wait makes failed checks appear to need the person while the agent is waiting for Yulius. The screenshot does not expose the process tree of the reported run.
 
 ## Requirements
 
@@ -22,7 +22,7 @@ The screenshot shows a failing PR check and a terminal reply banner. The task vi
 
 - [x] Trace the false Codex reply alert
 - [x] Reproduce active work raising a reply alert
-- [ ] Keep Codex work out of the reply queue
+- [x] Keep Codex work out of the reply queue
 - [ ] Verify and review the fix
 
 ## Acceptance criteria
@@ -37,3 +37,9 @@ Use synthetic process trees modeled on the sandbox and a browser test with a fai
 ## Decisions
 
 Apply the existing ownership and wait rules from SPEC-085 and SPEC-130. Use the status that the task view already derives to distinguish a failed PR from a request for a reply.
+
+
+## Evidence
+
+- Before the fix, the process regression counted zero of two agent-owned waits. The Chromium regression showed the exact reply banner after the live wait ended and the failed checks became visible.
+- The shell tests passed with direct, shell-launched, wrapped and adopted waits. The nested wrapped wait in an adopted process failed first with three waits instead of two.
