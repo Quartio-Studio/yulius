@@ -1033,6 +1033,113 @@ async fn a_red_candidate_is_bisected_and_the_breaking_pull_request_told() -> Tes
     Ok(())
 }
 
+/// When the first half lands, the last two recreate the four-member tree that failed.
+#[tokio::test]
+async fn a_bisection_executes_the_failed_tree_only_once() -> TestResult {
+    let f = fixture().await?;
+    let app = f.h.app.clone();
+    let mut worktrees = Vec::new();
+    for (n, file) in [(1, "a.txt"), (2, "b.txt"), (3, "clash-1"), (4, "clash-2")] {
+        worktrees.push(f.task(n, &[(file, "x\n")]).await?);
+    }
+    for (n, worktree) in (1..).zip(&worktrees) {
+        f.arm(n, worktree).await?;
+        f.record_passed(&app, n, &git(worktree, &["rev-parse", "HEAD"])?)
+            .await?;
+    }
+    f.advance_dev("other.txt")?;
+    f.decide_until(&app, || async {
+        let trains = f.train_runs(&app).await?;
+        let original = trains
+            .iter()
+            .find(|r| r.reference == CiRef::Train(vec![1, 2, 3, 4]));
+        if let Some(red) = original.filter(|r| r.state == RunState::Failed) {
+            let red_tree = git(&f.repo, &["rev-parse", &format!("{}^{{tree}}", red.sha)])?;
+            for run in trains.iter().filter(|r| r.id != red.id) {
+                let tree = git(&f.repo, &["rev-parse", &format!("{}^{{tree}}", run.sha)])?;
+                assert_ne!(
+                    tree,
+                    red_tree,
+                    "{} got a second run on the failed tree",
+                    run.reference.key()
+                );
+            }
+            let pair = format!("merge train #3, #4 (run {})", red.id);
+            if dissolved(&app)
+                .await?
+                .iter()
+                .any(|detail| detail.starts_with(&pair) && detail.contains("(why: bisected)"))
+            {
+                return Ok(true);
+            }
+        }
+        f.settle(&app).await?;
+        Ok(false)
+    })
+    .await?;
+    assert_eq!(f.merges(), ["merge_pull #1 squash", "merge_pull #2 squash"]);
+    Ok(())
+}
+
+/// A previous candidate may have lost its worker or been cancelled while testing this tree.
+/// A pull request's own failure also belongs to a different reference.
+#[tokio::test]
+async fn inconclusive_candidate_runs_leave_the_same_tree_eligible_to_run() -> TestResult {
+    let f = fixture().await?;
+    let app = f.h.app.clone();
+    let worktree = f.task(1, &[("a.txt", "x\n")]).await?;
+    f.arm(1, &worktree).await?;
+    let head = git(&worktree, &["rev-parse", "HEAD"])?;
+    f.record_passed(&app, 1, &head).await?;
+    f.advance_dev("other.txt")?;
+    git(&f.repo, &["fetch", "-q", "origin"])?;
+    let tree = git(
+        &f.repo,
+        &["merge-tree", "--write-tree", "origin/dev", &head],
+    )?;
+    let sha = git(&f.repo, &["commit-tree", &tree, "-m", "previous candidate"])?;
+    let template = f
+        .runs(&app)
+        .await?
+        .into_iter()
+        .find(|r| r.sha == head)
+        .ok_or("own run")?;
+    for (reference, state) in [
+        (CiRef::Train(vec![5]), RunState::Error),
+        (CiRef::Train(vec![6]), RunState::Cancelled),
+        (CiRef::PullRequest(7), RunState::Failed),
+    ] {
+        app.deps
+            .store
+            .insert_ci_run(
+                &CiRunRecord {
+                    id: format!("earlier-{}", state.as_str()),
+                    reference,
+                    sha: sha.clone(),
+                    state,
+                    status_for: Some(state),
+                    ..template.clone()
+                },
+                &[],
+            )
+            .await?;
+    }
+    app.merge_armed(&f.sandbox).await;
+    let run = f
+        .train_runs(&app)
+        .await?
+        .into_iter()
+        .find(|r| r.reference == CiRef::Train(vec![1]))
+        .ok_or("the candidate must get its own run")?;
+    assert_eq!(
+        git(&f.repo, &["rev-parse", &format!("{}^{{tree}}", run.sha)])?,
+        tree
+    );
+    assert_eq!(run.state, RunState::Queued);
+    assert_eq!(run_candidate(&f, &app, &run.id).await?, RunState::Passed);
+    Ok(())
+}
+
 /// SPEC-497 MQW-003: the member a bisection left out is told only when the others passed without
 /// it. Here #1 fails on the new base by itself: the candidate of two fails, #1 alone fails and is
 /// told, and #2, blamed for nothing, merges on a candidate of its own.
