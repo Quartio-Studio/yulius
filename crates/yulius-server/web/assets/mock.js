@@ -1480,6 +1480,7 @@ route('GET', `/api/sandboxes/${ID}/tasks`, ({ db, p, query }) => {
   return db.tasks.filter((t) => t.sandbox_id === p[0] && t.archived === archived).map(summary);
 });
 route('POST', `/api/sandboxes/${ID}/tasks`, async ({ db, p, body }) => {
+  db.lastTaskCreate = body; // Request received before the mock resolves model and effort defaults.
   const sandbox = sandboxOf(db, p[0]);
   need(sandbox, 'write');
   if (!body.prompt || !body.prompt.trim()) fail(422, 'invalid', 'The prompt is empty.');

@@ -7,6 +7,7 @@ failOnPageErrors();
 type Mocked = {
   __yuliusMock: {
     accounts: { id: string; provider: string; label: string; status: string }[];
+    lastTaskCreate: { harness?: string; model?: string; effort?: string };
     tasks: { harness: string; model: string; effort: string; model_default: boolean }[];
   };
 };
@@ -30,6 +31,8 @@ for (const choice of [
     await prompt.press('ControlOrMeta+Enter');
     await expect(browser).toHaveURL(/#\/s\/studio\/t\/\d+$/);
     const task = await browser.evaluate(() => (window as unknown as Mocked).__yuliusMock.tasks.at(-1));
+    const submitted = await browser.evaluate(() => (window as unknown as Mocked).__yuliusMock.lastTaskCreate);
+    expect(submitted).toMatchObject({ harness: choice.harness, model: choice.id, effort: choice.effort });
     expect(task).toMatchObject({ harness: choice.harness, model: choice.id, effort: choice.effort, model_default: false });
   });
 }
@@ -83,6 +86,9 @@ test('Settings preserves compatible effort and clears incompatible choices in th
   await prompt.press('ControlOrMeta+Enter');
   await expect(browser).toHaveURL(/#\/s\/studio\/t\/\d+$/);
   const task = await browser.evaluate(() => (window as unknown as Mocked).__yuliusMock.tasks.at(-1));
+  const submitted = await browser.evaluate(() => (window as unknown as Mocked).__yuliusMock.lastTaskCreate);
+  expect(submitted).toMatchObject({ harness: 'antigravity', model: 'gemini-3.1-pro' });
+  expect(Object.hasOwn(submitted, 'effort')).toBe(false);
   expect(task).toMatchObject({ model: 'gemini-3.1-pro', effort: 'high' });
 });
 
