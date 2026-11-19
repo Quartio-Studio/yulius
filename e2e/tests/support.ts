@@ -2,7 +2,9 @@
 // assets/mock.js stand in for `yulius serve`, so no server, account or model is needed.
 import { createRequire } from 'node:module';
 import { afterEach, beforeEach, type Browser, type Screen } from '@e2e-dev/web';
+import type { Request } from 'playwright-core';
 import { expect, type App, type Locator, type TextMatch } from 'e2e';
+import { surface } from '../chromium.ts';
 
 /**
  * A UI path in mock mode (`?mock=1`, hash routing). `options` are further mock switches, such as
@@ -44,14 +46,76 @@ export async function instrument(browser: Browser): Promise<void> {
 function waitForTheMockOnEveryLoad(app: App, browser: Browser): void {
   // The app's own test for mock mode (app.js): `?mock=1`. Part of the page's first load, so it has
   // that budget (SPEC-412 FLD-002).
-  const ready = () => expect.poll(() => browser.evaluate(() => new URLSearchParams(location.search).get('mock') !== '1'
-    || Boolean((window as { __yuliusMock?: unknown }).__yuliusMock)), {
-    timeout: FIRST_LOAD_MS,
-    message: 'window.__yuliusMock was never installed (mock.js did not load or the app did not start)',
-  }).toBe(true);
+  const ready = async (interrupted = () => false) => {
+    let installed = false;
+    await expect.poll(async () => {
+      // The poll owns the deadline. A nested runner step could still be recorded as pending
+      // when the last sample reaches that deadline and the caller handles the timeout.
+      installed = await surface.page().evaluate(() => new URLSearchParams(location.search).get('mock') !== '1'
+        || Boolean((window as { __yuliusMock?: unknown }).__yuliusMock));
+      return installed || interrupted();
+    }, {
+      timeout: FIRST_LOAD_MS,
+      message: 'window.__yuliusMock was never installed (mock.js did not load or the app did not start)',
+    }).toBe(true);
+    return installed;
+  };
   const open = app.open.bind(app);
   const reload = browser.reload.bind(browser);
-  Object.assign(app, { open: async (path?: string) => { await open(path); await ready(); } });
+  let firstOpen = true;
+  Object.assign(app, { open: async (path?: string) => {
+    const initial = firstOpen;
+    firstOpen = false;
+    const base = app.baseUrl;
+    const target = initial && base ? URL.parse(path ?? '/', base) : null;
+    if (!base || target?.searchParams.get('mock') !== '1' || target.origin !== new URL(base).origin) {
+      await open(path);
+      await ready();
+      return;
+    }
+
+    const context = surface.context();
+    let documentInterrupted = false;
+    let scriptInterrupted = false;
+    const onFailure = (request: Request) => {
+      if (request.failure()?.errorText !== 'net::ERR_NETWORK_CHANGED' || request.serviceWorker()) return;
+      const url = new URL(request.url());
+      if (url.origin !== target.origin) return;
+      try {
+        if (request.frame() !== surface.page().mainFrame()) return;
+      } catch {
+        // Playwright can report a new tab's navigation before it has an associated frame.
+        return;
+      }
+      if (request.isNavigationRequest() && url.pathname === target.pathname && url.search === target.search) {
+        documentInterrupted = true;
+      }
+      if (request.resourceType() === 'script' && url.pathname.startsWith('/assets/') && url.pathname.endsWith('.js')) {
+        scriptInterrupted = true;
+      }
+    };
+    context.on('requestfailed', onFailure);
+    try {
+      try {
+        await open(path);
+      } catch (error) {
+        if (!documentInterrupted) throw error;
+      }
+      if (!documentInterrupted && await ready(() => scriptInterrupted)) return;
+    } finally {
+      context.off('requestfailed', onFailure);
+    }
+
+    console.warn('[e2e] net::ERR_NETWORK_CHANGED interrupted the initial mock load. Retrying that load once.');
+    if (documentInterrupted) {
+      // Chromium rejects goto before committing its error page, which can cancel a new goto.
+      await browser.waitForURL('chrome-error://chromewebdata/', { timeout: FIRST_LOAD_MS });
+      await open(path);
+    } else {
+      await reload(); // A goto with the same hash can stay in the interrupted document.
+    }
+    await ready();
+  } });
   Object.assign(browser, { reload: async (...args: Parameters<Browser['reload']>) => { await reload(...args); await ready(); } });
 }
 

@@ -15,6 +15,7 @@ type Mocked = {
     tasks: { harness: string; model: string; effort: string; number: number }[];
     accounts: { label: string; provider: string; status: string }[];
     automations: { name: string; harness: string }[];
+    release(): void;
   };
 };
 
@@ -132,8 +133,17 @@ test('choosing Codex in the composer starts a Codex task', async ({ app, browser
 });
 
 test('an automation chooses the agent of its tasks', async ({ app, browser, screen }) => {
-  await app.open(mock('/s/studio/automations/new'));
-  await screen.getByRole('textbox', 'Automation name').fill('Nightly Codex review');
+  await app.open(mock('/s/studio/automations/new', '&hold=/api/sandboxes/sb_studio/workflows'));
+  const name = screen.getByRole('textbox', 'Automation name');
+  await firstShown(name);
+  // A name matching another recipe used to be replaced when the workflow read finished (#1416).
+  const enteredName = 'Weekly summary';
+  await name.fill(enteredName);
+  await expect(screen.getByRole('button', 'Create automation')).toBeDisabled();
+  await name.press('ControlOrMeta+s');
+  await browser.evaluate(() => (window as unknown as Mocked).__yuliusMock.release());
+  await expect(screen.getByRole('radio', /^Daily feedback/)).toHaveAttribute('aria-checked', 'true');
+  await expect(name).toHaveValue(enteredName);
   await screen.getByRole('textbox', 'What the task does').fill('Review yesterday’s commits.');
   const agent = screen.getByRole('radiogroup', 'Agent');
   // Random is the default (SPEC-520 RHM-006).
@@ -142,7 +152,7 @@ test('an automation chooses the agent of its tasks', async ({ app, browser, scre
   await expect(agent.getByRole('radio', 'Codex')).toHaveAttribute('aria-checked', 'true');
   expect(await axeViolations(browser)).toEqual([]);
   await screen.getByRole('button', 'Create automation').click();
-  await expect.poll(() => browser.evaluate(() => (window as unknown as Mocked).__yuliusMock.automations.find((a) => a.name === 'Nightly Codex review')?.harness)).toBe('codex');
+  await expect.poll(() => browser.evaluate((savedName: string) => (window as unknown as Mocked).__yuliusMock.automations.find((a) => a.name === savedName)?.harness, enteredName)).toBe('codex');
 });
 
 type Touching = { __yuliusMock: Mocked['__yuliusMock'] & { touchTask: (sandbox: string, number: number, fields: Record<string, unknown>) => void } };
