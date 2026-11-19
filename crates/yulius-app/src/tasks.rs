@@ -257,6 +257,7 @@ impl App {
                 }),
                 None => None,
             },
+            owner_asks_first: store.control_ask_first(&task.owner).await?,
             created_at: rfc3339(task.created_at),
             updated_at: rfc3339(task.updated_at),
             state_since: times.map(|t| rfc3339(t.state_at)),
@@ -522,7 +523,7 @@ impl App {
         let guest = self.is_guest(&ctx.user);
         match task_access::decide_for(action, level, owns(task, &ctx.user.id), guest) {
             Ok(()) => Ok(level),
-            Err(TaskRefusal::NotOwner) => Err(self.not_the_owner(task).await),
+            Err(TaskRefusal::NotOwner) => Err(self.not_the_owner(task, guest).await),
             Err(TaskRefusal::Guest) => Err(AppError::Forbidden(format!(
                 "Task #{} is @{}'s: a guest stops, archives and deletes only their own tasks on \
                  this playground.",
@@ -549,15 +550,30 @@ impl App {
         if owns(task, &ctx.user.id) {
             return Ok(());
         }
-        Err(self.not_the_owner(task).await)
+        Err(self.not_the_owner(task, self.is_guest(&ctx.user)).await)
     }
 
     /// The refusal of control of `task` (SPEC-490 OWN-004): whose it is, why, how to ask, and
     /// what anyone may still do.
-    async fn not_the_owner(&self, task: &TaskRecord) -> AppError {
+    async fn not_the_owner(&self, task: &TaskRecord, guest: bool) -> AppError {
+        // How control is got (SPEC-510 TKC-006): taken, unless the owner chose to be asked or the
+        // person is a playground's guest, who takes nothing and puts away only their own tasks.
+        // A store failure says to ask, which works either way.
+        let how = if guest {
+            "Ask them for control on the task's page."
+        } else if self
+            .deps
+            .store
+            .control_ask_first(&task.owner)
+            .await
+            .unwrap_or(true)
+        {
+            "Ask them for control on the task's page. You can still stop, archive or delete it."
+        } else {
+            "Take control on the task's page to steer it. You can still stop, archive or delete it."
+        };
         AppError::Forbidden(format!(
-            "Task #{} is @{}'s and only they steer it: it acts on GitHub as them. Ask them for \
-             control on the task's page. You can still stop, archive or delete it.",
+            "Task #{} is @{}'s and only they steer it: it acts on GitHub as them. {how}",
             task.number,
             self.login_of(&task.owner).await
         ))

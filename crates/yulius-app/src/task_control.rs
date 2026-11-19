@@ -1,9 +1,11 @@
 //! Control of a task (SPEC-070, ADR-0060): a task acts on GitHub with its owner's token, so only
-//! the owner changes it. Anyone else who may work in the project asks the owner for control; the
-//! owner hands it over or declines, and the asker may withdraw. One request waits per task. When
-//! the owner can no longer act (disabled, deleted, or without write access to the project), a
-//! request passes control at once. A hand-over moves the task's GitHub token, commit identity and
-//! authority to the new owner from its next call on, also in a run that goes on.
+//! the owner changes it. Anyone else who may work in the project takes control at once
+//! (SPEC-510, ADR-0365), and the previous owner may take it back; an owner who chose to be asked
+//! first is asked instead: they hand it over or decline, and the asker may withdraw. One request
+//! waits per task. When the owner can no longer act (disabled, deleted, or without write access
+//! to the project), a take or a request passes control at once. A hand-over moves the task's
+//! GitHub token, commit identity and authority to the new owner from its next call on, also in a
+//! run that goes on.
 
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -27,6 +29,8 @@ pub(crate) enum Handover {
     Unstarted,
     /// Its giver takes it back (SPEC-490 OWN-009).
     TakenBack,
+    /// Someone takes it without asking from an owner who did not choose to be asked (SPEC-510).
+    Taken,
 }
 
 impl App {
@@ -89,6 +93,85 @@ impl App {
         }
         self.publish_task(&task.id).await;
         self.control_summary(&task).await
+    }
+
+    /// `POST /api/tasks/{tid}/control/take` (SPEC-510 TKC-001): `ctx`'s person takes control of
+    /// another person's task at once. The previous owner may take it back and is told wherever
+    /// they are. With the owner absent, control passes as on a request (TKC-004).
+    ///
+    /// # Errors
+    /// `NotFound`/`Forbidden` without write access to the project, for a disabled account or a
+    /// guest; `Conflict` for the owner, when the owner chose to be asked first (naming them), or
+    /// when the task changed meanwhile.
+    pub async fn take_task_control(
+        self: &Arc<Self>,
+        ctx: &AuthContext,
+        id: &str,
+    ) -> AppResult<TaskSummary> {
+        let task = self.load_task(ctx, id, Action::View).await?;
+        let (sandbox, _) = self
+            .require_for(ctx, &task.sandbox_id, Action::Work)
+            .await?;
+        if ctx.user.disabled_at.is_some() {
+            return Err(AppError::Forbidden("this account is disabled".into()));
+        }
+        if crate::tasks::owns(&task, &ctx.user.id) {
+            return Err(AppError::Conflict("you already own this task".into()));
+        }
+        let owner = self.login_of(&task.owner).await;
+        // A guest puts away only their own tasks (ADR-0331); taking one is more than that.
+        if self.is_guest(&ctx.user) {
+            return Err(AppError::Forbidden(format!(
+                "Task #{} is @{owner}'s: a guest takes control of no other person's task on this \
+                 playground.",
+                task.number
+            )));
+        }
+        if self.owner_is_absent(&task, &sandbox).await {
+            self.pass_task_control(&task, &ctx.user, ctx, Handover::OwnerAbsent)
+                .await?;
+            return self.control_summary(&task).await;
+        }
+        if self.deps.store.control_ask_first(&task.owner).await? {
+            return Err(AppError::Conflict(format!(
+                "@{owner} wants to be asked before anyone takes control of their tasks: request \
+                 control of task #{} instead",
+                task.number
+            )));
+        }
+        self.pass_task_control(&task, &ctx.user, ctx, Handover::Taken)
+            .await?;
+        // Whoever had it hears of it wherever they are (TKC-002).
+        self.events.publish_to_user(
+            task.owner.clone(),
+            yulius_contracts::events::UiEvent::ControlTaken {
+                task_id: task.id.as_str().to_owned(),
+                sandbox_id: task.sandbox_id.as_str().to_owned(),
+                number: task.number,
+                title: task.title.clone(),
+                by: self.login_of(&ctx.user.id).await,
+            },
+        );
+        self.control_summary(&task).await
+    }
+
+    /// `PUT /api/me/control` (SPEC-510 TKC-003): whether teammates ask before taking control of
+    /// `ctx`'s person's tasks.
+    ///
+    /// # Errors
+    /// Store failures.
+    pub async fn set_control_ask_first(
+        &self,
+        ctx: &AuthContext,
+        ask_first: bool,
+    ) -> AppResult<yulius_contracts::api::auth::ControlChoice> {
+        self.deps
+            .store
+            .set_control_ask_first(&ctx.user.id, ask_first)
+            .await?;
+        Ok(yulius_contracts::api::auth::ControlChoice {
+            ask_first: self.deps.store.control_ask_first(&ctx.user.id).await?,
+        })
     }
 
     /// `POST /api/tasks/{tid}/control-request/accept`: the owner hands the task to the person
@@ -298,7 +381,7 @@ impl App {
             && self.holds_personal_mcp(task).await?
         {
             return Err(AppError::Conflict(format!(
-                "task #{} is starting with @{}'s personal MCP servers; ask again once it runs",
+                "task #{} is starting with @{}'s personal MCP servers; try again once it runs",
                 task.number,
                 self.login_of(&task.owner).await
             )));
@@ -318,6 +401,11 @@ impl App {
             Handover::TakenBack => {
                 store
                     .take_back_control(&task.id, &task.owner, &to.id, now)
+                    .await?
+            }
+            Handover::Taken => {
+                store
+                    .seize_control(&task.id, &task.owner, &to.id, now)
                     .await?
             }
         };
@@ -382,6 +470,21 @@ impl App {
                     ),
                 },
                 "task.control_passed",
+            ),
+            // Taken back by the one it was taken from, nobody can take it back: the giver says.
+            Handover::Taken => (
+                match store.control_from(&task.id).await? {
+                    Some(giver) => format!(
+                        "@{to} took control of this task from @{from}: it now acts on GitHub as \
+                         @{to}. @{} can take it back.",
+                        self.login_of(&giver).await
+                    ),
+                    None => format!(
+                        "@{to} took control of this task from @{from}: it now acts on GitHub as \
+                         @{to}."
+                    ),
+                },
+                "task.control_taken",
             ),
             Handover::OwnerAbsent | Handover::Unstarted => (
                 format!(

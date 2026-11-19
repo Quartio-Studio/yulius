@@ -390,12 +390,15 @@ watching, steering and unblocking.
   Others
   watch it as its live transcript (printed as the Sessions view prints a session, in the
   terminal's colours, following its newest lines until they scroll up), see whose it is
-  in the view and in the sidebar, and can ask the owner for control, from the task's page or
-  its menu in a list; the owner hears of the request wherever they are (a notification, a
-  toast and a mark on the task's row) and hands it over or declines; once handed over, it acts
-  as the new owner, and whoever handed it over can take it back at any time without asking. No administrator takes a task
-  without asking; only a task whose owner can no longer act (a disabled account, no write
-  access) passes to the first person who asks.
+  in the view and in the sidebar, and can take control, from the task's page or its menu in a
+  list, after a confirmation naming the owner (SPEC-510): the task then acts on GitHub as them,
+  and the previous owner hears of it wherever they are and can take it back at any time. A
+  person who wants to be asked first turns on "Ask me before taking control of my tasks" in
+  Settings; others then ask them for control, the owner hears of the request wherever they are
+  (a notification, a toast and a mark on the task's row) and hands it over or declines; once
+  handed over, it acts as the new owner, and whoever handed it over can take it back at any time
+  without asking. A task whose owner can no longer act (a disabled account, no write access)
+  passes to the first person who takes or asks.
 - **Subscription pool**: Claude accounts are used as one self-managing pool, and Codex and
   Antigravity accounts each as one of their own (SPEC-503, SPEC-505); switches and pauses are invisible to agents. Each task shows the subscription it runs on, and a person can
   run it on another from the task ("Run #N on…"); removing a subscription moves its tasks, and a
@@ -666,8 +669,8 @@ watching, steering and unblocking.
   token), chooses what reaches it (Needs you by default; Done; failed or stopped; subscription
   problems for administrators) and unlinks there or with `/stop`. Only what their notification
   center would show them is sent (a subscription switch is no news, a project's Docker trouble is
-  one message however many tasks ask, a request for control of their task reaches them under
-  Needs you), with a link to the task, agent secrets removed, at most five
+  one message however many tasks ask, a request for control of their task, or a teammate taking
+  it or taking it back, reaches them under Needs you), with a link to the task, agent secrets removed, at most five
   messages a minute with the rest in one summary. The server asks Telegram for messages, so no
   inbound port is needed. Replies and new tasks from Telegram are part 2.
 

@@ -1084,6 +1084,52 @@ async fn a_sandbox_wide_docker_needs_you_is_told_once_per_episode() -> TestResul
     Ok(())
 }
 
+/// SPEC-510 TKC-002 (review round 1): a take reaches the chat of the person it was taken from,
+/// under the Needs you choice, and no one else's; so does a take-back.
+#[tokio::test]
+async fn a_take_reaches_the_chat_of_whoever_it_was_taken_from() -> TestResult {
+    let w = world().await?;
+    set_bot(&w, TOKEN_A).await?;
+    w.h.github.set_perm("bob", "acme/app", perms("write"));
+    link(&w, &w.alice, 100).await?;
+    link(&w, &w.bob, 200).await?;
+    link(&w, &w.carol, 300).await?;
+    let alice = user_id(&w, "alice").await?;
+    let task = seed_task(&w.h, "t1", "s1", &alice, TaskStatus::Running, None).await?;
+    let r = api(&w, Method::POST, "/api/tasks/t1/control/take", None, &w.bob).await?;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+    let sent = w.fake.wait_sent(100, 2).await?;
+    assert_eq!(
+        sent[1],
+        format!(
+            "@bob took control of #{n} task t1\nIt acts on GitHub as them now; you can take it \
+             back · app\nhttps://yulius.test/s/app/t/{n}",
+            n = task.number
+        )
+    );
+    let r = api(
+        &w,
+        Method::POST,
+        "/api/tasks/t1/control/take-back",
+        None,
+        &w.alice,
+    )
+    .await?;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+    let sent = w.fake.wait_sent(200, 2).await?;
+    assert!(
+        sent[1].starts_with(&format!(
+            "@alice took back control of #{} task t1\n",
+            task.number
+        )),
+        "{sent:?}"
+    );
+    barrier(&w, "c1").await?;
+    assert_eq!(w.fake.sent_to(100).len(), 2, "{:?}", w.fake.sent_to(100));
+    assert_eq!(w.fake.sent_to(200).len(), 2, "{:?}", w.fake.sent_to(200));
+    Ok(())
+}
+
 /// TGC-027: a person's request for control of a task (SPEC-490 OWN-008) reaches the task's
 /// owner's chat once, under the Needs you choice, and no other viewer's.
 #[tokio::test]

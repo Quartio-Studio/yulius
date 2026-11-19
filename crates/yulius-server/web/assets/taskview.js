@@ -11,7 +11,7 @@ import { taskInfo, isLive, allows, taskActions, otherOwner, endedMessage, agentO
 import { heldPromptCard, splitCard, supertaskCard, checkRequest, intakeStatus } from './intake.js';
 import { createMarkdownEditor } from './mdeditor.js';
 import { SUBMIT_KEYS, SUBMIT_ARIA } from './shortcuts.js';
-import { openTaskMenu, openSubscriptionMenu, continueTask, deliveryStrip, startNow, stopTask, resumeTask, requestControl, dropControlRequest, handOverTask, takeBackTask, openScheduleDialog, rescheduleTask } from './actions.js';
+import { openTaskMenu, openSubscriptionMenu, continueTask, deliveryStrip, startNow, stopTask, resumeTask, requestControl, takeControl, dropControlRequest, handOverTask, takeBackTask, openScheduleDialog, rescheduleTask } from './actions.js';
 import { attachTerminalDrop, attachPromptDrop, draftAttachments, taskAttachments, withAttachments, openAttachment } from './filedrop.js';
 import { createPromptInput, ATOM, FILE_MARK, FILE_MARK_END, PLACE_TYPE, placeFiles, withoutMarks } from './promptinput.js';
 import { mentionOf, parsePrompt } from './promptparts.js';
@@ -415,19 +415,24 @@ export function mountTaskView(ctx, sandbox, task) {
     // Control of the task (SPEC-070), on its own row above what else the task needs.
     let control = null;
     if (owner() && allows(access, 'write') && current.control_from && current.control_from.login === me()) {
-      // You handed it over on request: you take it back without asking (SPEC-490 OWN-009, OWN-010).
-      control = [icon('lock', { size: 16 }), h('span', { class: 'attention-text' }, h('strong', null, `You handed this task to @${owner()}. `), 'It acts on GitHub as them; you can take it back at any time.'),
+      // You handed it over, or it was taken from you: you take it back without asking (SPEC-490
+      // OWN-009, OWN-010, SPEC-510 TKC-002).
+      control = [icon('lock', { size: 16 }), h('span', { class: 'attention-text' }, h('strong', null, `@${owner()} has control of this task now. `), 'It acts on GitHub as them; you can take it back at any time.'),
         h('button', { type: 'button', class: 'btn btn-sm btn-primary', title: 'It acts on GitHub as you again', onClick: () => takeBackTask(ctx, current) }, 'Take back')];
     } else if (owner() && allows(access, 'write')) {
-      // Someone else's task: it acts on GitHub as them; its owner may hand it over. Asking again
+      // Someone else's task: it acts on GitHub as them. Control is taken at once (SPEC-510), or,
+      // from an owner who chose to be asked, requested: they may hand it over, and asking again
       // takes control at once once the owner can no longer act.
       const mine = request && request.by.login === me();
+      // A playground's guest takes no one's task (TKC-007): they ask, as of an owner who asks first.
+      const asksFirst = Boolean(current.owner_asks_first) || Boolean(ctx.guest && ctx.guest());
+      const take = h('button', { type: 'button', class: 'btn btn-sm btn-primary', title: `It acts on GitHub as you from then on; @${owner()} is told and can take it back`, onClick: () => takeControl(ctx, current) }, 'Take control');
       control = [icon('lock', { size: 16 }), h('span', { class: 'attention-text' },
         mine ? [h('strong', null, `You asked @${owner()} for control. `), 'Until they hand it over, the task acts on GitHub as them.']
-          : [h('strong', null, `You are watching @${owner()}'s task. `), `You can stop, archive or delete it; to type in it or change it, ask @${owner()} for control.`, request ? ` @${request.by.login} asked for control.` : '']),
-      mine ? h('button', { type: 'button', class: 'btn btn-sm', title: `Takes control at once when @${owner()} can no longer act`, onClick: () => requestControl(ctx, current) }, 'Ask again') : null,
-      mine ? h('button', { type: 'button', class: 'btn btn-sm', onClick: () => dropControlRequest(ctx, current) }, 'Withdraw')
-        : request ? null : h('button', { type: 'button', class: 'btn btn-sm btn-primary', onClick: () => requestControl(ctx, current) }, 'Request control')];
+          : [h('strong', null, `You are watching @${owner()}'s task. `), asksFirst ? `You can stop, archive or delete it; to type in it or change it, ask @${owner()} for control.` : 'You can stop, archive or delete it; to type in it or change it, take control.', request ? ` @${request.by.login} asked for control.` : '']),
+      mine && asksFirst ? h('button', { type: 'button', class: 'btn btn-sm', title: `Takes control at once when @${owner()} can no longer act`, onClick: () => requestControl(ctx, current) }, 'Ask again') : null,
+      mine ? h('button', { type: 'button', class: 'btn btn-sm', onClick: () => dropControlRequest(ctx, current) }, 'Withdraw') : null,
+      !asksFirst ? take : mine || request ? null : h('button', { type: 'button', class: 'btn btn-sm btn-primary', onClick: () => requestControl(ctx, current) }, 'Request control')];
     } else if (!owner() && request && allows(access, 'write')) {
       control = [icon('st-attention', { size: 16 }), h('span', { class: 'attention-text' }, h('strong', null, `@${request.by.login} asks to take control of this task: `), 'it will act on GitHub as them.'),
         h('button', { type: 'button', class: 'btn btn-sm btn-primary', onClick: () => handOverTask(ctx, current) }, 'Hand over'),

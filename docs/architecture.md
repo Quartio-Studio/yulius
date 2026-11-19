@@ -2794,7 +2794,9 @@ Each person can get their notifications in their own Telegram chat
   active (`App::seed_notices`), so only later changes are told. As the
   notification center does, a switching task is skipped without touching that memory, a request
   naming a sandbox-wide cause (`docker`) is told once per episode (`App::shared_episode`), and a
-  waiting request for control goes to the task's owner only, once per request. For each linked
+  waiting request for control goes to the task's owner only, once per request; a take of a task
+  (`task.control_taken`) or a take-back (`task.control_taken_back`) goes to the person it was
+  taken from only (`yulius_domain::notify::taken_text`, SPEC-510). For each linked
   person who chose that kind it applies `App::envelope_reaches`, the same function that filters
   `WS /api/events`, then the person's `Throttle` (5 a minute, the rest folded into a summary). Text
   passes `App::redact_for_sandbox` (account text: the shape-based `redact`).
@@ -3294,13 +3296,18 @@ to `load_task` means control, so a new task function is the owner's unless it as
 name. Nothing else compares a task's owner: the terminal's write grant, shells and files in a
 worktree, the queue's order, a Superagent's message, a restore of attachments into a task and
 Start onboarding all ask the same rule. A playground's guest tidies only their own tasks
-(`TaskRefusal::Guest`). Anyone else who may work in the project asks for control, from the
-task's page or its menu; the owner hears of it wherever they are (a notification, a toast, a
-mark on the sidebar row) and hands it over or declines, and an absent owner's task passes at
-once. A hand-over on request records its giver (`tasks.control_from`, schema 60), who takes the
-task back without asking (`App::take_back_task_control`, one conditional update) until control
-moves again: handed on, handed back to the giver, or passed from an absent owner, which clear
-or replace it. An onboarding task that never ran passes to whoever
+(`TaskRefusal::Guest`). Anyone else who may work in the project (not a guest) takes control at
+once from the task's page or its menu (`App::take_task_control`, `seize_control`,
+[SPEC-510](../.ai/specs/SPEC-510-change-request-control-for-tasks-to-take.md),
+[decision 0365](decisions/0365-a-teammate-takes-control-unless-the-owner-chose-to-be-asked.md)),
+and the previous owner gets `task.control_taken` wherever they are. An owner who turned on
+"Ask me before taking control of my tasks" (`users.control_ask_first`, schema 67; each
+`TaskSummary` says `owner_asks_first`) is asked instead: they hear of a request wherever they are
+(a notification, a toast, a mark on the sidebar row) and hand it over or decline. An absent
+owner's task passes at once either way. A take or a hand-over on request records its giver
+(`tasks.control_from`, schema 60), who takes the task back without asking
+(`App::take_back_task_control`, one conditional update) until control moves again: handed on,
+handed back to the giver, or passed from an absent owner, which clear or replace it. An onboarding task that never ran passes to whoever
 starts onboarding.
 
 ```mermaid
@@ -3310,8 +3317,10 @@ flowchart LR
   RULE -->|"tidy: write access"| TIDY["stop, close out, archive,<br/>restore, delete"]
   TIDY --> AUD[("audit: who, and the owner")]
   RULE -->|"control: write access + owner"| CTRL["terminal, messages, answers,<br/>start, pause, deliver, worktree"]
-  RULE -->|"control, not the owner"| ASK["403: ask the owner for control"]
-  ASK -->|"POST /control-request"| REQ[("tasks.control_requested_by")]
+  RULE -->|"control, not the owner"| ASK["403: take control, or ask"]
+  ASK -->|"POST /control/take<br/>(owner does not ask first)"| SEIZE["seize_control"]
+  SEIZE --> OWN
+  ASK -->|"POST /control-request<br/>(owner asks first)"| REQ[("tasks.control_requested_by")]
   REQ -->|"owner absent"| PASS["pass_control"]
   A["Owner: Hand over"] -->|"POST /control-request/accept"| PASS
   A -->|"DELETE: decline"| REQ
