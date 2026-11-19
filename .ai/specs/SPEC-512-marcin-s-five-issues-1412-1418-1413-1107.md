@@ -150,11 +150,11 @@ each from its issue's acceptance criteria.
 
 ### #1412
 
-- [ ] A task with no turn running and no background work does not count toward `max_sessions`
+- [x] A task with no turn running and no background work does not count toward `max_sessions`
   after the grace period (PRK-002, PRK-003, PRK-006).
-- [ ] Writing to such a task resumes it in its own session, with its history (PRK-005).
-- [ ] A queued task shows why it has not started and what it waits for (PRK-007).
-- [ ] The Capacity card shows working sessions and parked sessions separately (PRK-008).
+- [x] Writing to such a task resumes it in its own session, with its history (PRK-005).
+- [x] A queued task shows why it has not started and what it waits for (PRK-007).
+- [x] The Capacity card shows working sessions and parked sessions separately (PRK-008).
 
 ## Test plan
 
@@ -197,4 +197,37 @@ each from its issue's acceptance criteria.
 
 ## Evidence
 
-To be filled per part.
+### Part 1 (#1412)
+
+| Acceptance criterion | Held by |
+| --- | --- |
+| A task with no turn and no background work stops counting after the grace period | `parking::an_answered_task_parks_and_its_slot_starts_a_queued_task` (limit 1: the parked task's slot starts the queued one; activity kept, run ended `parked`, audited `task.parked` by `yulius`); `yulius_app::parking::tests::*` (every exclusion of PRK-002); `parking::a_task_parks_only_after_its_grace_period_and_never_with_parking_off` (grace 0, a long grace, a keystroke) |
+| Writing to it resumes it in its own session with its history | `parking::a_message_resumes_a_parked_task_in_its_own_session` (`task_message` → `delivered: "resumed"`, second run `LaunchKind::Resume` with the same provider session id, `needs_you` ended); `parking::resume_keeps_the_request_and_archive_or_stop_end_a_parked_task` (the web's Resume keeps the request; archive → `closed`; Stop → `stopped`); `parking::a_message_during_a_park_is_refused_and_resumes_the_task_once_parked` (race point `ParkDecided`) |
+| A queued task says what it waits for | `parking::an_answered_task_parks_and_its_slot_starts_a_queued_task` (`queue_reason` "Waiting for a free session: 1 of 1 in use"); `yulius_app::parking::tests::a_queued_task_says_what_it_waits_for`; e2e `parked.e2e.ts` "a queued task says what it waits for" |
+| The Capacity card shows working and parked sessions apart | `parking::an_answered_task_parks_and_its_slot_starts_a_queued_task` (`sessions` = working 1, limit 1, parked 1); e2e `parked.e2e.ts` "the Capacity card shows working and parked sessions apart" |
+
+The status itself: `yulius_domain::task::tests::a_parked_task_resumes_closes_or_stops` and
+`a_parked_task_stays_in_its_group`; the web rule: e2e `parked.e2e.ts` "a parked task reads as it
+did…" (labels, groups, actions, the ended terminal's Resume).
+
+Commands (2026-11-19, after merging `origin/dev` at 4b9045b4c):
+
+- `cargo test -p yulius --test main parking::` → 5 passed (`target/evidence/parking-9.log`).
+- `cargo test -p yulius-domain --lib` → 573 passed; `cargo test -p yulius-app --lib` → 614 passed.
+- `npx e2e run tests/parked.e2e.ts` → 3 passed; `subscriptions`, `loading-shapes`, `task-done`,
+  `attention`, `home`, `archive`, `pause` → 112 passed.
+- `scripts/dev quick` → passed; `scripts/dev lint` → passed.
+
+What a person sees. Before: a finished task stays "Running · Your turn" or "Done" with a live
+process; a queued task reads "Queued" and nothing else; the Capacity card has no sessions. After:
+the same row reads "Your turn · parked" (or "Done · parked"), its second line "Parked to free its
+session · resumes when you write to it", its terminal "Yulius parked this idle session to free its
+place and memory. Resume it, or write to it, and it goes on in the same session with its history."
+with a Resume button; a queued row reads "Waiting for a free session: 8 of 8 in use"; the Capacity
+card's Sessions tile reads "8 / 8 working" over "13 parked · 2 idle · 3 queued" and "Idle sessions
+park after 30 min".
+
+Not tested here: a park whose session hangs and is lost through the escalation (the `mark_lost`
+branch that parks it) has no test of its own: the gated host that refuses ends is wired only into
+another test file's private start helper; the branch is the same `settle_parked` the exit path's
+tests cover.
