@@ -6,6 +6,13 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-19
 
+- Answer a teammate's Needs you (SPEC-516, task #498, ADR-0370): on someone else's task whose
+  agent asks a person for something, Reply answers it without taking control. The agent gets the
+  answer labelled with your name (and that you are not its owner), the request ends, and the task
+  stays its owner's on GitHub. Not while the agent asks in its terminal, nor while the owner's
+  personal secrets or MCP servers reach its run: then the owner answers, or you take control.
+  `POST /api/tasks/{tid}/needs-you/answer`, audited `task.needs_you_answered`.
+
 - Take control (SPEC-510, task #492, ADR-0365): on a teammate's task, Take control (in the task
   view and the task menu, after a confirmation naming the owner) makes the task yours at once:
   it acts on GitHub as you from then on. The previous owner is told wherever they are (their

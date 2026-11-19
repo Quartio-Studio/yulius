@@ -383,7 +383,10 @@ watching, steering and unblocking.
   Others
   watch it as its live transcript (printed as the Sessions view prints a session, in the
   terminal's colours, following its newest lines until they scroll up), see whose it is
-  in the view and in the sidebar, and can take control, from the task's page or its menu in a
+  in the view and in the sidebar, answer what its agent asks under Needs you with Reply
+  without taking control (SPEC-516: the agent gets the answer labelled with their name; not
+  while it asks in its terminal or holds the owner's personal secrets or MCP servers), and can
+  take control, from the task's page or its menu in a
   list, after a confirmation naming the owner (SPEC-510): the task then acts on GitHub as them,
   and the previous owner hears of it wherever they are and can take it back at any time. A
   person who wants to be asked first turns on "Ask me before taking control of my tasks" in

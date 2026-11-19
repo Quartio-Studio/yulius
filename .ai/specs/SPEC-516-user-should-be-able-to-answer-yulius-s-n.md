@@ -66,9 +66,9 @@ as them. Nothing else of the task is opened to the answerer.
 ## Plan
 
 - [x] Read the product context and related work, then write and validate the spec
-- [ ] A teammate answers a task's Needs you over the API, control unchanged
-- [ ] The task view's Reply answers a teammate's Needs you without taking control
-- [ ] ADR-0370, API, architecture and product documents say who answers a Needs you
+- [x] A teammate answers a task's Needs you over the API, control unchanged
+- [x] The task view's Reply answers a teammate's Needs you without taking control
+- [x] ADR-0370, API, architecture and product documents say who answers a Needs you
 - [ ] Independent review in a fresh session, findings fixed test-first
 - [ ] Every gate green, docs and the changes log updated
 

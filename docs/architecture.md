@@ -3263,8 +3263,15 @@ whoever owns the task) and **control** (everything that steers it: write access 
 to `load_task` means control, so a new task function is the owner's unless it asks for tidy by
 name. Nothing else compares a task's owner: the terminal's write grant, shells and files in a
 worktree, the queue's order, a Superagent's message, a restore of attachments into a task and
-Start onboarding all ask the same rule. A playground's guest tidies only their own tasks
-(`TaskRefusal::Guest`). Anyone else who may work in the project (not a guest) takes control at
+Start onboarding all ask the same rule. A fourth, **answer** (`TaskAction::Answer`,
+[SPEC-516](../.ai/specs/SPEC-516-user-should-be-able-to-answer-yulius-s-n.md),
+[decision 0370](decisions/0370-a-teammate-answers-a-tasks-needs-you-without-taking-control.md)),
+answers what a running task's agent asked a person (`needs_you`) with write access, owner or
+not: `POST /api/tasks/{tid}/needs-you/answer` (`App::answer_needs_you`) types one labelled answer
+through `type_into_session` and ends the request; control does not move. It is refused while the
+agent asks in its terminal and, from anyone but the owner, while the owner's personal agent
+secrets or MCP servers reach the run. A playground's guest tidies and answers only their own
+tasks (`TaskRefusal::Guest`). Anyone else who may work in the project (not a guest) takes control at
 once from the task's page or its menu (`App::take_task_control`, `seize_control`,
 [SPEC-510](../.ai/specs/SPEC-510-change-request-control-for-tasks-to-take.md),
 [decision 0365](decisions/0365-a-teammate-takes-control-unless-the-owner-chose-to-be-asked.md)),
@@ -3285,6 +3292,7 @@ flowchart LR
   RULE -->|"tidy: write access"| TIDY["stop, close out, archive,<br/>restore, delete"]
   TIDY --> AUD[("audit: who, and the owner")]
   RULE -->|"control: write access + owner"| CTRL["terminal, messages, answers,<br/>start, pause, deliver, worktree"]
+  RULE -->|"answer: write access,<br/>owner or not"| ANS["POST /needs-you/answer:<br/>labelled paste, needs_you ends"]
   RULE -->|"control, not the owner"| ASK["403: take control, or ask"]
   ASK -->|"POST /control/take<br/>(owner does not ask first)"| SEIZE["seize_control"]
   SEIZE --> OWN
