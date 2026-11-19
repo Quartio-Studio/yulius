@@ -12,7 +12,7 @@ use yulius_domain::briefing::{
     BriefingInput, DEFAULT_BUDGET_BYTES, Foundations, MAX_RECENT_CHANGES, ParallelTask,
     RecentChange, TaskBrief, build_briefing,
 };
-use yulius_domain::harness::Harness;
+use yulius_domain::harness::{Harness, SubmitOrigin};
 use yulius_domain::ids::TaskId;
 use yulius_domain::rotation::{self, Decision, Trigger};
 use yulius_domain::spec_format::{DecisionFiles, NamedFile, decision_titles, project_layout};
@@ -255,6 +255,47 @@ impl App {
         reply
     }
 
+    async fn submit_origin(
+        &self,
+        ctx: &AgentContext,
+        input: &HookInput,
+        sent: i64,
+    ) -> SubmitOrigin {
+        let (Some(session), Some(id), Some(prompt)) =
+            (&input.session_id, &input.prompt_id, &input.prompt)
+        else {
+            return SubmitOrigin::Unmarked;
+        };
+        if ctx.attempt.harness != Harness::ClaudeCode
+            || !yulius_domain::harness::valid_session_id(session)
+            || ctx
+                .attempt
+                .provider_session_id
+                .as_ref()
+                .is_some_and(|current| current != session)
+        {
+            return SubmitOrigin::Unmarked;
+        }
+        // Use only the file derived from the authenticated task. The hook's path and cwd
+        // are provider input, not paths the server may open.
+        let anchor = self.sandbox_dir(&ctx.task.sandbox_id);
+        let path = self.native_transcript(&ctx.task, Harness::ClaudeCode, session);
+        let harness = Arc::clone(&self.deps.harness);
+        let (session, id, prompt) = (session.clone(), id.clone(), prompt.clone());
+        let run_to_submit = ctx.attempt.started_at..=yulius_domain::time::Timestamp(sent);
+        // Claude 2.1.322 buffered its queue writes for 67–108 ms. Let the already-made
+        // hand-over reach disk. Use the original submit time throughout, even if keys arrive.
+        let age = self.now().0.saturating_sub(sent).clamp(0, 200);
+        tokio::time::sleep(std::time::Duration::from_millis((200 - age).unsigned_abs())).await;
+        tokio::task::spawn_blocking(move || {
+            crate::transcripts::open(&anchor, &path).map_or(SubmitOrigin::Unmarked, |file| {
+                harness.submit_origin(file, &session, &id, &prompt, run_to_submit)
+            })
+        })
+        .await
+        .unwrap_or(SubmitOrigin::Unmarked)
+    }
+
     /// Answers the hook `event` of the run `ctx`, sent at `sent` ([`Self::hook_event`]).
     async fn answer_hook(
         self: &Arc<Self>,
@@ -265,7 +306,9 @@ impl App {
         input_seq: u64,
     ) -> AppResult<HookReply> {
         if event != events::USER_PROMPT_SUBMIT {
-            return self.answer_event(ctx, event, input, sent).await;
+            return self
+                .answer_event(ctx, event, input, sent, SubmitOrigin::Unmarked)
+                .await;
         }
         // A prompt submitted from the session's prompt box empties it: what was typed before
         // it is no draft any more (SPEC-468 CCF-010). Claude Code runs this hook at the Enter,
@@ -275,7 +318,13 @@ impl App {
         // seconds, stamped anew, until it goes on, and what a person types meanwhile is a
         // draft.
         let runtime = self.runtime(&ctx.task.id);
-        let from_box = crate::finish::from_prompt_box(input.prompt.as_deref());
+        let box_text = crate::finish::from_prompt_box(input.prompt.as_deref());
+        let origin = if box_text {
+            self.submit_origin(ctx, input, sent).await
+        } else {
+            SubmitOrigin::Unmarked
+        };
+        let from_box = box_text && origin == SubmitOrigin::Unmarked;
         let sent_again = runtime.prompt_held.load(Ordering::SeqCst);
         let submitted = if from_box {
             let mut mark = runtime.draft_mark.lock().await;
@@ -286,7 +335,7 @@ impl App {
         } else {
             None
         };
-        let reply = self.answer_event(ctx, event, input, sent).await;
+        let reply = self.answer_event(ctx, event, input, sent, origin).await;
         // A prompt that is held stays held through an answer that fails: the hook client, once
         // it holds, asks again after a 5xx or a lost connection (it fails open at a first
         // request). At a 4xx it ends its hold and the prompt goes on; that is read as held
@@ -344,6 +393,8 @@ impl App {
                     self.settle_draft_flag(&ctx.task.id).await;
                 }
             }
+        }
+        if box_text && !held && !blocked {
             // It goes on to Claude Code now, which writes where it went (a turn of its own,
             // or its queue) only after this answer: until that record is read, a turn's end
             // cannot tell (SPEC-471 CCQ-004).
@@ -363,6 +414,7 @@ impl App {
         event: &str,
         input: &HookInput,
         sent: i64,
+        origin: SubmitOrigin,
     ) -> AppResult<HookReply> {
         // This run reports its turn boundaries through hooks: the Stop hook decides switches
         // and pauses, not the transcript.
@@ -405,7 +457,7 @@ impl App {
             events::SESSION_START => Ok(HookReply::Output(
                 self.hook_session_start(ctx, input).await?,
             )),
-            events::USER_PROMPT_SUBMIT => self.hook_prompt_submit(ctx, input, sent).await,
+            events::USER_PROMPT_SUBMIT => self.hook_prompt_submit(ctx, input, sent, origin).await,
             events::PRE_INVOCATION if ctx.attempt.harness == Harness::Antigravity => {
                 self.antigravity_work(&ctx.task.id, sent).await?;
                 Ok(HookReply::Output(HookOutput::default()))
@@ -797,13 +849,14 @@ impl App {
         ctx: &AgentContext,
         input: &HookInput,
         sent: i64,
+        origin: SubmitOrigin,
     ) -> AppResult<HookReply> {
+        let typed = origin == SubmitOrigin::Unmarked
+            && crate::finish::is_typed_prompt(input.prompt.as_deref());
         let store = &self.deps.store;
         // A person wrote to the task (they typed it, even a prompt held below): what its agent
         // asked a person is answered (SPEC-134 CDT-004). Prompts Yulius types do not count.
-        if crate::finish::is_typed_prompt(input.prompt.as_deref())
-            && self.typed_recently(&ctx.task.id).is_some()
-        {
+        if typed && self.typed_recently(&ctx.task.id).is_some() {
             self.end_needs_you(&ctx.task.id).await;
         }
         // A prompt held for capacity stays held while its pause lasts (also across a restart).
@@ -828,7 +881,9 @@ impl App {
         // Scope discipline (TSK-013): a held prompt never reaches the agent, so nothing below
         // (capacity, activity) happens for it. A prompt typed into a task held
         // at its turn end (paused for capacity) is checked like any other.
-        if let Some(held) = self.screen_prompt(ctx, input).await? {
+        if origin != SubmitOrigin::Scheduled
+            && let Some(held) = self.screen_prompt(ctx, input).await?
+        {
             return Ok(HookReply::Output(held));
         }
         // The start of a turn: with no subscription below the threshold, the prompt waits here
@@ -871,12 +926,14 @@ impl App {
         );
         // A typed prompt starts new work: an achieved goal no longer makes the task done
         // (TSK-014). Claude Code's own wake-ups (a background shell ended) keep it.
-        if crate::finish::is_typed_prompt(input.prompt.as_deref()) {
+        if typed {
             self.prompt_submitted(&ctx.task.id);
         }
         // `/compact` runs no turn and no Stop hook ends it: the task stays as it was (SPEC-085
         // STT-005).
-        if !crate::finish::prompt_starts_work(input.prompt.as_deref()) {
+        if origin != SubmitOrigin::Scheduled
+            && !crate::finish::prompt_starts_work(input.prompt.as_deref())
+        {
             return Ok(HookReply::Output(HookOutput::default()));
         }
         // As it is now: a Stop of the turn before may have settled it since it was read.
@@ -893,7 +950,7 @@ impl App {
         runtime.goal_retry_armed.store(false, Ordering::SeqCst);
         runtime.turn_began_ms.store(self.now().0, Ordering::SeqCst);
         // Claude Code's own wake-up goes on with the stretch; a typed prompt starts a new one.
-        let stretch = if crate::finish::is_typed_prompt(input.prompt.as_deref()) {
+        let stretch = if typed {
             None
         } else {
             self.continue_working_stretch(&ctx.task.id).await
@@ -911,7 +968,7 @@ impl App {
         // typed, its agent is told to resume it, not to start it again (SPEC-486 WFL-006).
         // Claude Code's own wake-ups say what ended; they get nothing added.
         let now = self.now();
-        if crate::finish::is_typed_prompt(input.prompt.as_deref())
+        if typed
             && let Some(runs) =
                 runtime.with_workflows(|workflows: &mut crate::dynamic_workflow::Unfinished| {
                     workflows.paused(now)

@@ -12,6 +12,8 @@ or an imported `auth.json`. The detailed contracts are in
 [SPEC-002](../.ai/specs/SPEC-002-yulius-architecture.md); crate layering rules are in
 [engineering/architecture.md](engineering/architecture.md).
 
+The supervisor terminates a disconnected run using the identities recorded by its host. On Linux it checks exit of the entire process before recording a forced loss. [Decision 0390](decisions/0390-linux-host-exit-is-observed-for-the-whole-process.md)
+
 ```mermaid
 flowchart LR
   UI["Web UI (xterm.js, Monaco)"] <--> RP["Reverse proxy (TLS)"] <--> API
@@ -791,6 +793,9 @@ which a new sign-in takes too; it is never held across a request to the provider
 recorded while a reading is under way is kept. The write that marks a subscription refused
 (`record_access_lost`) takes the lock as well: a usage write stores the status it read together
 with the usage, and one under way would otherwise store `ok` over "needs a new sign-in" (#1211).
+Under that lock it checks the current sealed credential against the digest recorded at launch.
+A stale refusal or a pre-upgrade run without a digest affects only the interrupted task
+([decision 0387](decisions/0387-bind-claude-refusals-to-the-launch-credential.md)).
 A subscription works while it reads `ok` or `limited` (`AccountStatus::healthy`), and that is
 the one rule: the pool places tasks only on one that works, the background rounds ask only such
 a one for its usage and its e-mail address, and a reading that arrives for any other stores its
@@ -981,7 +986,7 @@ A task leaves its subscription for three reasons besides the pool's own rotation
 [decision 0288](decisions/0288-a-person-moves-a-task-between-subscriptions-and-removing-one-moves-its-tasks.md)):
 a person chooses another from the task (`POST /api/tasks/{tid}/switch`), a person removes the
 subscription (`DELETE /api/admin/accounts/{id}`), or Claude refuses it (`Observed::AccessLost`,
-which marks it `relogin`). All three go through `App::move_task` (`moves.rs`), which picks the
+which marks it `relogin` while the refused sign-in is current). All three go through `App::move_task` (`moves.rs`), which picks the
 switch that fits where the task stands (past a limit, the first message again, a held prompt, a
 cut turn told to go on) and lets the pool pick when no subscription is named; with nowhere to go
 the launch pauses the task. A removal deletes the row first, so `choose_account`, which reads only
@@ -992,7 +997,8 @@ one-line notice and, with nothing usable left, the task's Needs you, which `end_
 flowchart LR
   P["Person: Run #N on…"] -->|"switch_task (Trigger::Manual, < 100 %)"| M["move_task"]
   D["Person: Remove"] -->|"delete row, close Done sessions"| M
-  R["Claude refuses (AccessLost)"] -->|"relogin, rotate"| M
+  R["Claude refuses (AccessLost)"] -->|"rotate the interrupted task"| M
+  R -->|"launch credential still current"| A["Mark subscription relogin"]
   M -->|"switch_from: end run, start_run_if"| C{"choose_account"}
   C -->|"a subscription"| RUN["Same session on it"]
   C -->|"none"| W["waiting_capacity"]
@@ -2280,7 +2286,9 @@ however long ago; the task's owner alone sends past their own with `with_draft`,
 sender is told, and for a message of Yulius's own, which waits in its watch, the task is flagged
 and its terminal says so once the person's last key is ten minutes old; the key that begins a
 possible draft leaves `person-typed` in the run folder, removed when a prompt is submitted from
-the box and read by `reconcile` for a reattached run). Before a paste, visible input in
+the box and read by `reconcile` for a reattached run). Claude’s scheduled hand-over preserves that mark even when its submit hook
+carries plain text (SPEC-541, [ADR-0388](decisions/0388-claude-scheduled-submits-use-the-transcript-hand-over.md)).
+Before a paste, visible input in
 Claude Code’s conversation box also holds a message. This catches restores that generated no
 key. An automatic message flags the task immediately in this case
 ([ADR-0384](decisions/0384-visible-prompt-text-holds-session-messages.md)). Messages also wait while Claude Code's
@@ -3409,7 +3417,10 @@ drawn for the size its writer's browser sets and is unreadable at another
 `watchview.js` prints the session with the Sessions view's renderer in the terminal's colours and
 reads on from where it stopped; `App::task_transcript` reads the file of the lineage entry adopted
 last (`transcripts::read_tail`, then `read_page` from `end`) and answers an unchanged size from a
-`stat`. Only the run's own `SessionStart` hook changes a task's session (`/clear`, `/resume`); a
+`stat`. The server's read cursor keeps the IDs of Claude background shells that read dotenv files,
+so each later `BashOutput` or `TaskOutput` for that shell gets dotenv redaction.
+[SPEC-536](../.ai/specs/SPEC-536-carry-claude-redaction-into-background-c.md).
+Only the run's own `SessionStart` hook changes a task's session (`/clear`, `/resume`); a
 `claude` the agent runs in its worktree writes a transcript beside the TUI's but is never adopted
 ([decision 0209](decisions/0209-only-the-tui-s-own-hooks-change-the-task-s-session.md)).
 While the reader has not scrolled up, a `ResizeObserver` keeps the view at the bottom through every

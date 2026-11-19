@@ -298,7 +298,12 @@ impl App {
         }
     }
 
-    fn native_transcript(&self, task: &TaskRecord, harness: Harness, session_id: &str) -> PathBuf {
+    pub(crate) fn native_transcript(
+        &self,
+        task: &TaskRecord,
+        harness: Harness,
+        session_id: &str,
+    ) -> PathBuf {
         let worktree = task.worktree_path.as_ref().map_or_else(
             || {
                 self.sandbox_dir(&task.sandbox_id)
