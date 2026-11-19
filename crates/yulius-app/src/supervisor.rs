@@ -5032,6 +5032,10 @@ impl App {
                 return Err(err);
             }
         };
+        crate::race::reached(
+            crate::race::Point::SwitchPrepared,
+            Path::new(task_id.as_str()),
+        );
         if !store
             .transition_task(task_id, Some(task.status), next, None, self.now())
             .await?

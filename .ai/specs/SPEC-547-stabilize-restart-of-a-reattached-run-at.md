@@ -17,19 +17,22 @@ Issue #1286 reports a timeout waiting for attempt two on plain dev under load. S
 
 - RST-547-1. The old attempt ends and exactly one replacement runs with the current owner's servers, continuing the interrupted turn on an available subscription.
 - RST-547-2. A controlled ordering reproduces the failure. The integration test waits on observable conditions with bounded deadlines.
+- RST-547-3. A capacity pass that finds the old pause during the hand-over defers that task and continues through the pool. A later pass checks that the same pause is still open.
 
 ## Plan
 
 - [x] Isolate the failing reattach and restart ordering
 - [x] Prove the ordering with a failing regression
 - [x] Restore reliable restart and normal CI coverage
-- [ ] Verify the restart under 48 busy loops
+- [x] Verify the restart under 48 busy loops
+- [ ] Protect the persisted pause during startup hand-over
 - [ ] Ready the independently reviewed fix for the green CI merge
 
 ## Acceptance criteria
 
 - AC-1. Reattaching the limited run while another subscription has room resumes it once, with its limit record removed and the current owner's servers.
 - AC-2. The integration test passes 40 iterations beside 48 busy loops.
+- AC-3. A capacity pass between hand-over preflight and the switch’s status update leaves the task waiting for that hand-over, schedules a prompt recheck, and yields one live replacement.
 
 ## Test plan
 
@@ -46,3 +49,5 @@ Reconciliation takes the task’s move lock before attaching the host. It releas
 - The retained regression held the replayed limit move until the hand-over completed. Releasing it created attempt three. The two-attempt assertion failed in 7.9 seconds.
 - Seven targeted nextest cases passed, including the original fixture and the delayed limit move, replay with unchanged ownership and hand-over without a recorded limit.
 - Eleven adjacent workflow-limit, refused-subscription and failed hand-over cases passed. These cover the pool’s ordinary limit moves, workflow resumption after restart, and stopping an old owner’s run when the required restart genuinely fails.
+- The original test passed 40/40 iterations in 331.5 seconds beside 48 busy loops. All workers were alive at both ends of the run.
+- Independent review of 1113a4157 found that the startup capacity pass could also claim the persisted pause. Holding the hand-over after preflight and calling resume_round reproduced it in 7.1 seconds. The task was already Running when the hand-over still owned a WaitingCapacity pause.

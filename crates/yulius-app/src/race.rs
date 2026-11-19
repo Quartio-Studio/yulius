@@ -49,6 +49,8 @@ pub enum Point {
     /// A switch (SPEC-250): the task is `Switching`; the switch's end intent for the old run is
     /// not set yet. The path is the task id.
     SwitchDecided,
+    /// A switch passed preflight and has yet to claim the task status. The path is the task id.
+    SwitchPrepared,
     /// A queued limit move is about to check its reporting attempt. The path is the task id.
     LimitMoveReady,
     /// The queued limit rotation returned.

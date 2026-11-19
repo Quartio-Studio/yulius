@@ -1118,17 +1118,30 @@ fn a_reattached_run_with_another_persons_servers_is_restarted() -> TestResult {
 /// continued, on a subscription with room), not into the limit's error.
 #[test]
 fn a_reattached_run_at_a_limit_is_restarted_past_it() -> TestResult {
-    reattach_at_limit(false)
+    reattach_at_limit(LimitRestartRace::Natural)
 }
 
 /// A pool move delayed after replay belongs to the old attempt. If the hand-over already
 /// replaced it, processing the old limit must leave the replacement running.
 #[test]
 fn a_delayed_limit_move_leaves_the_reattached_runs_replacement_running() -> TestResult {
-    reattach_at_limit(true)
+    reattach_at_limit(LimitRestartRace::LateLimit)
 }
 
-fn reattach_at_limit(delay_limit_move: bool) -> TestResult {
+/// Startup's first capacity round sees the persisted pause while its hand-over prepares
+/// the restart. It must leave that pause to the hand-over.
+#[test]
+fn a_capacity_round_leaves_the_reattached_runs_hand_over_to_finish() -> TestResult {
+    reattach_at_limit(LimitRestartRace::CapacityRound)
+}
+
+enum LimitRestartRace {
+    Natural,
+    LateLimit,
+    CapacityRound,
+}
+
+fn reattach_at_limit(order: LimitRestartRace) -> TestResult {
     use yulius_app::race::Point;
     let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
     let (_dir, data) = temp()?;
@@ -1179,7 +1192,7 @@ fn reattach_at_limit(delay_limit_move: bool) -> TestResult {
         let app = build()?;
         probe.set("b-second", usage(10.0, 4 * HOUR, 30.0, 100));
         refresh(&app, &admin, "b-second").await?;
-        let delayed = delay_limit_move.then(|| {
+        let delayed = matches!(order, LimitRestartRace::LateLimit).then(|| {
             let (ready, go) = support::hold_point(Point::LimitMoveReady, id.as_str());
             let (done, finished) = std::sync::mpsc::channel();
             yulius_app::race::on(
@@ -1191,13 +1204,27 @@ fn reattach_at_limit(delay_limit_move: bool) -> TestResult {
             );
             (ready, go, finished)
         });
+        let capacity = matches!(order, LimitRestartRace::CapacityRound)
+            .then(|| support::hold_point(Point::SwitchPrepared, id.as_str()));
         app.reconcile().await?;
+        let after_round = if let Some((ready, go)) = capacity {
+            support::point_reached(ready).await?;
+            let retry = app.resume_round().await;
+            let status = task(&app, &id).await?.status;
+            go.send(())?;
+            Some((status, retry))
+        } else {
+            None
+        };
         wait_for("the hand-over restart", Duration::from_secs(60), || async {
-            app.deps.store.switches(&id).await.is_ok_and(|switches| {
-                switches
-                    .iter()
-                    .any(|s| s.reason == "handover" && s.outcome == "completed")
-            })
+            task(&app, &id)
+                .await
+                .is_ok_and(|task| task.status.is_resting())
+                || app.deps.store.switches(&id).await.is_ok_and(|switches| {
+                    switches
+                        .iter()
+                        .any(|s| s.reason == "handover" && s.outcome == "completed")
+                })
         })
         .await?;
         if let Some((ready, go, finished)) = delayed {
@@ -1205,12 +1232,30 @@ fn reattach_at_limit(delay_limit_move: bool) -> TestResult {
             go.send(())?;
             support::point_reached(finished).await?;
         }
+        let status = task(&app, &id).await?.status;
         let attempts = app.deps.store.attempts(&id).await?;
         let resumed = attempts.last().ok_or("no attempt after the hand-over")?;
         let run_dir = Path::new(&resumed.run_dir);
         let owner = std::fs::read_to_string(run_dir.join("personal-mcp-of"));
         let problems = limit_resume_problems(run_dir, &data);
         stop(&app, &id).await?;
+        if let Some((status, retry)) = after_round {
+            assert_eq!(
+                status,
+                TaskStatus::WaitingCapacity,
+                "the hand-over owns the pause"
+            );
+            assert_eq!(
+                retry,
+                Duration::from_secs(1),
+                "retry the deferred pause promptly"
+            );
+        }
+        assert_eq!(
+            status,
+            TaskStatus::Running,
+            "the resumed task keeps running"
+        );
         assert_eq!(attempts.len(), 2, "one replacement for the limited run");
         assert_eq!(resumed.state, yulius_domain::task::AttemptState::Live);
         assert_eq!(
