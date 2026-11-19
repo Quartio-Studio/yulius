@@ -1237,7 +1237,20 @@ fn reattach_at_limit(order: LimitRestartRace) -> TestResult {
     })?;
     first.shutdown_timeout(Duration::from_secs(5));
 
-    let second = runtime()?;
+    // Under a controlled delay the hand-over must still progress with a single async worker.
+    let second = if matches!(
+        order,
+        LimitRestartRace::LateLimit
+            | LimitRestartRace::CapacityRound
+            | LimitRestartRace::BlindRetry
+    ) {
+        tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()?
+    } else {
+        runtime()?
+    };
     second.block_on(async {
         let app = build()?;
         if !matches!(order, LimitRestartRace::NoCapacity) {
