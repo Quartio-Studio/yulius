@@ -31,7 +31,10 @@ export function openTaskMenu(ctx, anchor, task) {
   const write = allows(access, 'write');
   // Steering is the owner's (SPEC-490): the reason says how to get it. Stop, archive and delete
   // are open to whoever may work here, so theirs is the task's state.
-  const why = !write ? 'Requires write access' : owner ? `@${owner} owns this task: request control to do this` : 'Not available in this state';
+  // Control is taken, unless its owner chose to be asked first or the viewer is a playground's
+  // guest, who takes no one's task (SPEC-510 TKC-005, TKC-007).
+  const asksFirst = Boolean(task.owner_asks_first) || guest;
+  const why = !write ? 'Requires write access' : owner ? `@${owner} owns this task: ${asksFirst ? 'request' : 'take'} control to do this` : 'Not available in this state';
   const whyTidy = !write ? 'Requires write access' : guest && owner ? `@${owner}'s task: a guest puts away only their own tasks` : 'Not available in this state';
   const request = task.control_request;
   const asked = Boolean(request && request.by.login === me);
@@ -48,8 +51,10 @@ export function openTaskMenu(ctx, anchor, task) {
     { label: 'See the original prompt', onSelect: () => openPromptDialog(ctx, task) },
     { label: 'Delivery…', onSelect: () => openDeliveryDialog(ctx, task) },
     { label: 'Feedback…', disabled: !can.feedback, onSelect: () => openFeedbackDialog(ctx, task) },
-    // Someone else's task: ask its owner for control from here too (SPEC-490 OWN-007).
+    // Someone else's task: take control, or ask an owner who wants to be asked, from here too
+    // (SPEC-490 OWN-007, SPEC-510 TKC-005).
     !can.askControl ? null
+      : !asksFirst ? { label: 'Take control', title: `It would act on GitHub as you; @${owner} is told and can take it back`, onSelect: () => takeControl(ctx, task) }
       : asked ? { label: 'Withdraw request', title: `You asked @${owner} for control of this task`, onSelect: () => dropControlRequest(ctx, task) }
       : { label: 'Request control', disabled: Boolean(request), title: request ? `@${request.by.login} already asked @${owner} for control` : `Asks @${owner} to hand this task over: it would act on GitHub as you`, onSelect: () => requestControl(ctx, task) },
     { separator: true },
@@ -271,6 +276,25 @@ export async function openSubscriptionMenu(ctx, anchor, task) {
     }),
     accounts.length ? null : { label: `No ${kind} subscription yet`, disabled: true, description: 'An instance administrator adds one in Subscriptions' },
   ]);
+}
+
+/** Take control of someone else's task without asking, after a confirmation naming its owner
+ * (SPEC-510 TKC-001): it acts on GitHub as you from then on; its owner is told and can take it back. */
+export async function takeControl(ctx, task) {
+  const owner = otherOwner(task, ctx.store.state.me?.user?.login);
+  const ok = await confirmDialog({
+    title: `Take control of @${owner}'s task #${task.number}?`,
+    message: `From now on it acts on GitHub as you: your token and your commit identity. @${owner} is told and can take it back.`,
+    confirmLabel: 'Take control',
+  });
+  if (!ok) return;
+  const taken = await taskPost(ctx, task, 'take control of', () => ctx.api.post(`/api/tasks/${enc(task.id)}/control/take`), `#${task.number} is yours now`);
+  // Refused (the owner chose to be asked since the page read the task, or it changed): read it
+  // again, so the page offers what works now (review round 1).
+  if (!taken) {
+    const fresh = await ctx.api.get(`/api/tasks/${enc(task.id)}`).catch(() => null);
+    if (fresh && fresh.id) ctx.store.upsertTask(fresh);
+  }
 }
 
 /** Ask the task's owner for control: the task would act on GitHub as you (SPEC-070). */

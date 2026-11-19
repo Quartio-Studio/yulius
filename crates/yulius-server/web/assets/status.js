@@ -505,7 +505,8 @@ export function taskActions(task, access, pr, me, guest = false) {
     archive: tidy && (ended || finished) && !task.archived,
     restore: tidy && task.archived,
     delete: tidy && (ended || chained || finished) && task.status !== 'stopping',
-    // Someone else's task: its owner is asked for control (SPEC-070), from wherever its menu opens.
+    // Someone else's task: control is taken, or asked of an owner who asks first (SPEC-070,
+    // SPEC-510), from wherever its menu opens.
     askControl: tidy && Boolean(owner),
   };
 }

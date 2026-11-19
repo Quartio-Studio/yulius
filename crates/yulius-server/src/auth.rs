@@ -305,6 +305,8 @@ mod tests {
             "/api/secrets/activity",
             "/api/agent-secrets/x",
             "/api/me/tokens",
+            // Whether teammates ask first is an account's choice, not a guest's (SPEC-510).
+            "/api/me/control",
             "/api/device/approve",
             "/api/playgrounds",
             "/api/import",

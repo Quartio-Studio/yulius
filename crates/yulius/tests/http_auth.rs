@@ -1642,7 +1642,7 @@ async fn the_superadmin_sees_and_opens_every_sandbox_without_github() -> TestRes
         continued.body
     );
     assert!(
-        continued.body.to_string().contains("Ask them for control"),
+        continued.body.to_string().contains("Take control"),
         "{}",
         continued.body
     );
