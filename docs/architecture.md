@@ -82,8 +82,10 @@ takes an OpenAI API key, or takes the `auth.json` of a ChatGPT sign-in made else
 sealed in the vault. Its usage windows come from `chatgpt.com/backend-api/wham/usage` and from
 its runs' rollouts. In the web UI, Subscriptions' Add dialog chooses the agent first (Claude Code
 or Codex) and then its way in, a Codex card imports a new `auth.json`, the composer's model menu
-offers Codex under OpenAI (`harness: codex`, no model), and an automation chooses the agent of
-the tasks it creates.
+groups explicit model IDs by provider. Each Codex or Gemini choice sends its harness and model,
+and the Codex default choice sends its harness alone. Settings and the composer share the model's
+supported effort levels and browser preferences. An automation chooses the agent of the tasks it
+creates. See [ADR-0372](decisions/0372-model-pickers-use-provider-reasoning-levels.md).
 
 Rotation picks only accounts of the task's provider, so a Codex task moves only between Codex
 accounts, by `codex resume <id>`: at a usage limit, when a person moves it and when its
@@ -127,7 +129,7 @@ flowchart LR
 The Codex CLI and the Antigravity CLI are Yulius's own
 ([decision 0355](decisions/0355-codex-returns-as-a-second-harness-with-a-pinned-cli.md),
 [decision 0361](decisions/0361-antigravity-is-a-third-harness-picked-at-random-by-default.md)):
-each pinned release (Codex 0.169.0, Antigravity 1.5.10) is downloaded once (Codex from npm,
+each pinned release (Codex 0.170.0, Antigravity 1.5.12) is downloaded once (Codex from npm,
 Antigravity from Google's release storage), checked against the sha512 in the source
 (`yulius_domain::agent_cli::{codex, antigravity}`) and unpacked into
 `<data>/codex-cli/<version>-<platform>` or `<data>/antigravity-cli/<version>-<platform>` by one
@@ -137,8 +139,8 @@ read-only; sign-ins start it the same way. Without it, a host `codex` or `agy` i
 
 ```mermaid
 flowchart LR
-  NPM["registry.npmjs.org: @openai/codex@0.169.0-linux-x64"] -->|"first need, sha512 pinned"| CLI["data/codex-cli/0.169.0-linux-x64 (bin/codex, codex-path/rg)"]
-  GCS["storage.googleapis.com: antigravity-cli 1.5.10 linux-x64"] -->|"first need, sha512 pinned"| AGY["data/antigravity-cli/1.5.10-linux-x64 (antigravity)"]
+  NPM["registry.npmjs.org: @openai/codex@0.170.0-linux-x64"] -->|"first need, sha512 pinned"| CLI["data/codex-cli/0.170.0-linux-x64 (bin/codex, codex-path/rg)"]
+  GCS["storage.googleapis.com: antigravity-cli 1.5.12 linux-x64"] -->|"first need, sha512 pinned"| AGY["data/antigravity-cli/1.5.12-linux-x64 (antigravity)"]
   CLI -->|"absolute path, read-only bind"| RUN["Codex run in its sandbox"]
   CLI -->|"absolute path"| LOGIN["codex login --device-auth"]
   AGY -->|"absolute path, read-only bind"| ARUN["Antigravity run in its sandbox"]
@@ -1408,6 +1410,13 @@ sequenceDiagram
     A->>H: SubagentStop (last_assistant_message)
     H->>Y: end the round with its verdict
 ```
+
+## Harness comparison
+
+Dashboard → Harnesses reads the sandbox analytics summary for tasks created in the selected UTC period.
+Task counts use the assigned harness. Each run contributes to the executing harness’s token totals and
+reporting coverage. Ended runs also contribute elapsed wall time to that harness’s median and p90.
+[ADR-0374](decisions/0374-compare-harnesses-by-executing-attempt.md)
 
 ## Agent feedback
 

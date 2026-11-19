@@ -110,7 +110,7 @@ test('choosing Codex in the composer starts a Codex task', async ({ app, browser
   await screen.getByRole('button', /^Model:/).click();
   await expect(screen.getByRole('menuitemradio', /^Codex/)).toContainText('GPT-6.2 Astra at high effort by default');
   await screen.getByRole('menuitemradio', /^Codex/).click();
-  await expect(screen.getByRole('button', 'Model: Codex')).toBeVisible();
+  await expect(screen.getByRole('button', 'Model: Codex default')).toBeVisible();
   const prompt = screen.getByRole('textbox', 'Task prompt');
   await prompt.fill('Add a health check');
   await prompt.press('ControlOrMeta+Enter');
@@ -128,7 +128,7 @@ test('choosing Codex in the composer starts a Codex task', async ({ app, browser
     const dt = [...document.querySelectorAll('.ti-kv dt')].find((el) => (el as HTMLElement).innerText === 'Model');
     return dt ? (dt.nextElementSibling as HTMLElement).innerText : null;
   });
-  await expect.poll(model).toBe('gpt-6.2-astra (default) · High effort');
+  await expect.poll(model).toBe('GPT-6.2 Astra (default) · High effort');
 });
 
 test('an automation chooses the agent of its tasks', async ({ app, browser, screen }) => {
