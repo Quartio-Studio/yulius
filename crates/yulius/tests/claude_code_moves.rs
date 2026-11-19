@@ -2334,6 +2334,128 @@ mod moves {
         Ok(())
     }
 
+    #[derive(Clone, Copy)]
+    enum GoalMove {
+        Manual,
+        Pool,
+        Limit,
+    }
+
+    #[test]
+    fn a_manual_move_restores_the_prompt_goal_before_stop() -> TestResult {
+        prompt_goal_after_move(GoalMove::Manual)
+    }
+
+    #[test]
+    fn a_pool_move_restores_the_prompt_goal_before_stop() -> TestResult {
+        prompt_goal_after_move(GoalMove::Pool)
+    }
+
+    #[test]
+    fn a_limit_move_restores_the_prompt_goal_before_stop() -> TestResult {
+        prompt_goal_after_move(GoalMove::Limit)
+    }
+
+    fn prompt_goal_after_move(cause: GoalMove) -> TestResult {
+        let (_dir, data) = data_dir()?;
+        let rt = runtime()?;
+        rt.block_on(async {
+            let boundary = data.join("may-end");
+            std::fs::write(&boundary, "")?;
+            let options = FakeAgentOptions {
+                turn_hold_file: Some(boundary.clone()),
+                answers_first_message: true,
+                goal_verdict: Some("none"),
+                limit_after: matches!(cause, GoalMove::Limit).then_some(3),
+                ..hooked()
+            };
+            let s = server(
+                &data,
+                &data.join("version"),
+                options,
+                TaskMode::Prompt,
+                "2.1.311",
+            )
+            .await?;
+            settled(&s, Activity::Waiting).await?;
+            add_account(&s.app, "b-second").await?;
+            s.app
+                .send_input(&s.id, b"/goal keep the header blue\r")
+                .await?;
+            goal_read(&s).await?;
+            settled(&s, Activity::Waiting).await?;
+            match cause {
+                GoalMove::Manual => {
+                    s.app
+                        .switch_task(
+                            &s.ctx().await?,
+                            s.id.as_str(),
+                            &yulius_contracts::api::tasks::ContinueTask {
+                                account_id: Some("b-second".into()),
+                            },
+                        )
+                        .await?;
+                }
+                GoalMove::Pool => {
+                    // Change the reading during the turn, so its Stop decides the rotation.
+                    std::fs::remove_file(&boundary)?;
+                    s.app.send_input(&s.id, b"rotate at Stop\r").await?;
+                    settled(&s, Activity::Working).await?;
+                    s.probe.set("a-first", usage(99.0, HOUR, 30.0, 100));
+                    refresh(&s.app, &s.user, "a-first").await?;
+                    std::fs::write(&boundary, "")?;
+                }
+                GoalMove::Limit => s.app.send_input(&s.id, b"reach limit\r").await?,
+            }
+            second_run_live(&s).await?;
+            wait_for("the new terminal", Duration::from_secs(30), || async {
+                let shown = screen(&s.app, &s.id);
+                shown.contains("FAKE-AGENT READY") && !shown.contains("GOAL SET")
+            })
+            .await?;
+            let run = s
+                .app
+                .deps
+                .store
+                .live_attempt(&s.id)
+                .await?
+                .ok_or("live run")?;
+            assert_eq!(
+                run.account_id.as_ref().map(|account| account.as_str()),
+                Some("b-second")
+            );
+            assert!(
+                s.app.goal_is_open(&s.id),
+                "resumed prompt goal before any verdict"
+            );
+
+            // /size reads terminal dimensions without starting a turn. Seeing its answer proves
+            // the preceding work turn's synchronous Stop returned with no new verdict or turn record.
+            s.app.send_input(&s.id, b"/work 1 resumed\r/size\r").await?;
+            wait_for(
+                "the resumed clean Stop to return",
+                Duration::from_secs(30),
+                || async {
+                    screen(&s.app, &s.id)
+                        .lines()
+                        .any(|line| line.trim_start().starts_with("SIZE "))
+                },
+            )
+            .await?;
+            assert_eq!(
+                state(&s.app, &s.id).await,
+                Some((TaskStatus::Running, Some(Activity::Working)))
+            );
+            if matches!(cause, GoalMove::Manual) {
+                // The evaluator is silent. The normal verdict deadline releases the turn.
+                settled(&s, Activity::Waiting).await?;
+            }
+            stop(&s.app, &s.id).await
+        })?;
+        rt.shutdown_timeout(Duration::from_secs(5));
+        Ok(())
+    }
+
     /// A prompt-mode session on 2.1.311 while runs get 2.1.322, in which a person sets a goal
     /// of their own and whose goal evaluator gives no verdict; with `code` changed in its
     /// worktree and no spec, so the gate blocks its turn's end. With `may_end` the goal's turn
