@@ -4205,7 +4205,9 @@ route('POST', `/api/admin/accounts/login/${ID}/cancel`, ({ db, p }) => {
   if (!session) fail(404, 'not_found', 'not found');
   if (!session.done) {
     db.loginCancels.push(p[0]);
-    session.end('cancelled', null);
+    // Like the server, a sign-in that already holds its credential is sealed (SPEC-515).
+    if (session.status === 'signed_in') session.succeed();
+    else session.end('cancelled', null);
   }
   return { status: session.status };
 });
@@ -6603,6 +6605,8 @@ const GOOGLE_SIGN_IN_URL = `https://accounts.google.com/o/oauth2/v2/auth?access_
  * Fake provider login for the account login terminal: a fixed 1000×40 PTY; `state.status`
  * goes running → ok | error | cancelled and the exit frame carries the same status. Tokens are
  * masked. Enter signs in; the code `fail` makes the sign-in fail as the CLI's would (SPEC-243).
+ * An Antigravity sign-in says `signed_in` instead and runs on for the CLI's setup until it is
+ * ended through the cancel route, which then answers `ok` (SPEC-515).
  */
 /** Why the mock's sign-in fails: what the server's exit frame and a first sign-in's error say. */
 const SIGN_IN_FAILED = 'the sign-in ended without producing a token (exit code 1)';
@@ -6688,6 +6692,8 @@ class LoginSession {
   }
 
   finish() {
+    // The Antigravity CLI's setup after the sign-in takes its answers (SPEC-515).
+    if (this.status === 'signed_in') { this.input = ''; this.out('\r\n'); return; }
     const account = this.db.accounts.find((a) => a.id === this.accountId);
     if (this.input === 'fail') {
       this.out(`\r\n${c(203, this.codex() ? 'Error logging in with device code: the code was not approved.' : 'OAuth error: the authorization code was not accepted.')}\r\n`);
@@ -6704,7 +6710,21 @@ class LoginSession {
       this.end('error', 1, SIGN_IN_FAILED);
       return;
     }
-    this.out(this.google() ? `\r\n${c(114, '✔')} Signed in with Google.\r\n` : this.codex() ? `\r\n${c(114, '✔')} Successfully logged in.\r\n` : `\r\nToken: sk-ant-oat01-[REDACTED]\r\n${c(114, '✔')} Logged in. Credentials stored encrypted for this account.\r\n`);
+    if (this.google()) {
+      // Like agy: the token file is written now, and its setup goes on (SPEC-515).
+      this.input = '';
+      this.status = 'signed_in';
+      this.out(`\r\n${c(114, '✔')} Signed in with Google.\r\n Help improve Antigravity: may Google use your data to improve its models? (y/N) `);
+      if (this.ws) this.ws.push(JSON.stringify(this.state()));
+      return;
+    }
+    this.succeed();
+  }
+
+  /** The credential is sealed: the account is connected and the sign-in ends `ok`. */
+  succeed() {
+    const account = this.db.accounts.find((a) => a.id === this.accountId);
+    this.out(this.google() ? `\r\n${c(114, '✔')} Antigravity is set up.\r\n` : this.codex() ? `\r\n${c(114, '✔')} Successfully logged in.\r\n` : `\r\nToken: sk-ant-oat01-[REDACTED]\r\n${c(114, '✔')} Logged in. Credentials stored encrypted for this account.\r\n`);
     if (account) {
       this.db.unsignedAccounts.delete(account.id);
       Object.assign(account, { status: 'ok', last_error: null, usage: { primary: { used_percent: 3.0, resets_at: isoIn(5 * HOUR), window_minutes: 300 }, secondary: { used_percent: 1.0, resets_at: isoIn(7 * DAY), window_minutes: 10080 }, observed_at: new Date().toISOString() } });

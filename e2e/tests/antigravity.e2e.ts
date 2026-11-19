@@ -15,6 +15,7 @@ type Mocked = {
     accounts: { label: string; provider: string; status: string }[];
     automations: { name: string; harness: string }[];
     connectAntigravity: () => void;
+    loginCancels: string[];
   };
 };
 
@@ -75,8 +76,18 @@ test('an Antigravity subscription signs in with Google in the login terminal', a
   expect(waiting).toMatchObject({ provider: 'google', status: 'pending_login' });
   await expect(browser.locator('.login-terminal .xterm-helper-textarea')).toBeFocused();
   await browser.keyboard.press('Enter');
+  // The CLI's setup goes on after the code (SPEC-515, #1421): the window stays open until Done.
+  await expect(dialog.getByText(/^Antigravity is signed in\. Finish the rest of its setup in the terminal below/)).toBeVisible();
+  await expect(terminal).toContainText('Help improve Antigravity');
+  const signedIn = await browser.evaluate(() => (window as unknown as Mocked).__yuliusMock.accounts.find((a) => a.label === 'Antigravity dev'));
+  expect(signedIn).toMatchObject({ status: 'pending_login' });
+  await browser.keyboard.type('n');
+  await browser.keyboard.press('Enter');
+  await expect(dialog.getByRole('button', 'Cancel sign-in')).toHaveCount(0);
+  await dialog.getByRole('button', 'Done').click();
   await expect(dialog).toBeHidden();
   await expect(browser.locator('.toast-ok .toast-msg:has-text("Antigravity dev is connected")')).toContainText('Antigravity tasks can use it now.');
+  expect(await browser.evaluate(() => (window as unknown as Mocked).__yuliusMock.loginCancels.length)).toBe(1);
 });
 
 test('choosing Gemini 4 Carbon in the composer starts an Antigravity task at high effort', async ({ app, browser, screen }) => {
