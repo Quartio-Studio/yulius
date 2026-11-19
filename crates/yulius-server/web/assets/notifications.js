@@ -9,6 +9,7 @@ import { h, icon, iconButton, setChildren, popoverFocus, keepFocus, toast } from
 import { relShort, dateTime } from './format.js';
 import { taskInfo } from './status.js';
 import { readJson, writeJson } from './store.js';
+import { digestSummary } from './digest.js';
 
 const MAX_ITEMS = 100;
 const KINDS = new Set(['info', 'ok', 'warn', 'error']);
@@ -198,6 +199,15 @@ export function createNotificationCenter(ctx) {
     if (live) toast(title, { kind: 'warn', timeout: 10000, action: route ? { label: 'Open', run: () => ctx.navigate(route) } : undefined });
   }
   watch('task', (task) => heardRequest(task, true));
+
+  // The end-of-day digest (SPEC-512 DIG-005): one entry per digest that opens /digest, also for
+  // one made while no page was open (read when the page opens).
+  function heardDigest(digest) {
+    if (!digest || typeof digest.id !== 'string') return;
+    add({ kind: 'info', title: 'Your end-of-day digest', detail: digestSummary(digest), route: '/digest', key: `digest:${digest.id}`, once: true });
+  }
+  watch('digest', heardDigest);
+  if (ctx.api) ctx.api.get('/api/me/digest').then(heardDigest, () => {});
   // A sandbox's tasks as first loaded: requests that waited before the page did. Later list
   // changes come with their own task event.
   const loaded = new Set();
