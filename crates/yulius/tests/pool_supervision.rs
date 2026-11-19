@@ -1059,6 +1059,17 @@ fn a_hand_over_after_a_restart_still_restarts_a_run_with_personal_servers() -> T
 /// server restarts the run at once.
 #[test]
 fn a_reattached_run_with_another_persons_servers_is_restarted() -> TestResult {
+    reattach_for_new_owner(false)
+}
+
+/// Only a refusal that interrupted the session lets hand-over replace a revoked subscription.
+/// A normal hand-over keeps its existing preflight refusal, even with another account.
+#[test]
+fn a_reattached_handover_without_a_reported_limit_keeps_its_preflight_refusal() -> TestResult {
+    reattach_for_new_owner(true)
+}
+
+fn reattach_for_new_owner(revoked: bool) -> TestResult {
     let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
     let (_dir, data) = temp()?;
     let agent = || FakeAgentOptions {
@@ -1087,6 +1098,11 @@ fn a_reattached_run_with_another_persons_servers_is_restarted() -> TestResult {
         })
         .await?;
         let run = app.deps.store.live_attempt(&id).await?.ok_or("run")?;
+        if revoked {
+            crate::subscription_moves::ready(&app, &id).await?;
+            app.send_input(&id, b"first turn\r").await?;
+            crate::usage_credits::first_turn_transcript(&data).await?;
+        }
         let mark = Path::new(&run.run_dir).join("personal-mcp-of");
         assert_eq!(std::fs::read_to_string(&mark)?, admin.as_str());
         std::fs::write(&mark, "u-bob")?;
@@ -1097,15 +1113,46 @@ fn a_reattached_run_with_another_persons_servers_is_restarted() -> TestResult {
     let second = runtime()?;
     second.block_on(async {
         let app = build()?;
+        if revoked {
+            add_account(&app, "b-second").await?;
+            app.deps
+                .store
+                .set_account_state(
+                    &AccountId::parse("a-first")?,
+                    AccountStatus::Relogin,
+                    None,
+                    None,
+                    app.now(),
+                )
+                .await?;
+        }
         app.reconcile().await?;
         wait_for("the restarted run", Duration::from_secs(60), || async {
             let attempts = app.deps.store.attempts(&id).await.unwrap_or_default();
-            attempts.len() == 2 && attempts[1].state == yulius_domain::task::AttemptState::Live
+            task(&app, &id)
+                .await
+                .is_ok_and(|task| task.status.is_resting())
+                || (attempts.len() == 2
+                    && attempts[1].state == yulius_domain::task::AttemptState::Live)
         })
         .await?;
-        let resumed = app.deps.store.attempts(&id).await?.remove(1);
-        assert_eq!(resumed.launch_kind, LaunchKind::Resume);
+        let attempts = app.deps.store.attempts(&id).await?;
+        let status = task(&app, &id).await?.status;
         stop(&app, &id).await?;
+        if revoked {
+            assert_eq!(
+                status,
+                TaskStatus::Stopped(yulius_domain::task::StopReason::Cancelled)
+            );
+            assert_eq!(
+                attempts.len(),
+                1,
+                "a normal hand-over cannot move off a revoked account"
+            );
+        } else {
+            assert_eq!(attempts.len(), 2);
+            assert_eq!(attempts[1].launch_kind, LaunchKind::Resume);
+        }
         Ok::<_, Box<dyn std::error::Error>>(())
     })?;
     second.shutdown_timeout(Duration::from_secs(5));
@@ -2295,25 +2342,61 @@ fn a_refused_subscription_moves_the_task_to_a_working_one() -> TestResult {
 /// no prompt, and nothing typed into the paused process (it used to get "Continue.").
 #[test]
 fn a_limit_on_the_only_subscription_resumes_past_the_limit_when_it_recovers() -> TestResult {
+    resume_live_limit(false)
+}
+
+/// A later refusal on a reattached attempt is live once its unchanged owner's replay ends.
+#[test]
+fn a_live_limit_after_an_unchanged_owner_reattach_resumes_in_the_capacity_round() -> TestResult {
+    resume_live_limit(true)
+}
+
+fn resume_live_limit(reattach: bool) -> TestResult {
     let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
     let (_dir, data) = temp()?;
-    let rt = runtime()?;
-    rt.block_on(async {
-        let probe = Arc::new(ScriptedUsage::default());
-        let agent = FakeAgentOptions {
-            transcript: true,
-            limit_after: Some(1),
-            ..FakeAgentOptions::default()
-        };
-        let app = build_with(&data, &fake, probe.clone(), agent)?;
+    let probe = Arc::new(ScriptedUsage::default());
+    let build = || {
+        build_with(
+            &data,
+            &fake,
+            probe.clone(),
+            FakeAgentOptions {
+                transcript: true,
+                limit_after: Some(if reattach { 2 } else { 1 }),
+                ..FakeAgentOptions::default()
+            },
+        )
+    };
+    let first = runtime()?;
+    let (app, user, id) = first.block_on(async {
+        let app = build()?;
         let (sandbox, user) = seed(&app, &data, &["a-first"]).await?;
         let id = new_task(&app, &sandbox, &user, "Limit").await?;
-        wait_for("the run", Duration::from_secs(30), || {
-            let app = app.clone();
-            let id = id.clone();
-            async move { screen(&app, &id).contains("FAKE-AGENT READY") }
-        })
-        .await?;
+        crate::subscription_moves::ready(&app, &id).await?;
+        if reattach {
+            app.send_input(&id, b"first turn\r").await?;
+            crate::usage_credits::first_turn_transcript(&data).await?;
+        }
+        Ok::<_, Box<dyn std::error::Error>>((app, user, id))
+    })?;
+    let (rt, app) = if reattach {
+        drop(app);
+        first.shutdown_timeout(Duration::from_secs(5));
+        let second = runtime()?;
+        let app = second.block_on(async {
+            let app = build()?;
+            app.reconcile().await?;
+            wait_for("the transcript replay", Duration::from_secs(30), || async {
+                app.runtime(&id).transcript_rounds() >= 2
+            })
+            .await?;
+            Ok::<_, Box<dyn std::error::Error>>(app)
+        })?;
+        (second, app)
+    } else {
+        (first, app)
+    };
+    rt.block_on(async {
         let (paused, go) = hold_pool_move(yulius_app::race::Point::LimitPauseStored, &id);
         app.send_input(&id, b"hello\r").await?;
         support::point_reached(paused).await?;

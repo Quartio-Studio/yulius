@@ -1271,7 +1271,10 @@ async fn first_turn(
     Ok((id, user, first_turn_transcript(data).await?))
 }
 
-async fn first_turn_transcript(data: &Path) -> Result<PathBuf, Box<dyn std::error::Error>> {
+/// Wait for the fake agent's complete transcript record for its first answer.
+pub(crate) async fn first_turn_transcript(
+    data: &Path,
+) -> Result<PathBuf, Box<dyn std::error::Error>> {
     let mut transcript = None;
     wait_for("the first turn", Duration::from_secs(30), || {
         transcript = session_transcript(data, "msg_fake_1");
