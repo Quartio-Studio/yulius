@@ -1669,3 +1669,69 @@ fn a_manual_switch_of_a_held_first_message_keeps_its_image() -> TestResult {
     rt.shutdown_timeout(Duration::from_secs(5));
     Ok(())
 }
+
+/// The turn Claude redoes past its limit can reach Stop while the new PTY attach is held.
+#[test]
+fn a_restored_prompt_goal_waits_at_stop_before_attach() -> TestResult {
+    let (_dir, data) = data_dir()?;
+    let fake = locate_fake_agent().ok_or("fake-agent")?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let host = Arc::new(crate::support::gated::GatedHost::new(
+            env!("CARGO_BIN_EXE_yulius").into(),
+        ));
+        let options = FakeAgentOptions {
+            opening_turn_ms: Some(1),
+            goal_verdict: Some("none"),
+            limit_after: Some(3),
+            ..hooked()
+        };
+        let (app, _) = start_hosted(
+            &data,
+            &fake,
+            options,
+            (0, Arc::new(ScriptedUsage::default()), Arc::new(SystemClock)),
+            Some(host.clone()),
+            |_| {},
+        )
+        .await?;
+        let (sandbox, user) = seed(&app, &data, &["a-first"]).await?;
+        let id = new_task(&app, &sandbox, &user, "initial turn", TaskMode::Prompt).await?;
+        wait_for("the initial Stop", Duration::from_secs(30), || async {
+            activity(&app, &id).await == Some(Activity::Waiting)
+        })
+        .await?;
+        crate::pool_supervision::add_account(&app, "b-second").await?;
+        app.send_input(&id, b"/goal keep the header blue\r").await?;
+        wait_for("the idle open goal", Duration::from_secs(30), || async {
+            app.goal_is_open(&id) && activity(&app, &id).await == Some(Activity::Waiting)
+        })
+        .await?;
+        host.arm();
+        app.send_input(&id, b"reach the limit\r").await?;
+        tokio::time::timeout(Duration::from_secs(60), host.reached()).await?;
+        let resumed = app
+            .deps
+            .store
+            .live_attempt(&id)
+            .await?
+            .ok_or("live resume")?;
+        assert_eq!(resumed.launch_kind, LaunchKind::Resume);
+        wait_for(
+            "the resumed turn's Stop answer before attach",
+            Duration::from_secs(30),
+            || async { Path::new(&resumed.run_dir).join("stop-answered").exists() },
+        )
+        .await?;
+        let after_stop = activity(&app, &id).await;
+        host.release();
+        assert_eq!(
+            after_stop,
+            Some(Activity::Working),
+            "Stop waits through attach"
+        );
+        stop(&app, &id).await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}

@@ -1359,6 +1359,13 @@ impl HarnessPort for RecordingHarness {
     fn claude_transcript(&self, home: &Path, worktree: &Path, session: &str) -> PathBuf {
         self.inner.claude_transcript(home, worktree, session)
     }
+    fn last_claude_goal(
+        &self,
+        anchor: &Path,
+        path: &Path,
+    ) -> AppResult<Option<yulius_domain::task::GoalOutcome>> {
+        self.inner.last_claude_goal(anchor, path)
+    }
     fn step_back_transcript(&self, home: &Path, worktree: &Path, session: &str) -> AppResult<bool> {
         self.inner.step_back_transcript(home, worktree, session)
     }

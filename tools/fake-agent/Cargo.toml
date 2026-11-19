@@ -15,6 +15,7 @@ workspace = true
 layer = "tooling"
 
 [dependencies]
+yulius-harness.workspace = true
 serde_json.workspace = true
 signal-hook.workspace = true
 

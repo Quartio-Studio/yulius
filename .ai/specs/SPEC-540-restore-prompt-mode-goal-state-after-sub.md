@@ -16,14 +16,14 @@ Issue #1182 records a real session and inspections of Claude Code 2.1.292, 2.1.3
 ## Requirements
 
 - PRG-001. For manual, turn-boundary and usage-limit resumes, interpret the last goal status of the prompt task's Claude conversation. Set and not-met are open. Met, failed and cleared are closed.
-- PRG-002. At a clean Stop with an open goal, apply the existing verdict wait. A new verdict, turn record or the existing 20-second deadline resolves it. When trust or policy prevents Claude's restore, Yulius types nothing and follows the same bounded fallback.
+- PRG-002. At a clean Stop with an open goal, apply the existing verdict wait. The wait survives PTY attachment. A new verdict, turn record or the existing 20-second deadline resolves it. Exit or loss of the run cancels its pending wait. When trust or policy prevents Claude's restore, Yulius types nothing and follows the same bounded fallback.
 - PRG-003. The fake Claude restores the last open condition on resume and supports forgetting it to simulate a restricted workspace. Goal-mode launches keep their existing once-per-resume submission.
 
 ## Plan
 
 - [x] Specify goal recovery from the resumed conversation
-- [ ] Reproduce goal loss across subscription moves
-- [ ] Restore prompt goals in the watcher and fake agent
+- [x] Reproduce goal loss across subscription moves
+- [x] Restore prompt goals in the watcher and fake agent
 - [ ] Verify the fix and obtain independent review
 
 ## Acceptance criteria
@@ -39,3 +39,11 @@ Exercise the supervisor with a detached PTY host and the fake CLI, including Sto
 ## Decisions
 
 [ADR-0386](../../docs/decisions/0386-prompt-goals-follow-the-resumed-claude-conversation.md) defines the restore assumption and the fallback.
+
+## Evidence
+
+- Before the fix, all three real-process switch tests failed at the assertion that the resumed goal was open. A separate two-process fake CLI probe appended two answer records and zero verdicts on the second process.
+- After initialization from the transcript, the manual, pool and usage-limit tests passed, including a server restart after the manual move. The restricted-hook fixture stayed Working after Stop and settled at the verdict deadline. The existing goal-mode switch test observed exactly one goal submission.
+- Holding the resumed PTY attach exposed an additional early Stop failure. The task read Waiting before its evaluator could report. The verdict slot now lasts through attach and is cancelled when the run exits or is lost.
+- The fake CLI contract exercised open and closed conditions, sidechain records and the opt-out. The adapter test exercised all five outcomes, a missing transcript, malformed input and a partial trailing record.
+- The automated tests use detached PTY hosts and the fake CLI. The evidence for native Claude Code restoration is from issue #1182. This task did not run a signed-in Claude session.

@@ -521,6 +521,7 @@ mod moves {
 
     struct Server {
         app: Arc<App>,
+        port: u16,
         installed: Arc<Installed>,
         probe: Arc<ScriptedUsage>,
         sandbox: SandboxId,
@@ -582,7 +583,7 @@ mod moves {
             config.claude_code_queue_record_ms = 0;
             configure(config);
         };
-        let (app, _port) = start_with(data, &fake, options, 0, probe.clone(), configure).await?;
+        let (app, port) = start_with(data, &fake, options, 0, probe.clone(), configure).await?;
         let installed = Arc::new(Installed(Mutex::new(Some(v(gets)))));
         assert!(app.set_agent_cli(installed.clone() as Arc<_>, Channel::Latest));
         let (sandbox, user) = seed(&app, data, &["a-first"]).await?;
@@ -590,6 +591,7 @@ mod moves {
         ready(&app, &id).await?;
         Ok(Server {
             app,
+            port,
             installed,
             probe,
             sandbox,
@@ -2337,6 +2339,7 @@ mod moves {
     #[derive(Clone, Copy)]
     enum GoalMove {
         Manual,
+        Restricted,
         Pool,
         Limit,
     }
@@ -2344,6 +2347,11 @@ mod moves {
     #[test]
     fn a_manual_move_restores_the_prompt_goal_before_stop() -> TestResult {
         prompt_goal_after_move(GoalMove::Manual)
+    }
+
+    #[test]
+    fn a_manual_move_with_restricted_hooks_releases_the_silent_evaluator() -> TestResult {
+        prompt_goal_after_move(GoalMove::Restricted)
     }
 
     #[test]
@@ -2359,10 +2367,11 @@ mod moves {
     fn prompt_goal_after_move(cause: GoalMove) -> TestResult {
         let (_dir, data) = data_dir()?;
         let rt = runtime()?;
-        rt.block_on(async {
+        let reattach = rt.block_on(async {
             let boundary = data.join("may-end");
             std::fs::write(&boundary, "")?;
             let options = FakeAgentOptions {
+                forget_goal: matches!(cause, GoalMove::Restricted),
                 turn_hold_file: Some(boundary.clone()),
                 answers_first_message: true,
                 goal_verdict: Some("none"),
@@ -2385,7 +2394,7 @@ mod moves {
             goal_read(&s).await?;
             settled(&s, Activity::Waiting).await?;
             match cause {
-                GoalMove::Manual => {
+                GoalMove::Manual | GoalMove::Restricted => {
                     s.app
                         .switch_task(
                             &s.ctx().await?,
@@ -2446,13 +2455,45 @@ mod moves {
                 state(&s.app, &s.id).await,
                 Some((TaskStatus::Running, Some(Activity::Working)))
             );
-            if matches!(cause, GoalMove::Manual) {
+            assert_eq!(
+                screen(&s.app, &s.id).contains("GOAL RESTORED"),
+                !matches!(cause, GoalMove::Restricted)
+            );
+            if matches!(cause, GoalMove::Restricted) {
                 // The evaluator is silent. The normal verdict deadline releases the turn.
                 settled(&s, Activity::Waiting).await?;
             }
-            stop(&s.app, &s.id).await
+            if matches!(cause, GoalMove::Manual) {
+                return Ok::<_, Box<dyn std::error::Error>>(Some((s.port, s.id)));
+            }
+            stop(&s.app, &s.id).await?;
+            Ok(None)
         })?;
         rt.shutdown_timeout(Duration::from_secs(5));
+        if let Some((port, id)) = reattach {
+            let rt = runtime()?;
+            rt.block_on(async {
+                let fake = locate_fake_agent().ok_or("fake-agent")?;
+                let (app, _) = crate::first_message::start(
+                    &data,
+                    &fake,
+                    hooked(),
+                    port,
+                    Arc::new(ScriptedUsage::default()),
+                )
+                .await?;
+                app.reconcile().await?;
+                wait_for(
+                    "the resumed run’s transcript replay",
+                    Duration::from_secs(30),
+                    || async { app.runtime(&id).transcript_rounds() >= 2 },
+                )
+                .await?;
+                assert!(app.goal_is_open(&id), "replay with no new goal record");
+                stop(&app, &id).await
+            })?;
+            rt.shutdown_timeout(Duration::from_secs(5));
+        }
         Ok(())
     }
 
@@ -2522,12 +2563,8 @@ mod moves {
         (runs(s).await, goals, s.app.goal_is_open(&s.id))
     }
 
-    /// SPEC-468 CCF-001 (review round 3, minor 1): Yulius types nothing into a prompt-mode
-    /// session it restarts and reads a goal only from the new run's lines, so it could not
-    /// follow a goal its person set there across a restart; and the fake agent, unlike the
-    /// Claude Code binaries read (2.1.292, 2.1.311, 2.1.322), forgets a goal when it is
-    /// resumed. A turn that closes with that goal open and no verdict leaves the task its
-    /// person's turn: the session is not restarted idle, so the goal stays in force and known.
+    /// SPEC-468 CCF-001: a version upgrade waits while a person's goal is open. A turn that
+    /// closes with that goal open and no verdict leaves the task its person's turn.
     #[test]
     fn a_persons_own_goal_keeps_an_idle_prompt_session_where_it_is() -> TestResult {
         let (_dir, data) = data_dir()?;

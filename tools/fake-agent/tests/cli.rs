@@ -1584,7 +1584,7 @@ fn resume_evaluates_only_the_last_open_goal() -> TestResult {
         if forget {
             args.push("--forget-goal");
         }
-        let out = run(&args, "check the result\n/exit\n")?;
+        let out = run(&args, "check the result\ncheck once more\n/exit\n")?;
         assert!(
             out.status.success(),
             "{}",

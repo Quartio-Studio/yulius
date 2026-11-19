@@ -7,7 +7,7 @@
 //! ```text
 //! fake-agent [--mode echo|flood|ignore-term|fork-child|exit-early|sleep]
 //!            [--bytes N] [--code N] [--seconds N] [--ignore-term]
-//!            [--session-id ID] [--transcript PATH [--transcript-kind claude]]
+//!            [--session-id ID] [--transcript PATH [--transcript-kind claude]] [--resume [--forget-goal]]
 //!            [--limit-after N [--access-lost | --credits-out [--credits-reset-s S]]]
 //!            [--report-env NAME]... [--tui]
 //!            [--hooks YULIUS_EXE] [--goal-background SECONDS]
@@ -411,6 +411,8 @@ struct Options {
     queue_record_file: Option<PathBuf>,
     queue_handover_file: Option<PathBuf>,
     queue_turn_file: Option<PathBuf>,
+    resume: bool,
+    forget_goal: bool,
     resume_record: bool,
     context_full_after: Option<u64>,
     compact_fails: bool,
@@ -490,6 +492,8 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Options, String>
         queue_record_file: None,
         queue_handover_file: None,
         queue_turn_file: None,
+        resume: false,
+        forget_goal: false,
         resume_record: false,
         context_full_after: None,
         compact_fails: false,
@@ -675,6 +679,8 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Options, String>
                 options.queue_turn_file =
                     Some(args.next().ok_or("--queue-turn-file needs a path")?.into());
             }
+            "--resume" => options.resume = true,
+            "--forget-goal" => options.forget_goal = true,
             "--resume-record" => options.resume_record = true,
             "--context-full-after" => {
                 options.context_full_after = Some(parse_number(&flag, args.next())?);
@@ -874,6 +880,8 @@ struct Transcript {
     cwd: String,
     turns: u64,
     last_uuid: Option<String>,
+    /// The evaluator installed from the old process’s last open goal on resume.
+    restored_goal: Option<String>,
     /// A Codex rollout (SPEC-503) instead of a Claude Code transcript.
     codex: bool,
     /// Codex: the session's tokens so far (`total_token_usage`).
@@ -900,6 +908,7 @@ impl Transcript {
             cwd,
             turns: 0,
             last_uuid: None,
+            restored_goal: None,
             codex: false,
             total_tokens: 0,
             antigravity: false,
@@ -1338,8 +1347,37 @@ impl Transcript {
         self.append(&[user])
     }
 
+    /// Install the last goal's evaluator without submitting a command or appending a sentinel.
+    fn restore_goal(&mut self) -> io::Result<()> {
+        let file = match yulius_harness::tail::open_regular(&self.path) {
+            Ok(file) => file,
+            Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(()),
+            Err(err) => return Err(err),
+        };
+        self.restored_goal =
+            yulius_harness::claude::last_goal(file)?.and_then(|(_, condition)| condition);
+        if self.restored_goal.is_some() {
+            say("GOAL RESTORED")?;
+        }
+        Ok(())
+    }
+
+    fn evaluate_restored_goal(&mut self, verdict: GoalVerdict) -> io::Result<()> {
+        if verdict != GoalVerdict::None
+            && let Some(condition) = self.restored_goal.take()
+        {
+            self.goal_status(
+                json!({"type":"goal_status", "met":verdict == GoalVerdict::Met,
+                "failed":verdict == GoalVerdict::Failed, "condition":condition}),
+            )?;
+        }
+        Ok(())
+    }
+
     /// A `goal_status` attachment shaped like Claude Code 2.1.292's.
     fn goal_status(&mut self, goal: Value) -> io::Result<()> {
+        // An explicit replacement or a verdict supersedes the evaluator restored at startup.
+        self.restored_goal = None;
         let uuid = format!("fake-{}-goal-{}", self.session_id, self.turns);
         let mut record = self.claude_envelope("attachment", &uuid, &rfc3339(now_ms()));
         record["attachment"] = goal;
@@ -2119,6 +2157,7 @@ fn queued_echo(
             }
             write(&mut |t| t.stop_feedback(&reason, options.stop_tool))?;
         }
+        write(&mut |t| t.evaluate_restored_goal(options.goal_verdict))?;
         let took = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
         if waiting.lines.is_empty() {
             write(&mut |t| t.close_turn(took, 0))?;
@@ -2925,10 +2964,13 @@ fn echo_loop(options: &Options, session_id: &str) -> io::Result<i32> {
         Some(path) if options.antigravity => Some(Arc::new(Mutex::new(
             Transcript::open_antigravity(path.clone(), session_id)?,
         ))),
-        Some(path) => Some(Arc::new(Mutex::new(Transcript::open(
-            path.clone(),
-            session_id,
-        )?))),
+        Some(path) => {
+            let mut transcript = Transcript::open(path.clone(), session_id)?;
+            if options.resume && !options.forget_goal {
+                transcript.restore_goal()?;
+            }
+            Some(Arc::new(Mutex::new(transcript)))
+        }
         None => None,
     };
     if options.resume_record
@@ -3278,8 +3320,15 @@ fn echo_message(
                 hooks.cloned(),
             );
         }
-    } else if let Some(hooks) = hooks {
-        hooks.stop()?;
+    } else {
+        if let Some(hooks) = hooks {
+            hooks.stop()?;
+        }
+        if let Some(transcript) = transcript
+            && let Ok(mut t) = transcript.lock()
+        {
+            t.evaluate_restored_goal(options.goal_verdict)?;
+        }
     }
     status_line(options, hooks)
 }
@@ -3459,6 +3508,11 @@ fn work_turn(
     }
     if let Some(hooks) = hooks {
         hooks.stop()?;
+    }
+    if let Some(transcript) = transcript
+        && let Ok(mut t) = transcript.lock()
+    {
+        t.evaluate_restored_goal(options.goal_verdict)?;
     }
     status_line(options, hooks)
 }
