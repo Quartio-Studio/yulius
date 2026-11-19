@@ -376,10 +376,17 @@ impl App {
             };
             if is_regular_file(&native) {
                 let path = native.to_string_lossy().into_owned();
-                self.deps.store.set_session_doc_path(&doc.id, &path).await?;
-                doc.transcript_path = path;
-                doc.indexed_bytes = 0;
-                doc.indexed_lines = 0;
+                let store = &self.deps.store;
+                if store
+                    .set_session_doc_path(&doc.id, &doc.transcript_path, &path)
+                    .await?
+                {
+                    doc.transcript_path = path;
+                    doc.indexed_bytes = 0;
+                    doc.indexed_lines = 0;
+                } else if let Some(current) = store.session_doc(&doc.id).await? {
+                    *doc = current;
+                }
             }
         }
         Ok(())

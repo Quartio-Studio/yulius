@@ -25,7 +25,7 @@ Issue #1454 follows the transcript reader work in SPEC-525. When Codex has repor
 
 - [x] Reproduce late rollout discovery through Sessions and search
 - [x] Repair persisted Codex placeholder paths during synchronization
-- [ ] Preserve indexed passages across concurrent path repairs
+- [x] Preserve indexed passages across concurrent path repairs
 - [ ] Verify compatibility and deliver the reviewed fix
 
 ## Acceptance criteria
@@ -40,10 +40,11 @@ Use the Sessions HTTP integration fixture with a real store, an isolated sandbox
 
 ## Decisions
 
-Reuse the sandbox's bounded Codex rollout lookup and the store's existing transactional path replacement. Recognize the generated placeholder for the document's session ID so resolved documents need no additional directory walks. Direct reads resolve the pending path without writing. The index refresh persists it and resets the index cursor in its existing transaction. Existing rows are eligible on their next read or refresh.
+Reuse the sandbox's bounded Codex rollout lookup and the store's existing transactional path replacement. Recognize the generated placeholder for the document's session ID so resolved documents need no additional directory walks. Direct reads resolve the pending path without writing. The index refresh persists it and resets the index cursor in its existing transaction. Existing rows are eligible on their next read or refresh. The transaction checks the previously observed path before resetting the index. A refresh that loses this race reloads the winning row.
 
 ## Evidence
 
 - On the original implementation, `cargo test --locked -p yulius --test main late_codex_rollout` failed both tests. The transcript lacked the message and search returned no document after the fixture wrote the rollout.
 - With the fix, `cargo test --locked -p yulius --test main sessions::` passed all five tests. The two request orders returned the rollout text and its search hit under the original document ID. The stored path changed from the legacy placeholder to the dated rollout. The Claude Code and Antigravity rows with the same session ID retained their original paths and index state.
 - `cargo test --locked -p yulius-app --lib transcripts::tests::` passed all 21 reader tests, including the Claude Code, Codex and Antigravity formats.
+- The first independent review found that a second refresh could erase the winning refresh's passages. `cargo test --locked -p yulius-store --lib a_repeated_path_repair` reproduced the loss of the 42-byte, two-line index cursor. With conditional path replacement, `cargo test --locked -p yulius-store --lib session_docs::tests::` passed all three tests, including preservation of the cursor and the search hit after a stale repair.

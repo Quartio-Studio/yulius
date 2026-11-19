@@ -257,23 +257,28 @@ impl SessionDocStore for SqliteStore {
         .await
     }
 
-    async fn set_session_doc_path(&self, id: &str, path: &str) -> AppResult<()> {
-        let (id, path) = (id.to_owned(), path.to_owned());
+    async fn set_session_doc_path(&self, id: &str, expected: &str, path: &str) -> AppResult<bool> {
+        let (id, expected, path) = (id.to_owned(), expected.to_owned(), path.to_owned());
         self.call(move |c| {
             let tx = c.transaction().map_err(db)?;
+            let changed = tx
+                .execute(
+                    "UPDATE session_docs SET transcript_path = ?1, indexed_bytes = 0, \
+                     indexed_lines = 0, index_full = 0 WHERE id = ?2 \
+                     AND transcript_path = ?3 AND transcript_path <> ?1",
+                    params![path, id, expected],
+                )
+                .map_err(db)?;
+            if changed == 0 {
+                return Ok(false);
+            }
             tx.execute(
                 "DELETE FROM session_chunks WHERE doc_id = ?1",
                 [id.as_str()],
             )
             .map_err(db)?;
-            tx.execute(
-                "UPDATE session_docs SET transcript_path = ?1, indexed_bytes = 0, \
-                 indexed_lines = 0, index_full = 0 WHERE id = ?2",
-                params![path, id],
-            )
-            .map_err(db)?;
             tx.commit().map_err(db)?;
-            Ok(())
+            Ok(true)
         })
         .await
     }
@@ -596,7 +601,11 @@ mod tests {
             .append_session_chunks(&doc.id, &[chunk(0, "previous")], advance(0, 20))
             .await?;
         let rollout = "/data/rollout.jsonl";
-        store.set_session_doc_path(&doc.id, rollout).await?;
+        assert!(
+            store
+                .set_session_doc_path(&doc.id, &doc.transcript_path, rollout)
+                .await?
+        );
         assert!(
             store
                 .search_session_chunks(&doc.sandbox_id, "previous", 10)
@@ -611,7 +620,21 @@ mod tests {
 
         // A second refresh read the same placeholder before the first one repaired it.
         // Even if the second request stops here, the first one's passages are searchable.
-        store.set_session_doc_path(&doc.id, rollout).await?;
+        assert!(
+            !store
+                .set_session_doc_path(&doc.id, &doc.transcript_path, rollout)
+                .await?
+        );
+        assert!(
+            !store
+                .set_session_doc_path(&doc.id, &doc.transcript_path, "/data/other-rollout.jsonl")
+                .await?
+        );
+        assert!(
+            !store
+                .set_session_doc_path(&doc.id, rollout, rollout)
+                .await?
+        );
         let repaired = store.session_doc(&doc.id).await?.ok_or("document")?;
         assert_eq!(repaired.transcript_path, rollout);
         assert_eq!((repaired.indexed_bytes, repaired.indexed_lines), (42, 2));
