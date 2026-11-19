@@ -116,6 +116,8 @@ pub enum Point {
     /// `files_roots` (SPEC-340): the sandbox repository was found; its `.git/HEAD` is not opened
     /// yet. The path is the repository's.
     RootsHead,
+    /// A prompt is ending its draft, just before the old key's mark is removed.
+    DraftMarkCleanup,
     /// A Stop hook (SPEC-346): the task was read; the Stop has not taken the turn lock yet. The
     /// path is the task id.
     StopTurnLock,

@@ -4085,7 +4085,7 @@ fn attempts(data: &Path, first: &str, again: &str) -> String {
     )
 }
 
-/// How many times each checkout's job ran.
+/// The number of attempts recorded in each attempt file.
 fn attempts_of(f: &Fixture) -> BoxResult<Vec<usize>> {
     let mut counts = Vec::new();
     for entry in std::fs::read_dir(&f.data)? {
@@ -4406,31 +4406,50 @@ async fn a_second_run_that_finds_no_network_room_is_not_made() -> TestResult {
     let f = fixture_tuned(
         false,
         |data| {
-            let first = format!(
-                "while [ ! -e \"{}\" ]; do sleep 0.05; done; {NO_POOL}",
-                data.join("go").display()
-            );
-            attempts(data, &first, "echo ok")
+            format!(
+                "[[ci.jobs]]\nname = \"build\"\ncommand = 'echo x >> \"{dir}/attempts-$YULIUS_CI_RUN\"; \
+                 while [ ! -e \"{dir}/go\" ]; do sleep 0.05; done; {NO_POOL}'\n",
+                dir = data.display()
+            )
         },
         None,
-        |config| config.ci.rerun_network_wait = Duration::from_millis(500),
+        |config| {
+            config.ci.max_jobs = 1;
+            config.ci.job_timeout = WAIT * 3;
+            config.ci.rerun_network_wait = Duration::from_millis(500);
+        },
     )
     .await?;
-    // Room for the first start; none once it ran.
     let measured = Measured::new(0, 1);
     assert!(f.h.app.set_isolation(measured.clone()));
-    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
-    let deadline = tokio::time::Instant::now() + WAIT;
-    while attempts_of(&f)?.len() < 2 {
-        f.h.app.ci_dispatch().await;
-        if tokio::time::Instant::now() > deadline {
-            return Err("the jobs never started".into());
+    let go = f.data.join("go");
+    let refuse_retry = async |started_runs: usize| -> TestResult {
+        f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+        let deadline = tokio::time::Instant::now() + WAIT;
+        while attempts_of(&f)?.len() < started_runs {
+            f.h.app.ci_dispatch().await;
+            if tokio::time::Instant::now() > deadline {
+                return Err("the job never started".into());
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
         }
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
-    measured.networks.store(4096, Ordering::SeqCst);
-    std::fs::write(f.data.join("go"), "")?;
-    f.settle().await?;
+        measured.networks.store(4096, Ordering::SeqCst);
+        std::fs::write(&go, "")?;
+        f.settle().await
+    };
+    // Admit the branch first. A one-CPU runner cannot start the pull while the branch holds it.
+    let pull =
+        f.h.github
+            .pulls
+            .lock()
+            .map_err(|_| "pulls")?
+            .pop()
+            .ok_or("pull")?;
+    refuse_retry(1).await?;
+    std::fs::remove_file(&go)?;
+    measured.networks.store(1, Ordering::SeqCst);
+    f.h.github.pulls.lock().map_err(|_| "pulls")?.push(pull);
+    refuse_retry(2).await?;
     let job = pull_job(&f).await?;
     assert_eq!(job["state"], "error", "{job}");
     assert_eq!(
@@ -4440,6 +4459,10 @@ async fn a_second_run_that_finds_no_network_room_is_not_made() -> TestResult {
          the change"
     );
     assert_eq!(attempts_of(&f)?, [1, 1]);
+    assert!(
+        f.h.app.config.ci.job_timeout > WAIT * 2,
+        "the job deadline must outlast both the start and settle waits"
+    );
     Ok(())
 }
 

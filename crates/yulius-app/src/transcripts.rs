@@ -114,6 +114,10 @@ fn str_field<'a>(value: &'a Value, key: &str) -> Option<&'a str> {
 #[derive(Debug, Default, Clone)]
 pub struct EnvCalls {
     ids: HashSet<String>,
+    /// Protected Claude Bash calls awaiting the result that may name a background shell.
+    pending_bash: HashSet<String>,
+    /// Background shells whose BashOutput and TaskOutput results need dotenv redaction.
+    claude_shells: HashSet<String>,
     /// An Antigravity model response called a tool on a dotenv file: its steps name no call, so
     /// the tool steps up to the next response are redacted as dotenv content (SPEC-525).
     steps_touch_env: bool,
@@ -446,8 +450,23 @@ pub fn entry_of(line: u64, record: &Value, env_calls: &mut EnvCalls) -> Option<T
             match content {
                 Value::String(text) => blocks.push(text_block(text, meta_line)),
                 Value::Array(parts) => {
+                    // Record-level metadata identifies the shell when only one result owns it.
+                    let background_id = record
+                        .get("toolUseResult")
+                        .and_then(|r| str_field(r, "backgroundTaskId"))
+                        .filter(|id| !id.is_empty())
+                        .filter(|_| {
+                            parts
+                                .iter()
+                                .filter(|p| str_field(p, "type") == Some("tool_result"))
+                                .take(2)
+                                .count()
+                                == 1
+                        });
                     for part in parts {
-                        if let Some(block) = content_block(part, meta_line, env_calls) {
+                        if let Some(block) =
+                            content_block(part, meta_line, background_id, env_calls)
+                        {
                             blocks.push(block);
                         }
                     }
@@ -892,7 +911,31 @@ fn text_block(text: &str, meta: bool) -> TranscriptBlock {
     }
 }
 
-fn content_block(part: &Value, meta: bool, env_calls: &mut EnvCalls) -> Option<TranscriptBlock> {
+/// Claude's rendered Bash launch notice, used when the transcript omits toolUseResult.
+fn background_shell_id(text: &str) -> Option<&str> {
+    text.lines().rev().find_map(|notice| {
+        if let Some(rest) = notice
+            .strip_prefix("Command running in background with ID: ")
+            .or_else(|| notice.strip_prefix("Command was manually backgrounded by user with ID: "))
+        {
+            return rest
+                .split_ascii_whitespace()
+                .next()
+                .map(|id| id.trim_end_matches('.'));
+        }
+        let (_, rest) = notice
+            .strip_prefix("Command ")?
+            .split_once("background (ID: ")?;
+        rest.split_once(')').map(|(id, _)| id)
+    })
+}
+
+fn content_block(
+    part: &Value,
+    meta: bool,
+    background_id: Option<&str>,
+    env_calls: &mut EnvCalls,
+) -> Option<TranscriptBlock> {
     match str_field(part, "type")? {
         "text" => {
             let text = str_field(part, "text")?;
@@ -911,13 +954,21 @@ fn content_block(part: &Value, meta: bool, env_calls: &mut EnvCalls) -> Option<T
         }
         "tool_use" | "server_tool_use" => {
             let id = str_field(part, "id").unwrap_or("");
-            let (block, env) = tool_call(
-                id,
-                str_field(part, "name").unwrap_or("tool"),
-                part.get("input").cloned().unwrap_or(Value::Null),
-            );
-            if env && !id.is_empty() {
+            let name = str_field(part, "name").unwrap_or("tool");
+            let input = part.get("input").unwrap_or(&Value::Null);
+            let shell = match name {
+                "BashOutput" => str_field(input, "bash_id"),
+                "TaskOutput" => str_field(input, "task_id"),
+                _ => None,
+            };
+            let (block, env) = tool_call(id, name, input.clone());
+            if !id.is_empty()
+                && (env || shell.is_some_and(|id| env_calls.claude_shells.contains(id)))
+            {
                 env_calls.ids.insert(id.to_owned());
+                if name == "Bash" {
+                    env_calls.pending_bash.insert(id.to_owned());
+                }
             }
             Some(block)
         }
@@ -925,6 +976,12 @@ fn content_block(part: &Value, meta: bool, env_calls: &mut EnvCalls) -> Option<T
             let tool_use_id = str_field(part, "tool_use_id").unwrap_or("").to_owned();
             let env = env_calls.ids.contains(&tool_use_id);
             let raw = result_text(part.get("content"));
+            if env_calls.pending_bash.remove(&tool_use_id)
+                && let Some(shell) = background_id.or_else(|| background_shell_id(&raw))
+                && !shell.is_empty()
+            {
+                env_calls.claude_shells.insert(shell.to_owned());
+            }
             let (text, truncated) = cut(&raw, MAX_RESULT_CHARS);
             Some(TranscriptBlock::ToolResult {
                 text: clean(&text, env),
@@ -1232,8 +1289,8 @@ pub fn read_page_at(
             }
         }
         if current < from {
-            // Only tool calls matter before the page (dotenv tracking); skip the parse otherwise.
-            if may_change_env_tracking(&buf)
+            // A pending Bash launch can acquire its shell ID on a result before this page.
+            if (!env_calls.pending_bash.is_empty() || may_change_env_tracking(&buf))
                 && let Ok(record) = serde_json::from_slice::<Value>(&buf)
             {
                 let _ = entry_of(current, &record, &mut env_calls);
@@ -1328,12 +1385,13 @@ pub fn read_tail(file: File, limit: usize, max_chars: usize) -> io::Result<Page>
 }
 
 /// Whether a line before a page can change the dotenv tracking: a tool call (Claude Code's
-/// `tool_use`, Codex's calls), an Antigravity model response (its `tool_calls` start the
+/// `tool_use` or `server_tool_use`, Codex's calls), an Antigravity model response (its `tool_calls` start the
 /// tracking, and each response ends the one before), or a Codex output naming a continuation.
 /// One pass over the line.
 fn may_change_env_tracking(line: &[u8]) -> bool {
-    const NEEDLES: [&[u8]; 5] = [
+    const NEEDLES: [&[u8]; 6] = [
         b"\"tool_use\"",
+        b"\"server_tool_use\"",
         b"\"function_call\"",
         b"\"custom_tool_call\"",
         b"\"local_shell_call\"",
@@ -2275,6 +2333,114 @@ mod tests {
                 texts.iter().any(|t| t == "user result step-3 MODE=plain"),
                 "a later step's output is not dotenv content: {texts:?}"
             );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn a_cold_page_skips_plain_text_before_the_requested_line() {
+        let ordinary = br#"{"type":"user","message":{"content":"build finished"}}"#;
+        assert!(!may_change_env_tracking(ordinary));
+    }
+
+    /// SPEC-536: the launch and each retrieval have different tool-use IDs. The shell
+    /// association must survive a cursor between them, and a cold scan up to the results.
+    #[test]
+    fn claude_background_shell_output_is_redacted_on_every_read() -> TestResult {
+        let call = |id: &str, name: &str, input: Value| json!({"type":"assistant","message":{"content":[{"type":"tool_use","id":id,"name":name,"input":input}]}});
+        let result = |id: &str, content: &str| json!({"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":id,"content":content}]}});
+        for launch in [
+            result(
+                "dotenv",
+                "partial output\nCommand running in background with ID: shell_7",
+            ),
+            result(
+                "dotenv",
+                "Command running in background with ID: shell_7. Output is being written to: /tmp/shell_7.output",
+            ),
+            result(
+                "dotenv",
+                "Command was moved to the background (ID: shell_7) after running for 30s. Output is being written to: /tmp/shell_7.output",
+            ),
+            result(
+                "dotenv",
+                "Command was manually backgrounded by user with ID: shell_7. Output is being written to: /tmp/shell_7.output.\nYou will be notified when it completes.",
+            ),
+            {
+                let mut record = result("dotenv", "Command moved to the background");
+                record["message"]["content"]
+                    .as_array_mut()
+                    .ok_or("expected blocks")?
+                    .extend([
+                        json!({"type":"text","text":"launch completed"}),
+                        json!({"type":"text","text":"shell is running"}),
+                    ]);
+                record["toolUseResult"] = json!({"backgroundTaskId":"shell_7"});
+                record
+            },
+        ] {
+            let dir = tempfile::tempdir()?;
+            let path = write_lines(
+                dir.path(),
+                &[
+                    call(
+                        "dotenv",
+                        "Bash",
+                        json!({"command":"cat .env","run_in_background":true}),
+                    ),
+                    call(
+                        "ordinary",
+                        "Bash",
+                        json!({"command":"pwd","run_in_background":true}),
+                    ),
+                    result(
+                        "ordinary",
+                        "Command running in background with ID: shell_70",
+                    ),
+                    launch,
+                    call("old", "BashOutput", json!({"bash_id":"shell_7"})),
+                    call("other", "TaskOutput", json!({"task_id":"shell_70"})),
+                    {
+                        let mut retrieval = call("new", "TaskOutput", json!({"task_id":"shell_7"}));
+                        retrieval["message"]["content"][0]["type"] = json!("server_tool_use");
+                        retrieval
+                    },
+                    result("old", &format!("<stdout>\n{ENV_TWO}\n</stdout>")),
+                    result("other", "SHOP_REGION=public-region"),
+                    result("new", &format!("<output>\n{ENV_TWO}\n</output>")),
+                ],
+            )?;
+            let (_, kept) = read_page_at(File::open(&path)?, None, 0, 4, MAX_PAGE_CHARS)?;
+            assert_eq!(kept.line, 4);
+            for page in [
+                read_page(File::open(&path)?, 0, 100, MAX_PAGE_CHARS)?,
+                read_page(File::open(&path)?, 7, 100, MAX_PAGE_CHARS)?,
+                read_page_at(File::open(&path)?, Some(&kept), 7, 100, MAX_PAGE_CHARS)?.0,
+                read_tail(File::open(&path)?, 3, MAX_PAGE_CHARS)?,
+            ] {
+                let results = page
+                    .entries
+                    .iter()
+                    .flat_map(|entry| &entry.blocks)
+                    .filter_map(|block| {
+                        if let TranscriptBlock::ToolResult {
+                            tool_use_id, text, ..
+                        } = block
+                        {
+                            Some((tool_use_id.as_str(), text.as_str()))
+                        } else {
+                            None
+                        }
+                    })
+                    .collect::<std::collections::HashMap<_, _>>();
+                for id in ["old", "new"] {
+                    let output = results[id];
+                    assert!(output.contains("SHOP_REGION=[REDACTED:"), "{id}: {output}");
+                    assert!(output.contains("MAIL_DOMAIN=[REDACTED:"), "{id}: {output}");
+                    assert!(!output.contains("eu-north-7b") && !output.contains("mg.shop.example"));
+                }
+                assert_eq!(results["other"], "SHOP_REGION=public-region");
+            }
         }
         Ok(())
     }

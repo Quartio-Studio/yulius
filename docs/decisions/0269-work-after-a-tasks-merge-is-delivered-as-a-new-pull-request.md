@@ -27,10 +27,11 @@ organisation the agent had to push and open PR #2 by hand, and the task still sh
   (spec, plan, clean worktree) are checked before the reset, so a head that cannot go out keeps
   the task merged. New work means all three, read from a fresh fetch: the merged head is an
   ancestor of the worktree head; the head is more than it plus Git's own clean merges of the
-  integration branch (the review carry-over of SPEC-083 REV-001); and what the head changed
-  since the merged head, merged into the integration branch (`merge-tree --merge-base`), changes
-  that branch's tree (a follow-up a person merged outside Yulius adds nothing, so it opens no
-  duplicate).
+  integration branch (the review carry-over of SPEC-083 REV-001); and the head adds to the
+  integration tree. When the head contains the fetched integration commit, compare their trees
+  directly. Otherwise merge the change from the merged PR head (`merge-tree --merge-base`) and
+  compare the result with the integration tree. A follow-up already integrated adds nothing.
+  [SPEC-532](../../.ai/specs/SPEC-532-deliver-follow-ups-when-dev-is-already-a.md)
 - **Nothing new keeps the task merged.** The merged head, a head behind it, only clean merges of
   the integration branch and a head the integration branch already holds change nothing. That
   verdict is kept per task for its head and pull request, so later Stops at the same head ask
@@ -73,7 +74,7 @@ organisation the agent had to push and open PR #2 by hand, and the task still sh
   sees a member's stage go back.
 - An armed merge whose pull request merged outside Yulius is still not dropped by the armed-merge
   upkeep (pre-existing, #1075); `delivery_merge` called again clears it.
-- `adds_to` needs Git 2.40 (`merge-tree --merge-base`); an older Git makes the verdict unknown,
+- For divergent histories, `adds_to` needs Git 2.40 (`merge-tree --merge-base`); an older Git makes the verdict unknown,
   never a duplicate pull request.
 - The merged pull request leaves the task's record; it stays in GitHub and in the audit log
   (`delivery.follow_up` names it).
