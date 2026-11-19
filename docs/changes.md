@@ -6,6 +6,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-19
 
+- The local CI network-refusal test exercises the branch and pull request in sequence, giving each job time to report a full network pool on a one-CPU runner (SPEC-549, #1408).
 - A merge candidate that rebuilds a recently failed candidate tree uses the original run for bisection. Errored and cancelled runs leave the tree eligible for CI (SPEC-542, #1384).
 - Automation edits, schedule switches and Run now require the creator in the UI and tools. On upgrade, existing schedules pause once. Review the saved prompt and enable the schedule to resume it. [SPEC-534](../.ai/specs/SPEC-534-enforce-automation-ownership-across-edit.md)
 - Codex session documents created before the first turn now show and index the rollout when it appears (#1454, SPEC-538).
