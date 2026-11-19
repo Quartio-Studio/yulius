@@ -216,6 +216,69 @@ async fn imported_doc(
     Ok(path)
 }
 
+/// The second server has only the SQLite offsets and the same transcript on disk.
+#[tokio::test]
+async fn session_search_redacts_a_dotenv_result_appended_after_restart() -> TestResult {
+    use std::io::Write as _;
+    let dir = tempfile::tempdir()?;
+    let start = || -> Result<support::Harness, Error> {
+        let data = dir.path().to_path_buf();
+        support::harness_with(support::HarnessOptions {
+            store: Some(yulius_store::SqliteStore::open(&data.join("index.sqlite"))?),
+            configure: Some(Box::new(move |config| config.data_dir = data)),
+            ..Default::default()
+        })
+    };
+    let h = start()?;
+    support::seed_github_user(&h, "u1", "alice").await?;
+    let sandbox = support::seed_sandbox(&h, "s1", "studio", "u1").await?.id;
+    let call = line(&json!({"type": "assistant", "message": {"content": [
+        {"type": "tool_use", "id": "r1", "name": "Read", "input": {"file_path": ".env"}}
+    ]}}));
+    let path = imported_doc(
+        &h.store,
+        dir.path(),
+        &sandbox,
+        "indexed",
+        "Fixture",
+        &UserId::parse("u1")?,
+        &call,
+    )
+    .await?;
+    h.app.refresh_session_index(&sandbox).await?;
+    let before = h.store.session_doc("indexed").await?.ok_or("document")?;
+    assert_eq!(
+        (before.indexed_bytes, before.indexed_lines),
+        (u64::try_from(call.len())?, 1)
+    );
+    drop(h);
+
+    let mut file = std::fs::OpenOptions::new().append(true).open(path)?;
+    writeln!(
+        file,
+        "{}",
+        json!({"type": "user", "message": {"content": [
+            {"type": "tool_result", "tool_use_id": "r1", "content": "REGION=violetfixture"}
+        ]}})
+    )?;
+    let h = start()?;
+    h.app.refresh_session_index(&sandbox).await?;
+    let hits = h
+        .store
+        .search_session_chunks(&sandbox, "REGION", 10)
+        .await?;
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].line, 1);
+    assert!(hits[0].snippet.contains("[REDACTED:"));
+    assert!(
+        h.store
+            .search_session_chunks(&sandbox, "violetfixture", 10)
+            .await?
+            .is_empty()
+    );
+    Ok(())
+}
+
 async fn get(w: &World, creds: &Creds, path: &str) -> Result<support::Resp, Error> {
     call(&w.h.router, Method::GET, path, None, creds).await
 }

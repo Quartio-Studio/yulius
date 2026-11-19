@@ -1874,6 +1874,65 @@ mod tests {
     }
 
     #[test]
+    fn resumed_index_redacts_dotenv_results_across_a_restart() -> TestResult {
+        use std::io::Write as _;
+        let dir = tempfile::tempdir()?;
+        let call = json!({"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "id": "r1", "name": "Read", "input": {"file_path": ".env"}}
+        ]}});
+        let path = write_lines(dir.path(), &[call])?;
+        let first = read_for_index(File::open(&path)?, 0, 0, u64::MAX, usize::MAX)?;
+        assert_eq!(first.end_line, 1);
+        let result = json!({"type": "user", "message": {"content": [
+            {"type": "tool_result", "tool_use_id": "r1", "content": ENV_TWO},
+            {"type": "tool_result", "tool_use_id": "other", "content": "MODE=ordinary"}
+        ]}});
+        let mut growing = std::fs::OpenOptions::new().append(true).open(&path)?;
+        write!(growing, "{result}")?;
+        let resume = || {
+            read_for_index(
+                File::open(&path)?,
+                first.end_byte,
+                first.end_line,
+                u64::MAX,
+                usize::MAX,
+            )
+        };
+        let partial = resume()?;
+        assert_eq!((partial.end_byte, partial.end_line), (first.end_byte, 1));
+        assert!(partial.chunks.is_empty());
+        writeln!(growing)?;
+        let second = resume()?;
+        assert_eq!(second.chunks.len(), 1);
+        let passage = &second.chunks[0];
+        assert_eq!(passage.line, 1);
+        assert!(passage.text.contains("SHOP_REGION=[REDACTED:"));
+        assert!(passage.text.contains("MAIL_DOMAIN=[REDACTED:"));
+        assert!(!passage.text.contains("eu-north-7b") && !passage.text.contains("mg.shop.example"));
+        assert!(passage.text.contains("MODE=ordinary"));
+        Ok(())
+    }
+
+    #[test]
+    fn a_resumed_index_refuses_offsets_that_disagree_with_the_transcript() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let path = write_transcript(dir.path())?;
+        let first = read_for_index(File::open(&path)?, 0, 0, 1, usize::MAX)?;
+        for (byte, line) in [
+            (first.end_byte - 1, first.end_line),
+            (first.end_byte, first.end_line - 1),
+            (first.end_byte, first.end_line + 1),
+        ] {
+            let result = read_for_index(File::open(&path)?, byte, line, u64::MAX, usize::MAX);
+            assert_eq!(
+                result.err().map(|err| err.kind()),
+                Some(io::ErrorKind::InvalidData)
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
     fn rendering_for_agents_is_bounded() -> TestResult {
         let dir = tempfile::tempdir()?;
         let path = write_transcript(dir.path())?;
@@ -2308,6 +2367,17 @@ mod tests {
                 read_page(File::open(&path)?, last, 100, MAX_PAGE_CHARS)?,
             ),
         ];
+        // Restart at every record boundary using only the offsets the index persists.
+        let whole = read_for_index(File::open(&path)?, 0, 0, u64::MAX, usize::MAX)?;
+        let mut chunks = Vec::new();
+        let (mut byte, mut line) = (0, 0);
+        while line <= last {
+            let next = read_for_index(File::open(&path)?, byte, line, 1, usize::MAX)?;
+            assert_eq!(next.end_line, line + 1);
+            (byte, line) = (next.end_byte, next.end_line);
+            chunks.extend(next.chunks);
+        }
+        assert_eq!(chunks, whole.chunks, "{name}: resumed index");
         for (how, page) in reads {
             assert!(!page.entries.is_empty(), "{name} ({how}): no entries");
             let text = serde_json::to_string(&page.entries)?;

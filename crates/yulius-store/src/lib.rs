@@ -535,46 +535,53 @@ mod tests {
                  INSERT INTO session_chunks (doc_id, line, role, text) VALUES ('d-claude', 1, 'user', 'kept passage'),
                    ('d-codex', 1, 'user', 'stalecodexpassage');",
             )?;
+            // Exercise version 69 in isolation before opening the database with the latest schema.
+            conn.execute_batch(MIGRATIONS[68])?;
+            conn.pragma_update(None, "user_version", 69)?;
+            let index = |id: &str| {
+                conn.query_row(
+                    "SELECT indexed_bytes, indexed_lines, index_full FROM session_docs WHERE id = ?1",
+                    [id],
+                    |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?, row.get::<_, bool>(2)?)),
+                )
+            };
+            assert_eq!(index("d-codex")?, (0, 0, false));
+            assert_eq!(index("d-agy")?, (0, 0, false));
+            assert_eq!(index("d-claude")?, (500, 7, false));
+            let matches = |term: &str| {
+                conn.query_row(
+                    "SELECT COUNT(*) FROM session_fts WHERE session_fts MATCH ?1",
+                    [term],
+                    |row| row.get::<_, i64>(0),
+                )
+            };
+            assert_eq!(matches("kept")?, 1);
+            assert_eq!(matches("stalecodexpassage")?, 0);
         }
+        // SPEC-535: an upgrade clears even a passage already indexed by a version-69 server.
         let store = SqliteStore::open(&path)?;
-        let docs = store
-            .session_docs(&yulius_domain::ids::SandboxId::parse("s1")?)
-            .await?;
-        let index = |id: &str| {
-            docs.iter()
-                .find(|doc| doc.id == id)
-                .map(|doc| (doc.indexed_bytes, doc.indexed_lines, doc.index_full))
-        };
-        assert_eq!(index("d-codex"), Some((0, 0, false)));
-        assert_eq!(index("d-agy"), Some((0, 0, false)));
-        assert_eq!(index("d-claude"), Some((500, 7, false)));
-        let kept: i64 = store
-            .call(|c| {
-                c.query_row(
-                    "SELECT COUNT(*) FROM session_chunks WHERE doc_id = 'd-claude'",
-                    [],
-                    |r| r.get(0),
-                )
-                .map_err(db)
-            })
-            .await?;
-        assert_eq!(kept, 1);
-        let (stale, found): (i64, i64) = store
-            .call(|c| {
-                c.query_row(
-                    "SELECT (SELECT COUNT(*) FROM session_chunks WHERE doc_id = 'd-codex'), \
-                     (SELECT COUNT(*) FROM session_fts WHERE session_fts MATCH 'stalecodexpassage')",
-                    [],
-                    |r| Ok((r.get(0)?, r.get(1)?)),
-                )
-                .map_err(db)
-            })
-            .await?;
-        assert_eq!(
-            (stale, found),
-            (0, 0),
-            "a passage of theirs goes, from the search too"
+        let sandbox = yulius_domain::ids::SandboxId::parse("s1")?;
+        let docs = store.session_docs(&sandbox).await?;
+        assert_eq!(docs.len(), 3);
+        for doc in docs {
+            assert_eq!(
+                (doc.indexed_bytes, doc.indexed_lines, doc.index_full),
+                (0, 0, false)
+            );
+        }
+        assert!(
+            store
+                .search_session_chunks(&sandbox, "kept", 10)
+                .await?
+                .is_empty()
         );
+        let chunks: i64 = store
+            .call(|conn| {
+                conn.query_row("SELECT COUNT(*) FROM session_chunks", [], |row| row.get(0))
+                    .map_err(db)
+            })
+            .await?;
+        assert_eq!(chunks, 0);
         Ok(())
     }
 
