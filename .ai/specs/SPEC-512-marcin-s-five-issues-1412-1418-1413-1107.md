@@ -116,10 +116,44 @@ merged; #1106 against ADR-0227.
   with parked, idle (live but not counted: Done) and queued apart, and when idle sessions park.
   Parked sessions use no memory.
 
-### Parts 2 to 5
+### Part 2: a request that names who it waits for (#1418)
 
-Written when each part starts (see Context): ANS (#1418), DIG (#1413), TGI (#1107), HOF (#1106),
-each from its issue's acceptance criteria.
+Today (after task #498, SPEC-516, ADR-0370, merged as #1428): anyone with write access answers a
+running task's open `needs_you` on its page (`POST /api/tasks/{tid}/needs-you/answer`), labelled
+as theirs, audited `task.needs_you.answered`, without control moving; `task_message` stays the
+owner's; stop, archive and delete are anyone's who may work in the project (ADR-0331), and
+steering (terminal input, Continue, merge, model, subscription) is the owner's. Taking control
+(SPEC-510, ADR-0365) is for steering a task; what this part adds is for one answer.
+
+- **ANS-001 Naming.** `needs_you` takes `who`: one to ten GitHub logins it waits for besides the
+  owner. Each must be a person of the instance with write access to the project, checked when the
+  request is raised; one that is not refuses the whole request, saying which and why. The owner
+  named is dropped from the list (always may answer). Stored with the request
+  (`NeedsYouRecord.who`), shown in its view (`who`) and in `tasks_list`/`task_get`.
+- **ANS-002 Who answers a named request.** While a request names people, its owner and the
+  people still named answer it; anyone else with write access is refused ("task #N asks @a and
+  @b, not you"). A request that names nobody keeps ADR-0370's rule (any writer).
+- **ANS-003 Through `task_message`.** A message from someone who is not the task's owner, while a
+  request is open that they may answer (ANS-002), is that answer: it goes the way of the web's
+  answer (same label, guards and audit) and `delivered` says `answered`. With no such request it
+  is refused as today (the owner steers).
+- **ANS-004 Closed, replaced or withdrawn.** An answer names the request it answers (`asked_at`,
+  the request's `at`; the web sends it). One sent after the request ended is refused ("…asks
+  nobody anything now"), after a new request replaced it ("the question you answered was replaced
+  by a new one: read it and answer again"), and after the owner withdrew the person ("@owner
+  withdrew you from this question").
+- **ANS-005 The owner sees and withdraws.** The task's page shows "Asks @a, @b" on the request;
+  its owner withdraws a person there (`POST /api/tasks/{tid}/needs-you/withdraw {login}`, owner
+  only, a browser session or an operate token), audited `task.needs_you.withdrawn`. Withdrawing
+  the last name leaves the request to its owner alone.
+- **ANS-006 Nothing else moves.** A named person who answers does not get control: the task acts
+  on GitHub as its owner; terminal input, Continue (start), and `delivery_merge`/`task_merge`
+  stay the owner's (tested for the named person); stop follows ADR-0331 as today.
+
+### Parts 3 to 5
+
+Written when each part starts (see Context): DIG (#1413), TGI (#1107), HOF (#1106), each from its
+issue's acceptance criteria.
 
 ## Plan
 
@@ -163,6 +197,18 @@ each from its issue's acceptance criteria.
 - [x] Writing to such a task resumes it in its own session, with its history (PRK-005).
 - [x] A queued task shows why it has not started and what it waits for (PRK-007).
 - [x] The Capacity card shows working sessions and parked sessions separately (PRK-008).
+
+### #1418
+
+- [ ] A task can name who its `needs_you` waits for; logins without write access are refused when
+  the `needs_you` is raised (ANS-001).
+- [ ] A named non-owner can answer that `needs_you` (web and `task_message`) while it is open, and
+  is refused once it is cleared or replaced, with a message that says so (ANS-002 to ANS-004).
+- [ ] The answer appears in the transcript and the audit log as that person's, and the task keeps
+  acting on GitHub as its owner (ADR-0370, ANS-006).
+- [ ] The owner sees who else may answer and can withdraw it (ANS-005).
+- [ ] Everything else on the task stays owner-only (GIT-004), with tests for terminal input,
+  start, stop and merge by the named person (ANS-006).
 
 ## Test plan
 
