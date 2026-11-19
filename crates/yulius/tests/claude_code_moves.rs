@@ -1811,6 +1811,57 @@ mod moves {
         Ok(())
     }
 
+    /// SPEC-512 PRK-002 (review round 3 of part 1, Q1): an idle session whose Claude Code queue
+    /// holds a prompt is not parked: the prompt would end with the session.
+    #[test]
+    fn a_prompt_in_the_queue_keeps_an_idle_session_from_parking() -> TestResult {
+        let (_dir, data) = data_dir()?;
+        let rt = runtime()?;
+        rt.block_on(async {
+            let version = data.join("claude-version");
+            let may_end = data.join("turn-may-end");
+            let handed_on = data.join("queue-handed-on");
+            let options = FakeAgentOptions {
+                queue_handover_file: Some(handed_on.clone()),
+                ..queueing(&may_end)
+            };
+            let s = server_with(&data, &version, options, TaskMode::Prompt, "2.1.311", |c| {
+                c.park_after_ms = 1;
+            })
+            .await?;
+            s.app.send_input(&s.id, b"one\r").await?;
+            says(&s, "TURN HELD").await?;
+            s.app.send_input(&s.id, b"two\r").await?;
+            says(&s, "QUEUED: two").await?;
+            waits_in_the_queue(&s).await?;
+            std::fs::write(&may_end, "")?;
+            says(&s, "QUEUE HELD").await?;
+            wait_for("the idle turn's end", Duration::from_secs(60), || async {
+                crate::first_message::activity(&s.app, &s.id).await == Some(Activity::Waiting)
+            })
+            .await?;
+            assert!(s.app.claude_queue_holds(&s.id));
+            // Past the 1 ms grace period, so the pass refuses for what it checks.
+            wait_for("the grace period", Duration::from_secs(10), || async {
+                s.app
+                    .deps
+                    .store
+                    .task_times(&s.id)
+                    .await
+                    .ok()
+                    .flatten()
+                    .is_some_and(|times| s.app.now().0 - times.state_at.0 > 2)
+            })
+            .await?;
+            assert_eq!(s.app.park_idle_sessions_now().await, 0);
+            let status = s.app.deps.store.task(&s.id).await?.ok_or("task")?.status;
+            assert_eq!(status, TaskStatus::Running);
+            stop(&s.app, &s.id).await
+        })?;
+        rt.shutdown_timeout(Duration::from_secs(5));
+        Ok(())
+    }
+
     /// SPEC-471 AC5: two prompts entered while one turn ran are answered in one turn.
     #[test]
     fn two_waiting_prompts_keep_the_session_and_get_one_turn() -> TestResult {

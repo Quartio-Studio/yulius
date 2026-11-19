@@ -1,6 +1,8 @@
 //! Claude Code transcripts as read-only documents (SPEC-001 SES-002..005): one JSONL line →
 //! one [`TranscriptEntry`] of messages, tool calls, results and diffs, redacted and bounded;
-//! paged reading, index passages and the plain-text rendering agents read.
+//! paged reading, index passages and the plain-text rendering agents read. Codex rollouts and
+//! Antigravity transcripts read into the same entries (SPEC-525): each line's shape tells its
+//! format.
 //!
 //! Every text that leaves this module went through [`yulius_domain::redact`]: provider tokens,
 //! keys and secret assignments everywhere, and every value of a dotenv file that a tool read or
@@ -14,6 +16,7 @@ use std::path::Path;
 
 use serde_json::Value;
 use yulius_contracts::api::sessions::{DiffHunk, TranscriptBlock, TranscriptDiff, TranscriptEntry};
+use yulius_domain::harness::is_codex_injected_context;
 use yulius_domain::redact::{
     is_env_file, is_secret_name, mentions_env_file, redact, redact_env, redact_named,
 };
@@ -111,25 +114,201 @@ fn str_field<'a>(value: &'a Value, key: &str) -> Option<&'a str> {
 #[derive(Debug, Default, Clone)]
 pub struct EnvCalls {
     ids: HashSet<String>,
+    /// An Antigravity model response called a tool on a dotenv file: its steps name no call, so
+    /// the tool steps up to the next response are redacted as dotenv content (SPEC-525).
+    steps_touch_env: bool,
+    /// An Antigravity command on a dotenv file ran: one that went on as a task is read by a later
+    /// `manage_task`, whose steps are then redacted as dotenv content too.
+    commands_touched_env: bool,
+    /// What a tracked Codex call goes on as: `cell:<id>` (a code-mode script that yielded, read by
+    /// `wait`) and `session:<id>` (a command still running, read by `write_stdin`).
+    continuations: HashSet<String>,
 }
 
 impl EnvCalls {
     fn touches_env(name: &str, input: &Value) -> bool {
-        match name {
-            "Bash" => str_field(input, "command").is_some_and(mentions_env_file),
-            _ => ["file_path", "path", "notebook_path"]
-                .iter()
-                .filter_map(|key| str_field(input, key))
+        match (name, input) {
+            // A free-text call: a Codex code-mode `exec` script (`tools.exec_command({cmd:…})`),
+            // a patch, or arguments that did not parse.
+            (_, Value::String(script)) => script_mentions_env(script),
+            ("apply_patch", _) => patch_files(input).iter().any(|path| is_env_file(path)),
+            (SHELL_TOOLS!(), _) => {
+                command_of(input).is_some_and(|command| mentions_env_file(&command))
+            }
+            // A file tool's path, also one level down (Antigravity's `call_mcp_tool` keeps its
+            // tool's arguments in `Arguments`).
+            _ => std::iter::once(input)
+                .chain(input.as_object().into_iter().flat_map(|map| map.values()))
+                .flat_map(|value| {
+                    [
+                        "file_path",
+                        "path",
+                        "notebook_path",
+                        "Path",
+                        "AbsolutePath",
+                        "TargetFile",
+                    ]
+                    .iter()
+                    .filter_map(move |key| str_field(value, key))
+                })
                 .any(is_env_file),
         }
     }
+}
+
+/// Whether a script names a dotenv file, its words split at quotes, backticks and brackets too
+/// (`{cmd:`cat .env`}`).
+fn script_mentions_env(script: &str) -> bool {
+    let mut words = String::with_capacity(script.len());
+    let mut chars = script.chars();
+    while let Some(c) = chars.next() {
+        if c == '\\' {
+            // An escape (`\n`, `\"`, `\\`) separates words as what it stands for does.
+            chars.next();
+            words.push(' ');
+        } else if matches!(
+            c,
+            '`' | '"' | '\'' | '{' | '}' | '[' | ']' | ',' | ':' | '='
+        ) {
+            words.push(' ');
+        } else {
+            words.push(c);
+        }
+    }
+    mentions_env_file(&words)
+}
+
+/// Whether a Codex call reads on from a tracked one: a `wait` for a script that yielded, or a
+/// `write_stdin` (a function call, or in a code-mode script) to a command still running.
+fn continues_tracked(name: &str, input: &Value, env_calls: &EnvCalls) -> bool {
+    let id_of = |value: &Value| match value {
+        Value::String(text) => Some(text.clone()),
+        Value::Number(number) => Some(number.to_string()),
+        _ => None,
+    };
+    let known = |key: String| env_calls.continuations.contains(&key);
+    match (name, input) {
+        ("wait", _) => input
+            .get("cell_id")
+            .and_then(id_of)
+            .is_some_and(|id| known(format!("cell:{id}"))),
+        ("write_stdin", _) => input
+            .get("session_id")
+            .and_then(id_of)
+            .is_some_and(|id| known(format!("session:{id}"))),
+        // A script names its sessions as it likes (`[7, 9].map(session_id => …)`, a variable):
+        // any tracked session id in a script that writes to a session continues it.
+        (_, Value::String(script)) if script.contains("write_stdin(") => script
+            .split(|c: char| !c.is_ascii_alphanumeric())
+            .any(|word| !word.is_empty() && known(format!("session:{word}"))),
+        _ => false,
+    }
+}
+
+/// Keeps what a tracked Codex call's output says it goes on as (see [`EnvCalls`]).
+fn keep_continuations(parts: &[String], env_calls: &mut EnvCalls) {
+    for part in parts {
+        if let Some((_, rest)) = part.split_once("Script running with cell ID ") {
+            let id: String = rest
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '-')
+                .collect();
+            if !id.is_empty() {
+                env_calls.continuations.insert(format!("cell:{id}"));
+            }
+        }
+        if let Ok(value) = serde_json::from_str::<Value>(part) {
+            let mut stack = vec![&value];
+            while let Some(value) = stack.pop() {
+                match value {
+                    Value::Object(map) => {
+                        match map.get("session_id") {
+                            Some(Value::Number(id)) => {
+                                env_calls.continuations.insert(format!("session:{id}"));
+                            }
+                            Some(Value::String(id)) => {
+                                env_calls.continuations.insert(format!("session:{id}"));
+                            }
+                            _ => {}
+                        }
+                        stack.extend(map.values());
+                    }
+                    Value::Array(items) => stack.extend(items),
+                    _ => {}
+                }
+            }
+        }
+    }
+}
+
+/// The first command of a Codex code-mode script: the quoted `cmd` of its first
+/// `tools.exec_command({cmd: …})`.
+fn code_mode_command(script: &str) -> Option<&str> {
+    let (_, rest) = script.split_once("exec_command(")?;
+    let (_, rest) = rest.split_once("cmd:")?;
+    let rest = rest.trim_start();
+    let quote = rest
+        .chars()
+        .next()
+        .filter(|c| matches!(c, '`' | '"' | '\''))?;
+    let rest = &rest[quote.len_utf8()..];
+    rest.split_once(quote).map(|(command, _)| command)
+}
+
+/// The shell tools of the three harnesses: Claude's `Bash`, Codex's `exec_command`, `shell` and
+/// `shell_command`, Antigravity's `run_command`.
+macro_rules! SHELL_TOOLS {
+    () => {
+        "Bash" | "exec_command" | "shell" | "shell_command" | "run_command"
+    };
+}
+use SHELL_TOOLS;
+
+/// The command line of a shell tool's input: Claude's `command`, Codex's `cmd` or `command` (an
+/// argument list for `shell`), Antigravity's `CommandLine`.
+fn command_of(input: &Value) -> Option<String> {
+    ["command", "cmd", "CommandLine"]
+        .iter()
+        .find_map(|key| match input.get(*key)? {
+            Value::String(text) => Some(text.clone()),
+            Value::Array(parts) => Some(
+                parts
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .collect::<Vec<_>>()
+                    .join(" "),
+            ),
+            _ => None,
+        })
+}
+
+/// The files a Codex `apply_patch` names (`*** Update File: <path>` and its kin).
+fn patch_files(input: &Value) -> Vec<&str> {
+    // A custom tool's text, or a function call's `{"input": …}`.
+    let Some(patch) = input.as_str().or_else(|| str_field(input, "input")) else {
+        return Vec::new();
+    };
+    patch
+        .lines()
+        .filter_map(|line| {
+            ["*** Add File: ", "*** Update File: ", "*** Delete File: "]
+                .iter()
+                .find_map(|prefix| line.strip_prefix(prefix))
+        })
+        .map(str::trim)
+        .collect()
 }
 
 /// One-line description of a tool call.
 fn tool_summary(name: &str, input: &Value) -> String {
     let field = |key| str_field(input, key).map(one_line);
     let summary = match name {
-        "Bash" => field("command"),
+        SHELL_TOOLS!() => command_of(input).map(|c| one_line(&c)),
+        "apply_patch" => {
+            Some(one_line(&patch_files(input).join(", "))).filter(|files| !files.is_empty())
+        }
+        "exec" => input.as_str().and_then(code_mode_command).map(one_line),
+        "read_file" | "view_file" | "edit_file" | "write_file" => field("Path"),
         "Read" | "Write" | "Edit" | "MultiEdit" => field("file_path"),
         "NotebookEdit" => field("notebook_path"),
         "Glob" | "Grep" => field("pattern").map(|pattern| {
@@ -145,6 +324,9 @@ fn tool_summary(name: &str, input: &Value) -> String {
         _ => None,
     };
     summary.unwrap_or_else(|| {
+        if let Value::String(text) = input {
+            return one_line(text);
+        }
         let compact = serde_json::to_string(input).unwrap_or_default();
         if compact == "{}" {
             String::new()
@@ -234,6 +416,9 @@ fn is_meta_text(text: &str) -> bool {
 /// operations, progress) and lines without visible content.
 #[must_use]
 pub fn entry_of(line: u64, record: &Value, env_calls: &mut EnvCalls) -> Option<TranscriptEntry> {
+    if record.get("step_index").is_some() && record.get("source").is_some() {
+        return antigravity_entry(line, record, env_calls);
+    }
     let kind = str_field(record, "type")?;
     let at = str_field(record, "timestamp").map(str::to_owned);
     let sidechain = record
@@ -271,8 +456,37 @@ pub fn entry_of(line: u64, record: &Value, env_calls: &mut EnvCalls) -> Option<T
             }
             kind
         }
+        // A Codex rollout (SPEC-525): its items; `event_msg` lines repeat them or count.
+        "response_item" => {
+            let (role, item) = codex_item(record.get("payload")?, env_calls)?;
+            blocks.push(item);
+            role
+        }
+        "compacted" => {
+            // Codex 0.169 leaves `message` empty (its summary is in `replacement_history`).
+            let text = record
+                .get("payload")
+                .and_then(|p| str_field(p, "message"))
+                .filter(|text| !text.trim().is_empty())?;
+            let (text, truncated) = cut(text, MAX_TEXT_CHARS);
+            blocks.push(TranscriptBlock::Text {
+                text: clean(&text, false),
+                truncated,
+            });
+            "summary"
+        }
         _ => return None,
     };
+    entry(line, role, at, sidechain, blocks)
+}
+
+fn entry(
+    line: u64,
+    role: &str,
+    at: Option<String>,
+    sidechain: bool,
+    blocks: Vec<TranscriptBlock>,
+) -> Option<TranscriptEntry> {
     if blocks.is_empty() {
         return None;
     }
@@ -283,6 +497,388 @@ pub fn entry_of(line: u64, record: &Value, env_calls: &mut EnvCalls) -> Option<T
         sidechain,
         blocks,
     })
+}
+
+/// One Codex `response_item` payload as a block and its role: a message (developer instructions
+/// left out, context Codex added shown quietly), a reasoning summary, a tool call or its output.
+fn codex_item(
+    payload: &Value,
+    env_calls: &mut EnvCalls,
+) -> Option<(&'static str, TranscriptBlock)> {
+    match str_field(payload, "type")? {
+        "message" => {
+            let role = match str_field(payload, "role")? {
+                "user" => "user",
+                "assistant" => "assistant",
+                _ => return None,
+            };
+            let text = codex_texts(payload.get("content")).join("\n\n");
+            if text.trim().is_empty() {
+                return None;
+            }
+            let added = role == "user" && codex_added(payload, &text);
+            Some((
+                role,
+                if added {
+                    meta_block(&text, MAX_RESULT_CHARS)
+                } else {
+                    text_block(&text, false)
+                },
+            ))
+        }
+        "reasoning" => {
+            let summary = payload.get("summary").and_then(Value::as_array)?;
+            let text = summary
+                .iter()
+                .filter_map(|part| str_field(part, "text"))
+                .collect::<Vec<_>>()
+                .join("\n\n");
+            if text.trim().is_empty() {
+                return None;
+            }
+            let (text, truncated) = cut(&text, MAX_THINKING_CHARS);
+            Some((
+                "assistant",
+                TranscriptBlock::Thinking {
+                    text: clean(&text, false),
+                    truncated,
+                },
+            ))
+        }
+        "function_call" | "custom_tool_call" | "local_shell_call" => {
+            let id = str_field(payload, "call_id")
+                .or_else(|| str_field(payload, "id"))
+                .unwrap_or("");
+            let name = str_field(payload, "name").unwrap_or("shell");
+            let input = match payload.get("arguments") {
+                Some(Value::String(text)) => {
+                    serde_json::from_str(text).unwrap_or_else(|_| Value::String(text.clone()))
+                }
+                Some(value) => value.clone(),
+                None => payload
+                    .get("input")
+                    .or_else(|| payload.get("action"))
+                    .cloned()
+                    .unwrap_or(Value::Null),
+            };
+            let continued = continues_tracked(name, &input, env_calls);
+            let (block, env) = tool_call(id, name, input);
+            if (env || continued) && !id.is_empty() {
+                env_calls.ids.insert(id.to_owned());
+            }
+            Some(("assistant", block))
+        }
+        "function_call_output" | "custom_tool_call_output" | "local_shell_call_output" => {
+            let tool_use_id = str_field(payload, "call_id").unwrap_or("").to_owned();
+            let env = env_calls.ids.contains(&tool_use_id);
+            let parts = match payload.get("output") {
+                Some(Value::Object(output)) => ["content", "output"]
+                    .iter()
+                    .find_map(|key| output.get(*key))
+                    .map_or_else(Vec::new, |value| codex_texts(Some(value))),
+                other => codex_texts(other),
+            };
+            if env {
+                keep_continuations(&parts, env_calls);
+            }
+            let raw = output_text(&parts, env);
+            let (text, truncated) = cut(&raw, MAX_RESULT_CHARS);
+            Some((
+                "user",
+                TranscriptBlock::ToolResult {
+                    text: clean(&text, env),
+                    is_error: false,
+                    tool_use_id,
+                    truncated,
+                },
+            ))
+        }
+        _ => None,
+    }
+}
+
+/// A Codex tool output's parts as one text. A code-mode `exec` prints each command's result as
+/// JSON (`{"chunk_id", "exit_code", "output", …}`), also nested (a `Promise.allSettled` list,
+/// `{status, value}`, an MCP tool's `{content, isError}`): the texts in it are read out, so a
+/// dotenv file printed there reads as lines. Other JSON is kept as it is, its strings redacted as
+/// dotenv content when the call read a dotenv file (`env`).
+fn output_text(parts: &[String], env: bool) -> String {
+    let mut lines = Vec::new();
+    for part in parts {
+        match serde_json::from_str::<Value>(part) {
+            Ok(value @ (Value::Object(_) | Value::Array(_))) => {
+                let mut texts = Vec::new();
+                if is_code_mode_result(&value) {
+                    json_texts(&value, &mut texts);
+                }
+                if !texts.is_empty() {
+                    lines.push(joined(texts.into_iter().map(str::to_owned)));
+                } else if env {
+                    let mut value = value;
+                    redact_strings_as_env(&mut value);
+                    lines.push(value.to_string());
+                } else {
+                    lines.push(part.clone());
+                }
+            }
+            _ => lines.push(part.clone()),
+        }
+    }
+    joined(lines.into_iter())
+}
+
+/// The texts a code-mode result holds: each `output`, an MCP result's `content[].text`, a
+/// settled promise's `value`, `reason` or `error`, the strings of a list; other objects are
+/// searched.
+fn json_texts<'a>(value: &'a Value, texts: &mut Vec<&'a str>) {
+    match value {
+        Value::Object(map) => {
+            if let Some(Value::String(output)) = map.get("output") {
+                texts.push(output);
+            } else if let (Some("text"), Some(text)) =
+                (str_field(value, "type"), str_field(value, "text"))
+            {
+                // A content item (`{"type": "text", "text": …}`), also in a settled `value`.
+                texts.push(text);
+            } else if let Some(Value::Array(content)) = map.get("content") {
+                texts.extend(content.iter().filter_map(|item| str_field(item, "text")));
+            } else {
+                for key in ["value", "reason", "error"] {
+                    if let Some(Value::String(text)) = map.get(key) {
+                        texts.push(text);
+                    }
+                }
+                for item in map.values().filter(|v| v.is_object() || v.is_array()) {
+                    json_texts(item, texts);
+                }
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                match item {
+                    Value::String(text) => texts.push(text),
+                    other => json_texts(other, texts),
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Whether JSON is a code-mode result: it holds a command's result (`chunk_id`), a settled
+/// promise (`status` `fulfilled` or `rejected`) or an MCP tool's result (`content` and
+/// `isError`). Other JSON is shown as it is.
+fn is_code_mode_result(value: &Value) -> bool {
+    match value {
+        Value::Object(map) => {
+            map.contains_key("chunk_id")
+                || matches!(
+                    map.get("status").and_then(Value::as_str),
+                    Some("fulfilled" | "rejected")
+                )
+                || (map.get("content").is_some_and(Value::is_array) && map.contains_key("isError"))
+                || map.values().any(is_code_mode_result)
+        }
+        Value::Array(items) => items.iter().any(is_code_mode_result),
+        _ => false,
+    }
+}
+
+/// Every string of a JSON value redacted as dotenv content.
+fn redact_strings_as_env(value: &mut Value) {
+    match value {
+        Value::String(text) => *text = clean(text, true),
+        Value::Array(items) => items.iter_mut().for_each(redact_strings_as_env),
+        Value::Object(map) => map.values_mut().for_each(redact_strings_as_env),
+        _ => {}
+    }
+}
+
+/// Texts one after another, each on its own line.
+fn joined(texts: impl Iterator<Item = String>) -> String {
+    let mut text = String::new();
+    for part in texts {
+        if !text.is_empty() && !text.ends_with('\n') {
+            text.push('\n');
+        }
+        text.push_str(&part);
+    }
+    text
+}
+
+/// The texts of a Codex content value: a string, or the text parts of a list.
+fn codex_texts(content: Option<&Value>) -> Vec<String> {
+    match content {
+        Some(Value::String(text)) => vec![text.clone()],
+        Some(Value::Array(parts)) => parts
+            .iter()
+            .filter_map(|part| str_field(part, "text").map(str::to_owned))
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// Whether Codex added a user-role message (its environment context, a blocking hook's
+/// continuation) rather than a person typing it: its provenance says so when Codex wrote one
+/// (0.169: `harness` or `user`), else a text that opens as Codex's injected context does.
+fn codex_added(payload: &Value, text: &str) -> bool {
+    let kinds: Vec<&str> = payload
+        .get("internal_chat_message_metadata_passthrough")
+        .and_then(|meta| meta.get("content_item_metadata"))
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| item.get("provenance")?.get("type")?.as_str())
+                .filter(|kind| *kind != "unknown")
+                .collect()
+        })
+        .unwrap_or_default();
+    if !kinds.is_empty() {
+        return !kinds.contains(&"user");
+    }
+    is_codex_injected_context(text)
+}
+
+/// One Antigravity transcript step (SPEC-525): the person's request without the CLI's wrapper,
+/// the model's answer and tool calls, a system message, an API error, a tool step.
+fn antigravity_entry(line: u64, step: &Value, env_calls: &mut EnvCalls) -> Option<TranscriptEntry> {
+    let at = str_field(step, "created_at").map(str::to_owned);
+    let index = step
+        .get("step_index")
+        .and_then(Value::as_u64)
+        .unwrap_or(line);
+    let content = str_field(step, "content").filter(|text| !text.trim().is_empty());
+    let error = str_field(step, "error").filter(|text| !text.trim().is_empty());
+    let mut blocks = Vec::new();
+    let role = match (str_field(step, "source"), str_field(step, "type")) {
+        (_, Some("USER_INPUT")) => {
+            let request = user_request(content?);
+            if request.is_empty() {
+                return None;
+            }
+            blocks.push(text_block(&request, false));
+            "user"
+        }
+        (_, Some("PLANNER_RESPONSE")) => {
+            env_calls.steps_touch_env = false;
+            if let Some(text) = str_field(step, "thinking").filter(|t| !t.trim().is_empty()) {
+                let (text, truncated) = cut(text, MAX_THINKING_CHARS);
+                blocks.push(TranscriptBlock::Thinking {
+                    text: clean(&text, false),
+                    truncated,
+                });
+            }
+            if let Some(text) = content {
+                blocks.push(text_block(text, false));
+            }
+            let calls = step.get("tool_calls").and_then(Value::as_array);
+            for (n, call) in calls.into_iter().flatten().enumerate() {
+                let name = str_field(call, "name").unwrap_or("tool");
+                let input = antigravity_args(call.get("args"));
+                let (block, env) = tool_call(&format!("step-{index}-{n}"), name, input);
+                if env && name == "run_command" {
+                    env_calls.commands_touched_env = true;
+                }
+                // A command that went on as a task is read by `manage_task`.
+                env_calls.steps_touch_env |=
+                    env || (name == "manage_task" && env_calls.commands_touched_env);
+                blocks.push(block);
+            }
+            "assistant"
+        }
+        (_, Some("SYSTEM_MESSAGE")) => {
+            // A command that went on as a task reports its result as a system message
+            // (`Task id "…" finished with result: …`): redacted as dotenv content once a command
+            // on a dotenv file ran.
+            let text = content?;
+            // `finished with result`, `was canceled with result`.
+            let env = env_calls.commands_touched_env && text.contains(" with result");
+            let (text, truncated) = cut(text, MAX_RESULT_CHARS);
+            blocks.push(TranscriptBlock::Meta {
+                text: clean(&text, env),
+                truncated,
+            });
+            "system"
+        }
+        (Some("MODEL"), _) | (_, Some("ERROR_MESSAGE")) => {
+            let raw = error.or(content)?;
+            let is_error = error.is_some() || str_field(step, "status") == Some("ERROR");
+            let (text, truncated) = cut(raw, MAX_RESULT_CHARS);
+            blocks.push(TranscriptBlock::ToolResult {
+                tool_use_id: format!("step-{index}"),
+                text: clean(&text, env_calls.steps_touch_env),
+                is_error,
+                truncated,
+            });
+            "user"
+        }
+        _ => {
+            blocks.push(meta_block(content.or(error)?, MAX_RESULT_CHARS));
+            "system"
+        }
+    };
+    entry(line, role, at, false, blocks)
+}
+
+/// The person's words in an Antigravity `USER_INPUT`: the text inside `<USER_REQUEST>`, without
+/// the metadata the CLI adds after it; the whole content when there is no such tag.
+fn user_request(content: &str) -> String {
+    content
+        .split_once("<USER_REQUEST>")
+        .and_then(|(_, rest)| rest.split_once("</USER_REQUEST>"))
+        .map_or(content, |(request, _)| request)
+        .trim()
+        .to_owned()
+}
+
+/// An Antigravity tool call's arguments: each value is written as JSON text (`"\"ls\""`), read
+/// back as the value it holds.
+fn antigravity_args(args: Option<&Value>) -> Value {
+    match args {
+        Some(Value::Object(map)) => Value::Object(
+            map.iter()
+                .map(|(key, value)| {
+                    let value = match value {
+                        Value::String(text) => {
+                            serde_json::from_str(text).unwrap_or_else(|_| value.clone())
+                        }
+                        other => other.clone(),
+                    };
+                    (key.clone(), value)
+                })
+                .collect(),
+        ),
+        Some(other) => other.clone(),
+        None => Value::Null,
+    }
+}
+
+/// A tool call block: its input redacted (as dotenv content when it touches a dotenv file, whose
+/// result is then redacted the same way) and summarized; with whether it touches one.
+fn tool_call(id: &str, name: &str, mut input: Value) -> (TranscriptBlock, bool) {
+    let env = EnvCalls::touches_env(name, &input);
+    // A script that writes a dotenv file in a quoted string (`"…\n+KEY=value\n…"`, with `\n`
+    // escapes) has its lines apart, so each is redacted as a line.
+    if let (true, Value::String(script)) = (env, &mut input)
+        && script.contains("\\n")
+    {
+        *script = script.replace("\\n", "\n");
+    }
+    redact_value(&mut input, env);
+    // A patch is text: shown as written, not as a JSON string.
+    let pretty = match &input {
+        Value::String(text) => text.clone(),
+        other => serde_json::to_string_pretty(other).unwrap_or_default(),
+    };
+    let block = TranscriptBlock::ToolCall {
+        summary: tool_summary(name, &input),
+        diff: diff_of(name, &input),
+        input: bounded(&pretty, MAX_INPUT_CHARS),
+        id: id.to_owned(),
+        name: name.to_owned(),
+    };
+    (block, env)
 }
 
 fn text_block(text: &str, meta: bool) -> TranscriptBlock {
@@ -314,22 +910,16 @@ fn content_block(part: &Value, meta: bool, env_calls: &mut EnvCalls) -> Option<T
             })
         }
         "tool_use" | "server_tool_use" => {
-            let id = str_field(part, "id").unwrap_or("").to_owned();
-            let name = str_field(part, "name").unwrap_or("tool").to_owned();
-            let mut input = part.get("input").cloned().unwrap_or(Value::Null);
-            let env = EnvCalls::touches_env(&name, &input);
-            if env && !id.is_empty() {
-                env_calls.ids.insert(id.clone());
-            }
-            redact_value(&mut input, env);
-            let pretty = serde_json::to_string_pretty(&input).unwrap_or_default();
-            Some(TranscriptBlock::ToolCall {
-                summary: tool_summary(&name, &input),
-                diff: diff_of(&name, &input),
-                input: bounded(&pretty, MAX_INPUT_CHARS),
+            let id = str_field(part, "id").unwrap_or("");
+            let (block, env) = tool_call(
                 id,
-                name,
-            })
+                str_field(part, "name").unwrap_or("tool"),
+                part.get("input").cloned().unwrap_or(Value::Null),
+            );
+            if env && !id.is_empty() {
+                env_calls.ids.insert(id.to_owned());
+            }
+            Some(block)
         }
         "tool_result" => {
             let tool_use_id = str_field(part, "tool_use_id").unwrap_or("").to_owned();
@@ -643,7 +1233,7 @@ pub fn read_page_at(
         }
         if current < from {
             // Only tool calls matter before the page (dotenv tracking); skip the parse otherwise.
-            if memchr_tool_use(&buf)
+            if may_change_env_tracking(&buf)
                 && let Ok(record) = serde_json::from_slice::<Value>(&buf)
             {
                 let _ = entry_of(current, &record, &mut env_calls);
@@ -737,8 +1327,26 @@ pub fn read_tail(file: File, limit: usize, max_chars: usize) -> io::Result<Page>
     Ok(page)
 }
 
-fn memchr_tool_use(line: &[u8]) -> bool {
-    line.windows(10).any(|window| window == b"\"tool_use\"")
+/// Whether a line before a page can change the dotenv tracking: a tool call (Claude Code's
+/// `tool_use`, Codex's calls), an Antigravity model response (its `tool_calls` start the
+/// tracking, and each response ends the one before), or a Codex output naming a continuation.
+/// One pass over the line.
+fn may_change_env_tracking(line: &[u8]) -> bool {
+    const NEEDLES: [&[u8]; 5] = [
+        b"\"tool_use\"",
+        b"\"function_call\"",
+        b"\"custom_tool_call\"",
+        b"\"local_shell_call\"",
+        b"\"PLANNER_RESPONSE\"",
+    ];
+    // A tracked call's output that says what it goes on as (`keep_continuations`).
+    const CONTINUATIONS: [&[u8]; 2] = [b"Script running with cell ID", b"session_id"];
+    line.iter().enumerate().any(|(at, byte)| {
+        (*byte == b'"' && NEEDLES.iter().any(|needle| line[at..].starts_with(needle)))
+            || CONTINUATIONS
+                .iter()
+                .any(|needle| line[at..].starts_with(needle))
+    })
 }
 
 /// Passages read for the index from a byte offset.
@@ -1419,5 +2027,783 @@ mod tests {
         assert_eq!(buf, b"bb");
         assert_eq!(read_line(&mut reader, &mut buf, 3)?, LineRead::Eof);
         Ok(())
+    }
+
+    /// A harness fixture of `yulius-harness` (SPEC-525): the formats as the real CLIs wrote them.
+    fn fixture(name: &str) -> Result<std::path::PathBuf, Box<dyn std::error::Error>> {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../yulius-harness/tests/fixtures")
+            .join(name);
+        if !path.is_file() {
+            return Err(format!("missing fixture {}", path.display()).into());
+        }
+        Ok(path)
+    }
+
+    /// An entry as one line per block: `role kind text`, the text cut to 40 characters.
+    fn shape(entries: &[TranscriptEntry]) -> Vec<String> {
+        let short = |text: &str| {
+            text.chars()
+                .take(40)
+                .collect::<String>()
+                .trim_end()
+                .to_owned()
+        };
+        entries
+            .iter()
+            .flat_map(|entry| {
+                entry.blocks.iter().map(|block| {
+                    let what = match block {
+                        TranscriptBlock::Text { text, .. } => format!("text {}", short(text)),
+                        TranscriptBlock::Thinking { text, .. } => {
+                            format!("thinking {}", short(text))
+                        }
+                        TranscriptBlock::ToolCall {
+                            id, name, summary, ..
+                        } => {
+                            format!("call {id} {name}: {}", short(summary))
+                        }
+                        TranscriptBlock::ToolResult {
+                            tool_use_id,
+                            text,
+                            is_error,
+                            ..
+                        } => format!(
+                            "{} {tool_use_id} {}",
+                            if *is_error { "error" } else { "result" },
+                            short(text)
+                        ),
+                        TranscriptBlock::Image { .. } => "image".to_owned(),
+                        TranscriptBlock::Meta { text, .. } => format!("meta {}", short(text)),
+                    };
+                    format!("{} {what}", entry.role)
+                })
+            })
+            .collect()
+    }
+
+    fn write_lines(
+        dir: &Path,
+        lines: &[Value],
+    ) -> Result<std::path::PathBuf, Box<dyn std::error::Error>> {
+        let path = dir.join("t.jsonl");
+        let mut text = String::new();
+        for line in lines {
+            text.push_str(&serde_json::to_string(line)?);
+            text.push('\n');
+        }
+        std::fs::write(&path, text)?;
+        Ok(path)
+    }
+
+    /// SPEC-525 WCX-001: a Codex rollout reads as its prompts, answers, reasoning, tool calls and
+    /// results (it read as nothing, so a watcher saw "Codex is starting…" for the whole run).
+    /// Codex's own instructions are left out; context it added is shown quietly.
+    #[test]
+    fn a_codex_rollout_reads_as_prompts_answers_and_tool_calls() -> TestResult {
+        let tail = read_tail(
+            File::open(fixture("codex/rollout.jsonl")?)?,
+            100,
+            MAX_PAGE_CHARS,
+        )?;
+        assert_eq!(
+            shape(&tail.entries),
+            vec![
+                "user meta <environment_context>\n  <cwd>/work/demo<",
+                "user text Add a greeting function and test it.",
+                "assistant call call_01 exec_command: cargo test",
+                "user result call_01 test result: ok. 3 passed",
+                "assistant text Tests pass. Added `greet`.",
+                "user text Now make it greet in Polish: cześć.",
+                "assistant call call_02 apply_patch: src/lib.rs",
+                "user result call_02 Success. Updated the following files:\nM",
+                "assistant text Done: `greet` now returns \"cześć\".",
+                "summary text Synthetic compaction summary.",
+            ]
+        );
+        let at = tail.entries[1].at.as_deref();
+        assert_eq!(at, Some("2026-11-09T10:00:03.000Z"));
+        let TranscriptBlock::ToolCall { input, .. } = &tail.entries[6].blocks[0] else {
+            return Err("the patch".into());
+        };
+        assert!(
+            input.starts_with("*** Begin Patch\n"),
+            "a patch reads as written: {input}"
+        );
+
+        // Codex 0.169 marks what it added by provenance: its continuation after a blocking Stop
+        // hook is shown quietly, the person's prompts as prompts.
+        let blocked = read_tail(
+            File::open(fixture("codex/exec-0.169.0-stop-block.jsonl")?)?,
+            100,
+            MAX_PAGE_CHARS,
+        )?;
+        let shapes = shape(&blocked.entries);
+        assert_eq!(shapes[1], "user text Say hi");
+        assert_eq!(shapes[2], "assistant text Synthetic answer 1.");
+        assert!(
+            shapes[3].starts_with("user meta <hook_prompt"),
+            "{shapes:?}"
+        );
+        assert_eq!(shapes[4], "assistant text Synthetic answer 2.");
+        assert_eq!(shapes.len(), 5, "{shapes:?}");
+
+        // A reasoning summary is the model's visible thinking; a shell call reads its command.
+        let dir = tempfile::tempdir()?;
+        let path = write_lines(
+            dir.path(),
+            &[
+                json!({"type": "response_item", "payload": {"type": "reasoning", "summary": [{"type": "summary_text", "text": "**Plan** the greeting"}], "encrypted_content": "eA=="}}),
+                json!({"type": "response_item", "payload": {"type": "function_call", "name": "shell", "arguments": "{\"command\":[\"bash\",\"-lc\",\"ls src\"]}", "call_id": "c9"}}),
+                json!({"type": "response_item", "payload": {"type": "function_call_output", "call_id": "c9", "output": {"content": "lib.rs", "success": true}}}),
+            ],
+        )?;
+        let page = read_page(File::open(&path)?, 0, 100, MAX_PAGE_CHARS)?;
+        assert_eq!(
+            shape(&page.entries),
+            vec![
+                "assistant thinking **Plan** the greeting",
+                "assistant call c9 shell: bash -lc ls src",
+                "user result c9 lib.rs",
+            ]
+        );
+        Ok(())
+    }
+
+    /// SPEC-525 WCX-002: an Antigravity transcript reads as the person's requests (without the
+    /// CLI's wrapper), the model's answers and tool calls, its tool steps and errors.
+    #[test]
+    fn an_antigravity_transcript_reads_as_requests_answers_and_tool_steps() -> TestResult {
+        let quota = read_tail(
+            File::open(fixture("antigravity/quota-1.5.10.jsonl")?)?,
+            100,
+            MAX_PAGE_CHARS,
+        )?;
+        let shapes = shape(&quota.entries);
+        assert_eq!(
+            shapes[..4],
+            [
+                "user text Say hello",
+                "assistant text Hello from the stub.",
+                "user text Run the probe command",
+                "system meta The following is a <SYSTEM_MESSAGE> not",
+            ]
+        );
+        assert_eq!(
+            shapes[7],
+            "user error step-7 API error (attempt 1): Error 429, Messag"
+        );
+        assert_eq!(quota.entries[0].at.as_deref(), Some("2026-11-17T17:09:20Z"));
+
+        let tool = read_tail(
+            File::open(fixture("antigravity/tool-1.5.10.jsonl")?)?,
+            100,
+            MAX_PAGE_CHARS,
+        )?;
+        assert_eq!(
+            shape(&tool.entries),
+            vec![
+                "user error step-5 invalid arguments:\n- missing property 't",
+                "assistant text Hello from the stub.",
+                "user text run a command",
+                "system meta The following is a <SYSTEM_MESSAGE> not",
+                "assistant call step-9-0 run_command: echo probe-ran",
+                "user error step-10 tool call denied by pre-tool hook:",
+                "assistant text Hello from the stub.",
+            ]
+        );
+        Ok(())
+    }
+
+    /// SPEC-525 WCX-003: what a Codex or Antigravity command printed from a dotenv file is
+    /// redacted as dotenv content, also on a page or a tail that starts after the call.
+    #[test]
+    fn a_dotenv_read_by_codex_or_antigravity_is_redacted_on_every_page() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let codex = write_lines(
+            dir.path(),
+            &[
+                json!({"type": "response_item", "payload": {"type": "function_call", "name": "exec_command", "arguments": "{\"cmd\":\"cat .env\"}", "call_id": "e1"}}),
+                json!({"type": "response_item", "payload": {"type": "function_call_output", "call_id": "e1", "output": "SHOP_PASSPHRASE=plainvalue42\nPORT=3000"}}),
+                json!({"type": "response_item", "payload": {"type": "function_call", "name": "exec_command", "arguments": "{\"cmd\":\"echo SHOP_PASSPHRASE=plainvalue42\"}", "call_id": "e2"}}),
+                json!({"type": "response_item", "payload": {"type": "function_call_output", "call_id": "e2", "output": "done"}}),
+            ],
+        )?;
+        for page in [
+            read_page(File::open(&codex)?, 0, 100, MAX_PAGE_CHARS)?,
+            read_page(File::open(&codex)?, 1, 1, MAX_PAGE_CHARS)?,
+            read_tail(File::open(&codex)?, 3, MAX_PAGE_CHARS)?,
+        ] {
+            let result = page
+                .entries
+                .iter()
+                .find(|e| e.line == 1)
+                .ok_or("the output")?;
+            let TranscriptBlock::ToolResult { text, .. } = &result.blocks[0] else {
+                return Err("tool result".into());
+            };
+            assert!(
+                text.contains("SHOP_PASSPHRASE=[REDACTED:") && text.contains("PORT=3000"),
+                "{text}"
+            );
+        }
+
+        let agy = dir.path().join("agy");
+        std::fs::create_dir_all(&agy)?;
+        let agy = write_lines(
+            &agy,
+            &[
+                json!({"step_index": 0, "source": "MODEL", "type": "PLANNER_RESPONSE", "status": "DONE", "tool_calls": [{"name": "run_command", "args": {"CommandLine": "\"cat .env\""}}]}),
+                json!({"step_index": 1, "source": "MODEL", "type": "RUN_COMMAND", "status": "DONE", "content": "SHOP_PASSPHRASE=plainvalue42"}),
+                json!({"step_index": 2, "source": "MODEL", "type": "PLANNER_RESPONSE", "status": "DONE", "content": "Read it."}),
+                json!({"step_index": 3, "source": "MODEL", "type": "RUN_COMMAND", "status": "DONE", "content": "MODE=plain"}),
+            ],
+        )?;
+        for page in [
+            read_page(File::open(&agy)?, 0, 100, MAX_PAGE_CHARS)?,
+            read_page(File::open(&agy)?, 1, 100, MAX_PAGE_CHARS)?,
+            read_tail(File::open(&agy)?, 3, MAX_PAGE_CHARS)?,
+        ] {
+            let texts = shape(&page.entries);
+            assert!(
+                texts
+                    .iter()
+                    .any(|t| t.starts_with("user result step-1 SHOP_PASSPHRASE=[REDACTED:")),
+                "{texts:?}"
+            );
+            assert!(
+                texts.iter().any(|t| t == "user result step-3 MODE=plain"),
+                "a later step's output is not dotenv content: {texts:?}"
+            );
+        }
+        Ok(())
+    }
+
+    /// Two dotenv values no generic pattern catches: only dotenv redaction hides them.
+    const ENV_TWO: &str = "SHOP_REGION=eu-north-7b\nMAIL_DOMAIN=mg.shop.example";
+
+    /// Reads `lines` from the start, from a page after the call (line 1, without and with the
+    /// cursor a first read kept) and as a tail, and checks the dotenv values never show.
+    fn assert_env_hidden(name: &str, lines: &[Value]) -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let path = write_lines(dir.path(), lines)?;
+        let (_, kept) = read_page_at(File::open(&path)?, None, 0, 1, MAX_PAGE_CHARS)?;
+        let last = u64::try_from(lines.len())? - 1;
+        let reads = [
+            (
+                "start",
+                read_page(File::open(&path)?, 0, 100, MAX_PAGE_CHARS)?,
+            ),
+            (
+                "page",
+                read_page(File::open(&path)?, 1, 100, MAX_PAGE_CHARS)?,
+            ),
+            (
+                "kept cursor",
+                read_page_at(File::open(&path)?, Some(&kept), 1, 100, MAX_PAGE_CHARS)?.0,
+            ),
+            ("tail", read_tail(File::open(&path)?, 1, MAX_PAGE_CHARS)?),
+            (
+                "last line",
+                read_page(File::open(&path)?, last, 100, MAX_PAGE_CHARS)?,
+            ),
+        ];
+        for (how, page) in reads {
+            assert!(!page.entries.is_empty(), "{name} ({how}): no entries");
+            let text = serde_json::to_string(&page.entries)?;
+            assert!(
+                !text.contains("eu-north-7b") && !text.contains("mg.shop.example"),
+                "{name} ({how}): {text}"
+            );
+        }
+        Ok(())
+    }
+
+    /// SPEC-525 WCX-003, on the shapes the real CLIs write (review round 1): Codex 0.169 runs
+    /// commands from a code-mode `exec` script whose output parts wrap the command's in JSON,
+    /// `shell_command` is the bundled models' shell, a patch adds dotenv lines with `+`;
+    /// Antigravity 1.5.10 names a file `Path` and numbers `read_file`'s lines `1: `.
+    #[test]
+    fn dotenv_reads_in_the_real_cli_shapes_are_redacted() -> TestResult {
+        let wrapped = serde_json::to_string(
+            &json!({"chunk_id": "ab12cd", "wall_time_seconds": 0.01, "exit_code": 0, "original_token_count": 9, "output": format!("{ENV_TWO}\n")}),
+        )?;
+        assert_env_hidden(
+            "codex exec",
+            &[
+                json!({"type": "response_item", "payload": {"type": "custom_tool_call", "status": "completed", "call_id": "c1", "name": "exec", "input": "text(await tools.exec_command({cmd:`cat .env`}))\n"}}),
+                json!({"type": "response_item", "payload": {"type": "custom_tool_call_output", "call_id": "c1", "output": [{"type": "input_text", "text": "Script completed\nWall time 0.1 seconds\nOutput:\n"}, {"type": "input_text", "text": wrapped}]}}),
+            ],
+        )?;
+        assert_env_hidden(
+            "codex shell_command",
+            &[
+                json!({"type": "response_item", "payload": {"type": "function_call", "name": "shell_command", "arguments": "{\"command\":\"cat .env\",\"workdir\":\"/w\"}", "call_id": "s1"}}),
+                json!({"type": "response_item", "payload": {"type": "function_call_output", "call_id": "s1", "output": format!("Exit code: 0\nWall time: 0.1 seconds\nOutput:\n{ENV_TWO}\n")}}),
+            ],
+        )?;
+        for patch in [
+            "*** Begin Patch\n*** Add File: .env\n+SHOP_REGION=eu-north-7b\n+MAIL_DOMAIN=mg.shop.example\n*** End Patch",
+            "*** Begin Patch\n*** Update File: apps/web/.env.local\n@@\n-SHOP_REGION=us-east\n+SHOP_REGION=eu-north-7b\n MAIL_DOMAIN=mg.shop.example\n*** End Patch",
+        ] {
+            assert_env_hidden(
+                "codex apply_patch",
+                &[
+                    json!({"type": "response_item", "payload": {"type": "custom_tool_call", "status": "completed", "call_id": "p1", "name": "apply_patch", "input": patch}}),
+                    json!({"type": "response_item", "payload": {"type": "custom_tool_call_output", "call_id": "p1", "output": "Success."}}),
+                ],
+            )?;
+        }
+        let stamps = "Created At: 2026-11-19T15:18:15Z\nCompleted At: 2026-11-19T15:18:15Z\n";
+        assert_env_hidden(
+            "agy read_file",
+            &[
+                json!({"step_index": 0, "source": "MODEL", "type": "PLANNER_RESPONSE", "status": "DONE", "tool_calls": [{"name": "read_file", "args": {"Path": "\"/w/.env\""}}]}),
+                json!({"step_index": 1, "source": "MODEL", "type": "GENERIC", "status": "DONE", "content": format!("{stamps}Showing lines 1-2 of 2\n1: SHOP_REGION=eu-north-7b\n2: MAIL_DOMAIN=mg.shop.example")}),
+            ],
+        )?;
+        assert_env_hidden(
+            "agy write_file",
+            &[
+                json!({"step_index": 0, "source": "MODEL", "type": "PLANNER_RESPONSE", "status": "DONE", "tool_calls": [{"name": "write_file", "args": {"Path": "\"/w/.env\"", "Overwrite": "true", "Content": serde_json::to_string(&format!("{ENV_TWO}\n"))?}}]}),
+                json!({"step_index": 1, "source": "MODEL", "type": "GENERIC", "status": "DONE", "content": format!("{stamps}Created file.")}),
+            ],
+        )?;
+        assert_env_hidden(
+            "agy edit_file",
+            &[
+                json!({"step_index": 0, "source": "MODEL", "type": "PLANNER_RESPONSE", "status": "DONE", "tool_calls": [{"name": "edit_file", "args": {"Path": "\"/w/.env\"", "Target": "\"SHOP_REGION=us-east\"", "Replacement": "\"SHOP_REGION=eu-north-7b\\nMAIL_DOMAIN=mg.shop.example\""}}]}),
+                json!({"step_index": 1, "source": "MODEL", "type": "GENERIC", "status": "DONE", "content": format!("{stamps}Edited file.")}),
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// SPEC-525, review round 1: the real shapes read cleanly. A code-mode call's summary is its
+    /// command and its result the command's output; Antigravity's thinking is shown and its file
+    /// tools name their file; an empty compaction is no entry; a typed prompt that opens with a
+    /// tag stays a prompt when the rollout has no provenance.
+    #[test]
+    fn the_real_cli_shapes_read_as_commands_outputs_and_thinking() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let wrapped = serde_json::to_string(
+            &json!({"chunk_id": "ab12cd", "exit_code": 0, "output": "lib.rs\nmain.rs\n"}),
+        )?;
+        let path = write_lines(
+            dir.path(),
+            &[
+                json!({"type": "response_item", "payload": {"type": "custom_tool_call", "call_id": "c1", "name": "exec", "input": "text(await tools.exec_command({cmd:`ls src`, yield_time_ms: 1000}))\n"}}),
+                json!({"type": "response_item", "payload": {"type": "custom_tool_call_output", "call_id": "c1", "output": [{"type": "input_text", "text": "Script completed\nWall time 0.1 seconds\nOutput:\n"}, {"type": "input_text", "text": wrapped}]}}),
+                json!({"type": "compacted", "payload": {"message": "", "replacement_history": []}}),
+                json!({"type": "response_item", "payload": {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "<div> breaks the layout"}]}}),
+                json!({"type": "response_item", "payload": {"type": "custom_tool_call", "call_id": "c2", "name": "exec", "input": "const a = 1;\ntext(String(a))\n"}}),
+            ],
+        )?;
+        let page = read_page(File::open(&path)?, 0, 100, MAX_PAGE_CHARS)?;
+        assert_eq!(
+            shape(&page.entries),
+            vec![
+                "assistant call c1 exec: ls src",
+                "user result c1 Script completed\nWall time 0.1 seconds\nO",
+                "user text <div> breaks the layout",
+                "assistant call c2 exec: const a = 1; text(String(a))",
+            ]
+        );
+        let TranscriptBlock::ToolResult { text, .. } = &page.entries[1].blocks[0] else {
+            return Err("the output".into());
+        };
+        assert!(
+            text.ends_with("Output:\nlib.rs\nmain.rs\n"),
+            "the command's own output: {text:?}"
+        );
+
+        let agy = dir.path().join("agy");
+        std::fs::create_dir_all(&agy)?;
+        let path = write_lines(
+            &agy,
+            &[
+                json!({"step_index": 0, "source": "MODEL", "type": "PLANNER_RESPONSE", "status": "DONE", "thinking": "Check the cart first.", "tool_calls": [{"name": "read_file", "args": {"Path": "\"/w/src/cart.ts\"", "StartLine": "1"}}]}),
+            ],
+        )?;
+        let page = read_page(File::open(&path)?, 0, 100, MAX_PAGE_CHARS)?;
+        assert_eq!(
+            shape(&page.entries),
+            vec![
+                "assistant thinking Check the cart first.",
+                "assistant call step-0-0 read_file: /w/src/cart.ts",
+            ]
+        );
+        Ok(())
+    }
+
+    fn exec_call(id: &str, script: &str) -> Value {
+        json!({"type": "response_item", "payload": {"type": "custom_tool_call", "status": "completed", "call_id": id, "name": "exec", "input": script}})
+    }
+
+    fn exec_output(id: &str, parts: &[Value]) -> Value {
+        let mut list = vec![
+            json!({"type": "input_text", "text": "Script completed\nWall time 0.1 seconds\nOutput:\n"}),
+        ];
+        for part in parts {
+            let text = match part {
+                Value::String(text) => text.clone(),
+                other => other.to_string(),
+            };
+            list.push(json!({"type": "input_text", "text": text}));
+        }
+        json!({"type": "response_item", "payload": {"type": "custom_tool_call_output", "call_id": id, "output": list}})
+    }
+
+    fn chunk(output: &str) -> Value {
+        json!({"chunk_id": "ab12cd", "wall_time_seconds": 0.01, "exit_code": 0, "original_token_count": 9, "output": output})
+    }
+
+    /// SPEC-525 WCX-003, review round 2: a code-mode script prints its results nested (a
+    /// `Promise.allSettled` list, `{status, value}` one by one, a list of wrappers or of strings,
+    /// an MCP tool's `{content, isError}`), quotes its command with escapes, or yields and is read
+    /// on by a later `wait` or `write_stdin`; a patch can come as a function call; an
+    /// Antigravity command can go on as a task read by `manage_task` after the next response, and
+    /// an MCP tool keeps its path inside `Arguments`. Every one hides the dotenv values.
+    #[test]
+    fn dotenv_reads_nested_escaped_or_continued_are_redacted() -> TestResult {
+        let env = format!("{ENV_TWO}\n");
+        let all = "const r = await Promise.allSettled([tools.exec_command({cmd:`cat .env`}), tools.exec_command({cmd:`ls`})]);\ntext(r)\n";
+        let cases: Vec<(&str, Vec<Value>)> = vec![
+            (
+                "allSettled list",
+                vec![
+                    exec_call("c1", all),
+                    exec_output(
+                        "c1",
+                        &[
+                            json!([{"status": "fulfilled", "value": chunk(&env)}, {"status": "fulfilled", "value": chunk("src\n")}]),
+                        ],
+                    ),
+                ],
+            ),
+            (
+                "allSettled one by one",
+                vec![
+                    exec_call("c1", all),
+                    exec_output(
+                        "c1",
+                        &[
+                            json!({"status": "fulfilled", "value": chunk(&env)}),
+                            json!({"status": "fulfilled", "value": chunk("src\n")}),
+                        ],
+                    ),
+                ],
+            ),
+            (
+                "list of wrappers",
+                vec![
+                    exec_call("c1", all),
+                    exec_output("c1", &[json!([chunk(&env), chunk("src\n")])]),
+                ],
+            ),
+            (
+                "list of strings",
+                vec![exec_call("c1", all), exec_output("c1", &[json!([env])])],
+            ),
+            (
+                "an unknown JSON shape",
+                vec![
+                    exec_call("c1", all),
+                    exec_output("c1", &[json!({"results": {"first": {"text_of_it": env}}})]),
+                ],
+            ),
+            (
+                "MCP result",
+                vec![
+                    exec_call(
+                        "c1",
+                        "text(await tools.mcp__fs__read_file({path:`/w/.env`}))\n",
+                    ),
+                    exec_output(
+                        "c1",
+                        &[json!({"content": [{"type": "text", "text": env}], "isError": false})],
+                    ),
+                ],
+            ),
+            (
+                "double quotes and a newline escape",
+                vec![
+                    exec_call(
+                        "c1",
+                        "text(await tools.exec_command({cmd:\"cat .env\\ncat package.json\"}))\n",
+                    ),
+                    exec_output("c1", &[chunk(&env)]),
+                ],
+            ),
+            (
+                "escaped quotes around the file",
+                vec![
+                    exec_call(
+                        "c1",
+                        "text(await tools.exec_command({cmd:\"cat \\\".env\\\"\"}))\n",
+                    ),
+                    exec_output("c1", &[chunk(&env)]),
+                ],
+            ),
+            (
+                "bash -lc with escaped quotes",
+                vec![
+                    exec_call(
+                        "c1",
+                        "text(await tools.exec_command({cmd:\"bash -lc \\\"cat .env\\\"\"}))\n",
+                    ),
+                    exec_output("c1", &[chunk(&env)]),
+                ],
+            ),
+            (
+                "write_stdin continuation",
+                vec![
+                    exec_call(
+                        "c1",
+                        "text(await tools.exec_command({cmd:`sleep 2; cat .env`, yield_time_ms: 1000}))\n",
+                    ),
+                    exec_output(
+                        "c1",
+                        &[
+                            json!({"chunk_id": "a", "wall_time_seconds": 1.0, "session_id": 7, "original_token_count": 0, "output": ""}),
+                        ],
+                    ),
+                    exec_call(
+                        "c2",
+                        "text(await tools.write_stdin({session_id: 7, chars: ``, yield_time_ms: 3000}))\n",
+                    ),
+                    exec_output("c2", &[chunk(&env)]),
+                ],
+            ),
+            (
+                "wait continuation",
+                vec![
+                    exec_call(
+                        "c1",
+                        "text(await tools.exec_command({cmd:`sleep 20; cat .env`}))\n",
+                    ),
+                    exec_output("c1", &[json!("Script running with cell ID 5")]),
+                    json!({"type": "response_item", "payload": {"type": "function_call", "name": "wait", "arguments": "{\"cell_id\":\"5\",\"yield_time_ms\":10000}", "call_id": "w1"}}),
+                    json!({"type": "response_item", "payload": {"type": "function_call_output", "call_id": "w1", "output": [{"type": "input_text", "text": "Script completed\nOutput:\n"}, {"type": "input_text", "text": chunk(&env).to_string()}]}}),
+                ],
+            ),
+            (
+                "patch heredoc in double quotes",
+                vec![
+                    exec_call(
+                        "c1",
+                        "text(await tools.exec_command({cmd:\"apply_patch <<'PATCH'\\n*** Begin Patch\\n*** Add File: .env\\n+SHOP_REGION=eu-north-7b\\n+MAIL_DOMAIN=mg.shop.example\\n*** End Patch\\nPATCH\"}))\n",
+                    ),
+                    exec_output("c1", &[chunk("Success.\n")]),
+                ],
+            ),
+            (
+                "function-style apply_patch",
+                vec![
+                    json!({"type": "response_item", "payload": {"type": "function_call", "name": "apply_patch", "arguments": json!({"input": "*** Begin Patch\n*** Add File: .env\n+SHOP_REGION=eu-north-7b\n+MAIL_DOMAIN=mg.shop.example\n*** End Patch"}).to_string(), "call_id": "p1"}}),
+                    json!({"type": "response_item", "payload": {"type": "function_call_output", "call_id": "p1", "output": "Success."}}),
+                ],
+            ),
+            (
+                "unparsed shell arguments",
+                vec![
+                    json!({"type": "response_item", "payload": {"type": "function_call", "name": "shell_command", "arguments": "cat .env", "call_id": "u1"}}),
+                    json!({"type": "response_item", "payload": {"type": "function_call_output", "call_id": "u1", "output": env.clone()}}),
+                ],
+            ),
+            (
+                "local_shell_call",
+                vec![
+                    json!({"type": "response_item", "payload": {"type": "local_shell_call", "call_id": "l1", "status": "completed", "action": {"type": "exec", "command": ["bash", "-lc", "cat .env"]}}}),
+                    json!({"type": "response_item", "payload": {"type": "local_shell_call_output", "call_id": "l1", "output": env.clone()}}),
+                ],
+            ),
+            (
+                "agy async command read by manage_task",
+                vec![
+                    json!({"step_index": 0, "source": "MODEL", "type": "PLANNER_RESPONSE", "status": "DONE", "tool_calls": [{"name": "run_command", "args": {"CommandLine": "\"sleep 9; cat .env\"", "WaitMsBeforeAsync": "1000"}}]}),
+                    json!({"step_index": 1, "source": "MODEL", "type": "GENERIC", "status": "RUNNING", "content": "Command is running as task t1."}),
+                    json!({"step_index": 2, "source": "MODEL", "type": "PLANNER_RESPONSE", "status": "DONE", "tool_calls": [{"name": "manage_task", "args": {"Action": "\"status\"", "TaskId": "\"t1\""}}]}),
+                    json!({"step_index": 3, "source": "MODEL", "type": "GENERIC", "status": "DONE", "content": format!("Command output:\n{ENV_TWO}")}),
+                ],
+            ),
+            (
+                "agy call_mcp_tool",
+                vec![
+                    json!({"step_index": 0, "source": "MODEL", "type": "PLANNER_RESPONSE", "status": "DONE", "tool_calls": [{"name": "call_mcp_tool", "args": {"ServerName": "\"fs\"", "ToolName": "\"read\"", "Arguments": "{\"path\":\"/w/.env\"}"}}]}),
+                    json!({"step_index": 1, "source": "MODEL", "type": "GENERIC", "status": "DONE", "content": ENV_TWO}),
+                ],
+            ),
+        ];
+        let async_result = |body: &str| json!({"step_index": 3, "source": "SYSTEM", "type": "SYSTEM_MESSAGE", "status": "DONE", "content": format!("The following is a <SYSTEM_MESSAGE> not actually sent by the user. <SYSTEM_MESSAGE> [Message] timestamp=2026-11-19T10:00:00Z sender=abc/task-1 priority=MESSAGE_PRIORITY_HIGH content=Task id \"abc/task-1\" finished with result: {body}</SYSTEM_MESSAGE>")});
+        let went_async = [
+            json!({"step_index": 0, "source": "MODEL", "type": "PLANNER_RESPONSE", "status": "DONE", "tool_calls": [{"name": "run_command", "args": {"CommandLine": "\"sleep 9; cat .env\"", "WaitMsBeforeAsync": "1000"}}]}),
+            json!({"step_index": 1, "source": "MODEL", "type": "GENERIC", "status": "RUNNING", "content": "Tool is running as a background task with task id: abc/task-1"}),
+            json!({"step_index": 2, "source": "MODEL", "type": "PLANNER_RESPONSE", "status": "DONE", "content": "Waiting."}),
+        ];
+        let round_three: Vec<(&str, Vec<Value>)> = vec![
+            (
+                "agy async result as a system message",
+                went_async
+                    .iter()
+                    .cloned()
+                    .chain([async_result(&format!(
+                        "Command exited with code 0\nOutput:\n{ENV_TWO}\n"
+                    ))])
+                    .collect(),
+            ),
+            (
+                "agy async one-line result",
+                went_async
+                    .iter()
+                    .cloned()
+                    .chain([async_result(
+                        "Command exited with code 0\nOutput:\nSHOP_REGION=eu-north-7b\n",
+                    )])
+                    .collect(),
+            ),
+            (
+                "agy async numbered result",
+                went_async
+                    .iter()
+                    .cloned()
+                    .chain([async_result(
+                        "Output:\n1: SHOP_REGION=eu-north-7b\n2: MAIL_DOMAIN=mg.shop.example\n",
+                    )])
+                    .collect(),
+            ),
+            (
+                "write_stdin through a map shorthand",
+                vec![
+                    exec_call(
+                        "c1",
+                        "text(await tools.exec_command({cmd:`sleep 2; cat .env`, yield_time_ms: 1000}))\n",
+                    ),
+                    exec_output(
+                        "c1",
+                        &[
+                            json!({"chunk_id": "a", "wall_time_seconds": 1.0, "session_id": 7, "original_token_count": 0, "output": ""}),
+                        ],
+                    ),
+                    exec_call(
+                        "c2",
+                        "for (const r of await Promise.allSettled([7,9].map(session_id=>tools.write_stdin({session_id,chars:\"\",yield_time_ms:3000})))) text(r.value)\n",
+                    ),
+                    exec_output("c2", &[chunk(&env), chunk("ok\n")]),
+                ],
+            ),
+            (
+                "write_stdin with the id in a variable",
+                vec![
+                    exec_call(
+                        "c1",
+                        "text(await tools.exec_command({cmd:`sleep 2; cat .env`, yield_time_ms: 1000}))\n",
+                    ),
+                    exec_output(
+                        "c1",
+                        &[
+                            json!({"chunk_id": "a", "wall_time_seconds": 1.0, "session_id": 7, "original_token_count": 0, "output": ""}),
+                        ],
+                    ),
+                    exec_call(
+                        "c2",
+                        "const id = 7;\ntext(await tools.write_stdin({session_id: id, chars: ``}))\n",
+                    ),
+                    exec_output("c2", &[chunk(&env)]),
+                ],
+            ),
+        ];
+        for (name, lines) in cases.into_iter().chain(round_three) {
+            assert_env_hidden(name, &lines)?;
+        }
+        Ok(())
+    }
+
+    /// SPEC-525, review round 2: nested results read as the commands' own output (not JSON), and
+    /// an Antigravity request with nothing in it is no entry.
+    #[test]
+    fn nested_code_mode_results_read_as_their_outputs() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let path = write_lines(
+            dir.path(),
+            &[
+                exec_call(
+                    "c1",
+                    "text(await Promise.allSettled([tools.exec_command({cmd:`ls`}), tools.view({path:`a`}), tools.exec_command({cmd:`false`})]))\n",
+                ),
+                exec_output(
+                    "c1",
+                    &[
+                        json!([{"status": "fulfilled", "value": chunk("src\n")}, {"status": "fulfilled", "value": "file body"}, {"status": "rejected", "reason": "exit 1"}]),
+                    ],
+                ),
+                json!({"step_index": 0, "source": "USER_EXPLICIT", "type": "USER_INPUT", "status": "DONE", "content": "<USER_REQUEST>\n</USER_REQUEST>"}),
+                exec_call("c2", "text(await tools.mcp__x__list({}))\n"),
+                exec_output(
+                    "c2",
+                    &[json!({"items": ["alpha", "beta"], "total": 2, "next": "cursor-3"})],
+                ),
+            ],
+        )?;
+        let page = read_page(File::open(&path)?, 0, 100, MAX_PAGE_CHARS)?;
+        assert_eq!(page.entries.len(), 4, "{:?}", shape(&page.entries));
+        let result = |n: usize| match &page.entries[n].blocks[0] {
+            TranscriptBlock::ToolResult { text, .. } => Ok(text.clone()),
+            _ => Err("the output"),
+        };
+        assert_eq!(
+            result(1)?,
+            "Script completed\nWall time 0.1 seconds\nOutput:\nsrc\nfile body\nexit 1"
+        );
+        // JSON that is no code-mode result is shown whole.
+        assert_eq!(
+            result(3)?,
+            "Script completed\nWall time 0.1 seconds\nOutput:\n{\"items\":[\"alpha\",\"beta\"],\"next\":\"cursor-3\",\"total\":2}"
+        );
+        Ok(())
+    }
+
+    /// SPEC-525, review round 4: a settled promise whose `value` is a list of content items
+    /// shows their texts; a background task cancelled with a result is redacted as one finished.
+    #[test]
+    fn settled_content_items_show_and_cancelled_results_are_redacted() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let path = write_lines(
+            dir.path(),
+            &[
+                exec_call(
+                    "c1",
+                    "text(await Promise.allSettled([tools.exec_command({cmd:`ls`}), tools.mcp__x__read({})]))\n",
+                ),
+                exec_output(
+                    "c1",
+                    &[
+                        json!([{"status": "fulfilled", "value": chunk("src\n")}, {"status": "fulfilled", "value": [{"type": "text", "text": "page one"}]}]),
+                    ],
+                ),
+            ],
+        )?;
+        let page = read_page(File::open(&path)?, 0, 100, MAX_PAGE_CHARS)?;
+        let TranscriptBlock::ToolResult { text, .. } = &page.entries[1].blocks[0] else {
+            return Err("the output".into());
+        };
+        assert!(text.ends_with("Output:\nsrc\npage one"), "{text:?}");
+        let cancelled = format!(
+            "<SYSTEM_MESSAGE> content=Task id \"abc/task-1\" was canceled with result: \
+             Output:\n{ENV_TWO}\n</SYSTEM_MESSAGE>"
+        );
+        assert_env_hidden(
+            "agy async result of a cancelled task",
+            &[
+                json!({"step_index": 0, "source": "MODEL", "type": "PLANNER_RESPONSE", "status": "DONE", "tool_calls": [{"name": "run_command", "args": {"CommandLine": "\"sleep 9; cat .env\""}}]}),
+                json!({
+                    "step_index": 1,
+                    "source": "SYSTEM",
+                    "type": "SYSTEM_MESSAGE",
+                    "status": "DONE",
+                    "content": cancelled,
+                }),
+            ],
+        )
     }
 }

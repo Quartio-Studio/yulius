@@ -82,6 +82,8 @@ pub struct GatedHost {
     deaf: Arc<AtomicBool>,
     /// The look at a run's background shells gives no answer.
     probe_silent: AtomicBool,
+    /// The look at a run's background work (shells and `yulius wait`) gives no answer.
+    work_probe_silent: AtomicBool,
     /// The strays every probe reports, once set.
     strays: Mutex<Option<Vec<StrayProcess>>>,
     /// The strays it was asked to reap, each with the number of probes before it.
@@ -103,6 +105,7 @@ impl GatedHost {
             refused: Arc::new(watch::channel(0).0),
             deaf: Arc::new(AtomicBool::new(false)),
             probe_silent: AtomicBool::new(false),
+            work_probe_silent: AtomicBool::new(false),
             strays: Mutex::new(None),
             reaped: Mutex::new(Vec::new()),
             probes: AtomicU32::new(0),
@@ -163,6 +166,12 @@ impl GatedHost {
     /// that timed out, a process table that cannot be read).
     pub fn silence_probe(&self, silent: bool) {
         self.probe_silent.store(silent, Ordering::SeqCst);
+    }
+
+    /// While `silent` holds, the look at a run's background work (`background_probe`: shells
+    /// and `yulius wait`) gives no answer.
+    pub fn silence_work_probe(&self, silent: bool) {
+        self.work_probe_silent.store(silent, Ordering::SeqCst);
     }
 
     /// Returns once a run was asked to shut down while ends were refused (the request dropped).
@@ -253,6 +262,9 @@ impl SessionHost for GatedHost {
     }
 
     fn background_probe(&self, child_pid: u32) -> Option<BackgroundProbe> {
+        if self.work_probe_silent.load(Ordering::SeqCst) {
+            return None;
+        }
         let strays = self
             .strays
             .lock()

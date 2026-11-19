@@ -5,6 +5,8 @@ status: done
 
 # SPEC-514: a task's agent is set, never drawn
 
+> Superseded in its no-draw part by [SPEC-520](SPEC-520-i-dont-know-why-but-i-dont-see-random-ha.md) and [ADR-0377](../../docs/decisions/0377-random-draws-uniformly-across-harnesses-with-available-subscriptions.md) (2026-11-19): tasks and `auto` automations without a chosen agent draw uniformly across all harnesses with non-exhausted subscriptions, while a running task agent's unadorned `task_create` / `automation_create` still keeps its calling task's agent (PIN-002).
+
 ## Goal
 
 The agent (harness) a new task runs is predictable: the one the person, the model or the calling

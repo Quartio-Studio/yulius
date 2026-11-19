@@ -242,6 +242,15 @@ impl App {
         }
         // An armed merge lives with the task's run: one that ended keeps none (the pass would
         // drop it at once).
+        // A parked task's session sleeps: resumed, it arms the merge (SPEC-512 PRK-005).
+        if task.status == yulius_domain::task::TaskStatus::Parked {
+            return Err(AppError::Conflict(format!(
+                "task #{} is parked, and an armed merge lives with a task's run: ask again once \
+                 its checks pass, and it merges at once (ci_runs shows them), or resume the task \
+                 (task_restart, or task_message) to arm it",
+                task.number
+            )));
+        }
         if !task.status.keeps_an_armed_merge() {
             return Err(AppError::Conflict(format!(
                 "task #{} has ended ({}), and an armed merge lives with a task's run: ask again \

@@ -8,28 +8,44 @@ Yulius develops itself with Yulius.
 It also runs native Codex CLI sessions on Codex (OpenAI) subscriptions, chosen per task or
 automation, on GPT-6.2 Astra at high effort unless a task names another model or effort (task
 #493, [SPEC-511](../.ai/specs/SPEC-511-default-model-for-codex-should-be-astra.md)); a task keeps
-its agent for life, and a Codex task moves only between Codex subscriptions. A Codex
+its agent for life, and a Codex task moves only between Codex subscriptions. On ChatGPT Pro 500,
+Codex defaults to Ultrafast for models that support it. A Codex
 subscription signs in by device code, by an imported `auth.json` of a `codex login` made elsewhere,
 or with an OpenAI API key, and Yulius provides the pinned Codex CLI
-(0.169.0) to every Codex run. The founders accepted this on 2026-11-16 (`F 2026-11-16 Codex`,
+(0.170.0) to every Codex run. The founders accepted this on 2026-11-16 (`F 2026-11-16 Codex`,
 outside pull request #1146 by studenciak00owl), reversing the Codex part of their Claude-only
 decision `F 2026-10-08`; provider switching and session translation stay out
 ([SPEC-503](../.ai/specs/SPEC-503-accept-outside-pr-1146-codex-returns-as.md),
 [ADR-0355](decisions/0355-codex-returns-as-a-second-harness-with-a-pinned-cli.md)).
 
 It runs native Antigravity CLI sessions on Antigravity (Google) subscriptions too, on Gemini 4
-Carbon at high effort unless a task names another Gemini model (`F 2026-11-17 Antigravity`, task
-#487). An Antigravity subscription signs in with the CLI's own Google sign-in or a Gemini API key,
-an Antigravity task moves only between Antigravity subscriptions, and Yulius provides the pinned
-Antigravity CLI (1.5.10)
+Neon at high effort unless a task names another Gemini model such as Gemini 4 Carbon
+(`F 2026-11-17 Antigravity`, task #487; `F 2026-11-19 Neon`, task #501). An Antigravity
+subscription signs in with the CLI's own Google sign-in or a Gemini API key, an Antigravity task
+moves only between Antigravity subscriptions, and Yulius provides the pinned Antigravity CLI
+(1.5.12)
 ([SPEC-505](../.ai/specs/SPEC-505-implement-antigravity-cli-next-to-claude.md),
-[ADR-0361](decisions/0361-antigravity-is-a-third-harness-picked-at-random-by-default.md)). A
-task's agent is set, never drawn: the one chosen, else the one its model implies, else Claude Code
-(the composer's Default); a follow-up an agent creates runs that agent's own, and an automation
-always runs the agent it names (`F 2026-11-19 Harness`,
-[SPEC-514](../.ai/specs/SPEC-514-make-sure-harnesses-doesnt-change-themse.md),
-[ADR-0368](decisions/0368-a-tasks-agent-is-set-never-drawn.md)). Tasks drawn at random while
-SPEC-505's draw existed still say so, and the analytics export lists it.
+[SPEC-519](../.ai/specs/SPEC-519-this-is-a-test-task-confirm-everything-w.md),
+[ADR-0361](decisions/0361-antigravity-is-a-third-harness-picked-at-random-by-default.md),
+[ADR-0373](decisions/0373-gemini-4-neon-is-antigravitys-default-model-on-agy-1-5-12.md)). An
+Antigravity task stays Working while its command runs in the background or its agent resumes by
+itself ([SPEC-528](../.ai/specs/SPEC-528-antigravity-tasks-show-needs-its-person.md)). A
+task created without choosing an agent (the composer's and Settings' `Random`, or `auto`) and
+without a model that implies one draws uniformly across all added harnesses (`claude`, `codex`,
+`antigravity`) that currently have at least one non-exhausted subscription — one equal chance per
+eligible harness regardless of subscription count, excluding harnesses with zero or only finished
+subscriptions while another has capacity — and keeps that assigned harness for life (`harness_choice:
+random`, exported in analytics); a running task agent's unadorned follow-up keeps the calling
+task's harness, and an automation defaults to `Random` (`auto`, drawn for each run) or runs the
+agent it names (`F 2026-11-19 Random harness`,
+[SPEC-520](../.ai/specs/SPEC-520-i-dont-know-why-but-i-dont-see-random-ha.md),
+[ADR-0377](decisions/0377-random-draws-uniformly-across-harnesses-with-available-subscriptions.md),
+superseding the no-draw part of [SPEC-514](../.ai/specs/SPEC-514-make-sure-harnesses-doesnt-change-themse.md)
+/ [ADR-0368](decisions/0368-a-tasks-agent-is-set-never-drawn.md)).
+
+The composer and Settings offer individual Codex and Gemini models grouped by provider. Each model
+shows its supported effort levels. Choosing a model that cannot use the saved effort restores the
+High default. [SPEC-521](../.ai/specs/SPEC-521-i-should-be-able-to-selected-every-model.md)
 
 The authoritative product brief is [SPEC-001](../.ai/specs/SPEC-001-yulius-product.md); this
 page is the short version for anyone who must know the whole product before building.
@@ -344,6 +360,13 @@ watching, steering and unblocking.
   (it reads "Waiting for checks or merge" then, not Done). The tools show a waiting task's rule
   whole, and "after all current tasks" (`after_all_tasks`) waits for every task with work
   still coming (SPEC-487).
+  A task whose turn ended and that waits for a person (Needs you, Done) is **parked** after
+  half an hour with nothing going on (`YULIUS_PARK_AFTER_MINUTES`): its Claude Code process ends,
+  so it holds neither a session slot nor memory, and it stays in the list where it was, marked
+  "parked", with its transcript, question and pull request. Writing to it, or Resume, continues
+  the same session with its history (SPEC-512). A queued task says what it waits for ("Waiting
+  for a free session: 8 of 8 in use"), and the Capacity card shows working, parked, idle and
+  queued sessions apart.
   A task that waits and has not started yet takes queued messages: each is added to its request,
   so the agent gets the correction when the task starts. The request and the message box show
   files as placeholders (`Image N`) that open on a click (a double-click in the box); images pasted or dropped into a message

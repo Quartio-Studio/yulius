@@ -252,6 +252,8 @@ function seed(params) {
     unsignedAccounts: new Set(),
     // Codex subscriptions made with an OpenAI API key: no usage windows (SPEC-503 CDX-008).
     codexKeyAccounts: new Set(),
+    // Rolls of the next harness draws, in order (tests; SPEC-520 RHM-001).
+    harnessRolls: [],
   };
   // Product: the product preset with a dev-vm deploy command (so it is "custom"): exercises
   // command runs plus manual confirmation. Studio: continuous, no environments.
@@ -516,7 +518,7 @@ function summary(task) {
   return {
     id: task.id, sandbox_id: task.sandbox_id, number: task.number, title: task.title, harness: task.harness,
     harness_choice: task.harness_choice || 'chosen',
-    status: task.status, activity: task.status === 'running' || task.status === 'waiting_capacity' ? task.activity : null,
+    status: task.status, activity: ['running', 'waiting_capacity', 'parked'].includes(task.status) ? task.activity : null,
     branch: task.branch, origin: task.origin, created_by: task.created_by, created_at: task.created_at, updated_at: task.updated_at,
     // Since when it is in its state and working (SPEC-087).
     state_since: task.state_since || task.updated_at, working_since: task.working_since ?? null,
@@ -544,6 +546,8 @@ function summary(task) {
     // A supertask, and what a queued task waits for because of one (SPEC-071).
     supertask: Boolean(task.supertask),
     held_by: task.status === 'queued' ? [...(task.heldBy || [])] : [],
+    // What a queued task waits for (SPEC-512 PRK-007): a test sets it with `touchTask`.
+    queue_reason: task.status === 'queued' && !(task.heldBy || []).length ? task.queue_reason || null : null,
     // A prepared task's time (SPEC-105).
     start_at: task.status === 'prepared' ? task.start_at || null : null,
     // Background shells an idle agent left running (TSK-014).
@@ -1480,14 +1484,17 @@ route('GET', `/api/sandboxes/${ID}/tasks`, ({ db, p, query }) => {
   return db.tasks.filter((t) => t.sandbox_id === p[0] && t.archived === archived).map(summary);
 });
 route('POST', `/api/sandboxes/${ID}/tasks`, async ({ db, p, body }) => {
+  db.lastTaskCreate = body; // Request received before the mock resolves model and effort defaults.
   const sandbox = sandboxOf(db, p[0]);
   need(sandbox, 'write');
   if (!body.prompt || !body.prompt.trim()) fail(422, 'invalid', 'The prompt is empty.');
   if (body.harness && !['auto', 'claude', 'codex', 'antigravity'].includes(body.harness)) fail(422, 'invalid', 'harness must be claude, codex or antigravity');
-  // No agent (or `auto`): the one the model implies, else Claude Code; never drawn (SPEC-514).
-  const harness = body.harness && body.harness !== 'auto' ? body.harness : impliedHarness(body.model);
-  // Antigravity runs Google's Gemini models only, as on the server (SPEC-505).
-  if (harness === 'antigravity' && body.model && !body.model.startsWith('gemini-')) fail(422, 'invalid', 'an Antigravity task takes a Gemini model (such as gemini-4-carbon)');
+  // No agent (or `auto`): the one the model implies, else drawn uniformly across harnesses with
+  // non-exhausted subscriptions (SPEC-520 RHM-001..003).
+  const drawn = (!body.harness || body.harness === 'auto') && !body.model;
+  const harness = drawn ? drawHarness(db) : body.harness && body.harness !== 'auto' ? body.harness : impliedHarness(body.model);
+  // Antigravity runs Google's Gemini models only, as on the server (SPEC-505, SPEC-519).
+  if (harness === 'antigravity' && body.model && !body.model.startsWith('gemini-')) fail(422, 'invalid', 'an Antigravity task takes a Gemini model (such as gemini-4-neon)');
   if (body.mode && !['goal', 'prompt', 'auto'].includes(body.mode)) fail(422, 'invalid', 'mode must be goal, prompt or auto');
   const visible = db.workflows.filter((w) => w.scope === 'instance' || w.sandbox === sandbox.id);
   if (body.workflow_id && body.workflow_id !== 'auto' && !visible.some((w) => w.id === body.workflow_id)) fail(422, 'invalid', `unknown workflow \`${body.workflow_id}\``);
@@ -1527,12 +1534,12 @@ route('POST', `/api/sandboxes/${ID}/tasks`, async ({ db, p, body }) => {
   const wf = choice ? choice.workflow : db.workflows.find((w) => w.id === body.workflow_id);
   const id = `tsk_${sandbox.id.slice(3)}_${number}`;
   const task = {
-    id, sandbox_id: sandbox.id, number, title, harness, harness_choice: 'chosen', status: waitsFor ? 'chained' : 'queued', activity: null,
+    id, sandbox_id: sandbox.id, number, title, harness, harness_choice: drawn ? 'random' : 'chosen', status: waitsFor ? 'chained' : 'queued', activity: null,
     branch: `feat/${title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40) || `task-${number}`}`,
     origin: 'ui', created_by: { login: db.me.user.login, id: db.me.user.id }, created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
     archived: false, account_label: null,
     stepsList: wf ? wf.steps.map((title2, i) => ({ id: `${id}-s${i + 1}`, ordinal: i + 1, title: title2, status: 'pending', note: '', updated_by: 'workflow', updated_at: new Date().toISOString() })) : [],
-    model: body.model || (harness === 'codex' ? 'gpt-6.2-astra' : harness === 'antigravity' ? 'gemini-4-carbon' : 'claude-opus-4'), effort: body.effort || (harness === 'codex' ? 'high' : harness === 'antigravity' ? 'high' : 'default'), prompt: body.prompt,
+    model: body.model || (harness === 'codex' ? 'gpt-6.2-astra' : harness === 'antigravity' ? 'gemini-4-neon' : 'claude-opus-4'), effort: body.effort || (harness === 'codex' ? 'high' : harness === 'antigravity' ? 'high' : 'default'), prompt: body.prompt,
     // A task without a model asks for its agent's default, as on the server (`model_default`).
     model_default: !body.model,
     delivery: null, mode: choice ? choice.mode : body.mode || 'goal', auto: choice ? choice.auto : null,
@@ -1816,9 +1823,33 @@ route('POST', `/api/tasks/${ID}/stop`, ({ db, p }) => {
   later(() => touch(db, task, { status: 'stopped_cancelled', account_label: null }), 1400);
   return summary(task);
 });
+// Whether `provider` has at least one healthy signed-in subscription that is not finished (not
+// bare-limited and below the 98 % threshold in every window binding its default model; SPEC-520).
+function availableForProvider(db, provider) {
+  const now = Date.now();
+  const keys = provider === 'anthropic' ? ['primary', 'secondary', 'weekly_opus'] : ['primary', 'secondary'];
+  return db.accounts.some((a) => {
+    if ((a.provider || 'anthropic') !== provider) return false;
+    if (db.unsignedAccounts && db.unsignedAccounts.has(a.id)) return false;
+    if (a.status !== 'ok' && !(a.status === 'limited' && a.usage)) return false;
+    if (a.usage && a.usage.limit_reached && (!a.usage.limit_resets_at || Date.parse(a.usage.limit_resets_at) > now)) return false;
+    return keys.every((k) => {
+      const w = a.usage && a.usage[k];
+      return !(w && Number.isFinite(w.used_percent) && w.used_percent >= 98 && (!w.resets_at || Date.parse(w.resets_at) > now));
+    });
+  });
+}
+function drawHarness(db) {
+  const all = ['claude', 'codex', 'antigravity'];
+  const available = all.filter((h) => availableForProvider(db, agentOfHarness(h).provider));
+  const candidates = available.length ? available : all.filter((h) => usableOf(db, agentOfHarness(h).provider));
+  if (candidates.length === 0) return 'claude';
+  const roll = db.harnessRolls && db.harnessRolls.length ? db.harnessRolls.shift() : Math.floor(Math.random() * candidates.length);
+  return candidates[roll % candidates.length];
+}
 const impliedHarness = (model) => (String(model || '').trim().toLowerCase().startsWith('gemini-') ? 'antigravity' : 'claude');
-// An automation runs the agent it names; `auto` (or none) is Claude Code (SPEC-514 PIN-003).
-const namedHarness = (harness) => (!harness || harness === 'auto' ? 'claude' : harness);
+// An automation without a named agent (`auto`) draws one for each run (SPEC-520 RHM-005).
+const automationHarness = (db, a) => (!a.harness || a.harness === 'auto' ? { harness: drawHarness(db), harness_choice: 'random' } : { harness: a.harness, harness_choice: 'chosen' });
 // A task runs on subscriptions of its harness's provider only (SPEC-503 CDX-013, SPEC-505).
 const providerOfTask = (task) => agentOfHarness(task.harness).provider;
 const kindOf = (provider) => agentOfProvider(provider).name;
@@ -3085,7 +3116,7 @@ route('POST', `/api/sandboxes/${ID}/automation-templates/${ID}/enable`, ({ db, p
   if (created) {
     db.nextId += 1;
     const { id: _id, description: _d, ...fields } = t;
-    a = { id: `aut_${db.nextId}`, sandbox: p[0], ...fields, harness: 'claude', created_via: 'ui', last_run: null };
+    a = { id: `aut_${db.nextId}`, sandbox: p[0], ...fields, harness: 'auto', created_via: 'ui', last_run: null };
     db.automations.push(a);
   }
   Object.assign(a, { enabled: true, next_run_at: isoIn(5 * HOUR) });
@@ -3118,7 +3149,7 @@ route('POST', `/api/sandboxes/${ID}/automations`, ({ db, p, body }) => {
   need(sandboxOf(db, p[0]), 'write');
   if (Math.abs(Number(body.utc_offset_minutes) || 0) > 1080) fail(422, 'invalid', 'utc_offset_minutes must be within ±1080');
   db.nextId += 1;
-  const a = { id: `aut_${db.nextId}`, sandbox: p[0], ...body, harness: namedHarness(body.harness), ...automationStart(db, p[0], body), created_via: 'ui', next_run_at: body.enabled ? isoIn(5 * HOUR) : null, last_run: null };
+  const a = { id: `aut_${db.nextId}`, sandbox: p[0], ...body, harness: !body.harness || body.harness === 'auto' ? 'auto' : body.harness, ...automationStart(db, p[0], body), created_via: 'ui', next_run_at: body.enabled ? isoIn(5 * HOUR) : null, last_run: null };
   db.automations.push(a);
   const { sandbox: _s, ...out } = a;
   return json(201, out);
@@ -3129,7 +3160,7 @@ route('PUT', `/api/automations/${ID}`, ({ db, p, body }) => {
   // The stored choice sent back unchanged is kept unchecked, as the server does (SPEC-078).
   const same = Boolean(body.supertask) === Boolean(a.supertask) && (body.after_task_id || null) === (a.after_task_id || null) && (body.start_rule || null) === (a.start_rule || null) && Boolean(body.prepared) === Boolean(a.prepared);
   const start = same ? { supertask: Boolean(a.supertask), after_task_id: a.after_task_id || null, after_task_number: a.after_task_number ?? null, start_rule: a.start_rule || null, prepared: Boolean(a.prepared) } : automationStart(db, a.sandbox, body);
-  Object.assign(a, body, start, { harness: namedHarness(body.harness || a.harness), next_run_at: body.enabled ? isoIn(5 * HOUR) : null });
+  Object.assign(a, body, start, { harness: !body.harness ? (a.harness || 'auto') : body.harness, next_run_at: body.enabled ? isoIn(5 * HOUR) : null });
   const { sandbox: _s, ...out } = a;
   return out;
 });
@@ -3159,10 +3190,11 @@ function automationTask(db, a, start) {
   const before = rule ? db.tasks.find((t) => t.sandbox_id === a.sandbox && t.number === Number(rule.match(/#(\d+)/)[1]))
     : start.after_task_id ? db.tasks.find((t) => t.id === start.after_task_id) : null;
   const now = new Date().toISOString();
+  const chosen = automationHarness(db, a);
   const task = {
-    id, sandbox_id: a.sandbox, number, title: a.name, harness: namedHarness(a.harness), harness_choice: 'chosen', status: before ? 'chained' : start.prepared ? 'prepared' : 'queued', activity: null,
+    id, sandbox_id: a.sandbox, number, title: a.name, ...chosen, status: before ? 'chained' : start.prepared ? 'prepared' : 'queued', activity: null,
     branch: `feat/${number}-automation`, origin: 'automation', created_by: { login: db.me.user.login }, created_at: now, updated_at: now,
-    archived: false, account_label: null, stepsList: [], model: 'claude-opus-4', effort: 'default', prompt: a.prompt,
+    archived: false, account_label: null, stepsList: [], model: chosen.harness === 'codex' ? 'gpt-6.2-astra' : chosen.harness === 'antigravity' ? 'gemini-4-neon' : 'claude-opus-4', effort: chosen.harness === 'claude' ? 'default' : 'high', prompt: a.prompt,
     delivery: null, mode: 'goal', auto: null, supertask: start.supertask,
   };
   db.tasks.push(task);
@@ -3829,9 +3861,12 @@ route('POST', `/api/sandboxes/${ID}/superagent/requests/${ID}`, async ({ db, p, 
   const number = Math.max(0, ...db.tasks.filter((t) => t.sandbox_id === target.id).map((t) => t.number)) + 1;
   const title = request.view.title || request.view.prompt.split('\n')[0].slice(0, 60);
   const id = `tsk_${target.id.slice(3)}_${number}`;
-  const prepared = request.view.options.prepared === true;
+  const opts = request.view.options || {};
+  const prepared = opts.prepared === true;
+  const drawn = (!opts.harness || opts.harness === 'auto') && !opts.model;
+  const harness = drawn ? drawHarness(db) : opts.harness && opts.harness !== 'auto' ? opts.harness : impliedHarness(opts.model);
   const task = {
-    id, sandbox_id: target.id, number, title, harness: request.view.options.harness || 'claude',
+    id, sandbox_id: target.id, number, title, harness, harness_choice: drawn ? 'random' : 'chosen',
     status: prepared ? 'prepared' : 'queued', activity: null,
     branch: `feat/${number}-${title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40)}`,
     origin: 'agent', created_by: { login: db.me.user.login, id: db.me.user.id }, created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
@@ -5674,6 +5709,16 @@ route('GET', '/api/capacity', ({ db }) => {
       ...(admin ? { id: a.id, in_use_by: a.in_use_by, ...(a.email ? { email: a.email } : {}) } : {}),
     })),
     tokens: poolTokens(),
+    // The instance's sessions (SPEC-512 PRK-008): what the limit counts, and apart from it the
+    // parked, idle (Done) and queued ones.
+    sessions: {
+      working: db.tasks.filter((t) => ['starting', 'running', 'switching', 'stopping'].includes(t.status) && t.activity !== 'done').length,
+      limit: db.sessionLimit,
+      idle: db.tasks.filter((t) => t.status === 'running' && t.activity === 'done').length,
+      parked: db.tasks.filter((t) => t.status === 'parked').length,
+      queued: db.tasks.filter((t) => t.status === 'queued').length,
+      park_after_ms: 30 * MIN,
+    },
   };
 });
 

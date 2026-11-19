@@ -15,6 +15,10 @@ use crate::metrics_recount::RecountTally;
 
 /// Queue drain interval, also the device grant purge interval (#169).
 const TICK: Duration = Duration::from_secs(60);
+/// No idle session is parked this soon after a start: the tasks that went idle while Yulius was
+/// down are woken first ([`crate::outage::WAKE_GRACE`] after the start, SPEC-358 MSB-007).
+const PARK_AFTER_START: Duration = Duration::from_secs(3 * 60);
+const _: () = assert!(PARK_AFTER_START.as_secs() > crate::outage::WAKE_GRACE.as_secs());
 /// First background usage round after start: lets the server settle first (ROT-009).
 const USAGE_FIRST: Duration = Duration::from_secs(2 * 60);
 /// Background usage rounds: every subscription in its back-off or read moments ago is skipped,
@@ -98,6 +102,7 @@ impl App {
             app.start_capacity_loop();
             let mut tick = tokio::time::interval(TICK);
             tick.tick().await;
+            let started = tokio::time::Instant::now();
             loop {
                 tick.tick().await;
                 app.drain_queue().await;
@@ -105,6 +110,11 @@ impl App {
                 app.advance_all_chains().await;
                 // Prepared tasks start at their time (SPEC-105 PRP-003).
                 app.release_due_prepared().await;
+                // Idle sessions past their grace period are parked (SPEC-512 PRK-002), once the
+                // tasks that went idle while Yulius was down have been woken (MSB-007).
+                if started.elapsed() >= PARK_AFTER_START {
+                    app.park_idle_sessions_now().await;
+                }
                 // Expired and consumed CLI device grants (#169).
                 if let Err(err) = app.purge_device_grants().await {
                     tracing::warn!(error = %err, "device grants could not be purged");

@@ -157,8 +157,8 @@ pub struct AutomationRecord {
     pub prompt: String,
     /// Workflow of created tasks.
     pub workflow_id: Option<String>,
-    /// Harness of created tasks: every run's (SPEC-514 PIN-003).
-    pub harness: Harness,
+    /// Harness of created tasks; `None`: drawn for each run (stored as `auto`, SPEC-520 RHM-005).
+    pub harness: Option<Harness>,
     /// Enabled.
     pub enabled: bool,
     /// How created tasks start.
@@ -258,7 +258,7 @@ struct Fields {
     cron: String,
     utc_offset_minutes: i32,
     prompt: String,
-    harness: Harness,
+    harness: Option<Harness>,
 }
 
 /// Everything needed to insert an automation.
@@ -310,22 +310,14 @@ fn validate_prompt(prompt: &str) -> AppResult<String> {
     Ok(prompt.to_owned())
 }
 
-/// An automation's agent: none is `default` (the stored agent for an update, the calling task's
-/// for a tool, else Claude Code) and `auto` the tool's `default` too; never drawn (SPEC-514
-/// PIN-002/003).
-fn validate_harness(text: &str, default: Harness) -> AppResult<Harness> {
-    match text.trim() {
-        "" | "auto" => Ok(default),
-        text => crate::lifecycle::parse_harness(text),
-    }
-}
-
-/// The agent an HTTP create or update stores: `auto` is Claude Code, none is `unnamed` (Claude
-/// Code for a new automation, the stored agent for an update; SPEC-514 PIN-003).
-fn input_harness(text: &str, unnamed: Harness) -> AppResult<Harness> {
+/// The agent an automation stores: `auto` draws for each run (`None`), empty keeps `unnamed`
+/// (`None` for an HTTP create or a caller without a task, the calling task's agent for a running
+/// task's `automation_create`, or the stored agent for an HTTP update; SPEC-520 RHM-004/005).
+fn input_harness(text: &str, unnamed: Option<Harness>) -> AppResult<Option<Harness>> {
     match text.trim() {
         "" => Ok(unnamed),
-        text => validate_harness(text, Harness::ClaudeCode),
+        "auto" => Ok(None),
+        text => crate::lifecycle::parse_harness(text).map(Some),
     }
 }
 
@@ -338,7 +330,7 @@ fn input_start(input: &Automation) -> AppResult<StartInput> {
     )
 }
 
-fn validate(input: &Automation, unnamed: Harness) -> AppResult<Fields> {
+fn validate(input: &Automation, unnamed: Option<Harness>) -> AppResult<Fields> {
     Ok(Fields {
         name: validate_name(&input.name)?,
         cron: validate_cron(&input.cron)?,
@@ -444,7 +436,7 @@ impl App {
             utc_offset_minutes: record.utc_offset_minutes,
             prompt: record.prompt.clone(),
             workflow_id: record.workflow_id.clone(),
-            harness: record.harness.as_str().to_owned(),
+            harness: record.harness.map_or("auto", Harness::as_str).to_owned(),
             enabled: record.enabled,
             supertask,
             after_task_id,
@@ -583,7 +575,7 @@ impl App {
     ) -> AppResult<Automation> {
         let sid = SandboxId::parse(sandbox).map_err(|_| AppError::NotFound)?;
         self.require_for(ctx, &sid, Action::Configure).await?;
-        let fields = validate(input, Harness::ClaudeCode)?;
+        let fields = validate(input, None)?;
         let workflow = self
             .resolve_workflow_id(&sid, input.workflow_id.as_deref())
             .await?;
@@ -710,8 +702,9 @@ impl App {
             cron: validate_cron(&template.cron)?,
             utc_offset_minutes: validate_offset(i64::from(template.utc_offset_minutes))?,
             prompt: validate_prompt(&template.prompt)?,
-            // A template names no agent: Claude Code, as any automation without one (SPEC-514).
-            harness: Harness::ClaudeCode,
+            // A template's tasks draw across available harnesses, as any new automation without an
+            // explicit agent does (SPEC-520 RHM-005).
+            harness: None,
         };
         let workflow = self
             .resolve_workflow_id(sid, template.workflow.as_deref())
@@ -1235,14 +1228,18 @@ impl App {
         let (supertask, after, rule) = self.run_start(automation).await?;
         // "When I decide" prepares the task without a time (SPEC-155, SPEC-105).
         let prepared = (automation.start == AutomationStart::Prepared).then_some(None);
+        // An automation without a named agent (`auto`) draws one for each run (SPEC-520 RHM-005).
+        let (harness, drawn) = match automation.harness {
+            Some(harness) => (harness, false),
+            None => (self.draw_harness().await?, true),
+        };
         let task = self
-            .create_task_held(
+            .create_task_drawn(
                 NewTask {
                     sandbox: automation.sandbox_id.clone(),
                     created_by: automation.created_by.clone(),
                     prompt: automation.prompt.clone(),
-                    // Every run runs the agent the automation names (SPEC-514 PIN-003).
-                    harness: automation.harness,
+                    harness,
                     title: Some(automation.name.clone()),
                     workflow_id: automation.workflow_id.clone(),
                     steps,
@@ -1260,6 +1257,7 @@ impl App {
                 after.as_ref(),
                 rule.as_ref(),
                 prepared,
+                drawn,
             )
             .await?;
         Ok(task.id)
@@ -1437,14 +1435,12 @@ impl App {
                 .as_i64()
                 .ok_or_else(|| AppError::Invalid("utc_offset_minutes must be an integer".into()))?,
         };
-        // No agent named (or `auto`): the calling task's own, else Claude Code (SPEC-514 PIN-002).
-        let own = caller
-            .task
-            .as_ref()
-            .map_or(Harness::ClaudeCode, |t| t.harness);
-        let harness = validate_harness(
+        // Omitting `harness` keeps a running task's own agent, or `auto` without a calling task;
+        // explicit `auto` draws for each run (SPEC-520 RHM-004/005).
+        let unnamed = caller.task.as_ref().map(|t| t.harness);
+        let harness = input_harness(
             args.get("harness").and_then(Value::as_str).unwrap_or(""),
-            own,
+            unnamed,
         )?;
         let fields = Fields {
             name: validate_name(str_arg(args, "name")?)?,
@@ -1595,29 +1591,20 @@ mod tests {
         assert!(validate_prompt("   ").is_err());
         assert!(validate_prompt(&"x".repeat(MAX_PROMPT_BYTES + 1)).is_err());
         assert!(validate_name("").is_err());
-        assert!(validate_harness("gpt", Harness::ClaudeCode).is_err());
+        assert!(input_harness("gpt", None).is_err());
         assert_eq!(
-            validate_harness(" auto ", Harness::Antigravity).ok(),
-            Some(Harness::Antigravity)
+            input_harness(" auto ", Some(Harness::Antigravity)).ok(),
+            Some(None)
+        );
+        assert_eq!(input_harness("", None).ok(), Some(None));
+        assert_eq!(
+            input_harness("", Some(Harness::Antigravity)).ok(),
+            Some(Some(Harness::Antigravity))
         );
         assert_eq!(
-            validate_harness("", Harness::ClaudeCode).ok(),
-            Some(Harness::ClaudeCode)
+            input_harness("codex", Some(Harness::Antigravity)).ok(),
+            Some(Some(Harness::Codex))
         );
-        assert_eq!(
-            validate_harness("codex", Harness::Antigravity).ok(),
-            Some(Harness::Codex)
-        );
-        // HTTP: none keeps `unnamed` (the stored agent on an update), `auto` is Claude Code.
-        assert_eq!(
-            input_harness("", Harness::Antigravity).ok(),
-            Some(Harness::Antigravity)
-        );
-        assert_eq!(
-            input_harness("auto", Harness::Antigravity).ok(),
-            Some(Harness::ClaudeCode)
-        );
-        assert!(input_harness("gpt", Harness::ClaudeCode).is_err());
     }
 
     #[test]

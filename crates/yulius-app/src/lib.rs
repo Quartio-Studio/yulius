@@ -75,6 +75,7 @@ pub mod notes;
 pub mod notify;
 pub mod onboarding;
 pub mod outage;
+pub mod parking;
 mod pause;
 pub(crate) mod person_tools;
 pub mod playground;

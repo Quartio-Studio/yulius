@@ -6,12 +6,16 @@ Accepted on 2026-11-17 (`F 2026-11-17 Antigravity`: the person's request in task
 antigravity cli next to claude cli … it should be randomised by default what we are using but also
 we should be able to choose. Use Gemini 4 Carbon high by default."). Specified in
 [SPEC-505](../../.ai/specs/SPEC-505-implement-antigravity-cli-next-to-claude.md). Its **Draw**
-is superseded by [ADR-0368](0368-a-tasks-agent-is-set-never-drawn.md) (2026-11-19): a task's agent
-is set, never drawn; the rest stands. Follows
+was superseded by [ADR-0368](0368-a-tasks-agent-is-set-never-drawn.md) and then by
+[ADR-0377](0377-random-draws-uniformly-across-harnesses-with-available-subscriptions.md)
+(2026-11-19): Random draws uniformly across all harnesses (`claude`, `codex`, `antigravity`) that
+have non-exhausted subscriptions; the rest stands. Follows
 [ADR-0355](0355-codex-returns-as-a-second-harness-with-a-pinned-cli.md) (Codex) in every seam;
 provider switching and session translation stay removed (SPEC-002 ADR-06).
 Refined by [0369](0369-a-google-sign-in-runs-until-the-person-is-done.md): a Google sign-in runs
-on for the CLI's setup until the person is done.
+on for the CLI's setup until the person is done. Its **Model** and **CLI** are amended by
+[0373](0373-gemini-4-neon-is-antigravitys-default-model-on-agy-1-5-12.md): Antigravity tasks
+default to Gemini 4 Neon on `agy` 1.5.12, with Gemini 4 Carbon kept selectable.
 
 ## Context
 

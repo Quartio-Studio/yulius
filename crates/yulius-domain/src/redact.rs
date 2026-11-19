@@ -366,7 +366,8 @@ pub fn redact(text: &str) -> Option<Redacted> {
 
 /// Redacts the contents of a dotenv file: every non-trivial `KEY=value` value (numbers,
 /// booleans and `${…}` references stay), plus everything [`redact`] finds. Lines may carry the
-/// `cat -n` prefix Claude Code's Read tool adds (`   12→KEY=value`).
+/// `cat -n` prefix Claude Code's Read tool adds (`   12→KEY=value`), the `1: ` Antigravity's
+/// `read_file` adds, or a patch's `+`/`-` marker.
 #[must_use]
 pub fn redact_env(text: &str) -> Option<Redacted> {
     let mut spans = Vec::new();
@@ -987,18 +988,27 @@ fn env_line_value(line: &str, offset: usize) -> Option<Span> {
     let body_end = line.trim_end_matches(['\n', '\r']).len();
     let body = &line[..body_end];
     let mut cursor = body.len() - body.trim_start().len();
-    // `cat -n` style prefix: digits then a tab or `→`.
+    // `cat -n` style prefix: digits then a tab or `→`; Antigravity's `read_file` numbers lines
+    // `1: ` (SPEC-525).
     let digits = body[cursor..]
         .bytes()
         .take_while(u8::is_ascii_digit)
         .count();
     if digits > 0 {
         let rest = &body[cursor + digits..];
-        if let Some(stripped) = rest.strip_prefix('\t') {
-            cursor = body.len() - stripped.len();
-        } else if let Some(stripped) = rest.strip_prefix('→') {
+        if let Some(stripped) = rest
+            .strip_prefix('\t')
+            .or_else(|| rest.strip_prefix('→'))
+            .or_else(|| rest.strip_prefix(": "))
+        {
             cursor = body.len() - stripped.len();
         }
+    } else if let Some(stripped) = body[cursor..]
+        .strip_prefix('+')
+        .or_else(|| body[cursor..].strip_prefix('-'))
+    {
+        // A patch's added or removed line (`+KEY=value`), its marker kept (SPEC-525).
+        cursor = body.len() - stripped.len();
     }
     let mut rest = &body[cursor..];
     let trimmed = rest.trim_start();
@@ -1344,6 +1354,25 @@ mod tests {
             "Here is my config:\nAPP_NAME=[REDACTED:env-value]\nSMTP_HOST=[REDACTED:env-value]\nSMTP_PASS=[REDACTED:env-value]\nThanks"
         );
         assert_eq!(redacted("A=1\nB=2"), "A=1\nB=2");
+    }
+
+    /// SPEC-525: Antigravity's `read_file` numbers lines as `1: KEY=value`, and a patch adds or
+    /// removes them as `+KEY=value` / `-KEY=value`: the values go, the prefixes stay.
+    #[test]
+    fn env_lines_numbered_by_antigravity_or_marked_by_a_patch_lose_their_values() {
+        let read = "Showing lines 1-3 of 3\n1: SHOP_REGION=eu-north-7b\n2: PORT=3000\n3: # note";
+        assert_eq!(
+            redact_env(read).map(|r| r.text).unwrap_or_default(),
+            "Showing lines 1-3 of 3\n1: SHOP_REGION=[REDACTED:env-value]\n2: PORT=3000\n3: # note"
+        );
+        let patch = "*** Update File: .env\n@@\n-MAIL_DOMAIN=old.shop.example\n+MAIL_DOMAIN=mg.shop.example\n PORT=3000";
+        assert_eq!(
+            redact_env(patch).map(|r| r.text).unwrap_or_default(),
+            "*** Update File: .env\n@@\n-MAIL_DOMAIN=[REDACTED:env-value]\n+MAIL_DOMAIN=[REDACTED:env-value]\n PORT=3000"
+        );
+        // Outside dotenv content nothing changes: a diff's lines are no dotenv block.
+        let diff = "+APP_NAME=shop\n+SMTP_HOST=mail.example.org\n+SMTP_USER=team";
+        assert_eq!(redacted(diff), diff);
     }
 
     #[test]

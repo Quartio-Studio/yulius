@@ -1924,3 +1924,195 @@ async fn codex_hooks_reach_yulius_for_codex_runs_only() -> TestResult {
     assert_eq!(codex.status, 401, "a Codex hook from a Claude run");
     Ok(())
 }
+
+/// An Antigravity goal task running a step of its plan.
+async fn antigravity_goal() -> Result<Fixture, Box<dyn std::error::Error>> {
+    let f = fixture_of(
+        None,
+        |task| {
+            task.mode = yulius_app::model::TaskMode::Goal;
+            task.activity = Some(Activity::Working);
+        },
+        Agent::Antigravity,
+    )
+    .await?;
+    let ctx = f.h.app.agent_context(TOKEN).await?;
+    f.h.app
+        .tool_steps_set(
+            &ctx,
+            &json!({"steps": [{"title": "Run the tests", "status": "in_progress"}]}),
+        )
+        .await?;
+    Ok(f)
+}
+
+async fn agy_event(f: &Fixture, name: &str, payload: serde_json::Value) -> TestResult {
+    f.h.clock.0.fetch_add(1, Ordering::SeqCst);
+    let reply = call(
+        &f.h.internal,
+        Method::POST,
+        &format!("/hooks/antigravity/{name}"),
+        Some(payload),
+        &agent(),
+    )
+    .await?;
+    assert_eq!(reply.status, 200, "{}", reply.body);
+    assert!(reply.body["decision"].is_null(), "{}", reply.body);
+    Ok(())
+}
+
+async fn agy_brief(f: &Fixture) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+    let reply = support::mcp_tool(&f.h, TOKEN, "task_get", json!({"number": 1})).await?;
+    Ok(support::tool_text(&reply))
+}
+
+/// SPEC-528: a background Stop and the agent's wake are both Working.
+#[tokio::test]
+async fn antigravity_background_stop_and_autonomous_invocation() -> TestResult {
+    let f = antigravity_goal().await?;
+    agy_event(&f, "Stop", json!({"fully_idle": false})).await?;
+    let caller = yulius_app::coordination::ProjectCaller {
+        sandbox: f.sandbox.clone(),
+        user: f.h.app.agent_context(TOKEN).await?.task.owner,
+        task: None,
+        channel: yulius_app::coordination::Channel::Superagent,
+        actor: "test viewer".into(),
+        detail: json!({}),
+    };
+    let scope = json!({"scope": "needs_you"});
+    let list = f.h.app.tool_tasks_list(&caller, &scope).await?;
+    assert_eq!(list["tasks"], json!([]), "{list}");
+    let busy = agy_brief(&f).await?;
+    assert_eq!(busy["shows"], "working", "{busy}");
+    agy_event(&f, "PreInvocation", json!({})).await?;
+    assert_eq!(agy_brief(&f).await?["activity"], "working");
+    let action = "Approve access to the staging account";
+    support::mcp_tool(&f.h, TOKEN, "needs_you", json!({"action": action})).await?;
+    agy_event(&f, "Stop", json!({"fully_idle": false})).await?;
+    agy_event(&f, "PreInvocation", json!({})).await?;
+    let requested = agy_brief(&f).await?;
+    assert_eq!(requested["shows"], "needs_you");
+    assert_eq!(requested["needs_you"]["action"], action);
+    let list = f.h.app.tool_tasks_list(&caller, &scope).await?;
+    assert_eq!(list["tasks"][0]["number"], 1);
+    assert_eq!(list["tasks"][0]["needs_you"]["action"], action);
+    Ok(())
+}
+
+/// SPEC-528: an idle Stop with open work gives its reason and only a newer wake reopens it.
+#[tokio::test]
+async fn antigravity_idle_stop_with_an_open_step_explains_the_wait() -> TestResult {
+    let f = antigravity_goal().await?;
+    agy_event(&f, "Stop", json!({"fully_idle": true})).await?;
+    let idle = agy_brief(&f).await?;
+    assert_eq!(idle["activity"], "waiting");
+    assert_eq!(idle["shows"], "needs_you");
+    assert!(
+        idle["wait_reason"]
+            .as_str()
+            .is_some_and(|s| s.contains("step")),
+        "{idle}"
+    );
+    let plain = call(
+        &f.h.internal,
+        Method::POST,
+        "/mcp",
+        Some(json!({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {"name": "task_get", "arguments": {"number": 1}}
+        })),
+        &agent(),
+    )
+    .await?;
+    let text = plain.body["result"]["content"][0]["text"]
+        .as_str()
+        .ok_or("task_get text")?;
+    assert!(
+        text.contains("NEEDS ITS PERSON") && text.contains("unfinished steps"),
+        "{text}"
+    );
+    let stale = f.h.app.now().0 - 1;
+    f.h.app
+        .hook_event(
+            TOKEN,
+            "antigravity",
+            "PreInvocation",
+            &Default::default(),
+            Some(stale),
+        )
+        .await?;
+    assert_eq!(agy_brief(&f).await?["activity"], "waiting", "late wake");
+    agy_event(&f, "PreInvocation", json!({})).await?;
+    assert_eq!(agy_brief(&f).await?["shows"], "working");
+    // Older clients omitted the idle bit. A model error also really ends the turn.
+    for stop in [
+        json!({}),
+        json!({"fully_idle": false, "error": "Model unavailable"}),
+    ] {
+        agy_event(&f, "Stop", stop).await?;
+        assert_eq!(agy_brief(&f).await?["activity"], "waiting");
+        agy_event(&f, "PreInvocation", json!({})).await?;
+    }
+    let ctx = f.h.app.agent_context(TOKEN).await?;
+    f.h.app
+        .tool_steps_set(
+            &ctx,
+            &json!({"steps": [{"title": "Run the tests", "status": "done"}]}),
+        )
+        .await?;
+    agy_event(&f, "Stop", json!({"fully_idle": true})).await?;
+    let answered = agy_brief(&f).await?;
+    assert_eq!(answered["shows"], "done");
+    assert!(answered.get("wait_reason").is_none());
+    Ok(())
+}
+
+/// A Stop client can time out while its handler still runs. A model invocation sent
+/// afterwards owns the activity, even when the task was already Working at its wake.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn antigravity_late_idle_stop_cannot_settle_a_newer_invocation() -> TestResult {
+    for exhausted_gate in [false, true] {
+        late_agy_stop(exhausted_gate).await?;
+    }
+    Ok(())
+}
+
+async fn late_agy_stop(exhausted_gate: bool) -> TestResult {
+    use std::time::Duration;
+    use yulius_app::race::{Point, on};
+    let id = TaskId::parse("t-delayed-agy-stop")?;
+    let f = fixture_of(
+        None,
+        |task| {
+            task.id = id.clone();
+            if exhausted_gate {
+                task.gate_blocks = 3;
+            }
+            task.mode = yulius_app::model::TaskMode::Goal;
+            task.activity = Some(Activity::Working);
+        },
+        Agent::Antigravity,
+    )
+    .await?;
+    if exhausted_gate {
+        std::fs::write(f.worktree.join("api.rs"), "fn main() {}\n")?;
+    }
+    let (reached, parked) = tokio::sync::oneshot::channel();
+    let (release, released) = std::sync::mpsc::channel();
+    let limit = Duration::from_secs(10);
+    on(Point::StopTurnLock, Path::new(id.as_str()), move || {
+        let _ = reached.send(());
+        assert!(tokio::task::block_in_place(|| released.recv_timeout(limit)).is_ok());
+    });
+    let app = Arc::clone(&f.h.app);
+    let stop = tokio::spawn(async move {
+        app.hook_event(TOKEN, "antigravity", "Stop", &Default::default(), None)
+            .await
+    });
+    tokio::time::timeout(limit, parked).await??;
+    agy_event(&f, "PreInvocation", json!({})).await?;
+    release.send(())?;
+    stop.await??;
+    assert_eq!(agy_brief(&f).await?["activity"], "working");
+    Ok(())
+}
