@@ -6,6 +6,13 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-19
 
+- A task that finds a bug fixes it (SPEC-517, ADR-0371, task #499): a request that reports
+  something wrong in the product, also asked as a question ("What", "why is this broken"), runs on
+  Auto as a goal with the Fix workflow's steps instead of Research / Question; a question task that
+  confirms a defect grows the fixing steps or asks the person with `needs_you`, never files it and
+  stops; the briefing, `issue_create` and `delivery-pipeline` say so, and an issue filed for an
+  unrelated defect is named in the summary. Quartio-v2 task #312 had filed its PDF bug as an issue.
+
 - Codex runs GPT-6.2 Astra at high effort by default (SPEC-511, task #493): a Codex task that
   names no model is launched with `-m gpt-6.2-astra`, one that names no effort at high, instead
   of the account's own default. The run records the model, the task's details name it, and the

@@ -525,10 +525,14 @@ nothing is checked and nothing is held, and Auto uses its defaults.
   `start_rule`), Start as chosen as the person chose.
 - **Auto mode and workflow (TSK-015).** With `"mode":"auto"` and/or `"workflow_id":"auto"` (the
   composer's defaults) the server asks Jev before creating the task, both questions at once within
-  2.5 s: `goal` or `prompt` (followed at 75 %), and one of the sandbox's workflows from the store,
-  or none (followed at 60 %). Otherwise the defaults apply: Goal, and the workflow named "Feature"
-  (the sandbox's own first; none without one, and none for a prompt-mode task). A prompt-mode task
-  never gets a workflow that requires a spec from Auto. The summary's `auto` says who chose what
+  2.5 s: `goal`, `fix` or `prompt` (followed at 75 %), and one of the sandbox's workflows from the
+  store, or none (followed at 60 %). Otherwise the defaults apply: Goal, and the workflow named
+  "Feature" (the sandbox's own first; none without one, and none for a prompt-mode task). A
+  prompt-mode task never gets a workflow that requires a spec from Auto. `fix` is a request that
+  reports something wrong in the product, also when asked as a question (SPEC-517, ADR-0371): it
+  runs as a goal, and a workflow that needs no spec (Research / Question), or an unsure workflow
+  answer, becomes the one named "Fix" (the sandbox's own first; else the default), shown as
+  `workflow: "default"` and audited as "mode goal, reports a defect". The summary's `auto` says who chose what
   (`jev`, `default`, or null for a value the request picked) and the workflow's name; it is null
   when nothing was on Auto. Without a Jev key Auto still works, with the defaults.
 - **Chains (TSK-012).** A `chained` task starts by itself (`chained → queued`) when its predecessor
