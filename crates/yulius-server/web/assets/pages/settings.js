@@ -2,7 +2,7 @@
 // account, this browser's preferences and the way into instance administration. It gathers what
 // exists; the administration pages themselves are unchanged.
 
-import { h, icon, toggle, openMenu, toast } from '../dom.js';
+import { h, icon, toggle, openMenu, toast, errorToast } from '../dom.js';
 import { href } from '../router.js';
 import { readJson, writeJson } from '../store.js';
 import { initials } from '../layout.js';
@@ -97,12 +97,31 @@ export function mountSettingsPage(ctx) {
     },
   });
 
+  // Whether teammates take control of the user's tasks or ask first (SPEC-510 TKC-003): kept on
+  // the server, since it is what other people's pages offer. A guest has no say in it.
+  const askFirstToggle = toggle({
+    checked: user.control_ask_first === true,
+    label: 'Ask me before taking control of my tasks',
+    onChange: async (checked, input) => {
+      try {
+        const saved = await ctx.api.put('/api/me/control', { ask_first: checked });
+        user.control_ask_first = saved.ask_first;
+        input.checked = saved.ask_first;
+        toast(saved.ask_first ? 'Teammates now ask you for control of your tasks.' : 'Teammates now take control of your tasks at once.', { kind: 'ok' });
+      } catch (err) {
+        input.checked = !checked;
+        errorToast(err, 'Could not save it');
+      }
+    },
+  });
+
   frame.body.append(
     section('user', 'Your account', null,
       h('div', { class: 'settings-identity' },
         h('span', { class: 'avatar settings-avatar', 'aria-hidden': 'true' }, initials(name)),
         h('div', null, h('div', { class: 'settings-name' }, name), h('div', { class: 'muted small' }, [user.login ? `@${user.login}` : null, role].filter(Boolean).join(' · ')))),
       row('archive', 'Archived tasks', 'Tasks you archived, with restore', open('/archived', 'archived tasks')),
+      user.guest ? null : row('lock', 'Ask me before taking control of my tasks', 'Off: a teammate takes control of your task at once and it acts on GitHub as them; you are told and can take it back. On: they ask, and you hand it over or decline.', askFirstToggle),
       row('key', 'CLI device approval', 'Approve “yulius login” from a terminal', open('/device', 'CLI device approval')),
       row('logout', 'Sign out', `Sign out of ${BRAND.name} in this browser`, h('button', { type: 'button', class: 'btn btn-sm', onClick: () => ctx.signOut() }, 'Sign out'))),
     section('plug', 'Connect your local agent', 'API tokens for your own agents and the yulius CLI', agentTokensBody(ctx)),
