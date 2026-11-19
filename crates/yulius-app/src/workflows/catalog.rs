@@ -125,6 +125,56 @@ mod tests {
         Ok(())
     }
 
+    /// SPEC-517 FIX-004 (quartio-v2 task #312): a question-shaped bug report is a Fix, and the
+    /// Research / Question workflow fixes a defect it confirms, or asks the person, instead of
+    /// filing it as an issue and stopping.
+    #[test]
+    fn a_defect_found_answering_a_question_is_fixed_not_filed() -> Result<(), String> {
+        let research = default_workflow("wf-research").ok_or("wf-research")?;
+        let fix = default_workflow("wf-fix").ok_or("wf-fix")?;
+        assert!(
+            fix.when_to_use
+                .contains("also when it is asked as a question"),
+            "{}",
+            fix.when_to_use
+        );
+        assert!(
+            research
+                .when_to_use
+                .contains("reports nothing wrong in the product"),
+            "{}",
+            research.when_to_use
+        );
+        // The catalog wraps its lines: compare with the whitespace folded.
+        let instructions = research
+            .instructions
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        for said in [
+            "A defect is fixed, never filed instead",
+            "even as a question or a screenshot",
+            "fix it in this task",
+            "add the Fix workflow's steps (`workflows_list`) to your plan",
+            "`om-root-cause`, then `om-fix`",
+            "ask with `needs_you`",
+            "never file it as an issue and stop",
+            "Name every issue you opened in your answer",
+        ] {
+            assert!(instructions.contains(said), "missing {said:?}");
+        }
+        assert!(
+            !instructions.contains("When the answer reveals work, record it as an issue"),
+            "{instructions}"
+        );
+        assert!(
+            !research.description.contains("no code changes"),
+            "{}",
+            research.description
+        );
+        Ok(())
+    }
+
     /// Only a person promotes and deploys production (ADR-0110, #556): no shipped workflow, in
     /// its description, steps or instructions, tells an agent to promote or to deploy or verify
     /// production.

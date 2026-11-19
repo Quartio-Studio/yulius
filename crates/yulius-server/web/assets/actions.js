@@ -298,6 +298,15 @@ export async function takeControl(ctx, task) {
   }
 }
 
+/**
+ * Answer what someone else's task's agent asked a person (`needs_you`, SPEC-516): one labelled
+ * answer typed into its session; the task stays its owner's. The updated task, or null when refused
+ * (the reason is shown).
+ */
+export function answerNeedsYou(ctx, task, text) {
+  return taskPost(ctx, task, 'answer', () => ctx.api.post(`/api/tasks/${enc(task.id)}/needs-you/answer`, { text }), `Answered #${task.number}`);
+}
+
 /** Ask the task's owner for control: the task would act on GitHub as you (SPEC-070). */
 export function requestControl(ctx, task) {
   return taskPost(ctx, task, 'ask for control of', () => ctx.api.post(`/api/tasks/${enc(task.id)}/control-request`), `Asked for control of #${task.number}`);

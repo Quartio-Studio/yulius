@@ -6,9 +6,11 @@ contained sandboxes on a single Linux VM, and enforces engineering discipline ar
 Yulius develops itself with Yulius.
 
 It also runs native Codex CLI sessions on Codex (OpenAI) subscriptions, chosen per task or
-automation; a task keeps its agent for life, and a Codex task moves only between Codex
-subscriptions. A Codex subscription signs in by device code, by an imported `auth.json` of a
-`codex login` made elsewhere, or with an OpenAI API key, and Yulius provides the pinned Codex CLI
+automation, on GPT-6.2 Astra at high effort unless a task names another model or effort (task
+#493, [SPEC-511](../.ai/specs/SPEC-511-default-model-for-codex-should-be-astra.md)); a task keeps
+its agent for life, and a Codex task moves only between Codex subscriptions. A Codex
+subscription signs in by device code, by an imported `auth.json` of a `codex login` made elsewhere,
+or with an OpenAI API key, and Yulius provides the pinned Codex CLI
 (0.169.0) to every Codex run. The founders accepted this on 2026-11-16 (`F 2026-11-16 Codex`,
 outside pull request #1146 by studenciak00owl), reversing the Codex part of their Claude-only
 decision `F 2026-10-08`; provider switching and session translation stay out
@@ -371,7 +373,7 @@ watching, steering and unblocking.
   people look elsewhere, also across a reload, until it starts.
   A task is its owner's: Yulius acts on GitHub for it with their credentials (the agent's own Git
   and `gh` use a narrowed App token), so only they steer it: type into it, send it messages,
-  answer what it asks, continue, start, pause or deliver it. Anyone who may work in the project
+  answer what it asks in its terminal, continue, start, pause or deliver it. Anyone who may work in the project
   can **stop, archive, restore and delete** any of its tasks (a playground's guest only their
   own), from the task's page, the lists and the sidebar; stopping or deleting someone else's task asks first and names its owner, and
   the audit says who did it (SPEC-490). Its owner can **pause** a running task and resume it later: the agent
@@ -385,7 +387,10 @@ watching, steering and unblocking.
   Others
   watch it as its live transcript (printed as the Sessions view prints a session, in the
   terminal's colours, following its newest lines until they scroll up), see whose it is
-  in the view and in the sidebar, and can take control, from the task's page or its menu in a
+  in the view and in the sidebar, answer what its agent asks under Needs you with Reply
+  without taking control (SPEC-516: the agent gets the answer labelled with their name; not
+  while it asks in its terminal or holds the owner's personal secrets or MCP servers), and can
+  take control, from the task's page or its menu in a
   list, after a confirmation naming the owner (SPEC-510): the task then acts on GitHub as them,
   and the previous owner hears of it wherever they are and can take it back at any time. A
   person who wants to be asked first turns on "Ask me before taking control of my tasks" in
@@ -676,7 +681,9 @@ watching, steering and unblocking.
 Agents are real CLIs; sessions outlive the server; GitHub is the authority for permissions (a playground's guests, let
 in through an expiring link, are the one exception);
 coordination goes through one MCP and hook protocol; every queue, stream, retry and wait is
-bounded and owned; features have specs, research and questions do not.
+bounded and owned; features have specs, research and questions do not; a defect a request
+reports is fixed in its task, also when it is asked as a question, never filed and left
+([decision 0371](decisions/0371-a-defect-a-request-reports-is-fixed-also-when-asked-as-a-question.md)).
 
 ## Where to read more
 

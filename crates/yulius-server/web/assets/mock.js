@@ -723,7 +723,7 @@ function detail(db, task) {
     started: hasStarted(task),
     // What the task asks for, and the Claude Code its latest session runs (SPEC-461 CCM-012).
     model: task.model || 'claude-opus-5-5',
-    model_default: !task.model || task.effort === 'default',
+    model_default: Boolean(task.model_default) || !task.model || task.effort === 'default',
     // The model its run was launched with while no subscription could run its own (SPEC-482).
     ...(task.fallback_model ? { fallback_model: task.fallback_model } : {}),
     ...(task.effort && task.effort !== 'default' ? { effort: task.effort } : { effort: 'high' }),
@@ -1532,7 +1532,9 @@ route('POST', `/api/sandboxes/${ID}/tasks`, async ({ db, p, body }) => {
     origin: 'ui', created_by: { login: db.me.user.login, id: db.me.user.id }, created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
     archived: false, account_label: null,
     stepsList: wf ? wf.steps.map((title2, i) => ({ id: `${id}-s${i + 1}`, ordinal: i + 1, title: title2, status: 'pending', note: '', updated_by: 'workflow', updated_at: new Date().toISOString() })) : [],
-    model: body.model || (harness === 'antigravity' ? 'gemini-4-carbon' : 'claude-opus-4'), effort: body.effort || (harness === 'antigravity' ? 'high' : 'default'), prompt: body.prompt,
+    model: body.model || (harness === 'codex' ? 'gpt-6.2-astra' : harness === 'antigravity' ? 'gemini-4-carbon' : 'claude-opus-4'), effort: body.effort || (harness === 'codex' ? 'high' : harness === 'antigravity' ? 'high' : 'default'), prompt: body.prompt,
+    // A task without a model asks for its agent's default, as on the server (`model_default`).
+    model_default: !body.model,
     delivery: null, mode: choice ? choice.mode : body.mode || 'goal', auto: choice ? choice.auto : null,
     supertask: body.supertask === true,
   };
@@ -1917,6 +1919,25 @@ route('POST', `/api/tasks/${ID}/control/take`, ({ db, p }) => {
   if (task.ownerAsksFirst) fail(409, 'conflict', `@${owner} wants to be asked before anyone takes control of their tasks: request control of task #${task.number} instead`);
   const controlFrom = task.controlFrom && task.controlFrom.login === me ? null : { login: owner };
   touch(db, task, { owner: { login: me }, controlRequest: null, controlFrom, ownerAsksFirst: false });
+  return summary(task);
+});
+// Answer a task's Needs you, owner or not, without taking control (SPEC-516). Tests read what
+// was answered from `__yuliusMock.needsYouAnswers`; `holdsPersonal` on a task stands for its
+// owner's personal secrets or MCP servers in reach.
+route('POST', `/api/tasks/${ID}/needs-you/answer`, ({ db, p, body }) => {
+  const task = taskOf(db, p[0]);
+  need(sandboxOf(db, task.sandbox_id), 'write');
+  const me = db.me.user.login;
+  const owner = ownerOf(task).login;
+  if (owner !== me && db.me.user.guest) fail(403, 'forbidden', `Task #${task.number} is @${owner}'s: a guest answers the requests of only their own tasks on this playground.`);
+  const text = String(body.text || '').trim();
+  if (!text) fail(422, 'invalid', 'the answer is empty');
+  if (task.status !== 'running') fail(409, 'conflict', `task #${task.number} is not running (${task.status}), so its agent reads no answer now`);
+  if (!task.needs_you) fail(409, 'conflict', `task #${task.number} asks nobody anything now: there is nothing to answer`);
+  if (task.activity === 'needs_attention') fail(409, 'conflict', `task #${task.number}'s agent asks in its terminal now: @${owner} answers there, or take control of the task`);
+  if (owner !== me && task.holdsPersonal) fail(409, 'conflict', `task #${task.number} holds @${owner}'s personal secrets or MCP servers, so only @${owner} answers it; or take control of the task`);
+  (db.needsYouAnswers ||= []).push({ task: task.id, by: me, text });
+  touch(db, task, { needs_you: null });
   return summary(task);
 });
 route('PUT', '/api/me/control', ({ db, body }) => {

@@ -1,7 +1,7 @@
 ---
 name: Fix
 description: A defect fixed at its root cause, proven by a regression test that fails without the fix.
-when_to_use: Something does not work as specified or as it used to - a bug, a regression, a crash, wrong data, a failing check or deployment.
+when_to_use: Something does not work as specified or as it used to - a bug, a regression, a crash, wrong data, a broken or confusing behaviour, a failing check or deployment - also when it is asked as a question or shown in a screenshot.
 spec: required
 tests: required
 order: 20
