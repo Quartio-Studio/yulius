@@ -2762,7 +2762,9 @@ Each person can get their notifications in their own Telegram chat
   active (`App::seed_notices`), so only later changes are told. As the
   notification center does, a switching task is skipped without touching that memory, a request
   naming a sandbox-wide cause (`docker`) is told once per episode (`App::shared_episode`), and a
-  waiting request for control goes to the task's owner only, once per request. For each linked
+  waiting request for control goes to the task's owner only, once per request; a take of a task
+  (`task.control_taken`) or a take-back (`task.control_taken_back`) goes to the person it was
+  taken from only (`yulius_domain::notify::taken_text`, SPEC-510). For each linked
   person who chose that kind it applies `App::envelope_reaches`, the same function that filters
   `WS /api/events`, then the person's `Throttle` (5 a minute, the rest folded into a summary). Text
   passes `App::redact_for_sandbox` (account text: the shape-based `redact`).

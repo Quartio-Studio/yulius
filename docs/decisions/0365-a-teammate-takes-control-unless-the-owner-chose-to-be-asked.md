@@ -31,18 +31,23 @@ then acts on GitHub as them, and only a person who wants consent keeps it.
 - **The previous owner can take it back and is told.** The take records them as the giver
   (`tasks.control_from`), so 0331's Take back returns the task while control has not moved
   since, also when the taker asks first. They get `task.control_taken` wherever they are
-  (a notification and a toast that opens the task).
+  (a notification and a toast that opens the task, and their Telegram chat under Needs you; a
+  take-back reaches the chat the same way).
 - **The option is the owner's, per person, on the server, off by default.** Settings → Your
   account → "Ask me before taking control of my tasks" (`users.control_ask_first`, schema 67,
   `PUT /api/me/control`, `Me.user.control_ask_first`). With it on, a take of their task is
-  refused (409 naming them) and teammates request control as before. Each task summary carries
-  `owner_asks_first`, so every page offers the right action.
+  refused (409 naming them) and teammates request control as before; the take reads the choice
+  in its own update, so a choice saved first always holds. Each task summary carries
+  `owner_asks_first`, so every page offers the right action, and a refused take reads the task
+  again so the page offers what works now.
 - **An absent owner never holds a task.** A take, like a request, passes control at once from
   an owner who is disabled, deleted or without write access, whatever they chose (0060, 0331).
 - **A confirmation before taking.** It names the owner and says the task will act on GitHub as
   the taker and that the owner can take it back.
 - **Taking is a person's own act.** No agent, Superagent or MCP tool takes control (0331's rule
   for asking and consenting).
+- **A playground's guest asks.** A guest tidies only their own tasks (0331) and has no GitHub
+  identity to act as: the take refuses them, and their pages and refusals offer Request control.
 
 ## Alternatives
 
@@ -65,6 +70,6 @@ then acts on GitHub as them, and only a person who wants consent keeps it.
   returns it.
 - What the task does on GitHub after a take is under the taker's name, as after a hand-over.
 - A page that read a task before its owner changed the option offers the old action until the
-  task's next update; a take is then refused with the reason, and a request still works.
+  task's next update or a refused take, which reads the task again.
 - The refusal of steering says "Take control on the task's page", or "Ask them for control" when
   the owner asks first.

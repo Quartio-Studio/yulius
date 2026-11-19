@@ -43,13 +43,16 @@ Decline.
   `task.control_taken`). A waiting request for control is dropped by the take.
 - TKC-002: The previous owner becomes the giver (`control_from`) and may Take back while control
   has not moved since; they are told wherever they are (`task.control_taken` event to them only:
-  a notification and a toast that opens the task). The task's terminal says
+  a notification and a toast that opens the task, and their linked Telegram chat under Needs you;
+  a take-back reaches the chat the same way). The task's terminal says
   "@to took control of this task from @from: it now acts on GitHub as @to. @from can take it back."
 - TKC-003: Each person chooses in Settings whether teammates take control of their tasks or ask
   first: "Ask me before taking control of my tasks", off by default, kept on the server
   (`users.control_ask_first`, `PUT /api/me/control {ask_first}`, `Me.user.control_ask_first`).
   With it on, a take of their task is refused with 409 naming them and saying to request control;
-  requests, hand-over, decline and withdraw work as before. With it off, requests still work.
+  the take reads the choice in its own conditional update. Requests, hand-over, decline and
+  withdraw work as before. With it off, requests still work. A page whose take is refused reads
+  the task again and offers what works now.
 - TKC-004: An owner who can no longer act never holds a task: a take or a request passes control
   at once whatever the owner chose (SPEC-070 R5, kept).
 - TKC-005: Each task summary says whether its owner asks first (`owner_asks_first`). On someone
@@ -61,7 +64,8 @@ Decline.
   Take back.
 - TKC-006: Taking control is a person's own act: no agent, Superagent or MCP tool does it. The
   refusal for a non-owner's steering says to take control on the task's page (or ask, when the
-  owner wants to be asked).
+  owner wants to be asked). A playground's guest is offered and told to request control, never to
+  take it (review round 1).
 - TKC-007: Refusals: the owner taking their own task (409), a disabled account or one without
   write access (403/404), a guest (403), a task that changed meanwhile (409), a task starting with
   its owner's personal MCP servers (409, as for a hand-over).
@@ -114,4 +118,11 @@ Decline.
 - **Requests stay** for owners who ask first; with the option off a request still works (an
   asker may prefer to ask), but the UI offers Take control.
 - **Guests do not take.** A playground guest tidies only their own tasks (ADR-0331); taking the
-  maker's task would be more than that.
+  maker's task would be more than that. Their pages keep Request control, which they had before
+  (review round 1).
+- **The previous owner's chat is told** (review round 1): a take of a running task without
+  consent is when an owner away from the browser most needs word; the take-back, which had the
+  same gap, is told the same way.
+- **A refused take reads the task again** rather than every page being told of an owner's
+  changed choice: publishing all of a person's tasks on each toggle costs more than the one read
+  a stale page needs.
