@@ -29,7 +29,7 @@ and [OpenAI's Pro tiers](https://help.openai.com/en/articles/9793128-about-chatg
 
 - [x] Read the product context and related work, then write and validate the spec
 - [x] Select Ultrafast from the assigned Codex subscription on each launch
-- [ ] Independent review in a fresh session, findings fixed test-first
+- [x] Independent review in a fresh session, findings fixed test-first
 - [ ] Every gate green, docs and the changes log updated
 
 ## Acceptance criteria
@@ -59,6 +59,10 @@ apply project overrides, session choices, model capabilities and feature setting
 - The pinned Codex CLI 0.169.0 returned `service_tier: ultrafast` from `config/read` against a
   temporary home with the generated setting. Its service-tier resolver checks the model catalog
   and honors disabled features. See [the pinned resolver](https://github.com/openai/codex/blob/rust-v0.169.0/codex-rs/tui/src/service_tier_resolution.rs).
-  No billable turn was sent. An offline `account/read` with a synthetic credential stopped at
-  workspace routing discovery.
+  The same CLI reported `promax` from `account/read` with a synthetic personal sign-in and
+  reported `priority` when a trusted project's configuration selected it. No billable turn was sent.
 - `scripts/dev quick` passed the repository contracts and formatting check.
+- Independent review approved `00b7ccef` with one minor. The reviewer found that the plan detector accepted padded JWT payloads. The added
+  launch assertion failed on the padded Pro 500 fixture. Plan detection now uses Codex's strict
+  base64url decoding, while the existing credential refresh comparison keeps its prior behavior.
+- Local Vidoc scan exited 2. Vidoc rejected the instance key (HTTP 401).

@@ -1502,10 +1502,12 @@ fn codex_ultrafast_follows_the_assigned_subscription() -> TestResult {
     wrong_mode["auth_mode"] = json!("apikey");
     let mut broken_token = ultra.clone();
     broken_token["tokens"]["id_token"] = json!("h.invalid.s");
+    let mut padded = ultra.clone();
     let mut truncated = ultra.clone();
     let token = ultra["tokens"]["id_token"]
         .as_str()
         .ok_or("fixture needs a token")?;
+    padded["tokens"]["id_token"] = json!(token.replace(".s", "=.s"));
     truncated["tokens"]["id_token"] = json!(token.trim_end_matches(".s"));
     let mut empty_header = ultra.clone();
     empty_header["tokens"]["id_token"] = json!(token.trim_start_matches('h'));
@@ -1540,6 +1542,7 @@ fn codex_ultrafast_follows_the_assigned_subscription() -> TestResult {
             ),
             ("unreadable token", broken_token.clone(), false),
             ("truncated token", truncated.clone(), false),
+            ("padded payload", padded.clone(), false),
             ("empty header", empty_header.clone(), false),
             ("empty signature", empty_signature.clone(), false),
         ] {

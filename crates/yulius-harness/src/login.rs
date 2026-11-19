@@ -315,7 +315,7 @@ pub fn codex_auth_replaces(fresh: &[u8], stored: &[u8], now: Timestamp) -> bool 
 fn signed_in_user(auth_json: &[u8]) -> Option<String> {
     let value: Value = serde_json::from_slice(auth_json).ok()?;
     let token = value.get("tokens")?.get("id_token")?.as_str()?;
-    let claims = decode_claims(token.split('.').nth(1)?)?;
+    let claims = decode_claims(token.split('.').nth(1)?.trim_end_matches('='))?;
     claims
         .get("sub")
         .and_then(Value::as_str)
@@ -361,7 +361,7 @@ fn plan_claims(token: &str) -> Option<Value> {
 fn decode_claims(payload: &str) -> Option<Value> {
     use base64::Engine as _;
     let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .decode(payload.trim_end_matches('='))
+        .decode(payload)
         .ok()?;
     serde_json::from_slice(&bytes).ok()
 }
