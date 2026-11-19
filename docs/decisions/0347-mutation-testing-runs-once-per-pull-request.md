@@ -97,3 +97,12 @@ No one command existed.
   only a whole change gets more. The CPU of a run grows with its jobs by those cold builds; on a
   busy host the kernel's weights share it, and CI keeps four times an agent's share within the
   sandbox. The numbers are in SPEC-506's Evidence.
+
+## Amendment (2026-11-19, SPEC-533)
+
+The clean baseline and each mutant use Cargo's workspace selection and the same nextest filter.
+In cargo-mutants 27.1.0, `--test-workspace true` applied only to mutants. The baseline omitted
+tests in packages without mutations. In Git-free copies the xtask missing-key test then failed
+on every viable mutant in PR #1360. Earlier summaries, including the measurements above, can
+overstate catches. Inspect individual logs for the failing test or rerun the change with the
+corrected baseline before relying on those counts. [Issue #1364](https://github.com/Quartio-Studio/yulius/issues/1364)

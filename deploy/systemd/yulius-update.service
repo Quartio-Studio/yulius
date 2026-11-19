@@ -6,6 +6,7 @@
 # "local" to the server (rustup's cargo for root; the service's data directory and listener).
 [Unit]
 Description=Yulius update helper
+StartLimitIntervalSec=0
 After=network-online.target
 Wants=network-online.target
 

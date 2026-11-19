@@ -8,6 +8,21 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 - A Claude run refused after its subscription signs in again now moves or waits while the new
   sign-in stays available (SPEC-539, #1365).
+- A task can deliver a follow-up that appends to a list after incorporating an append from
+  `dev`. Delivery compares the two trees when the task contains the integration commit.
+  An equal tree keeps the previous pull request marked as merged. [#1299](https://github.com/Quartio-Studio/yulius/issues/1299)
+- On the Git page, pressing Space on the production protection switch still saves the change when the overview redraws during the keypress (SPEC-546, #1157).
+- A message to a Claude Code session waits when its prompt box shows a restored draft. The
+  sender or session owner learns why. A new key keeps its recovery mark when an earlier
+  prompt finishes ([SPEC-537](../.ai/specs/SPEC-537-preserve-restored-drafts-when-typing-int.md), #1264).
+- Rapid update requests now leave the systemd update watcher active. The operations guide covers upgrading hand-installed units and recovering a failed watcher (SPEC-551, #1201).
+- The merge train regression now checks that the train itself rejects a member whose owner was disabled and records that arm for one-by-one handling (SPEC-544, #1154).
+- Git integration tests now install fake Git executables and hooks in a separate process so concurrent forks cannot keep the executable open for writing (#1332, SPEC-548).
+- Browser tests recover their initial mock page once when Chromium reports a network change during startup. The test output records the recovery (#1331, SPEC-545).
+- The new automation editor keeps the name you enter while workflows load, including names that match a recipe (#1416, SPEC-543).
+- Mutation testing now checks the same workspace tests on the baseline and each mutant.
+  Earlier runs could count an unrelated xtask failure as a catch (#1364, SPEC-533).
+
 - Task briefings now request a native reviewer for each harness. Codex uses GPT-6.2 Astra at high effort and Antigravity uses Gemini 4 Neon (High) in every round. Claude Code keeps its Fable and Opus round policy. Gemini task launches use the Neon default delivered in SPEC-519 (review instructions in SPEC-524).
 - A question names who answers it (SPEC-512 part 2, task #494, #1418): an agent's `needs_you`
   can name the people besides the owner it waits for (`who`, each with write access to the

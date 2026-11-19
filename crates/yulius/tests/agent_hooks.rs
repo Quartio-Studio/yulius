@@ -2116,3 +2116,59 @@ async fn late_agy_stop(exhausted_gate: bool) -> TestResult {
     assert_eq!(agy_brief(&f).await?["activity"], "working");
     Ok(())
 }
+
+/// A viewer key may arrive after a submit reaches the server, while its token is being
+/// resolved to a task. The fixture clock keeps both events in the same millisecond.
+#[test]
+fn a_key_during_submit_context_lookup_keeps_its_mark() -> TestResult {
+    use futures::FutureExt;
+    use std::time::Duration;
+    use yulius_contracts::hooks::{HookInput, events};
+
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .max_blocking_threads(1)
+        .build()?
+        .block_on(async {
+            let f = fixture().await?;
+            let app = &f.h.app;
+            let run = app.agent_context(TOKEN).await?.attempt.run_dir;
+            std::fs::create_dir_all(&run)?;
+            let mark = Path::new(&run).join("person-typed");
+            let user = UserId::parse("u1")?;
+            app.record_typing(&f.task, &user);
+
+            // Token lookup submits its SQLite job on the blocking pool. Hold the only
+            // worker until the hook has entered and the later viewer key is recorded.
+            let (ready, started) = tokio::sync::oneshot::channel();
+            let (release, wait) = std::sync::mpsc::channel();
+            let worker = tokio::task::spawn_blocking(move || {
+                let _ = ready.send(());
+                wait.recv_timeout(Duration::from_secs(5))
+            });
+            tokio::time::timeout(Duration::from_secs(5), started).await??;
+            let input = HookInput {
+                prompt: Some("old text".into()),
+                ..Default::default()
+            };
+            let mut submit = std::pin::pin!(app.hook_event(
+                TOKEN,
+                "claude",
+                events::USER_PROMPT_SUBMIT,
+                &input,
+                None
+            ));
+            assert!(submit.as_mut().now_or_never().is_none());
+            app.record_typing(&f.task, &user);
+            std::fs::write(&mark, app.now().0.to_string())?;
+            release.send(())?;
+            worker.await??;
+            submit.await?;
+            assert!(
+                mark.is_file(),
+                "the submit erased a key received during lookup"
+            );
+            assert!(app.has_draft(&f.task));
+            Ok(())
+        })
+}

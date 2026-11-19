@@ -116,6 +116,14 @@ struct ActiveRun {
     writer: Box<dyn RunWriter>,
 }
 
+/// The durable draft mark and the prompt submission whose hook may be retried.
+#[derive(Default)]
+pub(crate) struct DraftMark {
+    pub(crate) written: bool,
+    /// The submit's wall time and the viewer input sequence at its first request.
+    pub(crate) submit: (i64, u64),
+}
+
 /// Runtime state of one task with a hub that outlives individual runs.
 pub struct TaskRuntime {
     /// Terminal fan-out.
@@ -193,11 +201,12 @@ pub struct TaskRuntime {
     /// message of Yulius's own waits for (SPEC-480 DRF-006): one line per keystroke.
     pub(crate) draft_told_ms: AtomicI64,
     /// The run's folder holds the mark of a person's possible draft (`person-typed`, SPEC-480
-    /// DRF-009), so that a draft's keystrokes write it once.
-    pub(crate) draft_marked: AtomicBool,
-    /// This server saw a person type into the run. Until it did, a draft is known from its
-    /// mark alone, and a prompt that goes on is not known to follow it (DRF-009).
-    pub(crate) typed_seen: AtomicBool,
+    /// DRF-009). The guard orders a key's timestamp and file write with the submit hook's
+    /// check and file removal (SPEC-537).
+    pub(crate) draft_mark: tokio::sync::Mutex<DraftMark>,
+    /// Sequence of the last viewer input in this run. Before the first, only the durable
+    /// mark identifies a possible draft, and a prompt may predate it (DRF-009).
+    pub(crate) typed_seq: AtomicU64,
     /// The task's owner had a message typed behind their possible draft and Yulius is about to
     /// submit both (SPEC-487 TCT-006): the next prompt that goes on from the box carried that
     /// draft to the agent, also one this server knows from its mark alone. The mark is taken
@@ -207,11 +216,9 @@ pub struct TaskRuntime {
     /// Code did not take Yulius's Enter as a submit: the draft would then read as ended
     /// while its text is still in the box.
     pub(crate) sent_past_draft: AtomicBool,
-    /// When the prompt whose hook is being answered emptied the prompt box (ms): worked out at
-    /// its first request and taken into [`Self::box_emptied_ms`] when the prompt goes on, so a
-    /// prompt that is held and then blocked, which Claude Code puts back into the box, empties
-    /// nothing (SPEC-468 CCF-010).
-    pub(crate) submit_emptied_ms: AtomicI64,
+    /// The viewer input sequence when the submit that emptied the box arrived. Keys after that submit
+    /// win ties in the millisecond clock, including while a held prompt is answered.
+    pub(crate) emptied_seq: AtomicU64,
     /// The run's last prompt hook was answered with a hold: the next one is that prompt sent
     /// again by the hook client, not another submit. A hold the CLI gave up (its client holds
     /// for days) leaves this set until the run's next prompt is answered, which then counts as
@@ -501,15 +508,30 @@ impl TaskRuntime {
             .max(self.message_typed_ms.load(Ordering::SeqCst))
     }
 
+    /// The empty time for a strict timestamp comparison. When the two wall times
+    /// coincide, use the order of the submit and key observed by this server.
+    pub(crate) fn empty_time_for_typing(&self) -> i64 {
+        let emptied = self.box_emptied_ms.load(Ordering::SeqCst);
+        if self.typed_at_ms.load(Ordering::SeqCst) == emptied
+            && self.typed_seq.load(Ordering::SeqCst) > self.emptied_seq.load(Ordering::SeqCst)
+        {
+            emptied.saturating_sub(1)
+        } else {
+            emptied
+        }
+    }
+
     /// A run starts at `now_ms`, in a new process: its prompt box is empty, and no prompt of
     /// it is held (one held in the run before went with that run's hook client; SPEC-468
     /// CCF-010). Nothing waits in its queue and no prompt of it went on: what the run before
     /// queued went with its process (SPEC-471 CCQ-001).
-    pub(crate) fn run_starts(&self, now_ms: i64) {
+    pub(crate) async fn run_starts(&self, now_ms: i64) {
+        let mut mark = self.draft_mark.lock().await;
         self.box_emptied_ms.store(now_ms, Ordering::SeqCst);
         // Its folder is new: no draft is marked there (SPEC-480 DRF-009).
-        self.draft_marked.store(false, Ordering::SeqCst);
-        self.typed_seen.store(false, Ordering::SeqCst);
+        *mark = DraftMark::default();
+        self.typed_seq.store(0, Ordering::SeqCst);
+        self.emptied_seq.store(0, Ordering::SeqCst);
         self.sent_past_draft.store(false, Ordering::SeqCst);
         self.prompt_held.store(false, Ordering::SeqCst);
         self.with_queue(|queue| *queue = yulius_domain::agent_cli::Queue::default());
@@ -594,10 +616,10 @@ impl TaskRuntime {
             message_typed_ms: AtomicI64::new(0),
             box_emptied_ms: AtomicI64::new(0),
             draft_told_ms: AtomicI64::new(0),
-            draft_marked: AtomicBool::new(false),
-            typed_seen: AtomicBool::new(false),
+            draft_mark: tokio::sync::Mutex::default(),
+            typed_seq: AtomicU64::new(0),
             sent_past_draft: AtomicBool::new(false),
-            submit_emptied_ms: AtomicI64::new(0),
+            emptied_seq: AtomicU64::new(0),
             prompt_held: AtomicBool::new(false),
             typed_by: Mutex::new(None),
             personal_mcp_of: Mutex::new(None),
@@ -803,6 +825,9 @@ const LIVE_WITH_A_RUN: [TaskStatus; 4] = [
 /// Supervisor-owned per-process state.
 #[derive(Default)]
 pub struct SupervisorState {
+    /// Viewer input order across runs. A hook reads it before looking up its run, so a key
+    /// arriving during that lookup wins a tie in the wall clock (SPEC-537).
+    pub(crate) input_seq: AtomicU64,
     runtimes: Mutex<HashMap<TaskId, Arc<TaskRuntime>>>,
     /// Shared, so an install on the blocking pool can own its guard (SPEC-507 SKR-005).
     launch: Arc<tokio::sync::Mutex<()>>,
@@ -2536,7 +2561,7 @@ impl App {
         // Typing from now on, once viewers can write to this run, is a person's draft in it
         // (SPEC-068): its prompt box starts empty (SPEC-468 CCF-010).
         let typed_before = runtime.typed_at_ms.load(Ordering::SeqCst);
-        runtime.run_starts(self.now().0);
+        runtime.run_starts(self.now().0).await;
         self.attach_run(&task.id, &attempt, &host_token).await?;
         // The new run learns its goal from its own lines, and an idle one writes none: what the
         // old run read of the goal still says what the agent left.
@@ -5692,10 +5717,13 @@ impl App {
             // box: its mark says since when (SPEC-480 DRF-009). A keystroke this server saw is
             // newer and stays.
             // Never later than now: a time ahead of the clock would never grow old.
-            let drafted = person_typed_marked(Path::new(&attempt.run_dir)).min(self.now().0);
-            if drafted > 0 {
-                runtime.typed_at_ms.fetch_max(drafted, Ordering::SeqCst);
-                runtime.draft_marked.store(true, Ordering::SeqCst);
+            {
+                let mut mark = runtime.draft_mark.lock().await;
+                let drafted = person_typed_marked(Path::new(&attempt.run_dir)).min(self.now().0);
+                if drafted > 0 {
+                    runtime.typed_at_ms.fetch_max(drafted, Ordering::SeqCst);
+                    mark.written = true;
+                }
             }
             let reattached = match host_token {
                 Some(token) => self
@@ -7497,13 +7525,13 @@ mod tests {
     /// SPEC-468 CCF-010: a run starts with an empty prompt box and holds no prompt: one held
     /// in the run before went with that run's hook client, so the new run's first prompt is a
     /// submit, not that prompt sent again.
-    #[test]
-    fn a_new_run_starts_with_an_empty_prompt_box_and_no_held_prompt() {
+    #[tokio::test]
+    async fn a_new_run_starts_with_an_empty_prompt_box_and_no_held_prompt() {
         use std::sync::atomic::Ordering;
         let runtime = super::TaskRuntime::new();
         runtime.typed_at_ms.store(5_000, Ordering::SeqCst);
         runtime.prompt_held.store(true, Ordering::SeqCst);
-        runtime.run_starts(7_000);
+        runtime.run_starts(7_000).await;
         assert_eq!(runtime.box_emptied_ms.load(Ordering::SeqCst), 7_000);
         assert!(!runtime.prompt_held.load(Ordering::SeqCst));
     }
@@ -7511,8 +7539,8 @@ mod tests {
     /// SPEC-471 CCQ-001: what the run before left in Claude Code's queue went with its process,
     /// and a resumed session does not get it back: a run starts with an empty queue and with
     /// no prompt that just went on.
-    #[test]
-    fn a_new_run_starts_with_an_empty_queue() {
+    #[tokio::test]
+    async fn a_new_run_starts_with_an_empty_queue() {
         use std::sync::atomic::Ordering;
         use yulius_domain::agent_cli::QueueChange;
         let runtime = super::TaskRuntime::new();
@@ -7521,7 +7549,7 @@ mod tests {
         runtime.with_queue(|queue| queue.record(QueueChange::Added, None));
         runtime.prompt_passed_ms.store(6_500, Ordering::SeqCst);
         assert!(runtime.queue().holds());
-        runtime.run_starts(7_000);
+        runtime.run_starts(7_000).await;
         assert_eq!(runtime.queue(), yulius_domain::agent_cli::Queue::default());
         assert_eq!(runtime.prompt_passed_ms.load(Ordering::SeqCst), 0);
         assert!(!runtime.queue_may_hold());
@@ -7529,7 +7557,7 @@ mod tests {
         // which counts as holding; the next launch starts a process whose queue is empty.
         runtime.queue_unread.store(true, Ordering::SeqCst);
         assert!(runtime.queue_may_hold(), "not known counts as holding");
-        runtime.run_starts(8_000);
+        runtime.run_starts(8_000).await;
         assert!(!runtime.queue_may_hold());
     }
 
@@ -7553,8 +7581,8 @@ mod tests {
     /// SPEC-479 SWQ-001, SWQ-002: what a move at a turn's end asks of the queue. An entry that
     /// waits counts until a turn's closing record found it waiting; a queue that is not known
     /// (a reattached run not read yet, a lock a thread died with) counts; a new run has none.
-    #[test]
-    fn a_move_asks_the_queue_for_what_a_turns_end_hands_on() {
+    #[tokio::test]
+    async fn a_move_asks_the_queue_for_what_a_turns_end_hands_on() {
         use std::sync::atomic::Ordering;
         use yulius_domain::agent_cli::{Queue, QueueChange};
         let runtime = std::sync::Arc::new(super::TaskRuntime::new());
@@ -7566,7 +7594,7 @@ mod tests {
         assert!(runtime.queue_may_hold(), "the restart's rule counts it");
         runtime.queue_unread.store(true, Ordering::SeqCst);
         assert!(runtime.queue_may_hand_on(), "not known counts");
-        runtime.run_starts(8_000);
+        runtime.run_starts(8_000).await;
         assert!(!runtime.queue_may_hand_on());
         assert_eq!(runtime.queue().left_over(), 0);
         let dying = std::sync::Arc::clone(&runtime);
