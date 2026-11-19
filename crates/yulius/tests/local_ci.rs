@@ -4440,6 +4440,10 @@ async fn a_second_run_that_finds_no_network_room_is_not_made() -> TestResult {
          the change"
     );
     assert_eq!(attempts_of(&f)?, [1, 1]);
+    assert!(
+        f.h.app.config.ci.job_timeout > WAIT * 2,
+        "the job deadline must outlast both the start and settle waits"
+    );
     Ok(())
 }
 
