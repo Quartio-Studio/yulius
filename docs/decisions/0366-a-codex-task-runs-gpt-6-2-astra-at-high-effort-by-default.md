@@ -13,8 +13,10 @@ CDX-013: a Codex task without a model ran its account's default).
 - A Codex task without a model was launched with no `-m` and no `model_reasoning_effort`, so the
   account or the CLI chose both, and the run recorded no model.
 - Codex's bundled model catalog (release 0.170.0) names the model `gpt-6.2-astra` ("GPT-6.2-Astra",
-  efforts `low` to `ultra`, default `low`) and serves it to clients from 0.166.0; the pinned
-  0.169.0 asks the server's model list and runs it.
+  efforts `low` to `ultra`, default `low`) for clients from 0.166.0. The pinned 0.169.0 does not
+  bundle it: run against a stub API it sends `gpt-6.2-astra` at `high`; with an API-key sign-in it
+  runs on fallback metadata (a warning, 0.169.0's generic request shape), with a ChatGPT sign-in
+  on the entry the server's model list gives.
 - Antigravity already has a server-side default model and effort (ADR-0361), filled in by the
   launch plan and recorded with the run.
 
@@ -41,4 +43,8 @@ CDX-013: a Codex task without a model ran its account's default).
 
 - Codex runs use GPT-6.2 Astra at high effort unless a task names another; usage per run is
   attributed to a named model.
+- API-key Codex subscriptions run the default on fallback metadata until the pinned CLI bundles
+  the model; a bump of the pin to such a release (0.170.0 or later) is its own change.
+- A Codex task that started before this on its account's default resumes on GPT-6.2 Astra at
+  high effort.
 - When OpenAI retires the model, the constant changes in one place.
