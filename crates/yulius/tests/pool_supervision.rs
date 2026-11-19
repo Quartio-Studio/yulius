@@ -1135,10 +1135,24 @@ fn a_capacity_round_leaves_the_reattached_runs_hand_over_to_finish() -> TestResu
     reattach_at_limit(LimitRestartRace::CapacityRound)
 }
 
+/// The recorded refusal makes the old subscription unusable before the hand-over.
+#[test]
+fn a_reattached_refused_subscription_restarts_on_a_working_one() -> TestResult {
+    reattach_at_limit(LimitRestartRace::AccessLost)
+}
+
+/// The ownership restart reports why a session switched inside the CLI resumes on Opus.
+#[test]
+fn a_reattached_switched_model_limit_is_said_at_the_ownership_restart() -> TestResult {
+    reattach_at_limit(LimitRestartRace::SwitchedModel)
+}
+
 enum LimitRestartRace {
     Natural,
     LateLimit,
     CapacityRound,
+    AccessLost,
+    SwitchedModel,
 }
 
 fn reattach_at_limit(order: LimitRestartRace) -> TestResult {
@@ -1149,7 +1163,8 @@ fn reattach_at_limit(order: LimitRestartRace) -> TestResult {
     let build = || {
         let agent = FakeAgentOptions {
             transcript: true,
-            limit_after: Some(1),
+            limit_after: (!matches!(order, LimitRestartRace::SwitchedModel)).then_some(1),
+            access_lost: matches!(order, LimitRestartRace::AccessLost),
             ..FakeAgentOptions::default()
         };
         build_with_github(
@@ -1177,6 +1192,9 @@ fn reattach_at_limit(order: LimitRestartRace) -> TestResult {
         })
         .await?;
         app.send_input(&id, b"hello\r").await?;
+        if matches!(order, LimitRestartRace::SwitchedModel) {
+            crate::usage_credits::append_switched_fable_limit(&app, &data).await?;
+        }
         wait_for("the pause at the limit", Duration::from_secs(30), || {
             has_status(&app, &id, TaskStatus::WaitingCapacity)
         })
@@ -1206,6 +1224,7 @@ fn reattach_at_limit(order: LimitRestartRace) -> TestResult {
         });
         let capacity = matches!(order, LimitRestartRace::CapacityRound)
             .then(|| support::hold_point(Point::SwitchPrepared, id.as_str()));
+        let mut watch = app.runtime(&id).hub.watch();
         app.reconcile().await?;
         let after_round = if let Some((ready, go)) = capacity {
             support::point_reached(ready).await?;
@@ -1263,6 +1282,12 @@ fn reattach_at_limit(order: LimitRestartRace) -> TestResult {
             Some("b-second")
         );
         assert_eq!(owner?, admin.as_str());
+        if matches!(order, LimitRestartRace::SwitchedModel) {
+            let said = crate::subscription_moves::notices(&mut watch);
+            assert!(said.iter().any(|n| n ==
+                "Fable is used up on this subscription: this session goes on with Opus 5.5."),
+                "{said:?}");
+        }
         assert!(problems.is_empty(), "{problems:?}");
         Ok::<_, Box<dyn std::error::Error>>(())
     })?;

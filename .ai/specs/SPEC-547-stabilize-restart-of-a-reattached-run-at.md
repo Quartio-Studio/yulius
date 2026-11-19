@@ -18,6 +18,7 @@ Issue #1286 reports a timeout waiting for attempt two on plain dev under load. S
 - RST-547-1. The old attempt ends and exactly one replacement runs with the current owner's servers, continuing the interrupted turn on an available subscription.
 - RST-547-2. A controlled ordering reproduces the failure. The integration test waits on observable conditions with bounded deadlines.
 - RST-547-3. A capacity pass that finds the old pause during the hand-over defers that task and continues through the pool. A later pass checks that the same pause is still open.
+- RST-547-4. When a replayed refusal belongs to a revoked account, the restart uses an available subscription. When it belongs to a model selected inside the CLI, the replacement reports its return to the configured model.
 
 ## Plan
 
@@ -25,7 +26,8 @@ Issue #1286 reports a timeout waiting for attempt two on plain dev under load. S
 - [x] Prove the ordering with a failing regression
 - [x] Restore reliable restart and normal CI coverage
 - [x] Verify the restart under 48 busy loops
-- [ ] Protect the persisted pause during startup hand-over
+- [x] Protect the persisted pause during startup hand-over
+- [ ] Preserve replayed subscription and model refusals through hand-over
 - [ ] Ready the independently reviewed fix for the green CI merge
 
 ## Acceptance criteria
@@ -51,3 +53,5 @@ Reconciliation takes the task’s move lock before attaching the host. It releas
 - Eleven adjacent workflow-limit, refused-subscription and failed hand-over cases passed. These cover the pool’s ordinary limit moves, workflow resumption after restart, and stopping an old owner’s run when the required restart genuinely fails.
 - The original test passed 40/40 iterations in 331.5 seconds beside 48 busy loops. All workers were alive at both ends of the run.
 - Independent review of 1113a4157 found that the startup capacity pass could also claim the persisted pause. Holding the hand-over after preflight and calling resume_round reproduced it in 7.1 seconds. The task was already Running when the hand-over still owned a WaitingCapacity pause.
+- After the capacity fix, all 57 pool supervision, subscription pool and workflow limit integration tests passed, including the controlled preflight capacity pass.
+- Review of 3d948255e found two replay cases. Before their fixes, the revoked-account case stopped instead of running after 5.0 s. The switched-model case resumed but omitted the Fable-to-Opus terminal notice after 6.8 s.
