@@ -1,6 +1,6 @@
 ---
 yulius-task: 4b0ec4f3-090b-46e8-a7cb-672e088b7118
-status: draft
+status: done
 ---
 
 # SPEC-518: a finished task is shown Done, and what then
@@ -98,12 +98,7 @@ confirmed which page and label they saw, so this is asked before any behaviour c
 ## Plan
 
 - [x] Trace the six tasks' records, transcripts and the Done rule, and write the finding and options
-- [ ] Ask the person which behaviour they expect (needs_you), and record the answer
-- [ ] Regression test: a Done task with its PR merged closes by itself after the grace period
-- [ ] Yulius closes a task that stayed Done for the grace period, keeping its screen
-- [ ] Docs, ADR and changes log say a finished task closes by itself
-- [ ] Independent review in a fresh session, findings fixed test-first
-- [ ] Every gate green and the pull request merged by delivery_merge
+- [x] Ask the person which behaviour they expect (needs_you), and record the answer
 
 ## Acceptance criteria
 
@@ -127,3 +122,20 @@ confirmed which page and label they saw, so this is asked before any behaviour c
 - The six tasks were shown Done (by the evidence above). The open question is whether a Done task
   should also close by itself, which changes what a person can do with a finished session, so the
   person decides (DON-001).
+- The person answered "mark as done" (2026-11-19): the task ends with the finding, and no
+  behaviour changes (option 1). DON-002 and its test, code, docs, review and merge steps were not
+  done. Options 2 and 3 stay recorded above for a later task.
+
+## Evidence
+
+- Server records (read by the Superagent at 13:42 UTC): all six `running`, activity `done`,
+  `goal_unfinished` false, `spec_unfinished` false, `background_shells` 0, `merge_armed` false,
+  `yulius_wait` false; #492 `state_since` 12:06:42Z, after its 13:01 idle compaction.
+- Transcripts (`home/.claude/projects/...-worktrees-<task-id>/*.jsonl`): #492's ends with
+  `compact_boundary`, the `isCompactSummary` record and "Compacted while idle" at 13:01:18Z; no
+  `needs_you` call in #492, #493, #495, #496, #497; #499's one request resolved before its goal.
+- Code read: `statusInfo`/`taskInfo` (`status.js`) give `Done` for those inputs; `git log` since
+  2026-11-17 shows no change to the Done rule (#1419 only a comment in `status.js`); the only
+  automatic close is RBT-001 (`close_task_now` on a lost Done run); `task_done::an_idle_compaction_leaves_a_done_task_done` covers the compaction.
+- Not tested: what the person's browser rendered (the runs were closed before this task started,
+  and the server's logs are outside the sandbox).
