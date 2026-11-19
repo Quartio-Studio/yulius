@@ -15,6 +15,8 @@ use tokio::sync::broadcast;
 use yulius_app::auth::AuthContext;
 use yulius_app::context::App;
 use yulius_app::hub::HubFrame;
+use yulius_app::model::AccountStatus;
+use yulius_contracts::api::admin::ReplaceAccountToken;
 use yulius_contracts::api::tasks::ContinueTask;
 use yulius_domain::ids::{AccountId, TaskId, UserId};
 use yulius_domain::task::{AttemptState, TaskStatus};
@@ -362,6 +364,62 @@ fn a_refused_subscription_says_where_its_task_went() -> TestResult {
         })
         .await?;
         stop(&app, &id).await?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+#[test]
+fn a_refused_run_preserves_the_new_sign_in() -> TestResult {
+    refusal_without_a_matching_sign_in(false)
+}
+
+#[test]
+fn a_refused_run_from_before_credential_tracking_preserves_the_account() -> TestResult {
+    refusal_without_a_matching_sign_in(true)
+}
+
+fn refusal_without_a_matching_sign_in(legacy_run: bool) -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built")?;
+    let (_dir, data) = temp()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let probe = Arc::new(ScriptedUsage::default());
+        let options = FakeAgentOptions {
+            limit_after: Some(1),
+            access_lost: true,
+            ..agent()
+        };
+        let app = build_with(&data, &fake, probe.clone(), options)?;
+        let (id, user) = running_on_first(&app, &probe, &data).await?;
+        let first = AccountId::parse("a-first")?;
+        if legacy_run {
+            let run = app.deps.store.live_attempt(&id).await?.ok_or("run")?;
+            let marker = std::path::Path::new(&run.run_dir).join("claude-credential-sha256");
+            if marker.exists() {
+                std::fs::remove_file(marker)?;
+            }
+        } else {
+            let token = "sk-ant-oat01-SYNTHETIC-replacement-sign-in";
+            probe.set(token, usage(0.0, 5 * HOUR, 0.0, 100));
+            app.replace_account_token(
+                &ctx(&app, &user).await?,
+                first.as_str(),
+                ReplaceAccountToken {
+                    token: token.into(),
+                },
+            )
+            .await?;
+        }
+        let signed_in = app.deps.store.account(&first).await?.ok_or("account")?;
+        app.send_input(&id, b"hello\r").await?;
+        runs_on(&app, &id, "b-second").await?;
+        let after = app.deps.store.account(&first).await?.ok_or("account")?;
+        stop(&app, &id).await?;
+        assert_eq!(after.status, AccountStatus::Ok);
+        assert!(after.last_error.is_none(), "{:?}", after.last_error);
+        assert!(after.credential == signed_in.credential);
         Ok::<_, Box<dyn std::error::Error>>(())
     })?;
     rt.shutdown_timeout(Duration::from_secs(5));
