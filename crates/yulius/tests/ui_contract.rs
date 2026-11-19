@@ -575,7 +575,9 @@ fn the_composer_says_codex_runs_its_default_model() -> TestResult {
     let mock = std::fs::read_to_string(web_dir().join("assets/mock.js"))?;
     assert!(
         mock.contains(&format!("harness === 'codex' ? '{DEFAULT_CODEX_MODEL}'"))
-            && mock.contains(&format!("harness === 'codex' ? '{DEFAULT_CODEX_EFFORT}'")),
+            && mock.contains(&format!(
+                "(harness === 'claude' ? 'default' : '{DEFAULT_CODEX_EFFORT}')"
+            )),
         "the mock creates a Codex task without a model on another default"
     );
     Ok(())

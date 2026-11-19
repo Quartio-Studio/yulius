@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from '@e2e-dev/web';
 import { expect } from 'e2e';
-import { axeViolations, failOnPageErrors, mock } from './support.ts';
+import { axeViolations, failOnPageErrors, firstShown, mock } from './support.ts';
 
 failOnPageErrors();
 
@@ -118,9 +118,17 @@ test('choosing Codex in the composer starts a Codex task', async ({ app, browser
   const task = await browser.evaluate(() => {
     const tasks = (window as unknown as Mocked).__yuliusMock.tasks;
     const last = tasks[tasks.length - 1];
-    return { harness: last.harness, model: last.model, effort: last.effort };
+    return { harness: last.harness, model: last.model, effort: last.effort, number: last.number };
   });
-  expect(task).toEqual({ harness: 'codex', model: 'gpt-6.2-astra', effort: 'high' });
+  expect(task).toMatchObject({ harness: 'codex', model: 'gpt-6.2-astra', effort: 'high' });
+  // Its details name the default as the server does (`model_default`).
+  await app.open(mock(`/s/studio/tasks/${task.number}`));
+  await firstShown(screen.getByRole('heading', { level: 2, name: 'Details' }));
+  const model = () => browser.evaluate(() => {
+    const dt = [...document.querySelectorAll('.ti-kv dt')].find((el) => (el as HTMLElement).innerText === 'Model');
+    return dt ? (dt.nextElementSibling as HTMLElement).innerText : null;
+  });
+  await expect.poll(model).toBe('gpt-6.2-astra (default) · High effort');
 });
 
 test('an automation chooses the agent of its tasks', async ({ app, browser, screen }) => {
