@@ -1,6 +1,6 @@
 ---
 yulius-task: 56839a7f-ee68-4994-99cf-5e6db3f7ee41
-status: in-progress
+status: done
 ---
 
 # SPEC-510: Take control of a teammate's task, unless its owner chose to be asked
@@ -76,8 +76,10 @@ Decline.
 - [x] Owners choose in Settings whether teammates take control or ask first
 - [x] Take control passes a teammate's task at once, its owner told and able to take it back
 - [x] Task view and task menu offer Take control, or Request control when the owner asks first
-- [ ] Independent review in a fresh session, findings fixed test-first
-- [ ] Every gate green, docs and the changes log updated
+- [x] Independent review in a fresh session, findings fixed test-first
+- [x] The giver's re-take is a take-back, offered in the menu, and a guest's bar says only what they may do
+- [x] Follow-up review in a fresh session approves the round-2 fixes
+- [x] Every gate green, docs and the changes log updated
 
 ## Acceptance criteria
 
@@ -126,3 +128,36 @@ Decline.
 - **A refused take reads the task again** rather than every page being told of an owner's
   changed choice: publishing all of a person's tasks on each toggle costs more than the one read
   a stale page needs.
+
+## Evidence
+
+- Pull request #1419 (round 0 and the round-1 fixes) merged into `dev` at 58019c127 on its green
+  Yulius CI run (quality, both test shards and e2e passed; security skipped, exit 78: no Vidoc
+  key), after review round 2 (yulius-reviewer, Fable 5.2) approved that head. Round 1 asked for
+  changes: a playground guest was offered a Take control the server always refuses (major), a
+  stale page kept a failing button, the asks-first read raced the take, and three test gaps.
+- The follow-up pull request answers round 2's minors: the giver's re-take through
+  `/control/take` is a take-back (event `task.control_taken_back`, audit `task.control_taken_back`,
+  no "can take it back"); the task menu offers Take back to the giver; a guest's bar no longer says
+  they may put the task away; `docs/api.md` quotes the three refusal wordings; the take-back chat
+  text and `taken_text` are pinned. Not changed: operate API tokens reach `/control/take` as they
+  reach request, accept and take-back (the reviewer's direction note; MCP has no tool for any).
+- Tests written first and seen failing before their fix: the store's asks-first refusal in
+  `seize_control`; `playground_guests::a_guest_tidies_only_their_own_tasks` (guest wording);
+  `task_ownership::taking_control_back_from_the_taker_leaves_no_giver` (event kind);
+  `telegram::a_take_reaches_the_chat_of_whoever_it_was_taken_from` (timed out before the
+  notice existed); e2e "a guest is not offered to take control of the maker's task", "a take
+  refused because the owner now asks first leaves Request control" (both fail on the round-0 web
+  code) and the giver's menu and guest bar assertions (fail before the round-2 fix).
+- Local runs on the follow-up head, with the pinned tools on PATH
+  (`PATH=$PWD/.tools/bin:$PATH`): `cargo nextest run --workspace` 4998 passed, 21 skipped;
+  `cargo clippy --workspace --all-targets` clean; `cargo fmt --all --check` and
+  `scripts/dev quick` exit 0; `npx e2e run` of ownership, playground-guests, watching,
+  consistency, api-tokens, telegram and notifications: 73 passed.
+- Mutation run on the round-2 fix lines (`scripts/dev mutants --base 58019c127`): "mutants: 9
+  listed, 1 caught, 0 missed, 0 timed out, 8 unviable, 0 not reached". The follow-up review
+  (yulius-reviewer, Fable 5.2) approved a9186dac8; its minor test gap is answered by the
+  asks-first case in `taking_control_back_from_the_taker_leaves_no_giver`.
+- Not tested: a real Telegram chat and a real GitHub push after a take (the fakes in
+  `tests/telegram.rs` and `github_actor` stand in); the Vidoc scan (CI's security job skipped:
+  Vidoc refused the instance key, HTTP 401).

@@ -1117,12 +1117,13 @@ async fn a_take_reaches_the_chat_of_whoever_it_was_taken_from() -> TestResult {
     .await?;
     assert_eq!(r.status, StatusCode::OK, "{}", r.body);
     let sent = w.fake.wait_sent(200, 2).await?;
-    assert!(
-        sent[1].starts_with(&format!(
-            "@alice took back control of #{} task t1\n",
-            task.number
-        )),
-        "{sent:?}"
+    assert_eq!(
+        sent[1],
+        format!(
+            "@alice took back control of #{n} task t1\nIt acts on GitHub as them again · app\n\
+             https://yulius.test/s/app/t/{n}",
+            n = task.number
+        )
     );
     barrier(&w, "c1").await?;
     assert_eq!(w.fake.sent_to(100).len(), 2, "{:?}", w.fake.sent_to(100));

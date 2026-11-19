@@ -389,9 +389,8 @@ pub trait TaskStore: Send + Sync {
     ) -> AppResult<bool>;
     /// Since when `task` is in its current state and working (SPEC-087 TIM-001), if it exists.
     async fn task_times(&self, task: &TaskId) -> AppResult<Option<TaskTimes>>;
-    /// Records that `task`'s harness was drawn at creation (SPEC-505 RND-001).
-    async fn record_harness_draw(&self, task: &TaskId, at: Timestamp) -> AppResult<()>;
-    /// Whether `task`'s harness was drawn at creation (SPEC-505 RND-001).
+    /// Whether `task`'s harness was drawn at creation (SPEC-505 RND-001): only tasks created
+    /// before SPEC-514 were (ADR-0368), and they keep saying so.
     async fn harness_drawn(&self, task: &TaskId) -> AppResult<bool>;
     /// Records the start of `task`'s working stretch, or its end with `None` (SPEC-087
     /// TIM-002). The task's other times stay.
@@ -458,8 +457,8 @@ pub trait TaskStore: Send + Sync {
     ) -> AppResult<bool>;
     /// Passes control of `task` from `from` to `to`, who takes it without asking (SPEC-510
     /// TKC-001), and drops any waiting request, in one statement: false unless `from` still owns
-    /// the task and has not chosen to be asked first. `from` becomes the giver who may take it back, unless `to` is the giver
-    /// recorded (it is taken back): then nobody is.
+    /// the task and has not chosen to be asked first. `from` becomes the giver who may take it
+    /// back, unless `to` is the giver recorded (it is taken back): then nobody is.
     async fn seize_control(
         &self,
         task: &TaskId,

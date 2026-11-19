@@ -149,7 +149,8 @@ test("a guest is not offered to put away the maker's task", async ({ app, browse
 test("a guest is not offered to take control of the maker's task", async ({ app, browser, screen }) => {
   await app.open(mock('/s/lab/t/1', '&guest=1&labtask=1'));
   await firstShown(screen.getByText("You are watching @mkarp's task."));
-  await expect(browser.locator('.attention-bar .attention-text').first()).toHaveText(/ask @mkarp for control\.$/);
+  // Nor are they told they may put it away, which a guest may not (review round 2).
+  await expect(browser.locator('.attention-bar .attention-text').first()).toHaveText("You are watching @mkarp's task. To type in it or change it, ask @mkarp for control.");
   await expect(screen.getByRole('button', 'Take control')).toHaveCount(0);
   await expect(screen.getByRole('button', 'Request control')).toBeVisible();
   await browser.locator('.taskview .stepstrip-main [aria-label="Task actions"]').click();
