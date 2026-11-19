@@ -28,7 +28,7 @@ exercise request handling without running the shipped systemd units.
 
 - [ ] Capture the update watcher failure in an isolated systemd VM
 - [x] Pin the service start-limit setting in a shipped-unit regression
-- [ ] Keep the watcher active and document recovery for existing installations
+- [x] Keep the watcher active and document recovery for existing installations
 - [ ] Verify recovery and burst handling against the shipped units
 - [ ] Independent approval for delivery into dev
 
