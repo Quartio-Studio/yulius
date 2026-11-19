@@ -1,6 +1,6 @@
 ---
 yulius-task: a87fb46a-b4fc-4ec0-aa5c-fa3f2c6cb224
-status: in-progress
+status: done
 ---
 
 # SPEC-537 — Preserve restored drafts when typing into a session
@@ -35,8 +35,8 @@ an empty box. Its screen reader has yet to land on dev.
 - [x] Specify the restored-draft veto and mark lifetime
 - [x] Reproduce both stash restores and the mark cleanup race
 - [x] Protect visible drafts and preserve concurrent keystrokes
-- [ ] Verify the fix and obtain independent approval
-- [ ] Prepare the approved fix for delivery to dev
+- [x] Verify the fix and obtain independent approval
+- [x] Prepare the approved fix for delivery to dev
 
 ## Acceptance criteria
 
@@ -79,12 +79,21 @@ orders a key and a submit even when they share a wall-clock millisecond.
   local-command restore. The q6 empty named prompt permitted delivery.
 - Repository quick checks passed. Green CI on the reviewed head is required for
   the dev merge.
-
 - The first review found a synchronous test awaiting run setup and a same-millisecond
   ordering case. The run setup test now awaits in a Tokio test. The fixed-clock PTY
   regression failed on the previous implementation with “the older submit erased the
   same-ms key's mark”.
-
 - The second review identified lookup as an earlier wait. With the SQLite lookup
   paused and the clock fixed, the regression failed on the preceding implementation
   with “the submit erased a key received during lookup”.
+- Round 3 independently approved the product changes at `932d6c65`. The reviewer
+  independently ran all four screen tests and checked the mark lock, the pre-lookup
+  sequence and the held-retry path. The branch passed `scripts/dev quick`.
+  `scripts/dev security` reported that Vidoc was disabled for the project.
+- Earlier shared-process integration testing passed 30 of 32 cases. The two failures
+  were a port collision during fixture reattachment and a missing attention flag
+  during an MCP watch. The attention case passed in isolation. Exact-head CI and
+  scoped nextest provide the delivery evidence.
+- The first mutation run was interrupted when review found the synchronous test did
+  not compile. The follow-up runs selected 43 and 25 mutants for the two ordering
+  fixes. Both were still running when the code was approved.
