@@ -1,11 +1,11 @@
 ---
 yulius-task: 198f6d63-a78b-462e-ae91-4905a69d1240
-status: in-progress
+status: done
 ---
 
 # SPEC-519: Gemini 4 Neon is offered and becomes Antigravity's default model (on agy 1.5.12)
 
-Status: in-progress
+Status: done
 Date: 2026-11-19
 Owner: Yulius task #501
 Scope authorization: the person's request of 2026-11-19 (task #501), verbatim: "this is a test
@@ -76,8 +76,8 @@ stays Yulius's unnamed-agent default (`F 2026-11-19 Harness`, SPEC-514).
 - [x] Pin Antigravity CLI 1.5.12 and default Antigravity tasks to Gemini 4 Neon
 - [x] Offer Gemini 4 Neon first under Google in the UI and mock, keeping Gemini 4 Carbon
 - [x] Record ADR-0373 and update product, architecture and API documentation
-- [ ] Independent review in a fresh session, findings fixed test-first
-- [ ] Every gate green, docs and the changes log updated
+- [x] Independent review in a fresh session, findings fixed test-first
+- [x] Every gate green, docs and the changes log updated
 
 ## Acceptance criteria
 
@@ -179,8 +179,11 @@ stays Yulius's unnamed-agent default (`F 2026-11-19 Harness`, SPEC-514).
 - **Review round 1** (`yulius-reviewer` fresh session, head `dac2b1b61`, request changes; 1
   own-code major, 0 pre-existing): `SPEC-519` lines 27 and 147 named the live subscription's
   personal `@gmail.com` address (SPEC-244 SUB-005/006, ADR-0185). Redacted on both lines in a
-  follow-up commit (`git diff origin/dev | grep -i '@gmail'` empty; prose-only fix, no runtime test
-  applies).
+  follow-up commit (`2de704344`; `git diff origin/dev | grep -i '@gmail'` empty; prose-only fix, no
+  runtime test applies).
+- **Review round 2** (`yulius-reviewer` fresh session, head `a5e3b42a1`, approve; 0 findings):
+  confirmed the Round 1 redaction, clean `origin/dev` merge, repository contracts, scoped Rust
+  nextest suites and `antigravity.e2e.ts` (12/12).
 - **Not tested:** a live `GEMINI_API_KEY` call to Google's production endpoint (stubbed locally
   against `agy` 1.5.12), and `linux-arm64` binary execution (verified by pinned manifest `sha512`
   and tarball inspection).
