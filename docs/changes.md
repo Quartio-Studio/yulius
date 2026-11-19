@@ -12,6 +12,17 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   stays its owner's on GitHub. Not while the agent asks in its terminal, nor while the owner's
   personal secrets or MCP servers reach its run: then the owner answers, or you take control.
   `POST /api/tasks/{tid}/needs-you/answer`, audited `task.needs_you.answered`.
+- A task that finds a bug fixes it (SPEC-517, ADR-0371, task #499): a request that reports
+  something wrong in the product, also asked as a question ("What", "why is this broken"), runs on
+  Auto as a goal with the Fix workflow's steps instead of Research / Question; a question task that
+  confirms a defect grows the fixing steps or asks the person with `needs_you`, never files it and
+  stops; the briefing, `issue_create` and `delivery-pipeline` say so, and an issue filed for an
+  unrelated defect is named in the summary. Quartio-v2 task #312 had filed its PDF bug as an issue.
+
+- Codex runs GPT-6.2 Astra at high effort by default (SPEC-511, task #493): a Codex task that
+  names no model is launched with `-m gpt-6.2-astra`, one that names no effort at high, instead
+  of the account's own default. The run records the model, the task's details name it, and the
+  composer's Codex entry says so (ADR-0366).
 - The Antigravity sign-in window stays open for the CLI's setup (SPEC-515, task #497, #1421):
   after the Google code, the Antigravity CLI goes on asking (its data-use choice and more), so the
   server no longer stops it 5 s after its token file appears. The window says Antigravity is

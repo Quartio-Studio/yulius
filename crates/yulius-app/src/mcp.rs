@@ -679,7 +679,7 @@ pub fn tool_descriptors() -> Vec<ToolDescriptor> {
         },
         ToolDescriptor {
             name: "issue_create".into(),
-            description: "Open a GitHub issue for what lies outside this change, instead of widening this task: a pre-existing bug (in code this change did not introduce), a flaky test this change did not cause, or a cosmetic nit left after 3 review rounds; say why it is outside, with the evidence (e.g. \"present on dev before this change\"). Never a finding in code or tests this change added or modified: fix that in this pull request, test-first. It must meet the Definition of Ready: exactly one `type: …` label (bug, enhancement, docs, chore, performance), one `priority: …` label (high, medium, low), at least one `area: …` label (add `risk: high` for authentication, permissions, data isolation, migrations, money or shared contracts), and a body with a summary, current and expected behavior and a `## Acceptance criteria` checklist. Missing labels are created.".into(),
+            description: "Open a GitHub issue for what lies outside this change, instead of widening this task: a pre-existing bug (in code this change did not introduce), a flaky test this change did not cause, or a cosmetic nit left after 3 review rounds; say why it is outside, with the evidence (e.g. \"present on dev before this change\"). Never a finding in code or tests this change added or modified: fix that in this pull request, test-first. The defect this task's own request reports (also one asked as a question, or confirmed while answering it) is fixed in this task, never filed instead: the issue the Fix workflow opens for it closes with `Fixes #<number>` in this pull request; when its fix is clearly beyond the request, ask with needs_you. Name every issue you open in your summary to the person. It must meet the Definition of Ready: exactly one `type: …` label (bug, enhancement, docs, chore, performance), one `priority: …` label (high, medium, low), at least one `area: …` label (add `risk: high` for authentication, permissions, data isolation, migrations, money or shared contracts), and a body with a summary, current and expected behavior and a `## Acceptance criteria` checklist. Missing labels are created.".into(),
             input_schema: schema(json!({
                 "title": {"type": "string"},
                 "body": {"type": "string", "description": "Markdown with a ## Acceptance criteria checklist"},
@@ -1719,6 +1719,11 @@ mod tests {
             "pre-existing",
             "flaky test this change did not cause",
             "Never a finding in code or tests this change added or modified",
+            // SPEC-517 FIX-005: the defect the task's own request reports is fixed, never filed
+            // instead; the issue the Fix workflow opens for it closes with the fix (DSC-016).
+            "is fixed in this task, never filed instead",
+            "closes with `Fixes #<number>` in this pull request",
+            "Name every issue you open in your summary",
         ] {
             assert!(
                 description.contains(stated),
@@ -1726,6 +1731,15 @@ mod tests {
             );
         }
         assert!(!description.contains("follow-up work"), "{description}");
+        assert!(!description.contains("Never the defect"), "{description}");
+        // The Fix workflow files the bug it fixes; the tool must not forbid that (SPEC-517
+        // review round 1).
+        let fix =
+            crate::workflows::catalog::default_workflow("wf-fix").map(|w| w.instructions.as_str());
+        assert!(
+            fix.is_some_and(|i| i.contains("Once the defect is confirmed, report it")
+                && i.contains("`Fixes #<number>`"))
+        );
     }
 
     /// SPEC-429 ANS-005: `needs_you` says a plain-text question reaches nobody, since a turn that

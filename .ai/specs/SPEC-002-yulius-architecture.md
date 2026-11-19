@@ -630,7 +630,10 @@ context.
    `POST /api/sandboxes/{sid}/tasks` (the composer's defaults; the API's default stays Goal without
    a workflow). Before the task exists, Jev answers at most two questions at once, within one
    2.5 s deadline (`crates/yulius-domain/src/auto_choice.rs`, `crates/yulius-app/src/auto_choice.rs`):
-   - `mode` (`goal` | `prompt`), threshold 0.75 — default Goal;
+   - `mode` (`goal` | `fix` | `prompt`), threshold 0.75 (`goal` and `fix` together for Goal) —
+     default Goal; `fix` is a request that reports something wrong in the product, also asked as
+     a question: a goal whose workflow is never one that needs no spec (a no-spec pick or an unsure
+     answer becomes the workflow named "Fix"; SPEC-517, ADR-0371);
    - `workflow`: a fixed question text whose options are the sandbox's workflows as
      `App::workflows_for` lists them — the catalog's defaults (§7.10), then instance and sandbox
      workflows — as `w1`…`w12`, each "Name (spec first | no spec): description Use when: … Steps:

@@ -6,9 +6,11 @@ contained sandboxes on a single Linux VM, and enforces engineering discipline ar
 Yulius develops itself with Yulius.
 
 It also runs native Codex CLI sessions on Codex (OpenAI) subscriptions, chosen per task or
-automation; a task keeps its agent for life, and a Codex task moves only between Codex
-subscriptions. A Codex subscription signs in by device code, by an imported `auth.json` of a
-`codex login` made elsewhere, or with an OpenAI API key, and Yulius provides the pinned Codex CLI
+automation, on GPT-6.2 Astra at high effort unless a task names another model or effort (task
+#493, [SPEC-511](../.ai/specs/SPEC-511-default-model-for-codex-should-be-astra.md)); a task keeps
+its agent for life, and a Codex task moves only between Codex subscriptions. A Codex
+subscription signs in by device code, by an imported `auth.json` of a `codex login` made elsewhere,
+or with an OpenAI API key, and Yulius provides the pinned Codex CLI
 (0.169.0) to every Codex run. The founders accepted this on 2026-11-16 (`F 2026-11-16 Codex`,
 outside pull request #1146 by studenciak00owl), reversing the Codex part of their Claude-only
 decision `F 2026-10-08`; provider switching and session translation stay out
@@ -679,7 +681,9 @@ watching, steering and unblocking.
 Agents are real CLIs; sessions outlive the server; GitHub is the authority for permissions (a playground's guests, let
 in through an expiring link, are the one exception);
 coordination goes through one MCP and hook protocol; every queue, stream, retry and wait is
-bounded and owned; features have specs, research and questions do not.
+bounded and owned; features have specs, research and questions do not; a defect a request
+reports is fixed in its task, also when it is asked as a question, never filed and left
+([decision 0371](decisions/0371-a-defect-a-request-reports-is-fixed-also-when-asked-as-a-question.md)).
 
 ## Where to read more
 
