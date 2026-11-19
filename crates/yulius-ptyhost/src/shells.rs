@@ -594,6 +594,30 @@ mod tests {
     }
 
     #[test]
+    fn a_codex_wait_belongs_to_the_agent_until_it_exits() {
+        let table = [
+            ns_init(11, 10),
+            entry(12, 11, false), // Codex
+            entry(13, 12, false), // its ordinary shell
+            entry(14, 11, false), // a process adopted by the sandbox
+            wait(15, 14),
+            wait(16, 11), // an adopted wait itself
+            wait(21, 20), // another task
+            wait(17, 13),
+            wait(18, 12), // the shell exec'd the wait
+        ];
+        assert_eq!(
+            count_background(&table, 10),
+            ShellCount {
+                shells: 0,
+                waits: 2
+            }
+        );
+        assert_eq!(count_background(&table[..7], 10), ShellCount::default());
+        assert_eq!(count_background(&table, 12).waits, 2, "unsandboxed agent");
+    }
+
+    #[test]
     fn the_wrapper_is_recognised_in_raw_and_ps_command_lines() {
         assert!(is_agent_shell(
             b"/bin/bash\0-c\0-l\0source /h/.claude/shell-snapshots/s.sh && eval 'npm run dev' < /dev/null && pwd -P >| /tmp/claude-1a2b-cwd\0"
