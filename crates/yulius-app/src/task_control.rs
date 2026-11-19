@@ -97,7 +97,8 @@ impl App {
 
     /// `POST /api/tasks/{tid}/control/take` (SPEC-510 TKC-001): `ctx`'s person takes control of
     /// another person's task at once. The previous owner may take it back and is told wherever
-    /// they are. With the owner absent, control passes as on a request (TKC-004).
+    /// they are. With the owner absent, control passes as on a request (TKC-004). The giver's
+    /// take is a take-back, with its errors.
     ///
     /// # Errors
     /// `NotFound`/`Forbidden` without write access to the project, for a disabled account or a
@@ -476,7 +477,8 @@ impl App {
                 },
                 "task.control_passed",
             ),
-            // Taken back by the one it was taken from, nobody can take it back: the giver says.
+            // A guard: the store clears the giver when the taker was it (a giver's take is a
+            // take-back before it gets here), and then nothing promises a take-back.
             Handover::Taken => (
                 match store.control_from(&task.id).await? {
                     Some(giver) => format!(

@@ -1407,6 +1407,8 @@ async fn a_take_is_refused_to_whoever_may_not_take() -> TestResult {
 async fn taking_control_back_from_the_taker_leaves_no_giver() -> TestResult {
     let f = fixture().await?;
     assert_eq!(take(&f, &f.bob).await?.status, 200);
+    // Bob asking first does not keep the task from whoever it was taken from (ADR-0365).
+    assert_eq!(ask_first(&f.h, &f.bob, true).await?.status, 200);
     let mut watch = f.h.app.runtime(&f.task.id).hub.watch();
     let mut events = f.h.app.events.subscribe();
     let back = take(&f, &f.alice).await?;
