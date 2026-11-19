@@ -689,7 +689,7 @@ pub fn tool_descriptors() -> Vec<ToolDescriptor> {
         },
         ToolDescriptor {
             name: "automation_create".into(),
-            description: "Create a scheduled automation in this project: on a five-field cron schedule (minute hour day-of-month month day-of-week, evaluated at utc_offset_minutes from UTC) Yulius creates a new task with the given prompt. Use it when the user asks for recurring work, e.g. \"every day at 9 implement yesterday's customer feedback\"; ask for their time zone when the schedule depends on it. Created tasks start like New task: now (the default), after_task, start_rule, as a supertask, or prepared (waiting until the person presses Start now). The automation appears on the project's Automations page.".into(),
+            description: "Create a scheduled automation in this project: on a five-field cron schedule (minute hour day-of-month month day-of-week, evaluated at utc_offset_minutes from UTC) Yulius creates a new task with the given prompt. Use it when the user asks for recurring work, e.g. \"every day at 9 implement yesterday's customer feedback\"; ask for their time zone when the schedule depends on it. Created tasks start like New task: now (the default), after_task, start_rule, as a supertask, or prepared (waiting until the person presses Start now). The person you act for owns the automation and its tasks run as them.".into(),
             input_schema: schema(json!({
                 "name": {"type": "string", "description": "Short name; also the title of created tasks"},
                 "cron": {"type": "string", "description": "Five-field cron expression, e.g. \"0 9 * * *\" (daily at 09:00) or \"0 9 * * MON-FRI\""},
@@ -706,19 +706,19 @@ pub fn tool_descriptors() -> Vec<ToolDescriptor> {
         },
         ToolDescriptor {
             name: "automations_list".into(),
-            description: "List this project's automations with schedule, next run and last run, and under ready_made the ready-made automations Yulius ships (id, what it does, schedule; automation_id is the project's automation of the same name, or null when not added). Enable one with automation_template_enable.".into(),
+            description: "List this project's automations with the owner whose GitHub identity each task uses, schedule, next run and last run, and under ready_made the ready-made automations Yulius ships (id, what it does, schedule; automation_id is the project's automation of the same name, or null when not added). Enable one with automation_template_enable.".into(),
             input_schema: schema(json!({}), &[]),
         },
         ToolDescriptor {
             name: "automation_template_enable".into(),
-            description: "Enable a ready-made automation by its id from automations_list's ready_made (e.g. docs-up-to-date), as its switch under Defaults on the Automations page: it is added enabled with its catalog name, schedule, workflow and prompt, or, when the project already has an automation of that name, that one is enabled unchanged. Never creates a duplicate.".into(),
+            description: "Enable a ready-made automation by its id from automations_list's ready_made (e.g. docs-up-to-date), as its switch under Defaults on the Automations page: it is added enabled with its catalog name, schedule, workflow and prompt, or, when the project already has an automation of that name, that one is enabled unchanged. Tasks run as the creator. Only that person can re-enable a paused automation. Never creates a duplicate.".into(),
             input_schema: schema(json!({
                 "template": {"type": "string", "description": "Ready-made automation id"}
             }), &["template"]),
         },
         ToolDescriptor {
             name: "automation_run_now".into(),
-            description: "Run an automation of this project once now, as Run now on the Automations page (also when disabled; skipped while its previous task is still active). Returns the run and the task it created.".into(),
+            description: "Run an automation of this project once now, as Run now on the Automations page (also when disabled; skipped while its previous task is still active). Only the creator can start it. The task runs as the creator. Returns the run and the task it created.".into(),
             input_schema: schema(json!({"automation_id": {"type": "string"}}), &["automation_id"]),
         },
         ToolDescriptor {
@@ -728,7 +728,7 @@ pub fn tool_descriptors() -> Vec<ToolDescriptor> {
         },
         ToolDescriptor {
             name: "automation_update".into(),
-            description: "Change an automation of this project: enable/disable it, or change its cron schedule, UTC offset, prompt, name or how its tasks start (giving any of after_task, start_rule, supertask or prepared replaces the start choice; supertask false alone: start now).".into(),
+            description: "Change an automation owned by the person you act for. Its tasks run as that person. Enable/disable it, or change its cron schedule, UTC offset, prompt, name or how its tasks start (giving any of after_task, start_rule, supertask or prepared replaces the start choice; supertask false alone: start now).".into(),
             input_schema: schema(json!({
                 "automation_id": {"type": "string"},
                 "enabled": {"type": "boolean"},

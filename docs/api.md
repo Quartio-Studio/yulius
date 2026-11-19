@@ -1163,11 +1163,11 @@ read-only in the UI.
 | GET/POST | `/api/sandboxes/{sid}/workflows` | read/write | `Workflow`; POST → 201. `"scope":"instance"` creates an instance workflow (instance admins). |
 | PUT/DELETE | `/api/workflows/{id}` | write (instance: admin) | PUT replaces name, description, steps, instructions, gates → `Workflow`; DELETE → 204. A default workflow (`builtin`) → 409 `conflict` ("duplicate it to customise"). |
 | GET/POST | `/api/sandboxes/{sid}/automations` | read/write | `Automation`; POST → 201. `harness` `auto` (the default for a new automation and templates) draws each run's agent across harnesses with non-exhausted subscriptions, while `claude`, `codex` or `antigravity` runs that agent every time; absent on a PUT keeps the stored agent; a running task agent's `automation_create` without `harness` saves the calling task's own agent while `auto` and Superagent calls store `auto` (SPEC-520 RHM-004/005) |
-| PUT/DELETE | `/api/automations/{id}` | write | PUT replaces the editable fields → `Automation`; DELETE → 204 (removes run history; tasks stay) |
-| POST | `/api/automations/{id}/run` | write | creates one run now (also when disabled) → `AutomationRun`; an optional body `RunAutomation` is this run's start choice (checked like `Automation`'s, 422 when invalid, not stored; SPEC-093), none uses the stored one |
+| PUT/DELETE | `/api/automations/{id}` | write | PUT requires the creator and replaces the editable fields → `Automation`; DELETE → 204 (removes run history; tasks stay) |
+| POST | `/api/automations/{id}/run` | write, creator | creates one run now (also when disabled) → `AutomationRun`; an optional body `RunAutomation` is this run's start choice (checked like `Automation`'s, 422 when invalid, not stored; SPEC-093), none uses the stored one |
 | GET | `/api/automations/{id}/runs` | read | `[AutomationRun]`, newest first (at most 100) |
 | GET | `/api/sandboxes/{sid}/automation-templates` | read | `[AutomationTemplate]`, the ready-made automations (SPEC-042) |
-| POST | `/api/sandboxes/{sid}/automation-templates/{id}/enable` | write | creates the automation from the template, enabled → 201 `Automation`; when the sandbox already has an automation of that name, enables it unchanged → 200 `Automation`; unknown template → 404 |
+| POST | `/api/sandboxes/{sid}/automation-templates/{id}/enable` | write | creates the automation from the template, enabled → 201 `Automation`; when the sandbox already has an automation of that name, returns it if enabled, or requires the creator to re-enable it → 200 `Automation`; unknown template → 404 |
 | GET/POST | `/api/sandboxes/{sid}/mcp` | read/write (personal: work) | `McpServer` (the sandbox's and the instance's team servers and the caller's own personal ones, SPEC-332); POST body `McpServerInput` → 201; every sandbox + team needs an instance admin (403), personal needs work access |
 | PUT/DELETE | `/api/mcp/{id}` | write (instance team: admin; personal: its owner, else 404) | PUT `McpServerInput` → `McpServer`, `scope`/`audience` move it (with the right to manage it there; to `sandbox` from `instance` it takes `sandbox`, else 422); DELETE → 204 |
 | POST | `/api/mcp/{id}/test` | write (instance team: admin; personal: its owner) | `{"ok","tools":["…"],"error"}`; HTTP ≤ 5 s, stdio ≤ 10 s then the process group is killed. On a contained instance stdio tests need an instance admin (they run outside the containment). A server with `origin` `mcp_json` is refused (`ok: false`, the reason in `error`, nothing started) for stdio, and for HTTP on a private or loopback address (SPEC-218). |
@@ -1179,7 +1179,7 @@ Workflow = {"id","name","description","steps":["Write the spec","Implement","Tes
 Automation = {"id","name","cron":"0 9 * * *","utc_offset_minutes":120,"prompt","workflow_id|null",
               "harness":"auto|claude|codex|antigravity","enabled":true,"supertask":false,"after_task_id":"…|null",
               "after_task_number":12|null,"start_rule":"#12 done|null","prepared":false,
-              "created_via":"ui|agent",
+              "created_via":"ui|agent","owner_id","owner_login",
               "next_run_at":"…|null","last_run":AutomationRun|null}
 RunAutomation = {"supertask":false,"after_task_id":"…|null","start_rule":"#12 done|null","prepared":false}
 AutomationTemplate = {"id":"docs-up-to-date","name","description","cron","utc_offset_minutes","prompt",
