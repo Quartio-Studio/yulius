@@ -4,6 +4,15 @@ Notable changes, newest first. Per-change detail lives in the merged pull reques
 evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-architecture.md)
 (sections 14 and 15).
 
+## 2026-11-19
+
+- Take control (SPEC-510, task #492, ADR-0365): on a teammate's task, Take control (in the task
+  view and the task menu, after a confirmation naming the owner) makes the task yours at once:
+  it acts on GitHub as you from then on. The previous owner is told wherever they are and can
+  take it back. A person who wants to be asked first turns on "Ask me before taking control of
+  my tasks" in Settings; others then request control and they hand it over or decline, as
+  before. `POST /api/tasks/{tid}/control/take`, `PUT /api/me/control`, schema 67.
+
 ## 2026-11-18
 
 - Subscription sign-ins start again (SPEC-509, task #491, #1414): login terminals are 1000

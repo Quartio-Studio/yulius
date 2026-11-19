@@ -69,9 +69,9 @@ Decline.
 ## Plan
 
 - [x] Read the product context and related work, then write and validate the spec
-- [ ] Owners choose in Settings whether teammates take control or ask first
-- [ ] Take control passes a teammate's task at once, its owner told and able to take it back
-- [ ] Task view and task menu offer Take control, or Request control when the owner asks first
+- [x] Owners choose in Settings whether teammates take control or ask first
+- [x] Take control passes a teammate's task at once, its owner told and able to take it back
+- [x] Task view and task menu offer Take control, or Request control when the owner asks first
 - [ ] Independent review in a fresh session, findings fixed test-first
 - [ ] Every gate green, docs and the changes log updated
 
