@@ -6,6 +6,8 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-19
 
+- Codex defaults to Ultrafast on supported models when the assigned subscription is ChatGPT
+  Pro 500. Each launch reads the current sign-in (SPEC-523, task #505).
 - Finished tasks shown Done, not closed (SPEC-518, task #500, findings only): six goal-achieved
   tasks with merged pull requests were shown Done (by the fields read) and stayed open, because no rule closes a Done
   task whose session lives. Claude Code's idle compaction changed nothing. No behaviour changed;
