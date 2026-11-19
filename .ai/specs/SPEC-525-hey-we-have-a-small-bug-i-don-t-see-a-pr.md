@@ -94,7 +94,24 @@ antigravity when it's Michal's task, in opus it works good"). Fixes #1440.
   plumbing for the same result, since the three formats cannot be mistaken for each other.
 - **No tool-result pairing for Antigravity.** Its steps name no call id, so a tool run's step is a
   result of its own (id `step-<n>`) shown after its call, not folded into it.
+- **Checked on the real shapes, not only the fixtures** (review round 1, the reviewer's survey of
+  this host's 22 Codex 0.169 rollouts and 3 Antigravity 1.5.10 transcripts): Codex runs every shell
+  command from a code-mode `exec` script (`text(await tools.exec_command({cmd:`…`}))`) whose output
+  parts wrap each result in JSON (`{"chunk_id", "exit_code", "output", …}`); `shell_command` is the
+  bundled models' shell; Antigravity names files `Path` (`read_file`, `edit_file`, `write_file`)
+  and numbers `read_file`'s lines `1: `. A free-text call is tracked as a dotenv read when its
+  script names a dotenv file; a wrapper's `output` is the text redacted; `redact_env` accepts the
+  `1: ` numbering and a patch's `+`/`-` marker (in dotenv content only: a diff in other text is no
+  dotenv block). `AbsolutePath` and `TargetFile` stay tracked too: no real call used them, but a
+  key tracked for nothing costs nothing.
+- **Codex's injected-context prefixes live in `yulius-domain`** (`CODEX_INJECTED_CONTEXT_PREFIXES`),
+  read by the rollout observer and the transcript reader alike: a prompt without provenance is
+  shown quietly only when it opens as Codex's own context does, so a typed `<div> …` stays a prompt
+  (`render_text` and the index drop meta blocks).
+- **Pre-existing, filed:** #1453 (the index's dotenv tracking restarts each batch), #1454 (a Codex
+  session document can keep a `missing-<id>.jsonl` path), #1455 (assistant entries are announced as
+  "Claude").
 - **A Codex message Codex added is shown quietly, not hidden.** Its provenance (`harness`) says so
-  when present; otherwise a text starting with a tag (`<environment_context>`, `<hook_prompt …>`)
-  or Codex's `# AGENTS.md instructions` heading does: shown as a meta block, as Claude Code's
+  when present; otherwise a text opening with one of Codex's injected-context prefixes
+  (`<environment_context>`, `<hook_prompt …>`, `# AGENTS.md instructions`, …) does: shown as a meta block, as Claude Code's
   `<system-reminder>` is. Developer messages (Codex's own instructions) are left out.
