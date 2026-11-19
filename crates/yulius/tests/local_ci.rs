@@ -4406,11 +4406,11 @@ async fn a_second_run_that_finds_no_network_room_is_not_made() -> TestResult {
     let f = fixture_tuned(
         false,
         |data| {
-            let first = format!(
-                "while [ ! -e \"{}\" ]; do sleep 0.05; done; {NO_POOL}",
-                data.join("go").display()
-            );
-            attempts(data, &first, "echo ok")
+            format!(
+                "[[ci.jobs]]\nname = \"build\"\ncommand = 'echo x >> \"{dir}/attempts-$YULIUS_CI_RUN\"; \
+                 while [ ! -e \"{dir}/go\" ]; do sleep 0.05; done; {NO_POOL}'\n",
+                dir = data.display()
+            )
         },
         None,
         |config| {
@@ -4423,10 +4423,10 @@ async fn a_second_run_that_finds_no_network_room_is_not_made() -> TestResult {
     let measured = Measured::new(0, 1);
     assert!(f.h.app.set_isolation(measured.clone()));
     let go = f.data.join("go");
-    let refuse_retry = async |started_checkouts: usize| -> TestResult {
+    let refuse_retry = async |started_runs: usize| -> TestResult {
         f.h.app.ci_sync_sandbox(&f.sandbox).await?;
         let deadline = tokio::time::Instant::now() + WAIT;
-        while attempts_of(&f)?.len() < started_checkouts {
+        while attempts_of(&f)?.len() < started_runs {
             f.h.app.ci_dispatch().await;
             if tokio::time::Instant::now() > deadline {
                 return Err("the job never started".into());
