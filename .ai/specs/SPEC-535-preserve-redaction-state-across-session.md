@@ -1,6 +1,6 @@
 ---
 yulius-task: 1391bf1d-5afc-41a0-8c92-86c13b3c102d
-status: in-progress
+status: done
 ---
 
 # SPEC-535 Preserve dotenv redaction across session index batches
@@ -23,9 +23,9 @@ The session store commits passages with the byte and line offsets. On resume, `r
 
 - [x] Specify redaction at the saved index offset
 - [x] Prove the split-batch search regression
-- [ ] Resume indexing with the transcript’s redaction context
+- [x] Resume indexing with the transcript’s redaction context
 - [x] Clear passages indexed before the fix
-- [ ] Verify and review the delivery head
+- [x] Verify and review the delivery head
 
 ## Acceptance criteria
 
@@ -48,3 +48,7 @@ Replay the prefix with the existing transcript parser so restart needs only the 
 - The baseline SQLite restart integration test also failed at its missing snippet redaction marker. All 23 transcript unit tests passed with replay, including Claude, Codex and Antigravity fixtures.
 - The SQLite schema-upgrade, migration-position and two session-store tests passed. A synthetic deletion with the FTS trigger disabled showed why the upgrade assertion queries FTS directly: the joined query returned zero while the direct FTS query found one stale match.
 - An oversized, newline-terminated synthetic suffix on a rewritten transcript originally advanced past stale offsets. Validating the prefix before either kind of complete line fixes that case. An unterminated suffix still waits for a newline.
+- On the first review head, the recovery regression left the synthetic stale offset at 33554432. On the approved head, nextest passed both product regressions, including guarded recovery and budget accounting across two documents (run d3a83fdc-0483-427f-abeb-419e15e311ab).
+- Independent review approved `c540a12d`. `scripts/dev quick` passed. `scripts/dev security` reported that Vidoc was disabled.
+- Final verification passed all 24 transcript unit tests, all five sessions integration tests, and Clippy for all targets and features of `yulius-app` and `yulius-store`.
+- After merging the corrected mutation runner from dev (#1364), `scripts/dev mutants` passed its unmodified baseline (3,127 selected tests) and reached its 30-minute campaign limit. Its summary was `mutants: 32 listed, 3 caught, 0 missed, 0 timed out, 4 unviable, 25 not reached (bound 30 min, took 1803 s)`. The 25 unreached mutations are unverified.
