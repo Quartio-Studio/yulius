@@ -1,6 +1,6 @@
 ---
 yulius-task: 12ae73c7-bbed-467a-846c-24ed2d207a5d
-status: in-progress
+status: done
 ---
 
 # SPEC-517: a task that finds a bug fixes it
@@ -76,12 +76,12 @@ outside the change), the briefing (`crates/yulius-domain/src/briefing.rs`, 9,500
 
 ## Plan
 
-- [ ] Read #312's evidence and the code paths it ran through, then write and validate the spec
-- [ ] Auto: a defect asked as a question runs as a goal with the Fix workflow's steps
-- [ ] Research / Question and Fix workflows: a confirmed defect grows fixing steps or asks the person
-- [ ] Briefing and issue_create: fix the request's defect, file only what lies outside it, name it
-- [ ] ADR-0371, product, API and SPEC-001 TSK-015 say the rule; changes log entry
-- [ ] Independent review in a fresh session, findings fixed test-first
+- [x] Read #312's evidence and the code paths it ran through, then write and validate the spec
+- [x] Auto: a defect asked as a question runs as a goal with the Fix workflow's steps
+- [x] Research / Question and Fix workflows: a confirmed defect grows fixing steps or asks the person
+- [x] Briefing and issue_create: fix the request's defect, file only what lies outside it, name it
+- [x] ADR-0371, product, API and SPEC-001 TSK-015 say the rule; changes log entry
+- [x] Independent review in a fresh session, findings fixed test-first
 
 ## Acceptance criteria
 
@@ -135,3 +135,30 @@ outside the change), the briefing (`crates/yulius-domain/src/briefing.rs`, 9,500
   reported fault are covered as ADR-0371's Consequences say.
 - **The Fix workflow still reports the bug it fixes** (`issue_create`, then `Fixes #N`): that issue
   closes with the merge, so it does not add to the open list.
+
+## Evidence
+
+- Cause (task #312): its plan is the Research / Question workflow's three steps; that workflow said
+  "Change no code. When the answer reveals work, record it as an issue"; its step 2 note (read by the
+  owner's Superagent) "Reproduced on dev: soffice exit 77 as uid 997 (no passwd entry); issue #1392".
+  Mode, workflow and the `auto` line are not readable across sandboxes, so the change covers Auto
+  and a hand pick.
+- Tests written first and seen failing: `auto_choice::a_defect_asked_as_a_question_gets_the_fixing_steps`
+  (Research steps where Fix's were expected), `workflows::catalog::tests::a_defect_found_answering_a_question_is_fixed_not_filed`,
+  the new briefing and `issue_create` needles, the goal/fix split case in
+  `auto_choice::tests::a_reported_defect_is_a_goal_and_both_questions_say_so`.
+- `cargo nextest run -p yulius-domain -p yulius-app`: 1,185 passed.
+  `cargo nextest run -p yulius -E 'binary_id(yulius::main) & (test(/^auto_choice::/) | test(/^skills/) | test(/^agent_hooks::/))'`:
+  all passed. `scripts/dev quick`: repository contracts and `cargo fmt --check` passed.
+- Briefing budget: the three budget tests (`short_parts_donate_budget_to_long_ones`,
+  `a_long_goal_shrinks_before_a_mandatory_part_is_cut`,
+  `the_containers_section_never_displaces_the_task_or_the_architecture`) failed with the first
+  wording (+128 bytes) and pass with the final one, paid for by a shorter header line.
+- Research / Question's instruction block: 1,375 of 1,444 bytes.
+- `yulius security-scan`: exit 2, not run (Vidoc refused the key, HTTP 401, an instance-wide
+  condition); CI's `security` job skipped (exit 78). Not a pass.
+- Review round 1 (Fable 5.2): request changes, one major (the texts forbade the issue the Fix
+  workflow opens for its bug) and minors; all fixed test-first in a8e654225.
+- The whole gate: Yulius CI on the pull request (#1430) head.
+- Not testable here: how the real Jev answers the three-way mode question, and whether agents
+  follow the reworded instructions; both are text given to a model.
