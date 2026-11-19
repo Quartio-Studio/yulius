@@ -1,6 +1,6 @@
 ---
 yulius-task: 1c2c18ef-b209-4c4e-924b-19790ff0e5d6
-status: in-progress
+status: done
 ---
 
 # SPEC-547 Stabilize restart of a reattached run at its limit
@@ -30,8 +30,8 @@ Issue #1286 reports a timeout waiting for attempt two on plain dev under load. S
 - [x] Protect the persisted pause during startup hand-over
 - [x] Preserve replayed subscription and model refusals through hand-over
 - [x] Preserve failed hand-over and bounded retries when capacity runs out
-- [ ] Verify probe progress and immediate resumption of ordinary pauses
-- [ ] Ready the independently reviewed fix for the green CI merge
+- [x] Verify probe progress and immediate resumption of ordinary pauses
+- [x] Ready the independently reviewed fix for the green CI merge
 
 ## Acceptance criteria
 
@@ -66,4 +66,10 @@ Reconciliation takes the task’s move lock before attaching the host. It releas
 - The capacity review mutation campaign listed six mutants, with five unviable and one missed. Its filter included no ordinary successful capacity pass. The final campaign includes that pass to check the missed negation of the open-pause check.
 - With the probe yielding its worker, the delayed move, preflight capacity pass and spent blind retry all passed on one worker. Holding the end of an ordinary published pause reproduced the overly broad lock: one capacity pass left the task WaitingCapacity instead of Running (1.8 s).
 - A later live refusal after an unchanged-owner reattach also reproduced WaitingCapacity instead of Running in one capacity pass (4.5 s). The watcher distinguishes the refusal replayed at startup from subsequent live observations.
-- Changing the hand-over condition from conjunction to disjunction in the mutation run let an ordinary hand-over use a different account. The added non-limit hand-over regression failed against the generated mutation in 2.8 s. It checks the established preflight refusal and old host exit.
+- Changing the hand-over condition from conjunction to disjunction in the mutation run let an ordinary hand-over use a different account. The added non-limit hand-over regression failed against the generated mutation in 2.8 s. It checks Stopped(Cancelled) and one attempt. The exhausted-pool regression separately waits for the old host’s recorded exit.
+- On approved product head aa227146a, all 95 integration tests in pool supervision, subscription pool, workflow limit and usage credits passed. Repository contracts, Rust formatting and spec validation passed. The project has Vidoc disabled.
+- The reviewer independently ran the later-live capacity pass, ordinary revoked-account hand-over and spent blind retry on aa227146a. All three passed in 6.63 s. The broader mutation run caught the previously missed open-pause negation and the launch-time model-notice condition.
+- The requested stress run repeated on aa227146a with 40/40 passes in 196.356 s. All 48 busy loops were alive both before and after nextest. The loaded workers were then reaped.
+- The compatibility mutation run tested all 11 listed changes in 784 s. Two were caught and eight were unviable. The full reviewed change tested all 30 in 1249 s, with 12 caught and 17 unviable. Both runs missed only the hand-over conjunction. The new non-limit regression subsequently caught that exact mutation. Neither campaign timed out.
+- The later source-propagation filter omitted the existing review-round suite. Its subscription-wide reviewer refusal passed on the final code in 3.1 s and failed in 61.5 s with the exact generated mutation which removes the subagent limit handler. It timed out waiting for the replacement.
+- Final source-propagation campaign on aa227146a: 12 listed, 4 caught, 1 missed, 0 timed out, 7 unviable, 0 not reached (bound 30 min, took 959 s). The dedicated review-round test above caught its only survivor.
