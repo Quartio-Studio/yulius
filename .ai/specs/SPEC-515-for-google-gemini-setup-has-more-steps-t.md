@@ -1,6 +1,6 @@
 ---
 yulius-task: 7f4e80ab-d201-4a2b-94d9-ab61afbbaff1
-status: in-progress
+status: done
 ---
 
 # SPEC-515: an Antigravity Google sign-in stays open until its setup is finished
@@ -58,7 +58,7 @@ in the same terminal. The window closes when they press Done (issue #1421).
 - [x] A Google sign-in runs on after its token file and says signed_in, sealed when it ends
 - [x] The sign-in window stays open with Done once Antigravity is signed in
 - [x] ADR 0369, architecture and changes say a Google sign-in ends with Done
-- [ ] Independent review in a fresh session, findings fixed test-first
+- [x] Independent review in a fresh session, findings fixed test-first
 
 ## Acceptance criteria
 
@@ -103,3 +103,36 @@ in the same terminal. The window closes when they press Done (issue #1421).
   within its grace.
 - ADR [0369](../../docs/decisions/0369-a-google-sign-in-runs-until-the-person-is-done.md)
   records this. It replaces ADR-0361's "stopped 5 s after its token file appears".
+
+## Evidence
+
+- Red at 75fbc03dd (tests only): `cargo nextest run -p yulius -E 'binary_id(yulius::main) &
+  test(/^accounts::an_antigravity/)'`: 7 run, 6 passed, 1 failed:
+  `an_antigravity_sign_in_runs_on_after_its_token_file_until_done` with "the sign-in ended (ok)
+  before saying signed_in". The exit and timeout tests pass on dev's code too: they hold R3, they
+  do not reproduce the bug.
+- Green at 8e2f86f80 (server fix): `accounts::` 29 passed; `cargo clippy -p yulius-app -p yulius
+  --all-targets -- -D warnings` clean.
+- Red at 597fac7cf (e2e and mock): `npx e2e run tests/antigravity.e2e.ts` 9 passed, 1 failed (the
+  "Antigravity is signed in" text never shows). Green at b6e6a2675: 10 passed;
+  `tests/subscriptions.e2e.ts` 49 passed (Claude and Codex dialogs unchanged).
+- `scripts/dev quick` passed; `spec_check` valid; the related `yulius-app` login and account
+  tests and the `ui_contract`, `antigravity` and `claude_gate` files: 50 passed.
+- Yulius CI run 03c7df61 on f75a286b3: passed (quality, test 1/2, test 2/2, e2e). Security
+  (Vidoc) skipped, exit 78: the key is refused (401), as on dev's runs, so the change's files were
+  not scanned by Vidoc.
+- Review round 1 (yulius-reviewer, Fable 5.2, head f75a286b3, request changes; nothing
+  pre-existing). Answers:
+  - Major, own code: no test held `session.hub.state_changed()` (the reviewer removed it and the
+    three tests still passed). `state_says` now returns only on a `HubFrame::State` after which
+    the state says the status (f6bfbba2c). With the line removed the test fails (`Elapsed`, 10 s);
+    with it, `accounts::` 29 passed.
+  - Minor, own code: the reset in `again()` had no test. New e2e case "Try again after a signed-in
+    Antigravity sign-in was replaced starts over and offers Done again". With the two reset lines
+    removed it fails (the Finish text is not visible); with them, the file has 11 passed.
+  - Nit, own code: the typed `n` asserted nothing. The e2e now expects `(y/N) *` before Enter.
+  - Nit, own code: the architecture diagram still said "5 s after the token" only. It now has the
+    `signed_in` state and its way to `ok`.
+- Not testable here: a live Google sign-in with the real agy and its real setup screens (no
+  Google account in the sandbox). The data-use setting being remote is read from agy 1.5.10's
+  strings (`UserSettings.TelemetryEnabled`, "Failed to save remote settings"), not seen live.

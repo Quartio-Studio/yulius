@@ -635,6 +635,8 @@ in, that TUI can run a shell command typed into it, which an instance administra
 stateDiagram-v2
   [*] --> running: Add subscription / Sign in again
   running --> ok: token sealed (CLI exit, or 5 s after the token)
+  running --> signed_in: Antigravity token file written, its setup goes on (ADR-0369)
+  signed_in --> ok: token file sealed (Done or dialog closed, CLI exit, or 15 min timeout)
   running --> error: no token at exit, or 15 min timeout
   running --> cancelled: dialog closed (cancel) before a token, replaced, or subscription removed
   ok --> [*]: dialog closes, toast "… is connected"
