@@ -508,8 +508,8 @@ impl App {
         Ok(())
     }
 
-    /// Resumes a task's live run for its new owner with nothing typed: past a usage limit
-    /// on an available subscription, afresh for a first message never taken,
+    /// Resumes a task's live run for its new owner, keeping its subscription when it can take
+    /// the run: past a usage limit, afresh for a first message never taken,
     /// else the same conversation. A run that cannot be restarted is stopped, so the previous
     /// owner's credential never stays with the new owner (fail closed).
     pub(crate) async fn restart_for_new_owner(
@@ -539,14 +539,12 @@ impl App {
         if !claim_restart(&self.runtime(task).personal_mcp_of, holder.person()) {
             return;
         }
-        let (start, account) = if self.runtime(task).at_limit.load(Ordering::SeqCst) {
-            // The hand-over takes the place of the pool's limit move. Its previous
-            // subscription may have lost access altogether.
-            (RunStart::AfterLimit, None)
+        let start = if self.runtime(task).at_limit.load(Ordering::SeqCst) {
+            RunStart::AfterLimit
         } else if self.held_opening(task).await {
-            (RunStart::Fresh { prompt: None }, account)
+            RunStart::Fresh { prompt: None }
         } else {
-            (RunStart::Resume { prompt: None }, account)
+            RunStart::Resume { prompt: None }
         };
         if let Err(err) = self.switch_with(task, account, "handover", start).await {
             tracing::warn!(task = %task, error = %err, "run holding the previous owner's MCP servers not restarted; stopping it");

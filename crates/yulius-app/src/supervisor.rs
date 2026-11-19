@@ -5031,7 +5031,22 @@ impl App {
         let account = match account {
             Some(kept) if keeps_subscription(reason) => {
                 let input = self.rotation_input(&task, None).await?;
-                rotation::keeps_account(&input, &kept).then_some(kept)
+                // A replayed access refusal can make the kept subscription unusable.
+                // Only relinquish it for a pool placement that can actually take the turn.
+                if reason == "handover" && matches!(start, RunStart::AfterLimit) {
+                    let asked = Trigger::Manual {
+                        account: kept.clone(),
+                    };
+                    match (
+                        rotation::decide(&input, asked).0,
+                        rotation::decide(&input, Trigger::Start).0,
+                    ) {
+                        (Decision::Stay, Decision::Switch { account }) => Some(account),
+                        _ => Some(kept),
+                    }
+                } else {
+                    rotation::keeps_account(&input, &kept).then_some(kept)
+                }
             }
             other => other,
         };
@@ -6705,6 +6720,11 @@ impl App {
         let ran = switched_model(&limit, family);
         runtime.limit_cut_the_turn(&attempt.id, at, ran);
         if let Some(account) = &attempt.account_id {
+            // A hand-over may place the replacement itself. The reporting account and
+            // model still count if the pool later exhausts its retry without an answer.
+            if blind && let Ok(mut met) = runtime.blind_limits.lock() {
+                met.met(account, ran.unwrap_or(family));
+            }
             self.record_limit(account, limit, family).await;
         }
         let app = self.clone();
@@ -6799,15 +6819,6 @@ impl App {
         };
         if ran.is_some() {
             input.running = ran;
-        }
-        // Remembered for the model this run was launched with: a task of a Fable model may be
-        // refused its fallback on the same subscription too (SPEC-482 FBK-007).
-        if blind
-            && limit
-            && let Some(account) = &current
-            && let Ok(mut met) = self.runtime(task_id).blind_limits.lock()
-        {
-            met.met(account, input.running.unwrap_or(input.family));
         }
         let (decision, reason) = rotation::decide(&input, trigger);
         self.runtime(task_id)
