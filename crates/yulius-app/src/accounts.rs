@@ -183,6 +183,9 @@ pub struct LoginSession {
     /// own error says (a refused subscription keeps Claude's reason, SPEC-483 SGN-001).
     failure: Mutex<Option<String>>,
     cancelled: AtomicBool,
+    /// The Antigravity CLI wrote its token file and runs on for the rest of its setup, until the
+    /// person ends the sign-in (SPEC-515): its terminal's state says `signed_in`.
+    signed_in: AtomicBool,
     /// An imported `auth.json` replaced the account's sign-in: whatever this one holds is not
     /// stored (SPEC-503 IMP-001).
     superseded: AtomicBool,
@@ -241,10 +244,17 @@ impl LoginTerminal {
         self.session.hub.unsubscribe();
     }
 
-    /// Current `state` frame.
+    /// Current `state` frame: its status is the phase, or `signed_in` while an Antigravity
+    /// sign-in that holds its token file runs on for its setup (SPEC-515).
     #[must_use]
     pub fn state(&self) -> TerminalServerMsg {
         let (phase, _) = self.session.phase();
+        let status =
+            if phase == LoginPhase::Running && self.session.signed_in.load(Ordering::SeqCst) {
+                "signed_in"
+            } else {
+                phase.as_str()
+            };
         TerminalServerMsg::State {
             attempt_seq: None,
             harness: Some(self.session.provider.harness().as_str().to_owned()),
@@ -252,7 +262,7 @@ impl LoginTerminal {
             rows: LOGIN_ROWS,
             can_write: phase == LoginPhase::Running,
             controller: true,
-            status: phase.as_str().to_owned(),
+            status: status.to_owned(),
         }
     }
 
@@ -339,7 +349,8 @@ fn scrub(bytes: Option<Vec<u8>>) {
 /// How the login process ended.
 enum Ending {
     Exited(RunExit),
-    /// A complete token was in the output and the CLI ran on past [`TOKEN_EXIT_GRACE`].
+    /// A complete token was in the output and the CLI ran on past [`TOKEN_EXIT_GRACE`] (not for
+    /// Antigravity, whose setup goes on after its token file: SPEC-515).
     Captured,
     TimedOut,
     Cancelled,
@@ -2039,6 +2050,7 @@ impl App {
             phase: Mutex::new((LoginPhase::Running, None)),
             failure: Mutex::new(None),
             cancelled: AtomicBool::new(false),
+            signed_in: AtomicBool::new(false),
             superseded: AtomicBool::new(false),
             cancel: Notify::new(),
             ended: Notify::new(),
@@ -2145,8 +2157,18 @@ impl App {
                         if let Some(exit) = self.login_event(&session, masker.as_mut(), &mut seq, event) {
                             break Ending::Exited(exit);
                         }
-                        if fresh > 0 && captured.is_none() && self.holds_credential(&session, fresh) {
-                            captured = Some(tokio::time::Instant::now() + self.token_grace());
+                        let signed_in = session.signed_in.load(Ordering::SeqCst);
+                        if fresh > 0 && captured.is_none() && !signed_in && self.holds_credential(&session, fresh) {
+                            if session.provider == Provider::Google {
+                                // The Antigravity CLI writes its token file before the rest of
+                                // its setup (the data-use choice and more), so it runs on until
+                                // the person ends the sign-in, it exits, or the timeout; the
+                                // file there then is sealed (SPEC-515).
+                                session.signed_in.store(true, Ordering::SeqCst);
+                                session.hub.state_changed();
+                            } else {
+                                captured = Some(tokio::time::Instant::now() + self.token_grace());
+                            }
                         }
                     }
                     Ok(Ok(None) | Err(_)) => break Ending::Lost,
