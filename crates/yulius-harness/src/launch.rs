@@ -47,6 +47,8 @@ pub const ANTIGRAVITY_DIR: &str = ".gemini";
 /// `TOKEN_NAME` (a test keeps them equal).
 pub const ANTIGRAVITY_TOKEN_FILE: &str = ".gemini/antigravity-cli/antigravity-oauth-token";
 pub use yulius_domain::harness::{DEFAULT_ANTIGRAVITY_EFFORT, DEFAULT_ANTIGRAVITY_MODEL};
+/// The model and effort of a Codex task that names none (GPT-6.2 Astra at high effort, SPEC-511).
+pub use yulius_domain::harness::{DEFAULT_CODEX_EFFORT, DEFAULT_CODEX_MODEL};
 /// Codex caps the timeout of its `SessionEnd` hook at 3 s (0.167).
 pub const CODEX_SESSION_END_TIMEOUT_SECONDS: u64 = 3;
 /// Environment variable holding the per-attempt Yulius bearer token (set by the supervisor).
@@ -929,12 +931,12 @@ fn plan_codex(request: &LaunchRequest) -> Result<LaunchPlan, LaunchError> {
             }
         }
     }
-    if let Some(effort) = &request.effort {
-        config("model_reasoning_effort", toml_string(effort));
-    }
-    if let Some(model) = &request.model {
-        argv.extend(["-m".into(), model.clone()]);
-    }
+    // The model and effort on every launch: without them Codex runs the account's default model
+    // at its own default effort (SPEC-511 CXD-001).
+    let effort = request.effort.as_deref().unwrap_or(DEFAULT_CODEX_EFFORT);
+    config("model_reasoning_effort", toml_string(effort));
+    let model = request.model.as_deref().unwrap_or(DEFAULT_CODEX_MODEL);
+    argv.extend(["-m".into(), model.to_owned()]);
     if request.contained {
         argv.push("--dangerously-bypass-approvals-and-sandbox".into());
     }

@@ -1271,13 +1271,14 @@ fn a_codex_goal_task_gets_its_request_as_its_first_message() -> TestResult {
         for marker in ["launch-goal-pending", "typed-goal-pending"] {
             assert!(!run_dir.join(marker).exists(), "{marker}");
         }
-        // Without a model of its own it runs its subscription's default: no Claude model is
-        // recorded for the run or named for the task (CDX-013).
-        assert_eq!(attempt.model, None);
+        // Without a model or effort of its own it runs GPT-6.2 Astra at high effort, recorded for
+        // the run and named for the task, never a Claude model (SPEC-511 CXD-002, CDX-013).
+        assert_eq!(attempt.model.as_deref(), Some("gpt-6.2-astra"));
         let ctx = admin_ctx(&app, &user).await?;
         let detail = app.task_detail(&ctx, id.as_str()).await?;
-        assert!(!detail.model.starts_with("claude"), "{}", detail.model);
+        assert_eq!(detail.model, "gpt-6.2-astra");
         assert!(detail.model_default);
+        assert_eq!(detail.effort.as_deref(), Some("high"));
         // Its turns end it as a prompt-mode task's do: with every Codex subscription used up, a
         // turn's Stop is not held for capacity as a goal's would be, so the next line is read.
         let full = yulius_domain::usage::AccountUsage {
