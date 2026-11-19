@@ -22,7 +22,7 @@ SPEC-525 carries dotenv tracking through Codex and Antigravity continuations. Cl
 
 - [x] Document the missing Claude shell association
 - [x] Reproduce the read paths with synthetic Claude transcripts
-- [ ] Carry dotenv protection through Claude shell continuations
+- [x] Carry dotenv protection through Claude shell continuations
 - [ ] Verify and independently review the fix for delivery
 
 ## Acceptance criteria
@@ -41,3 +41,5 @@ Extend the transcript-local tracking already kept in ReadCursor. Associate a she
 ## Evidence
 
 - On the original reader, `cargo test --locked -p yulius-app --lib claude_background_shell_output_is_redacted_on_every_read` failed. The BashOutput result retained both synthetic assignment values.
+- The manual-background notice and a structured launch result accompanied by a text block each failed before their respective fixes.
+- `cargo test --locked -p yulius-app --lib transcripts::` passed all 22 transcript tests. The regression exercised both tools with five launch variants across four read paths. The unrelated shell retained its public assignment on each read.

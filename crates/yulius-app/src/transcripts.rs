@@ -114,6 +114,10 @@ fn str_field<'a>(value: &'a Value, key: &str) -> Option<&'a str> {
 #[derive(Debug, Default, Clone)]
 pub struct EnvCalls {
     ids: HashSet<String>,
+    /// Protected Claude Bash calls awaiting the result that may name a background shell.
+    pending_bash: HashSet<String>,
+    /// Background shells whose BashOutput and TaskOutput results need dotenv redaction.
+    claude_shells: HashSet<String>,
     /// An Antigravity model response called a tool on a dotenv file: its steps name no call, so
     /// the tool steps up to the next response are redacted as dotenv content (SPEC-525).
     steps_touch_env: bool,
@@ -446,8 +450,23 @@ pub fn entry_of(line: u64, record: &Value, env_calls: &mut EnvCalls) -> Option<T
             match content {
                 Value::String(text) => blocks.push(text_block(text, meta_line)),
                 Value::Array(parts) => {
+                    // Record-level metadata identifies the shell when only one result owns it.
+                    let background_id = record
+                        .get("toolUseResult")
+                        .and_then(|r| str_field(r, "backgroundTaskId"))
+                        .filter(|id| !id.is_empty())
+                        .filter(|_| {
+                            parts
+                                .iter()
+                                .filter(|p| str_field(p, "type") == Some("tool_result"))
+                                .take(2)
+                                .count()
+                                == 1
+                        });
                     for part in parts {
-                        if let Some(block) = content_block(part, meta_line, env_calls) {
+                        if let Some(block) =
+                            content_block(part, meta_line, background_id, env_calls)
+                        {
                             blocks.push(block);
                         }
                     }
@@ -892,7 +911,31 @@ fn text_block(text: &str, meta: bool) -> TranscriptBlock {
     }
 }
 
-fn content_block(part: &Value, meta: bool, env_calls: &mut EnvCalls) -> Option<TranscriptBlock> {
+/// Claude's rendered Bash launch notice, used when the transcript omits toolUseResult.
+fn background_shell_id(text: &str) -> Option<&str> {
+    text.lines().rev().find_map(|notice| {
+        if let Some(rest) = notice
+            .strip_prefix("Command running in background with ID: ")
+            .or_else(|| notice.strip_prefix("Command was manually backgrounded by user with ID: "))
+        {
+            return rest
+                .split_ascii_whitespace()
+                .next()
+                .map(|id| id.trim_end_matches('.'));
+        }
+        let (_, rest) = notice
+            .strip_prefix("Command ")?
+            .split_once("background (ID: ")?;
+        rest.split_once(')').map(|(id, _)| id)
+    })
+}
+
+fn content_block(
+    part: &Value,
+    meta: bool,
+    background_id: Option<&str>,
+    env_calls: &mut EnvCalls,
+) -> Option<TranscriptBlock> {
     match str_field(part, "type")? {
         "text" => {
             let text = str_field(part, "text")?;
@@ -911,13 +954,21 @@ fn content_block(part: &Value, meta: bool, env_calls: &mut EnvCalls) -> Option<T
         }
         "tool_use" | "server_tool_use" => {
             let id = str_field(part, "id").unwrap_or("");
-            let (block, env) = tool_call(
-                id,
-                str_field(part, "name").unwrap_or("tool"),
-                part.get("input").cloned().unwrap_or(Value::Null),
-            );
-            if env && !id.is_empty() {
+            let name = str_field(part, "name").unwrap_or("tool");
+            let input = part.get("input").unwrap_or(&Value::Null);
+            let shell = match name {
+                "BashOutput" => str_field(input, "bash_id"),
+                "TaskOutput" => str_field(input, "task_id"),
+                _ => None,
+            };
+            let (block, env) = tool_call(id, name, input.clone());
+            if !id.is_empty()
+                && (env || shell.is_some_and(|id| env_calls.claude_shells.contains(id)))
+            {
                 env_calls.ids.insert(id.to_owned());
+                if name == "Bash" {
+                    env_calls.pending_bash.insert(id.to_owned());
+                }
             }
             Some(block)
         }
@@ -925,6 +976,12 @@ fn content_block(part: &Value, meta: bool, env_calls: &mut EnvCalls) -> Option<T
             let tool_use_id = str_field(part, "tool_use_id").unwrap_or("").to_owned();
             let env = env_calls.ids.contains(&tool_use_id);
             let raw = result_text(part.get("content"));
+            if env_calls.pending_bash.remove(&tool_use_id)
+                && let Some(shell) = background_id.or_else(|| background_shell_id(&raw))
+                && !shell.is_empty()
+            {
+                env_calls.claude_shells.insert(shell.to_owned());
+            }
             let (text, truncated) = cut(&raw, MAX_RESULT_CHARS);
             Some(TranscriptBlock::ToolResult {
                 text: clean(&text, env),
@@ -1232,8 +1289,8 @@ pub fn read_page_at(
             }
         }
         if current < from {
-            // Only tool calls matter before the page (dotenv tracking); skip the parse otherwise.
-            if may_change_env_tracking(&buf)
+            // A pending Bash launch can acquire its shell ID on a result before this page.
+            if (!env_calls.pending_bash.is_empty() || may_change_env_tracking(&buf))
                 && let Ok(record) = serde_json::from_slice::<Value>(&buf)
             {
                 let _ = entry_of(current, &record, &mut env_calls);
@@ -2298,8 +2355,16 @@ mod tests {
                 "dotenv",
                 "Command was moved to the background (ID: shell_7) after running for 30s. Output is being written to: /tmp/shell_7.output",
             ),
+            result(
+                "dotenv",
+                "Command was manually backgrounded by user with ID: shell_7. Output is being written to: /tmp/shell_7.output.\nYou will be notified when it completes.",
+            ),
             {
                 let mut record = result("dotenv", "Command moved to the background");
+                record["message"]["content"]
+                    .as_array_mut()
+                    .ok_or("expected blocks")?
+                    .push(json!({"type":"text","text":"launch completed"}));
                 record["toolUseResult"] = json!({"backgroundTaskId":"shell_7"});
                 record
             },

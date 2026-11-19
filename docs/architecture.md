@@ -3389,7 +3389,10 @@ drawn for the size its writer's browser sets and is unreadable at another
 `watchview.js` prints the session with the Sessions view's renderer in the terminal's colours and
 reads on from where it stopped; `App::task_transcript` reads the file of the lineage entry adopted
 last (`transcripts::read_tail`, then `read_page` from `end`) and answers an unchanged size from a
-`stat`. Only the run's own `SessionStart` hook changes a task's session (`/clear`, `/resume`); a
+`stat`. The server's read cursor keeps the IDs of Claude background shells that read dotenv files,
+so each later `BashOutput` or `TaskOutput` for that shell gets dotenv redaction.
+[SPEC-536](../.ai/specs/SPEC-536-carry-claude-redaction-into-background-c.md).
+Only the run's own `SessionStart` hook changes a task's session (`/clear`, `/resume`); a
 `claude` the agent runs in its worktree writes a transcript beside the TUI's but is never adopted
 ([decision 0209](decisions/0209-only-the-tui-s-own-hooks-change-the-task-s-session.md)).
 While the reader has not scrolled up, a `ResizeObserver` keeps the view at the bottom through every
