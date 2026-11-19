@@ -1304,12 +1304,53 @@ fn the_push_guard_follows_no_link_an_agent_planted() -> TestResult {
 
 #[cfg(unix)]
 fn write_hook(path: &Path, body: &str) -> TestResult {
-    use std::os::unix::fs::PermissionsExt;
+    use std::io::Write as _;
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
-    fs::write(path, body)?;
-    fs::set_permissions(path, fs::Permissions::from_mode(0o755))?;
+    // A concurrent fork can inherit our writer until it execs. Only install opens
+    // the executable inode for writing, so waiting for install closes its last writer.
+    let mut source = tempfile::NamedTempFile::new()?;
+    source.write_all(body.as_bytes())?;
+    let output = Command::new("install")
+        .args(["-m", "755"])
+        .arg(source.path())
+        .arg(path)
+        .output()?;
+    if !output.status.success() {
+        return Err(format!(
+            "install {}: {}",
+            path.display(),
+            String::from_utf8_lossy(&output.stderr)
+        )
+        .into());
+    }
+    Ok(())
+}
+
+/// A child forked during a write can keep the writer after the parent closes it.
+/// Hand the child that descriptor explicitly so the overlap lasts through the first exec.
+#[cfg(target_os = "linux")]
+#[test]
+fn fake_git_runs_while_a_child_holds_an_inherited_writer() -> TestResult {
+    use std::process::Stdio;
+
+    let fx = Fixture::new()?;
+    let path = fx.path("fake git");
+    for index in 0..8 {
+        let writer = fs::File::create(&path)?;
+        let child = Command::new("cat")
+            .stdin(Stdio::piped())
+            .stdout(writer)
+            .spawn()?;
+        let result = write_hook(&path, &format!("#!/bin/sh\nprintf '%s' {index}\n"))
+            .and_then(|()| Ok(Command::new(&path).output()?));
+        // Closing the input releases cat even if installation or exec failed.
+        assert!(child.wait_with_output()?.status.success());
+        let output = result?;
+        assert!(output.status.success());
+        assert_eq!(output.stdout, index.to_string().as_bytes());
+    }
     Ok(())
 }
 
@@ -2546,7 +2587,6 @@ fn a_redirected_clone_git_directory_is_refused() -> TestResult {
 #[test]
 fn a_clone_configuration_swapped_for_a_link_during_the_scrub_is_never_written_through() -> TestResult
 {
-    use std::os::unix::fs::PermissionsExt as _;
     let fx = Fixture::new()?;
     let (_remote, repo) = fx.repo_with_remote()?;
     fx.raw(
@@ -2558,9 +2598,9 @@ fn a_clone_configuration_swapped_for_a_link_during_the_scrub_is_never_written_th
     fs::write(&outside, planted)?;
     let config = repo.join(".git/config");
     let swapper = fx.path("swapping-git");
-    fs::write(
+    write_hook(
         &swapper,
-        format!(
+        &format!(
             "#!/bin/sh\nif [ \"${{33}}\" = config ] && [ ! -e '{mark}' ]; then\n  : > '{mark}'\n  \
              mv '{config}' '{config}.aside' && ln -s '{outside}' '{config}'\nfi\nexec git \"$@\"\n",
             mark = fx.path("swapped").display(),
@@ -2568,7 +2608,6 @@ fn a_clone_configuration_swapped_for_a_link_during_the_scrub_is_never_written_th
             outside = outside.display(),
         ),
     )?;
-    fs::set_permissions(&swapper, fs::Permissions::from_mode(0o755))?;
     let git = isolated(Git::new(&swapper), &fx.home);
     git.scrub_transport_config(&repo)?;
     assert!(fx.path("swapped").exists(), "the wrapper swapped the file");
@@ -2591,9 +2630,7 @@ fn a_clone_configuration_swapped_for_a_link_during_the_scrub_is_never_written_th
 /// A `git` at `path` that runs `script` (sh, `${33}` is the subcommand after the sixteen fixed
 /// `-c` pairs) before the real Git.
 fn wrapped_git(fx: &Fixture, path: &Path, script: &str) -> Result<Git, Box<dyn Error>> {
-    use std::os::unix::fs::PermissionsExt as _;
-    fs::write(path, format!("#!/bin/sh\n{script}\nexec git \"$@\"\n"))?;
-    fs::set_permissions(path, fs::Permissions::from_mode(0o755))?;
+    write_hook(path, &format!("#!/bin/sh\n{script}\nexec git \"$@\"\n"))?;
     Ok(isolated(Git::new(path), &fx.home))
 }
 
@@ -2804,16 +2841,14 @@ fn a_follow_up_is_read_from_the_commits_themselves() -> TestResult {
 #[cfg(unix)]
 #[test]
 fn reading_no_grafts_prints_no_hint() -> TestResult {
-    use std::os::unix::fs::PermissionsExt as _;
     let fx = Fixture::new()?;
     let (_remote, repo) = fx.repo_with_remote()?;
     let said = fx.path("stderr.log");
     let wrapper = fx.path("stderr-git");
-    fs::write(
+    write_hook(
         &wrapper,
-        format!("#!/bin/sh\nexec git \"$@\" 2>>'{}'\n", said.display()),
+        &format!("#!/bin/sh\nexec git \"$@\" 2>>'{}'\n", said.display()),
     )?;
-    fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o755))?;
     let git = isolated(Git::new(&wrapper), &fx.home);
     fs::write(repo.join("a.txt"), "changed\n")?;
     git.commit_all(&repo, "Change", &author())?;
