@@ -1,6 +1,6 @@
 ---
 yulius-task: 471b3694-e07c-467b-b0bc-29a0822f3fbb
-status: done
+status: in-progress
 ---
 
 # SPEC-540 — Restore prompt-mode goal state after subscription switches
@@ -25,6 +25,7 @@ Issue #1182 records a real session and inspections of Claude Code 2.1.292, 2.1.3
 - [x] Reproduce goal loss across subscription moves
 - [x] Restore prompt goals in the watcher and fake agent
 - [x] Verify the fix and obtain independent review
+- [ ] Preserve dropped goal submission retries in the resumed fake terminal
 
 ## Acceptance criteria
 

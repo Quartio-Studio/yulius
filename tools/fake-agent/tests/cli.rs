@@ -1608,3 +1608,35 @@ fn resume_evaluates_only_the_last_open_goal() -> TestResult {
     }
     Ok(())
 }
+
+/// After a dropped goal submission, an Enter in the empty prompt box starts no turn.
+#[test]
+fn a_blank_retry_does_not_evaluate_a_restored_goal() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let path = dir.path().join("conversation.jsonl");
+    let history = serde_json::json!({
+        "type":"attachment", "attachment":{"type":"goal_status","condition":"previous","met":false,"sentinel":true}
+    });
+    for queued in [false, true] {
+        std::fs::write(&path, format!("{history}\n"))?;
+        let mut args = vec![
+            "--transcript",
+            path.to_str().ok_or("path")?,
+            "--resume",
+            "--drop-lines",
+            "1",
+        ];
+        if queued {
+            args.push("--queue-prompts");
+        }
+        let output = run(&args, "/goal typed goal\n\n/exit\n")?;
+        assert!(output.status.success());
+        assert!(stdout(&output).contains("GOAL RESTORED"));
+        assert_eq!(
+            read_jsonl(&path)?,
+            [history.clone()],
+            "a bare Enter created a turn, queued={queued}"
+        );
+    }
+    Ok(())
+}
