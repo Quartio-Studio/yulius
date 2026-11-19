@@ -1,7 +1,72 @@
 //! Detect a draft restored into Claude Code's full-screen prompt box (SPEC-537).
 
-pub(crate) fn shown(_screen: &vt100::Screen) -> bool {
-    false
+/// The focused conversation input in Claude Code 2.1.323. Its upper rule may carry
+/// the session name after /rename. The agents view uses dim rules.
+pub(crate) fn shown(screen: &vt100::Screen) -> bool {
+    if !screen.alternate_screen() {
+        return false;
+    }
+    let (rows, cols) = screen.size();
+    let (row, col) = screen.cursor_position();
+    let cell = |r, c| screen.cell(r, c);
+    let text = |r, c| cell(r, c).map_or("", vt100::Cell::contents);
+    let rule = |r, c| cell(r, c).is_some_and(|v| v.contents() == "─" && !v.dim());
+    let Some(first) = (1..=row).rev().find(|&r| {
+        text(r, 0) == "❯" && text(r, 1).trim().is_empty() && upper_rule(screen, r - 1, cols)
+    }) else {
+        return false;
+    };
+    let Some(bottom) = (first + 1..rows).find(|&r| (0..cols).all(|c| rule(r, c))) else {
+        return false;
+    };
+    if row >= bottom || (row == first && col < 2) {
+        return false;
+    }
+    // Even typed spaces advance the caret. In an empty input the caret is on its
+    // first cell, including when Claude draws a dim suggestion there.
+    if (row, col) != (first, 2) {
+        return true;
+    }
+    let mut dim_follows = false;
+    for r in first..bottom {
+        let start = if r == first { 3 } else { 0 };
+        for c in start..cols {
+            if let Some(v) = cell(r, c)
+                && !v.contents().trim().is_empty()
+            {
+                if !v.dim() {
+                    return true;
+                }
+                dim_follows = true;
+            }
+        }
+    }
+    // A suggestion's first glyph is inverse under the caret while focused. A single
+    // restored character under that caret has no dim suffix.
+    cell(first, 2).is_some_and(|v| {
+        !v.contents().trim().is_empty() && !v.dim() && !(v.inverse() && dim_follows)
+    })
+}
+
+/// Either a solid rule or the same rule ending in " name ─" after /rename.
+fn upper_rule(screen: &vt100::Screen, row: u16, cols: u16) -> bool {
+    if screen
+        .cell(row, cols - 1)
+        .is_none_or(|cell| cell.contents() != "─")
+        || (0..cols).any(|c| screen.cell(row, c).is_some_and(vt100::Cell::dim))
+    {
+        return false;
+    }
+    let Some(line) = screen.rows(0, cols).nth(usize::from(row)) else {
+        return false;
+    };
+    let label = line.trim_start_matches('─');
+    line.starts_with('─')
+        && (label.is_empty()
+            || label
+                .strip_prefix(' ')
+                .and_then(|s| s.strip_suffix(" ─"))
+                .is_some_and(|name| !name.trim().is_empty()))
 }
 
 #[cfg(test)]
@@ -55,6 +120,8 @@ mod tests {
         for redraw in [
             "\x1b[5;1H \x1b[6;3H",
             "\x1b[7;40H \x1b[6;3H",
+            "\x1b[5;20H \x1b[6;3H",
+            "\x1b[5;20H\x1b[2m─\x1b[0m\x1b[6;3H",
             "\x1b[5;1H\x1b[2m─\x1b[0m\x1b[6;3H",
         ] {
             let mut parser = framed(&["❯ describe a new session"], (6, 3), true);

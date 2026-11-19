@@ -2339,7 +2339,8 @@ fn a_new_key_keeps_its_mark_during_draft_cleanup() -> TestResult {
         wait_for(
             "the older submit to finish",
             Duration::from_secs(30),
-            || async { read_alone(&app, &id, "older prompt") },
+            // The PTY echoes the new key on the same row as the agent’s reply.
+            || async { screen(&app, &id).contains("ECHO: older prompt") },
         )
         .await?;
         tokio::time::timeout(Duration::from_secs(5), accepted).await???;

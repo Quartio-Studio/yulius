@@ -181,6 +181,13 @@ impl Hub {
         self.screen.lock().map(|s| s.seq > 0).unwrap_or(false)
     }
 
+    /// Whether the live VT screen shows text in Claude Code's conversation input.
+    pub(crate) fn shows_draft(&self) -> bool {
+        self.screen
+            .lock()
+            .is_ok_and(|s| crate::visible_draft::shown(s.parser.screen()))
+    }
+
     /// Visible screen text (for previews and tests).
     #[must_use]
     pub fn screen_text(&self) -> String {

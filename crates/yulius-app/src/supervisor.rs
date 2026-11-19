@@ -193,8 +193,9 @@ pub struct TaskRuntime {
     /// message of Yulius's own waits for (SPEC-480 DRF-006): one line per keystroke.
     pub(crate) draft_told_ms: AtomicI64,
     /// The run's folder holds the mark of a person's possible draft (`person-typed`, SPEC-480
-    /// DRF-009), so that a draft's keystrokes write it once.
-    pub(crate) draft_marked: AtomicBool,
+    /// DRF-009). The guard orders a key's timestamp and file write with the submit hook's
+    /// check and file removal (SPEC-537).
+    pub(crate) draft_marked: tokio::sync::Mutex<bool>,
     /// This server saw a person type into the run. Until it did, a draft is known from its
     /// mark alone, and a prompt that goes on is not known to follow it (DRF-009).
     pub(crate) typed_seen: AtomicBool,
@@ -505,10 +506,11 @@ impl TaskRuntime {
     /// it is held (one held in the run before went with that run's hook client; SPEC-468
     /// CCF-010). Nothing waits in its queue and no prompt of it went on: what the run before
     /// queued went with its process (SPEC-471 CCQ-001).
-    pub(crate) fn run_starts(&self, now_ms: i64) {
+    pub(crate) async fn run_starts(&self, now_ms: i64) {
+        let mut marked = self.draft_marked.lock().await;
         self.box_emptied_ms.store(now_ms, Ordering::SeqCst);
         // Its folder is new: no draft is marked there (SPEC-480 DRF-009).
-        self.draft_marked.store(false, Ordering::SeqCst);
+        *marked = false;
         self.typed_seen.store(false, Ordering::SeqCst);
         self.sent_past_draft.store(false, Ordering::SeqCst);
         self.prompt_held.store(false, Ordering::SeqCst);
@@ -594,7 +596,7 @@ impl TaskRuntime {
             message_typed_ms: AtomicI64::new(0),
             box_emptied_ms: AtomicI64::new(0),
             draft_told_ms: AtomicI64::new(0),
-            draft_marked: AtomicBool::new(false),
+            draft_marked: tokio::sync::Mutex::new(false),
             typed_seen: AtomicBool::new(false),
             sent_past_draft: AtomicBool::new(false),
             submit_emptied_ms: AtomicI64::new(0),
@@ -2526,7 +2528,7 @@ impl App {
         // Typing from now on, once viewers can write to this run, is a person's draft in it
         // (SPEC-068): its prompt box starts empty (SPEC-468 CCF-010).
         let typed_before = runtime.typed_at_ms.load(Ordering::SeqCst);
-        runtime.run_starts(self.now().0);
+        runtime.run_starts(self.now().0).await;
         self.attach_run(&task.id, &attempt, &host_token).await?;
         // The new run learns its goal from its own lines, and an idle one writes none: what the
         // old run read of the goal still says what the agent left.
@@ -5682,10 +5684,13 @@ impl App {
             // box: its mark says since when (SPEC-480 DRF-009). A keystroke this server saw is
             // newer and stays.
             // Never later than now: a time ahead of the clock would never grow old.
-            let drafted = person_typed_marked(Path::new(&attempt.run_dir)).min(self.now().0);
-            if drafted > 0 {
-                runtime.typed_at_ms.fetch_max(drafted, Ordering::SeqCst);
-                runtime.draft_marked.store(true, Ordering::SeqCst);
+            {
+                let mut marked = runtime.draft_marked.lock().await;
+                let drafted = person_typed_marked(Path::new(&attempt.run_dir)).min(self.now().0);
+                if drafted > 0 {
+                    runtime.typed_at_ms.fetch_max(drafted, Ordering::SeqCst);
+                    *marked = true;
+                }
             }
             let reattached = match host_token {
                 Some(token) => self
@@ -7474,13 +7479,13 @@ mod tests {
     /// SPEC-468 CCF-010: a run starts with an empty prompt box and holds no prompt: one held
     /// in the run before went with that run's hook client, so the new run's first prompt is a
     /// submit, not that prompt sent again.
-    #[test]
-    fn a_new_run_starts_with_an_empty_prompt_box_and_no_held_prompt() {
+    #[tokio::test]
+    async fn a_new_run_starts_with_an_empty_prompt_box_and_no_held_prompt() {
         use std::sync::atomic::Ordering;
         let runtime = super::TaskRuntime::new();
         runtime.typed_at_ms.store(5_000, Ordering::SeqCst);
         runtime.prompt_held.store(true, Ordering::SeqCst);
-        runtime.run_starts(7_000);
+        runtime.run_starts(7_000).await;
         assert_eq!(runtime.box_emptied_ms.load(Ordering::SeqCst), 7_000);
         assert!(!runtime.prompt_held.load(Ordering::SeqCst));
     }
@@ -7488,8 +7493,8 @@ mod tests {
     /// SPEC-471 CCQ-001: what the run before left in Claude Code's queue went with its process,
     /// and a resumed session does not get it back: a run starts with an empty queue and with
     /// no prompt that just went on.
-    #[test]
-    fn a_new_run_starts_with_an_empty_queue() {
+    #[tokio::test]
+    async fn a_new_run_starts_with_an_empty_queue() {
         use std::sync::atomic::Ordering;
         use yulius_domain::agent_cli::QueueChange;
         let runtime = super::TaskRuntime::new();
@@ -7498,7 +7503,7 @@ mod tests {
         runtime.with_queue(|queue| queue.record(QueueChange::Added, None));
         runtime.prompt_passed_ms.store(6_500, Ordering::SeqCst);
         assert!(runtime.queue().holds());
-        runtime.run_starts(7_000);
+        runtime.run_starts(7_000).await;
         assert_eq!(runtime.queue(), yulius_domain::agent_cli::Queue::default());
         assert_eq!(runtime.prompt_passed_ms.load(Ordering::SeqCst), 0);
         assert!(!runtime.queue_may_hold());
@@ -7506,7 +7511,7 @@ mod tests {
         // which counts as holding; the next launch starts a process whose queue is empty.
         runtime.queue_unread.store(true, Ordering::SeqCst);
         assert!(runtime.queue_may_hold(), "not known counts as holding");
-        runtime.run_starts(8_000);
+        runtime.run_starts(8_000).await;
         assert!(!runtime.queue_may_hold());
     }
 
@@ -7543,7 +7548,7 @@ mod tests {
         assert!(runtime.queue_may_hold(), "the restart's rule counts it");
         runtime.queue_unread.store(true, Ordering::SeqCst);
         assert!(runtime.queue_may_hand_on(), "not known counts");
-        runtime.run_starts(8_000);
+        runtime.run_starts(8_000).await;
         assert!(!runtime.queue_may_hand_on());
         assert_eq!(runtime.queue().left_over(), 0);
         let dying = std::sync::Arc::clone(&runtime);

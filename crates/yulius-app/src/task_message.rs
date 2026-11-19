@@ -188,6 +188,11 @@ impl Sender {
 const DRAFT_HOLDS_PROBLEM: &str = "Yulius has a message for this session and does not type it: \
     someone typed in the terminal and sent no prompt since, so their text may still be in the \
     prompt box.";
+/// The CLI can restore text itself, even after a prompt was submitted (SPEC-537).
+const VISIBLE_DRAFT_PROBLEM: &str =
+    "Yulius is holding a message because the session's prompt box contains text.";
+const VISIBLE_DRAFT_NOTICE: &str = "Yulius is holding a message because the prompt box contains \
+    text. Send the text, or clear it and send a prompt.";
 /// What the person does about [`DRAFT_HOLDS_PROBLEM`].
 const DRAFT_HOLDS_ACTION: &str = "Send what you typed in the terminal, or clear it and send \
     any prompt. Yulius types its message after the next prompt sent from there.";
@@ -697,8 +702,8 @@ impl App {
             }
         }
         // The person's draft is theirs, however old (SPEC-480 DRF-001): pasted behind it, the
-        // message and their unfinished text would be submitted as one prompt. Yulius sees keys,
-        // not the box, so a keystroke since the box was last empty counts until the next prompt
+        // message and their unfinished text would be submitted as one prompt. A keystroke
+        // since the box was last empty counts until the next prompt
         // is submitted from it; the one who can act is told instead (DRF-004, DRF-006).
         let typed = runtime.typed_at_ms.load(Ordering::SeqCst);
         let emptied = runtime.box_emptied_ms.load(Ordering::SeqCst);
@@ -717,7 +722,8 @@ impl App {
             }
             Some(held @ BoxHeld::Draft { .. }) => {
                 if from.tells_person(held) {
-                    self.tell_of_held_message(task, typed).await;
+                    self.tell_of_held_message(task, typed, DRAFT_HOLDS_PROBLEM, DRAFT_HOLDS_NOTICE)
+                        .await;
                 }
                 return Err(AppError::Conflict(format!(
                     "a person typed into task #{}'s terminal and sent no prompt since, so \
@@ -743,6 +749,24 @@ impl App {
                 task.number
             )));
         };
+        if task.harness == yulius_domain::harness::Harness::ClaudeCode
+            && from != Sender::OwnerPastDraft
+            && runtime.hub.shows_draft()
+        {
+            if matches!(from, Sender::Yulius | Sender::YuliusLastTry) {
+                self.tell_of_held_message(
+                    task,
+                    emptied.max(1),
+                    VISIBLE_DRAFT_PROBLEM,
+                    VISIBLE_DRAFT_NOTICE,
+                )
+                .await;
+            }
+            return Err(AppError::Conflict(format!(
+                "task #{}'s prompt box contains text. Ask its person to send or clear that text, then try again.",
+                task.number
+            )));
+        }
         // From here a message is in the session's prompt box and not submitted, and a restart
         // would lose it (SPEC-468 CCF-011). Stamped before it is typed: its submit comes after
         // (Claude Code runs the prompt hook some 30 ms after the Enter below, also while a
@@ -781,21 +805,24 @@ impl App {
         Ok(())
     }
 
-    /// Tells the session's person that a message of Yulius's own waits for what they typed at
-    /// `typed` (SPEC-480 DRF-006): the task is flagged with the reason and its terminal says
-    /// so. The watches try again at every pass: a task that reads the flag keeps it, one whose
-    /// flag ended meanwhile (a turn's end settles a flagged task) is flagged again, and the
-    /// terminal gets its line once per keystroke.
-    async fn tell_of_held_message(&self, task: &TaskRecord, typed: i64) {
-        let reason = AttentionRecord::yulius(DRAFT_HOLDS_PROBLEM, DRAFT_HOLDS_ACTION);
+    /// Flags a waiting automatic message, with one terminal notice per last key or, for a
+    /// visible restore, per last submit. A later pass restores a flag that the turn settled.
+    async fn tell_of_held_message(
+        &self,
+        task: &TaskRecord,
+        stamp: i64,
+        problem: &str,
+        notice: &str,
+    ) {
+        let reason = AttentionRecord::yulius(problem, DRAFT_HOLDS_ACTION);
         if let Err(err) = self.flag_attention(&task.id, reason).await {
             // Not told: the next pass tries again.
             tracing::warn!(task = %task.id, error = %err, "could not flag the task whose draft holds a message");
             return;
         }
         let runtime = self.runtime(&task.id);
-        if runtime.draft_told_ms.swap(typed, Ordering::SeqCst) != typed {
-            runtime.hub.notice(DRAFT_HOLDS_NOTICE.to_owned());
+        if runtime.draft_told_ms.swap(stamp, Ordering::SeqCst) != stamp {
+            runtime.hub.notice(notice.to_owned());
             tracing::info!(task = %task.id, "a message waits for a person's draft: the task is flagged");
         }
     }
@@ -812,7 +839,11 @@ impl App {
         let store = &self.deps.store;
         let flagged = match store.task_attention(task_id).await {
             Ok(Some((reason, flagged)))
-                if reason == AttentionRecord::yulius(DRAFT_HOLDS_PROBLEM, DRAFT_HOLDS_ACTION) =>
+                if [DRAFT_HOLDS_PROBLEM, VISIBLE_DRAFT_PROBLEM]
+                    .iter()
+                    .any(|problem| {
+                        reason == AttentionRecord::yulius(problem, DRAFT_HOLDS_ACTION)
+                    }) =>
             {
                 flagged
             }

@@ -280,7 +280,7 @@
 //! go into the transcript. Used to measure how the web terminal settles (F 2026-10-09).
 
 use std::fs::OpenOptions;
-use std::io::{self, BufRead, Read, Write};
+use std::io::{self, BufRead, IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -803,7 +803,7 @@ impl Tui {
 /// Starts the TUI and its redraw-on-resize thread.
 fn start_tui(session: &str) -> io::Result<()> {
     // Deliver the stash key (Ctrl+S) to the fixture as an input byte.
-    if !Command::new("stty").arg("-ixon").status()?.success() {
+    if io::stdin().is_terminal() && !Command::new("stty").arg("-ixon").status()?.success() {
         return Err(io::Error::other("could not enable the stash key"));
     }
     let resized = Arc::new(AtomicBool::new(false));

@@ -307,6 +307,7 @@ impl App {
             // a prompt follows a key this server saw (SPEC-480 DRF-009). Read from the file,
             // not from what recovery kept: this hook may be served before the run is
             // reattached.
+            let mut marked = runtime.draft_marked.lock().await;
             let inherited = if past_draft || runtime.typed_seen.load(Ordering::SeqCst) {
                 0
             } else {
@@ -314,7 +315,7 @@ impl App {
             };
             if inherited > 0 {
                 runtime.typed_at_ms.fetch_max(inherited, Ordering::SeqCst);
-                runtime.draft_marked.store(true, Ordering::SeqCst);
+                *marked = true;
             } else {
                 runtime.box_emptied_ms.fetch_max(emptied, Ordering::SeqCst);
                 // With the box empty no person's draft holds a typed message any more
@@ -324,8 +325,9 @@ impl App {
                 // after this submit is a draft of its own, and both stay.
                 if !self.persons_draft_holds(&ctx.task.id) {
                     crate::race::reached(crate::race::Point::DraftMarkCleanup, run_dir);
-                    runtime.draft_marked.store(false, Ordering::SeqCst);
+                    *marked = false;
                     crate::supervisor::clear_person_typed(run_dir);
+                    drop(marked);
                     self.settle_draft_flag(&ctx.task.id).await;
                 }
             }

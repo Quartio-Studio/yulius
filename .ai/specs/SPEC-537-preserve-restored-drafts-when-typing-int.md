@@ -33,10 +33,10 @@ an empty box. Its screen reader has yet to land on dev.
 ## Plan
 
 - [x] Specify the restored-draft veto and mark lifetime
-- [ ] Reproduce both stash restores and the mark cleanup race
-- [ ] Protect visible drafts and preserve concurrent keystrokes
+- [x] Reproduce both stash restores and the mark cleanup race
+- [x] Protect visible drafts and preserve concurrent keystrokes
 - [ ] Verify the fix and obtain independent approval
-- [ ] Deliver the approved fix to dev
+- [ ] Prepare the approved fix for delivery to dev
 
 ## Acceptance criteria
 
@@ -59,3 +59,21 @@ Use positive screen evidence as an additional veto. An unrecognized renderer kee
 the existing keystroke policy because the task supports multiple harnesses. Screen
 text stays in the hub and never appears in the refusal or audit. A task owner who
 explicitly sends with `with_draft` retains the documented consent path.
+
+
+## Evidence
+
+- The test-first commit adds a fake CLI with a prompt buffer and Ctrl+S stash. On the
+  preceding delivery logic, the ordinary-submit case read the draft and incoming
+  message as one prompt. The local-command case already held the message through
+  the key record. The mark race failed with “cleanup erased the newer key's recovery
+  mark” when the new viewer key started between the check and removal.
+- The three integration regressions passed with the fix. They check that the sender
+  gets a conflict, an automatic reconnect flags the session, and the person's draft
+  and the later message each reach the agent separately. The overlapping-key test
+  checks the run folder after the older submit and the new key both complete.
+- Four VT reader tests passed. Replaying the saved real Claude Code 2.1.323 screen
+  bytes through the reader detected the r22 ordinary-submit restore and the r19
+  local-command restore. The q6 empty named prompt permitted delivery.
+- Repository quick checks passed. Green CI on the reviewed head is required for
+  the dev merge.
