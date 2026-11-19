@@ -456,6 +456,8 @@ async fn a_guest_tidies_only_their_own_tasks() -> TestResult {
         (Method::POST, "/stop"),
         (Method::POST, "/archive"),
         (Method::DELETE, ""),
+        // Nor does a guest take control of the maker's task (SPEC-510 TKC-007).
+        (Method::POST, "/control/take"),
     ] {
         let path = format!("/api/tasks/{}{rest}", makers.id);
         let refused = call(&w.h.router, method.clone(), &path, None, &guest).await?;
@@ -473,6 +475,21 @@ async fn a_guest_tidies_only_their_own_tasks() -> TestResult {
             "{message}"
         );
     }
+    // Steering the maker's task, a guest is told to ask: never to take control, which they
+    // cannot, nor that they may put it away (SPEC-510 review round 1).
+    let path = format!("/api/tasks/{}/continue", makers.id);
+    let refused = call(&w.h.router, Method::POST, &path, Some(json!({})), &guest).await?;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN, "{}", refused.body);
+    let message = refused.body["error"]["message"]
+        .as_str()
+        .unwrap_or_default();
+    assert!(
+        message.contains("@alice")
+            && message.contains("Ask them for control")
+            && !message.contains("Take control")
+            && !message.contains("stop, archive or delete"),
+        "{message}"
+    );
     use yulius_app::ports::store::TaskStore as _;
     assert_eq!(w.h.store.task(&makers.id).await?.ok_or("task")?, makers);
     let own = format!("/api/tasks/{}/stop", guests.id);

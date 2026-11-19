@@ -70,6 +70,35 @@ impl UserStore for SqliteStore {
         self.user_where("id = ?1", id.as_str().to_owned()).await
     }
 
+    async fn control_ask_first(&self, user: &UserId) -> AppResult<bool> {
+        let id = user.as_str().to_owned();
+        self.call(move |c| {
+            let ask: Option<bool> = c
+                .query_row(
+                    "SELECT control_ask_first FROM users WHERE id = ?1",
+                    [id.as_str()],
+                    |r| r.get(0),
+                )
+                .optional()
+                .map_err(db)?;
+            Ok(ask.unwrap_or(false))
+        })
+        .await
+    }
+
+    async fn set_control_ask_first(&self, user: &UserId, ask_first: bool) -> AppResult<()> {
+        let id = user.as_str().to_owned();
+        self.call(move |c| {
+            c.execute(
+                "UPDATE users SET control_ask_first = ?2 WHERE id = ?1",
+                params![id, ask_first],
+            )
+            .map_err(db)?;
+            Ok(())
+        })
+        .await
+    }
+
     async fn user_by_login(&self, login: &str) -> AppResult<Option<UserRecord>> {
         self.user_where("github_login = ?1 COLLATE NOCASE", login.to_owned())
             .await

@@ -800,6 +800,76 @@ async fn the_giver_takes_a_task_back_until_control_moves_again() -> R {
     Ok(())
 }
 
+/// SPEC-510 TKC-003: whether teammates take control of a person's tasks or ask first is theirs to
+/// choose; nobody has chosen to be asked until they do.
+#[tokio::test]
+async fn a_person_chooses_whether_teammates_ask_before_taking_control() -> R {
+    let dir = tempfile::tempdir()?;
+    let store = SqliteStore::open(&dir.path().join("y.db"))?;
+    let (_, alice) = seed(&store).await?;
+    store.insert_user(&user("u2", Some("bob"), false)?).await?;
+    let bob = UserId::parse("u2")?;
+    assert!(!store.control_ask_first(&alice).await?);
+    store.set_control_ask_first(&alice, true).await?;
+    assert!(store.control_ask_first(&alice).await?);
+    assert!(!store.control_ask_first(&bob).await?, "only alice chose");
+    store.set_control_ask_first(&alice, false).await?;
+    assert!(!store.control_ask_first(&alice).await?);
+    // Nobody who is not a user asks for anything.
+    assert!(!store.control_ask_first(&UserId::parse("u9")?).await?);
+    Ok(())
+}
+
+/// SPEC-510 TKC-001, TKC-002: a take passes control only from the owner seen, drops a waiting
+/// request and makes the previous owner the giver who may take it back.
+#[tokio::test]
+async fn a_take_passes_control_from_the_owner_seen_who_may_take_it_back() -> R {
+    let dir = tempfile::tempdir()?;
+    let store = SqliteStore::open(&dir.path().join("y.db"))?;
+    let (sid, alice) = seed(&store).await?;
+    for (id, login) in [("u2", "bob"), ("u3", "carol")] {
+        store.insert_user(&user(id, Some(login), false)?).await?;
+    }
+    let (bob, carol) = (UserId::parse("u2")?, UserId::parse("u3")?);
+    let t = store.insert_task(&task("t1", &sid, &alice)?).await?;
+    assert!(store.request_control(&t.id, &carol, Timestamp(10)).await?);
+    // A stale owner changes nothing.
+    assert!(
+        !store
+            .seize_control(&t.id, &carol, &bob, Timestamp(11))
+            .await?
+    );
+    assert!(
+        store
+            .seize_control(&t.id, &alice, &bob, Timestamp(12))
+            .await?
+    );
+    let taken = store.task(&t.id).await?.ok_or("task")?;
+    assert_eq!(
+        (taken.owner, taken.updated_at),
+        (bob.clone(), Timestamp(12))
+    );
+    assert_eq!(store.control_request(&t.id).await?, None);
+    assert_eq!(store.control_from(&t.id).await?, Some(alice.clone()));
+    // Taken back by the one it was taken from: nobody is the giver any more.
+    assert!(
+        store
+            .seize_control(&t.id, &bob, &alice, Timestamp(13))
+            .await?
+    );
+    assert_eq!(store.control_from(&t.id).await?, None);
+    // An owner who chose to be asked meanwhile keeps the task: the choice is read in the same
+    // statement (review round 1).
+    store.set_control_ask_first(&alice, true).await?;
+    assert!(
+        !store
+            .seize_control(&t.id, &alice, &bob, Timestamp(14))
+            .await?
+    );
+    assert_eq!(store.task(&t.id).await?.ok_or("task")?.owner, alice);
+    Ok(())
+}
+
 /// SPEC-070: one person at a time asks for control, and control passes only from the owner the
 /// decision saw to the person whose request still waits.
 #[tokio::test]

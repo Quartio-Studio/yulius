@@ -218,6 +218,7 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
       case 'task.updated': upsertTask(event.task); scheduleCountsRefresh(); break;
       case 'task.removed': removeTask(event.task_id); scheduleCountsRefresh(); break;
       case 'task.control_taken_back': emit('control-taken-back', event); break;
+      case 'task.control_taken': emit('control-taken', event); break;
       case 'steps.updated': emit('steps', event.task_id); break;
       case 'browser.action_requested': addActionRequest(event); break;
       case 'automation.run': emit('automation-run', event); break;

@@ -15,7 +15,7 @@ use yulius_contracts::events::UiEvent;
 use yulius_domain::ids::{TaskId, UserId};
 use yulius_domain::notify::{
     AskedOf, NoticeKind, TaskNotice, Throttle, account_problem, account_text, control_text,
-    shared_cause, task_notice, task_signature,
+    shared_cause, taken_text, task_notice, task_signature,
 };
 
 use crate::context::App;
@@ -155,7 +155,10 @@ impl App {
         }
         if !matches!(
             envelope.event,
-            UiEvent::TaskUpdated { .. } | UiEvent::AccountUpdated { .. }
+            UiEvent::TaskUpdated { .. }
+                | UiEvent::AccountUpdated { .. }
+                | UiEvent::ControlTaken { .. }
+                | UiEvent::ControlTakenBack { .. }
         ) {
             return;
         }
@@ -178,6 +181,21 @@ impl App {
             UiEvent::AccountUpdated { account } => {
                 notices.push(Ok(self.account_notice(account).map(|n| (n, None))));
             }
+            // Sent only to the person it was taken from, as the event is (SPEC-510 TKC-002).
+            UiEvent::ControlTaken { task_id, by, .. } => {
+                notices.push(
+                    self.taken_notice(task_id, by, false)
+                        .await
+                        .map(|n| n.and_then(|n| envelope.user.clone().map(|only| (n, Some(only))))),
+                );
+            }
+            UiEvent::ControlTakenBack { task_id, by, .. } => {
+                notices.push(
+                    self.taken_notice(task_id, by, true)
+                        .await
+                        .map(|n| n.and_then(|n| envelope.user.clone().map(|only| (n, Some(only))))),
+                );
+            }
             _ => {}
         }
         for notice in notices {
@@ -193,6 +211,40 @@ impl App {
                 }
             }
         }
+    }
+
+    /// A take of a task by `by` (`back`: its giver took it back), for whoever it was taken from
+    /// (SPEC-510 TKC-002), under the Needs you choice: they may want it back.
+    async fn taken_notice(&self, task_id: &str, by: &str, back: bool) -> AppResult<Option<Notice>> {
+        let Ok(id) = TaskId::parse(task_id) else {
+            return Ok(None);
+        };
+        let store = &self.deps.store;
+        let Some(task) = store.task(&id).await? else {
+            return Ok(None);
+        };
+        let Some(sandbox) = store.sandbox(&task.sandbox_id).await? else {
+            return Ok(None);
+        };
+        let link = format!(
+            "{}/s/{}/t/{}",
+            self.config.public_url.trim_end_matches('/'),
+            sandbox.slug,
+            task.number
+        );
+        let (headline, text) = taken_text(
+            by,
+            task.number,
+            &task.title,
+            &sandbox.repo_name,
+            &link,
+            back,
+        );
+        Ok(Some(Notice {
+            kind: NoticeKind::NeedsYou,
+            headline: self.redact_for_sandbox(&task.sandbox_id, &headline).await,
+            text: self.redact_for_sandbox(&task.sandbox_id, &text).await,
+        }))
     }
 
     /// A person's request for control of a task (SPEC-490 OWN-008), for the task's owner only,
