@@ -1748,3 +1748,32 @@ async fn a_digest_reaches_only_people_who_can_see_the_project() -> TestResult {
     );
     Ok(())
 }
+
+/// SPEC-512 DIG-002 (review round 3): the same-day rule reads the run's claim, not where its
+/// listing ended: a digest claimed at 23:59:30 whose listing ended after midnight does not cost
+/// the next day's.
+#[tokio::test]
+async fn a_digest_whose_listing_ends_after_midnight_keeps_the_next_days() -> TestResult {
+    use yulius_app::ports::store_ext::DigestStore as _;
+    let w = world().await?;
+    let alice = user_id(&w, "alice").await?;
+    seed_task(&w.h, "t1", "s1", &alice, TaskStatus::Running, None).await?;
+    move_to(&w, "t1", TaskStatus::Running, Some(Activity::Working)).await?;
+    let day_ms = 24 * 60 * MINUTE_MS;
+    let day = w.h.app.now().0.div_euclid(day_ms) * day_ms;
+    w.h.clock
+        .0
+        .store(day + 10 * 60 * MINUTE_MS, Ordering::SeqCst);
+    let r = set_digest(&w, json!({"enabled": true, "at": "23:59"}), &w.alice).await?;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+    let claimed = day + day_ms - 30_000;
+    w.h.clock.0.store(claimed, Ordering::SeqCst);
+    assert_eq!(w.h.app.digest_tick().await.sent, 1);
+    // Its listing ended at 00:00:05 the next day (a slow park).
+    w.h.store
+        .set_digest_listed_at(yulius_domain::time::Timestamp(day + day_ms + 5_000))
+        .await?;
+    w.h.clock.0.store(claimed + day_ms, Ordering::SeqCst);
+    assert_eq!(w.h.app.digest_tick().await.sent, 1, "the next day's digest");
+    Ok(())
+}
