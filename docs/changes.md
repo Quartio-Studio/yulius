@@ -6,6 +6,9 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-19
 
+- A task can deliver a follow-up that appends to a list after incorporating an append from
+  `dev`. Delivery compares the two trees when the task contains the integration commit.
+  An equal tree keeps the previous pull request marked as merged. [#1299](https://github.com/Quartio-Studio/yulius/issues/1299)
 - On the Git page, pressing Space on the production protection switch still saves the change when the overview redraws during the keypress (SPEC-546, #1157).
 - A message to a Claude Code session waits when its prompt box shows a restored draft. The
   sender or session owner learns why. A new key keeps its recovery mark when an earlier
