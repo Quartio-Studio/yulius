@@ -1,6 +1,6 @@
 ---
 yulius-task: 73c95420-044f-49f0-8574-c9b5476f7ebf
-status: in-progress
+status: done
 ---
 
 # SPEC-533. Restore trustworthy mutation-test results
@@ -28,7 +28,7 @@ has one package, so it cannot expose the difference. [Issue #1364](https://githu
 - [x] Reproduce the Git-free failure and specify the baseline contract
 - [x] Prove baseline failure and missed mutants across workspace members
 - [x] Run the same workspace tests on clean and mutated code
-- [ ] Document historical results and verify the reviewed change
+- [x] Document historical results and verify the reviewed change
 
 ## Acceptance criteria
 
@@ -55,3 +55,7 @@ filter and campaign bounds defined in [ADR-0347](../../docs/decisions/0347-mutat
 - Before the fix, the two-member fixture had a passing baseline and reported both mutations caught by the unrelated sibling failure.
 - With the fix, the same sibling failure stopped the baseline before mutation. With a passing sibling test, the clean baseline passed and both replacements of the untested return value were missed. Adding a sibling assertion on the value caught both.
 - The missing-key CLI test passed in the original Git-free copy. The xtask suite passed all 20 tests.
+- `cargo nextest run --locked -p xtask` passed all 20 tests with the pinned tools. The fixture enables `test_workspace` in cargo-mutants configuration to verify the runner passes the Cargo flag once.
+- `scripts/dev quick`, xtask Clippy with all targets and features, and `git diff --check` passed. `scripts/dev security` reported Vidoc disabled by the project.
+- `scripts/dev mutants` reported “No mutant in the Rust lines changed against origin/dev.” The branch changes tooling, which ADR-0347 excludes from mutation. The fixture results above exercise the runner directly.
+- An independent reviewer approved fdeeac35f, checked the pinned tool's package and argument selection, and reran the security CLI test.
