@@ -3858,9 +3858,12 @@ route('POST', `/api/sandboxes/${ID}/superagent/requests/${ID}`, async ({ db, p, 
   const number = Math.max(0, ...db.tasks.filter((t) => t.sandbox_id === target.id).map((t) => t.number)) + 1;
   const title = request.view.title || request.view.prompt.split('\n')[0].slice(0, 60);
   const id = `tsk_${target.id.slice(3)}_${number}`;
-  const prepared = request.view.options.prepared === true;
+  const opts = request.view.options || {};
+  const prepared = opts.prepared === true;
+  const drawn = (!opts.harness || opts.harness === 'auto') && !opts.model;
+  const harness = drawn ? drawHarness(db) : opts.harness && opts.harness !== 'auto' ? opts.harness : impliedHarness(opts.model);
   const task = {
-    id, sandbox_id: target.id, number, title, harness: request.view.options.harness || 'claude',
+    id, sandbox_id: target.id, number, title, harness, harness_choice: drawn ? 'random' : 'chosen',
     status: prepared ? 'prepared' : 'queued', activity: null,
     branch: `feat/${number}-${title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40)}`,
     origin: 'agent', created_by: { login: db.me.user.login, id: db.me.user.id }, created_at: new Date().toISOString(), updated_at: new Date().toISOString(),

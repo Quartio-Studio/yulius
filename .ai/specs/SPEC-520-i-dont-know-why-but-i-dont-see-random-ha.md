@@ -1,6 +1,6 @@
 ---
 yulius-task: 5f9512b5-168c-4d48-996b-cc0bc5b0de62
-status: in-progress
+status: done
 ---
 
 # SPEC-520: Random harness selection across all harnesses with available subscriptions
@@ -37,7 +37,7 @@ Restore the random harness feature as the default for new tasks and automations,
 - [x] Draw uniformly across all harnesses with non-exhausted subscriptions in task and automation creation
 - [x] Restore Random in the composer, Settings, automation editor, and browser mock
 - [x] Record ADR-0377 and update product, architecture, API, and spec documentation
-- [ ] Independent review in a fresh session, findings fixed test-first
+- [x] Independent review in a fresh session, findings fixed test-first
 
 ## Acceptance criteria
 
@@ -59,3 +59,26 @@ Restore the random harness feature as the default for new tasks and automations,
 - **Eligibility uses the rotation policy's own non-exhausted rule, with a `Usable` fallback when every connected pool is temporarily full.** Checking only `AgentAccounts::Usable` (`status.healthy()`) included `Limited` and `>= 98%` accounts, causing drawn tasks to stall on an exhausted harness while another harness was idle. Conversely, if *every* connected harness is temporarily `Limited`, falling back to `AgentAccounts::Usable` queues the task on a connected harness rather than falsely claiming no Claude account is connected.
 - **Preserve caller-harness inheritance only when a running task's agent omits `harness` and `model`.** Keeping `caller.task`'s harness on an unadorned follow-up `task_create` / `automation_create` prevents multi-slice agent work from unexpectedly switching `claude -> gemini`, while explicit `harness: "auto"`, UI creations, automations on `Random`, and Superagent calls all draw at random.
 - **Do not rewrite migration 0068.** Schema version 68 has already shipped on `dev`; rewriting existing automations back to `auto` in a new migration would override automations people created intentionally as `claude` after SPEC-514. New automations and templates default to `auto` again, and existing ones can be switched to `Random` in the editor.
+
+
+## Evidence
+
+- **Red-first reproduction** (commit `e23034d6c` before production fix):
+  - `cargo test -p yulius --test main harness_draw::` failed `0 passed; 6 failed` (`harness_choice` `"chosen"` instead of `"random"`, automation `"claude"` instead of `"auto"`, `409 claude_account_required` when only Antigravity was connected).
+- **Domain & integration verification**:
+  - `cargo nextest run -p yulius-domain -p yulius-store -p yulius-app` → passed (including `unbiased_draw_gives_every_eligible_harness_the_same_chance`, `85 / 85 / 85` exact uniformity over `0..=254` with `255` rejected, and `validation_rejects_bad_input`).
+  - `cargo test -p yulius --test main harness_draw::` → `6 passed; 0 failed` (AC-1..AC-4: uneven 5:1:1 pool uniformity, `Limited` / `>= 98%` `weekly_opus` / missing pool exclusion, partial-pool inclusion, all-limited connected-pool queueing, 0-account 409, caller-task inheritance vs `auto` / Superagent draw, `auto` automation runs and `PUT` preservation, analytics JSON/CSV, delete cleanup).
+  - `cargo test -p yulius --test main ui_contract::` → `12 passed; 0 failed`.
+  - `cargo clippy --workspace --all-targets -- -D warnings` → passed with 0 warnings.
+  - `scripts/dev quick` → passed (`check_repository.py` + `cargo fmt --all -- --check`).
+- **Browser end-to-end verification**:
+  - `cd e2e && E2E_TELEMETRY_DISABLED=1 npx e2e run tests/antigravity.e2e.ts tests/codex.e2e.ts tests/automations.e2e.ts` → `3 test files passed, 38 passed`.
+  - Post-merge (`origin/dev` `57849bf87`) + post-review: `tests/harness-comparison.e2e.ts`, `tests/antigravity.e2e.ts`, `tests/codex.e2e.ts`, `tests/superagent-requests.e2e.ts` passed.
+- **Mutation testing** (`scripts/dev mutants --base origin/dev`):
+  - `mutants: 108 listed, 38 caught, 0 missed, 0 timed out, 70 unviable, 0 not reached (bound 30 min, took 1032 s)`
+- **Security scan** (`scripts/dev security`):
+  - Exited 2 (not run, Vidoc off in Yulius for this project/instance; nothing sent).
+- **Independent code review**:
+  - Round 1 (`yulius-reviewer` on `5cac9313273b2c7cb19a7ab40d9cb2680c6f3ed0`): `Verdict: approve` with 0 blockers/majors/minors and 3 nits (`docs/decisions/README.md` numeric ordering after `origin/dev` merge, stale comment in `crates/yulius/tests/automations.rs:328`, and cross-sandbox `auto` fallback in `mock.js:3863`), all addressed within the post-approval allowance (`6` lines in `mock.js`, `0` product lines in docs/tests).
+- **Untested live limits**:
+  - Live Anthropic, OpenAI/Codex, and Google/Antigravity OAuth/usage API responses were exercised through synthetic `AgentAccountRecord` fixtures and the mock harness rather than live external provider accounts.
