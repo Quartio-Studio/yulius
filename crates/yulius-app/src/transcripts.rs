@@ -635,6 +635,11 @@ fn json_texts<'a>(value: &'a Value, texts: &mut Vec<&'a str>) {
         Value::Object(map) => {
             if let Some(Value::String(output)) = map.get("output") {
                 texts.push(output);
+            } else if let (Some("text"), Some(text)) =
+                (str_field(value, "type"), str_field(value, "text"))
+            {
+                // A content item (`{"type": "text", "text": …}`), also in a settled `value`.
+                texts.push(text);
             } else if let Some(Value::Array(content)) = map.get("content") {
                 texts.extend(content.iter().filter_map(|item| str_field(item, "text")));
             } else {
@@ -787,7 +792,8 @@ fn antigravity_entry(line: u64, step: &Value, env_calls: &mut EnvCalls) -> Optio
             // (`Task id "…" finished with result: …`): redacted as dotenv content once a command
             // on a dotenv file ran.
             let text = content?;
-            let env = env_calls.commands_touched_env && text.contains("finished with result");
+            // `finished with result`, `was canceled with result`.
+            let env = env_calls.commands_touched_env && text.contains(" with result");
             let (text, truncated) = cut(text, MAX_RESULT_CHARS);
             blocks.push(TranscriptBlock::Meta {
                 text: clean(&text, env),
