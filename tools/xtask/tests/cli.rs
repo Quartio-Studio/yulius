@@ -37,22 +37,32 @@ fn security_is_listed_and_needs_a_vidoc_key() -> std::io::Result<()> {
         .arg("--help")
         .output()?;
     assert!(String::from_utf8_lossy(&help.stdout).contains("security"));
-    // Not the runner's Vidoc switch: a CI job of a project or instance with Vidoc off has
-    // `YULIUS_VIDOC=off`, which makes the scan exit 0 as disabled.
-    let result = Command::new(env!("CARGO_BIN_EXE_xtask"))
-        .env_remove("VIDOC_API_KEY")
-        .env_remove("YULIUS_VIDOC")
-        .arg("security")
-        .output()?;
+    // The scanner reads committed config before checking the key. Give both commands a
+    // repository of their own, including when cargo-mutants builds xtask in a Git-free copy.
+    let repo = tempfile::tempdir()?;
+    assert!(
+        Command::new("git")
+            .args(["init", "--quiet"])
+            .arg(repo.path())
+            .status()?
+            .success()
+    );
+    let security = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_xtask"))
+            .env("GIT_DIR", repo.path().join(".git"))
+            .env("GIT_WORK_TREE", repo.path())
+            .env_remove("VIDOC_API_KEY")
+            .env_remove("YULIUS_VIDOC")
+            .arg("security")
+            .args(args)
+            .output()
+    };
+    let result = security(&[])?;
     // Exit 2 is "not run", distinct from findings (1): the gate's code passes through.
     assert_eq!(result.status.code(), Some(2));
     assert!(String::from_utf8_lossy(&result.stderr).contains("No Vidoc key"));
     // SPEC-195: its options reach the scan (`scripts/dev security --all` is the broad scan).
-    let broad = Command::new(env!("CARGO_BIN_EXE_xtask"))
-        .env_remove("VIDOC_API_KEY")
-        .env_remove("YULIUS_VIDOC")
-        .args(["security", "--all"])
-        .output()?;
+    let broad = security(&["--all"])?;
     assert_eq!(broad.status.code(), Some(2));
     assert!(String::from_utf8_lossy(&broad.stdout).contains("scripts/vidoc_scan.py --all"));
     assert!(String::from_utf8_lossy(&broad.stderr).contains("No Vidoc key"));

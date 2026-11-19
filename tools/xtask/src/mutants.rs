@@ -446,8 +446,11 @@ pub fn run(root: &Path, cargo: &str, settings: &Settings) -> io::Result<Option<O
         .args([
             "--test-tool",
             "nextest",
-            "--test-workspace",
-            "true",
+            // 27.1.0 applies --test-workspace only to mutants. Cargo's --workspace
+            // includes every member alongside the -p arguments in both scenarios.
+            // Override test_workspace in .cargo/mutants.toml to avoid passing it twice.
+            "--test-workspace=false",
+            "--cargo-arg=--workspace",
             "--no-shuffle",
         ])
         .args(["--jobs", &jobs.to_string()])
@@ -486,6 +489,12 @@ pub fn run(root: &Path, cargo: &str, settings: &Settings) -> io::Result<Option<O
     };
     // 0: all caught; 2: some missed; 3: some timed out. Anything else, unless the bound ended
     // it, is cargo-mutants' own failure (a baseline that does not pass), not mutants unreached.
+    if !bounded && status.code() == Some(4) {
+        return Err(io::Error::other(format!(
+            "cargo-mutants failed its unmutated baseline; see {}",
+            dir.join("mutants.out/log/baseline.log").display()
+        )));
+    }
     if !bounded && !matches!(status.code(), Some(0 | 2 | 3)) {
         return Err(io::Error::other(format!(
             "cargo-mutants failed ({status}); its log: {}",
@@ -696,19 +705,50 @@ mod tests {
         };
         let lib = "pub fn one() -> u32 {\n    1\n}\n\npub fn two() -> u32 {\n    2\n}\n\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn one_is_one() {\n        assert_eq!(super::one(), 1);\n    }\n";
         let (dir, base) = fixture("missed")?;
+        // Only the root package has mutations. A failure in a sibling's test must stop
+        // the baseline before cargo-mutants can credit that failure to a mutant.
+        let manifest = std::fs::read_to_string(dir.join("Cargo.toml"))?;
+        std::fs::write(
+            dir.join("Cargo.toml"),
+            format!("{manifest}members = [\"tools/observer\"]\n"),
+        )?;
+        std::fs::write(dir.join(".gitignore"), "/target/\n")?;
+        std::fs::create_dir_all(dir.join("tools/observer/src"))?;
+        std::fs::write(
+            dir.join("tools/observer/Cargo.toml"),
+            "[package]\nname = \"observer\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\
+             [dev-dependencies]\nfixture = { path = \"../..\" }\n",
+        )?;
+        std::fs::create_dir(dir.join(".cargo"))?;
+        std::fs::write(dir.join(".cargo/mutants.toml"), "test_workspace = true\n")?;
+        let observer = "tools/observer/src/lib.rs";
+        std::fs::write(dir.join(observer), "#[test] fn peer_test() { panic!() }\n")?;
         commit(&dir, "src/lib.rs", &format!("{lib}}}\n"))?;
+        let failed = run(&dir, "cargo", &settings(&base));
+        assert!(
+            failed
+                .as_ref()
+                .is_err_and(|err| err.to_string().contains("baseline")),
+            "peer must fail the baseline: {failed:?}"
+        );
+        let log = std::fs::read_to_string(dir.join("target/mutants/mutants.out/log/baseline.log"))?;
+        assert!(log.contains("peer_test"), "{log}");
+
+        commit(&dir, observer, "#[test] fn peer_test() {}\n")?;
         let outcomes = run(&dir, "cargo", &settings(&base))?.ok_or("nothing mutated")?;
         assert!(
             outcomes.missed.iter().any(|m| m.contains("two")),
             "{outcomes:?}"
         );
         assert!(!outcomes.held());
-        let held = format!(
-            "{lib}\n    #[test]\n    fn two_is_two() {{\n        assert_eq!(super::two(), 2);\n    }}\n}}\n"
-        );
-        commit(&dir, "src/lib.rs", &held)?;
+        commit(
+            &dir,
+            observer,
+            "#[test] fn peer_test() { assert_eq!(fixture::two(), 2); }\n",
+        )?;
         let outcomes = run(&dir, "cargo", &settings(&base))?.ok_or("nothing mutated")?;
         assert!(outcomes.held(), "{outcomes:?}");
+        assert!(outcomes.caught.iter().any(|m| m.contains("two")));
         let (docs, docs_base) = fixture("docs")?;
         commit(&docs, "README.md", "words\n")?;
         assert_eq!(run(&docs, "cargo", &settings(&docs_base))?, None);
