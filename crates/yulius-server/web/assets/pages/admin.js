@@ -251,7 +251,7 @@ export function openLoginTerminal(ctx, { loginId, account, onFinish }) {
   let signedIn = false;
   const agent = agentOfProvider(account.provider);
   const RUNNING = { openai: CODEX_SIGN_IN_RUNNING, google: ANTIGRAVITY_SIGN_IN_RUNNING };
-  const status = h('span', { class: 'muted small' }, RUNNING[account.provider] || SIGN_IN_RUNNING);
+  const status = h('span', { class: 'muted small', role: 'status' }, RUNNING[account.provider] || SIGN_IN_RUNNING);
   const outcome = h('div', { class: 'banner banner-danger', role: 'alert', hidden: true });
   const host = h('div', { class: 'login-terminal' });
   const modal = openModal({
