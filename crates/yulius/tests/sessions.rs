@@ -286,11 +286,36 @@ async fn late_codex_rollout(search_first: bool) -> TestResult {
     assert_eq!(empty.status, StatusCode::OK);
     assert_eq!(empty.body["entries"], json!([]));
 
-    let path = w
+    let sessions = w
         .data_dir()
         .join("sandboxes")
         .join(sid.as_str())
-        .join("codex/sessions/2026/11/19")
+        .join("codex/sessions");
+    let pending = w.h.store.session_doc(id).await?.ok_or("pending document")?;
+    assert_eq!(
+        Path::new(&pending.transcript_path),
+        sessions.join(format!("missing-{session}.jsonl"))
+    );
+    // Session IDs are scoped by harness. A matching Codex rollout does not supersede
+    // either other harness's transcript or add its text to their search results.
+    let mut other_docs = Vec::new();
+    for harness in [Harness::ClaudeCode, Harness::Antigravity] {
+        let other = SessionDocRecord {
+            id: format!("doc-{}", harness.as_str()),
+            harness,
+            transcript_path: w
+                .scratch
+                .path()
+                .join(format!("{}.jsonl", harness.as_str()))
+                .to_string_lossy()
+                .into_owned(),
+            ..pending.clone()
+        };
+        w.h.store.insert_session_doc(&other).await?;
+        other_docs.push(other);
+    }
+    let path = sessions
+        .join("2026/11/19")
         .join(format!("rollout-2026-11-19T12-00-00-{session}.jsonl"));
     write(
         &path,
@@ -304,6 +329,7 @@ async fn late_codex_rollout(search_first: bool) -> TestResult {
     let search = async {
         let found = get(&w, &creds, &search_url).await?;
         assert_eq!(found.status, StatusCode::OK);
+        assert_eq!(found.body["sessions"].as_array().map(Vec::len), Some(1));
         assert_eq!(found.body["sessions"][0]["id"], id, "rollout indexed");
         assert_eq!(found.body["sessions"][0]["hits"][0]["line"], 0);
         TestResult::Ok(())
@@ -326,6 +352,9 @@ async fn late_codex_rollout(search_first: bool) -> TestResult {
     }
     let doc = w.h.store.session_doc(id).await?.ok_or("document")?;
     assert_eq!(Path::new(&doc.transcript_path), path);
+    for other in other_docs {
+        assert_eq!(w.h.store.session_doc(&other.id).await?, Some(other));
+    }
     Ok(())
 }
 

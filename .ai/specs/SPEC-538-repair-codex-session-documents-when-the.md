@@ -21,8 +21,8 @@ Issue #1454 follows the transcript reader work in SPEC-525. When Codex has repor
 
 ## Plan
 
-- [ ] Reproduce late rollout discovery through Sessions and search
-- [ ] Repair persisted Codex placeholder paths during synchronization
+- [x] Reproduce late rollout discovery through Sessions and search
+- [x] Repair persisted Codex placeholder paths during synchronization
 - [ ] Verify compatibility and deliver the reviewed fix
 
 ## Acceptance criteria
@@ -37,4 +37,10 @@ Use the Sessions HTTP integration fixture with a real store, an isolated sandbox
 
 ## Decisions
 
-Reuse the sandbox's bounded Codex rollout lookup and the store's existing transactional path replacement. Recognize the generated placeholder for the document's session ID so resolved documents need no additional directory walks. This is a repair of the existing document contract and requires no schema change.
+Reuse the sandbox's bounded Codex rollout lookup and the store's existing transactional path replacement. Recognize the generated placeholder for the document's session ID so resolved documents need no additional directory walks. Direct reads resolve the pending path without writing. The index refresh persists it and resets the index cursor in its existing transaction. Existing rows are eligible on their next read or refresh.
+
+## Evidence
+
+- On the original implementation, `cargo test --locked -p yulius --test main late_codex_rollout` failed both tests. The transcript lacked the message and search returned no document after the fixture wrote the rollout.
+- With the fix, `cargo test --locked -p yulius --test main sessions::` passed all five tests. The two request orders returned the rollout text and its search hit under the original document ID. The stored path changed from the legacy placeholder to the dated rollout. The Claude Code and Antigravity rows with the same session ID retained their original paths and index state.
+- `cargo test --locked -p yulius-app --lib transcripts::tests::` passed all 21 reader tests, including the Claude Code, Codex and Antigravity formats.
