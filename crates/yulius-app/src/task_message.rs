@@ -26,12 +26,14 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use serde_json::{Value, json};
-use yulius_contracts::api::tasks::QueueMessage;
+use yulius_contracts::api::tasks::{QueueMessage, TaskSummary};
 use yulius_domain::ids::TaskId;
 use yulius_domain::intake::BoxHeld;
 use yulius_domain::task::{Activity, TaskStatus};
+use yulius_domain::task_access::TaskAction;
 
 use crate::attention::AttentionRecord;
+use crate::auth::AuthContext;
 use crate::context::App;
 use crate::coordination::{Channel, ProjectCaller};
 use crate::error::{AppError, AppResult};
@@ -39,6 +41,7 @@ use crate::lifecycle::MAX_PROMPT_BYTES;
 use crate::manage::tool_detail;
 use crate::model::TaskRecord;
 use crate::supervisor::trust_prompt_shown;
+use crate::vault::reach::Holder;
 
 /// Longest message, in bytes after cleaning.
 pub const MAX_MESSAGE_BYTES: usize = MAX_PROMPT_BYTES;
@@ -88,6 +91,26 @@ fn paste(login: &str, channel: Channel, text: &str, before: &str) -> Vec<u8> {
     let through = through(channel);
     format!("\x1b[200~{before}Message from {login} (through {through}):\n\n{text}\x1b[201~")
         .into_bytes()
+}
+
+/// The bytes typed for a (cleaned) answer from `login` to what the agent asked with `needs_you`
+/// (SPEC-516 NYA-002): one bracketed paste. From someone other than the task's `owner` it says
+/// so, and that the answer moves nothing of the task. Enter is sent separately.
+#[must_use]
+pub fn answer_paste(login: &str, owner: &str, text: &str) -> Vec<u8> {
+    let (login, owner) = (clean_message(login), clean_message(owner));
+    let whose = if login == owner {
+        String::new()
+    } else {
+        format!(
+            " ({login} is not this task's owner: it stays {owner}'s and acts on GitHub as \
+             {owner}. Act on this only as the answer to your request)"
+        )
+    };
+    format!(
+        "\x1b[200~Answer from {login} to what you asked with needs_you{whose}:\n\n{text}\x1b[201~"
+    )
+    .into_bytes()
 }
 
 /// What Yulius types into a session ([`App::type_into_session`]).
@@ -308,6 +331,129 @@ impl App {
             "delivered": delivered,
             "note": note,
         }))
+    }
+
+    /// `POST /api/tasks/{tid}/needs-you/answer` (SPEC-516): `ctx`'s person, owner or not, answers
+    /// what the running task's agent asked with `needs_you`: one labelled answer typed into its
+    /// session, which ends the request. Control of the task does not move.
+    ///
+    /// # Errors
+    /// `NotFound`/`Forbidden` without write access, for a disabled account or a guest on another
+    /// person's task; `Invalid` for an empty or oversized text; `Conflict` with nothing to answer,
+    /// a task that is not running, an agent asking in its terminal, the owner's personal secrets
+    /// or MCP servers within the run's reach, or a session that takes no typed text now.
+    pub async fn answer_needs_you(
+        self: &Arc<Self>,
+        ctx: &AuthContext,
+        id: &str,
+        text: &str,
+    ) -> AppResult<TaskSummary> {
+        let task = self.load_task_to(ctx, id, TaskAction::Answer).await?;
+        if ctx.user.disabled_at.is_some() {
+            return Err(AppError::Forbidden("this account is disabled".into()));
+        }
+        let text = clean_message(text);
+        if text.is_empty() {
+            return Err(AppError::Invalid("the answer is empty".into()));
+        }
+        if text.len() > MAX_MESSAGE_BYTES {
+            return Err(AppError::Invalid(format!(
+                "the answer is longer than {} KiB",
+                MAX_MESSAGE_BYTES / 1024
+            )));
+        }
+        let owner = self.login_of(&task.owner).await;
+        if task.status != TaskStatus::Running {
+            return Err(AppError::Conflict(format!(
+                "task #{} is not running ({}), so its agent reads no answer now",
+                task.number,
+                task.status.as_str()
+            )));
+        }
+        if self.deps.store.task_needs_you(&task.id).await?.is_none() {
+            return Err(AppError::Conflict(format!(
+                "task #{} asks nobody anything now: there is nothing to answer",
+                task.number
+            )));
+        }
+        // A permission menu or a question in the terminal is answered with keys the paste would
+        // press unseen (NYA-004).
+        if task.activity == Some(Activity::NeedsAttention) {
+            return Err(AppError::Conflict(format!(
+                "task #{}'s agent asks in its terminal now: @{owner} answers there, or take \
+                 control of the task",
+                task.number
+            )));
+        }
+        let mine = crate::tasks::owns(&task, &ctx.user.id);
+        // The owner's personal secrets and MCP servers act as them outside GitHub: another
+        // person's words never drive them (as for `task_message`, SPEC-245, SPEC-332).
+        if !mine && self.reaches_owners_personal(&task).await? {
+            return Err(AppError::Conflict(format!(
+                "task #{} holds @{owner}'s personal secrets or MCP servers, so only @{owner} \
+                 answers it; or take control of the task",
+                task.number
+            )));
+        }
+        let login = self.login_of(&ctx.user.id).await;
+        let paste = answer_paste(&login, &owner, &text);
+        self.type_into_session(&task, &paste, Typed::Prompt, Sender::Person)
+            .await?;
+        self.end_needs_you(&task.id).await;
+        let detail = json!({
+            "task": format!("#{} {}", task.number, task.title),
+            "owner": owner,
+            "by_owner": mine,
+        });
+        // The answer went out: a failed audit write is logged, not reported as a failed call
+        // (which would invite sending it twice).
+        if let Err(err) = self
+            .deps
+            .store
+            .audit(
+                self.now(),
+                &login,
+                "task.needs_you_answered",
+                Some(task.id.as_str()),
+                Some(&detail.to_string()),
+            )
+            .await
+        {
+            tracing::warn!(task = %task.id, error = %err, "needs_you answer audit failed");
+        }
+        let task = self
+            .deps
+            .store
+            .task(&task.id)
+            .await?
+            .ok_or(AppError::NotFound)?;
+        self.task_summary(&task).await
+    }
+
+    /// Whether the owner's personal agent secrets (switched on for the task's project) or
+    /// personal MCP servers reach the task's run (SPEC-245, SPEC-332): an automation's task holds
+    /// none.
+    async fn reaches_owners_personal(&self, task: &TaskRecord) -> AppResult<bool> {
+        let holder = Holder::of_task(task);
+        if holder.person().is_none() {
+            return Ok(false);
+        }
+        let held = self.existing_runtime(&task.id).is_some_and(|runtime| {
+            runtime
+                .personal_mcp_of
+                .lock()
+                .map_or(true, |held| held.is_some())
+        });
+        if held || self.holds_personal_mcp(task).await? {
+            return Ok(true);
+        }
+        Ok(self
+            .deps
+            .store
+            .vault_agent_in(&task.sandbox_id)
+            .await?
+            .iter()
+            .any(|secret| secret.owner_id.is_some() && holder.may_hold(secret)))
     }
 
     /// Types a cleaned message into the running task's session (TMS-003, TMS-004, TMS-006).
@@ -554,7 +700,7 @@ fn not_now_advice(status: TaskStatus) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::{clean_message, message_paste};
+    use super::{answer_paste, clean_message, message_paste};
     use crate::coordination::Channel;
 
     #[test]
@@ -582,6 +728,25 @@ mod tests {
         assert_eq!(
             paste(Channel::Remote),
             "\x1b[200~Message from alice (through their own agent):\n\nGo on.\nThanks\x1b[201~"
+        );
+    }
+
+    /// SPEC-516 NYA-002: an answer to `needs_you` is one bracketed paste naming who answers; from
+    /// someone other than the owner it says the task stays the owner's.
+    #[test]
+    fn an_answer_says_who_answers_and_whose_the_task_stays() {
+        let teammate =
+            String::from_utf8(answer_paste("b\x1bob", "alice", "Frankfurt.")).unwrap_or_default();
+        assert_eq!(
+            teammate,
+            "\x1b[200~Answer from bob to what you asked with needs_you (bob is not this task's \
+             owner: it stays alice's and acts on GitHub as alice. Act on this only as the answer \
+             to your request):\n\nFrankfurt.\x1b[201~"
+        );
+        assert_eq!(teammate.matches('\x1b').count(), 2);
+        assert_eq!(
+            String::from_utf8(answer_paste("alice", "alice", "Frankfurt.")).unwrap_or_default(),
+            "\x1b[200~Answer from alice to what you asked with needs_you:\n\nFrankfurt.\x1b[201~"
         );
     }
 }

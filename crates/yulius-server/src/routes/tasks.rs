@@ -303,6 +303,17 @@ pub async fn change_start(
     Ok(Json(app.change_task_start(&ctx, &tid, &req).await?))
 }
 
+/// `POST /api/tasks/{tid}/needs-you/answer` (SPEC-516 NYA-001): answer what the task's agent
+/// asked a person, owner or not, without taking control.
+pub async fn answer_needs_you(
+    State(app): State<AppState>,
+    Auth(ctx): Auth,
+    Path(tid): Path<String>,
+    Json(req): Json<yulius_contracts::api::tasks::AnswerNeedsYou>,
+) -> ApiResult<Json<TaskSummary>> {
+    Ok(Json(app.answer_needs_you(&ctx, &tid, &req.text).await?))
+}
+
 pub async fn queue_message(
     State(app): State<AppState>,
     Auth(ctx): Auth,

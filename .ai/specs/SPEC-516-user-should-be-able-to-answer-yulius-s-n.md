@@ -41,7 +41,7 @@ as them. Nothing else of the task is opened to the answerer.
   or not they own it. A new task action, `TaskAction::Answer`, carries the rule: write access,
   owner or not; a playground's guest answers only their own tasks (as they tidy only theirs).
 - NYA-002: The answer is cleaned as a message is (`clean_message`; empty or longer than the
-  message bound: 400) and typed into the session as one bracketed paste and then Enter, through
+  message bound: 422) and typed into the session as one bracketed paste and then Enter, through
   `App::type_into_session`, so every refusal of a message holds (session not started, a person's
   draft or keystrokes, another typist, a withheld screen). The paste reads
   `Answer from <login> to what you asked with needs_you` and, from someone other than the owner,

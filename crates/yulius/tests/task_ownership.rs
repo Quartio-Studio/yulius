@@ -10,7 +10,7 @@ use yulius_app::model::TaskRecord;
 use yulius_app::ports::store::{
     InstanceStore as _, PermissionStore as _, TaskStore as _, UserStore as _,
 };
-use yulius_app::ports::store_ext::AutomationStore as _;
+use yulius_app::ports::store_ext::{AutomationStore as _, NeedsYouStore as _};
 use yulius_domain::ids::{TaskId, UserId};
 use yulius_domain::task::TaskStatus;
 
@@ -1432,5 +1432,127 @@ async fn taking_control_back_from_the_taker_leaves_no_giver() -> TestResult {
     );
     // Nobody gave it to Alice: there is nothing to take back.
     assert_eq!(take_back(&f, &f.bob).await?.status, 409);
+    Ok(())
+}
+
+/// What the agent of task `id` asks a person (SPEC-134), as the `needs_you` tool records it.
+async fn ask(h: &Harness, id: &str) -> TestResult {
+    let asked = yulius_app::needs_you::NeedsYouRecord {
+        action: "Choose the staging region".into(),
+        happened: None,
+        problem: None,
+        decision: true,
+        link: None,
+        at: 1,
+        cause: None,
+    };
+    h.store
+        .set_task_needs_you(&TaskId::parse(id)?, Some(&asked), h.app.now())
+        .await?;
+    Ok(())
+}
+
+/// `POST /api/tasks/{id}/needs-you/answer` (SPEC-516) by `who`.
+async fn answer(
+    h: &Harness,
+    id: &str,
+    who: &Creds,
+    text: &str,
+) -> Result<crate::support::Resp, Box<dyn std::error::Error>> {
+    call(
+        &h.router,
+        Method::POST,
+        &format!("/api/tasks/{id}/needs-you/answer"),
+        Some(json!({"text": text})),
+        who,
+    )
+    .await
+}
+
+/// SPEC-516 NYA-004, AC2: an answer is refused, saying why, with nothing to answer, an empty
+/// text, a task that does not run, an agent asking in its terminal, the owner's personal secret
+/// within the run's reach, a reader and a disabled account; the request stays open and the task
+/// stays its owner's.
+#[tokio::test]
+async fn a_needs_you_answer_is_refused_where_it_must_not_reach_the_agent() -> TestResult {
+    let f = fixture().await?;
+    let t1 = id_of(&f).to_owned();
+    let status = |r: &crate::support::Resp| r.status;
+    let says = |r: &crate::support::Resp, what: &str| {
+        r.body
+            .to_string()
+            .to_lowercase()
+            .contains(&what.to_lowercase())
+    };
+
+    let none = answer(&f.h, &t1, &f.bob, "Frankfurt").await?;
+    assert_eq!(status(&none), 409, "{}", none.body);
+    assert!(says(&none, "nothing to answer"), "{}", none.body);
+
+    ask(&f.h, &t1).await?;
+    let empty = answer(&f.h, &t1, &f.bob, " \u{7} ").await?;
+    assert_eq!(status(&empty), 422, "{}", empty.body);
+
+    seed_task(&f.h, "t2", "s1", "u-a", RESTING, None).await?;
+    ask(&f.h, "t2").await?;
+    let resting = answer(&f.h, "t2", &f.bob, "Frankfurt").await?;
+    assert_eq!(status(&resting), 409, "{}", resting.body);
+    assert!(says(&resting, "not running"), "{}", resting.body);
+
+    f.h.store
+        .set_activity(
+            &f.task.id,
+            Some(yulius_domain::task::Activity::NeedsAttention),
+            f.h.app.now(),
+        )
+        .await?;
+    let terminal = answer(&f.h, &t1, &f.bob, "Frankfurt").await?;
+    assert_eq!(status(&terminal), 409, "{}", terminal.body);
+    assert!(says(&terminal, "terminal"), "{}", terminal.body);
+    f.h.store
+        .set_activity(
+            &f.task.id,
+            Some(yulius_domain::task::Activity::Waiting),
+            f.h.app.now(),
+        )
+        .await?;
+
+    let carol = seed_github_user(&f.h, "u-c", "carol").await?;
+    f.h.github.set_perm("carol", "acme/repo", perms("read"));
+    let reader = answer(&f.h, &t1, &carol, "Frankfurt").await?;
+    assert_eq!(status(&reader), 403, "{}", reader.body);
+
+    let secret = call(
+        &f.h.router,
+        Method::POST,
+        "/api/sandboxes/s1/agent-secrets",
+        Some(
+            json!({"scope": "personal", "name": "ALICE_TOKEN", "value": "alice-personal-71c0ffee",
+            "hosts": ["api.alice.test"], "injection": "bearer"}),
+        ),
+        &f.alice,
+    )
+    .await?;
+    assert_eq!(status(&secret), 201, "{}", secret.body);
+    let personal = answer(&f.h, &t1, &f.bob, "Frankfurt").await?;
+    assert_eq!(status(&personal), 409, "{}", personal.body);
+    assert!(
+        says(&personal, "@alice") && says(&personal, "personal"),
+        "{}",
+        personal.body
+    );
+
+    disable(&f.h, "u-b").await?;
+    let disabled = answer(&f.h, &t1, &f.bob, "Frankfurt").await?;
+    assert!(
+        matches!(status(&disabled).as_u16(), 401 | 403 | 404),
+        "{}",
+        disabled.body
+    );
+
+    assert!(f.h.store.task_needs_you(&f.task.id).await?.is_some());
+    let task = f.h.store.task(&f.task.id).await?.ok_or("task")?;
+    assert_eq!(task.owner, UserId::parse("u-a")?);
+    assert_eq!(audited(&f.h, &t1, "task.needs_you_answered").await?, 0);
     Ok(())
 }

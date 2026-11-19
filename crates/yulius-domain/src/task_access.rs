@@ -14,8 +14,12 @@ pub enum TaskAction {
     /// End it or put it away: stop (also cancel one that waits to start), close out, archive,
     /// restore, delete. Nothing here steers the agent or acts on GitHub.
     Tidy,
-    /// Steer it: type into it, send it messages, answer what it asks, change how it runs or
-    /// starts, deliver it, write into its worktree, answer a request for control.
+    /// Answer what its agent asked a person (`needs_you`) with one labelled message (SPEC-516):
+    /// a small intervention that moves nothing of the owner's, so anyone who may work in the
+    /// project does it. A playground's guest answers only their own tasks.
+    Answer,
+    /// Steer it: type into it, send it messages, change how it runs or starts, deliver it,
+    /// write into its worktree, answer a request for control.
     Control,
 }
 
@@ -26,7 +30,8 @@ pub enum TaskRefusal {
     Access,
     /// The action is the owner's and they are not the owner.
     NotOwner,
-    /// A playground's guest tidies only their own tasks there (SPEC-490, GST-003).
+    /// A playground's guest tidies and answers only their own tasks there (SPEC-490, GST-003;
+    /// SPEC-516).
     Guest,
 }
 
@@ -47,7 +52,7 @@ impl TaskAction {
     pub fn sandbox_action(self) -> Action {
         match self {
             Self::View => Action::View,
-            Self::Tidy | Self::Control => Action::Work,
+            Self::Tidy | Self::Answer | Self::Control => Action::Work,
         }
     }
 
@@ -81,7 +86,8 @@ pub fn decide(action: TaskAction, level: AccessLevel, owns: bool) -> Result<(), 
 /// playground but tidies only their own tasks there, never its maker's (SPEC-490 review round 1).
 ///
 /// # Errors
-/// As [`decide`]; [`TaskRefusal::Guest`] for a guest's tidy of a task they do not own.
+/// As [`decide`]; [`TaskRefusal::Guest`] for a guest's tidy or answer of a task they do not
+/// own.
 pub fn decide_for(
     action: TaskAction,
     level: AccessLevel,
@@ -94,7 +100,7 @@ pub fn decide_for(
     if action.owner_only() && !owns {
         return Err(TaskRefusal::NotOwner);
     }
-    if action == TaskAction::Tidy && guest && !owns {
+    if matches!(action, TaskAction::Tidy | TaskAction::Answer) && guest && !owns {
         return Err(TaskRefusal::Guest);
     }
     Ok(())
@@ -195,6 +201,36 @@ mod tests {
                 (TaskAction::Control, action)
             );
         }
+    }
+
+    /// SPEC-516 NYA-001: answering what the agent asked needs write access, owner or not; a
+    /// playground's guest answers only their own tasks' requests.
+    #[test]
+    fn anyone_who_may_work_answers_a_request() {
+        for level in LEVELS {
+            for owns in [true, false] {
+                let expected = if level >= AccessLevel::Write {
+                    Ok(())
+                } else {
+                    Err(TaskRefusal::Access)
+                };
+                assert_eq!(
+                    decide(TaskAction::Answer, level, owns),
+                    expected,
+                    "answer at {level:?}, owner {owns}"
+                );
+            }
+        }
+        assert_eq!(
+            decide_for(TaskAction::Answer, AccessLevel::Write, true, true),
+            Ok(())
+        );
+        assert_eq!(
+            decide_for(TaskAction::Answer, AccessLevel::Write, false, true),
+            Err(TaskRefusal::Guest)
+        );
+        assert!(!TaskAction::Answer.owner_only());
+        assert_eq!(TaskAction::Answer.sandbox_action(), Action::Work);
     }
 
     /// An administrator who does not own a task tidies it and never steers it.

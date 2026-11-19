@@ -523,10 +523,14 @@ impl App {
             Ok(()) => Ok(level),
             Err(TaskRefusal::NotOwner) => Err(self.not_the_owner(task, guest).await),
             Err(TaskRefusal::Guest) => Err(AppError::Forbidden(format!(
-                "Task #{} is @{}'s: a guest stops, archives and deletes only their own tasks on \
-                 this playground.",
+                "Task #{} is @{}'s: a guest {} only their own tasks on this playground.",
                 task.number,
-                self.login_of(&task.owner).await
+                self.login_of(&task.owner).await,
+                if action == TaskAction::Answer {
+                    "answers the requests of"
+                } else {
+                    "stops, archives and deletes"
+                }
             ))),
             // `require_for` refused a level below the action's already.
             Err(TaskRefusal::Access) => Err(AppError::Forbidden(
