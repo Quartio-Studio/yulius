@@ -27,7 +27,16 @@ test('an admin turns the production ruleset requirement off and on in the Git pa
   expect(await axeViolations(browser)).toEqual([]);
 
   // From the keyboard: the keyboard stays on the switch after the change (review round 1).
+  // Expanding the overview redraws it synchronously. Force that redraw between Space's
+  // keydown and keyup, as a late overview read or a task update can do.
+  const more = screen.getByRole('button', /^\+\d+ more$/).first();
+  await expect(more).toBeVisible();
   await required.focus();
+  await browser.evaluate(() => {
+    document.activeElement!.addEventListener('keydown', () => {
+      document.querySelector<HTMLButtonElement>('.dl-col button.link-btn')!.click();
+    }, { once: true });
+  });
   await browser.keyboard.press('Space');
   await expect(screen.getByText(/Production protection is off/)).toBeVisible();
   await expect(card.getByRole('switch', 'Require a GitHub ruleset on main')).toBeFocused();
