@@ -155,6 +155,15 @@ pub async fn accept_control(
     Ok(Json(app.accept_task_control(&ctx, &tid).await?))
 }
 
+/// `POST /api/tasks/{tid}/control/take` (SPEC-510 TKC-001): take control without asking.
+pub async fn take_control(
+    State(app): State<AppState>,
+    Auth(ctx): Auth,
+    Path(tid): Path<String>,
+) -> ApiResult<Json<TaskSummary>> {
+    Ok(Json(app.take_task_control(&ctx, &tid).await?))
+}
+
 /// `POST /api/tasks/{tid}/control/take-back` (SPEC-490 OWN-009).
 pub async fn take_back_control(
     State(app): State<AppState>,

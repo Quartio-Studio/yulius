@@ -515,6 +515,7 @@ impl App {
                 is_superadmin: user.is_superadmin,
                 is_instance_admin: user.is_instance_admin || user.is_superadmin,
                 github_linked: user.github_id.is_some(),
+                control_ask_first: self.deps.store.control_ask_first(&user.id).await?,
                 guest,
             },
             csrf_token: csrf.unwrap_or_default(),

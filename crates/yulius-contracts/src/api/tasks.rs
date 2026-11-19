@@ -65,6 +65,10 @@ pub struct TaskSummary {
     /// OWN-009), or null.
     #[serde(default)]
     pub control_from: Option<UserRef>,
+    /// Whether the owner chose to be asked before anyone takes control (SPEC-510 TKC-005):
+    /// then others request control; else they take it.
+    #[serde(default)]
+    pub owner_asks_first: bool,
     /// Creation time.
     pub created_at: String,
     /// Last change of anything (title, owner, archive, status …).

@@ -68,6 +68,7 @@ pub fn public() -> Router<AppState> {
         )
         .route("/api/auth/logout", post(setup_auth::logout))
         .route("/api/me", get(setup_auth::me))
+        .route("/api/me/control", put(setup_auth::me_control))
         // The remote MCP for a person's own agent (SPEC-247); no server-sent stream. It reads
         // its body itself, after the token: a `project_change` carries up to 50 files of 256 KiB.
         .route(
@@ -157,6 +158,7 @@ pub fn public() -> Router<AppState> {
             "/api/tasks/{tid}/control/take-back",
             post(tasks::take_back_control),
         )
+        .route("/api/tasks/{tid}/control/take", post(tasks::take_control))
         .route("/api/tasks/{tid}/terminal", get(terminal::terminal))
         .route("/api/events", get(events::events))
         .route(
