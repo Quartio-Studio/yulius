@@ -53,6 +53,8 @@ pub enum Point {
     SwitchPrepared,
     /// A queued limit move is about to check its reporting attempt. The path is the task id.
     LimitMoveReady,
+    /// The pool stored the limit pause and is finishing its notices. The path is the task id.
+    LimitPauseStored,
     /// The queued limit rotation returned.
     LimitMoveFinished,
     /// `close_task_now` (SPEC-250): the task was read `Running`; the close's end intent is not set

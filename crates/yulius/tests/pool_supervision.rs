@@ -1262,11 +1262,11 @@ fn reattach_at_limit(order: LimitRestartRace) -> TestResult {
             LimitRestartRace::LateLimit | LimitRestartRace::BlindRetry
         )
         .then(|| {
-            let (ready, go) = support::hold_point(Point::LimitMoveReady, id.as_str());
+            let (ready, go) = hold_pool_move(Point::LimitMoveReady, &id);
             (ready, go, limit_move_finished(&id))
         });
         let capacity = matches!(order, LimitRestartRace::CapacityRound)
-            .then(|| support::hold_point(Point::SwitchPrepared, id.as_str()));
+            .then(|| hold_pool_move(Point::SwitchPrepared, &id));
         let mut watch = app.runtime(&id).hub.watch();
         app.reconcile().await?;
         let after_round = if let Some((ready, go)) = capacity {
@@ -1370,6 +1370,22 @@ fn reattach_at_limit(order: LimitRestartRace) -> TestResult {
     })?;
     second.shutdown_timeout(Duration::from_secs(5));
     Ok(())
+}
+
+/// The delayed task gives its worker back to Tokio so the competing move can finish.
+fn hold_pool_move(
+    point: yulius_app::race::Point,
+    id: &TaskId,
+) -> (std::sync::mpsc::Receiver<()>, std::sync::mpsc::Sender<()>) {
+    let (ready, reached) = std::sync::mpsc::channel();
+    let (go, release) = std::sync::mpsc::channel();
+    yulius_app::race::on(point, Path::new(id.as_str()), move || {
+        tokio::task::block_in_place(|| {
+            let _ = ready.send(());
+            let _ = release.recv_timeout(Duration::from_secs(60));
+        });
+    });
+    (reached, go)
 }
 
 fn limit_move_finished(id: &TaskId) -> std::sync::mpsc::Receiver<()> {
@@ -2298,7 +2314,9 @@ fn a_limit_on_the_only_subscription_resumes_past_the_limit_when_it_recovers() ->
             async move { screen(&app, &id).contains("FAKE-AGENT READY") }
         })
         .await?;
+        let (paused, go) = hold_pool_move(yulius_app::race::Point::LimitPauseStored, &id);
         app.send_input(&id, b"hello\r").await?;
+        support::point_reached(paused).await?;
         wait_for("the pause at the limit", Duration::from_secs(30), || {
             has_status(&app, &id, TaskStatus::WaitingCapacity)
         })
@@ -2312,6 +2330,13 @@ fn a_limit_on_the_only_subscription_resumes_past_the_limit_when_it_recovers() ->
         probe.set("a-first", usage(0.0, 5 * HOUR, 30.0, 100));
         refresh(&app, &user, "a-first").await?;
         let _ = app.resume_round().await;
+        let after_round = task(&app, &id).await?.status;
+        go.send(())?;
+        assert_eq!(
+            after_round,
+            TaskStatus::Running,
+            "a live limit pause resumes in this round"
+        );
         wait_for("the resumed run", Duration::from_secs(60), || async {
             let attempts = app.deps.store.attempts(&id).await.unwrap_or_default();
             attempts.len() == 2 && attempts[1].state == yulius_domain::task::AttemptState::Live

@@ -6865,6 +6865,10 @@ impl App {
                     // that says it does not go on by itself is answered, as at a move past
                     // the limit (SPEC-464 UCL-007).
                     if paused.is_ok() {
+                        crate::race::reached(
+                            crate::race::Point::LimitPauseStored,
+                            Path::new(task_id.as_str()),
+                        );
                         self.end_limit_requests(task_id, crate::goal_retry::TakenOn::Paused)
                             .await;
                     }

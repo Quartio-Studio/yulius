@@ -29,7 +29,8 @@ Issue #1286 reports a timeout waiting for attempt two on plain dev under load. S
 - [x] Verify the restart under 48 busy loops
 - [x] Protect the persisted pause during startup hand-over
 - [x] Preserve replayed subscription and model refusals through hand-over
-- [ ] Preserve failed hand-over and bounded retries when capacity runs out
+- [x] Preserve failed hand-over and bounded retries when capacity runs out
+- [ ] Verify probe progress and immediate resumption of ordinary pauses
 - [ ] Ready the independently reviewed fix for the green CI merge
 
 ## Acceptance criteria
@@ -60,3 +61,7 @@ Reconciliation takes the task’s move lock before attaching the host. It releas
 - With both replay fixes, 91/91 pool supervision, subscription pool, workflow limit and usage credit integration tests passed. The merged dev base also passed the three startup regressions.
 - First review mutation campaign: 11 listed, 1 caught, 0 missed, 0 timed out, 10 unviable, 0 not reached (bound 30 min, took 1595 s).
 - Before the final compatibility fixes, an exhausted pool left the hand-over in WaitingCapacity instead of stopping it (3.8 s). Once each move finished, refreshing the first account after the second account spent its retry launched a fourth attempt instead of leaving the third waiting (6.2 s).
+- The delayed-move fixture timed out before any hand-over decision in a mutation baseline and an independent run. A one-worker Tokio executor reproduced the blocked synchronous probe after 63.5 seconds. The retained probe yields its worker while waiting.
+- The no-candidate hand-over and spent blind retry passed on 0763285e8. Host termination is verified independently of the earlier stopped task status. A separate existing test sampled Running immediately after its attempt became Live; the same two database writes and assertion are on dev, and were reported on #1286.
+- The capacity review mutation campaign listed six mutants, with five unviable and one missed. Its filter included no ordinary successful capacity pass. The final campaign includes that pass to check the missed negation of the open-pause check.
+- With the probe yielding its worker, the delayed move, preflight capacity pass and spent blind retry all passed on one worker. Holding the end of an ordinary published pause reproduced the overly broad lock: one capacity pass left the task WaitingCapacity instead of Running (1.8 s).
