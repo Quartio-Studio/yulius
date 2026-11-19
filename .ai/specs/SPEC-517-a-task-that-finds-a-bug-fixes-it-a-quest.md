@@ -159,6 +159,11 @@ outside the change), the briefing (`crates/yulius-domain/src/briefing.rs`, 9,500
   condition); CI's `security` job skipped (exit 78). Not a pass.
 - Review round 1 (Fable 5.2): request changes, one major (the texts forbade the issue the Fix
   workflow opens for its bug) and minors; all fixed test-first in a8e654225.
+- Review round 2 (Fable 5.2): request changes, a `clippy::collapsible_if` blocker in
+  `mode_choice` and minors (Research's headline, SPEC-002 ADR-16 item 5, comments); fixed.
+  `cargo clippy --locked -p yulius-domain -p yulius-app -p yulius --all-targets --all-features --
+  -D warnings`: passed. The briefing keeps no "(reference it)" for want of bytes; the Fix
+  workflow still says to reference the tracking issue.
 - The whole gate: Yulius CI on the pull request (#1430) head.
 - Not testable here: how the real Jev answers the three-way mode question, and whether agents
   follow the reworded instructions; both are text given to a model.

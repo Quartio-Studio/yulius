@@ -24,7 +24,7 @@ The deliverable is an answer, not a change.
   lines, commands and links.
 - Answer in the session, short and decision-oriented: the conclusion first, then the evidence,
   the options with their trade-offs, and your recommendation.
-- A defect is fixed, not filed: when the request reports something wrong in the product, even as
+- A defect is fixed, never filed instead: when the request reports something wrong in the product, even as
   a question or a screenshot, or you confirm a defect in what it asks about, fix it in this task:
   add the Fix workflow's steps (`workflows_list`) to your plan; `om-root-cause`, then `om-fix`.
   When the fix is clearly outside the request, or you cannot tell whether the person wants an

@@ -1,5 +1,6 @@
 //! "Auto" mode and workflow for new tasks (SPEC-001 TSK-015, AC-TSK-14; SPEC-002 ADR-16 item 5):
-//! through the public API, Jev chooses goal or prompt and one of the sandbox's workflows (the
+//! through the public API, Jev chooses goal, fix (a goal: a defect reported, also as a question,
+//! SPEC-517) or prompt and one of the sandbox's workflows (the
 //! catalog's defaults — Feature, Fix, Research / Question — then instance and sandbox workflows) or none; without Jev, or when it fails or is unsure, the task is Goal with the
 //! "Feature" workflow (none for a prompt-mode task); a prompt-mode task never gets a spec-first
 //! workflow from Auto; picked values are never sent to Jev. Jev is a fake: no real call is made.

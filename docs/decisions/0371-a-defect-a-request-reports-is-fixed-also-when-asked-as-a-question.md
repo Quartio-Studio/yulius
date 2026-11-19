@@ -67,6 +67,10 @@ stands.
   default Goal, an agent's `task_create` with only the workflow on Auto, so no mode question is
   asked), gets the rule through the workflow question's text and the workflow's instructions,
   not through the override.
+- A task that stays on Research / Question and grows the Fix steps keeps that workflow's gates
+  (spec and tests optional, DSC-013): its spec and regression test rest on the instructions
+  (`om-fix`), not on a gate. Auto's route for a reported fault is the Fix workflow, which gates
+  them.
 - Docs and Chore need no spec either, so a confident Docs pick for a reported fault ("the README's
   install command is wrong") also becomes Fix, with its spec and regression test: accepted, since
   the request reports something wrong and the Fix path is the one that proves it fixed.

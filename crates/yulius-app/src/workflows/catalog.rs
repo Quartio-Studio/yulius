@@ -152,7 +152,7 @@ mod tests {
             .collect::<Vec<_>>()
             .join(" ");
         for said in [
-            "A defect is fixed, not filed",
+            "A defect is fixed, never filed instead",
             "even as a question or a screenshot",
             "fix it in this task",
             "add the Fix workflow's steps (`workflows_list`) to your plan",

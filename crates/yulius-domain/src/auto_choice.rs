@@ -139,14 +139,14 @@ impl ChosenBy {
 /// confident of Goal when its choice is either and the two together reach the threshold.
 #[must_use]
 pub fn mode_choice(answer: Option<&ChoiceAnswer>) -> (ModeChoice, ChosenBy) {
-    if let Some(a) = answer {
-        if let Some((top, _)) = a.top().filter(|(top, _)| *top == a.choice) {
-            if top == "prompt" && a.probability("prompt") >= MODE_THRESHOLD {
-                return (ModeChoice::Prompt, ChosenBy::Jev);
-            }
-            if matches!(top, "goal" | FIX_KEY) && goal_probability(a) >= MODE_THRESHOLD {
-                return (ModeChoice::Goal, ChosenBy::Jev);
-            }
+    if let Some(a) = answer
+        && let Some((top, _)) = a.top().filter(|(top, _)| *top == a.choice)
+    {
+        if top == "prompt" && a.probability("prompt") >= MODE_THRESHOLD {
+            return (ModeChoice::Prompt, ChosenBy::Jev);
+        }
+        if matches!(top, "goal" | FIX_KEY) && goal_probability(a) >= MODE_THRESHOLD {
+            return (ModeChoice::Goal, ChosenBy::Jev);
         }
     }
     (ModeChoice::Goal, ChosenBy::Default)
