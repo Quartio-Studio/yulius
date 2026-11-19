@@ -116,6 +116,14 @@ struct ActiveRun {
     writer: Box<dyn RunWriter>,
 }
 
+/// The durable draft mark and the prompt submission whose hook may be retried.
+#[derive(Default)]
+pub(crate) struct DraftMark {
+    pub(crate) written: bool,
+    /// The submit's wall time and the last viewer key it observed on its first request.
+    pub(crate) submit: (i64, u64),
+}
+
 /// Runtime state of one task with a hub that outlives individual runs.
 pub struct TaskRuntime {
     /// Terminal fan-out.
@@ -195,10 +203,10 @@ pub struct TaskRuntime {
     /// The run's folder holds the mark of a person's possible draft (`person-typed`, SPEC-480
     /// DRF-009). The guard orders a key's timestamp and file write with the submit hook's
     /// check and file removal (SPEC-537).
-    pub(crate) draft_marked: tokio::sync::Mutex<bool>,
-    /// This server saw a person type into the run. Until it did, a draft is known from its
-    /// mark alone, and a prompt that goes on is not known to follow it (DRF-009).
-    pub(crate) typed_seen: AtomicBool,
+    pub(crate) draft_mark: tokio::sync::Mutex<DraftMark>,
+    /// Viewer input events seen in this run. Before the first, only the durable mark
+    /// identifies a possible draft, and a prompt may predate it (DRF-009).
+    pub(crate) key_count: AtomicU64,
     /// The task's owner had a message typed behind their possible draft and Yulius is about to
     /// submit both (SPEC-487 TCT-006): the next prompt that goes on from the box carried that
     /// draft to the agent, also one this server knows from its mark alone. The mark is taken
@@ -208,11 +216,9 @@ pub struct TaskRuntime {
     /// Code did not take Yulius's Enter as a submit: the draft would then read as ended
     /// while its text is still in the box.
     pub(crate) sent_past_draft: AtomicBool,
-    /// When the prompt whose hook is being answered emptied the prompt box (ms): worked out at
-    /// its first request and taken into [`Self::box_emptied_ms`] when the prompt goes on, so a
-    /// prompt that is held and then blocked, which Claude Code puts back into the box, empties
-    /// nothing (SPEC-468 CCF-010).
-    pub(crate) submit_emptied_ms: AtomicI64,
+    /// The last key observed by the submit that emptied the box. Keys after that submit
+    /// win ties in the millisecond clock, including while a held prompt is answered.
+    pub(crate) emptied_key_count: AtomicU64,
     /// The run's last prompt hook was answered with a hold: the next one is that prompt sent
     /// again by the hook client, not another submit. A hold the CLI gave up (its client holds
     /// for days) leaves this set until the run's next prompt is answered, which then counts as
@@ -502,16 +508,30 @@ impl TaskRuntime {
             .max(self.message_typed_ms.load(Ordering::SeqCst))
     }
 
+    /// The empty time for a strict timestamp comparison. When the two wall times
+    /// coincide, use the order of the submit and key observed by this server.
+    pub(crate) fn empty_time_for_typing(&self) -> i64 {
+        let emptied = self.box_emptied_ms.load(Ordering::SeqCst);
+        if self.typed_at_ms.load(Ordering::SeqCst) == emptied
+            && self.key_count.load(Ordering::SeqCst) > self.emptied_key_count.load(Ordering::SeqCst)
+        {
+            emptied.saturating_sub(1)
+        } else {
+            emptied
+        }
+    }
+
     /// A run starts at `now_ms`, in a new process: its prompt box is empty, and no prompt of
     /// it is held (one held in the run before went with that run's hook client; SPEC-468
     /// CCF-010). Nothing waits in its queue and no prompt of it went on: what the run before
     /// queued went with its process (SPEC-471 CCQ-001).
     pub(crate) async fn run_starts(&self, now_ms: i64) {
-        let mut marked = self.draft_marked.lock().await;
+        let mut mark = self.draft_mark.lock().await;
         self.box_emptied_ms.store(now_ms, Ordering::SeqCst);
         // Its folder is new: no draft is marked there (SPEC-480 DRF-009).
-        *marked = false;
-        self.typed_seen.store(false, Ordering::SeqCst);
+        *mark = DraftMark::default();
+        self.key_count.store(0, Ordering::SeqCst);
+        self.emptied_key_count.store(0, Ordering::SeqCst);
         self.sent_past_draft.store(false, Ordering::SeqCst);
         self.prompt_held.store(false, Ordering::SeqCst);
         self.with_queue(|queue| *queue = yulius_domain::agent_cli::Queue::default());
@@ -596,10 +616,10 @@ impl TaskRuntime {
             message_typed_ms: AtomicI64::new(0),
             box_emptied_ms: AtomicI64::new(0),
             draft_told_ms: AtomicI64::new(0),
-            draft_marked: tokio::sync::Mutex::new(false),
-            typed_seen: AtomicBool::new(false),
+            draft_mark: tokio::sync::Mutex::default(),
+            key_count: AtomicU64::new(0),
             sent_past_draft: AtomicBool::new(false),
-            submit_emptied_ms: AtomicI64::new(0),
+            emptied_key_count: AtomicU64::new(0),
             prompt_held: AtomicBool::new(false),
             typed_by: Mutex::new(None),
             personal_mcp_of: Mutex::new(None),
@@ -5685,11 +5705,11 @@ impl App {
             // newer and stays.
             // Never later than now: a time ahead of the clock would never grow old.
             {
-                let mut marked = runtime.draft_marked.lock().await;
+                let mut mark = runtime.draft_mark.lock().await;
                 let drafted = person_typed_marked(Path::new(&attempt.run_dir)).min(self.now().0);
                 if drafted > 0 {
                     runtime.typed_at_ms.fetch_max(drafted, Ordering::SeqCst);
-                    *marked = true;
+                    mark.written = true;
                 }
             }
             let reattached = match host_token {

@@ -58,8 +58,9 @@ screen tests, repository quick checks, security gate, independent review and Yul
 Use positive screen evidence as an additional veto. An unrecognized renderer keeps
 the existing keystroke policy because the task supports multiple harnesses. Screen
 text stays in the hub and never appears in the refusal or audit. A task owner who
-explicitly sends with `with_draft` retains the documented consent path.
-
+explicitly sends with `with_draft` retains the documented consent path. Each submit
+records the last viewer input it observed, including across held-hook retries. This
+orders a key and a submit even when they share a wall-clock millisecond.
 
 ## Evidence
 
@@ -77,3 +78,8 @@ explicitly sends with `with_draft` retains the documented consent path.
   local-command restore. The q6 empty named prompt permitted delivery.
 - Repository quick checks passed. Green CI on the reviewed head is required for
   the dev merge.
+
+- The first review found a synchronous test awaiting run setup and a same-millisecond
+  ordering case. The run setup test now awaits in a Tokio test. The fixed-clock PTY
+  regression failed on the previous implementation with “the older submit erased the
+  same-ms key's mark”.

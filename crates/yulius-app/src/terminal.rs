@@ -217,14 +217,14 @@ impl App {
                 tracing::debug!(task = %attach.task_id, error = %err, "typist's size not applied");
             }
             // A prompt submitted soon after is this person's (TSK-013).
-            let mut marked = attach.runtime.draft_marked.lock().await;
+            let mut mark = attach.runtime.draft_mark.lock().await;
             self.record_typing(&attach.task_id, &ctx.user.id);
             // What they type may stay in the prompt box, unsent: the run's folder keeps that
             // for a restarted server (SPEC-480 DRF-009). Before the key is passed on, so the
             // prompt it may submit removes the mark after it was written.
-            if !*marked {
+            if !mark.written {
                 let typed = attach.runtime.typed_at_ms.load(Ordering::SeqCst);
-                *marked = self.mark_draft(&attach.task_id, typed).await;
+                mark.written = self.mark_draft(&attach.task_id, typed).await;
             }
         }
         self.send_input(&attach.task_id, data).await

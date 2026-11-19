@@ -706,7 +706,7 @@ impl App {
         // since the box was last empty counts until the next prompt
         // is submitted from it; the one who can act is told instead (DRF-004, DRF-006).
         let typed = runtime.typed_at_ms.load(Ordering::SeqCst);
-        let emptied = runtime.box_emptied_ms.load(Ordering::SeqCst);
+        let emptied = runtime.empty_time_for_typing();
         match yulius_domain::intake::box_held(self.now().0, typed, emptied) {
             // Its owner sends past their own text, once they are no longer typing it: it
             // goes out with the message.
