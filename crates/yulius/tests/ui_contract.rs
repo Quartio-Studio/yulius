@@ -537,7 +537,7 @@ fn the_composer_offers_antigravity_on_its_default_model() -> TestResult {
     );
     assert!(
         google.contains(&format!(
-            "    models: [\n      {{ id: '{DEFAULT_ANTIGRAVITY_MODEL}', name: 'Gemini 4 Carbon'"
+            "    models: [\n      {{ id: '{DEFAULT_ANTIGRAVITY_MODEL}', name: 'Gemini 4 Neon'"
         )),
         "models.js does not list {DEFAULT_ANTIGRAVITY_MODEL} first for Antigravity"
     );

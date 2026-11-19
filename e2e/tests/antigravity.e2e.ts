@@ -130,14 +130,14 @@ test('Try again after a signed-in Antigravity sign-in was lost starts over and o
   await expect(browser.locator('.toast-ok .toast-msg:has-text("Antigravity retry is connected")')).toBeVisible();
 });
 
-test('choosing Gemini 4 Carbon in the composer starts an Antigravity task at high effort', async ({ app, browser, screen }) => {
+test('choosing Gemini 4 Neon in the composer starts an Antigravity task at high effort', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio'));
   await browser.evaluate(() => (window as unknown as Mocked).__yuliusMock.accounts.push({ id: 'acc_google', provider: 'google', label: 'Antigravity #1', status: 'ok' } as never));
   await firstShown(screen.getByRole('button', /^Model:/));
   await screen.getByRole('button', /^Model:/).click();
   await expect(screen.getByText('Google', { exact: true })).toBeVisible();
-  await screen.getByRole('menuitemradio', /^Gemini 4 Carbon/).click();
-  await expect(screen.getByRole('button', 'Model: Gemini 4 Carbon')).toBeVisible();
+  await screen.getByRole('menuitemradio', /^Gemini 4 Neon/).click();
+  await expect(screen.getByRole('button', 'Model: Gemini 4 Neon')).toBeVisible();
   const prompt = screen.getByRole('textbox', 'Task prompt');
   await prompt.fill('Add a health check');
   await prompt.press('ControlOrMeta+Enter');
@@ -147,7 +147,7 @@ test('choosing Gemini 4 Carbon in the composer starts an Antigravity task at hig
     const last = tasks[tasks.length - 1];
     return { harness: last.harness, model: last.model, effort: last.effort };
   });
-  expect(task).toEqual({ harness: 'antigravity', model: 'gemini-4-carbon', effort: 'high' });
+  expect(task).toEqual({ harness: 'antigravity', model: 'gemini-4-neon', effort: 'high' });
 });
 
 test('an automation can run its tasks on Antigravity', async ({ app, browser, screen }) => {

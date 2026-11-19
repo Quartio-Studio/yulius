@@ -471,8 +471,7 @@ impl DoneDefinition {
              anyone in between.\n\n\
              - **If the request changes this repository:** work on this task's branch (it starts \
              from `{integration}`); write the spec first where the repository's rules ask for one; \
-             implement with tests; get the independent review of the exact head (agent \
-             `yulius-reviewer`; Yulius picks its model); merge into \
+             implement with tests; get the independent review of the exact head (use the reviewer from the task briefing); merge into \
              `{integration}` with `delivery_merge` on green Yulius CI (while the checks still \
              run, Yulius merges by itself once they pass). Call it as soon as the review approved \
              the head and never hold a green pull request back for another task's run: Yulius's \

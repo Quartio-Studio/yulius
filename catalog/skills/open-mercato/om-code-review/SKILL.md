@@ -12,9 +12,7 @@ produce actionable findings with a clear verdict.
 
 **Independent by construction.** The reviewer is never the author's context: run this skill in a
 fresh session or a subagent that receives only the diff range (or pull request number), the spec
-path and this skill. In a Yulius task: start the independent code review with the Agent tool and
-the `yulius-reviewer` agent: Yulius picks the round's model (Fable 5.2 for a pull request's first
-two rounds, then Opus 5.5). The reviewer runs at high effort, never max. The reviewer is
+path and this skill. In a Yulius task: follow the task briefing for the reviewer and model of the active harness. The reviewer runs at high effort, never max. The reviewer is
 read-only: no fixes, commits or pushes; it judges the code and the tests separately. The author
 fixes findings test-first (`om-fix`, `test-driven-development`) and asks for a new round, up to 3
 rounds (see Own code or pre-existing).
@@ -83,7 +81,7 @@ changes**; only minors, nits and pre-existing majors filed as issues with the ev
 **approve** (list them; the author still fixes those in its own code).
 After an approval, fix the remaining nits within 20 product lines and merge without another round:
 `delivery_merge` with the approved head counts them (tests and documents do not count). More than
-that, or a file leaving the change, needs a new round. A usage limit can cut a reviewer off before its report: resume that same reviewer with SendMessage to its agent id, never start a new one for the same round. A reviewer runs at high effort, never max.
+that, or a file leaving the change, needs a new round. A usage limit can cut a reviewer off before its report: resume that same reviewer by its agent id, never start a new one for the same round. A reviewer runs at high effort, never max.
 
 ## Own code or pre-existing
 

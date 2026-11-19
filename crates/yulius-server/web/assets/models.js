@@ -42,7 +42,8 @@ export const PROVIDERS = [
     harness: 'antigravity',
     // Without an effort chosen, the server runs an Antigravity task at high effort.
     models: [
-      { id: 'gemini-4-carbon', name: 'Gemini 4 Carbon', description: 'Antigravity CLI on an Antigravity account, high effort by default' },
+      { id: 'gemini-4-neon', name: 'Gemini 4 Neon', description: 'Antigravity, high effort by default' },
+      { id: 'gemini-4-carbon', name: 'Gemini 4 Carbon' },
     ],
   },
 ];

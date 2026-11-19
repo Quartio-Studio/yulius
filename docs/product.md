@@ -18,10 +18,9 @@ decision `F 2026-10-08`; provider switching and session translation stay out
 [ADR-0355](decisions/0355-codex-returns-as-a-second-harness-with-a-pinned-cli.md)).
 
 It runs native Antigravity CLI sessions on Antigravity (Google) subscriptions too, on Gemini 4
-Carbon at high effort unless a task names another Gemini model (`F 2026-11-17 Antigravity`, task
-#487). An Antigravity subscription signs in with the CLI's own Google sign-in or a Gemini API key,
+Neon at high effort unless a task names another model or effort (SPEC-524). An Antigravity subscription signs in with the CLI's own Google sign-in or a Gemini API key,
 an Antigravity task moves only between Antigravity subscriptions, and Yulius provides the pinned
-Antigravity CLI (1.5.10)
+Antigravity CLI (1.5.12)
 ([SPEC-505](../.ai/specs/SPEC-505-implement-antigravity-cli-next-to-claude.md),
 [ADR-0361](decisions/0361-antigravity-is-a-third-harness-picked-at-random-by-default.md)). A
 task's agent is set, never drawn: the one chosen, else the one its model implies, else Claude Code
@@ -332,10 +331,10 @@ watching, steering and unblocking.
   Yulius's default model is never used, and Settings, Instance shows the version, the channel
   and "Check now" (SPEC-421, SPEC-461). A task, Cockpit or Superagent that names no model or effort runs
   Opus 5.5 at high effort (SPEC-023, SPEC-462, SPEC-493); the composer and Settings choose
-  another, Fable too. A task's independent code review runs as Yulius's reviewer agent, whose
+  another, Fable too. A Claude Code task's independent code review runs as Yulius's reviewer agent, whose
   model Yulius picks per round: Fable 5.2 for a pull request's first two rounds, Opus 5.5 from
   the third, and Opus 5.5 when the task's subscription cannot run Fable then; each round is
-  recorded with its reviewer, its model and its verdict.
+  recorded with its reviewer, its model and its verdict. Codex tasks request GPT-6.2 Astra for every review round, and Antigravity tasks request Gemini 4 Neon (High).
   Task intake splits mixed requests, holds scope changes and chains
   dependent tasks, also by a logical rule such as "#12 done and #13 done", which the composer
   builds from picked conditions (a task, its state, all or any). A task that waits for another

@@ -711,6 +711,17 @@ fn changes_rule(input: &BriefingInput<'_>) -> String {
     format!("Add a short entry at the {end} of {changes}.")
 }
 
+/// Only Claude Code registers a named reviewer and selects its model at the Agent hook.
+fn review_instructions(harness: Harness) -> &'static str {
+    match harness {
+        Harness::ClaudeCode => "Agent `yulius-reviewer`, Yulius picks its model",
+        Harness::Codex => {
+            "`spawn_agent`, fork_turns=none, model=gpt-6.2-astra, reasoning_effort=high"
+        }
+        Harness::Antigravity => "`swarm` add a fresh reviewer, model=gemini-4-neon-high",
+    }
+}
+
 fn git_rules(input: &BriefingInput<'_>) -> String {
     if input.playground {
         return playground_git_rules(input);
@@ -764,10 +775,9 @@ fn git_rules(input: &BriefingInput<'_>) -> String {
          `origin/{integration}` before the review or for a conflict; rerun the tests. Numbered \
          files (ADRs, migrations) take their number from `record_number`. One concern per pull \
          request (about 400 changed lines outside tests); split bigger work into chained tasks.\n\
-         - Before delivery, get an independent review in a fresh session (agent `yulius-reviewer`; \
-         Yulius picks its model; diff range, spec, `om-code-review`) marking findings own code or \
-         pre-existing; answer all. Fix own code test-first, never as an issue; after 3 rounds \
-         split or `needs_you`.\n\
+         - Get an independent review in a fresh session ({review}), read-only, given the diff range, \
+         spec and `om-code-review`, marking findings own code or pre-existing; answer all. \
+         Fix own code test-first, never as an issue; after 3 rounds split or `needs_you`.\n\
          - Yulius pushes your branch and opens the pull request (spec valid if needed, all \
          committed) at your turn's end once all steps are done, when the review starts, or when \
          you call `delivery_merge` for the finished part (steps ahead stay open); later commits \
@@ -785,6 +795,7 @@ fn git_rules(input: &BriefingInput<'_>) -> String {
          nothing stale \
          (`repo_hygiene`, `repo_cleanup`).\n\
          - Delivery path ({preset} profile): {path}.\n\n",
+        review = review_instructions(input.harness),
         branch = code(&input.task.branch, 200),
         preset = profile.preset.as_str(),
         path = path.join(" → "),
@@ -812,10 +823,9 @@ fn playground_git_rules(input: &BriefingInput<'_>) -> String {
          is outside this sandbox: never fetch or push; Yulius keeps `origin/{integration}` \
          current in your clone. Stay current by merging `origin/{integration}` and rerun the \
          tests after a conflict.\n\
-         - Before delivery, get an independent review in a fresh session (a read-only subagent \
-         given only the diff range, the spec and skill `om-code-review`), which marks each finding \
-         own code or pre-existing. Fix every own-code finding test-first before the merge, \
-         never deferring it (after 3 rounds: keep fixing, split the change or `needs_you`).\n\
+         - Get an independent review in a fresh session ({review}), read-only, given the diff range, \
+         spec and `om-code-review`. The reviewer marks each finding own code or pre-existing. \
+         Fix every own-code finding test-first before the merge, never deferring it (after 3 rounds: keep fixing, split the change or `needs_you`).\n\
          - Before delivery, run every project gate yourself. When the work is ready (spec valid \
          if needed, steps done, all committed) and the review approved the exact head, call \
          `delivery_merge`: Yulius CI tests your head merged into {integration} (when the \
@@ -826,6 +836,7 @@ fn playground_git_rules(input: &BriefingInput<'_>) -> String {
          it again.\n\
          - List in your summary what is outside your change (a pre-existing bug, a flaky test it \
          did not cause, a nit left after 3 rounds).\n\n",
+        review = review_instructions(input.harness),
         branch = code(&input.task.branch, 200),
     )
 }
@@ -1725,6 +1736,33 @@ mod tests {
             effort,
             ..StepState::pending(title)
         }
+    }
+
+    #[test]
+    fn independent_review_uses_the_active_harness_in_both_delivery_profiles() -> TestResult {
+        let profile = DeliveryProfile::standard();
+        let layout = DocsLayout::default();
+        let mut input = base(&profile, &layout)?;
+        let policies = [
+            (Harness::ClaudeCode, "yulius-reviewer"),
+            (Harness::Codex, "model=gpt-6.2-astra, reasoning_effort=high"),
+            (Harness::Antigravity, "model=gemini-4-neon-high"),
+        ];
+        for playground in [false, true] {
+            input.playground = playground;
+            for (harness, expected) in policies {
+                input.harness = harness;
+                let briefing = build_briefing(&input, DEFAULT_BUDGET_BYTES);
+                for (_, policy) in policies {
+                    assert_eq!(
+                        briefing.contains(policy),
+                        policy == expected,
+                        "{harness:?} {policy}"
+                    );
+                }
+            }
+        }
+        Ok(())
     }
 
     fn assert_mandatory(text: &str) {

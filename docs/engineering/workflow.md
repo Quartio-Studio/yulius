@@ -30,9 +30,7 @@ gates.
    existing default behavior. Classify findings with concrete failure scenarios.
    Green tests do not establish untested product acceptance. Get an independent review in a
    fresh session too: a reviewer with no shared context (a subagent given only the diff
-   range and the spec), read-only. Start the independent code review with the Agent tool and
-   the `yulius-reviewer` agent: Yulius picks the round's model (Fable 5.2 for a pull
-   request's first two rounds, then Opus 5.5). Then fix each finding in the change's own
+   range and the spec), read-only. Follow the task briefing for the reviewer and model of the active harness. Then fix each finding in the change's own
    code test-first, never deferring it ([Review output](#review-output)).
    A reviewer does not ask for changes because of CI alone: `delivery_merge` merges only a
    head whose own Yulius CI run passed. When the review finds nothing to fix and the
@@ -76,7 +74,7 @@ discovered, plus validation scope and gaps.
 
 After an approval, fix the remaining nits within 20 product lines and merge without
 another round: `delivery_merge` with the approved head counts them (tests and documents do
-not count). More than that, or a file leaving the change, needs a new round. A usage limit can cut a reviewer off before its report: resume that same reviewer with SendMessage to its agent id, never start a new one for the same round. A reviewer runs at high effort, never max.
+not count). More than that, or a file leaving the change, needs a new round. A usage limit can cut a reviewer off before its report: resume that same reviewer by its agent id, never start a new one for the same round. A reviewer runs at high effort, never max.
 
 Findings in the change's own code are fixed, never deferred
 ([ADR-0141](../decisions/0141-review-findings-in-the-change-s-own-code-are-fixed-before-merge.md)):

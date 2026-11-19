@@ -2677,7 +2677,7 @@ cargo-deny, machete, rustdoc) is the evidence until it runs.
   harness: an Antigravity adapter in `yulius-harness` (launch plan, transcript observation, hook
   translation, sign-in envelope), a home per run linked to the sandbox's shared conversations,
   the token write-back as a compare-and-swap of the credential the launch gave, Antigravity
-  subscriptions in the API and the UI, and the pinned Antigravity CLI 1.5.10 installed into
+  subscriptions in the API and the UI, and the pinned Antigravity CLI 1.5.12 installed into
   `<data>/antigravity-cli`; principle 1 and the evidence table say so; ADR-06 (no translation)
   unchanged.
 

@@ -64,9 +64,8 @@ pub fn claude_model_name(id: &str) -> String {
 /// high from task #21 until then).
 pub const DEFAULT_CLAUDE_EFFORT: &str = "high";
 
-/// The model of an Antigravity task that names none: Gemini 4 Carbon (the person's request of
-/// 2026-11-17, SPEC-505: "Use Gemini 4 Carbon high by default").
-pub const DEFAULT_ANTIGRAVITY_MODEL: &str = "gemini-4-carbon";
+/// Default Gemini model for new Antigravity runs (SPEC-524).
+pub const DEFAULT_ANTIGRAVITY_MODEL: &str = "gemini-4-neon";
 
 /// The effort of an Antigravity task that names none: high (SPEC-505).
 pub const DEFAULT_ANTIGRAVITY_EFFORT: &str = "high";

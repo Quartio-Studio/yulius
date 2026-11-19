@@ -6,6 +6,8 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-19
 
+- Task briefings now request a native reviewer for each harness. Codex uses GPT-6.2 Astra at high effort and Antigravity uses Gemini 4 Neon (High) in every round. Claude Code keeps its Fable and Opus round policy. Gemini tasks default to Neon on Antigravity CLI 1.5.12 (SPEC-524).
+
 - Answer a teammate's Needs you (SPEC-516, task #498, ADR-0370): on someone else's task whose
   agent asks a person for something, Reply answers it without taking control. The agent gets the
   answer labelled with your name (and that you are not its owner), the request ends, and the task

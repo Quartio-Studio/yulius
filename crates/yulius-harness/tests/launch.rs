@@ -1646,7 +1646,7 @@ fn agy_sign_in() -> Result<Vec<u8>, String> {
         .ok_or_else(|| "a sign-in credential".to_owned())
 }
 
-/// SPEC-505 AGY-002: a new Antigravity session on an API key runs `agy` on Gemini 4 Carbon at
+/// SPEC-505 AGY-002: a new Antigravity session on an API key runs `agy` on Gemini 4 Neon at
 /// high effort, the approval bypass only when contained, its prompt as one `=` argument (a
 /// leading dash stays the prompt); auto-update off; the key only in the secret environment; the
 /// home's settings trust the worktree and skip the first-run screens; Yulius's hooks and MCP in
@@ -1666,7 +1666,7 @@ fn antigravity_new_session_on_an_api_key() -> TestResult {
         [
             "agy",
             "--model",
-            "gemini-4-carbon",
+            "gemini-4-neon",
             "--effort",
             "high",
             "--dangerously-skip-permissions",

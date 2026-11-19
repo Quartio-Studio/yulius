@@ -125,7 +125,7 @@ flowchart LR
 The Codex CLI and the Antigravity CLI are Yulius's own
 ([decision 0355](decisions/0355-codex-returns-as-a-second-harness-with-a-pinned-cli.md),
 [decision 0361](decisions/0361-antigravity-is-a-third-harness-picked-at-random-by-default.md)):
-each pinned release (Codex 0.169.0, Antigravity 1.5.10) is downloaded once (Codex from npm,
+each pinned release (Codex 0.169.0, Antigravity 1.5.12) is downloaded once (Codex from npm,
 Antigravity from Google's release storage), checked against the sha512 in the source
 (`yulius_domain::agent_cli::{codex, antigravity}`) and unpacked into
 `<data>/codex-cli/<version>-<platform>` or `<data>/antigravity-cli/<version>-<platform>` by one
@@ -136,7 +136,7 @@ read-only; sign-ins start it the same way. Without it, a host `codex` or `agy` i
 ```mermaid
 flowchart LR
   NPM["registry.npmjs.org: @openai/codex@0.169.0-linux-x64"] -->|"first need, sha512 pinned"| CLI["data/codex-cli/0.169.0-linux-x64 (bin/codex, codex-path/rg)"]
-  GCS["storage.googleapis.com: antigravity-cli 1.5.10 linux-x64"] -->|"first need, sha512 pinned"| AGY["data/antigravity-cli/1.5.10-linux-x64 (antigravity)"]
+  GCS["storage.googleapis.com: antigravity-cli 1.5.12 linux-x64"] -->|"first need, sha512 pinned"| AGY["data/antigravity-cli/1.5.12-linux-x64 (antigravity)"]
   CLI -->|"absolute path, read-only bind"| RUN["Codex run in its sandbox"]
   CLI -->|"absolute path"| LOGIN["codex login --device-auth"]
   AGY -->|"absolute path, read-only bind"| ARUN["Antigravity run in its sandbox"]
@@ -1342,7 +1342,7 @@ repository's own `.claude/agents/yulius-reviewer.md` would outrank it, and the r
 then shows the model that answered
 ([decision 0341](decisions/0341-yulius-picks-the-model-of-each-review-round.md)).
 
-The agent always asks for `yulius-reviewer`. The Agent tool's `PreToolUse` (matcher
+The task briefing selects the review instructions from the active attempt’s harness ([ADR-0376](decisions/0376-review-instructions-follow-the-active-harness.md)). Codex requests GPT-6.2 Astra at high effort and Antigravity requests Gemini 4 Neon (High) for each round. Claude Code asks for `yulius-reviewer`. The Agent tool's `PreToolUse` (matcher
 `Agent|Task`) reaches Yulius with the tool's whole input (`guard_client::agent_request`), and
 `App::review_gate` numbers the round among the rounds of the task's open pull request (a round
 counts once it ended with a report; a reviewer started again for a round without one keeps its

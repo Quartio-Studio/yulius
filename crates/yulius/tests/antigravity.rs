@@ -179,7 +179,7 @@ fn temp() -> Result<(tempfile::TempDir, PathBuf), Box<dyn std::error::Error>> {
 /// Google account (never the Claude one) in `<sandbox>/antigravity/<account>`, whose settings,
 /// hooks and MCP configuration are private and whose conversations are the sandbox's; its
 /// conversation is learnt from its SessionStart (sent through `yulius hook antigravity`); its
-/// turns and tokens are read from the transcript; it runs Gemini 4 Carbon by default.
+/// turns and tokens are read from the transcript; it runs Gemini 4 Neon by default.
 #[test]
 fn an_antigravity_task_runs_in_its_home() -> TestResult {
     let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
@@ -213,7 +213,7 @@ fn an_antigravity_task_runs_in_its_home() -> TestResult {
             Some(&account),
             "a Google account"
         );
-        assert_eq!(attempt.model.as_deref(), Some("gemini-4-carbon"));
+        assert_eq!(attempt.model.as_deref(), Some("gemini-4-neon"));
         let launch = std::fs::read_to_string(Path::new(&attempt.run_dir).join("fake-launch.txt"))?;
         assert!(
             launch.contains("model=None"),
@@ -607,7 +607,7 @@ fn an_antigravity_goal_task_gets_its_request_as_its_first_message() -> TestResul
         };
         let detail = app.task_detail(&ctx, id.as_str()).await?;
         assert_eq!(
-            detail.model, "gemini-4-carbon",
+            detail.model, "gemini-4-neon",
             "Gemini, not the Claude default"
         );
         assert!(detail.model_default);
@@ -1029,7 +1029,7 @@ fn a_contained_antigravity_plan_binds_the_runs_home() -> TestResult {
             exe.clone(),
         );
         config.contained = true;
-        let cli = data.join("antigravity-cli/1.5.10-linux-x64");
+        let cli = data.join("antigravity-cli/1.5.12-linux-x64");
         let deps = Deps {
             store: Arc::new(SqliteStore::open(&data.join("yulius.db"))?),
             clock: Arc::new(SystemClock),

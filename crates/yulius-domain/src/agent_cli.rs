@@ -675,11 +675,10 @@ pub mod codex {
 /// The Antigravity CLI Yulius pins and provides to Antigravity runs (SPEC-505 AGY-007, ADR-0361):
 /// Google's release tarballs, one per platform, each holding the single binary `antigravity`.
 pub mod antigravity {
-    /// The pinned release: the newest on 2026-11-17, checked against the harness then
-    /// (SPEC-505).
-    pub const VERSION: &str = "1.5.10";
+    /// The pinned release: verified with all offered Gemini models and efforts (SPEC-521).
+    pub const VERSION: &str = "1.5.12";
     /// The release's build, part of its download path.
-    pub const BUILD: &str = "1.5.10-5253791805734912";
+    pub const BUILD: &str = "1.5.12-5281398513336320";
     /// Where Google publishes the tarballs.
     pub const HOST: &str = "storage.googleapis.com";
     /// The binary in a tarball and below an installed release's directory.
@@ -735,14 +734,14 @@ pub mod antigravity {
                 folder: "linux-x64",
                 file: "cli_linux_x64.tar.gz",
                 machine: 62,
-                sha512: "713ae840845d74736e2d4a96f5d84e3353d614e73a875793ddf500997ccee09595448cebfd8e94fdd90ce2a0fa97707bd1cc29763dcfe01c945d80c92234378f",
+                sha512: "26de25fccb3fbf0b093e090ce14a14ac1df1ec3e90ef4ea6106887d3a81b0cc9edb0dadea7b9101d07f9606eba159062a6fb7b78e91b73f7520684a24db73428",
             }),
             ("linux", "aarch64") => Some(Platform {
                 suffix: "linux-arm64",
                 folder: "linux-arm",
                 file: "cli_linux_arm64.tar.gz",
                 machine: 183,
-                sha512: "f9f5c7ebc47a8b8de536acca8116b1f5a43dca614cde94008fe5a510517b23535fb281d85416930d76e76478858bf3dc66ea6d1b0c9b6eeadcfabe4d8ef2a807",
+                sha512: "1030d89ce9e5cb39509e272cb89b71fde0e0d5d6527b7392525d5ef2683da54fb49230449107486d91c02ded39a678faaa649b2041304a6cf82a3a332d5819d9",
             }),
             _ => None,
         }
@@ -753,7 +752,7 @@ pub mod antigravity {
 mod tests {
     use super::*;
 
-    /// SPEC-505 AGY-007: the pinned agy 1.5.10 is published per Linux platform at Google's path,
+    /// SPEC-505 AGY-007: the pinned agy release is published per Linux platform at Google's path,
     /// each with a full sha512; other hosts get none.
     #[test]
     fn the_pinned_antigravity_cli_names_its_tarballs() {
@@ -761,19 +760,19 @@ mod tests {
         assert_eq!(
             x64.map(|p| p.tarball_path()).as_deref(),
             Some(
-                "/antigravity-public/antigravity-cli/1.5.10-5253791805734912/linux-x64/\
+                "/antigravity-public/antigravity-cli/1.5.12-5281398513336320/linux-x64/\
                  cli_linux_x64.tar.gz"
             )
         );
         assert_eq!(
             x64.map(|p| p.install_name()).as_deref(),
-            Some("1.5.10-linux-x64")
+            Some("1.5.12-linux-x64")
         );
         let arm = antigravity::platform("linux", "aarch64");
         assert_eq!(
             arm.map(|p| p.tarball_path()).as_deref(),
             Some(
-                "/antigravity-public/antigravity-cli/1.5.10-5253791805734912/linux-arm/\
+                "/antigravity-public/antigravity-cli/1.5.12-5281398513336320/linux-arm/\
                  cli_linux_arm64.tar.gz"
             )
         );
