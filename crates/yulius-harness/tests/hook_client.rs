@@ -1074,19 +1074,28 @@ fn an_antigravity_wake_up_is_no_prompt() -> TestResult {
     assert!(sent.get("prompt").is_none());
 
     let (url, listener) = untouched_listener()?;
-    let missing = agy_payload(
-        "PreInvocation",
-        serde_json::json!({"invocationNum": 0,
-        "initialNumSteps": 4, "transcriptPath": dir.path().join("missing.jsonl")}),
-    );
-    run_hook(
-        "antigravity",
-        "PreInvocation",
-        &mut &missing[..],
-        &mut Vec::new(),
-        &env_with(url, Some("task-token-SYNTHETIC")),
-    );
-    assert_no_connection(&listener);
+    let env = env_with(url, Some("task-token-SYNTHETIC"));
+    let missing = dir.path().join("missing.jsonl");
+    for (invocation, steps, path) in [
+        (0, 4, missing.as_path()),
+        (1, 4, std::path::Path::new(&transcript)),
+        (0, 3, std::path::Path::new(&transcript)),
+    ] {
+        let payload = agy_payload(
+            "PreInvocation",
+            serde_json::json!({"invocationNum": invocation, "initialNumSteps": steps, "transcriptPath": path}),
+        );
+        let mut output = Vec::new();
+        run_hook(
+            "antigravity",
+            "PreInvocation",
+            &mut &payload[..],
+            &mut output,
+            &env,
+        );
+        assert_eq!(json_out(&output)?, serde_json::json!({}));
+        assert_no_connection(&listener);
+    }
     Ok(())
 }
 
