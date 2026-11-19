@@ -1,6 +1,6 @@
 ---
 yulius-task: 09d68ab2-678f-4e8e-a4f5-0fff81215881
-status: in-progress
+status: done
 ---
 
 # SPEC-539 Guard a new sign-in against an older run's refusal
@@ -23,7 +23,7 @@ The watcher handles a live or replayed access refusal by passing the account ID 
 - [x] Reproduce a refusal after sign-in in a synthetic run
 - [x] Bind the refusal write to the launch credential
 - [x] Verify account state and run recovery
-- [ ] Review and deliver the fix on green CI
+- [x] Review and deliver the fix on green CI
 
 ## Acceptance criteria
 
@@ -43,3 +43,6 @@ Use a digest of the sealed launch credential in the private run directory, follo
 
 - Before the fix, `cargo test --locked -p yulius --test main subscription_moves::a_refused_run_` failed both regressions. Each task moved to the second subscription and the original account read `Relogin` where `Ok` was expected.
 - After the fix, six synthetic integration tests passed with `cargo nextest run --locked -p yulius --test main -E 'test(/subscription_moves::a_refused_/) | test(/pool_supervision::a_refused_subscription/) | test(/usage_credits::a_subscription_refused_while/)'`. They cover the pasted replacement token, a missing launch digest, a current refusal and its error, the usage-write race, the move notice and the last subscription's capacity wait.
+- `scripts/dev quick` passed. `scripts/dev security` reported Vidoc disabled for this project. The independent reviewer approved `42411b5d` after tracing launch, refusal, reattachment and sign-in locking.
+- `scripts/dev mutants` reported 12 listed, 4 caught, 0 missed, 0 timed out, 6 unviable and 2 not reached within 30 minutes. The four caught results failed in the unrelated xtask Vidoc-key test in the Git-less scratch checkout, so they provide no evidence about this fix. This limitation is recorded on #1365.
+- A separate `cargo mutants` run inverted only the credential comparison and selected the two supervision tests for #1365. Both failed at their account-state assertions: current read `Ok` instead of `Relogin`, and stale read `Relogin` instead of `Ok`. The tool reported one mutant tested and caught. The source matched the reviewed commit again when the run ended.
