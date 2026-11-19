@@ -224,7 +224,7 @@ acceptance criteria.
 - [x] The digest is built from task state and last messages
 - [x] The digest parks idle tasks past the threshold and goes to the browser and Telegram
 - [x] ADR and docs for the digest
-- [ ] Review of the #1413 pull request answered test-first
+- [x] Review of the #1413 pull request answered test-first
 - [ ] Telegram intake switch and default project per person, off by default
 - [ ] A reply to a Telegram notification reaches its task under the owner rule
 - [ ] A new Telegram message or file becomes a task with attachments
@@ -391,6 +391,12 @@ Review round 2 (head 809c5b974, CHANGES REQUESTED), answered test-first:
 | The listing window had no upper bound | "parked since" is after the last mark and up to this listing's mark | the parking and Telegram tests' second runs list nothing parked |
 | Wording in architecture, spec and ADR-0380 | corrected (the mark's value is taken before the build and written after it; the same-day rule and the settle wait in the ADR) | by reading |
 | CI at 3d6fb8768: the guest page test saw the mock refuse `/api/me/digest` | the mock's guest allowlist matches the server's | e2e `playground-guests.e2e.ts` "a guest sees their playground and nothing else" |
+
+Review round 3 (head 35aacf65f): APPROVED, nothing blocking. Its one test gap was closed after the
+approval (tests only): `telegram::a_digest_whose_listing_ends_after_midnight_keeps_the_next_days`
+fails when the tick reads the listing mark instead of the claim (checked by mutation). Nits left
+as they are: a digest park that takes over a minute to end is listed on two days; a page opened
+in the same instant as a live digest can add the previous digest's entry once more.
 
 Known limit (not changed): a stored digest is not redacted again when read, so a secret registered after a
 digest was made stays in up to seven stored digests of its person until they rotate out.
