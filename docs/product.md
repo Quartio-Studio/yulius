@@ -8,10 +8,11 @@ Yulius develops itself with Yulius.
 It also runs native Codex CLI sessions on Codex (OpenAI) subscriptions, chosen per task or
 automation, on GPT-6.2 Astra at high effort unless a task names another model or effort (task
 #493, [SPEC-511](../.ai/specs/SPEC-511-default-model-for-codex-should-be-astra.md)); a task keeps
-its agent for life, and a Codex task moves only between Codex subscriptions. A Codex
+its agent for life, and a Codex task moves only between Codex subscriptions. On ChatGPT Pro 500,
+Codex defaults to Ultrafast for models that support it. A Codex
 subscription signs in by device code, by an imported `auth.json` of a `codex login` made elsewhere,
 or with an OpenAI API key, and Yulius provides the pinned Codex CLI
-(0.169.0) to every Codex run. The founders accepted this on 2026-11-16 (`F 2026-11-16 Codex`,
+(0.170.0) to every Codex run. The founders accepted this on 2026-11-16 (`F 2026-11-16 Codex`,
 outside pull request #1146 by studenciak00owl), reversing the Codex part of their Claude-only
 decision `F 2026-10-08`; provider switching and session translation stay out
 ([SPEC-503](../.ai/specs/SPEC-503-accept-outside-pr-1146-codex-returns-as.md),
@@ -21,7 +22,7 @@ It runs native Antigravity CLI sessions on Antigravity (Google) subscriptions to
 Carbon at high effort unless a task names another Gemini model (`F 2026-11-17 Antigravity`, task
 #487). An Antigravity subscription signs in with the CLI's own Google sign-in or a Gemini API key,
 an Antigravity task moves only between Antigravity subscriptions, and Yulius provides the pinned
-Antigravity CLI (1.5.10)
+Antigravity CLI (1.5.12)
 ([SPEC-505](../.ai/specs/SPEC-505-implement-antigravity-cli-next-to-claude.md),
 [ADR-0361](decisions/0361-antigravity-is-a-third-harness-picked-at-random-by-default.md)). A
 task's agent is set, never drawn: the one chosen, else the one its model implies, else Claude Code
@@ -30,6 +31,10 @@ always runs the agent it names (`F 2026-11-19 Harness`,
 [SPEC-514](../.ai/specs/SPEC-514-make-sure-harnesses-doesnt-change-themse.md),
 [ADR-0368](decisions/0368-a-tasks-agent-is-set-never-drawn.md)). Tasks drawn at random while
 SPEC-505's draw existed still say so, and the analytics export lists it.
+
+The composer and Settings offer individual Codex and Gemini models grouped by provider. Each model
+shows its supported effort levels. Choosing a model that cannot use the saved effort restores the
+High default. [SPEC-521](../.ai/specs/SPEC-521-i-should-be-able-to-selected-every-model.md)
 
 The authoritative product brief is [SPEC-001](../.ai/specs/SPEC-001-yulius-product.md); this
 page is the short version for anyone who must know the whole product before building.
