@@ -2279,6 +2279,93 @@ mod tests {
         Ok(())
     }
 
+    /// SPEC-536: the launch and each retrieval have different tool-use IDs. The shell
+    /// association must survive a cursor between them, and a cold scan up to the results.
+    #[test]
+    fn claude_background_shell_output_is_redacted_on_every_read() -> TestResult {
+        let call = |id: &str, name: &str, input: Value| json!({"type":"assistant","message":{"content":[{"type":"tool_use","id":id,"name":name,"input":input}]}});
+        let result = |id: &str, content: &str| json!({"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":id,"content":content}]}});
+        for launch in [
+            result(
+                "dotenv",
+                "partial output\nCommand running in background with ID: shell_7",
+            ),
+            result(
+                "dotenv",
+                "Command running in background with ID: shell_7. Output is being written to: /tmp/shell_7.output",
+            ),
+            result(
+                "dotenv",
+                "Command was moved to the background (ID: shell_7) after running for 30s. Output is being written to: /tmp/shell_7.output",
+            ),
+            {
+                let mut record = result("dotenv", "Command moved to the background");
+                record["toolUseResult"] = json!({"backgroundTaskId":"shell_7"});
+                record
+            },
+        ] {
+            let dir = tempfile::tempdir()?;
+            let path = write_lines(
+                dir.path(),
+                &[
+                    call(
+                        "dotenv",
+                        "Bash",
+                        json!({"command":"cat .env","run_in_background":true}),
+                    ),
+                    call(
+                        "ordinary",
+                        "Bash",
+                        json!({"command":"pwd","run_in_background":true}),
+                    ),
+                    result(
+                        "ordinary",
+                        "Command running in background with ID: shell_70",
+                    ),
+                    launch,
+                    call("old", "BashOutput", json!({"bash_id":"shell_7"})),
+                    call("other", "TaskOutput", json!({"task_id":"shell_70"})),
+                    call("new", "TaskOutput", json!({"task_id":"shell_7"})),
+                    result("old", &format!("<stdout>\n{ENV_TWO}\n</stdout>")),
+                    result("other", "SHOP_REGION=public-region"),
+                    result("new", &format!("<output>\n{ENV_TWO}\n</output>")),
+                ],
+            )?;
+            let (_, kept) = read_page_at(File::open(&path)?, None, 0, 4, MAX_PAGE_CHARS)?;
+            assert_eq!(kept.line, 4);
+            for page in [
+                read_page(File::open(&path)?, 0, 100, MAX_PAGE_CHARS)?,
+                read_page(File::open(&path)?, 7, 100, MAX_PAGE_CHARS)?,
+                read_page_at(File::open(&path)?, Some(&kept), 7, 100, MAX_PAGE_CHARS)?.0,
+                read_tail(File::open(&path)?, 3, MAX_PAGE_CHARS)?,
+            ] {
+                let results = page
+                    .entries
+                    .iter()
+                    .flat_map(|entry| &entry.blocks)
+                    .filter_map(|block| {
+                        if let TranscriptBlock::ToolResult {
+                            tool_use_id, text, ..
+                        } = block
+                        {
+                            Some((tool_use_id.as_str(), text.as_str()))
+                        } else {
+                            None
+                        }
+                    })
+                    .collect::<std::collections::HashMap<_, _>>();
+                for id in ["old", "new"] {
+                    let output = results[id];
+                    assert!(output.contains("SHOP_REGION=[REDACTED:"), "{id}: {output}");
+                    assert!(output.contains("MAIL_DOMAIN=[REDACTED:"), "{id}: {output}");
+                    assert!(!output.contains("eu-north-7b") && !output.contains("mg.shop.example"));
+                }
+                assert_eq!(results["other"], "SHOP_REGION=public-region");
+            }
+        }
+        Ok(())
+    }
+
     /// Two dotenv values no generic pattern catches: only dotenv redaction hides them.
     const ENV_TWO: &str = "SHOP_REGION=eu-north-7b\nMAIL_DOMAIN=mg.shop.example";
 
