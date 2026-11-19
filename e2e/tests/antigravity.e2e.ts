@@ -16,6 +16,7 @@ type Mocked = {
     automations: { name: string; harness: string }[];
     connectAntigravity: () => void;
     loginCancels: string[];
+    logins: Map<string, { accountId: string; done: boolean; end: (status: string, code: number | null) => void }>;
   };
 };
 
@@ -82,12 +83,44 @@ test('an Antigravity subscription signs in with Google in the login terminal', a
   const signedIn = await browser.evaluate(() => (window as unknown as Mocked).__yuliusMock.accounts.find((a) => a.label === 'Antigravity dev'));
   expect(signedIn).toMatchObject({ status: 'pending_login' });
   await browser.keyboard.type('n');
+  await expect(terminal).toContainText('(y/N) *');
   await browser.keyboard.press('Enter');
   await expect(dialog.getByRole('button', 'Cancel sign-in')).toHaveCount(0);
   await dialog.getByRole('button', 'Done').click();
   await expect(dialog).toBeHidden();
   await expect(browser.locator('.toast-ok .toast-msg:has-text("Antigravity dev is connected")')).toContainText('Antigravity tasks can use it now.');
   expect(await browser.evaluate(() => (window as unknown as Mocked).__yuliusMock.loginCancels.length)).toBe(1);
+});
+
+test('Try again after a signed-in Antigravity sign-in was replaced starts over and offers Done again', async ({ app, browser, screen }) => {
+  await app.open(mock('/admin/accounts?add=antigravity', '&ambient=0'));
+  const add = screen.getByRole('dialog', 'Add an Antigravity subscription');
+  await firstShown(add);
+  await add.getByRole('textbox', /^Name/).fill('Antigravity retry');
+  await add.getByRole('button', 'Continue to sign-in').click();
+  const dialog = screen.getByRole('dialog', 'Sign in · Antigravity retry');
+  await expect(browser.locator('.login-terminal')).toContainText('Sign in with Google');
+  await expect(browser.locator('.login-terminal .xterm-helper-textarea')).toBeFocused();
+  await browser.keyboard.press('Enter');
+  await expect(dialog.getByText(/^Antigravity is signed in\./)).toBeVisible();
+  // Another sign-in of this subscription replaces this one while its setup runs (SPEC-515).
+  await browser.evaluate(() => {
+    const db = (window as unknown as Mocked).__yuliusMock;
+    const account = db.accounts.find((a) => a.label === 'Antigravity retry') as unknown as { id: string };
+    for (const session of db.logins.values()) if (session.accountId === account.id && !session.done) session.end('cancelled', null);
+  });
+  await expect(dialog.getByText('This sign-in was cancelled')).toBeVisible();
+  await dialog.getByRole('button', 'Try again').click();
+  await expect(dialog.getByText(/^Finish Antigravity’s sign-in: choose Google in the terminal below/)).toBeVisible();
+  await expect(dialog.getByText(/^Antigravity is signed in\./)).toHaveCount(0);
+  await expect(dialog.getByRole('button', 'Cancel sign-in')).toBeVisible();
+  await expect(browser.locator('.login-terminal')).toContainText('Sign in with Google');
+  await expect(browser.locator('.login-terminal .xterm-helper-textarea')).toBeFocused();
+  await browser.keyboard.press('Enter');
+  await expect(dialog.getByText(/^Antigravity is signed in\./)).toBeVisible();
+  await dialog.getByRole('button', 'Done').click();
+  await expect(dialog).toBeHidden();
+  await expect(browser.locator('.toast-ok .toast-msg:has-text("Antigravity retry is connected")')).toBeVisible();
 });
 
 test('choosing Gemini 4 Carbon in the composer starts an Antigravity task at high effort', async ({ app, browser, screen }) => {
