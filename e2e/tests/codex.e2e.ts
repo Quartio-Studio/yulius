@@ -12,7 +12,7 @@ failOnPageErrors();
 
 type Mocked = {
   __yuliusMock: {
-    tasks: { harness: string }[];
+    tasks: { harness: string; model: string; effort: string; number: number }[];
     accounts: { label: string; provider: string; status: string }[];
     automations: { name: string; harness: string }[];
   };

@@ -91,8 +91,8 @@ model or effort keeps it.
 - Model id: `strings` of the Codex CLI 0.170.0 and 0.172.0-alpha.1 linux-x64 binaries (npm
   `@openai/codex@<v>-linux-x64`) hold the bundled catalog entry `"slug": "gpt-6.2-astra"`,
   `"display_name": "GPT-6.2-Astra"`, efforts `low` … `ultra`, `"minimal_client_version":
-  "0.166.0"`; 0.169.0's binary lists `gpt-6.1-*` at most, fetches `/v1/models` with
-  `client_version` and says "This will use fallback model metadata" for an unlisted model.
+  "0.166.0"`; 0.169.0's binary lists `gpt-6.1-*` at most and holds the fallback-metadata warning; how it
+  asks for models per sign-in kind is in Context (the review's stub run).
 - Test-first: `cargo test -p yulius-harness --test launch codex` failed before the launch change
   (`codex_defaults_to_gpt_6_2_astra_at_high_effort`: no `-m`, no effort; `codex_resume_argv`),
   then 26/26 passed; `cargo test -p yulius-harness` all green.
@@ -115,6 +115,10 @@ model or effort keeps it.
   wraps, and this Context. Left: the mock's duplicate effort arm (its line is over 200 bytes, which
   a change after the approval may not touch), and the mock's Run now and Superagent tasks still
   getting `claude-opus-4` (pre-existing, mock-only, Antigravity alike; the server is right).
+- Review round 2 (Fable 5.2) approved `356719673` with one minor and two nits, answered: the
+  Antigravity goal-mode test now checks the pool family too (with the Antigravity arm of
+  `task_model` set to `None` it failed with `left: Some(Any), right: Some(Opus)`), this Evidence's
+  first bullet, and the e2e file's `Mocked.tasks` type.
 - `npx e2e run` of `codex`, `antigravity`, `responsive`, `model-fallback`, `claude-code` and
   `steps`: 71/71 passed.
 - Security scan: not run. Yulius CI's `security` job was skipped (exit 78: Vidoc refused the
