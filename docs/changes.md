@@ -9,6 +9,8 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 - A message to a Claude Code session waits when its prompt box shows a restored draft. The
   sender or session owner learns why. A new key keeps its recovery mark when an earlier
   prompt finishes ([SPEC-537](../.ai/specs/SPEC-537-preserve-restored-drafts-when-typing-int.md), #1264).
+- Mutation testing now checks the same workspace tests on the baseline and each mutant.
+  Earlier runs could count an unrelated xtask failure as a catch (#1364, SPEC-533).
 
 - Task briefings now request a native reviewer for each harness. Codex uses GPT-6.2 Astra at high effort and Antigravity uses Gemini 4 Neon (High) in every round. Claude Code keeps its Fable and Opus round policy. Gemini task launches use the Neon default delivered in SPEC-519 (review instructions in SPEC-524).
 - A question names who answers it (SPEC-512 part 2, task #494, #1418): an agent's `needs_you`
