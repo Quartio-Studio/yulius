@@ -354,3 +354,60 @@ test('a tap across a task update, its click after the release, opens the field (
   await expect.poll(() => focused(browser)).toEqual({ label: 'Reply to the agent', caret: 0 });
   await expect(bar).toHaveText(/Add a ruleset on main/);
 });
+
+// SPEC-516 (task #498): on someone else's task, Reply answers what its agent asked without taking
+// control. The answer goes to the server, the request ends and the task stays its owner's.
+
+/** The answers the mock's server took for task #12 (`needs-you/answer`), JSON-safe. */
+const answers = (browser: Browser) => browser.evaluate(() =>
+  ((window as unknown as { __yuliusMock: { needsYouAnswers?: { task: string; text: string }[] } }).__yuliusMock.needsYouAnswers ?? [])
+    .filter((a) => a.task === 'tsk_studio_12').map((a) => a.text));
+
+test("Reply on a teammate's Needs you answers it without taking control (SPEC-516)", async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/t/12', '&ambient=0'));
+  await touchTask(browser, 'sb_studio', 12, { owner: { login: 'anna-q' } });
+  await askRuleset(browser);
+  const bar = browser.locator('.attention-bar');
+  await expect(bar).toHaveText(/watching @anna-q's task[\s\S]*Needs you[\s\S]*Add a ruleset/);
+
+  const reply = screen.getByRole('button', 'Reply');
+  expect(await reply.getAttribute('title')).toBe('Answers the agent without taking control of the task');
+  await reply.click();
+  const field = screen.getByRole('textbox', 'Reply to the agent');
+  await expect(field).toBeVisible();
+  expect(await axeViolations(browser)).toEqual([]);
+  await browser.keyboard.type('Ruleset added');
+  await browser.keyboard.press('Enter');
+
+  await expect.poll(() => answers(browser)).toEqual(['Ruleset added']);
+  await expect(screen.getByText('Answered #12')).toBeVisible();
+  await expect(field).toBeHidden();
+  await expect(bar).not.toContainText('Needs you');
+  // Control did not move: the page still watches @anna-q's task.
+  await expect(bar).toContainText("You are watching @anna-q's task");
+});
+
+test("a refused answer to a teammate's Needs you keeps the field and its text (SPEC-516)", async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/t/12', '&ambient=0'));
+  await touchTask(browser, 'sb_studio', 12, { owner: { login: 'anna-q' }, holdsPersonal: true });
+  await askRuleset(browser);
+  await screen.getByRole('button', 'Reply').click();
+  const field = screen.getByRole('textbox', 'Reply to the agent');
+  await expect(field).toBeVisible();
+  await browser.keyboard.type('Ruleset added');
+  await screen.getByRole('button', 'Send').click();
+  await expect(screen.getByText(/only @anna-q answers it/)).toBeVisible();
+  await expect(field).toBeVisible();
+  await expect(field).toHaveValue('Ruleset added');
+  expect(await answers(browser)).toEqual([]);
+  await expect(browser.locator('.attention-bar')).toContainText('Needs you');
+});
+
+test("a teammate's Reply is not offered while the agent asks in its terminal (SPEC-516)", async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/t/12', '&ambient=0'));
+  await touchTask(browser, 'sb_studio', 12, { owner: { login: 'anna-q' } });
+  await askRuleset(browser);
+  await touchTask(browser, 'sb_studio', 12, { activity: 'needs_attention' });
+  await expect(browser.locator('.attention-bar')).toHaveText(/Needs you[\s\S]*Add a ruleset/);
+  await expect(screen.getByRole('button', 'Reply')).toHaveCount(0);
+});

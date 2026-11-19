@@ -1931,6 +1931,25 @@ route('POST', `/api/tasks/${ID}/control/take`, ({ db, p }) => {
   touch(db, task, { owner: { login: me }, controlRequest: null, controlFrom, ownerAsksFirst: false });
   return summary(task);
 });
+// Answer a task's Needs you, owner or not, without taking control (SPEC-516). Tests read what
+// was answered from `__yuliusMock.needsYouAnswers`; `holdsPersonal` on a task stands for its
+// owner's personal secrets or MCP servers in reach.
+route('POST', `/api/tasks/${ID}/needs-you/answer`, ({ db, p, body }) => {
+  const task = taskOf(db, p[0]);
+  need(sandboxOf(db, task.sandbox_id), 'write');
+  const me = db.me.user.login;
+  const owner = ownerOf(task).login;
+  if (owner !== me && db.me.user.guest) fail(403, 'forbidden', `Task #${task.number} is @${owner}'s: a guest answers the requests of only their own tasks on this playground.`);
+  const text = String(body.text || '').trim();
+  if (!text) fail(422, 'invalid', 'the answer is empty');
+  if (task.status !== 'running') fail(409, 'conflict', `task #${task.number} is not running (${task.status}), so its agent reads no answer now`);
+  if (!task.needs_you) fail(409, 'conflict', `task #${task.number} asks nobody anything now: there is nothing to answer`);
+  if (task.activity === 'needs_attention') fail(409, 'conflict', `task #${task.number}'s agent asks in its terminal now: @${owner} answers there, or take control of the task`);
+  if (owner !== me && task.holdsPersonal) fail(409, 'conflict', `task #${task.number} holds @${owner}'s personal secrets or MCP servers, so only @${owner} answers it; or take control of the task`);
+  (db.needsYouAnswers ||= []).push({ task: task.id, by: me, text });
+  touch(db, task, { needs_you: null });
+  return summary(task);
+});
 route('PUT', '/api/me/control', ({ db, body }) => {
   db.me.user.control_ask_first = Boolean(body.ask_first);
   return { ask_first: db.me.user.control_ask_first };

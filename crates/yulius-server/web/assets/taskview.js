@@ -11,7 +11,7 @@ import { taskInfo, isLive, allows, taskActions, otherOwner, endedMessage, agentO
 import { heldPromptCard, splitCard, supertaskCard, checkRequest, intakeStatus } from './intake.js';
 import { createMarkdownEditor } from './mdeditor.js';
 import { SUBMIT_KEYS, SUBMIT_ARIA } from './shortcuts.js';
-import { openTaskMenu, openSubscriptionMenu, continueTask, deliveryStrip, startNow, stopTask, resumeTask, requestControl, takeControl, dropControlRequest, handOverTask, takeBackTask, openScheduleDialog, rescheduleTask } from './actions.js';
+import { openTaskMenu, openSubscriptionMenu, continueTask, deliveryStrip, startNow, stopTask, resumeTask, requestControl, takeControl, answerNeedsYou, dropControlRequest, handOverTask, takeBackTask, openScheduleDialog, rescheduleTask } from './actions.js';
 import { attachTerminalDrop, attachPromptDrop, draftAttachments, taskAttachments, withAttachments, openAttachment } from './filedrop.js';
 import { createPromptInput, ATOM, FILE_MARK, FILE_MARK_END, PLACE_TYPE, placeFiles, withoutMarks } from './promptinput.js';
 import { mentionOf, parsePrompt } from './promptparts.js';
@@ -369,7 +369,9 @@ export function mountTaskView(ctx, sandbox, task) {
   let replying = false;
   const replyInput = h('input', { class: 'input', type: 'text', placeholder: 'Reply to the agent…', autocomplete: 'off', enterkeyhint: 'send', 'aria-label': 'Reply to the agent' });
   const replyButton = h('button', { type: 'button', class: 'btn btn-sm', onClick: () => {
-    if (isPhone()) { quickInput.focus(); return; }
+    // Someone else's task has no terminal to type in: its Needs you is answered in the field
+    // (SPEC-516).
+    if (isPhone() && !owner()) { quickInput.focus(); return; }
     replying = true;
     renderAttention();
     replyInput.focus();
@@ -379,10 +381,27 @@ export function mountTaskView(ctx, sandbox, task) {
     renderAttention();
     if (replyButton.isConnected) replyButton.focus();
   };
-  const sendReply = () => {
-    if (!replying) return; // a closed (hidden) field never sends
+  let answering = false; // an answer to someone else's task is on its way
+  const sendReply = async () => {
+    if (!replying || answering) return; // a closed (hidden) field never sends
     const text = replyInput.value.trim();
     if (!text) { replyInput.focus(); return; }
+    if (owner()) {
+      // Someone else's task (SPEC-516): the answer goes to the server, which types it labelled
+      // into the session; control stays with the owner. Refused, the field keeps its text.
+      answering = true;
+      replyInput.readOnly = true;
+      const answered = await answerNeedsYou(ctx, current, text).finally(() => {
+        answering = false;
+        replyInput.readOnly = false;
+      });
+      if (!alive) return;
+      if (!answered) { if (replying) replyInput.focus(); return; }
+      replyInput.value = '';
+      replying = false;
+      renderAttention();
+      return;
+    }
     // The answer is for the terminal, sent or not: why it was not shows there (SPEC-326).
     closeHistory(false);
     if (!typeAndSubmit(text)) return;
@@ -479,11 +498,15 @@ export function mountTaskView(ctx, sandbox, task) {
       // The request stays while the agent asks something in the terminal (a permission menu): text
       // typed there would pick the menu's options unseen, so Reply goes to the terminal then.
       const asksInTerminal = current.activity === 'needs_attention';
-      textAnswer = !owner() && !asksInTerminal;
+      // Someone else's task: anyone who may work there but a guest answers it without taking
+      // control (SPEC-516), unless the agent asks in its terminal.
+      const answers = !owner() || (allows(access, 'write') && !(ctx.guest && ctx.guest()) && !asksInTerminal);
+      textAnswer = answers && !asksInTerminal;
       asksPerson = true;
+      replyButton.title = owner() ? 'Answers the agent without taking control of the task' : '';
       content = [icon('st-attention', { size: 16 }), needsYouText(asked),
         asked.link ? openLink(asked.link) : null,
-        owner() ? null : asksInTerminal ? terminalReply : replying ? null : replyButton];
+        !answers ? null : asksInTerminal ? terminalReply : replying ? null : replyButton];
     } else if (info.request) {
       content = [icon('globe', { size: 16 }), h('span', { class: 'attention-text' }, h('strong', null, 'Action needed in the browser: '), info.request.reason || 'the agent asked you to do something there.'),
         h('button', { type: 'button', class: 'btn btn-sm', onClick: () => ctx.openBrowserTab && ctx.openBrowserTab(sandbox, info.request.tab_id) }, 'Open browser tab')];
@@ -513,6 +536,7 @@ export function mountTaskView(ctx, sandbox, task) {
         ? h('strong', null, `The agent is waiting for @${owner()}'s reply.`)
         : [h('strong', null, 'The agent is waiting for your reply. '), 'Type it in the terminal below.']),
         owner() ? null : replying ? null : replyButton];
+      replyButton.title = '';
       textAnswer = !owner();
     }
     attention.hidden = !content && !control;
