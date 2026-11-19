@@ -95,8 +95,10 @@ it names (`auto` saves as `claude`; migration 0068 turned stored `auto` into `cl
 drawn while SPEC-505 RND-001 drew stay in `task_harness_draws`, shown as `harness_choice`
 `random`.
 
-An Antigravity task ([decision 0361](decisions/0361-antigravity-is-a-third-harness-picked-at-random-by-default.md))
-runs the `agy` TUI on a Google account with a home of its own in its run directory,
+An Antigravity task ([decision 0361](decisions/0361-antigravity-is-a-third-harness-picked-at-random-by-default.md),
+[decision 0373](decisions/0373-gemini-4-neon-is-antigravitys-default-model-on-agy-1-5-12.md))
+runs the `agy` TUI on a Google account, on its own model and effort or else `--model gemini-4-neon
+--effort high` (SPEC-519), with a home of its own in its run directory,
 `<run>/antigravity-home`, the folder whose `.gemini` the CLI reads: Yulius writes its
 `settings.json` (the worktree trusted, the first-run screens skipped, `modelProvider: gemini` for
 a Gemini API key), `config/hooks.json`, `config/mcp_config.json` and, for a Google sign-in, the
@@ -124,8 +126,9 @@ flowchart LR
 
 The Codex CLI and the Antigravity CLI are Yulius's own
 ([decision 0355](decisions/0355-codex-returns-as-a-second-harness-with-a-pinned-cli.md),
-[decision 0361](decisions/0361-antigravity-is-a-third-harness-picked-at-random-by-default.md)):
-each pinned release (Codex 0.169.0, Antigravity 1.5.10) is downloaded once (Codex from npm,
+[decision 0361](decisions/0361-antigravity-is-a-third-harness-picked-at-random-by-default.md),
+[decision 0373](decisions/0373-gemini-4-neon-is-antigravitys-default-model-on-agy-1-5-12.md)):
+each pinned release (Codex 0.169.0, Antigravity 1.5.12) is downloaded once (Codex from npm,
 Antigravity from Google's release storage), checked against the sha512 in the source
 (`yulius_domain::agent_cli::{codex, antigravity}`) and unpacked into
 `<data>/codex-cli/<version>-<platform>` or `<data>/antigravity-cli/<version>-<platform>` by one
@@ -136,7 +139,7 @@ read-only; sign-ins start it the same way. Without it, a host `codex` or `agy` i
 ```mermaid
 flowchart LR
   NPM["registry.npmjs.org: @openai/codex@0.169.0-linux-x64"] -->|"first need, sha512 pinned"| CLI["data/codex-cli/0.169.0-linux-x64 (bin/codex, codex-path/rg)"]
-  GCS["storage.googleapis.com: antigravity-cli 1.5.10 linux-x64"] -->|"first need, sha512 pinned"| AGY["data/antigravity-cli/1.5.10-linux-x64 (antigravity)"]
+  GCS["storage.googleapis.com: antigravity-cli 1.5.12 linux-x64"] -->|"first need, sha512 pinned"| AGY["data/antigravity-cli/1.5.12-linux-x64 (antigravity)"]
   CLI -->|"absolute path, read-only bind"| RUN["Codex run in its sandbox"]
   CLI -->|"absolute path"| LOGIN["codex login --device-auth"]
   AGY -->|"absolute path, read-only bind"| ARUN["Antigravity run in its sandbox"]

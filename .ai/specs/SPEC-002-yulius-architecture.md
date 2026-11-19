@@ -2649,7 +2649,7 @@ cargo-deny, machete, rustdoc) is the evidence until it runs.
 | Hooks, briefing, discipline (COM-004, DSC-003) | `crates/yulius/tests/agent_hooks.rs` over the internal HTTP listener. |
 | Live Claude Code 2.1.292 | `tests/live_claude.rs` (opt-in): hooks fire, Yulius MCP `steps_set` with the task bearer token, session id and transcript path as predicted. `supervision.rs::real_claude_tui_reaches_the_prompt_inside_ptyhost` (opt-in): the real TUI in the real ptyhost reaches its prompt without first-run screens. |
 | Codex | Back since F 2026-11-16 Codex (SPEC-503, ADR-0355; removed by F 2026-10-08): a Codex task's launch, rollout, rotation, resume, write-back, hooks, sign-ins, usage and the provided CLI are covered by `codex.rs`, `codex_cli.rs`, `accounts.rs`, `account_token.rs`, `account_usage.rs`, `claude_gate.rs`, `agent_hooks.rs`, the `yulius-harness` tests (rollouts real Codex 0.169.0 wrote) and e2e `codex.e2e.ts`. |
-| Antigravity | Since F 2026-11-17 Antigravity (SPEC-505, ADR-0361): an Antigravity task's launch, transcript, hooks, rotation, resume, write-back, sign-ins and the provided CLI are covered by `antigravity.rs`, `antigravity_cli.rs`, `accounts.rs`, `claude_gate.rs`, `agent_hooks.rs`, the `yulius-harness` tests (a transcript real agy 1.5.10 wrote against a local Gemini stub) and e2e `antigravity.e2e.ts`; a live Google account is not verified. |
+| Antigravity | Since F 2026-11-17 Antigravity (SPEC-505, ADR-0361; SPEC-519, ADR-0373): an Antigravity task's launch, transcript, hooks, rotation, resume, write-back, sign-ins and the provided CLI (1.5.12) are covered by `antigravity.rs`, `antigravity_cli.rs`, `accounts.rs`, `claude_gate.rs`, `agent_hooks.rs`, the `yulius-harness` tests (transcripts real agy 1.5.10 and 1.5.12 wrote against a local Gemini stub) and e2e `antigravity.e2e.ts`, and confirmed live on a Google sign-in subscription in task #501. |
 | Real adapters | `tests/git_adapter.rs` (real git); GitHub adapter unit-tested against recorded HTTP (no real App configured). |
 | Areas | `accounts.rs`, `analytics.rs`, `automations.rs`, `skills_mcp.rs`, `delivery.rs`, `projects.rs`, `import_server.rs`, `browser.rs`, `editor.rs`, `shells.rs`, `http_auth.rs`, `mcp_coordination.rs`. |
 | UI in a real browser (2026-10-07) | Headless Google Chrome (isolated profile, CDP driver) against a temporary local `yulius serve`: setup wizard with both non-recoverable confirmations, workspace shell (thin sandbox tab row, sidebar without Settings, no top usage bar, "not contained" badge), GitHub connection page and manifest endpoint (real adapter: org form URL with state, callback URLs, permissions), users/accounts pages, status panel with live machine metrics. Task views through the UI's mock backend served by the real server: step strip, xterm terminal, browser panel with per-sandbox tabs and a user-action tab, phone layout (390×844) with quick-input bar whose input reaches the terminal. No console errors. Sandbox-backed pages with real data need a GitHub App (not exercised). The UI/API contract is enforced by `ui_contract.rs`. |
@@ -2672,6 +2672,12 @@ cargo-deny, machete, rustdoc) is the evidence until it runs.
 | Not exercised | Real GitHub App/OAuth, deployment (out of scope). Linux results: see the container runs below. `yulius onboard` against a deployed instance with real `~/.claude` stores. |
 
 ## 15. Changelog
+
+- 2026-11-19 (`F 2026-11-19 Neon`, task #501; SPEC-519, ADR-0373): Antigravity's default model is
+  `gemini-4-neon` at `high` effort, `models.js` lists Gemini 4 Neon first and Gemini 4 Carbon
+  second under Google, and the pinned Antigravity CLI moves from 1.5.10 to 1.5.12
+  (`1.5.12-5281398513336320`) so `--model gemini-4-neon --effort high` works on `GEMINI_API_KEY`
+  subscriptions as well as Google sign-ins; live Google sign-in run verified in task #501.
 
 - 2026-11-18 (`F 2026-11-17 Antigravity`, task #487; SPEC-505, ADR-0361): Antigravity is a third
   harness: an Antigravity adapter in `yulius-harness` (launch plan, transcript observation, hook

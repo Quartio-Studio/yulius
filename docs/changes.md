@@ -6,6 +6,14 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-19
 
+- Antigravity offers Gemini 4 Neon and runs it at high effort by default (SPEC-519, task #501,
+  [ADR-0373](decisions/0373-gemini-4-neon-is-antigravitys-default-model-on-agy-1-5-12.md)):
+  confirmed end to end in a live Antigravity session on a Google sign-in subscription. An
+  Antigravity task that names no model launches with `--model gemini-4-neon --effort high`, records
+  `gemini-4-neon` on its attempt and names it in its details; the composer and Settings list Gemini
+  4 Neon first under Google and keep Gemini 4 Carbon second while unnamed `Default` stays Claude
+  Code (`Opus 5.5`). The pinned Antigravity CLI moves from 1.5.10 to 1.5.12 so Gemini 4 Neon works
+  on `GEMINI_API_KEY` subscriptions too.
 - Answer a teammate's Needs you (SPEC-516, task #498, ADR-0370): on someone else's task whose
   agent asks a person for something, Reply answers it without taking control. The agent gets the
   answer labelled with your name (and that you are not its owner), the request ends, and the task
