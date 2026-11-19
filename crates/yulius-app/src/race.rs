@@ -58,6 +58,9 @@ pub enum Point {
     /// `mark_lost`: the run's loss won its record; the run's end intent is not read yet. The
     /// path is the task id.
     LossRecorded,
+    /// `answer_needs_you` (SPEC-512 ANS-004): the answer was typed into the session; the request
+    /// it answers is not ended yet. The path is the task id.
+    AnswerTyped,
     /// A switch (SPEC-250): the old run ended and the status the switch goes on from was read; the
     /// launch has not taken the launch lock yet. The path is the task id.
     SwitchLaunching,

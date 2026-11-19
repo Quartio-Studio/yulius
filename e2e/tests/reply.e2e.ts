@@ -518,6 +518,11 @@ test("an answer typed while the question is replaced goes to no other question (
   await expect(screen.getByText(/was replaced by a new one/)).toBeVisible();
   await expect(field).toHaveValue('M1: yes');
   expect(await answers(browser)).toEqual([]);
+  // Having read the new question, the person answers it from the same field.
+  await field.fill('2026-12-01');
+  await field.focus();
+  await browser.keyboard.press('Enter');
+  await expect.poll(() => answers(browser)).toEqual(['2026-12-01']);
 });
 
 test("a request whose names were all withdrawn offers a teammate no Reply (SPEC-512 ANS-002, review)", async ({ app, browser, screen }) => {

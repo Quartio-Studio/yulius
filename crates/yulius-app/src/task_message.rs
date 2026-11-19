@@ -523,16 +523,13 @@ impl App {
         let paste = answer_paste(&login, &owner, mine, &text);
         self.type_into_session(&task, &paste, Typed::Prompt, Sender::Person)
             .await?;
+        crate::race::reached(
+            crate::race::Point::AnswerTyped,
+            std::path::Path::new(task.id.as_str()),
+        );
         // The answer ends the request it answers, not one asked while it was typed (ANS-004).
-        if self
-            .deps
-            .store
-            .task_needs_you(&task.id)
-            .await?
-            .is_some_and(|open| open.at == asked.at)
-        {
-            self.end_needs_you(&task.id).await;
-        }
+        self.end_needs_you_asked_at(&task.id, asked.at, asked.cause.clone())
+            .await;
         let detail = json!({
             "task": format!("#{} {}", task.number, task.title),
             "owner": owner,

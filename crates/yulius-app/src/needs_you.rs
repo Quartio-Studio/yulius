@@ -325,10 +325,19 @@ impl App {
                     {
                         Ok(_) => true,
                         Err(AppError::NotFound | AppError::Forbidden(_)) => false,
+                        // No usable GitHub sign-in: their access is not known until they sign
+                        // in to Yulius again, which no wait changes.
+                        Err(AppError::Unauthenticated) => {
+                            return Err(AppError::Invalid(format!(
+                                "who: @{login} must sign in to Yulius again before their access \
+                                 to this project can be checked (nothing was asked)"
+                            )));
+                        }
                         Err(err) => {
                             return Err(AppError::Upstream(format!(
                                 "who: @{login}'s access to this project could not be checked \
-                                 now ({err}); ask again in a minute (nothing was asked)"
+                                 now ({}); ask again in a minute (nothing was asked)",
+                                err.public_message()
                             )));
                         }
                     }
@@ -378,6 +387,41 @@ impl App {
         };
         self.end_one_needs_you(task).await;
         if let Some(cause) = shared
+            && let Ok(Some(record)) = self.deps.store.task(task).await
+            && record.status == yulius_domain::task::TaskStatus::Running
+        {
+            let source = format!("a person's answer to task #{}", record.number);
+            let others = self
+                .end_shared_needs_you(&record.sandbox_id, &cause, self.now().0, &source)
+                .await;
+            if cause == "docker" {
+                self.tell_docker_answered(record.sandbox_id.as_str(), others);
+            }
+        }
+    }
+
+    /// [`Self::end_needs_you`] for the request asked at `asked_at` only (SPEC-512 ANS-004): one
+    /// asked after it stays open, and only an ended request answers a shared cause's others.
+    pub(crate) async fn end_needs_you_asked_at(
+        &self,
+        task: &TaskId,
+        asked_at: i64,
+        cause: Option<String>,
+    ) {
+        match self
+            .deps
+            .store
+            .end_task_needs_you_at(task, asked_at, self.now())
+            .await
+        {
+            Ok(true) => self.publish_task(task).await,
+            Ok(false) => return,
+            Err(err) => {
+                tracing::warn!(task = %task, error = %err, "the answered request was not ended");
+                return;
+            }
+        }
+        if let Some(cause) = cause
             && let Ok(Some(record)) = self.deps.store.task(task).await
             && record.status == yulius_domain::task::TaskStatus::Running
         {

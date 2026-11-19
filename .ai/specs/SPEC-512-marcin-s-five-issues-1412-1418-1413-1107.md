@@ -137,11 +137,13 @@ steering (terminal input, Continue, merge, model, subscription) is the owner's. 
   request is open that they may answer (ANS-002), is that answer: it goes the way of the web's
   answer (same label, guards and audit) and `delivered` says `answered`. With no such request it
   is refused as today (the owner steers).
-- **ANS-004 Closed, replaced or withdrawn.** An answer names the request it answers (`asked_at`,
-  the request's `at`; the web sends it). One sent after the request ended is refused ("…asks
-  nobody anything now"), after a new request replaced it ("the question you answered was replaced
-  by a new one: read it and answer again"), and after the owner withdrew the person ("@owner
-  withdrew you from this question").
+- **ANS-004 Closed, replaced or withdrawn.** An answer names the request it answers
+  (`asked_at_ms`, the request's `at_ms`; the page sends the one Reply opened on, and after a
+  refusal the one it shows). One sent after the request ended is refused ("…asks nobody anything
+  now"), after a new request replaced it ("the question you answered was replaced by a new one:
+  read it and answer again"), and after the owner withdrew the person ("@owner withdrew you from
+  this question"). An answer ends only the request it answered: one asked while it was typed
+  stays open.
 - **ANS-005 The owner sees and withdraws.** The task's page shows "Asks @a, @b" on the request;
   its owner withdraws a person there (`POST /api/tasks/{tid}/needs-you/withdraw {login}`, owner
   only, a browser session or an operate token), audited `task.needs_you.withdrawn`. Withdrawing
@@ -287,6 +289,23 @@ Commands (2026-11-19): `cargo test -p yulius --test main -- task_ownership:: tas
 telegram:: docker_trouble_notices:: agent_hooks:: cockpit:: parking::` → 221 passed;
 `cargo test -p yulius-app --lib` → 626 passed; e2e `reply`, `parked`, `attention`, `ownership`,
 `watching`, `notifications` → 79 passed; `scripts/dev quick`, `lint`, `cargo doc` passed.
+
+Review round 2 of #1459 (request changes at 23f21095a), answered test-first:
+
+| Finding | Answer | Test that fails without it |
+| --- | --- | --- |
+| After a "replaced" refusal the open field kept naming the old question | after a refused send the field names the question it now shows | e2e "an answer typed while the question is replaced goes to no other question" (the second Enter answers the new question) |
+| The answer-end guard had no test | `end_task_needs_you_at`: one conditional statement by the request's `at` (`end_needs_you_asked_at` also answers a shared cause's others only when it ended one) | store `an_answer_ends_only_the_request_asked_at_its_time`; `task_message::an_answer_leaves_a_question_asked_while_it_was_typed` (race point `AnswerTyped`; an unconditional end fails it: checked by mutation) |
+| Stale `asked_at` in docs | api.md, architecture.md, ANS-004 and the e2e README name `asked_at_ms`/`at_ms` | — |
+| The `who` access check's error wording | a missing GitHub sign-in is a refusal saying the person must sign in again; other errors say "could not be checked now" with the public message | `task_ownership::a_name_whose_access_cannot_be_checked_is_said_so` |
+| Store test differed in both `at` and action | a same-action request asked later is refused too | store `a_request_is_replaced_only_while_it_is_the_one_read` |
+| `?` on the read after typing | gone: the end is one statement, its failure logged | — |
+| Round-1 nits | kept, because: the toast reads "Couldn't withdraw task #N" with the server's reason after it, which says what failed; people are matched by GitHub login, as `who` is given and shown, and a login names one person of the instance; after a take of control the new owner answers as owner and a name equal to them is harmless, while the former owner answers only if named (the request is the new owner's); requests sharing a `cause` end together by SPEC-494's rule, which names nobody | — |
+| Notifier reads the task after the event (pre-existing) | unchanged; a start failing within the handling lag behaves as on `dev` | — |
+
+`task_message::the_last_wake_after_an_outage_tells_the_person_of_their_draft` failed once under
+a parallel run of five suites here and passed 3 of 3 alone (load-sensitive; it does not touch
+this change's paths).
 
 Review round 1 of #1459 (request changes at dd7b25b38), answered test-first:
 

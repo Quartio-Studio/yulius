@@ -2159,3 +2159,46 @@ fn a_named_person_answers_through_their_own_agent() -> TestResult {
         stop(&app, &id).await
     })
 }
+
+/// SPEC-512 ANS-004 (review of part 2): an answer ends the question it answered only: one the
+/// agent asked while the answer was being typed stays open.
+#[test]
+fn an_answer_leaves_a_question_asked_while_it_was_typed() -> TestResult {
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let app = app(&data, fake_agent()).await?;
+        let (id, owner) = running(&app, &data).await?;
+        let ctx = teammate(&app, &owner.sandbox).await?;
+        app.deps
+            .store
+            .set_task_needs_you(&id, Some(&region_asked()), app.now())
+            .await?;
+        let later = NeedsYouRecord {
+            action: "Choose the release date".into(),
+            at: 2,
+            ..region_asked()
+        };
+        {
+            let (app, id, later) = (app.clone(), id.clone(), later.clone());
+            let handle = tokio::runtime::Handle::current();
+            yulius_app::race::on(
+                yulius_app::race::Point::AnswerTyped,
+                Path::new(id.clone().as_str()),
+                move || {
+                    let _ = tokio::task::block_in_place(|| {
+                        handle.block_on(app.deps.store.set_task_needs_you(
+                            &id,
+                            Some(&later),
+                            app.now(),
+                        ))
+                    });
+                },
+            );
+        }
+        app.answer_needs_you(&ctx, id.as_str(), "Frankfurt", None)
+            .await?;
+        assert_eq!(app.deps.store.task_needs_you(&id).await?, Some(later));
+        stop(&app, &id).await
+    })
+}

@@ -3339,8 +3339,8 @@ secrets or MCP servers reach the run. A request can name whom it waits for besid
 [decision 0379](decisions/0379-a-needs-you-names-who-may-answer-it.md)): each a person with write
 access, checked when it is raised. A named request is answered by its owner and whom it still
 names; `task_message` from a non-owner while such a request is open goes through
-`answer_needs_you`; an answer carries the request's `at` (`asked_at`) and is refused once the
-request was replaced, and the owner withdraws a name (`POST /api/tasks/{tid}/needs-you/withdraw`,
+`answer_needs_you`; an answer carries the request's `at_ms` (`asked_at_ms`), is refused once the
+request was replaced and ends only that request (`end_task_needs_you_at`, one statement), and the owner withdraws a name (`POST /api/tasks/{tid}/needs-you/withdraw`,
 `task.needs_you.withdrawn`). A playground's guest tidies and answers only their own
 tasks (`TaskRefusal::Guest`). Anyone else who may work in the project (not a guest) takes control at
 once from the task's page or its menu (`App::take_task_control`, `seize_control`,

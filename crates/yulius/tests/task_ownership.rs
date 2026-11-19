@@ -2002,3 +2002,22 @@ async fn naming_and_withdrawing_refuse_what_cannot_hold() -> TestResult {
     );
     Ok(())
 }
+
+/// SPEC-512 ANS-001 (review of part 2): when GitHub does not answer, a named person's access is
+/// not judged "none": the request is refused saying it could not be checked now.
+#[tokio::test]
+async fn a_name_whose_access_cannot_be_checked_is_said_so() -> TestResult {
+    let f = fixture().await?;
+    f.h.github
+        .fail_permissions
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let asked = agent_asks(&f.h, json!({"action": "Decide", "who": ["bob"]})).await?;
+    f.h.github
+        .fail_permissions
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+    assert_eq!(asked["isError"], true, "{asked}");
+    let said = asked.to_string();
+    assert!(said.contains("could not be checked now"), "{said}");
+    assert!(!said.contains("has no write access"), "{said}");
+    Ok(())
+}

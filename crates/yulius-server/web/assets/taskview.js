@@ -402,7 +402,14 @@ export function mountTaskView(ctx, sandbox, task) {
         replyInput.readOnly = false;
       });
       if (!alive) return;
-      if (!answered) { if (replying) replyInput.focus(); return; }
+      if (!answered) {
+        // Refused: the person has just been told why. A question replaced meanwhile is the one
+        // they read now, so the field answers it from here on (SPEC-512 ANS-004).
+        const shown = current.needs_you && Number.isFinite(current.needs_you.at_ms) ? current.needs_you.at_ms : null;
+        if (shown !== null) replyAskedAtMs = shown;
+        if (replying) replyInput.focus();
+        return;
+      }
       replyInput.value = '';
       replying = false;
       renderAttention();
