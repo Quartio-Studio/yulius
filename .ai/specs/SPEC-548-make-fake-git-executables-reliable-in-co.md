@@ -1,6 +1,6 @@
 ---
 yulius-task: b8068c9c-ed44-4278-992a-7a75bf36f268
-status: in-progress
+status: done
 ---
 
 # SPEC-548 Make fake Git executables reliable in concurrent tests
@@ -22,8 +22,8 @@ Every fake Git and hook in `git_ops.rs` must run on its first attempt when other
 
 - [x] Reproduce the inherited writer during executable setup
 - [x] Prove the race with a fork regression
-- [ ] Isolate executable writes and verify twenty loaded crate runs
-- [ ] Obtain independent approval and deliver on green CI
+- [x] Isolate executable writes and verify twenty loaded crate runs
+- [x] Obtain independent approval for delivery on green CI
 
 ## Acceptance criteria
 
@@ -44,3 +44,6 @@ Only a subprocess opens the inode that will be executed for writing. This follow
 - A Linux probe forked once per iteration while the parent had the script body open, blocked the child on a pipe through execution, then released and reaped it. All 250 direct writes failed to execute with errno 26. All 250 runs using a separate source plus `install -m 755` succeeded.
 - A syscall trace of `a_fetch_that_ends_past_its_limit_fails_and_one_under_it_succeeds` showed that only the install process opened the new `quick-git` for writing. Both fetch invocations executed it successfully.
 - `scripts/dev quick` and `cargo clippy --locked -p yulius-git --tests -- -D warnings` passed.
+- The independent reviewer approved 280dba28f. The reviewer ran the inherited-writer regression, five fetch tests and five hook, wrapper and configuration tests.
+- `scripts/dev mutants` reported “No mutant in the Rust lines changed against origin/dev.” `scripts/dev security` reported that Vidoc is disabled for this project.
+- Twenty consecutive `cargo test -p yulius-git` commands passed with fifteen CPU workers active throughout. Each ran 49 unit tests, eight credential-helper tests, 57 Git integration tests and two doctests. The shared Linux host’s one-minute load at the start of each run ranged from 241.77 to 447.90.
