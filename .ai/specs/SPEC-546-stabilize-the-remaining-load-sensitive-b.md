@@ -57,3 +57,7 @@ The original CI heads preceded #1150 (`e2dd441d`, Nov 11 12:30 UTC). #1156’s g
 The later missing-toast report was on `3308cd33`, which contained #1150 and #1159. On current dev, holding the Git overview read, pressing Space down, releasing the read, waiting for Activity and then releasing Space left focus on the replacement switch and the stored value on. This reproduces the symptom independently of the unavailable CI trace. With the fix the same probe stored off.
 
 The committed regression at `34dadb66a` forced the same overview render during a native Space press and failed at the original missing-toast assertion. The focused e2e selection passed all five named tests and the refused PATCH during a real card update (6/6). The unchanged input handles keyup, and a changed card still redraws.
+
+The independent reviewer approved `248bcddf3` and ran all six protection tests. The review asked for a count of PATCH requests from one Space activation. Adding that assertion to the admin test rejected a deliberately duplicated PATCH (“expected 2 to be 1”). The protection suite passed 6/6 with the real handler and the count assertion.
+
+`scripts/dev quick` passed the repository contracts and Rust formatting check. `scripts/dev security` reported that Vidoc was disabled. `scripts/dev mutants` reported “No Rust code changed against origin/dev: nothing to mutate.” The browser regression and duplicate-write probe exercise the JavaScript changes directly.

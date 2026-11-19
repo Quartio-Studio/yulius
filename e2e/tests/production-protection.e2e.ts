@@ -8,7 +8,7 @@ failOnPageErrors();
 // with no access to github pro. It should be done in Git section". The Git page's Production
 // protection card switches off the requirement of a GitHub ruleset on the production branch.
 
-type Mocked = { __yuliusMock: { sandboxes: { slug: string; repo: { url: string }; profile: { protect_production?: boolean } }[]; release: () => void; resyncNow: () => void } };
+type Mocked = { __yuliusMock: { sent: Record<string, number>; sandboxes: { slug: string; repo: { url: string }; profile: { protect_production?: boolean } }[]; release: () => void; resyncNow: () => void } };
 
 /** The mock's stored switch of the sandbox `slug`. */
 const switchOf = (browser: Browser, slug: string) => browser.evaluate((s: string) => {
@@ -45,6 +45,7 @@ test('an admin turns the production ruleset requirement off and on in the Git pa
   await expect(card.getByRole('switch', 'Require a GitHub ruleset on main')).not.toBeChecked();
   // The switch shows the new state while it is sent: wait for the stored one.
   await expect.poll(() => switchOf(browser, 'studio')).toBe(false);
+  expect(await browser.evaluate(() => (window as unknown as Mocked).__yuliusMock.sent['PATCH /api/sandboxes/sb_studio'])).toBe(1);
   expect(await switchOf(browser, 'product')).toBe(true);
 
   await card.getByRole('switch', 'Require a GitHub ruleset on main').click();
