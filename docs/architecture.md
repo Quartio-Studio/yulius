@@ -3333,7 +3333,15 @@ not: `POST /api/tasks/{tid}/needs-you/answer` (`App::answer_needs_you`) types on
 through `type_into_session` and ends the request (audited `task.needs_you.answered`); control
 does not move. The task is read again after the access check. It is refused while the agent asks
 in its terminal and, from anyone but the owner, while the owner's personal agent
-secrets or MCP servers reach the run. A playground's guest tidies and answers only their own
+secrets or MCP servers reach the run. A request can name whom it waits for besides the owner
+(`NeedsYouRecord.named`, `who` of `needs_you`,
+[SPEC-512](../.ai/specs/SPEC-512-marcin-s-five-issues-1412-1418-1413-1107.md) part 2,
+[decision 0379](decisions/0379-a-needs-you-names-who-may-answer-it.md)): each a person with write
+access, checked when it is raised. A named request is answered by its owner and whom it still
+names; `task_message` from a non-owner while such a request is open goes through
+`answer_needs_you`; an answer carries the request's `at` (`asked_at`) and is refused once the
+request was replaced, and the owner withdraws a name (`POST /api/tasks/{tid}/needs-you/withdraw`,
+`task.needs_you.withdrawn`). A playground's guest tidies and answers only their own
 tasks (`TaskRefusal::Guest`). Anyone else who may work in the project (not a guest) takes control at
 once from the task's page or its menu (`App::take_task_control`, `seize_control`,
 [SPEC-510](../.ai/specs/SPEC-510-change-request-control-for-tasks-to-take.md),

@@ -165,10 +165,10 @@ issue's acceptance criteria.
 - [x] The Capacity card shows working, parked, idle and queued sessions
 - [x] Docs for parking: product, architecture, api, operations, changes
 - [x] Review of the #1412 pull request answered test-first
-- [ ] needs_you names who it waits for, refused for logins without write access
-- [ ] A named person answers an open needs_you on the web and with task_message
-- [ ] The owner sees who may answer and withdraws it; answers attributed in transcript and audit
-- [ ] Owner-only refusals tested for the named person; ADR and docs for answers
+- [x] needs_you names who it waits for, refused for logins without write access
+- [x] A named person answers an open needs_you on the web and with task_message
+- [x] The owner sees who may answer and withdraws it; answers attributed in transcript and audit
+- [x] Owner-only refusals tested for the named person; ADR and docs for answers
 - [ ] Review of the #1418 pull request answered test-first
 - [ ] Digest setting: on or off, time and idle threshold, off by default
 - [ ] The digest is built from task state and last messages
@@ -200,14 +200,14 @@ issue's acceptance criteria.
 
 ### #1418
 
-- [ ] A task can name who its `needs_you` waits for; logins without write access are refused when
+- [x] A task can name who its `needs_you` waits for; logins without write access are refused when
   the `needs_you` is raised (ANS-001).
-- [ ] A named non-owner can answer that `needs_you` (web and `task_message`) while it is open, and
+- [x] A named non-owner can answer that `needs_you` (web and `task_message`) while it is open, and
   is refused once it is cleared or replaced, with a message that says so (ANS-002 to ANS-004).
-- [ ] The answer appears in the transcript and the audit log as that person's, and the task keeps
+- [x] The answer appears in the transcript and the audit log as that person's, and the task keeps
   acting on GitHub as its owner (ADR-0370, ANS-006).
-- [ ] The owner sees who else may answer and can withdraw it (ANS-005).
-- [ ] Everything else on the task stays owner-only (GIT-004), with tests for terminal input,
+- [x] The owner sees who else may answer and can withdraw it (ANS-005).
+- [x] Everything else on the task stays owner-only (GIT-004), with tests for terminal input,
   start, stop and merge by the named person (ANS-006).
 
 ## Test plan
@@ -260,6 +260,33 @@ issue's acceptance criteria.
   session that takes none, and is told when the task resumes.
 
 ## Evidence
+
+### Part 2 (#1418)
+
+| Acceptance criterion | Held by |
+| --- | --- |
+| A request names whom it waits for; logins without write access are refused when it is raised | `task_ownership::a_needs_you_names_who_it_waits_for` (a reader and an unknown login refuse the whole request and record nothing; `@Bob`, the owner and a repeat clean to `["bob"]`) |
+| A named non-owner answers on the web and with `task_message` while it is open; refused once cleared, replaced or withdrawn, saying so | `task_ownership::a_named_request_is_answered_by_whom_it_names` (Bob and the owner answer, Dave is refused naming @bob, an unnamed request stays any writer's, Bob's `task_message` is his answer, Dave's is refused, with nothing asked a message stays the owner's); `task_ownership::an_answer_to_a_replaced_or_withdrawn_request_is_refused` ("replaced", "withdrew"); ADR-0370's "nothing to answer" test still holds |
+| The answer is that person's in the transcript and the audit; the task acts as its owner | `task_message::a_named_person_answers_through_their_own_agent` (real processes: "Answer from bob" on the agent's screen, request ended, owner unchanged, audited as bob) |
+| The owner sees who may answer and withdraws it | `task_ownership::an_answer_to_a_replaced_or_withdrawn_request_is_refused` (only the owner withdraws, `task.needs_you.withdrawn` audited); e2e `reply.e2e.ts` ("Asks @bob, @carol", Withdraw @bob) |
+| Everything else stays owner-only, tested for the named person | `task_ownership::a_named_person_steers_nothing_else` (terminal input refused, Continue and merge 403; a stop succeeds, as ADR-0331 lets anyone who may work there stop a task: the issue's "stop" predates ADR-0331) |
+
+What a person sees. Before: a request on someone else's task offered every teammate Reply, and
+their own agent's `task_message` was refused ("only they steer it"). After: the request says
+"Asks @bob"; Bob gets Reply (and his agent's message is his answer), others get none; the owner
+sees "Withdraw @bob". Refusals say "task #43 asks @alice, @bob, not you", "the question you
+answered on task #43 was replaced by a new one: read it and answer again", "@alice withdrew you
+from task #43's question".
+
+Commands (2026-11-19): `cargo test -p yulius --test main -- task_ownership:: task_message::
+telegram:: docker_trouble_notices:: agent_hooks:: cockpit:: parking::` → 221 passed;
+`cargo test -p yulius-app --lib` → 626 passed; e2e `reply`, `parked`, `attention`, `ownership`,
+`watching`, `notifications` → 79 passed; `scripts/dev quick`, `lint`, `cargo doc` passed.
+
+Also in this pull request, the two follow-ups the review of part 1 left: a parked task's Resume
+is no Telegram news (`telegram::a_parked_tasks_resume_is_no_news`, failed before: the notice was
+sent twice), and a parked status with no activity reads "Parked" on the Dashboard's Outcomes
+(e2e `parked.e2e.ts`).
 
 ### Part 1 (#1412)
 
