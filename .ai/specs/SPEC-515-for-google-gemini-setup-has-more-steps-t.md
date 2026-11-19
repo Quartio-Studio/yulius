@@ -159,6 +159,14 @@ in the same terminal. The window closes when they press Done (issue #1421).
     connected. Left as is.
 - Product lines after the approval: 3 (one in `pages/admin.js`, two in `mock.js`). Tests and
   documents do not count.
+- Dev merged again (04fd49c30, SPEC-514 #1424). The only conflict was the `antigravity.e2e.ts`
+  row of `e2e/README.md`, and both sides are kept. After the merge: `scripts/dev quick` passed;
+  `accounts::` and `antigravity::` 40 passed; `tests/antigravity.e2e.ts` and
+  `tests/subscriptions.e2e.ts` 61 passed.
+- Review round 3 (yulius-reviewer, Opus 5.5, head ac377ba2c; needed because the merge resolved a
+  conflict): **approve**, nothing to fix, nothing pre-existing. One nit, own code: the mock's new
+  sealing of a replaced signed-in sign-in in `startLogin` has no e2e case left. Left as is: it only
+  keeps the mock true to the server, whose rule the Rust tests hold.
 - Not testable here: a live Google sign-in with the real agy and its real setup screens (no
   Google account in the sandbox). The data-use setting being remote is read from agy 1.5.10's
   strings (`UserSettings.TelemetryEnabled`, "Failed to save remote settings"), not seen live.
