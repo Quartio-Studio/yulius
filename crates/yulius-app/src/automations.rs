@@ -174,6 +174,16 @@ pub struct AutomationRecord {
 }
 
 impl AutomationRecord {
+    fn require_creator(&self, person: &UserId) -> AppResult<()> {
+        if self.created_by == *person {
+            Ok(())
+        } else {
+            Err(AppError::Forbidden(
+                "only the automation creator can change or start it".into(),
+            ))
+        }
+    }
+
     /// The schedule anchor: last handled time or creation time.
     #[must_use]
     pub fn anchor(&self) -> Timestamp {
@@ -443,6 +453,8 @@ impl App {
             after_task_number,
             start_rule,
             prepared,
+            owner_id: record.created_by.to_string(),
+            owner_login: self.login_of(&record.created_by).await,
             created_via: record.created_via.as_str().to_owned(),
             next_run_at,
             last_run: last.first().map(run_view),
@@ -683,6 +695,7 @@ impl App {
             .find(|a| templates::same_name(template, &a.name));
         if let Some(current) = existing {
             if !current.enabled {
+                current.require_creator(created_by)?;
                 let next = AutomationRecord {
                     enabled: true,
                     ..current.clone()
@@ -790,6 +803,7 @@ impl App {
         let current = self
             .automation_for_change(ctx, id, Action::Configure)
             .await?;
+        current.require_creator(&ctx.user.id)?;
         // An update that sends no agent keeps the stored one (SPEC-514 PIN-003).
         let fields = validate(input, current.harness)?;
         let workflow_id = self
@@ -928,6 +942,7 @@ impl App {
         let record = self
             .automation_for_change(ctx, id, Action::Configure)
             .await?;
+        record.require_creator(&ctx.user.id)?;
         // The stored choice sent back is kept unchecked, as an update keeps it (AUT-014).
         let start = match start {
             None => None,
@@ -1514,6 +1529,7 @@ impl App {
     ) -> AppResult<Value> {
         self.configure_authority(caller).await?;
         let current = self.agent_automation(caller, args).await?;
+        current.require_creator(&caller.user)?;
         let mut next = current.clone();
         if let Some(name) = args.get("name").and_then(Value::as_str) {
             next.name = validate_name(name)?;

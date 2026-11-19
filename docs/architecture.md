@@ -3419,6 +3419,8 @@ sequenceDiagram
 
 ## Ready-made automations
 
+Each automation has an immutable creator. HTTP and MCP compare the authenticated person with the creator before saving, re-enabling or starting a run. Task creation uses that same identity. [ADR-0381](decisions/0381-automation-creators-authorize-edits-and-starts.md)
+
 Ready-made automations are a read-only catalog like the default workflows
 ([SPEC-042](../.ai/specs/SPEC-042-create-2-default-automations-that-can-be.md),
 [decision 0034](decisions/0034-ready-made-automations-catalog.md)): `catalog/automations/*.md`,
@@ -3433,9 +3435,9 @@ flowchart LR
   CAT["catalog/automations/*.md"] -->|"build.rs embeds"| TPL["automations::templates"]
   UI["Automations page: Defaults"] -->|"GET automation-templates"| TPL
   UI -->|"POST …/enable"| EN["App::enable_automation_template"]
-  EN -->|"same name exists"| UPD["re-enable it"]
+  EN -->|"same name, paused, caller is creator"| UPD["re-enable it"]
   EN -->|"else"| INS["insert automation (enabled)"]
-  INS --> SCH["Scheduler: one task per slot"]
+  INS --> SCH["Scheduler: one task per slot as creator"]
   UPD --> SCH
 ```
 

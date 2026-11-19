@@ -366,10 +366,10 @@ function seed(params) {
     { name: 'test-driven-development', description: 'Write the test first, watch it fail for the right reason, then the minimal code.', source: 'superpowers', path: 'skills/superpowers/test-driven-development/SKILL.md', enabled: false },
   ];
   db.automations = [
-    { id: 'aut_1', sandbox: 'sb_studio', name: 'Daily customer feedback', cron: '0 9 * * *', utc_offset_minutes: 120, prompt: 'Create a task implementing yesterday’s customer feedback from the Quartio MCP.', workflow_id: 'wf-feature', harness: 'claude', enabled: true, supertask: false, after_task_id: null, after_task_number: null, start_rule: null, created_via: 'agent', next_run_at: isoIn(14 * HOUR), last_run: { scheduled_for: iso(10 * HOUR), state: 'task_created', task_id: 'tsk_studio_8' } },
-    { id: 'aut_2', sandbox: 'sb_studio', name: 'Weekly dependency audit', cron: '0 7 * * 1', utc_offset_minutes: 0, prompt: 'Audit dependencies for advisories and open a PR with safe upgrades.', workflow_id: null, harness: 'claude', enabled: false, supertask: false, after_task_id: null, after_task_number: null, start_rule: null, created_via: 'ui', next_run_at: null, last_run: null },
+    { id: 'aut_1', sandbox: 'sb_studio', owner_id: db.me.user.id, owner_login: db.me.user.login, name: 'Daily customer feedback', cron: '0 9 * * *', utc_offset_minutes: 120, prompt: 'Create a task implementing yesterday’s customer feedback from the Quartio MCP.', workflow_id: 'wf-feature', harness: 'claude', enabled: true, supertask: false, after_task_id: null, after_task_number: null, start_rule: null, created_via: 'agent', next_run_at: isoIn(14 * HOUR), last_run: { scheduled_for: iso(10 * HOUR), state: 'task_created', task_id: 'tsk_studio_8' } },
+    { id: 'aut_2', sandbox: 'sb_studio', owner_id: db.me.user.id, owner_login: db.me.user.login, name: 'Weekly dependency audit', cron: '0 7 * * 1', utc_offset_minutes: 0, prompt: 'Audit dependencies for advisories and open a PR with safe upgrades.', workflow_id: null, harness: 'claude', enabled: false, supertask: false, after_task_id: null, after_task_number: null, start_rule: null, created_via: 'ui', next_run_at: null, last_run: null },
     // A shipped automation an agent created by name (SPEC-042 OPS-010): a default all the same (SPEC-197).
-    { id: 'aut_3', sandbox: 'sb_studio', name: 'Work through open issues', cron: '0 3 * * *', utc_offset_minutes: 120, prompt: 'Work through this repository’s open GitHub issues written by the core team or their agents.', workflow_id: null, harness: 'claude', enabled: true, supertask: false, after_task_id: null, after_task_number: null, start_rule: null, created_via: 'agent', next_run_at: isoIn(14 * HOUR), last_run: null },
+    { id: 'aut_3', sandbox: 'sb_studio', owner_id: db.me.user.id, owner_login: db.me.user.login, name: 'Work through open issues', cron: '0 3 * * *', utc_offset_minutes: 120, prompt: 'Work through this repository’s open GitHub issues written by the core team or their agents.', workflow_id: null, harness: 'claude', enabled: true, supertask: false, after_task_id: null, after_task_number: null, start_rule: null, created_via: 'agent', next_run_at: isoIn(14 * HOUR), last_run: null },
   ];
   db.mcp = [
     { id: 'mcp_quartio', sandbox: null, scope: 'instance', audience: 'team', name: 'quartio', transport: 'http', command: null, args: [], url: 'https://mcp.quartio.ai/mcp', env_keys: [], header_keys: ['Authorization'], enabled: true, origin: 'person' },
@@ -3127,6 +3127,9 @@ route('GET', `/api/sandboxes/${ID}/automation-templates`, ({ db, p }) => AUTOMAT
   const own = db.automations.find((a) => a.sandbox === p[0] && sameName(a.name, t.name));
   return { ...t, automation_id: own ? own.id : null };
 }));
+function requireAutomationCreator(db, automation) {
+  if (automation.owner_id !== db.me.user.id) fail(403, 'forbidden', 'only the automation creator can change or start it');
+}
 route('POST', `/api/sandboxes/${ID}/automation-templates/${ID}/enable`, ({ db, p }) => {
   need(sandboxOf(db, p[0]), 'write');
   const t = AUTOMATION_TEMPLATES.find((x) => x.id === p[1]);
@@ -3136,9 +3139,10 @@ route('POST', `/api/sandboxes/${ID}/automation-templates/${ID}/enable`, ({ db, p
   if (created) {
     db.nextId += 1;
     const { id: _id, description: _d, ...fields } = t;
-    a = { id: `aut_${db.nextId}`, sandbox: p[0], ...fields, harness: 'auto', created_via: 'ui', last_run: null };
+    a = { id: `aut_${db.nextId}`, sandbox: p[0], ...fields, owner_id: db.me.user.id, owner_login: db.me.user.login, harness: 'auto', created_via: 'ui', last_run: null };
     db.automations.push(a);
   }
+  if (!created && !a.enabled) requireAutomationCreator(db, a);
   Object.assign(a, { enabled: true, next_run_at: isoIn(5 * HOUR) });
   const { sandbox: _s, ...out } = a;
   return json(created ? 201 : 200, out);
@@ -3169,7 +3173,7 @@ route('POST', `/api/sandboxes/${ID}/automations`, ({ db, p, body }) => {
   need(sandboxOf(db, p[0]), 'write');
   if (Math.abs(Number(body.utc_offset_minutes) || 0) > 1080) fail(422, 'invalid', 'utc_offset_minutes must be within ±1080');
   db.nextId += 1;
-  const a = { id: `aut_${db.nextId}`, sandbox: p[0], ...body, harness: !body.harness || body.harness === 'auto' ? 'auto' : body.harness, ...automationStart(db, p[0], body), created_via: 'ui', next_run_at: body.enabled ? isoIn(5 * HOUR) : null, last_run: null };
+  const a = { id: `aut_${db.nextId}`, sandbox: p[0], ...body, harness: !body.harness || body.harness === 'auto' ? 'auto' : body.harness, ...automationStart(db, p[0], body), owner_id: db.me.user.id, owner_login: db.me.user.login, created_via: 'ui', next_run_at: body.enabled ? isoIn(5 * HOUR) : null, last_run: null };
   db.automations.push(a);
   const { sandbox: _s, ...out } = a;
   return json(201, out);
@@ -3177,10 +3181,12 @@ route('POST', `/api/sandboxes/${ID}/automations`, ({ db, p, body }) => {
 route('PUT', `/api/automations/${ID}`, ({ db, p, body }) => {
   const a = db.automations.find((x) => x.id === p[0]);
   if (!a) fail(404, 'not_found', 'not found');
+  need(sandboxOf(db, a.sandbox), 'write');
+  requireAutomationCreator(db, a);
   // The stored choice sent back unchanged is kept unchecked, as the server does (SPEC-078).
   const same = Boolean(body.supertask) === Boolean(a.supertask) && (body.after_task_id || null) === (a.after_task_id || null) && (body.start_rule || null) === (a.start_rule || null) && Boolean(body.prepared) === Boolean(a.prepared);
   const start = same ? { supertask: Boolean(a.supertask), after_task_id: a.after_task_id || null, after_task_number: a.after_task_number ?? null, start_rule: a.start_rule || null, prepared: Boolean(a.prepared) } : automationStart(db, a.sandbox, body);
-  Object.assign(a, body, start, { harness: !body.harness ? (a.harness || 'auto') : body.harness, next_run_at: body.enabled ? isoIn(5 * HOUR) : null });
+  Object.assign(a, body, start, { owner_id: a.owner_id, owner_login: a.owner_login, harness: !body.harness ? (a.harness || 'auto') : body.harness, next_run_at: body.enabled ? isoIn(5 * HOUR) : null });
   const { sandbox: _s, ...out } = a;
   return out;
 });
@@ -3191,6 +3197,7 @@ route('POST', `/api/automations/${ID}/run`, ({ db, p, body }) => {
   const a = db.automations.find((x) => x.id === p[0]);
   if (!a) fail(404, 'not_found', 'not found');
   need(sandboxOf(db, a.sandbox), 'write');
+  requireAutomationCreator(db, a);
   const stored = { supertask: Boolean(a.supertask), after_task_id: a.after_task_id || null, start_rule: a.start_rule || null, prepared: Boolean(a.prepared) };
   const same = !body || (Boolean(body.supertask) === stored.supertask && (body.after_task_id || null) === stored.after_task_id && (body.start_rule || null) === stored.start_rule && Boolean(body.prepared) === stored.prepared);
   const start = same ? stored : automationStart(db, a.sandbox, body);

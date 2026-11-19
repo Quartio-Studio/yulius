@@ -22,9 +22,9 @@ Issue #1289 and static inspection of dev 8d05c25b show that HTTP and MCP allow a
 ## Plan
 
 - [x] Specify the automation owner and legacy behavior
-- [ ] Cover edits, re-enables and starts with two actors
-- [ ] Bind automation actions to the authorized identity
-- [ ] Explain execution ownership in the editor and tools
+- [x] Cover edits, re-enables and starts with two actors
+- [x] Bind automation actions to the authorized identity
+- [x] Explain execution ownership in the editor and tools
 - [ ] Verify and review the fix for delivery into dev
 
 ## Acceptance criteria
@@ -40,3 +40,8 @@ Use the existing SQLite and fake GitHub fixtures, HTTP router, in-process MCP to
 ## Decisions
 
 [ADR-0381](../../docs/decisions/0381-automation-creators-authorize-edits-and-starts.md) extends task ownership to its scheduled source. A project writer can replace an absent creator's automation with their own.
+
+## Evidence
+
+- Before the fix, both synthetic authorization tests failed. The HTTP edit returned 200 when the fixture expected 403, and MCP accepted the other writer's update. The browser regression failed because the editor omitted the execution identity.
+- With the UI change, all 15 tests in `e2e/tests/automations.e2e.ts` passed on Chromium. The SQLite upgrade fixture paused the schedule, linked the pre-existing task and skipped the slot with no task.

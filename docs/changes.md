@@ -6,6 +6,8 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-19
 
+- Automation edits, schedule switches and Run now require the creator in the UI and tools. On upgrade, existing schedules pause once. Review the saved prompt and enable the schedule to resume it. [SPEC-534](../.ai/specs/SPEC-534-enforce-automation-ownership-across-edit.md)
+
 - Task briefings now request a native reviewer for each harness. Codex uses GPT-6.2 Astra at high effort and Antigravity uses Gemini 4 Neon (High) in every round. Claude Code keeps its Fable and Opus round policy. Gemini task launches use the Neon default delivered in SPEC-519 (review instructions in SPEC-524).
 - A question names who answers it (SPEC-512 part 2, task #494, #1418): an agent's `needs_you`
   can name the people besides the owner it waits for (`who`, each with write access to the

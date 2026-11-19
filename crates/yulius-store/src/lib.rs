@@ -192,6 +192,8 @@ const MIGRATIONS: &[&str] = &[
     include_str!("migrations/0068_automation_agent_named.sql"),
     // Schema version 69 (SPEC-525).
     include_str!("migrations/0069_reindex_codex_antigravity_sessions.sql"),
+    // SPEC-534. The position is the schema version and 0072 is the reserved file number.
+    include_str!("migrations/0072_pause_legacy_automations.sql"),
 ];
 
 type Job = Box<dyn FnOnce(&mut Connection) + Send + 'static>;
@@ -467,6 +469,10 @@ mod tests {
                 69,
                 include_str!("migrations/0069_reindex_codex_antigravity_sessions.sql"),
             ),
+            (
+                70,
+                include_str!("migrations/0072_pause_legacy_automations.sql"),
+            ),
         ];
         for (version, sql) in pinned {
             assert_eq!(
@@ -475,7 +481,7 @@ mod tests {
                 "schema version {version}"
             );
         }
-        assert_eq!(MIGRATIONS.len(), 69, "a new migration is pinned here too");
+        assert_eq!(MIGRATIONS.len(), 70, "a new migration is pinned here too");
     }
 
     /// SPEC-514 PIN-003: a version-67 database's automations saved as `auto` (drawn for each
