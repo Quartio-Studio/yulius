@@ -65,14 +65,14 @@ nobody asking:
 - Removing a subscription closes the Done tasks that run on it (`delete_account`:
   `task_is_done_locally`, then `close_task_and_wait`).
 
-That is why earlier tasks of this sandbox (#447, #449, #438, … all updated 2026-11-12 07:44:44Z)
-read `closed`. Today's six did not. Inferred, since the server's logs are outside the sandbox:
+Inferred, since the server's logs are outside the sandbox: that is why earlier tasks of this
+sandbox (#447, #449, #438, … all updated 2026-11-12 07:44:44Z) read `closed`. Today's six did not:
 today's server update (main promoted at 12:42 UTC) reattached the live sessions of the four
 already Done, and #493 and #499 reached their goals after it, so no run was lost.
 
 ### Cause
 
-No part of the Done rule disagreed: the six were shown Done and stayed open, because no rule
+No part of the Done rule disagreed: by the fields read (see Evidence), the six were shown Done and stayed open, because no rule
 closes a Done task whose session lives. The working reading is that the person expects such a
 task to be **closed**, leaving the Active list as finished as the earlier tasks did after a
 restart. It is not confirmed by the person: they were asked which page and label they saw, and
@@ -82,7 +82,7 @@ their answer did not say (see Decisions).
 
 1. **Keep it as it is.** Done tasks stay in the Active list's Done group until a person archives
    them, from the task menu or the Done group. Nothing changes. The next restart still closes some
-   of them and not others, which is the inconsistency the person noticed.
+   of them and not others, which may be what the person noticed (unconfirmed, see Cause).
 2. **Close a finished task by itself after a short grace period (recommended).** A task that has been Done for
    a grace period (default 15 minutes, so a person can still type a follow-up) is closed by
    Yulius. Done here means: its goal achieved, or its plan complete with its pull request merged,
@@ -99,8 +99,9 @@ their answer did not say (see Decisions).
 - FIN-002 (only if the person chooses option 2 or 3; not built here): a running task that stays
   finished for the grace period is closed by Yulius, as a person's archive closes it. Finished
   means goal achieved, or plan complete and pull request merged or tested, with no background
-  shell, no `yulius wait`, no armed merge and no `needs_you` (`task_is_done`, then
-  `close_task_now`; not `shows_done`, which also counts Answered). An agent that only answered
+  shell, no `yulius wait`, no armed merge and no `needs_you` (`task_is_done`, and no open request,
+  held prompt or pause as `task_group` reads them, then `close_task_now`; not `shows_done`, which
+  also counts Answered). An agent that only answered
   (SPEC-429 "Answered", no goal, no plan) stays open, because its person may still follow up.
   Its final screen is kept and Continue resumes it. A prompt, a shell or any activity in the
   period cancels it.
@@ -153,8 +154,8 @@ their answer did not say (see Decisions).
   `needs_you` call in #492, #493, #495, #496, #497; #499's one request resolved before its goal.
 - Code read: `statusInfo`/`taskInfo` (`status.js`) give `Done` for those inputs; `git log` since
   2026-11-17 shows no change to the Done rule (#1419 only a comment in `status.js`). Without a
-  person, a Done task closes only through RBT-001 (`after_loss`) or a subscription's removal
-  (`delete_account`). `task_done::an_idle_compaction_leaves_a_done_task_done` covers the
+  person, Yulius closes a Done task only through RBT-001 (`after_loss`) or a subscription's removal
+  (`delete_account`); a session that ends by itself with a normal exit also records `Closed`. `task_done::an_idle_compaction_leaves_a_done_task_done` covers the
   compaction.
 - Independent review, round 1 (Fable 5.2, head 06125d8e2): it confirmed the Done rule, the
   compaction test, today's merges and the transcripts. It asked for the answer to be recorded as
@@ -162,3 +163,7 @@ their answer did not say (see Decisions).
   #479 date, and the inferred reattach.
 - Not tested: what the person's browser rendered (the runs were closed before this task started,
   and the server's logs are outside the sandbox).
+- Independent review, round 2 (Fable 5.2, head b9a2b3c3b): approved. It checked all ten
+  round-1 answers against the code and the transcripts, and accepted "no change" as a recorded
+  default. Its two minors and three nits (the FIN-002 predicate, unconfirmed claims marked as
+  such, and a normal session exit as a third way to `Closed`) were fixed in wording.
