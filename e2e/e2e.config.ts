@@ -6,7 +6,7 @@
 // held under agents' builds (SPEC-053 Evidence).
 import type { E2EConfig } from 'e2e';
 import { anthropic } from '@ai-sdk/anthropic';
-import { web } from '@e2e-dev/web';
+import { chromium } from './chromium.ts';
 import { fileURLToPath } from 'node:url';
 
 const ui = fileURLToPath(new URL('../crates/yulius-server/web', import.meta.url));
@@ -22,7 +22,7 @@ export default {
   targets: [
     {
       name: 'chromium',
-      engine: web({ viewport: { width: 1440, height: 900 } }),
+      engine: chromium,
       app: {
         url: 'http://127.0.0.1:0',
         command: {
