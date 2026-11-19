@@ -111,9 +111,10 @@ model or effort keeps it.
   right: Some(Opus)` before it), the launch notice (the same test; with the filter in
   `supervisor.rs` mutated to `true` it failed with `["Opus 5.5 is used up on every subscription:
   this session runs on Gpt 6.2.astra."]`), the mock's `model_default` (the e2e composer test
-  failed with "gpt-6.2-astra · High effort" before it), the effort ternary, the `POST …/tasks` row
-  and the line wraps, and this Context. Left: the mock's Run now and Superagent tasks still get
-  `claude-opus-4` (pre-existing, mock-only, Antigravity alike; the server is right).
+  failed with "gpt-6.2-astra · High effort" before it), the `POST …/tasks` row and the line
+  wraps, and this Context. Left: the mock's duplicate effort arm (its line is over 200 bytes, which
+  a change after the approval may not touch), and the mock's Run now and Superagent tasks still
+  getting `claude-opus-4` (pre-existing, mock-only, Antigravity alike; the server is right).
 - `npx e2e run` of `codex`, `antigravity`, `responsive`, `model-fallback`, `claude-code` and
   `steps`: 71/71 passed.
 - Security scan: not run. Yulius CI's `security` job was skipped (exit 78: Vidoc refused the
