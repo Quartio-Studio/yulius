@@ -314,8 +314,6 @@ impl App {
         }
     }
 
-    /// A task session read from a stored copy moves to the native transcript once the task
-    /// resumed it (the copy stops growing; the native file has the continuation).
     /// A transcript rewritten in place (stepped back over a usage limit, SPEC-034) is indexed
     /// again from its start: the index reads transcripts as append-only.
     pub(crate) async fn reindex_session(&self, sandbox: &SandboxId, session_id: &str) {
@@ -334,27 +332,61 @@ impl App {
         }
     }
 
-    async fn follow_resumed_copies(&self, docs: &mut [SessionDocRecord]) -> AppResult<()> {
-        let stored_root = self.config.data_dir.join("transcripts");
-        for doc in docs.iter_mut() {
-            if doc.kind != SessionKind::Task
-                || !Path::new(&doc.transcript_path).starts_with(&stored_root)
-            {
-                continue;
+    /// A direct document read can precede an index refresh. Retry the bounded rollout lookup
+    /// only for a task document still pointing at its Codex placeholder.
+    async fn document_read_path(&self, doc: &SessionDocRecord) -> AppResult<PathBuf> {
+        let saved = PathBuf::from(&doc.transcript_path);
+        if let (SessionKind::Task, Harness::Codex) = (doc.kind, doc.harness) {
+            let sessions = self.codex_sessions(&doc.sandbox_id);
+            if saved == Self::missing_codex_rollout(&sessions, &doc.session_id) {
+                let harness = Arc::clone(&self.deps.harness);
+                let id = doc.session_id.clone();
+                return blocking(move || {
+                    Ok(harness
+                        .find_codex_rollout(&sessions, &id)
+                        .ok()
+                        .flatten()
+                        .unwrap_or(saved))
+                })
+                .await;
             }
-            let Some(task_id) = &doc.task_id else {
-                continue;
+        }
+        Ok(saved)
+    }
+
+    /// Persist the native path once a stored copy resumes or a pending Codex rollout appears.
+    async fn follow_native_transcripts(&self, docs: &mut [SessionDocRecord]) -> AppResult<()> {
+        let stored_root = self.config.data_dir.join("transcripts");
+        for doc in docs.iter_mut().filter(|doc| doc.kind == SessionKind::Task) {
+            let saved = Path::new(&doc.transcript_path);
+            let native = if saved.starts_with(&stored_root) {
+                let Some(task_id) = &doc.task_id else {
+                    continue;
+                };
+                let Some(task) = self.deps.store.task(task_id).await? else {
+                    continue;
+                };
+                self.native_transcript(&task, doc.harness, &doc.session_id)
+            } else {
+                let resolved = self.document_read_path(doc).await?;
+                if resolved == saved {
+                    continue;
+                }
+                resolved
             };
-            let Some(task) = self.deps.store.task(task_id).await? else {
-                continue;
-            };
-            let native = self.native_transcript(&task, doc.harness, &doc.session_id);
             if is_regular_file(&native) {
                 let path = native.to_string_lossy().into_owned();
-                self.deps.store.set_session_doc_path(&doc.id, &path).await?;
-                doc.transcript_path = path;
-                doc.indexed_bytes = 0;
-                doc.indexed_lines = 0;
+                let store = &self.deps.store;
+                if store
+                    .set_session_doc_path(&doc.id, &doc.transcript_path, &path)
+                    .await?
+                {
+                    doc.transcript_path = path;
+                    doc.indexed_bytes = 0;
+                    doc.indexed_lines = 0;
+                } else if let Some(current) = store.session_doc(&doc.id).await? {
+                    *doc = current;
+                }
             }
         }
         Ok(())
@@ -374,7 +406,7 @@ impl App {
             .into_iter()
             .filter(|doc| !doc.index_full)
             .collect();
-        self.follow_resumed_copies(&mut docs).await?;
+        self.follow_native_transcripts(&mut docs).await?;
         let paths: Vec<PathBuf> = docs
             .iter()
             .map(|doc| PathBuf::from(&doc.transcript_path))
@@ -726,7 +758,7 @@ impl App {
         let session = self
             .doc_view(&doc, &tasks, &mut HashMap::new(), Some((&ctx.user, level)))
             .await;
-        let path = PathBuf::from(&doc.transcript_path);
+        let path = self.document_read_path(&doc).await?;
         let anchor = self.sandbox_dir(&doc.sandbox_id);
         let page = blocking(move || {
             let read = transcripts::open(&anchor, &path)
@@ -1418,7 +1450,7 @@ impl App {
                 usize::try_from(n).unwrap_or(READ_CHARS_MAX)
             })
             .clamp(1_000, READ_CHARS_MAX);
-        let path = PathBuf::from(&doc.transcript_path);
+        let path = self.document_read_path(&doc).await?;
         let anchor = self.sandbox_dir(&doc.sandbox_id);
         let page = blocking(move || {
             transcripts::open(&anchor, &path)

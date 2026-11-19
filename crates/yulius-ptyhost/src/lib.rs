@@ -38,6 +38,7 @@ pub use containment::{BWRAP_PROGRAM, SYSTEM_READONLY_DIRS, bwrap_argv};
 pub use host::{HostError, MAX_SHUTDOWN_GRACE_MS, host_program, run_host};
 pub use reconcile::{
     RunDirState, TerminateError, current_boot_id, exit_usage, inspect_run_dir, terminate_recorded,
+    terminate_run_dir,
 };
 pub use spawn::{DEFAULT_SPAWN_TIMEOUT, HostProcessExit, SpawnError, SpawnedHost, spawn_host};
 pub use yulius_contracts::ptyhost::BubblewrapSpec;

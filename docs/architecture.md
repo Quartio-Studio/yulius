@@ -12,6 +12,8 @@ or an imported `auth.json`. The detailed contracts are in
 [SPEC-002](../.ai/specs/SPEC-002-yulius-architecture.md); crate layering rules are in
 [engineering/architecture.md](engineering/architecture.md).
 
+The supervisor terminates a disconnected run using the identities recorded by its host. On Linux it checks exit of the entire process before recording a forced loss. [Decision 0390](decisions/0390-linux-host-exit-is-observed-for-the-whole-process.md)
+
 ```mermaid
 flowchart LR
   UI["Web UI (xterm.js, Monaco)"] <--> RP["Reverse proxy (TLS)"] <--> API
@@ -63,7 +65,9 @@ The supervisor writes the home's `auth.json` (the account's sealed credential), 
 `hooks.json` through handles that follow no link, and reads the rollout from the sandbox's shared
 `codex/sessions`; its hooks reach Yulius as `yulius hook codex <event>`. After the run, a
 refreshed `auth.json` goes back into the vault, and the file leaves the sandbox once no run of the
-account is left there.
+account is left there. If a session document predates its rollout, transcript reads look up the
+file by session ID and the next index refresh saves its path on the same document.
+[SPEC-538](../.ai/specs/SPEC-538-repair-codex-session-documents-when-the.md)
 
 ```mermaid
 flowchart LR
@@ -1514,7 +1518,9 @@ request as it is:
   candidate tested the exact merged result (SPEC-497 MQW-002); a member whose own run fails leaves,
   and the candidate is formed again from the others (MQC-002); an errored or cancelled own run
   leaves it to the candidate (MQW-001); a candidate formed again on the same base with the same
-  members takes its tree's passed run (`App::ci_reuse_for_candidate`); a failed candidate waits
+  members takes its tree's passed run. A rebuilt candidate whose tree recently failed in a
+  candidate run takes that failed run ID first, even on a different base with different members
+  (`App::ci_reuse_for_candidate`, SPEC-542). A failed candidate waits
   for its members' own runs before it is bisected;
 - a pull request that changes files under a glob of the integration branch's `[merge_queue]
   apart` (derived files) that an earlier member also changes is held out of the candidate and
@@ -1547,7 +1553,7 @@ flowchart TD
     P -- passed --> U{contains the integration branch?}
     P -- running, behind --> C
     U -- yes --> M[merged now]
-    U -- no --> C[merge candidate: base + armed pull requests, one run beside their own]
+    U -- no --> C[merge candidate on the current base, reusing a known verdict for its tree]
     C -- a member's own run fails --> C
     C -- passed --> L[each brought up to date, verdict recorded, merged in order]
     C -- failed, n >= 2 --> H[first half again]
@@ -3396,7 +3402,10 @@ drawn for the size its writer's browser sets and is unreadable at another
 `watchview.js` prints the session with the Sessions view's renderer in the terminal's colours and
 reads on from where it stopped; `App::task_transcript` reads the file of the lineage entry adopted
 last (`transcripts::read_tail`, then `read_page` from `end`) and answers an unchanged size from a
-`stat`. Only the run's own `SessionStart` hook changes a task's session (`/clear`, `/resume`); a
+`stat`. The server's read cursor keeps the IDs of Claude background shells that read dotenv files,
+so each later `BashOutput` or `TaskOutput` for that shell gets dotenv redaction.
+[SPEC-536](../.ai/specs/SPEC-536-carry-claude-redaction-into-background-c.md).
+Only the run's own `SessionStart` hook changes a task's session (`/clear`, `/resume`); a
 `claude` the agent runs in its worktree writes a transcript beside the TUI's but is never adopted
 ([decision 0209](decisions/0209-only-the-tui-s-own-hooks-change-the-task-s-session.md)).
 While the reader has not scrolled up, a `ResizeObserver` keeps the view at the bottom through every
@@ -3426,6 +3435,8 @@ sequenceDiagram
 
 ## Ready-made automations
 
+Each automation has an immutable creator. HTTP and MCP compare the authenticated person with the creator before saving, re-enabling or starting a run. Task creation uses that same identity. [ADR-0381](decisions/0381-automation-creators-authorize-edits-and-starts.md)
+
 Ready-made automations are a read-only catalog like the default workflows
 ([SPEC-042](../.ai/specs/SPEC-042-create-2-default-automations-that-can-be.md),
 [decision 0034](decisions/0034-ready-made-automations-catalog.md)): `catalog/automations/*.md`,
@@ -3440,9 +3451,9 @@ flowchart LR
   CAT["catalog/automations/*.md"] -->|"build.rs embeds"| TPL["automations::templates"]
   UI["Automations page: Defaults"] -->|"GET automation-templates"| TPL
   UI -->|"POST …/enable"| EN["App::enable_automation_template"]
-  EN -->|"same name exists"| UPD["re-enable it"]
+  EN -->|"same name, paused, caller is creator"| UPD["re-enable it"]
   EN -->|"else"| INS["insert automation (enabled)"]
-  INS --> SCH["Scheduler: one task per slot"]
+  INS --> SCH["Scheduler: one task per slot as creator"]
   UPD --> SCH
 ```
 

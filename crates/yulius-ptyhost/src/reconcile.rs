@@ -132,6 +132,9 @@ fn child_matches(status: &StatusRecord) -> Option<Pid> {
 /// Failure to terminate a recorded run.
 #[derive(Debug, thiserror::Error)]
 pub enum TerminateError {
+    /// The recorded process identities could not be read.
+    #[error("cannot read the process status: {0}")]
+    Status(String),
     /// A signal could not be delivered.
     #[error("cannot signal process {pid}: {errno}")]
     Signal {
@@ -146,6 +149,20 @@ pub enum TerminateError {
         /// The survivor.
         pid: u32,
     },
+}
+
+/// Terminates the processes in `status.json`. A detached host may still be serving its
+/// child's exit frame after it writes `exit.json`.
+///
+/// # Errors
+/// Fails if the status is unreadable or [`terminate_recorded`] cannot end the processes.
+pub fn terminate_run_dir(run_dir: &Path) -> Result<(), TerminateError> {
+    if let Some(status) = read_status(&run_dir.join(STATUS_FILE))
+        .map_err(|error| TerminateError::Status(error.to_string()))?
+    {
+        terminate_recorded(&status)?;
+    }
+    Ok(())
 }
 
 /// Kills a recorded run: the child's process group (and, on Linux, its session) first, then the
