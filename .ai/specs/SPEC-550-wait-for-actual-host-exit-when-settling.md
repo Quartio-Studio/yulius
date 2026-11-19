@@ -1,6 +1,6 @@
 ---
 yulius-task: 54c4a0e3-d269-47d0-9355-2c4ed893ac81
-status: in-progress
+status: done
 ---
 
 # SPEC-550 Wait for actual host exit when settling a stopped run
@@ -25,8 +25,8 @@ Issue #1449 reports the host still running after stop on CI run `0c4393e8`. PR #
 - [x] Specify the delayed host exit regression
 - [x] Reproduce the failure with a controlled host
 - [x] Verify settlement against actual host exit
-- [ ] Prove whole-process exit when the Linux leader dies first
-- [ ] Review and deliver the fix to dev
+- [x] Prove whole-process exit when the Linux leader dies first
+- [x] Review and deliver the fix to dev
 
 ## Acceptance criteria
 
@@ -53,6 +53,7 @@ On Linux a PID file descriptor becomes readable when the last thread exits. A ze
 - Seven focused nextest cases passed (run `816cb2d3`), covering ordinary stop, delayed host exit at the loss transition, restart, an unreaped zombie, surviving termination, stale process identity and an unreadable record.
 - `scripts/dev quick` passed. `scripts/dev security` reported Vidoc disabled for the project.
 - Independent review approved `252fbd507`. The reviewer observed that deleting the status file between inspection and termination discards its identities on the base revision too. This separate case was recorded on #1449.
-
 - Stress on the first fix failed in iteration 1 of 10. A diagnostic run captured a zombie leader, two threads in the host and a second `waitpid(WNOHANG)` returning `StillAlive` at the loss transition. A syscall trace captured the kill and the host becoming waitable after the loss. #1190's fixture had a single-threaded, fully exited child.
 - The deterministic Linux worker test failed at `908a53098` with “the worker was still running.” With the PID file descriptor check, all three process unit tests passed, including the existing fully exited zombie case.
+- Nextest stress run `2f06ab6c` ran nine focused tests ten times. All 90 executions passed, including the delayed host at loss recording on every iteration. A fresh independent review approved `e0c51dbea`.
+- `scripts/dev mutants` ran 3,127 passing baseline tests. Its summary was “9 listed, 5 caught, 0 missed, 0 timed out, 4 unviable, 0 not reached (bound 30 min, took 1527 s)”.
