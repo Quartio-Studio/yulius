@@ -1420,7 +1420,7 @@ fn reattach_at_limit(order: LimitRestartRace) -> TestResult {
 }
 
 /// The delayed task gives its worker back to Tokio so the competing move can finish.
-fn hold_pool_move(
+pub(crate) fn hold_pool_move(
     point: yulius_app::race::Point,
     id: &TaskId,
 ) -> (std::sync::mpsc::Receiver<()>, std::sync::mpsc::Sender<()>) {

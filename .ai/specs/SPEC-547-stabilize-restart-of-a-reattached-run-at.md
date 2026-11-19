@@ -1,6 +1,6 @@
 ---
 yulius-task: 1c2c18ef-b209-4c4e-924b-19790ff0e5d6
-status: done
+status: in-progress
 ---
 
 # SPEC-547 Stabilize restart of a reattached run at its limit
@@ -32,6 +32,7 @@ Issue #1286 reports a timeout waiting for attempt two on plain dev under load. S
 - [x] Preserve failed hand-over and bounded retries when capacity runs out
 - [x] Verify probe progress and immediate resumption of ordinary pauses
 - [x] Ready the independently reviewed fix for the green CI merge
+- [ ] Resume the restored workflow when its first capacity pass is deferred
 
 ## Acceptance criteria
 
