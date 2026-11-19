@@ -7,6 +7,10 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 ## 2026-11-19
 
 - Rapid update requests now leave the systemd update watcher active. The operations guide covers upgrading hand-installed units and recovering a failed watcher (SPEC-551, #1201).
+- The merge train regression now checks that the train itself rejects a member whose owner was disabled and records that arm for one-by-one handling (SPEC-544, #1154).
+- Git integration tests now install fake Git executables and hooks in a separate process so concurrent forks cannot keep the executable open for writing (#1332, SPEC-548).
+- Browser tests recover their initial mock page once when Chromium reports a network change during startup. The test output records the recovery (#1331, SPEC-545).
+- The new automation editor keeps the name you enter while workflows load, including names that match a recipe (#1416, SPEC-543).
 - Mutation testing now checks the same workspace tests on the baseline and each mutant.
   Earlier runs could count an unrelated xtask failure as a catch (#1364, SPEC-533).
 
