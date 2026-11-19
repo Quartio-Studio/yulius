@@ -280,19 +280,14 @@ impl App {
         let path = self.native_transcript(&ctx.task, Harness::ClaudeCode, session);
         let harness = Arc::clone(&self.deps.harness);
         let (session, id, prompt) = (session.clone(), id.clone(), prompt.clone());
+        let run_to_submit = ctx.attempt.started_at..=yulius_domain::time::Timestamp(sent);
         // Claude 2.1.322 buffered its queue writes for 67–108 ms. Let the already-made
         // hand-over reach disk. Use the original submit time throughout, even if keys arrive.
         let age = self.now().0.saturating_sub(sent).clamp(0, 200);
         tokio::time::sleep(std::time::Duration::from_millis((200 - age).unsigned_abs())).await;
         tokio::task::spawn_blocking(move || {
             crate::transcripts::open(&anchor, &path).map_or(SubmitOrigin::Unmarked, |file| {
-                harness.submit_origin(
-                    file,
-                    &session,
-                    &id,
-                    &prompt,
-                    yulius_domain::time::Timestamp(sent),
-                )
+                harness.submit_origin(file, &session, &id, &prompt, run_to_submit)
             })
         })
         .await

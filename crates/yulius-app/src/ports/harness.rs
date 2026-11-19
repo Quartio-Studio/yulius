@@ -417,7 +417,7 @@ pub trait HarnessPort: Send + Sync {
         session: &str,
         id: &str,
         prompt: &str,
-        sent: Timestamp,
+        run_to_submit: std::ops::RangeInclusive<Timestamp>,
     ) -> yulius_domain::harness::SubmitOrigin;
     /// Steps a Claude session's transcript back over a usage limit (SPEC-034 LIM-001); `true`
     /// when it rewrote the file. Blocking file I/O bounded by the transcript's size: callers run

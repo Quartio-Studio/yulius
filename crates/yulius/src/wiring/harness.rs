@@ -392,9 +392,9 @@ impl HarnessPort for HarnessAdapter {
         session: &str,
         id: &str,
         prompt: &str,
-        sent: yulius_domain::time::Timestamp,
+        run_to_submit: std::ops::RangeInclusive<yulius_domain::time::Timestamp>,
     ) -> yulius_domain::harness::SubmitOrigin {
-        yulius_harness::scheduled::submit_origin(file, session, id, prompt, sent)
+        yulius_harness::scheduled::submit_origin(file, session, id, prompt, run_to_submit)
             .unwrap_or(yulius_domain::harness::SubmitOrigin::Unmarked)
     }
 

@@ -17,7 +17,7 @@ pub fn submit_origin(
     session: &str,
     prompt_id: &str,
     prompt: &str,
-    sent: Timestamp,
+    run_to_submit: std::ops::RangeInclusive<Timestamp>,
 ) -> io::Result<SubmitOrigin> {
     let len = file.metadata()?.len();
     let start = len.saturating_sub(crate::tail::DEFAULT_MAX_LINE_BYTES as u64);
@@ -35,7 +35,7 @@ pub fn submit_origin(
         session,
         prompt_id,
         prompt,
-        sent,
+        run_to_submit,
         start != 0,
     ))
 }
@@ -51,7 +51,6 @@ struct Record<'a> {
     operation: Option<&'a str>,
     // Enqueue content may contain JSON escapes, or (on another record) be an object.
     content: Option<serde_json::Value>,
-    prompt: Option<String>,
     uuid: Option<&'a str>,
     is_sidechain: Option<bool>,
     scheduled_fire_id: Option<&'a str>,
@@ -65,13 +64,12 @@ fn origin_in<'a>(
     session: &str,
     id: &str,
     prompt: &str,
-    sent: Timestamp,
+    run_to_submit: std::ops::RangeInclusive<Timestamp>,
     clipped: bool,
 ) -> SubmitOrigin {
     // The file can contain enqueue, dequeue, THEN fire. Their provider timestamps give the
-    // causal order. A fire's display prompt can be folded or shortened. The enqueue carries
+    // causal order. A fire can display a loop name in place of the expanded prompt. The enqueue carries
     // the complete text. Pair the fire with its next enqueue, never a later same-text entry.
-    let preview = prompt.split_whitespace().collect::<Vec<_>>().join(" ");
     let mut events = Vec::new();
     let mut finished = std::collections::HashSet::new();
     for line in lines {
@@ -93,18 +91,15 @@ fn origin_in<'a>(
                 finished.insert(fire);
             }
         }
-        let Some(at) = r.timestamp.and_then(parse_rfc3339).filter(|at| *at <= sent) else {
+        let Some(at) = r
+            .timestamp
+            .and_then(parse_rfc3339)
+            .filter(|at| run_to_submit.contains(at))
+        else {
             continue;
         };
         let event = match (r.kind, r.subtype, r.operation) {
-            ("system", Some("scheduled_task_fire"), _) => r.uuid.map(|uuid| {
-                // The fire holds a display preview (at most 200 UTF-16 units); the enqueue
-                // is the exact comparison. Keep unrelated fires in order too.
-                Event::Fire(
-                    uuid,
-                    r.prompt.as_deref().is_some_and(|p| preview.starts_with(p)),
-                )
-            }),
+            ("system", Some("scheduled_task_fire"), _) => r.uuid.map(Event::Fire),
             ("queue-operation", _, Some("enqueue")) => {
                 let text = r.content.as_ref().and_then(serde_json::Value::as_str);
                 Some(Event::Enqueue(text.map(str::to_owned)))
@@ -144,17 +139,22 @@ fn hand_over(
     let mut handed_on = SubmitOrigin::Unmarked;
     for (_, event) in events {
         match event {
-            Event::Fire(uuid, matches) => fires.push_back((uuid, matches)),
+            Event::Fire(uuid) => fires.push_back(uuid),
             Event::Enqueue(text) => {
                 let scheduled = fires
                     .pop_front()
-                    .is_some_and(|(uuid, matches)| matches && !finished.contains(uuid));
+                    .is_some_and(|uuid| !finished.contains(uuid));
                 waiting.push_back((text, scheduled));
             }
             Event::Dequeue => {
                 match waiting.pop_front() {
                     Some((Some(text), true)) if text == prompt => {
                         handed_on = SubmitOrigin::Scheduled
+                    }
+                    Some((Some(text), false))
+                        if clipped && text == prompt && handed_on == SubmitOrigin::Unmarked =>
+                    {
+                        handed_on = SubmitOrigin::UnidentifiedHandOver;
                     }
                     // Claude can leave a background notice counted forever (SPEC-493).
                     Some((Some(text), _))
@@ -187,7 +187,7 @@ fn hand_over(
 }
 
 enum Event<'a> {
-    Fire(&'a str, bool),
+    Fire(&'a str),
     Enqueue(Option<String>),
     Turn,
     Dequeue,
@@ -216,7 +216,7 @@ mod tests {
             "s",
             id,
             prompt,
-            Timestamp(at),
+            Timestamp(0)..=Timestamp(at),
             false,
         ) == SubmitOrigin::Scheduled
     }
@@ -269,6 +269,91 @@ mod tests {
             "replayed scheduled hook"
         );
         assert!(!classified(&records, "another", &text, 7), "retired fire");
+    }
+
+    #[test]
+    fn the_fire_display_can_differ_from_the_scheduled_prompt() {
+        use serde_json::json;
+        for (display, text) in [
+            ("/loop (loop.md)", "# /loop tick: check build"),
+            ("👩💻", "👩‍💻"),
+        ] {
+            let records = [
+                record(
+                    "system",
+                    1,
+                    json!({"subtype":"scheduled_task_fire","uuid":"fire","prompt":display}),
+                ),
+                record(
+                    "queue-operation",
+                    2,
+                    json!({"operation":"enqueue","content":text}),
+                ),
+                record("queue-operation", 3, json!({"operation":"dequeue"})),
+            ];
+            assert!(classified(&records, "p", text, 4), "{display}");
+        }
+    }
+
+    #[test]
+    fn a_resumed_process_starts_with_an_empty_prompt_queue() {
+        use serde_json::json;
+        let records = [
+            record(
+                "queue-operation",
+                1,
+                json!({"operation":"enqueue","content":"old process"}),
+            ),
+            record(
+                "system",
+                11,
+                json!({"subtype":"scheduled_task_fire","uuid":"fire","prompt":"check"}),
+            ),
+            record(
+                "queue-operation",
+                12,
+                json!({"operation":"enqueue","content":"check"}),
+            ),
+            record("queue-operation", 13, json!({"operation":"dequeue"})),
+        ];
+        let lines = records.iter().map(ToString::to_string).collect::<Vec<_>>();
+        // The current attempt started at 10.
+        assert_eq!(
+            origin_in(
+                lines.iter().map(String::as_bytes),
+                "s",
+                "p",
+                "check",
+                Timestamp(10)..=Timestamp(14),
+                false
+            ),
+            SubmitOrigin::Scheduled
+        );
+    }
+
+    #[test]
+    fn a_visible_matching_enqueue_can_have_its_fire_outside_the_tail() {
+        use serde_json::json;
+        let records = [
+            record(
+                "queue-operation",
+                2,
+                json!({"operation":"enqueue","content":"check"}),
+            ),
+            record("queue-operation", 3, json!({"operation":"dequeue"})),
+        ];
+        let lines = records.iter().map(ToString::to_string).collect::<Vec<_>>();
+        assert_eq!(
+            origin_in(
+                lines.iter().map(String::as_bytes),
+                "s",
+                "p",
+                "check",
+                Timestamp(0)..=Timestamp(4),
+                true
+            ),
+            SubmitOrigin::UnidentifiedHandOver
+        );
     }
 
     #[test]
@@ -327,7 +412,7 @@ mod tests {
                 "s",
                 "p",
                 "check",
-                Timestamp(13),
+                Timestamp(0)..=Timestamp(13),
                 false
             ),
             SubmitOrigin::UnidentifiedHandOver
@@ -367,7 +452,13 @@ mod tests {
             json!({"operation":"dequeue"}),
         )?;
         assert_eq!(
-            submit_origin(file.try_clone()?, "s", "p", "check", Timestamp(5))?,
+            submit_origin(
+                file.try_clone()?,
+                "s",
+                "p",
+                "check",
+                Timestamp(0)..=Timestamp(5)
+            )?,
             SubmitOrigin::UnidentifiedHandOver
         );
         write(
@@ -377,7 +468,7 @@ mod tests {
             json!({"promptId":"p","isMeta":true,"promptSource":"system","scheduledFireId":"fire"}),
         )?;
         assert_eq!(
-            submit_origin(file, "s", "other", "check", Timestamp(7))?,
+            submit_origin(file, "s", "other", "check", Timestamp(0)..=Timestamp(7))?,
             SubmitOrigin::Unmarked
         );
         Ok(())

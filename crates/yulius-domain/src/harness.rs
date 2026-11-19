@@ -303,7 +303,7 @@ pub enum SubmitOrigin {
     Unmarked,
     /// The prompt matches a scheduled hand-over or an ID-matched system prompt record.
     Scheduled,
-    /// The queue just handed an entry on, but its enqueue is outside the readable tail.
+    /// The queue handed an entry on, but a clipped record or a stranded notice obscures its source.
     /// Keep personal state until the next identifiable submission.
     UnidentifiedHandOver,
 }
