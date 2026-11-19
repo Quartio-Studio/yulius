@@ -9,6 +9,9 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 - Stopping a disconnected run now terminates its detached host even when the agent has just
   exited and the host is waiting to deliver the exit frame. On Linux, settlement also waits
   for the last host thread to exit (SPEC-550, #1449).
+- Git integration tests now install fake Git executables and hooks in a separate process so concurrent forks cannot keep the executable open for writing (#1332, SPEC-548).
+- Browser tests recover their initial mock page once when Chromium reports a network change during startup. The test output records the recovery (#1331, SPEC-545).
+- The new automation editor keeps the name you enter while workflows load, including names that match a recipe (#1416, SPEC-543).
 - Mutation testing now checks the same workspace tests on the baseline and each mutant.
   Earlier runs could count an unrelated xtask failure as a catch (#1364, SPEC-533).
 
