@@ -6,6 +6,10 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-19
 
+- Scrolling a full-screen task with mouse reporting off can no longer recall an earlier prompt
+  or trigger “Needs your action” for an unsent draft. Scrolling up still offers the session
+  history (SPEC-529, #1446).
+
 - Parked sessions (SPEC-512 part 1, task #494, #1412): a task whose turn ended and that waits for
   a person gives its idle session up after 30 minutes (`YULIUS_PARK_AFTER_MINUTES`, 0 never): the
   process ends, so it holds no session slot and no memory, and the task stays where the list
