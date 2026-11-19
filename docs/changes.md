@@ -6,6 +6,14 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-19
 
+- Antigravity offers Gemini 4 Neon and runs it at high effort by default (SPEC-519, task #501,
+  [ADR-0373](decisions/0373-gemini-4-neon-is-antigravitys-default-model-on-agy-1-5-12.md)):
+  confirmed end to end in a live Antigravity session on a Google sign-in subscription. An
+  Antigravity task that names no model launches with `--model gemini-4-neon --effort high`, records
+  `gemini-4-neon` on its attempt and names it in its details; the composer and Settings list Gemini
+  4 Neon first under Google and keep Gemini 4 Carbon second while unnamed `Random` continues to draw
+  across available harnesses (`SPEC-520`). The pinned Antigravity CLI moves from 1.5.10 to 1.5.12 so
+  Gemini 4 Neon works on `GEMINI_API_KEY` subscriptions too.
 - Watchers see Codex and Antigravity sessions (SPEC-525, task #507, #1440): someone else's Codex
   or Antigravity task showed "Codex is starting…" / "Antigravity is starting…" for its whole run,
   because the transcript reader knew only Claude Code's lines. It now reads Codex rollouts and

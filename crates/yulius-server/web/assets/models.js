@@ -8,7 +8,7 @@
 // Choosing Codex default sends `harness: codex` and no model: the server runs GPT-6.2 Astra, at
 // high effort unless one is chosen (SPEC-511). An explicit Codex model sends its id. Choosing a
 // Gemini model sends `harness: antigravity` and the model; Antigravity's default is Gemini 4
-// Carbon at high effort.
+// Neon at high effort (SPEC-519; Gemini 4 Carbon before, SPEC-505).
 
 import { readJson, writeJson } from './store.js';
 
@@ -64,8 +64,8 @@ export const PROVIDERS = [
     efforts: STANDARD,
     // Without an effort chosen, the server runs an Antigravity task at high effort.
     models: [
-      { id: 'gemini-4-carbon', name: 'Gemini 4 Carbon', description: 'Antigravity, high effort by default' },
-      { id: 'gemini-4-neon', name: 'Gemini 4 Neon', efforts: EXTRA_HIGH },
+      { id: 'gemini-4-neon', name: 'Gemini 4 Neon', description: 'Antigravity, high effort by default', efforts: EXTRA_HIGH },
+      { id: 'gemini-4-carbon', name: 'Gemini 4 Carbon' },
       { id: 'gemini-4-hydrogen', name: 'Gemini 4 Hydrogen', efforts: EXTRA_HIGH },
       { id: 'gemini-4-argon', name: 'Gemini 4 Argon' },
       { id: 'gemini-3.8-flash', name: 'Gemini 3.8 Flash' },
@@ -140,9 +140,9 @@ export function findEffort(id) {
 
 function effortLevels(modelId) {
   const found = findModel(modelId);
-  // Random (`modelId === null`) may draw Gemini 4 Carbon (`STANDARD`), Opus 5.5 (`MAX`) or
-  // GPT-6.2 Astra (`ULTRA`), so offer the common `STANDARD` tiers accepted by all three defaults.
-  return found?.model.efforts ?? found?.provider.efforts ?? STANDARD;
+  // Random (`modelId === null`) may draw Gemini 4 Neon (`EXTRA_HIGH`), Opus 5.5 (`MAX`) or
+  // GPT-6.2 Astra (`ULTRA`), so offer the common `EXTRA_HIGH` tiers accepted by all three defaults.
+  return found?.model.efforts ?? found?.provider.efforts ?? EXTRA_HIGH;
 }
 
 /** A browser's new-task picks, shared by Settings and the composer. */
@@ -168,9 +168,9 @@ export function modelPreferences() {
 export function modelMenuItems(selected, onPick) {
   return [
     // No model chosen: the agent is drawn uniformly for each task across Claude Code (Opus 5.5),
-    // Codex (GPT-6.2 Astra) and Antigravity (Gemini 4 Carbon), among those with non-exhausted
-    // subscriptions (SPEC-520 RHM-001/006).
-    { label: 'Random', description: 'Claude Code (Opus 5.5), Codex (GPT-6.2 Astra) or Antigravity (Gemini 4 Carbon), drawn for each task', checked: selected === null, onSelect: () => onPick(null) },
+    // Codex (GPT-6.2 Astra) and Antigravity (Gemini 4 Neon), among those with non-exhausted
+    // subscriptions (SPEC-520 RHM-001/006, SPEC-519 NEO-004).
+    { label: 'Random', description: 'Claude Code (Opus 5.5), Codex (GPT-6.2 Astra) or Antigravity (Gemini 4 Neon), drawn for each task', checked: selected === null, onSelect: () => onPick(null) },
     ...PROVIDERS.map((provider) => ({
       header: provider.name,
       items: provider.models.map((model) => ({ label: model.name, description: model.description, checked: model.id === selected, onSelect: () => onPick(model.id) })),

@@ -177,11 +177,19 @@ async fn a_task_without_an_agent_draws_across_all_harnesses_and_keeps_explicit_c
             "claude",
         ),
         (
-            json!({"prompt": "E", "model": "gemini-4-carbon"}),
+            json!({"prompt": "E", "model": "gemini-4-neon"}),
             "antigravity",
         ),
         (
-            json!({"prompt": "F", "harness": "auto", "model": "gemini-4-carbon"}),
+            json!({"prompt": "F", "harness": "auto", "model": "gemini-4-neon"}),
+            "antigravity",
+        ),
+        (
+            json!({"prompt": "G", "model": "gemini-4-carbon"}),
+            "antigravity",
+        ),
+        (
+            json!({"prompt": "H", "harness": "auto", "model": "gemini-4-carbon"}),
             "antigravity",
         ),
     ] {

@@ -102,8 +102,10 @@ every connected pool is temporarily limited, else `ClaudeCode`), recorded in `ta
 `harness` (or `model`) keep the calling task's agent (`chosen`), while explicit `auto`, Superagent
 calls and `auto` automations draw per created task.
 
-An Antigravity task ([decision 0361](decisions/0361-antigravity-is-a-third-harness-picked-at-random-by-default.md))
-runs the `agy` TUI on a Google account with a home of its own in its run directory,
+An Antigravity task ([decision 0361](decisions/0361-antigravity-is-a-third-harness-picked-at-random-by-default.md),
+[decision 0373](decisions/0373-gemini-4-neon-is-antigravitys-default-model-on-agy-1-5-12.md))
+runs the `agy` TUI on a Google account, on its own model and effort or else `--model gemini-4-neon
+--effort high` (SPEC-519), with a home of its own in its run directory,
 `<run>/antigravity-home`, the folder whose `.gemini` the CLI reads: Yulius writes its
 `settings.json` (the worktree trusted, the first-run screens skipped, `modelProvider: gemini` for
 a Gemini API key), `config/hooks.json`, `config/mcp_config.json` and, for a Google sign-in, the
@@ -133,7 +135,8 @@ flowchart LR
 
 The Codex CLI and the Antigravity CLI are Yulius's own
 ([decision 0355](decisions/0355-codex-returns-as-a-second-harness-with-a-pinned-cli.md),
-[decision 0361](decisions/0361-antigravity-is-a-third-harness-picked-at-random-by-default.md)):
+[decision 0361](decisions/0361-antigravity-is-a-third-harness-picked-at-random-by-default.md),
+[decision 0373](decisions/0373-gemini-4-neon-is-antigravitys-default-model-on-agy-1-5-12.md)):
 each pinned release (Codex 0.170.0, Antigravity 1.5.12) is downloaded once (Codex from npm,
 Antigravity from Google's release storage), checked against the sha512 in the source
 (`yulius_domain::agent_cli::{codex, antigravity}`) and unpacked into

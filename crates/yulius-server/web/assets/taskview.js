@@ -1364,7 +1364,7 @@ export function mountComposer(ctx, sandbox) {
     startButton.title = write ? `${startAction()} (${SUBMIT_KEYS})` : 'Requires write access';
     const found = findModel(picks.model);
     setChildren(modelChip, h('span', { class: 'sr-only' }, 'Model: '), h('span', { class: 'chip-label' }, found ? found.model.name : 'Random agent'), icon('down', { size: 12 }));
-    modelChip.title = found ? `${found.provider.name} · ${found.model.name}` : 'Agent: drawn for each task, Claude Code (Opus 5.5), Codex (GPT-6.2 Astra) or Antigravity (Gemini 4 Carbon)';
+    modelChip.title = found ? `${found.provider.name} · ${found.model.name}` : 'Agent: drawn for each task, Claude Code (Opus 5.5), Codex (GPT-6.2 Astra) or Antigravity (Gemini 4 Neon)';
     // A model without effort levels (Haiku) hides the effort choice and sends none.
     effortChip.hidden = found?.model.efforts?.length === 0;
     const effort = findEffort(picks.effort);

@@ -19,12 +19,15 @@ decision `F 2026-10-08`; provider switching and session translation stay out
 [ADR-0355](decisions/0355-codex-returns-as-a-second-harness-with-a-pinned-cli.md)).
 
 It runs native Antigravity CLI sessions on Antigravity (Google) subscriptions too, on Gemini 4
-Carbon at high effort unless a task names another Gemini model (`F 2026-11-17 Antigravity`, task
-#487). An Antigravity subscription signs in with the CLI's own Google sign-in or a Gemini API key,
-an Antigravity task moves only between Antigravity subscriptions, and Yulius provides the pinned
-Antigravity CLI (1.5.12)
+Neon at high effort unless a task names another Gemini model such as Gemini 4 Carbon
+(`F 2026-11-17 Antigravity`, task #487; `F 2026-11-19 Neon`, task #501). An Antigravity
+subscription signs in with the CLI's own Google sign-in or a Gemini API key, an Antigravity task
+moves only between Antigravity subscriptions, and Yulius provides the pinned Antigravity CLI
+(1.5.12)
 ([SPEC-505](../.ai/specs/SPEC-505-implement-antigravity-cli-next-to-claude.md),
-[ADR-0361](decisions/0361-antigravity-is-a-third-harness-picked-at-random-by-default.md)). An
+[SPEC-519](../.ai/specs/SPEC-519-this-is-a-test-task-confirm-everything-w.md),
+[ADR-0361](decisions/0361-antigravity-is-a-third-harness-picked-at-random-by-default.md),
+[ADR-0373](decisions/0373-gemini-4-neon-is-antigravitys-default-model-on-agy-1-5-12.md)). An
 Antigravity task stays Working while its command runs in the background or its agent resumes by
 itself ([SPEC-528](../.ai/specs/SPEC-528-antigravity-tasks-show-needs-its-person.md)). A
 task created without choosing an agent (the composer's and Settings' `Random`, or `auto`) and

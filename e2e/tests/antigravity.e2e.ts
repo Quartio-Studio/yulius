@@ -4,9 +4,10 @@ import { axeViolations, eventsConnected, failOnPageErrors, firstShown, mock, tou
 
 failOnPageErrors();
 
-// Antigravity as a third harness (SPEC-505 AGY-010): Antigravity subscriptions by Gemini API key
-// or Google sign-in, Gemini 4 Carbon in the composer's model menu (high effort by default), the
-// agent of an automation's tasks, and an Antigravity task that names its own agent.
+// Antigravity as a third harness (SPEC-505 AGY-010, SPEC-519 NEO-004): Antigravity subscriptions
+// by Gemini API key or Google sign-in, Gemini 4 Neon first and Gemini 4 Carbon second in the
+// composer's model menu (high effort by default), the agent of an automation's tasks, and an
+// Antigravity task that names its own agent.
 
 type Mocked = {
   __yuliusMock: {
@@ -131,24 +132,53 @@ test('Try again after a signed-in Antigravity sign-in was lost starts over and o
   await expect(browser.locator('.toast-ok .toast-msg:has-text("Antigravity retry is connected")')).toBeVisible();
 });
 
-test('choosing Gemini 4 Carbon in the composer starts an Antigravity task at high effort', async ({ app, browser, screen }) => {
+test('choosing Gemini 4 Neon or Gemini 4 Carbon in the composer starts an Antigravity task at high effort', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio'));
   await browser.evaluate(() => (window as unknown as Mocked).__yuliusMock.accounts.push({ id: 'acc_google', provider: 'google', label: 'Antigravity #1', status: 'ok' } as never));
   await firstShown(screen.getByRole('button', /^Model:/));
   await screen.getByRole('button', /^Model:/).click();
   await expect(screen.getByText('Google', { exact: true })).toBeVisible();
-  await screen.getByRole('menuitemradio', /^Gemini 4 Carbon/).click();
-  await expect(screen.getByRole('button', 'Model: Gemini 4 Carbon')).toBeVisible();
+  const googleModels = await browser.evaluate(() => {
+    const group = [...document.querySelectorAll('.menu-group[role="group"]')].find(
+      (el) => document.getElementById(el.getAttribute('aria-labelledby') || '')?.textContent?.trim() === 'Google',
+    );
+    return group ? [...group.querySelectorAll('.menu-label')].map((el) => el.textContent?.trim()) : [];
+  });
+  expect(googleModels.slice(0, 2)).toEqual(['Gemini 4 Neon', 'Gemini 4 Carbon']);
+  await screen.getByRole('menuitemradio', /^Gemini 4 Neon/).click();
+  await expect(screen.getByRole('button', 'Model: Gemini 4 Neon')).toBeVisible();
   const prompt = screen.getByRole('textbox', 'Task prompt');
   await prompt.fill('Add a health check');
   await prompt.press('ControlOrMeta+Enter');
   await expect(browser).toHaveURL(/#\/s\/studio\/t\/\d+$/);
-  const task = await browser.evaluate(() => {
+  const neonTask = await browser.evaluate(() => {
+    const tasks = (window as unknown as Mocked).__yuliusMock.tasks;
+    const last = tasks[tasks.length - 1] as Mocked['__yuliusMock']['tasks'][number] & { number: number };
+    return { harness: last.harness, model: last.model, effort: last.effort, number: last.number };
+  });
+  expect(neonTask).toMatchObject({ harness: 'antigravity', model: 'gemini-4-neon', effort: 'high' });
+  await browser.evaluate((num) => { location.hash = `#/s/studio/tasks/${num}`; }, neonTask.number);
+  await firstShown(screen.getByRole('heading', { level: 2, name: 'Details' }));
+  await expect.poll(() => browser.evaluate(() => {
+    const dt = [...document.querySelectorAll('.ti-kv dt')].find((el) => (el as HTMLElement).innerText === 'Model');
+    return dt ? (dt.nextElementSibling as HTMLElement).innerText : null;
+  })).toBe('Gemini 4 Neon · High effort');
+
+  // Gemini 4 Carbon stays selectable for tasks that ask for it.
+  await browser.evaluate(() => { location.hash = '#/s/studio'; });
+  await firstShown(screen.getByRole('button', 'Model: Gemini 4 Neon'));
+  await screen.getByRole('button', /^Model:/).click();
+  await screen.getByRole('menuitemradio', /^Gemini 4 Carbon/).click();
+  await expect(screen.getByRole('button', 'Model: Gemini 4 Carbon')).toBeVisible();
+  await screen.getByRole('textbox', 'Task prompt').fill('Check Carbon');
+  await screen.getByRole('textbox', 'Task prompt').press('ControlOrMeta+Enter');
+  await expect(browser).toHaveURL(/#\/s\/studio\/t\/\d+$/);
+  const carbonTask = await browser.evaluate(() => {
     const tasks = (window as unknown as Mocked).__yuliusMock.tasks;
     const last = tasks[tasks.length - 1];
     return { harness: last.harness, model: last.model, effort: last.effort };
   });
-  expect(task).toEqual({ harness: 'antigravity', model: 'gemini-4-carbon', effort: 'high' });
+  expect(carbonTask).toEqual({ harness: 'antigravity', model: 'gemini-4-carbon', effort: 'high' });
 });
 
 test('an automation can run its tasks on Antigravity', async ({ app, browser, screen }) => {

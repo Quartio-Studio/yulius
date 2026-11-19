@@ -1491,8 +1491,8 @@ route('POST', `/api/sandboxes/${ID}/tasks`, async ({ db, p, body }) => {
   // non-exhausted subscriptions (SPEC-520 RHM-001..003).
   const drawn = (!body.harness || body.harness === 'auto') && !body.model;
   const harness = drawn ? drawHarness(db) : body.harness && body.harness !== 'auto' ? body.harness : impliedHarness(body.model);
-  // Antigravity runs Google's Gemini models only, as on the server (SPEC-505).
-  if (harness === 'antigravity' && body.model && !body.model.startsWith('gemini-')) fail(422, 'invalid', 'an Antigravity task takes a Gemini model (such as gemini-4-carbon)');
+  // Antigravity runs Google's Gemini models only, as on the server (SPEC-505, SPEC-519).
+  if (harness === 'antigravity' && body.model && !body.model.startsWith('gemini-')) fail(422, 'invalid', 'an Antigravity task takes a Gemini model (such as gemini-4-neon)');
   if (body.mode && !['goal', 'prompt', 'auto'].includes(body.mode)) fail(422, 'invalid', 'mode must be goal, prompt or auto');
   const visible = db.workflows.filter((w) => w.scope === 'instance' || w.sandbox === sandbox.id);
   if (body.workflow_id && body.workflow_id !== 'auto' && !visible.some((w) => w.id === body.workflow_id)) fail(422, 'invalid', `unknown workflow \`${body.workflow_id}\``);
@@ -1537,7 +1537,7 @@ route('POST', `/api/sandboxes/${ID}/tasks`, async ({ db, p, body }) => {
     origin: 'ui', created_by: { login: db.me.user.login, id: db.me.user.id }, created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
     archived: false, account_label: null,
     stepsList: wf ? wf.steps.map((title2, i) => ({ id: `${id}-s${i + 1}`, ordinal: i + 1, title: title2, status: 'pending', note: '', updated_by: 'workflow', updated_at: new Date().toISOString() })) : [],
-    model: body.model || (harness === 'codex' ? 'gpt-6.2-astra' : harness === 'antigravity' ? 'gemini-4-carbon' : 'claude-opus-4'), effort: body.effort || (harness === 'codex' ? 'high' : harness === 'antigravity' ? 'high' : 'default'), prompt: body.prompt,
+    model: body.model || (harness === 'codex' ? 'gpt-6.2-astra' : harness === 'antigravity' ? 'gemini-4-neon' : 'claude-opus-4'), effort: body.effort || (harness === 'codex' ? 'high' : harness === 'antigravity' ? 'high' : 'default'), prompt: body.prompt,
     // A task without a model asks for its agent's default, as on the server (`model_default`).
     model_default: !body.model,
     delivery: null, mode: choice ? choice.mode : body.mode || 'goal', auto: choice ? choice.auto : null,
@@ -3192,7 +3192,7 @@ function automationTask(db, a, start) {
   const task = {
     id, sandbox_id: a.sandbox, number, title: a.name, ...chosen, status: before ? 'chained' : start.prepared ? 'prepared' : 'queued', activity: null,
     branch: `feat/${number}-automation`, origin: 'automation', created_by: { login: db.me.user.login }, created_at: now, updated_at: now,
-    archived: false, account_label: null, stepsList: [], model: chosen.harness === 'codex' ? 'gpt-6.2-astra' : chosen.harness === 'antigravity' ? 'gemini-4-carbon' : 'claude-opus-4', effort: chosen.harness === 'claude' ? 'default' : 'high', prompt: a.prompt,
+    archived: false, account_label: null, stepsList: [], model: chosen.harness === 'codex' ? 'gpt-6.2-astra' : chosen.harness === 'antigravity' ? 'gemini-4-neon' : 'claude-opus-4', effort: chosen.harness === 'claude' ? 'default' : 'high', prompt: a.prompt,
     delivery: null, mode: 'goal', auto: null, supertask: start.supertask,
   };
   db.tasks.push(task);

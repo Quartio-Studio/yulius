@@ -1734,11 +1734,11 @@ fn agy_sign_in() -> Result<Vec<u8>, String> {
         .ok_or_else(|| "a sign-in credential".to_owned())
 }
 
-/// SPEC-505 AGY-002: a new Antigravity session on an API key runs `agy` on Gemini 4 Carbon at
-/// high effort, the approval bypass only when contained, its prompt as one `=` argument (a
-/// leading dash stays the prompt); auto-update off; the key only in the secret environment; the
-/// home's settings trust the worktree and skip the first-run screens; Yulius's hooks and MCP in
-/// the home's config.
+/// SPEC-505 AGY-002, SPEC-519 NEO-001: a new Antigravity session on an API key runs `agy` on
+/// Gemini 4 Neon at high effort, the approval bypass only when contained, its prompt as one `=`
+/// argument (a leading dash stays the prompt); auto-update off; the key only in the secret
+/// environment; the home's settings trust the worktree and skip the first-run screens; Yulius's
+/// hooks and MCP in the home's config.
 #[test]
 fn antigravity_new_session_on_an_api_key() -> TestResult {
     let plan = plan_launch(&agy_request(
@@ -1754,7 +1754,7 @@ fn antigravity_new_session_on_an_api_key() -> TestResult {
         [
             "agy",
             "--model",
-            "gemini-4-carbon",
+            "gemini-4-neon",
             "--effort",
             "high",
             "--dangerously-skip-permissions",
@@ -1911,8 +1911,11 @@ fn antigravity_resume_on_a_google_sign_in() -> TestResult {
     let settings = json_of(file(&plan, ".gemini/antigravity-cli/settings.json")?)?;
     assert_eq!(settings.get("modelProvider"), None);
     assert_secret_absent(&plan, "SYNTHETIC-agy-oauth-token-file");
-    // A plain resume sends its prompt, or none.
+    // A plain resume sends its prompt, or none; without a model or effort it passes Gemini 4 Neon
+    // at high effort too (SPEC-519 NEO-001).
     let mut plain = request.clone();
+    plain.model = None;
+    plain.effort = None;
     plain.mode = LaunchMode::Resume {
         session_id: "0bb76935-ee61-4895-9082-1aea3f3976ee".into(),
         prompt: None,
@@ -1920,8 +1923,16 @@ fn antigravity_resume_on_a_google_sign_in() -> TestResult {
     };
     let plan = plan_launch(&plain)?;
     assert_eq!(
-        plan.argv.last().map(String::as_str),
-        Some("0bb76935-ee61-4895-9082-1aea3f3976ee")
+        plan.argv,
+        [
+            "/data/antigravity-cli/1.5.10-linux-x64/antigravity",
+            "--model",
+            "gemini-4-neon",
+            "--effort",
+            "high",
+            "--conversation",
+            "0bb76935-ee61-4895-9082-1aea3f3976ee",
+        ]
     );
     Ok(())
 }

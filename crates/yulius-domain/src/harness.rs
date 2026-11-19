@@ -95,9 +95,10 @@ pub fn claude_model_name(id: &str) -> String {
 /// high from task #21 until then).
 pub const DEFAULT_CLAUDE_EFFORT: &str = "high";
 
-/// The model of an Antigravity task that names none: Gemini 4 Carbon (the person's request of
-/// 2026-11-17, SPEC-505: "Use Gemini 4 Carbon high by default").
-pub const DEFAULT_ANTIGRAVITY_MODEL: &str = "gemini-4-carbon";
+/// The model of an Antigravity task that names none: Gemini 4 Neon (the person's request of
+/// 2026-11-19, SPEC-519: "add Gemini 4 Neon to the models and make Neon the default model";
+/// Gemini 4 Carbon before, SPEC-505).
+pub const DEFAULT_ANTIGRAVITY_MODEL: &str = "gemini-4-neon";
 
 /// The effort of an Antigravity task that names none: high (SPEC-505).
 pub const DEFAULT_ANTIGRAVITY_EFFORT: &str = "high";
@@ -346,10 +347,19 @@ mod tests {
         assert_eq!(two, [128, 128]);
         assert_eq!(Harness::unbiased_index(1, &[255]), Some(0));
 
+        assert_eq!(Harness::implied_by("gemini-4-neon"), Harness::Antigravity);
         assert_eq!(Harness::implied_by("gemini-4-carbon"), Harness::Antigravity);
         assert_eq!(Harness::implied_by(" Gemini-3.1-pro"), Harness::Antigravity);
         assert_eq!(Harness::implied_by("claude-opus-5-5"), Harness::ClaudeCode);
         assert_eq!(Harness::implied_by("opus"), Harness::ClaudeCode);
+    }
+
+    /// SPEC-519 NEO-001: an Antigravity task that names no model runs Gemini 4 Neon at high
+    /// effort.
+    #[test]
+    fn the_antigravity_default_model_is_gemini_4_neon_at_high_effort() {
+        assert_eq!(DEFAULT_ANTIGRAVITY_MODEL, "gemini-4-neon");
+        assert_eq!(DEFAULT_ANTIGRAVITY_EFFORT, "high");
     }
 
     /// SPEC-493 MDL-001: a task that names no model runs Opus 5.5, the first model offered;

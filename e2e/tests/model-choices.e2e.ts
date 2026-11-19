@@ -61,7 +61,7 @@ test('Settings preserves compatible effort and clears incompatible choices in th
   await expect(screen.getByRole('button', 'Effort: Default effort')).toBeVisible();
   await screen.getByRole('button', /^Effort:/).click();
   const randomEfforts = await browser.evaluate(() => Array.from(document.querySelectorAll('.menu .menu-label'), (el) => el.textContent));
-  expect(randomEfforts).toEqual(['Default', 'Low', 'Medium', 'High']);
+  expect(randomEfforts).toEqual(['Default', 'Low', 'Medium', 'High', 'Extra high']);
   await screen.getByRole('menuitemradio', /^Default/).press('Escape');
   await screen.getByRole('button', /^Model:/).click();
   await screen.getByRole('menuitemradio', /^GPT-6 Luna/).click();
