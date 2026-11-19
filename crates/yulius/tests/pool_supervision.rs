@@ -1291,10 +1291,18 @@ fn reattach_at_limit(order: LimitRestartRace) -> TestResult {
                 TaskStatus::Stopped(yulius_domain::task::StopReason::Cancelled)
             );
             assert_eq!(attempts.len(), 1);
-            assert!(
-                attempts[0].ended_at.is_some(),
-                "the previous owner's run ended"
-            );
+            wait_for(
+                "the previous owner's host to exit",
+                Duration::from_secs(30),
+                || async {
+                    app.deps
+                        .store
+                        .attempt(&attempts[0].id)
+                        .await
+                        .is_ok_and(|run| run.is_some_and(|run| run.ended_at.is_some()))
+                },
+            )
+            .await?;
             return Ok(());
         }
         let resumed = attempts.last().ok_or("no attempt after the hand-over")?;
