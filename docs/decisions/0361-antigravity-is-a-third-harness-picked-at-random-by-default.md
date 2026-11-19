@@ -10,6 +10,8 @@ is superseded by [ADR-0368](0368-a-tasks-agent-is-set-never-drawn.md) (2026-11-1
 is set, never drawn; the rest stands. Follows
 [ADR-0355](0355-codex-returns-as-a-second-harness-with-a-pinned-cli.md) (Codex) in every seam;
 provider switching and session translation stay removed (SPEC-002 ADR-06).
+Refined by [0369](0369-a-google-sign-in-runs-until-the-person-is-done.md): a Google sign-in runs
+on for the CLI's setup until the person is done.
 
 ## Context
 

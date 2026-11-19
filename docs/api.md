@@ -345,8 +345,8 @@ task_number, from?, limit?, max_chars?, tail?}` (≤ 200 entries, ≤ 100 000 ch
 | POST | `/api/tasks/{tid}/control-request` | write | → `TaskSummary`; asks the task's owner for control (SPEC-070, ADR-0060): it would act on GitHub as you. One request waits per task: 409 for the owner and while another person's request waits (naming them); asking again changes nothing. With the owner disabled, deleted or without write access, control passes at once (`owner` is you), whatever request waits; a waiting asker who can no longer work gives way (their request dropped, `task.control_dropped`). Audited `task.control_requested` |
 | DELETE | `/api/tasks/{tid}/control-request` | read (asker) · write (owner) | → `TaskSummary`; the asker withdraws (`task.control_withdrawn`) or the owner declines (`task.control_declined`); 409 when no request waits, 403 for anyone else |
 | POST | `/api/tasks/{tid}/control-request/accept` | write (owner) | → `TaskSummary` with the asker as `owner`; the task acts on GitHub as them from its next call, its worktree commits as them, its terminal says so, audited `task.control_passed`; 409 when no request waits, when the asker can no longer work in the project (the request is dropped), or while a task holding the owner's personal MCP servers is starting or switching (SPEC-332); a live run holding them resumes for the new owner (same conversation and subscription, nothing typed), or stops if it cannot |
-| POST | `/api/tasks/{tid}/control/take` | write (not a guest) | → `TaskSummary` with you as `owner` and the previous owner as `control_from`; takes control of another person's task without asking (SPEC-510, ADR-0365): it acts on GitHub as you from its next call, as after a hand-over (commit identity, a run holding the previous owner's personal MCP servers resumes for you); a waiting request is dropped; its terminal says "@you took control of this task from @owner … @owner can take it back", audited `task.control_taken`, and the previous owner gets the `task.control_taken` event. With the owner disabled, deleted or without write access it passes at once with `control_from` null. 409 for the owner, when the owner asks first (`owner_asks_first`: request control instead), while a task holding the owner's personal MCP servers is starting, or when the task changed meanwhile; 403 for a guest or a disabled account |
-| POST | `/api/tasks/{tid}/control/take-back` | write (the giver) | → `TaskSummary` with the giver as `owner` and `control_from` null; the person who handed the task over on request (`TaskSummary.control_from`) takes it back without asking (SPEC-490 OWN-009, ADR-0331): the task acts on GitHub as them again, its terminal says "Control of this task returned to @a", audited `task.control_taken_back`, and the person it was taken from gets the `task.control_taken_back` event; 409 for the owner; 403 for anyone else (naming the giver) or a giver who can no longer work; 409 when nobody can take it back (never handed over on request, handed back to its giver, or passed from an absent owner) or the task changed meanwhile |
+| POST | `/api/tasks/{tid}/control/take` | write (not a guest) | → `TaskSummary` with you as `owner` and the previous owner as `control_from` (by the giver recorded in `control_from`, it is a take-back, answered as `/control/take-back`); takes control of another person's task without asking (SPEC-510, ADR-0365): it acts on GitHub as you from its next call, as after a hand-over (commit identity, a run holding the previous owner's personal MCP servers resumes for you); a waiting request is dropped; its terminal says "@you took control of this task from @owner … @owner can take it back", audited `task.control_taken`, and the previous owner gets the `task.control_taken` event. With the owner disabled, deleted or without write access it passes at once with `control_from` null. 409 for the owner, when the owner asks first (`owner_asks_first`: request control instead), while a task holding the owner's personal MCP servers is starting, or when the task changed meanwhile; 403 for a guest or a disabled account |
+| POST | `/api/tasks/{tid}/control/take-back` | write (the giver) | → `TaskSummary` with the giver as `owner` and `control_from` null; the person who handed the task over on request, or from whom it was taken (`TaskSummary.control_from`), takes it back without asking (SPEC-490 OWN-009, ADR-0331): the task acts on GitHub as them again, its terminal says "Control of this task returned to @a", audited `task.control_taken_back`, and the person it was taken from gets the `task.control_taken_back` event; 409 for the owner; 403 for anyone else (naming the giver) or a giver who can no longer work; 409 when nobody can take it back (never handed over on request, handed back to its giver, or passed from an absent owner) or the task changed meanwhile |
 | POST | `/api/tasks/{tid}/feedback` | read | `{"verdict":"correct|incorrect","comment"}` → 204 |
 | GET | `/api/archived-tasks` | read | → `[TaskSummary]` across visible sandboxes |
 | WS | `/api/tasks/{tid}/terminal` | read (input: write, owner) | terminal protocol below |
@@ -357,8 +357,9 @@ One rule decides what a person does to a task (SPEC-490,
 cancelling a task that waits to start, archive, restore, delete, and the tools' `task_close`)
 needs write access, whoever owns the task; **control** is everything else marked write, and needs
 the task's owner as well (SPEC-070). Anyone else gets 403 "Task #N is @owner's and only they
-steer it: it acts on GitHub as them. Ask them for control on the task's page. You can still
-stop, archive or delete it." — also an administrator or the superadmin, and the tools of a
+steer it: it acts on GitHub as them. Take control on the task's page to steer it. You can still
+stop, archive or delete it." ("Ask them for control on the task's page." instead when the owner
+asks first; a playground's guest is told only to ask, SPEC-510) — also an administrator or the superadmin, and the tools of a
 Superagent, the remote MCP and a task's agent, each for the person it acts for (`task_message`
 included). A tidy by someone who does not own the task is audited under their login with the
 owner's (`task.stopped`, `task.archived`, `task.unarchived`, `task.closed_by_person`,
@@ -1737,8 +1738,9 @@ keeps its idle session but no longer holds the subscription.
 directory or home, in a server-owned PTY 1000 columns wide (the process host's limit) so
 tokens and URLs never wrap (the Google sign-in link is 704 characters). It uses the terminal
 protocol above: `resize` and `take_control` only re-send `state` (the size is fixed), `input`
-is forwarded while the login runs. `state.status` is `running`, then `ok|error|cancelled`; the `exit` frame carries the same
-status, the CLI's exit code and, for `error`, why the sign-in failed (`cause`). Output is masked before it reaches any viewer (Claude tokens
+is forwarded while the login runs. `state.status` is `running`, then `ok|error|cancelled`
+(an Antigravity login says `signed_in` while it runs on after its token file, below); the
+`exit` frame carries the same status, the CLI's exit code and, for `error`, why the sign-in failed (`cause`). Output is masked before it reaches any viewer (Claude tokens
 become `sk-ant-oat01-[REDACTED]`). On exit the credential (the Claude token from the output) is sealed
 into the account (`ok`, `account.updated`), and the temporary directory
 is overwritten and removed. A first login that ends without a credential sets `error` with a
@@ -1748,8 +1750,12 @@ message; an account that still holds a working credential keeps its status and r
 login, 15-minute timeout (the process is stopped), finished logins stay viewable for 10 minutes.
 Once the output holds a complete token, the CLI gets 5 seconds to exit by itself
 (`claude setup-token` does after 500 ms); one still running then is stopped and the token sealed,
-so the login ends `ok` (SPEC-243). The web UI closes the login dialog on `ok`, and cancels a
-login that is still running when its dialog is closed. A terminal for an unknown or expired login
+so the login ends `ok` (SPEC-243). The Antigravity CLI's setup goes on after it wrote its token
+file (its data-use choice and more), so that login is not stopped then: `state.status` becomes
+`signed_in` (input still forwarded), and the token file is sealed when the login ends, by a cancel
+(which then answers `ok`), the CLI's exit or the timeout (SPEC-515). The web UI closes the login
+dialog on `ok`, offers Done on `signed_in` (a cancel), and cancels a login that is still running
+when its dialog is closed. A terminal for an unknown or expired login
 is refused in band: an `error` frame `not_found`, then close code 4003, which the browser does not
 retry (non-administrators and other origins are still refused at the handshake). An open login
 terminal is re-checked every `viewer_recheck_ms` (60 s) beside the stream: a signed-out, expired or

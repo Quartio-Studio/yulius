@@ -336,6 +336,11 @@ test('whoever a task is taken from hears so and takes it back', async ({ app, br
   await browser.keyboard.press('Escape');
   await browser.locator('.toast').filter({ hasText: taken }).getByRole('button', 'Open').click();
   await expect(screen.getByText('@anna-q has control of this task now.')).toBeVisible();
+  // Its menu offers Take back too, not a take that would read as a new one (review round 2).
+  await browser.locator('.taskview .stepstrip-main [aria-label="Task actions"]').click();
+  await expect(screen.getByRole('menuitem', /^Take back/)).toBeEnabled();
+  await expect(screen.getByRole('menuitem', /^Take control/)).toHaveCount(0);
+  await browser.keyboard.press('Escape');
   await screen.getByRole('button', 'Take back').click();
   await expect(screen.getByText('#12 is yours again')).toBeVisible();
 });
