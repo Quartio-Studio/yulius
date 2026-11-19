@@ -222,7 +222,12 @@ function authJsonInput() {
 /** What it says while Codex's device sign-in runs (SPEC-503). */
 const CODEX_SIGN_IN_RUNNING = 'Finish Codex’s sign-in: open the link in the terminal below, sign in with ChatGPT and enter the one-time code it shows. This window closes by itself once the subscription is connected.';
 /** What it says while the Antigravity CLI's Google sign-in runs (SPEC-505 AGY-008). */
-const ANTIGRAVITY_SIGN_IN_RUNNING = 'Finish Antigravity’s sign-in: choose Google in the terminal below, open the link it shows and sign in with Google. This window closes by itself once the subscription is connected.';
+const ANTIGRAVITY_SIGN_IN_RUNNING = 'Finish Antigravity’s sign-in: choose Google in the terminal below, open the link it shows and sign in with Google.';
+/**
+ * What it says once the Antigravity CLI holds its sign-in: its setup goes on in the terminal
+ * (the data-use choice and more), so the window stays open until Done (SPEC-515).
+ */
+const ANTIGRAVITY_SIGNED_IN = 'Antigravity is signed in. Finish the rest of its setup in the terminal below, such as its data-use choices, then press Done to connect the subscription.';
 
 /** A server sentence as the start of a sentence. */
 const sentence = (text) => text.charAt(0).toUpperCase() + text.slice(1);
@@ -231,7 +236,9 @@ const sentence = (text) => text.charAt(0).toUpperCase() + text.slice(1);
  * Account login terminal modal (ROT-002, SPEC-243): Claude's own sign-in over the terminal
  * protocol. Success closes the dialog by itself and a toast names the subscription (with its
  * email once the account reports one); a failed, cancelled or lost sign-in says so with Try
- * again; closing a sign-in that still runs cancels it on the server.
+ * again; closing a sign-in that still runs cancels it on the server. An Antigravity sign-in
+ * whose terminal says `signed_in` runs on for the CLI's setup: Done (or closing) ends it, and
+ * the server seals the sign-in it holds (SPEC-515).
  */
 export function openLoginTerminal(ctx, { loginId, account, onFinish }) {
   let terminal = null;
@@ -240,9 +247,11 @@ export function openLoginTerminal(ctx, { loginId, account, onFinish }) {
   // connection (reconnecting gave up; the sign-in may still run).
   let phase = 'running';
   let closed = false;
+  // The running sign-in already holds its credential and runs on for the CLI's setup.
+  let signedIn = false;
   const agent = agentOfProvider(account.provider);
   const RUNNING = { openai: CODEX_SIGN_IN_RUNNING, google: ANTIGRAVITY_SIGN_IN_RUNNING };
-  const status = h('span', { class: 'muted small' }, RUNNING[account.provider] || SIGN_IN_RUNNING);
+  const status = h('span', { class: 'muted small', role: 'status' }, RUNNING[account.provider] || SIGN_IN_RUNNING);
   const outcome = h('div', { class: 'banner banner-danger', role: 'alert', hidden: true });
   const host = h('div', { class: 'login-terminal' });
   const modal = openModal({
@@ -349,6 +358,8 @@ export function openLoginTerminal(ctx, { loginId, account, onFinish }) {
     if (closed) { cancel(result.login_id); return; }
     current = result.login_id;
     phase = 'running';
+    signedIn = false;
+    status.textContent = RUNNING[account.provider] || SIGN_IN_RUNNING;
     outcome.hidden = true;
     status.hidden = false;
     if (terminal) terminal.destroy();
@@ -366,6 +377,14 @@ export function openLoginTerminal(ctx, { loginId, account, onFinish }) {
       onLink: (uri, event) => ctx.openLink(uri, event),
       readOnlyLabel: () => 'The sign-in has ended.',
       followServerSize: true,
+      // Signed in, with the CLI's setup still to finish: Done ends the sign-in (it is the
+      // cancel, which keeps a credential already there, so the answer is `ok`).
+      onState: (state) => {
+        if (terminal !== view || phase !== 'running' || signedIn || state.status !== 'signed_in') return;
+        signedIn = true;
+        status.textContent = ANTIGRAVITY_SIGNED_IN;
+        modal.setActions([{ label: 'Done', kind: 'primary' }]);
+      },
       onExit: (exit) => {
         if (terminal !== view || phase !== 'running') return;
         if (exit.status === 'ok') succeeded();
@@ -821,7 +840,7 @@ export function mountAccountsPage(ctx, route) {
       'openai:here': 'Next, a terminal opens with Codex’s own sign-in (codex login --device-auth): open the link it shows and enter its one-time code. Codex tasks waiting for capacity continue on it as soon as it is signed in.',
       'openai:import': `The file is the subscription’s sign-in at once; Codex tasks can use it right away, and ${BRAND.name} keeps the tokens Codex refreshes.`,
       'openai:api_key': 'The key is the subscription’s credential at once; Codex tasks can use it right away.',
-      'google:here': 'Next, a terminal opens with the Antigravity CLI’s own sign-in: choose Google, open the link it shows and sign in. Antigravity tasks waiting for capacity continue on it as soon as it is signed in.',
+      'google:here': 'Next, a terminal opens with the Antigravity CLI’s own sign-in: choose Google, open the link it shows and sign in, then finish its setup there and press Done. Antigravity tasks waiting for capacity continue on it then.',
       'google:api_key': 'The key is the subscription’s credential at once; Antigravity tasks run Gemini with it right away.',
     };
     const ACTIONS = { 'anthropic:here': signInHere, 'anthropic:paste': pasteToken, 'openai:here': signInHere, 'openai:import': importFile, 'openai:api_key': giveKey, 'google:here': signInHere, 'google:api_key': giveGeminiKey };

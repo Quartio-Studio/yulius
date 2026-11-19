@@ -1737,8 +1737,9 @@ keeps its idle session but no longer holds the subscription.
 directory or home, in a server-owned PTY 1000 columns wide (the process host's limit) so
 tokens and URLs never wrap (the Google sign-in link is 704 characters). It uses the terminal
 protocol above: `resize` and `take_control` only re-send `state` (the size is fixed), `input`
-is forwarded while the login runs. `state.status` is `running`, then `ok|error|cancelled`; the `exit` frame carries the same
-status, the CLI's exit code and, for `error`, why the sign-in failed (`cause`). Output is masked before it reaches any viewer (Claude tokens
+is forwarded while the login runs. `state.status` is `running`, then `ok|error|cancelled`
+(an Antigravity login says `signed_in` while it runs on after its token file, below); the
+`exit` frame carries the same status, the CLI's exit code and, for `error`, why the sign-in failed (`cause`). Output is masked before it reaches any viewer (Claude tokens
 become `sk-ant-oat01-[REDACTED]`). On exit the credential (the Claude token from the output) is sealed
 into the account (`ok`, `account.updated`), and the temporary directory
 is overwritten and removed. A first login that ends without a credential sets `error` with a
@@ -1748,8 +1749,12 @@ message; an account that still holds a working credential keeps its status and r
 login, 15-minute timeout (the process is stopped), finished logins stay viewable for 10 minutes.
 Once the output holds a complete token, the CLI gets 5 seconds to exit by itself
 (`claude setup-token` does after 500 ms); one still running then is stopped and the token sealed,
-so the login ends `ok` (SPEC-243). The web UI closes the login dialog on `ok`, and cancels a
-login that is still running when its dialog is closed. A terminal for an unknown or expired login
+so the login ends `ok` (SPEC-243). The Antigravity CLI's setup goes on after it wrote its token
+file (its data-use choice and more), so that login is not stopped then: `state.status` becomes
+`signed_in` (input still forwarded), and the token file is sealed when the login ends, by a cancel
+(which then answers `ok`), the CLI's exit or the timeout (SPEC-515). The web UI closes the login
+dialog on `ok`, offers Done on `signed_in` (a cancel), and cancels a login that is still running
+when its dialog is closed. A terminal for an unknown or expired login
 is refused in band: an `error` frame `not_found`, then close code 4003, which the browser does not
 retry (non-administrators and other origins are still refused at the handshake). An open login
 terminal is re-checked every `viewer_recheck_ms` (60 s) beside the stream: a signed-out, expired or
