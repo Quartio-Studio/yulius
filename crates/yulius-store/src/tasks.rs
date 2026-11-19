@@ -1231,19 +1231,6 @@ impl TaskStore for SqliteStore {
             .next())
     }
 
-    async fn record_harness_draw(&self, task: &TaskId, at: Timestamp) -> AppResult<()> {
-        let task = task.as_str().to_owned();
-        self.call(move |c| {
-            c.execute(
-                "INSERT OR IGNORE INTO task_harness_draws (task_id, drawn_at) VALUES (?1, ?2)",
-                params![task, at.0],
-            )
-            .map(|_| ())
-            .map_err(db)
-        })
-        .await
-    }
-
     async fn harness_drawn(&self, task: &TaskId) -> AppResult<bool> {
         let task = task.as_str().to_owned();
         self.call(move |c| {

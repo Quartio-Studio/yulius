@@ -47,7 +47,7 @@ export function mountSettingsPage(ctx) {
   const effortButton = h('button', { type: 'button', class: 'chip-btn', 'aria-haspopup': 'menu' });
   const renderPicks = () => {
     const found = findModel(modelId);
-    modelButton.replaceChildren(h('span', { class: 'sr-only' }, 'Model for new tasks: '), h('span', { class: 'chip-label' }, found ? found.model.name : 'Random agent'), icon('down', { size: 12 }));
+    modelButton.replaceChildren(h('span', { class: 'sr-only' }, 'Model for new tasks: '), h('span', { class: 'chip-label' }, found ? found.model.name : 'Default model'), icon('down', { size: 12 }));
     const effort = findEffort(effortId);
     effortButton.replaceChildren(h('span', { class: 'sr-only' }, 'Effort for new tasks: '), h('span', { class: 'chip-label' }, effort ? effort.name : 'Default effort'), icon('down', { size: 12 }));
   };

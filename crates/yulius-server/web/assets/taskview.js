@@ -443,11 +443,12 @@ export function mountTaskView(ctx, sandbox, task) {
       // takes control at once once the owner can no longer act.
       const mine = request && request.by.login === me();
       // A playground's guest takes no one's task (TKC-007): they ask, as of an owner who asks first.
-      const asksFirst = Boolean(current.owner_asks_first) || Boolean(ctx.guest && ctx.guest());
+      const guest = Boolean(ctx.guest && ctx.guest());
+      const asksFirst = Boolean(current.owner_asks_first) || guest;
       const take = h('button', { type: 'button', class: 'btn btn-sm btn-primary', title: `It acts on GitHub as you from then on; @${owner()} is told and can take it back`, onClick: () => takeControl(ctx, current) }, 'Take control');
       control = [icon('lock', { size: 16 }), h('span', { class: 'attention-text' },
         mine ? [h('strong', null, `You asked @${owner()} for control. `), 'Until they hand it over, the task acts on GitHub as them.']
-          : [h('strong', null, `You are watching @${owner()}'s task. `), asksFirst ? `You can stop, archive or delete it; to type in it or change it, ask @${owner()} for control.` : 'You can stop, archive or delete it; to type in it or change it, take control.', request ? ` @${request.by.login} asked for control.` : '']),
+          : [h('strong', null, `You are watching @${owner()}'s task. `), guest ? `To type in it or change it, ask @${owner()} for control.` : asksFirst ? `You can stop, archive or delete it; to type in it or change it, ask @${owner()} for control.` : 'You can stop, archive or delete it; to type in it or change it, take control.', request ? ` @${request.by.login} asked for control.` : '']),
       mine && asksFirst ? h('button', { type: 'button', class: 'btn btn-sm', title: `Takes control at once when @${owner()} can no longer act`, onClick: () => requestControl(ctx, current) }, 'Ask again') : null,
       mine ? h('button', { type: 'button', class: 'btn btn-sm', onClick: () => dropControlRequest(ctx, current) }, 'Withdraw') : null,
       !asksFirst ? take : mine || request ? null : h('button', { type: 'button', class: 'btn btn-sm btn-primary', onClick: () => requestControl(ctx, current) }, 'Request control')];
@@ -1363,8 +1364,8 @@ export function mountComposer(ctx, sandbox) {
     startButton.setAttribute('aria-label', startAction());
     startButton.title = write ? `${startAction()} (${SUBMIT_KEYS})` : 'Requires write access';
     const found = findModel(modelId);
-    setChildren(modelChip, h('span', { class: 'sr-only' }, 'Model: '), h('span', { class: 'chip-label' }, found ? found.model.name : 'Random agent'), icon('down', { size: 12 }));
-    modelChip.title = found ? `${found.provider.name} · ${found.model.name}` : 'Agent: drawn for each task, Claude Code (Opus 5.5) or Antigravity (Gemini 4 Carbon)';
+    setChildren(modelChip, h('span', { class: 'sr-only' }, 'Model: '), h('span', { class: 'chip-label' }, found ? found.model.name : 'Default model'), icon('down', { size: 12 }));
+    modelChip.title = found ? `${found.provider.name} · ${found.model.name}` : 'Model: default, Claude Code, Opus 5.5';
     // A model without effort levels (Haiku) hides the effort choice and sends none.
     const effortless = Boolean(found && found.model.effort === false);
     effortChip.hidden = effortless;
@@ -1819,9 +1820,8 @@ export function mountComposer(ctx, sandbox) {
       }),
       keep: () => busyRun(autoStage(), async () => opened(await createTask(bodyFor(value)))),
       close: () => clearSplit(),
-      // A task of another agent runs without a Claude account (SPEC-503, SPEC-505), and so does
-      // a Random one while Antigravity is usable: it is drawn among the usable agents (RND-001).
-      codex: Boolean(bodyFor(value).harness) || (!findModel(modelId) && antigravityConnected(ctx.store.state.me)),
+      // A task of another agent runs without a Claude account (SPEC-503, SPEC-505).
+      codex: Boolean(bodyFor(value).harness),
     });
     setChildren(intakeSlot, split.el);
     const calm = window.matchMedia('(prefers-reduced-motion: reduce)').matches;

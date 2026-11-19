@@ -738,7 +738,8 @@ const USAGE_KEYS = ['primary', 'secondary', 'weekly_opus', 'weekly_sonnet', 'wee
  * `yulius:usage-changed` event on the card.
  */
 export function accountUsage(account, { foldable = false, open = false, rename = null, setEmail = null, showEmail = false, refresh = null, note = null } = {}) {
-  const provider = agentOfProvider(account.provider).name;
+  const agent = agentOfProvider(account.provider);
+  const provider = agent.name;
   const label = () => account.label || account.id;
   // Usage not read yet: a shimmering bar where the reset time will be (SPEC-092).
   const reading = () => [h('span', { class: 'skeleton-line', 'aria-hidden': 'true' }), h('span', { class: 'sr-only' }, 'Reading usage…')];
@@ -772,10 +773,14 @@ export function accountUsage(account, { foldable = false, open = false, rename =
       h('span', { class: 'account-name' },
         rename && !foldable ? renamableName(account, rename) : h('strong', { class: 'ellipsis', title: account.label || account.id }, account.label || account.id),
         account.plan ? h('span', { class: 'plan-badge', title: `${provider} plan` }, account.plan) : null),
-      // The email is for administrators (UI-022); others see the provider as before.
-      !showEmail ? h('span', { class: 'account-sub' }, provider)
-        : setEmail && !foldable ? editableEmail(account, setEmail)
-          : h('span', { class: ['account-sub', account.email ? null : 'account-email-unknown'], title: account.email ? `${provider} account` : `Shown after the subscription’s next sign-in, when ${provider} shares it` }, accountEmail(account.email))),
+      // Whose subscription it is, on every card, then the email for administrators (UI-022):
+      // the agent's badge, in the line under the name so a narrow row keeps the name's room
+      // (SPEC-513). Others see the badge alone, which names the provider as before.
+      h('span', { class: 'account-subline' },
+        h('span', { class: ['agent-badge', showEmail ? null : 'account-sub'], title: `${agent.cli} subscription · ${agent.vendor}` }, provider),
+        !showEmail ? null
+          : setEmail && !foldable ? editableEmail(account, setEmail)
+            : h('span', { class: ['account-sub', account.email ? null : 'account-email-unknown'], title: account.email ? `${account.email} · ${provider} account` : `Shown after the subscription’s next sign-in, when ${provider} shares it` }, accountEmail(account.email)))),
     stateHost,
     glanceHost,
     foldable ? icon('down', { size: 14 }) : null,
