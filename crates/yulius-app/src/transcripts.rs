@@ -1385,12 +1385,13 @@ pub fn read_tail(file: File, limit: usize, max_chars: usize) -> io::Result<Page>
 }
 
 /// Whether a line before a page can change the dotenv tracking: a tool call (Claude Code's
-/// `tool_use`, Codex's calls), an Antigravity model response (its `tool_calls` start the
+/// `tool_use` or `server_tool_use`, Codex's calls), an Antigravity model response (its `tool_calls` start the
 /// tracking, and each response ends the one before), or a Codex output naming a continuation.
 /// One pass over the line.
 fn may_change_env_tracking(line: &[u8]) -> bool {
-    const NEEDLES: [&[u8]; 5] = [
+    const NEEDLES: [&[u8]; 6] = [
         b"\"tool_use\"",
+        b"\"server_tool_use\"",
         b"\"function_call\"",
         b"\"custom_tool_call\"",
         b"\"local_shell_call\"",
@@ -2364,7 +2365,10 @@ mod tests {
                 record["message"]["content"]
                     .as_array_mut()
                     .ok_or("expected blocks")?
-                    .push(json!({"type":"text","text":"launch completed"}));
+                    .extend([
+                        json!({"type":"text","text":"launch completed"}),
+                        json!({"type":"text","text":"shell is running"}),
+                    ]);
                 record["toolUseResult"] = json!({"backgroundTaskId":"shell_7"});
                 record
             },
@@ -2390,7 +2394,11 @@ mod tests {
                     launch,
                     call("old", "BashOutput", json!({"bash_id":"shell_7"})),
                     call("other", "TaskOutput", json!({"task_id":"shell_70"})),
-                    call("new", "TaskOutput", json!({"task_id":"shell_7"})),
+                    {
+                        let mut retrieval = call("new", "TaskOutput", json!({"task_id":"shell_7"}));
+                        retrieval["message"]["content"][0]["type"] = json!("server_tool_use");
+                        retrieval
+                    },
                     result("old", &format!("<stdout>\n{ENV_TWO}\n</stdout>")),
                     result("other", "SHOP_REGION=public-region"),
                     result("new", &format!("<output>\n{ENV_TWO}\n</output>")),

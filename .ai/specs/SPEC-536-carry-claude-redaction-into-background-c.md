@@ -43,3 +43,5 @@ Extend the transcript-local tracking already kept in ReadCursor. Associate a she
 - On the original reader, `cargo test --locked -p yulius-app --lib claude_background_shell_output_is_redacted_on_every_read` failed. The BashOutput result retained both synthetic assignment values.
 - The manual-background notice and a structured launch result accompanied by a text block each failed before their respective fixes.
 - `cargo test --locked -p yulius-app --lib transcripts::` passed all 22 transcript tests. The regression exercised both tools with five launch variants across four read paths. The unrelated shell retained its public assignment on each read.
+- Review round 1 found that the prefix scan skipped the accepted `server_tool_use` block type. Switching the synthetic TaskOutput to that type reproduced the cold-page failure. The prefix scan now recognizes both Claude tool-use block types.
+- Incremental search indexing resets tracking at a batch boundary on dev. That separate surface is tracked in #1453 and noted on #1457.
