@@ -133,6 +133,32 @@ in the same terminal. The window closes when they press Done (issue #1421).
   - Nit, own code: the typed `n` asserted nothing. The e2e now expects `(y/N) *` before Enter.
   - Nit, own code: the architecture diagram still said "5 s after the token" only. It now has the
     `signed_in` state and its way to `ok`.
+- Review round 2 (yulius-reviewer, Fable 5.2, head 1f265362c, after a clean merge of dev):
+  **approve**. Every round-1 finding is resolved on that head, and its Yulius CI run 92b3a612
+  passed. Nothing pre-existing. Own-code notes, answered after the approval:
+  - Minor: no test held the `Running` guard in `LoginTerminal::state()`. The test now asserts the
+    state after Done says `ok` with `can_write: false` (3342a60c8). With the guard removed it fails
+    (`accounts.rs:2149`); with it, `accounts::` 29 passed.
+  - Minor: the mock ended a replaced signed-in sign-in `cancelled`, but the server seals it
+    (`ok`). `startLogin` in the mock now seals it too. The Try again case reaches its window
+    through a sign-in the server lost (a `not_found` refusal, as after a restart) and is renamed
+    (432ff586c).
+  - Minor: the `scripts/dev mutants` summary line was missing. On the branch's Rust lines
+    (`--base origin/dev`, at 3342a60c8): `mutants: 8 listed, 3 caught, 0 missed, 0 timed out, 5
+    unviable, 0 not reached (bound 30 min, took 327 s)`.
+  - Minor: the step text changed silently for screen readers. Its span has `role="status"`
+    (b881c9690), and the e2e checks that role and runs `axeViolations` in the signed-in state. The
+    role assertion failed before the change. `tests/antigravity.e2e.ts` and
+    `tests/subscriptions.e2e.ts`: 60 passed.
+  - Nit: a Done whose cancel request fails shows "Couldn't cancel the sign-in" after the window is
+    gone. That is the existing wording for every failed cancel, and the subscription's card shows
+    where it stands. The sign-in still ends and is sealed at its timeout. Left as is.
+  - Nit: the 15 minutes run from the sign-in's start, so a code pasted very late leaves little time
+    for the setup. ADR-0369 keeps ADR-0184's per-sign-in bound (a slot and a host process are held
+    meanwhile), and the token file is sealed at the timeout anyway, so the subscription is
+    connected. Left as is.
+- Product lines after the approval: 3 (one in `pages/admin.js`, two in `mock.js`). Tests and
+  documents do not count.
 - Not testable here: a live Google sign-in with the real agy and its real setup screens (no
   Google account in the sandbox). The data-use setting being remote is read from agy 1.5.10's
   strings (`UserSettings.TelemetryEnabled`, "Failed to save remote settings"), not seen live.
