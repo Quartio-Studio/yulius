@@ -130,7 +130,7 @@ each from its issue's acceptance criteria.
 - [x] A queued task says what it waits for
 - [x] The Capacity card shows working, parked, idle and queued sessions
 - [x] Docs for parking: product, architecture, api, operations, changes
-- [ ] Review of the #1412 pull request answered test-first
+- [x] Review of the #1412 pull request answered test-first
 - [ ] needs_you names who it waits for, refused for logins without write access
 - [ ] A named person answers an open needs_you on the web and with task_message
 - [ ] The owner sees who may answer and withdraws it; answers attributed in transcript and audit
@@ -267,6 +267,8 @@ Review round 1 (Fable 5.2, request changes at 74c6b7076), answered test-first:
 | m10, nits | rollback note in operations, the third `queue_reason` line documented, PRK-002 and ADR-0367 name the onboarding task | — |
 | `queue_reason_of` per summary | kept: only queued tasks compute it, at most `queue_max` (32) | — |
 | needs_you shared cause (pre-existing condition) | unchanged: answering a parked task resumes it; the others are answered by their own messages | — |
+
+Review round 5 approved head 75c95f40e (2026-11-19).
 
 Review round 4 (request changes at e68acb5e2), answered test-first:
 
