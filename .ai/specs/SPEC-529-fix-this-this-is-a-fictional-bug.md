@@ -24,6 +24,7 @@ Task #511 shows the held-message warning on the Codex session for PR #1439. The 
 - [x] Specify the scroll behavior and commit the failing browser regression
 - [x] Keep passive scrolling out of the task prompt and verify real keyboard input
 - [x] Independent review and verification for delivery to dev
+- [x] Integrate the upstream withheld-screen test fix and verify the combined branch
 
 ## Acceptance criteria
 
@@ -48,3 +49,4 @@ Prevent xterm's synthesized history key at the task view. Labelling that arrow a
 - The local Vidoc scan was unrun (exit 2, HTTP 401).
 - Independent review approved `3a0580a4709bfa092cb955ee02bc88fc53bc7955` after the reviewer ran five Chromium controls covering the task, shell, native mouse tracking and scrollback. The screenshot does not establish the original gesture or buffer mode.
 - Full browser suite on the fixed product code: 1,119 passed, one model-backed test skipped, zero failures. The independent-shell control added during review also passed separately.
+- Hosted CI on `d401bf01a` passed the browser job but failed the withheld-screen Rust test. CI recorded the same race on PR #1439 and tracked it in [issue #1452](https://github.com/Quartio-Studio/yulius/issues/1452). Merging `dev` at `a26df3bf3` brought in #1439’s fix, which waits for the opening Stop before raising the flag. On the combined branch the previously failing test passed when selected directly with Cargo (one passed, zero skipped). All five terminal browser controls and `scripts/dev quick` passed.
