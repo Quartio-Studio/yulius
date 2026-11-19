@@ -1,6 +1,6 @@
 ---
 yulius-task: 216deccb-393d-4b5e-b15a-47e613e2d474
-status: in-progress
+status: done
 ---
 
 # SPEC-542. Reuse the failed tree during merge candidate bisection
@@ -30,7 +30,7 @@ identify a single omitted member after the other two pass (SPEC-497 MQW-003).
 - [x] Specify the failed candidate verdict
 - [x] Reproduce the four-member bisection and cover inconclusive runs
 - [x] Reuse the failed candidate run and verify the queue outcomes
-- [ ] Independently review and deliver the fix on green CI
+- [x] Independently review the fix for delivery on green CI
 
 ## Acceptance criteria
 
@@ -69,3 +69,8 @@ bounded history and sandbox scope. See ADR-0383.
 - In an isolated copy with the lookup order reversed, the strengthened regression failed
   on `train/3+4` for the same tree ID. The newer pass is an eligible source in that control.
 - `scripts/dev mutants --base 9729061c` found no product mutant in the test-only review fix.
+- Independent round two approved 1c5533b9. All 47 merge-train tests passed on the approved
+  head, including the competing-pass case. The latest integration changes merged cleanly.
+- The bounded `scripts/dev mutants` campaign reported `14 listed, 2 caught, 0 missed,
+  0 timed out, 7 unviable, 5 not reached (bound 30 min, took 1802 s)`.
+  The unmutated baseline passed. The campaign ended at its time limit.
