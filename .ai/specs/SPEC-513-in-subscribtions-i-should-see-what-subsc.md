@@ -128,6 +128,12 @@ subscription as Claude's.
   the badge reads beside the email; kept locally under the ignored `target/shots/`.
 - Yulius CI on e4c6fc183 passed (quality, both test shards, e2e). The `security` job was skipped
   (exit 78: Vidoc not run on this instance, as on every recent run), which is unrun, not passed.
+- Yulius CI on 85bec4b56 failed in `migrate_helper::tests::a_stop_of_the_helper_ends_the_command_first`
+  (NotFound), the flake open as #1375, outside this change (no Rust touched). Its cause: the helper
+  says Running once the command started, before the test script set its TERM trap, so a stop
+  under load killed bash first. A 0.3 s delay before the trap reproduced it every time; with the
+  script's own mark awaited (8ce2552b1, tests only, in both trap tests) it passed with the delay,
+  and `--stress-count 20` of all 18 `migrate_helper::` tests passed 20 of 20.
 - Not tested: a real server with real Codex and Antigravity subscriptions (the server already sends
   `provider` on all three endpoints, checked in `CapacityAccount`, `AccountView` and the status
   view; the UI is proved against the mock, whose capacity view now matches the server).
