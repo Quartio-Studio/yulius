@@ -1,6 +1,6 @@
 import { test } from '@e2e-dev/web';
 import { expect } from 'e2e';
-import { axeViolations, failOnPageErrors, mock } from './support.ts';
+import { axeViolations, failOnPageErrors, firstShown, mock } from './support.ts';
 
 failOnPageErrors();
 
@@ -74,6 +74,17 @@ test('the shipped automations are the defaults, switched on in place, and Delete
   expect((await cardOf(browser, 'Work through open issues'))!).toEqual({ badges: ['Default'], buttons: [], opens: false });
   expect(await namesIn(browser, 'automations-defaults')).toEqual(DEFAULTS);
   expect(await namesIn(browser, 'automations-custom')).toEqual(CUSTOM);
+});
+
+test('loading workflows between selecting the name and typing its replacement preserves the selection', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/automations/new', '&hold=/api/sandboxes/sb_studio/workflows'));
+  const name = screen.getByRole('textbox', 'Automation name');
+  await firstShown(name);
+  await name.press('ControlOrMeta+a');
+  await browser.evaluate(() => (window as unknown as { __yuliusMock: { release(): void } }).__yuliusMock.release());
+  await expect(screen.getByRole('radio', /^Daily feedback/)).toHaveAttribute('aria-checked', 'true');
+  await browser.keyboard.type('Nightly Codex review');
+  await expect(name).toHaveValue('Nightly Codex review');
 });
 
 test('a new automation suggests recipe names until a custom name is entered', async ({ app, screen }) => {

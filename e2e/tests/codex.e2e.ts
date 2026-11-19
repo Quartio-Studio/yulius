@@ -139,6 +139,8 @@ test('an automation chooses the agent of its tasks', async ({ app, browser, scre
   // A name matching another recipe used to be replaced when the workflow read finished (#1416).
   const enteredName = 'Weekly summary';
   await name.fill(enteredName);
+  await expect(screen.getByRole('button', 'Create automation')).toBeDisabled();
+  await name.press('ControlOrMeta+s');
   await browser.evaluate(() => (window as unknown as Mocked).__yuliusMock.release());
   await expect(screen.getByRole('radio', /^Daily feedback/)).toHaveAttribute('aria-checked', 'true');
   await expect(name).toHaveValue(enteredName);
