@@ -6612,7 +6612,8 @@ class ShellSession {
 
 /** Starts a sign-in for `accountId`, replacing (cancelling) one still running, as the server does. */
 function startLogin(db, accountId) {
-  for (const session of db.logins.values()) if (session.accountId === accountId && !session.done) session.end('cancelled', null);
+  // Like the server, a replaced sign-in that already holds its credential is sealed (SPEC-515).
+  for (const session of db.logins.values()) if (session.accountId === accountId && !session.done) { if (session.status === 'signed_in') session.succeed(); else session.end('cancelled', null); }
   db.nextId += 1;
   const loginId = `login_${accountId}_${db.nextId}`;
   db.logins.set(loginId, new LoginSession(db, accountId));

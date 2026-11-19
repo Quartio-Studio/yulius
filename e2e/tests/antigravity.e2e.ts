@@ -16,7 +16,7 @@ type Mocked = {
     automations: { name: string; harness: string }[];
     connectAntigravity: () => void;
     loginCancels: string[];
-    logins: Map<string, { accountId: string; done: boolean; end: (status: string, code: number | null) => void }>;
+    logins: Map<string, { accountId: string; done: boolean; ws: { push: (frame: string) => void } | null }>;
   };
 };
 
@@ -77,8 +77,11 @@ test('an Antigravity subscription signs in with Google in the login terminal', a
   expect(waiting).toMatchObject({ provider: 'google', status: 'pending_login' });
   await expect(browser.locator('.login-terminal .xterm-helper-textarea')).toBeFocused();
   await browser.keyboard.press('Enter');
-  // The CLI's setup goes on after the code (SPEC-515, #1421): the window stays open until Done.
+  // The CLI's setup goes on after the code (SPEC-515, #1421): the window stays open until Done,
+  // and says so as a status, which a screen reader announces with the focus in the terminal.
   await expect(dialog.getByText(/^Antigravity is signed in\. Finish the rest of its setup in the terminal below/)).toBeVisible();
+  await expect(browser.locator('dialog [role="status"]:has-text("Antigravity is signed in")')).toBeVisible();
+  expect(await axeViolations(browser)).toEqual([]);
   await expect(terminal).toContainText('Help improve Antigravity');
   const signedIn = await browser.evaluate(() => (window as unknown as Mocked).__yuliusMock.accounts.find((a) => a.label === 'Antigravity dev'));
   expect(signedIn).toMatchObject({ status: 'pending_login' });
@@ -92,7 +95,7 @@ test('an Antigravity subscription signs in with Google in the login terminal', a
   expect(await browser.evaluate(() => (window as unknown as Mocked).__yuliusMock.loginCancels.length)).toBe(1);
 });
 
-test('Try again after a signed-in Antigravity sign-in was replaced starts over and offers Done again', async ({ app, browser, screen }) => {
+test('Try again after a signed-in Antigravity sign-in was lost starts over and offers Done again', async ({ app, browser, screen }) => {
   await app.open(mock('/admin/accounts?add=antigravity', '&ambient=0'));
   const add = screen.getByRole('dialog', 'Add an Antigravity subscription');
   await firstShown(add);
@@ -103,13 +106,18 @@ test('Try again after a signed-in Antigravity sign-in was replaced starts over a
   await expect(browser.locator('.login-terminal .xterm-helper-textarea')).toBeFocused();
   await browser.keyboard.press('Enter');
   await expect(dialog.getByText(/^Antigravity is signed in\./)).toBeVisible();
-  // Another sign-in of this subscription replaces this one while its setup runs (SPEC-515).
+  // The server lost this sign-in while its setup ran (a restart): its terminal is refused in band
+  // with `not_found`, as the server refuses one it no longer has (SPEC-515).
   await browser.evaluate(() => {
     const db = (window as unknown as Mocked).__yuliusMock;
     const account = db.accounts.find((a) => a.label === 'Antigravity retry') as unknown as { id: string };
-    for (const session of db.logins.values()) if (session.accountId === account.id && !session.done) session.end('cancelled', null);
+    for (const session of db.logins.values()) {
+      if (session.accountId !== account.id || session.done) continue;
+      session.done = true;
+      if (session.ws) session.ws.push(JSON.stringify({ type: 'error', code: 'not_found', message: 'not found' }));
+    }
   });
-  await expect(dialog.getByText('This sign-in was cancelled')).toBeVisible();
+  await expect(dialog.getByText('This sign-in is no longer available')).toBeVisible();
   await dialog.getByRole('button', 'Try again').click();
   await expect(dialog.getByText(/^Finish Antigravity’s sign-in: choose Google in the terminal below/)).toBeVisible();
   await expect(dialog.getByText(/^Antigravity is signed in\./)).toHaveCount(0);
