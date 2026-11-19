@@ -779,7 +779,7 @@ fn git_rules(input: &BriefingInput<'_>) -> String {
          spec and `om-code-review`, marking findings own code or pre-existing; answer all. \
          Fix own code test-first, never as an issue; after 3 rounds split or `needs_you`.\n\
          - Yulius pushes your branch and opens the pull request (spec valid if needed, all \
-         committed) at your turn's end once all steps are done, when the review starts, or when \
+         committed) at your turn's end once all steps are done{review_start}, or when \
          you call `delivery_merge` for the finished part (steps ahead stay open); later commits \
          too. CI is ours (`ci_status`). Once the review approved the exact \
          head, call `delivery_merge`: on green it merges, else it arms and the queue merges in \
@@ -795,6 +795,11 @@ fn git_rules(input: &BriefingInput<'_>) -> String {
          nothing stale \
          (`repo_hygiene`, `repo_cleanup`).\n\
          - Delivery path ({preset} profile): {path}.\n\n",
+        review_start = if input.harness == Harness::ClaudeCode {
+            ", when the review starts"
+        } else {
+            ""
+        },
         review = review_instructions(input.harness),
         branch = code(&input.task.branch, 200),
         preset = profile.preset.as_str(),
@@ -1744,15 +1749,25 @@ mod tests {
         let layout = DocsLayout::default();
         let mut input = base(&profile, &layout)?;
         let policies = [
-            (Harness::ClaudeCode, "yulius-reviewer"),
-            (Harness::Codex, "model=gpt-6.2-astra, reasoning_effort=high"),
-            (Harness::Antigravity, "model=gemini-4-neon-high"),
+            (Harness::ClaudeCode, "Agent `yulius-reviewer`"),
+            (
+                Harness::Codex,
+                "`spawn_agent`, fork_turns=none, model=gpt-6.2-astra, reasoning_effort=high",
+            ),
+            (
+                Harness::Antigravity,
+                "`swarm` add a fresh reviewer, model=gemini-4-neon-high",
+            ),
         ];
         for playground in [false, true] {
             input.playground = playground;
             for (harness, expected) in policies {
                 input.harness = harness;
                 let briefing = build_briefing(&input, DEFAULT_BUDGET_BYTES);
+                assert_eq!(
+                    briefing.contains("when the review starts"),
+                    !playground && harness == Harness::ClaudeCode
+                );
                 for (_, policy) in policies {
                     assert_eq!(
                         briefing.contains(policy),

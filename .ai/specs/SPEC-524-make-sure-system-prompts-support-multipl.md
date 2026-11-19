@@ -46,3 +46,7 @@ Use the attempt harness in the briefing and leave the author's explicit model ch
 The old standard Codex briefing failed the policy matrix by naming the Claude reviewer. The updated launch test failed on the original Carbon argv.
 
 Antigravity 1.5.12 on Linux x64, downloaded from Google (sha512 starting 26de25fc), reports in its bundled changelog that 1.1.0 removed `/fast`. Its help and the [CLI reference](https://antigravity.google/docs/cli/reference) expose no inference-speed flag. A synthetic Gemini API request confirmed Neon at high effort and the native `swarm` tool supporting a fresh worker pinned to a model. The `swarm models` response from the actual CLI includes `gemini-4-neon-high`. The ordinary `invoke_subagent` tool only accepts tiers.
+
+- Real CLI 1.5.12 with a synthetic API: a Carbon parent called `swarm add` with `model=gemini-4-neon-high`. The tool returned the worker name and that model, and the worker sent its request to the Neon endpoint.
+- Round 1, head 6fd7d10ab, requested changes (both own code). The new matrix assertion reproduced the incorrect promise that a Codex review opens the PR. Only Claude now gets that instruction, and the shared skill allows a code verdict before the first PR starts CI. The matrix checks the native tool, model, effort and fresh context for each profile.
+- APM install and audit passed, and the repository quick checks passed. The local change scan was unrun because Vidoc returned HTTP 401.

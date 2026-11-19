@@ -1143,6 +1143,11 @@ mod tests {
                 "{rel} does not state the rule"
             );
         }
+        let review = normal(&fs::read_to_string(
+            root.join("catalog/skills/open-mercato/om-code-review/SKILL.md"),
+        )?);
+        assert!(review.contains("report that ci awaits delivery and give the code verdict"));
+        assert!(!review.contains("never approve without reading the head's yulius ci run"));
         for rel in [
             "catalog/workflows/feature.md",
             "catalog/workflows/fix.md",
