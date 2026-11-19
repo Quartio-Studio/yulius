@@ -7,6 +7,17 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 ## 2026-11-19
 
 - After a server restart, a run at its usage limit can resume on an available subscription with its new owner’s MCP servers. A delayed move for the old attempt leaves the replacement running (SPEC-547, #1286).
+- Claude Code's scheduled wake-ups preserve unsent drafts, achieved goals and open requests for a person, including when the hook carries plain text (SPEC-541, #1225).
+- A Claude run refused after its subscription signs in again now moves or waits while the new
+  sign-in stays available (SPEC-539, #1365).
+- Stopping a disconnected run now terminates its detached host even when the agent has just
+  exited and the host is waiting to deliver the exit frame. On Linux, settlement also waits
+  for the last host thread to exit (SPEC-550, #1449).
+- Claude transcript pages and tails now hide dotenv values returned by `BashOutput` and
+  `TaskOutput`, including when a reader resumes after the background shell started (SPEC-536, #1457).
+- The local CI network-refusal test exercises the branch and pull request in sequence, giving each job time to report a full network pool on a one-CPU runner (SPEC-549, #1408).
+- A merge candidate that rebuilds a recently failed candidate tree uses the original run for bisection. Errored and cancelled runs leave the tree eligible for CI (SPEC-542, #1384).
+- Automation edits, schedule switches and Run now require the creator in the UI and tools. On upgrade, existing schedules pause once. Review the saved prompt and enable the schedule to resume it. [SPEC-534](../.ai/specs/SPEC-534-enforce-automation-ownership-across-edit.md)
 - Codex session documents created before the first turn now show and index the rollout when it appears (#1454, SPEC-538).
 - A task can deliver a follow-up that appends to a list after incorporating an append from
   `dev`. Delivery compares the two trees when the task contains the integration commit.

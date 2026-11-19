@@ -33,6 +33,7 @@ Issue #1286 reports a timeout waiting for attempt two on plain dev under load. S
 - [x] Verify probe progress and immediate resumption of ordinary pauses
 - [x] Ready the independently reviewed fix for the green CI merge
 - [x] Resume the restored workflow when its first capacity pass is deferred
+- [x] Verify reattached refusals against the current sign-in after merging dev
 
 ## Acceptance criteria
 
@@ -76,3 +77,4 @@ Reconciliation takes the task’s move lock before attaching the host. It releas
 - Final source-propagation campaign on aa227146a: 12 listed, 4 caught, 1 missed, 0 timed out, 7 unviable, 0 not reached (bound 30 min, took 959 s). The dedicated review-round test above caught its only survivor.
 - PR #1481 CI run cb4cdbc8 timed out after 63.3 s waiting for a restored workflow. Holding the replayed limit pause across the fixture’s only capacity pass reproduced the timeout in 62.6 s. That pass returned the one-second recheck which the fixture discarded. The test now verifies the deferral and starts the server’s capacity loop to drive subsequent passes. The forced ordering passed 12/12 iterations in 38.8 s, and all 95 related integration tests passed on the updated dev base.
 - After the CI fixture fix and clean merge of dev at 514b07925, the original test again passed 40/40 in 219.170 s with all 48 busy loops still running.
+- Merging dev at e03e050c7 combined attempt-scoped access refusals with the run directory's credential check from #1365. All 110 related tests passed, including replay on a revoked subscription, a refusal after a new sign-in, and a run from before credential tracking.

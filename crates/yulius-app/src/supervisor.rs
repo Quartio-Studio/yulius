@@ -1007,6 +1007,9 @@ const REPLAY_WAIT: Duration = Duration::from_secs(30);
 /// server reads it back for a reattached run (SPEC-483 RST-001).
 const PERSONAL_MCP_FILE: &str = "personal-mcp-of";
 
+/// Digest of the sealed sign-in selected for a Claude run, kept for watcher reattachment.
+const CLAUDE_CREDENTIAL_DIGEST: &str = "claude-credential-sha256";
+
 /// Whose personal MCP servers the run in `run_dir` was started with; `None` for none, and for
 /// a mark that cannot be read (said in the log: the run then counts as holding nobody's).
 fn personal_mcp_marked(run_dir: &Path) -> Option<yulius_domain::ids::UserId> {
@@ -2206,6 +2209,13 @@ impl App {
             AttemptId::parse(&self.deps.crypto.new_id()).map_err(AppError::internal)?;
         let run_dir = self.config.data_dir.join("runs").join(attempt_id.as_str());
         std::fs::create_dir_all(&run_dir).map_err(AppError::internal)?;
+        if harness == Harness::ClaudeCode
+            && let Some(sealed) = &account.credential
+        {
+            let digest = self.deps.crypto.sha256_hex(&sealed.0);
+            write_private_file(&run_dir.join(CLAUDE_CREDENTIAL_DIGEST), digest.as_bytes())
+                .map_err(AppError::internal)?;
+        }
         // An Antigravity run has a home of its own in its run directory (SPEC-505 AGY-003).
         let antigravity_home = match harness {
             Harness::Antigravity => Some(self.antigravity_home(&sandbox.id, &run_dir)?),
@@ -3886,6 +3896,10 @@ impl App {
                 child_alive,
                 ..
             } if host_alive || child_alive => {
+                crate::race::reached(
+                    crate::race::Point::LostRunTermination,
+                    Path::new(&attempt.run_dir),
+                );
                 self.terminate_then_mark_lost(task_id, &attempt, StopReason::Lost)
                     .await;
             }
@@ -6050,33 +6064,50 @@ impl App {
         }
     }
 
-    /// A subscription the provider refused for good: it needs a new sign-in, with the provider's
-    /// text as its error. The pool no longer places tasks on it, the usage round skips it, and
-    /// paused tasks are reconsidered for the subscriptions left. A usage write under way
-    /// finishes first, so that it never stores what it read before this.
-    pub(crate) async fn record_access_lost(&self, account: &AccountId, message: &str) {
+    /// Marks a refused sign-in while it is still current. The label is for the interrupted
+    /// task's move notice, including when a newer sign-in is already available.
+    async fn record_access_lost(
+        &self,
+        account: &AccountId,
+        run_dir: &Path,
+        message: &str,
+    ) -> Option<String> {
         crate::race::reached(
             crate::race::Point::AccessLostRecord,
             Path::new(account.as_str()),
         );
-        // Under the lock every write of the subscription's usage takes: such a write reads the
-        // status and stores it back with the usage, and would store `ok` over this (#1211).
+        let launched =
+            crate::leftovers::read_small_file(&run_dir.join(CLAUDE_CREDENTIAL_DIGEST), 64);
+        // Claude sign-in takes this lock too. Keep it from the credential check through the
+        // status write, which must also follow any usage write already under way (#1211).
         let _writing = self.capacity.usage_writes.lock().await;
-        if let Err(err) = self
-            .deps
-            .store
-            .set_account_state(
-                account,
-                AccountStatus::Relogin,
-                None,
-                Some(message),
-                self.now(),
-            )
-            .await
+        let record = match self.deps.store.account(account).await {
+            Ok(account) => account?,
+            Err(err) => {
+                tracing::error!(error = %err, "could not read a refused subscription");
+                return None;
+            }
+        };
+        if let (Some(launched), Some(current)) = (launched, &record.credential)
+            && launched == self.deps.crypto.sha256_hex(&current.0)
         {
-            tracing::error!(error = %err, "could not mark a refused subscription");
+            if let Err(err) = self
+                .deps
+                .store
+                .set_account_state(
+                    account,
+                    AccountStatus::Relogin,
+                    None,
+                    Some(message),
+                    self.now(),
+                )
+                .await
+            {
+                tracing::error!(error = %err, "could not mark a refused subscription");
+            }
+            self.capacity_changed();
         }
-        self.capacity_changed();
+        Some(record.label)
     }
 
     fn start_watcher(self: &Arc<Self>, task_id: &TaskId, attempt: &AttemptRecord) {
@@ -6484,21 +6515,17 @@ impl App {
                 self.limit_met(task_id, attempt, limit, at, source).await;
             }
             Observation::AccessLost { message, at } => {
-                // The subscription no longer works (cancelled, downgraded, revoked): it needs a
-                // new sign-in, so nothing is placed on it again and its usage is no longer read
-                // back to `ok`. The cut turn then moves on like a limit's, to the next working
-                // subscription, or the task waits for one.
+                // The refused turn moves on like a limit's, including after another sign-in.
                 tracing::warn!(task = %task_id, %message, "subscription access refused");
                 runtime.end_turn();
                 runtime.limit_cut_the_turn(&attempt.id, at, None);
-                let mut refused = None;
-                if let Some(account) = &attempt.account_id {
-                    refused = match self.deps.store.account(account).await {
-                        Ok(Some(record)) => Some(record.label),
-                        _ => None,
-                    };
-                    self.record_access_lost(account, &message).await;
-                }
+                let refused = match &attempt.account_id {
+                    Some(account) => {
+                        self.record_access_lost(account, Path::new(&attempt.run_dir), &message)
+                            .await
+                    }
+                    None => None,
+                };
                 let app = self.clone();
                 let tid = task_id.clone();
                 let account = attempt.account_id.clone();

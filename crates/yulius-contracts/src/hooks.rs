@@ -90,6 +90,9 @@ pub struct HookInput {
     /// `SessionStart` source such as `startup`, `resume`, `clear` or `compact`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
+    /// Claude prompt identifier shared with its transcript record.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prompt_id: Option<String>,
     /// Submitted prompt (`UserPromptSubmit`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub prompt: Option<String>,
