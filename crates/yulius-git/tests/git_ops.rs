@@ -1313,6 +1313,32 @@ fn write_hook(path: &Path, body: &str) -> TestResult {
     Ok(())
 }
 
+/// A child forked during a write can keep the writer after the parent closes it.
+/// Hand the child that descriptor explicitly so the overlap lasts through the first exec.
+#[cfg(target_os = "linux")]
+#[test]
+fn fake_git_runs_while_a_child_holds_an_inherited_writer() -> TestResult {
+    use std::process::Stdio;
+
+    let fx = Fixture::new()?;
+    let path = fx.path("fake git");
+    for index in 0..8 {
+        let writer = fs::File::create(&path)?;
+        let child = Command::new("cat")
+            .stdin(Stdio::piped())
+            .stdout(writer)
+            .spawn()?;
+        let result = write_hook(&path, &format!("#!/bin/sh\nprintf '%s' {index}\n"))
+            .and_then(|()| Ok(Command::new(&path).output()?));
+        // Closing the input releases cat even if installation or exec failed.
+        assert!(child.wait_with_output()?.status.success());
+        let output = result?;
+        assert!(output.status.success());
+        assert_eq!(output.stdout, index.to_string().as_bytes());
+    }
+    Ok(())
+}
+
 #[cfg(unix)]
 #[test]
 fn pre_push_guard_chains_existing_hooks_and_honors_hooks_path() -> TestResult {
