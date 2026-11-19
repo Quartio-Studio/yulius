@@ -1,6 +1,6 @@
 ---
 yulius-task: 1c2c18ef-b209-4c4e-924b-19790ff0e5d6
-status: in-progress
+status: done
 ---
 
 # SPEC-547 Stabilize restart of a reattached run at its limit
@@ -32,7 +32,7 @@ Issue #1286 reports a timeout waiting for attempt two on plain dev under load. S
 - [x] Preserve failed hand-over and bounded retries when capacity runs out
 - [x] Verify probe progress and immediate resumption of ordinary pauses
 - [x] Ready the independently reviewed fix for the green CI merge
-- [ ] Resume the restored workflow when its first capacity pass is deferred
+- [x] Resume the restored workflow when its first capacity pass is deferred
 
 ## Acceptance criteria
 
@@ -74,3 +74,5 @@ Reconciliation takes the task’s move lock before attaching the host. It releas
 - The compatibility mutation run tested all 11 listed changes in 784 s. Two were caught and eight were unviable. The full reviewed change tested all 30 in 1249 s, with 12 caught and 17 unviable. Both runs missed only the hand-over conjunction. The new non-limit regression subsequently caught that exact mutation. Neither campaign timed out.
 - The later source-propagation filter omitted the existing review-round suite. Its subscription-wide reviewer refusal passed on the final code in 3.1 s and failed in 61.5 s with the exact generated mutation which removes the subagent limit handler. It timed out waiting for the replacement.
 - Final source-propagation campaign on aa227146a: 12 listed, 4 caught, 1 missed, 0 timed out, 7 unviable, 0 not reached (bound 30 min, took 959 s). The dedicated review-round test above caught its only survivor.
+- PR #1481 CI run cb4cdbc8 timed out after 63.3 s waiting for a restored workflow. Holding the replayed limit pause across the fixture’s only capacity pass reproduced the timeout in 62.6 s. That pass returned the one-second recheck which the fixture discarded. The test now verifies the deferral and starts the server’s capacity loop to drive subsequent passes. The forced ordering passed 12/12 iterations in 38.8 s, and all 95 related integration tests passed on the updated dev base.
+- After the CI fixture fix and clean merge of dev at 514b07925, the original test again passed 40/40 in 219.170 s with all 48 busy loops still running.

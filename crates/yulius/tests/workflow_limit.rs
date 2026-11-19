@@ -606,9 +606,11 @@ fn a_workflow_paused_at_a_limit_is_known_after_a_restart() -> TestResult {
         assert_eq!(app.deps.store.attempts(&id).await?.len(), 1);
         probe.set("b-second", usage(0.0, 5 * HOUR, 30.0, 100));
         refresh(&app, &user, "b-second").await?;
-        let next = app.resume_round().await;
+        // Replay still owns the move. The first pass schedules a prompt recheck,
+        // which the server's capacity loop drives when the restored workflow can resume.
+        assert_eq!(app.resume_round().await, Duration::from_secs(1));
+        app.start_capacity_loop();
         release.send(())?;
-        assert_eq!(next, Duration::from_secs(1));
         wait_for("the resumed run", Duration::from_secs(60), || {
             second_run_lives(&app, &id)
         })
