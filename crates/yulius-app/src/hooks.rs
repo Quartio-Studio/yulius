@@ -173,6 +173,8 @@ impl App {
         let Ok(harness) = yulius_domain::harness::Harness::parse(harness) else {
             return Err(AppError::NotFound);
         };
+        // Capture the ordering boundary before the token lookup yields to a viewer key.
+        let input_seq = self.supervisor.input_seq.load(Ordering::SeqCst);
         // Never later than now: the client's clock is the host's (loopback only), and a time
         // from the future would order nothing. One not after the epoch is none (SPEC-346 LPH-001).
         let now = self.now().0;
@@ -207,7 +209,7 @@ impl App {
             None
         };
         if event != events::STOP {
-            return self.answer_hook(&ctx, event, input, sent).await;
+            return self.answer_hook(&ctx, event, input, sent, input_seq).await;
         }
         // The agent sent this Stop after every prompt of its turn (SPEC-346 LPH-002).
         {
@@ -225,7 +227,7 @@ impl App {
             attempt: ctx.attempt,
         };
         let _in_flight = crate::finish::StopInFlight::enter(&runtime);
-        let reply = self.answer_hook(&ctx, event, input, sent).await;
+        let reply = self.answer_hook(&ctx, event, input, sent, input_seq).await;
         // Only the live run's answers count: a late one of a run a switch ended is not this
         // session's (SPEC-290 GDW-001).
         let live = matches!(
@@ -301,6 +303,7 @@ impl App {
         event: &str,
         input: &HookInput,
         sent: i64,
+        input_seq: u64,
     ) -> AppResult<HookReply> {
         if event != events::USER_PROMPT_SUBMIT {
             return self
@@ -323,9 +326,15 @@ impl App {
         };
         let from_box = box_text && origin == SubmitOrigin::Unmarked;
         let sent_again = runtime.prompt_held.load(Ordering::SeqCst);
-        if from_box && !sent_again {
-            runtime.submit_emptied_ms.store(sent, Ordering::SeqCst);
-        }
+        let submitted = if from_box {
+            let mut mark = runtime.draft_mark.lock().await;
+            if !sent_again {
+                mark.submit = (sent, input_seq);
+            }
+            Some(mark.submit)
+        } else {
+            None
+        };
         let reply = self.answer_event(ctx, event, input, sent, origin).await;
         // A prompt that is held stays held through an answer that fails: the hook client, once
         // it holds, asks again after a 5xx or a lost connection (it fails open at a first
@@ -344,8 +353,10 @@ impl App {
             // What was submitted is back in the box: nothing was sent past a draft.
             runtime.sent_past_draft.store(false, Ordering::SeqCst);
         }
-        if from_box && !held && !blocked {
-            let emptied = runtime.submit_emptied_ms.load(Ordering::SeqCst);
+        if let Some((emptied, keys)) = submitted
+            && !held
+            && !blocked
+        {
             let run_dir = Path::new(&ctx.attempt.run_dir);
             // The owner's message typed behind their draft went on with it (SPEC-487
             // TCT-006): this prompt is known to follow the draft, whatever this server saw.
@@ -356,24 +367,29 @@ impl App {
             // a prompt follows a key this server saw (SPEC-480 DRF-009). Read from the file,
             // not from what recovery kept: this hook may be served before the run is
             // reattached.
-            let inherited = if past_draft || runtime.typed_seen.load(Ordering::SeqCst) {
+            let mut mark = runtime.draft_mark.lock().await;
+            let inherited = if past_draft || runtime.typed_seq.load(Ordering::SeqCst) != 0 {
                 0
             } else {
                 crate::supervisor::person_typed_marked(run_dir).min(self.now().0)
             };
             if inherited > 0 {
                 runtime.typed_at_ms.fetch_max(inherited, Ordering::SeqCst);
-                runtime.draft_marked.store(true, Ordering::SeqCst);
+                mark.written = true;
             } else {
-                runtime.box_emptied_ms.fetch_max(emptied, Ordering::SeqCst);
+                if emptied >= runtime.box_emptied_ms.fetch_max(emptied, Ordering::SeqCst) {
+                    runtime.emptied_seq.fetch_max(keys, Ordering::SeqCst);
+                }
                 // With the box empty no person's draft holds a typed message any more
                 // (DRF-007, DRF-009): its mark leaves the run's folder, whatever this server
                 // remembers of having written it, and a flag that said a message of Yulius's
                 // own waits for it ends, also after a prompt that starts no turn. A key typed
                 // after this submit is a draft of its own, and both stay.
                 if !self.persons_draft_holds(&ctx.task.id) {
-                    runtime.draft_marked.store(false, Ordering::SeqCst);
+                    crate::race::reached(crate::race::Point::DraftMarkCleanup, run_dir);
+                    mark.written = false;
                     crate::supervisor::clear_person_typed(run_dir);
+                    drop(mark);
                     self.settle_draft_flag(&ctx.task.id).await;
                 }
             }

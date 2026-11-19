@@ -337,10 +337,7 @@ impl App {
     #[must_use]
     pub fn has_draft(&self, task_id: &TaskId) -> bool {
         let runtime = self.runtime(task_id);
-        is_draft(
-            runtime.last_typed_ms(),
-            runtime.box_emptied_ms.load(Ordering::SeqCst),
-        )
+        is_draft(runtime.last_typed_ms(), runtime.empty_time_for_typing())
     }
 
     /// Whether something waits in Claude Code's own queue (not Yulius's queue of tasks) in the

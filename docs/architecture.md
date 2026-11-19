@@ -2263,8 +2263,12 @@ however long ago; the task's owner alone sends past their own with `with_draft`,
 sender is told, and for a message of Yulius's own, which waits in its watch, the task is flagged
 and its terminal says so once the person's last key is ten minutes old; the key that begins a
 possible draft leaves `person-typed` in the run folder, removed when a prompt is submitted from
-the box and read by `reconcile` for a reattached run). Claude's scheduled hand-over preserves that
-mark even when its submit hook carries plain text (SPEC-541, [ADR-0388](decisions/0388-claude-scheduled-submits-use-the-transcript-hand-over.md)). Yulius also waits while Claude Code's
+the box and read by `reconcile` for a reattached run). Claude’s scheduled hand-over preserves that mark even when its submit hook
+carries plain text (SPEC-541, [ADR-0388](decisions/0388-claude-scheduled-submits-use-the-transcript-hand-over.md)).
+Before a paste, visible input in
+Claude Code’s conversation box also holds a message. This catches restores that generated no
+key. An automatic message flags the task immediately in this case
+([ADR-0384](decisions/0384-visible-prompt-text-holds-session-messages.md)). Messages also wait while Claude Code's
 folder-trust dialog shows
 (`trust_prompt_shown`), while Yulius types the first message or while anything else
 is typed (`TaskRuntime::typing_message`, held from a line to its Enter by a message,
