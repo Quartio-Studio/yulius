@@ -1,6 +1,6 @@
 ---
 yulius-task: 471b3694-e07c-467b-b0bc-29a0822f3fbb
-status: in-progress
+status: done
 ---
 
 # SPEC-540 — Restore prompt-mode goal state after subscription switches
@@ -24,7 +24,7 @@ Issue #1182 records a real session and inspections of Claude Code 2.1.292, 2.1.3
 - [x] Specify goal recovery from the resumed conversation
 - [x] Reproduce goal loss across subscription moves
 - [x] Restore prompt goals in the watcher and fake agent
-- [ ] Verify the fix and obtain independent review
+- [x] Verify the fix and obtain independent review
 
 ## Acceptance criteria
 
@@ -45,5 +45,9 @@ Exercise the supervisor with a detached PTY host and the fake CLI, including Sto
 - Before the fix, all three real-process switch tests failed at the assertion that the resumed goal was open. A separate two-process fake CLI probe appended two answer records and zero verdicts on the second process.
 - After initialization from the transcript, the manual, pool and usage-limit tests passed, including a server restart after the manual move. The restricted-hook fixture stayed Working after Stop and settled at the verdict deadline. The existing goal-mode switch test observed exactly one goal submission.
 - Holding the resumed PTY attach exposed an additional early Stop failure. The task read Waiting before its evaluator could report. The verdict slot now lasts through attach and is cancelled when the run exits or is lost.
-- The fake CLI contract exercised open and closed conditions, sidechain records and the opt-out. The adapter test exercised all five outcomes, a missing transcript, malformed input and a partial trailing record.
+- The fake CLI contract exercised open and closed conditions, sidechain records and the opt-out. The adapter test exercised all five outcomes, a missing transcript, malformed input, the 4 MiB record limit and a partial trailing record.
 - The automated tests use detached PTY hosts and the fake CLI. The evidence for native Claude Code restoration is from issue #1182. This task did not run a signed-in Claude session.
+- Independent review requested a check that the same early Stop settles after attachment. The gated test now observes Working before releasing attach and Waiting without further input or verdict. Restoring the single slot clear in an isolated worktree made the test fail with “timed out waiting for the same Stop's deadline after attach”. It passed in the normal test binary. The reviewer approved the revised implementation and test at `c980e4094`.
+- `scripts/dev quick` passed, as did `cargo clippy --locked -p yulius-harness -p yulius-app -p fake-agent --all-targets -- -D warnings` and the same Clippy check on `-p yulius`. `scripts/dev security` reported Vidoc disabled for this project. `scripts/dev mutants --base db567d76d` found no mutable lines in the review's test-only correction.
+- The process-isolated nextest selection covering the switch tests and pre-attach Stop passed all 57 tests. A second nextest selection passed ten existing task completion, goal evaluation and restart tests. `cargo test -p fake-agent --test cli` passed all 30 CLI tests. `cargo test -p yulius --lib resumed_goal_uses_the_last_complete_main_thread_status` passed with records at exactly 4 MiB and one byte over. The first boundary fixture hit Rust's formatting width limit before calling the parser. The corrected fixture writes its bytes directly.
+- `scripts/dev mutants` listed 54 mutants. Its unmodified workspace baseline reached the 300-second test deadline with 2,780 tests passed, three in progress terminated and 402 outstanding. The command reported “cargo test failed in an unmutated tree, so no mutants were tested”. All 54 remain untested by that campaign. The separate one-line reversal above produced the expected failure. `scripts/dev mutants --base c980e4094` found no mutant in the final boundary-fixture correction.
