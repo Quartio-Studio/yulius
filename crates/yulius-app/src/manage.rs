@@ -347,12 +347,23 @@ impl App {
             Some(_) => self.agent_workflow(caller, args).await?,
             None => None,
         };
+        let model = opt_str(args, "model")?;
+        // No agent named (or `auto`): the one the model implies, else the calling task's own,
+        // else Claude Code; never drawn (SPEC-514 PIN-002).
+        let harness = match opt_str(args, "harness")? {
+            Some(named) if named.trim() != AUTO => named,
+            _ => yulius_domain::harness::Harness::unnamed(
+                model.as_deref(),
+                caller.task.as_ref().map(|t| t.harness),
+            )
+            .as_str()
+            .to_owned(),
+        };
         let request = CreateTask {
             prompt: prompt.to_owned(),
-            // No agent named: the one the model implies, else drawn (SPEC-505 RND-001).
-            harness: opt_str(args, "harness")?.unwrap_or_else(|| "auto".into()),
+            harness,
             workflow_id,
-            model: opt_str(args, "model")?,
+            model,
             effort: opt_str(args, "effort")?,
             title: opt_str(args, "title")?,
             mode: opt_str(args, "mode")?,

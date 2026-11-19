@@ -33,9 +33,10 @@ pub struct Automation {
     /// Workflow for created tasks.
     #[serde(default)]
     pub workflow_id: Option<String>,
-    /// Harness: `auto` (the default: drawn for each run, SPEC-505 RND-002), `claude`, `codex`
-    /// (SPEC-503) or `antigravity` (SPEC-505).
-    #[serde(default = "default_harness")]
+    /// Harness: `claude`, `codex` (SPEC-503) or `antigravity` (SPEC-505); `auto` is Claude Code,
+    /// stored as `claude`. Absent (empty): Claude Code for a new automation, the stored agent for
+    /// an update, so a change that sends no agent keeps it (SPEC-514 PIN-003).
+    #[serde(default)]
     pub harness: String,
     /// Enabled.
     #[serde(default = "default_true")]
@@ -87,10 +88,6 @@ pub struct RunAutomation {
     /// The task waits, prepared, until a person starts it (SPEC-155).
     #[serde(default)]
     pub prepared: bool,
-}
-
-fn default_harness() -> String {
-    "auto".into()
 }
 
 fn default_true() -> bool {

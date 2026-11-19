@@ -5,7 +5,9 @@
 Accepted on 2026-11-17 (`F 2026-11-17 Antigravity`: the person's request in task #487, "Implement
 antigravity cli next to claude cli … it should be randomised by default what we are using but also
 we should be able to choose. Use Gemini 4 Carbon high by default."). Specified in
-[SPEC-505](../../.ai/specs/SPEC-505-implement-antigravity-cli-next-to-claude.md). Follows
+[SPEC-505](../../.ai/specs/SPEC-505-implement-antigravity-cli-next-to-claude.md). Its **Draw**
+is superseded by [ADR-0368](0368-a-tasks-agent-is-set-never-drawn.md) (2026-11-19): a task's agent
+is set, never drawn; the rest stands. Follows
 [ADR-0355](0355-codex-returns-as-a-second-harness-with-a-pinned-cli.md) (Codex) in every seam;
 provider switching and session translation stay removed (SPEC-002 ADR-06).
 

@@ -325,10 +325,10 @@ async fn workflows_defaults_scope_permissions_and_task_steps() -> TestResult {
     )
     .await?;
     assert_eq!(quick.body["steps"]["total"], 0);
-    // No agent and no Antigravity subscription: the draw leaves Claude Code (SPEC-505 RND-001).
+    // No agent named: Claude Code, never drawn (SPEC-514 PIN-001).
     assert_eq!(
         quick.body["harness"], "claude",
-        "Claude Code is the only usable agent here"
+        "Claude Code is the default harness"
     );
     let other = call(
         &w.h.router,
@@ -1262,8 +1262,11 @@ async fn agents_manage_automations_through_mcp_tools() -> TestResult {
     assert!(!err, "{created}");
     let automation = &created["automation"];
     assert_eq!(automation["created_via"], "agent");
-    // No agent named: its tasks' agent is drawn for each run (SPEC-505 RND-002).
-    assert_eq!(automation["harness"], "auto", "drawn for each run");
+    // No agent named: the calling task's own, Claude Code here (SPEC-514 PIN-002).
+    assert_eq!(
+        automation["harness"], "claude",
+        "defaults to the agent's harness"
+    );
     assert_eq!(automation["workflow_id"], "wf-feature");
     assert_eq!(automation["utc_offset_minutes"], 120);
     let id = automation["id"].as_str().ok_or("id")?.to_owned();

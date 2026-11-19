@@ -21,13 +21,15 @@ It runs native Antigravity CLI sessions on Antigravity (Google) subscriptions to
 Carbon at high effort unless a task names another Gemini model (`F 2026-11-17 Antigravity`, task
 #487). An Antigravity subscription signs in with the CLI's own Google sign-in or a Gemini API key,
 an Antigravity task moves only between Antigravity subscriptions, and Yulius provides the pinned
-Antigravity CLI (1.5.10). A task or automation run without a chosen agent is drawn at random
-between Claude Code and Antigravity, among those with a usable subscription (the composer's and
-the automation editor's default, Random), so the two can be compared on the same mix of work; a
-task says whether its agent was drawn, and the analytics export lists it. An agent can always be
-chosen instead
+Antigravity CLI (1.5.10)
 ([SPEC-505](../.ai/specs/SPEC-505-implement-antigravity-cli-next-to-claude.md),
-[ADR-0361](decisions/0361-antigravity-is-a-third-harness-picked-at-random-by-default.md)).
+[ADR-0361](decisions/0361-antigravity-is-a-third-harness-picked-at-random-by-default.md)). A
+task's agent is set, never drawn: the one chosen, else the one its model implies, else Claude Code
+(the composer's Default); a follow-up an agent creates runs that agent's own, and an automation
+always runs the agent it names (`F 2026-11-19 Harness`,
+[SPEC-514](../.ai/specs/SPEC-514-make-sure-harnesses-doesnt-change-themse.md),
+[ADR-0368](decisions/0368-a-tasks-agent-is-set-never-drawn.md)). Tasks drawn at random while
+SPEC-505's draw existed still say so, and the analytics export lists it.
 
 The authoritative product brief is [SPEC-001](../.ai/specs/SPEC-001-yulius-product.md); this
 page is the short version for anyone who must know the whole product before building.

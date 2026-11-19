@@ -1339,8 +1339,8 @@ export function mountComposer(ctx, sandbox) {
     startButton.setAttribute('aria-label', startAction());
     startButton.title = write ? `${startAction()} (${SUBMIT_KEYS})` : 'Requires write access';
     const found = findModel(modelId);
-    setChildren(modelChip, h('span', { class: 'sr-only' }, 'Model: '), h('span', { class: 'chip-label' }, found ? found.model.name : 'Random agent'), icon('down', { size: 12 }));
-    modelChip.title = found ? `${found.provider.name} · ${found.model.name}` : 'Agent: drawn for each task, Claude Code (Opus 5.5) or Antigravity (Gemini 4 Carbon)';
+    setChildren(modelChip, h('span', { class: 'sr-only' }, 'Model: '), h('span', { class: 'chip-label' }, found ? found.model.name : 'Default model'), icon('down', { size: 12 }));
+    modelChip.title = found ? `${found.provider.name} · ${found.model.name}` : 'Model: default, Claude Code, Opus 5.5';
     // A model without effort levels (Haiku) hides the effort choice and sends none.
     const effortless = Boolean(found && found.model.effort === false);
     effortChip.hidden = effortless;
@@ -1795,9 +1795,8 @@ export function mountComposer(ctx, sandbox) {
       }),
       keep: () => busyRun(autoStage(), async () => opened(await createTask(bodyFor(value)))),
       close: () => clearSplit(),
-      // A task of another agent runs without a Claude account (SPEC-503, SPEC-505), and so does
-      // a Random one while Antigravity is usable: it is drawn among the usable agents (RND-001).
-      codex: Boolean(bodyFor(value).harness) || (!findModel(modelId) && antigravityConnected(ctx.store.state.me)),
+      // A task of another agent runs without a Claude account (SPEC-503, SPEC-505).
+      codex: Boolean(bodyFor(value).harness),
     });
     setChildren(intakeSlot, split.el);
     const calm = window.matchMedia('(prefers-reduced-motion: reduce)').matches;

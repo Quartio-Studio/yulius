@@ -88,10 +88,12 @@ accounts, by `codex resume <id>`: at a usage limit, when a person moves it and w
 subscription is removed (SPEC-447); it waits when none has capacity, and with no Codex
 subscription usable it asks for one.
 
-A task created without an agent (or a model that implies one) is drawn between Claude Code and
-Antigravity among those with a usable subscription (`App::draw_harness`, `Harness::drawn`), and
-so is each run of an automation without one; the draw is kept in `task_harness_draws` and shown
-as `harness_choice` (SPEC-505 RND-001..003).
+A task's agent is set at creation and never drawn (SPEC-514, ADR-0368): without an agent (or
+with `auto`) it is the one its model implies, else Claude Code (`Harness::unnamed`); an agent's
+`task_create` and `automation_create` pass the calling task's own; an automation stores the agent
+it names (`auto` saves as `claude`; migration 0068 turned stored `auto` into `claude`). Tasks
+drawn while SPEC-505 RND-001 drew stay in `task_harness_draws`, shown as `harness_choice`
+`random`.
 
 An Antigravity task ([decision 0361](decisions/0361-antigravity-is-a-third-harness-picked-at-random-by-default.md))
 runs the `agy` TUI on a Google account with a home of its own in its run directory,

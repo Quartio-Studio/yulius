@@ -133,22 +133,6 @@ impl Harness {
     /// All supported harnesses.
     pub const ALL: [Self; 3] = [Self::ClaudeCode, Self::Codex, Self::Antigravity];
 
-    /// The agents a task created without one is drawn between (SPEC-505 RND-001): the two the
-    /// person compares. Codex runs only when chosen.
-    pub const DRAWN: [Self; 2] = [Self::ClaudeCode, Self::Antigravity];
-
-    /// The agent `roll` draws among `usable` (those of [`Self::DRAWN`] with a usable
-    /// subscription, in that order), uniformly for a uniform roll over an even range; Claude Code
-    /// when none is usable, whose start is then refused for want of an account (SPEC-505 RND-001).
-    #[must_use]
-    pub fn drawn(usable: &[Self], roll: u8) -> Self {
-        if usable.is_empty() {
-            Self::ClaudeCode
-        } else {
-            usable[usize::from(roll) % usable.len()]
-        }
-    }
-
     /// The agent a model given without one implies: Antigravity for a Gemini model, else Claude
     /// Code (Codex runs only when chosen; SPEC-505 RND-001).
     #[must_use]
@@ -157,6 +141,17 @@ impl Harness {
             Self::Antigravity
         } else {
             Self::ClaudeCode
+        }
+    }
+
+    /// The agent of a task created without one (SPEC-514 PIN-001/002, ADR-0368): the one `model`
+    /// implies when a model is given, else `caller`'s (the task whose agent created it), else
+    /// Claude Code. It is never drawn, so it does not change from one task to the next.
+    #[must_use]
+    pub fn unnamed(model: Option<&str>, caller: Option<Self>) -> Self {
+        match model.map(str::trim).filter(|m| !m.is_empty()) {
+            Some(model) => Self::implied_by(model),
+            None => caller.unwrap_or(Self::ClaudeCode),
         }
     }
 
@@ -267,21 +262,25 @@ pub fn valid_session_id(id: &str) -> bool {
 mod tests {
     use super::*;
 
-    /// SPEC-505 RND-001: a roll picks among the usable agents in their order, evenly over a
-    /// byte; with none usable it is Claude Code.
+    /// SPEC-514 PIN-001/002: a task without an agent takes its model's agent, else its caller's,
+    /// else Claude Code; a model's agent is Antigravity for Gemini, else Claude Code.
     #[test]
-    fn the_draw_picks_among_the_usable_agents() {
-        let both = Harness::DRAWN;
-        assert_eq!(Harness::drawn(&both, 0), Harness::ClaudeCode);
-        assert_eq!(Harness::drawn(&both, 1), Harness::Antigravity);
-        assert_eq!(Harness::drawn(&both, 255), Harness::Antigravity);
-        let picks = (0..=255u8).filter(|r| Harness::drawn(&both, *r) == Harness::Antigravity);
-        assert_eq!(picks.count(), 128, "even over a byte");
+    fn a_task_without_an_agent_takes_its_models_or_its_callers_or_claude_code() {
+        assert_eq!(Harness::unnamed(None, None), Harness::ClaudeCode);
+        assert_eq!(Harness::unnamed(Some("  "), None), Harness::ClaudeCode);
         assert_eq!(
-            Harness::drawn(&[Harness::Antigravity], 0),
+            Harness::unnamed(None, Some(Harness::Antigravity)),
             Harness::Antigravity
         );
-        assert_eq!(Harness::drawn(&[], 1), Harness::ClaudeCode);
+        assert_eq!(Harness::unnamed(None, Some(Harness::Codex)), Harness::Codex);
+        assert_eq!(
+            Harness::unnamed(Some("claude-sonnet-5-5"), Some(Harness::Antigravity)),
+            Harness::ClaudeCode
+        );
+        assert_eq!(
+            Harness::unnamed(Some("gemini-4-carbon"), Some(Harness::ClaudeCode)),
+            Harness::Antigravity
+        );
         assert_eq!(Harness::implied_by("gemini-4-carbon"), Harness::Antigravity);
         assert_eq!(Harness::implied_by(" Gemini-3.1-pro"), Harness::Antigravity);
         assert_eq!(Harness::implied_by("claude-opus-5-5"), Harness::ClaudeCode);
