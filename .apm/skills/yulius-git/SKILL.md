@@ -15,9 +15,7 @@ first. A task's branch and worktree come from current `origin/dev` (Yulius makes
 branch. Implement and verify, merge `origin/dev` before the review or for a conflict, then get
 an independent review in a fresh session of the exact head and call `delivery_merge` with that
 `reviewed_head`: Yulius pushes, opens the pull request into dev and squashes it on green Yulius
-CI through its merge queue. After an approval, fix the remaining nits within 20 product lines and merge without another round: `delivery_merge` with the approved head counts them (tests and documents do not count). More than that, or a file leaving the change, needs a new round. A usage limit can cut a reviewer off before its report: resume that same reviewer with SendMessage to its agent id, never start a new one for the same round. A reviewer runs at high effort, never max. Start the independent code review with the Agent tool and the
-`yulius-reviewer` agent: Yulius picks the round's model (Fable 5.2 for a pull request's first
-two rounds, then Opus 5.5). Never merge by hand (`gh pr merge` is refused). Yulius removes a
+CI through its merge queue. After an approval, fix the remaining nits within 20 product lines and merge without another round: `delivery_merge` with the approved head counts them (tests and documents do not count). More than that, or a file leaving the change, needs a new round. A usage limit can cut a reviewer off before its report: resume that same reviewer by its agent id, never start a new one for the same round. A reviewer runs at high effort, never max. Follow the task briefing for the reviewer and model of the active harness. Never merge by hand (`gh pr merge` is refused). Yulius removes a
 closed task's worktree; a branch made by hand is deleted only after safely removing its
 worktree, preserving unpublished commits and tracked/untracked/ignored user data. Keep permanent
 dev/main worktrees.

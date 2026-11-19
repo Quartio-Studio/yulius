@@ -1031,7 +1031,7 @@ fn a_contained_antigravity_plan_binds_the_runs_home() -> TestResult {
             exe.clone(),
         );
         config.contained = true;
-        let cli = data.join("antigravity-cli/1.5.10-linux-x64");
+        let cli = data.join("antigravity-cli/1.5.12-linux-x64");
         let deps = Deps {
             store: Arc::new(SqliteStore::open(&data.join("yulius.db"))?),
             clock: Arc::new(SystemClock),

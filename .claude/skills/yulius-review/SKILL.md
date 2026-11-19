@@ -20,9 +20,7 @@ choices and simplicity; do not demand nonexistent implementation tests. For code
 check its requirement evidence and run scoped verification when useful. Do not
 claim an unexecuted test passed.
 
-For the independent review of a task's change: start the independent code review with the Agent
-tool and the `yulius-reviewer` agent: Yulius picks the round's model (Fable 5.2 for a pull
-request's first two rounds, then Opus 5.5).
+For the independent review of a task's change: follow the task briefing for the reviewer and model of the active harness.
 A reviewer does not ask for changes because of CI alone: `delivery_merge` merges
 only a head whose own Yulius CI run passed. When the review finds nothing to fix
 and the head's run is still going, or failed in a way the change does not cause,
@@ -53,6 +51,6 @@ lines of the fix where it can take them. Here: `scripts/dev mutants --base
 After an approval, fix the remaining nits within 20 product lines and merge
 without another round: `delivery_merge` with the approved head counts them
 (tests and documents do not count). More than that, or a file leaving the
-change, needs a new round. A usage limit can cut a reviewer off before its report: resume that same reviewer with SendMessage to its agent id, never start a new one for the same round. A reviewer runs at high effort, never max.
+change, needs a new round. A usage limit can cut a reviewer off before its report: resume that same reviewer by its agent id, never start a new one for the same round. A reviewer runs at high effort, never max.
 
 Mutation testing runs beside the review: when you ask for a pull request's first review, start the project's mutation command in the background and let the reviewer read meanwhile; when it ends, put its summary line in the spec's Evidence and fix each missed mutant test-first before the merge. After a later round's fix, run it on that fix's lines alone. A project without one undoes by hand the few lines its new tests are meant to hold and says what failed. The reviewer may undo a single line it doubts and runs no campaign of its own. Nobody writes a mutation script by hand. A test that cannot fail is still fixed in the same pull request (ADR-0141). Here the command is `scripts/dev mutants`.

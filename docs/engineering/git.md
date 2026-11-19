@@ -18,9 +18,7 @@ merges it. Its steps:
    `origin/dev` before the review or for a conflict (never rebase), and run the tests it
    touches again.
 3. An **independent review in a fresh session** reads the exact head (a read-only reviewer given
-   the diff range and the spec, skill `om-code-review`). Start the independent code review with
-   the Agent tool and the `yulius-reviewer` agent: Yulius picks the round's model (Fable 5.2 for
-   a pull request's first two rounds, then Opus 5.5). Every finding is answered
+   the diff range and the spec, skill `om-code-review`). Follow the task briefing for the reviewer and model of the active harness. Every finding is answered
    ([workflow](workflow.md#review-output)). A commit after the approval needs a look at it too; a
    clean merge of `dev` after it (no conflict resolved) keeps the approval.
 4. Call `delivery_merge` with that `reviewed_head`. Yulius pushes the branch, opens the pull
@@ -195,7 +193,7 @@ branches or use forced ref updates to refresh a checked-out branch.
   comments if present; do not fabricate a second reviewer identity.
 - After an approval, fix the remaining nits within 20 product lines and merge without
   another round: `delivery_merge` with the approved head counts them (tests and documents do
-  not count). More than that, or a file leaving the change, needs a new round. A usage limit can cut a reviewer off before its report: resume that same reviewer with SendMessage to its agent id, never start a new one for the same round. A reviewer runs at high effort, never max.
+  not count). More than that, or a file leaving the change, needs a new round. A usage limit can cut a reviewer off before its report: resume that same reviewer by its agent id, never start a new one for the same round. A reviewer runs at high effort, never max.
 
 ## Enforcement and maintenance
 

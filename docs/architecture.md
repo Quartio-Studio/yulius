@@ -1354,7 +1354,7 @@ repository's own `.claude/agents/yulius-reviewer.md` would outrank it, and the r
 then shows the model that answered
 ([decision 0341](decisions/0341-yulius-picks-the-model-of-each-review-round.md)).
 
-The agent always asks for `yulius-reviewer`. The Agent tool's `PreToolUse` (matcher
+The task briefing selects the review instructions from the active attempt’s harness ([ADR-0376](decisions/0376-review-instructions-follow-the-active-harness.md)). Codex requests GPT-6.2 Astra at high effort and Antigravity requests Gemini 4 Neon (High) for each round. Claude Code asks for `yulius-reviewer`. The Agent tool's `PreToolUse` (matcher
 `Agent|Task`) reaches Yulius with the tool's whole input (`guard_client::agent_request`), and
 `App::review_gate` numbers the round among the rounds of the task's open pull request (a round
 counts once it ended with a report; a reviewer started again for a round without one keeps its
@@ -2273,7 +2273,10 @@ however long ago; the task's owner alone sends past their own with `with_draft`,
 sender is told, and for a message of Yulius's own, which waits in its watch, the task is flagged
 and its terminal says so once the person's last key is ten minutes old; the key that begins a
 possible draft leaves `person-typed` in the run folder, removed when a prompt is submitted from
-the box and read by `reconcile` for a reattached run), while Claude Code's
+the box and read by `reconcile` for a reattached run). Before a paste, visible input in
+Claude Code’s conversation box also holds a message. This catches restores that generated no
+key. An automatic message flags the task immediately in this case
+([ADR-0384](decisions/0384-visible-prompt-text-holds-session-messages.md)). Messages also wait while Claude Code's
 folder-trust dialog shows
 (`trust_prompt_shown`), while Yulius types the first message or while anything else
 is typed (`TaskRuntime::typing_message`, held from a line to its Enter by a message,
