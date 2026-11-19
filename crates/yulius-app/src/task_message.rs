@@ -94,12 +94,12 @@ fn paste(login: &str, channel: Channel, text: &str, before: &str) -> Vec<u8> {
 }
 
 /// The bytes typed for a (cleaned) answer from `login` to what the agent asked with `needs_you`
-/// (SPEC-516 NYA-002): one bracketed paste. From someone other than the task's `owner` it says
-/// so, and that the answer moves nothing of the task. Enter is sent separately.
+/// (SPEC-516 NYA-002): one bracketed paste. From someone other than the task's `owner` (`mine`
+/// false) it says so, and that the answer moves nothing of the task. Enter is sent separately.
 #[must_use]
-pub fn answer_paste(login: &str, owner: &str, text: &str) -> Vec<u8> {
+pub fn answer_paste(login: &str, owner: &str, mine: bool, text: &str) -> Vec<u8> {
     let (login, owner) = (clean_message(login), clean_message(owner));
-    let whose = if login == owner {
+    let whose = if mine {
         String::new()
     } else {
         format!(
@@ -338,8 +338,8 @@ impl App {
     /// session, which ends the request. Control of the task does not move.
     ///
     /// # Errors
-    /// `NotFound`/`Forbidden` without write access, for a disabled account or a guest on another
-    /// person's task; `Invalid` for an empty or oversized text; `Conflict` with nothing to answer,
+    /// `NotFound`/`Forbidden` without write access (a disabled account has none) or for a guest on
+    /// another person's task; `Invalid` for an empty or oversized text; `Conflict` with nothing to answer,
     /// a task that is not running, an agent asking in its terminal, the owner's personal secrets
     /// or MCP servers within the run's reach, or a session that takes no typed text now.
     pub async fn answer_needs_you(
@@ -348,10 +348,16 @@ impl App {
         id: &str,
         text: &str,
     ) -> AppResult<TaskSummary> {
+        // A disabled account has no access to any project, so this refuses it too.
         let task = self.load_task_to(ctx, id, TaskAction::Answer).await?;
-        if ctx.user.disabled_at.is_some() {
-            return Err(AppError::Forbidden("this account is disabled".into()));
-        }
+        // The access check may have waited on GitHub: what the task does now is read after it
+        // (review round 1), so a question opened in its terminal meanwhile is not answered.
+        let task = self
+            .deps
+            .store
+            .task(&task.id)
+            .await?
+            .ok_or(AppError::NotFound)?;
         let text = clean_message(text);
         if text.is_empty() {
             return Err(AppError::Invalid("the answer is empty".into()));
@@ -396,7 +402,7 @@ impl App {
             )));
         }
         let login = self.login_of(&ctx.user.id).await;
-        let paste = answer_paste(&login, &owner, &text);
+        let paste = answer_paste(&login, &owner, mine, &text);
         self.type_into_session(&task, &paste, Typed::Prompt, Sender::Person)
             .await?;
         self.end_needs_you(&task.id).await;
@@ -413,7 +419,7 @@ impl App {
             .audit(
                 self.now(),
                 &login,
-                "task.needs_you_answered",
+                "task.needs_you.answered",
                 Some(task.id.as_str()),
                 Some(&detail.to_string()),
             )
@@ -735,8 +741,8 @@ mod tests {
     /// someone other than the owner it says the task stays the owner's.
     #[test]
     fn an_answer_says_who_answers_and_whose_the_task_stays() {
-        let teammate =
-            String::from_utf8(answer_paste("b\x1bob", "alice", "Frankfurt.")).unwrap_or_default();
+        let teammate = String::from_utf8(answer_paste("b\x1bob", "alice", false, "Frankfurt."))
+            .unwrap_or_default();
         assert_eq!(
             teammate,
             "\x1b[200~Answer from bob to what you asked with needs_you (bob is not this task's \
@@ -744,8 +750,13 @@ mod tests {
              to your request):\n\nFrankfurt.\x1b[201~"
         );
         assert_eq!(teammate.matches('\x1b').count(), 2);
+        // Two accounts may share a label (`unknown`): who owns the task decides, not the names.
+        let same_label =
+            String::from_utf8(answer_paste("unknown", "unknown", false, "Go.")).unwrap_or_default();
+        assert!(same_label.contains("not this task's owner"), "{same_label}");
         assert_eq!(
-            String::from_utf8(answer_paste("alice", "alice", "Frankfurt.")).unwrap_or_default(),
+            String::from_utf8(answer_paste("alice", "alice", true, "Frankfurt."))
+                .unwrap_or_default(),
             "\x1b[200~Answer from alice to what you asked with needs_you:\n\nFrankfurt.\x1b[201~"
         );
     }
