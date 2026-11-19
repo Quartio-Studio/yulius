@@ -58,9 +58,9 @@ antigravity when it's Michal's task, in opus it works good"). Fixes #1440.
 ## Plan
 
 - [x] Root cause found and the defect filed as an issue
-- [ ] Spec SPEC-525 written and valid
-- [ ] Codex and Antigravity transcripts read as entries, regression tests first
-- [ ] Docs and the changes log updated
+- [x] Spec SPEC-525 written and valid
+- [x] Codex and Antigravity transcripts read as entries, regression tests first
+- [x] Docs and the changes log updated
 - [ ] Independent review in a fresh session, findings fixed test-first
 
 ## Acceptance criteria
