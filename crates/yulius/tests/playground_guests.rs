@@ -475,6 +475,24 @@ async fn a_guest_tidies_only_their_own_tasks() -> TestResult {
             "{message}"
         );
     }
+    // Nor does a guest answer what the maker's task asks (SPEC-516 NYA-001).
+    let path = format!("/api/tasks/{}/needs-you/answer", makers.id);
+    let refused = call(
+        &w.h.router,
+        Method::POST,
+        &path,
+        Some(json!({"text": "Frankfurt"})),
+        &guest,
+    )
+    .await?;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN, "{}", refused.body);
+    let message = refused.body["error"]["message"]
+        .as_str()
+        .unwrap_or_default();
+    assert!(
+        message.contains("@alice") && message.contains("answers the requests of"),
+        "{message}"
+    );
     // Steering the maker's task, a guest is told to ask: never to take control, which they
     // cannot, nor that they may put it away (SPEC-510 review round 1).
     let path = format!("/api/tasks/{}/continue", makers.id);

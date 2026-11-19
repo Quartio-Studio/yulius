@@ -457,7 +457,7 @@ impl App {
     /// The task `id` for a sandbox-level `action` by `ctx`'s person: viewing needs access to its
     /// sandbox, and anything more is control, which only its owner has ([`TaskAction::of`],
     /// SPEC-490 OWN-001): a path that changes a task is the owner's unless it asks
-    /// [`App::load_task_to`] for [`TaskAction::Tidy`].
+    /// [`App::load_task_to`] for [`TaskAction::Tidy`] or [`TaskAction::Answer`].
     ///
     /// # Errors
     /// As [`App::load_task_to`].
@@ -523,10 +523,14 @@ impl App {
             Ok(()) => Ok(level),
             Err(TaskRefusal::NotOwner) => Err(self.not_the_owner(task, guest).await),
             Err(TaskRefusal::Guest) => Err(AppError::Forbidden(format!(
-                "Task #{} is @{}'s: a guest stops, archives and deletes only their own tasks on \
-                 this playground.",
+                "Task #{} is @{}'s: a guest {} only their own tasks on this playground.",
                 task.number,
-                self.login_of(&task.owner).await
+                self.login_of(&task.owner).await,
+                if action == TaskAction::Answer {
+                    "answers the requests of"
+                } else {
+                    "stops, archives and deletes"
+                }
             ))),
             // `require_for` refused a level below the action's already.
             Err(TaskRefusal::Access) => Err(AppError::Forbidden(

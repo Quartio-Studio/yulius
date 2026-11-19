@@ -6,6 +6,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-19
 
+- Answer a teammate's Needs you (SPEC-516, task #498, ADR-0370): on someone else's task whose
+  agent asks a person for something, Reply answers it without taking control. The agent gets the
+  answer labelled with your name (and that you are not its owner), the request ends, and the task
+  stays its owner's on GitHub. Not while the agent asks in its terminal, nor while the owner's
+  personal secrets or MCP servers reach its run: then the owner answers, or you take control.
+  `POST /api/tasks/{tid}/needs-you/answer`, audited `task.needs_you.answered`.
 - A task that finds a bug fixes it (SPEC-517, ADR-0371, task #499): a request that reports
   something wrong in the product, also asked as a question ("What", "why is this broken"), runs on
   Auto as a goal with the Fix workflow's steps instead of Research / Question; a question task that

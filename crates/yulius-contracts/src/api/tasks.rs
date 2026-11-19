@@ -592,6 +592,14 @@ pub struct QueueMessage {
     pub text: String,
 }
 
+/// `POST /api/tasks/{tid}/needs-you/answer` (SPEC-516 NYA-001): the answer to what the task's
+/// agent asked a person, from anyone who may work in its project.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AnswerNeedsYou {
+    /// The answer, typed into the task's session as one labelled message.
+    pub text: String,
+}
+
 /// Answer to a queued message: the request as the agent will get it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct QueuedMessage {

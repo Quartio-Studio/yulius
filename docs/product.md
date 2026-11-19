@@ -373,7 +373,7 @@ watching, steering and unblocking.
   people look elsewhere, also across a reload, until it starts.
   A task is its owner's: Yulius acts on GitHub for it with their credentials (the agent's own Git
   and `gh` use a narrowed App token), so only they steer it: type into it, send it messages,
-  answer what it asks, continue, start, pause or deliver it. Anyone who may work in the project
+  answer what it asks in its terminal, continue, start, pause or deliver it. Anyone who may work in the project
   can **stop, archive, restore and delete** any of its tasks (a playground's guest only their
   own), from the task's page, the lists and the sidebar; stopping or deleting someone else's task asks first and names its owner, and
   the audit says who did it (SPEC-490). Its owner can **pause** a running task and resume it later: the agent
@@ -387,7 +387,10 @@ watching, steering and unblocking.
   Others
   watch it as its live transcript (printed as the Sessions view prints a session, in the
   terminal's colours, following its newest lines until they scroll up), see whose it is
-  in the view and in the sidebar, and can take control, from the task's page or its menu in a
+  in the view and in the sidebar, answer what its agent asks under Needs you with Reply
+  without taking control (SPEC-516: the agent gets the answer labelled with their name; not
+  while it asks in its terminal or holds the owner's personal secrets or MCP servers), and can
+  take control, from the task's page or its menu in a
   list, after a confirmation naming the owner (SPEC-510): the task then acts on GitHub as them,
   and the previous owner hears of it wherever they are and can take it back at any time. A
   person who wants to be asked first turns on "Ask me before taking control of my tasks" in
