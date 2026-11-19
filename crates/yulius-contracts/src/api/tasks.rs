@@ -167,8 +167,8 @@ pub struct TaskSummary {
     #[serde(default)]
     pub held_by: Vec<u32>,
     /// While `queued` and not held by a supertask: what it waits for, one line ("Waiting for a
-    /// free session: 8 of 8 in use", "Waiting for the Yulius update to finish"; SPEC-512
-    /// PRK-007). Null otherwise.
+    /// free session: 8 of 8 in use", "Waiting for the Yulius update to finish", "Starting: a
+    /// session is free"; SPEC-512 PRK-007). Null otherwise.
     #[serde(default)]
     pub queue_reason: Option<String>,
     /// While `prepared` (SPEC-105): when it starts by itself, RFC 3339; null when it waits for a

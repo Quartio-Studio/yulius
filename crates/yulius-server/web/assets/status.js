@@ -383,7 +383,11 @@ export function taskInfo(task, actionRequests, pr) {
   // A parked task is shown where it was, as its idle run would be, marked parked (SPEC-512 PRK-004).
   if (task.status === 'parked') {
     const shown = taskInfo(asIdleRun(task), actionRequests, pr);
-    return { ...shown, label: `${shown.label} · parked`, parked: true };
+    // Nothing of it goes on by itself: what would keep a running agent busy (its checks, a
+    // conflict it is told of, a CI run to run again) is a person's now, never Working (review
+    // round 1 of SPEC-512 part 1; the server's `parked_group`).
+    const waits = shown.group === 'working' ? { icon: 'st-attention', tone: 'attention', group: 'needs' } : {};
+    return { ...shown, ...waits, label: `${shown.label} · parked`, parked: true };
   }
   let info = taskInfoOf(task, actionRequests, pr);
   // Another live task claims paths this one claims (SPEC-493 SCO-002): said beside the rest, a
@@ -508,7 +512,7 @@ export function taskActions(task, access, pr, me, guest = false) {
   return {
     // A stopping task can be stopped again: a stop whose session could not be ended is retried
     // (SPEC-065).
-    stop: tidy && (live || chained),
+    stop: tidy && (live || chained || task.status === 'parked'),
     // A person pauses a running task and resumes it (SPEC-191 PER-006); an update's pause ends
     // by itself.
     pause: write && task.status === 'running' && !task.pause,
@@ -518,7 +522,8 @@ export function taskActions(task, access, pr, me, guest = false) {
     continue: write && ended && !task.archived,
     // Run on another subscription (SPEC-447 MOV-001): a running or waiting task moves in its
     // session, an ended one continues there; a person's pause is resumed first (PER-005).
-    move: write && !task.archived && ((['running', 'waiting_capacity'].includes(task.status) && !(task.pause && task.pause.by === 'person')) || ended),
+    // A parked task resumes where it ran (SPEC-512 PRK-005): no move.
+    move: write && !task.archived && task.status !== 'parked' && ((['running', 'waiting_capacity'].includes(task.status) && !(task.pause && task.pause.by === 'person')) || ended),
     deliver: write && !task.archived,
     feedback: allows(access, 'read'),
     // A finished task (Done by the one rule of taskInfo: goal achieved, or plan complete with its

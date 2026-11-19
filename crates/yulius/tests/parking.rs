@@ -18,7 +18,9 @@ use yulius_domain::ids::TaskId;
 use yulius_domain::task::{Activity, TaskStatus};
 use yulius_ptyhost::test_support::locate_fake_agent;
 
-use crate::first_message::{data_dir, hooked, new_task, runtime, screen, start_with, wait_for};
+use crate::first_message::{
+    data_dir, hooked, new_task, runtime, screen, start_hosted, start_with, wait_for,
+};
 use crate::pool_supervision::{ScriptedUsage, seed};
 use crate::support::TestResult;
 use crate::support::agents::FakeAgentOptions;
@@ -378,6 +380,333 @@ fn a_message_during_a_park_is_refused_and_resumes_the_task_once_parked() -> Test
             screen(&app, &id).contains("Late: answer with an echo")
         })
         .await?;
+        Ok::<_, Error>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// PRK-003 (review round 1, M1): a stop that lands while the parked run's end is being recorded
+/// (after it took the park's intent) leaves the task stopped, never `stopping` with no run.
+#[test]
+fn a_stop_during_the_parks_end_stops_the_task() -> TestResult {
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let app = app(&data, 8, 1).await?;
+        let (id, _) = answered(&app, &data).await?;
+        let stopped = Arc::new(std::sync::Mutex::new(None));
+        {
+            let (app, id, stopped) = (app.clone(), id.clone(), stopped.clone());
+            let handle = tokio::runtime::Handle::current();
+            yulius_app::race::on(
+                yulius_app::race::Point::RunEndTaken,
+                Path::new(id.clone().as_str()),
+                move || {
+                    let answer =
+                        tokio::task::block_in_place(|| handle.block_on(app.stop_task_now(&id)));
+                    if let Ok(mut slot) = stopped.lock() {
+                        *slot = Some(answer.map_err(|err| err.to_string()));
+                    }
+                },
+            );
+        }
+        app.park_idle_sessions_now().await;
+        wait_for("the task to rest", Duration::from_secs(30), || async {
+            matches!(status_of(&app, &id).await.0, Some(TaskStatus::Stopped(_)))
+        })
+        .await?;
+        let answer = stopped.lock().map_err(|_| "poisoned")?.clone();
+        assert!(matches!(answer, Some(Ok(()))), "{answer:?}");
+        assert!(app.deps.store.live_attempt(&id).await?.is_none());
+        Ok::<_, Error>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// PRK-004 (review round 1, M3): a task chained after one that is Done and parked starts, as it
+/// starts after a Done one that kept its session.
+#[test]
+fn a_task_chained_after_a_parked_done_task_starts() -> TestResult {
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let app = app(&data, 8, 1).await?;
+        let (id, _) = answered(&app, &data).await?;
+        app.deps
+            .store
+            .set_activity(&id, Some(Activity::Done), app.now())
+            .await?;
+        parked(&app, &id).await?;
+        let before = TaskStore::task(app.deps.store.as_ref(), &id)
+            .await?
+            .ok_or("task")?;
+        let mut waiting = before.clone();
+        waiting.id = TaskId::parse("t-next")?;
+        waiting.number = 99;
+        waiting.title = "Next".into();
+        waiting.status = TaskStatus::Chained;
+        waiting.activity = None;
+        waiting.branch = None;
+        waiting.worktree_path = None;
+        let waiting = app.deps.store.insert_task(&waiting).await?;
+        yulius_app::ports::store_ext::IntakeStore::insert_chain(
+            app.deps.store.as_ref(),
+            &yulius_app::intake::ChainRecord {
+                task_id: waiting.id.clone(),
+                after_task_id: Some(id.clone()),
+                after_number: before.number,
+                blocked_reason: None,
+                created_at: app.now(),
+                rule: None,
+            },
+        )
+        .await?;
+        app.advance_all_chains().await;
+        wait_for(
+            "the chained task to leave its chain",
+            Duration::from_secs(30),
+            || async {
+                status_of(&app, &waiting.id)
+                    .await
+                    .0
+                    .is_some_and(|status| status != TaskStatus::Chained)
+            },
+        )
+        .await?;
+        Ok::<_, Error>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// PRK-001 (review round 1, M4): a parked task keeps its scope claims: another task claiming
+/// the same paths is told of it.
+#[test]
+fn a_parked_task_keeps_its_claims() -> TestResult {
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let app = app(&data, 8, 1).await?;
+        let (a, caller) = answered(&app, &data).await?;
+        let agent = |id: TaskId| {
+            let app = app.clone();
+            async move {
+                Ok::<_, Error>(yulius_app::coordination::AgentContext {
+                    attempt: app
+                        .deps
+                        .store
+                        .live_attempt(&id)
+                        .await?
+                        .ok_or("a live run")?,
+                    task: TaskStore::task(app.deps.store.as_ref(), &id)
+                        .await?
+                        .ok_or("the task")?,
+                })
+            }
+        };
+        app.tool_scope_claim(
+            &agent(a.clone()).await?,
+            &json!({"pattern": "crates/a/src/x.rs", "note": "splitting x"}),
+        )
+        .await?;
+        parked(&app, &a).await?;
+        let b = new_task(
+            &app,
+            &caller.sandbox,
+            &caller.user,
+            "Feature: answer with an echo",
+            TaskMode::Prompt,
+        )
+        .await?;
+        wait_for("its first answer", Duration::from_secs(30), || async {
+            screen(&app, &b).contains("ECHO: Feature: answer with an echo")
+        })
+        .await?;
+        let answer = app
+            .tool_scope_claim(&agent(b).await?, &json!({"pattern": "crates/a/**"}))
+            .await?;
+        assert_eq!(
+            answer["conflicts"][0]["their_note"], "splitting x",
+            "{answer}"
+        );
+        Ok::<_, Error>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// PRK-002 (review round 1, M5): a session is parked only on a fresh look at its background work;
+/// a look that gives no answer counts as work running and keeps the session.
+#[test]
+fn a_look_that_gives_no_answer_keeps_the_session() -> TestResult {
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let fake =
+            locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+        let host = Arc::new(crate::support::gated::GatedHost::new(
+            std::path::PathBuf::from(env!("CARGO_BIN_EXE_yulius")),
+        ));
+        let agent = FakeAgentOptions {
+            answers_first_message: true,
+            ..hooked()
+        };
+        let (app, _) = start_hosted(
+            &data,
+            &fake,
+            agent,
+            (
+                0,
+                Arc::new(ScriptedUsage::default()),
+                Arc::new(yulius::wiring::clock::SystemClock),
+            ),
+            Some(host.clone()),
+            |config| config.park_after_ms = 1,
+        )
+        .await?;
+        let (id, _) = answered(&app, &data).await?;
+        host.silence_work_probe(true);
+        assert_eq!(app.park_idle_sessions_now().await, 0);
+        assert_eq!(status_of(&app, &id).await.0, Some(TaskStatus::Running));
+        host.silence_work_probe(false);
+        parked(&app, &id).await?;
+        Ok::<_, Error>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// PRK-002 (review round 1, M6): what the person still has to answer in the session, or a
+/// person's pause, keeps the session, whatever the grace period.
+#[test]
+fn a_question_in_the_terminal_or_a_pause_keeps_the_session() -> TestResult {
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let app = app(&data, 8, 1).await?;
+        let (id, caller) = answered(&app, &data).await?;
+        // Claude Code asks in its terminal: only the live session can take the answer.
+        app.deps
+            .store
+            .set_activity(&id, Some(Activity::NeedsAttention), app.now())
+            .await?;
+        assert_eq!(app.park_idle_sessions_now().await, 0);
+        app.deps
+            .store
+            .set_activity(&id, Some(Activity::Waiting), app.now())
+            .await?;
+        // A person paused it.
+        let ctx = AuthContext {
+            user: app.deps.store.user(&caller.user).await?.ok_or("user")?,
+            csrf_token: None,
+            session_hash: None,
+            token: None,
+        };
+        app.pause_task_for_person(&ctx, id.as_str()).await?;
+        assert_eq!(app.park_idle_sessions_now().await, 0);
+        assert_eq!(status_of(&app, &id).await.0, Some(TaskStatus::Running));
+        Ok::<_, Error>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// PRK-005 (review round 1, M6): a message to a parked task while every session is in use
+/// queues the resume with its prompt; once a session is free it resumes with that message.
+#[test]
+fn a_resume_at_the_session_limit_waits_with_its_message() -> TestResult {
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let app = app(&data, 1, 1).await?;
+        let (first, caller) = answered(&app, &data).await?;
+        parked(&app, &first).await?;
+        let second = new_task(
+            &app,
+            &caller.sandbox,
+            &caller.user,
+            "Busy: answer with an echo",
+            TaskMode::Prompt,
+        )
+        .await?;
+        wait_for(
+            "the second task's answer",
+            Duration::from_secs(30),
+            || async { screen(&app, &second).contains("ECHO: Busy: answer with an echo") },
+        )
+        .await?;
+        let answer = app
+            .tool_task_message(
+                &caller,
+                &json!({"number": 1, "text": "Later: answer with an echo"}),
+            )
+            .await?;
+        assert_eq!(answer["delivered"], "resumed");
+        assert_eq!(status_of(&app, &first).await.0, Some(TaskStatus::Queued));
+        app.stop_task_now(&second).await?;
+        wait_for("the queued resume", Duration::from_secs(60), || async {
+            screen(&app, &first).contains("Later: answer with an echo")
+        })
+        .await?;
+        let runs = app.deps.store.attempts(&first).await?;
+        assert_eq!(runs.len(), 2);
+        assert_eq!(runs[1].launch_kind, LaunchKind::Resume);
+        assert_eq!(runs[0].provider_session_id, runs[1].provider_session_id);
+        Ok::<_, Error>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// PRK-003 (review round 1, F11): a park whose session cannot be ended gives up: the session
+/// goes on and a message is typed into it again, not refused as "parking" for ever.
+#[test]
+fn a_park_that_cannot_end_its_session_gives_up() -> TestResult {
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let fake =
+            locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+        let host = Arc::new(crate::support::gated::GatedHost::new(
+            std::path::PathBuf::from(env!("CARGO_BIN_EXE_yulius")),
+        ));
+        let agent = FakeAgentOptions {
+            answers_first_message: true,
+            ..hooked()
+        };
+        let (app, _) = start_hosted(
+            &data,
+            &fake,
+            agent,
+            (
+                0,
+                Arc::new(ScriptedUsage::default()),
+                Arc::new(yulius::wiring::clock::SystemClock),
+            ),
+            Some(host.clone()),
+            |config| {
+                config.park_after_ms = 1;
+                config.stop_escalation_ms = 500;
+            },
+        )
+        .await?;
+        let (id, caller) = answered(&app, &data).await?;
+        host.refuse_ends(true);
+        assert_eq!(app.park_idle_sessions_now().await, 1);
+        host.shutdown_refused().await;
+        wait_for("the park to give up", Duration::from_secs(30), || async {
+            app.tool_task_message(
+                &caller,
+                &json!({"number": 1, "text": "Still here: answer with an echo"}),
+            )
+            .await
+            .is_ok_and(|answer| answer["delivered"] == "sent")
+        })
+        .await?;
+        assert_eq!(status_of(&app, &id).await.0, Some(TaskStatus::Running));
+        host.refuse_ends(false);
         Ok::<_, Error>(())
     })?;
     rt.shutdown_timeout(Duration::from_secs(5));

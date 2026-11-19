@@ -31,7 +31,9 @@ issue #1412. Extends SPEC-050 SES-101 (Done tasks' sessions do not count toward 
 - Only an idle task with nothing that goes on by itself is parked: no background shell or
   subagent, no `yulius wait`, no armed merge or pull request news due, no held prompt, browser
   request, person's pause, possible draft or recent keystroke, and never a question in its
-  terminal (`needs_attention`), a Superagent or a review session. The decision is taken under the
+  terminal (`needs_attention`), nothing in Claude Code's queue, and never the onboarding task. The
+  background work is looked at afresh first (no answer counts as work), and no park starts in the
+  first three minutes after a start. The decision is taken under the
   launch lock against the stored task.
 - `parked` is neither live (no process, no slot, no subscription) nor resting (it has not ended).
   It leaves by a resume (`starting`, or `queued` at the session limit), a close or archive

@@ -95,6 +95,8 @@ enum SwitchEnd {
     Stopped,
     /// A close took over the old run's end.
     Closed,
+    /// A park took over the old run's end (SPEC-512 PRK-003).
+    Parked,
     /// The old run was lost.
     Lost,
     /// The old run did not end in time and the switch ended it (SPEC-483 SWT-002).
@@ -3842,8 +3844,21 @@ impl App {
         {
             Ok(()) => self.mark_lost(task_id, &attempt.id, reason).await,
             Err(err) => {
-                self.run_stays_live(task_id, attempt, &err, "Stop the task again to retry.")
-                    .await;
+                // A park that cannot end its session gives up: the session goes on as it was and
+                // takes messages again (SPEC-512 PRK-003); its flag keeps it from parking again.
+                let park_given_up = self.runtime(task_id).intent.lock().is_ok_and(|mut intent| {
+                    let parking = matches!(*intent, Some(EndIntent::Park));
+                    if parking {
+                        *intent = None;
+                    }
+                    parking
+                });
+                let action = if park_given_up {
+                    "Nothing was lost: the task goes on in this session. Stop it to end it."
+                } else {
+                    "Stop the task again to retry."
+                };
+                self.run_stays_live(task_id, attempt, &err, action).await;
             }
         }
     }
@@ -3990,23 +4005,27 @@ impl App {
         tracing::warn!(task = %task_id, "the ended run's task kept changing; left as it is");
     }
 
-    /// The task whose parked run ended (SPEC-512 PRK-003): a running one is `parked` with its
-    /// activity and audited `task.parked`; one that changed meanwhile ends as a close would
-    /// leave it (a switch the park overtook gave up, as for a close: SPEC-250 STW-006).
+    /// The task whose parked run ended (SPEC-512 PRK-003): a running or switching one is
+    /// `parked` with its activity and audited `task.parked`; one a stop or a capacity pause took
+    /// meanwhile rests as that run's end leaves it.
     async fn settle_parked(&self, task_id: &TaskId, now: Timestamp) {
         for _ in 0..STOP_ROUNDS {
             let Ok(Some(task)) = self.deps.store.task(task_id).await else {
                 return;
             };
             crate::race::reached(crate::race::Point::EndDecided, Path::new(task_id.as_str()));
-            let (to, activity) = match task.status.apply(TaskEvent::Parked) {
-                Ok(parked) => (parked, task.activity),
-                Err(_) => match task
-                    .status
+            // A switch the park overtook gave up: the task parks from `Switching` too. A stop
+            // that landed meanwhile rests it stopped, and a capacity pause closed (SPEC-250
+            // STW-005: an ended run never leaves its task live).
+            let parked = task.status.apply(TaskEvent::Parked).or_else(|_| {
+                task.status
                     .apply(TaskEvent::SwitchCompleted)
-                    .and_then(|running| running.apply(TaskEvent::Exited { normal: true }))
-                {
-                    Ok(closed) => (closed, None),
+                    .and_then(|running| running.apply(TaskEvent::Parked))
+            });
+            let (to, activity) = match parked {
+                Ok(parked) => (parked, task.activity),
+                Err(_) => match task.status.apply(TaskEvent::Exited { normal: true }) {
+                    Ok(rests) => (rests, None),
                     Err(_) => return,
                 },
             };
@@ -4424,11 +4443,25 @@ impl App {
     /// # Errors
     /// Store failures.
     pub(crate) async fn park_task_now(self: &Arc<Self>, task_id: &TaskId) -> AppResult<bool> {
+        // The list's counters are a probe's last answer: before a session ends, its background
+        // work is looked at now, and a look that gives no answer counts as work running, as
+        // for a move (SPEC-483 SWT-001, SPEC-461 CCM-013). Looked at before the launch lock, so
+        // a slow look holds no start: a turn begun since is seen under the lock.
+        if self.background_or_wait_now(task_id).await != Some(false) {
+            return Ok(false);
+        }
         let _guard = self.supervisor.launch.lock().await;
         let Some(task) = self.deps.store.task(task_id).await? else {
             return Ok(false);
         };
         if !self.parkable_now(&task).await {
+            return Ok(false);
+        }
+        // A prompt waiting in Claude Code's queue would be lost with the session (SPEC-471).
+        if self
+            .existing_runtime(task_id)
+            .is_none_or(|runtime| runtime.queue_may_hold())
+        {
             return Ok(false);
         }
         let Some(run) = self.live_attempt_id(task_id).await else {
@@ -4994,8 +5027,9 @@ impl App {
             let taken = match runtime.intent.lock() {
                 Ok(mut intent) => match *intent {
                     Some(EndIntent::Cancel) => Some(SwitchEnd::Stopped),
+                    Some(EndIntent::Close) => Some(SwitchEnd::Closed),
                     // A park ends the run as a close does (SPEC-512 PRK-003).
-                    Some(EndIntent::Close | EndIntent::Park) => Some(SwitchEnd::Closed),
+                    Some(EndIntent::Park) => Some(SwitchEnd::Parked),
                     _ => {
                         *intent = Some(EndIntent::Switch(tx));
                         None
@@ -5312,14 +5346,19 @@ impl App {
             .intent
             .lock()
             .map(|intent| match *intent {
-                Some(EndIntent::Close | EndIntent::Park) => Some(true),
+                Some(EndIntent::Close) => Some(true),
                 Some(EndIntent::Cancel) => Some(false),
                 _ => None,
             })
             .unwrap_or(None);
+        let parking = self.parking(task_id);
         // What overtook it says so; without word, the status and the intent tell.
         let why = match (told, status, intent) {
             (Some(SwitchEnd::TimedOut), _, _) => "the session did not end in time",
+            (Some(SwitchEnd::Parked), _, _) | (None, Some(TaskStatus::Parked), _) => {
+                "the idle session was parked"
+            }
+            (None, _, None) if parking => "the idle session was parked",
             (Some(SwitchEnd::Closed), _, _)
             | (None, Some(TaskStatus::Closed), _)
             | (None, _, Some(true)) => "the task was closed",

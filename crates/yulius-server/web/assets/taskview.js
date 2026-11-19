@@ -101,7 +101,8 @@ function readOnlyText(sandbox) {
  */
 function emptyTerminalMessage(task) {
   switch (task.status) {
-    case 'queued': return { title: 'Queued', text: 'The agent starts as soon as a session slot is free.', busy: true };
+    // What it waits for, when the server says (SPEC-512 PRK-007).
+    case 'queued': return { title: 'Queued', text: task.queue_reason ? `${task.queue_reason}. It starts by itself.` : 'The agent starts as soon as a session slot is free.', busy: true };
     case 'starting': return { title: `Starting ${cliOf(task)}…`, text: 'The session appears here in a moment.', busy: true };
     case 'switching': return { title: 'Continuing…', text: 'The session picks up where it left off in a moment.', busy: true };
     case 'waiting_capacity': return task.waits_for_account
@@ -847,7 +848,8 @@ export function mountTaskView(ctx, sandbox, task) {
     setChildren(statusEl,
       statusMark(info),
       h('span', { class: 'strip-state' }, info.label, reset ? h('span', { class: 'strip-reset' }, ` · ${reset}`) : null,
-        info.shells ? h('span', { class: 'strip-reset' }, ` · ${shellsLine(info.shells, info.shellsSince)}`) : null));
+        info.shells ? h('span', { class: 'strip-reset' }, ` · ${shellsLine(info.shells, info.shellsSince)}`) : null,
+        current.status === 'queued' && current.queue_reason ? h('span', { class: 'strip-reset' }, ` · ${current.queue_reason}`) : null));
     // The chain shows on both tasks (TSK-012): what this task runs after, what runs after it.
     const slug = encodeURIComponent((ctx.store.sandboxById(sandbox.id) || sandbox).slug);
     const chainLink = (link, text, title) => (link.task_id

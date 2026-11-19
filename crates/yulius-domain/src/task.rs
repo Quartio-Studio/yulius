@@ -186,6 +186,14 @@ impl TaskStatus {
         )
     }
 
+    /// Whether the task's work is in progress in this state, so its scope claims count and
+    /// other tasks are told of it: a live run, or a parked one that resumes in its session
+    /// (SPEC-512 PRK-001).
+    #[must_use]
+    pub fn holds_claims(self) -> bool {
+        self.is_live() || self == Self::Parked
+    }
+
     /// Whether a merge its agent armed stays armed in this state: while the task's run lives,
     /// is only held (a subscription switch, no capacity) or waits in the queue for a slot to
     /// start in again by itself (a held run goes through the queue when capacity returns
@@ -539,9 +547,11 @@ impl AttentionFacts {
         if self.held_prompt || self.browser_request {
             return G::NeedsYou;
         }
-        // A parked task is an idle one whose session went to sleep (SPEC-512 PRK-004).
-        let finished = matches!(self.status, TaskStatus::Running | TaskStatus::Parked)
-            && self.activity.is_some_and(Activity::is_idle);
+        if self.status == TaskStatus::Parked {
+            return self.parked_group();
+        }
+        let finished =
+            self.status == TaskStatus::Running && self.activity.is_some_and(Activity::is_idle);
         // Yulius merges it and tells its agent, an achieved goal's too (SPEC-487 CHN-001).
         if finished && self.merge_armed {
             return G::Working;
@@ -576,16 +586,7 @@ impl AttentionFacts {
             }
         }
         match self.status {
-            // Nothing goes on by itself in a parked task, and its terminal asks nothing: it waits
-            // for a person when work is left or a goal unfinished, and is Done otherwise
-            // (SPEC-512 PRK-004).
-            TaskStatus::Parked => {
-                if work_left || self.goal_unfinished {
-                    G::NeedsYou
-                } else {
-                    G::Done
-                }
-            }
+            TaskStatus::Parked => self.parked_group(),
             TaskStatus::Running => match self.activity {
                 Some(Activity::Waiting | Activity::Done) if self.background_shells => G::Working,
                 Some(Activity::Waiting) if self.yulius_wait => G::Working,
@@ -606,6 +607,27 @@ impl AttentionFacts {
             | TaskStatus::Closed
             | TaskStatus::Stopped(_)
             | TaskStatus::Failed(_) => G::Ended,
+        }
+    }
+
+    /// The group of a parked task (SPEC-512 PRK-004): where an idle run with nothing going on by
+    /// itself is, never Working. Nothing of it goes on by itself, so what would keep a running
+    /// agent busy (its checks running, a conflict its pull request watch tells it of, a CI run
+    /// to run again) waits for a person: they resume it. An achieved goal is Done whatever its
+    /// checks still do; failing checks need a person.
+    fn parked_group(&self) -> TaskGroup {
+        use TaskGroup as G;
+        let work_left = self.plan_open || self.spec_unfinished;
+        let achieved = self.activity == Some(Activity::Done);
+        match self.pull {
+            Some(PullSignal::Failing | PullSignal::Errored | PullSignal::Conflicting) => {
+                G::NeedsYou
+            }
+            Some(PullSignal::InReview) if achieved && !work_left => G::Done,
+            Some(PullSignal::InReview) => G::NeedsYou,
+            Some(PullSignal::Tested | PullSignal::Merged) if !work_left => G::Done,
+            _ if work_left || self.goal_unfinished => G::NeedsYou,
+            _ => G::Done,
         }
     }
 
@@ -852,6 +874,9 @@ mod tests {
         assert!(!parked.is_live());
         assert!(!parked.is_resting());
         assert!(!parked.keeps_an_armed_merge());
+        assert!(parked.holds_claims());
+        assert!(TaskStatus::Running.holds_claims());
+        assert!(!TaskStatus::Closed.holds_claims());
         assert_eq!(
             parked.apply(TaskEvent::ContinueRequested)?,
             TaskStatus::Starting
@@ -905,11 +930,45 @@ mod tests {
         let mut merged = parked(Activity::Waiting);
         merged.pull = Some(PullSignal::Merged);
         assert_eq!(merged.group(), TaskGroup::Done);
-        // Never Working, nor Ended: it went to sleep where it was.
+        // Never Working, nor Ended: it went to sleep where it was. Nothing of it goes on by
+        // itself, so what would keep a running agent busy (its checks, a conflict its pull
+        // request watch tells it of, a CI run to rerun) is a person's now (review round 1, M2).
+        let signals = [
+            None,
+            Some(PullSignal::Tested),
+            Some(PullSignal::InReview),
+            Some(PullSignal::Conflicting),
+            Some(PullSignal::Failing),
+            Some(PullSignal::Errored),
+            Some(PullSignal::Merged),
+        ];
         for activity in [Activity::Waiting, Activity::Done, Activity::NeedsAttention] {
-            assert_ne!(parked(activity).group(), TaskGroup::Working);
-            assert_ne!(parked(activity).group(), TaskGroup::Ended);
+            for pull in signals {
+                for plan_open in [false, true] {
+                    let mut facts = parked(activity);
+                    facts.pull = pull;
+                    facts.plan_open = plan_open;
+                    let group = facts.group();
+                    assert!(
+                        matches!(group, TaskGroup::NeedsYou | TaskGroup::Done),
+                        "{activity:?} {pull:?} plan_open={plan_open}: {group:?}"
+                    );
+                }
+            }
         }
+        for pull in [
+            PullSignal::InReview,
+            PullSignal::Conflicting,
+            PullSignal::Errored,
+        ] {
+            let mut waiting = parked(Activity::Waiting);
+            waiting.pull = Some(pull);
+            assert_eq!(waiting.group(), TaskGroup::NeedsYou, "{pull:?}");
+        }
+        // An achieved goal is Done whatever its checks still do, as for a running task.
+        let mut achieved = parked(Activity::Done);
+        achieved.pull = Some(PullSignal::InReview);
+        assert_eq!(achieved.group(), TaskGroup::Done);
     }
 
     #[test]

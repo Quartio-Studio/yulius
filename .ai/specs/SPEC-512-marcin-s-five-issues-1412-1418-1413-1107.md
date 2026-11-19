@@ -81,23 +81,31 @@ merged; #1106 against ADR-0227.
   its terminal, is never parked), the list shows it under Needs you or Done, it has no background
   shell or subagent, does not wait in `yulius wait`, has no merge armed and no pull request news
   due, no held prompt, no pending browser request, no person's pause, no possible draft in its
-  prompt box and no keystroke within the grace period, and it is not a Superagent or a review
-  session. The grace period is `YULIUS_PARK_AFTER_MINUTES` (default 30; 0 turns parking off),
+  prompt box and no keystroke within the grace period, nothing waiting in Claude Code's queue,
+  and it is not the onboarding task (whose run's end decides the onboarding). Its background work
+  is looked at afresh before the session ends; a look that gives no answer counts as work. No
+  park starts in the first three minutes after a server start, so the tasks that went idle while
+  it was down are woken first (SPEC-358 MSB-007). The grace period is `YULIUS_PARK_AFTER_MINUTES` (default 30; 0 turns parking off),
   counted from the last change of its status or activity (`state_at`).
 - **PRK-003 How it parks.** The session ends as a close does (graceful exit, then escalation),
   and the run's end records `parked` instead of `closed`; the task keeps its activity. Parking
   is decided under the launch lock against the task as stored, so a turn, a message or a start
   that came meanwhile wins. Audited `task.parked` (actor `yulius`). The terminal shows that the
   task is parked and how it resumes.
-- **PRK-004 It shows as it did.** A parked task is in the list's group it was in (Needs you or
-  Done, by the same rule as an idle running task with no live overlay), labelled "· parked";
-  its `needs_you` stays open and is shown; `tasks_list` and `task_get` say `parked`.
+- **PRK-004 It shows as it did.** A parked task is in the list's group it was in, labelled
+  "· parked", never Working: nothing of it goes on by itself, so checks still running, a conflict
+  with its base or a CI run that could not run make it Needs you (an achieved goal is Done
+  whatever its checks still do), and otherwise it is Needs you or Done by the idle rule. Its
+  `needs_you` stays open and is shown; `tasks_list` and `task_get` say `parked`. For chains and
+  start rules, a parked task that is Done is done; its scope claims still count, and the
+  briefing lists it among the parallel tasks.
 - **PRK-005 Writing resumes it.** `task_message` to a parked task resumes it with the message as
   its first prompt (labelled as today) and ends its `needs_you`, delivered `"resumed"`; the web's
   Resume (the Continue of a parked task) resumes it with nothing typed, its `needs_you` kept
   until the person writes. Either way it is the same provider session, with its history; at the
   session limit the resume waits in the queue with its prompt (SPEC-483 QST-001). The owner rule
-  is unchanged: only who may steer the task resumes it.
+  is unchanged: only who may steer the task resumes it. `task_restart` of a parked task is its
+  resume; `task_merge` tells to resume it to arm a merge.
 - **PRK-006 What counts.** Only live sessions of tasks that are not Done count toward
   `max_sessions` (SES-101 stays); parked tasks hold no session and no subscription.
 - **PRK-007 A queued task says why.** A queued task's summary carries `queue_reason`, one line:
@@ -181,9 +189,19 @@ each from its issue's acceptance criteria.
   ended); a `running` task without a run breaks the restart reconciliation (ADR-0050), which
   takes a running task with no live run for a lost one. `parked` says what happened and keeps
   both rules true. ADR-0367.
-- **Parked tasks are not "resting".** `is_resting` means ended in most of its callers (scopes,
-  CI hygiene of worktrees, `needs_you`, chains); a parked task keeps all of those. The few places
-  that continue or archive a resting task accept `parked` by name.
+- **Parked tasks are neither "live" nor "resting".** `is_resting` means ended in most of its
+  callers (CI hygiene of worktrees, `needs_you`, chains); `is_live` means a process holds a slot.
+  A parked task's claims count (`TaskStatus::holds_claims`), it is Done for chains when its idle
+  run would be, and the few places that continue or archive a resting task accept `parked` by
+  name. A supertask does not wait for a parked task, as it does not wait for an idle Done one.
+- **A park looks at the session afresh.** The list's shell and `yulius wait` counters are a
+  probe's last answer; before ending a session the park probes it again and treats no answer as
+  work running, as a move does (SPEC-483 SWT-001), and asks Claude Code's queue (SPEC-471). A
+  park whose session cannot be ended gives up and the session goes on.
+- **Known limits.** The park's intent lives in the server's memory: a restart between the
+  decision and the session's end records the end as a clean exit (`closed`) or a crash. A person
+  who only reads the terminal does not hold a park; a keystroke or draft does. On the web,
+  "writing to it" is Resume followed by typing; `task_message` resumes it with the message.
 - **The grace period is a unit setting, default 30 minutes.** Long enough that a person who reads
   the answer and replies within the half hour finds the live session; short enough that a night
   of finished tasks frees its memory. Settings → limits is for host-sized numbers; this one is not
@@ -227,7 +245,30 @@ with a Resume button; a queued row reads "Waiting for a free session: 8 of 8 in 
 card's Sessions tile reads "8 / 8 working" over "13 parked · 2 idle · 3 queued" and "Idle sessions
 park after 30 min".
 
-Not tested here: a park whose session hangs and is lost through the escalation (the `mark_lost`
-branch that parks it) has no test of its own: the gated host that refuses ends is wired only into
-another test file's private start helper; the branch is the same `settle_parked` the exit path's
-tests cover.
+Review round 1 (Fable 5.2, request changes at 74c6b7076), answered test-first:
+
+| Finding | Answer | Test that fails without it |
+| --- | --- | --- |
+| B1 `cargo doc`: private intra-doc links in `parking.rs` | plain backticks | `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --all-features --no-deps` passes |
+| M1 a stop during the park's end left the task `stopping` | `settle_parked` rests a stopped or paused task as its run's end does | `parking::a_stop_during_the_parks_end_stops_the_task` (race point `RunEndTaken`) |
+| M2 a parked task listed Working by its pull request | `AttentionFacts::parked_group`; `status.js` mirrors it | `a_parked_task_stays_in_its_group` (every `PullSignal`, plan open or not); e2e `parked.e2e.ts` |
+| M3 a parked Done task never Done for chains and rules | `task_is_done` counts an idle parked task | `parking::a_task_chained_after_a_parked_done_task_starts` |
+| M4 a parked task's claims ignored | `TaskStatus::holds_claims` in the claim readers, overlaps and the briefing | `parking::a_parked_task_keeps_its_claims` |
+| M5 park trusted cached counters | fresh `background_or_wait_now` (no answer = work) and Claude Code's queue | `parking::a_look_that_gives_no_answer_keeps_the_session` (gated host) |
+| M6 test gaps | added the tests in this table and below | `parking::a_question_in_the_terminal_or_a_pause_keeps_the_session`, `parking::a_resume_at_the_session_limit_waits_with_its_message` |
+| F10 a park overtaking a switch closed the task | it parks; the notice says "the idle session was parked" (`SwitchEnd::Parked`) | covered by the fallback order of M1; no race test of its own |
+| F11 a park whose session cannot end blocked messages | the park gives up and says so | `parking::a_park_that_cannot_end_its_session_gives_up` |
+| F12 park intent in memory only | recorded as a known limit (Decisions) | — |
+| F4 `task_restart`/`task_merge` on a parked task | resume through `continue_task`; merge advice says resume | the same `continue_task` as `resume_keeps_the_request…` |
+| F7 Move offered, Stop not | no Move, Stop offered | e2e `parked.e2e.ts` |
+| m7 park before the outage wake | no park in the first 3 minutes after a start (asserted at compile time > `WAKE_GRACE`) | — |
+| m8 reason only on hover | the strip and the empty terminal show it | e2e "a parked task shows where it was…" |
+| m9 analytics | parked + Done counts `done` | `analytics::tests` |
+| m10, nits | rollback note in operations, the third `queue_reason` line documented, PRK-002 and ADR-0367 name the onboarding task | — |
+| `queue_reason_of` per summary | kept: only queued tasks compute it, at most `queue_max` (32) | — |
+| needs_you shared cause (pre-existing condition) | unchanged: answering a parked task resumes it; the others are answered by their own messages | — |
+
+Commands after round 1: `cargo test -p yulius --test main parking::` → 12 passed;
+`scope_overlaps:: task_message::` → 26 passed; `cargo test -p yulius-domain -p yulius-app --lib`
+→ 573 + 614 passed; `npx e2e run tests/parked.e2e.ts` → 4 passed, four runs in a row;
+`scripts/dev quick`, `scripts/dev lint`, `cargo doc` → passed.

@@ -512,8 +512,10 @@ session limit the resume waits `queued` with its prompt. Archive and close make 
 session"). Each park is audited `task.parked` by `yulius`.
 
 A `queued` task not held by a supertask carries `queue_reason`, one line: "Waiting for a free
-session: N of M in use" or "Waiting for the Yulius update to finish" (SPEC-512 PRK-007); null
-otherwise, and in `tasks_list` the same as `queue_reason`.
+session: N of M in use", "Waiting for the Yulius update to finish", or "Starting: a session is
+free" (the queue's next pass starts it) (SPEC-512 PRK-007); null otherwise, and in `tasks_list`
+the same as `queue_reason`. A parked task is never listed Working (its pull request's running
+checks, a conflict or a CI run that could not run make it Needs you).
 
 How a session's end moves its task (F 2026-10-10, SPEC-002 §6.1): leaving the session (`/exit`,
 Ctrl+C twice, Ctrl+D, `/logout` — Claude Code's `SessionEnd` reason `prompt_input_exit`/`logout`)

@@ -1,6 +1,6 @@
 import { test } from '@e2e-dev/web';
 import { expect } from 'e2e';
-import { failOnPageErrors, mock } from './support.ts';
+import { axeViolations, failOnPageErrors, mock, touchTask } from './support.ts';
 
 failOnPageErrors();
 
@@ -23,6 +23,11 @@ test('a parked task reads as it did, marked parked, and resumes from its menu (u
       const shown = taskInfo(task, null, pr);
       return [shown.label, shown.group];
     };
+    // Nothing of a parked task goes on by itself: what keeps a running agent busy is a person's
+    // (review round 1, M2), and never Working.
+    const open = (checks: string, conflicts = false) => ({ number: 7, state: 'open', checks, conflicts });
+    const prs = [open('pending'), open('error'), open('success', true), open('failure'), open('success'), { number: 7, state: 'merged', checks: 'success' }];
+    const groups = [merged, { ...merged, activity: 'done' }, asked].flatMap((task) => prs.map((pr) => taskInfo(task, null, pr).group));
     const acts = taskActions(parked, 'write', null, 'me');
     return {
       done: info(parked),
@@ -30,9 +35,14 @@ test('a parked task reads as it did, marked parked, and resumes from its menu (u
       request: info(withRequest),
       stale: info(stale),
       merged: info(merged, { number: 7, state: 'merged', checks: 'success' }),
+      checksRunning: info(merged, open('pending')),
+      conflict: info(merged, open('success', true)),
+      ciError: info(merged, open('error')),
+      achievedRunning: info({ ...merged, activity: 'done' }, open('pending')),
+      neverWorking: groups.every((group) => group === 'needs' || group === 'done'),
       line: activityLine(parked),
       live: isLive('parked'),
-      actions: { continue: acts.continue, stop: acts.stop, archive: acts.archive, delete: acts.delete },
+      actions: { continue: acts.continue, stop: acts.stop, archive: acts.archive, delete: acts.delete, move: acts.move },
       someoneElses: taskActions(parked, 'write', null, 'other').continue,
       message: endedMessage('parked'),
     };
@@ -43,9 +53,15 @@ test('a parked task reads as it did, marked parked, and resumes from its menu (u
     request: ['Needs you: Choose the colour · parked', 'needs'],
     stale: ['Done · parked', 'done'],
     merged: ['Done · PR #7 merged · parked', 'done'],
+    checksRunning: ['In review · PR #7 · checks running · parked', 'needs'],
+    conflict: ['In review · PR #7 · conflicts with its base · parked', 'needs'],
+    ciError: ['In review · PR #7 · CI could not run (not the code) · parked', 'needs'],
+    achievedRunning: ['Done · PR #7 · parked', 'done'],
+    neverWorking: true,
     line: 'Parked to free its session · resumes when you write to it',
     live: false,
-    actions: { continue: true, stop: false, archive: true, delete: true },
+    // It resumes where it ran (a move would be refused), and a stop stops it.
+    actions: { continue: true, stop: true, archive: true, delete: true, move: false },
     someoneElses: false,
     message: {
       tone: 'info',
@@ -100,4 +116,17 @@ test('the Capacity card shows working and parked sessions apart (unit, in the pa
     quiet: ['1 / 8 working', ['None parked', 'Parking is off']],
     none: false,
   });
+});
+
+// What a person sees: a parked task's row and strip, and a queued task's reason on its page.
+test('a parked task shows where it was, marked parked; a queued task page says why it waits', async ({ app, browser, screen }) => {
+  // No ambient activity: the mock's own changes would regroup the list under the test.
+  await app.open(mock('/s/studio/t/13', '&ambient=0'));
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('#13 Improve the code');
+  await touchTask(browser, 'sb_studio', 13, { status: 'parked', activity: 'done' });
+  await expect(browser.locator('.strip-status')).toHaveText(/· parked/);
+  await expect(screen.getByRole('region', 'Done').getByRole('link', /Improve the code/)).toBeVisible();
+  expect(await axeViolations(browser)).toEqual([]);
+  await touchTask(browser, 'sb_studio', 13, { status: 'queued', activity: null, queue_reason: 'Waiting for a free session: 8 of 8 in use' });
+  await expect(browser.locator('.strip-status')).toHaveText(/Queued · Waiting for a free session: 8 of 8 in use/);
 });

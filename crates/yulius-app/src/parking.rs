@@ -7,9 +7,9 @@
 //!   Needs you or Done and in which nothing goes on by itself or waits on a keyboard, is parked
 //!   ([`ParkFacts::parkable`]); the grace period runs from the last change of its status or
 //!   activity (`state_at`); 0 turns parking off;
-//! - the decision is taken again under the launch lock ([`App::park_task_now`]), so a start, a
+//! - the decision is taken again under the launch lock (`App::park_task_now`), so a start, a
 //!   turn or a message that came meanwhile wins; the run's end makes the task `parked`;
-//! - a parked task holds no session: [`App::sessions_in_use`] counts live runs only;
+//! - a parked task holds no session: `App::sessions_in_use` counts live runs only;
 //! - every park is audited `task.parked` by `yulius`, without the task's words.
 
 use std::collections::{HashMap, HashSet};

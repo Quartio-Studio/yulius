@@ -518,7 +518,7 @@ function summary(task) {
   return {
     id: task.id, sandbox_id: task.sandbox_id, number: task.number, title: task.title, harness: task.harness,
     harness_choice: task.harness_choice || 'chosen',
-    status: task.status, activity: task.status === 'running' || task.status === 'waiting_capacity' ? task.activity : null,
+    status: task.status, activity: ['running', 'waiting_capacity', 'parked'].includes(task.status) ? task.activity : null,
     branch: task.branch, origin: task.origin, created_by: task.created_by, created_at: task.created_at, updated_at: task.updated_at,
     // Since when it is in its state and working (SPEC-087).
     state_since: task.state_since || task.updated_at, working_since: task.working_since ?? null,
@@ -546,6 +546,8 @@ function summary(task) {
     // A supertask, and what a queued task waits for because of one (SPEC-071).
     supertask: Boolean(task.supertask),
     held_by: task.status === 'queued' ? [...(task.heldBy || [])] : [],
+    // What a queued task waits for (SPEC-512 PRK-007): a test sets it with `touchTask`.
+    queue_reason: task.status === 'queued' && !(task.heldBy || []).length ? task.queue_reason || null : null,
     // A prepared task's time (SPEC-105).
     start_at: task.status === 'prepared' ? task.start_at || null : null,
     // Background shells an idle agent left running (TSK-014).
