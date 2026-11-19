@@ -2145,6 +2145,15 @@ async fn an_antigravity_sign_in_runs_on_after_its_token_file_until_done() -> Tes
     )
     .await?;
     assert_eq!(r.body, json!({"status": "ok"}), "{}", r.body);
+    // Ended, it says how and takes no more input: never `signed_in` again.
+    assert!(
+        matches!(
+            terminal.state(),
+            TerminalServerMsg::State { ref status, can_write: false, .. } if status == "ok"
+        ),
+        "{:?}",
+        terminal.state()
+    );
     terminal.unsubscribe();
     let settled = account_settled(&mut events, &account_id).await?;
     assert_eq!(settled["status"], "ok", "{settled}");
