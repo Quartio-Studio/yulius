@@ -127,6 +127,110 @@ fn default_names() -> Vec<String> {
     catalog::defaults().iter().map(|w| w.name.clone()).collect()
 }
 
+/// SPEC-534. Both people may configure the project. Only the creator authorizes its runs.
+#[tokio::test]
+async fn automation_owner_authorizes_http_edits_and_starts() -> TestResult {
+    let w = world().await?;
+    let mut saved = daily("Summary", "* * * * *");
+    saved["enabled"] = json!(false);
+    let id = create_automation(&w, saved.clone()).await?;
+    let path = format!("/api/automations/{id}");
+    for (field, value) in [("prompt", json!("Other summary")), ("enabled", json!(true))] {
+        let mut input = saved.clone();
+        input[field] = value;
+        let result = call(&w.h.router, Method::PUT, &path, Some(input), &w.root).await?;
+        assert_eq!(result.status, StatusCode::FORBIDDEN);
+    }
+    let result = call(
+        &w.h.router,
+        Method::POST,
+        &format!("{path}/run"),
+        None,
+        &w.root,
+    )
+    .await?;
+    assert_eq!(result.status, StatusCode::FORBIDDEN);
+    let stored = w.h.store.automation(&id).await?.ok_or("automation")?;
+    assert_eq!(stored.prompt, saved["prompt"].as_str().ok_or("prompt")?);
+    assert!(!stored.enabled);
+    assert!(runs(&w, &id).await?.is_empty());
+
+    saved["enabled"] = json!(true);
+    saved["owner_id"] = json!("u-root"); // A read-only response field sent back by a client.
+    let result = call(&w.h.router, Method::PUT, &path, Some(saved), &w.alice).await?;
+    assert_eq!(result.status, StatusCode::OK);
+    assert_eq!(result.body["owner_id"], "u-alice");
+    assert_eq!(result.body["owner_login"], "alice");
+    set_clock(&w.h, BASE + MIN);
+    w.h.app.automation_tick().await?;
+    let tasks = automation_tasks(&w.h, &id).await?;
+    assert_eq!(tasks.len(), 1);
+    assert_eq!(tasks[0].owner, UserId::parse("u-alice")?);
+    assert_eq!(tasks[0].prompt, stored.prompt);
+    let deleted = call(&w.h.router, Method::DELETE, &path, None, &w.root).await?;
+    assert_eq!(deleted.status, StatusCode::NO_CONTENT);
+    Ok(())
+}
+
+/// SPEC-534. The task tool acts for Alice while the template belongs to another project writer.
+#[tokio::test]
+async fn automation_owner_authorizes_tools_edits_and_starts() -> TestResult {
+    let w = world().await?;
+    let mut input = daily("Keep the docs up to date", "* * * * *");
+    input["enabled"] = json!(false);
+    let created = call(
+        &w.h.router,
+        Method::POST,
+        "/api/sandboxes/s1/automations",
+        Some(input.clone()),
+        &w.root,
+    )
+    .await?;
+    assert_eq!(created.status, StatusCode::CREATED);
+    let id = created.body["id"].as_str().ok_or("automation")?;
+    seed_agent(&w.h, "agent1", "s1", "tok-agent").await?;
+    let internal = yulius_server::internal_router(w.h.app.clone())
+        .layer(MockConnectInfo(SocketAddr::from(([127, 0, 0, 1], 1))));
+    for (name, args) in [
+        (
+            "automation_update",
+            json!({"automation_id": id, "prompt": "Other summary"}),
+        ),
+        (
+            "automation_update",
+            json!({"automation_id": id, "enabled": true}),
+        ),
+        (
+            "automation_template_enable",
+            json!({"template": "docs-up-to-date"}),
+        ),
+        ("automation_run_now", json!({"automation_id": id})),
+    ] {
+        let (message, refused) = tool(&internal, "tok-agent", name, args).await?;
+        assert!(
+            refused && message.to_string().contains("creator"),
+            "{name}: {message}"
+        );
+    }
+    let stored = w.h.store.automation(id).await?.ok_or("automation")?;
+    assert!(!stored.enabled);
+    assert_eq!(stored.prompt, input["prompt"].as_str().ok_or("prompt")?);
+    assert!(runs(&w, id).await?.is_empty());
+    let run = call(
+        &w.h.router,
+        Method::POST,
+        &format!("/api/automations/{id}/run"),
+        None,
+        &w.root,
+    )
+    .await?;
+    assert_eq!(run.status, StatusCode::OK);
+    let tasks = automation_tasks(&w.h, id).await?;
+    assert_eq!(tasks.len(), 1);
+    assert_eq!(tasks[0].owner, UserId::parse("u-root")?);
+    Ok(())
+}
+
 /// AC-AUT-5: the default workflows come from the catalog (first, read-only, with when to use
 /// them), can be duplicated, and give a task their steps and instructions.
 #[tokio::test]
@@ -652,7 +756,9 @@ async fn ready_made_automations_are_enabled_in_one_call() -> TestResult {
     )
     .await?;
     assert_eq!(r.status, StatusCode::OK, "{}", r.body);
-    let again = enable_template(&w, &w.root, "docs-up-to-date").await?;
+    let refused = enable_template(&w, &w.root, "docs-up-to-date").await?;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN);
+    let again = enable_template(&w, &w.alice, "docs-up-to-date").await?;
     assert_eq!(again.status, StatusCode::OK, "{}", again.body);
     assert_eq!(again.body["id"], id.as_str());
     assert_eq!(again.body["enabled"], true);
