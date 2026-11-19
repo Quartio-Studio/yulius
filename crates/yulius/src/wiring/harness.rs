@@ -1235,14 +1235,14 @@ mod tests {
             assert_eq!(goal()?, Some(outcome));
         }
         // The newline is outside the live watch's record-size limit.
-        let open = r#"{"type":"attachment","attachment":{"type":"goal_status","met":false}}"#;
-        writeln!(
-            file,
-            "{open:width$}",
-            width = tail::DEFAULT_MAX_LINE_BYTES + 1
-        )?;
+        let mut open =
+            br#"{"type":"attachment","attachment":{"type":"goal_status","met":false}}"#.to_vec();
+        open.resize(tail::DEFAULT_MAX_LINE_BYTES, b' ');
+        file.write_all(&open)?;
+        file.write_all(b" \n")?;
         assert_eq!(goal()?, Some(GoalOutcome::Cleared));
-        writeln!(file, "{open:width$}", width = tail::DEFAULT_MAX_LINE_BYTES)?;
+        file.write_all(&open)?;
+        file.write_all(b"\n")?;
         assert_eq!(goal()?, Some(GoalOutcome::NotMet));
         write!(
             file,
