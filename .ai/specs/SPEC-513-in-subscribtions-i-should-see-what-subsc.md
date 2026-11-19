@@ -134,6 +134,13 @@ subscription as Claude's.
   under load killed bash first. A 0.3 s delay before the trap reproduced it every time; with the
   script's own mark awaited (8ce2552b1, tests only, in both trap tests) it passed with the delay,
   and `--stress-count 20` of all 18 `migrate_helper::` tests passed 20 of 20.
+- Yulius CI on 2d2fc89ef failed in `restart::a_wait_ends_at_its_deadline_while_yulius_is_down`
+  ("the task token was refused"), also outside this change: the test freed the port it picked to
+  stand for a stopped Yulius, and another test's server took it. Serving Yulius on that port in
+  the test reproduced the message exactly; the test now holds the port with a bound,
+  non-listening socket (refused connections, no other bind: both a std and a tokio listener were
+  refused in a probe), tests only. `--stress-count 10` of `restart::a_wait*` and
+  `restart::a_refused*`: 10 of 10.
 - Not tested: a real server with real Codex and Antigravity subscriptions (the server already sends
   `provider` on all three endpoints, checked in `CapacityAccount`, `AccountView` and the status
   view; the UI is proved against the mock, whose capacity view now matches the server).
