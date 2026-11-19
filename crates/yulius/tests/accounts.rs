@@ -2038,8 +2038,9 @@ async fn state_says(
     sub: &mut yulius_app::hub::Subscription,
     status: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let says = |terminal: &yulius_app::accounts::LoginTerminal| {
-        matches!(terminal.state(), TerminalServerMsg::State { status: s, .. } if s == status)
+    let says = |terminal: &yulius_app::accounts::LoginTerminal| match terminal.state() {
+        TerminalServerMsg::State { status: now, .. } => now == status,
+        _ => false,
     };
     let wait = async {
         while !says(terminal) {
@@ -2089,7 +2090,13 @@ async fn an_antigravity_sign_in_runs_on_after_its_token_file_until_done() -> Tes
     s.host.release.add_permits(1);
     state_says(&terminal, &mut sub, "signed_in").await?;
     assert!(
-        matches!(terminal.state(), TerminalServerMsg::State { can_write: true, .. }),
+        matches!(
+            terminal.state(),
+            TerminalServerMsg::State {
+                can_write: true,
+                ..
+            }
+        ),
         "the setup still takes input"
     );
     // Six times the grace that ends a Claude sign-in: no exit frame comes, nothing is stopped.
