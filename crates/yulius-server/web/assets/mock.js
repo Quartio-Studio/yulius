@@ -5657,7 +5657,8 @@ route('PUT', '/api/admin/digest', ({ db, body }) => {
   db.digest.setting = { enabled: Boolean(body.enabled), at: `${m[1].padStart(2, '0')}:${m[2]}`, park_idle_hours: hours ?? null };
   return db.digest.setting;
 });
-route('GET', '/api/me/digest', ({ db }) => db.digest.latest);
+// `reads` counts the page's reads of it, so a test knows the bell has read it.
+route('GET', '/api/me/digest', ({ db }) => { db.digest.reads = (db.digest.reads || 0) + 1; return db.digest.latest; });
 
 // The instance Vidoc key (SPEC-195 VDK-002): the Jev key's routes, for Vidoc.
 function vidocView(db) {

@@ -68,9 +68,10 @@ test('a cleared digest entry does not come back on the next load (SPEC-512 DIG-0
   await firstShown(bell);
   await bell.click();
   await screen.getByRole('dialog', 'Notifications').getByRole('button', 'Clear').click();
-  await app.open(mock('/settings', '&digest=1'));
+  // Another address, so the page really loads again (the same one is not reloaded).
+  await app.open(mock('/settings', '&digest=1&again=1'));
   // The bell reads the digest when the page opens: wait until it has, then look once.
-  await expect.poll(() => browser.evaluate(() => Object.keys(localStorage).some((k) => k.startsWith('yulius.digest.seen.')))).toBe(true);
+  await expect.poll(() => browser.evaluate(() => (window as unknown as { __yuliusMock: { digest: { reads?: number } } }).__yuliusMock.digest.reads ?? 0)).toBeGreaterThan(0);
   await firstShown(screen.getByRole('button', /^Notifications$/));
   await expect(screen.getByRole('button', /^Notifications \(\d+ unread\)/)).toHaveCount(0);
 });

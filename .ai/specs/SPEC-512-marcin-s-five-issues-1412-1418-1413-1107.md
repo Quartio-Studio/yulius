@@ -295,7 +295,7 @@ acceptance criteria.
   digest's text (sections in order, cut last message, nothing to report → none); the day's run
   decision (before and after `at`, ran already, turned on after `at`).
 - Store: `digest_ran_at` is taken once; digests kept per person, the last seven.
-- Integration (`crates/yulius/tests/digest.rs`): off by default (no digest, no park); a run parks
+- Integration (`crates/yulius/tests/telegram.rs` and `parking.rs`, the digest tests): off by default (no digest, no park); a run parks
   an idle Your-turn task past the threshold and not a Needs-you or Done one, and a message
   resumes it; the person's digest lists the waiting task first, the parked one with its last
   message redacted, the working count; Telegram gets it (fake bot) and not with `digest` off;
@@ -367,6 +367,23 @@ acceptance criteria.
 | Idle tasks past the threshold are parked, listed with links and their last message, and resume when written to | `parking::the_digest_parks_a_quiet_task_that_asks_nobody_and_lists_its_last_message` (real processes, part 1 off: parked, audited `task.parked`, "Last message: ECHO: …", `task_message` resumes it) |
 | Text that leaves the instance is redacted | `telegram::a_digest_lists_what_waits_first_redacted_and_reaches_the_chat` (an agent secret in the request is absent from the stored digest and the Telegram text) |
 | A digest with nothing to report is not sent | `telegram::a_digest_lists_what_waits_first_redacted_and_reaches_the_chat` (bob, with no task, gets none: `null` and no message) |
+
+Review round 1 (head 3d6fb8768, CHANGES REQUESTED), answered test-first:
+
+| Finding | Change | Test |
+|---|---|---|
+| The digest reached people who cannot see the project (owner who lost access, named person without access) | each recipient is checked with `can_view` per project, cached per run | `telegram::a_digest_reaches_only_people_who_can_see_the_project` (fails without the check: checked by mutation) |
+| A task the digest parked was listed again the next day | the listing has its own mark (`digest_listed_at`), written once the run's parks settled (no longer live) and before the build; "parked since" is after it | `parking::the_digest_parks_…` (a second run sends nothing) and `telegram::a_digest_lists_…` (a second digest lists nothing parked); both fail when the window ignores the mark (mutation) |
+| A cleared bell entry came back on every load | the last digest heard is remembered per person apart from the list; the entry carries the digest's time | e2e "a cleared digest entry does not come back on the next load" (fails without the memory: mutation) |
+| No tests for named, withdrawn or disabled people, or for redacting a title or a last message | added | `telegram::a_digest_reaches_only_people_who_can_see_the_project` (named, withdrawn, disabled owner), `telegram::a_digest_lists_…` (secret in a title), `parking::the_digest_parks_…` (agent secret in the last message: `[secret:DIGEST_KEY]`) |
+| A save shortened the window; moving the time later sent a second digest that day | a save no longer touches the listing mark (the first digest looks back 24 hours); no digest when one already went out today | store `the_days_run_is_taken_once`, `digest::tests::the_digest_is_due_once_a_day_after_its_time`, `telegram::a_digest_lists_…` (saved before the first run, the parked task is still listed) |
+| Transcripts read inside the tick | the run is spawned off the tick; its claim keeps a second tick out | by reading (`background.rs`) |
+| One unreadable task cancelled every digest | a task that fails is logged and left out | by reading (`digest_drafts`) |
+| Guests were refused `/api/me/digest` | allowed for guests (their own digest; visibility is checked per project) | `guest_may_reach` |
+| Nits | `notify::truncate`; quiet time checked before a park's probe; "Finished" follows the list's group; `waiting_capacity` counts as working; digits-only times; `/digest` follows `digest.ready` | `a_time_is_hours_and_minutes`; parking test reads "Finished" as the list does |
+
+Known limit (not changed): a stored digest is not redacted again when read, so a secret registered after a
+digest was made stays in up to seven stored digests of its person until they rotate out.
 
 Before and after: before, nothing gathered what waits for a person; they opened each project. After
 (with the digest on), one bell entry a day, "Your end-of-day digest: 1 waits for you · 1 parked ·
