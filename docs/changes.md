@@ -4,6 +4,13 @@ Notable changes, newest first. Per-change detail lives in the merged pull reques
 evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-architecture.md)
 (sections 14 and 15).
 
+## 2026-11-19
+
+- Subscription cards name their agent (SPEC-513, task #495): on the Subscriptions page, the
+  Status panel and the Dashboard, a badge under each subscription's name reads Claude, Codex or
+  Antigravity (the vendor, such as Google Gemini, on hover), before the email. The web mock's
+  capacity view carries each subscription's provider, as the server's does.
+
 ## 2026-11-18
 
 - Subscription sign-ins start again (SPEC-509, task #491, #1414): login terminals are 1000

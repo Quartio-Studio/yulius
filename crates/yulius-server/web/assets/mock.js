@@ -5626,7 +5626,7 @@ route('GET', '/api/capacity', ({ db }) => {
     resumes_at: null,
     fallback_model: fallback ? 'claude-opus-5-5' : null,
     accounts: db.accounts.map((a) => ({
-      label: a.label, status: a.status, usage: a.usage, available: isAvailable(a),
+      label: a.label, provider: a.provider || 'anthropic', status: a.status, usage: a.usage, available: isAvailable(a),
       ...(admin ? { id: a.id, in_use_by: a.in_use_by, ...(a.email ? { email: a.email } : {}) } : {}),
     })),
     tokens: poolTokens(),

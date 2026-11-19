@@ -708,6 +708,11 @@ body.resizing iframe, body.resizing canvas { pointer-events: none; }
 .account-email-edit { display: flex; align-items: center; gap: 2px; min-width: 0; flex-wrap: wrap; }
 .account-email-text { min-width: 0; max-width: calc(100% - var(--control-sm) - 2px); cursor: text; }
 .account-email-text:hover { text-decoration: underline dotted; }
+/* The agent a subscription belongs to (SPEC-513), before the email under the name: neutral, so
+   the plan badge keeps the accent. */
+.account-subline { display: flex; align-items: center; gap: 6px; min-width: 0; overflow: hidden; }
+.account-subline > .account-email-edit { flex: 1; }
+.agent-badge { display: inline-flex; align-items: center; height: 16px; padding: 0 6px; border-radius: var(--radius-full); background: var(--surface-2); color: var(--muted); font-size: var(--fs-xs); line-height: var(--lh-xs); font-weight: 600; white-space: nowrap; flex: none; }
 .plan-badge { display: inline-flex; align-items: center; height: 18px; padding: 0 6px; border-radius: var(--radius-full); background: var(--accent-soft); color: var(--accent-fg); font-size: var(--fs-xs); line-height: var(--lh-xs); font-weight: 600; letter-spacing: 0.02em; white-space: nowrap; flex: none; }
 .account-state { display: inline-flex; align-items: center; gap: 4px; height: 20px; padding: 0 8px; border-radius: var(--radius-full); font-size: var(--fs-xs); line-height: var(--lh-xs); font-weight: 600; white-space: nowrap; flex: none; }
 .state-ok { background: var(--ok-soft); color: var(--ok-fg); }
