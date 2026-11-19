@@ -532,7 +532,8 @@ mod tests {
                    ('d-codex', 's1', 'imported', 'codex', 'c', 'C', '/x/c.jsonl', 900, 12, 0, 1, 1),
                    ('d-agy', 's1', 'imported', 'antigravity', 'a', 'A', '/x/a.jsonl', 700, 9, 1, 1, 1),
                    ('d-claude', 's1', 'imported', 'claude', 'k', 'K', '/x/k.jsonl', 500, 7, 0, 1, 1);
-                 INSERT INTO session_chunks (doc_id, line, role, text) VALUES ('d-claude', 1, 'user', 'kept passage');",
+                 INSERT INTO session_chunks (doc_id, line, role, text) VALUES ('d-claude', 1, 'user', 'kept passage'),
+                   ('d-codex', 1, 'user', 'stalecodexpassage');",
             )?;
         }
         let store = SqliteStore::open(&path)?;
@@ -558,6 +559,22 @@ mod tests {
             })
             .await?;
         assert_eq!(kept, 1);
+        let (stale, found): (i64, i64) = store
+            .call(|c| {
+                c.query_row(
+                    "SELECT (SELECT COUNT(*) FROM session_chunks WHERE doc_id = 'd-codex'), \
+                     (SELECT COUNT(*) FROM session_fts WHERE session_fts MATCH 'stalecodexpassage')",
+                    [],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .map_err(db)
+            })
+            .await?;
+        assert_eq!(
+            (stale, found),
+            (0, 0),
+            "a passage of theirs goes, from the search too"
+        );
         Ok(())
     }
 

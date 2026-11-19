@@ -2604,7 +2604,85 @@ mod tests {
                 ],
             ),
         ];
-        for (name, lines) in cases {
+        let async_result = |body: &str| json!({"step_index": 3, "source": "SYSTEM", "type": "SYSTEM_MESSAGE", "status": "DONE", "content": format!("The following is a <SYSTEM_MESSAGE> not actually sent by the user. <SYSTEM_MESSAGE> [Message] timestamp=2026-11-19T10:00:00Z sender=abc/task-1 priority=MESSAGE_PRIORITY_HIGH content=Task id \"abc/task-1\" finished with result: {body}</SYSTEM_MESSAGE>")});
+        let went_async = [
+            json!({"step_index": 0, "source": "MODEL", "type": "PLANNER_RESPONSE", "status": "DONE", "tool_calls": [{"name": "run_command", "args": {"CommandLine": "\"sleep 9; cat .env\"", "WaitMsBeforeAsync": "1000"}}]}),
+            json!({"step_index": 1, "source": "MODEL", "type": "GENERIC", "status": "RUNNING", "content": "Tool is running as a background task with task id: abc/task-1"}),
+            json!({"step_index": 2, "source": "MODEL", "type": "PLANNER_RESPONSE", "status": "DONE", "content": "Waiting."}),
+        ];
+        let round_three: Vec<(&str, Vec<Value>)> = vec![
+            (
+                "agy async result as a system message",
+                went_async
+                    .iter()
+                    .cloned()
+                    .chain([async_result(&format!(
+                        "Command exited with code 0\nOutput:\n{ENV_TWO}\n"
+                    ))])
+                    .collect(),
+            ),
+            (
+                "agy async one-line result",
+                went_async
+                    .iter()
+                    .cloned()
+                    .chain([async_result(
+                        "Command exited with code 0\nOutput:\nSHOP_REGION=eu-north-7b\n",
+                    )])
+                    .collect(),
+            ),
+            (
+                "agy async numbered result",
+                went_async
+                    .iter()
+                    .cloned()
+                    .chain([async_result(
+                        "Output:\n1: SHOP_REGION=eu-north-7b\n2: MAIL_DOMAIN=mg.shop.example\n",
+                    )])
+                    .collect(),
+            ),
+            (
+                "write_stdin through a map shorthand",
+                vec![
+                    exec_call(
+                        "c1",
+                        "text(await tools.exec_command({cmd:`sleep 2; cat .env`, yield_time_ms: 1000}))\n",
+                    ),
+                    exec_output(
+                        "c1",
+                        &[
+                            json!({"chunk_id": "a", "wall_time_seconds": 1.0, "session_id": 7, "original_token_count": 0, "output": ""}),
+                        ],
+                    ),
+                    exec_call(
+                        "c2",
+                        "for (const r of await Promise.allSettled([7,9].map(session_id=>tools.write_stdin({session_id,chars:\"\",yield_time_ms:3000})))) text(r.value)\n",
+                    ),
+                    exec_output("c2", &[chunk(&env), chunk("ok\n")]),
+                ],
+            ),
+            (
+                "write_stdin with the id in a variable",
+                vec![
+                    exec_call(
+                        "c1",
+                        "text(await tools.exec_command({cmd:`sleep 2; cat .env`, yield_time_ms: 1000}))\n",
+                    ),
+                    exec_output(
+                        "c1",
+                        &[
+                            json!({"chunk_id": "a", "wall_time_seconds": 1.0, "session_id": 7, "original_token_count": 0, "output": ""}),
+                        ],
+                    ),
+                    exec_call(
+                        "c2",
+                        "const id = 7;\ntext(await tools.write_stdin({session_id: id, chars: ``}))\n",
+                    ),
+                    exec_output("c2", &[chunk(&env)]),
+                ],
+            ),
+        ];
+        for (name, lines) in cases.into_iter().chain(round_three) {
             assert_env_hidden(name, &lines)?;
         }
         Ok(())
@@ -2620,25 +2698,36 @@ mod tests {
             &[
                 exec_call(
                     "c1",
-                    "text(await Promise.allSettled([tools.exec_command({cmd:`ls`}), tools.exec_command({cmd:`false`})]))\n",
+                    "text(await Promise.allSettled([tools.exec_command({cmd:`ls`}), tools.view({path:`a`}), tools.exec_command({cmd:`false`})]))\n",
                 ),
                 exec_output(
                     "c1",
                     &[
-                        json!([{"status": "fulfilled", "value": chunk("src\n")}, {"status": "rejected", "reason": "exit 1"}]),
+                        json!([{"status": "fulfilled", "value": chunk("src\n")}, {"status": "fulfilled", "value": "file body"}, {"status": "rejected", "reason": "exit 1"}]),
                     ],
                 ),
                 json!({"step_index": 0, "source": "USER_EXPLICIT", "type": "USER_INPUT", "status": "DONE", "content": "<USER_REQUEST>\n</USER_REQUEST>"}),
+                exec_call("c2", "text(await tools.mcp__x__list({}))\n"),
+                exec_output(
+                    "c2",
+                    &[json!({"items": ["alpha", "beta"], "total": 2, "next": "cursor-3"})],
+                ),
             ],
         )?;
         let page = read_page(File::open(&path)?, 0, 100, MAX_PAGE_CHARS)?;
-        assert_eq!(page.entries.len(), 2, "{:?}", shape(&page.entries));
-        let TranscriptBlock::ToolResult { text, .. } = &page.entries[1].blocks[0] else {
-            return Err("the output".into());
+        assert_eq!(page.entries.len(), 4, "{:?}", shape(&page.entries));
+        let result = |n: usize| match &page.entries[n].blocks[0] {
+            TranscriptBlock::ToolResult { text, .. } => Ok(text.clone()),
+            _ => Err("the output"),
         };
         assert_eq!(
-            text,
-            "Script completed\nWall time 0.1 seconds\nOutput:\nsrc\nexit 1"
+            result(1)?,
+            "Script completed\nWall time 0.1 seconds\nOutput:\nsrc\nfile body\nexit 1"
+        );
+        // JSON that is no code-mode result is shown whole.
+        assert_eq!(
+            result(3)?,
+            "Script completed\nWall time 0.1 seconds\nOutput:\n{\"items\":[\"alpha\",\"beta\"],\"next\":\"cursor-3\",\"total\":2}"
         );
         Ok(())
     }
