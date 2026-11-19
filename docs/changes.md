@@ -6,6 +6,15 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-19
 
+- Random harness selection across all harnesses with available subscriptions (SPEC-520, task #502,
+  #1437, ADR-0377): restores `Random` (`Random agent` in the composer and Settings, `Random` /
+  `auto` in the automation editor) as the default, drawing uniformly (`1 / k`, unbiased over random
+  bytes) across `claude`, `codex`, and `antigravity` that currently have at least one healthy
+  non-exhausted subscription — equal chance per eligible harness regardless of subscription count,
+  excluding harnesses with zero or only finished subscriptions while another has capacity (falling
+  back to healthy `Usable` pools when every connected pool is temporarily limited). Drawn tasks keep
+  their harness for life (`harness_choice: random`); a running task agent's unadorned `task_create`
+  and `automation_create` still keep the calling task's harness.
 - Answer a teammate's Needs you (SPEC-516, task #498, ADR-0370): on someone else's task whose
   agent asks a person for something, Reply answers it without taking control. The agent gets the
   answer labelled with your name (and that you are not its owner), the request ends, and the task

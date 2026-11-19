@@ -24,12 +24,18 @@ an Antigravity task moves only between Antigravity subscriptions, and Yulius pro
 Antigravity CLI (1.5.10)
 ([SPEC-505](../.ai/specs/SPEC-505-implement-antigravity-cli-next-to-claude.md),
 [ADR-0361](decisions/0361-antigravity-is-a-third-harness-picked-at-random-by-default.md)). A
-task's agent is set, never drawn: the one chosen, else the one its model implies, else Claude Code
-(the composer's Default); a follow-up an agent creates runs that agent's own, and an automation
-always runs the agent it names (`F 2026-11-19 Harness`,
-[SPEC-514](../.ai/specs/SPEC-514-make-sure-harnesses-doesnt-change-themse.md),
-[ADR-0368](decisions/0368-a-tasks-agent-is-set-never-drawn.md)). Tasks drawn at random while
-SPEC-505's draw existed still say so, and the analytics export lists it.
+task created without choosing an agent (the composer's and Settings' `Random`, or `auto`) and
+without a model that implies one draws uniformly across all added harnesses (`claude`, `codex`,
+`antigravity`) that currently have at least one non-exhausted subscription — one equal chance per
+eligible harness regardless of subscription count, excluding harnesses with zero or only finished
+subscriptions while another has capacity — and keeps that assigned harness for life (`harness_choice:
+random`, exported in analytics); a running task agent's unadorned follow-up keeps the calling
+task's harness, and an automation defaults to `Random` (`auto`, drawn for each run) or runs the
+agent it names (`F 2026-11-19 Random harness`,
+[SPEC-520](../.ai/specs/SPEC-520-i-dont-know-why-but-i-dont-see-random-ha.md),
+[ADR-0377](decisions/0377-random-draws-uniformly-across-harnesses-with-available-subscriptions.md),
+superseding the no-draw part of [SPEC-514](../.ai/specs/SPEC-514-make-sure-harnesses-doesnt-change-themse.md)
+/ [ADR-0368](decisions/0368-a-tasks-agent-is-set-never-drawn.md)).
 
 The authoritative product brief is [SPEC-001](../.ai/specs/SPEC-001-yulius-product.md); this
 page is the short version for anyone who must know the whole product before building.
