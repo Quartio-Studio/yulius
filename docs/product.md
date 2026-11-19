@@ -491,7 +491,8 @@ watching, steering and unblocking.
   because the integration branch moved; armed and green, it merges at once when up to date, else
   Yulius tests it once on top of the current integration branch, together with the others
   waiting (a merge candidate, halved when red), and merges them in order as soon as that run
-  passed, without waiting for their own runs (SPEC-497). The Pipeline tab says why each recent
+  passed, without waiting for their own runs (SPEC-497). If a candidate rebuilds a tree that
+  recently failed in this queue, bisection uses the original run (SPEC-542). The Pipeline tab says why each recent
   candidate was dissolved. Every armed pull
   request says where it stands, and a merge at a head whose own Yulius CI run passed counts as
   merged on green, whoever made it.

@@ -28,8 +28,8 @@ identify a single omitted member after the other two pass (SPEC-497 MQW-003).
 ## Plan
 
 - [x] Specify the failed candidate verdict
-- [ ] Reproduce the four-member bisection and cover inconclusive runs
-- [ ] Reuse the failed candidate run and verify the queue outcomes
+- [x] Reproduce the four-member bisection and cover inconclusive runs
+- [x] Reuse the failed candidate run and verify the queue outcomes
 - [ ] Independently review and deliver the fix on green CI
 
 ## Acceptance criteria
@@ -50,3 +50,13 @@ inconclusive candidate runs at the rebuilt tree. Run the existing merge-train te
 Look for a failed candidate before consulting the existing passed-tree lookup, and attach
 the original run so its job logs and failure remain available. Use the scheduler's existing
 bounded history and sandbox scope. See ADR-0383.
+
+## Evidence
+
+- On the test-only commit, the four-member regression failed with
+  `train/3+4 got a second run on the failed tree`. Git reported tree
+  `e003ac10660d2355d232903af31b46f39c845084` for both runs. The same-tree
+  error/cancellation control and the existing three-member bisection test passed.
+- After the fix, nextest ran both new integration tests. Both passed. The four-member
+  case observed the original failed run ID at the second bisection.
+- `scripts/dev quick` passed the repository contracts and format check.
