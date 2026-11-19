@@ -1240,7 +1240,10 @@ fn a_named_persons_message_resumes_a_parked_task() -> TestResult {
             detail: json!({"via": "remote"}),
         };
         let sent = app
-            .tool_task_message(&bobs_agent, &json!({"task_id": id.as_str(), "text": "M1: yes"}))
+            .tool_task_message(
+                &bobs_agent,
+                &json!({"task_id": id.as_str(), "text": "M1: yes"}),
+            )
             .await?;
         assert_eq!(sent["delivered"], "answered", "{sent}");
         wait_for("the resumed answer", Duration::from_secs(60), || async {
