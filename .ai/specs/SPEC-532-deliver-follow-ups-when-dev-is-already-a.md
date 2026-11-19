@@ -1,6 +1,6 @@
 ---
 yulius-task: 911b66b2-e0d0-4e52-92ab-0fec1d3e047d
-status: in-progress
+status: done
 ---
 
 # SPEC-532. Deliver follow-ups when the head contains the integration branch
@@ -23,7 +23,7 @@ Task #473's first pull request merged at head `aa154aec4`. Git confirms integrat
 - [x] Reproduce the migration append conflict and specify its verdict
 - [x] Cover different and equal descendant trees in delivery tests
 - [x] Judge an integrated follow-up by its Git tree
-- [ ] Verify and independently review the delivery fix
+- [x] Verify and independently review the delivery fix
 
 ## Acceptance criteria
 
@@ -43,3 +43,7 @@ Use the existing Git adapter comparison, which pins the integration ref to one c
 
 - On the original code, `cargo test --locked -p yulius --test main delivery::a_follow_up_containing_dev_is_judged_by_its_tree -- --exact` failed at the second delivery call. It reported a conflict with `origin/dev` and advised merging it again. The equal-tree assertions passed.
 - After the fix, a focused `cargo nextest run -p yulius` passed all six selected tests. The new regression saw the equal tree remain merged and the additional migration push, open and arm PR #2. Existing tests covered divergent histories, an externally merged follow-up, the live merge train and PR conflict reporting.
+- The independent reviewer approved `2ca60c2ac`, traced both callers of the Git adapter, and reran all six tests. They passed again after the clean merge of `80eed52f9`, which supplied the corrected mutation runner.
+- `scripts/dev quick` passed and `scripts/dev security` reported Vidoc disabled for the project.
+- `scripts/dev mutants --jobs 1` reported `mutants: 11 listed, 1 caught, 0 missed, 0 timed out, 10 unviable, 0 not reached (bound 30 min, took 1200 s)`. All 3,124 baseline tests passed. Reversing the tree comparison failed the new regression at its equal-tree assertion and the existing follow-up test at its new-PR assertion.
+- All six scoped tests also passed at `580e9ab59` after incorporating the latest integration changes.
