@@ -32,6 +32,9 @@ const FAIL_LABELS = {
 const SAFE = 'Its branch and changes are safe.';
 const ENDED_MESSAGES = {
   closed: { tone: 'info', text: 'This task is closed. Its branch and changes are kept.' },
+  // Its idle session was ended to free its place and memory (SPEC-512 PRK-003): it goes on in the
+  // same session when resumed.
+  parked: { tone: 'info', text: `${BRAND.name} parked this idle session to free its place and memory. Resume it, or write to it, and it goes on in the same session with its history.`, resume: true },
   stopped_cancelled: { tone: 'info', text: `You stopped this task. ${SAFE}` },
   stopped_crashed: { tone: 'warn', text: `The agent stopped unexpectedly. ${SAFE}` },
   stopped_killed: { tone: 'warn', text: `The agent's process was ended outside ${BRAND.name} (for example killed). ${SAFE}` },
@@ -163,6 +166,9 @@ const SPEC_UNFINISHED = 'Every step is finished, but its spec does not say done:
  * the text fallback.
  */
 export function statusInfo(task) {
+  // A parked task reads as the idle running task it was (SPEC-512 PRK-004): nothing of a session
+  // goes on in it, so no background shell, `yulius wait` or pause counts.
+  if (task.status === 'parked') return { ...statusInfo(asIdleRun(task)), parked: true };
   const status = task.status;
   const activity = task.activity;
   // Its live run is paused (SPEC-191): an update holds it, or a person paused it. Whatever the
@@ -204,7 +210,8 @@ export function statusInfo(task) {
     const held = heldBy(task);
     if (held.length && task.supertask) return { glyph: '⧗', icon: 'st-queued', tone: 'queued', label: `Supertask · waits for ${numbers(held)}`, group: 'working' };
     if (held.length) return { glyph: '⧗', icon: 'st-queued', tone: 'queued', label: `Queued after supertask #${held[0]}`, group: 'working' };
-    return { glyph: '⧗', icon: 'st-queued', tone: 'queued', label: 'Queued', group: 'working' };
+    // What it waits for, when the server says (SPEC-512 PRK-007).
+    return { glyph: '⧗', icon: 'st-queued', tone: 'queued', label: 'Queued', group: 'working', detail: task.queue_reason || undefined };
   }
   if (status === 'starting') return { glyph: '◌', icon: 'st-starting', tone: 'queued', label: 'Starting', group: 'working' };
   // The pool moves the session to another subscription at a turn end (ROT-003): under the hood,
@@ -244,6 +251,14 @@ export function statusInfo(task) {
   if (status in FAIL_LABELS) return { glyph: '✕', icon: 'st-failed', tone: 'failed', label: FAIL_LABELS[status].replace('Claude', agentOf(task)), group: 'ended' };
   return { glyph: '?', icon: 'st-stopped', tone: 'stopped', label: 'Unknown state', group: 'ended', detail: status };
 }
+
+/** A parked task as the idle running task it was, with no live overlay (SPEC-512 PRK-004). */
+function asIdleRun(task) {
+  return { ...task, status: 'running', background_shells: 0, yulius_wait: false, merge_armed: false, pause: null };
+}
+
+/** What a parked task's row says (SPEC-512 PRK-005). */
+export const PARKED_LINE = 'Parked to free its session · resumes when you write to it';
 
 /** What a queued task waits for because of a supertask (SPEC-071): task numbers, or []. */
 export function heldBy(task) {
@@ -293,6 +308,7 @@ export function pauseLine(pause) {
  * should do, in words — the reason of a browser request, the current step, or the state.
  */
 export function activityLine(task, info = statusInfo(task)) {
+  if (task.status === 'parked') return PARKED_LINE;
   if (info.paused) return pauseLine(info.paused);
   if (info.request) return info.request.reason || 'Do something in the sandbox browser';
   if (info.held) return 'A prompt was held · choose what to do';
@@ -329,6 +345,7 @@ export function activityLine(task, info = statusInfo(task)) {
   if (task.status === 'prepared') return preparedLine(task);
   if (task.status === 'waiting_capacity') return pausedLine(task);
   if (task.status === 'queued' && heldBy(task).length) return supertaskLine(task);
+  if (task.status === 'queued' && task.queue_reason) return task.queue_reason;
   if (info.group === 'ended' && steps.total) return `${info.label} · ${steps.done || 0}/${steps.total} steps`;
   return info.label;
 }
@@ -363,6 +380,15 @@ export function supertaskLine(task) {
  * act.
  */
 export function taskInfo(task, actionRequests, pr) {
+  // A parked task is shown where it was, as its idle run would be, marked parked (SPEC-512 PRK-004).
+  if (task.status === 'parked') {
+    const shown = taskInfo(asIdleRun(task), actionRequests, pr);
+    // Nothing of it goes on by itself: what would keep a running agent busy (its checks, a
+    // conflict it is told of, a CI run to run again) is a person's now, never Working (review
+    // round 1 of SPEC-512 part 1; the server's `parked_group`).
+    const waits = shown.group === 'working' ? { icon: 'st-attention', tone: 'attention', group: 'needs' } : {};
+    return { ...shown, ...waits, label: `${shown.label} · parked`, parked: true };
+  }
   let info = taskInfoOf(task, actionRequests, pr);
   // Another live task claims paths this one claims (SPEC-493 SCO-002): said beside the rest, a
   // stalled pull request's mark too; the detail names them when nothing else is said.
@@ -486,7 +512,7 @@ export function taskActions(task, access, pr, me, guest = false) {
   return {
     // A stopping task can be stopped again: a stop whose session could not be ended is retried
     // (SPEC-065).
-    stop: tidy && (live || chained),
+    stop: tidy && (live || chained || task.status === 'parked'),
     // A person pauses a running task and resumes it (SPEC-191 PER-006); an update's pause ends
     // by itself.
     pause: write && task.status === 'running' && !task.pause,
@@ -496,7 +522,8 @@ export function taskActions(task, access, pr, me, guest = false) {
     continue: write && ended && !task.archived,
     // Run on another subscription (SPEC-447 MOV-001): a running or waiting task moves in its
     // session, an ended one continues there; a person's pause is resumed first (PER-005).
-    move: write && !task.archived && ((['running', 'waiting_capacity'].includes(task.status) && !(task.pause && task.pause.by === 'person')) || ended),
+    // A parked task resumes where it ran (SPEC-512 PRK-005): no move.
+    move: write && !task.archived && task.status !== 'parked' && ((['running', 'waiting_capacity'].includes(task.status) && !(task.pause && task.pause.by === 'person')) || ended),
     deliver: write && !task.archived,
     feedback: allows(access, 'read'),
     // A finished task (Done by the one rule of taskInfo: goal achieved, or plan complete with its

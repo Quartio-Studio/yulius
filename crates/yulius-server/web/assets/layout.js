@@ -856,6 +856,21 @@ function capacityTile(iconName, name, value, detail, tone = 'ok', chart = null) 
     (lines.length ? lines : [' ']).map((line) => h('div', { class: 'stat-detail' }, line)));
 }
 
+/**
+ * The Capacity card's Sessions tile (SPEC-512 PRK-008): live sessions the limit counts, and apart
+ * from them the parked ones (no process, no memory), the idle Done ones (live, not counted) and
+ * the queued tasks; null when the view has no sessions (an older server).
+ */
+function sessionsCapacityTile(sessions) {
+  if (!sessions || !Number.isFinite(sessions.working)) return null;
+  const { working, limit, idle = 0, parked = 0, queued = 0, park_after_ms: parkAfter = 0 } = sessions;
+  const apart = [parked ? `${parked} parked` : null, idle ? `${idle} idle` : null, queued ? `${queued} queued` : null].filter(Boolean);
+  const minutes = Math.round(parkAfter / 60000);
+  const parks = parkAfter > 0 ? `Idle sessions park after ${minutes >= 120 && minutes % 60 === 0 ? `${minutes / 60} h` : `${Math.max(1, minutes)} min`}` : 'Parking is off';
+  const tone = limit > 0 && working >= limit ? (queued ? 'warn' : 'ok') : 'ok';
+  return capacityTile('terminal', 'Sessions', `${working}${limit ? ` / ${limit}` : ''} working`, [apart.length ? apart.join(' · ') : 'None parked', parks], tone);
+}
+
 /** A 7-day chart of a capacity figure ("Tokens, last 7 days: first …"), or null without data. */
 function weekChart(name, values, format) {
   return Array.isArray(values) ? sparkline(values, { label: `${name}, last 7 days`, format }) : null;
@@ -926,6 +941,7 @@ export function capacityPanel(view) {
         weekChart('Burn rate', (v.burn_per_day || []).map(perWeek), (x) => `${x.toFixed(1)} / week`)),
       capacityTile('chart', 'Runs out', v.runs_out_at ? resetLabel(v.runs_out_at).replace(/^Resets (at )?/, '') : burn24 === null ? '—' : 'Not this week', v.runs_out_at ? 'at the current rate' : 'at the current rate, before the next resets', v.runs_out_at ? 'warn' : 'ok'),
       tokenTiles(v.tokens),
+      sessionsCapacityTile(v.sessions),
       capacityTile('pulse', 'Paused (7 days)', `${hours.toFixed(hours >= 10 ? 0 : 1)} h`, Number.isFinite(v.active_hours_7d) ? `task-hours; ${Math.round(v.active_hours_7d)} h worked` : 'task-hours', hours > 0 ? 'warn' : 'ok',
         weekChart('Paused', v.paused_hours_per_day, (x) => `${x.toFixed(1)} h`))));
 }

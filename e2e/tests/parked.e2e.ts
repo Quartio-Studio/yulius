@@ -1,0 +1,137 @@
+import { test } from '@e2e-dev/web';
+import { expect } from 'e2e';
+import { axeViolations, failOnPageErrors, mock, touchTask } from './support.ts';
+
+failOnPageErrors();
+
+// SPEC-512 part 1 (#1412): a task whose turn ended and that waits for a person is parked after a
+// grace period: its session ends, the task stays where the list showed it and resumes when someone
+// writes to it.
+
+test('a parked task reads as it did, marked parked, and resumes from its menu (unit, in the page)', async ({ app, browser }) => {
+  await app.open(mock('/s/studio'));
+  const read = await browser.evaluate(async () => {
+    const statusUrl = '/assets/status.js';
+    const { taskInfo, activityLine, taskActions, isLive, endedMessage } = await import(statusUrl);
+    const parked = { status: 'parked', activity: 'done', steps: { done: 3, total: 3 }, owner: { login: 'me' } };
+    const asked = { status: 'parked', activity: 'waiting', steps: { done: 1, total: 3 }, owner: { login: 'me' } };
+    const withRequest = { ...asked, needs_you: { action: 'Choose the `colour`', problem: 'Two options' } };
+    // Shells and a `yulius wait` cannot run without a session: a stale count does not make it Working.
+    const stale = { ...parked, background_shells: 2, yulius_wait: true };
+    const merged = { status: 'parked', activity: 'waiting', steps: { done: 3, total: 3 } };
+    const info = (task: Record<string, unknown>, pr: unknown = null) => {
+      const shown = taskInfo(task, null, pr);
+      return [shown.label, shown.group];
+    };
+    // Nothing of a parked task goes on by itself: what keeps a running agent busy is a person's
+    // (review round 1, M2), and never Working.
+    const open = (checks: string, conflicts = false) => ({ number: 7, state: 'open', checks, conflicts });
+    const prs = [open('pending'), open('error'), open('success', true), open('failure'), open('success'), { number: 7, state: 'merged', checks: 'success' }];
+    const groups = [merged, { ...merged, activity: 'done' }, asked].flatMap((task) => prs.map((pr) => taskInfo(task, null, pr).group));
+    const acts = taskActions(parked, 'write', null, 'me');
+    return {
+      done: info(parked),
+      yourTurn: info(asked),
+      request: info(withRequest),
+      stale: info(stale),
+      merged: info(merged, { number: 7, state: 'merged', checks: 'success' }),
+      checksRunning: info(merged, open('pending')),
+      conflict: info(merged, open('success', true)),
+      ciError: info(merged, open('error')),
+      achievedRunning: info({ ...merged, activity: 'done' }, open('pending')),
+      neverWorking: groups.every((group) => group === 'needs' || group === 'done'),
+      // Its idle run's facts, as the server sends them for a parked task (review round 3, W1).
+      specLeft: info({ ...merged, spec_unfinished: true }, { number: 7, state: 'open', checks: 'success' }),
+      goalLeft: info({ ...merged, goal_unfinished: true }),
+      line: activityLine(parked),
+      live: isLive('parked'),
+      actions: { continue: acts.continue, stop: acts.stop, archive: acts.archive, delete: acts.delete, move: acts.move },
+      someoneElses: taskActions(parked, 'write', null, 'other').continue,
+      message: endedMessage('parked'),
+    };
+  });
+  expect(read).toEqual({
+    done: ['Done · parked', 'done'],
+    yourTurn: ['Your turn · parked', 'needs'],
+    request: ['Needs you: Choose the colour · parked', 'needs'],
+    stale: ['Done · parked', 'done'],
+    merged: ['Done · PR #7 merged · parked', 'done'],
+    checksRunning: ['In review · PR #7 · checks running · parked', 'needs'],
+    conflict: ['In review · PR #7 · conflicts with its base · parked', 'needs'],
+    ciError: ['In review · PR #7 · CI could not run (not the code) · parked', 'needs'],
+    achievedRunning: ['Done · PR #7 · parked', 'done'],
+    neverWorking: true,
+    specLeft: ['Your turn · parked', 'needs'],
+    goalLeft: ['Your turn · parked', 'needs'],
+    line: 'Parked to free its session · resumes when you write to it',
+    live: false,
+    // It resumes where it ran (a move would be refused), and a stop stops it.
+    actions: { continue: true, stop: true, archive: true, delete: true, move: false },
+    someoneElses: false,
+    message: {
+      tone: 'info',
+      text: 'Yulius parked this idle session to free its place and memory. Resume it, or write to it, and it goes on in the same session with its history.',
+      resume: true,
+    },
+  });
+});
+
+// SPEC-512 PRK-007: a queued task says what it waits for; a supertask's hold keeps its own line.
+test('a queued task says what it waits for (unit, in the page)', async ({ app, browser }) => {
+  await app.open(mock('/s/studio'));
+  const read = await browser.evaluate(async () => {
+    const statusUrl = '/assets/status.js';
+    const { taskInfo, activityLine } = await import(statusUrl);
+    const full = { status: 'queued', queue_reason: 'Waiting for a free session: 8 of 8 in use' };
+    const held = { status: 'queued', held_by: [3], queue_reason: null };
+    const plain = { status: 'queued' };
+    return {
+      full: [activityLine(full), taskInfo(full, null, null).detail],
+      held: activityLine(held),
+      plain: activityLine(plain),
+    };
+  });
+  expect(read).toEqual({
+    full: ['Waiting for a free session: 8 of 8 in use', 'Waiting for a free session: 8 of 8 in use'],
+    held: 'It starts once #3 is done: a supertask runs alone in this project.',
+    plain: 'Queued',
+  });
+});
+
+// SPEC-512 PRK-008: the Capacity card shows working sessions of the limit, and parked, idle and
+// queued ones apart, with when an idle session parks.
+test('the Capacity card shows working and parked sessions apart (unit, in the page)', async ({ app, browser }) => {
+  await app.open(mock('/s/studio'));
+  const read = await browser.evaluate(async () => {
+    const layoutUrl = '/assets/layout.js';
+    const { capacityPanel } = await import(layoutUrl);
+    const tile = (sessions: Record<string, number>) => {
+      const panel = capacityPanel({ subscriptions: 1, sessions });
+      const found = [...panel.querySelectorAll('.stat-tile')].find((t) => t.textContent.startsWith('Sessions'));
+      return found ? [found.querySelector('.tile-value').textContent, [...found.querySelectorAll('.stat-detail')].map((d) => d.textContent)] : null;
+    };
+    return {
+      busy: tile({ working: 8, limit: 8, idle: 2, parked: 13, queued: 3, park_after_ms: 1800000 }),
+      quiet: tile({ working: 1, limit: 8, idle: 0, parked: 0, queued: 0, park_after_ms: 0 }),
+      none: capacityPanel({ subscriptions: 1 }).textContent.includes('Sessions'),
+    };
+  });
+  expect(read).toEqual({
+    busy: ['8 / 8 working', ['13 parked · 2 idle · 3 queued', 'Idle sessions park after 30 min']],
+    quiet: ['1 / 8 working', ['None parked', 'Parking is off']],
+    none: false,
+  });
+});
+
+// What a person sees: a parked task's row and strip, and a queued task's reason on its page.
+test('a parked task shows where it was, marked parked; a queued task page says why it waits', async ({ app, browser, screen }) => {
+  // No ambient activity: the mock's own changes would regroup the list under the test.
+  await app.open(mock('/s/studio/t/13', '&ambient=0'));
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('#13 Improve the code');
+  await touchTask(browser, 'sb_studio', 13, { status: 'parked', activity: 'done' });
+  await expect(browser.locator('.strip-status')).toHaveText(/· parked/);
+  await expect(screen.getByRole('region', 'Done').getByRole('link', /Improve the code/)).toBeVisible();
+  expect(await axeViolations(browser)).toEqual([]);
+  await touchTask(browser, 'sb_studio', 13, { status: 'queued', activity: null, queue_reason: 'Waiting for a free session: 8 of 8 in use' });
+  await expect(browser.locator('.strip-status')).toHaveText(/Queued · Waiting for a free session: 8 of 8 in use/);
+});

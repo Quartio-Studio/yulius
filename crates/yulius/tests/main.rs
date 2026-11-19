@@ -78,6 +78,7 @@ mod metrics_recount;
 mod migration;
 mod model_fallback;
 mod notes;
+mod parking;
 mod playground;
 mod playground_guests;
 mod playground_move;

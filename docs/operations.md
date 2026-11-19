@@ -162,6 +162,13 @@ Environment=YULIUS_INTERNAL_BIND=127.0.0.1:8081
 # sized from this host; pin one only on purpose (see "Resource limits" below), or change it in
 # Settings → Instance, which wins over this file.
 #Environment=YULIUS_MAX_SESSIONS=8
+# Minutes a finished task (its turn ended, it waits for a person) keeps its idle session before it
+# is parked: the process ends, the task resumes in the same session when someone writes to it
+# (default 30; 0 never; SPEC-512).
+#Environment=YULIUS_PARK_AFTER_MINUTES=30
+# A server older than parking cannot read the status `parked`: before rolling back past it,
+# resume or archive the tasks marked "parked" in the task lists, with this set to 0 so no task
+# parks meanwhile.
 Environment=YULIUS_CONTAINED=true
 # Largest file dropped onto the editor or a terminal, in MiB (default 1024; keep the proxy's body
 # limit above it).

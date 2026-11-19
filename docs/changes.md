@@ -6,6 +6,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-19
 
+- Parked sessions (SPEC-512 part 1, task #494, #1412): a task whose turn ended and that waits for
+  a person gives its idle session up after 30 minutes (`YULIUS_PARK_AFTER_MINUTES`, 0 never): the
+  process ends, so it holds no session slot and no memory, and the task stays where the list
+  showed it, marked "parked", with its question and pull request. A message (`task_message`) or
+  Resume continues the same session with its history. A queued task says what it waits for, and
+  the Capacity card shows working, parked, idle and queued sessions apart (ADR-0367).
 - Antigravity offers Gemini 4 Neon and runs it at high effort by default (SPEC-519, task #501,
   [ADR-0373](decisions/0373-gemini-4-neon-is-antigravitys-default-model-on-agy-1-5-12.md)):
   confirmed end to end in a live Antigravity session on a Google sign-in subscription. An

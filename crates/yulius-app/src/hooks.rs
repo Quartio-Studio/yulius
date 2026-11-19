@@ -693,7 +693,8 @@ impl App {
             .collect();
         let parallel_tasks = all
             .iter()
-            .filter(|t| t.id != task.id && t.status.is_live())
+            // A parked task's work goes on when it resumes (SPEC-512 PRK-001).
+            .filter(|t| t.id != task.id && t.status.holds_claims())
             .map(|t| ParallelTask {
                 number: t.number,
                 title: t.title.clone(),

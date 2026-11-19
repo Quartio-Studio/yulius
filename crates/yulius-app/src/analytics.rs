@@ -73,11 +73,14 @@ pub struct AnalyticsTask {
     pub closed_at: Option<Timestamp>,
 }
 
-/// The key a task counts under in `by_status`: its status, or `done` for a running task whose
-/// goal is achieved (TSK-014), which is finished although its session stays open.
+/// The key a task counts under in `by_status`: its status, or `done` for a running or parked task
+/// whose goal is achieved (TSK-014, SPEC-512 PRK-004), which is finished whether its session
+/// stays open or was parked.
 #[must_use]
 pub fn outcome_key(status: TaskStatus, activity: Option<Activity>) -> &'static str {
-    if status == TaskStatus::Running && activity == Some(Activity::Done) {
+    if matches!(status, TaskStatus::Running | TaskStatus::Parked)
+        && activity == Some(Activity::Done)
+    {
         "done"
     } else {
         status.as_str()
@@ -909,6 +912,15 @@ mod tests {
             "running"
         );
         assert_eq!(outcome_key(TaskStatus::Closed, None), "closed");
+        // A parked task whose goal was achieved is still done (SPEC-512 PRK-004).
+        assert_eq!(
+            outcome_key(TaskStatus::Parked, Some(Activity::Done)),
+            "done"
+        );
+        assert_eq!(
+            outcome_key(TaskStatus::Parked, Some(Activity::Waiting)),
+            "parked"
+        );
         Ok(())
     }
 

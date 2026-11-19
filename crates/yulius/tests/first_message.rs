@@ -95,6 +95,18 @@ pub(crate) async fn start_on(
     clock: Arc<dyn yulius_app::ports::Clock>,
     configure: impl FnOnce(&mut AppConfig),
 ) -> Result<(Arc<App>, u16), BoxError> {
+    start_hosted(data, fake, agent, (port, probe, clock), None, configure).await
+}
+
+/// [`start_on`] whose runs go through `host` (the real one when `None`).
+pub(crate) async fn start_hosted(
+    data: &Path,
+    fake: &Path,
+    agent: FakeAgentOptions,
+    (port, probe, clock): (u16, Arc<ScriptedUsage>, Arc<dyn yulius_app::ports::Clock>),
+    host: Option<Arc<dyn yulius_app::ports::session::SessionHost>>,
+    configure: impl FnOnce(&mut AppConfig),
+) -> Result<(Arc<App>, u16), BoxError> {
     let socket = tokio::net::TcpSocket::new_v4()?;
     socket.set_reuseaddr(true)?;
     socket.bind(SocketAddr::from(([127, 0, 0, 1], port)))?;
@@ -110,7 +122,7 @@ pub(crate) async fn start_on(
         clock,
         crypto: Arc::new(MasterKeyCrypto::from_key(&[7u8; 32])?),
         github: Arc::new(support::FakeGitHub::default()),
-        session_host: Arc::new(PtySessionHost::new(exe.clone())),
+        session_host: host.unwrap_or_else(|| Arc::new(PtySessionHost::new(exe.clone()))),
         harness: Arc::new(FakeAgentHarness {
             inner: HarnessAdapter::new(exe.clone(), url),
             fake: fake.to_path_buf(),

@@ -3162,10 +3162,16 @@ fn a_run_that_ends_before_its_switch_claims_it_closes_the_task() -> TestResult {
                 move || {
                     let ended = wait_in_hook(&handle, async {
                         app.send_input(&id, b"/exit\r").await?;
+                        // The run's end is recorded and its task rests: "before its switch
+                        // claims it" means the whole end, or a loaded host lets the switch go
+                        // on between the two and wait out its bound (#1456).
                         wait_for("the run's end", Duration::from_secs(30), || async {
                             matches!(
                                 app.deps.store.attempt(&run.id).await,
                                 Ok(Some(a)) if a.state.is_terminal()
+                            ) && matches!(
+                                app.deps.store.task(&id).await,
+                                Ok(Some(t)) if t.status.is_resting()
                             )
                         })
                         .await

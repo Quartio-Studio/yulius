@@ -216,6 +216,17 @@ impl App {
             tracing::warn!(error = %err, task = %task.id, "harness draw not read");
             false
         });
+        let held_by = if task.status == TaskStatus::Queued {
+            match project {
+                Some(project) => self.supertask_holders_among(task, project).await,
+                None => self.supertask_holders(task).await,
+            }
+            .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        let idle_run = matches!(task.status, TaskStatus::Running | TaskStatus::Parked)
+            && task.activity.is_some_and(Activity::is_idle);
         Ok(TaskSummary {
             id: task.id.to_string(),
             sandbox_id: task.sandbox_id.to_string(),
@@ -280,15 +291,8 @@ impl App {
             auto: self.auto_choice_view(&task.id).await,
             supertask: task.supertask,
             start_at: self.prepared_start_at(task).await.map(rfc3339),
-            held_by: if task.status == TaskStatus::Queued {
-                match project {
-                    Some(project) => self.supertask_holders_among(task, project).await,
-                    None => self.supertask_holders(task).await,
-                }
-                .unwrap_or_default()
-            } else {
-                Vec::new()
-            },
+            queue_reason: self.queue_reason_of(task, &held_by).await,
+            held_by,
             background_shells: (task.status == TaskStatus::Running
                 && task.activity.is_some_and(Activity::is_idle))
             .then(|| self.background_shells_of(&task.id))
@@ -302,19 +306,17 @@ impl App {
             merge_armed: task.status == TaskStatus::Running
                 && task.activity.is_some_and(Activity::is_idle)
                 && self.merge_is_armed(&task.id),
-            goal_unfinished: task.status == TaskStatus::Running
-                && task.activity.is_some_and(Activity::is_idle)
-                && self.goal_unfinished(&task.id),
-            spec_unfinished: task.status == TaskStatus::Running
-                && task.activity.is_some_and(Activity::is_idle)
-                && self.spec_unfinished(&task.id).await,
+            // A parked task's facts are its idle run's (SPEC-512 PRK-004): the web reads it as
+            // that run.
+            goal_unfinished: idle_run && self.goal_unfinished_of(task).await,
+            spec_unfinished: idle_run && self.spec_unfinished(&task.id).await,
             not_started,
             awaits_start_onboarding,
             pause: self.pause_view(task).await,
             pr_stalled: (task.status == TaskStatus::Running)
                 .then(|| self.pr_stalled(&task.id))
                 .flatten(),
-            overlaps: if task.status.is_live() {
+            overlaps: if task.status.holds_claims() {
                 self.claim_overlaps(task, project).await
             } else {
                 Vec::new()
@@ -891,7 +893,8 @@ impl App {
         if archive && done && task.origin == TaskOrigin::Onboarding {
             // Its run's end decides whether onboarding is over, which the check below reads.
             self.close_task_and_wait(&task.id).await?;
-        } else if archive && done {
+        } else if archive && (done || task.status == TaskStatus::Parked) {
+            // A parked task is closed at once: it has no session to end (SPEC-512 PRK-001).
             self.close_task_now(&task.id).await?;
         } else if archive && !task.status.is_resting() {
             return Err(AppError::Conflict(
