@@ -1,6 +1,6 @@
 ---
 yulius-task: e9bfc4ce-4926-40ed-b8d3-0f6160bc7b70
-status: in-progress
+status: done
 ---
 
 # SPEC-522 Compare harnesses on the sandbox Dashboard
@@ -25,8 +25,8 @@ The Overview already reads the bounded, permission-scoped analytics summary for 
 - [x] Read the product context and related work, then write and validate the spec
 - [x] Measure finished run durations by executing harness
 - [x] Compare harness workload, run times and token coverage on the Dashboard
-- [ ] Independent review in a fresh session, findings fixed test-first
-- [ ] Every gate green, docs and the changes log updated
+- [x] Independent review in a fresh session, findings fixed test-first
+- [x] Every gate green, docs and the changes log updated
 
 ## Acceptance criteria
 
@@ -49,3 +49,7 @@ Reuse the analytics summary and its existing authorization, work bound and creat
 - `npx e2e run tests/harness-comparison.e2e.ts` passed all three browser scenarios, including date restoration, missing and measured-zero telemetry, empty and capped cohorts, retry, 360 px layout and an accessibility check.
 - Independent review round 1 found that two unknowns in one row could hide a swapped column. An added row reports 17 input, 23 output, 42 cache-read and 64 cache-write tokens. In an isolated web copy the test failed when Output and Cache read were swapped. On the feature branch all three scenarios passed.
 - `scripts/dev quick` passed. `scripts/dev security` exited 2 because Vidoc refused the instance key (HTTP 401).
+- Independent round 2 approved `16f9d3e718bbb6f447ce40c39892573f5e3e4ae5` after rerunning the seven Rust and three browser tests.
+- `scripts/dev mutants` reported 1 listed, 1 caught, 0 missed, 0 timed out, 0 unviable, 0 not reached. The review fix changed tests and documentation only.
+- The full Chromium suite completed with 1,117 passing, one skipped and one failure on the intake page while the task list was loading. [Issue #1441](https://github.com/Quartio-Studio/yulius/issues/1441) tracks that first-load timeout. All harness comparison scenarios passed.
+- The delivery queue requires a successful Yulius CI run on the merge head. Its recorded result is the delivery evidence.
