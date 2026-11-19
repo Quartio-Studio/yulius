@@ -59,7 +59,8 @@ Use positive screen evidence as an additional veto. An unrecognized renderer kee
 the existing keystroke policy because the task supports multiple harnesses. Screen
 text stays in the hub and never appears in the refusal or audit. A task owner who
 explicitly sends with `with_draft` retains the documented consent path. Each submit
-records the last viewer input it observed, including across held-hook retries. This
+reads the server's viewer input sequence before looking up its run. Held-hook retries
+retain the sequence of the original request. This
 orders a key and a submit even when they share a wall-clock millisecond.
 
 ## Evidence
@@ -83,3 +84,7 @@ orders a key and a submit even when they share a wall-clock millisecond.
   ordering case. The run setup test now awaits in a Tokio test. The fixed-clock PTY
   regression failed on the previous implementation with “the older submit erased the
   same-ms key's mark”.
+
+- The second review identified lookup as an earlier wait. With the SQLite lookup
+  paused and the clock fixed, the regression failed on the preceding implementation
+  with “the submit erased a key received during lookup”.

@@ -120,7 +120,7 @@ struct ActiveRun {
 #[derive(Default)]
 pub(crate) struct DraftMark {
     pub(crate) written: bool,
-    /// The submit's wall time and the last viewer key it observed on its first request.
+    /// The submit's wall time and the viewer input sequence at its first request.
     pub(crate) submit: (i64, u64),
 }
 
@@ -204,9 +204,9 @@ pub struct TaskRuntime {
     /// DRF-009). The guard orders a key's timestamp and file write with the submit hook's
     /// check and file removal (SPEC-537).
     pub(crate) draft_mark: tokio::sync::Mutex<DraftMark>,
-    /// Viewer input events seen in this run. Before the first, only the durable mark
-    /// identifies a possible draft, and a prompt may predate it (DRF-009).
-    pub(crate) key_count: AtomicU64,
+    /// Sequence of the last viewer input in this run. Before the first, only the durable
+    /// mark identifies a possible draft, and a prompt may predate it (DRF-009).
+    pub(crate) typed_seq: AtomicU64,
     /// The task's owner had a message typed behind their possible draft and Yulius is about to
     /// submit both (SPEC-487 TCT-006): the next prompt that goes on from the box carried that
     /// draft to the agent, also one this server knows from its mark alone. The mark is taken
@@ -216,9 +216,9 @@ pub struct TaskRuntime {
     /// Code did not take Yulius's Enter as a submit: the draft would then read as ended
     /// while its text is still in the box.
     pub(crate) sent_past_draft: AtomicBool,
-    /// The last key observed by the submit that emptied the box. Keys after that submit
+    /// The viewer input sequence when the submit that emptied the box arrived. Keys after that submit
     /// win ties in the millisecond clock, including while a held prompt is answered.
-    pub(crate) emptied_key_count: AtomicU64,
+    pub(crate) emptied_seq: AtomicU64,
     /// The run's last prompt hook was answered with a hold: the next one is that prompt sent
     /// again by the hook client, not another submit. A hold the CLI gave up (its client holds
     /// for days) leaves this set until the run's next prompt is answered, which then counts as
@@ -513,7 +513,7 @@ impl TaskRuntime {
     pub(crate) fn empty_time_for_typing(&self) -> i64 {
         let emptied = self.box_emptied_ms.load(Ordering::SeqCst);
         if self.typed_at_ms.load(Ordering::SeqCst) == emptied
-            && self.key_count.load(Ordering::SeqCst) > self.emptied_key_count.load(Ordering::SeqCst)
+            && self.typed_seq.load(Ordering::SeqCst) > self.emptied_seq.load(Ordering::SeqCst)
         {
             emptied.saturating_sub(1)
         } else {
@@ -530,8 +530,8 @@ impl TaskRuntime {
         self.box_emptied_ms.store(now_ms, Ordering::SeqCst);
         // Its folder is new: no draft is marked there (SPEC-480 DRF-009).
         *mark = DraftMark::default();
-        self.key_count.store(0, Ordering::SeqCst);
-        self.emptied_key_count.store(0, Ordering::SeqCst);
+        self.typed_seq.store(0, Ordering::SeqCst);
+        self.emptied_seq.store(0, Ordering::SeqCst);
         self.sent_past_draft.store(false, Ordering::SeqCst);
         self.prompt_held.store(false, Ordering::SeqCst);
         self.with_queue(|queue| *queue = yulius_domain::agent_cli::Queue::default());
@@ -617,9 +617,9 @@ impl TaskRuntime {
             box_emptied_ms: AtomicI64::new(0),
             draft_told_ms: AtomicI64::new(0),
             draft_mark: tokio::sync::Mutex::default(),
-            key_count: AtomicU64::new(0),
+            typed_seq: AtomicU64::new(0),
             sent_past_draft: AtomicBool::new(false),
-            emptied_key_count: AtomicU64::new(0),
+            emptied_seq: AtomicU64::new(0),
             prompt_held: AtomicBool::new(false),
             typed_by: Mutex::new(None),
             personal_mcp_of: Mutex::new(None),
@@ -825,6 +825,9 @@ const LIVE_WITH_A_RUN: [TaskStatus; 4] = [
 /// Supervisor-owned per-process state.
 #[derive(Default)]
 pub struct SupervisorState {
+    /// Viewer input order across runs. A hook reads it before looking up its run, so a key
+    /// arriving during that lookup wins a tie in the wall clock (SPEC-537).
+    pub(crate) input_seq: AtomicU64,
     runtimes: Mutex<HashMap<TaskId, Arc<TaskRuntime>>>,
     /// Shared, so an install on the blocking pool can own its guard (SPEC-507 SKR-005).
     launch: Arc<tokio::sync::Mutex<()>>,
