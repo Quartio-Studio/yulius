@@ -41,8 +41,12 @@ subscription as Claude's.
 - SUBK-002: The badge's title says whose subscription it is and from which vendor (for example
   "Antigravity subscription · Google Gemini"), and a screen reader reads the agent with the name.
 - SUBK-003: The badge never replaces the name, the plan badge or the email, and takes no room from
-  the name: a folded row at phone width keeps the name's 64 px (SPEC-172 GLN-004); the email
-  shortens with an ellipsis instead.
+  the name: a folded row at phone width keeps the name's 64 px (SPEC-172 GLN-004). The badge stays
+  whole; the email shortens with an ellipsis and goes to its own line only when not even its start
+  (4 em) fits beside the badge. The email's title is the whole address, so a shortened one can be
+  read.
+- SUBK-005: Nothing in the line under the name clips: the email's pencil and field keep their
+  whole focus ring.
 - SUBK-004: The web mock's `GET /api/capacity` carries each subscription's `provider`, as the
   server's `CapacityAccount` does.
 
@@ -66,6 +70,12 @@ subscription as Claude's.
 - e2e (`e2e/tests/subscription-agent.e2e.ts`): the Subscriptions page with Codex and Antigravity
   subscriptions connected through the mock shows each card's agent badge and its title; the
   Dashboard's folded rows show the same; axe passes. The test fails before the change (no badge).
+- The same file: the Status panel shows each agent for an administrator and for a member (whose
+  line is the badge alone); the email's pencil and field have no clipping ancestor within their
+  4 px focus ring; at 360 px an Antigravity subscription at its limit with an old reading (the
+  widest line) keeps its badge whole, the name's room and at least 24 px of its email, in the
+  Dashboard and the Status panel; axe passes on each. The ring and phone tests fail on the round-1
+  CSS (`overflow: hidden` on the line, no wrap).
 - The existing subscription e2e files (`subscriptions`, `subscription-names`,
   `subscription-touch`, `codex`, `antigravity`) still pass: the name and email selectors are
   unchanged.
@@ -78,6 +88,15 @@ subscription as Claude's.
   stays its own element (`.account-sub`), editable in place as before (SPEC-463). The badge uses the agent's short name the rest of the UI uses (agents.js), so a
   person reads the same "Antigravity" as in the Add dialog and the composer; the vendor, which is
   what the person asked about for Gemini, is in the title.
-- A neutral badge (surface colour, muted text), not one colour per agent: the plan badge keeps
-  the accent colour, and no new palette tokens are needed.
+- An outlined badge (`--border-strong` edge, muted text, no fill), not one colour per agent and
+  not a filled pill: a fill of `--surface-2` or `--surface-3` matches a folded row's own fill or
+  its hover fill and disappears there (review round 1); the plan badge keeps the accent colour,
+  and no new palette tokens are needed.
+- The line wraps rather than clips: `overflow: hidden` on it cut the email pencil's focus ring
+  (review round 1), and a badge that shrinks would no longer say whose subscription it is. The
+  email takes the rest of the line with an ellipsis and a 4 em basis, so it moves under the badge
+  only in the narrowest rows.
+- The badge names the agent, not the vendor, in text; the vendor (Google Gemini for Antigravity)
+  is in its title. Every page names the agent (the Add dialog, the composer, a task's notices),
+  and Gemini is what the composer's model menu shows for Antigravity.
 - No ADR: a display choice on one card, recorded here.
