@@ -30,7 +30,7 @@ use yulius_app::ports::session::{
 };
 use yulius_app::ports::store::{AccountStore, AuditStore, TaskStore};
 use yulius_contracts::ptyhost::MAX_DIMENSION;
-use yulius_contracts::terminal::{KIND_OUTPUT, KIND_SNAPSHOT, decode_binary};
+use yulius_contracts::terminal::{KIND_OUTPUT, KIND_SNAPSHOT, TerminalServerMsg, decode_binary};
 use yulius_domain::harness::Harness;
 use yulius_domain::ids::{AccountId, AttemptId, SandboxId, TaskId, UserId};
 use yulius_domain::task::{AttemptState, TaskStatus};
@@ -2032,11 +2032,32 @@ async fn an_antigravity_google_sign_in_seals_the_token_file() -> TestResult {
     Ok(())
 }
 
-/// SPEC-505 AGY-008: the Antigravity CLI never exits after its sign-in (its TUI runs on): the
-/// sign-in ends once the token file it wrote has been there for the grace, the process is
-/// stopped, and the file is sealed.
+/// Waits (bounded) until the login terminal's `state` frame says `status`.
+async fn state_says(
+    terminal: &yulius_app::accounts::LoginTerminal,
+    sub: &mut yulius_app::hub::Subscription,
+    status: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let says = |terminal: &yulius_app::accounts::LoginTerminal| {
+        matches!(terminal.state(), TerminalServerMsg::State { status: s, .. } if s == status)
+    };
+    let wait = async {
+        while !says(terminal) {
+            if let HubFrame::Exit { status: ended, .. } = sub.rx.recv().await? {
+                return Err(format!("the sign-in ended ({ended}) before saying {status}").into());
+            }
+        }
+        Ok::<(), Box<dyn std::error::Error>>(())
+    };
+    tokio::time::timeout(Duration::from_secs(10), wait).await?
+}
+
+/// SPEC-515 (issue #1421): the Antigravity CLI's setup goes on after it wrote its token file
+/// (the data-use choice and more), so the sign-in is not stopped then. The terminal says
+/// `signed_in` and keeps taking input; the person ends it (Done is the cancel route), and the
+/// token file as it is then is sealed: here one the CLI rewrote during its setup.
 #[tokio::test]
-async fn an_antigravity_sign_in_ends_once_its_token_file_is_written() -> TestResult {
+async fn an_antigravity_sign_in_runs_on_after_its_token_file_until_done() -> TestResult {
     let s = setup().await?;
     s.h.app
         .set_account_login_token_grace(Duration::from_millis(50));
@@ -2046,8 +2067,9 @@ async fn an_antigravity_sign_in_ends_once_its_token_file_is_written() -> TestRes
             "home/.gemini/antigravity-cli/antigravity-oauth-token".into(),
             "SYNTHETIC-agy-token-2".into(),
         )],
-        after: vec![" Signed in. Ask anything\r\n".into()],
+        after: vec![" Signed in. Help improve Antigravity? (y/n)\r\n".into()],
         exit: None,
+        gated: true,
         ..Script::default()
     });
     let mut events = s.h.app.events.subscribe();
@@ -2061,19 +2083,124 @@ async fn an_antigravity_sign_in_ends_once_its_token_file_is_written() -> TestRes
         *cols <= MAX_DIMENSION,
         "{cols} columns are refused by the process host"
     );
+    let ctx = ctx_of(&s.h, &s.admin).await?;
+    let terminal = s.h.app.login_terminal(&ctx, &login_id)?;
+    let mut sub = terminal.subscribe();
+    s.host.release.add_permits(1);
+    state_says(&terminal, &mut sub, "signed_in").await?;
+    assert!(
+        matches!(terminal.state(), TerminalServerMsg::State { can_write: true, .. }),
+        "the setup still takes input"
+    );
+    // Six times the grace that ends a Claude sign-in: no exit frame comes, nothing is stopped.
+    let ended = async {
+        loop {
+            if let HubFrame::Exit { status, .. } = sub.rx.recv().await? {
+                return Ok::<String, Box<dyn std::error::Error>>(status);
+            }
+        }
+    };
+    assert!(
+        tokio::time::timeout(Duration::from_millis(300), ended)
+            .await
+            .is_err(),
+        "the sign-in ended while its setup ran"
+    );
+    let log = s.host.log();
+    assert!(!log.iter().any(|l| l.starts_with("signal:")), "{log:?}");
+    terminal.input(b"n\r").await?;
+    assert!(s.host.log().iter().any(|l| l == "input:n\r"));
+    let record =
+        s.h.store
+            .account(&AccountId::parse(&account_id)?)
+            .await?
+            .ok_or("account")?;
+    assert_eq!(record.status.as_str(), "pending_login");
+    // A refresh during the setup rewrites the file: the one there at Done is sealed.
+    std::fs::write(
+        login_dir(&s, &login_id).join("home/.gemini/antigravity-cli/antigravity-oauth-token"),
+        "SYNTHETIC-agy-token-3",
+    )?;
+    let r = call(
+        &s.h.router,
+        Method::POST,
+        &format!("/api/admin/accounts/login/{login_id}/cancel"),
+        None,
+        &s.admin,
+    )
+    .await?;
+    assert_eq!(r.body, json!({"status": "ok"}), "{}", r.body);
+    terminal.unsubscribe();
     let settled = account_settled(&mut events, &account_id).await?;
     assert_eq!(settled["status"], "ok", "{settled}");
-    let log = s.host.log.lock().map_err(|_| "log")?.clone();
-    assert!(log.iter().any(|l| l == "signal:Terminate"), "{log:?}");
     assert_eq!(
         stored_credential(&s, &account_id).await?.as_bytes(),
-        yulius_harness::login::antigravity_sign_in_credential(b"SYNTHETIC-agy-token-2")
+        yulius_harness::login::antigravity_sign_in_credential(b"SYNTHETIC-agy-token-3")
             .ok_or("envelope")?
     );
     assert!(
         !login_dir(&s, &login_id).exists(),
         "the temporary home is wiped"
     );
+    Ok(())
+}
+
+/// SPEC-515: an Antigravity sign-in whose CLI exits by itself after its setup is sealed.
+#[tokio::test]
+async fn an_antigravity_sign_in_that_exits_after_its_setup_is_sealed() -> TestResult {
+    let s = setup().await?;
+    s.host.push(Script {
+        chunks: vec![" Sign in with Google\r\n".into()],
+        writes: vec![(
+            "home/.gemini/antigravity-cli/antigravity-oauth-token".into(),
+            "SYNTHETIC-agy-token-4".into(),
+        )],
+        after: vec![" Setup complete. Goodbye.\r\n".into()],
+        exit: Some(0),
+        ..Script::default()
+    });
+    let mut events = s.h.app.events.subscribe();
+    let (account_id, _) = create(&s, "google", "Antigravity #4").await?;
+    let settled = account_settled(&mut events, &account_id).await?;
+    assert_eq!(settled["status"], "ok", "{settled}");
+    assert_eq!(
+        stored_credential(&s, &account_id).await?.as_bytes(),
+        yulius_harness::login::antigravity_sign_in_credential(b"SYNTHETIC-agy-token-4")
+            .ok_or("envelope")?
+    );
+    Ok(())
+}
+
+/// SPEC-515: an Antigravity sign-in left open after its token file (the window closed without
+/// Done reaching the server) is stopped at its timeout, and its token file is still sealed.
+#[tokio::test]
+async fn an_antigravity_sign_in_left_open_is_sealed_at_its_timeout() -> TestResult {
+    let s = setup().await?;
+    s.h.app
+        .set_account_login_token_grace(Duration::from_millis(50));
+    s.h.app
+        .set_account_login_timeout(Duration::from_millis(400));
+    s.host.push(Script {
+        chunks: vec![" Sign in with Google\r\n".into()],
+        writes: vec![(
+            "home/.gemini/antigravity-cli/antigravity-oauth-token".into(),
+            "SYNTHETIC-agy-token-5".into(),
+        )],
+        after: vec![" Signed in. Ask anything\r\n".into()],
+        exit: None,
+        ..Script::default()
+    });
+    let mut events = s.h.app.events.subscribe();
+    let (account_id, login_id) = create(&s, "google", "Antigravity #5").await?;
+    let settled = account_settled(&mut events, &account_id).await?;
+    assert_eq!(settled["status"], "ok", "{settled}");
+    assert!(s.host.log().iter().any(|l| l == "signal:Terminate"));
+    assert_eq!(
+        stored_credential(&s, &account_id).await?.as_bytes(),
+        yulius_harness::login::antigravity_sign_in_credential(b"SYNTHETIC-agy-token-5")
+            .ok_or("envelope")?
+    );
+    assert!(!login_dir(&s, &login_id).exists());
     Ok(())
 }
 
