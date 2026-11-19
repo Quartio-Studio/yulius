@@ -22,7 +22,7 @@ Task #473's first pull request merged at head `aa154aec4`. Git confirms integrat
 
 - [x] Reproduce the migration append conflict and specify its verdict
 - [x] Cover different and equal descendant trees in delivery tests
-- [ ] Judge an integrated follow-up by its Git tree
+- [x] Judge an integrated follow-up by its Git tree
 - [ ] Verify and independently review the delivery fix
 
 ## Acceptance criteria
@@ -42,3 +42,4 @@ Use the existing Git adapter comparison, which pins the integration ref to one c
 ## Evidence
 
 - On the original code, `cargo test --locked -p yulius --test main delivery::a_follow_up_containing_dev_is_judged_by_its_tree -- --exact` failed at the second delivery call. It reported a conflict with `origin/dev` and advised merging it again. The equal-tree assertions passed.
+- After the fix, a focused `cargo nextest run -p yulius` passed all six selected tests. The new regression saw the equal tree remain merged and the additional migration push, open and arm PR #2. Existing tests covered divergent histories, an externally merged follow-up, the live merge train and PR conflict reporting.

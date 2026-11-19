@@ -968,14 +968,20 @@ impl GitPort for GitAdapter {
             head.to_owned(),
         );
         blocking(move || {
-            // One commit for both reads: a fetch in between must not move `base`.
+            // Pin the integration commit across the ancestry check and tree reads.
             let base = git.rev_parse(&worktree, &base)?;
-            let Some(merged) = git.merge_tree_from(&worktree, Some(&since), &base, &head)? else {
+            let tree_of = |rev: &str| {
+                git.tree_of(&worktree, rev)?
+                    .ok_or_else(|| GitError::RevisionNotFound(rev.to_owned()))
+            };
+            let merged = if git.is_ancestor(&worktree, &base, &head)? {
+                tree_of(&head)?
+            } else if let Some(tree) = git.merge_tree_from(&worktree, Some(&since), &base, &head)? {
+                tree
+            } else {
                 return Ok(None);
             };
-            Ok(Some(
-                git.tree_of(&worktree, &base)?.as_deref() != Some(merged.as_str()),
-            ))
+            Ok(Some(merged != tree_of(&base)?))
         })
         .await
     }
