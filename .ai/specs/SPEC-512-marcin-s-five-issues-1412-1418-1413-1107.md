@@ -132,7 +132,11 @@ steering (terminal input, Continue, merge, model, subscription) is the owner's. 
   (`NeedsYouRecord.who`), shown in its view (`who`) and in `tasks_list`/`task_get`.
 - **ANS-002 Who answers a named request.** While a request names people, its owner and the
   people still named answer it; anyone else with write access is refused ("task #N asks @a and
-  @b, not you"). A request that names nobody keeps ADR-0370's rule (any writer).
+  @b, not you"). A request that names nobody keeps ADR-0370's rule (any writer). A question
+  stays answerable while it is open, also once its task parked (PRK-002): the answer resumes the
+  task in its own session with the answer as its first prompt, as a message does (PRK-005). A
+  task whose run holds its owner's personal secrets or MCP servers names nobody: nobody else
+  could answer it.
 - **ANS-003 Through `task_message`.** A message from someone who is not the task's owner, while a
   request is open that they may answer (ANS-002), is that answer: it goes the way of the web's
   answer (same label, guards and audit) and `delivered` says `answered`. With no such request it
@@ -289,6 +293,20 @@ Commands (2026-11-19): `cargo test -p yulius --test main -- task_ownership:: tas
 telegram:: docker_trouble_notices:: agent_hooks:: cockpit:: parking::` → 221 passed;
 `cargo test -p yulius-app --lib` → 626 passed; e2e `reply`, `parked`, `attention`, `ownership`,
 `watching`, `notifications` → 79 passed; `scripts/dev quick`, `lint`, `cargo doc` passed.
+
+Review round 3 of #1459 (request changes at c6430ace1), answered test-first:
+
+| Finding | Answer | Test that fails without it |
+| --- | --- | --- |
+| A named person could not answer once the task parked | an allowed answer to a parked task resumes it in its own session with the answer as its first prompt (PRK-005; ANS-002 and ADR-0379 say so); the page offers Reply on a parked task | `parking::a_named_persons_answer_resumes_a_parked_task` (failed before: "not running (parked)"); e2e "a parked task's question is answered by whom it names" |
+| The field re-keyed after any failed send | it no longer re-keys after a failure; before sending, a question the page shows as replaced is said ("…replaced by a new one: read it and answer again") and the field names it from the next send | e2e "an answer typed while the question is replaced…" |
+| `tasks_list`/`task_get` text named nobody | "(answered by its owner and @bob, @carol)" / "(answered by its owner only)"; api.md lists `at_ms`, `who`, `named` | `mcp_text::tests::every_reason_a_task_gives_is_in_its_line` |
+| Duplicated, untested shared-cause block | one helper (`answer_shared_cause`) for both ends | `docker_trouble_notices::a_page_answer_to_a_shared_docker_question_answers_the_others` |
+| Sign-in-missing branch untested | test of a person with no stored GitHub sign-in | `task_ownership::names_that_could_never_answer_are_refused_with_why` |
+| Naming people on a task holding the owner's personal reach | refused when raised: only the owner could answer | same test |
+| Nits | `task_message`'s answer branch only for a running or parked task (an ended task's stale request gets the owner rule); its note and api.md say a question asked meanwhile stays | — |
+| `task_message` names no request | kept: an agent answers the question open now; the page names the one Reply opened on | — |
+| Pre-existing: refresh failure reads as sign-in missing (`access.rs`) | unchanged | — |
 
 Review round 2 of #1459 (request changes at 23f21095a), answered test-first:
 

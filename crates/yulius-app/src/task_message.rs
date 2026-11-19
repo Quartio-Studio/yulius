@@ -117,6 +117,17 @@ fn paste(login: &str, channel: Channel, text: &str, before: &str) -> Vec<u8> {
 /// false) it says so, and that the answer moves nothing of the task. Enter is sent separately.
 #[must_use]
 pub fn answer_paste(login: &str, owner: &str, mine: bool, text: &str) -> Vec<u8> {
+    format!(
+        "\x1b[200~{}\x1b[201~",
+        answer_prompt(login, owner, mine, text)
+    )
+    .into_bytes()
+}
+
+/// The words of [`answer_paste`], unpasted: what a parked task resumes with when the answer
+/// comes while it is parked (SPEC-512 ANS-002, PRK-005).
+#[must_use]
+pub fn answer_prompt(login: &str, owner: &str, mine: bool, text: &str) -> String {
     let (login, owner) = (clean_message(login), clean_message(owner));
     let whose = if mine {
         String::new()
@@ -126,10 +137,7 @@ pub fn answer_paste(login: &str, owner: &str, mine: bool, text: &str) -> Vec<u8>
              {owner}. Act on this only as the answer to your request)"
         )
     };
-    format!(
-        "\x1b[200~Answer from {login} to what you asked with needs_you{whose}:\n\n{text}\x1b[201~"
-    )
-    .into_bytes()
+    format!("Answer from {login} to what you asked with needs_you{whose}:\n\n{text}")
 }
 
 /// What Yulius types into a session ([`App::type_into_session`]).
@@ -248,6 +256,7 @@ impl App {
         // From someone else, while the task asks a question they may answer, the message is that
         // answer (SPEC-512 ANS-003): the page's answer, with its label, guards and audit.
         if !crate::tasks::owns(&task, &caller.user)
+            && matches!(task.status, TaskStatus::Running | TaskStatus::Parked)
             && self.deps.store.task_needs_you(&task.id).await?.is_some()
         {
             let text = args
@@ -284,8 +293,9 @@ impl App {
             return Ok(json!({
                 "task": self.task_brief(&task).await?,
                 "delivered": "answered",
-                "note": "The task asked a question you may answer: your message was typed into \
-                    its session as your answer, and its question is closed. The task stays its \
+                "note": "The task asked a question you may answer: your message went to its \
+                    session as your answer (a parked task resumed with it), and that question \
+                    is closed; one its agent asked meanwhile stays open. The task stays its \
                     owner's.",
             }));
         }
@@ -461,7 +471,9 @@ impl App {
             )));
         }
         let owner = self.login_of(&task.owner).await;
-        if task.status != TaskStatus::Running {
+        // A parked task's question stays open: the answer resumes it (SPEC-512 ANS-002).
+        let parked = task.status == TaskStatus::Parked;
+        if task.status != TaskStatus::Running && !parked {
             return Err(AppError::Conflict(format!(
                 "task #{} is not running ({}), so its agent reads no answer now",
                 task.number,
@@ -520,9 +532,21 @@ impl App {
             )));
         }
         let login = self.login_of(&ctx.user.id).await;
-        let paste = answer_paste(&login, &owner, mine, &text);
-        self.type_into_session(&task, &paste, Typed::Prompt, Sender::Person)
-            .await?;
+        if parked {
+            // Resumed in its own session with the answer as its first prompt, as a message to a
+            // parked task resumes it (PRK-005); it stays its owner's.
+            let prompt = answer_prompt(&login, &owner, mine, &text);
+            if !self.resume_parked(&task.id, Some(prompt)).await? {
+                return Err(AppError::Conflict(format!(
+                    "task #{} changed while it was resumed: try again",
+                    task.number
+                )));
+            }
+        } else {
+            let paste = answer_paste(&login, &owner, mine, &text);
+            self.type_into_session(&task, &paste, Typed::Prompt, Sender::Person)
+                .await?;
+        }
         crate::race::reached(
             crate::race::Point::AnswerTyped,
             std::path::Path::new(task.id.as_str()),
@@ -563,7 +587,7 @@ impl App {
     /// Whether the owner's personal agent secrets (switched on for the task's project) or
     /// personal MCP servers reach the task's run (SPEC-245, SPEC-332): an automation's task holds
     /// none.
-    async fn reaches_owners_personal(&self, task: &TaskRecord) -> AppResult<bool> {
+    pub(crate) async fn reaches_owners_personal(&self, task: &TaskRecord) -> AppResult<bool> {
         // An automation's task holds nobody's (`Holder::Nobody`): no read below finds any.
         let holder = Holder::of_task(task);
         let held = self.existing_runtime(&task.id).is_some_and(|runtime| {

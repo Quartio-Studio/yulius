@@ -393,6 +393,15 @@ export function mountTaskView(ctx, sandbox, task) {
     const text = replyInput.value.trim();
     if (!text) { replyInput.focus(); return; }
     if (owner()) {
+      // The question shown is no longer the one the field was opened on (SPEC-512 ANS-004): the
+      // person is told and reads it; the field answers it from the next send on.
+      const shown = current.needs_you && Number.isFinite(current.needs_you.at_ms) ? current.needs_you.at_ms : null;
+      if (shown !== null && replyAskedAtMs !== null && shown !== replyAskedAtMs) {
+        replyAskedAtMs = shown;
+        toast('The question you answered was replaced by a new one: read it and answer again.', { kind: 'warn' });
+        replyInput.focus();
+        return;
+      }
       // Someone else's task (SPEC-516): the answer goes to the server, which types it labelled
       // into the session; control stays with the owner. Refused, the field keeps its text.
       answering = true;
@@ -402,14 +411,7 @@ export function mountTaskView(ctx, sandbox, task) {
         replyInput.readOnly = false;
       });
       if (!alive) return;
-      if (!answered) {
-        // Refused: the person has just been told why. A question replaced meanwhile is the one
-        // they read now, so the field answers it from here on (SPEC-512 ANS-004).
-        const shown = current.needs_you && Number.isFinite(current.needs_you.at_ms) ? current.needs_you.at_ms : null;
-        if (shown !== null) replyAskedAtMs = shown;
-        if (replying) replyInput.focus();
-        return;
-      }
+      if (!answered) { if (replying) replyInput.focus(); return; }
       replyInput.value = '';
       replying = false;
       renderAttention();
@@ -518,7 +520,8 @@ export function mountTaskView(ctx, sandbox, task) {
       const named = asked.named === true;
       const who = Array.isArray(asked.who) ? asked.who : [];
       const forMe = !named || who.includes(String(me() || '').toLowerCase());
-      const answers = !owner() || (current.status === 'running' && allows(access, 'write') && !(ctx.guest && ctx.guest()) && !asksInTerminal && forMe);
+      // A parked task's question stays open: an answer resumes it (SPEC-512 ANS-002).
+      const answers = !owner() || (['running', 'parked'].includes(current.status) && allows(access, 'write') && !(ctx.guest && ctx.guest()) && !asksInTerminal && forMe);
       textAnswer = answers && !asksInTerminal;
       asksPerson = true;
       replyButton.title = owner() ? 'Answers the agent without taking control of the task' : '';

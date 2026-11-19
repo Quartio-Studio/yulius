@@ -2021,3 +2021,52 @@ async fn a_name_whose_access_cannot_be_checked_is_said_so() -> TestResult {
     assert!(!said.contains("has no write access"), "{said}");
     Ok(())
 }
+
+/// SPEC-512 ANS-001 (review round 3 of part 2): a person with no usable GitHub sign-in cannot
+/// be named until they sign in again; a task whose run holds the owner's personal secrets
+/// names nobody else, since only its owner can answer it.
+#[tokio::test]
+async fn names_that_could_never_answer_are_refused_with_why() -> TestResult {
+    let f = fixture().await?;
+    // Frank has an account but no GitHub sign-in stored.
+    let frank = yulius_app::model::UserRecord {
+        id: UserId::parse("u-f")?,
+        github_login: Some("frank".into()),
+        github_id: None,
+        display_name: "Frank".into(),
+        avatar_url: None,
+        is_superadmin: false,
+        is_instance_admin: false,
+        password_hash: None,
+        created_at: yulius_domain::time::Timestamp(1),
+        disabled_at: None,
+    };
+    f.h.store.insert_user(&frank).await?;
+    f.h.github.set_perm("frank", "acme/repo", perms("write"));
+    let unsigned = agent_asks(&f.h, json!({"action": "Decide", "who": ["frank"]})).await?;
+    assert_eq!(unsigned["isError"], true, "{unsigned}");
+    assert!(
+        unsigned
+            .to_string()
+            .contains("must sign in to Yulius again"),
+        "{unsigned}"
+    );
+    // Alice's personal secret reaches the run: nobody else can answer, so nobody is named.
+    let secret = call(
+        &f.h.router,
+        Method::POST,
+        "/api/sandboxes/s1/agent-secrets",
+        Some(
+            json!({"scope": "personal", "name": "ALICE_TOKEN", "value": "alice-personal-71c0ffee",
+            "hosts": ["api.alice.test"], "injection": "bearer"}),
+        ),
+        &f.alice,
+    )
+    .await?;
+    assert_eq!(secret.status, 201, "{}", secret.body);
+    let personal = agent_asks(&f.h, json!({"action": "Decide", "who": ["bob"]})).await?;
+    assert_eq!(personal["isError"], true, "{personal}");
+    assert!(personal.to_string().contains("personal"), "{personal}");
+    assert!(f.h.store.task_needs_you(&f.task.id).await?.is_none());
+    Ok(())
+}

@@ -310,6 +310,14 @@ impl App {
                 "who names at most {MAX_NAMED} people besides the task's owner"
             )));
         }
+        // Another person's words never reach a run holding the owner's personal secrets or MCP
+        // servers (ADR-0370): nobody named could answer.
+        if !named.is_empty() && self.reaches_owners_personal(task).await? {
+            return Err(AppError::Invalid(format!(
+                "who: this task holds @{owner}'s personal secrets or MCP servers, so only \
+                 @{owner} can answer it; ask without who (nothing was asked)"
+            )));
+        }
         for login in &named {
             let user = self.deps.store.user_by_login(login).await?;
             let writes = match &user {
@@ -386,13 +394,20 @@ impl App {
             _ => None,
         };
         self.end_one_needs_you(task).await;
-        if let Some(cause) = shared
-            && let Ok(Some(record)) = self.deps.store.task(task).await
+        if let Some(cause) = shared {
+            self.answer_shared_cause(task, &cause).await;
+        }
+    }
+
+    /// The other tasks of `task`'s sandbox that asked about `cause` before now are answered by a
+    /// person's answer to `task`, a live one (SPEC-494 DFJ-011), and told so.
+    async fn answer_shared_cause(&self, task: &TaskId, cause: &str) {
+        if let Ok(Some(record)) = self.deps.store.task(task).await
             && record.status == yulius_domain::task::TaskStatus::Running
         {
             let source = format!("a person's answer to task #{}", record.number);
             let others = self
-                .end_shared_needs_you(&record.sandbox_id, &cause, self.now().0, &source)
+                .end_shared_needs_you(&record.sandbox_id, cause, self.now().0, &source)
                 .await;
             if cause == "docker" {
                 self.tell_docker_answered(record.sandbox_id.as_str(), others);
@@ -421,17 +436,8 @@ impl App {
                 return;
             }
         }
-        if let Some(cause) = cause
-            && let Ok(Some(record)) = self.deps.store.task(task).await
-            && record.status == yulius_domain::task::TaskStatus::Running
-        {
-            let source = format!("a person's answer to task #{}", record.number);
-            let others = self
-                .end_shared_needs_you(&record.sandbox_id, &cause, self.now().0, &source)
-                .await;
-            if cause == "docker" {
-                self.tell_docker_answered(record.sandbox_id.as_str(), others);
-            }
+        if let Some(cause) = cause {
+            self.answer_shared_cause(task, &cause).await;
         }
     }
 

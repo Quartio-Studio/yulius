@@ -1963,7 +1963,7 @@ route('POST', `/api/tasks/${ID}/needs-you/answer`, ({ db, p, body }) => {
   if (owner !== me && db.me.user.guest) fail(403, 'forbidden', `Task #${task.number} is @${owner}'s: a guest answers the requests of only their own tasks on this playground.`);
   const text = String(body.text || '').trim();
   if (!text) fail(422, 'invalid', 'the answer is empty');
-  if (task.status !== 'running') fail(409, 'conflict', `task #${task.number} is not running (${task.status}), so its agent reads no answer now`);
+  if (task.status !== 'running' && task.status !== 'parked') fail(409, 'conflict', `task #${task.number} is not running (${task.status}), so its agent reads no answer now`);
   if (!task.needs_you) fail(409, 'conflict', `task #${task.number} asks nobody anything now: there is nothing to answer`);
   // SPEC-512 ANS-002, ANS-004, in the server's order: a replaced request, and one naming others,
   // is not answered.

@@ -514,6 +514,8 @@ test("an answer typed while the question is replaced goes to no other question (
   await expect(browser.locator('.attention-bar')).toContainText('Decide the release date');
   await expect(field).toHaveValue('M1: yes');
   await field.focus();
+  // The page knows the question changed: it says so and sends nothing (a failed send never
+  // re-keys the field, so old words never reach the new question).
   await browser.keyboard.press('Enter');
   await expect(screen.getByText(/was replaced by a new one/)).toBeVisible();
   await expect(field).toHaveValue('M1: yes');
@@ -531,4 +533,15 @@ test("a request whose names were all withdrawn offers a teammate no Reply (SPEC-
   await askNamed(browser, []);
   await expect(browser.locator('.attention-bar')).toContainText('Needs your decision');
   await expect(screen.getByRole('button', 'Reply')).toHaveCount(0);
+});
+
+test("a parked task's question is answered by whom it names, which resumes it (SPEC-512 ANS-002, review)", async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/t/12', '&ambient=0'));
+  await touchTask(browser, 'sb_studio', 12, { owner: { login: 'anna-q' } });
+  await askNamed(browser, ['mkarp']);
+  await touchTask(browser, 'sb_studio', 12, { status: 'parked', activity: 'waiting' });
+  await screen.getByRole('button', 'Reply').click();
+  await browser.keyboard.type('M1: yes');
+  await browser.keyboard.press('Enter');
+  await expect.poll(() => answers(browser)).toEqual(['M1: yes']);
 });

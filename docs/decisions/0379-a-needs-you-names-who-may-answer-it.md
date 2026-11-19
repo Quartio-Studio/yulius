@@ -38,6 +38,10 @@ names the person or nobody, the alternative ADR-0370 rejected ("let any person's
   happened.
 - **The owner withdraws.** On the task's page, or with an operate token, the owner removes a name;
   audited `task.needs_you.withdrawn`. The last name gone, the request is the owner's alone.
+- **A parked task's question stays open.** An answer to it resumes the task in its own session
+  with the answer as its first prompt, as a message to a parked task does
+  ([ADR-0367](0367-an-idle-session-is-parked-and-resumed-by-a-message.md)); the task stays its
+  owner's. A task whose run holds the owner's personal secrets or MCP servers names nobody.
 - **Nothing else moves.** Terminal input, Continue and merges stay the owner's; stop, archive and
   delete stay anyone's who may work in the project (ADR-0331).
 
