@@ -4414,26 +4414,42 @@ async fn a_second_run_that_finds_no_network_room_is_not_made() -> TestResult {
         },
         None,
         |config| {
+            config.ci.max_jobs = 1;
             config.ci.job_timeout = WAIT * 3;
             config.ci.rerun_network_wait = Duration::from_millis(500);
         },
     )
     .await?;
-    // Room for the first start; none once it ran.
     let measured = Measured::new(0, 1);
     assert!(f.h.app.set_isolation(measured.clone()));
-    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
-    let deadline = tokio::time::Instant::now() + WAIT;
-    while attempts_of(&f)?.len() < 2 {
-        f.h.app.ci_dispatch().await;
-        if tokio::time::Instant::now() > deadline {
-            return Err("the jobs never started".into());
+    let go = f.data.join("go");
+    let refuse_retry = async |started_checkouts: usize| -> TestResult {
+        f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+        let deadline = tokio::time::Instant::now() + WAIT;
+        while attempts_of(&f)?.len() < started_checkouts {
+            f.h.app.ci_dispatch().await;
+            if tokio::time::Instant::now() > deadline {
+                return Err("the job never started".into());
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
         }
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
-    measured.networks.store(4096, Ordering::SeqCst);
-    std::fs::write(f.data.join("go"), "")?;
-    f.settle().await?;
+        measured.networks.store(4096, Ordering::SeqCst);
+        std::fs::write(&go, "")?;
+        f.settle().await
+    };
+    // Admit the branch first. A one-CPU runner cannot start the pull while the branch holds it.
+    let pull =
+        f.h.github
+            .pulls
+            .lock()
+            .map_err(|_| "pulls")?
+            .pop()
+            .ok_or("pull")?;
+    refuse_retry(1).await?;
+    std::fs::remove_file(&go)?;
+    measured.networks.store(1, Ordering::SeqCst);
+    f.h.github.pulls.lock().map_err(|_| "pulls")?.push(pull);
+    refuse_retry(2).await?;
     let job = pull_job(&f).await?;
     assert_eq!(job["state"], "error", "{job}");
     assert_eq!(

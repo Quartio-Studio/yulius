@@ -6,7 +6,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-19
 
-- The local CI network-refusal test gives both first attempts time to start on slow runners before checking that neither is retried (SPEC-549, #1408).
+- The local CI network-refusal test exercises the branch and pull request in sequence, giving each job time to report a full network pool on a one-CPU runner (SPEC-549, #1408).
 - Mutation testing now checks the same workspace tests on the baseline and each mutant.
   Earlier runs could count an unrelated xtask failure as a catch (#1364, SPEC-533).
 
