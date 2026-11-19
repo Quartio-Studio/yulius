@@ -180,7 +180,7 @@ type Sent = { __yuliusMock: { sent?: Record<string, number>; asked?: Record<stri
 // the card stops saying so, with no reading and no list read; the row then says the window has
 // reset since.
 test('a card stops saying Limit reached the moment its window resets, with no new reading (SPEC-473)', async ({ app, browser }) => {
-  await openWithAWindowThatResetsInTenMinutes(app, browser);
+  const resetAt = await openWithAWindowThatResetsInTenMinutes(app, browser);
   // A card that has nothing new to say is not drawn again by the clock: its line stays the
   // very element it was (marked here, looked at once the clock has gone on). Claude #3 was
   // never read, so nothing on its card depends on the time.
@@ -190,8 +190,7 @@ test('a card stops saying Limit reached the moment its window resets, with no ne
   });
   const before = await cardSays(browser, 'main .account-card', 'pawel@example.com');
   expect(before.state).toBe('Limit reached');
-  expect(before.limits.length).toBe(1);
-  expect(before.limits[0]).toMatch(/^5-hour window used up · resets at \d/);
+  expect(before.limits).toEqual([`5-hour window used up · resets ${resetAt}`]);
   expect(before.rows[0].slice(0, 1).concat(before.rows[0].slice(2))).toEqual(['5-hour window', '100% used']);
   expect(before.age).toBe('Usage read just now');
   expect(await axeViolations(browser)).toEqual([]);
