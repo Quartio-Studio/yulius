@@ -162,9 +162,9 @@ pub struct TaskRuntime {
     /// row, and the subscription the pool no longer starts it on by itself (SPEC-464 UCL-010).
     pub(crate) blind_limits: Mutex<crate::moves::BlindLimits>,
     /// The model family a limit refused after the session's person switched to it (`/model`),
-    /// written by every placement after a limit and taken by the next launch, which says it
-    /// with the model it runs when it is the launch past that limit (SPEC-493 MDL-002).
-    pub(crate) switched_limit: Mutex<Option<ModelFamily>>,
+    /// recorded with the reporting attempt before either a pool move or an ownership restart
+    /// can launch its replacement (SPEC-493 MDL-002).
+    switched_limit: Mutex<Option<(AttemptId, ModelFamily)>>,
     /// When the current turn started (ms, 0 = no turn in progress). Active agent time comes
     /// from the transcript (SPEC-087 MET-001), not from this.
     turn_started_ms: AtomicI64,
@@ -716,7 +716,15 @@ impl TaskRuntime {
 
     /// A usage limit or a refused subscription, recorded `at`, cut the run's turn: the run is at
     /// its limit, and nothing is known yet of a goal pause written there (SPEC-464 UCL-007).
-    pub(crate) fn limit_cut_the_turn(&self, at: Option<Timestamp>) {
+    fn limit_cut_the_turn(
+        &self,
+        attempt: &AttemptId,
+        at: Option<Timestamp>,
+        ran: Option<ModelFamily>,
+    ) {
+        if let Ok(mut kept) = self.switched_limit.lock() {
+            *kept = ran.map(|family| (attempt.clone(), family));
+        }
         if let Ok(mut pause) = self.limit_goal_pause.lock() {
             *pause = crate::goal_retry::LimitGoalPause::None;
         }
@@ -2373,7 +2381,12 @@ impl App {
             .lock()
             .ok()
             .and_then(|mut kept| kept.take());
-        let ran = kept.filter(|_| matches!(start, RunStart::AfterLimit));
+        let ran = kept
+            .filter(|(id, _)| {
+                matches!(start, RunStart::AfterLimit)
+                    && earlier.last().is_some_and(|run| &run.id == id)
+            })
+            .map(|(_, family)| family);
         if let Some(ran) = ran.filter(|ran| ModelFamily::of(Some(model)) != *ran) {
             self.runtime(&task.id)
                 .hub
@@ -6415,7 +6428,7 @@ impl App {
                 // subscription, or the task waits for one.
                 tracing::warn!(task = %task_id, %message, "subscription access refused");
                 runtime.end_turn();
-                runtime.limit_cut_the_turn(at);
+                runtime.limit_cut_the_turn(&attempt.id, at, None);
                 let mut refused = None;
                 if let Some(account) = &attempt.account_id {
                     refused = match self.deps.store.account(account).await {
@@ -6685,12 +6698,12 @@ impl App {
     ) {
         let runtime = self.runtime(task_id);
         runtime.end_turn();
-        runtime.limit_cut_the_turn(at);
         let blind = limit.without_an_end(self.now());
         // The limit of the model this run was launched with (SPEC-482 FBK-006), unless it names
         // another one: the model the session was switched to inside it (SPEC-493 MDL-002).
         let family = self.run_family_of(attempt).await;
         let ran = switched_model(&limit, family);
+        runtime.limit_cut_the_turn(&attempt.id, at, ran);
         if let Some(account) = &attempt.account_id {
             self.record_limit(account, limit, family).await;
         }
@@ -6800,11 +6813,6 @@ impl App {
         self.runtime(task_id)
             .proactive_switch
             .store(false, Ordering::SeqCst);
-        // Kept for the launch past this limit (now, or when a pause for it ends), which says it
-        // with the model it runs; every limit's decision writes it.
-        if let (true, Ok(mut kept)) = (limit, self.runtime(task_id).switched_limit.lock()) {
-            *kept = ran;
-        }
         match decision {
             Decision::Stay => {}
             Decision::Switch { account } => {

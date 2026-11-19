@@ -18,4 +18,4 @@ Increasing the test deadline would leave the task stopped. Ignoring a failed han
 
 ## Consequences
 
-When a hand-over replaces the attempt, its replacement continues the interrupted turn with the new owner's servers. When the original attempt stays attached, the pool can still move it or pause it for capacity.
+When a hand-over replaces the attempt, its replacement continues the interrupted turn with the new owner's servers. The hand-over lets the pool place the interrupted turn, including after a revoked subscription. Replay records a model selected inside the CLI with the reporting attempt so the replacement can announce its return to the configured model. When the original attempt stays attached, the pool can still move it or pause it for capacity.
