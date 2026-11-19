@@ -7,7 +7,9 @@ Accepted (2026-11-19). Specified in
 issue #1418. Builds on and amends [ADR-0370](0370-a-teammate-answers-a-tasks-needs-you-without-taking-control.md)
 (a teammate answers without taking control): it reverses, for the time a question is open that
 names the person or nobody, the alternative ADR-0370 rejected ("let any person's Superagent
-`task_message` a teammate's task"), which here carries only that answer. It keeps
+`task_message` a teammate's task"), which here carries only that answer. It amends
+[ADR-0367](0367-an-idle-session-is-parked-and-resumed-by-a-message.md)'s "only who may steer the
+task resumes it": an answer to a parked task's open question resumes it too. It keeps
 [ADR-0331](0331-anyone-tidies-a-task-and-only-its-owners-consent-passes-control.md) and
 [ADR-0365](0365-a-teammate-takes-control-unless-the-owner-chose-to-be-asked.md) as they are.
 

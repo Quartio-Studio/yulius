@@ -514,12 +514,15 @@ test("an answer typed while the question is replaced goes to no other question (
   await expect(browser.locator('.attention-bar')).toContainText('Decide the release date');
   await expect(field).toHaveValue('M1: yes');
   await field.focus();
-  // The page knows the question changed: it says so and sends nothing (a failed send never
-  // re-keys the field, so old words never reach the new question).
+  // The page knows the question changed: it says so and sends nothing. Every answer POST would
+  // fail here, so a send that reached the server would count in `failedPosts`.
+  await browser.evaluate(() => { (window as unknown as { __yuliusMock: { failPostPath: string | null } }).__yuliusMock.failPostPath = '/api/tasks/tsk_studio_12/needs-you/answer'; });
   await browser.keyboard.press('Enter');
   await expect(screen.getByText(/was replaced by a new one/)).toBeVisible();
   await expect(field).toHaveValue('M1: yes');
+  expect(await browser.evaluate(() => (window as unknown as { __yuliusMock: { failedPosts: number } }).__yuliusMock.failedPosts)).toBe(0);
   expect(await answers(browser)).toEqual([]);
+  await browser.evaluate(() => { (window as unknown as { __yuliusMock: { failPostPath: string | null } }).__yuliusMock.failPostPath = null; });
   // Having read the new question, the person answers it from the same field.
   await field.fill('2026-12-01');
   await field.focus();

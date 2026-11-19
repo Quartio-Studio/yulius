@@ -99,7 +99,8 @@ merged; #1106 against ADR-0227.
   `needs_you` stays open and is shown; `tasks_list` and `task_get` say `parked`. For chains and
   start rules, a parked task that is Done is done; its scope claims still count, and the
   briefing lists it among the parallel tasks.
-- **PRK-005 Writing resumes it.** `task_message` to a parked task resumes it with the message as
+- **PRK-005 Writing resumes it.** (An allowed answer from a named person resumes it too: ANS-002.)
+  `task_message` to a parked task resumes it with the message as
   its first prompt (labelled as today) and ends its `needs_you`, delivered `"resumed"`; the web's
   Resume (the Continue of a parked task) resumes it with nothing typed, its `needs_you` kept
   until the person writes. Either way it is the same provider session, with its history; at the
@@ -329,7 +330,7 @@ Review round 1 of #1459 (request changes at dd7b25b38), answered test-first:
 
 | Finding | Answer | Test that fails without it |
 | --- | --- | --- |
-| Web sent the `at` of the question shown at Enter, not the one Reply opened on | the page keeps the question's `at_ms` from when Reply opened and sends it (`asked_at_ms`) | e2e `reply.e2e.ts` "an answer typed while the question is replaced goes to no other question" (fails when the page reads the request at send time: checked by mutation) |
+| Web sent the `at` of the question shown at Enter, not the one Reply opened on | the page keeps the question's `at_ms` from when Reply opened and sends it (`asked_at_ms`) | e2e `reply.e2e.ts` "an answer typed while the question is replaced goes to no other question" (fails when the page reads the request at send time: checked by mutation; the first Enter sends nothing: `failedPosts` stays 0 with every answer POST set to fail) |
 | Withdraw read-modify-write could overwrite a newer request | `replace_task_needs_you`: one conditional statement on the request's `at`, action and `who`; 409 "changed meanwhile" otherwise | `needs_you::tests::a_request_is_replaced_only_while_it_is_the_one_read` (store) |
 | A start hid a repeated failure from Telegram | a start forgets a told failure (`failed:…`) and keeps the rest, so a parked task's resume stays no news | `telegram::a_failure_after_a_restart_is_told_again`; `telegram::a_parked_tasks_resume_is_no_news` still holds |
 | `asked_at` compared as a second-precision string | compared as the stored milliseconds (`at_ms` in the view, `asked_at_ms` in the answer) | `task_ownership::an_answer_to_a_replaced_or_withdrawn_request_is_refused` |

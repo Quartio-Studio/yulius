@@ -1181,3 +1181,83 @@ fn a_named_persons_answer_resumes_a_parked_task() -> TestResult {
     rt.shutdown_timeout(Duration::from_secs(5));
     Ok(())
 }
+
+/// SPEC-512 ANS-003 with PRK-005 (review round 4 of part 2): the named person's own agent
+/// answers a parked task's question with `task_message`: the task resumes with the answer.
+#[test]
+fn a_named_persons_message_resumes_a_parked_task() -> TestResult {
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let app = app(&data, 8, 1).await?;
+        let (id, caller) = answered(&app, &data).await?;
+        let bob = yulius_app::model::UserRecord {
+            id: yulius_domain::ids::UserId::parse("u-bob")?,
+            github_login: Some("bob".into()),
+            github_id: None,
+            display_name: "Bob".into(),
+            avatar_url: None,
+            is_superadmin: false,
+            is_instance_admin: false,
+            password_hash: None,
+            created_at: yulius_domain::time::Timestamp(1),
+            disabled_at: None,
+        };
+        yulius_app::ports::store::UserStore::insert_user(app.deps.store.as_ref(), &bob).await?;
+        yulius_app::ports::store::PermissionStore::put_access(
+            app.deps.store.as_ref(),
+            &bob.id,
+            &caller.sandbox,
+            yulius_domain::permission::AccessLevel::Write,
+            app.now(),
+        )
+        .await?;
+        let asked = NeedsYouRecord {
+            action: "Decide M1".into(),
+            happened: None,
+            problem: None,
+            decision: true,
+            link: None,
+            at: 1,
+            cause: None,
+            named: yulius_app::needs_you::Named {
+                who: vec!["bob".into()],
+                withdrawn: Vec::new(),
+            },
+        };
+        app.deps
+            .store
+            .set_task_needs_you(&id, Some(&asked), app.now())
+            .await?;
+        parked(&app, &id).await?;
+        let _ = bob;
+        let bobs_agent = yulius_app::coordination::ProjectCaller {
+            sandbox: caller.sandbox.clone(),
+            user: yulius_domain::ids::UserId::parse("u-bob")?,
+            task: None,
+            channel: yulius_app::coordination::Channel::Remote,
+            actor: "remote:bob".into(),
+            detail: json!({"via": "remote"}),
+        };
+        let sent = app
+            .tool_task_message(&bobs_agent, &json!({"task_id": id.as_str(), "text": "M1: yes"}))
+            .await?;
+        assert_eq!(sent["delivered"], "answered", "{sent}");
+        wait_for("the resumed answer", Duration::from_secs(60), || async {
+            screen(&app, &id).contains("Answer from bob")
+        })
+        .await?;
+        assert!(screen(&app, &id).contains("M1: yes"));
+        assert!(!asks(&app, &id).await?, "the question is answered");
+        let runs = app.deps.store.attempts(&id).await?;
+        assert_eq!(runs.len(), 2);
+        assert_eq!(runs[1].launch_kind, LaunchKind::Resume);
+        let task = TaskStore::task(app.deps.store.as_ref(), &id)
+            .await?
+            .ok_or("task")?;
+        assert_eq!(task.owner, caller.user);
+        Ok::<_, Error>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
