@@ -5630,6 +5630,16 @@ route('GET', '/api/capacity', ({ db }) => {
       ...(admin ? { id: a.id, in_use_by: a.in_use_by, ...(a.email ? { email: a.email } : {}) } : {}),
     })),
     tokens: poolTokens(),
+    // The instance's sessions (SPEC-512 PRK-008): what the limit counts, and apart from it the
+    // parked, idle (Done) and queued ones.
+    sessions: {
+      working: db.tasks.filter((t) => ['starting', 'running', 'switching', 'stopping'].includes(t.status) && t.activity !== 'done').length,
+      limit: db.sessionLimit,
+      idle: db.tasks.filter((t) => t.status === 'running' && t.activity === 'done').length,
+      parked: db.tasks.filter((t) => t.status === 'parked').length,
+      queued: db.tasks.filter((t) => t.status === 'queued').length,
+      park_after_ms: 30 * MIN,
+    },
   };
 });
 

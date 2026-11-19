@@ -24,7 +24,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use tokio::sync::Notify;
-use yulius_contracts::api::admin::{CapacityAccount, CapacityView, PoolTokensView, TokenSpendView};
+use yulius_contracts::api::admin::{
+    CapacityAccount, CapacitySessions, CapacityView, PoolTokensView, TokenSpendView,
+};
 use yulius_contracts::hooks::{RateLimitWindow, RateLimits};
 use yulius_domain::capacity::{
     ForecastInput, PoolMember, PoolTokens, Span, TokenRun, TokenSpend, WeeklySample,
@@ -961,6 +963,25 @@ impl App {
         self.publish_task(&task.id).await;
     }
 
+    /// The instance's sessions on the Capacity card (SPEC-512 PRK-008), with `working` the live
+    /// sessions the limit counts ([`App::working_attempts`]).
+    ///
+    /// # Errors
+    /// Store failures.
+    async fn capacity_sessions(&self, working: usize) -> AppResult<CapacitySessions> {
+        let store = &self.deps.store;
+        let live = store.live_attempts().await?.len();
+        let count = |n: usize| u32::try_from(n).unwrap_or(u32::MAX);
+        Ok(CapacitySessions {
+            working: count(working),
+            limit: self.max_live_sessions(),
+            idle: count(live.saturating_sub(working)),
+            parked: count(store.tasks_with_status(&[TaskStatus::Parked]).await?.len()),
+            queued: count(store.tasks_with_status(&[TaskStatus::Queued]).await?.len()),
+            park_after_ms: self.config.park_after_ms,
+        })
+    }
+
     /// The subscription pool, its burn rate and forecast for the caller (`GET /api/capacity`):
     /// everyone signed in sees labels, status and usage; ids and live task counts are for
     /// instance administrators (like the Status panel).
@@ -1099,7 +1120,9 @@ impl App {
                     .min()
             })
             .flatten();
+        let sessions = self.capacity_sessions(live.len()).await?;
         Ok(CapacityView {
+            sessions,
             threshold,
             subscriptions: forecast.subscriptions,
             unknown_usage: forecast.unknown_usage,

@@ -168,6 +168,26 @@ fn an_answered_task_parks_and_its_slot_starts_a_queued_task() -> TestResult {
         assert_eq!(audited(&data, "task.parked", &first)?, ["yulius"]);
         let summary = app.task_summary(&task).await?;
         assert_eq!(summary.status, "parked");
+        // The Capacity card counts the queued task's session as working and the parked one
+        // apart (PRK-008).
+        let ctx = AuthContext {
+            user: app.deps.store.user(&caller.user).await?.ok_or("user")?,
+            csrf_token: None,
+            session_hash: None,
+            token: None,
+        };
+        let sessions = app.capacity_view(&ctx).await?.sessions;
+        assert_eq!(
+            (
+                sessions.working,
+                sessions.limit,
+                sessions.parked,
+                sessions.idle,
+                sessions.queued,
+                sessions.park_after_ms
+            ),
+            (1, 1, 1, 0, 0, 1)
+        );
         Ok::<_, Error>(())
     })?;
     rt.shutdown_timeout(Duration::from_secs(5));

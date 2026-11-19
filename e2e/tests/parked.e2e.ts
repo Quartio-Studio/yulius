@@ -76,3 +76,28 @@ test('a queued task says what it waits for (unit, in the page)', async ({ app, b
     plain: 'Queued',
   });
 });
+
+// SPEC-512 PRK-008: the Capacity card shows working sessions of the limit, and parked, idle and
+// queued ones apart, with when an idle session parks.
+test('the Capacity card shows working and parked sessions apart (unit, in the page)', async ({ app, browser }) => {
+  await app.open(mock('/s/studio'));
+  const read = await browser.evaluate(async () => {
+    const layoutUrl = '/assets/layout.js';
+    const { capacityPanel } = await import(layoutUrl);
+    const tile = (sessions: Record<string, number>) => {
+      const panel = capacityPanel({ subscriptions: 1, sessions });
+      const found = [...panel.querySelectorAll('.stat-tile')].find((t) => t.textContent.startsWith('Sessions'));
+      return found ? [found.querySelector('.tile-value').textContent, [...found.querySelectorAll('.stat-detail')].map((d) => d.textContent)] : null;
+    };
+    return {
+      busy: tile({ working: 8, limit: 8, idle: 2, parked: 13, queued: 3, park_after_ms: 1800000 }),
+      quiet: tile({ working: 1, limit: 8, idle: 0, parked: 0, queued: 0, park_after_ms: 0 }),
+      none: capacityPanel({ subscriptions: 1 }).textContent.includes('Sessions'),
+    };
+  });
+  expect(read).toEqual({
+    busy: ['8 / 8 working', ['13 parked · 2 idle · 3 queued', 'Idle sessions park after 30 min']],
+    quiet: ['1 / 8 working', ['None parked', 'Parking is off']],
+    none: false,
+  });
+});

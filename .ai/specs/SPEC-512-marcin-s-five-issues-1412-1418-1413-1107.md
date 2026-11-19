@@ -104,7 +104,7 @@ merged; #1106 against ADR-0227.
   "Waiting for a free session: 8 of 8 in use", "Waiting for the Yulius update to finish", or the
   supertask's line (as today), and the list and the task page show it.
 - **PRK-008 The Capacity card.** `GET /api/capacity` adds `sessions {working, limit, parked,
-  idle, queued, park_after_minutes}`; the Capacity card shows a Sessions tile: working of limit,
+  idle, queued, park_after_ms}`; the Capacity card shows a Sessions tile: working of limit,
   with parked, idle (live but not counted: Done) and queued apart, and when idle sessions park.
   Parked sessions use no memory.
 
@@ -120,7 +120,7 @@ each from its issue's acceptance criteria.
 - [x] Idle sessions park after the grace period, decided under the launch lock
 - [x] Writing to a parked task resumes it: task_message and the web's Resume
 - [x] A queued task says what it waits for
-- [ ] The Capacity card shows working, parked, idle and queued sessions
+- [x] The Capacity card shows working, parked, idle and queued sessions
 - [ ] Docs for parking: product, architecture, api, operations, changes
 - [ ] Review of the #1412 pull request answered test-first
 - [ ] needs_you names who it waits for, refused for logins without write access
