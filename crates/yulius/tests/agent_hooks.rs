@@ -1924,3 +1924,113 @@ async fn codex_hooks_reach_yulius_for_codex_runs_only() -> TestResult {
     assert_eq!(codex.status, 401, "a Codex hook from a Claude run");
     Ok(())
 }
+
+/// An Antigravity goal task running a step of its plan.
+async fn antigravity_goal() -> Result<Fixture, Box<dyn std::error::Error>> {
+    let f = fixture_of(
+        None,
+        |task| {
+            task.mode = yulius_app::model::TaskMode::Goal;
+            task.activity = Some(Activity::Working);
+        },
+        Agent::Antigravity,
+    )
+    .await?;
+    let ctx = f.h.app.agent_context(TOKEN).await?;
+    f.h.app
+        .tool_steps_set(
+            &ctx,
+            &json!({"steps": [{"title": "Run the tests", "status": "in_progress"}]}),
+        )
+        .await?;
+    Ok(f)
+}
+
+async fn agy_event(f: &Fixture, name: &str, payload: serde_json::Value) -> TestResult {
+    f.h.clock.0.fetch_add(1, Ordering::SeqCst);
+    let reply = call(
+        &f.h.internal,
+        Method::POST,
+        &format!("/hooks/antigravity/{name}"),
+        Some(payload),
+        &agent(),
+    )
+    .await?;
+    assert_eq!(reply.status, 200, "{}", reply.body);
+    assert!(reply.body["decision"].is_null(), "{}", reply.body);
+    Ok(())
+}
+
+async fn agy_brief(f: &Fixture) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+    let reply = support::mcp_tool(&f.h, TOKEN, "task_get", json!({"number": 1})).await?;
+    Ok(support::tool_text(&reply))
+}
+
+/// SPEC-528: a background Stop and the agent's wake are both Working.
+#[tokio::test]
+async fn antigravity_background_stop_and_autonomous_invocation() -> TestResult {
+    let f = antigravity_goal().await?;
+    agy_event(&f, "Stop", json!({"fully_idle": false})).await?;
+    let busy = agy_brief(&f).await?;
+    assert_eq!(busy["shows"], "working", "{busy}");
+    agy_event(&f, "PreInvocation", json!({})).await?;
+    assert_eq!(agy_brief(&f).await?["activity"], "working");
+    let action = "Approve access to the staging account";
+    support::mcp_tool(&f.h, TOKEN, "needs_you", json!({"action": action})).await?;
+    agy_event(&f, "Stop", json!({"fully_idle": false})).await?;
+    agy_event(&f, "PreInvocation", json!({})).await?;
+    let requested = agy_brief(&f).await?;
+    assert_eq!(requested["shows"], "needs_you");
+    assert_eq!(requested["needs_you"]["action"], action);
+    Ok(())
+}
+
+/// SPEC-528: an idle Stop with open work gives its reason and only a newer wake reopens it.
+#[tokio::test]
+async fn antigravity_idle_stop_with_an_open_step_explains_the_wait() -> TestResult {
+    let f = antigravity_goal().await?;
+    agy_event(&f, "Stop", json!({"fully_idle": true})).await?;
+    let idle = agy_brief(&f).await?;
+    assert_eq!(idle["activity"], "waiting");
+    assert_eq!(idle["shows"], "needs_you");
+    assert!(
+        idle["wait_reason"]
+            .as_str()
+            .is_some_and(|s| s.contains("step")),
+        "{idle}"
+    );
+    let stale = f.h.app.now().0 - 1;
+    f.h.app
+        .hook_event(
+            TOKEN,
+            "antigravity",
+            "PreInvocation",
+            &Default::default(),
+            Some(stale),
+        )
+        .await?;
+    assert_eq!(agy_brief(&f).await?["activity"], "waiting", "late wake");
+    agy_event(&f, "PreInvocation", json!({})).await?;
+    assert_eq!(agy_brief(&f).await?["shows"], "working");
+    // Older clients omitted the idle bit. A model error also really ends the turn.
+    for stop in [
+        json!({}),
+        json!({"fully_idle": false, "error": "Model unavailable"}),
+    ] {
+        agy_event(&f, "Stop", stop).await?;
+        assert_eq!(agy_brief(&f).await?["activity"], "waiting");
+        agy_event(&f, "PreInvocation", json!({})).await?;
+    }
+    let ctx = f.h.app.agent_context(TOKEN).await?;
+    f.h.app
+        .tool_steps_set(
+            &ctx,
+            &json!({"steps": [{"title": "Run the tests", "status": "done"}]}),
+        )
+        .await?;
+    agy_event(&f, "Stop", json!({"fully_idle": true})).await?;
+    let answered = agy_brief(&f).await?;
+    assert_eq!(answered["shows"], "done");
+    assert!(answered.get("wait_reason").is_none());
+    Ok(())
+}

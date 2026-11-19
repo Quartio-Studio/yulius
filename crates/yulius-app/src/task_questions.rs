@@ -14,13 +14,12 @@
 //!   write access checked at the call;
 //! - a request is ended only while it still asks what was read: one asked meanwhile stays.
 
-use std::collections::HashSet;
 use std::sync::Arc;
 
 use serde_json::{Value, json};
 use yulius_contracts::api::intake::{HeldPromptOutcome, ResolveHeldPrompt};
 use yulius_domain::permission::Action;
-use yulius_domain::task::TaskGroup;
+use yulius_domain::task::{AttentionFacts, PullSignal, TaskGroup};
 
 use crate::auth::AuthContext;
 use crate::context::App;
@@ -51,19 +50,6 @@ pub fn group_name(group: TaskGroup) -> &'static str {
 }
 
 impl App {
-    /// The group the task list shows `task` in, among the sandbox's pending requests
-    /// `requested` ([`App::browser_requests`]).
-    ///
-    /// # Errors
-    /// Store failures.
-    pub(crate) async fn shown_group(
-        &self,
-        task: &TaskRecord,
-        requested: &HashSet<String>,
-    ) -> AppResult<TaskGroup> {
-        self.task_group(task, requested).await
-    }
-
     /// Why `task` waits for a person, or is held, as its page shows it (QST-001): the fields a
     /// task's brief adds, each only when there is one. `needs_you`: what its agent asked;
     /// `attention`: the reason of its flag; `held_prompt`: a typed prompt Yulius held for a
@@ -75,6 +61,7 @@ impl App {
         &self,
         task: &TaskRecord,
         person: bool,
+        facts: &AttentionFacts,
     ) -> serde_json::Map<String, Value> {
         // What the task's summary shows, also for a task that ended: a prompt held before its
         // end is still decided on its card.
@@ -132,6 +119,25 @@ impl App {
                 .await
                 .and_then(|pause| serde_json::to_value(pause).ok()),
         );
+        if facts.group() == TaskGroup::NeedsYou && why.is_empty() {
+            // No stored question or flag: explain the same facts that put it in this group.
+            let reason = if facts.browser_request {
+                Some("A browser request is waiting for a person.")
+            } else if facts.pull == Some(PullSignal::Failing) {
+                Some("The agent stopped and its pull request checks are failing.")
+            } else if facts.plan_open {
+                Some("The agent stopped with unfinished steps in its plan.")
+            } else if facts.spec_unfinished {
+                Some("The agent stopped before its spec was finished.")
+            } else if facts.goal_unfinished {
+                Some("The agent stopped before its goal was achieved.")
+            } else {
+                None
+            };
+            if let Some(reason) = reason {
+                why.insert("wait_reason".into(), json!(reason));
+            }
+        }
         why
     }
 

@@ -6,6 +6,10 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-19
 
+- Antigravity tasks show Working while a background command runs and when its completion
+  starts another model turn. If the agent stops with unfinished steps, its task brief explains
+  why it needs a person. Fixes #1444 (SPEC-528, task #510).
+
 - Answer a teammate's Needs you (SPEC-516, task #498, ADR-0370): on someone else's task whose
   agent asks a person for something, Reply answers it without taking control. The agent gets the
   answer labelled with your name (and that you are not its owner), the request ends, and the task

@@ -23,7 +23,9 @@ Carbon at high effort unless a task names another Gemini model (`F 2026-11-17 An
 an Antigravity task moves only between Antigravity subscriptions, and Yulius provides the pinned
 Antigravity CLI (1.5.10)
 ([SPEC-505](../.ai/specs/SPEC-505-implement-antigravity-cli-next-to-claude.md),
-[ADR-0361](decisions/0361-antigravity-is-a-third-harness-picked-at-random-by-default.md)). A
+[ADR-0361](decisions/0361-antigravity-is-a-third-harness-picked-at-random-by-default.md)). An
+Antigravity task stays Working while its command runs in the background or its agent resumes by
+itself ([SPEC-528](../.ai/specs/SPEC-528-antigravity-tasks-show-needs-its-person.md)). A
 task's agent is set, never drawn: the one chosen, else the one its model implies, else Claude Code
 (the composer's Default); a follow-up an agent creates runs that agent's own, and an automation
 always runs the agent it names (`F 2026-11-19 Harness`,
