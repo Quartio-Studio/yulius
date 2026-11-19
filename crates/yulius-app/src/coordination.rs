@@ -3,6 +3,7 @@
 
 use serde_json::{Value, json};
 use yulius_domain::ids::{SandboxId, StepId, TaskId, UserId};
+use yulius_domain::task::{AttentionFacts, TaskGroup};
 
 use crate::auth::rfc3339;
 use crate::context::App;
@@ -122,20 +123,21 @@ impl App {
         requested: &std::collections::HashSet<String>,
         person: bool,
     ) -> AppResult<Value> {
-        let group = self.shown_group(task, requested).await?;
-        self.task_brief_shown(task, group, person).await
+        let facts = self.task_attention_facts(task, requested).await?;
+        self.task_brief_shown(task, facts, person).await
     }
 
     /// [`Self::task_brief_among`] for a task whose group is read already.
     async fn task_brief_shown(
         &self,
         task: &TaskRecord,
-        group: yulius_domain::task::TaskGroup,
+        facts: AttentionFacts,
         person: bool,
     ) -> AppResult<Value> {
         let mut brief = self.task_brief_plain(task).await?;
         // Where the task list shows it, and why it waits for a person or is held (SPEC-487
         // QST-001): what its page says, so nobody has to paste it.
+        let group = facts.group();
         brief["shows"] = json!(crate::task_questions::group_name(group));
         // What it runs on (SPEC-487 SUB-002): its live run's subscription, and the model and
         // effort it was given (none: the instance's defaults).
@@ -143,7 +145,7 @@ impl App {
         brief["model"] = json!(task.model);
         brief["effort"] = json!(task.effort);
         if let Some(fields) = brief.as_object_mut() {
-            fields.extend(self.waits_why(task, person).await);
+            fields.extend(self.waits_why(task, person, &facts).await);
         }
         Ok(brief)
     }
@@ -208,12 +210,12 @@ impl App {
                 break;
             }
             // The tasks the list shows under "Needs you" (SPEC-487 QST-002), by its own rule.
-            let group = self.shown_group(t, &requested).await?;
-            if scope == "needs_you" && group != yulius_domain::task::TaskGroup::NeedsYou {
+            let facts = self.task_attention_facts(t, &requested).await?;
+            if scope == "needs_you" && facts.group() != TaskGroup::NeedsYou {
                 continue;
             }
             out.push(
-                self.task_brief_shown(t, group, caller.task.is_none())
+                self.task_brief_shown(t, facts, caller.task.is_none())
                     .await?,
             );
         }

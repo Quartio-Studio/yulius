@@ -233,6 +233,9 @@ pub struct TaskRuntime {
     /// same for a prompt read from the transcript and its [`Self::last_stop_ms`] check, which a
     /// clean Stop moves under it (SPEC-453 TPO-001).
     pub(crate) turn_order: tokio::sync::Mutex<()>,
+    /// Latest native Antigravity turn hook's send time. Serialize the full Stop decision
+    /// with invocations, independently of transcript reads that need `turn_order`.
+    pub(crate) antigravity_hook_ms: tokio::sync::Mutex<i64>,
     /// Claude Code's SessionStart hook arrived for the current attempt: its prompt box reads
     /// input (typing before it is lost or left unsubmitted, F 2026-10-12).
     pub(crate) session_started: AtomicBool,
@@ -590,7 +593,8 @@ impl TaskRuntime {
             goal_achieved: AtomicBool::new(false),
             goal_submitted: AtomicBool::new(false),
             turn_end_ms: AtomicI64::new(0),
-            turn_order: tokio::sync::Mutex::new(()),
+            turn_order: tokio::sync::Mutex::default(),
+            antigravity_hook_ms: tokio::sync::Mutex::default(),
             session_started: AtomicBool::new(false),
             scrub: Mutex::new(crate::vault::TerminalScrub::default()),
             screen_flagged: AtomicBool::new(false),

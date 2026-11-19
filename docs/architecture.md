@@ -109,8 +109,10 @@ CLI's token file. Its `antigravity-cli/brain` and `conversations` link to
 `--conversation <id>`. A contained run binds that `.gemini` over the sandbox home's (the agent's
 shell keeps the sandbox's `HOME`); an uncontained one sets `HOME` to the run's Antigravity home.
 `yulius hook antigravity <event>` translates its hooks (SessionStart, the first model call of a
-typed turn, Stop, `run_command`) to Yulius's; its transcript gives prompts, tokens and limits, and
-a turn its model API failed ends with a Stop Yulius settles without a gate. When its run ends, a
+turn, Stop, `run_command`) to Yulius's; its transcript gives prompts, tokens and limits, and
+a turn its model API failed ends with a Stop Yulius settles without a gate. A successful Stop
+with `fullyIdle: false` keeps the task Working while its command runs. A first invocation
+following a system message signals activity without submitting a prompt ([SPEC-528](../.ai/specs/SPEC-528-antigravity-tasks-show-needs-its-person.md)). When its run ends, a
 token file the CLI refreshed replaces the stored sign-in and is removed.
 
 ```mermaid
