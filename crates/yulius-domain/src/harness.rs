@@ -2,6 +2,37 @@
 
 use std::fmt;
 
+/// Prefixes of user-role messages that Codex injects as context rather than typed prompts, for a
+/// message without provenance (0.167's rollouts; 0.169 marks each content item). From
+/// `core/src/context` of `rust-v0.169.0`. Read by the rollout observer and the transcript reader.
+pub const CODEX_INJECTED_CONTEXT_PREFIXES: [&str; 15] = [
+    "<environment_context",
+    "<user_instructions",
+    "# AGENTS.md instructions",
+    "<turn_aborted",
+    "<user_shell_command",
+    "<permissions instructions",
+    // The text a blocking Stop hook makes Codex go on with (`protocol/src/items.rs`).
+    "<hook_prompt",
+    "<subagent_notification",
+    "<skill",
+    "<codex_internal_context",
+    "<goal_context",
+    "<agent_message_board_notification",
+    "<recommended_plugins",
+    "<model_switch",
+    "<current_time_reminder",
+];
+
+/// Whether a user-role Codex message is context Codex injected ([`CODEX_INJECTED_CONTEXT_PREFIXES`]).
+#[must_use]
+pub fn is_codex_injected_context(text: &str) -> bool {
+    let trimmed = text.trim_start();
+    CODEX_INJECTED_CONTEXT_PREFIXES
+        .iter()
+        .any(|prefix| trimmed.starts_with(prefix))
+}
+
 /// The Claude model of a task that names none: Opus 5.5 by its full id, not an alias that moves
 /// with each release (the person's decision of 2026-11-13, SPEC-493: Opus 5.5 writes, Fable 5.2
 /// reviews; Fable 5.2 from 2026-11-10 until then, Opus 5.5 before, task #21). A subscription's
