@@ -6,6 +6,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-19
 
+- A task's agent is set, never drawn (SPEC-514, task #496, ADR-0368): a task started without
+  choosing an agent runs Claude Code (or the agent its model implies) instead of Claude Code or
+  Antigravity at random; a follow-up an agent creates runs that agent's own, and an automation
+  runs the agent it names, the ones saved as Random now Claude Code. The composer's no-choice
+  item is Default again and the automation editor has no Random. Tasks drawn before still say so.
+
 - Take control (SPEC-510, task #492, ADR-0365): on a teammate's task, Take control (in the task
   view and the task menu, after a confirmation naming the owner) makes the task yours at once: it
   acts on GitHub as you from then on. The previous owner is told wherever they are (their Telegram

@@ -195,7 +195,8 @@ pub struct TaskRow {
     pub origin: String,
     /// Harness of the first run (current harness when the task never ran).
     pub harness: String,
-    /// `random` when the task's harness was drawn at creation, else `chosen` (SPEC-505 RND-003).
+    /// `random` when the task's harness was drawn at creation, else `chosen` (SPEC-505 RND-003);
+    /// only tasks created before SPEC-514 were drawn.
     #[serde(default)]
     pub harness_choice: String,
     /// Harnesses used, in order of first use, `;`-separated.

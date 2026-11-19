@@ -63,7 +63,7 @@ pub const MAX_QUESTION_BYTES: usize = 4096;
 struct CrossTaskArgs {
     sandbox: String,
     prompt: String,
-    /// The task's agent (SPEC-505 RND-001); absent: drawn.
+    /// The task's agent (SPEC-505); absent: Claude Code, never drawn (SPEC-514 PIN-001).
     harness: Option<String>,
     title: Option<String>,
     workflow: Option<String>,
