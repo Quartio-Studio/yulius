@@ -427,6 +427,17 @@ impl RunWriter for Writer {
 mod tests {
     use super::*;
 
+    #[test]
+    fn terminating_a_run_with_unreadable_process_identity_fails()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let host = PtySessionHost::new(PathBuf::new());
+        host.terminate(dir.path())?; // No process was recorded.
+        std::fs::write(dir.path().join(wire::STATUS_FILE), b"invalid record")?;
+        assert!(host.terminate(dir.path()).is_err());
+        Ok(())
+    }
+
     /// SPEC-187 DKR-001: the sandbox's Docker socket reaches a joined run's `bwrap` argv.
     #[test]
     fn a_joined_run_gets_the_sandboxs_docker_directory() -> Result<(), Box<dyn std::error::Error>> {
