@@ -1,11 +1,11 @@
 ---
 yulius-task: 1750d0c6-ed74-4d6d-8f30-e85034e76227
-status: in-progress
+status: done
 ---
 
 # SPEC-513: Each subscription card names its agent
 
-Status: in-progress
+Status: done
 Date: 2026-11-19
 Owner: Yulius task #495
 Scope authorization: task #495, the person's request of 2026-11-19 ("in subscriptions, I should
@@ -56,7 +56,7 @@ subscription as Claude's.
 - [x] Read the product context and related work, then write and validate the spec
 - [x] Agent badge on every subscription card, with its e2e test
 - [x] Product document and changes entry say what the card shows
-- [ ] Independent review in a fresh session, findings fixed test-first
+- [x] Independent review in a fresh session, findings fixed test-first
 
 ## Acceptance criteria
 
@@ -103,3 +103,31 @@ subscription as Claude's.
   is in its title. Every page names the agent (the Add dialog, the composer, a task's notices),
   and Gemini is what the composer's model menu shows for Antigravity.
 - No ADR: a display choice on one card, recorded here.
+
+## Evidence
+
+- Test first: `e2e/tests/subscription-agent.e2e.ts` failed on dev's UI ("expected null to equal
+  ["Claude","Claude Code subscription · Anthropic"]", no badge), then passed with the badge.
+- Round 1 (request changes, Fable 5.2): the line's `overflow: hidden` cut the email pencil's focus
+  ring (major); the email nearly vanished at 360 px, the filled badge was invisible on folded rows,
+  and tests missed order, the Status panel and members (minors); alignment (nit). Answered in
+  ee8cb1752 and 85bec4b56; the ring and phone tests failed with round 1's `styles.css` put back
+  ("expected ["account-subline"] to equal []", ".db-card Antigravity: expected 0 to be greater
+  than or equal to 24").
+- Round 2 (approve on 85bec4b56, Fable 5.2): one minor (the open email field 70 px wide beside the
+  badge on a card with a state at 360 px, its refusal past the column) and two nits (the phone test
+  asserted 24 px against the 4 em of SUBK-003; SUBK-003's title sentence too broad, SUBK-005 out of
+  order). Fixed in 2ca737d29 within the approval's 20 product lines (2 CSS lines): the new test
+  failed first ("expected 243 to be less than or equal to 217.5"), then passed.
+- `npx e2e run` of subscription-agent (6 tests), subscriptions, subscription-names,
+  subscription-touch, phone and responsive: 111 passed; earlier on the round-1 fix, those plus
+  codex, antigravity, text-fits and loading-shapes: 169 passed.
+- `cargo nextest run -p yulius -E 'binary_id(yulius::main) & test(/^ui_contract::/)'`: 11 passed.
+- `scripts/dev quick`: passed (it caught a 5 px padding off the 4 px scale, fixed in 85bec4b56).
+- Screenshots at 1280 and 390 px of the Subscriptions page and the Dashboard (mock, dark theme):
+  the badge reads beside the email; kept locally under the ignored `target/shots/`.
+- Yulius CI on e4c6fc183 passed (quality, both test shards, e2e). The `security` job was skipped
+  (exit 78: Vidoc not run on this instance, as on every recent run), which is unrun, not passed.
+- Not tested: a real server with real Codex and Antigravity subscriptions (the server already sends
+  `provider` on all three endpoints, checked in `CapacityAccount`, `AccountView` and the status
+  view; the UI is proved against the mock, whose capacity view now matches the server).
