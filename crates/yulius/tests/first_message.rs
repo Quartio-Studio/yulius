@@ -1730,6 +1730,12 @@ fn a_restored_prompt_goal_waits_at_stop_before_attach() -> TestResult {
             Some(Activity::Working),
             "Stop waits through attach"
         );
+        wait_for(
+            "the same Stop's deadline after attach",
+            Duration::from_secs(30),
+            || async { activity(&app, &id).await == Some(Activity::Waiting) },
+        )
+        .await?;
         stop(&app, &id).await
     })?;
     rt.shutdown_timeout(Duration::from_secs(5));
