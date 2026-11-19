@@ -1420,4 +1420,248 @@ mod tests {
         assert_eq!(read_line(&mut reader, &mut buf, 3)?, LineRead::Eof);
         Ok(())
     }
+
+    /// A harness fixture of `yulius-harness` (SPEC-525): the formats as the real CLIs wrote them.
+    fn fixture(name: &str) -> Result<std::path::PathBuf, Box<dyn std::error::Error>> {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../yulius-harness/tests/fixtures")
+            .join(name);
+        if !path.is_file() {
+            return Err(format!("missing fixture {}", path.display()).into());
+        }
+        Ok(path)
+    }
+
+    /// An entry as one line per block: `role kind text`, the text cut to 40 characters.
+    fn shape(entries: &[TranscriptEntry]) -> Vec<String> {
+        let short = |text: &str| text.chars().take(40).collect::<String>();
+        entries
+            .iter()
+            .flat_map(|entry| {
+                entry.blocks.iter().map(|block| {
+                    let what = match block {
+                        TranscriptBlock::Text { text, .. } => format!("text {}", short(text)),
+                        TranscriptBlock::Thinking { text, .. } => {
+                            format!("thinking {}", short(text))
+                        }
+                        TranscriptBlock::ToolCall {
+                            id, name, summary, ..
+                        } => {
+                            format!("call {id} {name}: {}", short(summary))
+                        }
+                        TranscriptBlock::ToolResult {
+                            tool_use_id,
+                            text,
+                            is_error,
+                            ..
+                        } => format!(
+                            "{} {tool_use_id} {}",
+                            if *is_error { "error" } else { "result" },
+                            short(text)
+                        ),
+                        TranscriptBlock::Image { .. } => "image".to_owned(),
+                        TranscriptBlock::Meta { text, .. } => format!("meta {}", short(text)),
+                    };
+                    format!("{} {what}", entry.role)
+                })
+            })
+            .collect()
+    }
+
+    fn write_lines(
+        dir: &Path,
+        lines: &[Value],
+    ) -> Result<std::path::PathBuf, Box<dyn std::error::Error>> {
+        let path = dir.join("t.jsonl");
+        let mut text = String::new();
+        for line in lines {
+            text.push_str(&serde_json::to_string(line)?);
+            text.push('\n');
+        }
+        std::fs::write(&path, text)?;
+        Ok(path)
+    }
+
+    /// SPEC-525 WCX-001: a Codex rollout reads as its prompts, answers, reasoning, tool calls and
+    /// results (it read as nothing, so a watcher saw "Codex is starting…" for the whole run).
+    /// Codex's own instructions are left out; context it added is shown quietly.
+    #[test]
+    fn a_codex_rollout_reads_as_prompts_answers_and_tool_calls() -> TestResult {
+        let tail = read_tail(
+            File::open(fixture("codex/rollout.jsonl")?)?,
+            100,
+            MAX_PAGE_CHARS,
+        )?;
+        assert_eq!(
+            shape(&tail.entries),
+            vec![
+                "user meta <environment_context>\n  <cwd>/work/demo<",
+                "user text Add a greeting function and test it.",
+                "assistant call call_01 exec_command: cargo test",
+                "user result call_01 test result: ok. 3 passed",
+                "assistant text Tests pass. Added `greet`.",
+                "user text Now make it greet in Polish: cześć.",
+                "assistant call call_02 apply_patch: src/lib.rs",
+                "user result call_02 Success. Updated the following files:\nM",
+                "assistant text Done: `greet` now returns \"cześć\".",
+                "summary text Synthetic compaction summary.",
+            ]
+        );
+        let at = tail.entries[1].at.as_deref();
+        assert_eq!(at, Some("2026-11-09T10:00:03.000Z"));
+        let TranscriptBlock::ToolCall { input, .. } = &tail.entries[6].blocks[0] else {
+            return Err("the patch".into());
+        };
+        assert!(
+            input.starts_with("*** Begin Patch\n"),
+            "a patch reads as written: {input}"
+        );
+
+        // Codex 0.169 marks what it added by provenance: its continuation after a blocking Stop
+        // hook is shown quietly, the person's prompts as prompts.
+        let blocked = read_tail(
+            File::open(fixture("codex/exec-0.169.0-stop-block.jsonl")?)?,
+            100,
+            MAX_PAGE_CHARS,
+        )?;
+        let shapes = shape(&blocked.entries);
+        assert_eq!(shapes[1], "user text Say hi");
+        assert_eq!(shapes[2], "assistant text Synthetic answer 1.");
+        assert!(
+            shapes[3].starts_with("user meta <hook_prompt"),
+            "{shapes:?}"
+        );
+        assert_eq!(shapes[4], "assistant text Synthetic answer 2.");
+        assert_eq!(shapes.len(), 5, "{shapes:?}");
+
+        // A reasoning summary is the model's visible thinking; a shell call reads its command.
+        let dir = tempfile::tempdir()?;
+        let path = write_lines(
+            dir.path(),
+            &[
+                json!({"type": "response_item", "payload": {"type": "reasoning", "summary": [{"type": "summary_text", "text": "**Plan** the greeting"}], "encrypted_content": "eA=="}}),
+                json!({"type": "response_item", "payload": {"type": "function_call", "name": "shell", "arguments": "{\"command\":[\"bash\",\"-lc\",\"ls src\"]}", "call_id": "c9"}}),
+                json!({"type": "response_item", "payload": {"type": "function_call_output", "call_id": "c9", "output": {"content": "lib.rs", "success": true}}}),
+            ],
+        )?;
+        let page = read_page(File::open(&path)?, 0, 100, MAX_PAGE_CHARS)?;
+        assert_eq!(
+            shape(&page.entries),
+            vec![
+                "assistant thinking **Plan** the greeting",
+                "assistant call c9 shell: bash -lc ls src",
+                "user result c9 lib.rs",
+            ]
+        );
+        Ok(())
+    }
+
+    /// SPEC-525 WCX-002: an Antigravity transcript reads as the person's requests (without the
+    /// CLI's wrapper), the model's answers and tool calls, its tool steps and errors.
+    #[test]
+    fn an_antigravity_transcript_reads_as_requests_answers_and_tool_steps() -> TestResult {
+        let quota = read_tail(
+            File::open(fixture("antigravity/quota-1.5.10.jsonl")?)?,
+            100,
+            MAX_PAGE_CHARS,
+        )?;
+        let shapes = shape(&quota.entries);
+        assert_eq!(
+            shapes[..4],
+            [
+                "user text Say hello",
+                "assistant text Hello from the stub.",
+                "user text Run the probe command",
+                "system meta The following is a <SYSTEM_MESSAGE> not",
+            ]
+        );
+        assert_eq!(
+            shapes[7],
+            "user error step-7 API error (attempt 1): Error 429, Messa"
+        );
+        assert_eq!(quota.entries[0].at.as_deref(), Some("2026-11-17T17:09:20Z"));
+
+        let tool = read_tail(
+            File::open(fixture("antigravity/tool-1.5.10.jsonl")?)?,
+            100,
+            MAX_PAGE_CHARS,
+        )?;
+        assert_eq!(
+            shape(&tool.entries),
+            vec![
+                "user error step-5 invalid arguments:\n- missing property 'to",
+                "assistant text Hello from the stub.",
+                "user text run a command",
+                "system meta The following is a <SYSTEM_MESSAGE> not",
+                "assistant call step-9-0 run_command: echo probe-ran",
+                "user error step-10 tool call denied by pre-tool hook: ",
+                "assistant text Hello from the stub.",
+            ]
+        );
+        Ok(())
+    }
+
+    /// SPEC-525 WCX-003: what a Codex or Antigravity command printed from a dotenv file is
+    /// redacted as dotenv content, also on a page or a tail that starts after the call.
+    #[test]
+    fn a_dotenv_read_by_codex_or_antigravity_is_redacted_on_every_page() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let codex = write_lines(
+            dir.path(),
+            &[
+                json!({"type": "response_item", "payload": {"type": "function_call", "name": "exec_command", "arguments": "{\"cmd\":\"cat .env\"}", "call_id": "e1"}}),
+                json!({"type": "response_item", "payload": {"type": "function_call_output", "call_id": "e1", "output": "SHOP_PASSPHRASE=plainvalue42\nPORT=3000"}}),
+                json!({"type": "response_item", "payload": {"type": "function_call", "name": "exec_command", "arguments": "{\"cmd\":\"echo SHOP_PASSPHRASE=plainvalue42\"}", "call_id": "e2"}}),
+                json!({"type": "response_item", "payload": {"type": "function_call_output", "call_id": "e2", "output": "done"}}),
+            ],
+        )?;
+        for page in [
+            read_page(File::open(&codex)?, 0, 100, MAX_PAGE_CHARS)?,
+            read_page(File::open(&codex)?, 1, 1, MAX_PAGE_CHARS)?,
+            read_tail(File::open(&codex)?, 3, MAX_PAGE_CHARS)?,
+        ] {
+            let result = page
+                .entries
+                .iter()
+                .find(|e| e.line == 1)
+                .ok_or("the output")?;
+            let TranscriptBlock::ToolResult { text, .. } = &result.blocks[0] else {
+                return Err("tool result".into());
+            };
+            assert!(
+                text.contains("SHOP_PASSPHRASE=[REDACTED:") && text.contains("PORT=3000"),
+                "{text}"
+            );
+        }
+
+        let agy = dir.path().join("agy");
+        std::fs::create_dir_all(&agy)?;
+        let agy = write_lines(
+            &agy,
+            &[
+                json!({"step_index": 0, "source": "MODEL", "type": "PLANNER_RESPONSE", "status": "DONE", "tool_calls": [{"name": "run_command", "args": {"CommandLine": "\"cat .env\""}}]}),
+                json!({"step_index": 1, "source": "MODEL", "type": "RUN_COMMAND", "status": "DONE", "content": "SHOP_PASSPHRASE=plainvalue42"}),
+                json!({"step_index": 2, "source": "MODEL", "type": "PLANNER_RESPONSE", "status": "DONE", "content": "Read it."}),
+                json!({"step_index": 3, "source": "MODEL", "type": "RUN_COMMAND", "status": "DONE", "content": "MODE=plain"}),
+            ],
+        )?;
+        for page in [
+            read_page(File::open(&agy)?, 0, 100, MAX_PAGE_CHARS)?,
+            read_page(File::open(&agy)?, 1, 100, MAX_PAGE_CHARS)?,
+            read_tail(File::open(&agy)?, 3, MAX_PAGE_CHARS)?,
+        ] {
+            let texts = shape(&page.entries);
+            assert!(
+                texts
+                    .iter()
+                    .any(|t| t.starts_with("user result step-1 SHOP_PASSPHRASE=[REDACTED:")),
+                "{texts:?}"
+            );
+            assert!(
+                texts.iter().any(|t| t == "user result step-3 MODE=plain"),
+                "a later step's output is not dotenv content: {texts:?}"
+            );
+        }
+        Ok(())
+    }
 }
