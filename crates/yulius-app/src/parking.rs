@@ -153,7 +153,7 @@ impl App {
         let runtime = self.existing_runtime(&task.id);
         let keyboard = runtime.as_ref().is_some_and(|runtime| {
             let typed = runtime.typed_at_ms.load(Ordering::SeqCst);
-            let emptied = runtime.box_emptied_ms.load(Ordering::SeqCst);
+            let emptied = runtime.empty_time_for_typing();
             yulius_domain::intake::box_held(now, typed, emptied).is_some()
                 || (typed > 0
                     && i64::try_from(park_after_ms)
