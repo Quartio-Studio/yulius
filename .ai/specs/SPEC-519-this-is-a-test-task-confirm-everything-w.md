@@ -24,7 +24,7 @@ stays Yulius's unnamed-agent default (`F 2026-11-19 Harness`, SPEC-514).
 ## Context
 
 - **Live verification on Gemini (task #501).** Task #501 itself runs on `Harness::Antigravity` on a
-  live Google sign-in subscription (`bartlomiejnowak04@gmail.com`) inside a contained sandbox:
+  live Google sign-in subscription inside a contained sandbox:
   - The sealed Google sign-in token file was restored into the run's private `.gemini` home as
     `.gemini/antigravity-cli/antigravity-oauth-token` (`0600`), bound over `<sandbox>/home/.gemini`
     while keeping `HOME` equal to `<sandbox>/home` for Git and shell tools (AGY-003, AGY-008).
@@ -143,8 +143,8 @@ stays Yulius's unnamed-agent default (`F 2026-11-19 Harness`, SPEC-514).
 
 ## Evidence
 
-- **Live Antigravity verification (task #501):** running on `Harness::Antigravity` on subscription
-  `bartlomiejnowak04@gmail.com` inside bwrap containment; `.gemini/antigravity-cli/antigravity-oauth-token`
+- **Live Antigravity verification (task #501):** running on `Harness::Antigravity` on a live Google
+  sign-in subscription inside bwrap containment; `.gemini/antigravity-cli/antigravity-oauth-token`
   (`0600`) restored, `brain` and `conversations` linked to `<sandbox>/antigravity/shared`,
   `SessionStart` injected the Yulius briefing, `PreToolUse` (`^run_command$`) allowed commands, and
   `yulius mcp` served `steps_get`, `steps_set`, `step_update`, `spec_check`, `tasks_list`,
@@ -172,4 +172,16 @@ stays Yulius's unnamed-agent default (`F 2026-11-19 Harness`, SPEC-514).
   - `cargo nextest run -p yulius -E 'binary_id(yulius::main) & (test(/^antigravity::/) | test(/^antigravity_cli::/) | test(/^harness_pin::/) | test(/^task_delete::tasks_run_claude_code_or_codex/) | test(/^ui_contract::/))'`: passed.
   - `cargo nextest run -p yulius --run-ignored only -E 'binary_id(yulius::main) & test(/^antigravity_cli::the_real_pinned_release_installs_from_google$/)'`: passed (`agy` 1.5.12 downloaded from Google storage, `sha512` verified, `--version` returned `1.5.12`).
   - `cd e2e && E2E_TELEMETRY_DISABLED=1 npx e2e run tests/antigravity.e2e.ts tests/codex.e2e.ts tests/model-fallback.e2e.ts`: 12/12, 13/13 and 4/4 passed.
+  - `scripts/dev quick` and `cargo clippy -p yulius-domain -p yulius-harness -p yulius-app -p yulius-server -p yulius --all-targets -- -D warnings`: passed.
+- **Mutation testing** (`scripts/dev mutants`, on `dac2b1b61`): `mutants: 15 listed, 6 caught, 0 missed, 0 timed out, 9 unviable, 0 not reached (bound 30 min, took 876 s)`.
+- **Security scan** (`scripts/dev security`): exit 2 (`Vidoc refused the key (HTTP 401)`) — unrun,
+  not passed.
+- **Review round 1** (`yulius-reviewer` fresh session, head `dac2b1b61`, request changes; 1
+  own-code major, 0 pre-existing): `SPEC-519` lines 27 and 147 named the live subscription's
+  personal `@gmail.com` address (SPEC-244 SUB-005/006, ADR-0185). Redacted on both lines in a
+  follow-up commit (`git diff origin/dev | grep -i '@gmail'` empty; prose-only fix, no runtime test
+  applies).
+- **Not tested:** a live `GEMINI_API_KEY` call to Google's production endpoint (stubbed locally
+  against `agy` 1.5.12), and `linux-arm64` binary execution (verified by pinned manifest `sha512`
+  and tarball inspection).
 
