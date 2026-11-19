@@ -33,9 +33,9 @@ pub struct Automation {
     /// Workflow for created tasks.
     #[serde(default)]
     pub workflow_id: Option<String>,
-    /// Harness: `claude`, `codex` (SPEC-503) or `antigravity` (SPEC-505); `auto` is Claude Code,
-    /// stored as `claude`. Absent (empty): Claude Code for a new automation, the stored agent for
-    /// an update, so a change that sends no agent keeps it (SPEC-514 PIN-003).
+    /// Harness: `auto` (the default for a new automation: drawn for each run, SPEC-520 RHM-005),
+    /// `claude`, `codex` (SPEC-503) or `antigravity` (SPEC-505). Absent (empty): `auto` for a new
+    /// automation, the stored agent for an update, so a change that sends no agent keeps it.
     #[serde(default)]
     pub harness: String,
     /// Enabled.

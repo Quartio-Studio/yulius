@@ -1363,8 +1363,8 @@ export function mountComposer(ctx, sandbox) {
     startButton.setAttribute('aria-label', startAction());
     startButton.title = write ? `${startAction()} (${SUBMIT_KEYS})` : 'Requires write access';
     const found = findModel(picks.model);
-    setChildren(modelChip, h('span', { class: 'sr-only' }, 'Model: '), h('span', { class: 'chip-label' }, found ? found.model.name : 'Default model'), icon('down', { size: 12 }));
-    modelChip.title = found ? `${found.provider.name} · ${found.model.name}` : 'Model: default, Claude Code, Opus 5.5';
+    setChildren(modelChip, h('span', { class: 'sr-only' }, 'Model: '), h('span', { class: 'chip-label' }, found ? found.model.name : 'Random agent'), icon('down', { size: 12 }));
+    modelChip.title = found ? `${found.provider.name} · ${found.model.name}` : 'Agent: drawn for each task, Claude Code (Opus 5.5), Codex (GPT-6.2 Astra) or Antigravity (Gemini 4 Carbon)';
     // A model without effort levels (Haiku) hides the effort choice and sends none.
     effortChip.hidden = found?.model.efforts?.length === 0;
     const effort = findEffort(picks.effort);
@@ -1817,8 +1817,9 @@ export function mountComposer(ctx, sandbox) {
       }),
       keep: () => busyRun(autoStage(), async () => opened(await createTask(bodyFor(value)))),
       close: () => clearSplit(),
-      // A task of another agent runs without a Claude account (SPEC-503, SPEC-505).
-      codex: Boolean(bodyFor(value).harness),
+      // A task of another agent runs without a Claude account (SPEC-503, SPEC-505), and so does a
+      // Random one while Codex or Antigravity is usable (SPEC-520 RHM-006).
+      codex: Boolean(bodyFor(value).harness) || (!findModel(picks.model) && (codexConnected(ctx.store.state.me) || antigravityConnected(ctx.store.state.me))),
     });
     setChildren(intakeSlot, split.el);
     const calm = window.matchMedia('(prefers-reduced-motion: reduce)').matches;

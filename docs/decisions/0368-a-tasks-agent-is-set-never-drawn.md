@@ -2,12 +2,15 @@
 
 ## Status
 
-Accepted on 2026-11-19 (`F 2026-11-19 Harness`: the person's request in task #496, "make sure
-harnesses doesnt change themselves between tasks (like claude -> gemini) because it's
-unpredictable. A harness is set for a task"). Specified in
-[SPEC-514](../../.ai/specs/SPEC-514-make-sure-harnesses-doesnt-change-themse.md). Supersedes the
-"Draw" part of [ADR-0361](0361-antigravity-is-a-third-harness-picked-at-random-by-default.md);
-the rest of ADR-0361 stands.
+Superseded in part on 2026-11-19 by
+[ADR-0377](0377-random-draws-uniformly-across-harnesses-with-available-subscriptions.md)
+([SPEC-520](../../.ai/specs/SPEC-520-i-dont-know-why-but-i-dont-see-random-ha.md)): Random is
+offered again as the default for new tasks and automations, drawing uniformly across all harnesses
+with non-exhausted subscriptions, while a task's assigned harness remains fixed for life and a
+running task agent's unadorned follow-up keeps the calling task's harness. Accepted earlier on
+2026-11-19 (`F 2026-11-19 Harness`: task #496,
+[SPEC-514](../../.ai/specs/SPEC-514-make-sure-harnesses-doesnt-change-themse.md)), superseding the
+"Draw" part of [ADR-0361](0361-antigravity-is-a-third-harness-picked-at-random-by-default.md).
 
 ## Context
 

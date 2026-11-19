@@ -13,6 +13,15 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   results, redacted the same way, dotenv reads included), so the watch view, the Sessions page,
   session search and `session_read` show them. Schema version 69 indexes the Codex and Antigravity
   sessions already passed with no passages again from their start.
+- Random harness selection across all harnesses with available subscriptions (SPEC-520, task #502,
+  #1437, ADR-0377): restores `Random` (`Random agent` in the composer and Settings, `Random` /
+  `auto` in the automation editor) as the default, drawing uniformly (`1 / k`, unbiased over random
+  bytes) across `claude`, `codex`, and `antigravity` that currently have at least one healthy
+  non-exhausted subscription — equal chance per eligible harness regardless of subscription count,
+  excluding harnesses with zero or only finished subscriptions while another has capacity (falling
+  back to healthy `Usable` pools when every connected pool is temporarily limited). Drawn tasks keep
+  their harness for life (`harness_choice: random`); a running task agent's unadorned `task_create`
+  and `automation_create` still keep the calling task's harness.
 - Antigravity tasks show Working while a background command runs and when its completion
   starts another model turn. If the agent stops with unfinished steps, its task brief explains
   why it needs a person. Fixes #1444 (SPEC-528, task #510).
