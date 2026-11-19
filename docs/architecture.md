@@ -624,16 +624,21 @@ grows and is zeroed whole once the token is extracted
 Codex (`codex login --device-auth`) and Antigravity sign in the same way but leave a file instead
 of printing a token: `auth.json`, or the Antigravity CLI's token file below
 `.gemini/antigravity-cli`, read without following a link and sealed. The Antigravity CLI has no
-sign-in-only command: its sign-in is the whole agent TUI (auto-update off), which never exits on
-its own, so it is stopped 5 s after its token file appears. Once signed in, that TUI can run a
-shell command typed into it, which an instance administrator can do anyway (an MCP server's
-Test), and Yulius types nothing into it
+sign-in-only command: its sign-in is the whole agent TUI (auto-update off). It writes its token
+file before the rest of its setup (the data-use choice and more), so it is not stopped then. The
+terminal's state says `signed_in`, and the dialog offers Done. Done or closing the dialog (the
+cancel, answering `ok`), the CLI's exit or the timeout end it and seal the token file
+([decision 0369](decisions/0369-a-google-sign-in-runs-until-the-person-is-done.md)). Once signed
+in, that TUI can run a shell command typed into it, which an instance administrator can do anyway
+(an MCP server's Test), and Yulius types nothing into it
 ([decision 0361](decisions/0361-antigravity-is-a-third-harness-picked-at-random-by-default.md)).
 
 ```mermaid
 stateDiagram-v2
   [*] --> running: Add subscription / Sign in again
   running --> ok: token sealed (CLI exit, or 5 s after the token)
+  running --> signed_in: Antigravity token file written, its setup goes on (ADR-0369)
+  signed_in --> ok: token file sealed (Done or dialog closed, CLI exit, or 15 min timeout)
   running --> error: no token at exit, or 15 min timeout
   running --> cancelled: dialog closed (cancel) before a token, replaced, or subscription removed
   ok --> [*]: dialog closes, toast "… is connected"

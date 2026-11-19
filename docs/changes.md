@@ -13,6 +13,10 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   stops; the briefing, `issue_create` and `delivery-pipeline` say so, and an issue filed for an
   unrelated defect is named in the summary. Quartio-v2 task #312 had filed its PDF bug as an issue.
 
+- The Antigravity sign-in window stays open for the CLI's setup (SPEC-515, task #497, #1421):
+  after the Google code, the Antigravity CLI goes on asking (its data-use choice and more), so the
+  server no longer stops it 5 s after its token file appears. The window says Antigravity is
+  signed in and offers Done, which seals the token file and connects the subscription (ADR-0369).
 - Subscription cards name their agent (SPEC-513, task #495): on the Subscriptions page, the
   Status panel and the Dashboard, a badge under each subscription's name reads Claude, Codex or
   Antigravity (the vendor, such as Google Gemini, on hover), before the email. The web mock's
