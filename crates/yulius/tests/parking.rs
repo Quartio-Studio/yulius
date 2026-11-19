@@ -1293,12 +1293,8 @@ fn the_digest_parks_a_quiet_task_that_asks_nobody_and_lists_its_last_message() -
         let since = app.now().0 - 60_000;
         ask(&app, &id).await?;
         past_the_grace(&app, &id).await?;
-        assert_eq!(app.send_digests_now(since, Some(1)).await, 1);
-        assert_eq!(
-            status_of(&app, &id).await.0,
-            Some(TaskStatus::Running),
-            "it asks"
-        );
+        let run = app.send_digests_now(since, Some(1)).await;
+        assert_eq!((run.sent, run.parked), (1, 0), "it asks");
         let digest = latest_digest(&app, &caller.user).await?;
         assert_eq!(
             digest["waiting"][0]["detail"], "Choose the colour",
@@ -1311,7 +1307,8 @@ fn the_digest_parks_a_quiet_task_that_asks_nobody_and_lists_its_last_message() -
             .set_task_needs_you(&id, None, app.now())
             .await?;
         past_the_grace(&app, &id).await?;
-        assert_eq!(app.send_digests_now(since, Some(1)).await, 1);
+        let run = app.send_digests_now(since, Some(1)).await;
+        assert_eq!((run.sent, run.parked), (1, 1));
         wait_for("the digest's park", Duration::from_secs(30), || async {
             status_of(&app, &id).await.0 == Some(TaskStatus::Parked)
         })

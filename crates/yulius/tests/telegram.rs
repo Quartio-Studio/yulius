@@ -1553,7 +1553,7 @@ async fn a_digest_lists_what_waits_first_redacted_and_reaches_the_chat() -> Test
 
     let since = w.h.app.now().0 - 24 * 60 * MINUTE_MS;
     assert_eq!(
-        w.h.app.send_digests_now(since, None).await,
+        w.h.app.send_digests_now(since, None).await.sent,
         1,
         "bob has nothing"
     );
@@ -1603,7 +1603,7 @@ async fn a_digest_lists_what_waits_first_redacted_and_reaches_the_chat() -> Test
     .await?;
     assert_eq!(r.body["choices"]["digest"], false, "{}", r.body);
     let told = w.fake.sent_to(100).len();
-    assert_eq!(w.h.app.send_digests_now(since, None).await, 1);
+    assert_eq!(w.h.app.send_digests_now(since, None).await.sent, 1);
     barrier(&w, "d1").await?;
     assert_eq!(w.fake.sent_to(100).len(), told, "{:?}", w.fake.sent_to(100));
     let again = api(&w, Method::GET, "/api/me/digest", None, &w.alice).await?;
@@ -1623,7 +1623,7 @@ async fn the_digest_runs_once_a_day_after_its_time() -> TestResult {
     w.h.clock
         .0
         .store(day + 10 * 60 * MINUTE_MS, Ordering::SeqCst);
-    assert_eq!(w.h.app.digest_tick().await, 0, "off by default");
+    assert_eq!(w.h.app.digest_tick().await.sent, 0, "off by default");
     let r = api(
         &w,
         Method::PUT,
@@ -1633,15 +1633,15 @@ async fn the_digest_runs_once_a_day_after_its_time() -> TestResult {
     )
     .await?;
     assert_eq!(r.status, StatusCode::OK, "{}", r.body);
-    assert_eq!(w.h.app.digest_tick().await, 0, "before its time");
+    assert_eq!(w.h.app.digest_tick().await.sent, 0, "before its time");
     w.h.clock
         .0
         .store(day + 18 * 60 * MINUTE_MS + 1, Ordering::SeqCst);
-    assert_eq!(w.h.app.digest_tick().await, 1);
-    assert_eq!(w.h.app.digest_tick().await, 0, "once a day");
+    assert_eq!(w.h.app.digest_tick().await.sent, 1);
+    assert_eq!(w.h.app.digest_tick().await.sent, 0, "once a day");
     w.h.clock
         .0
         .store(day + 42 * 60 * MINUTE_MS + 1, Ordering::SeqCst);
-    assert_eq!(w.h.app.digest_tick().await, 1, "the next day");
+    assert_eq!(w.h.app.digest_tick().await.sent, 1, "the next day");
     Ok(())
 }

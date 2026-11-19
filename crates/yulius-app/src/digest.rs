@@ -113,6 +113,15 @@ pub fn digest_text(digest: &DigestView) -> String {
     out
 }
 
+/// What a run did: how many people got a digest and how many sessions it began to park.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct DigestRun {
+    /// People who got a digest.
+    pub sent: usize,
+    /// Parks it began (DIG-003).
+    pub parked: usize,
+}
+
 /// One person's digest while it is built.
 #[derive(Default)]
 struct Draft {
@@ -197,21 +206,21 @@ impl App {
     }
 
     /// The background tick's look (DIG-002): runs the day's digest when it is due and this tick
-    /// took the run. Returns how many digests went out.
-    pub async fn digest_tick(self: &Arc<Self>) -> usize {
+    /// took the run.
+    pub async fn digest_tick(self: &Arc<Self>) -> DigestRun {
         let Ok((setting, ran)) = self.stored_digest_setting().await else {
-            return 0;
+            return DigestRun::default();
         };
         let now = self.now();
         if !run_due(&setting, now.0, ran.map(|r| r.0)) {
-            return 0;
+            return DigestRun::default();
         }
         match self.deps.store.take_digest_run(ran, now).await {
             Ok(true) => {}
-            Ok(false) => return 0,
+            Ok(false) => return DigestRun::default(),
             Err(err) => {
                 tracing::warn!(error = %err, "the digest's run could not be taken");
-                return 0;
+                return DigestRun::default();
             }
         }
         let since = ran.map_or(now.0 - DAY_MS, |r| r.0);
@@ -221,12 +230,12 @@ impl App {
 
     /// Parks what waits for nobody quiet for `park_after_ms` (DIG-003), then builds, keeps,
     /// publishes and sends each person's digest (DIG-004 to DIG-006), listing as parked what was
-    /// parked since `since_ms`. Returns how many people got one.
+    /// parked since `since_ms`.
     pub async fn send_digests_now(
         self: &Arc<Self>,
         since_ms: i64,
         park_after_ms: Option<u64>,
-    ) -> usize {
+    ) -> DigestRun {
         let parked_now = match park_after_ms {
             Some(after_ms) => self.digest_park(after_ms).await,
             None => HashSet::new(),
@@ -235,7 +244,10 @@ impl App {
             Ok(drafts) => drafts,
             Err(err) => {
                 tracing::warn!(error = %err, "the digest could not be built");
-                return 0;
+                return DigestRun {
+                    sent: 0,
+                    parked: parked_now.len(),
+                };
             }
         };
         let mut sent = 0;
@@ -248,7 +260,11 @@ impl App {
                 Err(err) => tracing::warn!(user = %user, error = %err, "a digest failed"),
             }
         }
-        sent
+        tracing::info!(sent, parked = parked_now.len(), "the end-of-day digest ran");
+        DigestRun {
+            sent,
+            parked: parked_now.len(),
+        }
     }
 
     /// DIG-003: the running tasks the digest parks.
