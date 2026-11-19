@@ -348,16 +348,19 @@ impl App {
             None => None,
         };
         let model = opt_str(args, "model")?;
-        // No agent named (or `auto`): the one the model implies, else the calling task's own,
-        // else Claude Code; never drawn (SPEC-514 PIN-002).
+        // Omitting both `harness` and `model` from a running task keeps its own agent; explicit
+        // `auto` or a caller without a task (Superagent, remote MCP) draws (SPEC-520 RHM-004).
         let harness = match opt_str(args, "harness")? {
-            Some(named) if named.trim() != AUTO => named,
-            _ => yulius_domain::harness::Harness::unnamed(
-                model.as_deref(),
-                caller.task.as_ref().map(|t| t.harness),
-            )
-            .as_str()
-            .to_owned(),
+            Some(named) => named,
+            None => match model.as_deref() {
+                Some(m) => yulius_domain::harness::Harness::implied_by(m)
+                    .as_str()
+                    .to_owned(),
+                None => caller
+                    .task
+                    .as_ref()
+                    .map_or_else(|| AUTO.to_owned(), |t| t.harness.as_str().to_owned()),
+            },
         };
         let request = CreateTask {
             prompt: prompt.to_owned(),
