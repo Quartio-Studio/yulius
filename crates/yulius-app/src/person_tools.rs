@@ -602,9 +602,14 @@ impl App {
                     // what its person is told to do instead. Whose task it is comes first, as
                     // it does in Continue: advice is for a task the person may change (review
                     // of slice 2, R3-1). The state is the one that check read.
+                    // A parked task resumes in its session (SPEC-512 PRK-005).
+                    "task_restart" if task.status == TaskStatus::Parked => self
+                        .continue_task(ctx, id, &ContinueTask { account_id: None })
+                        .await
+                        .map_err(|err| restart_refusal(err, task.number))?,
                     "task_restart" if !task.status.is_resting() => {
                         let task = self.load_task(ctx, id, Action::Work).await?;
-                        if !task.status.is_resting() {
+                        if !task.status.is_resting() && task.status != TaskStatus::Parked {
                             return Err(not_resting(task.number, task.status));
                         }
                         self.continue_task(ctx, id, &ContinueTask { account_id: None })

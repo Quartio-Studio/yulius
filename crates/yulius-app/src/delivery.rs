@@ -3401,7 +3401,10 @@ impl App {
     pub(crate) async fn task_is_done(&self, task: &TaskRecord) -> bool {
         use yulius_domain::task::{Activity, TaskStatus};
         let running = task.status == TaskStatus::Running;
-        let turn_ended = (running && task.activity.is_some_and(Activity::is_idle))
+        // A parked task is an idle run whose session went to sleep (SPEC-512 PRK-004): nothing of
+        // it goes on by itself, so no shell, armed merge or news keeps it from Done.
+        let parked = task.status == TaskStatus::Parked;
+        let turn_ended = ((running || parked) && task.activity.is_some_and(Activity::is_idle))
             || task.status == TaskStatus::Closed;
         if !turn_ended || (running && self.background_shells_of(&task.id).unwrap_or(0) > 0) {
             return false;
@@ -3410,7 +3413,7 @@ impl App {
         if running && self.merge_is_armed(&task.id) {
             return false;
         }
-        if running && task.activity == Some(Activity::Done) {
+        if (running || parked) && task.activity == Some(Activity::Done) {
             return true;
         }
         // One reading of its delivery for the whole decision: a merge recorded between two
@@ -3420,7 +3423,7 @@ impl App {
         };
         // Yulius still has news of its pull request for its agent (an armed merge, a merge not
         // said yet): it goes on by itself, so it is not Done (SPEC-487 CHN-001, CHN-002).
-        if self.pr_news_due_of(task, record.as_ref(), false).await {
+        if !parked && self.pr_news_due_of(task, record.as_ref(), false).await {
             return false;
         }
         // A pull request makes a task Done only when no work it declared is left: its plan is

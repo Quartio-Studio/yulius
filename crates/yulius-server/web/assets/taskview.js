@@ -18,7 +18,7 @@ import { mentionOf, parsePrompt } from './promptparts.js';
 import { relLong, dateTime, whenLabel } from './format.js';
 import { readJson, writeJson } from './store.js';
 import { href } from './router.js';
-import { findModel, findEffort, modelFields, modelMenuItems, effortMenuItems, MODEL_PREF_KEY, EFFORT_PREF_KEY } from './models.js';
+import { findModel, findEffort, modelFields, modelMenuItems, effortMenuItems, modelPreferences } from './models.js';
 import { randomQuote } from './quotes.js';
 import { brandSmoke } from './brandfx.js';
 import { BRAND } from './brand.js';
@@ -101,7 +101,8 @@ function readOnlyText(sandbox) {
  */
 function emptyTerminalMessage(task) {
   switch (task.status) {
-    case 'queued': return { title: 'Queued', text: 'The agent starts as soon as a session slot is free.', busy: true };
+    // What it waits for, when the server says (SPEC-512 PRK-007).
+    case 'queued': return { title: 'Queued', text: task.queue_reason ? `${task.queue_reason}. It starts by itself.` : 'The agent starts as soon as a session slot is free.', busy: true };
     case 'starting': return { title: `Starting ${cliOf(task)}…`, text: 'The session appears here in a moment.', busy: true };
     case 'switching': return { title: 'Continuing…', text: 'The session picks up where it left off in a moment.', busy: true };
     case 'waiting_capacity': return task.waits_for_account
@@ -217,7 +218,8 @@ export function mountTaskView(ctx, sandbox, task) {
         // The exit can arrive before the task's new status: write access is enough, but an archived
         // task is restored first, as in its menu (taskActions).
         if (allows(sandbox.access, 'write') && !owner() && !current.archived) {
-          actions.push({ label: message.retry ? 'Try again' : 'Continue', run: () => continueTask(ctx, current) });
+          // A parked task resumes in its session (SPEC-512 PRK-005).
+          actions.push({ label: message.retry ? 'Try again' : message.resume ? 'Resume' : 'Continue', run: () => continueTask(ctx, current) });
         }
         return actions;
       },
@@ -871,7 +873,8 @@ export function mountTaskView(ctx, sandbox, task) {
     setChildren(statusEl,
       statusMark(info),
       h('span', { class: 'strip-state' }, info.label, reset ? h('span', { class: 'strip-reset' }, ` · ${reset}`) : null,
-        info.shells ? h('span', { class: 'strip-reset' }, ` · ${shellsLine(info.shells, info.shellsSince)}`) : null));
+        info.shells ? h('span', { class: 'strip-reset' }, ` · ${shellsLine(info.shells, info.shellsSince)}`) : null,
+        current.status === 'queued' && current.queue_reason ? h('span', { class: 'strip-reset' }, ` · ${current.queue_reason}`) : null));
     // The chain shows on both tasks (TSK-012): what this task runs after, what runs after it.
     const slug = encodeURIComponent((ctx.store.sandboxById(sandbox.id) || sandbox).slug);
     const chainLink = (link, text, title) => (link.task_id
@@ -1236,8 +1239,7 @@ export function mountComposer(ctx, sandbox) {
   // `{ at: iso }` starts by itself then; null starts as chosen above.
   let prepare = draft.prepare || null;
   let split = null; // the split card while it shows (TSK-011)
-  let modelId = findModel(readJson(MODEL_PREF_KEY, null)) ? readJson(MODEL_PREF_KEY, null) : null;
-  let effortId = findEffort(readJson(EFFORT_PREF_KEY, null)) ? readJson(EFFORT_PREF_KEY, null) : null;
+  const picks = modelPreferences();
 
   const chip = (label, onOpen, extra = {}) => {
     // The visible value is the accessible name, with a hidden "Mode: " prefix (WCAG 2.5.3).
@@ -1363,13 +1365,12 @@ export function mountComposer(ctx, sandbox) {
     // The send button says what it does: a prepared task is not started (SPEC-105).
     startButton.setAttribute('aria-label', startAction());
     startButton.title = write ? `${startAction()} (${SUBMIT_KEYS})` : 'Requires write access';
-    const found = findModel(modelId);
-    setChildren(modelChip, h('span', { class: 'sr-only' }, 'Model: '), h('span', { class: 'chip-label' }, found ? found.model.name : 'Default model'), icon('down', { size: 12 }));
-    modelChip.title = found ? `${found.provider.name} · ${found.model.name}` : 'Model: default, Claude Code, Opus 5.5';
+    const found = findModel(picks.model);
+    setChildren(modelChip, h('span', { class: 'sr-only' }, 'Model: '), h('span', { class: 'chip-label' }, found ? found.model.name : 'Random agent'), icon('down', { size: 12 }));
+    modelChip.title = found ? `${found.provider.name} · ${found.model.name}` : 'Agent: drawn for each task, Claude Code (Opus 5.5), Codex (GPT-6.2 Astra) or Antigravity (Gemini 4 Neon)';
     // A model without effort levels (Haiku) hides the effort choice and sends none.
-    const effortless = Boolean(found && found.model.effort === false);
-    effortChip.hidden = effortless;
-    const effort = findEffort(effortId);
+    effortChip.hidden = found?.model.efforts?.length === 0;
+    const effort = findEffort(picks.effort);
     setChildren(effortChip, h('span', { class: 'sr-only' }, 'Effort: '), h('span', { class: 'chip-label' }, effort ? effort.name : 'Default effort'), icon('down', { size: 12 }));
     // Every choice shown here is the draft's (DRF-003).
     if (draft.mode !== mode || draft.workflowId !== workflowId || draft.afterTaskId !== afterTaskId || draft.startRule !== startRule || draft.supertask !== supertask || draft.prepare !== prepare) {
@@ -1459,11 +1460,11 @@ export function mountComposer(ctx, sandbox) {
   }
 
   function openModelMenu(anchor) {
-    openMenu(anchor, modelMenuItems(modelId, (id) => { modelId = id; writeJson(MODEL_PREF_KEY, id); renderChips(); prompt.focus(); }));
+    openMenu(anchor, modelMenuItems(picks.model, (id) => { picks.setModel(id); renderChips(); prompt.focus(); }));
   }
 
   function openEffortMenu(anchor) {
-    openMenu(anchor, effortMenuItems(effortId, (id) => { effortId = id; writeJson(EFFORT_PREF_KEY, id); renderChips(); prompt.focus(); }));
+    openMenu(anchor, effortMenuItems(picks.model, picks.effort, (id) => { picks.setEffort(id); renderChips(); prompt.focus(); }));
   }
 
 
@@ -1724,9 +1725,8 @@ export function mountComposer(ctx, sandbox) {
     const body = { prompt: text, mode };
     if (title) body.title = title;
     if (workflowId) body.workflow_id = workflowId;
-    const found = findModel(modelId);
-    Object.assign(body, modelFields(modelId));
-    if (effortId && !(found && found.model.effort === false)) body.effort = effortId;
+    Object.assign(body, modelFields(picks.model));
+    if (picks.effort) body.effort = picks.effort;
     return body;
   }
 
@@ -1820,8 +1820,9 @@ export function mountComposer(ctx, sandbox) {
       }),
       keep: () => busyRun(autoStage(), async () => opened(await createTask(bodyFor(value)))),
       close: () => clearSplit(),
-      // A task of another agent runs without a Claude account (SPEC-503, SPEC-505).
-      codex: Boolean(bodyFor(value).harness),
+      // A task of another agent runs without a Claude account (SPEC-503, SPEC-505), and so does a
+      // Random one while Codex or Antigravity is usable (SPEC-520 RHM-006).
+      codex: Boolean(bodyFor(value).harness) || (!findModel(picks.model) && (codexConnected(ctx.store.state.me) || antigravityConnected(ctx.store.state.me))),
     });
     setChildren(intakeSlot, split.el);
     const calm = window.matchMedia('(prefers-reduced-motion: reduce)').matches;

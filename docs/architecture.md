@@ -57,6 +57,8 @@ flowchart LR
 A Codex task runs `codex --no-daemon` in its worktree with `CODEX_HOME=<sandbox>/codex/<account>`,
 on its own model and effort or else `-m gpt-6.2-astra -c model_reasoning_effort="high"` (SPEC-511,
 [decision 0366](decisions/0366-a-codex-task-runs-gpt-6-2-astra-at-high-effort-by-default.md)).
+For a ChatGPT Pro 500 sign-in, the launch planner writes `service_tier = "ultrafast"` as the
+home default ([decision 0375](decisions/0375-codex-selects-ultrafast-for-pro-500.md)).
 The supervisor writes the home's `auth.json` (the account's sealed credential), `config.toml` and
 `hooks.json` through handles that follow no link, and reads the rollout from the sandbox's shared
 `codex/sessions`; its hooks reach Yulius as `yulius hook codex <event>`. After the run, a
@@ -80,23 +82,30 @@ takes an OpenAI API key, or takes the `auth.json` of a ChatGPT sign-in made else
 sealed in the vault. Its usage windows come from `chatgpt.com/backend-api/wham/usage` and from
 its runs' rollouts. In the web UI, Subscriptions' Add dialog chooses the agent first (Claude Code
 or Codex) and then its way in, a Codex card imports a new `auth.json`, the composer's model menu
-offers Codex under OpenAI (`harness: codex`, no model), and an automation chooses the agent of
-the tasks it creates.
+groups explicit model IDs by provider. Each Codex or Gemini choice sends its harness and model,
+and the Codex default choice sends its harness alone. Settings and the composer share the model's
+supported effort levels and browser preferences. An automation chooses the agent of the tasks it
+creates. See [ADR-0372](decisions/0372-model-pickers-use-provider-reasoning-levels.md).
 
 Rotation picks only accounts of the task's provider, so a Codex task moves only between Codex
 accounts, by `codex resume <id>`: at a usage limit, when a person moves it and when its
 subscription is removed (SPEC-447); it waits when none has capacity, and with no Codex
 subscription usable it asks for one.
 
-A task's agent is set at creation and never drawn (SPEC-514, ADR-0368): without an agent (or
-with `auto`) it is the one its model implies, else Claude Code (`Harness::unnamed`); an agent's
-`task_create` and `automation_create` pass the calling task's own; an automation stores the agent
-it names (`auto` saves as `claude`; migration 0068 turned stored `auto` into `claude`). Tasks
-drawn while SPEC-505 RND-001 drew stay in `task_harness_draws`, shown as `harness_choice`
-`random`.
+A task's agent is assigned at creation and kept for life (SPEC-520, ADR-0377, superseding the
+no-draw part of SPEC-514 / ADR-0368): without an explicit agent (or with `auto`) it takes the one
+its model implies, else draws uniformly (`1 / k`, rejection-sampled over `random_bytes`) across the
+harnesses in `Harness::ALL` (`claude`, `codex`, `antigravity`) that have at least one healthy
+non-exhausted subscription for their default model (falling back to healthy `Usable` pools when
+every connected pool is temporarily limited, else `ClaudeCode`), recorded in `task_harness_draws`
+(`harness_choice: random`). A running task agent's `task_create` and `automation_create` without
+`harness` (or `model`) keep the calling task's agent (`chosen`), while explicit `auto`, Superagent
+calls and `auto` automations draw per created task.
 
-An Antigravity task ([decision 0361](decisions/0361-antigravity-is-a-third-harness-picked-at-random-by-default.md))
-runs the `agy` TUI on a Google account with a home of its own in its run directory,
+An Antigravity task ([decision 0361](decisions/0361-antigravity-is-a-third-harness-picked-at-random-by-default.md),
+[decision 0373](decisions/0373-gemini-4-neon-is-antigravitys-default-model-on-agy-1-5-12.md))
+runs the `agy` TUI on a Google account, on its own model and effort or else `--model gemini-4-neon
+--effort high` (SPEC-519), with a home of its own in its run directory,
 `<run>/antigravity-home`, the folder whose `.gemini` the CLI reads: Yulius writes its
 `settings.json` (the worktree trusted, the first-run screens skipped, `modelProvider: gemini` for
 a Gemini API key), `config/hooks.json`, `config/mcp_config.json` and, for a Google sign-in, the
@@ -105,8 +114,10 @@ CLI's token file. Its `antigravity-cli/brain` and `conversations` link to
 `--conversation <id>`. A contained run binds that `.gemini` over the sandbox home's (the agent's
 shell keeps the sandbox's `HOME`); an uncontained one sets `HOME` to the run's Antigravity home.
 `yulius hook antigravity <event>` translates its hooks (SessionStart, the first model call of a
-typed turn, Stop, `run_command`) to Yulius's; its transcript gives prompts, tokens and limits, and
-a turn its model API failed ends with a Stop Yulius settles without a gate. When its run ends, a
+turn, Stop, `run_command`) to Yulius's; its transcript gives prompts, tokens and limits, and
+a turn its model API failed ends with a Stop Yulius settles without a gate. A successful Stop
+with `fullyIdle: false` keeps the task Working while its command runs. A first invocation
+following a system message signals activity without submitting a prompt ([SPEC-528](../.ai/specs/SPEC-528-antigravity-tasks-show-needs-its-person.md)). When its run ends, a
 token file the CLI refreshed replaces the stored sign-in and is removed.
 
 ```mermaid
@@ -124,8 +135,9 @@ flowchart LR
 
 The Codex CLI and the Antigravity CLI are Yulius's own
 ([decision 0355](decisions/0355-codex-returns-as-a-second-harness-with-a-pinned-cli.md),
-[decision 0361](decisions/0361-antigravity-is-a-third-harness-picked-at-random-by-default.md)):
-each pinned release (Codex 0.169.0, Antigravity 1.5.10) is downloaded once (Codex from npm,
+[decision 0361](decisions/0361-antigravity-is-a-third-harness-picked-at-random-by-default.md),
+[decision 0373](decisions/0373-gemini-4-neon-is-antigravitys-default-model-on-agy-1-5-12.md)):
+each pinned release (Codex 0.170.0, Antigravity 1.5.12) is downloaded once (Codex from npm,
 Antigravity from Google's release storage), checked against the sha512 in the source
 (`yulius_domain::agent_cli::{codex, antigravity}`) and unpacked into
 `<data>/codex-cli/<version>-<platform>` or `<data>/antigravity-cli/<version>-<platform>` by one
@@ -135,8 +147,8 @@ read-only; sign-ins start it the same way. Without it, a host `codex` or `agy` i
 
 ```mermaid
 flowchart LR
-  NPM["registry.npmjs.org: @openai/codex@0.169.0-linux-x64"] -->|"first need, sha512 pinned"| CLI["data/codex-cli/0.169.0-linux-x64 (bin/codex, codex-path/rg)"]
-  GCS["storage.googleapis.com: antigravity-cli 1.5.10 linux-x64"] -->|"first need, sha512 pinned"| AGY["data/antigravity-cli/1.5.10-linux-x64 (antigravity)"]
+  NPM["registry.npmjs.org: @openai/codex@0.170.0-linux-x64"] -->|"first need, sha512 pinned"| CLI["data/codex-cli/0.170.0-linux-x64 (bin/codex, codex-path/rg)"]
+  GCS["storage.googleapis.com: antigravity-cli 1.5.12 linux-x64"] -->|"first need, sha512 pinned"| AGY["data/antigravity-cli/1.5.12-linux-x64 (antigravity)"]
   CLI -->|"absolute path, read-only bind"| RUN["Codex run in its sandbox"]
   CLI -->|"absolute path"| LOGIN["codex login --device-auth"]
   AGY -->|"absolute path, read-only bind"| ARUN["Antigravity run in its sandbox"]
@@ -1407,6 +1419,13 @@ sequenceDiagram
     H->>Y: end the round with its verdict
 ```
 
+## Harness comparison
+
+Dashboard → Harnesses reads the sandbox analytics summary for tasks created in the selected UTC period.
+Task counts use the assigned harness. Each run contributes to the executing harness’s token totals and
+reporting coverage. Ended runs also contribute elapsed wall time to that harness’s median and p90.
+[ADR-0374](decisions/0374-compare-harnesses-by-executing-attempt.md)
+
 ## Agent feedback
 
 Yulius has no messages for now ([SPEC-028](../.ai/specs/SPEC-028-delete-message-mechanism-for-now-until-w.md),
@@ -1736,8 +1755,10 @@ The reads the server still made by path there go the same way
 ([decision 0315](decisions/0315-what-the-host-reads-in-a-sandbox-it-reads-through-handles.md)):
 a session's transcript is opened from the sandbox directory folder by folder, without following
 a link or waiting on a FIFO, and only a regular file is read (`transcripts::open`, used by the
-transcript pages, `session_read` and the search index; the run watcher's tail opens it the same
-way at its name); the sandbox adapter reads the system layer's `passwd` and `group` itself, at
+transcript pages, `session_read` and the search index, which read a Claude Code session, a Codex
+rollout and an Antigravity transcript into the same entries, the format told by each line's
+shape ([SPEC-525](../.ai/specs/SPEC-525-hey-we-have-a-small-bug-i-don-t-see-a-pr.md)); the run
+watcher's tail opens it the same way at its name); the sandbox adapter reads the system layer's `passwd` and `group` itself, at
 most 1 MiB of a regular file, and hands people's identity files the text; `record_number` lists
 a numbered directory from the sandbox directory down; the quota's disk usage is measured from
 folder handles; and the task review reads an untracked file from the worktree's folder.
@@ -1978,6 +1999,38 @@ briefing quotes the newest end of the changes log: a log whose ISO dates run old
 quoted from its end, and its new entries go there. A changes folder (`[docs] changes` ending with
 `/`, or naming a directory) is quoted as its newest notes, by the date in their names, and each
 task adds one new note there ([decision 0248](decisions/0248-change-notes-may-be-a-folder-of-one-file-per-change.md)).
+
+### Parked sessions
+
+A task whose turn ended and that waits for a person gives its idle session up
+(`yulius-app/src/parking.rs`,
+[SPEC-512](../.ai/specs/SPEC-512-marcin-s-five-issues-1412-1418-1413-1107.md) part 1,
+[decision 0367](decisions/0367-an-idle-session-is-parked-and-resumed-by-a-message.md)). The
+background tick (every minute) reads the `running` tasks whose activity is `waiting` or `done`
+and parks one once `ParkFacts::parkable` holds for `YULIUS_PARK_AFTER_MINUTES` (default 30, 0
+off) counted from `state_at`: the list shows it under Needs you or Done, no turn runs, it left no
+background shell, subagent or dynamic workflow, does not wait in `yulius wait`, has no merge
+armed or pull request news due, no held prompt, no request in the sandbox browser, no pause, no
+possible draft or keystroke within the grace period, and is not an onboarding task.
+`park_task_now` asks again under the launch lock, sets the run's end intent `Park` and ends the
+session as a close does (graceful shutdown, then the escalation). The run's end, by its exit or
+its loss, makes the task `parked` with its activity (`settle_parked`) and audits `task.parked`.
+`parked` is neither live nor resting: no slot (`sessions_in_use` counts live runs only), its
+worktree, claims, `needs_you` and delivery stay, and the list groups it as an idle run with no
+live overlay. While the park is under way nothing is typed into the session. A message
+(`task_message`) or the web's Resume (`/continue`) resumes it through `start_run` with
+`RunStart::Resume`, in the same provider session; at the limit the resume waits `queued` with its
+prompt. A queued task's summary carries `queue_reason` (the session limit or an update), and
+`GET /api/capacity` counts working, idle, parked and queued sessions for the Capacity card.
+
+```mermaid
+stateDiagram-v2
+  running --> parked: idle past the grace period, nothing goes on (session ended)
+  parked --> starting: task_message or Resume (same session)
+  parked --> queued: resume at the session limit
+  parked --> closed: archive or close
+  parked --> stopped_cancelled: Stop
+```
 
 ### Supertasks
 
@@ -3216,6 +3269,10 @@ flowchart LR
 ```
 
 ## Terminal input
+
+Task terminals suppress xterm’s wheel-to-arrow fallback when the alternate buffer has no mouse
+tracking. The existing history offer handles the upward gesture.
+[Decision 0378](decisions/0378-keep-wheel-generated-arrows-out-of-task-prompts.md)
 
 A keystroke goes from xterm to the PTY and its echo comes back without waiting for the database or
 GitHub ([SPEC-118](../.ai/specs/SPEC-118-when-i-write-something-in-a-claude-termi.md),

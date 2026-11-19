@@ -374,6 +374,28 @@ pub struct CapacityView {
     /// The pool's tokens and their estimated API cost over the last 7 days.
     #[serde(default)]
     pub tokens: PoolTokensView,
+    /// The instance's agent sessions (SPEC-512 PRK-008).
+    #[serde(default)]
+    pub sessions: CapacitySessions,
+}
+
+/// The instance's agent sessions on the Capacity card (SPEC-512 PRK-008): what the limit counts
+/// apart from what it does not.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CapacitySessions {
+    /// Live sessions that count toward the limit: working ones and idle ones not Done.
+    pub working: u32,
+    /// The live-session limit (`max_sessions`).
+    pub limit: u32,
+    /// Live sessions the limit does not count: those of Done tasks (SES-101).
+    pub idle: u32,
+    /// Tasks whose idle session was parked: no process, no memory, resumed when written to.
+    pub parked: u32,
+    /// Tasks waiting in the queue for a session.
+    pub queued: u32,
+    /// How long an idle session that waits for a person is kept before it is parked, in
+    /// milliseconds; 0: parking is off.
+    pub park_after_ms: u64,
 }
 
 /// `GET /api/admin/github`.

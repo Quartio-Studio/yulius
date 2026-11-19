@@ -72,6 +72,11 @@ pub enum TaskStatus {
     /// time. Exit: Start now or the time → `queued`; cancel → `stopped(cancelled)`. No timeout:
     /// without a time it never starts by itself.
     Prepared,
+    /// Its idle session was ended to free its slot and memory (SPEC-512 PRK-001, ADR-0367): no
+    /// process, not ended. It keeps its activity, request, worktree and delivery, and resumes in
+    /// the same session. Owner: whoever writes to it. Exit: a resume → `starting` (`queued` at
+    /// the limit); a close or archive → `closed`; a stop → `stopped(cancelled)`. No timeout.
+    Parked,
 }
 
 /// Fine-grained activity while [`TaskStatus::Running`] (derived from hooks and transcripts).
@@ -146,6 +151,10 @@ pub enum TaskEvent {
     /// Before its first run a person changed how a waiting task starts: it now waits for them or
     /// a time (SPEC-126).
     PreparedChosen,
+    /// The idle session of a running task ended because Yulius parked it (SPEC-512 PRK-003).
+    Parked,
+    /// A person closed a parked task, which has no session to end (archive, close; PRK-001).
+    CloseRequested,
 }
 
 /// An event that is not valid in the current state.
@@ -175,6 +184,14 @@ impl TaskStatus {
             self,
             Self::Starting | Self::Running | Self::Switching | Self::Stopping
         )
+    }
+
+    /// Whether the task's work is in progress in this state, so its scope claims count and
+    /// other tasks are told of it: a live run, or a parked one that resumes in its session
+    /// (SPEC-512 PRK-001).
+    #[must_use]
+    pub fn holds_claims(self) -> bool {
+        self.is_live() || self == Self::Parked
     }
 
     /// Whether a merge its agent armed stays armed in this state: while the task's run lives,
@@ -241,8 +258,13 @@ impl TaskStatus {
             (S::Starting | S::Running | S::Switching | S::Stopping, E::Lost(reason)) => {
                 S::Stopped(reason)
             }
-            (S::Closed | S::Stopped(_) | S::Failed(_), E::ContinueRequested) => S::Starting,
-            (S::Closed | S::Stopped(_) | S::Failed(_), E::ContinueQueued) => S::Queued,
+            (S::Closed | S::Stopped(_) | S::Failed(_) | S::Parked, E::ContinueRequested) => {
+                S::Starting
+            }
+            (S::Closed | S::Stopped(_) | S::Failed(_) | S::Parked, E::ContinueQueued) => S::Queued,
+            (S::Running, E::Parked) => S::Parked,
+            (S::Parked, E::CloseRequested) => S::Closed,
+            (S::Parked, E::CancelRequested) => S::Stopped(StopReason::Cancelled),
             (from, event) => return Err(TransitionError { from, event }),
         };
         Ok(next)
@@ -289,6 +311,7 @@ impl TaskStatus {
             Self::Failed(FailReason::NoAccount) => "failed_no_account",
             Self::Chained => "chained",
             Self::Prepared => "prepared",
+            Self::Parked => "parked",
         }
     }
 
@@ -303,7 +326,7 @@ impl TaskStatus {
 }
 
 /// Every task status, for exhaustive mapping.
-pub const ALL_STATUSES: [TaskStatus; 19] = [
+pub const ALL_STATUSES: [TaskStatus; 20] = [
     TaskStatus::Queued,
     TaskStatus::Starting,
     TaskStatus::Running,
@@ -323,6 +346,7 @@ pub const ALL_STATUSES: [TaskStatus; 19] = [
     TaskStatus::Failed(FailReason::NoAccount),
     TaskStatus::Chained,
     TaskStatus::Prepared,
+    TaskStatus::Parked,
 ];
 
 impl Activity {
@@ -516,6 +540,10 @@ impl AttentionFacts {
         if self.status.is_resting() || self.status == TaskStatus::Stopping {
             return G::Ended;
         }
+        // A parked task has no run to pause or to go on with (SPEC-512 PRK-004).
+        if self.status == TaskStatus::Parked {
+            return self.parked_group();
+        }
         // A paused run does nothing until it resumes, whatever it waited for (SPEC-191).
         if self.paused {
             return G::Working;
@@ -559,6 +587,8 @@ impl AttentionFacts {
             }
         }
         match self.status {
+            // Returned above.
+            TaskStatus::Parked => G::NeedsYou,
             TaskStatus::Running => match self.activity {
                 Some(Activity::Waiting | Activity::Done) if self.background_shells => G::Working,
                 Some(Activity::Waiting) if self.yulius_wait => G::Working,
@@ -579,6 +609,30 @@ impl AttentionFacts {
             | TaskStatus::Closed
             | TaskStatus::Stopped(_)
             | TaskStatus::Failed(_) => G::Ended,
+        }
+    }
+
+    /// The group of a parked task (SPEC-512 PRK-004): the group of the idle run it was, with no
+    /// live overlay (shells, `yulius wait`, an armed merge, a pause), and never Working: nothing
+    /// of it goes on by itself, so what would keep a running agent busy (its checks running, a
+    /// conflict its pull request watch tells it of, a CI run to run again, a first turn) waits
+    /// for a person, who resumes it.
+    fn parked_group(&self) -> TaskGroup {
+        // The idle run it was, with nothing of a session going on (review round 2 of SPEC-512
+        // part 1: the web's `asIdleRun` reads it the same way).
+        let run = Self {
+            status: TaskStatus::Running,
+            background_shells: false,
+            yulius_wait: false,
+            merge_armed: false,
+            paused: false,
+            ..*self
+        }
+        .group();
+        if run == TaskGroup::Working {
+            TaskGroup::NeedsYou
+        } else {
+            run
         }
     }
 
@@ -809,6 +863,152 @@ mod tests {
         assert!(TaskStatus::Running.is_live());
         assert!(!TaskStatus::Queued.is_live());
         assert!(TaskStatus::Failed(FailReason::SpawnError).is_resting());
+    }
+
+    /// SPEC-512 PRK-001: a running task's session is parked and it leaves `parked` only by a
+    /// resume, a close or a stop; it is neither live nor resting.
+    #[test]
+    fn a_parked_task_resumes_closes_or_stops() -> Result<(), TransitionError> {
+        assert_eq!(
+            TaskStatus::Running.apply(TaskEvent::Parked)?,
+            TaskStatus::Parked
+        );
+        let parked = TaskStatus::Parked;
+        assert_eq!(parked.as_str(), "parked");
+        assert_eq!(TaskStatus::parse("parked"), Some(parked));
+        assert!(!parked.is_live());
+        assert!(!parked.is_resting());
+        assert!(!parked.keeps_an_armed_merge());
+        assert!(parked.holds_claims());
+        assert!(TaskStatus::Running.holds_claims());
+        assert!(!TaskStatus::Closed.holds_claims());
+        assert_eq!(
+            parked.apply(TaskEvent::ContinueRequested)?,
+            TaskStatus::Starting
+        );
+        assert_eq!(parked.apply(TaskEvent::ContinueQueued)?, TaskStatus::Queued);
+        assert_eq!(parked.apply(TaskEvent::CloseRequested)?, TaskStatus::Closed);
+        assert_eq!(
+            parked.apply(TaskEvent::CancelRequested)?,
+            TaskStatus::Stopped(StopReason::Cancelled)
+        );
+        // Nothing else moves it, and only a running task parks.
+        for event in [
+            TaskEvent::Spawned,
+            TaskEvent::Exited { normal: true },
+            TaskEvent::CapacityGranted,
+            TaskEvent::SwitchStarted,
+            TaskEvent::Parked,
+        ] {
+            assert!(parked.apply(event).is_err(), "{event:?}");
+        }
+        for status in ALL_STATUSES {
+            if status != TaskStatus::Running {
+                assert!(status.apply(TaskEvent::Parked).is_err(), "{status:?}");
+            }
+            if status != TaskStatus::Parked {
+                assert!(
+                    status.apply(TaskEvent::CloseRequested).is_err(),
+                    "{status:?}"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    /// SPEC-512 PRK-004: a parked task is shown where an idle running task with no live overlay
+    /// is: Needs you or Done, never Working or Ended.
+    #[test]
+    fn a_parked_task_stays_in_its_group() {
+        let parked = |activity| AttentionFacts::new(TaskStatus::Parked, Some(activity));
+        assert_eq!(parked(Activity::Done).group(), TaskGroup::Done);
+        assert_eq!(parked(Activity::Waiting).group(), TaskGroup::Done);
+        let mut work_left = parked(Activity::Waiting);
+        work_left.plan_open = true;
+        assert_eq!(work_left.group(), TaskGroup::NeedsYou);
+        let mut asked = parked(Activity::Waiting);
+        asked.browser_request = true;
+        assert_eq!(asked.group(), TaskGroup::NeedsYou);
+        let mut failing = parked(Activity::Waiting);
+        failing.pull = Some(PullSignal::Failing);
+        assert_eq!(failing.group(), TaskGroup::NeedsYou);
+        let mut merged = parked(Activity::Waiting);
+        merged.pull = Some(PullSignal::Merged);
+        assert_eq!(merged.group(), TaskGroup::Done);
+        // Never Working, nor Ended: it went to sleep where it was. Nothing of it goes on by
+        // itself, so what would keep a running agent busy (its checks, a conflict its pull
+        // request watch tells it of, a CI run to rerun) is a person's now (review round 1, M2).
+        let signals = [
+            None,
+            Some(PullSignal::Tested),
+            Some(PullSignal::InReview),
+            Some(PullSignal::Conflicting),
+            Some(PullSignal::Failing),
+            Some(PullSignal::Errored),
+            Some(PullSignal::Merged),
+        ];
+        for activity in [Activity::Waiting, Activity::Done, Activity::NeedsAttention] {
+            for pull in signals {
+                for plan_open in [false, true] {
+                    let mut facts = parked(activity);
+                    facts.pull = pull;
+                    facts.plan_open = plan_open;
+                    let group = facts.group();
+                    assert!(
+                        matches!(group, TaskGroup::NeedsYou | TaskGroup::Done),
+                        "{activity:?} {pull:?} plan_open={plan_open}: {group:?}"
+                    );
+                }
+            }
+        }
+        for pull in [
+            PullSignal::InReview,
+            PullSignal::Conflicting,
+            PullSignal::Errored,
+        ] {
+            let mut waiting = parked(Activity::Waiting);
+            waiting.pull = Some(pull);
+            assert_eq!(waiting.group(), TaskGroup::NeedsYou, "{pull:?}");
+        }
+        // An achieved goal is Done whatever its checks still do, as for a running task.
+        let mut achieved = parked(Activity::Done);
+        achieved.pull = Some(PullSignal::InReview);
+        assert_eq!(achieved.group(), TaskGroup::Done);
+        // Review round 2 (N1): it reads as the idle run it was, whatever the facts, and only
+        // what would keep that run Working is a person's: the web's rule (`asIdleRun`) is the
+        // same.
+        for activity in [
+            None,
+            Some(Activity::Waiting),
+            Some(Activity::Done),
+            Some(Activity::NeedsAttention),
+        ] {
+            for pull in signals {
+                for (plan_open, spec_unfinished, goal_unfinished) in [
+                    (false, false, false),
+                    (true, false, false),
+                    (false, true, false),
+                    (false, false, true),
+                ] {
+                    let mut facts = AttentionFacts::new(TaskStatus::Parked, activity);
+                    facts.pull = pull;
+                    facts.plan_open = plan_open;
+                    facts.spec_unfinished = spec_unfinished;
+                    facts.goal_unfinished = goal_unfinished;
+                    let run = AttentionFacts {
+                        status: TaskStatus::Running,
+                        ..facts
+                    }
+                    .group();
+                    let want = if run == TaskGroup::Working {
+                        TaskGroup::NeedsYou
+                    } else {
+                        run
+                    };
+                    assert_eq!(facts.group(), want, "{facts:?}");
+                }
+            }
+        }
     }
 
     #[test]
