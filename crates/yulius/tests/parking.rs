@@ -81,10 +81,29 @@ async fn status_of(app: &App, id: &TaskId) -> (Option<TaskStatus>, Option<Activi
     }
 }
 
+/// Parks `id`: a pass runs at each look until it parked, so a pass that came in the millisecond
+/// its state last changed (quiet 0 of a 1 ms grace) is followed by another.
 async fn parked(app: &Arc<App>, id: &TaskId) -> TestResult {
-    app.park_idle_sessions_now().await;
     wait_for("the task to park", Duration::from_secs(30), || async {
+        if status_of(app, id).await.0 == Some(TaskStatus::Running) {
+            app.park_idle_sessions_now().await;
+        }
         status_of(app, id).await.0 == Some(TaskStatus::Parked)
+    })
+    .await
+}
+
+/// Waits until the task's state is older than a 1 ms grace period, so a pass that parks
+/// nothing says so because of what it checks, not because the grace is not over yet.
+async fn past_the_grace(app: &App, id: &TaskId) -> TestResult {
+    wait_for("the grace period", Duration::from_secs(10), || async {
+        app.deps
+            .store
+            .task_times(id)
+            .await
+            .ok()
+            .flatten()
+            .is_some_and(|times| app.now().0 - times.state_at.0 > 2)
     })
     .await
 }
@@ -326,6 +345,7 @@ fn a_task_parks_only_after_its_grace_period_and_never_with_parking_off() -> Test
         let (id, caller) = answered(&app, &data).await?;
         // A person typed and sent nothing: their draft may be in the prompt box.
         app.record_typing(&id, &caller.user);
+        past_the_grace(&app, &id).await?;
         assert_eq!(app.park_idle_sessions_now().await, 0);
         assert_eq!(status_of(&app, &id).await.0, Some(TaskStatus::Running));
         Ok::<_, Error>(())
@@ -411,6 +431,7 @@ fn a_stop_during_the_parks_end_stops_the_task() -> TestResult {
                 },
             );
         }
+        past_the_grace(&app, &id).await?;
         app.park_idle_sessions_now().await;
         wait_for("the task to rest", Duration::from_secs(30), || async {
             matches!(status_of(&app, &id).await.0, Some(TaskStatus::Stopped(_)))
@@ -434,11 +455,13 @@ fn a_task_chained_after_a_parked_done_task_starts() -> TestResult {
     rt.block_on(async {
         let app = app(&data, 8, 1).await?;
         let (id, _) = answered(&app, &data).await?;
+        parked(&app, &id).await?;
+        // Its goal achieved: set on the parked task, which has no session whose turn's end
+        // would read it again.
         app.deps
             .store
             .set_activity(&id, Some(Activity::Done), app.now())
             .await?;
-        parked(&app, &id).await?;
         let before = TaskStore::task(app.deps.store.as_ref(), &id)
             .await?
             .ok_or("task")?;
@@ -568,6 +591,7 @@ fn a_look_that_gives_no_answer_keeps_the_session() -> TestResult {
         .await?;
         let (id, _) = answered(&app, &data).await?;
         host.silence_work_probe(true);
+        past_the_grace(&app, &id).await?;
         assert_eq!(app.park_idle_sessions_now().await, 0);
         assert_eq!(status_of(&app, &id).await.0, Some(TaskStatus::Running));
         host.silence_work_probe(false);
@@ -592,6 +616,7 @@ fn a_question_in_the_terminal_or_a_pause_keeps_the_session() -> TestResult {
             .store
             .set_activity(&id, Some(Activity::NeedsAttention), app.now())
             .await?;
+        past_the_grace(&app, &id).await?;
         assert_eq!(app.park_idle_sessions_now().await, 0);
         app.deps
             .store
@@ -605,6 +630,7 @@ fn a_question_in_the_terminal_or_a_pause_keeps_the_session() -> TestResult {
             token: None,
         };
         app.pause_task_for_person(&ctx, id.as_str()).await?;
+        past_the_grace(&app, &id).await?;
         assert_eq!(app.park_idle_sessions_now().await, 0);
         assert_eq!(status_of(&app, &id).await.0, Some(TaskStatus::Running));
         Ok::<_, Error>(())
@@ -694,6 +720,7 @@ fn a_park_that_cannot_end_its_session_gives_up() -> TestResult {
         .await?;
         let (id, caller) = answered(&app, &data).await?;
         host.refuse_ends(true);
+        past_the_grace(&app, &id).await?;
         assert_eq!(app.park_idle_sessions_now().await, 1);
         host.shutdown_refused().await;
         wait_for("the park to give up", Duration::from_secs(30), || async {
@@ -787,8 +814,15 @@ fn a_session_deaf_to_the_park_is_parked_by_the_escalation() -> TestResult {
         let (id, _) = answered(&app, &data).await?;
         host.deafen(true);
         parked(&app, &id).await?;
+        // The escalation's loss or the reader's exit records it, whichever comes first; the
+        // order where the loss comes first is pinned by
+        // `a_loss_recorded_while_the_reader_holds_the_park_still_parks`.
         let runs = app.deps.store.attempts(&id).await?;
-        assert_eq!(runs[0].exit_reason.as_deref(), Some("lost"));
+        assert!(
+            matches!(runs[0].exit_reason.as_deref(), Some("lost" | "parked")),
+            "{:?}",
+            runs[0].exit_reason
+        );
         assert_eq!(status_of(&app, &id).await.1, Some(Activity::Waiting));
         assert_eq!(audited(&data, "task.parked", &id)?, ["yulius"]);
         Ok::<_, Error>(())
@@ -824,6 +858,7 @@ fn a_held_prompt_keeps_the_session() -> TestResult {
             },
         )
         .await?;
+        past_the_grace(&app, &id).await?;
         assert_eq!(app.park_idle_sessions_now().await, 0);
         assert_eq!(status_of(&app, &id).await.0, Some(TaskStatus::Running));
         Ok::<_, Error>(())
@@ -895,8 +930,109 @@ fn the_onboarding_task_is_not_parked() -> TestResult {
             "UPDATE tasks SET origin = 'onboarding' WHERE id = ?1",
             [id.as_str()],
         )?;
+        past_the_grace(&app, &id).await?;
         assert_eq!(app.park_idle_sessions_now().await, 0);
         assert_eq!(status_of(&app, &id).await.0, Some(TaskStatus::Running));
+        Ok::<_, Error>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// PRK-003 (review round 3, L1): the session exits on the park's request and its reader takes
+/// the park's intent, then holds; the escalation finds the run still recorded live and records
+/// its loss first. The task is parked all the same, not stopped as lost.
+#[test]
+fn a_loss_recorded_while_the_reader_holds_the_park_still_parks() -> TestResult {
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let fake =
+            locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+        let agent = FakeAgentOptions {
+            answers_first_message: true,
+            ..hooked()
+        };
+        let (app, _) = start_with(
+            &data,
+            &fake,
+            agent,
+            0,
+            Arc::new(ScriptedUsage::default()),
+            |config| {
+                config.park_after_ms = 1;
+                config.stop_escalation_ms = 300;
+            },
+        )
+        .await?;
+        let (id, _) = answered(&app, &data).await?;
+        let run = app
+            .deps
+            .store
+            .live_attempt(&id)
+            .await?
+            .ok_or("a live run")?;
+        {
+            // The reader holds the park's intent until the escalation recorded the loss.
+            let (app, run) = (app.clone(), run.id.clone());
+            let handle = tokio::runtime::Handle::current();
+            yulius_app::race::on(
+                yulius_app::race::Point::RunEndTaken,
+                Path::new(id.as_str()),
+                move || {
+                    tokio::task::block_in_place(|| {
+                        handle.block_on(async {
+                            let _ = wait_for("the loss", Duration::from_secs(20), || async {
+                                app.deps
+                                    .store
+                                    .attempt(&run)
+                                    .await
+                                    .ok()
+                                    .flatten()
+                                    .is_some_and(|attempt| attempt.state.is_terminal())
+                            })
+                            .await;
+                        });
+                    });
+                },
+            );
+        }
+        parked(&app, &id).await?;
+        let runs = app.deps.store.attempts(&id).await?;
+        assert_eq!(
+            runs[0].exit_reason.as_deref(),
+            Some("lost"),
+            "the loss was recorded first"
+        );
+        assert_eq!(status_of(&app, &id).await.1, Some(Activity::Waiting));
+        Ok::<_, Error>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// PRK-004 (review round 3, W1): a parked task's summary says what its idle run's did: a spec
+/// that does not say done keeps it "Your turn" on the web as on the server.
+#[test]
+fn a_parked_tasks_summary_keeps_its_unfinished_work() -> TestResult {
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let app = app(&data, 8, 1).await?;
+        let (id, _) = answered(&app, &data).await?;
+        app.deps
+            .store
+            .set_spec_status(&id, Some("in-progress"))
+            .await?;
+        let before = TaskStore::task(app.deps.store.as_ref(), &id)
+            .await?
+            .ok_or("task")?;
+        assert!(app.task_summary(&before).await?.spec_unfinished);
+        parked(&app, &id).await?;
+        let after = TaskStore::task(app.deps.store.as_ref(), &id)
+            .await?
+            .ok_or("task")?;
+        assert!(app.task_summary(&after).await?.spec_unfinished);
         Ok::<_, Error>(())
     })?;
     rt.shutdown_timeout(Duration::from_secs(5));

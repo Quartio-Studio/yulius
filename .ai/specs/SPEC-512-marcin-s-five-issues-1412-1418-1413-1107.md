@@ -268,6 +268,27 @@ Review round 1 (Fable 5.2, request changes at 74c6b7076), answered test-first:
 | `queue_reason_of` per summary | kept: only queued tasks compute it, at most `queue_max` (32) | — |
 | needs_you shared cause (pre-existing condition) | unchanged: answering a parked task resumes it; the others are answered by their own messages | — |
 
+Review round 3 (request changes at 87a654b6c), answered test-first:
+
+| Finding | Answer | Test that fails without it |
+| --- | --- | --- |
+| W1 a parked task's summary dropped `goal_unfinished`/`spec_unfinished` | sent for an idle parked task as for an idle running one; the goal's state is kept in the parked run's directory (`parked-goal-unfinished`), which outlives a restart, and read for a parked task (summary, group, resume) | `parking::a_parked_tasks_summary_keeps_its_unfinished_work`; e2e `parked.e2e.ts` (`specLeft`, `goalLeft`) |
+| L1 the reader took the park's intent and the escalation's loss was recorded first: `stopped_lost` | the reader leaves `park_taken` (the run's id) when it takes a park's intent; `mark_lost` parks when it finds no intent and that mark | `parking::a_loss_recorded_while_the_reader_holds_the_park_still_parks` (the session exits, its reader holds at `RunEndTaken` until the escalation recorded the loss; `exit_reason` `lost`, parked) |
+| T1 the deaf test pinned no order | it accepts either recorder; the order where the loss comes first is pinned by the L1 test | 8 suite runs in a row, 19 tests each, all passed |
+| T2 one pass per park in the same millisecond as the last state change | `parked()` runs a pass at each look until parked; negative checks first wait past the grace (`past_the_grace`); the chained test sets Done on the already parked task | same 8 runs |
+| Q1 the queue guard untested | test `claude_code_moves::moves::a_prompt_in_the_queue_keeps_an_idle_session_from_parking`; with the fake agent a prompt in the queue also reads as a turn in progress (`turn`), so removing the queue guard alone does not fail it (checked by mutation): the guard is a second line for a queue the transcript shows while no turn does | (behaviour held, guard not isolable) |
+| minor: Resume re-tells the same request on Telegram | not reproduced: in the Telegram harness park → starting → idle with the same request sent nothing new; left unchanged | — |
+| nits | e2e README row, ADR index line, the unreachable arm, `parked_activity` written under the intent's lock and cleared when a park gives up | — |
+| pre-existing: a close in the same recorder order ends an answered task `stopped_lost` | issue #1434 | — |
+
+Two `claude_code_moves` timing tests (`a_prompt_that_just_went_on_keeps_the_session`,
+`a_prompt_that_goes_on_while_a_turns_end_looks_keeps_the_session`) fail on this machine on the
+`dev` merge base 4b9045b4c too (outside this change; they passed in Yulius CI at 87a654b6c).
+
+Commands after round 3: `cargo test -p yulius --test main parking::` 19 passed, 8 runs in a row;
+`telegram:: scope_overlaps::` and the queue test passed; domain 573, app 614;
+`npx e2e run tests/parked.e2e.ts` 4 passed; `scripts/dev quick`, `lint`, `cargo doc` passed.
+
 Review round 2 (Fable 5.2, request changes at e17ffaef3), answered test-first:
 
 | Finding | Answer | Test that fails without it |
@@ -280,9 +301,7 @@ Review round 2 (Fable 5.2, request changes at e17ffaef3), answered test-first:
 | M6 owner rule | test | `parking::only_its_owner_resumes_a_parked_task` (another writer's `/continue` 403, `task_message` refused naming the owner, still parked) |
 | nits: scopes doc, a parked holder is not told | module doc says both | — |
 
-Not tested, with why: the `queue_may_hold` refusal (the queue's state comes from Claude Code's
-queue records in a transcript, which the fake agent does not write for an idle session; the same
-`queue_may_hold` guards a move, tested in `claude_code_moves`); a probe that answers "work
+Not tested, with why (round 2; the queue guard got a test in round 3): a probe that answers "work
 running" (it takes the same `!= Some(false)` branch as the tested no-answer case); a request in
 the sandbox browser (no browser runs in the tests); an armed merge (its guard is the same
 `yulius` fact as `yulius wait`, read from `merge_is_armed`); the three-minute start gate (a

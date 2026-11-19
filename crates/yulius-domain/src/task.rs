@@ -587,7 +587,8 @@ impl AttentionFacts {
             }
         }
         match self.status {
-            TaskStatus::Parked => self.parked_group(),
+            // Returned above.
+            TaskStatus::Parked => G::NeedsYou,
             TaskStatus::Running => match self.activity {
                 Some(Activity::Waiting | Activity::Done) if self.background_shells => G::Working,
                 Some(Activity::Waiting) if self.yulius_wait => G::Working,

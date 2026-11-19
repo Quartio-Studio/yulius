@@ -55,6 +55,9 @@ pub enum Point {
     /// A park (SPEC-512 PRK-003): its end intent is set under the launch lock; the session has
     /// not been asked to end yet. The path is the task id.
     ParkDecided,
+    /// `mark_lost`: the run's loss won its record; the run's end intent is not read yet. The
+    /// path is the task id.
+    LossRecorded,
     /// A switch (SPEC-250): the old run ended and the status the switch goes on from was read; the
     /// launch has not taken the launch lock yet. The path is the task id.
     SwitchLaunching,

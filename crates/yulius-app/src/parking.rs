@@ -201,6 +201,29 @@ impl App {
     }
 }
 
+/// The file in a parked run's directory that says its goal was left unfinished (SPEC-429): the
+/// session's runtime that knew it does not outlive the server, and a parked task has no run
+/// whose transcript would tell it again.
+pub(crate) const GOAL_UNFINISHED_MARK: &str = "parked-goal-unfinished";
+
+impl App {
+    /// Whether Claude Code last recorded the task's goal as unfinished (SPEC-429 ANS-002): for a
+    /// parked task what its parked run left ([`GOAL_UNFINISHED_MARK`]), else its live run's.
+    pub(crate) async fn goal_unfinished_of(&self, task: &TaskRecord) -> bool {
+        if task.status != TaskStatus::Parked {
+            return self.goal_unfinished(&task.id);
+        }
+        match self.deps.store.attempts(&task.id).await {
+            Ok(runs) => runs.last().is_some_and(|run| {
+                std::path::Path::new(&run.run_dir)
+                    .join(GOAL_UNFINISHED_MARK)
+                    .exists()
+            }),
+            Err(_) => false,
+        }
+    }
+}
+
 /// Audits the park of `task` (`task.parked`, by [`PARKED_BY`]); a failed write is logged.
 pub(crate) async fn audit_parked(app: &App, task: &TaskRecord) {
     let detail = json!({"number": task.number, "activity": task.activity.map(Activity::as_str)});

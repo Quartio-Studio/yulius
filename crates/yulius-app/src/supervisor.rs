@@ -422,6 +422,9 @@ pub struct TaskRuntime {
     /// The activity a park was decided on (SPEC-512 PRK-003): what the parked task keeps when a
     /// switch it overtook cleared the stored one.
     parked_activity: Mutex<Option<Activity>>,
+    /// The run whose park's intent its reader took before recording its end (SPEC-512 PRK-003):
+    /// a loss recorded first by `mark_lost` parks the task all the same.
+    park_taken: Mutex<Option<AttemptId>>,
 }
 
 /// Counts a run ending as being recorded until dropped (SPEC-065 END-003).
@@ -661,6 +664,7 @@ impl TaskRuntime {
             finalizing: tokio::sync::watch::channel(0).0,
             end_failed: Mutex::new(None),
             parked_activity: Mutex::new(None),
+            park_taken: Mutex::new(None),
         }
     }
 
@@ -3850,10 +3854,14 @@ impl App {
             Err(err) => {
                 // A park that cannot end its session gives up: the session goes on as it was and
                 // takes messages again (SPEC-512 PRK-003); its flag keeps it from parking again.
-                let park_given_up = self.runtime(task_id).intent.lock().is_ok_and(|mut intent| {
+                let runtime = self.runtime(task_id);
+                let park_given_up = runtime.intent.lock().is_ok_and(|mut intent| {
                     let parking = matches!(*intent, Some(EndIntent::Park));
                     if parking {
                         *intent = None;
+                        if let Ok(mut kept) = runtime.parked_activity.lock() {
+                            *kept = None;
+                        }
                     }
                     parking
                 });
@@ -3926,6 +3934,10 @@ impl App {
         if !first {
             return; // another observer already recorded the outcome
         }
+        crate::race::reached(
+            crate::race::Point::LossRecorded,
+            Path::new(task_id.as_str()),
+        );
         // A lost Codex run's processes are gone too: its refresh is kept and its file goes, as
         // after a run that ended (SPEC-503 CDX-006).
         self.codex_run_ended(task_id, attempt_id).await;
@@ -3940,7 +3952,16 @@ impl App {
             if matches!(*intent, Some(EndIntent::SwitchTimeout)) {
                 reason = StopReason::SwitchTimeout;
             }
-            parking = matches!(*intent, Some(EndIntent::Park));
+            // The park's intent is here, or this run's reader took it and lost the record to
+            // this loss (review round 3 of SPEC-512 part 1). A stop, close or switch that came
+            // since owns the end instead.
+            let taken = rt
+                .park_taken
+                .lock()
+                .ok()
+                .and_then(|mut taken| taken.take_if(|run| run == attempt_id));
+            parking =
+                matches!(*intent, Some(EndIntent::Park)) || (intent.is_none() && taken.is_some());
             // No exit will consume it: the next run must not inherit it.
             replace_intent(&mut intent, None, SwitchEnd::Lost);
         }
@@ -4050,6 +4071,7 @@ impl App {
                 Ok(false) => {}
                 Ok(true) => {
                     if to == TaskStatus::Parked {
+                        self.mark_parked_goal(task_id).await;
                         crate::parking::audit_parked(self, &task).await;
                     }
                     return;
@@ -4063,6 +4085,23 @@ impl App {
         tracing::warn!(task = %task_id, "the parked run's task kept changing; left as it is");
     }
 
+    /// Leaves in the parked run's directory whether its goal was unfinished, as the session's
+    /// runtime knew it ([`crate::parking::GOAL_UNFINISHED_MARK`]); a failed write is logged.
+    async fn mark_parked_goal(&self, task_id: &TaskId) {
+        if !self.goal_unfinished(task_id) {
+            return;
+        }
+        let Ok(runs) = self.deps.store.attempts(task_id).await else {
+            return;
+        };
+        if let Some(run) = runs.last() {
+            let mark = Path::new(&run.run_dir).join(crate::parking::GOAL_UNFINISHED_MARK);
+            if let Err(err) = std::fs::write(&mark, b"") {
+                tracing::warn!(task = %task_id, error = %err, "the parked goal was not marked");
+            }
+        }
+    }
+
     /// Records the end of a run exactly once and moves the task to its next state.
     async fn finalize_attempt(
         self: &Arc<Self>,
@@ -4073,7 +4112,17 @@ impl App {
         let store = &self.deps.store;
         let runtime = self.runtime(task_id);
         let _finalizing = Finalizing::start(&runtime.finalizing);
-        let intent = runtime.intent.lock().ok().and_then(|mut g| g.take());
+        let intent = runtime.intent.lock().ok().and_then(|mut g| {
+            let intent = g.take();
+            // Who records the run's end first decides it: a loss recorded meanwhile must still
+            // find the park this reader took (review round 3 of SPEC-512 part 1).
+            if matches!(intent, Some(EndIntent::Park))
+                && let Ok(mut taken) = runtime.park_taken.lock()
+            {
+                *taken = Some(attempt_id.clone());
+            }
+            intent
+        });
         crate::race::reached(crate::race::Point::RunEndTaken, Path::new(task_id.as_str()));
         let session_end = runtime.session_end.lock().ok().and_then(|mut g| g.take());
         runtime.watcher_alive.store(false, Ordering::SeqCst);
@@ -4133,6 +4182,10 @@ impl App {
             .unwrap_or(false);
         if !first {
             return; // another observer already recorded the outcome
+        }
+        // This reader recorded the end: the park it took is settled below.
+        if let Ok(mut taken) = runtime.park_taken.lock() {
+            *taken = None;
         }
         runtime.clear_start_counters(attempt_id);
         // A session restarted on a newer Claude Code that ended by itself before it started
@@ -4486,9 +4539,10 @@ impl App {
                 return Ok(false);
             }
             *intent = Some(EndIntent::Park);
-        }
-        if let Ok(mut kept) = runtime.parked_activity.lock() {
-            *kept = task.activity;
+            // Under the intent's lock: the run's end that takes the intent finds it.
+            if let Ok(mut kept) = runtime.parked_activity.lock() {
+                *kept = task.activity;
+            }
         }
         crate::race::reached(crate::race::Point::ParkDecided, Path::new(task_id.as_str()));
         self.arm_escalation(task_id, Some(run));
@@ -4525,6 +4579,7 @@ impl App {
             .task(task_id)
             .await?
             .ok_or(AppError::NotFound)?;
+        let goal_unfinished = self.goal_unfinished_of(&task).await;
         let rest = task
             .activity
             .filter(|activity| {
@@ -4532,9 +4587,7 @@ impl App {
             })
             .map(|activity| IdleRest {
                 activity,
-                goal_unfinished: self
-                    .existing_runtime(task_id)
-                    .is_some_and(|runtime| runtime.goal_unfinished.load(Ordering::SeqCst)),
+                goal_unfinished,
             });
         self.start_run_if(
             task_id,

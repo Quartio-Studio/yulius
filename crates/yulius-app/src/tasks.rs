@@ -225,6 +225,8 @@ impl App {
         } else {
             Vec::new()
         };
+        let idle_run = matches!(task.status, TaskStatus::Running | TaskStatus::Parked)
+            && task.activity.is_some_and(Activity::is_idle);
         Ok(TaskSummary {
             id: task.id.to_string(),
             sandbox_id: task.sandbox_id.to_string(),
@@ -304,12 +306,10 @@ impl App {
             merge_armed: task.status == TaskStatus::Running
                 && task.activity.is_some_and(Activity::is_idle)
                 && self.merge_is_armed(&task.id),
-            goal_unfinished: task.status == TaskStatus::Running
-                && task.activity.is_some_and(Activity::is_idle)
-                && self.goal_unfinished(&task.id),
-            spec_unfinished: task.status == TaskStatus::Running
-                && task.activity.is_some_and(Activity::is_idle)
-                && self.spec_unfinished(&task.id).await,
+            // A parked task's facts are its idle run's (SPEC-512 PRK-004): the web reads it as
+            // that run.
+            goal_unfinished: idle_run && self.goal_unfinished_of(task).await,
+            spec_unfinished: idle_run && self.spec_unfinished(&task.id).await,
             not_started,
             awaits_start_onboarding,
             pause: self.pause_view(task).await,

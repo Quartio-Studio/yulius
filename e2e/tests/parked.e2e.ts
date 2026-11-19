@@ -40,6 +40,9 @@ test('a parked task reads as it did, marked parked, and resumes from its menu (u
       ciError: info(merged, open('error')),
       achievedRunning: info({ ...merged, activity: 'done' }, open('pending')),
       neverWorking: groups.every((group) => group === 'needs' || group === 'done'),
+      // Its idle run's facts, as the server sends them for a parked task (review round 3, W1).
+      specLeft: info({ ...merged, spec_unfinished: true }, { number: 7, state: 'open', checks: 'success' }),
+      goalLeft: info({ ...merged, goal_unfinished: true }),
       line: activityLine(parked),
       live: isLive('parked'),
       actions: { continue: acts.continue, stop: acts.stop, archive: acts.archive, delete: acts.delete, move: acts.move },
@@ -58,6 +61,8 @@ test('a parked task reads as it did, marked parked, and resumes from its menu (u
     ciError: ['In review · PR #7 · CI could not run (not the code) · parked', 'needs'],
     achievedRunning: ['Done · PR #7 · parked', 'done'],
     neverWorking: true,
+    specLeft: ['Your turn · parked', 'needs'],
+    goalLeft: ['Your turn · parked', 'needs'],
     line: 'Parked to free its session · resumes when you write to it',
     live: false,
     // It resumes where it ran (a move would be refused), and a stop stops it.

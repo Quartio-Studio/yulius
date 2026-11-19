@@ -161,7 +161,7 @@ impl App {
             chain_blocked,
             plan_open,
             spec_unfinished,
-            goal_unfinished: finished && self.goal_unfinished(&task.id),
+            goal_unfinished: finished && self.goal_unfinished_of(task).await,
             background_shells: live
                 && self
                     .background_shells_of(&task.id)
