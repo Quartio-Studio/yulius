@@ -416,6 +416,7 @@ mod tests {
             link: None,
             at: 800,
             cause: None,
+            named: Default::default(),
         };
         store
             .set_task_needs_you(&task, Some(&request), Timestamp(800))

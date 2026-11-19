@@ -6,6 +6,13 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-19
 
+- A question names who answers it (SPEC-512 part 2, task #494, #1418): an agent's `needs_you`
+  can name the people besides the owner it waits for (`who`, each with write access to the
+  project, checked when it asks). The task's page says "Asks @bob"; only the owner and whom it
+  names answer it, on the page or through their own agent's `task_message`, without taking the
+  task, and the owner withdraws a name there; answering a parked task's question resumes it. An answer to a question replaced or withdrawn
+  meanwhile is refused, saying so (ADR-0379). Also: a parked task's Resume no longer repeats its
+  Telegram notice, and the Dashboard's Outcomes say Parked (#1412 follow-up).
 - Scrolling a full-screen task with mouse reporting off can no longer recall an earlier prompt
   or trigger “Needs your action” for an unsent draft. Scrolling up still offers the session
   history (SPEC-529, #1446).

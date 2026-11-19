@@ -719,6 +719,24 @@ pub trait NeedsYouStore: Send + Sync {
         action: &str,
         at: Timestamp,
     ) -> AppResult<bool>;
+    /// Ends the request asked at `asked_at` (milliseconds) at `at`, in one step, only while it is
+    /// the open one: a request asked later stays (SPEC-512 ANS-004). `true` when it ended one.
+    async fn end_task_needs_you_at(
+        &self,
+        task: &TaskId,
+        asked_at: i64,
+        at: Timestamp,
+    ) -> AppResult<bool>;
+    /// Replaces the open request `read` with `next` at `at`, in one step, only while it is still
+    /// `read`: asked at the same time, the same action, naming the same people (SPEC-512
+    /// ANS-005). `true` when it replaced it.
+    async fn replace_task_needs_you(
+        &self,
+        task: &TaskId,
+        read: &crate::needs_you::NeedsYouRecord,
+        next: &crate::needs_you::NeedsYouRecord,
+        at: Timestamp,
+    ) -> AppResult<bool>;
     /// Tasks of a sandbox with an open request.
     async fn needs_you_tasks(&self, sandbox: &SandboxId) -> AppResult<Vec<TaskId>>;
 }

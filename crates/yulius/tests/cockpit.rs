@@ -6936,6 +6936,7 @@ async fn the_superagent_sees_why_tasks_need_its_person_and_answers_for_them() ->
         link: None,
         at: now.0,
         cause: None,
+        named: Default::default(),
     };
     store
         .set_task_needs_you(
@@ -7078,6 +7079,7 @@ async fn the_superagent_sees_why_tasks_need_its_person_and_answers_for_them() ->
         link: None,
         at: now.0,
         cause: None,
+        named: Default::default(),
     };
     store
         .set_task_needs_you(&carols.id, Some(&old_row), now)
@@ -8078,6 +8080,7 @@ async fn the_superagent_restarts_its_sandboxs_docker_or_hears_why_not() -> TestR
             link: None,
             at: f.h.app.now().0 - 1_000,
             cause: Some("docker".into()),
+            named: Default::default(),
         };
         f.h.store
             .set_task_needs_you(&task.id, Some(&asked), f.h.app.now())

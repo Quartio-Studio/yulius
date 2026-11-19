@@ -99,7 +99,8 @@ merged; #1106 against ADR-0227.
   `needs_you` stays open and is shown; `tasks_list` and `task_get` say `parked`. For chains and
   start rules, a parked task that is Done is done; its scope claims still count, and the
   briefing lists it among the parallel tasks.
-- **PRK-005 Writing resumes it.** `task_message` to a parked task resumes it with the message as
+- **PRK-005 Writing resumes it.** (An allowed answer from a named person resumes it too: ANS-002.)
+  `task_message` to a parked task resumes it with the message as
   its first prompt (labelled as today) and ends its `needs_you`, delivered `"resumed"`; the web's
   Resume (the Continue of a parked task) resumes it with nothing typed, its `needs_you` kept
   until the person writes. Either way it is the same provider session, with its history; at the
@@ -116,10 +117,50 @@ merged; #1106 against ADR-0227.
   with parked, idle (live but not counted: Done) and queued apart, and when idle sessions park.
   Parked sessions use no memory.
 
-### Parts 2 to 5
+### Part 2: a request that names who it waits for (#1418)
 
-Written when each part starts (see Context): ANS (#1418), DIG (#1413), TGI (#1107), HOF (#1106),
-each from its issue's acceptance criteria.
+Today (after task #498, SPEC-516, ADR-0370, merged as #1428): anyone with write access answers a
+running task's open `needs_you` on its page (`POST /api/tasks/{tid}/needs-you/answer`), labelled
+as theirs, audited `task.needs_you.answered`, without control moving; `task_message` stays the
+owner's; stop, archive and delete are anyone's who may work in the project (ADR-0331), and
+steering (terminal input, Continue, merge, model, subscription) is the owner's. Taking control
+(SPEC-510, ADR-0365) is for steering a task; what this part adds is for one answer.
+
+- **ANS-001 Naming.** `needs_you` takes `who`: one to ten GitHub logins it waits for besides the
+  owner. Each must be a person of the instance with write access to the project, checked when the
+  request is raised; one that is not refuses the whole request, saying which and why. The owner
+  named is dropped from the list (always may answer). Stored with the request
+  (`NeedsYouRecord.who`), shown in its view (`who`) and in `tasks_list`/`task_get`.
+- **ANS-002 Who answers a named request.** While a request names people, its owner and the
+  people still named answer it; anyone else with write access is refused ("task #N asks @a and
+  @b, not you"). A request that names nobody keeps ADR-0370's rule (any writer). A question
+  stays answerable while it is open, also once its task parked (PRK-002): the answer resumes the
+  task in its own session with the answer as its first prompt, as a message does (PRK-005). A
+  task whose run holds its owner's personal secrets or MCP servers names nobody: nobody else
+  could answer it.
+- **ANS-003 Through `task_message`.** A message from someone who is not the task's owner, while a
+  request is open that they may answer (ANS-002), is that answer: it goes the way of the web's
+  answer (same label, guards and audit) and `delivered` says `answered`. With no such request it
+  is refused as today (the owner steers).
+- **ANS-004 Closed, replaced or withdrawn.** An answer names the request it answers
+  (`asked_at_ms`, the request's `at_ms`; the page sends the one Reply opened on, and after a
+  refusal the one it shows). One sent after the request ended is refused ("…asks nobody anything
+  now"), after a new request replaced it ("the question you answered was replaced by a new one:
+  read it and answer again"), and after the owner withdrew the person ("@owner withdrew you from
+  this question"). An answer ends only the request it answered: one asked while it was typed
+  stays open.
+- **ANS-005 The owner sees and withdraws.** The task's page shows "Asks @a, @b" on the request;
+  its owner withdraws a person there (`POST /api/tasks/{tid}/needs-you/withdraw {login}`, owner
+  only, a browser session or an operate token), audited `task.needs_you.withdrawn`. Withdrawing
+  the last name leaves the request to its owner alone.
+- **ANS-006 Nothing else moves.** A named person who answers does not get control: the task acts
+  on GitHub as its owner; terminal input, Continue (start), and `delivery_merge`/`task_merge`
+  stay the owner's (tested for the named person); stop follows ADR-0331 as today.
+
+### Parts 3 to 5
+
+Written when each part starts (see Context): DIG (#1413), TGI (#1107), HOF (#1106), each from its
+issue's acceptance criteria.
 
 ## Plan
 
@@ -131,10 +172,10 @@ each from its issue's acceptance criteria.
 - [x] The Capacity card shows working, parked, idle and queued sessions
 - [x] Docs for parking: product, architecture, api, operations, changes
 - [x] Review of the #1412 pull request answered test-first
-- [ ] needs_you names who it waits for, refused for logins without write access
-- [ ] A named person answers an open needs_you on the web and with task_message
-- [ ] The owner sees who may answer and withdraws it; answers attributed in transcript and audit
-- [ ] Owner-only refusals tested for the named person; ADR and docs for answers
+- [x] needs_you names who it waits for, refused for logins without write access
+- [x] A named person answers an open needs_you on the web and with task_message
+- [x] The owner sees who may answer and withdraws it; answers attributed in transcript and audit
+- [x] Owner-only refusals tested for the named person; ADR and docs for answers
 - [ ] Review of the #1418 pull request answered test-first
 - [ ] Digest setting: on or off, time and idle threshold, off by default
 - [ ] The digest is built from task state and last messages
@@ -163,6 +204,18 @@ each from its issue's acceptance criteria.
 - [x] Writing to such a task resumes it in its own session, with its history (PRK-005).
 - [x] A queued task shows why it has not started and what it waits for (PRK-007).
 - [x] The Capacity card shows working sessions and parked sessions separately (PRK-008).
+
+### #1418
+
+- [x] A task can name who its `needs_you` waits for; logins without write access are refused when
+  the `needs_you` is raised (ANS-001).
+- [x] A named non-owner can answer that `needs_you` (web and `task_message`) while it is open, and
+  is refused once it is cleared or replaced, with a message that says so (ANS-002 to ANS-004).
+- [x] The answer appears in the transcript and the audit log as that person's, and the task keeps
+  acting on GitHub as its owner (ADR-0370, ANS-006).
+- [x] The owner sees who else may answer and can withdraw it (ANS-005).
+- [x] Everything else on the task stays owner-only (GIT-004), with tests for terminal input,
+  start, stop and merge by the named person (ANS-006).
 
 ## Test plan
 
@@ -198,6 +251,11 @@ each from its issue's acceptance criteria.
   probe's last answer; before ending a session the park probes it again and treats no answer as
   work running, as a move does (SPEC-483 SWT-001), and asks Claude Code's queue (SPEC-471). A
   park whose session cannot be ended gives up and the session goes on.
+- **A withdrawal splits the request's wait span.** The spans trigger (migration 0028) starts a
+  new `needs_you` span on any change of the stored request; a withdrawal changes its `who`, so
+  the Pipeline shows the wait as two spans from the same start (the first ended "replaced").
+  Kept: a migration of the trigger for this alone is not worth its risk now; the wait's total is
+  unchanged.
 - **Known limits.** The park's intent lives in the server's memory: a restart between the
   decision and the session's end records the end as a clean exit (`closed`) or a crash. A person
   who only reads the terminal does not hold a park; a keystroke or draft does. On the web,
@@ -214,6 +272,79 @@ each from its issue's acceptance criteria.
   session that takes none, and is told when the task resumes.
 
 ## Evidence
+
+### Part 2 (#1418)
+
+| Acceptance criterion | Held by |
+| --- | --- |
+| A request names whom it waits for; logins without write access are refused when it is raised | `task_ownership::a_needs_you_names_who_it_waits_for` (a reader and an unknown login refuse the whole request and record nothing; `@Bob`, the owner and a repeat clean to `["bob"]`) |
+| A named non-owner answers on the web and with `task_message` while it is open; refused once cleared, replaced or withdrawn, saying so | `task_ownership::a_named_request_is_answered_by_whom_it_names` (Bob and the owner answer, Dave is refused naming @bob, an unnamed request stays any writer's, Bob's `task_message` is his answer, Dave's is refused, with nothing asked a message stays the owner's); `task_ownership::an_answer_to_a_replaced_or_withdrawn_request_is_refused` ("replaced", "withdrew"); ADR-0370's "nothing to answer" test still holds |
+| The answer is that person's in the transcript and the audit; the task acts as its owner | `task_message::a_named_person_answers_through_their_own_agent` (real processes: "Answer from bob" on the agent's screen, request ended, owner unchanged, audited as bob) |
+| The owner sees who may answer and withdraws it | `task_ownership::an_answer_to_a_replaced_or_withdrawn_request_is_refused` (only the owner withdraws, `task.needs_you.withdrawn` audited); e2e `reply.e2e.ts` ("Asks @bob, @carol", Withdraw @bob) |
+| Everything else stays owner-only, tested for the named person | `task_ownership::a_named_person_steers_nothing_else` (terminal input refused, Continue and merge 403; a stop succeeds, as ADR-0331 lets anyone who may work there stop a task: the issue's "stop" predates ADR-0331) |
+
+What a person sees. Before: a request on someone else's task offered every teammate Reply, and
+their own agent's `task_message` was refused ("only they steer it"). After: the request says
+"Asks @bob"; Bob gets Reply (and his agent's message is his answer), others get none; the owner
+sees "Withdraw @bob". Refusals say "task #43 asks @alice and @bob, not you", "the question you
+answered on task #43 was replaced by a new one: read it and answer again", "@alice withdrew you
+from task #43's question".
+
+Commands (2026-11-19): `cargo test -p yulius --test main -- task_ownership:: task_message::
+telegram:: docker_trouble_notices:: agent_hooks:: cockpit:: parking::` → 221 passed;
+`cargo test -p yulius-app --lib` → 626 passed; e2e `reply`, `parked`, `attention`, `ownership`,
+`watching`, `notifications` → 79 passed; `scripts/dev quick`, `lint`, `cargo doc` passed.
+
+Review round 3 of #1459 (request changes at c6430ace1), answered test-first:
+
+| Finding | Answer | Test that fails without it |
+| --- | --- | --- |
+| A named person could not answer once the task parked | an allowed answer to a parked task resumes it in its own session with the answer as its first prompt (PRK-005; ANS-002 and ADR-0379 say so); the page offers Reply on a parked task | `parking::a_named_persons_answer_resumes_a_parked_task` (failed before: "not running (parked)"); e2e "a parked task's question is answered by whom it names" |
+| The field re-keyed after any failed send | it no longer re-keys after a failure; before sending, a question the page shows as replaced is said ("…replaced by a new one: read it and answer again") and the field names it from the next send | e2e "an answer typed while the question is replaced…" |
+| `tasks_list`/`task_get` text named nobody | "(answered by its owner and @bob, @carol)" / "(answered by its owner only)"; api.md lists `at_ms`, `who`, `named` | `mcp_text::tests::every_reason_a_task_gives_is_in_its_line` |
+| Duplicated, untested shared-cause block | one helper (`answer_shared_cause`) for both ends | `docker_trouble_notices::a_page_answer_to_a_shared_docker_question_answers_the_others` |
+| Sign-in-missing branch untested | test of a person with no stored GitHub sign-in | `task_ownership::names_that_could_never_answer_are_refused_with_why` |
+| Naming people on a task holding the owner's personal reach | refused when raised: only the owner could answer | same test |
+| Nits | `task_message`'s answer branch only for a running or parked task (an ended task's stale request gets the owner rule); its note and api.md say a question asked meanwhile stays | — |
+| `task_message` names no request | kept: an agent answers the question open now; the page names the one Reply opened on | — |
+| Pre-existing: refresh failure reads as sign-in missing (`access.rs`) | unchanged | — |
+
+Review round 2 of #1459 (request changes at 23f21095a), answered test-first:
+
+| Finding | Answer | Test that fails without it |
+| --- | --- | --- |
+| After a "replaced" refusal the open field kept naming the old question | after a refused send the field names the question it now shows | e2e "an answer typed while the question is replaced goes to no other question" (the second Enter answers the new question) |
+| The answer-end guard had no test | `end_task_needs_you_at`: one conditional statement by the request's `at` (`end_needs_you_asked_at` also answers a shared cause's others only when it ended one) | store `an_answer_ends_only_the_request_asked_at_its_time`; `task_message::an_answer_leaves_a_question_asked_while_it_was_typed` (race point `AnswerTyped`; an unconditional end fails it: checked by mutation) |
+| Stale `asked_at` in docs | api.md, architecture.md, ANS-004 and the e2e README name `asked_at_ms`/`at_ms` | — |
+| The `who` access check's error wording | a missing GitHub sign-in is a refusal saying the person must sign in again; other errors say "could not be checked now" with the public message | `task_ownership::a_name_whose_access_cannot_be_checked_is_said_so` |
+| Store test differed in both `at` and action | a same-action request asked later is refused too | store `a_request_is_replaced_only_while_it_is_the_one_read` |
+| `?` on the read after typing | gone: the end is one statement, its failure logged | — |
+| Round-1 nits | kept, because: the toast reads "Couldn't withdraw task #N" with the server's reason after it, which says what failed; people are matched by GitHub login, as `who` is given and shown, and a login names one person of the instance; after a take of control the new owner answers as owner and a name equal to them is harmless, while the former owner answers only if named (the request is the new owner's); requests sharing a `cause` end together by SPEC-494's rule, which names nobody | — |
+| Notifier reads the task after the event (pre-existing) | unchanged; a start failing within the handling lag behaves as on `dev` | — |
+
+`task_message::the_last_wake_after_an_outage_tells_the_person_of_their_draft` failed once under
+a parallel run of five suites here and passed 3 of 3 alone (load-sensitive; it does not touch
+this change's paths).
+
+Review round 1 of #1459 (request changes at dd7b25b38), answered test-first:
+
+| Finding | Answer | Test that fails without it |
+| --- | --- | --- |
+| Web sent the `at` of the question shown at Enter, not the one Reply opened on | the page keeps the question's `at_ms` from when Reply opened and sends it (`asked_at_ms`) | e2e `reply.e2e.ts` "an answer typed while the question is replaced goes to no other question" (fails when the page reads the request at send time: checked by mutation; the first Enter sends nothing: `failedPosts` stays 0 with every answer POST set to fail) |
+| Withdraw read-modify-write could overwrite a newer request | `replace_task_needs_you`: one conditional statement on the request's `at`, action and `who`; 409 "changed meanwhile" otherwise | `needs_you::tests::a_request_is_replaced_only_while_it_is_the_one_read` (store) |
+| A start hid a repeated failure from Telegram | a start forgets a told failure (`failed:…`) and keeps the rest, so a parked task's resume stays no news | `telegram::a_failure_after_a_restart_is_told_again`; `telegram::a_parked_tasks_resume_is_no_news` still holds |
+| `asked_at` compared as a second-precision string | compared as the stored milliseconds (`at_ms` in the view, `asked_at_ms` in the answer) | `task_ownership::an_answer_to_a_replaced_or_withdrawn_request_is_refused` |
+| `task_message`'s answered reply and audit | returns the task's brief like every other outcome and is audited `task.messaged` with its channel too; `docs/api.md` describes it | `task_message::a_named_person_answers_through_their_own_agent` |
+| Untested lines | eleven names, a disabled person, the withdraw 409s, a withdrawn person's own agent; a request with all names withdrawn offers no Reply | `task_ownership::naming_and_withdrawing_refuse_what_cannot_hold`; e2e "a request whose names were all withdrawn offers a teammate no Reply" |
+| ADR-0379 "builds on" 0370 | it says it amends 0370's rejected alternative | — |
+| Spans split by a withdrawal | recorded in Decisions (kept) | — |
+| Pre-existing: an answer ended a request asked while it was typed | the answer ends the request only while it is still the one it answered | covered by the replaced-request tests' paths |
+| Nits | GitHub errors while checking `who` say so instead of "no write access"; the mock checks in the server's order with its words; CSS gap for the names; the Evidence quotes the server's words | — |
+
+Also in this pull request, the two follow-ups the review of part 1 left: a parked task's Resume
+is no Telegram news (`telegram::a_parked_tasks_resume_is_no_news`, failed before: the notice was
+sent twice), and a parked status with no activity reads "Parked" on the Dashboard's Outcomes
+(e2e `parked.e2e.ts`).
 
 ### Part 1 (#1412)
 

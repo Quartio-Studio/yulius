@@ -1963,13 +1963,33 @@ route('POST', `/api/tasks/${ID}/needs-you/answer`, ({ db, p, body }) => {
   if (owner !== me && db.me.user.guest) fail(403, 'forbidden', `Task #${task.number} is @${owner}'s: a guest answers the requests of only their own tasks on this playground.`);
   const text = String(body.text || '').trim();
   if (!text) fail(422, 'invalid', 'the answer is empty');
-  if (task.status !== 'running') fail(409, 'conflict', `task #${task.number} is not running (${task.status}), so its agent reads no answer now`);
+  if (task.status !== 'running' && task.status !== 'parked') fail(409, 'conflict', `task #${task.number} is not running (${task.status}), so its agent reads no answer now`);
   if (!task.needs_you) fail(409, 'conflict', `task #${task.number} asks nobody anything now: there is nothing to answer`);
+  // SPEC-512 ANS-002, ANS-004, in the server's order: a replaced request, and one naming others,
+  // is not answered.
+  if (Number.isFinite(body.asked_at_ms) && body.asked_at_ms !== task.needs_you.at_ms) fail(409, 'conflict', `the question you answered on task #${task.number} was replaced by a new one: read it and answer again`);
+  const named = task.needs_you.named === true;
+  const who = task.needs_you.who || [];
+  if (owner !== me && named && (task.needs_you.withdrawn || []).includes(me)) fail(403, 'forbidden', `@${owner} withdrew you from task #${task.number}'s question`);
+  if (owner !== me && named && !who.includes(me)) fail(403, 'forbidden', `task #${task.number} asks @${owner}${who.length ? ` and ${who.map((l) => `@${l}`).join(', ')}` : ''}, not you: its question is theirs to answer`);
   if (task.activity === 'needs_attention') fail(409, 'conflict', `task #${task.number}'s agent asks in its terminal now: @${owner} answers there, or take control of the task`);
   if (owner !== me && task.holdsPersonal) fail(409, 'conflict', `task #${task.number} holds @${owner}'s personal secrets or MCP servers, so only @${owner} answers it; or take control of the task`);
-  (db.needsYouAnswers ||= []).push({ task: task.id, by: me, text });
+  (db.needsYouAnswers ||= []).push({ task: task.id, by: me, text, asked_at_ms: Number.isFinite(body.asked_at_ms) ? body.asked_at_ms : null });
   touch(db, task, { needs_you: null });
   return summary(task);
+});
+// The owner withdraws a person the request names (SPEC-512 ANS-005).
+route('POST', `/api/tasks/${ID}/needs-you/withdraw`, ({ db, p, body }) => {
+  const task = taskOf(db, p[0]);
+  const owner = ownerOf(task).login;
+  if (owner !== db.me.user.login) fail(403, 'forbidden', `Task #${task.number} is @${owner}'s and only they steer it`);
+  const asked = task.needs_you;
+  if (!asked) fail(409, 'conflict', `task #${task.number} asks nobody anything now: there is nobody to withdraw`);
+  const login = String(body.login || '').replace(/^@/, '').toLowerCase();
+  if (!(asked.who || []).includes(login)) fail(409, 'conflict', `task #${task.number}'s question does not name @${login}`);
+  const changed = { ...asked, who: asked.who.filter((l) => l !== login), withdrawn: [...(asked.withdrawn || []), login], named: true };
+  touch(db, task, { needs_you: changed });
+  return changed;
 });
 route('PUT', '/api/me/control', ({ db, body }) => {
   db.me.user.control_ask_first = Boolean(body.ask_first);

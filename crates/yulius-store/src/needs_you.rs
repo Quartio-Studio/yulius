@@ -3,6 +3,8 @@
 use async_trait::async_trait;
 use rusqlite::{OptionalExtension, params};
 use yulius_app::error::{AppError, AppResult};
+#[cfg(test)]
+use yulius_app::needs_you::Named;
 use yulius_app::needs_you::NeedsYouRecord;
 use yulius_app::ports::store_ext::NeedsYouStore;
 use yulius_domain::ids::{SandboxId, TaskId};
@@ -75,6 +77,57 @@ impl NeedsYouStore for SqliteStore {
         .await
     }
 
+    async fn end_task_needs_you_at(
+        &self,
+        task: &TaskId,
+        asked_at: i64,
+        at: Timestamp,
+    ) -> AppResult<bool> {
+        let task = task.as_str().to_owned();
+        self.call(move |c| {
+            let changed = c
+                .execute(
+                    // One statement: a request asked after the answered one is never ended.
+                    "UPDATE tasks SET needs_you = NULL, updated_at = ?3 \
+                     WHERE id = ?1 AND CASE WHEN json_valid(needs_you) \
+                       THEN json_extract(needs_you, '$.at') END = ?2",
+                    params![task, asked_at, at.0],
+                )
+                .map_err(db)?;
+            Ok(changed == 1)
+        })
+        .await
+    }
+
+    async fn replace_task_needs_you(
+        &self,
+        task: &TaskId,
+        read: &NeedsYouRecord,
+        next: &NeedsYouRecord,
+        at: Timestamp,
+    ) -> AppResult<bool> {
+        let task = task.as_str().to_owned();
+        let next = serde_json::to_string(next).map_err(AppError::internal)?;
+        let who = serde_json::to_string(&read.named.who).map_err(AppError::internal)?;
+        let (asked_at, action) = (read.at, read.action.clone());
+        self.call(move |c| {
+            let changed = c
+                .execute(
+                    // One statement: a request made, ended or changed after the read is left
+                    // as it is. An absent `who` is the empty list it was written from.
+                    "UPDATE tasks SET needs_you = ?2, updated_at = ?3 \
+                     WHERE id = ?1 AND CASE WHEN json_valid(needs_you) THEN \
+                       json_extract(needs_you, '$.at') = ?4 \
+                       AND json_extract(needs_you, '$.action') = ?5 \
+                       AND IFNULL(json_extract(needs_you, '$.who'), '[]') = ?6 END",
+                    params![task, next, at.0, asked_at, action, who],
+                )
+                .map_err(db)?;
+            Ok(changed == 1)
+        })
+        .await
+    }
+
     async fn needs_you_tasks(&self, sandbox: &SandboxId) -> AppResult<Vec<TaskId>> {
         let sandbox = sandbox.as_str().to_owned();
         self.call(move |c| {
@@ -99,6 +152,136 @@ impl NeedsYouStore for SqliteStore {
 mod tests {
     use super::*;
 
+    /// SPEC-512 ANS-005 (review of part 2): a withdrawal replaces the request only while it is
+    /// the one read, with the people it named then: a new request, one ended meanwhile, or
+    /// another withdrawal of the same request is never overwritten.
+    #[tokio::test]
+    async fn a_request_is_replaced_only_while_it_is_the_one_read() -> TestResult {
+        let store = SqliteStore::open_in_memory()?;
+        store
+            .call(|c| {
+                c.execute_batch(
+                    "INSERT INTO users (id, display_name, created_at) VALUES ('u1', 'U', 1);
+                     INSERT INTO sandboxes (id, slug, repo_owner, repo_name, default_branch, profile, port_base, port_count, created_by, onboarding_state, created_at)
+                       VALUES ('s1', 's', 'o', 'r', 'main', '{}', 20000, 10, 'u1', 'not_needed', 1);
+                     INSERT INTO tasks (id, sandbox_id, number, title, prompt, harness, status, origin, created_by, created_at, updated_at, owner_id)
+                       VALUES ('t1', 's1', 1, 'T', 'p', 'claude', 'queued', 'ui', 'u1', 100, 100, 'u1');",
+                )
+                .map_err(db)
+            })
+            .await?;
+        let task = TaskId::parse("t1")?;
+        let named = |action: &str, at: i64, who: &[&str]| NeedsYouRecord {
+            at,
+            named: Named {
+                who: who.iter().map(|w| (*w).to_owned()).collect(),
+                withdrawn: Vec::new(),
+            },
+            ..asks(action)
+        };
+        let read = named("Decide", 200, &["bob", "carol"]);
+        store
+            .set_task_needs_you(&task, Some(&read), Timestamp(200))
+            .await?;
+        let without_bob = named("Decide", 200, &["carol"]);
+        // A new request came meanwhile: it stays.
+        let newer = named("Decide again", 300, &["bob", "carol"]);
+        store
+            .set_task_needs_you(&task, Some(&newer), Timestamp(300))
+            .await?;
+        assert!(
+            !store
+                .replace_task_needs_you(&task, &read, &without_bob, Timestamp(310))
+                .await?
+        );
+        assert_eq!(store.task_needs_you(&task).await?, Some(newer.clone()));
+        // The same action asked again later is another request: it stays.
+        let same_later = named("Decide", 250, &["bob", "carol"]);
+        store
+            .set_task_needs_you(&task, Some(&same_later), Timestamp(305))
+            .await?;
+        assert!(
+            !store
+                .replace_task_needs_you(&task, &read, &without_bob, Timestamp(306))
+                .await?
+        );
+        store
+            .set_task_needs_you(&task, Some(&newer), Timestamp(307))
+            .await?;
+        // The one read, still as read: replaced once.
+        let without_carol = named("Decide again", 300, &["bob"]);
+        assert!(
+            store
+                .replace_task_needs_you(&task, &newer, &without_carol, Timestamp(320))
+                .await?
+        );
+        assert_eq!(store.task_needs_you(&task).await?, Some(without_carol));
+        // A second withdrawal from the same read finds its people changed: refused.
+        let without_bob_again = named("Decide again", 300, &["carol"]);
+        assert!(
+            !store
+                .replace_task_needs_you(&task, &newer, &without_bob_again, Timestamp(330))
+                .await?
+        );
+        // Ended meanwhile: nothing comes back.
+        store
+            .set_task_needs_you(&task, None, Timestamp(340))
+            .await?;
+        assert!(
+            !store
+                .replace_task_needs_you(&task, &newer, &without_carol_of(&newer), Timestamp(350))
+                .await?
+        );
+        assert_eq!(store.task_needs_you(&task).await?, None);
+        Ok(())
+    }
+
+    /// SPEC-512 ANS-004 (review of part 2): an answer ends the request it answered only: one
+    /// asked after it, even with the same action, stays.
+    #[tokio::test]
+    async fn an_answer_ends_only_the_request_asked_at_its_time() -> TestResult {
+        let store = SqliteStore::open_in_memory()?;
+        store
+            .call(|c| {
+                c.execute_batch(
+                    "INSERT INTO users (id, display_name, created_at) VALUES ('u1', 'U', 1);
+                     INSERT INTO sandboxes (id, slug, repo_owner, repo_name, default_branch, profile, port_base, port_count, created_by, onboarding_state, created_at)
+                       VALUES ('s1', 's', 'o', 'r', 'main', '{}', 20000, 10, 'u1', 'not_needed', 1);
+                     INSERT INTO tasks (id, sandbox_id, number, title, prompt, harness, status, origin, created_by, created_at, updated_at, owner_id)
+                       VALUES ('t1', 's1', 1, 'T', 'p', 'claude', 'queued', 'ui', 'u1', 100, 100, 'u1');",
+                )
+                .map_err(db)
+            })
+            .await?;
+        let task = TaskId::parse("t1")?;
+        let at = |at: i64| NeedsYouRecord {
+            at,
+            ..asks("Decide")
+        };
+        store
+            .set_task_needs_you(&task, Some(&at(300)), Timestamp(300))
+            .await?;
+        assert!(
+            !store
+                .end_task_needs_you_at(&task, 200, Timestamp(310))
+                .await?
+        );
+        assert_eq!(store.task_needs_you(&task).await?, Some(at(300)));
+        assert!(
+            store
+                .end_task_needs_you_at(&task, 300, Timestamp(320))
+                .await?
+        );
+        assert_eq!(store.task_needs_you(&task).await?, None);
+        Ok(())
+    }
+
+    fn without_carol_of(record: &NeedsYouRecord) -> NeedsYouRecord {
+        let mut next = record.clone();
+        next.named.who.retain(|w| w != "carol");
+        next
+    }
+
     type TestResult = Result<(), Box<dyn std::error::Error>>;
 
     fn asks(action: &str) -> NeedsYouRecord {
@@ -110,6 +293,7 @@ mod tests {
             link: None,
             at: 200,
             cause: None,
+            named: Default::default(),
         }
     }
 
