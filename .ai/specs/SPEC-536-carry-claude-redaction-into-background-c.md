@@ -45,3 +45,4 @@ Extend the transcript-local tracking already kept in ReadCursor. Associate a she
 - `cargo test --locked -p yulius-app --lib transcripts::` passed all 22 transcript tests. The regression exercised both tools with five launch variants across four read paths. The unrelated shell retained its public assignment on each read.
 - Review round 1 found that the prefix scan skipped the accepted `server_tool_use` block type. Switching the synthetic TaskOutput to that type reproduced the cold-page failure. The prefix scan now recognizes both Claude tool-use block types.
 - Incremental search indexing resets tracking at a batch boundary on dev. That separate surface is tracked in #1453 and noted on #1457.
+- A focused mutation run caught a prefix scan that always skips lines. A scan that parses every line survived because it still produces the right page. Added an assertion that ordinary transcript text takes the skip path.

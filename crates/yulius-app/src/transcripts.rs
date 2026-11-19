@@ -2337,6 +2337,12 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn a_cold_page_skips_plain_text_before_the_requested_line() {
+        let ordinary = br#"{"type":"user","message":{"content":"build finished"}}"#;
+        assert!(!may_change_env_tracking(ordinary));
+    }
+
     /// SPEC-536: the launch and each retrieval have different tool-use IDs. The shell
     /// association must survive a cursor between them, and a cold scan up to the results.
     #[test]
