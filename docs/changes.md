@@ -10,6 +10,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   Status panel and the Dashboard, a badge under each subscription's name reads Claude, Codex or
   Antigravity (the vendor, such as Google Gemini, on hover), before the email. The web mock's
   capacity view carries each subscription's provider, as the server's does.
+
 - Take control (SPEC-510, task #492, ADR-0365): on a teammate's task, Take control (in the task
   view and the task menu, after a confirmation naming the owner) makes the task yours at once:
   it acts on GitHub as you from then on. The previous owner is told wherever they are (their
