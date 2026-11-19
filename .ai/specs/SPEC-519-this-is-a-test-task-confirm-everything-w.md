@@ -18,8 +18,8 @@ ADR: [0373](../../docs/decisions/0373-gemini-4-neon-is-antigravitys-default-mode
 Confirm that an Antigravity (Google Gemini) task works end to end in a live Yulius session, offer
 Gemini 4 Neon (`gemini-4-neon`) in the composer and Settings under Google alongside Gemini 4
 Carbon (`gemini-4-carbon`), and make Gemini 4 Neon at high effort the default model of an
-Antigravity task on both Google sign-in and Gemini API key subscriptions. Claude Code (`Opus 5.5`)
-stays Yulius's unnamed-agent default (`F 2026-11-19 Harness`, SPEC-514).
+Antigravity task on both Google sign-in and Gemini API key subscriptions. Unnamed harness selection
+(`Random` across available harnesses, `SPEC-520`, superseding `SPEC-514`) stays unchanged.
 
 ## Context
 
@@ -58,9 +58,9 @@ stays Yulius's unnamed-agent default (`F 2026-11-19 Harness`, SPEC-514).
     fires `SessionStart`, `PreInvocation` and `Stop` with `"modelName": "gemini-4-neon-high"`,
     writes `PLANNER_RESPONSE` steps with `"model": "gemini-4-neon-high"`, and honors
     `AGY_CLI_DISABLE_AUTO_UPDATE=true` and the same `oauth-token` file layout.
-- **Explicit non-goals.** Tasks created without an agent and without a model still run Claude Code
-  on `claude-opus-5-5` (`F 2026-11-19 Harness`, SPEC-514 PIN-001, ADR-0368); Codex defaults stay as
-  set in SPEC-511 (`gpt-6.2-astra` at `high`).
+- **Explicit non-goals.** Unnamed harness selection (`Random` across connected harnesses, SPEC-520 /
+  ADR-0377, superseding SPEC-514 / ADR-0368) and Claude (`claude-opus-5-5`) / Codex (`gpt-6.2-astra`
+  at `high`, SPEC-511) defaults stay unchanged.
 
 ## Requirements
 
@@ -69,7 +69,7 @@ stays Yulius's unnamed-agent default (`F 2026-11-19 Harness`, SPEC-514).
 | NEO-001 | `DEFAULT_ANTIGRAVITY_MODEL` is `"gemini-4-neon"` and `DEFAULT_ANTIGRAVITY_EFFORT` stays `"high"`. An Antigravity launch (new or resumed) without `model` passes `--model gemini-4-neon` and without `effort` passes `--effort high`; a task's own `gemini-*` model (such as `gemini-4-carbon`) or effort is passed instead; non-`gemini-*` models on an Antigravity task stay 422 (`an Antigravity task takes a Gemini model (such as gemini-4-neon)`). | `yulius-domain` unit tests; `yulius-harness/tests/launch.rs`; `crates/yulius/tests/task_delete.rs` |
 | NEO-002 | An Antigravity task without `model` records `gemini-4-neon` on its attempt, shows `model: "gemini-4-neon"` with `model_default: true` and `effort: "high"` in its detail view, and is weighed by `DEFAULT_ANTIGRAVITY_MODEL` in the subscription pool. | `crates/yulius/tests/antigravity.rs` |
 | NEO-003 | `yulius_domain::agent_cli::antigravity` pins Antigravity CLI `1.5.12` (`1.5.12-5281398513336320`) with the `linux-x64` and `linux-arm64` tarball `sha512` digests from Google's release manifests, installed into `<data>/antigravity-cli/1.5.12-<platform>`; existing `1.5.10` runs finish undisturbed while `pinned_cli` prunes unreferenced older directories on install. | `yulius-domain` unit test; `crates/yulius/tests/antigravity_cli.rs` |
-| NEO-004 | The web UI's `models.js` lists `gemini-4-neon` ("Gemini 4 Neon") first under Google (`harness: 'antigravity'`) and keeps `gemini-4-carbon` ("Gemini 4 Carbon") second so both can be chosen and existing browser preferences (`yulius.composer.model`) stay valid; the composer's unnamed `Default` item stays Claude Code (`Opus 5.5`); the browser mock (`mock.js`) defaults an Antigravity task without `model` to `gemini-4-neon` at `high`. | `crates/yulius/tests/ui_contract.rs`; `e2e/tests/antigravity.e2e.ts` |
+| NEO-004 | The web UI's `models.js` lists `gemini-4-neon` ("Gemini 4 Neon") first under Google (`harness: 'antigravity'`) and keeps `gemini-4-carbon` ("Gemini 4 Carbon") second so both can be chosen and existing browser preferences (`yulius.composer.model`) stay valid; the composer's unnamed `Random` item continues to draw across available harnesses (`SPEC-520`, naming `Antigravity (Gemini 4 Neon)` and offering the common `EXTRA_HIGH` tiers); the browser mock (`mock.js`) defaults an Antigravity task or automation run without `model` to `gemini-4-neon` at `high`. | `crates/yulius/tests/ui_contract.rs`; `e2e/tests/antigravity.e2e.ts`; `e2e/tests/model-choices.e2e.ts` |
 
 ## Plan
 
@@ -81,6 +81,7 @@ stays Yulius's unnamed-agent default (`F 2026-11-19 Harness`, SPEC-514).
 - [x] Every gate green, docs and the changes log updated
 - [x] Resolve SPEC-521 merge conflicts, verify model pickers and review merged head
 - [x] Resolve origin/dev (#1436, #1450) merge conflict in docs/product.md and review merged head
+- [x] Resolve SPEC-520 (#1458) merge conflicts, verify harness draw & e2e suites, and review merged head
 
 ## Acceptance criteria
 
@@ -97,40 +98,43 @@ stays Yulius's unnamed-agent default (`F 2026-11-19 Harness`, SPEC-514).
 - **AC-3** (NEO-004) In the composer's model menu, Google lists `Gemini 4 Neon` first and `Gemini 4
   Carbon` second; picking `Gemini 4 Neon` starts an Antigravity task on `gemini-4-neon` at `high`
   effort, picking `Gemini 4 Carbon` starts one on `gemini-4-carbon` at `high` effort, and leaving
-  the menu on `Default` still starts a Claude Code task (`SPEC-514`).
+  the menu on `Random` continues to draw across available harnesses (`SPEC-520`).
 - **AC-4** (Live Gemini confirmation) All stages of this task (spec check, Rust and e2e tests,
   fresh-session independent review subagent, security scan, pull request, Yulius CI and merge) run
   from this Antigravity session, with any limitation recorded in `Evidence`.
 
 ## Test plan
 
-- Unit (`yulius-domain`, `yulius-harness`): `DEFAULT_ANTIGRAVITY_MODEL` and `Harness::implied_by` /
-  `Harness::unnamed` for `gemini-4-neon` and `gemini-4-carbon`; `antigravity::platform` paths and
-  `sha512` digests for `1.5.12`; `plan_launch` argv for default (`gemini-4-neon` at `high`) and
-  explicit Gemini models.
+- Unit (`yulius-domain`, `yulius-harness`): `DEFAULT_ANTIGRAVITY_MODEL` and `Harness::implied_by`
+  for `gemini-4-neon` and `gemini-4-carbon`; `antigravity::platform` paths and `sha512` digests for
+  `1.5.12`; `plan_launch` argv for default (`gemini-4-neon` at `high`) and explicit Gemini models.
 - Integration (`crates/yulius/tests`): `antigravity.rs` (attempt and task detail default to
   `gemini-4-neon`), `antigravity_cli.rs` (`1.5.12` stub install, digest refusal, and `--ignored`
-  live download from Google storage), `harness_pin.rs` (`gemini-4-neon` implies Antigravity while
-  unnamed tasks stay Claude Code), `ui_contract.rs` (`models.js` lists `DEFAULT_ANTIGRAVITY_MODEL`
-  first under Google, keeps `gemini-4-carbon`, and `mock.js` matches `DEFAULT_ANTIGRAVITY_MODEL`).
-- End-to-end (`e2e/tests/antigravity.e2e.ts`): choosing `Gemini 4 Neon` in the composer starts an
-  Antigravity task on `gemini-4-neon` at `high`; `Gemini 4 Carbon` remains selectable and starts one
-  on `gemini-4-carbon` at `high`; `Default` still starts Claude Code.
+  live download from Google storage), `harness_draw.rs` (`gemini-4-neon` and `gemini-4-carbon` imply
+  Antigravity `chosen` while unnamed tasks draw across available harnesses), `ui_contract.rs`
+  (`models.js` lists `DEFAULT_ANTIGRAVITY_MODEL` first under Google, keeps `gemini-4-carbon`, names
+  `Gemini 4 Neon` in `Random`, and `mock.js` matches `DEFAULT_ANTIGRAVITY_MODEL`).
+- End-to-end (`e2e/tests/antigravity.e2e.ts`, `e2e/tests/model-choices.e2e.ts`): choosing `Gemini 4
+  Neon` in the composer starts an Antigravity task on `gemini-4-neon` at `high`; `Gemini 4 Carbon`
+  remains selectable and starts one on `gemini-4-carbon` at `high`; `Random` offers `EXTRA_HIGH`
+  tiers and draws across available harnesses.
 - Real CLI against a local stub: `agy 1.5.12` verified in a temporary directory with
   `GEMINI_API_KEY` and `--model gemini-4-neon --effort high` (hooks and transcript step fields).
 
 ## Decisions
 
 - **"Make Neon the default model" sets Antigravity's default (`DEFAULT_ANTIGRAVITY_MODEL`), not
-  Yulius's unnamed-agent default.** Three hours earlier on the same day (`F 2026-11-19 Harness`,
-  task #496, SPEC-514, ADR-0368), the same person decided that tasks created without an explicit
-  agent or model must always run Claude Code (`claude-opus-5-5`) rather than switching to Gemini,
-  and in task #493 (SPEC-511, ADR-0366) set Codex's default model the same way. In this Gemini test
-  task ("confirm everything work on gemini. if so, add Gemini 4 Neon to the models and make Neon
-  the default model"), "the default model" therefore amends Antigravity's `gemini-4-carbon` default
-  from `F 2026-11-17 Antigravity` (SPEC-505, ADR-0361). Alternative: changing `Harness::unnamed`
-  and the composer's `Default` to Antigravity on Gemini 4 Neon; rejected because it would overturn
-  SPEC-514 and break every instance that has only Claude subscriptions connected. Recorded in
+  Yulius's sole unnamed-agent default.** Unnamed harness selection (`F 2026-11-19 Harness`,
+  SPEC-514 / ADR-0368, superseded by `F 2026-11-19 Random`, SPEC-520 / ADR-0377) governs which
+  harness runs when no agent or model is chosen (`Random` across connected harnesses), while task
+  #493 (SPEC-511, ADR-0366) set Codex's default model (`gpt-6.2-astra` at `high`). In this Gemini
+  test task ("confirm everything work on gemini. if so, add Gemini 4 Neon to the models and make
+  Neon the default model"), "the default model" amends Antigravity's `gemini-4-carbon` default from
+  `F 2026-11-17 Antigravity` (SPEC-505, ADR-0361), so every Antigravity task without an explicit
+  model (including tasks drawn to Antigravity by `Random`) runs `gemini-4-neon` at `high`.
+  Alternative: routing every unnamed task exclusively to Antigravity on Gemini 4 Neon; rejected
+  because it would override `Random` (`SPEC-520`) and break instances with only Claude or Codex
+  subscriptions connected. Recorded in
   [ADR-0373](../../docs/decisions/0373-gemini-4-neon-is-antigravitys-default-model-on-agy-1-5-12.md).
 - **Keep `Gemini 4 Carbon` in `models.js` below `Gemini 4 Neon`.** The request says "add Gemini 4
   Neon to the models and make Neon the default model", not "replace Carbon": keeping
@@ -198,6 +202,14 @@ stays Yulius's unnamed-agent default (`F 2026-11-19 Harness`, SPEC-514).
   `SPEC-528` (`#1450`) and numeric ADR ordering with `ADR-0375` (`#1436`), verified repository
   contracts, scoped Rust suites (`yulius-domain`, `yulius-harness`, `antigravity`, `agent_hooks`)
   and browser e2e suites.
+- **Merge of `SPEC-520` (`#1458`) and review round 5** (`yulius-reviewer` fresh session on the
+  resolved merge head before `delivery_merge`): reconciled `harness.rs`, `harness_draw.rs`
+  (replacing `harness_pin.rs`), `models.js` (`Random` naming `Antigravity (Gemini 4 Neon)` with
+  `EXTRA_HIGH` common tiers), `taskview.js`, `mock.js` (including automation runs on Antigravity),
+  `docs/api.md`, `docs/decisions/README.md`, `e2e/README.md`, `SPEC-001`, `SPEC-003` and `SPEC-505`;
+  verified `scripts/dev quick`, `yulius-domain`, `yulius-harness`, `yulius` (`antigravity`,
+  `antigravity_cli`, `harness_draw`, `task_delete`, `ui_contract`) and browser e2e suites
+  (`antigravity.e2e.ts`, `model-choices.e2e.ts`, `codex.e2e.ts`, `model-fallback.e2e.ts`).
 - **Not tested:** a live `GEMINI_API_KEY` call to Google's production endpoint (stubbed locally
   against `agy` 1.5.12), and `linux-arm64` binary execution (verified by pinned manifest `sha512`
   and tarball inspection).

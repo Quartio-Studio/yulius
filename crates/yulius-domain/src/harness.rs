@@ -134,25 +134,43 @@ impl Harness {
     /// All supported harnesses.
     pub const ALL: [Self; 3] = [Self::ClaudeCode, Self::Codex, Self::Antigravity];
 
+    /// Picks an unbiased index in `0..len` (`1 <= len <= 256`) from random `bytes` by rejection
+    /// sampling (`byte < 256 - (256 % len)`), so every candidate in a three-harness draw gets an
+    /// exact `1 / 3` share (`85 / 255`) rather than `86 / 256` on index `0` (SPEC-520 RHM-001).
+    /// Returns `None` when `len == 0`, `len > 256`, or every byte in `bytes` fell in the rejected
+    /// tail.
+    #[must_use]
+    pub fn unbiased_index(len: usize, bytes: &[u8]) -> Option<usize> {
+        if len == 0 || len > 256 {
+            return None;
+        }
+        let limit = 256_u16 - (256_u16 % u16::try_from(len).ok()?);
+        bytes
+            .iter()
+            .copied()
+            .find(|&b| u16::from(b) < limit)
+            .map(|b| usize::from(b) % len)
+    }
+
+    /// The harness `roll` picks among `candidates` (`ClaudeCode` when `candidates` is empty,
+    /// whose start is then refused for want of a Claude account; SPEC-520 RHM-001/002).
+    #[must_use]
+    pub fn drawn(candidates: &[Self], roll: u8) -> Self {
+        if candidates.is_empty() {
+            Self::ClaudeCode
+        } else {
+            candidates[usize::from(roll) % candidates.len()]
+        }
+    }
+
     /// The agent a model given without one implies: Antigravity for a Gemini model, else Claude
-    /// Code (Codex runs only when chosen; SPEC-505 RND-001).
+    /// Code (SPEC-505 RND-001).
     #[must_use]
     pub fn implied_by(model: &str) -> Self {
         if model.trim().to_ascii_lowercase().starts_with("gemini-") {
             Self::Antigravity
         } else {
             Self::ClaudeCode
-        }
-    }
-
-    /// The agent of a task created without one (SPEC-514 PIN-001/002, ADR-0368): the one `model`
-    /// implies when a model is given, else `caller`'s (the task whose agent created it), else
-    /// Claude Code. It is never drawn, so it does not change from one task to the next.
-    #[must_use]
-    pub fn unnamed(model: Option<&str>, caller: Option<Self>) -> Self {
-        match model.map(str::trim).filter(|m| !m.is_empty()) {
-            Some(model) => Self::implied_by(model),
-            None => caller.unwrap_or(Self::ClaudeCode),
         }
     }
 
@@ -263,29 +281,41 @@ pub fn valid_session_id(id: &str) -> bool {
 mod tests {
     use super::*;
 
-    /// SPEC-514 PIN-001/002: a task without an agent takes its model's agent, else its caller's,
-    /// else Claude Code; a model's agent is Antigravity for Gemini, else Claude Code.
+    /// SPEC-520 RHM-001/002: rejection sampling picks uniformly across 1, 2 or 3 harnesses (`85`
+    /// each over `0..255` for 3, `128` each over `0..=255` for 2, `256` for 1, `255` rejected for
+    /// 3); an empty candidate set falls back to Claude Code.
     #[test]
-    fn a_task_without_an_agent_takes_its_models_or_its_callers_or_claude_code() {
-        assert_eq!(Harness::unnamed(None, None), Harness::ClaudeCode);
-        assert_eq!(Harness::unnamed(Some("  "), None), Harness::ClaudeCode);
-        assert_eq!(
-            Harness::unnamed(None, Some(Harness::Antigravity)),
-            Harness::Antigravity
-        );
-        assert_eq!(Harness::unnamed(None, Some(Harness::Codex)), Harness::Codex);
-        assert_eq!(
-            Harness::unnamed(Some("claude-sonnet-5-5"), Some(Harness::Antigravity)),
-            Harness::ClaudeCode
-        );
-        assert_eq!(
-            Harness::unnamed(Some("gemini-4-neon"), Some(Harness::ClaudeCode)),
-            Harness::Antigravity
-        );
-        assert_eq!(
-            Harness::unnamed(Some("gemini-4-carbon"), Some(Harness::ClaudeCode)),
-            Harness::Antigravity
-        );
+    fn unbiased_draw_gives_every_eligible_harness_the_same_chance() {
+        let all = Harness::ALL;
+        assert_eq!(Harness::drawn(&all, 0), Harness::ClaudeCode);
+        assert_eq!(Harness::drawn(&all, 1), Harness::Codex);
+        assert_eq!(Harness::drawn(&all, 2), Harness::Antigravity);
+        assert_eq!(Harness::drawn(&[], 7), Harness::ClaudeCode);
+
+        // Over all 256 byte values with 3 candidates, 0..255 accept 85 each and 255 is rejected.
+        let mut counts = [0_usize; 3];
+        let mut rejected = 0_usize;
+        for b in 0..=255_u8 {
+            match Harness::unbiased_index(3, &[b]) {
+                Some(idx) => counts[idx] += 1,
+                None => rejected += 1,
+            }
+        }
+        assert_eq!(counts, [85, 85, 85], "exact 1/3 each across 3 harnesses");
+        assert_eq!(rejected, 1, "only 255 is rejected for len = 3");
+        assert_eq!(Harness::unbiased_index(3, &[255, 255, 4]), Some(1));
+        assert_eq!(Harness::unbiased_index(3, &[255, 255]), None);
+        assert_eq!(Harness::unbiased_index(0, &[0]), None);
+        assert_eq!(Harness::unbiased_index(257, &[0]), None);
+
+        let mut two = [0_usize; 2];
+        for b in 0..=255_u8 {
+            let idx = Harness::unbiased_index(2, &[b]).unwrap_or(usize::MAX);
+            two[idx] += 1;
+        }
+        assert_eq!(two, [128, 128]);
+        assert_eq!(Harness::unbiased_index(1, &[255]), Some(0));
+
         assert_eq!(Harness::implied_by("gemini-4-neon"), Harness::Antigravity);
         assert_eq!(Harness::implied_by("gemini-4-carbon"), Harness::Antigravity);
         assert_eq!(Harness::implied_by(" Gemini-3.1-pro"), Harness::Antigravity);

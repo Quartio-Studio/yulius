@@ -325,10 +325,10 @@ async fn workflows_defaults_scope_permissions_and_task_steps() -> TestResult {
     )
     .await?;
     assert_eq!(quick.body["steps"]["total"], 0);
-    // No agent named: Claude Code, never drawn (SPEC-514 PIN-001).
+    // No agent named: drawn among connected harnesses (only Claude is connected in this fixture).
     assert_eq!(
         quick.body["harness"], "claude",
-        "Claude Code is the default harness"
+        "Claude Code is drawn when only Claude is connected"
     );
     let other = call(
         &w.h.router,

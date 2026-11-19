@@ -30,12 +30,18 @@ moves only between Antigravity subscriptions, and Yulius provides the pinned Ant
 [ADR-0373](decisions/0373-gemini-4-neon-is-antigravitys-default-model-on-agy-1-5-12.md)). An
 Antigravity task stays Working while its command runs in the background or its agent resumes by
 itself ([SPEC-528](../.ai/specs/SPEC-528-antigravity-tasks-show-needs-its-person.md)). A
-task's agent is set, never drawn: the one chosen, else the one its model implies, else Claude Code
-(the composer's Default); a follow-up an agent creates runs that agent's own, and an automation
-always runs the agent it names (`F 2026-11-19 Harness`,
-[SPEC-514](../.ai/specs/SPEC-514-make-sure-harnesses-doesnt-change-themse.md),
-[ADR-0368](decisions/0368-a-tasks-agent-is-set-never-drawn.md)). Tasks drawn at random while
-SPEC-505's draw existed still say so, and the analytics export lists it.
+task created without choosing an agent (the composer's and Settings' `Random`, or `auto`) and
+without a model that implies one draws uniformly across all added harnesses (`claude`, `codex`,
+`antigravity`) that currently have at least one non-exhausted subscription — one equal chance per
+eligible harness regardless of subscription count, excluding harnesses with zero or only finished
+subscriptions while another has capacity — and keeps that assigned harness for life (`harness_choice:
+random`, exported in analytics); a running task agent's unadorned follow-up keeps the calling
+task's harness, and an automation defaults to `Random` (`auto`, drawn for each run) or runs the
+agent it names (`F 2026-11-19 Random harness`,
+[SPEC-520](../.ai/specs/SPEC-520-i-dont-know-why-but-i-dont-see-random-ha.md),
+[ADR-0377](decisions/0377-random-draws-uniformly-across-harnesses-with-available-subscriptions.md),
+superseding the no-draw part of [SPEC-514](../.ai/specs/SPEC-514-make-sure-harnesses-doesnt-change-themse.md)
+/ [ADR-0368](decisions/0368-a-tasks-agent-is-set-never-drawn.md)).
 
 The composer and Settings offer individual Codex and Gemini models grouped by provider. Each model
 shows its supported effort levels. Choosing a model that cannot use the saved effort restores the

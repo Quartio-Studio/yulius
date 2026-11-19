@@ -8,8 +8,9 @@ default model"). Specified in
 [SPEC-519](../../.ai/specs/SPEC-519-this-is-a-test-task-confirm-everything-w.md). Amends the
 **Model** and **CLI** parts of
 [ADR-0361](0361-antigravity-is-a-third-harness-picked-at-random-by-default.md) (SPEC-505 AGY-002,
-AGY-007, AGY-010); [ADR-0368](0368-a-tasks-agent-is-set-never-drawn.md) (Claude Code as the
-unnamed-agent default) stands.
+AGY-007, AGY-010); unnamed harness selection continues to follow
+[ADR-0377](0377-random-draws-uniformly-across-harnesses-with-available-subscriptions.md) (SPEC-520,
+which superseded [ADR-0368](0368-a-tasks-agent-is-set-never-drawn.md)).
 
 ## Context
 
@@ -38,16 +39,18 @@ unnamed-agent default) stands.
 - **Offered Google models.** `models.js` lists `gemini-4-neon` ("Gemini 4 Neon") first under Google
   (`harness: 'antigravity'`) and keeps `gemini-4-carbon` ("Gemini 4 Carbon") second; the browser
   mock defaults an Antigravity task without `model` to `gemini-4-neon` at `high`. The composer's
-  unnamed `Default` item stays Claude Code (`Opus 5.5`).
+  unnamed `Random` item continues to draw across available harnesses (`ADR-0377`, naming
+  `Antigravity (Gemini 4 Neon)` and offering the common `EXTRA_HIGH` tiers).
 - **Pinned Antigravity CLI.** `yulius_domain::agent_cli::antigravity` pins `1.5.12`
   (`1.5.12-5281398513336320`) with the `sha512` digests from Google's `linux_amd64` and
   `linux_arm64` manifests, installed into `<data>/antigravity-cli/1.5.12-<platform>`.
 
 ## Alternatives
 
-- **Make Gemini 4 Neon Yulius's overall unnamed `Default` (`Harness::unnamed`).** Rejected: it
-  would reverse `F 2026-11-19 Harness` (ADR-0368, merged hours earlier to keep unnamed tasks on
-  Claude Code) and break instances that have only Claude subscriptions connected.
+- **Make Gemini 4 Neon Yulius's sole unnamed default (routing every unnamed task to Antigravity).**
+  Rejected: unnamed harness selection is governed separately (`ADR-0368`, superseded by `ADR-0377`'s
+  uniform draw across connected harnesses), and forcing every unnamed task onto Gemini would break
+  instances that have only Claude or Codex subscriptions connected.
 - **Replace `Gemini 4 Carbon` in `models.js` instead of keeping it second.** Rejected: the request
   asks to add Gemini 4 Neon and make it the default, and keeping Carbon preserves explicit selection
   and browsers with `yulius.composer.model = "gemini-4-carbon"`.
@@ -57,10 +60,10 @@ unnamed-agent default) stands.
 
 ## Consequences
 
-- Antigravity tasks without an explicit model run `gemini-4-neon` at `high` effort on both Google
-  sign-in and `GEMINI_API_KEY` subscriptions; existing Antigravity tasks without a pinned model
-  resume on `gemini-4-neon` at their next launch.
+- Antigravity tasks without an explicit model (including tasks drawn to Antigravity by `Random`) run
+  `gemini-4-neon` at `high` effort on both Google sign-in and `GEMINI_API_KEY` subscriptions;
+  existing Antigravity tasks without a pinned model resume on `gemini-4-neon` at their next launch.
 - Both `Gemini 4 Neon` and `Gemini 4 Carbon` can be picked under Google in the composer and
-  Settings; unnamed `Default` tasks remain Claude Code (`Opus 5.5`).
+  Settings; unnamed `Random` tasks draw across available harnesses (`ADR-0377`).
 - First Antigravity start or server warm-up after the update downloads `agy` 1.5.12 (~100 MB) and
   prunes `1.5.10` once no running process holds it.

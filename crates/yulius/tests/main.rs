@@ -51,7 +51,7 @@ mod github_admin;
 mod github_callback;
 mod github_checks;
 mod global_superagent;
-mod harness_pin;
+mod harness_draw;
 mod host_move;
 mod http_auth;
 mod import_server;
