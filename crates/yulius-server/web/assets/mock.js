@@ -3142,8 +3142,10 @@ route('POST', `/api/sandboxes/${ID}/automation-templates/${ID}/enable`, ({ db, p
     a = { id: `aut_${db.nextId}`, sandbox: p[0], ...fields, owner_id: db.me.user.id, owner_login: db.me.user.login, harness: 'auto', created_via: 'ui', last_run: null };
     db.automations.push(a);
   }
-  if (!created && !a.enabled) requireAutomationCreator(db, a);
-  Object.assign(a, { enabled: true, next_run_at: isoIn(5 * HOUR) });
+  if (!a.enabled) {
+    requireAutomationCreator(db, a);
+    Object.assign(a, { enabled: true, next_run_at: isoIn(5 * HOUR) });
+  }
   const { sandbox: _s, ...out } = a;
   return json(created ? 201 : 200, out);
 });
