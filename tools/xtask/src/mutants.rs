@@ -696,19 +696,48 @@ mod tests {
         };
         let lib = "pub fn one() -> u32 {\n    1\n}\n\npub fn two() -> u32 {\n    2\n}\n\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn one_is_one() {\n        assert_eq!(super::one(), 1);\n    }\n";
         let (dir, base) = fixture("missed")?;
+        // Only the root package has mutations. A failure in a sibling's test must stop
+        // the baseline before cargo-mutants can credit that failure to a mutant.
+        let manifest = std::fs::read_to_string(dir.join("Cargo.toml"))?;
+        std::fs::write(
+            dir.join("Cargo.toml"),
+            format!("{manifest}members = [\"tools/observer\"]\n"),
+        )?;
+        std::fs::write(dir.join(".gitignore"), "/target/\n")?;
+        std::fs::create_dir_all(dir.join("tools/observer/src"))?;
+        std::fs::write(
+            dir.join("tools/observer/Cargo.toml"),
+            "[package]\nname = \"observer\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\
+             [dev-dependencies]\nfixture = { path = \"../..\" }\n",
+        )?;
+        let observer = "tools/observer/src/lib.rs";
+        std::fs::write(dir.join(observer), "#[test] fn peer_test() { panic!() }\n")?;
         commit(&dir, "src/lib.rs", &format!("{lib}}}\n"))?;
+        let failed = run(&dir, "cargo", &settings(&base));
+        assert!(
+            failed
+                .as_ref()
+                .is_err_and(|err| err.to_string().contains("baseline")),
+            "peer must fail the baseline: {failed:?}"
+        );
+        let log = std::fs::read_to_string(dir.join("target/mutants/mutants.out/log/baseline.log"))?;
+        assert!(log.contains("peer_test"), "{log}");
+
+        commit(&dir, observer, "#[test] fn peer_test() {}\n")?;
         let outcomes = run(&dir, "cargo", &settings(&base))?.ok_or("nothing mutated")?;
         assert!(
             outcomes.missed.iter().any(|m| m.contains("two")),
             "{outcomes:?}"
         );
         assert!(!outcomes.held());
-        let held = format!(
-            "{lib}\n    #[test]\n    fn two_is_two() {{\n        assert_eq!(super::two(), 2);\n    }}\n}}\n"
-        );
-        commit(&dir, "src/lib.rs", &held)?;
+        commit(
+            &dir,
+            observer,
+            "#[test] fn peer_test() { assert_eq!(fixture::two(), 2); }\n",
+        )?;
         let outcomes = run(&dir, "cargo", &settings(&base))?.ok_or("nothing mutated")?;
         assert!(outcomes.held(), "{outcomes:?}");
+        assert!(outcomes.caught.iter().any(|m| m.contains("two")));
         let (docs, docs_base) = fixture("docs")?;
         commit(&docs, "README.md", "words\n")?;
         assert_eq!(run(&docs, "cargo", &settings(&docs_base))?, None);
