@@ -23,7 +23,7 @@ SPEC-468 CCF-010 protects the draft until a prompt from the box goes through. SP
 
 - [x] Measure scheduled and typed submissions with Claude Code
 - [x] Reproduce draft, goal and question regressions
-- [ ] Classify scheduled submissions and verify typed submissions
+- [x] Classify scheduled submissions and verify typed submissions
 - [ ] Review and deliver the fix on green CI
 
 ## Acceptance criteria
@@ -51,3 +51,11 @@ Round 1 reviewed `f28bc0e884045023ee84f3d6f846e622a95ceec3`. New harness tests f
 Round 2 reviewed `2aab3a87db3fab4b5c24207bfa8b7ab496da99f4`. With a stranded notification, the second tick of a repeating schedule was misread as typed. The two-tick test failed on that head and passed after reconciling the queue with the completed fire ID and accounting for the stranded notice on each hand-over. Eight classifier tests passed, including a same-text typed submit after the ticks.
 
 At `3ec660448cb9e393cbeec7590df7b0e10186c718`, the delivered-notification control failed. A dequeue identifies neither the notice nor the scheduled item behind it. The classifier now keeps both candidates until the user record identifies the entry. All nine transcript tests passed, including a delivered notice followed by a scheduled hand-over and two recurring hand-overs behind a stranded notice. Replaying the captured 2.1.328 transcript through its pre-response queue records returned `Scheduled`.
+
+Independent review approved `3c5ba4295cc9945a6e4f0217e6f81745bf409915` after the delivered-notification correction. Both red integration regressions passed when run separately: the test-clock draft and open question, and the fake-agent scheduled turn with a draft and achieved goal. `scripts/dev quick` and spec validation passed. `scripts/dev security` reported that Vidoc is disabled for this project.
+
+At the approved head, `cargo test -p yulius-harness --lib scheduled::` passed all nine classifier tests and `cargo test -p yulius --test main scheduled_ -- --test-threads=1` passed all five selected integration tests. Nextest ran all 58 tests matching `/^claude_code_moves::moves::/` in isolated processes and all passed. Concurrent execution in one libtest process crossed existing race callbacks registered under the shared test task ID. This was also reproduced on the pre-fix test binary, and recorded on #1225.
+
+The whole-branch mutation run reported `TIMEOUT Unmutated baseline in 1018s build + 300s test` and tested no mutants. The first review-fix run stopped on the unchanged migration-helper signal-order test before it could test any of its 13 mutants.
+
+The second review-fix mutation run stopped at its unmutated baseline in the existing instance-migration estimate test. It tested none of the 17 listed mutants. The scoped Clippy run at the approved head passed for the app, harness and fake agent with warnings denied.
