@@ -1,6 +1,6 @@
 ---
 yulius-task: 1786ab2c-9cac-4831-983d-48f7f21bea33
-status: in-progress
+status: done
 ---
 
 # SPEC-534. Enforce automation ownership across edits and starts
@@ -25,7 +25,7 @@ Issue #1289 and static inspection of dev 8d05c25b show that HTTP and MCP allow a
 - [x] Cover edits, re-enables and starts with two actors
 - [x] Bind automation actions to the authorized identity
 - [x] Explain execution ownership in the editor and tools
-- [ ] Verify and review the fix for delivery into dev
+- [x] Verify and review the fix for delivery into dev
 
 ## Acceptance criteria
 
@@ -45,3 +45,9 @@ Use the existing SQLite and fake GitHub fixtures, HTTP router, in-process MCP to
 
 - Before the fix, both synthetic authorization tests failed. The HTTP edit returned 200 when the fixture expected 403, and MCP accepted the other writer's update. The browser regression failed because the editor omitted the execution identity.
 - With the UI change, all 15 tests in `e2e/tests/automations.e2e.ts` passed on Chromium. The SQLite upgrade fixture paused the schedule, linked the pre-existing task and skipped the slot with no task.
+- `cargo test -p yulius --test main automations::` passed all 15 cases, including both two-person regressions. The management-tool integration group passed all 21 cases. `cargo test -p yulius-store --lib legacy_automation_schedules` passed. The automation and store commands also passed after merging the updated dev base.
+- Round 1 asked for direct assertions on the list switch, Run now, Delete and the editor's read-only prompt. Those assertions passed. The mock's repeated template enable changed the next run time in the new regression. Preserving the schedule made it pass. Round 2 approved commit `25d1917bbc942c81815bb22333f24d614ae24768`.
+- `scripts/dev quick` passed. `scripts/dev security` reported Vidoc disabled. Full local Chromium suite at the first reviewed head recorded 1,132 passes, one skip and two failures in the host-policy notice and task-terminal image paste. The failures and the separate shared-workflow authorization observation are recorded on issue #1289.
+- The final `npx e2e run tests/automations.e2e.ts` passed all 16 Chromium cases, including the additional ownership assertions and repeated template enable.
+- After integrating the upstream editor fix for typed names, all 19 automation browser cases passed and the independent reviewer approved integrated commit `87f2eb5642408554cebd0daa9c67a5450f447930`.
+- `scripts/dev mutants` reported 30 listed, 1 caught, 0 missed, 0 timed out, 28 unviable and 1 not reached within the 30-minute bound. The tests caught the inverted creator comparison. The pending mutation replaced the whole MCP tool catalog with an empty list. The review follow-up command reported no changed Rust lines in that round.
