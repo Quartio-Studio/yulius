@@ -37,3 +37,10 @@ Exercise the shared helper on Linux, demonstrate the regression against the orig
 ## Decisions
 
 Only a subprocess opens the inode that will be executed for writing. This follows the test-fixture precedent in SPEC-494. Renaming a parent-written executable preserves the inherited writer, and close-on-exec still leaves a window before the child executes. This change is local to the Git integration tests.
+
+## Evidence
+
+- The Linux test `fake_git_runs_while_a_child_holds_an_inherited_writer` failed at 4cc394832 with errno 26. With the fix, all eight first attempts returned the expected body output while the child still held the old writer.
+- A Linux probe forked once per iteration while the parent had the script body open, blocked the child on a pipe through execution, then released and reaped it. All 250 direct writes failed to execute with errno 26. All 250 runs using a separate source plus `install -m 755` succeeded.
+- A syscall trace of `a_fetch_that_ends_past_its_limit_fails_and_one_under_it_succeeds` showed that only the install process opened the new `quick-git` for writing. Both fetch invocations executed it successfully.
+- `scripts/dev quick` and `cargo clippy --locked -p yulius-git --tests -- -D warnings` passed.
