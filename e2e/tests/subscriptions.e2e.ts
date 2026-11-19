@@ -146,14 +146,21 @@ test('a folded subscription marks a reading that may be out of date, and a windo
  */
 async function openWithAWindowThatResetsInTenMinutes(app: { open: (path: string) => Promise<void> }, browser: Browser) {
   await app.open(mock('/s/studio', '&ambient=0'));
-  await browser.evaluate(() => {
+  const resetAt = await browser.evaluate(() => {
     type Account = { label: string; status: string; usage: Record<string, unknown> };
     const db = (window as unknown as { __yuliusMock: { accounts: Account[] } }).__yuliusMock;
     const four = db.accounts.find((a) => a.label === 'Claude #4')!;
-    Object.assign(four, { status: 'ok', usage: { ...four.usage, primary: { used_percent: 100, resets_at: new Date(Date.now() + 10 * 60e3).toISOString(), window_minutes: 300 }, observed_at: new Date().toISOString() } });
+    // Ten minutes from 23:55 is on the next local calendar day, whatever time CI runs.
+    const reading = new Date();
+    reading.setHours(23, 55, 0, 0);
+    Date.now = () => reading.getTime();
+    const reset = new Date(Date.now() + 10 * 60e3);
+    Object.assign(four, { status: 'ok', usage: { ...four.usage, primary: { used_percent: 100, resets_at: reset.toISOString(), window_minutes: 300 }, observed_at: reading.toISOString() } });
     location.hash = '#/admin/accounts';
+    return reset.toLocaleDateString(undefined, { weekday: 'long' }) + ' ' + reset.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
   });
   await firstShown(browser.locator('main .account-card').first());
+  return resetAt;
 }
 
 /**
