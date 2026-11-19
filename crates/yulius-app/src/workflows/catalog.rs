@@ -133,17 +133,24 @@ mod tests {
         let research = default_workflow("wf-research").ok_or("wf-research")?;
         let fix = default_workflow("wf-fix").ok_or("wf-fix")?;
         assert!(
-            fix.when_to_use.contains("also when it is asked as a question"),
+            fix.when_to_use
+                .contains("also when it is asked as a question"),
             "{}",
             fix.when_to_use
         );
         assert!(
-            research.when_to_use.contains("reports nothing wrong in the product"),
+            research
+                .when_to_use
+                .contains("reports nothing wrong in the product"),
             "{}",
             research.when_to_use
         );
         // The catalog wraps its lines: compare with the whitespace folded.
-        let instructions = research.instructions.split_whitespace().collect::<Vec<_>>().join(" ");
+        let instructions = research
+            .instructions
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
         for said in [
             "A defect is fixed, not filed",
             "even as a question or a screenshot",

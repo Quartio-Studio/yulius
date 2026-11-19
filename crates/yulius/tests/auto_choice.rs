@@ -314,7 +314,10 @@ async fn a_defect_asked_as_a_question_gets_the_fixing_steps() -> TestResult {
     let a = auto(true).await?;
     let fix_steps = workflow_steps(&a, "Fix").await?;
     let research_steps = workflow_steps(&a, "Research / Question").await?;
-    assert!(fix_steps.iter().any(|s| s.contains("regression test")), "{fix_steps:?}");
+    assert!(
+        fix_steps.iter().any(|s| s.contains("regression test")),
+        "{fix_steps:?}"
+    );
 
     let r = create(
         &a,
@@ -332,9 +335,10 @@ async fn a_defect_asked_as_a_question_gets_the_fixing_steps() -> TestResult {
     let audit = a.h.store.automation_audit(task_id, 10).await?;
     assert!(
         audit.iter().any(|e| e.action == "task.auto_choice"
-            && e.detail.as_deref().is_some_and(|d| d
-                .contains("mode goal, reports a defect (jev 90%)")
-                && d.contains("workflow Fix (default"))),
+            && e.detail
+                .as_deref()
+                .is_some_and(|d| d.contains("mode goal, reports a defect (jev 90%)")
+                    && d.contains("workflow Fix (default"))),
         "{audit:?}"
     );
 
@@ -342,7 +346,9 @@ async fn a_defect_asked_as_a_question_gets_the_fixing_steps() -> TestResult {
     let seen = a.jev.seen.lock().map_err(|_| "lock")?.clone();
     let mode = seen.iter().find(|(id, _)| id == "mode").ok_or("mode")?;
     assert!(
-        mode.1.iter().any(|o| o.starts_with("fix=") && o.contains("asked as a question")),
+        mode.1
+            .iter()
+            .any(|o| o.starts_with("fix=") && o.contains("asked as a question")),
         "{mode:?}"
     );
 
@@ -355,7 +361,9 @@ async fn a_defect_asked_as_a_question_gets_the_fixing_steps() -> TestResult {
     let steps = step_titles(&detail(&a, &r.body).await?);
     assert_eq!(steps, research_steps);
     assert!(
-        !steps.iter().any(|s| fix_steps.contains(s) || s.contains("regression")),
+        !steps
+            .iter()
+            .any(|s| fix_steps.contains(s) || s.contains("regression")),
         "{steps:?}"
     );
     Ok(())

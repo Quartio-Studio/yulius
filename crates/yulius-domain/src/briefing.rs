@@ -609,7 +609,7 @@ fn header(input: &BriefingInput<'_>) -> String {
     format!(
         "# Yulius briefing: {project}\n\n\
          You are task #{} of the Yulius project \"{project}\", running in {}. Yulius coordinates \
-         several coding-agent sessions on this repository and enforces the discipline below. \
+         this repository's agents by the discipline below. \
          {instructions}\n\n",
         input.task.number,
         harness_name(input.harness),
@@ -778,11 +778,12 @@ fn git_rules(input: &BriefingInput<'_>) -> String {
          - Yulius types your PR's events with the next step (obey \"Hands off\"). To wait, \
          start `yulius wait` with run_in_background and end your turn; never poll (`sleep`, \
          `pgrep -f`) or hide an exit code behind `| tail`.\n\
-         - Report a bug you confirm with `issue_create` unless an open issue tracks it (reference \
-         it); for one met on the way, an unrelated flaky test or a leftover nit, say why it is \
-         outside your change; a task told not to \
-         create issues never does, and comments or says it in its summary instead. After the \
-         merge leave nothing stale (`repo_hygiene`, `repo_cleanup`).\n\
+         - Fix here a defect your request reports, even as a question; file another \
+         confirmed bug with `issue_create` unless an open issue tracks it (reference it); for \
+         one met on the way, an unrelated flaky test or a leftover nit, say why it is outside \
+         your change in your summary; told not to create issues, say it there. After the merge \
+         leave nothing stale \
+         (`repo_hygiene`, `repo_cleanup`).\n\
          - Delivery path ({preset} profile): {path}.\n\n",
         branch = code(&input.task.branch, 200),
         preset = profile.preset.as_str(),
@@ -1775,7 +1776,6 @@ mod tests {
             "on green",
             "`delivery_merge`",
             "`issue_create`",
-            "Report a bug you confirm",
             "unless an open issue tracks it",
             "`ci_status`",
             "marking findings own code or pre-existing",
@@ -1784,6 +1784,11 @@ mod tests {
             "never as an issue; after 3 rounds split or `needs_you`",
             "for one met on the way, an unrelated flaky test or a leftover nit, say why it is \
              outside your change",
+            // SPEC-517 FIX-005 (quartio-v2 task #312): the request's own defect is fixed, never
+            // filed and left, also when it is asked as a question; what is filed is named.
+            "Fix here a defect your request reports, even as a question; file \
+             another confirmed bug with `issue_create`",
+            "outside your change in your summary",
         ] {
             assert!(text.contains(needle), "missing {needle}");
         }

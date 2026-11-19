@@ -679,7 +679,7 @@ pub fn tool_descriptors() -> Vec<ToolDescriptor> {
         },
         ToolDescriptor {
             name: "issue_create".into(),
-            description: "Open a GitHub issue for what lies outside this change, instead of widening this task: a pre-existing bug (in code this change did not introduce), a flaky test this change did not cause, or a cosmetic nit left after 3 review rounds; say why it is outside, with the evidence (e.g. \"present on dev before this change\"). Never a finding in code or tests this change added or modified: fix that in this pull request, test-first. It must meet the Definition of Ready: exactly one `type: …` label (bug, enhancement, docs, chore, performance), one `priority: …` label (high, medium, low), at least one `area: …` label (add `risk: high` for authentication, permissions, data isolation, migrations, money or shared contracts), and a body with a summary, current and expected behavior and a `## Acceptance criteria` checklist. Missing labels are created.".into(),
+            description: "Open a GitHub issue for what lies outside this change, instead of widening this task: a pre-existing bug (in code this change did not introduce), a flaky test this change did not cause, or a cosmetic nit left after 3 review rounds; say why it is outside, with the evidence (e.g. \"present on dev before this change\"). Never a finding in code or tests this change added or modified: fix that in this pull request, test-first. Never the defect this task's request reports, also one asked as a question or found while answering it: fix that in this task (or ask with needs_you when the fix is clearly beyond the request). Name every issue you open in your summary to the person. It must meet the Definition of Ready: exactly one `type: …` label (bug, enhancement, docs, chore, performance), one `priority: …` label (high, medium, low), at least one `area: …` label (add `risk: high` for authentication, permissions, data isolation, migrations, money or shared contracts), and a body with a summary, current and expected behavior and a `## Acceptance criteria` checklist. Missing labels are created.".into(),
             input_schema: schema(json!({
                 "title": {"type": "string"},
                 "body": {"type": "string", "description": "Markdown with a ## Acceptance criteria checklist"},
@@ -1719,6 +1719,9 @@ mod tests {
             "pre-existing",
             "flaky test this change did not cause",
             "Never a finding in code or tests this change added or modified",
+            // SPEC-517 FIX-005: nor the defect the task's own request reports.
+            "Never the defect this task's request reports, also one asked as a question",
+            "Name every issue you open in your summary",
         ] {
             assert!(
                 description.contains(stated),

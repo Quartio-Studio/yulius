@@ -372,7 +372,10 @@ mod tests {
         assert_eq!(mode_choice(Some(&fix)), (ModeChoice::Goal, ChosenBy::Jev));
         assert!(reports_defect(Some(&fix)));
         let goal = answer("goal", &[("goal", 0.8), (FIX_KEY, 0.1), ("prompt", 0.1)]);
-        let prompt = answer("prompt", &[("goal", 0.05), (FIX_KEY, 0.05), ("prompt", 0.9)]);
+        let prompt = answer(
+            "prompt",
+            &[("goal", 0.05), (FIX_KEY, 0.05), ("prompt", 0.9)],
+        );
         let unsure = answer(FIX_KEY, &[("goal", 0.3), (FIX_KEY, 0.6), ("prompt", 0.1)]);
         for not_a_defect in [Some(&goal), Some(&prompt), Some(&unsure), None] {
             assert!(!reports_defect(not_a_defect));
@@ -381,7 +384,11 @@ mod tests {
             mode_choice(Some(&unsure)),
             (ModeChoice::Goal, ChosenBy::Default)
         );
-        assert!(MODE_QUESTION.instructions.contains("also when it is asked as a question"));
+        assert!(
+            MODE_QUESTION
+                .instructions
+                .contains("also when it is asked as a question")
+        );
         let fix_option = MODE_QUESTION.options.iter().find(|o| o.key == FIX_KEY);
         assert!(fix_option.is_some_and(|o| o.description.contains("asked as a question")));
         let prompt_option = MODE_QUESTION.options.iter().find(|o| o.key == "prompt");
