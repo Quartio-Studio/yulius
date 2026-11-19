@@ -1,6 +1,6 @@
 ---
 yulius-task: c875055e-3b84-4599-a00a-d727e4719d4f
-status: in-progress
+status: done
 ---
 
 # SPEC-546 Stabilize the five browser scenarios reported in #1157
@@ -23,7 +23,7 @@ On November 11, PR #1150 waited for the task page in the editor, Notes, Shell an
 - [x] Trace the five reported failures across the merged fixes
 - [x] Reproduce the remaining failure with controlled browser events
 - [x] Preserve the asserted behavior across delayed updates
-- [ ] Verify the full browser suite under load and deliver the reviewed fix
+- [x] Verify the full browser suite under load and deliver the reviewed fix
 
 ## Acceptance criteria
 
@@ -61,3 +61,8 @@ The committed regression at `34dadb66a` forced the same overview render during a
 The independent reviewer approved `248bcddf3` and ran all six protection tests. The review asked for a count of PATCH requests from one Space activation. Adding that assertion to the admin test rejected a deliberately duplicated PATCH (“expected 2 to be 1”). The protection suite passed 6/6 with the real handler and the count assertion.
 
 `scripts/dev quick` passed the repository contracts and Rust formatting check. `scripts/dev security` reported that Vidoc was disabled. `scripts/dev mutants` reported “No Rust code changed against origin/dev: nothing to mutate.” The browser regression and duplicate-write probe exercise the JavaScript changes directly.
+
+
+With `E2E_TELEMETRY_DISABLED=1 npx e2e run --repeat-each 2` and the configured zero retries, the five named tests passed 10/10 in the full-suite run. The one-minute host load was sampled from 158 to 508. All tests in their four files passed both repetitions (158 results). The complete run finished in 32m15s with 2,263 passed, 3 failed and 1 model-dependent skip. A separate selection of all five passed again on `4362cb14` after integrating `ccce9aae5`.
+
+The two entire local repetitions did not both pass (AC-3). Three scenarios outside the Git page and the five reported tests each failed once. The live-updates test measured 4,551 ms against its 4,500 ms bound. The instance-move test missed “Asking the move helper for the plan…”, and the instance-update test missed “Pausing tasks: 2 of 3 paused.” Those observations are recorded on #1157. The delivery gate requires a successful Yulius CI run at the PR head.
