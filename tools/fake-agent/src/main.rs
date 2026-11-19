@@ -1956,7 +1956,7 @@ impl Entered {
         std::thread::spawn(move || {
             let stdin = io::stdin();
             let mut input = stdin.lock();
-            while let Ok(Some(line)) = read_message(&mut input) {
+            while let Ok(Some(line)) = read_prompt(&mut input) {
                 if lines.send(line).is_err() {
                     break;
                 }
@@ -2490,6 +2490,16 @@ fn read_message(input: &mut impl BufRead) -> io::Result<Option<String>> {
         message.push_str(&next);
     }
     Ok(Some(render_pastes(&drop_reports(&message))))
+}
+
+/// Enter in an empty prompt box starts no turn, including a retry after a dropped submit.
+fn read_prompt(input: &mut impl BufRead) -> io::Result<Option<String>> {
+    while let Some(message) = read_message(input)? {
+        if !message.is_empty() {
+            return Ok(Some(message));
+        }
+    }
+    Ok(None)
 }
 
 /// The message without the focus reports (`ESC [ I`, `ESC [ O`) and SGR or X10 mouse reports a
@@ -3049,13 +3059,13 @@ fn echo_loop(options: &Options, session_id: &str) -> io::Result<i32> {
     let mut direct = entered.is_none().then(|| io::stdin().lock());
     let mut next = || match (&entered, &mut direct) {
         (Some(entered), _) => Ok(entered.next()),
-        (None, Some(input)) => read_message(input),
+        (None, Some(input)) => read_prompt(input),
         (None, None) => Ok(None),
     };
     let mut to_drop = options.drop_lines;
     while let Some(line) = next()? {
         // A submit the TUI lost (`--drop-lines`): the first typed lines never reach the agent.
-        if to_drop > 0 && !line.is_empty() {
+        if to_drop > 0 {
             to_drop -= 1;
             continue;
         }

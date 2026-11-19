@@ -1,6 +1,6 @@
 ---
 yulius-task: 471b3694-e07c-467b-b0bc-29a0822f3fbb
-status: in-progress
+status: done
 ---
 
 # SPEC-540 — Restore prompt-mode goal state after subscription switches
@@ -25,7 +25,7 @@ Issue #1182 records a real session and inspections of Claude Code 2.1.292, 2.1.3
 - [x] Reproduce goal loss across subscription moves
 - [x] Restore prompt goals in the watcher and fake agent
 - [x] Verify the fix and obtain independent review
-- [ ] Preserve dropped goal submission retries in the resumed fake terminal
+- [x] Preserve dropped goal submission retries in the resumed fake terminal
 
 ## Acceptance criteria
 
@@ -52,3 +52,4 @@ Exercise the supervisor with a detached PTY host and the fake CLI, including Sto
 - `scripts/dev quick` passed, as did `cargo clippy --locked -p yulius-harness -p yulius-app -p fake-agent --all-targets -- -D warnings` and the same Clippy check on `-p yulius`. `scripts/dev security` reported Vidoc disabled for this project. `scripts/dev mutants --base db567d76d` found no mutable lines in the review's test-only correction.
 - The process-isolated nextest selection covering the switch tests and pre-attach Stop passed all 57 tests. A second nextest selection passed ten existing task completion, goal evaluation and restart tests. `cargo test -p fake-agent --test cli` passed all 30 CLI tests. `cargo test -p yulius --lib resumed_goal_uses_the_last_complete_main_thread_status` passed with records at exactly 4 MiB and one byte over. The first boundary fixture hit Rust's formatting width limit before calling the parser. The corrected fixture writes its bytes directly.
 - `scripts/dev mutants` listed 54 mutants. Its unmodified workspace baseline reached the 300-second test deadline with 2,780 tests passed, three in progress terminated and 402 outstanding. The command reported “cargo test failed in an unmutated tree, so no mutants were tested”. All 54 remain untested by that campaign. The separate one-line reversal above produced the expected failure. `scripts/dev mutants --base c980e4094` found no mutant in the final boundary-fixture correction.
+- Yulius CI run `17ab4dd9` failed in `task_done::a_goal_the_tui_dropped_is_submitted_again`. The exact test also timed out locally on the reviewed head. A pipe regression showed the cause: after a dropped submission, the fake consumed a bare Enter as an empty turn and marked the previously restored goal met. Direct and queued prompt input now skip empty submissions. All 31 fake CLI tests passed, along with six selected process tests covering the CI failure, typing exclusion, the three prompt-mode moves and goal-mode resubmission.

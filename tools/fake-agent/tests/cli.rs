@@ -1634,7 +1634,7 @@ fn a_blank_retry_does_not_evaluate_a_restored_goal() -> TestResult {
         assert!(stdout(&output).contains("GOAL RESTORED"));
         assert_eq!(
             read_jsonl(&path)?,
-            [history.clone()],
+            std::slice::from_ref(&history),
             "a bare Enter created a turn, queued={queued}"
         );
     }
