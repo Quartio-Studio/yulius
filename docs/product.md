@@ -604,7 +604,9 @@ watching, steering and unblocking.
   nightly at 03:00 CEST. An automation's tasks start like New task's: now, as a supertask, after
   another task or when a rule is true, or wait prepared until the person presses Start now ("When
   I decide"), picked with New task's start chip beside Run now and Save;
-  Run now starts its task the way the chip shows.
+  Run now starts its task the way the chip shows. Each task runs as the automation creator.
+  Only the creator can save changes, toggle the schedule or use Run now. Project writers can
+  delete the automation and create a replacement of their own. [ADR-0381](decisions/0381-automation-creators-authorize-edits-and-starts.md)
 - **Notes**: in the tools rail, a notepad per sandbox and one for the whole team, shared and saved
   while people type; a teammate's edit shows up live, and two edits at once end in a choice. A
   third, **Me**, is each person's own: nobody else sees it, and it is the same in every sandbox.

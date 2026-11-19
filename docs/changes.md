@@ -6,6 +6,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-19
 
+- Automation edits, schedule switches and Run now require the creator in the UI and tools. On upgrade, existing schedules pause once. Review the saved prompt and enable the schedule to resume it. [SPEC-534](../.ai/specs/SPEC-534-enforce-automation-ownership-across-edit.md)
 - Codex session documents created before the first turn now show and index the rollout when it appears (#1454, SPEC-538).
 - A task can deliver a follow-up that appends to a list after incorporating an append from
   `dev`. Delivery compares the two trees when the task contains the integration commit.
