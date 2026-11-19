@@ -366,7 +366,8 @@ pub fn redact(text: &str) -> Option<Redacted> {
 
 /// Redacts the contents of a dotenv file: every non-trivial `KEY=value` value (numbers,
 /// booleans and `${…}` references stay), plus everything [`redact`] finds. Lines may carry the
-/// `cat -n` prefix Claude Code's Read tool adds (`   12→KEY=value`).
+/// `cat -n` prefix Claude Code's Read tool adds (`   12→KEY=value`), the `1: ` Antigravity's
+/// `read_file` adds, or a patch's `+`/`-` marker.
 #[must_use]
 pub fn redact_env(text: &str) -> Option<Redacted> {
     let mut spans = Vec::new();
@@ -987,18 +988,27 @@ fn env_line_value(line: &str, offset: usize) -> Option<Span> {
     let body_end = line.trim_end_matches(['\n', '\r']).len();
     let body = &line[..body_end];
     let mut cursor = body.len() - body.trim_start().len();
-    // `cat -n` style prefix: digits then a tab or `→`.
+    // `cat -n` style prefix: digits then a tab or `→`; Antigravity's `read_file` numbers lines
+    // `1: ` (SPEC-525).
     let digits = body[cursor..]
         .bytes()
         .take_while(u8::is_ascii_digit)
         .count();
     if digits > 0 {
         let rest = &body[cursor + digits..];
-        if let Some(stripped) = rest.strip_prefix('\t') {
-            cursor = body.len() - stripped.len();
-        } else if let Some(stripped) = rest.strip_prefix('→') {
+        if let Some(stripped) = rest
+            .strip_prefix('\t')
+            .or_else(|| rest.strip_prefix('→'))
+            .or_else(|| rest.strip_prefix(": "))
+        {
             cursor = body.len() - stripped.len();
         }
+    } else if let Some(stripped) = body[cursor..]
+        .strip_prefix('+')
+        .or_else(|| body[cursor..].strip_prefix('-'))
+    {
+        // A patch's added or removed line (`+KEY=value`), its marker kept (SPEC-525).
+        cursor = body.len() - stripped.len();
     }
     let mut rest = &body[cursor..];
     let trimmed = rest.trim_start();
