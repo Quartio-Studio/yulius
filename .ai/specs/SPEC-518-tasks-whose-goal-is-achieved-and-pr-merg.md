@@ -90,7 +90,9 @@ confirmed which page and label they saw, so this is asked before any behaviour c
 - DON-002 (if the person chooses option 2 or 3): a running task that stays Done (`statusInfo` group
   `done` by the server's rule: goal achieved, or plan complete and pull request merged or
   tested; no background shell, no `yulius wait`, no armed merge, no `needs_you`) for the grace
-  period is closed by Yulius, as a person's archive closes it. Its final screen is kept and
+  period is closed by Yulius, as a person's archive closes it (`shows_done`, then
+  `close_task_now`). An agent that only answered (SPEC-429 "Answered", no goal, no plan) stays
+  open: its person may still follow up. Its final screen is kept and
   Continue resumes it. A prompt, a shell or any activity in the period cancels it.
 
 ## Plan
