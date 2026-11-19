@@ -12,6 +12,7 @@ use yulius_domain::briefing::{
     BriefingInput, DEFAULT_BUDGET_BYTES, Foundations, MAX_RECENT_CHANGES, ParallelTask,
     RecentChange, TaskBrief, build_briefing,
 };
+use yulius_domain::harness::Harness;
 use yulius_domain::ids::TaskId;
 use yulius_domain::rotation::{self, Decision, Trigger};
 use yulius_domain::spec_format::{DecisionFiles, NamedFile, decision_titles, project_layout};
@@ -182,17 +183,33 @@ impl App {
         if ctx.attempt.harness != harness {
             return Err(AppError::Unauthenticated);
         }
+        let runtime = self.runtime(&ctx.task.id);
+        if event == events::STOP {
+            crate::race::reached(
+                crate::race::Point::StopTurnLock,
+                std::path::Path::new(ctx.task.id.as_str()),
+            );
+        }
+        // A timed-out hook may still be here while agy starts its next turn. Order its
+        // Stop before every consequence (gates, rotation, idle, and the answer marker).
+        let _native_order = if harness == Harness::Antigravity
+            && matches!(
+                event,
+                events::STOP | events::PRE_INVOCATION | events::USER_PROMPT_SUBMIT
+            ) {
+            let mut latest = runtime.antigravity_hook_ms.lock().await;
+            if sent < *latest && event != events::USER_PROMPT_SUBMIT {
+                return Ok(HookReply::Output(HookOutput::default()));
+            }
+            *latest = (*latest).max(sent);
+            Some(latest)
+        } else {
+            None
+        };
         if event != events::STOP {
             return self.answer_hook(&ctx, event, input, sent).await;
         }
-        // While Yulius answers a Stop, the record that closes its turn leaves the turn to it, until
-        // the answer is recorded below.
-        let runtime = self.runtime(&ctx.task.id);
         // The agent sent this Stop after every prompt of its turn (SPEC-346 LPH-002).
-        crate::race::reached(
-            crate::race::Point::StopTurnLock,
-            std::path::Path::new(ctx.task.id.as_str()),
-        );
         {
             let _order = runtime.turn_order.lock().await;
             runtime.turn_end_ms.fetch_max(sent, Ordering::SeqCst);
@@ -373,7 +390,11 @@ impl App {
                 self.hook_session_start(ctx, input).await?,
             )),
             events::USER_PROMPT_SUBMIT => self.hook_prompt_submit(ctx, input, sent).await,
-            events::STOP => self.hook_stop(ctx, input).await,
+            events::PRE_INVOCATION if ctx.attempt.harness == Harness::Antigravity => {
+                self.antigravity_work(&ctx.task.id, sent).await?;
+                Ok(HookReply::Output(HookOutput::default()))
+            }
+            events::STOP => self.hook_stop(ctx, input, sent).await,
             events::PRE_TOOL_USE => Ok(HookReply::Output(self.hook_pre_tool_use(ctx, input).await)),
             events::SUBAGENT_START => {
                 self.review_subagent_started(ctx, input).await;
@@ -911,13 +932,15 @@ impl App {
         self: &Arc<Self>,
         ctx: &AgentContext,
         input: &HookInput,
+        sent: i64,
     ) -> AppResult<HookReply> {
         let store = &self.deps.store;
         let mut task = &ctx.task;
         // A turn its model API failed ends for good: its CLI goes on with nothing Yulius says,
         // so no gate, nudge or goal holds it (SPEC-505 AGY-006).
-        let failed = input.error.is_some()
-            && ctx.attempt.harness == yulius_domain::harness::Harness::Antigravity;
+        let antigravity = ctx.attempt.harness == Harness::Antigravity;
+        let failed = antigravity && input.error.is_some();
+        let background = antigravity && !failed && input.fully_idle == Some(false);
         // A turn held for capacity stays held while its pause lasts (also across a restart).
         let refreshed;
         if let Some(pause) = store.open_pause(&task.id).await? {
@@ -992,7 +1015,8 @@ impl App {
                 crate::review::ReviewerMove::To(account) => {
                     let prompts_before = self.prompts_passed(&task.id);
                     self.await_transcript_read(&task.id).await;
-                    if self.background_work_now(&task.id).await != Some(false)
+                    if background
+                        || self.background_work_now(&task.id).await != Some(false)
                         || self.prompt_waits_for_turns_end(&task.id, prompts_before)
                     {
                         later();
@@ -1092,7 +1116,7 @@ impl App {
         }
         let stays = match decision {
             (Decision::Stay, _) => true,
-            (Decision::Switch { .. }, _) if busy => true,
+            (Decision::Switch { .. }, _) if background || busy => true,
             (Decision::Switch { .. }, _) if prompt_waits => {
                 tracing::info!(
                     task = %task.id,
@@ -1131,7 +1155,7 @@ impl App {
 
         // A clean turn end on the same subscription may carry one gentle step nudge (STP-008).
         // It is not a gate block: it is given once and never escalates to "needs attention".
-        if reasons.is_empty() && stays && !failed {
+        if reasons.is_empty() && stays && !failed && !background {
             match self.take_turn_end_nudge(task).await {
                 Ok(Some(text)) => return Ok(HookReply::Output(HookOutput::block(text))),
                 Ok(None) => {}
@@ -1148,7 +1172,11 @@ impl App {
             }
             // Done when the goal is achieved, waiting otherwise (TSK-014), once the goal verdict
             // came while a goal is open (SPEC-079 BGW-005).
-            self.clean_stop(task).await?;
+            if background {
+                self.antigravity_work(&task.id, sent).await?;
+            } else {
+                self.clean_stop(task).await?;
+            }
             return Ok(HookReply::Output(HookOutput::default()));
         }
 

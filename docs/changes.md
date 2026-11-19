@@ -12,6 +12,16 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   showed it, marked "parked", with its question and pull request. A message (`task_message`) or
   Resume continues the same session with its history. A queued task says what it waits for, and
   the Capacity card shows working, parked, idle and queued sessions apart (ADR-0367).
+- Antigravity tasks show Working while a background command runs and when its completion
+  starts another model turn. If the agent stops with unfinished steps, its task brief explains
+  why it needs a person. Fixes #1444 (SPEC-528, task #510).
+- Codex defaults to Ultrafast on supported models when the assigned subscription is ChatGPT
+  Pro 500. Each launch reads the current sign-in (SPEC-523, task #505).
+- Finished tasks shown Done, not closed (SPEC-518, task #500, findings only): six goal-achieved
+  tasks with merged pull requests were shown Done (by the fields read) and stayed open, because no rule closes a Done
+  task whose session lives. Claude Code's idle compaction changed nothing. No behaviour changed;
+  closing finished tasks by themselves is recorded as an option.
+- The composer and Settings now list 11 Codex models and eight Gemini models in searchable provider groups. The effort menu follows the selected model and clears incompatible saved effort. Codex 0.170.0 includes GPT-6.2 delegation metadata and Antigravity 1.5.12 supports Neon (SPEC-521, ADR-0372).
 - Dashboard → Harnesses compares assigned tasks, runs, median and p90 elapsed time, and reported input,
   output and cache tokens for the selected sandbox and period. Each harness shows the number of ended
   runs and the number reporting usage (SPEC-522, task #504).
