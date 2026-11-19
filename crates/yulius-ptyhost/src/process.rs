@@ -123,9 +123,20 @@ mod imp {
     }
 
     pub(crate) fn is_zombie(pid: Pid) -> bool {
-        stat_fields(pid.as_raw())
-            .and_then(|f| f.first().cloned())
-            .is_some_and(|state| state == "Z" || state == "X")
+        use rustix::event::{PollFd, PollFlags, Timespec, poll};
+        use rustix::process::{PidfdFlags, pidfd_open};
+
+        // The leader can be a zombie while a worker still runs. A process pidfd
+        // becomes readable once the last thread exits, including before the reap.
+        let Some(id) = rustix::process::Pid::from_raw(pid.as_raw()) else {
+            return false;
+        };
+        let Ok(fd) = pidfd_open(id, PidfdFlags::empty()) else {
+            return false;
+        };
+        let mut fds = [PollFd::new(&fd, PollFlags::IN)];
+        poll(&mut fds, Some(&Timespec::default())).is_ok()
+            && fds[0].revents().contains(PollFlags::IN)
     }
 
     pub(crate) fn start_time_ms(pid: Pid) -> Option<i64> {
@@ -253,6 +264,40 @@ mod tests {
         assert!(wait_gone(&[pid], Duration::from_secs(5)).is_none());
         child.wait()?;
         assert!(!alive(pid));
+        Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_zombie_leader_with_a_running_thread_is_still_alive() -> TestResult {
+        // pthread_exit ends only the main thread. The worker lives until our pipe closes.
+        let fixture = "import ctypes, select, threading
+threading.Thread(target=lambda: select.select([0], [], [], 30)).start()
+ctypes.CDLL(None).pthread_exit(None)";
+        let mut child = Command::new("python3")
+            .args(["-c", fixture])
+            .stdin(Stdio::piped())
+            .spawn()?;
+        let pid = Pid::from_raw(i32::try_from(child.id())?);
+        let stat = format!("/proc/{pid}/stat");
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let zombie_leader = loop {
+            if std::fs::read_to_string(&stat)?
+                .rsplit_once(')')
+                .is_some_and(|(_, fields)| fields.trim_start().starts_with('Z'))
+            {
+                break true;
+            }
+            if Instant::now() >= deadline {
+                break false;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        let still_alive = alive(pid);
+        drop(child.stdin.take());
+        child.wait()?;
+        assert!(zombie_leader, "the fixture's leader did not exit");
+        assert!(still_alive, "the worker was still running");
         Ok(())
     }
 

@@ -55,6 +55,8 @@ pub enum Point {
     /// A park (SPEC-512 PRK-003): its end intent is set under the launch lock; the session has
     /// not been asked to end yet. The path is the task id.
     ParkDecided,
+    /// A live disconnected run was inspected and is about to be terminated. Keyed by run directory.
+    LostRunTermination,
     /// `mark_lost`: the run's loss won its record; the run's end intent is not read yet. The
     /// path is the task id.
     LossRecorded,
@@ -114,6 +116,8 @@ pub enum Point {
     /// `files_roots` (SPEC-340): the sandbox repository was found; its `.git/HEAD` is not opened
     /// yet. The path is the repository's.
     RootsHead,
+    /// A prompt is ending its draft, just before the old key's mark is removed.
+    DraftMarkCleanup,
     /// A Stop hook (SPEC-346): the task was read; the Stop has not taken the turn lock yet. The
     /// path is the task id.
     StopTurnLock,

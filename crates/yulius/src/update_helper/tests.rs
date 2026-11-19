@@ -13,6 +13,20 @@ type TestResult = Result<(), Box<dyn std::error::Error>>;
 
 const OLD: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
+#[test]
+fn shipped_update_service_disables_the_start_limit_in_unit_section() {
+    let service = include_str!("../../../../deploy/systemd/yulius-update.service");
+    let interval = service
+        .lines()
+        .map(str::trim)
+        .skip_while(|line| *line != "[Unit]")
+        .skip(1)
+        .take_while(|line| !line.starts_with('['))
+        .filter_map(|line| line.strip_prefix("StartLimitIntervalSec="))
+        .last();
+    assert_eq!(interval, Some("0"));
+}
+
 fn git_in(dir: &Path, args: &[&str]) -> Result<String, Box<dyn std::error::Error>> {
     let output = Command::new("git")
         .arg("-C")

@@ -107,7 +107,8 @@ function offsetOptions(current) {
 export function mountAutomationEditor(ctx, sandbox, id) {
   const base = `/s/${encodeURIComponent(sandbox.slug)}/automations`;
   const creating = id === 'new';
-  const write = allows(sandbox.access, 'write');
+  const configure = allows(sandbox.access, 'write');
+  let write = configure && creating;
   let automation = null;
   let workflows = [];
   let recipe = null;
@@ -117,22 +118,22 @@ export function mountAutomationEditor(ctx, sandbox, id) {
   let loaded = false; // the automation has been read (SPEC-093): the chip and Run now turn on
   // The start choice (SPEC-078, SPEC-155): at most one of supertask, after_task_id, start_rule and
   // prepared.
-  const state = { name: '', prompt: '', workflow_id: null, harness: 'auto', enabled: true, cron: '0 9 * * 1-5', offset: -new Date().getTimezoneOffset(), custom: false, supertask: false, after_task_id: null, after_task_number: null, start_rule: null, prepared: false };
+  const state = { name: creating ? RECIPES[0].name : '', prompt: '', workflow_id: null, harness: 'auto', enabled: true, cron: '0 9 * * 1-5', offset: -new Date().getTimezoneOffset(), custom: false, supertask: false, after_task_id: null, after_task_number: null, start_rule: null, prepared: false };
   const live = h('div', { class: 'sr-only', role: 'status' });
 
-  const nameInput = h('input', { class: 'wf-name', placeholder: 'Name the automation', 'aria-label': 'Automation name', maxlength: 100, onInput: (e) => { state.name = e.target.value; changed(); } });
+  const nameInput = h('input', { class: 'wf-name', value: state.name, placeholder: 'Name the automation', 'aria-label': 'Automation name', maxlength: 100, onInput: (e) => { state.name = e.target.value; changed(); } });
   const when = h('span', { class: 'wf-desc au-when' });
-  const save = h('button', { type: 'button', class: 'btn btn-primary', disabled: !write, onClick: () => doSave() }, creating ? 'Create automation' : 'Save');
+  const save = h('button', { type: 'button', class: 'btn btn-primary', disabled: true, onClick: () => doSave() }, creating ? 'Create automation' : 'Save');
   // How each task starts (SPEC-093): New task's start chip, before Run now. Both stay off until
   // the automation is read, so Run now never sends a choice the page has not shown.
   const startChip = h('button', { type: 'button', class: 'chip-btn au-start', 'aria-haspopup': 'menu', disabled: true, onClick: () => openStart() });
   const runNow = creating ? null : h('button', { type: 'button', class: 'btn au-run', disabled: true, title: write ? 'Create a task from it now' : 'Requires write access', onClick: () => doRunNow() }, icon('send', { size: 14 }), 'Run now');
-  const del = creating ? null : h('button', { type: 'button', class: 'btn btn-quiet-danger', disabled: !write, onClick: () => doDelete() }, icon('trash', { size: 14 }), 'Delete');
+  const del = creating ? null : h('button', { type: 'button', class: 'btn btn-quiet-danger', disabled: !configure, onClick: () => doDelete() }, icon('trash', { size: 14 }), 'Delete');
   const body = h('div', { class: 'au-body' }, placeholder('Loading the automation…', 'loading', 'form'));
   const head = h('header', { class: 'gt-head wf-head' },
     h('a', { class: 'gt-back', href: href(base), dataset: { route: base, restore: 'page' } }, icon('back', { size: 14 }), 'Automations'),
     h('div', { class: 'gt-title-row' }, h('div', { class: 'wf-titles' }, nameInput, when), del, del ? h('span', { class: 'au-break', 'aria-hidden': 'true' }) : null, startChip, runNow, save),
-    !write ? h('p', { class: 'banner small' }, icon('lock', { size: 14 }), h('span', { class: 'banner-text' }, 'Read-only: changing automations needs write access to this sandbox.')) : null);
+    !configure ? h('p', { class: 'banner small' }, icon('lock', { size: 14 }), h('span', { class: 'banner-text' }, 'Read-only: changing automations needs write access to this sandbox.')) : null);
   const el = h('div', { class: 'page au-page' }, h('div', { class: 'page-inner mc-inner' }, h('h1', { class: 'sr-only' }, creating ? 'New automation' : 'Edit automation'), head, body, live));
 
   const snapshot = () => JSON.stringify(state);
@@ -147,7 +148,7 @@ export function mountAutomationEditor(ctx, sandbox, id) {
     return `${words} (${utcOffset(state.offset)})${start ? ` · ${start}` : ''}${!state.enabled ? ' · paused' : next ? ` · next run ${relLong(next.toISOString())} (${dateTime(next.toISOString())})` : ''}`;
   }
   function changed() {
-    save.disabled = !write || (!creating && !dirty());
+    save.disabled = !loaded || !write || (!creating && !dirty());
     when.textContent = sentence();
   }
 
@@ -157,9 +158,9 @@ export function mountAutomationEditor(ctx, sandbox, id) {
   const chip = (label, on, onClick, { extraClass, ...attrs } = {}) => h('button', { type: 'button', class: ['wf-chip', 'au-chip', extraClass, on && 'on'], 'aria-pressed': String(on), disabled: !write, onClick, ...attrs }, label);
 
   // ---- recipes (new automations)
-  function useRecipe(r) {
+  function useRecipe(r, { suggestName = true } = {}) {
     recipe = r.id;
-    if (!state.name || RECIPES.some((x) => x.name === state.name)) { state.name = r.id === 'blank' ? '' : r.name; nameInput.value = state.name; }
+    if (suggestName && (!state.name || RECIPES.some((x) => x.name === state.name))) { state.name = r.id === 'blank' ? '' : r.name; nameInput.value = state.name; }
     state.prompt = r.prompt;
     state.cron = writeSchedule({ days: r.days, time: r.time });
     state.custom = false;
@@ -222,7 +223,9 @@ export function mountAutomationEditor(ctx, sandbox, id) {
     // uniformly for each run across harnesses with non-exhausted subscriptions), or Claude Code,
     // Codex or Antigravity, each on its own accounts.
     const agent = (value, label) => chip(label, state.harness === value, () => { state.harness = value; render(); }, { role: 'radio', 'aria-checked': String(state.harness === value), 'aria-pressed': null });
-    return section('The task', null, h('div', { class: 'stack-sm' }, prompt,
+    const owner = creating ? ctx.store.state.me.user.login : automation.owner_login;
+    return section('The task', null, h('div', { class: 'stack-sm' },
+      h('p', { class: 'small' }, `Tasks run as @${owner}. Only the creator can edit, pause, enable, or run this automation.`), prompt,
       h('div', { class: 'au-row' }, h('span', { class: 'wf-label' }, 'Agent'),
         h('div', { class: 'wf-chips', role: 'radiogroup', 'aria-label': 'Agent' }, HARNESSES.map(([id, label]) => agent(id, label)))),
       h('div', { class: 'au-row' }, h('span', { class: 'wf-label' }, 'Workflow'),
@@ -312,7 +315,7 @@ export function mountAutomationEditor(ctx, sandbox, id) {
 
   // ---- save, run, delete, leave
   async function doSave() {
-    if (!write || save.classList.contains('busy')) return;
+    if (!loaded || !write || save.classList.contains('busy')) return;
     if (!state.name.trim()) { invalid(nameInput, 'Give the automation a name.'); return; }
     if (!state.prompt.trim()) { invalid(el.querySelector('.au-prompt'), 'Say what the task should do.'); return; }
     if (!cronValid(state.cron)) { const cron = el.querySelector('.au-cron'); cron?.closest('details')?.setAttribute('open', ''); if (cron) invalid(cron, 'A schedule has five fields, e.g. “0 9 * * 1-5”.'); return; }
@@ -397,6 +400,7 @@ export function mountAutomationEditor(ctx, sandbox, id) {
       if (!creating) {
         automation = (Array.isArray(list) ? list : []).find((a) => a.id === id);
         if (!automation) { saved = snapshot(); setChildren(el, notFound({ title: 'Automation not found', text: `There is no automation “${id}” in ${sandbox.name}. It may have been deleted.`, back: ['Automations', base] })); return; }
+        write = configure && automation.owner_id === ctx.store.state.me.user.id;
         Object.assign(state, { name: automation.name, prompt: automation.prompt || '', workflow_id: automation.workflow_id || null, harness: automation.harness || 'auto', enabled: automation.enabled, cron: automation.cron, offset: automation.utc_offset_minutes, custom: !readSchedule(automation.cron),
           supertask: Boolean(automation.supertask), after_task_id: automation.after_task_id || null, after_task_number: automation.after_task_number ?? null, start_rule: automation.start_rule || null, prepared: Boolean(automation.prepared) });
         nameInput.value = automation.name;
@@ -405,8 +409,15 @@ export function mountAutomationEditor(ctx, sandbox, id) {
       nameInput.readOnly = !write;
       loaded = true;
       startChip.disabled = !write;
-      if (runNow) runNow.disabled = !write;
-      if (creating) { useRecipe(RECIPES[0]); saved = JSON.stringify({ ...state, name: '' }); } else { saved = snapshot(); render(); loadRuns(); }
+      if (runNow) {
+        runNow.disabled = !write;
+        runNow.title = write ? 'Create a task from it now' : 'Requires the creator and write access';
+      }
+      if (creating) {
+        // The name was suggested at mount. The workflow read can finish during an edit.
+        useRecipe(RECIPES[0], { suggestName: false });
+        saved = JSON.stringify({ ...state, name: '' });
+      } else { saved = snapshot(); render(); loadRuns(); }
     } catch (error) {
       if (alive) setChildren(body, loadError(`Couldn’t load the automation: ${error.message}`, load));
     }

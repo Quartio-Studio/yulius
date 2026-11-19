@@ -280,7 +280,7 @@
 //! go into the transcript. Used to measure how the web terminal settles (F 2026-10-09).
 
 use std::fs::OpenOptions;
-use std::io::{self, BufRead, Read, Write};
+use std::io::{self, BufRead, IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -729,6 +729,7 @@ const TUI_KEEP: usize = 500;
 
 /// The full-screen drawing of `--tui`: the transcript and the session id.
 struct Tui {
+    draft: Mutex<String>,
     lines: Mutex<Vec<String>>,
     session: String,
 }
@@ -775,16 +776,24 @@ impl Tui {
                 screen.push_str(&format!("\x1b[{};1H{}", 4 + i, fit(line)));
             }
         }
+        let draft = self
+            .draft
+            .lock()
+            .map_err(|_| io::Error::other("draft lock"))?;
         let status = format!(" → fixture git:(main) · {cols}×{rows}");
         screen.push_str(&format!(
-            "\x1b[{};1H{rule}\x1b[{};1H❯ \x1b[{};1H{rule}\x1b[{};1H{}",
+            "\x1b[{};1H{rule}\x1b[{};1H❯ {draft}\x1b[{};1H{rule}\x1b[{};1H{}",
             rows - 3,
             rows - 2,
             rows - 1,
             rows,
             fit(&status)
         ));
-        screen.push_str(&format!("\x1b[{};3H\x1b[?25h", rows - 2));
+        screen.push_str(&format!(
+            "\x1b[{};{}H\x1b[?25h",
+            rows - 2,
+            3 + draft.chars().count()
+        ));
         let mut out = io::stdout().lock();
         out.write_all(screen.as_bytes())?;
         out.flush()
@@ -793,9 +802,14 @@ impl Tui {
 
 /// Starts the TUI and its redraw-on-resize thread.
 fn start_tui(session: &str) -> io::Result<()> {
+    // Deliver the stash key (Ctrl+S) to the fixture as an input byte.
+    if io::stdin().is_terminal() && !Command::new("stty").arg("-ixon").status()?.success() {
+        return Err(io::Error::other("could not enable the stash key"));
+    }
     let resized = Arc::new(AtomicBool::new(false));
     signal_hook::flag::register(signal_hook::consts::SIGWINCH, Arc::clone(&resized))?;
     let tui = TUI.get_or_init(|| Tui {
+        draft: Mutex::default(),
         lines: Mutex::new(Vec::new()),
         session: session.to_owned(),
     });
@@ -1174,10 +1188,11 @@ impl Transcript {
     }
 
     /// The record Claude Code 2.1.322 writes when a prompt it scheduled for itself fires.
-    fn scheduled_fire(&self) -> io::Result<()> {
+    fn scheduled_fire(&self, prompt: &str) -> io::Result<()> {
         let uuid = format!("fake-{}-fire-{}", self.session_id, now_ms());
         let mut fire = self.claude_envelope("system", &uuid, &rfc3339(now_ms()));
         fire["subtype"] = json!("scheduled_task_fire");
+        fire["prompt"] = json!(prompt);
         fire["isMeta"] = json!(false);
         self.append(&[fire])
     }
@@ -1798,14 +1813,26 @@ impl Hooks {
 
     /// `UserPromptSubmit`; `Some(reason)` when the hook blocks the prompt.
     fn prompt(&self, prompt: &str) -> Option<String> {
+        self.submit(prompt, None)
+    }
+
+    fn submit(&self, prompt: &str, prompt_id: Option<&str>) -> Option<String> {
         if self.harness == "codex" && !self.started.swap(true, Ordering::SeqCst) {
             self.session_start();
         }
-        let answer = self.call(
-            "UserPromptSubmit",
-            &json!({"session_id": self.session_id, "hook_event_name": "UserPromptSubmit",
-                "prompt": prompt}),
-        );
+        let mut input = json!({"session_id": self.session_id, "hook_event_name": "UserPromptSubmit",
+                "prompt": prompt});
+        if let Some(id) = prompt_id {
+            input["prompt_id"] = json!(id);
+            input["permission_mode"] = json!("default");
+            input["cwd"] = json!(std::env::current_dir().ok());
+            input["transcript_path"] = json!(
+                self.transcript
+                    .as_ref()
+                    .and_then(|t| t.lock().ok().map(|t| t.path.clone()))
+            );
+        }
+        let answer = self.call("UserPromptSubmit", &input);
         let value: Value = serde_json::from_str(&answer).ok()?;
         // What the hook adds to the prompt for the model is shown, as nothing else would be.
         if let Some(context) = value
@@ -1973,7 +2000,7 @@ impl Waiting<'_> {
                     }
                     if let Ok(t) = transcript.lock() {
                         if scheduled {
-                            let _ = t.scheduled_fire();
+                            let _ = t.scheduled_fire(&text);
                         }
                         // What Claude Code never takes out is a notification of its own.
                         let text = if stuck {
@@ -2142,7 +2169,13 @@ fn queued_echo(
             .iter()
             .filter(|one| one.starts_with(SCHEDULED) || one.starts_with(ALONE));
         for prompt in hooked {
-            let _ = hooks.and_then(|h| h.prompt(said(prompt)));
+            let _ = hooks.and_then(|h| {
+                if prompt.starts_with(SCHEDULED) {
+                    h.submit(said(prompt), Some(&format!("scheduled-{}", now_ms())))
+                } else {
+                    h.prompt(said(prompt))
+                }
+            });
         }
         write(&mut |t| turn.iter().try_for_each(|one| t.queued_prompt(one)))?;
         // The limit cuts the handed-on turn (`--limit-after`): its prompts are recorded and
@@ -2948,7 +2981,7 @@ fn echo_loop(options: &Options, session_id: &str) -> io::Result<i32> {
             "claude"
         },
         started: Arc::new(AtomicBool::new(false)),
-        transcript: transcript.clone().filter(|_| options.antigravity),
+        transcript: transcript.clone(),
     });
     if options.trust_prompt {
         trust_prompt()?;
@@ -3017,7 +3050,22 @@ fn echo_loop(options: &Options, session_id: &str) -> io::Result<i32> {
             to_drop -= 1;
             continue;
         }
+        // A stashed draft returns after the next submit, including a local command.
+        let mut restore = None;
+        let mut line = line;
+        if let Some(tui) = TUI.get() {
+            let mut draft = tui
+                .draft
+                .lock()
+                .map_err(|_| io::Error::other("draft lock"))?;
+            line.insert_str(0, &std::mem::take(&mut *draft));
+            if let Some((stashed, submit)) = line.split_once('\x13') {
+                restore = Some(stashed.to_owned());
+                line = submit.to_owned();
+            }
+        }
         match line.as_str() {
+            "/color" if options.tui => say("Color changed")?,
             "/exit" => {
                 if let Some(hooks) = &hooks {
                     hooks.session_end("prompt_input_exit");
@@ -3197,6 +3245,12 @@ fn echo_loop(options: &Options, session_id: &str) -> io::Result<i32> {
                 &mut state,
                 entered.as_ref(),
             )?,
+        }
+        if let (Some(tui), Some(draft)) = (TUI.get(), restore) {
+            *tui.draft
+                .lock()
+                .map_err(|_| io::Error::other("draft lock"))? = draft;
+            tui.draw()?;
         }
     }
     Ok(0)

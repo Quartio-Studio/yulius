@@ -1033,6 +1033,142 @@ async fn a_red_candidate_is_bisected_and_the_breaking_pull_request_told() -> Tes
     Ok(())
 }
 
+/// When the first half lands, the last two recreate the four-member tree that failed.
+#[tokio::test]
+async fn a_bisection_executes_the_failed_tree_only_once() -> TestResult {
+    let f = fixture().await?;
+    let app = f.h.app.clone();
+    let mut worktrees = Vec::new();
+    for (n, file) in [(1, "a.txt"), (2, "b.txt"), (3, "clash-1"), (4, "clash-2")] {
+        worktrees.push(f.task(n, &[(file, "x\n")]).await?);
+    }
+    for (n, worktree) in (1..).zip(&worktrees) {
+        f.arm(n, worktree).await?;
+        f.record_passed(&app, n, &git(worktree, &["rev-parse", "HEAD"])?)
+            .await?;
+    }
+    f.advance_dev("other.txt")?;
+    app.merge_armed(&f.sandbox).await;
+    let red = f
+        .train_runs(&app)
+        .await?
+        .into_iter()
+        .find(|r| r.reference == CiRef::Train(vec![1, 2, 3, 4]))
+        .ok_or("missing four-member candidate")?;
+    assert_eq!(run_candidate(&f, &app, &red.id).await?, RunState::Failed);
+    let red_tree = git(&f.repo, &["rev-parse", &format!("{}^{{tree}}", red.sha)])?;
+
+    // A later green branch run on this tree could lend a pass. The original candidate failure
+    // must win even though the green run has every job the candidate's gate requires.
+    let pass = CiRunRecord {
+        id: "same-tree-pass".into(),
+        reference: CiRef::Branch("topic".into()),
+        state: RunState::Passed,
+        started_at: Some(app.now()),
+        ended_at: Some(app.now()),
+        status_for: Some(RunState::Passed),
+        ..red.clone()
+    };
+    let mut jobs = app.deps.store.ci_jobs(&red.id, false).await?;
+    assert_eq!(jobs.len(), 1);
+    for job in &mut jobs {
+        job.id = format!("passed-{}", job.id);
+        job.run_id.clone_from(&pass.id);
+        job.state = RunState::Passed;
+        job.exit_code = Some(0);
+        job.failures = None;
+    }
+    app.deps.store.insert_ci_run(&pass, &jobs).await?;
+
+    let pair = format!("merge train #3, #4 (run {})", red.id);
+    f.decide_until(&app, || async {
+        for run in f.train_runs(&app).await?.iter().filter(|r| r.id != red.id) {
+            let tree = git(&f.repo, &["rev-parse", &format!("{}^{{tree}}", run.sha)])?;
+            assert_ne!(
+                tree,
+                red_tree,
+                "{} got a second run on the failed tree",
+                run.reference.key()
+            );
+        }
+        if dissolved(&app)
+            .await?
+            .iter()
+            .any(|detail| detail.starts_with(&pair) && detail.contains("(why: bisected)"))
+        {
+            return Ok(true);
+        }
+        f.settle(&app).await?;
+        Ok(false)
+    })
+    .await?;
+    let merges = f.merges();
+    assert_eq!(
+        merges.iter().take(2).collect::<Vec<_>>(),
+        ["merge_pull #1 squash", "merge_pull #2 squash"]
+    );
+    Ok(())
+}
+
+/// A previous candidate may have lost its worker or been cancelled while testing this tree.
+/// A pull request's own failure also belongs to a different reference.
+#[tokio::test]
+async fn inconclusive_candidate_runs_leave_the_same_tree_eligible_to_run() -> TestResult {
+    let f = fixture().await?;
+    let app = f.h.app.clone();
+    let worktree = f.task(1, &[("a.txt", "x\n")]).await?;
+    f.arm(1, &worktree).await?;
+    let head = git(&worktree, &["rev-parse", "HEAD"])?;
+    f.record_passed(&app, 1, &head).await?;
+    f.advance_dev("other.txt")?;
+    git(&f.repo, &["fetch", "-q", "origin"])?;
+    let tree = git(
+        &f.repo,
+        &["merge-tree", "--write-tree", "origin/dev", &head],
+    )?;
+    let sha = git(&f.repo, &["commit-tree", &tree, "-m", "previous candidate"])?;
+    let template = f
+        .runs(&app)
+        .await?
+        .into_iter()
+        .find(|r| r.sha == head)
+        .ok_or("own run")?;
+    for (reference, state) in [
+        (CiRef::Train(vec![5]), RunState::Error),
+        (CiRef::Train(vec![6]), RunState::Cancelled),
+        (CiRef::PullRequest(7), RunState::Failed),
+    ] {
+        app.deps
+            .store
+            .insert_ci_run(
+                &CiRunRecord {
+                    id: format!("earlier-{}", state.as_str()),
+                    reference,
+                    sha: sha.clone(),
+                    state,
+                    status_for: Some(state),
+                    ..template.clone()
+                },
+                &[],
+            )
+            .await?;
+    }
+    app.merge_armed(&f.sandbox).await;
+    let run = f
+        .train_runs(&app)
+        .await?
+        .into_iter()
+        .find(|r| r.reference == CiRef::Train(vec![1]))
+        .ok_or("the candidate must get its own run")?;
+    assert_eq!(
+        git(&f.repo, &["rev-parse", &format!("{}^{{tree}}", run.sha)])?,
+        tree
+    );
+    assert_eq!(run.state, RunState::Queued);
+    assert_eq!(run_candidate(&f, &app, &run.id).await?, RunState::Passed);
+    Ok(())
+}
+
 /// SPEC-497 MQW-003: the member a bisection left out is told only when the others passed without
 /// it. Here #1 fails on the new base by itself: the candidate of two fails, #1 alone fails and is
 /// told, and #2, blamed for nothing, merges on a candidate of its own.
@@ -2574,25 +2710,45 @@ async fn a_member_that_cannot_merge_is_told_instead_of_tested_again() -> TestRes
     let app = f.h.app.clone();
     let worktree = f.task(1, &[("a.txt", "x\n")]).await?;
     f.arm(1, &worktree).await?;
+    let (_, armed_at) = saved_armed(&app, 1)?.ok_or("armed")?;
     f.record_passed(&app, 1, &git(&worktree, &["rev-parse", "HEAD"])?)
         .await?;
     f.advance_dev("other.txt")?;
     app.merge_armed(&f.sandbox).await;
-    assert_eq!(f.train_runs(&app).await?.len(), 1);
-    // While the train's run is still queued: the end of the run decides the member in the
-    // background, and an owner disabled only after it may find the member merged already.
+    let trains = f.train_runs(&app).await?;
+    let [train] = trains.as_slice() else {
+        return Err(format!("expected one candidate: {trains:?}").into());
+    };
     f.h.store
         .update_user_flags(&UserId::parse("u-alice")?, Some(Some(app.now())), None)
         .await?;
-    f.settle(&app).await?;
-    f.decide_until(&app, || async {
-        Ok(f.wait(1, &worktree).await?["merge_armed"] == false)
-    })
-    .await?;
-    let outcome = f.wait(1, &worktree).await?["merge_outcome"]
-        .as_str()
-        .unwrap_or_default()
-        .to_owned();
+    // Record the passed run without its background merge pass. Inspect the train's decision
+    // after exactly one pass, before a later pass prunes the now-disarmed member.
+    let ended = yulius_app::ci::CiRunUpdate {
+        started_at: Some(app.now()),
+        ended_at: Some(app.now()),
+        ..Default::default()
+    };
+    assert!(
+        app.deps
+            .store
+            .transition_ci_run(&train.id, &[RunState::Queued], RunState::Passed, &ended)
+            .await?
+    );
+    app.merge_armed(&f.sandbox).await;
+    let reasons = dissolved(&app).await?;
+    assert!(
+        reasons
+            .iter()
+            .any(|r| r.contains("the owner of #1 can no longer act")),
+        "{reasons:?}"
+    );
+    let trains: Value = serde_json::from_str(&f.trains_file(&app))?;
+    assert_eq!(trains["s1"]["held_back"], json!([["t1", armed_at]]));
+    assert!(!f.merged(&app, 1).await?);
+    let state = f.wait(1, &worktree).await?;
+    assert_eq!(state["merge_armed"], false, "{state}");
+    let outcome = state["merge_outcome"].as_str().unwrap_or_default();
     assert!(outcome.contains("owner can no longer act"), "{outcome}");
     app.merge_armed(&f.sandbox).await;
     assert_eq!(f.train_runs(&app).await?.len(), 1, "not tested again");

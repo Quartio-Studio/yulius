@@ -1077,7 +1077,6 @@ mod moves {
         h: &crate::support::Harness,
         prompt: Option<&str>,
     ) -> Result<(axum::http::StatusCode, serde_json::Value), Box<dyn std::error::Error>> {
-        use tower::ServiceExt as _;
         let (event, body) = match prompt {
             Some(text) => (
                 "UserPromptSubmit",
@@ -1090,6 +1089,15 @@ mod moves {
                     "stop_hook_active": false}),
             ),
         };
+        send_clock_hook(h, event, &body).await
+    }
+
+    async fn send_clock_hook(
+        h: &crate::support::Harness,
+        event: &str,
+        body: &serde_json::Value,
+    ) -> Result<(axum::http::StatusCode, serde_json::Value), Box<dyn std::error::Error>> {
+        use tower::ServiceExt as _;
         let request = axum::http::Request::post(format!("/hooks/claude/{event}"))
             .header("authorization", format!("Bearer {CLOCK_TOKEN}"))
             .header("content-type", "application/json")
@@ -1367,6 +1375,73 @@ mod moves {
         until_decided(&flag).await?;
         assert!(probed.load(Ordering::SeqCst), "the session was looked at");
         assert!(h.app.claude_move_cooling(&task), "the restart was tried");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn scheduled_submit_preserves_a_draft_and_an_open_question() -> TestResult {
+        use axum::http::StatusCode;
+        use std::io::Write as _;
+        use yulius_domain::time::format_rfc3339;
+
+        let (h, task) = on_the_test_clock(false).await?;
+        let sandbox = h._dir.path().canonicalize()?.join("sandboxes/s1");
+        let cwd = sandbox.join("worktrees").join(task.as_str());
+        let session = "scheduled-fixture";
+        let path = h
+            .app
+            .deps
+            .harness
+            .claude_transcript(&sandbox.join("home"), &cwd, session);
+        std::fs::create_dir_all(path.parent().ok_or("transcript directory")?)?;
+        let mut file = std::fs::File::create(&path)?;
+        let text = "scheduled check of the build";
+        let asked = yulius_app::needs_you::NeedsYouRecord {
+            action: "Choose a release date".into(),
+            happened: None,
+            problem: None,
+            decision: true,
+            link: None,
+            at: h.app.now().0,
+            cause: None,
+            named: Default::default(),
+        };
+        h.app
+            .deps
+            .store
+            .set_task_needs_you(&task, Some(&asked), h.app.now())
+            .await?;
+        h.app.record_typing(&task, &UserId::parse("u-alice")?);
+        h.clock.0.fetch_add(1_000, Ordering::SeqCst);
+        let at = format_rfc3339(h.app.now());
+        for record in [
+            serde_json::json!({"type":"queue-operation","operation":"enqueue","content":text,"sessionId":session,"timestamp":at}),
+            serde_json::json!({"type":"queue-operation","operation":"dequeue","sessionId":session,"timestamp":at}),
+            serde_json::json!({"type":"system","subtype":"scheduled_task_fire","prompt":text,"uuid":"fire","sessionId":session,"timestamp":at}),
+        ] {
+            writeln!(file, "{record}")?;
+        }
+        let submit = |id: &str| {
+            serde_json::json!({"hook_event_name":"UserPromptSubmit",
+            "prompt":text, "prompt_id":id,"session_id":session,"transcript_path":path,"cwd":cwd,"permission_mode":"default"})
+        };
+        let (status, _) = send_clock_hook(&h, "UserPromptSubmit", &submit("scheduled")).await?;
+        assert_eq!(status, StatusCode::OK);
+        assert!(h.app.has_draft(&task), "scheduled work emptied the box");
+        assert!(
+            h.app.deps.store.task_needs_you(&task).await?.is_some(),
+            "the question still needs an answer"
+        );
+
+        let user = serde_json::json!({"type":"user","isMeta":true,"promptSource":"system",
+            "promptId":"scheduled","sessionId":session,"scheduledFireId":"fire",
+            "message":{"role":"user","content":text}});
+        writeln!(file, "{user}")?;
+        h.clock.0.fetch_add(1_000, Ordering::SeqCst);
+        let (status, _) = send_clock_hook(&h, "UserPromptSubmit", &submit("typed")).await?;
+        assert_eq!(status, StatusCode::OK);
+        assert!(!h.app.has_draft(&task), "the person sent the same text");
+        assert!(h.app.deps.store.task_needs_you(&task).await?.is_none());
         Ok(())
     }
 
@@ -2053,6 +2128,77 @@ mod moves {
             second_run_live(&s).await?;
             shown.push_str(&printed(&mut watch));
             assert!(shown.contains("ECHO: check the build"), "{shown}");
+            stop(&s.app, &s.id).await
+        })?;
+        rt.shutdown_timeout(Duration::from_secs(5));
+        Ok(())
+    }
+
+    #[test]
+    fn scheduled_hand_over_preserves_the_draft_and_achieved_goal() -> TestResult {
+        use std::io::Write as _;
+        use yulius_domain::task::Activity;
+        let (_dir, data) = data_dir()?;
+        let may_end = data.join("turn-may-end");
+        let turn_starts = data.join("queued-turn-starts");
+        let rt = runtime()?;
+        rt.block_on(async {
+            let options = FakeAgentOptions {
+                queue_turn_file: Some(turn_starts.clone()),
+                ..queueing(&may_end)
+            };
+            let s = server(
+                &data,
+                &data.join("version"),
+                options,
+                TaskMode::Prompt,
+                "2.1.311",
+            )
+            .await?;
+            s.app.send_input(&s.id, b"one\r").await?;
+            says(&s, "TURN HELD").await?;
+            s.app
+                .send_input(&s.id, b"/scheduled check the build\r")
+                .await?;
+            says(&s, "QUEUED: check the build").await?;
+            std::fs::write(&may_end, "")?;
+            says(&s, "QUEUED TURN HELD").await?;
+            // Claude's goal evaluator writes its verdict after the first Stop.
+            let task = s.app.deps.store.task(&s.id).await?.ok_or("task")?;
+            let run = s.app.deps.store.live_attempt(&s.id).await?.ok_or("run")?;
+            let home = data.join("sandboxes").join(s.sandbox.as_str()).join("home");
+            let path = s.app.deps.harness.claude_transcript(
+                &home,
+                Path::new(task.worktree_path.as_deref().ok_or("worktree")?),
+                run.provider_session_id.as_deref().ok_or("session")?,
+            );
+            let mut file = std::fs::OpenOptions::new().append(true).open(path)?;
+            writeln!(
+                file,
+                "{}",
+                serde_json::json!({"type":"attachment",
+                "attachment":{"type":"goal_status","condition":"build checked","met":true}})
+            )?;
+            wait_for("the achieved goal", Duration::from_secs(30), || async {
+                crate::first_message::activity(&s.app, &s.id).await == Some(Activity::Done)
+            })
+            .await?;
+            s.app.record_typing(&s.id, &s.user);
+            assert!(s.app.has_draft(&s.id));
+            std::fs::write(&turn_starts, "")?;
+            says(&s, "ECHO: check the build").await?;
+            assert!(
+                s.app.has_draft(&s.id),
+                "the scheduled hook emptied a person's draft"
+            );
+            wait_for(
+                "the achieved goal after the scheduled turn",
+                Duration::from_secs(30),
+                || async {
+                    crate::first_message::activity(&s.app, &s.id).await == Some(Activity::Done)
+                },
+            )
+            .await?;
             stop(&s.app, &s.id).await
         })?;
         rt.shutdown_timeout(Duration::from_secs(5));
