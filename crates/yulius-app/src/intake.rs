@@ -250,7 +250,8 @@ impl App {
     pub fn record_typing(&self, task: &TaskId, user: &UserId) {
         let runtime = self.runtime(task);
         runtime.typed_at_ms.store(self.now().0, Ordering::SeqCst);
-        runtime.typed_seen.store(true, Ordering::SeqCst);
+        let seq = self.supervisor.input_seq.fetch_add(1, Ordering::SeqCst) + 1;
+        runtime.typed_seq.fetch_max(seq, Ordering::SeqCst);
         if let Ok(mut who) = runtime.typed_by.lock() {
             *who = Some(user.clone());
         }
@@ -276,7 +277,7 @@ impl App {
         policy::box_held(
             self.now().0,
             runtime.typed_at_ms.load(Ordering::SeqCst),
-            runtime.box_emptied_ms.load(Ordering::SeqCst),
+            runtime.empty_time_for_typing(),
         )
     }
 
