@@ -25,12 +25,12 @@ The hook adapter discards the idle bit and forwards only typed first invocations
 
 - [x] Trace the false wait and specify Antigravity goal activity
 - [x] Cover autonomous invocations and idle stops with regression tests
-- [ ] Correct Antigravity goal activity and preserve actionable requests
+- [x] Correct Antigravity goal activity and preserve actionable requests
 - [ ] Verify the fix and deliver the independently reviewed change
 
 ## Acceptance criteria
 
-- AC-1 (AGW-001, AGW-002) A goal task with open steps reports Working across a busy Stop and autonomous PreInvocation. A first autonomous invocation after an idle Stop restores Working before any model output. An invocation sent before the idle Stop and delivered afterward leaves it Waiting.
+- AC-1 (AGW-001, AGW-002) A goal task with open steps reports Working across a busy Stop and autonomous PreInvocation. A first autonomous invocation after an idle Stop restores Working before any model output. An invocation sent before the idle Stop and delivered afterward leaves it Waiting. An idle Stop delayed until after a newer invocation leaves it Working.
 - AC-2 (AGW-003) A fully idle Stop with open steps shows why it needs a person. A real needs_you request is visible with its action during agent activity. A finished answer settles normally.
 
 ## Test plan
@@ -39,4 +39,11 @@ Use synthetic Antigravity 1.5.10 hook payloads with a temporary transcript for t
 
 ## Decisions
 
-Use the CLI's explicit idle bit and first-invocation hook as lifecycle evidence. Screen text and assistant prose can be stale. Retain SPEC-505's goal launch, compatibility and provider boundaries. No additional transcript parser, timer, or persisted flag is needed.
+Use the CLI's explicit idle bit and first-invocation hook as lifecycle evidence. Screen text and assistant prose can be stale. Retain SPEC-505's goal launch, compatibility and provider boundaries. The existing turn-order lock also records the latest Antigravity work hook's send time. Idle settlement checks that time and holds the lock through the write so a delayed Stop cannot overwrite a newer invocation. No additional transcript parser, timer, or persisted flag is needed.
+
+## Evidence
+
+- On the original application, the busy-Stop regression returned `activity: waiting`, `shows: needs_you`, one unfinished step and no request. In an isolated archive of baseline `328f94363`, both application regressions failed. The idle Stop with an open step had no wait reason. The original adapter tests observed a missing idle value and no HTTP request at the autonomous invocation.
+- `cargo test -p yulius --test main agent_hooks::` passed all 36 tests, including the busy and idle sequences. All 23 hook transport tests passed with `cargo test -p yulius-harness --test hook_client`. The tests use a synthetic Google session and a controlled clock.
+- `scripts/dev quick` passed. The local `scripts/dev security` scan was unrun because Vidoc refused the configured key (HTTP 401). No live Gemini model call was made.
+- Independent review of `28177bd64` identified a delayed Stop and an ambiguous explanation for a request dismissed during a list read. The gated Stop test failed with Waiting after a newer wake. The request test failed with a browser attribution. The fixes order the state writes and use source-neutral wording for a request snapshot. An ordinary MCP call also checks the reason in the default text.

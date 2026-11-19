@@ -827,7 +827,7 @@ impl App {
         // and the agent went on, ADR-0115): its turn is over, and what that turn's end decided
         // stands. The transcript still shows the turn. Held until Working is set, so a turn end
         // arriving meanwhile settles after it (SPEC-346 LPH-002).
-        let _order = runtime.turn_order.lock().await;
+        let mut order = runtime.turn_order.lock().await;
         if sent < runtime.turn_end_ms.load(Ordering::SeqCst) {
             tracing::info!(task = %ctx.task.id, "a prompt answered after its turn ended changes nothing");
             return Ok(HookReply::Output(HookOutput::default()));
@@ -865,6 +865,9 @@ impl App {
         } else {
             self.continue_working_stretch(&ctx.task.id).await
         };
+        if ctx.attempt.harness == Harness::Antigravity {
+            order.antigravity_work_ms = order.antigravity_work_ms.max(sent);
+        }
         self.set_task_activity(&task, Activity::Working).await?;
         // Only now, with the task gone from idle to Working by a prompt sent after the pull
         // request watch typed: the turn of that news has begun (SPEC-487 CHN-002). Not for a
@@ -1158,7 +1161,7 @@ impl App {
             if background {
                 self.antigravity_work(&task.id, sent).await?;
             } else {
-                self.clean_stop(task).await?;
+                self.clean_stop(task, sent).await?;
             }
             return Ok(HookReply::Output(HookOutput::default()));
         }

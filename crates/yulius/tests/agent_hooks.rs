@@ -1999,6 +1999,24 @@ async fn antigravity_idle_stop_with_an_open_step_explains_the_wait() -> TestResu
             .is_some_and(|s| s.contains("step")),
         "{idle}"
     );
+    let plain = call(
+        &f.h.internal,
+        Method::POST,
+        "/mcp",
+        Some(json!({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {"name": "task_get", "arguments": {"number": 1}}
+        })),
+        &agent(),
+    )
+    .await?;
+    let text = plain.body["result"]["content"][0]["text"]
+        .as_str()
+        .ok_or("task_get text")?;
+    assert!(
+        text.contains("NEEDS ITS PERSON") && text.contains("unfinished steps"),
+        "{text}"
+    );
     let stale = f.h.app.now().0 - 1;
     f.h.app
         .hook_event(
@@ -2032,5 +2050,42 @@ async fn antigravity_idle_stop_with_an_open_step_explains_the_wait() -> TestResu
     let answered = agy_brief(&f).await?;
     assert_eq!(answered["shows"], "done");
     assert!(answered.get("wait_reason").is_none());
+    Ok(())
+}
+
+/// A Stop client can time out while its handler still runs. A model invocation sent
+/// afterwards owns the activity, even when the task was already Working at its wake.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn antigravity_late_idle_stop_cannot_settle_a_newer_invocation() -> TestResult {
+    use std::time::Duration;
+    use yulius_app::race::{Point, on};
+    let id = TaskId::parse("t-delayed-agy-stop")?;
+    let f = fixture_of(
+        None,
+        |task| {
+            task.id = id.clone();
+            task.mode = yulius_app::model::TaskMode::Goal;
+            task.activity = Some(Activity::Working);
+        },
+        Agent::Antigravity,
+    )
+    .await?;
+    let (reached, parked) = tokio::sync::oneshot::channel();
+    let (release, released) = std::sync::mpsc::channel();
+    let limit = Duration::from_secs(10);
+    on(Point::StopTurnLock, Path::new(id.as_str()), move || {
+        let _ = reached.send(());
+        assert!(tokio::task::block_in_place(|| released.recv_timeout(limit)).is_ok());
+    });
+    let app = Arc::clone(&f.h.app);
+    let stop = tokio::spawn(async move {
+        app.hook_event(TOKEN, "antigravity", "Stop", &Default::default(), None)
+            .await
+    });
+    tokio::time::timeout(limit, parked).await??;
+    agy_event(&f, "PreInvocation", json!({})).await?;
+    release.send(())?;
+    stop.await??;
+    assert_eq!(agy_brief(&f).await?["activity"], "working");
     Ok(())
 }

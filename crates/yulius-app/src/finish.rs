@@ -662,7 +662,11 @@ impl App {
     /// A clean Stop ended the turn (TSK-014): remembers when, and settles it now, or once the goal
     /// verdict came while a goal is open (SPEC-079 BGW-005; Claude Code's evaluator is a Stop
     /// hook that runs after this one, so the hook cannot wait for it).
-    pub(crate) async fn clean_stop(self: &Arc<Self>, task: &TaskRecord) -> AppResult<()> {
+    pub(crate) async fn clean_stop(
+        self: &Arc<Self>,
+        task: &TaskRecord,
+        sent: i64,
+    ) -> AppResult<()> {
         let runtime = self.runtime(&task.id);
         crate::race::reached(
             crate::race::Point::StopClean,
@@ -670,12 +674,23 @@ impl App {
         );
         // After a prompt the transcript watcher is applying: it passed its last-Stop check and
         // starts its turn first (SPEC-453 TPO-001).
-        let stop_ms = {
-            let _order = runtime.turn_order.lock().await;
-            let stop_ms = self.now().0;
-            runtime.last_stop_ms.store(stop_ms, Ordering::SeqCst);
-            stop_ms
-        };
+        let order = runtime.turn_order.lock().await;
+        let antigravity = task.harness == yulius_domain::harness::Harness::Antigravity;
+        if antigravity
+            && sent
+                < order
+                    .antigravity_work_ms
+                    .max(runtime.turn_end_ms.load(Ordering::SeqCst))
+        {
+            return Ok(());
+        }
+        let stop_ms = self.now().0;
+        runtime.last_stop_ms.store(stop_ms, Ordering::SeqCst);
+        // An autonomous invocation that follows this check owns the next state.
+        // Keep it ordered through the idle write even if the Stop client timed out.
+        if !antigravity {
+            drop(order);
+        }
         runtime.resumed_turn.store(false, Ordering::SeqCst);
         if runtime.goal_open.load(Ordering::SeqCst) && !runtime.goal_achieved.load(Ordering::SeqCst)
         {
@@ -842,10 +857,11 @@ impl App {
         sent: i64,
     ) -> AppResult<()> {
         let runtime = self.runtime(task_id);
-        let _order = runtime.turn_order.lock().await;
+        let mut order = runtime.turn_order.lock().await;
         if sent < runtime.turn_end_ms.load(Ordering::SeqCst) {
             return Ok(());
         }
+        order.antigravity_work_ms = order.antigravity_work_ms.max(sent);
         // A flag raised while this hook is being handled must keep its reason.
         let _attention = runtime.attention_lock.lock().await;
         let task = self

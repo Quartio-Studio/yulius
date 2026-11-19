@@ -111,6 +111,14 @@ struct ActiveRun {
     writer: Box<dyn RunWriter>,
 }
 
+/// Activity evidence ordered with this task's turn boundaries.
+#[derive(Default)]
+pub(crate) struct TurnOrder {
+    /// Send time of the latest Antigravity invocation or busy Stop. Its model may
+    /// already be working again while an older Stop is still being handled.
+    pub(crate) antigravity_work_ms: i64,
+}
+
 /// Runtime state of one task with a hub that outlives individual runs.
 pub struct TaskRuntime {
     /// Terminal fan-out.
@@ -232,7 +240,7 @@ pub struct TaskRuntime {
     /// `turn_end_ms`, so their settling never lands before a prompt that passed the check. The
     /// same for a prompt read from the transcript and its [`Self::last_stop_ms`] check, which a
     /// clean Stop moves under it (SPEC-453 TPO-001).
-    pub(crate) turn_order: tokio::sync::Mutex<()>,
+    pub(crate) turn_order: tokio::sync::Mutex<TurnOrder>,
     /// Claude Code's SessionStart hook arrived for the current attempt: its prompt box reads
     /// input (typing before it is lost or left unsubmitted, F 2026-10-12).
     pub(crate) session_started: AtomicBool,
@@ -590,7 +598,7 @@ impl TaskRuntime {
             goal_achieved: AtomicBool::new(false),
             goal_submitted: AtomicBool::new(false),
             turn_end_ms: AtomicI64::new(0),
-            turn_order: tokio::sync::Mutex::new(()),
+            turn_order: tokio::sync::Mutex::default(),
             session_started: AtomicBool::new(false),
             scrub: Mutex::new(crate::vault::TerminalScrub::default()),
             screen_flagged: AtomicBool::new(false),
