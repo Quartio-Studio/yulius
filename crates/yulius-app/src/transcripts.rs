@@ -2756,4 +2756,38 @@ mod tests {
         );
         Ok(())
     }
+
+    /// SPEC-525, review round 4: a settled promise whose `value` is a list of content items
+    /// shows their texts; a background task cancelled with a result is redacted as one finished.
+    #[test]
+    fn settled_content_items_show_and_cancelled_results_are_redacted() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let path = write_lines(
+            dir.path(),
+            &[
+                exec_call(
+                    "c1",
+                    "text(await Promise.allSettled([tools.exec_command({cmd:`ls`}), tools.mcp__x__read({})]))\n",
+                ),
+                exec_output(
+                    "c1",
+                    &[
+                        json!([{"status": "fulfilled", "value": chunk("src\n")}, {"status": "fulfilled", "value": [{"type": "text", "text": "page one"}]}]),
+                    ],
+                ),
+            ],
+        )?;
+        let page = read_page(File::open(&path)?, 0, 100, MAX_PAGE_CHARS)?;
+        let TranscriptBlock::ToolResult { text, .. } = &page.entries[1].blocks[0] else {
+            return Err("the output".into());
+        };
+        assert!(text.ends_with("Output:\nsrc\npage one"), "{text:?}");
+        assert_env_hidden(
+            "agy async result of a cancelled task",
+            &[
+                json!({"step_index": 0, "source": "MODEL", "type": "PLANNER_RESPONSE", "status": "DONE", "tool_calls": [{"name": "run_command", "args": {"CommandLine": "\"sleep 9; cat .env\""}}]}),
+                json!({"step_index": 1, "source": "SYSTEM", "type": "SYSTEM_MESSAGE", "status": "DONE", "content": format!("<SYSTEM_MESSAGE> content=Task id \"abc/task-1\" was canceled with result: Output:\n{ENV_TWO}\n</SYSTEM_MESSAGE>")}),
+            ],
+        )
+    }
 }
