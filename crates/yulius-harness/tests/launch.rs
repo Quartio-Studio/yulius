@@ -1496,20 +1496,42 @@ fn codex_defaults_to_gpt_6_2_astra_at_high_effort() -> TestResult {
         request.model = None;
         request.effort = None;
         let plan = plan_launch(&request)?;
-        let tail: Vec<&str> = plan.argv.iter().skip(10).take(4).map(String::as_str).collect();
+        let tail: Vec<&str> = plan
+            .argv
+            .iter()
+            .skip(10)
+            .take(4)
+            .map(String::as_str)
+            .collect();
         assert_eq!(
             tail,
-            ["-c", "model_reasoning_effort=\"high\"", "-m", "gpt-6.2-astra"],
+            [
+                "-c",
+                "model_reasoning_effort=\"high\"",
+                "-m",
+                "gpt-6.2-astra"
+            ],
             "{:?}",
             plan.argv
         );
         request.model = Some("gpt-synthetic-codex".into());
         request.effort = Some("xhigh".into());
         let plan = plan_launch(&request)?;
-        let tail: Vec<&str> = plan.argv.iter().skip(10).take(4).map(String::as_str).collect();
+        let tail: Vec<&str> = plan
+            .argv
+            .iter()
+            .skip(10)
+            .take(4)
+            .map(String::as_str)
+            .collect();
         assert_eq!(
             tail,
-            ["-c", "model_reasoning_effort=\"xhigh\"", "-m", "gpt-synthetic-codex"],
+            [
+                "-c",
+                "model_reasoning_effort=\"xhigh\"",
+                "-m",
+                "gpt-synthetic-codex"
+            ],
             "{:?}",
             plan.argv
         );

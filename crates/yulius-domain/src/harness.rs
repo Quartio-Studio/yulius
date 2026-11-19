@@ -150,7 +150,7 @@ impl Harness {
     }
 
     /// The agent a model given without one implies: Antigravity for a Gemini model, else Claude
-    /// Code (Codex takes no model of Yulius's; SPEC-505 RND-001).
+    /// Code (Codex runs only when chosen; SPEC-505 RND-001).
     #[must_use]
     pub fn implied_by(model: &str) -> Self {
         if model.trim().to_ascii_lowercase().starts_with("gemini-") {
