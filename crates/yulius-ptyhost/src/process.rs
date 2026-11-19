@@ -256,6 +256,40 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_zombie_leader_with_a_running_thread_is_still_alive() -> TestResult {
+        // pthread_exit ends only the main thread. The worker lives until our pipe closes.
+        let fixture = "import ctypes, select, threading
+threading.Thread(target=lambda: select.select([0], [], [], 30)).start()
+ctypes.CDLL(None).pthread_exit(None)";
+        let mut child = Command::new("python3")
+            .args(["-c", fixture])
+            .stdin(Stdio::piped())
+            .spawn()?;
+        let pid = Pid::from_raw(i32::try_from(child.id())?);
+        let stat = format!("/proc/{pid}/stat");
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let zombie_leader = loop {
+            if std::fs::read_to_string(&stat)?
+                .rsplit_once(')')
+                .is_some_and(|(_, fields)| fields.trim_start().starts_with('Z'))
+            {
+                break true;
+            }
+            if Instant::now() >= deadline {
+                break false;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        let still_alive = alive(pid);
+        drop(child.stdin.take());
+        child.wait()?;
+        assert!(zombie_leader, "the fixture's leader did not exit");
+        assert!(still_alive, "the worker was still running");
+        Ok(())
+    }
+
     #[cfg(not(target_os = "linux"))]
     #[test]
     fn etime_parsing_covers_all_formats() {
