@@ -115,12 +115,21 @@ impl App {
         task: &TaskRecord,
         requested: &HashSet<String>,
     ) -> AppResult<TaskGroup> {
+        Ok(self.task_attention_facts(task, requested).await?.group())
+    }
+
+    /// The facts that place the task in its sidebar group and explain a derived wait.
+    pub(crate) async fn task_attention_facts(
+        &self,
+        task: &TaskRecord,
+        requested: &HashSet<String>,
+    ) -> AppResult<AttentionFacts> {
         let store = &self.deps.store;
         if task.status.is_resting() || task.status == TaskStatus::Stopping {
             let mut facts = AttentionFacts::new(task.status, task.activity);
             facts.awaits_start_onboarding =
                 self.is_awaited_onboarding(task).await? && !store.has_attempts(&task.id).await?;
-            return Ok(facts.group());
+            return Ok(facts);
         }
         let held_prompt = store.pending_hold(&task.id).await?.is_some();
         let chain_blocked = task.status == TaskStatus::Chained
@@ -168,8 +177,7 @@ impl App {
             paused: self.is_paused(task).await,
             awaits_start_onboarding: false,
             merge_armed: finished && self.merge_is_armed(&task.id),
-        }
-        .group())
+        })
     }
 
     /// Tasks with a pending request for a person to act: in the sandbox's browser (BRW-004),

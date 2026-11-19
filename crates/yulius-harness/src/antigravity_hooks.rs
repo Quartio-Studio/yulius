@@ -8,10 +8,9 @@
 //!   injected system message.
 //! - `PreInvocation` with `invocationNum` 0, the model call that opens a turn, whose step before
 //!   it is a person's `USER_INPUT` → `UserPromptSubmit` with `lastUserInput` as the prompt; a
-//!   refusal ends the turn showing its reason. Later model calls of the turn, and the turn the CLI
-//!   opens by itself when a background command ends (a system message before it, the earlier
-//!   prompt still in `lastUserInput`), ask nothing.
-//! - `Stop` → `Stop` (`continuationActive` as `stop_hook_active`); a block becomes
+//!   refusal ends the turn showing its reason. A first call after a system message reports
+//!   activity without a prompt. Later calls ask nothing.
+//! - `Stop` → `Stop` (`continuationActive` as `stop_hook_active`, `fullyIdle` as `fully_idle`); a block becomes
 //!   `{"decision":"continue"}`. A turn the model API ended with an error (`terminationReason`
 //!   `ERROR`) is sent with its `error`, which Yulius settles without a gate, and nothing continues
 //!   it; a turn a refused prompt ended (`TERMINAL_CUSTOM_HOOK`) asks nothing (Yulius ended it
@@ -24,6 +23,7 @@
 use std::io::{Read, Write};
 
 use serde_json::{Map, Value, json};
+use yulius_contracts::hooks::events;
 
 use crate::hook_client::{HOOK_TIMEOUT, HoldPolicy, MAX_INPUT_BYTES, MAX_TOOL_INPUT_BYTES};
 
@@ -39,54 +39,39 @@ fn compact_transcript(full: &str) -> String {
         .map_or_else(|| full.to_owned(), |dir| format!("{dir}{TRANSCRIPT}"))
 }
 
-/// Whether step `index` of the transcript at `path` is a prompt a person typed, read from the
-/// file's last [`TRANSCRIPT_TAIL_BYTES`] without following a link or waiting on a FIFO. `false`
-/// when it cannot be read or found.
-fn typed_step(path: &str, index: u64) -> bool {
+/// The hook for the step preceding a turn's first invocation. An explicit user input
+/// submits a prompt. A system message wakes the agent. An unknown step reports neither.
+fn invocation_event(payload: &Map<String, Value>) -> Option<&'static str> {
     use std::io::{BufRead as _, BufReader, Seek as _, SeekFrom};
-    let Ok(mut file) = crate::tail::open_regular(std::path::Path::new(path)) else {
-        return false;
-    };
-    let length = file.metadata().map(|m| m.len()).unwrap_or(0);
-    if file
-        .seek(SeekFrom::Start(
-            length.saturating_sub(TRANSCRIPT_TAIL_BYTES),
-        ))
-        .is_err()
-    {
-        return false;
+    if payload.get("invocationNum")?.as_u64()? != 0 {
+        return None;
     }
+    let index = payload.get("initialNumSteps")?.as_u64()?.checked_sub(1)?;
+    let path = compact_transcript(payload.get("transcriptPath")?.as_str()?);
+    let mut file = crate::tail::open_regular(std::path::Path::new(&path)).ok()?;
+    let length = file.metadata().ok()?.len();
+    file.seek(SeekFrom::Start(
+        length.saturating_sub(TRANSCRIPT_TAIL_BYTES),
+    ))
+    .ok()?;
     let mut found = None;
     for line in BufReader::new(file.take(TRANSCRIPT_TAIL_BYTES)).split(b'\n') {
-        let Ok(line) = line else { return false };
+        let line = line.ok()?;
         let Ok(Value::Object(step)) = serde_json::from_slice::<Value>(&line) else {
             continue;
         };
         if step.get("step_index").and_then(Value::as_u64) == Some(index) {
-            found = Some(
-                step.get("type").and_then(Value::as_str) == Some("USER_INPUT")
-                    && step.get("source").and_then(Value::as_str) == Some("USER_EXPLICIT"),
-            );
+            found = match (
+                step.get("source").and_then(Value::as_str),
+                step.get("type").and_then(Value::as_str),
+            ) {
+                (Some("USER_EXPLICIT"), Some("USER_INPUT")) => Some(events::USER_PROMPT_SUBMIT),
+                (Some("SYSTEM"), Some("SYSTEM_MESSAGE")) => Some(events::PRE_INVOCATION),
+                _ => None,
+            };
         }
     }
-    found.unwrap_or(false)
-}
-
-/// Whether a `PreInvocation` opens a turn a person's prompt started: its first model call, the
-/// step before it the prompt (SPEC-505 AGY-006).
-fn opens_a_typed_turn(payload: &Map<String, Value>) -> bool {
-    let first = payload.get("invocationNum").and_then(Value::as_u64) == Some(0);
-    let Some(prompt_step) = payload
-        .get("initialNumSteps")
-        .and_then(Value::as_u64)
-        .and_then(|n| n.checked_sub(1))
-    else {
-        return false;
-    };
-    let Some(full) = payload.get("transcriptPath").and_then(Value::as_str) else {
-        return false;
-    };
-    first && typed_step(&compact_transcript(full), prompt_step)
+    found
 }
 
 /// Runs one Antigravity hook. Always returns exit code 0.
@@ -177,7 +162,7 @@ fn to_claude(
 ) -> Option<(&'static str, Map<String, Value>)> {
     let claude_event = match event {
         "SessionStart" => "SessionStart",
-        "PreInvocation" if opens_a_typed_turn(payload) => "UserPromptSubmit",
+        "PreInvocation" => invocation_event(payload)?,
         // A turn a refused prompt ended asks nothing: Yulius ended it itself.
         "Stop"
             if payload.get("terminationReason").and_then(Value::as_str)
@@ -209,7 +194,11 @@ fn to_claude(
         "UserPromptSubmit" => {
             request.insert("prompt".into(), text(payload, "lastUserInput")?);
         }
+        events::PRE_INVOCATION => {}
         "Stop" => {
+            if let Some(idle) = payload.get("fullyIdle").and_then(Value::as_bool) {
+                request.insert("fully_idle".into(), json!(idle));
+            }
             let active = payload
                 .get("continuationActive")
                 .and_then(Value::as_bool)

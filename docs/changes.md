@@ -13,6 +13,9 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   results, redacted the same way, dotenv reads included), so the watch view, the Sessions page,
   session search and `session_read` show them. Schema version 69 indexes the Codex and Antigravity
   sessions already passed with no passages again from their start.
+- Antigravity tasks show Working while a background command runs and when its completion
+  starts another model turn. If the agent stops with unfinished steps, its task brief explains
+  why it needs a person. Fixes #1444 (SPEC-528, task #510).
 - Codex defaults to Ultrafast on supported models when the assigned subscription is ChatGPT
   Pro 500. Each launch reads the current sign-in (SPEC-523, task #505).
 - Finished tasks shown Done, not closed (SPEC-518, task #500, findings only): six goal-achieved
