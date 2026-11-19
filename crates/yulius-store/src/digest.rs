@@ -51,12 +51,27 @@ impl DigestStore for SqliteStore {
         self.call(move |c| {
             let changed = c
                 .execute(
-                    "UPDATE instance SET digest_ran_at = ?1 \
+                    "UPDATE instance SET digest_ran_at = ?1, digest_sent_at = ?1 \
                      WHERE singleton = 1 AND digest_ran_at IS ?2",
                     params![now.0, seen.map(|t| t.0)],
                 )
                 .map_err(db)?;
             Ok(changed == 1)
+        })
+        .await
+    }
+
+    async fn digest_sent_at(&self) -> AppResult<Option<Timestamp>> {
+        self.call(|c| {
+            let at = c
+                .query_row(
+                    "SELECT digest_sent_at FROM instance WHERE singleton = 1",
+                    [],
+                    |r| r.get::<_, Option<i64>>(0),
+                )
+                .optional()
+                .map_err(db)?;
+            Ok(at.flatten().map(Timestamp))
         })
         .await
     }
@@ -185,11 +200,21 @@ mod tests {
         );
         assert!(!store.take_digest_run(None, Timestamp(22)).await?);
         assert_eq!(store.digest_setting().await?.1, Some(Timestamp(20)));
+        assert_eq!(
+            store.digest_sent_at().await?,
+            Some(Timestamp(20)),
+            "the claim"
+        );
         // Where the listing ended is its own mark: saving the setting leaves it.
         assert_eq!(store.digest_listed_at().await?, None);
         store.set_digest_listed_at(Timestamp(25)).await?;
         store.set_digest_setting("{}", Timestamp(30)).await?;
         assert_eq!(store.digest_listed_at().await?, Some(Timestamp(25)));
+        assert_eq!(
+            store.digest_sent_at().await?,
+            Some(Timestamp(20)),
+            "a save leaves it"
+        );
         Ok(())
     }
 

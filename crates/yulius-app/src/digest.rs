@@ -51,14 +51,15 @@ pub fn minute_of(at: &str) -> Option<i64> {
 }
 
 /// Whether the day's digest is due at `now_ms` (DIG-002): it is on, today's time (UTC) has
-/// passed, it has not run or been saved since (`ran_at`), and no digest went out today
-/// (`listed_at`), so moving the time later the same day sends no second one.
+/// passed, it has not run or been saved since (`ran_at`), and no run was claimed today
+/// (`sent_at`, written only by a run's claim), so moving the time later the same day sends no
+/// second one; a run whose work ends after midnight does not cost the next day's.
 #[must_use]
 pub fn run_due(
     setting: &DigestSetting,
     now_ms: i64,
     ran_at: Option<i64>,
-    listed_at: Option<i64>,
+    sent_at: Option<i64>,
 ) -> bool {
     let Some(minute) = minute_of(&setting.at).filter(|_| setting.enabled) else {
         return false;
@@ -67,7 +68,7 @@ pub fn run_due(
     let today_at = day + minute * 60_000;
     now_ms >= today_at
         && ran_at.is_none_or(|ran| ran < today_at)
-        && listed_at.is_none_or(|listed| listed < day)
+        && sent_at.is_none_or(|sent| sent < day)
 }
 
 /// The end of `text` in at most `max` characters, from a word's start, `…` before it when cut.
@@ -224,14 +225,14 @@ impl App {
     /// took the run.
     pub async fn digest_tick(self: &Arc<Self>) -> DigestRun {
         let store = &self.deps.store;
-        let (Ok((setting, ran)), Ok(listed)) = (
+        let (Ok((setting, ran)), Ok(sent)) = (
             self.stored_digest_setting().await,
-            store.digest_listed_at().await,
+            store.digest_sent_at().await,
         ) else {
             return DigestRun::default();
         };
         let now = self.now();
-        if !run_due(&setting, now.0, ran.map(|r| r.0), listed.map(|l| l.0)) {
+        if !run_due(&setting, now.0, ran.map(|r| r.0), sent.map(|at| at.0)) {
             return DigestRun::default();
         }
         match store.take_digest_run(ran, now).await {
@@ -268,7 +269,7 @@ impl App {
             }
         };
         let listed_at = self.now();
-        let drafts = match self.digest_drafts(since_ms, &parked_now).await {
+        let drafts = match self.digest_drafts(since_ms, listed_at.0, &parked_now).await {
             Ok(drafts) => drafts,
             Err(err) => {
                 tracing::warn!(error = %err, "the digest could not be built");
@@ -367,6 +368,7 @@ impl App {
     async fn digest_drafts(
         &self,
         since_ms: i64,
+        until_ms: i64,
         parked_now: &HashSet<TaskId>,
     ) -> AppResult<HashMap<UserId, Draft>> {
         let store = &self.deps.store;
@@ -397,7 +399,13 @@ impl App {
                 continue;
             }
             let placed = self
-                .digest_place(&task, since_ms, parked_now, &people, &mut requests)
+                .digest_place(
+                    &task,
+                    (since_ms, until_ms),
+                    parked_now,
+                    &people,
+                    &mut requests,
+                )
                 .await;
             let (section, item, to) = match placed {
                 Ok(Some(placed)) => placed,
@@ -438,7 +446,7 @@ impl App {
     async fn digest_place(
         &self,
         task: &TaskRecord,
-        since_ms: i64,
+        (since_ms, until_ms): (i64, i64),
         parked_now: &HashSet<TaskId>,
         people: &HashMap<String, UserId>,
         requests: &mut HashMap<SandboxId, HashSet<String>>,
@@ -475,7 +483,7 @@ impl App {
             && store
                 .task_times(&task.id)
                 .await?
-                .is_some_and(|times| times.state_at.0 > since_ms);
+                .is_some_and(|times| (since_ms + 1..=until_ms).contains(&times.state_at.0));
         if parked_now.contains(&task.id) || parked_since {
             let ended = if self.task_group(task, &requested).await? == TaskGroup::Done {
                 "Finished"
@@ -692,6 +700,15 @@ mod tests {
             at + DAY_MS,
             Some(saved),
             Some(morning)
+        ));
+        // A run claimed at 23:59:30 (its listing may end after midnight): the next day's
+        // digest is still due, since the same-day rule reads the claim (review round 2).
+        let claimed = DAY0 + DAY_MS - 30_000;
+        assert!(run_due(
+            &on("23:59"),
+            claimed + DAY_MS,
+            Some(claimed),
+            Some(claimed)
         ));
     }
 

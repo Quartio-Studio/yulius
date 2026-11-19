@@ -75,3 +75,14 @@ test('a cleared digest entry does not come back on the next load (SPEC-512 DIG-0
   await firstShown(screen.getByRole('button', /^Notifications$/));
   await expect(screen.getByRole('button', /^Notifications \(\d+ unread\)/)).toHaveCount(0);
 });
+
+test('a digest arriving live reaches every open tab, also one whose browser already saw it (SPEC-512 DIG-005, review round 2)', async ({ app, browser, screen }) => {
+  await app.open(mock('/settings'));
+  await eventsConnected(browser);
+  // Another tab of the same browser heard this digest first and remembered it.
+  await browser.evaluate(() => { const id = (window as unknown as { __yuliusMock: { me: { user: { id: string } } } }).__yuliusMock.me.user.id; localStorage.setItem(`yulius.digest.seen.${id}`, JSON.stringify('dg_both')); });
+  await expect(screen.getByRole('button', /^Notifications \(\d+ unread\)/)).toHaveCount(0);
+  await browser.evaluate(() => (window as unknown as Mocked).__yuliusMock.sendDigest('dg_both'));
+  await screen.getByRole('button', /^Notifications \(1 unread\)/).click();
+  await expect(screen.getByRole('dialog', 'Notifications').getByRole('button', /^Unread: Your end-of-day digest/)).toBeVisible();
+});

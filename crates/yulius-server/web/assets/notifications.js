@@ -203,15 +203,18 @@ export function createNotificationCenter(ctx) {
   // The end-of-day digest (SPEC-512 DIG-005): one entry per digest that opens /digest, also for
   // one made while no page was open (read when the page opens). The last digest heard is
   // remembered apart from the list, so a cleared or dropped entry does not come back on the next
-  // load (review round 1); the entry carries the digest's own time.
+  // load (review round 1); the entry carries the digest's own time. Only the read at page open
+  // asks that memory: a digest arriving live reaches every open tab, whichever heard it first
+  // (review round 2).
   const digestSeenKey = `yulius.digest.seen.${user.id || user.login || 'anonymous'}`;
-  function heardDigest(digest) {
-    if (!digest || typeof digest.id !== 'string' || readJson(digestSeenKey, null) === digest.id) return;
+  function heardDigest(digest, live) {
+    if (!digest || typeof digest.id !== 'string') return;
+    if (!live && readJson(digestSeenKey, null) === digest.id) return;
     writeJson(digestSeenKey, digest.id);
     add({ kind: 'info', title: 'Your end-of-day digest', detail: digestSummary(digest), route: '/digest', key: `digest:${digest.id}`, once: true, at: digest.created_at });
   }
-  watch('digest', heardDigest);
-  if (ctx.api) ctx.api.get('/api/me/digest').then(heardDigest, () => {});
+  watch('digest', (digest) => heardDigest(digest, true));
+  if (ctx.api) ctx.api.get('/api/me/digest').then((digest) => heardDigest(digest, false), () => {});
   // A sandbox's tasks as first loaded: requests that waited before the page did. Later list
   // changes come with their own task event.
   const loaded = new Set();

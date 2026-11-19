@@ -2031,8 +2031,8 @@ a conditional write of `digest_ran_at`. `send_digests_now` first parks, with
 (the same `park_task_now`, every guard of `ParkFacts`) and waits until those sessions ended, then
 builds one `DigestView` per person who can see each task's project (`can_view`) from task state
 and the transcript's last assistant message (`read_tail`), redacted with `redact_for_sandbox`,
-listing as parked what parked after the last listing (`digest_listed_at`, written before the
-build), keeps it in `digests` (last seven), publishes `digest.ready` to that person and enqueues
+listing as parked what parked after the last listing and up to this one's mark
+(`digest_listed_at`: its value taken before the build, written after it), keeps it in `digests` (last seven), publishes `digest.ready` to that person and enqueues
 the text on their linked Telegram chat when `notify_digest` is on. The run is spawned off the
 tick.
 

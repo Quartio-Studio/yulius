@@ -373,7 +373,7 @@ Review round 1 (head 3d6fb8768, CHANGES REQUESTED), answered test-first:
 | Finding | Change | Test |
 |---|---|---|
 | The digest reached people who cannot see the project (owner who lost access, named person without access) | each recipient is checked with `can_view` per project, cached per run | `telegram::a_digest_reaches_only_people_who_can_see_the_project` (fails without the check: checked by mutation) |
-| A task the digest parked was listed again the next day | the listing has its own mark (`digest_listed_at`), written once the run's parks settled (no longer live) and before the build; "parked since" is after it | `parking::the_digest_parks_…` (a second run sends nothing) and `telegram::a_digest_lists_…` (a second digest lists nothing parked); both fail when the window ignores the mark (mutation) |
+| A task the digest parked was listed again the next day | the listing has its own mark (`digest_listed_at`), its value taken once the run's parks settled (no longer live) and before the build, written after it; "parked since" is after the last mark and up to this one | `parking::the_digest_parks_…` (a second run sends nothing) and `telegram::a_digest_lists_…` (a second digest lists nothing parked); both fail when the window ignores the mark (mutation) |
 | A cleared bell entry came back on every load | the last digest heard is remembered per person apart from the list; the entry carries the digest's time | e2e "a cleared digest entry does not come back on the next load" (fails without the memory: mutation) |
 | No tests for named, withdrawn or disabled people, or for redacting a title or a last message | added | `telegram::a_digest_reaches_only_people_who_can_see_the_project` (named, withdrawn, disabled owner), `telegram::a_digest_lists_…` (secret in a title), `parking::the_digest_parks_…` (agent secret in the last message: `[secret:DIGEST_KEY]`) |
 | A save shortened the window; moving the time later sent a second digest that day | a save no longer touches the listing mark (the first digest looks back 24 hours); no digest when one already went out today | store `the_days_run_is_taken_once`, `digest::tests::the_digest_is_due_once_a_day_after_its_time`, `telegram::a_digest_lists_…` (saved before the first run, the parked task is still listed) |
@@ -381,6 +381,16 @@ Review round 1 (head 3d6fb8768, CHANGES REQUESTED), answered test-first:
 | One unreadable task cancelled every digest | a task that fails is logged and left out | by reading (`digest_drafts`) |
 | Guests were refused `/api/me/digest` | allowed for guests (their own digest; visibility is checked per project) | `guest_may_reach` |
 | Nits | `notify::truncate`; quiet time checked before a park's probe; "Finished" follows the list's group; `waiting_capacity` counts as working; digits-only times; `/digest` follows `digest.ready` | `a_time_is_hours_and_minutes`; parking test reads "Finished" as the list does |
+
+Review round 2 (head 809c5b974, CHANGES REQUESTED), answered test-first:
+
+| Finding | Change | Test |
+|---|---|---|
+| With two tabs open, only one tab's bell showed a live digest | only the read at page open asks the remembered id; a live `digest.ready` always adds its entry (the key dedups) | e2e "a digest arriving live reaches every open tab, also one whose browser already saw it" (failed before the change) |
+| A run crossing midnight UTC skipped the next day's digest | the same-day rule reads `digest_sent_at`, written only by a run's claim (with `digest_ran_at`), not the listing's end | `digest::tests::the_digest_is_due_once_a_day_after_its_time` (claim at 23:59:30), store `the_days_run_is_taken_once` (the claim writes it, a save leaves it) |
+| The listing window had no upper bound | "parked since" is after the last mark and up to this listing's mark | the parking and Telegram tests' second runs list nothing parked |
+| Wording in architecture, spec and ADR-0380 | corrected (the mark's value is taken before the build and written after it; the same-day rule and the settle wait in the ADR) | by reading |
+| CI at 3d6fb8768: the guest page test saw the mock refuse `/api/me/digest` | the mock's guest allowlist matches the server's | e2e `playground-guests.e2e.ts` "a guest sees their playground and nothing else" |
 
 Known limit (not changed): a stored digest is not redacted again when read, so a secret registered after a
 digest was made stays in up to seven stored digests of its person until they rotate out.

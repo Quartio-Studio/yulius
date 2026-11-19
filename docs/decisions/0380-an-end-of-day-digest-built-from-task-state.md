@@ -23,9 +23,11 @@ personal Telegram channel); changes neither.
 - **An instance setting, off by default.** `enabled`, `at` (`HH:MM`, UTC) and
   `park_idle_hours` (1 to 720, or none), set by instance administrators in Settings and stored in
   `instance.digest`. An instance that changes nothing sends nothing and parks nothing more.
-- **Once a day from the background tick.** Due when today's time passed and it has not run
-  since; the run is taken with one conditional write of `digest_ran_at`, so restarts and ticks
-  never send it twice. Turning it on never sends at once.
+- **Once a day from the background tick.** Due when today's time passed, it has not run or
+  been saved since, and no run was claimed today (UTC); the run is taken with one conditional
+  write of `digest_ran_at` and `digest_sent_at`, so restarts and ticks never send it twice, and
+  it runs off the tick. Turning it on never sends at once. A run waits up to a minute for the
+  sessions it parks to end before it lists them.
 - **Built from task state and the transcript, no model.** Per person who can see the task's
   project (the notifier's rule), in order: tasks waiting for them (an open `needs_you`, a
   question in the terminal, or another person's request that names them), tasks parked since
