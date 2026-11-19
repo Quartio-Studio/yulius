@@ -6,6 +6,10 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-19
 
+- Finished tasks shown Done, not closed (SPEC-518, task #500, findings only): six goal-achieved
+  tasks with merged pull requests were shown Done and stayed open, because no rule closes a Done
+  task whose session lives. Claude Code's idle compaction changed nothing. No behaviour changed;
+  closing finished tasks by themselves is recorded as an option.
 - Answer a teammate's Needs you (SPEC-516, task #498, ADR-0370): on someone else's task whose
   agent asks a person for something, Reply answers it without taking control. The agent gets the
   answer labelled with your name (and that you are not its owner), the request ends, and the task

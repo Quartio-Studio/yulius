@@ -42,7 +42,7 @@ For all six: `goal_unfinished` false, `spec_unfinished` false, `background_shell
 - **A person's request left open.** None of the five other tasks called `needs_you`. #499 called it once
   and resolved it twice before its goal. Ruled out.
 - **Today's merges.** #1419/#1425 (take control) changed only a comment in `status.js` and the
-  control paths in `tasks.rs`. #1420, #1422, #1424, #1428 and #1430 do not touch `statusInfo`,
+  control paths in `tasks.rs`. #1420, #1422, #1423, #1424, #1428 and #1430 do not touch `statusInfo`,
   `taskInfo`, `goal_is_open` or the activity. Ruled out.
 - **The goal status hook.** activity `done` is set from the recorded goal (`goal_observed`), so it
   was recorded. Ruled out.
@@ -56,18 +56,27 @@ its **Done** group, with "done 1h ago" (`tasktime.js`). The server's `AttentionF
 way. So the six were shown **Done**, and they stayed in the Active list as `running` with a live
 Claude Code session.
 
-What did not happen: nothing **closes** such a task. A Done task stays `running` until a person
-archives, closes or deletes it (TSK-014, SPEC-039). The only automatic path is SPEC-229 RBT-001: a
-run lost while its task was Done (a reboot, a lost process) records `Closed`. That is why earlier
-tasks of this sandbox (#479, #447, #449, … all updated 2026-11-12 07:44 UTC) read `closed`, and
-today's six did not: today's server update reattached their live sessions, so no run was lost.
+What did not happen: nothing **closes** such a task while its session lives. A Done task stays
+`running` until a person or a tool closes, archives or deletes it (TSK-014, SPEC-039: `close_task_now`,
+called from `tasks.rs`, `task_edit.rs` and `close_task_and_wait`). Two other paths close it with
+nobody asking:
+- SPEC-229 RBT-001: a run lost while its task was Done (a reboot, a lost process) records
+  `Closed` (`TaskStatus::after_loss`, used by `mark_lost` and the reconcile sweep).
+- Removing a subscription closes the Done tasks that run on it (`delete_account`:
+  `task_is_done_locally`, then `close_task_and_wait`).
 
-### Cause (working conclusion)
+That is why earlier tasks of this sandbox (#447, #449, #438, … all updated 2026-11-12 07:44:44Z)
+read `closed`. Today's six did not. Inferred, since the server's logs are outside the sandbox:
+today's server update (main promoted at 12:42 UTC) reattached the live sessions of the four
+already Done, and #493 and #499 reached their goals after it, so no run was lost.
 
-No part of the Done rule disagreed. The person expects a task whose goal is achieved and whose
-pull request merged to be **closed** (to leave the Active list as finished, as the earlier tasks
-did after a restart), and Yulius only marks it Done and leaves it open. The person has not yet
-confirmed which page and label they saw, so this is asked before any behaviour changes.
+### Cause
+
+No part of the Done rule disagreed: the six were shown Done and stayed open, because no rule
+closes a Done task whose session lives. The working reading is that the person expects such a
+task to be **closed**, leaving the Active list as finished as the earlier tasks did after a
+restart. It is not confirmed by the person: they were asked which page and label they saw, and
+their answer did not say (see Decisions).
 
 ### Options
 
@@ -85,15 +94,16 @@ confirmed which page and label they saw, so this is asked before any behaviour c
 
 ## Requirements
 
-- DON-001: The finding above (shown Done, never closed by itself) and its options are given to the
+- FIN-001: The finding above (shown Done, never closed by itself) and its options are given to the
   person with `needs_you` before any behaviour changes.
-- DON-002 (if the person chooses option 2 or 3): a running task that stays Done (`statusInfo` group
-  `done` by the server's rule: goal achieved, or plan complete and pull request merged or
-  tested; no background shell, no `yulius wait`, no armed merge, no `needs_you`) for the grace
-  period is closed by Yulius, as a person's archive closes it (`shows_done`, then
-  `close_task_now`). An agent that only answered (SPEC-429 "Answered", no goal, no plan) stays
-  open: its person may still follow up. Its final screen is kept and
-  Continue resumes it. A prompt, a shell or any activity in the period cancels it.
+- FIN-002 (only if the person chooses option 2 or 3; not built here): a running task that stays
+  finished for the grace period is closed by Yulius, as a person's archive closes it. Finished
+  means goal achieved, or plan complete and pull request merged or tested, with no background
+  shell, no `yulius wait`, no armed merge and no `needs_you` (`task_is_done`, then
+  `close_task_now`; not `shows_done`, which also counts Answered). An agent that only answered
+  (SPEC-429 "Answered", no goal, no plan) stays open, because its person may still follow up.
+  Its final screen is kept and Continue resumes it. A prompt, a shell or any activity in the
+  period cancels it.
 
 ## Plan
 
@@ -106,8 +116,8 @@ confirmed which page and label they saw, so this is asked before any behaviour c
 - With option 2 or 3: an integration test that fails on today's `dev` shows a running task whose
   goal is achieved and whose pull request merged, after Claude Code's idle compaction too, reading
   `closed` once the grace period passed. A prompt typed within the period keeps it running.
-- With option 1: no code changes. The finding is the result, and the steps after the question are
-  skipped with that reason.
+- With no change (the default recorded in Decisions): no code changes. The finding is the
+  result, and the steps for option 2 were taken out of the Plan.
 
 ## Test plan
 
@@ -121,21 +131,34 @@ confirmed which page and label they saw, so this is asked before any behaviour c
 
 - The six tasks were shown Done (by the evidence above). The open question is whether a Done task
   should also close by itself, which changes what a person can do with a finished session, so the
-  person decides (DON-001).
-- The person answered "mark as done" (2026-11-19): the task ends with the finding, and no
-  behaviour changes (option 1). DON-002 and its test, code, docs, review and merge steps were not
-  done. Options 2 and 3 stay recorded above for a later task.
+  person decides (FIN-001).
+- The person's whole answer (2026-11-19, after clearing this task's goal) was "mark as done". It
+  named no option, no page and no label. It can be read as "mark this task as done" or as "finished
+  tasks should be marked done (closed)". The author's reversible default is the first reading: the
+  task ends with the finding and nothing changes (option 1). This is not a choice the person
+  stated. The closing summary tells them that option 2 or 3 is built on request. FIN-002 and its
+  test, code, docs and review were not done. Options 2 and 3 stay recorded above for a later task.
 
 ## Evidence
 
 - Server records (read by the Superagent at 13:42 UTC): all six `running`, activity `done`,
   `goal_unfinished` false, `spec_unfinished` false, `background_shells` 0, `merge_armed` false,
-  `yulius_wait` false; #492 `state_since` 12:06:42Z, after its 13:01 idle compaction.
+  `yulius_wait` false. #492's `state_since` is 12:06:42Z and was still in force after its 13:01
+  idle compaction. The record read does not show `pause`, `held_prompt` or a browser request, which
+  `taskInfoOf` checks before Done. None of the six transcripts calls
+  `browser_request_user_action`. A pause or a held prompt was not read from the store, so neither
+  is ruled out.
 - Transcripts (`home/.claude/projects/...-worktrees-<task-id>/*.jsonl`): #492's ends with
   `compact_boundary`, the `isCompactSummary` record and "Compacted while idle" at 13:01:18Z; no
   `needs_you` call in #492, #493, #495, #496, #497; #499's one request resolved before its goal.
 - Code read: `statusInfo`/`taskInfo` (`status.js`) give `Done` for those inputs; `git log` since
-  2026-11-17 shows no change to the Done rule (#1419 only a comment in `status.js`); the only
-  automatic close is RBT-001 (`close_task_now` on a lost Done run); `task_done::an_idle_compaction_leaves_a_done_task_done` covers the compaction.
+  2026-11-17 shows no change to the Done rule (#1419 only a comment in `status.js`). Without a
+  person, a Done task closes only through RBT-001 (`after_loss`) or a subscription's removal
+  (`delete_account`). `task_done::an_idle_compaction_leaves_a_done_task_done` covers the
+  compaction.
+- Independent review, round 1 (Fable 5.2, head 06125d8e2): it confirmed the Done rule, the
+  compaction test, today's merges and the transcripts. It asked for the answer to be recorded as
+  given, and for these corrections: the close paths, `task_is_done` over `shows_done`, the
+  #479 date, and the inferred reattach.
 - Not tested: what the person's browser rendered (the runs were closed before this task started,
   and the server's logs are outside the sandbox).
