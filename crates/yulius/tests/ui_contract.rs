@@ -620,12 +620,15 @@ fn the_ui_names_the_fallback_model_a_launch_uses() -> TestResult {
     Ok(())
 }
 
-/// SPEC-462 EFF-003: the composer and Settings describe "Default" as the model and effort a
-/// launch really uses (`yulius_domain::harness`), so a changed constant cannot leave the labels
-/// behind. The no-choice item is Claude Code's default, never a drawn agent (SPEC-514 PIN-004).
+/// SPEC-462 EFF-003, SPEC-520 RHM-006: the composer and Settings describe the no-choice item
+/// ("Random") with each drawn harness's default model (`yulius_domain::harness`), and "Default"
+/// in the effort menu with the default effort, so a changed constant cannot leave the labels
+/// behind.
 #[test]
 fn the_ui_describes_default_as_the_model_and_effort_a_launch_uses() -> TestResult {
-    use yulius_domain::harness::{DEFAULT_CLAUDE_EFFORT, DEFAULT_CLAUDE_MODEL};
+    use yulius_domain::harness::{
+        DEFAULT_ANTIGRAVITY_MODEL, DEFAULT_CLAUDE_EFFORT, DEFAULT_CLAUDE_MODEL, DEFAULT_CODEX_MODEL,
+    };
     let models = std::fs::read_to_string(web_dir().join("assets/models.js"))?;
     // The listed entry with the default's id gives the name people read ("Opus 5.5", "High").
     let named = |id: &str| -> Result<&str, String> {
@@ -637,15 +640,14 @@ fn the_ui_describes_default_as_the_model_and_effort_a_launch_uses() -> TestResul
             .ok_or(format!("models.js does not list {id}"))
     };
     let name = named(DEFAULT_CLAUDE_MODEL)?;
+    let gemini = named(DEFAULT_ANTIGRAVITY_MODEL)?;
+    assert_eq!(DEFAULT_CODEX_MODEL, "gpt-6.2-astra");
+    let random = format!("Claude Code ({name}), Codex (GPT-6.2 Astra) or Antigravity ({gemini})");
     assert!(
         models.contains(&format!(
-            "{{ label: 'Default', description: 'Claude Code, {name}',"
+            "{{ label: 'Random', description: '{random}, drawn for each task',"
         )),
-        "the model menu's Default is not Claude Code on {name}"
-    );
-    assert!(
-        !models.contains("label: 'Random'"),
-        "the model menu offers no drawn agent"
+        "the model menu's Random does not name {random}"
     );
     let level = named(DEFAULT_CLAUDE_EFFORT)?;
     assert!(
@@ -660,7 +662,7 @@ fn the_ui_describes_default_as_the_model_and_effort_a_launch_uses() -> TestResul
     );
     let composer = std::fs::read_to_string(web_dir().join("assets/taskview.js"))?;
     assert!(
-        composer.contains(&format!("'Model: default, Claude Code, {name}'")),
+        composer.contains(&format!("'Agent: drawn for each task, {random}'")),
         "the composer's model chip names another default"
     );
     Ok(())

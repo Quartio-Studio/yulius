@@ -34,8 +34,8 @@ Restore the random harness feature as the default for new tasks and automations,
 
 - [x] Reproduce the defect and find its root cause
 - [x] Write and validate SPEC-520 and commit the failing regression tests
-- [ ] Draw uniformly across all harnesses with non-exhausted subscriptions in task and automation creation
-- [ ] Restore Random in the composer, Settings, automation editor, and browser mock
+- [x] Draw uniformly across all harnesses with non-exhausted subscriptions in task and automation creation
+- [x] Restore Random in the composer, Settings, automation editor, and browser mock
 - [ ] Record ADR-0377 and update product, architecture, API, and spec documentation
 - [ ] Independent review in a fresh session, findings fixed test-first
 
