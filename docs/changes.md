@@ -4,6 +4,13 @@ Notable changes, newest first. Per-change detail lives in the merged pull reques
 evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-architecture.md)
 (sections 14 and 15).
 
+## 2026-11-19
+
+- The Antigravity sign-in window stays open for the CLI's setup (SPEC-515, task #497, #1421):
+  after the Google code, the Antigravity CLI goes on asking (its data-use choice and more), so the
+  server no longer stops it 5 s after its token file appears. The window says Antigravity is
+  signed in and offers Done, which seals the token file and connects the subscription (ADR-0369).
+
 ## 2026-11-18
 
 - Subscription sign-ins start again (SPEC-509, task #491, #1414): login terminals are 1000

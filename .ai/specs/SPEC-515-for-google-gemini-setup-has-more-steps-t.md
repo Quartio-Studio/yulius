@@ -55,9 +55,9 @@ in the same terminal. The window closes when they press Done (issue #1421).
 ## Plan
 
 - [x] Reproduce the defect and find its root cause
-- [ ] A Google sign-in runs on after its token file and says signed_in, sealed when it ends
-- [ ] The sign-in window stays open with Done once Antigravity is signed in
-- [ ] ADR 0369, architecture and changes say a Google sign-in ends with Done
+- [x] A Google sign-in runs on after its token file and says signed_in, sealed when it ends
+- [x] The sign-in window stays open with Done once Antigravity is signed in
+- [x] ADR 0369, architecture and changes say a Google sign-in ends with Done
 - [ ] Independent review in a fresh session, findings fixed test-first
 
 ## Acceptance criteria
