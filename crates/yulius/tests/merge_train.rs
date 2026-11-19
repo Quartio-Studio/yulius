@@ -1048,30 +1048,55 @@ async fn a_bisection_executes_the_failed_tree_only_once() -> TestResult {
             .await?;
     }
     f.advance_dev("other.txt")?;
+    app.merge_armed(&f.sandbox).await;
+    let red = f
+        .train_runs(&app)
+        .await?
+        .into_iter()
+        .find(|r| r.reference == CiRef::Train(vec![1, 2, 3, 4]))
+        .ok_or("missing four-member candidate")?;
+    assert_eq!(run_candidate(&f, &app, &red.id).await?, RunState::Failed);
+    let red_tree = git(&f.repo, &["rev-parse", &format!("{}^{{tree}}", red.sha)])?;
+
+    // A later green branch run on this tree could lend a pass. The original candidate failure
+    // must win even though the green run has every job the candidate's gate requires.
+    let pass = CiRunRecord {
+        id: "same-tree-pass".into(),
+        reference: CiRef::Branch("topic".into()),
+        state: RunState::Passed,
+        started_at: Some(app.now()),
+        ended_at: Some(app.now()),
+        status_for: Some(RunState::Passed),
+        ..red.clone()
+    };
+    let mut jobs = app.deps.store.ci_jobs(&red.id, false).await?;
+    assert_eq!(jobs.len(), 1);
+    for job in &mut jobs {
+        job.id = format!("passed-{}", job.id);
+        job.run_id.clone_from(&pass.id);
+        job.state = RunState::Passed;
+        job.exit_code = Some(0);
+        job.failures = None;
+    }
+    app.deps.store.insert_ci_run(&pass, &jobs).await?;
+
+    let pair = format!("merge train #3, #4 (run {})", red.id);
     f.decide_until(&app, || async {
-        let trains = f.train_runs(&app).await?;
-        let original = trains
+        for run in f.train_runs(&app).await?.iter().filter(|r| r.id != red.id) {
+            let tree = git(&f.repo, &["rev-parse", &format!("{}^{{tree}}", run.sha)])?;
+            assert_ne!(
+                tree,
+                red_tree,
+                "{} got a second run on the failed tree",
+                run.reference.key()
+            );
+        }
+        if dissolved(&app)
+            .await?
             .iter()
-            .find(|r| r.reference == CiRef::Train(vec![1, 2, 3, 4]));
-        if let Some(red) = original.filter(|r| r.state == RunState::Failed) {
-            let red_tree = git(&f.repo, &["rev-parse", &format!("{}^{{tree}}", red.sha)])?;
-            for run in trains.iter().filter(|r| r.id != red.id) {
-                let tree = git(&f.repo, &["rev-parse", &format!("{}^{{tree}}", run.sha)])?;
-                assert_ne!(
-                    tree,
-                    red_tree,
-                    "{} got a second run on the failed tree",
-                    run.reference.key()
-                );
-            }
-            let pair = format!("merge train #3, #4 (run {})", red.id);
-            if dissolved(&app)
-                .await?
-                .iter()
-                .any(|detail| detail.starts_with(&pair) && detail.contains("(why: bisected)"))
-            {
-                return Ok(true);
-            }
+            .any(|detail| detail.starts_with(&pair) && detail.contains("(why: bisected)"))
+        {
+            return Ok(true);
         }
         f.settle(&app).await?;
         Ok(false)
