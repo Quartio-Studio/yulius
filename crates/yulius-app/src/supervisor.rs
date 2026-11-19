@@ -7535,8 +7535,8 @@ mod tests {
     /// SPEC-479 SWQ-001, SWQ-002: what a move at a turn's end asks of the queue. An entry that
     /// waits counts until a turn's closing record found it waiting; a queue that is not known
     /// (a reattached run not read yet, a lock a thread died with) counts; a new run has none.
-    #[test]
-    fn a_move_asks_the_queue_for_what_a_turns_end_hands_on() {
+    #[tokio::test]
+    async fn a_move_asks_the_queue_for_what_a_turns_end_hands_on() {
         use std::sync::atomic::Ordering;
         use yulius_domain::agent_cli::{Queue, QueueChange};
         let runtime = std::sync::Arc::new(super::TaskRuntime::new());

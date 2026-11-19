@@ -2352,3 +2352,77 @@ fn a_new_key_keeps_its_mark_during_draft_cleanup() -> TestResult {
         stop(&app, &id).await
     })
 }
+
+/// The submit was received first, but the next key reaches the terminal before cleanup.
+#[test]
+fn a_key_after_submit_in_the_same_millisecond_keeps_its_draft() -> TestResult {
+    use yulius_app::ports::Clock;
+    let (_dir, data) = data_dir()?;
+    runtime()?.block_on(async {
+        let at = yulius::wiring::clock::SystemClock.now().0 - 4 * MINUTE;
+        let clock = Arc::new(support::TestClock(AtomicI64::new(at)));
+        let fake = locate_fake_agent().ok_or("missing fake-agent")?;
+        let (app, _) = start_on(
+            &data,
+            &fake,
+            fake_agent(),
+            0,
+            Arc::new(ScriptedUsage::default()),
+            clock.clone(),
+            |_| {},
+        )
+        .await?;
+        let (id, caller) = running(&app, &data).await?;
+        let (ctx, attach) = terminal(&app, &caller, &id).await?;
+        let attach = Arc::new(attach);
+        let run = app.deps.store.live_attempt(&id).await?.ok_or("run")?;
+        let mark = Path::new(&run.run_dir).join("person-typed");
+        let (sent, accepted) = tokio::sync::oneshot::channel();
+        {
+            let (app, ctx, attach) = (app.clone(), ctx.clone(), attach.clone());
+            let handle = tokio::runtime::Handle::current();
+            yulius_app::race::on(
+                yulius_app::race::Point::PromptTurnChecked,
+                Path::new(id.as_str()),
+                move || {
+                    let result = tokio::task::block_in_place(|| {
+                        handle.block_on(async {
+                            tokio::time::timeout(
+                                Duration::from_secs(5),
+                                app.terminal_input(&ctx, &attach, b"new text", false),
+                            )
+                            .await
+                        })
+                    });
+                    let _ = sent.send(result);
+                },
+            );
+        }
+        clock.0.fetch_add(1_000, Ordering::SeqCst);
+        app.terminal_input(&ctx, &attach, b"old text\r", false)
+            .await?;
+        tokio::time::timeout(Duration::from_secs(30), accepted).await????;
+        wait_for(
+            "the older prompt to go on",
+            Duration::from_secs(30),
+            || async { screen(&app, &id).contains("ECHO: old text") },
+        )
+        .await?;
+        assert!(
+            mark.is_file(),
+            "the older submit erased the same-ms key's mark"
+        );
+        clock.0.fetch_add(2 * MINUTE, Ordering::SeqCst);
+        let result = send(&app, &caller, &id).await;
+        assert!(matches!(result, Err(AppError::Conflict(why)) if why.contains("prompt box")));
+        app.terminal_input(&ctx, &attach, b"\r", false).await?;
+        wait_for(
+            "the new draft to be sent and unmarked",
+            Duration::from_secs(30),
+            || async { read_alone(&app, &id, "new text") && !mark.exists() },
+        )
+        .await?;
+        app.terminal_leave(&attach).await;
+        stop(&app, &id).await
+    })
+}
