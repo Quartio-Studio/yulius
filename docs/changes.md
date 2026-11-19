@@ -6,6 +6,9 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-19
 
+- A message to a Claude Code session waits when its prompt box shows a restored draft. The
+  sender or session owner learns why. A new key keeps its recovery mark when an earlier
+  prompt finishes ([SPEC-537](../.ai/specs/SPEC-537-preserve-restored-drafts-when-typing-int.md), #1264).
 - Rapid update requests now leave the systemd update watcher active. The operations guide covers upgrading hand-installed units and recovering a failed watcher (SPEC-551, #1201).
 - The merge train regression now checks that the train itself rejects a member whose owner was disabled and records that arm for one-by-one handling (SPEC-544, #1154).
 - Git integration tests now install fake Git executables and hooks in a separate process so concurrent forks cannot keep the executable open for writing (#1332, SPEC-548).
