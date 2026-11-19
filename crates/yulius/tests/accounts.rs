@@ -2032,7 +2032,9 @@ async fn an_antigravity_google_sign_in_seals_the_token_file() -> TestResult {
     Ok(())
 }
 
-/// Waits (bounded) until the login terminal's `state` frame says `status`.
+/// Waits (bounded) for a `state` signal to viewers (`HubFrame::State`, which makes the socket
+/// route send its `state` frame) after which the login terminal's state says `status`: a status
+/// that changed without telling viewers leaves an open dialog as it was, and fails this.
 async fn state_says(
     terminal: &yulius_app::accounts::LoginTerminal,
     sub: &mut yulius_app::hub::Subscription,
@@ -2043,12 +2045,18 @@ async fn state_says(
         _ => false,
     };
     let wait = async {
-        while !says(terminal) {
-            if let HubFrame::Exit { status: ended, .. } = sub.rx.recv().await? {
-                return Err(format!("the sign-in ended ({ended}) before saying {status}").into());
+        loop {
+            match sub.rx.recv().await? {
+                HubFrame::State if says(terminal) => return Ok(()),
+                HubFrame::Exit { status: ended, .. } => {
+                    return Err::<(), Box<dyn std::error::Error>>(
+                        format!("the sign-in ended ({ended}) before telling viewers {status}")
+                            .into(),
+                    );
+                }
+                _ => {}
             }
         }
-        Ok::<(), Box<dyn std::error::Error>>(())
     };
     tokio::time::timeout(Duration::from_secs(10), wait).await?
 }
