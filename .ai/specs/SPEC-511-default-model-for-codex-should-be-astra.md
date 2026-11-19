@@ -79,3 +79,27 @@ model or effort keeps it.
   second copy of the default in the page.
 - **No Codex CLI bump.** 0.169.0 runs the model (see Context); moving the pin is its own change.
 - **Lasting decision** in ADR-0366.
+
+## Evidence
+
+- Model id: `strings` of the Codex CLI 0.170.0 and 0.172.0-alpha.1 linux-x64 binaries (npm
+  `@openai/codex@<v>-linux-x64`) hold the bundled catalog entry `"slug": "gpt-6.2-astra"`,
+  `"display_name": "GPT-6.2-Astra"`, efforts `low` … `ultra`, `"minimal_client_version":
+  "0.166.0"`; 0.169.0's binary lists `gpt-6.1-*` at most, fetches `/v1/models` with
+  `client_version` and says "This will use fallback model metadata" for an unlisted model.
+- Test-first: `cargo test -p yulius-harness --test launch codex` failed before the launch change
+  (`codex_defaults_to_gpt_6_2_astra_at_high_effort`: no `-m`, no effort; `codex_resume_argv`),
+  then 26/26 passed; `cargo test -p yulius-harness` all green.
+- `cargo test -p yulius --test main codex::a_codex_goal_task_gets_its_request` failed before the
+  supervisor change (`left: None, right: Some("gpt-6.2-astra")`), then `codex::` 20/20 passed;
+  `antigravity:: model_fallback:: task_delete::` 26/26; `cargo test -p yulius-app -p yulius-domain`
+  all green.
+- `ui_contract::the_composer_says_codex_runs_its_default_model` failed before the composer and
+  mock change, then `ui_contract::` 12/12 passed.
+- `npx e2e run tests/codex.e2e.ts`: 13/13 passed (the composer test now checks the entry's text
+  and the created task's `gpt-6.2-astra` at `high`).
+- `cargo clippy -p yulius-domain -p yulius-harness -p yulius-app -p yulius --all-targets -- -D
+  warnings`: clean; `scripts/dev quick`: passed.
+- Not tested: a real Codex run on a real OpenAI account (no Codex account is connected to this
+  sandbox); the model's availability to the pinned 0.169.0 rests on the catalog's
+  `minimal_client_version`.
