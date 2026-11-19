@@ -431,7 +431,9 @@ watching, steering and unblocking.
   is left, how fast it burns, the tokens it used and what they would cost at Claude API list
   prices, with a 7-day chart for each. Administrators rename each subscription in place ("work
   Max", "personal") and see the email of its Claude account wherever it is named; when Claude
-  does not share it, they type it in place under the name (SPEC-463). A subscription is connected
+  does not share it, they type it in place under the name (SPEC-463). Every card says whose
+  subscription it is with a badge under its name (Claude, Codex or Antigravity, the vendor on
+  hover; SPEC-513). A subscription is connected
   with Claude's own sign-in in a terminal on the page, or by pasting the token
   `claude setup-token` printed on any computer (its owner's laptop, say); a card's "Paste a new
   token" signs one in again the same way (SPEC-502). Connecting one
@@ -664,10 +666,10 @@ watching, steering and unblocking.
   token), chooses what reaches it (Needs you by default; Done; failed or stopped; subscription
   problems for administrators) and unlinks there or with `/stop`. Only what their notification
   center would show them is sent (a subscription switch is no news, a project's Docker trouble is
-  one message however many tasks ask, a request for control of their task, or a teammate taking
-  it or taking it back, reaches them under Needs you), with a link to the task, agent secrets removed, at most five
-  messages a minute with the rest in one summary. The server asks Telegram for messages, so no
-  inbound port is needed. Replies and new tasks from Telegram are part 2.
+  one message however many tasks ask, a request for control of their task, or a teammate taking it
+  or taking it back, reaches them under Needs you), with a link to the task, agent secrets
+  removed, at most five messages a minute with the rest in one summary. The server asks Telegram
+  for messages, so no inbound port is needed. Replies and new tasks from Telegram are part 2.
 
 ## Principles
 

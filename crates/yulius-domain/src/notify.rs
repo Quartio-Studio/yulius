@@ -655,6 +655,17 @@ mod tests {
 
     #[test]
     fn a_control_request_names_who_asks() {
+        let taken = taken_text("bob", 7, "Fix\nit", "Shop", "L", false);
+        assert_eq!(
+            taken.1,
+            "@bob took control of #7 Fix it\nIt acts on GitHub as them now; you can take it back · \
+             Shop\nL"
+        );
+        let back = taken_text("bob", 7, "Fix", "Shop", "L", true);
+        assert_eq!(
+            back.1,
+            "@bob took back control of #7 Fix\nIt acts on GitHub as them again · Shop\nL"
+        );
         let (headline, text) = control_text("bob", 7, "Fix\nit", "Shop", "L");
         assert_eq!(headline, "@bob asks for control of #7 Fix it");
         assert_eq!(
