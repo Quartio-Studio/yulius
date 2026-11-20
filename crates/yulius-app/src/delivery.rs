@@ -3575,10 +3575,7 @@ impl App {
         }
         if parked {
             let requested = self.browser_requests(&task.sandbox_id).await;
-            let Ok(facts) = self
-                .task_attention_facts(task, &requested, crate::sandboxes::parked_pr_deadline())
-                .await
-            else {
+            let Ok(facts) = self.task_attention_facts(task, &requested, None).await else {
                 return false;
             };
             if facts.group() != yulius_domain::task::TaskGroup::Done {

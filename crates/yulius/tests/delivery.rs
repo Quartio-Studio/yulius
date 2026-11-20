@@ -4726,7 +4726,19 @@ async fn a_parked_predecessor_waits_for_the_complete_check_report() -> TestResul
         TaskStatus::Chained
     );
     f.h.github.set_checks(&head, ChecksState::Success);
-    f.h.app.advance_chains(&before).await;
+    let hold = f.h.github.hold_checks();
+    let app = f.h.app.clone();
+    let parked = f.h.store.task(&before).await?.ok_or("parked predecessor")?;
+    let advancing = tokio::spawn(async move { app.advance_chains(&before).await });
+    tokio::time::timeout(Duration::from_secs(5), f.h.github.checks_entered.notified()).await?;
+    // GitHub answers after the owner's bounded list read. The chain can still
+    // use the complete green report from its already pending background read.
+    assert_eq!(
+        f.h.app.task_summary(&parked).await?.parked_needs_you,
+        Some(true)
+    );
+    f.h.github.release_checks(&hold);
+    tokio::time::timeout(Duration::from_secs(5), advancing).await??;
     assert_ne!(
         f.h.store.task(&child).await?.ok_or("successor")?.status,
         TaskStatus::Chained

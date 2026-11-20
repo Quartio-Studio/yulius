@@ -74,7 +74,7 @@ impl App {
         let mut counts = SandboxCounts::default();
         for task in &tasks {
             match self
-                .task_attention_facts(task, &requested, deadline)
+                .task_attention_facts(task, &requested, Some(deadline))
                 .await?
                 .group()
             {
@@ -125,7 +125,7 @@ impl App {
 
     pub(crate) async fn shows_done_until(&self, task: &TaskRecord, deadline: Instant) -> bool {
         let requested = self.browser_requests(&task.sandbox_id).await;
-        self.task_attention_facts(task, &requested, deadline)
+        self.task_attention_facts(task, &requested, Some(deadline))
             .await
             .is_ok_and(|facts| facts.group() == TaskGroup::Done)
     }
@@ -142,17 +142,18 @@ impl App {
         requested: &HashSet<String>,
     ) -> AppResult<TaskGroup> {
         Ok(self
-            .task_attention_facts(task, requested, parked_pr_deadline())
+            .task_attention_facts(task, requested, Some(parked_pr_deadline()))
             .await?
             .group())
     }
 
     /// The facts that place the task in its sidebar group and explain a derived wait.
+    /// Lists share a deadline. A background chain waits within the upstream adapter's bounds.
     pub(crate) async fn task_attention_facts(
         &self,
         task: &TaskRecord,
         requested: &HashSet<String>,
-        deadline: Instant,
+        deadline: Option<Instant>,
     ) -> AppResult<AttentionFacts> {
         let store = &self.deps.store;
         if task.status.is_resting() || task.status == TaskStatus::Stopping {
@@ -188,7 +189,7 @@ impl App {
                 || requested.contains(task.id.as_str());
             let pull = if task.status == TaskStatus::Parked && !local_needs {
                 // An incomplete overview can omit a task's recorded open PR.
-                self.task_pull_signal(task, Some(deadline))
+                self.task_pull_signal(task, deadline)
                     .await
                     .unwrap_or(Some(PullSignal::Errored))
             } else {

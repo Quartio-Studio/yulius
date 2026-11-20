@@ -251,3 +251,23 @@ test('the PR watch refreshes the parked group in both directions', async ({ app,
     ['needs', 'done'], ['done', 'done'], ['needs', 'done'],
   ]);
 });
+
+for (const [page, route, selector] of [['terminal', 't', '.strip-status'], ['Task Info', 'tasks', '.gt-state']]) {
+  test(`the parked ${page} page and sidebar follow the PR rerun together`, async ({ app, browser, screen }) => {
+    await app.open(mock(`/s/studio/${route}/13`, '&ambient=0&pullgap=0'));
+    await touchTask(browser, 'sb_studio', 13, { status: 'parked', activity: 'done', parked_needs_you: false });
+    const status = browser.locator(selector);
+    await expect(status).toHaveText(/Done.*parked/);
+    for (const fails of [true, false]) {
+      await browser.evaluate((red) => {
+        type Mock = { tasks: { id: string; parked_needs_you?: boolean }[]; changePull(sandbox: string, number: number, changes: object): void };
+        const db = (window as unknown as { __yuliusMock: Mock }).__yuliusMock;
+        // The summary changes on the server. The only event is the PR watch.
+        db.tasks.find((t) => t.id === 'tsk_studio_13')!.parked_needs_you = red;
+        db.changePull('sb_studio', 520, { checks: red ? 'failure' : 'success' });
+      }, fails);
+      await expect(screen.getByRole('region', fails ? 'Needs you' : 'Done').getByRole('link', /Improve the code/)).toBeVisible();
+      await expect(status).toHaveText(fails ? /checks failing.*parked/ : /Done.*parked/);
+    }
+  });
+}

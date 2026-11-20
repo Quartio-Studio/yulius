@@ -325,7 +325,9 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
       if (!row && knownPull?.state !== 'open') continue;
       const needs = row?.parked_needs_you ?? true;
       if (needs !== prior.parked_needs_you) {
-        tasks.set(prior.id, { ...prior, parked_needs_you: needs });
+        const updated = { ...prior, parked_needs_you: needs };
+        tasks.set(prior.id, updated);
+        emit('task', updated);
         changed = true;
       }
     }

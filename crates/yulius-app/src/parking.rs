@@ -223,7 +223,11 @@ impl App {
             }
         };
         let mut facts = self
-            .task_attention_facts(task, &requested.all, crate::sandboxes::parked_pr_deadline())
+            .task_attention_facts(
+                task,
+                &requested.all,
+                Some(crate::sandboxes::parked_pr_deadline()),
+            )
             .await
             .ok();
         if let Some(facts) = &mut facts {

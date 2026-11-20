@@ -126,7 +126,11 @@ impl App {
         person: bool,
     ) -> AppResult<Value> {
         let facts = self
-            .task_attention_facts(task, requested, crate::sandboxes::parked_pr_deadline())
+            .task_attention_facts(
+                task,
+                requested,
+                Some(crate::sandboxes::parked_pr_deadline()),
+            )
             .await?;
         self.task_brief_shown(task, facts, person).await
     }
@@ -215,7 +219,9 @@ impl App {
                 break;
             }
             // The tasks the list shows under "Needs you" (SPEC-487 QST-002), by its own rule.
-            let facts = self.task_attention_facts(t, &requested, deadline).await?;
+            let facts = self
+                .task_attention_facts(t, &requested, Some(deadline))
+                .await?;
             if scope == "needs_you" && facts.group() != TaskGroup::NeedsYou {
                 continue;
             }
