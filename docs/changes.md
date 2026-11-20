@@ -6,6 +6,9 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-20
 
+- Intake browser tests wait up to the shared first-load budget for the sandbox task list.
+  Proposal interactions keep their usual timeouts (SPEC-559, #1441).
+
 - The store migration regression counts SQLite instructions and verifies completed step spans,
   so host contention cannot fail the backfill test (SPEC-559, #1484).
 - Newly parked tasks show their last agent screen, idle duration and resume instructions
