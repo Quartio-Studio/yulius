@@ -48,7 +48,7 @@ flowchart LR
   AG -->|"MCP (yulius mcp stdio bridge) + hooks"| INT
   AG -->|"HTTP(S) via the egress proxy: secrets for bound hosts"| INT
   APP <--> GH["GitHub App + REST"]
-  APP -->|"long poll getUpdates, sendMessage"| TG["Telegram Bot API"]
+  APP -->|"long poll getUpdates, sendMessage, getFile"| TG["Telegram Bot API"]
   AG <--> AN["Anthropic"]
   AG <--> OA["OpenAI (Codex)"]
   APP <-->|"DevTools pipe (fds 3/4)"| CH["Chrome on Xvfb"]
@@ -2839,8 +2839,9 @@ Each person can get their notifications in their own Telegram chat
 ([SPEC-498](../.ai/specs/SPEC-498-accept-outside-pr-1130-personal-telegram.md),
 [decision 0351](decisions/0351-a-personal-telegram-channel-behind-a-notification-channel-port.md)).
 
-- **The port.** `NotificationChannel` (`crates/yulius-app/src/ports/notify.rs`: `check`, `send`,
-  `receive`) is all a chat service implements; `crates/yulius/src/wiring/telegram.rs` is Telegram's
+- **The port.** `NotificationChannel` (`crates/yulius-app/src/ports/notify.rs`: `check`, `send`
+  (the sent message's id), `receive` (text or caption, the replied-to message, files, album) and
+  `fetch_file` (bounded)) is all a chat service implements; `crates/yulius/src/wiring/telegram.rs` is Telegram's
   Bot API over `reqwest` (`YULIUS_TELEGRAM_API_URL`, no redirects, bounded answers, errors typed
   without the token-bearing URL). The store keeps the bot in the `instance` row (sealed like the Jev
   and Vidoc keys) and `telegram_links` / `telegram_link_codes` (migration 0063).
@@ -2862,6 +2863,15 @@ Each person can get their notifications in their own Telegram chat
   person who chose that kind it applies `App::envelope_reaches`, the same function that filters
   `WS /api/events`, then the person's `Throttle` (5 a minute, the rest folded into a summary). Text
   passes `App::redact_for_sandbox` (account text: the shape-based `redact`).
+- **Intake** (`crates/yulius-app/src/telegram_intake.rs`, SPEC-512 part 4,
+  [decision 0392](decisions/0392-a-linked-telegram-chat-answers-and-starts-tasks-when-its-person-turns-intake-on.md)).
+  A notice about a task is queued with its task (`enqueue_about`); once sent, `telegram_sent`
+  (migration 0073) keeps which message was about which task, the last 500 per chat. With the
+  person's `intake` on, `on_inbound` hands a message to `App::telegram_intake`: a reply to such a
+  message is `tool_task_message` from a `ProjectCaller` for the person (every guard of their own
+  agent's), `/status` lists what waits for them, and any other message (an album merged into one)
+  starts a task through `create_task_as` with origin `telegram`, its files fetched into the
+  person's drafts folder and named in the prompt. Off, the chat gets the help reply.
 
 ```mermaid
 sequenceDiagram

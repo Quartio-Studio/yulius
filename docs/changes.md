@@ -4,6 +4,14 @@ Notable changes, newest first. Per-change detail lives in the merged pull reques
 evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-architecture.md)
 (sections 14 and 15).
 
+## 2026-11-20
+
+- Work from Telegram, off by default (SPEC-512 part 4, task #494, #1107, ADR-0392): a person
+  turns on their chat's intake in Settings → Notifications with a project. A reply to a
+  notification then answers its task as their message (the owner rule holds), any other message,
+  photos and files included, starts a task as them marked "From Telegram", and `/status` and
+  `/task <project> <text>` work.
+
 ## 2026-11-19
 
 - After a server restart, a run at its usage limit can resume on an available subscription with its new owner’s MCP servers. A delayed move for the old attempt leaves the replacement running (SPEC-547, #1286).
