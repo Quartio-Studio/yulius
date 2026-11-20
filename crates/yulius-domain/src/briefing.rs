@@ -763,11 +763,10 @@ fn git_rules(input: &BriefingInput<'_>) -> String {
          a turn waiting for one; decide, record why and carry on. When only a person can do \
          something (a credential, a paid plan, a permission outside the repository), ask with \
          `needs_you` and continue with the rest.\n\
-         Features and fixes take one path, with no human acceptance step: spec → implementation \
-         with tests → independent review → fixes → gates green → pull request → merge into \
-         {integration} on green → summary. Merges deploy nothing: `cd_deploy`/`cd_rollback` dev \
+         Features and fixes (no human acceptance step): spec → code and tests → independent \
+         review → fixes → green CI → PR → merge into {integration} on green → summary. Merges deploy nothing: `cd_deploy`/`cd_rollback` dev \
          only if asked; {production} is a person's: never promote. Each `[cd.*]` deploy has a \
-         `rollback`. Work that changes no file ends with its result.\n\
+         `rollback`. Report file-free results. Merge evidence is in `delivery_status`.\n\
          - Git (skill `git-hygiene`): work only on {branch}. Never commit or push to \
          {integration} or {production}, never `--no-verify`, never rewrite pushed commits (no \
          rebase, amend or force push: Yulius pushes plainly). Small conventional commits; nothing \
@@ -1826,6 +1825,7 @@ mod tests {
             // SPEC-444 PRN-012: Yulius tells the task; it keeps its hands off when told.
             "Yulius types your PR's events with the next step (obey \"Hands off\")",
             "no human acceptance step",
+            "Merge evidence is in `delivery_status`",
             "on green",
             "`delivery_merge`",
             "`issue_create`",

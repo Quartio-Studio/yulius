@@ -28,9 +28,12 @@ Task #517 displayed Codex's exit instructions. The host drained shutdown output 
 - [x] Keep unfinished tasks live and classify parked work accurately
 - [x] Document and verify the parking contract
 - [x] Deliver native Codex resume to dev
-- [ ] Preserve the parked grid until the resumed host attaches
-- [ ] Verify chain eligibility and refresh stale PR observations
-- [ ] Deliver goal continuation and parking eligibility to dev
+- [x] Preserve the parked grid until the resumed host attaches
+- [x] Verify chain eligibility and refresh stale PR observations
+- [x] Keep unfinished plans, specs and goals live
+- [ ] Verify PR checks and unpublished repairs before parking
+- [ ] Give parked PRs fair status reads and gate dependent tasks
+- [ ] Deliver bounded Codex goal continuation to dev
 - [ ] Recover screens from tasks parked before the upgrade
 
 ## Acceptance criteria
@@ -48,6 +51,8 @@ Use the fake Codex executable, its rollout, real PTY shutdown and the applicatio
 
 Capture a separate screen at the park decision because exiting can clear the entire alternate screen. Changing shutdown signals would couple presentation to the harness and could interfere with reaping. A separate snapshot lets an unsuccessful park keep its real terminal. Reuse native Codex resume and the Stop hook's persisted three-block budget. Older runs can only recover content still present in their saved screen. A parked owner terminal fits the saved grid to the viewport so the first row, last row and notice survive a smaller window. If the PR is the only remaining work and the Stop lookup cannot finish, the continuation asks the agent to verify its checks. Parking reads the current head before acquiring the launch lock and supplies that signal to the final eligibility check.
 
+A human request can take precedence over unfinished work in the task list. Both parking triggers therefore check the recorded plan, spec and native goal immediately before committing to shutdown. The task’s steps lock orders that decision with plan, spec and goal updates. An update in progress or a store read failure leaves the session live for a later pass.
+
 ## Evidence
 
 - The PTY regression failed on the original supervisor with the #517 token-usage and resume text. With the fix it preserves the first answer and one parking notice after process exit and server restart. The remote `task_screen` shows the same screen. The next `task_message` starts a native resume for the parked attempt's rollout ID and the synthetic rollout contains both prompts.
@@ -64,9 +69,17 @@ Capture a separate screen at the park decision because exiting can clear the ent
 
 - The first screen delivery candidate passed 76 scoped Rust tests and Clippy on the app, server and integration targets. Its reviewer identified an account removed after selection but before spawn. The real supervisor recorded the discarded attempt. With no replacement subscription, the prior reader then returned an empty string. The lookup now follows that resume past its discarded attempts. The regression exercises the cold tool and page while capacity waits and again while the replacement launch is held at `RunRecorded`.
 
+- [PR #1493](https://github.com/Quartio-Studio/yulius/pull/1493) delivered PKR-001 for new parks into `dev` on green CI at `215463547`. The final head passed 76 scoped Rust tests, including both cold readers across a discarded launch; Clippy on the affected targets passed.
+
+- On dev at `3cc2b1969`, the one-open-step, in-progress-spec and failed-native-goal regressions each observed one park where zero was expected. Positive controls let the idle session park after the step or spec finishes. The step fixture exercises both the grace timer and the digest.
+
+- The first local guard at `311e7e09b` passed 41 parking tests. Review found that a step could be committed after the final eligibility read and that a failed spec-status read could let digest parking proceed. Three deterministic regressions reproduced one incorrect park each on that head. They cover a step added before the park intent, an in-progress step writer, and a recorded spec made unreadable in SQLite. The spec fixture restores the status, verifies that it was in progress, and parks successfully after completion.
+
+- Independent review approved the local parking guard at `dad583243`. All 44 scoped Rust tests passed, including grace and digest parking, concurrent updates and recovery after the stored spec becomes readable. Repository contracts and formatting passed.
+
 ## Delivery slices
 
-Deliver native Codex resume independently (PKR-002). The terminal delivery (PKR-001) includes the original pre-stop snapshot, phone geometry, and recovery through the resumed host's first snapshot. Subsequent deliveries cover goal continuation and parking eligibility (PKR-003 and PKR-004), then recovery of pre-upgrade screens. The earlier combined-head evidence describes development verification across these slices.
+PRs #1492 and #1493 delivered native Codex resume and the pre-stop screen for new parks. The next delivery keeps sessions with local unfinished work live. Subsequent deliveries verify current PR checks and unpublished work, classify historical parked tasks and gate their successors, continue bounded Codex goals, and recover pre-upgrade screens. The earlier combined-head evidence records prototype verification across these deliveries.
 
 The native-resume regression checks the rollout in the native launch and reads the first and second user prompts from its on-disk history. It also exercises absent IDs and an older lineage entry. No paid provider is involved.
 

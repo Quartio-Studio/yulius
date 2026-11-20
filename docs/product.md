@@ -372,7 +372,7 @@ watching, steering and unblocking.
   half an hour with nothing going on (`YULIUS_PARK_AFTER_MINUTES`): its agent process ends,
   so it holds neither a session slot nor memory, and it stays in the list where it was, marked
   "parked", with its last terminal screen, idle duration, transcript, question and pull request.
-  Writing to it, or Resume, continues
+  An open step, unfinished spec or unfinished goal keeps the session live. Writing to it, or Resume, continues
   the same session with its history (SPEC-512). A queued task says what it waits for ("Waiting
   for a free session: 8 of 8 in use"), and the Capacity card shows working, parked, idle and
   queued sessions apart.
@@ -497,6 +497,7 @@ watching, steering and unblocking.
   existing directory), in one new note of its own in that folder, named
   `YYYY-MM-DD-<task number>-<short-slug>.md`, so parallel pull requests never conflict on it; the
   briefing then quotes the newest notes as Recent changes (SPEC-363).
+- **Post-merge verification** (SPEC-562). A task's Delivery links to the CI job verdicts and environment attempts for its landed change. Projects that accept task evidence can close a machine-verification step by citing the checked attempts in its note. [Git workflow](engineering/git.md#post-merge-machine-evidence)
 - **Merge queue** (every sandbox, SPEC-441): a pull request's own CI run is never restarted
   because the integration branch moved; armed and green, it merges at once when up to date, else
   Yulius tests it once on top of the current integration branch, together with the others

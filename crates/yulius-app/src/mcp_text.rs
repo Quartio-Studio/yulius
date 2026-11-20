@@ -680,6 +680,52 @@ fn delivery_status(value: &Value) -> Option<String> {
         }
         None => push_line(&mut out, "No pull request yet."),
     }
+    if let Some(evidence) = value.get("evidence").filter(|e| !e.is_null()) {
+        use serde::Deserialize;
+        let evidence = crate::delivery::evidence::MergeEvidence::deserialize(evidence).ok()?;
+        push_line(
+            &mut out,
+            &format!(
+                "Verification evidence for {} at {}: {}",
+                evidence.branch, evidence.merged_sha, evidence.url
+            ),
+        );
+        push_line(
+            &mut out,
+            "When the project accepts task evidence, cite the matching run IDs and link in the verification step's step_update note and closing summary. Keep required checks open until verified, including manual or hardware checks. Commit required source evidence and changelog work through review.",
+        );
+        if evidence.runs.is_empty() {
+            push_line(&mut out, "No matching CI or environment run recorded.");
+        }
+        for run in evidence.runs {
+            push_line(
+                &mut out,
+                &format!(
+                    "  {} {} at {}: {} (run {})",
+                    run.kind, run.reference, run.sha, run.state, run.run_id
+                ),
+            );
+            if let Some(reason) = &run.reason {
+                push_line(&mut out, reason);
+            }
+            for check in run.checks {
+                let mut line = format!("    {}: {}", check.name, check.state);
+                if let Some(reason) = check.reason.filter(|r| Some(r) != run.reason.as_ref()) {
+                    line.push_str(&format!(" ({reason})"));
+                }
+                push_line(&mut out, &line);
+            }
+        }
+        if let Some(cursor) = evidence.next_before {
+            push_line(
+                &mut out,
+                &format!(
+                    "Read older attempts with delivery_status {}.",
+                    serde_json::json!({"merged_sha": evidence.merged_sha, "before": cursor})
+                ),
+            );
+        }
+    }
     let problems: Vec<&str> = value
         .get("spec_problems")
         .and_then(Value::as_array)
@@ -1582,6 +1628,7 @@ mod tests {
             notes: vec![],
             checks_access: None,
             review_rounds: Vec::new(),
+            evidence: None,
         };
         let value = json!({
             "stage": delivery.stage,
