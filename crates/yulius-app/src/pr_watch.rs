@@ -383,7 +383,7 @@ fn outcome_key(head: &str, text: &str) -> String {
 }
 
 /// The key under which the watch tells an actionable failed publication of `head` (`text`)
-/// (SPEC-553 REP-005).
+/// (SPEC-553 REP-004).
 fn publish_key(head: &str, text: &str) -> String {
     format!("{}:{}", short(head), fingerprint(text))
 }
@@ -444,7 +444,7 @@ pub(crate) struct NewsFacts {
     /// How its last armed merge ended (its head and the line for the agent), when it has one.
     pub outcome: Option<(String, String)>,
     /// An actionable failed publication on an open pull request (head and text) not yet told
-    /// (SPEC-553 REP-005).
+    /// (SPEC-553 REP-004).
     pub publish_problem: Option<(String, String)>,
     /// Its sandbox is a playground: the watch tells its tasks nothing.
     pub playground: bool,
@@ -2394,7 +2394,7 @@ mod tests {
         assert_eq!(told.stalled, None, "a message to the task ends it");
     }
 
-    /// SPEC-553 REP-005: an actionable failed publication is told once per `(head, message)`,
+    /// SPEC-553 REP-004: an actionable failed publication is told once per `(head, message)`,
     /// survives a restart through `Told`, and counts as news due only until told.
     #[test]
     fn failed_publication_notice_is_told_once_and_counts_as_news_due_until_told() {

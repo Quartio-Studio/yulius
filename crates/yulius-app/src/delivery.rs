@@ -1230,7 +1230,7 @@ impl Observed {
 }
 
 /// Why a task's head is not pushed or not delivered, for `yulius wait` (SPEC-050 DLV-201,
-/// DLV-204) and `pr_watch` failed-publication notices (SPEC-553 REP-005).
+/// DLV-204) and `pr_watch` failed-publication notices (SPEC-553 REP-004).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct PushNote {
     /// The head it is about.
@@ -1943,7 +1943,7 @@ impl App {
             notes.push(note);
         }
         // Surface an actionable push/publication failure for the current unpublished head
-        // (SPEC-553 REP-005).
+        // (SPEC-553 REP-004).
         if let Some(head) = observed.worktree_head.as_deref()
             && !observed
                 .pr
@@ -2845,7 +2845,7 @@ impl App {
     }
 
     /// Records an actionable push/publication failure note on `task_id` for `head` (SPEC-553
-    /// REP-005).
+    /// REP-004).
     fn set_actionable_note(
         &self,
         task_id: &TaskId,
@@ -2865,7 +2865,7 @@ impl App {
     }
 
     /// Records the non-fast-forward remedy when a local repair branch diverged from or rewound
-    /// behind its open pull request head (SPEC-553 REP-003, REP-005).
+    /// behind its open pull request head (SPEC-553 REP-003, REP-004).
     fn set_diverged_problem(
         &self,
         task_id: &TaskId,
@@ -2886,7 +2886,7 @@ impl App {
     }
 
     /// The actionable push/publication note for `head`, if one is recorded for `task_id`
-    /// (SPEC-553 REP-005).
+    /// (SPEC-553 REP-004).
     pub(crate) fn actionable_push_problem_of(
         &self,
         task_id: &TaskId,
@@ -2901,7 +2901,7 @@ impl App {
     }
 
     /// The current actionable push/publication note `(head, text)` on `task_id`, regardless of
-    /// head match (for `pr_watch` and `pr_news_due`, SPEC-553 REP-005).
+    /// head match (for `pr_watch` and `pr_news_due`, SPEC-553 REP-004).
     pub(crate) fn actionable_push_problem(&self, task_id: &TaskId) -> Option<(String, String)> {
         let runtime = self.existing_runtime(task_id)?;
         let note = runtime.push_problem.lock().ok()?.clone()?;
@@ -3682,9 +3682,9 @@ impl App {
         }
     }
 
-    /// Local, zero-GitHub-call check for `parking.rs` (SPEC-553 REP-006): whether `task` has a
-    /// clean committed fast-forward repair on `task.branch` above `failing_pr_head` with no
-    /// recorded `push_problem`.
+    /// Local, zero-GitHub-call check for `parking.rs` (SPEC-553 PRK-103): whether `task` has an
+    /// unpublished clean committed fast-forward repair on `task.branch` above `failing_pr_head`
+    /// with no recorded `push_problem`.
     pub(crate) async fn open_pr_repair_pending_locally(
         &self,
         task: &TaskRecord,
@@ -3708,6 +3708,28 @@ impl App {
             return false;
         };
         if head.eq_ignore_ascii_case(failing_pr_head) || self.has_push_problem_for(&task.id, &head)
+        {
+            return false;
+        }
+        // Already published locally (by Yulius or on `origin/<branch>`): do not defer parking even
+        // if no new `CiRunRecord` exists yet (SPEC-553 PRK-103).
+        if self
+            .existing_runtime(&task.id)
+            .and_then(|rt| rt.auto_pr_head.lock().ok().and_then(|g| g.clone()))
+            .is_some_and(|pushed| pushed.eq_ignore_ascii_case(&head))
+        {
+            return false;
+        }
+        if let Ok(Some(remote)) = self
+            .deps
+            .git
+            .resolve_commit(path, &format!("refs/remotes/origin/{branch}"))
+            .await
+            && (remote.eq_ignore_ascii_case(&head)
+                || matches!(
+                    self.deps.git.is_ancestor(path, &head, &remote).await,
+                    Ok(true)
+                ))
         {
             return false;
         }

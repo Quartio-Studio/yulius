@@ -1815,7 +1815,39 @@ fn unpublished_open_pr_ci_repair_defers_parking_unless_needs_you_or_ci_running()
         );
         assert_eq!(status_of(&app, &id).await.0, Some(TaskStatus::Running));
 
-        // Once a human decision (`needs_you`) is open, parking is no longer deferred by the repair.
+        // Once the repair IS pushed to `origin/<branch>` (even with no new `CiRunRecord` yet),
+        // safe parking is no longer deferred.
+        let branch = task.branch.as_deref().ok_or("branch")?;
+        git(&["push", "-q", "origin", branch])?;
+        parked(&app, &id).await?;
+        assert_eq!(status_of(&app, &id).await.0, Some(TaskStatus::Parked));
+
+        // Resume, commit a second unpublished repair, and verify an open `needs_you` human
+        // decision still allows safe parking instead of deferring for the repair.
+        let owner_ctx = AuthContext {
+            user: app.deps.store.user(&caller.user).await?.ok_or("user")?,
+            csrf_token: None,
+            session_hash: None,
+            token: None,
+        };
+        app.continue_task(
+            &owner_ctx,
+            id.as_str(),
+            &yulius_contracts::api::tasks::ContinueTask::default(),
+        )
+        .await?;
+        wait_for(
+            "resumed for second repair",
+            Duration::from_secs(30),
+            || async {
+                status_of(&app, &id).await.0 == Some(TaskStatus::Running)
+                    && status_of(&app, &id).await.1 == Some(Activity::Waiting)
+            },
+        )
+        .await?;
+        std::fs::write(wt.join("repair2.txt"), "second fix\n")?;
+        git(&["add", "repair2.txt"])?;
+        git(&["commit", "-m", "Second unpublished CI repair"])?;
         ask(&app, &id).await?;
         parked(&app, &id).await?;
         assert_eq!(status_of(&app, &id).await.0, Some(TaskStatus::Parked));
