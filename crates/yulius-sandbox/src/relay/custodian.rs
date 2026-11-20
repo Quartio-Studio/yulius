@@ -27,6 +27,15 @@ const MAX_PAIRS: usize = 512; // 256 opaque tunnels and their matching out.sock 
 const MAX_STATE: usize = 32 * 1024; // Two 8 KiB buffers, half-close state and ownership metadata.
 const LIFETIME: Duration = Duration::from_secs(120);
 
+/// Linux monotonic milliseconds, comparable between the departing and adopting processes.
+#[must_use]
+pub fn monotonic_ms() -> u64 {
+    use rustix::time::{ClockId, clock_gettime};
+    let now = clock_gettime(ClockId::Monotonic);
+    let elapsed = Duration::try_from(now).unwrap_or_default();
+    u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
+}
+
 /// Already-connected endpoints and their bounded private state. Never log this state.
 pub struct Pair {
     /// The client-side and destination-side stream, in copy order.
@@ -348,6 +357,20 @@ mod tests {
     use super::*;
     use std::fs::Permissions;
     use std::os::unix::fs::PermissionsExt as _;
+
+    #[test]
+    fn handoff_clock_uses_the_same_epoch_as_other_processes() -> io::Result<()> {
+        use rustix::time::{ClockId, clock_gettime};
+        let kernel_ms = || {
+            Duration::try_from(clock_gettime(ClockId::Monotonic))
+                .map(|elapsed| elapsed.as_millis())
+                .map_err(io::Error::other)
+        };
+        let before = kernel_ms()?;
+        let handoff = u128::from(monotonic_ms());
+        assert!((before..=kernel_ms()?).contains(&handoff));
+        Ok(())
+    }
 
     fn pair(state: Vec<u8>) -> io::Result<(Pair, [UnixStream; 2])> {
         let (left, a) = UnixStream::pair()?;

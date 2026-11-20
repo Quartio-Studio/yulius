@@ -121,7 +121,9 @@ pub fn host(action: HostAction) -> ExitCode {
     match action {
         #[cfg(target_os = "linux")]
         HostAction::HoldTunnels { directory } => {
-            match yulius_sandbox::relay::custodian::run(&directory) {
+            match crate::wiring::tunnel_handoff::place_helper()
+                .and_then(|()| yulius_sandbox::relay::custodian::run(&directory))
+            {
                 Ok(()) => ExitCode::SUCCESS,
                 Err(error) => fail(&format!("tunnel handoff: {error}")),
             }

@@ -702,6 +702,14 @@ pub async fn serve(args: ServeArgs) -> Result<(), String> {
     // shells are adopted: a Superagent they start again gets the proxy (SPEC-186 SAV-001).
     let egress =
         crate::wiring::egress::egress_proxy(&app, yulius_egress::EgressConfig::default()).await?;
+    #[cfg(target_os = "linux")]
+    let direct_handoff = isolation
+        .is_none()
+        .then(|| args.data_dir.join("tunnel-handoff"));
+    #[cfg(target_os = "linux")]
+    if let Some(directory) = &direct_handoff {
+        crate::wiring::tunnel_handoff::restore(&egress, directory).await;
+    }
     browser_network.bind(&app, &egress);
     // Shells left running by the previous server process are adopted before serving.
     let workspace_reaper = app.start_workspace_services().await;
@@ -711,7 +719,7 @@ pub async fn serve(args: ServeArgs) -> Result<(), String> {
         .into_make_service_with_connect_info::<SocketAddr>();
     let internal_router = crate::wiring::egress::with_egress(
         yulius_server::internal_router(app.clone()),
-        egress,
+        Arc::clone(&egress),
         &app.config.internal_url,
     )
     .into_make_service_with_connect_info::<SocketAddr>();
@@ -720,6 +728,13 @@ pub async fn serve(args: ServeArgs) -> Result<(), String> {
     let internal_task = axum::serve(internal.tap_io(no_delay), internal_router)
         .with_graceful_shutdown(shutdown_signal());
     let (a, b) = tokio::join!(public_task, internal_task);
+    #[cfg(target_os = "linux")]
+    if let Some(directory) = &direct_handoff
+        && let Err(error) =
+            crate::wiring::tunnel_handoff::deposit(&egress, directory, &app.config.yulius_exe).await
+    {
+        tracing::warn!(kind = ?error.kind(), "cannot hand opaque tunnels to the next server");
+    }
     // Browsers do not outlive the server; shells and agent sessions keep running detached.
     drop(workspace_reaper);
     app.stop_workspace_services().await;

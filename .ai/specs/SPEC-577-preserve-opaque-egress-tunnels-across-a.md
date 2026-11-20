@@ -50,6 +50,8 @@ new request after the old sockets reach EOF. The issue requires the original con
 - [x] Obtain independent approval for the resumable copy slice
 - [x] Hold connected socket pairs and bounded copy state for one successor
 - [x] Obtain independent approval for the socket custodian slice
+- [x] Resume established direct opaque CONNECT sockets in the replacement server
+- [ ] Obtain independent approval for the proxy restart slice
 - [ ] Hand established opaque connections and matching relay sockets to the restarted server
 - [ ] Verify same-socket continuity, admission limits and intercepted traffic through restart
 - [ ] Independent review in a fresh session, findings fixed test-first
@@ -85,6 +87,10 @@ mutation checks and quick checks. Review each slice independently and deliver th
 Use a bounded handoff of connected descriptors and in-memory copy state during an orderly
 restart. A private host-side custodian can hold those descriptors between server processes.
 This leaves all dialing and host-bound secret handling in the authorized server.
+A custodian launched by a delegated service uses the service-owned sessions unit's existing
+legacy process leaf where available. A surviving child in a delegated server unit with active
+controllers can prevent systemd 258 and later from starting it. Where the sessions unit cannot
+take the child, deposit in that layout requires a systemd version that can restart it.
 The install helper stops and starts the unit separately, so a listener preserved only across
 a single systemd restart job would miss the update path. A reconnect and replay cannot restore
 an opaque TLS session. Interception remains scoped out of continuity because its TLS and
@@ -176,3 +182,36 @@ without adoption support or a remote peer that times out can end a tunnel.
   --base de8e028c5 --tests 'test(/^tunnel_handoff::/)'` on the same head selected those tests.
   The original-peer test failed on each inverted check. All 3,271 baseline tests passed,
   seven mutants were caught and one did not compile. None were missed, timed out or untested.
+- PR #1538 landed at dev squash `9b66c9a3d`. Yulius CI run
+  `5973c684-451f-4328-b4b5-69ffc731634e` passed both shards, quality and e2e at
+  `69dd7df1b`. Dev run `e49687ed-4a8f-490b-b463-41370a61e7d3` passed the same jobs
+  on the landed commit. Vidoc was disabled. The two-server probe still read EOF on the original
+  direct client after the replacement became healthy.
+  [Dev verification](https://yulius.quartio.ai/api/tasks/35adb14d-65fe-4a9f-b9fa-370d776d4139/delivery/evidence/9b66c9a3d4dbf46c24bd23ec2d3083d45c64ba13?run_id=e49687ed-4a8f-490b-b463-41370a61e7d3)
+- Before wiring the proxy, `cargo test --locked -p yulius --all-features --test main
+  opaque_restart::` failed with unexpected EOF. The test starts two real server binaries in
+  legacy mode. The destination listener closes after its sole accept. A prefix sent with
+  CONNECT arrives at that peer, and the client receives its reply before the old server exits.
+  The destination writes a new marker during the gap. The original client must read it after
+  successor readiness, send another marker, half-close and read the peer's final reply.
+- Discarding in-memory copy state on reconstruction made two bounded duplex fixtures lose
+  pending bytes. One read `abcd` in place of `XYZa`. Another read `done` in place of
+  `ongdone` after a half-close. The versioned opaque record carries both write-half phases,
+  their unsent bytes, the sandbox and run, original idle activity and absolute expiry.
+- The direct two-process test passed after wiring the proxy. An independent local fixture
+  also passed on the real binaries. Bounded-socket tests exposed a stalled reply when the
+  initial implementation wrote a large preread prefix serially. The revised copy forwards
+  its excess in parallel with the peer's reply, keeps up to 8 KiB pending, then registers
+  the established tunnel for handoff. The backpressure regression passed.
+- The library and integration suites for `yulius-domain`, `yulius-sandbox` and
+  `yulius-egress` passed 898 tests, with two sandbox environment tests ignored. This includes
+  host-bound secret injection and redaction, idle eviction, per-sandbox and global admission,
+  original lifetime expiry and cleanup. The Linux proxy tests also verify that interception,
+  refused credentials and refused destinations contribute no records.
+- With inherited placement, the cgroup fixture would acknowledge a helper in a delegated unit
+  with active controllers and no sessions unit on systemd 258. It failed the restart-safety
+  assertion. The helper now joins the detected sessions unit's service-owned legacy leaf. With
+  no usable sessions unit, an active subtree requires a confirmed systemd earlier than 258.
+  A service subtree with no enabled controllers and a standalone process keep their
+  existing placement. This sandbox has no cgroup filesystem or systemd PID 1, so placement is
+  tested with synthetic cgroup files. The two-process socket test runs real Linux binaries.

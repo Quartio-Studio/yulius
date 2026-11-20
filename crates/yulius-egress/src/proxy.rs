@@ -1,6 +1,9 @@
 //! The proxy itself: authentication of agent runs, tunnels, interception of bound hosts,
 //! forwarding over verified HTTPS and redaction of responses.
 
+#[cfg(target_os = "linux")]
+mod handoff;
+
 use std::collections::HashMap;
 use std::convert::Infallible;
 use std::net::{IpAddr, SocketAddr};
@@ -132,6 +135,7 @@ type Warned = HashMap<(&'static str, Option<String>), Instant>;
 struct Slots {
     /// By sandbox and run (`EgressClient::use_key`), SPEC-357.
     table: Mutex<Table>,
+    #[cfg(not(target_os = "linux"))]
     epoch: Instant,
     /// Where a refusing share or proxy is a trouble until it has room (SPEC-361).
     health: Arc<ConnectionHealth>,
@@ -144,7 +148,24 @@ struct Slots {
 }
 
 /// The connections by sandbox and run, each with what ends it.
-type Table = Connections<String, oneshot::Sender<()>, String>;
+type Table = Connections<String, Control, String>;
+
+struct Control {
+    // Eviction drops this sender and ends the connection, including during setup.
+    _end: oneshot::Sender<()>,
+    #[cfg(target_os = "linux")]
+    capture: Option<handoff::Capture>,
+}
+
+impl From<oneshot::Sender<()>> for Control {
+    fn from(end: oneshot::Sender<()>) -> Self {
+        Self {
+            _end: end,
+            #[cfg(target_os = "linux")]
+            capture: None,
+        }
+    }
+}
 
 /// The table `config` bounds: its total, a sandbox's share and the idle floor (SPEC-366 EPB-003).
 fn table(config: &EgressConfig) -> Table {
@@ -156,11 +177,18 @@ fn table(config: &EgressConfig) -> Table {
 }
 
 /// A place the table gave, or the limit met.
-type Answer = Result<Admitted<String, oneshot::Sender<()>, String>, connections::Full>;
+type Answer = Result<Admitted<String, Control, String>, connections::Full>;
 
 impl Slots {
     fn now(&self) -> u64 {
-        u64::try_from(self.epoch.elapsed().as_millis()).unwrap_or(u64::MAX)
+        #[cfg(target_os = "linux")]
+        {
+            yulius_sandbox::relay::custodian::monotonic_ms()
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            u64::try_from(self.epoch.elapsed().as_millis()).unwrap_or(u64::MAX)
+        }
     }
 
     /// Admits a connection of `run` in `sandbox` (`held`: in flight from the start), `end` ending
@@ -179,9 +207,9 @@ impl Slots {
         let mut table = self.table.lock().unwrap_or_else(PoisonError::into_inner);
         let (key, owner, now) = (sandbox.to_owned(), run.to_owned(), self.now());
         let admitted = if held {
-            table.admit_held_by(key.clone(), owner.clone(), end, now)
+            table.admit_held_by(key.clone(), owner.clone(), end.into(), now)
         } else {
-            table.admit_by(key.clone(), owner.clone(), end, now)
+            table.admit_by(key.clone(), owner.clone(), end.into(), now)
         };
         let counts = matches!(admitted, Err(connections::Full::Key)).then(|| {
             (
@@ -615,6 +643,7 @@ impl EgressProxy {
             response_head_timeout: config.response_head_timeout,
             slots: Arc::new(Slots {
                 table: Mutex::new(table),
+                #[cfg(not(target_os = "linux"))]
                 epoch: Instant::now(),
                 health: config.health,
                 share: config
@@ -769,6 +798,15 @@ impl EgressProxy {
                     match on_upgrade.await {
                         Ok(upgraded) if intercept => {
                             proxy.intercept(client, host, port, upgraded, permit).await;
+                        }
+                        #[cfg(target_os = "linux")]
+                        Ok(upgraded)
+                            if matches!(
+                                client.caller,
+                                yulius_app::ports::egress::EgressCaller::Agent { .. }
+                            ) =>
+                        {
+                            handoff::agent_tunnel(addrs, upgraded, permit, client.use_key()).await
                         }
                         Ok(upgraded) => tunnel(addrs, upgraded, permit).await,
                         Err(error) => tracing::debug!(%error, "proxy tunnel was not opened"),
@@ -1092,16 +1130,24 @@ fn respond(response: reqwest::Response, matcher: Arc<PlainMatcher>) -> Response<
         .unwrap_or_else(|_| text(502, "Yulius proxy: invalid upstream response"))
 }
 
-/// An opaque tunnel to a host without agent secrets.
-pub(crate) async fn tunnel(addrs: Vec<SocketAddr>, upgraded: Upgraded, permit: Slot) {
-    let stream = match tokio::time::timeout(CONNECT_TIMEOUT, TcpStream::connect(&addrs[..])).await {
-        Ok(Ok(stream)) => stream,
+async fn connect_tunnel(addrs: &[SocketAddr]) -> Option<TcpStream> {
+    match tokio::time::timeout(CONNECT_TIMEOUT, TcpStream::connect(addrs)).await {
+        Ok(Ok(stream)) => {
+            let _ = stream.set_nodelay(true);
+            Some(stream)
+        }
         _ => {
             tracing::debug!("tunnel destination unreachable");
-            return;
+            None
         }
+    }
+}
+
+/// An opaque tunnel to a host without agent secrets.
+pub(crate) async fn tunnel(addrs: Vec<SocketAddr>, upgraded: Upgraded, permit: Slot) {
+    let Some(stream) = connect_tunnel(&addrs).await else {
+        return;
     };
-    let _ = stream.set_nodelay(true);
     let mut client = TokioIo::new(upgraded);
     let mut server = Tracked::new(stream, &permit);
     let _ = tokio::time::timeout(
@@ -1167,6 +1213,7 @@ mod tests {
         };
         let slots = Arc::new(Slots {
             table: Mutex::new(Connections::with_owners(4, 2, u64::MAX)),
+            #[cfg(not(target_os = "linux"))]
             epoch: Instant::now(),
             health: Arc::clone(&health),
             share: 2,
@@ -1224,7 +1271,7 @@ mod tests {
         });
         let mut admit = |run: &str, now| {
             let (end, ended) = oneshot::channel();
-            let admitted = table.admit_by("s1".to_owned(), run.to_owned(), end, now);
+            let admitted = table.admit_by("s1".to_owned(), run.to_owned(), end.into(), now);
             (admitted, ended)
         };
         let (_old, mut old_ended) = admit("old", 0);

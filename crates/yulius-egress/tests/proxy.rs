@@ -196,6 +196,8 @@ async fn silent() -> Result<SocketAddr, Box<dyn std::error::Error>> {
 }
 
 struct Setup {
+    #[cfg(target_os = "linux")]
+    service: Arc<EgressProxy>,
     proxy: SocketAddr,
     health: Arc<ConnectionHealth>,
     egress_ca: String,
@@ -264,8 +266,10 @@ async fn setup_bounded(
     );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let addr = listener.local_addr()?;
-    tokio::spawn(yulius_egress::serve(listener, proxy));
+    tokio::spawn(yulius_egress::serve(listener, Arc::clone(&proxy)));
     Ok(Setup {
+        #[cfg(target_os = "linux")]
+        service: proxy,
         proxy: addr,
         health,
         egress_ca,
@@ -1026,4 +1030,125 @@ async fn a_failed_upstream_request_never_logs_the_secret_in_its_url() -> TestRes
     let leaked = logs.lines_with(VALUE);
     assert!(leaked.is_empty(), "{leaked:?}");
     Ok(())
+}
+
+#[cfg(target_os = "linux")]
+mod handoff {
+    use super::*;
+    use std::os::fd::OwnedFd;
+    use std::time::Duration;
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+    use tokio::net::{TcpListener, TcpStream};
+    use yulius_sandbox::relay::custodian::{Pair, monotonic_ms};
+
+    async fn sockets() -> Result<(TcpStream, OwnedFd), Box<dyn std::error::Error>> {
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let client = TcpStream::connect(listener.local_addr()?).await?;
+        let (server, _) = listener.accept().await?;
+        Ok((client, server.into_std()?.into()))
+    }
+
+    // A valid preceding proxy's private record, with clocks controlled by the fixture.
+    async fn record(
+        last: u64,
+        expires: u64,
+    ) -> Result<(TcpStream, TcpStream, Pair), Box<dyn std::error::Error>> {
+        let (client, left) = sockets().await?;
+        let (peer, right) = sockets().await?;
+        let mut state = format!(
+            "OP1\n{{\"sandbox\":\"s1\",\"run\":\"a1\",\"last\":{last},\"expires\":{expires}}}\n"
+        )
+        .into_bytes();
+        state.extend_from_slice(&[0, 0, 0, 0, 0, 0]);
+        Ok((
+            client,
+            peer,
+            Pair {
+                sockets: [left, right],
+                state,
+            },
+        ))
+    }
+
+    #[tokio::test]
+    async fn restored_activity_and_absolute_expiry_bind_the_replacement_proxy() -> TestResult {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            let next = setup_with(Duration::from_secs(300), 1).await?;
+            let now = monotonic_ms();
+            let (mut client, mut peer, pair) =
+                record(now.saturating_sub(310_000), now + 2000).await?;
+            next.service.restore_opaque_tunnel(pair)?;
+            peer.write_all(b"byte").await?;
+            assert_eq!(client.read_u32().await?.to_be_bytes(), *b"byte");
+            assert!(tunnel(&next, "good-token").await?.1.contains(" 503"));
+            // A second handoff keeps the same absolute end and refreshed byte activity.
+            let mut again = next.service.take_opaque_tunnels().await?;
+            assert_eq!(again.len(), 1);
+            let pair = again.pop().ok_or("missing record")?;
+            let header = pair.state.split(|b| *b == b'\n').nth(1).ok_or("metadata")?;
+            let metadata: serde_json::Value = serde_json::from_slice(header)?;
+            assert_eq!(metadata["expires"].as_u64(), Some(now + 2000));
+            assert!(metadata["last"].as_u64().is_some_and(|last| last >= now));
+            next.service.restore_opaque_tunnel(pair)?;
+            assert_eq!(client.read(&mut [0]).await?, 0);
+            assert_eq!(peer.read(&mut [0]).await?, 0);
+            assert!(tunnel(&next, "good-token").await?.1.contains(" 200"));
+            Ok::<_, Box<dyn std::error::Error>>(())
+        })
+        .await?
+    }
+
+    #[tokio::test]
+    async fn invalid_or_expired_records_release_both_peers_without_taking_a_place() -> TestResult {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            let next = setup_with(Duration::ZERO, 1).await?;
+            let now = monotonic_ms();
+            for (last, deadline) in [(now, 0), (u64::MAX, now + 2000), (now, u64::MAX)] {
+                let (mut client, mut peer, pair) = record(last, deadline).await?;
+                assert!(next.service.restore_opaque_tunnel(pair).is_err());
+                assert_eq!(client.read(&mut [0]).await?, 0);
+                assert_eq!(peer.read(&mut [0]).await?, 0);
+            }
+            assert!(next.service.take_opaque_tunnels().await?.is_empty());
+            assert!(tunnel(&next, "good-token").await?.1.contains(" 200"));
+            Ok::<_, Box<dyn std::error::Error>>(())
+        })
+        .await?
+    }
+
+    #[tokio::test]
+    async fn intercepted_and_refused_connections_never_enter_a_handoff() -> TestResult {
+        let before = setup().await?;
+        let (_intercept, status) =
+            tunnel_to(&before, "good-token", &format!("{BOUND}:443")).await?;
+        assert!(status.contains(" 200"));
+        assert!(tunnel(&before, "bad-token").await?.1.contains(" 407"));
+        assert!(
+            tunnel_to(&before, "good-token", "127.0.0.1:9")
+                .await?
+                .1
+                .contains(" 403")
+        );
+        assert!(before.service.take_opaque_tunnels().await?.is_empty());
+        let (client, status) = tunnel_to(&before, "good-token", &format!("{SILENT}:443")).await?;
+        assert!(status.contains(" 200"));
+        // The standalone HTTP/1 listener upgrades directly. Wait for its upstream to connect.
+        let batch = tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                let records = before.service.take_opaque_tunnels().await?;
+                if !records.is_empty() {
+                    return Ok::<_, std::io::Error>(records);
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await??;
+        assert_eq!(batch.len(), 1);
+        let [left, _] = &batch[0].sockets;
+        use std::os::fd::AsFd as _;
+        let retained = std::net::TcpStream::from(left.as_fd().try_clone_to_owned()?);
+        assert_eq!(retained.peer_addr()?, client.local_addr()?);
+        assert_eq!(retained.local_addr()?, before.proxy);
+        Ok(())
+    }
 }
