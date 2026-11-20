@@ -7,6 +7,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 ## 2026-11-20
 
 - Successors wait for a parked predecessor’s plan, goal, owner decision and current PR checks, including a replacement PR opened after the recorded delivery merged (SPEC-558).
+- Yulius retained its Rust mutation runner after paired compiler-cache trials preserved every mutant verdict and showed mixed elapsed times under shared-host load. [SPEC-569](../.ai/specs/SPEC-569-shorten-yulius-mutation-verification-whi.md)
 - Parallel ADR additions keep their numeric order in author updates and protected merge trains (SPEC-568, #1515).
 
 - Sandbox browsers skip Chrome’s default apps. Older profiles can take the extension blocklist
