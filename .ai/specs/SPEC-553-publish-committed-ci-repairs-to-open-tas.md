@@ -1,6 +1,6 @@
 ---
 yulius-task: 14dabe7e-01de-4b7b-b00e-3d8b5019b81d
-status: in-progress
+status: done
 ---
 
 # SPEC-553: Parked session terminal resume, automatic PR wake, and committed CI repair publication
@@ -55,7 +55,7 @@ Fix the full incident observed on `quartio-v2` tasks #322, #323 and #324:
 - [x] Integrate yulius wait, pr_watch restart recovery, actionable failed publication, and parking protection
 - [x] Fix parked web terminal presentation, owner input wake, and parked-task automatic PR/CI wake
 - [x] Add Rust integration and web e2e regression tests for parked terminal resume, automatic PR wake, and CI repairs
-- [ ] Update architecture and changelog docs, verify checks, complete independent review, and merge into dev
+- [x] Update architecture and changelog docs, verify checks, complete independent review, and merge into dev
 
 ## Acceptance criteria
 
@@ -97,5 +97,6 @@ Fix the full incident observed on `quartio-v2` tasks #322, #323 and #324:
   - `parking::unpublished_open_pr_ci_repair_defers_parking_unless_needs_you_or_ci_running`
 - **Web UI end-to-end suite (`cd e2e && npx e2e run`)**: full suite passed (94 passed, 1 skipped of 95 files; 1144 passed, 1 skipped of 1145 tests); after Round 1 review fixes, `npx e2e run tests/parked.e2e.ts` passed 5/5 (covering calm `.waiting` class, `data-cursor-blink="false"/"true"`, initial-load parked page, `stopped_crashed` & `stopped_cancelled` typing refusal, multi-character typing across `parked` -> `starting` -> `running` with zero `.term-notice` errors, and non-owner boundary) and `npx e2e run tests/terminal.e2e.ts tests/attention.e2e.ts` passed 42/42.
 - **Mutation testing (`scripts/dev mutants`)**: not available in this sandbox (`cargo mutants --list failed: error: no such command: mutants`); reported honestly as unrun rather than passed. Every Round 1, Round 2, and Round 3 review finding was addressed with a targeted regression test.
+- **Independent review (fresh read-only sessions, Rounds 1–4)**: Round 4 approved exact head `c9d39e3adb2aeb51d990af8263f9de15ef6a7369` with zero remaining findings after resolving all Round 1 (8), Round 2 (5), and Round 3 (2) findings with regression tests.
 - **Security scan (`scripts/dev security`)**: disabled in Yulius for this project/instance (`Security scan disabled: Vidoc is turned off in Yulius, for this project or the whole instance; nothing was scanned`); reported as disabled, not passed.
 - **Limits**: Live Quartio VM (`quartio-v2` #322/#323/#324) was not modified, restarted, or deployed from this task; live Codex rollout continuity on the VM was verified by the operator and covered locally through `provider_session_id` + `worktree_path` supervisor tests and Web UI mock e2e tests.
