@@ -159,6 +159,28 @@ test('a deploy running while tasks pause is named and holds the restart', async 
   expect(await axeViolations(browser)).toEqual([]);
 });
 
+test('a superadmin can proceed while only a finishing CI run holds the update', async ({ app, browser, screen }) => {
+  await app.open(mock('/admin/instance', '&update=1&build=hold'));
+  await screen.getByRole('button', 'Update now…').click();
+  await screen.getByRole('dialog', /to 9c1e7d3\?$/).getByRole('button', 'Update to 9c1e7d3').click();
+  await expect(screen.getByText('Building the new version. Tasks keep working meanwhile.')).toBeVisible();
+  await updateMock(browser, (m) => {
+    Object.assign(m.update.run, {
+      state: 'pausing', step: 'pausing', can_proceed: true, progress: null,
+      tasks: { paused: 3, total: 3, waiting: [] },
+      message: 'Tasks paused. Giving a finishing CI run time to complete.',
+    });
+    m.announceUpdate();
+  });
+  await expect(screen.getByText(/Giving a finishing CI run time/)).toBeVisible();
+  await screen.getByRole('button', 'Continue without waiting').click();
+  const dialog = screen.getByRole('dialog', 'Restart without waiting?');
+  await expect(dialog.getByText(/CI runs still executing at shutdown will be queued again/)).toBeVisible();
+  await dialog.getByRole('button', 'Restart now').click();
+  await expect(screen.getByText('Installing the new version.')).toBeVisible();
+  await expect(screen.getByRole('button', 'Continue without waiting')).toBeHidden();
+});
+
 // The superadmin's Update button beside the account button (SPEC-133, task #121).
 const footButton = (browser: Browser, name: string | RegExp) => browser.locator('.sidebar-foot').getByRole('button', name);
 
@@ -405,7 +427,7 @@ test('an automatic check that fails keeps the last result and raises no error', 
 // #502 (SPEC-226 UPC-002): reads of the update view overlap (events, the reconnect, the poll); an
 // older read answering after a newer one must not bring its older view back.
 type UpdateMock = {
-  update: { offer: string | null };
+  update: { offer: string | null; run: object };
   holdUpdateReads: boolean;
   updateReads: () => number;
   updateHolds: (() => void)[];

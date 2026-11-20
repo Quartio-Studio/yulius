@@ -24,7 +24,8 @@ class Result:
     repeated_pass_seconds: int
     all_second_seconds: int
     gate_elapsed: tuple[int, ...]
-    last_gate: int
+    workload_finish: int
+    last_gate_elapsed: int
     ready_to_serving: int
 
 
@@ -95,8 +96,9 @@ def simulate(work, slots, ready=None, policy="current", grace=30, stop_lag=25):
 
         update_done = ready is None or (serving is not None and now >= serving)
         if update_done and all(g.finished is not None for g in gates):
+            last = max(gates, key=lambda g: g.finished)
             return Result(duplicates, repeated_passes, repeated_pass_seconds, all_second_seconds,
-                          tuple(g.finished - g.arrival for g in gates), max(g.finished for g in gates),
+                          tuple(g.finished - g.arrival for g in gates), last.finished, last.finished - last.arrival,
                           0 if ready is None else serving - ready)
     raise AssertionError("fixture did not finish within its serial-work upper bound")
 
@@ -105,19 +107,23 @@ def sweep(cases, slots, policy, grace, stop_lag):
     pairs = []
     for work in cases:
         ordinary = simulate(work, slots)
-        for ready in range(0, ordinary.last_gate, 5):
+        for ready in range(0, ordinary.workload_finish, 5):
             control = simulate(work, slots, ready, stop_lag=stop_lag)
             candidate = simulate(work, slots, ready, policy, grace, stop_lag)
             pairs.append((control, candidate))
     averages = {}
-    for name in ("twice", "passed_twice", "repeated_pass_seconds", "all_second_seconds", "last_gate", "ready_to_serving"):
+    for name in ("twice", "passed_twice", "repeated_pass_seconds", "all_second_seconds",
+                 "workload_finish", "last_gate_elapsed", "ready_to_serving"):
         averages[name] = tuple(round(mean(getattr(pair[i], name) for pair in pairs), 2) for i in (0, 1))
     print(policy, "cap", grace, "stop lag", stop_lag, "pairs", len(pairs), averages,
-          "median gate delta", median(b.last_gate - a.last_gate for a, b in pairs),
+          "median last gate elapsed delta", median(b.last_gate_elapsed - a.last_gate_elapsed for a, b in pairs),
           "worst added wait", max(b.ready_to_serving - a.ready_to_serving for a, b in pairs))
 
 
 if __name__ == "__main__":
+    # The last-finishing gate arrives at second 20 and takes 60 seconds.
+    ordinary = simulate([(0, [30, 55]), (20, [60])], 3)
+    assert (ordinary.workload_finish, ordinary.last_gate_elapsed) == (80, 60)
     fixtures = [
         ("ordinary", [(0, [30, 55]), (20, [60])], None, 3),
         ("tail", [(0, [35, 68, 113])], 68, 3),

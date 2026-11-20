@@ -4944,6 +4944,8 @@ route('POST', '/api/admin/update/cancel', ({ db }) => {
 route('POST', '/api/admin/update/proceed', ({ db }) => {
   if (!db.me.user.is_superadmin) fail(403, 'forbidden', 'superadmin only');
   if (!db.update.run || db.update.run.state !== 'pausing') fail(409, 'conflict', 'the update is not pausing tasks');
+  if (!db.update.run.can_proceed) fail(409, 'conflict', 'waiting for a running deploy');
+  moveUpdate(db, 'restarting', { step: 'installing', message: 'Installing the new version.' });
   return updateView(db);
 });
 

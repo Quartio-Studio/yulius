@@ -28,6 +28,7 @@ Startup recovery ends orphaned hosts and requeues their runs. SQLite clears indi
 - [x] Measure duplicate execution and install delay under controlled load
 - [x] Prove bounded planned installation and the urgent path
 - [x] Verify recovery, outputs and gate timing across workloads
+- [x] Expose the urgent install control and distinguish gate elapsed from workload finish
 - [ ] Review and deliver the measured change to dev
 
 ## Acceptance criteria
@@ -74,10 +75,10 @@ The mixed fixture uses five slots and three gates, arriving at 0, 0 and 90 secon
 
 For a timing sweep, use executed-job durations in quality, test 1, test 2, e2e order from Yulius train #1523 [248,318,315,392], PR #1523 [552,447,436,437], PR #1521 [267,344,346,419] and the post-recovery #1507 [334,282,210,396]. Exclude skipped security. Only job durations come from history. Compare interruptions every five seconds up to the ordinary gate's end, running each vector separately in four slots (354 pairs) and together in six slots with arrivals [0,45,200,360] (230 pairs). Lost partial service and all second-attempt service are distinct from the repeated completed jobs shown here.
 
-| Mean per interrupt | Repeated completed jobs | Second service of repeated passes (s) | Last gate elapsed (s) | Drain entry to serving (s) |
-| --- | --- | --- | --- | --- |
-| Solo | 0.73 → 0.56 | 233.80 → 177.53 | 684.37 → 661.17 | 43 → 46.94 |
-| Mixed | 1.93 → 1.76 | 642.92 → 579.25 | 1473.23 → 1456.90 | 43 → 52.50 |
+| Mean per interrupt | Repeated completed jobs | Second service of repeated passes (s) | Last-finishing gate, arrival to finish (s) | Workload start to last finish (s) | Drain entry to serving (s) |
+| --- | --- | --- | --- | --- | --- |
+| Solo | 0.73 → 0.56 | 233.80 → 177.53 | 684.37 → 661.17 | 684.37 → 661.17 | 43 → 46.94 |
+| Mixed | 1.93 → 1.76 | 642.92 → 579.25 | 1113.23 → 1096.90 | 1473.23 → 1456.90 | 43 → 52.50 |
 
 Median elapsed-gate change was zero in both sweeps. Worst observed additional install wait was 26 seconds (30 seconds from drain entry including the four seconds the control already waited). The 15-second window saved 20.38 seconds of repeat-pass service on mixed load with 4.60 seconds of additional mean wait. A 60-second window saved 131.25 seconds with 18.26 seconds additional mean wait and up to 56 seconds extra. At the selected 30 seconds, moving the synthetic stop to +0 or +38 seconds still reduced mixed repeat-pass service by 63.67 or 70.26 seconds per interruption. The fixture does not predict production wall-clock savings, admission competition or the historical fate of a particular gate.
 
@@ -92,3 +93,5 @@ The indexed SQLite observation uses the existing partial active-run index and pe
 
 
 `cargo nextest run --locked -p yulius -p yulius-store -E 'test(/local_ci::planned_install::|self_update::|a_finishing_ci_run_has_an_executed_pass|a_requeued_run_keeps_its_paths_skip|a_job_a_restart_ended_is_told_ended|a_tests_failure_is_never_taken_for_the_infrastructure|update_helper::tests::/)'` ran 72 tests, all passed. This includes the existing deploy guard, cancellation, staged build and failed-health rollback, four real CI executor fixtures and eight eligibility scenarios. In the missing-output case the fixture observed positive held job weight before disposal and zero immediately afterwards. The new app answered the helper's version endpoint while the persisted run still read running, then acquired fresh grants, rebuilt the missing file and recorded both results under the original job IDs.
+
+Independent review of 0c5a357 found that the Instance page hid the urgent control once all tasks paused and that the mixed sweep measured workload finish from time zero. A Chromium regression first failed to locate the button during the CI-only wait. The Instance page now follows the server's proceed permission and explains that unfinished CI runs will be queued again. Both the click through to installation and the running-deploy guard passed in `npx e2e run update --grep 'only a finishing CI|holds the restart'`. A separate timing assertion uses a gate arriving at second 20 and finishing at 80. The replay reports 60 seconds elapsed for that gate and 80 from workload start. The mixed sweep reproduced both values in the table.
