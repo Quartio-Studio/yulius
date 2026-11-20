@@ -976,6 +976,33 @@ fn safe_relative(path: &str) -> bool {
             .all(|c| matches!(c, Component::Normal(_)))
 }
 
+/// A missing spec holds a code edit, while a spec that exists and cannot be judged
+/// is left to the Stop gate (SPEC-426).
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum RepoReadError {
+    #[error("`{0}` does not exist in the task worktree")]
+    Missing(String),
+    #[error("`{path}` is too large (limit {max} bytes)")]
+    TooLarge { path: String, max: u64 },
+    #[error("{0}")]
+    Unreadable(String),
+}
+
+impl RepoReadError {
+    fn from_io(relative: &str, error: &std::io::Error) -> Self {
+        if error.kind() == std::io::ErrorKind::NotFound {
+            Self::Missing(relative.into())
+        } else {
+            Self::Unreadable(format!("`{relative}` cannot be read"))
+        }
+    }
+}
+
+/// Reads a whole spec through an in-worktree handle, refusing links and partial documents.
+pub(crate) async fn read_spec(root: &Path, relative: &str) -> Result<String, RepoReadError> {
+    read_checked_file(root, relative, MAX_SPEC_BYTES, true).await
+}
+
 /// Reads a repository file below `root`, refusing paths that escape it (also through
 /// symlinks, including one swapped in after the check: the file is read through a handle whose
 /// real path is inside `root`) and files larger than `max` bytes. Errors are user-facing and never
@@ -985,50 +1012,86 @@ pub(crate) async fn read_repo_file(
     relative: &str,
     max: u64,
 ) -> Result<String, String> {
+    read_checked_file(root, relative, max, false)
+        .await
+        .map_err(|err| err.to_string())
+}
+
+async fn read_checked_file(
+    root: &Path,
+    relative: &str,
+    max: u64,
+    spec: bool,
+) -> Result<String, RepoReadError> {
+    use RepoReadError::{TooLarge, Unreadable};
     if !safe_relative(relative) {
-        return Err(format!(
+        return Err(Unreadable(format!(
             "`{}` is not a safe repository-relative path",
             clip_chars(relative, 100)
-        ));
+        )));
     }
     let root = tokio::fs::canonicalize(root)
         .await
-        .map_err(|_| "the task worktree is missing".to_owned())?;
-    let path = tokio::fs::canonicalize(root.join(relative))
-        .await
-        .map_err(|_| format!("`{relative}` does not exist in the task worktree"))?;
+        .map_err(|_| Unreadable("the task worktree is missing".into()))?;
+    let path = root.join(relative);
+    let path = if spec {
+        let metadata = tokio::fs::symlink_metadata(&path)
+            .await
+            .map_err(|err| RepoReadError::from_io(relative, &err))?;
+        if metadata.is_symlink() {
+            return Err(Unreadable(format!(
+                "`{relative}` is a symbolic link. Use a regular file for the task spec"
+            )));
+        }
+        path
+    } else {
+        tokio::fs::canonicalize(path)
+            .await
+            .map_err(|err| RepoReadError::from_io(relative, &err))?
+    };
     if !path.starts_with(&root) {
-        return Err(format!("`{relative}` points outside the task worktree"));
+        return Err(Unreadable(format!(
+            "`{relative}` points outside the task worktree"
+        )));
     }
     crate::race::reached(crate::race::Point::RepoFileRead, &path);
-    // The worktree is the agent's, which can swap a folder on the way, or the file, for a link at
-    // any moment: what is read is the handle, opened without following a link at its end and
-    // kept only while its real path is still inside the worktree (#745, ADR-0174).
     let opened =
         crate::files::open_inside(&root, &path, nix::fcntl::OFlag::O_RDONLY).map_err(|err| {
             match err {
+                AppError::NotFound => RepoReadError::Missing(relative.into()),
                 AppError::Forbidden(message) if message == crate::files::OUTSIDE => {
-                    format!("`{relative}` points outside the task worktree")
+                    Unreadable(format!("`{relative}` points outside the task worktree"))
                 }
-                _ => format!("`{relative}` cannot be read"),
+                _ => Unreadable(format!("`{relative}` cannot be read")),
             }
         })?;
     let file = tokio::fs::File::from_std(std::fs::File::from(opened));
     let meta = file
         .metadata()
         .await
-        .map_err(|_| format!("`{relative}` cannot be read"))?;
+        .map_err(|err| RepoReadError::from_io(relative, &err))?;
     if !meta.is_file() {
-        return Err(format!("`{relative}` is not a file"));
+        return Err(Unreadable(format!("`{relative}` is not a file")));
     }
+    let too_large = || TooLarge {
+        path: relative.into(),
+        max,
+    };
     if meta.len() > max {
-        return Err(format!("`{relative}` is larger than {max} bytes"));
+        return Err(too_large());
     }
+    // A writer may have grown it since metadata(). Check the bytes before decoding UTF-8.
     let mut bytes = Vec::new();
-    tokio::io::AsyncReadExt::read_to_end(&mut tokio::io::AsyncReadExt::take(file, max), &mut bytes)
-        .await
-        .map_err(|_| format!("`{relative}` cannot be read"))?;
-    String::from_utf8(bytes).map_err(|_| format!("`{relative}` is not UTF-8 text"))
+    tokio::io::AsyncReadExt::read_to_end(
+        &mut tokio::io::AsyncReadExt::take(file, max.saturating_add(1)),
+        &mut bytes,
+    )
+    .await
+    .map_err(|err| RepoReadError::from_io(relative, &err))?;
+    if bytes.len() as u64 > max {
+        return Err(too_large());
+    }
+    String::from_utf8(bytes).map_err(|_| Unreadable(format!("`{relative}` is not UTF-8 text")))
 }
 
 /// Text of a level-2 section (outside code fences), trimmed.
@@ -1506,7 +1569,7 @@ impl App {
                 );
             }
         };
-        match read_repo_file(&worktree, &path, MAX_SPEC_BYTES).await {
+        match read_spec(&worktree, &path).await {
             Ok(text) => {
                 let report = spec_format::validate_spec_for(&text, &task.id);
                 self.note_spec_status(&task.id, report.status).await;
@@ -1645,7 +1708,7 @@ impl App {
         names.sort();
         for name in names {
             let relative = format!("{dir}/{name}");
-            let Ok(text) = read_repo_file(worktree, &relative, MAX_SPEC_BYTES).await else {
+            let Ok(text) = read_spec(worktree, &relative).await else {
                 continue;
             };
             if text.contains(task.id.as_str())
