@@ -45,7 +45,7 @@ head on its own branch, as task #538 did for part 4 (SPEC-556, PR #1487).
 
 - [x] Branch carries task #494's part 5 head
 - [x] Touched tests, clippy and repository checks pass
-- [ ] Evidence recorded and the head handed to an independent review
+- [x] Evidence recorded and the head handed to an independent review
 - [ ] Round 1's findings answered and the head handed to review round 2
 
 ## Acceptance criteria
@@ -53,7 +53,7 @@ head on its own branch, as task #538 did for part 4 (SPEC-556, PR #1487).
 - [x] `git diff origin/dev..HEAD` holds part 5, its SPEC-512 Evidence and this spec (DLV-001,
   DLV-002).
 - [x] The tests part 5 touches pass on this head (DLV-001, DLV-003).
-- [ ] This head is handed to an independent review (`yulius-reviewer`) that knows task #494's
+- [x] This head is handed to an independent review (`yulius-reviewer`) that knows task #494's
   rounds.
 
 ## Test plan
