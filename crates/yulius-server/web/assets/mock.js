@@ -6347,6 +6347,7 @@ class TermSession {
     this.viewers = new Set();
     this.cols = 120;
     this.rows = 36;
+    this.parkedScreen = null;
     // ?othercols=N[&otherrows=M]: another, active viewer sets the size (N×M) until this one types
     // or clicks into the terminal, as on the server (F 2026-10-10); this viewer's own size is kept
     // for then.
@@ -6467,6 +6468,7 @@ class TermSession {
   }
 
   snapshot() {
+    if (this.parkedScreen) return this.parkedScreen.text;
     const bottom = this.regionBottom();
     const end = this.lines.length - this.scroll;
     const visible = this.lines.slice(Math.max(0, end - bottom), end).map((line) => this.drawn(line));
@@ -6520,7 +6522,8 @@ class TermSession {
   // Like the server: a viewer with write access controls the size unless another one does.
   state(_ws) {
     const write = this.canWrite();
-    return JSON.stringify({ type: 'state', attempt_seq: 1, harness: this.task.harness, cols: this.cols, rows: this.rows, can_write: write, controller: write && !this.otherController, status: this.task.status });
+    const { cols, rows } = this.parkedScreen || this;
+    return JSON.stringify({ type: 'state', attempt_seq: this.parkedScreen ? null : 1, parked_screen: Boolean(this.parkedScreen), harness: this.task.harness, cols, rows, can_write: write, controller: write && !this.otherController, status: this.task.status });
   }
 
   sendStates() {

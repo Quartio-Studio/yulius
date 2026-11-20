@@ -7,6 +7,9 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 ## 2026-11-20
 
 - Parked tasks and their dependent tasks use verified PR status. A failed integration candidate appears on its owner's task even when ordinary CI passed, and the existing PR notice identifies the failing run (SPEC-558).
+- Sandbox browsers skip Chrome’s default apps. Older profiles can take the extension blocklist
+  on a virtual display without showing a Docs Offline administrator dialog (SPEC-567, #1411).
+
 - Parking verifies the task checkout and current PR checks, including CI failures awaiting publication to GitHub (SPEC-558).
 - A red CI notice includes partial test failures observed before a sibling stopped the job. Agents can read each job’s retained diagnostics through `ci_status`. [SPEC-566](../.ai/specs/SPEC-566-report-tests-that-failed-in-a-ci-shard-b.md)
 - The parked terminal Chromium test waits for the second park after Resume and checks that Reply delivers its prompt to the resumed session (#1501).
