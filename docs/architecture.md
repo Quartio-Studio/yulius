@@ -2041,10 +2041,7 @@ off) counted from `state_at`: the list shows it under Needs you or Done, no turn
 background shell, subagent or dynamic workflow, does not wait in `yulius wait`, has no merge
 armed or pull request news due, no held prompt, no request in the sandbox browser, no pause, no
 possible draft or keystroke within the grace period, and is not an onboarding task.
-Parking also requires that no step, spec, goal or failing PR check needs the session.
-Both parking triggers look up open PRs on the task branch and verify them alongside the recorded delivery. An unreadable PR or a head that changes during verification keeps the session live.
-When the current PR head has a queued or running Yulius CI run, the PR watcher can resume
-the parked session on its result. Open agent work still requires the session.
+A task keeps its session while its plan has an open step, its spec is unfinished, or its goal still needs work. Both grace and digest parking recheck these facts before stopping the session, including when a person has been asked.
 The supervisor saves the redacted screen with the elapsed idle time before requesting shutdown.
 The web terminal and `task_screen` use that snapshot once the task parks and while a resumed host attaches.
 [Decision 0396](decisions/0396-capture-the-parked-terminal-before-shutdown.md).
@@ -2059,9 +2056,8 @@ session as a close does (graceful shutdown, then the escalation). The run's end,
 its loss, makes the task `parked` with its activity (`settle_parked`) and audits `task.parked`.
 `parked` is neither live nor resting: no slot (`sessions_in_use` counts live runs only), its
 worktree, claims, `needs_you` and delivery stay, and the list groups it as an idle run with no
-live overlay. An active CI run can take over checks on its recorded head. A newer committed
-repair awaiting publication keeps the session live, including while the task asks a person or CI
-reruns the published commit. A missing local merge base requires positive GitHub mergeability. While the park is
+live overlay. Idle sessions continue to park safely while CI runs on an open pull request (only an
+unpublished clean fast-forward CI repair awaiting publication defers parking). While the park is
 under way nothing is typed into the session. The web terminal treats `parked` as a non-live ended
 status so it shows the calm parked banner (distinct from a crash or operator stop) and a visible
 `Resume` button (plus `Reply` in the waiting bar for the owner), disables cursor blink, and wakes

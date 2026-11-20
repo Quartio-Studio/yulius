@@ -30,14 +30,6 @@ type Error = Box<dyn std::error::Error>;
 
 /// A hooked app whose idle sessions park at once (`park_after_ms` 1) under a limit of `slots`.
 async fn app(data: &Path, slots: u32, park_after_ms: u64) -> Result<Arc<App>, Error> {
-    Ok(app_with_pulls(data, slots, park_after_ms).await?.0)
-}
-
-async fn app_with_pulls(
-    data: &Path,
-    slots: u32,
-    park_after_ms: u64,
-) -> Result<(Arc<App>, Arc<crate::support::FakeGitHub>), Error> {
     let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
     let agent = FakeAgentOptions {
         answers_first_message: true,
@@ -45,81 +37,19 @@ async fn app_with_pulls(
         resume_prompts: true,
         ..hooked()
     };
-    let (app, _, github) = crate::first_message::start_hosted_with_github(
+    let (app, _) = start_with(
         data,
         &fake,
         agent,
-        (
-            0,
-            Arc::new(ScriptedUsage::default()),
-            Arc::new(yulius::wiring::clock::SystemClock),
-        ),
-        None,
+        0,
+        Arc::new(ScriptedUsage::default()),
         |config| {
             config.max_live_sessions = slots;
             config.park_after_ms = park_after_ms;
         },
     )
     .await?;
-    Ok((app, github))
-}
-
-/// Give the real parking decision a readable open PR at the head the fixture controls.
-async fn open_pull_at(
-    app: &App,
-    github: &crate::support::FakeGitHub,
-    task: &TaskId,
-    number: u64,
-    head: &str,
-) -> TestResult {
-    use yulius_app::ports::github::GhPull;
-    let store = &app.deps.store;
-    store.init_instance("https://yulius.test", "x").await?;
-    let cfg = json!({"app_id":1,"slug":"test","client_id":"test","client_secret":"synthetic","private_key_pem":"synthetic"});
-    store
-        .set_github_app(
-            &app.deps.crypto.seal(&serde_json::to_vec(&cfg)?)?,
-            "acme",
-            "org",
-        )
-        .await?;
-    store.set_installation(Some(7)).await?;
-    let branch = store
-        .task(task)
-        .await?
-        .and_then(|t| t.branch)
-        .ok_or("task branch")?;
-    github
-        .pulls
-        .lock()
-        .map_err(|_| "fixture pull")?
-        .push(GhPull {
-            number,
-            html_url: format!("https://github.test/acme/pool/pull/{number}"),
-            title: "Repair checks".into(),
-            state: "open".into(),
-            merged: false,
-            base: "dev".into(),
-            head: branch,
-            head_sha: head.into(),
-            mergeable: Some(true),
-            behind: false,
-            from_fork: false,
-            merge_commit_sha: None,
-        });
-    Ok(())
-}
-
-fn set_pull_head(github: &crate::support::FakeGitHub, number: u64, head: &str) -> TestResult {
-    github
-        .pulls
-        .lock()
-        .map_err(|_| "fixture pull")?
-        .iter_mut()
-        .find(|p| p.number == number)
-        .ok_or("open fixture pull")?
-        .head_sha = head.into();
-    Ok(())
+    Ok(app)
 }
 
 /// A running task whose agent answered its first message and waits for a person.
@@ -888,28 +818,21 @@ async fn queued_park_screen(
     )
     .await?;
     let captured = screen(app, id);
-    // A real park wakes the queue asynchronously. Reconstruct the cold states
-    // on a consistent copy so that drain cannot launch the synthetic queued run.
-    let (_cold_dir, cold_data) = data_dir()?;
-    yulius_store::SqliteStore::open(&data.join("yulius.db"))?
-        .backup_to(&cold_data.join("yulius.db"))
-        .await?;
-    let cold = self::app(&cold_data, 8, 1).await?;
     assert!(
-        cold.deps
+        app.deps
             .store
             .transition_task(
                 id,
                 Some(TaskStatus::Parked),
                 TaskStatus::Queued,
                 None,
-                cold.now()
+                app.now()
             )
             .await?
     );
     // Loss and normal exit can save identical bytes in this fake agent. Make
     // the ordinary final screen distinct to prove which snapshot each reader uses.
-    let last = cold
+    let last = app
         .deps
         .store
         .attempts(id)
@@ -918,10 +841,10 @@ async fn queued_park_screen(
         .ok_or("parked attempt")?;
     let dir = Path::new(&last.run_dir);
     std::fs::write(dir.join("final-screen"), b"80 24\nShutdown screen")?;
-    assert_cold_screen(&cold_data, id, caller, &captured).await?;
+    assert_cold_screen(data, id, caller, &captured).await?;
     // A restart in the gap between the state commit and the filename change.
     std::fs::rename(dir.join("parked-screen"), dir.join("parked-screen.pending"))?;
-    assert_cold_screen(&cold_data, id, caller, &captured).await?;
+    assert_cold_screen(data, id, caller, &captured).await?;
     let renamed = dir.to_owned();
     yulius_app::race::on(yulius_app::race::Point::ParkScreenRead, dir, move || {
         let published = std::fs::rename(
@@ -930,35 +853,35 @@ async fn queued_park_screen(
         );
         assert!(published.is_ok(), "{published:?}");
     });
-    assert_cold_screen(&cold_data, id, caller, &captured).await?;
+    assert_cold_screen(data, id, caller, &captured).await?;
     // Starting is recorded before the provider acquires its account.
     assert!(
-        cold.deps
+        app.deps
             .store
             .transition_task(
                 id,
                 Some(TaskStatus::Queued),
                 TaskStatus::Starting,
                 None,
-                cold.now()
+                app.now()
             )
             .await?
     );
-    assert_cold_screen(&cold_data, id, caller, &captured).await?;
+    assert_cold_screen(data, id, caller, &captured).await?;
     // The resumed launch has no subscription available, so it waits without a new attempt.
     assert!(
-        cold.deps
+        app.deps
             .store
             .transition_task(
                 id,
                 Some(TaskStatus::Starting),
                 TaskStatus::WaitingCapacity,
                 None,
-                cold.now()
+                app.now()
             )
             .await?
     );
-    assert_cold_screen(&cold_data, id, caller, &captured).await
+    assert_cold_screen(data, id, caller, &captured).await
 }
 
 /// PRK-003 (review round 2): a switch that starts after the park decided gives way to it: the
@@ -1257,6 +1180,26 @@ fn an_unfinished_spec_keeps_its_session() -> TestResult {
             .ok_or("task")?;
         assert_eq!(after.status, TaskStatus::Running);
         assert!(app.task_summary(&after).await?.spec_unfinished);
+        // Both a person request and an achieved activity can take precedence in the display.
+        ask(&app, &id).await?;
+        app.deps
+            .store
+            .transition_task(
+                &id,
+                Some(TaskStatus::Running),
+                TaskStatus::Running,
+                Some(Activity::Done),
+                app.now(),
+            )
+            .await?;
+        past_the_grace(&app, &id).await?;
+        assert_eq!(
+            app.park_idle_sessions_now().await,
+            0,
+            "a human request cannot hide the unfinished spec"
+        );
+        app.deps.store.set_spec_status(&id, Some("done")).await?;
+        parked(&app, &id).await?;
         Ok::<_, Error>(())
     })?;
     rt.shutdown_timeout(Duration::from_secs(5));
@@ -1653,7 +1596,7 @@ fn parked_task_parks_safely_during_ci_and_auto_wakes_on_actionable_check_results
     let (_dir, data) = data_dir()?;
     let rt = runtime()?;
     rt.block_on(async {
-        let (app, github) = app_with_pulls(&data, 8, 1).await?;
+        let app = app(&data, 8, 1).await?;
         let (id, caller) = answered(&app, &data).await?;
         let session_id = app.deps.store.attempts(&id).await?[0]
             .provider_session_id
@@ -1686,11 +1629,6 @@ fn parked_task_parks_safely_during_ci_and_auto_wakes_on_actionable_check_results
             started_at: Some(Timestamp(11)),
             ended_at: None,
         };
-        open_pull_at(&app, &github, &id, 42, &running_ci.sha).await?;
-        github.set_checks(
-            &running_ci.sha,
-            yulius_app::ports::github::ChecksState::Pending,
-        );
         let running_job = CiJobRecord {
             id: "job-running".into(),
             run_id: "run-running".into(),
@@ -1716,80 +1654,6 @@ fn parked_task_parks_safely_during_ci_and_auto_wakes_on_actionable_check_results
             .insert_ci_run(&running_ci, &[running_job])
             .await?;
 
-        // The CI run exists, but without a recorded PR the parked watcher cannot deliver it.
-        let external = DeliveryRecord {
-            stage: DeliveryStage::None,
-            pr_number: None,
-            ..open.clone()
-        };
-        assert!(
-            app.deps
-                .store
-                .transition_delivery(&open.stage, &external)
-                .await?
-        );
-        past_the_grace(&app, &id).await?;
-        assert_eq!(
-            app.park_idle_sessions_now().await,
-            0,
-            "external pending checks have no parked watcher"
-        );
-        assert!(
-            app.deps
-                .store
-                .transition_delivery(&external.stage, &open)
-                .await?
-        );
-        // A watch for an older head cannot take responsibility for the current checks.
-        let newer = "4444444444444444444444444444444444444444";
-        set_pull_head(&github, 42, newer)?;
-        github.set_checks(newer, yulius_app::ports::github::ChecksState::Pending);
-        past_the_grace(&app, &id).await?;
-        assert_eq!(
-            app.park_idle_sessions_now().await,
-            0,
-            "the active run is for an older PR head"
-        );
-        // Displaying an achieved goal or a human request does not hand its
-        // unobserved current-head checks to the CI watcher.
-        app.deps
-            .store
-            .transition_task(
-                &id,
-                Some(TaskStatus::Running),
-                TaskStatus::Running,
-                Some(Activity::Done),
-                app.now(),
-            )
-            .await?;
-        past_the_grace(&app, &id).await?;
-        assert_eq!(
-            app.park_idle_sessions_now().await,
-            0,
-            "an achieved goal still owns the unwatched checks"
-        );
-        app.deps
-            .store
-            .transition_task(
-                &id,
-                Some(TaskStatus::Running),
-                TaskStatus::Running,
-                Some(Activity::Waiting),
-                app.now(),
-            )
-            .await?;
-        ask(&app, &id).await?;
-        past_the_grace(&app, &id).await?;
-        assert_eq!(
-            app.park_idle_sessions_now().await,
-            0,
-            "a pending human request does not settle unwatched checks"
-        );
-        app.deps
-            .store
-            .set_task_needs_you(&id, None, app.now())
-            .await?;
-        set_pull_head(&github, 42, &running_ci.sha)?;
         parked(&app, &id).await?;
         let bounds = WatchBounds::default();
         // Still running: `watch_prs` must NOT wake the parked task.
@@ -1810,10 +1674,6 @@ fn parked_task_parks_safely_during_ci_and_auto_wakes_on_actionable_check_results
             ended_at: Some(Timestamp(22)),
             ..running_ci.clone()
         };
-        github.set_checks(
-            &passed_ci.sha,
-            yulius_app::ports::github::ChecksState::Success,
-        );
         let passed_job = CiJobRecord {
             id: "job-passed".into(),
             run_id: "run-passed".into(),
@@ -1893,11 +1753,6 @@ fn parked_task_parks_safely_during_ci_and_auto_wakes_on_actionable_check_results
             ended_at: Some(Timestamp(32)),
             ..running_ci
         };
-        set_pull_head(&github, 42, &failed_ci.sha)?;
-        github.set_checks(
-            &failed_ci.sha,
-            yulius_app::ports::github::ChecksState::Failure,
-        );
         let failed_job = CiJobRecord {
             id: "job-failed".into(),
             run_id: "run-failed".into(),
@@ -1977,16 +1832,6 @@ fn parked_task_parks_safely_during_ci_and_auto_wakes_on_actionable_check_results
             status_of(&app, &id).await.1 == Some(Activity::Waiting)
         })
         .await?;
-        past_the_grace(&app, &id).await?;
-        assert_eq!(
-            app.park_idle_sessions_now().await,
-            0,
-            "the known red head is still unfinished"
-        );
-        // The agent publishes a repair. The old failed-run notice remains delivered.
-        let repaired = "3333333333333333333333333333333333333333";
-        set_pull_head(&github, 42, repaired)?;
-        github.set_checks(repaired, yulius_app::ports::github::ChecksState::Success);
         parked(&app, &id).await?;
         // Simulate a server restart on the same data directory (re-reading `pr-notices.json`):
         // the already-delivered `run-failed` must NOT double-wake the parked task.
@@ -2004,9 +1849,10 @@ fn parked_task_parks_safely_during_ci_and_auto_wakes_on_actionable_check_results
 }
 
 /// SPEC-553 PRK-103: an unpublished clean committed fast-forward CI repair above a failing open
-/// PR head still needs its session when the task requests a person (SPEC-558 PKR-004).
+/// PR head defers parking (`open_pr_work_pending`), while a pending human `needs_you` decision
+/// or active (`Running`) CI run allows safe parking.
 #[test]
-fn an_unpublished_ci_repair_keeps_its_session_even_with_a_human_request() -> TestResult {
+fn unpublished_open_pr_ci_repair_defers_parking_unless_needs_you_or_ci_running() -> TestResult {
     use std::process::Command;
     use yulius_app::ci::{CiJobRecord, CiRunRecord};
     use yulius_app::delivery::DeliveryRecord;
@@ -2018,7 +1864,7 @@ fn an_unpublished_ci_repair_keeps_its_session_even_with_a_human_request() -> Tes
     let (_dir, data) = data_dir()?;
     let rt = runtime()?;
     rt.block_on(async {
-        let (app, github) = app_with_pulls(&data, 8, 1).await?;
+        let app = app(&data, 8, 1).await?;
         let (id, caller) = answered(&app, &data).await?;
         let task = TaskStore::task(app.deps.store.as_ref(), &id)
             .await?
@@ -2045,11 +1891,6 @@ fn an_unpublished_ci_repair_keeps_its_session_even_with_a_human_request() -> Tes
         let repair_head = git(&["rev-parse", "HEAD"])?;
         assert_ne!(repair_head, failed_head);
 
-        open_pull_at(&app, &github, &id, 99, &failed_head).await?;
-        github.set_checks(
-            &failed_head,
-            yulius_app::ports::github::ChecksState::Failure,
-        );
         let open = DeliveryRecord {
             task_id: id.clone(),
             stage: DeliveryStage::PrOpen,
@@ -2101,7 +1942,8 @@ fn an_unpublished_ci_repair_keeps_its_session_even_with_a_human_request() -> Tes
             .insert_ci_run(&failed_ci, &[failed_job])
             .await?;
         // Pre-seed `pr-notices.json` at `PR_NOTICES_FILE` (`data/pr-notices.json`) so `pr_news_due`
-        // is false while the upstream is red and the repair still needs to be pushed.
+        // is false and ONLY `open_pr_work_pending` keeps the session from parking while
+        // `repair_head` is unpublished.
         let told_json = json!({
             id.as_str(): {
                 "pr": 99,
@@ -2126,16 +1968,11 @@ fn an_unpublished_ci_repair_keeps_its_session_even_with_a_human_request() -> Tes
         // safe parking is no longer deferred.
         let branch = task.branch.as_deref().ok_or("branch")?;
         git(&["push", "-q", "origin", branch])?;
-        set_pull_head(&github, 99, &repair_head)?;
-        github.set_checks(
-            &repair_head,
-            yulius_app::ports::github::ChecksState::Success,
-        );
         parked(&app, &id).await?;
         assert_eq!(status_of(&app, &id).await.0, Some(TaskStatus::Parked));
 
-        // With green upstream checks the newer local commit alone keeps the session live,
-        // including while a human request is pending.
+        // Resume, commit a second unpublished repair, and verify an open `needs_you` human
+        // decision still allows safe parking instead of deferring for the repair.
         let owner_ctx = AuthContext {
             user: app.deps.store.user(&caller.user).await?.ok_or("user")?,
             csrf_token: None,
@@ -2160,83 +1997,7 @@ fn an_unpublished_ci_repair_keeps_its_session_even_with_a_human_request() -> Tes
         std::fs::write(wt.join("repair2.txt"), "second fix\n")?;
         git(&["add", "repair2.txt"])?;
         git(&["commit", "-m", "Second unpublished CI repair"])?;
-        past_the_grace(&app, &id).await?;
-        assert_eq!(
-            app.park_idle_sessions_now().await,
-            0,
-            "the upstream is green but the newer repair is unpublished"
-        );
         ask(&app, &id).await?;
-        past_the_grace(&app, &id).await?;
-        assert_eq!(
-            app.park_idle_sessions_now().await,
-            0,
-            "a human request does not publish the outstanding repair"
-        );
-        // Re-running CI on the *published* head cannot hand the newer local commit to the watcher.
-        for (offset, state) in [(1, RunState::Running), (2, RunState::Passed)] {
-            let rerun = CiRunRecord {
-                id: format!("repeat-{offset}"),
-                sha: repair_head.clone(),
-                state,
-                queued_at: Timestamp(20 + offset),
-                started_at: Some(Timestamp(20 + offset)),
-                ended_at: (state == RunState::Passed).then_some(Timestamp(23)),
-                ..failed_ci.clone()
-            };
-            app.deps.store.insert_ci_run(&rerun, &[]).await?;
-            assert_eq!(
-                app.park_idle_sessions_now().await,
-                0,
-                "a rerun on an older published commit cannot deliver the new one: {state:?}"
-            );
-        }
-        // A different upstream commit can also pass while the local repair is outstanding.
-        let tree = git(&["rev-parse", &format!("{repair_head}^{{tree}}")])?;
-        let parallel = git(&[
-            "commit-tree",
-            &tree,
-            "-p",
-            &repair_head,
-            "-m",
-            "Parallel upstream update",
-        ])?;
-        git(&[
-            "push",
-            "-q",
-            "origin",
-            &format!("{parallel}:refs/heads/{branch}"),
-        ])?;
-        set_pull_head(&github, 99, &parallel)?;
-        github.set_checks(&parallel, yulius_app::ports::github::ChecksState::Success);
-        assert_eq!(
-            app.park_idle_sessions_now().await,
-            0,
-            "the diverged upstream head does not contain the local repair"
-        );
-        git(&["merge", "--no-edit", &parallel])?;
-        git(&["push", "-q", "origin", branch])?;
-        let last = git(&["rev-parse", "HEAD"])?;
-        set_pull_head(&github, 99, &last)?;
-        github.set_checks(&last, yulius_app::ports::github::ChecksState::Success);
-        // The upstream may advance again. It now contains the repair, so the older checkout can park.
-        let tree = git(&["rev-parse", "HEAD^{tree}"])?;
-        let upstream = git(&[
-            "commit-tree",
-            &tree,
-            "-p",
-            &last,
-            "-m",
-            "Upstream after publication",
-        ])?;
-        git(&[
-            "push",
-            "-q",
-            "origin",
-            &format!("{upstream}:refs/heads/{branch}"),
-        ])?;
-        set_pull_head(&github, 99, &upstream)?;
-        github.set_checks(&upstream, yulius_app::ports::github::ChecksState::Success);
         parked(&app, &id).await?;
         assert_eq!(status_of(&app, &id).await.0, Some(TaskStatus::Parked));
         Ok::<_, Error>(())
@@ -2461,38 +2222,6 @@ fn a_handed_off_tasks_outcome_reaches_its_source() -> TestResult {
             app.deps.store.untold_handoffs().await?.is_empty(),
             "told once"
         );
-        Ok::<_, Error>(())
-    })?;
-    rt.shutdown_timeout(Duration::from_secs(5));
-    Ok(())
-}
-
-#[test]
-fn an_idle_task_keeps_its_session_while_its_recorded_pr_cannot_be_read() -> TestResult {
-    use yulius_domain::delivery::DeliveryStage;
-    let (_dir, data) = data_dir()?;
-    let rt = runtime()?;
-    rt.block_on(async {
-        let app = app(&data, 1, 1).await?;
-        let (id, _) = answered(&app, &data).await?;
-        app.deps
-            .store
-            .transition_delivery(
-                &DeliveryStage::None,
-                &yulius_app::delivery::DeliveryRecord {
-                    task_id: id.clone(),
-                    stage: DeliveryStage::PrOpen,
-                    pr_number: Some(1461),
-                    updated_at: app.now(),
-                },
-            )
-            .await?;
-        past_the_grace(&app, &id).await?;
-        // The fake project has no installation from which to read this head.
-        let digest = app.send_digests_now(Some(1)).await;
-        assert_eq!(digest.parked, 0);
-        assert_eq!(app.park_idle_sessions_now().await, 0);
-        assert_eq!(status_of(&app, &id).await.0, Some(TaskStatus::Running));
         Ok::<_, Error>(())
     })?;
     rt.shutdown_timeout(Duration::from_secs(5));

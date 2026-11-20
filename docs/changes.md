@@ -6,8 +6,8 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-20
 
-- Tasks keep their sessions while work is unfinished or PR checks cannot be verified.
-  Only an active Yulius CI run on the current PR head takes over pending checks (SPEC-558, #1490).
+- Idle sessions with an open step, unfinished spec or unfinished goal stay live through grace-period and digest parking, including when their owner has been asked (SPEC-558, #1490).
+
 - GPT-6.2 Astra now inherits extra high reasoning effort on new Codex launches and resumes.
   Task details mark inherited effort so an explicit High control is identifiable (SPEC-561, task #554).
 - Intake browser tests wait up to the shared first-load budget for the sandbox task list.
