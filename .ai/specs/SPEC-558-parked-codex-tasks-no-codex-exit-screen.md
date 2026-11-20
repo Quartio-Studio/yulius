@@ -39,7 +39,7 @@ Task #517 displayed Codex's exit instructions. The host drained shutdown output 
 - [x] Return the verified plan snapshot with parked HTTP task rows
 - [x] Filter and explain verified parked rows in MCP task reads
 - [x] Refresh parked page and sidebar status independently of the Git overview
-- [ ] Preserve newer task events when parked task lists reload
+- [x] Preserve newer task events when parked task lists reload
 - [ ] Deliver the verified parked page and sidebar watch after safe list reloads
 - [ ] Keep failed integration candidates with their original owner
 - [ ] Deliver bounded Codex goal continuation to dev
@@ -67,6 +67,8 @@ Capture a separate screen at the park decision because exiting can clear the ent
 A human request can take precedence over unfinished work in the task list. Both parking triggers therefore check the recorded plan, spec and native goal immediately before committing to shutdown. The task’s steps lock orders that decision with plan, spec and goal updates. An update in progress or a store read failure leaves the session live for a later pass.
 
 ## Evidence
+
+- Independent review approved `d63673e7083daf2b4d8ff8dcb73358ae11edb6b2` for the full-list reload slice. All five focused Chromium regressions passed, including recovery of the open task page after the sidebar received the only successful list. The parked-page watch remains a separate delivery.
 
 - Focused review reproduced two cold-load failure effects. One successful list still left the shared error set, hiding onboarding state. In the direct task route, a failed navigation request left the error page visible even after the sidebar received the successful list. Chromium tests failed on both effects and passed after correction. They also exercise archived task updates, a superseded failed request and an isolated refresh error.
 - With the split implementation, 55 scoped Chromium tests passed before the review extensions. The quick repository checks passed. The Rust mutation command reported no changed Rust code. Removing event preservation and request ordering in an isolated browser build made both corresponding regressions fail. Vidoc was disabled.
