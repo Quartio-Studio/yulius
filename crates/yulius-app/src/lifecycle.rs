@@ -57,19 +57,25 @@ pub struct NewTask {
     pub supertask: bool,
 }
 
-/// Codex runs OpenAI's models and Antigravity Google's Gemini models: another provider's model,
-/// given at creation or set later, would make its run fail at start (SPEC-503, SPEC-505).
+/// Refuse another provider's model before creating a task or updating its settings.
 pub(crate) fn model_of_its_harness(harness: Harness, model: Option<&str>) -> AppResult<()> {
-    let Some(model) = model.map(|m| m.trim().to_ascii_lowercase()) else {
+    let Some(model) = model else {
         return Ok(());
     };
-    match harness {
-        Harness::Codex if model.starts_with("claude") => Err(AppError::Invalid(
-            "a Codex task takes an OpenAI model, not a Claude one".into(),
+    match (harness, Harness::for_model_prefix(model)) {
+        (Harness::Antigravity, owner) if owner != Some(Harness::Antigravity) => {
+            Err(AppError::Invalid(format!(
+                "an Antigravity task takes a Gemini model (such as {})",
+                yulius_domain::harness::DEFAULT_ANTIGRAVITY_MODEL
+            )))
+        }
+        (Harness::Codex, Some(Harness::ClaudeCode)) => Err(AppError::Invalid(
+            "a Codex task takes an OpenAI model. Choose Claude Code for a Claude model.".into(),
         )),
-        Harness::Antigravity if !model.starts_with("gemini-") => Err(AppError::Invalid(format!(
-            "an Antigravity task takes a Gemini model (such as {})",
-            yulius_domain::harness::DEFAULT_ANTIGRAVITY_MODEL
+        (_, Some(owner)) if owner != harness => Err(AppError::Invalid(format!(
+            "Choose {} for this model. This task uses {}.",
+            owner.display_name(),
+            harness.display_name()
         ))),
         _ => Ok(()),
     }
@@ -469,7 +475,7 @@ impl App {
             text => Some(parse_harness(text)?),
         };
         if let Some(harness) = explicit_harness {
-            model_of_its_harness(harness, req.model.as_deref())?;
+            model_of_its_harness(harness, model)?;
         }
         // New tasks run in goal mode unless the user picks prompt mode (TSK-010); `auto` lets Jev
         // choose (TSK-015).
@@ -539,7 +545,7 @@ impl App {
                         .as_ref()
                         .map(|w| w.steps.clone())
                         .unwrap_or_default(),
-                    model: req.model.clone().filter(|m| !m.trim().is_empty()),
+                    model: model.map(str::to_owned),
                     effort: req.effort.clone().filter(|e| !e.trim().is_empty()),
                     origin,
                     automation_run: None,

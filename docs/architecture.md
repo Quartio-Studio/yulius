@@ -99,8 +99,8 @@ subscription usable it asks for one.
 
 A task's agent is assigned at creation and kept for life (SPEC-520, ADR-0377, superseding the
 no-draw part of SPEC-514 / ADR-0368): without an explicit agent (or with `auto`) it takes the one
-its model implies, else draws uniformly (`1 / k`, rejection-sampled over `random_bytes`) across the
-harnesses in `Harness::ALL` (`claude`, `codex`, `antigravity`) that have at least one healthy
+its model implies (Codex for `gpt-*`, Antigravity for `gemini-*`, otherwise Claude Code), else
+draws uniformly (`1 / k`, rejection-sampled over `random_bytes`) across the harnesses in `Harness::ALL` (`claude`, `codex`, `antigravity`) that have at least one healthy
 non-exhausted subscription for their default model (falling back to healthy `Usable` pools when
 every connected pool is temporarily limited, else `ClaudeCode`), recorded in `task_harness_draws`
 (`harness_choice: random`). A running task agent's `task_create` and `automation_create` without
