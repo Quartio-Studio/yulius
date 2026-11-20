@@ -3188,3 +3188,189 @@ async fn a_refreshed_credential_replaces_only_the_one_it_refreshes() -> R {
     assert_eq!(after.email_checked_at, Some(Timestamp(2)));
     Ok(())
 }
+
+fn staging_request(
+    id: &str,
+    sandbox: &SandboxId,
+    task: Option<&TaskId>,
+    revision: &str,
+    state: yulius_domain::staging::StagingState,
+) -> yulius_app::ports::store_ext::StagingRequestRecord {
+    yulius_app::ports::store_ext::StagingRequestRecord {
+        id: id.to_owned(),
+        sandbox_id: sandbox.clone(),
+        environment: "staging".into(),
+        task_id: task.cloned(),
+        revision: revision.to_owned(),
+        state,
+        ci_run_id: None,
+        cd_run_id: None,
+        attempts: 0,
+        note: None,
+        requested_by: "agent:t1".into(),
+        told: false,
+        created_at: Timestamp(100),
+        updated_at: Timestamp(100),
+    }
+}
+
+/// SPEC-575 MFS-005, MFS-008: a repeated request is the same row, a task has one successful
+/// staging deployment, one deploy runs at a time, and every move is a compare-and-set from the
+/// state it was decided on (a second tick or a restart never moves a request twice).
+#[tokio::test]
+async fn staging_requests_are_idempotent_and_move_once() -> R {
+    use yulius_app::ports::store_ext::{StagingChange, StagingStore};
+    use yulius_domain::staging::StagingState::{
+        Deploying, GateFailed, Included, Ready, Superseded, Testing, Verified,
+    };
+    let store = SqliteStore::open_in_memory()?;
+    let (sid, uid) = seed(&store).await?;
+    let t1 = task("t1", &sid, &uid)?;
+    let t2 = task("t2", &sid, &uid)?;
+    store.insert_task(&t1).await?;
+    store.insert_task(&t2).await?;
+    assert!(
+        store
+            .insert_staging_request(&staging_request("a", &sid, Some(&t1.id), "r1", Testing))
+            .await?
+    );
+    assert!(
+        !store
+            .insert_staging_request(&staging_request("a2", &sid, Some(&t1.id), "r1", Testing))
+            .await?,
+        "the same task and revision: one row"
+    );
+    // A person's request for the same revision is its own.
+    assert!(
+        store
+            .insert_staging_request(&staging_request("p", &sid, None, "r1", Testing))
+            .await?
+    );
+    assert!(
+        !store
+            .insert_staging_request(&staging_request("p2", &sid, None, "r1", Testing))
+            .await?
+    );
+    let of_t1 = store
+        .staging_requests_of(&sid, "staging", Some(&t1.id), "")
+        .await?;
+    assert_eq!(
+        of_t1.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(),
+        ["a"]
+    );
+    let of_person = store
+        .staging_requests_of(&sid, "staging", None, "r1")
+        .await?;
+    assert_eq!(
+        of_person.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(),
+        ["p"]
+    );
+    // Compare-and-set: the move applies once, from the state it was decided on.
+    let change = StagingChange {
+        ci_run_id: Some("ci-1".into()),
+        ..StagingChange::default()
+    };
+    assert!(
+        store
+            .move_staging_request("a", Testing, Ready, &change, Timestamp(110))
+            .await?
+    );
+    assert!(
+        !store
+            .move_staging_request("a", Testing, GateFailed, &change, Timestamp(111))
+            .await?
+    );
+    let a = store.staging_request("a").await?.ok_or("a")?;
+    assert_eq!(
+        (a.state, a.ci_run_id.as_deref(), a.updated_at),
+        (Ready, Some("ci-1"), Timestamp(110))
+    );
+    // One deploy at a time per environment.
+    assert!(
+        store
+            .insert_staging_request(&staging_request("b", &sid, Some(&t2.id), "r2", Ready))
+            .await?
+    );
+    assert!(
+        store
+            .move_staging_request(
+                "a",
+                Ready,
+                Deploying,
+                &StagingChange::default(),
+                Timestamp(120)
+            )
+            .await?
+    );
+    assert!(
+        !store
+            .move_staging_request(
+                "b",
+                Ready,
+                Deploying,
+                &StagingChange::default(),
+                Timestamp(121)
+            )
+            .await?,
+        "a second deploy of the environment is refused"
+    );
+    let pending = store.pending_staging_requests(&sid, "staging").await?;
+    assert_eq!(
+        pending.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(),
+        ["a", "p", "b"]
+    );
+    assert_eq!(
+        store.staging_queues().await?,
+        [(sid.clone(), "staging".to_owned())]
+    );
+    let verified = StagingChange {
+        cd_run_id: Some("cd-1".into()),
+        attempts: Some(1),
+        ..StagingChange::default()
+    };
+    assert!(
+        store
+            .move_staging_request("a", Deploying, Verified, &verified, Timestamp(130))
+            .await?
+    );
+    // One successful deployment per task: a second row of t1 can never succeed too.
+    assert!(
+        store
+            .insert_staging_request(&staging_request("a3", &sid, Some(&t1.id), "r3", Testing))
+            .await?
+    );
+    assert!(
+        !store
+            .move_staging_request(
+                "a3",
+                Testing,
+                Included,
+                &StagingChange::default(),
+                Timestamp(140)
+            )
+            .await?
+    );
+    assert!(
+        store
+            .move_staging_request(
+                "a3",
+                Testing,
+                Superseded,
+                &StagingChange::default(),
+                Timestamp(141)
+            )
+            .await?
+    );
+    // The outcome is told to the task once.
+    let untold = store.untold_staging_requests().await?;
+    assert_eq!(
+        untold.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(),
+        ["a"]
+    );
+    assert!(store.mark_staging_told("a").await?);
+    assert!(!store.mark_staging_told("a").await?);
+    assert!(store.untold_staging_requests().await?.is_empty());
+    let recent = store.recent_staging_requests(&sid, "staging", 2).await?;
+    assert_eq!(recent.len(), 2);
+    Ok(())
+}
