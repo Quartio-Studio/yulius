@@ -352,7 +352,7 @@ async fn a_plan_is_written_for_root_audited_and_followed() -> TestResult {
     let asked = i
         .ask(json!({
             "action": "plan", "target": "  root@new.example ", "public_url": "https://new.example/",
-            "data_disks": [" /dev/vdc ", ""],
+            "data_disks": [" /dev/vdc ", ""], "max_downtime": 8,
         }))
         .await?;
     assert_eq!(asked.status, StatusCode::ACCEPTED, "{}", asked.body);
@@ -365,6 +365,7 @@ async fn a_plan_is_written_for_root_audited_and_followed() -> TestResult {
     assert_eq!(request.ssh_port, Some(22));
     assert_eq!(request.public_url.as_deref(), Some("https://new.example"));
     assert_eq!(request.data_disks, ["/dev/vdc"]);
+    assert_eq!(serde_json::to_value(request)?["max_downtime"], 8);
     assert_eq!(request.requested_at, i.now());
     assert!(
         yulius_app::migration::rules::valid_id(&request.id),
@@ -411,6 +412,7 @@ async fn a_plan_is_written_for_root_audited_and_followed() -> TestResult {
     assert_eq!(running["run"]["action"], "plan");
     assert_eq!(running["run"]["target"], TARGET);
     assert_eq!(running["run"]["ssh_port"], 22);
+    assert_eq!(running["run"]["max_downtime"], 8);
     assert_eq!(running["run"]["data_disks"], json!(["/dev/vdc"]));
     assert_eq!(
         running["can"],
@@ -505,9 +507,10 @@ async fn a_move_needs_the_plan_that_was_shown_and_the_typed_host() -> TestResult
     i.planned(&GOOD, None).await?;
     assert_eq!(i.view().await?["can"]["move"], true);
     // Other values than the plan's: each one.
-    let changes: [(&str, Value, &str); 4] = [
+    let changes: [(&str, Value, &str); 5] = [
         ("target", "root@other.example".into(), "other.example"),
         ("ssh_port", 22.into(), "new.example"),
+        ("max_downtime", 1.into(), "new.example"),
         ("public_url", Value::Null, "new.example"),
         ("data_disks", json!(["/dev/vdc"]), "new.example"),
     ];
@@ -585,7 +588,7 @@ async fn a_move_needs_the_plan_that_was_shown_and_the_typed_host() -> TestResult
 #[tokio::test]
 async fn a_field_outside_the_rules_is_refused_before_anything_is_written() -> TestResult {
     let i = instance().await?;
-    let cases: [(&str, Value, &str); 9] = [
+    let cases: [(&str, Value, &str); 10] = [
         ("target", Value::Null, "the new host is missing"),
         ("target", "".into(), "the new host is missing"),
         (
@@ -595,6 +598,7 @@ async fn a_field_outside_the_rules_is_refused_before_anything_is_written() -> Te
         ),
         ("target", "admin@new.example".into(), "reached as root"),
         ("ssh_port", 0.into(), "the SSH port"),
+        ("max_downtime", 0.into(), "longest freeze"),
         ("public_url", "http://new.example".into(), "the public URL"),
         (
             "public_url",
@@ -621,9 +625,16 @@ async fn a_field_outside_the_rules_is_refused_before_anything_is_written() -> Te
         "an abort names no host",
     )
     .await?;
+    i.refused(
+        json!({"action": "abort", "max_downtime": 5}),
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "an abort names no",
+    )
+    .await?;
     // No such action, a port that is no port: not a request at all.
     for body in [
         json!({"action": "install", "target": TARGET}),
+        json!({"action": "plan", "target": TARGET, "max_downtime": "minutes"}),
         json!({"action": "plan", "target": TARGET, "ssh_port": 70000}),
     ] {
         let answer = i.ask(body).await?;

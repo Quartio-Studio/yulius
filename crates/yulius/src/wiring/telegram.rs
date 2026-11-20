@@ -14,11 +14,14 @@ use async_trait::async_trait;
 use serde_json::{Value, json};
 use yulius_app::model::Secret;
 use yulius_app::ports::notify::{
-    ChannelConnector, ChannelError, ChannelIdentity, Inbound, NotificationChannel, Received,
+    ChannelConnector, ChannelError, ChannelIdentity, Inbound, InboundFile, NotificationChannel,
+    Received,
 };
 
 /// Telegram's Bot API.
 pub const TELEGRAM_API: &str = "https://api.telegram.org";
+/// The bound of one file download (SPEC-512 TGI-003: at most 20 MB).
+const FILE_DEADLINE: Duration = Duration::from_secs(120);
 /// How long `getUpdates` waits for a message (seconds, Telegram's long poll).
 pub const POLL_SECONDS: u64 = 25;
 /// Bound of a call other than the long poll.
@@ -231,6 +234,60 @@ fn first_update_id(head: &[u8]) -> Option<i64> {
     digits[..end].parse().ok()
 }
 
+/// The files of a message (SPEC-512 TGI-003): a photo's largest size, a document, a voice note,
+/// an audio or a video file, each named by the sender or by its kind.
+fn message_files(message: &Value) -> Vec<InboundFile> {
+    let file = |value: &Value, kind: &str, ext: &str| -> Option<InboundFile> {
+        let id = value.get("file_id").and_then(Value::as_str)?.to_owned();
+        let unique = value
+            .get("file_unique_id")
+            .and_then(Value::as_str)
+            .unwrap_or("file");
+        let name = value
+            .get("file_name")
+            .and_then(Value::as_str)
+            .filter(|n| !n.trim().is_empty())
+            .map_or_else(|| format!("{kind}-{unique}.{ext}"), str::to_owned);
+        Some(InboundFile {
+            id,
+            name,
+            size: value.get("file_size").and_then(Value::as_u64),
+        })
+    };
+    let mut files = Vec::new();
+    if let Some(largest) = message
+        .get("photo")
+        .and_then(Value::as_array)
+        .and_then(|sizes| sizes.last())
+    {
+        files.extend(file(largest, "photo", "jpg"));
+    }
+    for (key, ext) in [
+        ("document", "bin"),
+        ("voice", "ogg"),
+        ("audio", "mp3"),
+        ("video", "mp4"),
+    ] {
+        if let Some(value) = message.get(key) {
+            files.extend(file(value, key, ext));
+        }
+    }
+    files
+}
+
+/// Whether Telegram's `file_path` is a plain relative path under the bot's file root: no
+/// parent step, no escape, no absolute path (SPEC-512 TGI-003).
+fn file_path_ok(path: &str) -> bool {
+    !path.is_empty()
+        && !path.starts_with('/')
+        && !path.contains("..")
+        && !path.contains('%')
+        && !path.contains('\\')
+        && path
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'/' | b'_' | b'-' | b'.'))
+}
+
 /// The messages of a `getUpdates` result and the next offset.
 fn parse_updates(result: &Value) -> Result<Received, ChannelError> {
     let updates = result.as_array().ok_or(ChannelError::Invalid)?;
@@ -252,14 +309,26 @@ fn parse_updates(result: &Value) -> Result<Received, ChannelError> {
         let Some(chat_id) = chat.get("id").and_then(Value::as_i64) else {
             continue;
         };
+        let text = message
+            .get("text")
+            .or_else(|| message.get("caption"))
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned();
         messages.push(Inbound {
             chat: chat_id.to_string(),
             private: chat.get("type").and_then(Value::as_str) == Some("private"),
-            text: message
-                .get("text")
+            text,
+            reply_to: message
+                .get("reply_to_message")
+                .and_then(|r| r.get("message_id"))
+                .and_then(Value::as_i64)
+                .map(|id| id.to_string()),
+            files: message_files(message),
+            group: message
+                .get("media_group_id")
                 .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_owned(),
+                .map(str::to_owned),
         });
     }
     Ok(Received {
@@ -287,16 +356,59 @@ impl NotificationChannel for TelegramBot {
         })
     }
 
-    async fn send(&self, chat: &str, text: &str) -> Result<(), ChannelError> {
+    async fn send(&self, chat: &str, text: &str) -> Result<Option<String>, ChannelError> {
         let chat: i64 = chat.parse().map_err(|_| ChannelError::Blocked)?;
         let body = json!({
             "chat_id": chat,
             "text": text,
             "link_preview_options": {"is_disabled": true},
         });
-        self.call("sendMessage", &body, CALL_DEADLINE)
+        let sent = self.call("sendMessage", &body, CALL_DEADLINE).await?;
+        Ok(sent
+            .get("message_id")
+            .and_then(Value::as_i64)
+            .map(|id| id.to_string()))
+    }
+
+    async fn fetch_file(&self, id: &str, max: u64) -> Result<Vec<u8>, ChannelError> {
+        let file = self
+            .call("getFile", &json!({ "file_id": id }), CALL_DEADLINE)
+            .await?;
+        if file
+            .get("file_size")
+            .and_then(Value::as_u64)
+            .is_some_and(|size| size > max)
+        {
+            return Err(ChannelError::TooLarge);
+        }
+        let path = file
+            .get("file_path")
+            .and_then(Value::as_str)
+            .filter(|p| file_path_ok(p))
+            .ok_or(ChannelError::Invalid)?;
+        let url = format!("{}/file/bot{}/{path}", self.base, self.token);
+        let mut response = self
+            .http
+            .get(url)
+            .timeout(FILE_DEADLINE)
+            .send()
             .await
-            .map(|_| ())
+            .map_err(|_| ChannelError::Unavailable)?;
+        if !response.status().is_success() {
+            return Err(ChannelError::Unavailable);
+        }
+        let mut bytes = Vec::new();
+        while let Some(chunk) = response
+            .chunk()
+            .await
+            .map_err(|_| ChannelError::Unavailable)?
+        {
+            if u64::try_from(bytes.len() + chunk.len()).unwrap_or(u64::MAX) > max {
+                return Err(ChannelError::TooLarge);
+            }
+            bytes.extend_from_slice(&chunk);
+        }
+        Ok(bytes)
     }
 
     async fn receive(&self, cursor: Option<&str>) -> Result<Received, ChannelError> {
@@ -367,6 +479,7 @@ mod tests {
         }
         let blocked = body["chat_id"] == json!(403);
         let (offset, limit) = (body["offset"].clone(), body["limit"].clone());
+        let file_id = body["file_id"].clone();
         if let Ok(mut bodies) = fake.bodies.lock() {
             bodies.push((method.clone(), body));
         }
@@ -392,6 +505,10 @@ mod tests {
                 return (StatusCode::FORBIDDEN, json!({"ok": false}).to_string());
             }
             "sendMessage" => json!({"message_id": 1}),
+            "getFile" if file_id == json!("big") => {
+                json!({"file_id": "big", "file_size": 30_000_000, "file_path": "documents/big.bin"})
+            }
+            "getFile" => json!({"file_id": file_id, "file_path": "photos/file_7.jpg"}),
             _ => return (StatusCode::NOT_FOUND, json!({"ok": false}).to_string()),
         };
         (
@@ -404,6 +521,15 @@ mod tests {
         let fake = Arc::new(Fake::default());
         let app = Router::new()
             .route("/{bot}/{method}", post(answer))
+            .route(
+                "/file/{bot}/{*path}",
+                axum::routing::get(|Path((bot, path)): Path<(String, String)>| async move {
+                    if bot != format!("bot{TOKEN}") || path != "photos/file_7.jpg" {
+                        return (StatusCode::NOT_FOUND, Vec::new());
+                    }
+                    (StatusCode::OK, vec![7_u8; 64])
+                }),
+            )
             .with_state(fake.clone());
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
         let addr = listener.local_addr()?;
@@ -441,7 +567,8 @@ mod tests {
         let me = bot.check().await.map_err(|e| e.as_str())?;
         assert_eq!(me.id, 1000);
         assert_eq!(me.username, "yulius_test_bot");
-        bot.send("42", "hello").await.map_err(|e| e.as_str())?;
+        let sent = bot.send("42", "hello").await.map_err(|e| e.as_str())?;
+        assert_eq!(sent.as_deref(), Some("1"), "the sent message's id");
         assert_eq!(bot.send("403", "x").await, Err(ChannelError::Blocked));
         let received = bot.receive(Some("7")).await.map_err(|e| e.as_str())?;
         assert_eq!(received.cursor.as_deref(), Some("10"));
@@ -451,12 +578,18 @@ mod tests {
                 Inbound {
                     chat: "42".into(),
                     private: true,
-                    text: "/start abc".into()
+                    text: "/start abc".into(),
+                    reply_to: None,
+                    files: Vec::new(),
+                    group: None,
                 },
                 Inbound {
                     chat: "-5".into(),
                     private: false,
-                    text: "hi".into()
+                    text: "hi".into(),
+                    reply_to: None,
+                    files: Vec::new(),
+                    group: None,
                 },
             ]
         );
@@ -540,6 +673,79 @@ mod tests {
             Some(7),
             "a cut character ends the head"
         );
+    }
+
+    /// TGI-002, TGI-003: a reply names the bot's message; a caption is the text; a photo's
+    /// largest size, a document and a voice note are files; an album is named.
+    #[test]
+    fn replies_captions_files_and_albums_are_read() {
+        let received = parse_updates(&json!([{"update_id": 1, "message": {
+            "chat": {"id": 42, "type": "private"},
+            "caption": "Fix this screen",
+            "media_group_id": "g1",
+            "reply_to_message": {"message_id": 77},
+            "photo": [
+                {"file_id": "small", "file_unique_id": "u1", "file_size": 10},
+                {"file_id": "large", "file_unique_id": "u2", "file_size": 900}
+            ],
+            "document": {"file_id": "doc", "file_unique_id": "u3", "file_name": "log.txt"},
+            "voice": {"file_id": "v", "file_unique_id": "u4"}
+        }}]));
+        let message = &received
+            .map_err(ChannelError::as_str)
+            .unwrap_or_default()
+            .messages[0];
+        assert_eq!(message.text, "Fix this screen");
+        assert_eq!(message.reply_to.as_deref(), Some("77"));
+        assert_eq!(message.group.as_deref(), Some("g1"));
+        let files: Vec<(&str, &str, Option<u64>)> = message
+            .files
+            .iter()
+            .map(|f| (f.id.as_str(), f.name.as_str(), f.size))
+            .collect();
+        assert_eq!(
+            files,
+            vec![
+                ("large", "photo-u2.jpg", Some(900)),
+                ("doc", "log.txt", None),
+                ("v", "voice-u4.ogg", None),
+            ]
+        );
+    }
+
+    /// TGI-003: a file is fetched within its bound; one Telegram says is larger is refused
+    /// before any byte, as is one whose bytes go past it.
+    #[tokio::test]
+    async fn a_file_is_fetched_within_its_bound() -> TestResult {
+        let (base, _fake) = fake().await?;
+        let bot = TelegramBots::new(base, 1).connect(&Secret(TOKEN.into()))?;
+        let bytes = bot.fetch_file("p7", 1_000).await.map_err(|e| e.as_str())?;
+        assert_eq!(bytes, vec![7_u8; 64]);
+        assert_eq!(
+            bot.fetch_file("big", 20_000_000).await,
+            Err(ChannelError::TooLarge)
+        );
+        assert_eq!(bot.fetch_file("p7", 63).await, Err(ChannelError::TooLarge));
+        Ok(())
+    }
+
+    /// TGI-003: only a plain relative `file_path` is fetched.
+    #[test]
+    fn only_a_plain_file_path_is_fetched() {
+        assert!(file_path_ok("photos/file_7.jpg"));
+        assert!(file_path_ok("documents/report-1_v2.pdf"));
+        for bad in [
+            "",
+            "/etc/passwd",
+            "../x",
+            "a/../../b",
+            "%2e%2e/x",
+            "a\\b",
+            "a b",
+            "a?x=1",
+        ] {
+            assert!(!file_path_ok(bad), "{bad}");
+        }
     }
 
     #[test]

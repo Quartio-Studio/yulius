@@ -232,6 +232,9 @@ function seed(params) {
     // digest (`digest=1` starts with one). `__yuliusMock.sendDigest()` makes a new one and sends
     // `digest.ready`, as the server's daily run does.
     digest: { setting: { enabled: false, at: '18:00', park_idle_hours: null }, latest: params.get('digest') ? mockDigest('dg_mock_1') : null },
+    // Handoffs between sandboxes (SPEC-512 part 5): `handoff=1` seeds a request on #12 and a
+    // provenance on #11.
+    handoffs: mockHandoffs(params.get('handoff'), params.get('handoff') === 'long'),
     vidoc: { key: null, setAt: null, setBy: null, config: params.get('vidoc') === 'config', offAt: params.get('vidoc_off') ? '2026-10-30T09:00:00Z' : null, offBy: params.get('vidoc_off') ? 'superadmin' : null, fail: params.get('vidoc_fail') === '1', repo: params.get('vidoc_repo'), patchFail: params.get('vidoc_patch_fail') === '1' },
     // fail=<path> answers 500 to GET requests of that exact path, to show how a view says a load
     // failed (in place, naming what failed, with Try again; #147). A test may set `failPath` later;
@@ -648,7 +651,13 @@ function delivery(db, task) {
   const next = [];
   const blocked = [];
   const pos = position(profile, state.stage, state.environment);
-  if (pos.kind === 'no_pr') {
+  if (sandbox.playground) {
+    if (state.stage === 'none') {
+      const reason = !task.branch ? 'the task has no branch yet' : problems.length ? problems[0] : stepsOpen ? `${stepsOpen} plan steps are still open` : null;
+      if (reason) blocked.push({ action: 'merge', reason });
+      else next.push('merge');
+    }
+  } else if (pos.kind === 'no_pr') {
     if (task.branch === null) blocked.push({ action: 'open_pr', reason: 'the task has no branch yet' });
     else if (problems.length) blocked.push({ action: 'open_pr', reason: `the task spec is not valid: ${problems[0]}` });
     else next.push('open_pr');
@@ -1211,7 +1220,9 @@ route('PATCH', `/api/sandboxes/${ID}`, ({ db, p, body }) => {
   need(sandbox, 'admin');
   // SPEC-338 VOF-001: the Vidoc switch is set on its own; a profile update keeps it.
   // The server writes both switches in one write: a refused protection switch changes neither.
-  if (body.protect_production !== undefined && body.protect_production !== null && db.protectPatchFail) fail(500, 'internal', 'the store is busy');
+  const setsProtection = body.protect_production !== undefined && body.protect_production !== null;
+  if (setsProtection && sandbox.playground) fail(422, 'invalid', 'a playground has no GitHub production branch: it has no protection switch to turn');
+  if (setsProtection && db.protectPatchFail) fail(500, 'internal', 'the store is busy');
   if (body.vidoc !== undefined && body.vidoc !== null) {
     if (sandbox.playground) fail(422, 'invalid', 'a playground runs no Vidoc scan: it has no switch to turn');
     if (db.vidoc.patchFail) fail(500, 'internal', 'the store is busy');
@@ -1221,8 +1232,7 @@ route('PATCH', `/api/sandboxes/${ID}`, ({ db, p, body }) => {
   // SPEC-423 PPR-002: the production protection switch, set on its own like the Vidoc one; a
   // refused profile changes nothing.
   if (body.profile) validateProfile(body.profile);
-  if (body.protect_production !== undefined && body.protect_production !== null) {
-    if (sandbox.playground) fail(422, 'invalid', 'a playground has no GitHub production branch: it has no protection switch to turn');
+  if (setsProtection) {
     sandbox.profile = { ...sandbox.profile, protect_production: Boolean(body.protect_production) };
   }
   if (body.profile) {
@@ -3089,6 +3099,7 @@ route('POST', '/api/superagent/attachments', ({ db, query, body }) => {
   // How many reached the server: the page sends images only (review round 1).
   db.globalUploads = (db.globalUploads || 0) + 1;
   if (![...db.shells.values()].some((s) => s.global)) fail(404, 'not_found', 'not found');
+  // Keep this list in sync with IMAGE_EXTENSIONS in uploads.rs and GLOBAL_IMAGE in filedrop.js.
   if (!/\.(png|jpe?g|gif|webp)$/i.test(mockAttachmentName(query.get('name')))) fail(422, 'invalid', 'the Global Superagent takes images only (PNG, JPEG, GIF or WebP): it has no file tools to open other files');
   return storeAttachment(db, null, 'superagent', query, body, '/srv/yulius/users/you/superagent/attachments');
 });
@@ -5217,7 +5228,7 @@ function migrationState(mode) {
     request: null,
     // `lost`: a move whose helper was killed while it prepared the new host.
     run: mode === 'lost' ? {
-      id: 'mock-0-move', action: 'move', target: 'root@new.yulius.example', ssh_port: 22, public_url: null, data_disks: [],
+      id: 'mock-0-move', action: 'move', target: 'root@new.yulius.example', ssh_port: 22, public_url: null, data_disks: [], max_downtime: null,
       state: 'lost', exit_code: null, error: null, started_at: iso(9 * MIN), updated_at: iso(4 * MIN), ended_at: null,
     } : null,
     moving: mode === 'cli' || mode === 'lost' ? {
@@ -5339,7 +5350,7 @@ function playMove(db, request, values, steps) {
     if (m.mode === 'refused') {
       // A checklist that is there stays: it is an earlier run's.
       if (m.moving) m.moving = { ...m.moving, earlier: true };
-      Object.assign(m.run, { target: null, ssh_port: null, public_url: null, data_disks: [], state: 'refused', ended_at: now, error: 'The request was refused: an update is running (yulius-update.service): ask again once it has finished.' });
+      Object.assign(m.run, { target: null, ssh_port: null, public_url: null, data_disks: [], max_downtime: null, state: 'refused', ended_at: now, error: 'The request was refused: an update is running (yulius-update.service): ask again once it has finished.' });
       return;
     }
     // What an earlier run recorded is not this run's: it is not shown until the command wrote
@@ -5437,6 +5448,11 @@ function moveSteps(db, values) {
   steps.push(() => {
     // The instance answers during the copy: the page reads it before anything freezes.
     if (!m.seen.Copy || m.holdAt === 'Copy') return 'again';
+    if (values.max_downtime != null && values.max_downtime < 9) {
+      moveSay(db, 'Copy', moveLine('downtime', 'failed', `Estimated freeze of 9 min exceeds the ${values.max_downtime} min limit after five passes.`));
+      moveEnd(db, 1, 'Copy');
+      return undefined;
+    }
     // The cutover freezes the instance: nothing answers until the new one runs.
     moveSay(db, 'Cutover', MOVE_CUTOVER[0]);
     m.frozen = true;
@@ -5499,16 +5515,19 @@ route('POST', MOVE_API, ({ db, body }) => {
   const m = db.migration;
   const action = body.action;
   if (!['plan', 'move', 'abort'].includes(action)) fail(422, 'invalid', 'no such action');
-  const values = action === 'abort' ? { target: null, ssh_port: null, public_url: null, data_disks: [] } : {
+  if (action === 'abort' && body.max_downtime != null) fail(422, 'invalid', 'an abort names no freeze limit');
+  const values = action === 'abort' ? { target: null, ssh_port: null, public_url: null, data_disks: [], max_downtime: null } : {
     target: String(body.target || '').trim(),
     ssh_port: body.ssh_port === undefined || body.ssh_port === null ? 22 : body.ssh_port,
     public_url: body.public_url ? String(body.public_url).trim().replace(/\/$/, '') : null,
+    max_downtime: body.max_downtime ?? null,
     data_disks: (body.data_disks || []).map((d) => String(d).trim()).filter(Boolean),
   };
   if (action !== 'abort') {
     if (!values.target) fail(422, 'invalid', 'the new host is missing');
     if (!/^[A-Za-z0-9._:[\]-]+(@[A-Za-z0-9._:[\]-]+)?$/.test(values.target) || values.target.startsWith('-')) fail(422, 'invalid', 'the new host must be `root@host` or `host`');
     if (values.target.includes('@') && !values.target.startsWith('root@')) fail(422, 'invalid', 'the new host is reached as root: `root@host`');
+    if (values.max_downtime != null && (!Number.isSafeInteger(values.max_downtime) || values.max_downtime < 1)) fail(422, 'invalid', 'the longest freeze must be at least one whole minute');
     if (!Number.isInteger(values.ssh_port) || values.ssh_port < 1 || values.ssh_port > 65535) fail(422, 'invalid', 'the SSH port must be 1 to 65535');
     if (values.public_url && !/^https:\/\/[A-Za-z0-9][A-Za-z0-9.-]*$/.test(values.public_url)) fail(422, 'invalid', 'the public URL must be `https://host`, with nothing after it');
     if (values.data_disks.length > 2) fail(422, 'invalid', 'data disks: one, or two for a mirror');
@@ -5522,7 +5541,7 @@ route('POST', MOVE_API, ({ db, body }) => {
   if (action === 'plan' && !can.plan) fail(409, 'conflict', 'a move is running: wait for its end, or abort it');
   if (action === 'move') {
     const same = m.run && m.run.target === values.target && m.run.ssh_port === values.ssh_port && m.run.public_url === values.public_url
-      && JSON.stringify(m.run.data_disks) === JSON.stringify(values.data_disks);
+      && (m.run.max_downtime ?? null) === values.max_downtime && JSON.stringify(m.run.data_disks) === JSON.stringify(values.data_disks);
     if (!can.move || !same) fail(409, 'conflict', 'show the plan for these values first: a move is the plan you saw');
   }
   if (action === 'abort' && !can.abort) fail(409, 'conflict', 'no move is recorded on this host: nothing to abort');
@@ -5606,8 +5625,15 @@ function telegramBotView(db) {
 function myTelegramView(db) {
   const t = db.telegram;
   const linked = Boolean(t.bot && t.linkedAt);
-  return { available: Boolean(t.bot), bot_username: t.bot, linked, linked_at: linked ? t.linkedAt : null, choices: linked ? { ...t.choices } : { needs_you: true, done: false, failed: false, account: false }, account_choice: isAdmin(db) };
+  return { available: Boolean(t.bot), bot_username: t.bot, linked, linked_at: linked ? t.linkedAt : null, choices: linked ? { ...t.choices } : { needs_you: true, done: false, failed: false, account: false, digest: true }, account_choice: isAdmin(db), intake: linked ? { ...(t.intake || { enabled: false, sandbox_id: null }) } : { enabled: false, sandbox_id: null } };
 }
+// The chat's intake (SPEC-512 TGI-001): refused without a link or, turned on, without a project.
+route('PUT', '/api/me/telegram/intake', ({ db, body }) => {
+  if (!db.telegram.linkedAt) fail(409, 'conflict', 'link a Telegram chat first');
+  if (body.enabled && !body.sandbox_id) fail(422, 'invalid', 'choose the project a new message starts its task in');
+  db.telegram.intake = { enabled: Boolean(body.enabled), sandbox_id: body.sandbox_id || null };
+  return myTelegramView(db);
+});
 const instanceAdminOnly = (db) => { if (!isAdmin(db)) fail(403, 'forbidden', 'instance administrators only'); };
 // A saved bot reads `starting` until the next read, as if Telegram's first poll answered then.
 // A test can keep a read's answer back (`telegram.holdRead = promise`): it is read when asked and
@@ -5673,6 +5699,51 @@ route('PUT', '/api/admin/digest', ({ db, body }) => {
   db.digest.setting = { enabled: Boolean(body.enabled), at: `${m[1].padStart(2, '0')}:${m[2]}`, park_idle_hours: hours ?? null };
   return db.digest.setting;
 });
+// Tasks hand work to another sandbox (SPEC-512 HOF-001..HOF-005). `handoff=1` starts task #12
+// with one request of its agent waiting for its owner, and #11 handed off from studio #12.
+function handoffsOf(db) {
+  return db.handoffs;
+}
+function mockHandoffs(seeded, long) {
+  const handoffs = { setting: { mode: seeded ? 'ask' : 'off', max_depth: 3, per_day: 20 }, accept: {}, byTask: {} };
+  if (seeded) {
+    handoffs.byTask.tsk_studio_12 = { from: null, handoffs: [{ id: 'ho_1', target_sandbox_id: 'sb_web', target_sandbox: 'quartio/web', title: 'Add the items endpoint', prompt: long ? Array.from({ length: 60 }, (_, i) => `Step ${i + 1}: add part ${i + 1} of the items endpoint.`).join('\n') : 'Add GET /v1/items returning the catalog, with tests.', harness: null, model: null, effort: null, mode: 'goal', state: 'requested', reason: null, target_number: null, target_link: null, created_at: new Date().toISOString() }] };
+    handoffs.byTask.tsk_studio_11 = { from: { sandbox: 'quartio/web', number: 4, link: `${ORIGIN}/s/web/t/4` }, handoffs: [] };
+  }
+  return handoffs;
+}
+route('GET', '/api/admin/handoffs', ({ db }) => { instanceAdminOnly(db); return handoffsOf(db).setting; });
+route('PUT', '/api/admin/handoffs', ({ db, body }) => {
+  instanceAdminOnly(db);
+  if (!['off', 'ask', 'automatic'].includes(body.mode)) fail(422, 'invalid', 'the mode is off, ask or automatic');
+  if (!(Number.isInteger(body.max_depth) && body.max_depth >= 1 && body.max_depth <= 5)) fail(422, 'invalid', 'a chain goes 1 to 5 deep');
+  if (!(Number.isInteger(body.per_day) && body.per_day >= 1 && body.per_day <= 100)) fail(422, 'invalid', "an owner's handoffs a day are 1 to 100");
+  handoffsOf(db).setting = { mode: body.mode, max_depth: body.max_depth, per_day: body.per_day };
+  return handoffsOf(db).setting;
+});
+route('GET', `/api/sandboxes/${ID}/handoffs`, ({ db, p }) => ({ accept: handoffsOf(db).accept[p[0]] !== false }));
+route('PUT', `/api/sandboxes/${ID}/handoffs`, ({ db, p, body }) => {
+  need(sandboxOf(db, p[0]), 'write');
+  handoffsOf(db).accept[p[0]] = Boolean(body.accept);
+  return { accept: Boolean(body.accept) };
+});
+route('GET', `/api/tasks/${ID}/handoffs`, ({ db, p }) => handoffsOf(db).byTask[p[0]] || { from: null, handoffs: [] });
+route('POST', `/api/tasks/${ID}/handoffs/${ID}`, ({ db, p, body }) => {
+  const task = taskOf(db, p[0]);
+  if (ownerOf(task).login !== db.me.user.login) fail(403, 'forbidden', "only the task's owner answers its handoffs");
+  const entry = handoffsOf(db).byTask[p[0]];
+  const handoff = entry && entry.handoffs.find((x) => x.id === p[1]);
+  if (!handoff) fail(404, 'not_found', 'not found');
+  if (handoff.state !== 'requested') fail(409, 'conflict', `this handoff is ${handoff.state} already`);
+  if (body.approve) {
+    Object.assign(handoff, { state: 'created', target_number: 31, target_link: `${ORIGIN}/s/web/t/31` });
+  } else {
+    Object.assign(handoff, { state: 'declined', reason: 'declined by its owner' });
+  }
+  db.handoffAnswers = (db.handoffAnswers || 0) + 1;
+  return entry;
+});
+
 // `reads` counts the page's reads of it, so a test knows the bell has read it.
 route('GET', '/api/me/digest', ({ db }) => { db.digest.reads = (db.digest.reads || 0) + 1; return db.digest.latest; });
 
@@ -6022,7 +6093,13 @@ const PUBLIC = ['/api/setup/status', '/api/setup', '/api/auth/password', '/api/a
 // A guest link is its own credential (SPEC-410).
 const isPublic = (path) => PUBLIC.includes(path) || /^\/api\/guest-invites\//.test(path);
 
+// `unanswered`: the page's requests not answered yet, so a test reads what they did once they settled.
 async function handleFetch(db, url, init = {}) {
+  db.unanswered = (db.unanswered || 0) + 1;
+  try { return await handleFetchCounted(db, url, init); } finally { db.unanswered -= 1; }
+}
+
+async function handleFetchCounted(db, url, init) {
   // Counted as the page asks, before the simulated latency (SPEC-108 tests); `asked` counts every
   // GET by path (SPEC-197).
   if ((init.method || 'GET') === 'GET') {

@@ -74,7 +74,8 @@ export function createTabRow(ctx) {
   const eventText = h('span', { class: 'sr-only' }, ', live updates connected');
   const statusButton = h('button', { type: 'button', class: 'btn btn-status', 'aria-expanded': 'false', 'aria-haspopup': 'dialog', title: 'Status: machine and subscription usage' }, eventDot, h('span', { class: 'status-text' }, 'Status'), eventText, icon('down', { size: 12 }));
   // Shows/hides the right tool rail (Superagent, browser, editor, shell, notes); hidden by default.
-  const toolsButton = iconButton('tools', 'Show tools (Superagent, browser, editor, shell, notes)', () => ctx.toggleRail && ctx.toggleRail(), { class: 'tools-toggle' });
+  const toolsLabel = ctx.guest() ? 'Show tools (browser, editor, shell, notes)' : 'Show tools (Superagent, browser, editor, shell, notes)';
+  const toolsButton = iconButton('tools', toolsLabel, () => ctx.toggleRail && ctx.toggleRail(), { class: 'tools-toggle' });
   const toolsDot = h('span', { class: 'rail-dot', hidden: true });
   toolsButton.append(toolsDot);
   toolsButton.style.position = 'relative';
@@ -82,7 +83,7 @@ export function createTabRow(ctx) {
   let toolsAttention = false;
   let railVisible = false;
   const labelTools = () => {
-    toolsButton.title = railVisible ? 'Hide tools' : 'Show tools (Superagent, browser, editor, shell, notes)';
+    toolsButton.title = railVisible ? 'Hide tools' : toolsLabel;
     toolsButton.setAttribute('aria-label', `${toolsButton.title}${toolsAttention ? ', an agent needs your action' : ''}`);
   };
   ctx.onToolsAttention = (attention) => { toolsAttention = attention; toolsDot.hidden = !attention; labelTools(); };
@@ -615,7 +616,10 @@ function editableLine(line, save) {
         // The refusal is the field's own (as `invalid` in dom.js says it for a form's control).
         input.setAttribute('aria-invalid', 'true');
         input.setAttribute('aria-describedby', error.id);
-        if (!stays()) input.dataset.setAside = 'true';
+        if (!stays()) {
+          input.dataset.setAside = 'true';
+          holder.dispatchEvent(new CustomEvent('yulius:edit-set-aside', { bubbles: true }));
+        }
       };
       const refused = line.check(value);
       if (refused) { refuse(refused); return; }

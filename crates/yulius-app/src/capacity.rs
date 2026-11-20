@@ -215,7 +215,7 @@ pub(crate) fn run_family(launched: Option<&str>, task_model: Option<&str>) -> Mo
 
 /// The model `task` runs: its own, else its agent's default (SPEC-511, SPEC-505), or `None` for
 /// Claude Code's, which [`model_family`] reads as the default model.
-fn task_model(task: &TaskRecord) -> Option<&str> {
+pub(crate) fn task_model(task: &TaskRecord) -> Option<&str> {
     use yulius_domain::harness::{DEFAULT_ANTIGRAVITY_MODEL, DEFAULT_CODEX_MODEL, Harness};
     task.model.as_deref().or(match task.harness {
         Harness::Codex => Some(DEFAULT_CODEX_MODEL),
@@ -410,6 +410,15 @@ impl App {
             return Ok(());
         };
         let now = self.now();
+        let runtime = self.runtime(task_id);
+        let during_turn = task.harness == yulius_domain::harness::Harness::ClaudeCode
+            && kind == PauseKind::Prompt
+            && (runtime.turn_in_progress()
+                || (task.activity == Some(Activity::Working)
+                    && runtime
+                        .turn_began_ms
+                        .load(std::sync::atomic::Ordering::SeqCst)
+                        > 0));
         let inserted = store
             .insert_pause(&PauseRecord {
                 id: self.deps.crypto.new_id(),
@@ -417,6 +426,7 @@ impl App {
                 kind,
                 account_id: account,
                 continuation: continuation.filter(|c| c.len() <= CONTINUATION_MAX),
+                during_turn,
                 started_at: now,
                 ended_at: None,
                 outcome: None,

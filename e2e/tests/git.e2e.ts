@@ -1,6 +1,6 @@
 import { test } from '@e2e-dev/web';
 import { expect } from 'e2e';
-import { axeViolations, failOnPageErrors, mock } from './support.ts';
+import { axeViolations, failOnPageErrors, mock, touchTask } from './support.ts';
 
 failOnPageErrors();
 
@@ -209,4 +209,30 @@ test('a task overview links to its changes only when its worktree is there', asy
   await expect(browser.locator('.ti-facts .stat:has-text("Changes") a')).toHaveText(/^\d+ files? · review$/);
   expect(await changesLinks()).toHaveLength(2);
   expect(await axeViolations(browser)).toEqual([]);
+});
+
+test('the Git task review follows a request for a person without navigation', async ({ app, browser }) => {
+  await app.open(mock('/s/studio/git/t/12', '&ambient=0'));
+  const state = browser.locator('.gt-state');
+  await expect(state).toBeVisible();
+  const initial = await browser.evaluate(() => document.querySelector('.gt-state')!.textContent);
+  await touchTask(browser, 'sb_studio', 12, {
+    needs_you: { action: 'Review the delivery', decision: false, at: new Date().toISOString() },
+  });
+  await expect(state).toHaveText('Needs you: Review the delivery');
+  await touchTask(browser, 'sb_studio', 12, { needs_you: null });
+  await expect(state).toHaveText(initial!);
+});
+
+test('a playground task shows its local squash before delivery and no release after it', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/lab/git', '&guest=1&labtask=1&ambient=0'));
+  const details = browser.locator('.dl-deliver').first();
+  await details.click();
+  const dialog = screen.getByRole('dialog', /^Delivery · #/);
+  await expect(dialog.getByText('Merge: ready')).toBeVisible();
+  await browser.keyboard.press('Escape');
+  await touchTask(browser, 'sb_lab', 1, { delivery: { stage: 'merged_integration', environment: null, pr: null } });
+  await details.click();
+  await expect(dialog.getByText('Nothing is pending at this stage.')).toBeVisible();
+  await expect(dialog.getByText(/Release to production: ready/)).toHaveCount(0);
 });

@@ -54,7 +54,7 @@ use yulius_domain::ids::{SandboxId, TaskId};
 use yulius_domain::task::{Activity, TaskStatus};
 use yulius_domain::time::Timestamp;
 
-use crate::agent_wait::{ArmedMerge, ArmedNow, Deciding, Verdict};
+use crate::agent_wait::{ArmedMerge, ArmedNow, Deciding, QueueNote, Verdict};
 use crate::auth::AuthContext;
 use crate::ci::{CiJobRecord, CiRunRecord};
 use crate::context::App;
@@ -271,7 +271,7 @@ fn short(sha: &str) -> &str {
 }
 
 /// What `yulius wait` says about `task`'s place in `train`.
-fn note_of(train: &Train, task: &str) -> Option<String> {
+fn note_of(train: &Train, task: &str) -> Option<QueueNote> {
     let prs = numbers(&train.members);
     if let Some(index) = train.members.iter().position(|m| m.task == task) {
         let place = format!(
@@ -281,7 +281,7 @@ fn note_of(train: &Train, task: &str) -> Option<String> {
             prs.len(),
             listed(&prs)
         );
-        return Some(if let Some((pr, _)) = train.own_wait {
+        let text = if let Some((pr, _)) = train.own_wait {
             format!(
                 "{place}: their combined result was tested (run {}); Yulius waits for pull \
                  request #{pr}'s own Yulius CI run before it merges or tests them further.",
@@ -295,6 +295,12 @@ fn note_of(train: &Train, task: &str) -> Option<String> {
                  in this order when it passes.",
                 train.run
             )
+        };
+        return Some(QueueNote {
+            text,
+            awaits_own_run: train
+                .own_wait
+                .is_some_and(|(pr, _)| pr == train.members[index].pr),
         });
     }
     train.left_out.iter().find(|l| l.task == task).map(|left| {
@@ -304,14 +310,14 @@ fn note_of(train: &Train, task: &str) -> Option<String> {
             .take(8)
             .map(|f| format!("`{f}`"))
             .collect();
-        format!(
+        QueueNote::current(format!(
             "pull request #{} was left out of merge train {}: merged on top of them it conflicts \
              in {}. It merges one by one after them; if it then conflicts with the integration \
              branch, Yulius says what to resolve.",
             left.pr,
             listed(&prs),
             files.join(", ")
-        )
+        ))
     })
 }
 
@@ -386,7 +392,7 @@ impl App {
     }
 
     /// What `yulius wait` says about `task`'s merge train, if it is in one or was left out.
-    pub(crate) fn train_note(&self, task: &TaskRecord) -> Option<String> {
+    pub(crate) fn train_note(&self, task: &TaskRecord) -> Option<QueueNote> {
         let state = self.read_trains(&task.sandbox_id);
         note_of(state.train.as_ref()?, task.id.as_str())
     }
@@ -1902,20 +1908,33 @@ mod tests {
     #[test]
     fn the_wait_says_where_a_pull_request_stands() {
         let mut train = train();
-        let note = note_of(&train, "b").unwrap_or_default();
+        let note = note_of(&train, "b")
+            .map(|note| note.text)
+            .unwrap_or_default();
         assert!(
             note.contains("#12 is number 2 of 3 in merge train #11, #12, #13"),
             "{note}"
         );
         assert!(note.contains("run run1"), "{note}");
-        let left = note_of(&train, "d").unwrap_or_default();
+        let left = note_of(&train, "d")
+            .map(|note| note.text)
+            .unwrap_or_default();
         assert!(
             left.contains("#14 was left out") && left.contains("`shared.txt`"),
             "{left}"
         );
         assert_eq!(note_of(&train, "x"), None);
+        train.own_wait = Some((12, 0));
+        assert!(note_of(&train, "b").is_some_and(|note| note.awaits_own_run));
+        assert!(
+            note_of(&train, "a")
+                .is_some_and(|note| !note.awaits_own_run && note.text.contains("#12's own"))
+        );
+        train.own_wait = None;
         train.merging = true;
-        let merging = note_of(&train, "a").unwrap_or_default();
+        let merging = note_of(&train, "a")
+            .map(|note| note.text)
+            .unwrap_or_default();
         assert!(merging.contains("passed; Yulius merges them"), "{merging}");
     }
 

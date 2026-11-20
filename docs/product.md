@@ -141,7 +141,7 @@ watching, steering and unblocking.
   passes into a staged copy, resumable after a broken link), freezes it only to send what changed
   since, proves the copy (entries, bytes and a fingerprint per folder, equal on both hosts),
   starts the new instance, redirects the old URL and removes its own key. The estimated freeze is
-  shown before it begins and `--max-downtime <minutes>` bounds it. People are asked only in the
+  shown before it begins and the optional longest freeze in Settings or `--max-downtime <minutes>` bounds it. People are asked only in the
   plan, before anything changes (the SSH sign-in, a DNS record, the GitHub App's callback). Any
   failure before the new instance runs thaws the old one; `--abort` goes back. Tasks that were
   live come back by themselves on the new host. A superadmin can also move from **Settings →
@@ -711,7 +711,24 @@ watching, steering and unblocking.
   one message however many tasks ask, a request for control of their task, or a teammate taking it
   or taking it back, reaches them under Needs you), with a link to the task, agent secrets
   removed, at most five messages a minute with the rest in one summary. The server asks Telegram
-  for messages, so no inbound port is needed. Replies and new tasks from Telegram are part 2.
+  for messages, so no inbound port is needed.
+- **Work from Telegram** (SPEC-512 part 4, ADR-0392, part 2 of #1107), off by default: a person
+  turns it on for their own chat in Settings → Notifications and picks the project new messages
+  start tasks in. A reply to a notification then answers its task as their message (the owner
+  rule holds: someone else's task takes only an answer it asks of them, and only to the question
+  the notice told of); a new message (not a reply), with photos, documents or voice notes up to
+  20 MB, starts a task as them, marked "From Telegram", at most 20 an hour in a project as for
+  agents' tools; `/task <project> <text>` picks another project and `/status` lists what waits
+  for them. A chat's messages are handled one at a time in the order sent; with more than 20
+  waiting, the chat is told the latest were not handled and to send them again. Turning intake
+  off or `/stop` also stops messages still waiting.
+- **Tasks hand work to another sandbox** (SPEC-512 part 5, ADR-0395, #1106), off by default:
+  an instance administrator chooses Ask or Automatic in Settings → Administration (with a chain's
+  depth and a daily bound per owner), and a sandbox's writers can close it to handoffs on its Git
+  page. A task's agent then hands the part of its work that belongs elsewhere to another sandbox
+  its owner can work in: in Ask mode the owner approves it on the task's page, in Automatic it
+  starts at once as the owner. The new task shows where it came from, the source task is told
+  when it is done or merged, and both sandboxes' audit logs say so.
 - **An end-of-day digest** (SPEC-512 part 3, ADR-0380, #1413), off by default: an instance
   administrator turns it on in Settings → Administration with a time (UTC) and, if they want, an
   idle threshold. Once a day each person with something to report gets what waits for them first,

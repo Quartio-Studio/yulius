@@ -184,12 +184,14 @@ export function mountTasksPage(ctx, sandbox) {
   }
 
   const matchesText = (task, q) => `#${task.number} ${task.title} ${task.branch || ''} ${(task.created_by && task.created_by.login) || ''}`.toLowerCase().includes(q);
+  let searchDialog;
   /** "/" — search every task of the sandbox; Enter opens its overview, ⌘↵ its session. */
   function openSearch(initial = '') {
-    openSpotlight({
+    searchDialog = openSpotlight({
       label: `Search tasks in ${sandbox.name}`,
       placeholder: `Search tasks in ${sandbox.name}`,
       initial,
+      onClose: () => { searchDialog = null; },
       search: (text) => {
         const q = text.toLowerCase();
         const tasks = ctx.store.tasksOf(sandbox.id) || [];
@@ -201,6 +203,7 @@ export function mountTasksPage(ctx, sandbox) {
         return found.slice(0, 12).map((task) => {
           const info = taskInfo(task, ctx.store.state.actionRequests, ctx.store.pullsOf(task.sandbox_id).get(task.id));
           return {
+            key: task.id,
             mark: statusMark(info, 16),
             title: task.title || `Task #${task.number}`,
             sub: `#${task.number} · ${detailLine(task, info)}`,
@@ -210,8 +213,8 @@ export function mountTasksPage(ctx, sandbox) {
           };
         });
       },
-      more: (text) => (text ? { title: `Show every task matching “${text}” in the list`, onPick: () => { searchQuery = text; view = 'list'; render(); } } : null),
-    });
+      more: (text) => (text ? { key: 'filter', title: `Show every task matching “${text}” in the list`, onPick: () => { searchQuery = text; view = 'list'; render(); } } : null),
+    }) || searchDialog;
   }
 
   function render() {
@@ -426,7 +429,7 @@ export function mountTasksPage(ctx, sandbox) {
   }
   document.addEventListener('keydown', onKey);
   // Live events repaint at most every 200 ms; the user's own clicks and keys render at once.
-  const repaint = coalesce(render, { minInterval: 200 });
+  const repaint = coalesce(() => { render(); searchDialog?.refresh(); }, { minInterval: 200 });
   const offs = [
     ctx.store.on('tasks', (sid) => { if (sid === sandbox.id) repaint(); }),
     ctx.store.on('browser-action', (event) => { if (event.sandbox_id === sandbox.id) repaint(); }),
@@ -445,6 +448,7 @@ export function mountTasksPage(ctx, sandbox) {
   }
   return { el: frame.el, key: `tasks:${sandbox.id}`, update, destroy: () => {
     alive = false;
+    searchDialog?.close();
     unwatchPulls();
     repaint.cancel();
     offs.forEach((off) => off());

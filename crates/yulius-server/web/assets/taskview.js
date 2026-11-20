@@ -26,6 +26,7 @@ import { antigravityConnected, claudeConnected, codexConnected, connectClaudeSte
 import { aName, agentOfHarness } from './agents.js';
 import { isPhone } from './theme.js';
 import { draftFor, saveDraft, clearDraft, attachToDraft, onDraftChange } from './drafts.js';
+import { handoffsPanel } from './handoffs.js';
 
 const STEP_MARK = { done: '✓', in_progress: '▸', pending: '·', skipped: '–', blocked: '✕' };
 const STEP_LABEL = { done: 'Done', in_progress: 'In progress', pending: 'To do', blocked: 'Blocked', skipped: 'Skipped' };
@@ -918,7 +919,10 @@ export function mountTaskView(ctx, sandbox, task) {
   }
 
   // Watching, the control card sits above the transcript in the flow (SPEC-179 WAT-005).
-  const termArea = h('div', { class: ['taskview-term', watch && 'watching'] }, terminal.el, attention, held, queueSlot);
+  // Where it was handed off from, and its own handoffs (SPEC-512 HOF-004, HOF-005).
+  const handoffs = handoffsPanel(ctx, () => current, () => Boolean(current.owner && current.owner.login === me()));
+  destroyers.push(handoffs.destroy);
+  const termArea = h('div', { class: ['taskview-term', watch && 'watching'] }, terminal.el, attention, held, handoffs.el, queueSlot);
   // The terminal's corner notices start below the attention bar, however tall it is (SPEC-327).
   const attentionSize = new ResizeObserver(() => {
     termArea.style.setProperty('--attention-h', `${attention.offsetHeight}px`);

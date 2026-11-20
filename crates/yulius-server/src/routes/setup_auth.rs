@@ -2,7 +2,7 @@
 
 use axum::Json;
 use axum::extract::{Query, State};
-use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
+use axum::http::{HeaderMap, HeaderValue, StatusCode, Uri, header};
 use axum::response::{IntoResponse, Redirect, Response};
 use serde::Deserialize;
 use yulius_app::auth::{GitHubSignInError, NewSession, local_return_path};
@@ -79,13 +79,25 @@ pub struct StartQuery {
     prompt: Option<String>,
 }
 
+/// Form decoding replaces invalid UTF-8. Reject it before extracting OAuth fields so the
+/// browser receives the same sign-in refusal as other malformed requests.
+fn sign_in_query<T: serde::de::DeserializeOwned>(uri: &Uri) -> Option<T> {
+    percent_encoding::percent_decode_str(uri.query().unwrap_or_default())
+        .decode_utf8()
+        .ok()?;
+    Query::try_from_uri(uri).ok().map(|Query(query)| query)
+}
+
 /// Starts GitHub sign-in: 303 to GitHub. Like the callback it never answers with an error body
 /// (ACC-004): without a GitHub App it returns to the sign-in page saying so (SPEC-422).
 pub async fn github_start(
     State(app): State<AppState>,
     client: ClientAddress,
-    Query(q): Query<StartQuery>,
+    uri: Uri,
 ) -> Response {
+    let Some(q) = sign_in_query::<StartQuery>(&uri) else {
+        return sign_in_refused("failed", None, None);
+    };
     let select_account = q.prompt.as_deref() == Some("select_account");
     let next = q.next.as_deref().and_then(local_return_path);
     match app.github_configured().await {
@@ -199,10 +211,13 @@ fn sign_in_refused(reason: &str, next: Option<&str>, login: Option<&str>) -> Res
 pub async fn github_callback(
     State(app): State<AppState>,
     headers: HeaderMap,
-    Query(q): Query<CallbackQuery>,
+    uri: Uri,
 ) -> Response {
     let secure = app.config.secure_cookies;
-    let mut response = github_callback_answer(&app, &headers, q).await;
+    let mut response = match sign_in_query(&uri) {
+        Some(query) => github_callback_answer(&app, &headers, query).await,
+        None => sign_in_refused("failed", None, None),
+    };
     // Used or not, the started sign-in's cookie goes.
     set_cookie(&mut response, &oauth_cookie("", 0, secure));
     response

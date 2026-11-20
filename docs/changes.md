@@ -14,6 +14,29 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   task-owned failing open PR now publish to the same feature branch and trigger exact-head CI even
   while a verification step remains open ([SPEC-553](../.ai/specs/SPEC-553-publish-committed-ci-repairs-to-open-tas.md),
   [ADR-0391](decisions/0391-publish-committed-ci-repairs-to-open-task-prs.md)).
+- Messaging a parked Codex task resumes the recorded rollout, including after a server restart
+  interrupted session bookkeeping (SPEC-558, #1490).
+
+- Tasks hand work to another sandbox, off by default (SPEC-512 part 5, task #494, delivered by
+  SPEC-557, #1106, ADR-0395): an instance administrator turns handoffs to Ask or Automatic; a
+  sandbox's writers may close it. A task's agent hands work to another sandbox with
+  `sandbox_handoff`: the owner approves it on the task's page (Ask) or it starts as the owner
+  (Automatic), within depth, cycle and daily bounds; the new task shows its source and the
+  source is told the outcome.
+
+- Work from Telegram, off by default (SPEC-512 part 4, task #494, delivered by SPEC-556, #1107, ADR-0392): a person
+  turns on their chat's intake in Settings → Notifications with a project. A reply to a
+  notification then answers its task as their message (the owner rule holds), any other message,
+  photos and files included, starts a task as them marked "From Telegram", and `/status` and
+  `/task <project> <text>` work.
+- Task notifications and queued prompts retain the state of the request they belong to. A successful model refresh releases waiting tasks, workflow limit classification respects all agent records in a poll, and provider usage reads have a byte limit (SPEC-555).
+- Settings accepts a freeze limit for host moves. Removed sandboxes release their port ranges after their processes and listeners retire. Playground delivery reports its local squash, and cross-project task requests check current permissions before displaying a card (SPEC-555).
+- Task search updates as results arrive. CI skips incomplete CPU samples, browser assertions follow layout and retry events, and the decision and browser test indexes reflect the repository (SPEC-555).
+
+- GitHub sign-in redirects malformed queries to the sign-in page. Pull request notices name failed browser tests and wait for the merge queue to catch up after a run passes. The scan and attachment restore tools describe their actual defaults (SPEC-554).
+- The release list labels roll-forward actions, playground guests see only their available tools, and the Git task review and subscription list reflect changes while open. The browser mock and touch tests cover the corresponding refusal paths (SPEC-554).
+- Instance moves report which units need thawing, explain insufficient space after an interrupted copy and detect an update already in progress. Import guidance uses the account's primary group, and the remote CLI explains sign-in recovery after a move (SPEC-554).
+- Spec gates and step synchronization handle the complete file at the size limit and explain unreadable specs. Completion tests cover onboarding and lost-run screen capture without depending on unrelated readiness signals (SPEC-554).
 
 ## 2026-11-19
 

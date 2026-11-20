@@ -440,7 +440,7 @@ export function shellAttachments(ctx, sandboxId, shellId) {
   return (file, options) => ctx.api.post(`/api/sandboxes/${enc(sandboxId)}/shells/${enc(shellId)}/attachments?name=${encodeURIComponent(file.name)}`, file, options);
 }
 
-/** The images Claude Code reads from a pasted path, as the server's `IMAGE_EXTENSIONS`. */
+/** Keep the Global Superagent image list in sync with IMAGE_EXTENSIONS in uploads.rs and mock.js's POST /api/superagent/attachments. */
 const GLOBAL_IMAGE = /\.(png|jpe?g|gif|webp)$/i;
 
 /**

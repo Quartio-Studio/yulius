@@ -403,6 +403,36 @@ async fn github_login(
     github_callback(h, &format!("code={code}&state={state}")).await
 }
 
+#[tokio::test]
+async fn malformed_github_sign_in_queries_return_to_sign_in() -> TestResult {
+    let h = harness()?;
+    setup_superadmin(&h).await?;
+    for path in [
+        "/api/auth/github/start?next=%FF",
+        "/api/auth/github/start?next=/a&next=/b",
+        "/api/auth/github/callback?code=%FF",
+        "/api/auth/github/callback?state=a&state=b",
+    ] {
+        let response = call(&h.router, Method::GET, path, None, &Creds::default()).await?;
+        assert_eq!(response.status, StatusCode::SEE_OTHER, "{path}");
+        assert_eq!(
+            response.location.as_deref(),
+            Some("/signin?error=failed"),
+            "{path}"
+        );
+        if path.contains("/callback?") {
+            assert!(
+                response
+                    .set_cookie
+                    .iter()
+                    .any(|cookie| cookie.contains("Max-Age=0")),
+                "{path}"
+            );
+        }
+    }
+    Ok(())
+}
+
 /// Before the GitHub App is connected, GitHub sign-in lands on the sign-in page with a reason,
 /// never on a JSON error, and the public setup status says so (SPEC-422, #1069).
 #[tokio::test]
@@ -1266,13 +1296,14 @@ async fn github_sign_in_returns_only_to_local_paths() -> TestResult {
 /// re-check interval, as new requests would.
 #[tokio::test]
 async fn event_streams_follow_revoked_access_and_close_for_disabled_users() -> TestResult {
-    use futures::StreamExt as _;
     use support::{HarnessOptions, harness_with, serve, ws_connect};
-    use tokio_tungstenite::tungstenite::Message;
     use yulius_app::ports::store::UserStore;
     use yulius_contracts::events::UiEvent;
     let h = harness_with(HarnessOptions {
-        configure: Some(Box::new(|c| c.viewer_recheck_ms = 200)),
+        configure: Some(Box::new(|c| {
+            c.viewer_recheck_ms = 200;
+            c.events_heartbeat_ms = 500;
+        })),
         ..HarnessOptions::default()
     })?;
     let alice = seed_github_user(&h, "u-alice", "alice").await?;
@@ -1291,32 +1322,11 @@ async fn event_streams_follow_revoked_access_and_close_for_disabled_users() -> T
             },
         );
     };
-    // The next text frame within `wait`, if any.
-    async fn next_text(
-        socket: &mut tokio_tungstenite::WebSocketStream<
-            tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
-        >,
-        wait: std::time::Duration,
-    ) -> Option<Result<String, Option<u16>>> {
-        let deadline = tokio::time::Instant::now() + wait;
-        loop {
-            match tokio::time::timeout_at(deadline, socket.next()).await {
-                Err(_) => return None,
-                Ok(Some(Ok(Message::Text(text)))) => return Some(Ok(text.to_string())),
-                Ok(Some(Ok(Message::Close(frame)))) => {
-                    return Some(Err(frame.map(|f| u16::from(f.code))));
-                }
-                Ok(None | Some(Err(_))) => return Some(Err(None)),
-                Ok(Some(Ok(_))) => {}
-            }
-        }
-    }
-
     // The server subscribes once the upgrade completes: publish until the stream has it.
     let mut seen = None;
     for _ in 0..20 {
         publish("t-visible");
-        seen = next_text(&mut socket, std::time::Duration::from_millis(250)).await;
+        seen = next_event_text(&mut socket, std::time::Duration::from_millis(250)).await;
         if seen.is_some() {
             break;
         }
@@ -1326,7 +1336,9 @@ async fn event_streams_follow_revoked_access_and_close_for_disabled_users() -> T
         "{seen:?}"
     );
     // Drain duplicates of the first event.
-    while let Some(Ok(_)) = next_text(&mut socket, std::time::Duration::from_millis(300)).await {}
+    while let Some(Ok(_)) =
+        next_event_text(&mut socket, std::time::Duration::from_millis(300)).await
+    {}
 
     // Access removed on GitHub: after the permission cache expires and a re-check, this
     // sandbox's events no longer reach the open stream.
@@ -1338,7 +1350,7 @@ async fn event_streams_follow_revoked_access_and_close_for_disabled_users() -> T
         .fetch_add(6 * 60 * 1000, std::sync::atomic::Ordering::SeqCst);
     tokio::time::sleep(std::time::Duration::from_millis(600)).await;
     publish("t-hidden");
-    let hidden = next_text(&mut socket, std::time::Duration::from_secs(1)).await;
+    let hidden = next_event_text(&mut socket, std::time::Duration::from_secs(1)).await;
     assert!(
         hidden.is_none(),
         "an event of a revoked sandbox arrived: {hidden:?}"
@@ -1348,7 +1360,7 @@ async fn event_streams_follow_revoked_access_and_close_for_disabled_users() -> T
     h.store
         .update_user_flags(&UserId::parse("u-alice")?, Some(Some(Timestamp(5))), None)
         .await?;
-    let closed = next_text(&mut socket, std::time::Duration::from_secs(5)).await;
+    let closed = next_event_text(&mut socket, std::time::Duration::from_secs(5)).await;
     assert_eq!(closed, Some(Err(Some(4003))), "{closed:?}");
     Ok(())
 }
@@ -1521,6 +1533,28 @@ async fn an_event_stream_starts_admin_events_once_administration_is_granted() ->
     assert_eq!(granted.status, StatusCode::OK);
     admin_rounds_until(&h, &mut socket, round, true, wait).await?;
     Ok(())
+}
+
+/// Reads non-heartbeat event frames under one deadline, preserving socket closes.
+async fn next_event_text(
+    socket: &mut EventSocket,
+    wait: std::time::Duration,
+) -> Option<Result<String, Option<u16>>> {
+    let deadline = tokio::time::Instant::now() + wait;
+    loop {
+        let frame = next_ws_text(
+            socket,
+            deadline.saturating_duration_since(tokio::time::Instant::now()),
+        )
+        .await;
+        if !matches!(&frame, Some(Ok(text)) if serde_json::from_str::<Value>(text).ok() == Some(json!({"type":"heartbeat"})))
+        {
+            return frame;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return None;
+        }
+    }
 }
 
 /// The next text frame within `wait`: `Ok(text)`, `Err(close code)` when the socket closed, or
@@ -1790,7 +1824,7 @@ async fn the_superadmins_sockets_survive_the_visibility_recheck() -> TestResult 
     let mut seen = None;
     for _ in 0..20 {
         publish("t-first");
-        seen = next_ws_text(&mut events, std::time::Duration::from_millis(250)).await;
+        seen = next_event_text(&mut events, std::time::Duration::from_millis(250)).await;
         if seen.is_some() {
             break;
         }
@@ -1799,8 +1833,9 @@ async fn the_superadmins_sockets_survive_the_visibility_recheck() -> TestResult 
         matches!(&seen, Some(Ok(text)) if text.contains("t-first")),
         "{seen:?}"
     );
-    while let Some(Ok(_)) = next_ws_text(&mut events, std::time::Duration::from_millis(300)).await {
-    }
+    while let Some(Ok(_)) =
+        next_event_text(&mut events, std::time::Duration::from_millis(300)).await
+    {}
 
     // Past the permission cache and with GitHub down, several re-checks run.
     h.github
@@ -1822,7 +1857,7 @@ async fn the_superadmins_sockets_survive_the_visibility_recheck() -> TestResult 
         "the terminal is still open: {answer:?}"
     );
     publish("t-later");
-    let later = next_ws_text(&mut events, std::time::Duration::from_secs(5)).await;
+    let later = next_event_text(&mut events, std::time::Duration::from_secs(5)).await;
     assert!(
         matches!(&later, Some(Ok(text)) if text.contains("t-later")),
         "the event stream still carries the sandbox: {later:?}"

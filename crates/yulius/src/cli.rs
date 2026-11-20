@@ -530,7 +530,7 @@ pub fn state_get(name: &str, out: &Path, sandbox: Option<&str>, server: Option<&
 }
 
 /// `path` single-quoted for a POSIX shell, for a command the person may paste.
-fn shell_quoted(path: &Path) -> String {
+pub(crate) fn shell_quoted(path: &Path) -> String {
     format!("'{}'", path.display().to_string().replace('\'', "'\\''"))
 }
 

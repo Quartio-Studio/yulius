@@ -165,6 +165,7 @@ Environment=YULIUS_INTERNAL_BIND=127.0.0.1:8081
 # Minutes a finished task (its turn ended, it waits for a person) keeps its idle session before it
 # is parked: the process ends, the task resumes in the same session when someone writes to it
 # (default 30; 0 never; SPEC-512).
+# A message to a parked Codex task resumes its recorded rollout with the message as its next prompt.
 #Environment=YULIUS_PARK_AFTER_MINUTES=30
 # A server older than parking cannot read the status `parked`: before rolling back past it,
 # resume or archive the tasks marked "parked" in the task lists, with this set to 0 so no task
@@ -751,7 +752,10 @@ other instead of overlapping.
 
 `yulius sandbox-base status` tells whether the base matches the host.
 
-**Ports.** A sandbox's dev servers are reachable on the host's loopback only on its port range
+**Ports.** Yulius allocates the lowest available block of 20 ports from 20000 through 32759.
+A removed sandbox keeps its block until its work, holder and loopback listeners have ended.
+The next sandbox can then reuse it. Keep this span outside the host’s ephemeral port range.
+A sandbox's dev servers are reachable on the host's loopback only on its port range
 (PRJ-010, `YULIUS_PORT_BASE`…), and only while something listens on them inside. Other ports
 stay private to the sandbox. Two sandboxes can both use 3000 inside.
 
@@ -1349,8 +1353,8 @@ Vidoc off, it also says `Vidoc scans are switched off for the instance`.
    card says "Claude did not say when it resets"; Refresh then gets the reset from Claude's
    refusal, the background round's next reading of the subscription ends the limit (a
    session's own reading does not), and a task with nowhere else to go is tried once more. Refused again, it waits for
-   another subscription's reset when one is known, off the subscription that refused it;
-   otherwise it is under Needs you (audit `task.limit_without_end`) until a person runs it
+   another subscription's reset when one is known. Refresh can also release that wait if
+   the model runs on the subscription that refused it. With no known reset, it is under Needs you (audit `task.limit_without_end`) until a person runs it
    elsewhere or sends it a message, until its agent works again because the limit is over, or
    until Yulius takes it on after all (a restart of Yulius retries it once; audit
    `task.needs_you.resolved` says which; SPEC-464).
@@ -1866,9 +1870,11 @@ and nothing is frozen). Everything a person has to do is asked for here:
   always runs the command so (a move asked from Settings → Instance is nobody's sign-in).
 - The new host: release, architecture, systemd, CPUs and memory; refused when it runs or holds an
   instance or another program holds the ports of the proxy and of Yulius.
-- Disk space where the data directory goes. When it is too small the blank disks of the new host
-  are listed: name one with `--data-disk`, or two for a mirror. Only disks without a partition
-  table, filesystem, holder or mount are taken.
+- Disk space where the data directory goes. The plan recognizes a staged copy it will resume.
+  If space is short and an unfinished copy will be discarded, the line identifies its directory
+  on the new host and gives a removal command for a dedicated, expendable copy. Blank disks
+  on the new host are listed when space is short. Name one with `--data-disk`, or two for a
+  mirror. Only disks without a partition table, filesystem, holder or mount are taken.
 - The link's rate, how long the copy will take at it, and a first estimate of the freeze. The
   instance runs during the copy; it is frozen only for the last changes, the proof and the start.
   For the estimate the plan reads a sample of the data directory twice (two seconds at most the
@@ -2006,7 +2012,7 @@ and whether GitHub accepts the new address (the note about the move is read from
 `<data>/moved.json`; remove the file to drop it). A later run that finds the key already deleted
 on the old host (the finish was done and only its record was lost) records the finish and says
 so, whether or not the new host answers; it asks the new host nothing more, so the GitHub App is
-named with its link and values as in the plan.
+named with directions to its settings and the homepage and callback values to register.
 
 **Abort.** `sudo yulius instance migrate --abort` on the old host stops and disables the new
 instance (through the key while the move is not finished; afterwards the key is gone: stop it
@@ -2142,7 +2148,7 @@ on the old host; without it the card says so and names the command above.
 
 1. **Show the plan.** The form takes the new host (`root@new-host`, a name or an address that leads
    there by itself: root's ssh configuration is not read), its SSH port, a new public URL (empty:
-   as the command decides) and one or two blank disks. The plan changes nothing but the move's own
+   as the command decides), one or two blank disks, and an optional longest freeze in whole minutes (at least one). The plan changes nothing but the move's own
    files and freezes nothing. A move asked from the page never signs in as root does (root's own
    keys, its agent, its ssh configuration, a password), so the first plan ends with **the key line
    to add**: copy it into root's `~/.ssh/authorized_keys` on the new host and show the plan again.
@@ -2152,12 +2158,12 @@ on the old host; without it the card says so and names the command above.
    failed ones are repeated above the checklist; a plan with a failed line offers no move.
 2. **Run migration…** names the host that root will give the instance's data to (every repository,
    secret and key) and the freeze the plan estimated, and is confirmed by typing the host's name.
-   It is the plan that was shown: the same host, port, URL and disks, shown at most an hour ago
+   It is the plan that was shown: the same host, port, URL, disks and freeze limit, shown at most an hour ago
    (else show it again). The card then shows the phases and the checklist as it grows: the new
    host is prepared and the data copied while the instance keeps working (the phases Prepare and
-   Copy), and only then it freezes. The page asks for no bound on the freeze: the move decides
-   as the command does without `--max-downtime` (it copies again while that shortens the
-   freeze). Use the command to set one.
+   Copy). With a freeze limit, the copy measures the estimate again before it freezes. If five
+   delta passes still exceed the bound, the instance keeps running and the staged copy stays
+   on the new host. Continue later or show a new plan with a higher limit.
 3. **While the instance is frozen** for the last changes, the proof of the copy and the start on
    the new host, nothing answers, the page included: the card says so with the plan's estimate (the
    copy measures it again a moment before the freeze; that line is in the checklist once something

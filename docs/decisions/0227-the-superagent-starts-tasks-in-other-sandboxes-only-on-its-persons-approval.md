@@ -7,7 +7,9 @@ task #319. Extends [0029](0029-cockpit-manages-through-mcp.md) (the Superagent's
 own sandbox) with one tool that reaches the person's other sandboxes. Leaves
 [0165](0165-the-superagent-bypasses-approvals-on-contained-servers.md) (the approval bypass)
 unchanged. Amended by [0333](0333-the-superagents-requests-to-its-person-last-until-answered.md)
-(SPEC-487): a request lasts until answered or withdrawn, past its call and a restart.
+(SPEC-487): a request lasts until answered or withdrawn, past its call and a restart. Amended by
+[0395](0395-tasks-hand-work-to-another-sandbox-behind-an-instance-switch.md) (SPEC-512): task
+agents hand work to another sandbox when an instance administrator turns handoffs on.
 
 ## Context
 

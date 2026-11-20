@@ -563,6 +563,7 @@ async fn a_playgrounds_task_merges_into_its_local_dev() -> TestResult {
         "{:?}",
         merged.body
     );
+    assert_eq!(merged.body["next_actions"], json!([]));
     let dev = git(&origin, &["rev-parse", "dev"])?.trim().to_owned();
     assert_eq!(
         git(&origin, &["rev-parse", "dev^"])?.trim(),
@@ -704,6 +705,88 @@ async fn a_playground_merge_records_whether_the_merged_head_was_approved() -> Te
     Ok(())
 }
 
+/// A commit directly ahead of dev needs no merge preview. After dev advances independently,
+/// the same delivery view asks Git to preview the two histories.
+#[tokio::test]
+async fn the_delivery_view_previews_only_diverged_histories() -> TestResult {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let trace = tempfile::tempdir()?;
+    let wrapper = trace.path().join("git");
+    let previews = trace.path().join("git.previews");
+    std::fs::write(
+        &wrapper,
+        r#"#!/bin/sh
+for arg do
+    if [ "$arg" = merge-tree ]; then
+        echo merge-tree >> "$0.previews"
+        break
+    fi
+done
+exec git "$@"
+"#,
+    )?;
+    std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755))?;
+    let git = yulius::wiring::git::GitAdapter::new(wrapper);
+    let h = support::harness_with_git(Arc::new(git))?;
+    let owner = support::setup_superadmin_creds(&h).await?;
+    let made = from_template(&h, &owner, "shop").await?;
+    playground_task(&h, &made.body, "t1", &[("task.txt", "one\n")], &["done"]).await?;
+
+    std::fs::write(&previews, "")?;
+    assert_delivery_ci(&h, &owner, &made.body, None).await?;
+    assert_eq!(std::fs::read_to_string(&previews)?, "");
+    push_to_dev(&h, &made.body, &[("dev.txt", "two\n")])?;
+    assert_delivery_ci(&h, &owner, &made.body, None).await?;
+    assert_eq!(std::fs::read_to_string(&previews)?, "merge-tree\n");
+    Ok(())
+}
+
+/// A task with only a branch name or only its checkout cannot be delivered.
+#[tokio::test]
+async fn a_playground_delivery_requires_both_branch_and_worktree() -> TestResult {
+    use yulius_app::model::TaskRecord;
+    use yulius_app::ports::store::TaskStore as _;
+    use yulius_domain::ids::TaskId;
+
+    let (h, owner) = world().await?;
+    let made = from_template(&h, &owner, "shop").await?;
+    playground_task(&h, &made.body, "t1", &[("a.txt", "change")], &["done"]).await?;
+    let ready = h.store.task(&TaskId::parse("t1")?).await?.ok_or("task")?;
+    for (id, branch, worktree_path) in [
+        ("t2", ready.branch.clone(), None),
+        ("t3", None, ready.worktree_path.clone()),
+    ] {
+        h.store
+            .insert_task(&TaskRecord {
+                id: TaskId::parse(id)?,
+                branch,
+                worktree_path,
+                ..ready.clone()
+            })
+            .await?;
+        let view = call(
+            &h.router,
+            Method::GET,
+            &format!("/api/tasks/{id}/delivery"),
+            None,
+            &owner,
+        )
+        .await?;
+        assert_eq!(view.status, StatusCode::OK, "{}", view.body);
+        assert_eq!(view.body["next_actions"], json!([]));
+        let reason = "this task has no branch to deliver yet";
+        assert_eq!(
+            view.body["blocked"],
+            json!([{"action": "merge", "reason": reason}])
+        );
+        let refused = merge(&h, &owner, id).await?;
+        assert_eq!(refused.status, StatusCode::CONFLICT);
+        assert!(text(&refused).contains(reason), "{}", refused.body);
+    }
+    Ok(())
+}
+
 /// PLY-007: an unfinished task is refused with what to do, and nothing lands.
 #[tokio::test]
 async fn an_unfinished_task_is_not_merged() -> TestResult {
@@ -720,6 +803,21 @@ async fn an_unfinished_task_is_not_merged() -> TestResult {
         &["done", "in_progress"],
     )
     .await?;
+    let waiting = call(
+        &h.router,
+        Method::GET,
+        "/api/tasks/t1/delivery",
+        None,
+        &owner,
+    )
+    .await?;
+    assert_eq!(waiting.body["next_actions"], json!([]));
+    assert_eq!(waiting.body["blocked"][0]["action"], "merge");
+    assert!(
+        waiting.body["blocked"][0]["reason"]
+            .as_str()
+            .is_some_and(|reason| reason.contains("Step 1"))
+    );
     let open = merge(&h, &owner, "t1").await?;
     assert_eq!(open.status, StatusCode::CONFLICT, "{:?}", open.body);
     assert!(text(&open).contains("step"), "{:?}", open.body);
@@ -770,18 +868,214 @@ fn text(resp: &support::Resp) -> String {
         .to_owned()
 }
 
+/// #1258: every local prerequisite can be met while the branch has nothing to deliver.
+#[tokio::test]
+async fn a_playground_task_level_with_dev_offers_no_squash() -> TestResult {
+    let (h, owner) = world().await?;
+    let made = from_template(&h, &owner, "shop").await?;
+    let worktree = playground_task(&h, &made.body, "t1", &[], &["done"]).await?;
+    // Both branches have the valid spec and point at the same commit.
+    git(&worktree, &["push", "origin", "HEAD:dev"])?;
+    assert_no_playground_squash(&h, &owner).await?;
+    std::fs::write(worktree.join("temporary.txt"), "temporary change")?;
+    git(&worktree, &["add", "temporary.txt"])?;
+    git(&worktree, &["commit", "-qm", "temporary change"])?;
+    git(&worktree, &["revert", "--no-edit", "HEAD"])?;
+    assert_no_playground_squash(&h, &owner).await
+}
+
+async fn assert_no_playground_squash(h: &Harness, owner: &Creds) -> TestResult {
+    let view = call(
+        &h.router,
+        Method::GET,
+        "/api/tasks/t1/delivery",
+        None,
+        owner,
+    )
+    .await?;
+    assert_eq!(view.status, StatusCode::OK);
+    assert_eq!(view.body["next_actions"], json!([]));
+    assert_eq!(view.body["blocked"][0]["action"], "merge");
+    let reason = view.body["blocked"][0]["reason"].as_str().ok_or("reason")?;
+    assert!(reason.contains("nothing to deliver"), "{reason}");
+    assert!(text(&merge(h, owner, "t1").await?).contains(reason));
+    Ok(())
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum AttributeFixtureChecks {
+    Absent,
+    Configured,
+    AddedOnTask,
+    RemovedOnDev,
+}
+
+/// Both the delivery view and the real squash apply the attributes of the checkout that
+/// performs the merge. A CI candidate starts on the task head. A raw squash runs in the clone.
+async fn changed_merge_attribute(checks: AttributeFixtureChecks, added: bool) -> TestResult {
+    let checked = checks != AttributeFixtureChecks::Absent;
+    let (h, owner) = if checked {
+        ci_world().await?
+    } else {
+        world().await?
+    };
+    let body = if matches!(
+        checks,
+        AttributeFixtureChecks::Configured | AttributeFixtureChecks::RemovedOnDev
+    ) {
+        ci_playground(&h, &owner).await?
+    } else {
+        from_template(&h, &owner, "shop").await?.body
+    };
+    let rule = "notes merge=union\n";
+    let base_files = if added {
+        vec![("notes", "base\n")]
+    } else {
+        vec![("notes", "base\n"), (".gitattributes", rule)]
+    };
+    push_to_dev(&h, &body, &base_files)?;
+    let repo = sandbox_dir(&h, &body).join("repo");
+    git(&repo, &["fetch", "-q", "origin"])?;
+    git(&repo, &["checkout", "-q", "--detach", "origin/dev"])?;
+    let worktree =
+        playground_task(&h, &body, "t1", &[("notes", "base\ntask\n")], &["done"]).await?;
+    let mut task_files = vec![(".gitattributes", added.then_some(rule))];
+    if checks == AttributeFixtureChecks::AddedOnTask {
+        task_files.push(("yulius.toml", Some(CI_JOBS)));
+    }
+    commit_in(&worktree, &task_files)?;
+    let mut dev = push_to_dev(&h, &body, &[("notes", "integration\n")])?;
+    if checks == AttributeFixtureChecks::RemovedOnDev {
+        git(&repo, &["fetch", "-q", "origin"])?;
+        git(&repo, &["checkout", "-q", "--detach", "origin/dev"])?;
+        dev = commit_in(&repo, &[("yulius.toml", None)])?;
+        git(&repo, &["push", "-q", "origin", "HEAD:dev"])?;
+    }
+    let view = call(
+        &h.router,
+        Method::GET,
+        "/api/tasks/t1/delivery",
+        None,
+        &owner,
+    )
+    .await?;
+    assert_eq!(view.status, StatusCode::OK, "{}", view.body);
+    let result = merge(&h, &owner, "t1").await?;
+    let clean = matches!(
+        checks,
+        AttributeFixtureChecks::Configured | AttributeFixtureChecks::AddedOnTask
+    ) == added;
+    if clean {
+        let merged = if checked {
+            assert!(
+                text(&result).contains("Yulius CI is testing"),
+                "{}",
+                result.body
+            );
+            ci_settle(&h, &owner, &body).await?;
+            assert_delivery_ci(&h, &owner, &body, None).await?;
+            merge(&h, &owner, "t1").await?
+        } else {
+            result
+        };
+        assert_eq!(merged.status, StatusCode::OK, "{}", merged.body);
+        assert_eq!(view.body["next_actions"], json!(["merge"]), "{}", view.body);
+        let notes = file_at(&origin_of(&h, &body), "dev", "notes")?;
+        assert!(
+            notes.contains("task") && notes.contains("integration"),
+            "{notes}"
+        );
+    } else {
+        assert_eq!(result.status, StatusCode::CONFLICT, "{}", result.body);
+        assert!(text(&result).contains("notes"), "{}", result.body);
+        assert_eq!(view.body["next_actions"], json!([]), "{}", view.body);
+        assert!(
+            view.body["blocked"][0]["reason"]
+                .as_str()
+                .is_some_and(|r| r.contains("notes"))
+        );
+        assert_eq!(
+            git(&origin_of(&h, &body), &["rev-parse", "dev"])?.trim(),
+            dev
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn an_unchecked_squash_uses_the_clone_when_the_task_adds_a_merge_attribute() -> TestResult {
+    changed_merge_attribute(AttributeFixtureChecks::Absent, true).await
+}
+
+#[tokio::test]
+async fn an_unchecked_squash_uses_the_clone_when_the_task_removes_a_merge_attribute() -> TestResult
+{
+    changed_merge_attribute(AttributeFixtureChecks::Absent, false).await
+}
+
+#[tokio::test]
+async fn a_checked_squash_uses_the_task_that_adds_a_merge_attribute() -> TestResult {
+    changed_merge_attribute(AttributeFixtureChecks::Configured, true).await
+}
+
+#[tokio::test]
+async fn a_checked_squash_uses_the_task_that_removes_a_merge_attribute() -> TestResult {
+    changed_merge_attribute(AttributeFixtureChecks::Configured, false).await
+}
+
+#[tokio::test]
+async fn a_task_adding_the_first_jobs_is_checked_with_its_own_merge_attribute() -> TestResult {
+    changed_merge_attribute(AttributeFixtureChecks::AddedOnTask, true).await
+}
+
+#[tokio::test]
+async fn a_merge_attribute_on_the_task_does_not_override_the_clone_after_dev_removed_the_jobs()
+-> TestResult {
+    changed_merge_attribute(AttributeFixtureChecks::RemovedOnDev, true).await
+}
+
 /// PLY-007: a branch that conflicts with the playground's `dev` is refused naming the files and
 /// the remedy.
 #[tokio::test]
 async fn a_conflicting_branch_is_refused_with_the_files() -> TestResult {
+    use yulius_app::ports::store_ext::CiStore as _;
     let (h, owner) = world().await?;
     let made = from_template(&h, &owner, "shop").await?;
     playground_task(&h, &made.body, "t1", &[("README.md", "# one\n")], &["done"]).await?;
     playground_task(&h, &made.body, "t2", &[("README.md", "# two\n")], &["done"]).await?;
     assert_eq!(merge(&h, &owner, "t1").await?.status, StatusCode::OK);
+    let sid = yulius_domain::ids::SandboxId::parse(made.body["id"].as_str().ok_or("id")?)?;
+    let runs_before = h.store.ci_runs(&sid, 100).await?.len();
+    let base = git(&origin_of(&h, &made.body), &["rev-parse", "dev"])?;
+    let view = call(
+        &h.router,
+        Method::GET,
+        "/api/tasks/t2/delivery",
+        None,
+        &owner,
+    )
+    .await?;
+    assert_eq!(view.status, StatusCode::OK, "{:?}", view.body);
+    assert_eq!(view.body["next_actions"], json!([]));
+    assert_eq!(view.body["blocked"][0]["action"], "merge");
+    let hold = view.body["blocked"][0]["reason"].as_str().ok_or("reason")?;
+    assert!(
+        hold.contains("README.md") && hold.contains("git merge origin/dev"),
+        "{hold}"
+    );
+    assert_eq!(
+        h.store.ci_runs(&sid, 100).await?.len(),
+        runs_before,
+        "reading scheduled CI"
+    );
+    assert_eq!(
+        git(&origin_of(&h, &made.body), &["rev-parse", "dev"])?,
+        base
+    );
     let refused = merge(&h, &owner, "t2").await?;
     assert_eq!(refused.status, StatusCode::CONFLICT, "{:?}", refused.body);
     let message = text(&refused);
+    assert_eq!(message, hold);
     assert!(message.contains("README.md"), "{message}");
     assert!(message.contains("git merge origin/dev"), "{message}");
     Ok(())
@@ -813,6 +1107,7 @@ async fn a_playground_never_calls_github() -> TestResult {
     )
     .await?;
     assert_eq!(delivery.status, StatusCode::OK, "{:?}", delivery.body);
+    assert_eq!(delivery.body["next_actions"], json!(["merge"]));
     let notes = delivery.body["notes"].to_string();
     assert!(notes.contains(note), "{notes}");
     assert!(!notes.contains("GitHub is not available"), "{notes}");
@@ -1813,6 +2108,46 @@ async fn agent_merge(h: &Harness, token: &str, head: &str) -> BoxResult<Value> {
     .await
 }
 
+/// The delivery GET reflects the current head's check and leaves CI unchanged.
+async fn assert_delivery_ci(
+    h: &Harness,
+    owner: &Creds,
+    sandbox: &Value,
+    held: Option<&str>,
+) -> TestResult {
+    let before = ci_overview(h, owner, sandbox).await?;
+    let got = call(
+        &h.router,
+        Method::GET,
+        "/api/tasks/t1/delivery",
+        None,
+        owner,
+    )
+    .await?;
+    assert_eq!(got.status, StatusCode::OK, "{}", got.body);
+    if let Some(state) = held {
+        assert_eq!(got.body["next_actions"], json!([]), "{}", got.body);
+        assert_eq!(got.body["blocked"][0]["action"], "merge");
+        let reason = got.body["blocked"][0]["reason"].as_str().ok_or("reason")?;
+        assert!(
+            reason.contains("Yulius CI") && reason.contains(state),
+            "{reason}"
+        );
+        if state == "failed" {
+            assert!(reason.contains("merge on green only"), "{reason}");
+        }
+    } else {
+        assert_eq!(got.body["next_actions"], json!(["merge"]), "{}", got.body);
+        assert_eq!(got.body["blocked"], json!([]));
+    }
+    assert_eq!(
+        ci_overview(h, owner, sandbox).await?["runs"],
+        before["runs"],
+        "GET changed CI"
+    );
+    Ok(())
+}
+
 /// PCI-003 (#411): a head whose merge into `dev` fails its checks never lands: the armed merge is
 /// dropped with why when the run ends, and the next `delivery_merge` is refused (merge on green
 /// only).
@@ -1842,6 +2177,7 @@ async fn a_failing_head_is_refused_and_its_armed_merge_dropped() -> TestResult {
         "{state}"
     );
 
+    assert_delivery_ci(&h, &owner, &body, Some("failed")).await?;
     let refused = agent_merge(&h, "tok-t1", &head).await?;
     assert_eq!(refused["isError"], true, "{refused}");
     assert!(
@@ -1955,6 +2291,8 @@ async fn an_armed_merge_follows_a_moved_dev() -> TestResult {
 
     let moved = push_to_dev(&h, &body, &[("other.txt", "two\n")])?;
     let sid = yulius_domain::ids::SandboxId::parse(body["id"].as_str().ok_or("id")?)?;
+    // The old queued run tested an earlier base. GET leaves the new candidate for the merge.
+    assert_delivery_ci(&h, &owner, &body, None).await?;
     h.app.merge_armed(&sid).await;
     let overview = ci_overview(&h, &owner, &body).await?;
     let second = task_run(&overview)?;
@@ -2002,6 +2340,7 @@ async fn a_persons_merge_waits_for_green() -> TestResult {
     let dev = git(&origin, &["rev-parse", "dev"])?.trim().to_owned();
     playground_task(&h, &body, "t1", &[("feature.txt", "one\n")], &["done"]).await?;
 
+    assert_delivery_ci(&h, &owner, &body, None).await?;
     let waiting = merge(&h, &owner, "t1").await?;
     assert_eq!(waiting.status, StatusCode::CONFLICT, "{:?}", waiting.body);
     assert!(
@@ -2010,6 +2349,7 @@ async fn a_persons_merge_waits_for_green() -> TestResult {
         waiting.body
     );
     assert_eq!(git(&origin, &["rev-parse", "dev"])?.trim(), dev);
+    assert_delivery_ci(&h, &owner, &body, Some("queued")).await?;
     let again = merge(&h, &owner, "t1").await?;
     assert_eq!(again.status, StatusCode::CONFLICT, "{:?}", again.body);
     let runs = ci_overview(&h, &owner, &body).await?;
@@ -2022,6 +2362,7 @@ async fn a_persons_merge_waits_for_green() -> TestResult {
     );
 
     ci_settle(&h, &owner, &body).await?;
+    assert_delivery_ci(&h, &owner, &body, None).await?;
     let merged = merge(&h, &owner, "t1").await?;
     assert_eq!(merged.status, StatusCode::OK, "{:?}", merged.body);
     assert_eq!(
@@ -2032,6 +2373,36 @@ async fn a_persons_merge_waits_for_green() -> TestResult {
     assert_eq!(git(&origin, &["rev-parse", "dev^"])?.trim(), dev);
     nothing_on_github(&h)?;
     Ok(())
+}
+
+/// The delivery view gives the recorded infrastructure error for the exact merge candidate.
+#[tokio::test]
+async fn a_playground_delivery_explains_an_errored_check() -> TestResult {
+    use yulius_app::ci::CiRunUpdate;
+    use yulius_app::ports::store_ext::CiStore as _;
+    use yulius_domain::ci::RunState;
+
+    let (h, owner) = ci_world().await?;
+    let body = ci_playground(&h, &owner).await?;
+    playground_task(&h, &body, "t1", &[("feature.txt", "change")], &["done"]).await?;
+    assert_eq!(merge(&h, &owner, "t1").await?.status, StatusCode::CONFLICT);
+    let run = task_run(&ci_overview(&h, &owner, &body).await?)?;
+    let reason = "the check worker could not start";
+    assert!(
+        h.store
+            .transition_ci_run(
+                run["id"].as_str().ok_or("run id")?,
+                &[RunState::Queued],
+                RunState::Error,
+                &CiRunUpdate {
+                    reason: Some(reason.to_owned()),
+                    ended_at: Some(h.app.now()),
+                    ..CiRunUpdate::default()
+                },
+            )
+            .await?
+    );
+    assert_delivery_ci(&h, &owner, &body, Some(reason)).await
 }
 
 /// Review round 1, major 1 (PCI-002): where both sides changed a `merge=union` file, the squash
@@ -2138,6 +2509,7 @@ async fn a_reset_head_never_takes_a_later_heads_verdict() -> TestResult {
     ci_settle(&h, &owner, &body).await?;
     h.app.merge_armed(&sid).await;
     git(&worktree, &["reset", "-q", "--hard", &fixed])?;
+    assert_delivery_ci(&h, &owner, &body, None).await?;
     let retried = answer(&agent_merge(&h, "tok-t1", &fixed).await?);
     assert!(
         retried.contains("armed: true"),
@@ -2159,6 +2531,13 @@ async fn a_persons_merge_without_required_checks_lands_at_once() -> TestResult {
     let origin = origin_of(&h, &body);
     let dev = git(&origin, &["rev-parse", "dev"])?.trim().to_owned();
     let sid = body["id"].as_str().ok_or("id")?;
+    playground_task(&h, &body, "t1", &[("broken", "yes\n")], &["done"]).await?;
+    let tested = merge(&h, &owner, "t1").await?;
+    assert_eq!(tested.status, StatusCode::CONFLICT, "{}", tested.body);
+    let overview = ci_settle(&h, &owner, &body).await?;
+    assert_eq!(task_run(&overview)?["state"], "failed", "{overview}");
+    assert_delivery_ci(&h, &owner, &body, Some("failed")).await?;
+
     let patched = call(
         &h.router,
         Method::PATCH,
@@ -2172,7 +2551,7 @@ async fn a_persons_merge_without_required_checks_lands_at_once() -> TestResult {
     )
     .await?;
     assert_eq!(patched.status, StatusCode::OK, "{:?}", patched.body);
-    playground_task(&h, &body, "t1", &[("feature.txt", "one\n")], &["done"]).await?;
+    assert_delivery_ci(&h, &owner, &body, None).await?;
     let merged = merge(&h, &owner, "t1").await?;
     assert_eq!(merged.status, StatusCode::OK, "{:?}", merged.body);
     assert_eq!(git(&origin, &["rev-parse", "dev^"])?.trim(), dev);
@@ -2688,6 +3067,122 @@ async fn a_purge_waits_while_a_process_of_the_sandbox_runs() -> TestResult {
             .task(&yulius_domain::ids::TaskId::parse("t1")?)
             .await?
             .is_some()
+    );
+    Ok(())
+}
+
+/// A real namespace manager for port-retirement checks without starting a privileged holder.
+fn retirement_manager(data: &Path) -> Arc<yulius_sandbox::manager::Manager> {
+    use yulius_contracts::sandbox::IdMap;
+    use yulius_sandbox::manager::{IdleConfig, IsolationConfig, Manager};
+
+    let map = IdMap {
+        host: 1000,
+        sub_start: 100_000,
+        count: 65_535,
+    };
+    Manager::new(IsolationConfig {
+        data_dir: data.to_path_buf(),
+        exe: PathBuf::new(),
+        bwrap: PathBuf::new(),
+        newuidmap: PathBuf::new(),
+        newgidmap: PathBuf::new(),
+        slirp4netns: None,
+        uid: map,
+        gid: map,
+        delegation: None,
+        limits: Default::default(),
+        disk_max: None,
+        forwards: Default::default(),
+        sudo_shim: String::new(),
+        idle: IdleConfig {
+            stop_after: std::time::Duration::from_secs(300),
+        },
+        auto_build: false,
+        docker: Err("disabled".into()),
+        health: Arc::default(),
+    })
+}
+
+/// The production adapter holds a removed sandbox's range while a recorded holder may be
+/// alive. Once that record is gone it releases the same sandbox's range.
+#[tokio::test]
+async fn namespace_adapter_keeps_ports_until_the_removed_holder_is_idle() -> TestResult {
+    use yulius::wiring::sandbox::NamespaceIsolation;
+    use yulius_app::ports::isolation::SandboxIsolation as _;
+    use yulius_contracts::sandbox::HOLDER_RECORD_FILE;
+    use yulius_domain::ids::SandboxId;
+
+    let data = tempfile::tempdir()?;
+    let sandbox = SandboxId::parse("s1")?;
+    let isolation = NamespaceIsolation::new(retirement_manager(data.path()), false);
+    let state = data.path().join("runtime/sandboxes").join(sandbox.as_str());
+    std::fs::create_dir_all(&state)?;
+    let record = state.join(HOLDER_RECORD_FILE);
+    std::fs::write(&record, b"{")?;
+    assert!(
+        !isolation.retired_ports_idle(&sandbox).await,
+        "an unreadable holder record keeps its ports"
+    );
+    std::fs::remove_file(record)?;
+    assert!(
+        isolation.retired_ports_idle(&sandbox).await,
+        "once the holder is gone its ports can be reused"
+    );
+    Ok(())
+}
+
+/// A permanent purge also removes both namespace holders' state. A later server must
+/// recycle the range without restoring either tree while it checks for remaining holders.
+#[tokio::test]
+async fn reusing_a_purged_playgrounds_ports_leaves_both_holder_trees_absent() -> TestResult {
+    use yulius::wiring::sandbox::NamespaceIsolation;
+    use yulius_sandbox::manager::{PrepareError, SandboxRequest};
+
+    let (h, owner) = world().await?;
+    let old = from_template(&h, &owner, "purged").await?.body;
+    let sid = old["id"].as_str().ok_or("id")?;
+    assert_eq!(old["port_base"], 20000);
+    let data = &h.app.config.data_dir;
+    let holders = data.join("runtime/sandboxes");
+    let trees = [holders.join(sid), holders.join(format!("{sid}.prod"))];
+    for tree in &trees {
+        std::fs::create_dir_all(tree)?;
+        std::fs::write(tree.join("retired"), b"")?;
+    }
+    assert_eq!(purge(&h, &owner, sid).await?.body["state"], "purged");
+    assert!(trees.iter().all(|tree| !tree.exists()));
+
+    // A fresh namespace manager sees only the on-disk state left by the purge.
+    // This test exercises retirement and allocation without launching a holder.
+    let manager = retirement_manager(data);
+    assert!(h.app.set_isolation(Arc::new(NamespaceIsolation::new(
+        Arc::clone(&manager),
+        false
+    ))));
+    let replacement = from_template(&h, &owner, "replacement").await?;
+    assert_eq!(
+        replacement.status,
+        StatusCode::CREATED,
+        "{:?}",
+        replacement.body
+    );
+    assert_eq!(replacement.body["port_base"], old["port_base"]);
+    assert!(
+        trees.iter().all(|tree| !tree.exists()),
+        "allocation restored purged holder state"
+    );
+    let stale = SandboxRequest {
+        id: sid.to_owned(),
+        hostname: "purged".into(),
+        dir: sandbox_dir(&h, &old),
+        port_first: 20000,
+        port_last: 20019,
+    };
+    assert_eq!(manager.prepare(&stale).await, Err(PrepareError::Retired));
+    assert_eq!(
+        manager.prepare_production(&stale).await,
+        Err(PrepareError::Retired)
     );
     Ok(())
 }

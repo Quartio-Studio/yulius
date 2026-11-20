@@ -479,6 +479,8 @@ pub struct IsolationStatus {
 pub struct Manager {
     config: IsolationConfig,
     bases: Bases,
+    /// A purge may remove the durable retirement marker while old requests still exist.
+    retirements: Mutex<HashMap<String, Instant>>,
     sandboxes: Mutex<HashMap<String, Arc<tokio::sync::Mutex<SandboxState>>>>,
     build: Mutex<BuildState>,
     building: AtomicBool,
@@ -580,6 +582,7 @@ impl Manager {
             docker_events: Mutex::new(std::collections::VecDeque::new()),
             sweeping: Arc::default(),
             config,
+            retirements: Mutex::default(),
             sandboxes: Mutex::new(HashMap::new()),
             build: Mutex::new(BuildState::default()),
             building: AtomicBool::new(false),
@@ -1408,6 +1411,10 @@ impl Manager {
         };
         let entry = self.entry(&request.id);
         let mut state = entry.lock().await;
+        // Retirement may have been marked while this prepare waited for the holder.
+        if self.retired(&request.id) {
+            return Err(PrepareError::Retired);
+        }
         state.request = Some(request.clone());
         if quota && let Some(refusal) = self.quota_refusal(request, &mut state).await {
             return Err(refusal);
@@ -1631,44 +1638,73 @@ impl Manager {
     /// [`Manager::adopt_one`] stops it instead of adopting it. A marker in its state directory
     /// keeps it across restarts; its time is the retirement's.
     pub async fn retire(&self, sandbox: &str) {
+        if self.mark_retired(sandbox, true).await {
+            tracing::info!(
+                sandbox,
+                "sandbox retired: its holder stops once its runs end"
+            );
+        }
+    }
+
+    /// Whether retirement bars new holders and the last holder has ended. Repairs a
+    /// missed retirement in existing holder directories without restoring purged files.
+    pub async fn retired_ports_idle(&self, sandbox: &str) -> bool {
+        self.mark_retired(sandbox, false).await && !self.holder_live(sandbox).await
+    }
+
+    async fn mark_retired(&self, sandbox: &str, create_dirs: bool) -> bool {
         if !valid_name(sandbox) {
             tracing::warn!(sandbox, "not a sandbox name: nothing retired");
-            return;
+            return false;
         }
         // Its production holder goes with it (SPEC-279 PDE-005).
-        let mut dirs = vec![self.state_dir(sandbox)];
+        let mut names = vec![sandbox.to_owned()];
         if production_sandbox(sandbox).is_none() {
-            dirs.push(self.state_dir(&production_holder(sandbox)));
+            names.push(production_holder(sandbox));
+        }
+        let dirs: Vec<_> = names.iter().map(|name| self.state_dir(name)).collect();
+        {
+            let mut retirements = lock(&self.retirements);
+            for name in names {
+                retirements.entry(name).or_insert_with(Instant::now);
+            }
         }
         let marked = tokio::task::spawn_blocking(move || {
             for dir in dirs {
-                std::fs::create_dir_all(&dir)?;
-                std::fs::write(dir.join(RETIRED), b"")?;
+                if create_dirs {
+                    std::fs::create_dir_all(&dir)?;
+                }
+                match std::fs::File::create_new(dir.join(RETIRED)) {
+                    Ok(_) => {}
+                    Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+                    Err(e) if !create_dirs && e.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(e) => return Err(e),
+                }
             }
             Ok(())
         })
         .await
         .unwrap_or_else(|error| Err(std::io::Error::other(error)));
-        match marked {
-            Ok(()) => tracing::info!(
-                sandbox,
-                "sandbox retired: its holder stops once its runs end"
-            ),
-            Err(error) => tracing::warn!(sandbox, %error, "the sandbox could not be retired"),
+        if let Err(error) = marked {
+            tracing::warn!(sandbox, %error, "the sandbox could not be retired");
+            return false;
         }
+        true
     }
 
     /// Whether `sandbox` was retired ([`Manager::retire`]).
     fn retired(&self, sandbox: &str) -> bool {
-        self.state_dir(sandbox).join(RETIRED).exists()
+        lock(&self.retirements).contains_key(sandbox)
+            || self.state_dir(sandbox).join(RETIRED).exists()
     }
 
     /// How long ago `sandbox` was retired; `None` when it was not.
     fn retired_for(&self, sandbox: &str) -> Option<Duration> {
-        let modified = std::fs::metadata(self.state_dir(sandbox).join(RETIRED))
+        std::fs::metadata(self.state_dir(sandbox).join(RETIRED))
             .and_then(|meta| meta.modified())
-            .ok()?;
-        Some(modified.elapsed().unwrap_or_default())
+            .ok()
+            .map(|modified| modified.elapsed().unwrap_or_default())
+            .or_else(|| lock(&self.retirements).get(sandbox).map(Instant::elapsed))
     }
 
     fn cgroup_of(&self, sandbox: &str) -> Option<SandboxGroups> {
@@ -4573,6 +4609,57 @@ while True:
             manager.prepare(&request(data.path())).await.err(),
             Some(PrepareError::Retired)
         );
+        Ok(())
+    }
+
+    /// A missed DELETE still retires an existing holder on disk. An unreadable record or
+    /// a lease keeps the range held and the other holder's absent tree stays absent.
+    #[tokio::test]
+    async fn recovering_a_retirement_waits_for_records_and_leases()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let data = tempfile::tempdir()?;
+        let manager = manager(data.path(), 1 << 40);
+        let state = manager.state_dir("s1");
+        std::fs::create_dir_all(&state)?;
+        let record = state.join(HOLDER_RECORD_FILE);
+        std::fs::write(&record, b"{")?;
+        assert!(!manager.retired_ports_idle("s1").await);
+        assert!(state.join(RETIRED).is_file());
+        assert!(!manager.state_dir("s1.prod").exists());
+        std::fs::remove_file(record)?;
+        manager.entry("s1").lock().await.leases = 1;
+        assert!(!manager.retired_ports_idle("s1").await);
+        manager.release("s1").await;
+        assert!(manager.retired_ports_idle("s1").await);
+        let restarted = Manager::new(manager.config().clone());
+        assert_eq!(
+            restarted.prepare(&request(data.path())).await,
+            Err(PrepareError::Retired)
+        );
+        Ok(())
+    }
+
+    /// An absent production holder needs no marker. A non-directory at its state path
+    /// is an error marking retirement, so even an idle development holder keeps the range.
+    #[tokio::test]
+    async fn a_retirement_marker_error_keeps_the_removed_range_reserved()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let data = tempfile::tempdir()?;
+        let manager = manager(data.path(), 1 << 40);
+        let dev = manager.state_dir("s1");
+        std::fs::create_dir_all(&dev)?;
+        let production = manager.state_dir("s1.prod");
+        std::fs::write(&production, b"not a state directory")?;
+        assert!(
+            !manager.holder_live("s1").await,
+            "the development holder has ended"
+        );
+        assert!(
+            !manager.retired_ports_idle("s1").await,
+            "production retirement could not be marked"
+        );
+        std::fs::remove_file(&production)?;
+        assert!(manager.retired_ports_idle("s1").await);
         Ok(())
     }
 

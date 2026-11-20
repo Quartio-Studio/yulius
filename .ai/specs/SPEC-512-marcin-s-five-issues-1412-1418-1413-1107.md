@@ -200,10 +200,79 @@ browser); the Telegram notifier (ADR-0351) sends each linked person's chosen kin
 - **DIG-006 Redaction.** Every text taken from a task (title, request, last message) passes the
   same redaction as that sandbox's transcripts before it is stored or sent.
 
-### Parts 4 and 5
+### Part 4: the personal Telegram channel's intake (#1107)
 
-Written when each part starts (see Context): TGI (#1107), HOF (#1106), each from its issue's
-acceptance criteria.
+Today (read on `dev` at 9427240e9): part 1 of #1107 is merged (pull request #1362, ADR-0351,
+SPEC-498): an instance administrator sets the bot (sealed, checked with `getMe`, removable), a
+person links their chat with a single-use 10-minute code from a browser session and unlinks in
+Settings or with `/stop` (audited), notifications reach the chat redacted under a rate bound, and
+the server long-polls with backoff. A linked chat's other messages get one help reply ("Replies
+and new tasks are not supported yet"). What #1107's acceptance still asks is the intake (its
+recommended option 1, part 4): replies and new tasks, off by default, on per person.
+
+- **TGI-001 The switch.** Each person's linked chat has `intake` (off by default) and a default
+  project, set in Settings → Notifications from a browser session only (as linking is) with
+  `PUT /api/me/telegram/intake` `{"enabled","sandbox_id"}`; the project must be one they may work
+  in; turning it on without one is refused. Audited `telegram.intake` (on or off, the project).
+  Unlinking ends it. Off, a linked chat's messages create and send nothing; the help reply says
+  how to turn it on.
+- **TGI-002 A reply reaches its task.** The bot remembers which of its messages were about which
+  task (the last 500 per chat). With intake on, a reply to one is the person's `task_message` to
+  that task, under the owner rule and its guards as from their own agent (ADR-0331, ADR-0379: a
+  person a request names may answer it; a task holding the owner's personal reach accepts only
+  its owner; a parked task resumes). The bot answers "Sent to #n" or the refusal's reason.
+- **TGI-003 A new message is a task.** With intake on, any other message (text, a caption, a
+  photo, a document, a voice note, an audio or video file; an album is one message) becomes a
+  task in the default project as that person, with the task bound, the onboarding gate and access
+  checks of `task_create`. Its files, each at most 20 MB (Telegram's bot download bound) and at
+  most 10, become the task's attachments in the person's drafts folder, named in its prompt. The
+  task is labelled "from Telegram" (origin `telegram`) and audited. The bot answers with its
+  number and link.
+- **TGI-004 Commands.** `/status` lists the person's tasks that wait for them (as the digest's
+  first section: an open request, a question in the terminal, a request naming them), at most 20,
+  with links; `/task <project> <text>` starts the task in another project they may work in
+  (named by its repository name or slug); `/help` says what the chat does.
+- **TGI-005 Redaction.** The bot's answers that carry a task's text (`/status`, a refusal naming a
+  task) pass the same redaction as transcripts.
+
+### Part 5: tasks hand work to another sandbox (#1106)
+
+Today (read on `dev` at f7cde240e): only the sandbox Superagent is served `sandboxes_list` and
+`sandbox_task_create` (`COCKPIT_TOOLS`, test `only_the_superagent_is_served_the_other_sandboxes`),
+and each such task waits in the call for its person's click (ADR-0227, ADR-0333). A task agent can
+only ask a person with `needs_you`. Nothing records where a task came from.
+
+- **HOF-001 The setting.** `GET`/`PUT /api/admin/handoffs` (instance administrators):
+  `mode` `off` (default), `ask` or `automatic`; `max_depth` (1 to 5, default 3) and `per_day`
+  (1 to 100 per owner, default 20). Stored in `instance.handoffs`, audited
+  `instance.handoffs.set`, shown in Settings. Off, nothing below exists for task agents.
+- **HOF-002 A sandbox opts out.** Its writers turn "Accept handoffs from other sandboxes" off
+  (`PUT /api/sandboxes/{sid}/handoffs` `{"accept"}`, on by default; stored in the sandbox's
+  profile, kept by a save of its delivery profile; audited `sandbox.handoffs`), shown on its Git
+  page.
+- **HOF-003 The tool.** `sandbox_handoff` `{sandbox, title, prompt}` with `task_create`'s
+  `harness`, `model`, `effort` and `mode`, served to task agents only while the mode is not off
+  (in `tools/list` and in the call). Refused with a reason the agent reads: an automation's task
+  (it holds nobody); text with characters a person cannot see; a prompt over 64 KiB; an agent
+  secret of the source sandbox (named; nothing stored keeps its value); a disabled owner; a target that is the task's own
+  sandbox, one its owner cannot work in (reported as not found), one that opted out; a chain
+  deeper than `max_depth` (a handed-off task's own handoff is one deeper); a sandbox already in
+  the chain (a cycle); more than `per_day` handoffs of the owner in 24 hours; the hourly bound
+  of tools. Every refusal is audited.
+- **HOF-004 Ask.** The handoff is stored as a request and the call returns at once; the task
+  goes on or ends with `needs_you`. The source task's page shows the request (target, title,
+  prompt, options) to its owner with Approve and Decline, in a browser session only (no API
+  token); approval re-checks the target and creates the task with exactly those arguments;
+  decline ends it. **Automatic:** the task is created at once.
+- **HOF-005 Provenance and the result.** A created task belongs to the source task's owner,
+  origin `handoff` ("Handed off"), and its info page shows "Handed off from <sandbox> #N" with a
+  link (the source's info page lists its handoffs; only a request to answer floats on the task's
+  page). When it
+  ends (Done, closed, stopped, failed, or merged), the source task gets one message from Yulius
+  with its outcome and pull request (queued for it when it has no live session).
+- **HOF-006 Audit.** `task.handoff` on both sandboxes with `requested`, `approved`,
+  `declined`, `created`, `refused` or `outcome`, never the prompt. Delivery is unchanged: the
+  target's work reaches `dev` only through its own pull request and green CI.
 
 ## Plan
 
@@ -225,18 +294,18 @@ acceptance criteria.
 - [x] The digest parks idle tasks past the threshold and goes to the browser and Telegram
 - [x] ADR and docs for the digest
 - [x] Review of the #1413 pull request answered test-first
-- [ ] Telegram intake switch and default project per person, off by default
-- [ ] A reply to a Telegram notification reaches its task under the owner rule
-- [ ] A new Telegram message or file becomes a task with attachments
-- [ ] Telegram commands /status and /task; ADR and docs for intake
-- [ ] Pull request #1130 answered and closed as superseded
+- [x] Telegram intake switch and default project per person, off by default
+- [x] A reply to a Telegram notification reaches its task under the owner rule
+- [x] A new Telegram message or file becomes a task with attachments
+- [x] Telegram commands /status and /task; ADR and docs for intake
+- [x] Pull request #1130 answered and closed as superseded
 - [ ] Review of the #1107 pull request answered test-first
-- [ ] Handoff setting off, ask or automatic and a per-project opt-out
-- [ ] The sandbox_handoff tool with its checks and bounds
-- [ ] Ask mode: a stored request the owner approves in a browser session
-- [ ] Provenance on the target, the outcome sent back, task.handoff audited on both
-- [ ] ADR amending ADR-0227 and docs for handoffs
-- [ ] Review of the #1106 pull request answered test-first
+- [x] Handoff setting off, ask or automatic and a per-project opt-out
+- [x] The sandbox_handoff tool with its checks and bounds
+- [x] Ask mode: a stored request the owner approves in a browser session
+- [x] Provenance on the target, the outcome sent back, task.handoff audited on both
+- [x] ADR amending ADR-0227 and docs for handoffs
+- [x] Review of the #1106 pull request answered test-first
 
 ## Acceptance criteria
 
@@ -270,6 +339,33 @@ acceptance criteria.
 - [x] Idle tasks past the threshold are parked, listed with links and what their last message
   left, and resume when someone writes to them (DIG-003, DIG-004).
 - [x] A digest with nothing to report is not sent (DIG-004).
+
+### #1107 (part 2: intake)
+
+- [x] Off by default per person; turned on in Settings with a default project, from a browser
+  session only, audited (TGI-001).
+- [x] With intake on, a reply to a notification reaches that task as a `task_message`, under the
+  owner rule; a refusal says why (TGI-002).
+- [x] A new message, or one with a photo or document, becomes a task with attachments in the
+  default project; `/task` targets another project (TGI-003, TGI-004).
+- [x] With intake off, neither happens (TGI-001).
+- [x] What the second person still cannot do through a reply: start, stop, merge, terminal input
+  (TGI-002).
+- [x] Docs: `product.md`, `api.md`, `changes.md` and an ADR (TGI-001..005).
+
+### #1106
+
+- [x] Off by default: task agents are not served `sandbox_handoff`; the existing test that
+  tasks lack cross-sandbox tools still passes (HOF-001, HOF-003).
+- [x] Ask: a stored request the owner approves or declines in a browser session only; approval
+  creates the task with exactly the arguments shown (HOF-004).
+- [x] Automatic: the task is created as the owner; a fourth level, a cycle and the daily bound are
+  refused with a reason (HOF-003, HOF-004).
+- [x] An opted-out sandbox, one the owner cannot work in (not found) and an automation's task are
+  refused (HOF-002, HOF-003).
+- [x] The target shows its source; the source gets the outcome; `task.handoff` on both
+  (HOF-005, HOF-006).
+- [x] Docs: `product.md`, `api.md`, `changes.md` and an ADR amending ADR-0227.
 
 ## Test plan
 
@@ -354,7 +450,114 @@ acceptance criteria.
   browser switch (the instance setting is the switch, as the issue's acceptance says), and
   Telegram digests can be turned off among the chat's choices.
 
+- **A Telegram reply goes through `task_message`, labelled `Telegram`.** The person typed it,
+  not their agent; the label says so (`Channel::Telegram`), and every guard is the one their own
+  agent meets. A reply to a notice of a request carries that request's `at`, so it never answers
+  a later one (ANS-004).
+- **Intake runs off the poll.** Files take up to two minutes each; the poll goes on, so other
+  chats' `/stop` and link codes are not held, and the next poll confirms the update at once.
+- **Known limits.** An album split by Telegram across two answers of `getUpdates` (more than 20
+  updates waiting) becomes two tasks. Files are fetched before `create_task_as` decides, so a
+  task it refuses (the onboarding gate) leaves its files in the person's drafts folder, removed
+  with the other drafts after a week.
+
+- **Handoffs: a request waits on the source task's page, not in the Needs you list.** The issue
+  names both; the page is where the owner reads the full prompt and options before approving, and
+  a Needs-you entry would offer the task to anyone who answers requests (ADR-0370). The task's
+  agent says in its own words, or with `needs_you`, that it waits.
+- **A handed-off task's outcome wakes a parked source.** Part 1 decided that Yulius's news does not
+  wake a parked task; the outcome is the answer the source asked for, so it resumes it, as a
+  person's message would. An open `needs_you` does not hold the outcome either (the tool tells an
+  agent to end with one while it waits); a prompt on screen, a pause or an update's hold do.
+- **Known limit: depth counts handoffs only.** A handed-off task that starts a task in its own
+  sandbox (`task_create`) starts a fresh chain, since a task records no parent; the daily bound
+  limits such a ping-pong.
+
 ## Evidence
+
+### Part 5 (#1106, handoffs)
+
+| Acceptance criterion | Test |
+|---|---|
+| Off by default: task agents are not served `sandbox_handoff`; tasks still lack the Superagent's cross-sandbox tools | `handoffs::handoffs_are_off_by_default_and_set_by_an_instance_administrator` (`tools/list` over `/mcp` with a task token, a call is an unknown tool, only instance administrators set it, 422 for bad values); `mcp::tests::only_the_superagent_is_served_the_other_sandboxes` unchanged and passing |
+| Ask: a stored request the owner answers in a browser session only; approval creates exactly what was shown | `handoffs::ask_stores_a_request_the_owner_answers_in_a_browser` (an operate token and another person get 403; the created task's title, prompt and owner equal the request; answered once; decline creates nothing); e2e `handoffs.e2e.ts` "the task's owner approves a handoff" |
+| Automatic: created as the owner; a deeper level, a cycle and the daily bound refused with a reason | `handoffs::automatic_creates_the_task_as_the_owner_within_the_checks`, `handoffs::depth_cycles_and_the_daily_bound_are_refused`; `handoffs::tests::a_chain_has_a_depth_and_no_cycle` |
+| An opted-out sandbox, one the owner cannot work in (not found) and an automation's task refused | `handoffs::automatic_creates_the_task_as_the_owner_within_the_checks`; e2e "a sandbox's writers close it to handoffs" |
+| The target shows its source; the source gets the outcome; `task.handoff` on both | `handoffs::automatic_…` (`from`, audits on s1 and s2 without the prompt), `parking::a_handed_off_tasks_outcome_reaches_its_source` (real processes: the source's session reads the outcome, told once), `handoffs::an_outcome_waits_for_the_targets_end`; e2e "a handed-off task shows where it came from"; store `a_handoff_is_decided_once_and_told_once` |
+| Docs and ADR | ADR-0395 (amends ADR-0227), `docs/product.md`, `docs/api.md`, `docs/architecture.md`, `docs/changes.md` |
+
+Review round 1 (head 9ea4cd1b3, CHANGES REQUESTED), answered test-first:
+
+| Finding | Change | Test |
+|---|---|---|
+| A delivery profile save dropped the opt-out | `update_sandbox_profile` keeps `accept_handoffs` | `handoffs::automatic_…` (opt out, save the profile, still refused; failed before) |
+| Approval was check-then-act | the request is claimed (`requested` → `creating`) before creating; a failure puts it back; a decline needs `requested` | `handoffs::two_approvals_at_once_create_one_task` (fails without the claim: mutation) |
+| The outcome was typed over a prompt on screen | not typed while the source needs its person, is paused or an update holds starts (an open `needs_you` does not hold it: Decisions) | `parking::a_handed_off_tasks_outcome_reaches_its_source` (real session: nothing typed while it needs attention; fails without the guard: mutation), `handoffs::an_outcome_waits_while_the_source_needs_its_person` |
+| Invisible text and a disabled owner were not audited; a full hour left a live request | every refusal goes through `refuse_handoff`; in automatic mode the hourly slot is taken before storing | `handoffs::every_refusal_is_audited_and_a_full_hour_leaves_no_request` |
+| The request card had no styles and could push Approve off screen | it floats over the terminal, bounded, its prompt scrolls; every request is listed first | e2e "a long handoff floats over the terminal and its answer stays in view" (fails when static: mutation) |
+| The pull request link lacked the owner | `owner/name`, none for a playground | `parking::a_handed_off_tasks_outcome_reaches_its_source` (merged, `https://github.com/<owner>/api/pull/7`) |
+| Minors | `past_merge` for merged; a gone task is not asked again; answers audited as their person, `approved` after creation; prompts bounded; an agent secret of the source sandbox refused; `owner/name` labels; the told title is the one asked for; `tools/call` over `/mcp` tested; docs (Git page, ADR-0227's Status, Decisions) | `handoffs::every_refusal_…` (secret), `handoffs::the_tool_is_called_over_mcp` |
+
+Review round 2 (head 84113ff1a, CHANGES REQUESTED), answered test-first:
+
+| Finding | Change | Test |
+|---|---|---|
+| The head lacked dev's tip (part 4 as #1487) | merged `225bf38fc`, taking dev's part 4 and keeping only the `/task owner/name` fix | `telegram::` (35 tests) |
+| A refusal for an agent secret stored and served it | a refusal stores its text redacted with the source sandbox's secrets, bounded (the sandbox name too); the page's view redacts again; the reason names the secret | `handoffs::every_refusal_is_audited_and_a_full_hour_leaves_no_request` (the value in neither the GET nor the audit; failed before) |
+| `creating` had no way out | the claimed part runs on its own task (approval and automatic); at start a leftover `creating` is `created` with its task, else `refused` ("ask again") | store `a_handoff_is_decided_once_and_told_once` (settled) |
+| A store error after creation read as "not created" | logged; the task is never reported unmade | by reading |
+| A weak outcome test | removed; the live-session test holds the guard (`parking::a_handed_off_tasks_outcome_reaches_its_source`) | — |
+| Non-request rows floated for good | only a request floats; provenance and history are on the info page | e2e "a handed-off task shows where it came from on its info page", "the task's owner approves…" (answered, it floats no more) |
+| Docs and nits | `creating` and the new refusals in the API, spec and contracts; a playground's label; `ACCEPT_KEY`; `creating` worded on the page | by reading |
+
+Review round 3 (head 0868ae83c): APPROVED, nothing blocking. After it: a stray changes line
+removed and a refusal redacts before it cuts (14 product lines). Nits left: a claim in flight while
+the server starts could be settled as refused; a settled claim in ask mode is refused rather than
+asked again; the options (`harness`, `model`, `effort`, `mode`) of a refusal are kept as given;
+`sandbox_named` duplicates `sandbox_by_reference`; the pause and update-hold halves of the outcome
+guard have no test.
+
+Also in this pull request (a part 4 defect found while building part 5): `/task acme/app` (a
+project's full repository name) named no project, because owner and name are stored apart;
+`telegram::with_intake_a_message_starts_a_task_and_a_photo_is_its_attachment` now covers it.
+
+### Part 4 (#1107, intake)
+
+| Acceptance criterion | Test |
+|---|---|
+| Off by default per person; on in Settings with a project they may work in, audited | `telegram::telegram_intake_is_off_by_default_and_set_with_a_project` (defaults, 422 without a project, refused for a project without access, audit `on s1`); store `intake_and_the_bots_messages_follow_the_chat`; e2e `telegram.e2e.ts` "a person turns their chat's intake on with a project" |
+| With intake off, nothing happens | `telegram::telegram_intake_is_off_by_default_and_set_with_a_project` (a message starts no task; the help says how to turn it on) |
+| A reply reaches its task as a `task_message` under the owner rule | `telegram::a_reply_reaches_its_task_under_the_owner_rule`: the owner's reply is handled as her `task_message` (here "task #1 has no live session": no agent runs in that harness; delivery to a live or parked session is `task_message`'s, tested in `task_message` and `parking`); a teammate's reply after the request ended is refused by the owner rule, nothing audited; the bot's messages are matched per chat (store test) |
+| A new message, or one with a photo or document, becomes a task with attachments; `/task` targets another project | `telegram::with_intake_a_message_starts_a_task_and_a_photo_is_its_attachment` (origin `telegram`, owner the person, the photo's bytes at the path named in the prompt, `/task app …`, unknown project refused); adapter `replies_captions_files_and_albums_are_read`, `a_file_is_fetched_within_its_bound`; `telegram::tests::an_album_is_one_message` |
+| What the second person still cannot do through a reply | a reply is only ever a `task_message`; the owner rule refuses a teammate's (test above); there is no Telegram path to start, stop, merge or type into a terminal |
+| `/status`, redaction | `telegram::a_reply_reaches_its_task_under_the_owner_rule` (`/status` lists the waiting task; the refusal carries no agent secret); `notify::tests::intake_commands_are_read` |
+| Docs and ADR | ADR-0392, `docs/product.md`, `docs/api.md`, `docs/architecture.md`, `docs/changes.md` |
+
+PR #1130 was commented on and closed as superseded by #1362 (part 1), naming this part 2.
+
+Review round 1 (head c6e1a673e, CHANGES REQUESTED), answered test-first:
+
+| Finding | Change | Test |
+|---|---|---|
+| Format gate failed | `cargo fmt --all` | `quality` |
+| The tools' hourly bound was not applied | `reserve_tool_task`/`release_tool_task`, shared with `tool_task_create`, taken before any file is fetched | `telegram::telegram_tasks_keep_the_hourly_bound_and_the_file_bounds` (the 21st is refused, nothing created; fails without the bound: mutation) |
+| The redaction check could not fail | the request's action carries the secret; `/status` asserts `[secret:PAYMENT_KEY]` and no value | `telegram::a_reply_reaches_its_task_under_the_owner_rule` (fails without the redaction: mutation) |
+| No reply was delivered in a test | a reply to a queued task's message joins its request, audited as from Telegram | `telegram::a_reply_is_delivered_and_a_reply_never_starts_a_task` |
+| The browser-only rule was untested | an operate token is refused, nothing stored or audited | `telegram::telegram_intake_is_off_by_default_and_set_with_a_project` (fails without the check: mutation) |
+| A reply to an unremembered message started a task | the bot's answers are remembered as about their task; a reply to a message about no task starts nothing | `telegram::a_reply_is_delivered_and_a_reply_never_starts_a_task` |
+| The label said "their own agent" | `Channel::Telegram`, labelled `Telegram` | by reading (`through`) |
+| An album across two answers is two tasks | recorded as a known limit | Decisions |
+| Intake held the poll; a restart could hand a message over twice | intake runs on its own task; the next poll confirms the update | by reading (`on_inbound`) |
+| A teammate's reply could answer a later request | the notice keeps its request's `at`; a reply passes it (`task_message_as`), as the page does (ANS-004) | store `intake_and_the_bots_messages_follow_the_chat` (kept and read back); the answer path's refusal is part 2's |
+| Origin lists lacked `telegram` | added in `api.md`, `TaskSummary`, `TaskAnalytics` | by reading |
+| Nits | `/task` refuses a short name two projects share; `/status` reads every live state; plain `file_path` only; intake can always be turned off; a person's old chat forgets its messages on a move; drafts of a refused task are a known limit | adapter `only_a_plain_file_path_is_fetched`, store test (move), the bounds test (`/task` without access, 11 files, 30 MB) |
+
+Review round 2 (head a7cc9d7ed): APPROVED. Its minors closed after the approval: each chat's
+intake runs in order in its own lane, five waiting at most (15 product lines); a reply to an old
+notice after its request was replaced is refused (`telegram::a_reply_reaches_its_task_under_the_owner_rule`,
+fails when the reply drops the request's time: mutation); architecture, product and API describe
+the round-1 design. Nits left: the bot's own answers carry no request time; the bound's refusal
+says "tools"; the label, `Named::Several` and the `task.created` detail have no test.
 
 ### Part 3 (#1413)
 

@@ -77,6 +77,7 @@ fn through(channel: Channel) -> &'static str {
     match channel {
         Channel::Superagent => "their Superagent",
         Channel::Remote => "their own agent",
+        Channel::Telegram => "Telegram",
         // Never served `task_message` (TMS-001); named for completeness.
         Channel::Task => "their task's agent",
     }
@@ -253,6 +254,18 @@ impl App {
         caller: &ProjectCaller,
         args: &Value,
     ) -> AppResult<Value> {
+        self.task_message_as(caller, args, None).await
+    }
+
+    /// [`App::tool_task_message`], an answer naming the request it answers (`asked_at_ms`, as
+    /// the page's does, SPEC-512 ANS-004): a Telegram reply to a notice answers that notice's
+    /// request, never a later one (TGI-002).
+    pub(crate) async fn task_message_as(
+        self: &Arc<Self>,
+        caller: &ProjectCaller,
+        args: &Value,
+        asked_at_ms: Option<i64>,
+    ) -> AppResult<Value> {
         let ctx = self.manage_context(caller).await?;
         let task = self.agent_task_ref(caller, args).await?;
         if caller.task.as_ref().is_some_and(|own| own.id == task.id) {
@@ -268,7 +281,7 @@ impl App {
                 .get("text")
                 .and_then(Value::as_str)
                 .ok_or_else(|| AppError::Invalid("missing string argument `text`".into()))?;
-            self.answer_needs_you(&ctx, task.id.as_str(), text, None)
+            self.answer_needs_you(&ctx, task.id.as_str(), text, asked_at_ms)
                 .await?;
             // Audited as a message too, with the channel it came through (TMS-005).
             let named = json!({
@@ -499,43 +512,9 @@ impl App {
                 task.number
             )));
         }
-        // A request that names people is theirs and its owner's (ANS-002).
-        if !crate::tasks::owns(&task, &ctx.user.id) && asked.named.narrows() {
-            let login = self.login_of(&ctx.user.id).await.to_lowercase();
-            if asked.named.withdrawn.contains(&login) {
-                return Err(AppError::Forbidden(format!(
-                    "@{owner} withdrew you from task #{}'s question: only they{} answer it now",
-                    task.number,
-                    names(&asked.named.who, " and ")
-                )));
-            }
-            if !asked.named.who.contains(&login) {
-                return Err(AppError::Forbidden(format!(
-                    "task #{} asks @{owner}{}, not you: its question is theirs to answer",
-                    task.number,
-                    names(&asked.named.who, " and ")
-                )));
-            }
-        }
-        // A permission menu or a question in the terminal is answered with keys the paste would
-        // press unseen (NYA-004).
-        if task.activity == Some(Activity::NeedsAttention) {
-            return Err(AppError::Conflict(format!(
-                "task #{}'s agent asks in its terminal now: @{owner} answers there, or take \
-                 control of the task",
-                task.number
-            )));
-        }
         let mine = crate::tasks::owns(&task, &ctx.user.id);
-        // The owner's personal secrets and MCP servers act as them outside GitHub: another
-        // person's words never drive them (as for `task_message`, SPEC-245, SPEC-332).
-        if !mine && self.reaches_owners_personal(&task).await? {
-            return Err(AppError::Conflict(format!(
-                "task #{} holds @{owner}'s personal secrets or MCP servers, so only @{owner} \
-                 answers it; or take control of the task",
-                task.number
-            )));
-        }
+        self.check_answer_authority(ctx, &task, &asked.named, &owner)
+            .await?;
         let login = self.login_of(&ctx.user.id).await;
         if parked {
             // Resumed in its own session with the answer as its first prompt, as a message to a
@@ -587,6 +566,54 @@ impl App {
             .await?
             .ok_or(AppError::NotFound)?;
         self.task_summary(&task).await
+    }
+
+    /// Checks whether this person may answer the question the task is asking now.
+    pub(crate) async fn check_answer_authority(
+        &self,
+        ctx: &AuthContext,
+        task: &TaskRecord,
+        named: &crate::needs_you::Named,
+        owner: &str,
+    ) -> AppResult<()> {
+        let mine = crate::tasks::owns(task, &ctx.user.id);
+        // A request that names people is theirs and its owner's (ANS-002).
+        if !mine && named.narrows() {
+            let login = self.login_of(&ctx.user.id).await.to_lowercase();
+            if named.withdrawn.contains(&login) {
+                return Err(AppError::Forbidden(format!(
+                    "@{owner} withdrew you from task #{}'s question: only they{} answer it now",
+                    task.number,
+                    names(&named.who, " and ")
+                )));
+            }
+            if !named.who.contains(&login) {
+                return Err(AppError::Forbidden(format!(
+                    "task #{} asks @{owner}{}, not you: its question is theirs to answer",
+                    task.number,
+                    names(&named.who, " and ")
+                )));
+            }
+        }
+        // A permission menu or a question in the terminal is answered with keys the paste would
+        // press unseen (NYA-004).
+        if task.activity == Some(Activity::NeedsAttention) {
+            return Err(AppError::Conflict(format!(
+                "task #{}'s agent asks in its terminal now: @{owner} answers there, or take \
+                 control of the task",
+                task.number
+            )));
+        }
+        // The owner's personal secrets and MCP servers act as them outside GitHub: another
+        // person's words never drive them (as for `task_message`, SPEC-245, SPEC-332).
+        if !mine && self.reaches_owners_personal(task).await? {
+            return Err(AppError::Conflict(format!(
+                "task #{} holds @{owner}'s personal secrets or MCP servers, so only @{owner} \
+                 answers it; or take control of the task",
+                task.number
+            )));
+        }
+        Ok(())
     }
 
     /// Whether the owner's personal agent secrets (switched on for the task's project) or

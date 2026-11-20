@@ -31,7 +31,7 @@ pub(crate) const TOKEN_RUNS_SQL: &str = "SELECT a.account_id, a.started_at, a.en
      WHERE a.ended_at IS NULL AND a.state IN ('spawning', 'live') OR a.ended_at >= ?1";
 
 pub(crate) const PAUSE_COLS: &str =
-    "id, task_id, kind, account_id, continuation, started_at, ended_at, outcome";
+    "id, task_id, kind, account_id, continuation, started_at, ended_at, outcome, during_turn";
 
 fn pause_from_row(row: &Row<'_>) -> rusqlite::Result<PauseRecord> {
     let task: String = row.get("task_id")?;
@@ -45,6 +45,7 @@ fn pause_from_row(row: &Row<'_>) -> rusqlite::Result<PauseRecord> {
             .map(|a| AccountId::parse(&a).map_err(|_| bad_column("account id", &a)))
             .transpose()?,
         continuation: row.get("continuation")?,
+        during_turn: row.get("during_turn")?,
         started_at: Timestamp(row.get("started_at")?),
         ended_at: row.get::<_, Option<i64>>("ended_at")?.map(Timestamp),
         outcome: row.get("outcome")?,
@@ -60,7 +61,7 @@ impl CapacityStore for SqliteStore {
                 .execute(
                     &format!(
                         "INSERT OR IGNORE INTO capacity_pauses ({PAUSE_COLS}) \
-                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, NULL)"
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, NULL, ?7)"
                     ),
                     params![
                         p.id,
@@ -68,7 +69,8 @@ impl CapacityStore for SqliteStore {
                         p.kind.as_str(),
                         p.account_id.as_ref().map(AccountId::as_str),
                         p.continuation,
-                        p.started_at.0
+                        p.started_at.0,
+                        p.during_turn
                     ],
                 )
                 .map_err(db)?;
@@ -117,7 +119,7 @@ impl CapacityStore for SqliteStore {
         self.call(move |c| {
             let changed = c
                 .execute(
-                    "UPDATE capacity_pauses SET kind = ?1, continuation = ?2 \
+                    "UPDATE capacity_pauses SET kind = ?1, continuation = ?2, during_turn = 0 \
                      WHERE task_id = ?3 AND ended_at IS NULL",
                     params![kind.as_str(), continuation, task],
                 )
@@ -234,5 +236,32 @@ impl CapacityStore for SqliteStore {
             rows.collect::<Result<Vec<_>, _>>().map_err(db)
         })
         .await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn migrating_a_prompt_already_held_waits_for_its_turn_record() -> rusqlite::Result<()> {
+        let db = rusqlite::Connection::open_in_memory()?;
+        db.execute_batch(
+            "CREATE TABLE capacity_pauses (id TEXT, kind TEXT, ended_at INTEGER);
+             INSERT INTO capacity_pauses VALUES ('held', 'prompt', NULL),
+                ('done', 'prompt', 99), ('limit', 'limit', NULL);",
+        )?;
+        db.execute_batch(include_str!("migrations/0075_prompt_held_during_turn.sql"))?;
+        let mut rows = db.prepare("SELECT id, during_turn FROM capacity_pauses ORDER BY id")?;
+        let values = rows
+            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, bool>(1)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        assert_eq!(
+            values,
+            [
+                ("done".into(), false),
+                ("held".into(), true),
+                ("limit".into(), false)
+            ]
+        );
+        Ok(())
     }
 }

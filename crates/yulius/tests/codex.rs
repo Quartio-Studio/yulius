@@ -1825,3 +1825,150 @@ fn the_capacity_view_names_providers_and_resumes_with_codex_too() -> TestResult 
     rt.shutdown_timeout(Duration::from_secs(5));
     Ok(())
 }
+
+/// A cold resume uses the parked attempt's rollout even if SessionStart lost its lineage write.
+#[test]
+fn parked_codex_resumes_the_recorded_rollout_with_the_next_prompt() -> TestResult {
+    use crate::first_message::{hooked, start_with};
+    use crate::pool_supervision::{ScriptedUsage, seed};
+    use crate::task_message::superagent;
+    use yulius_domain::task::Activity;
+    let fake = locate_fake_agent().ok_or("fake-agent is not built")?;
+    let (_dir, data) = temp()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let agent = FakeAgentOptions {
+            answers_first_message: true,
+            resume_prompts: true,
+            interrupts: true,
+            ..hooked()
+        };
+        let (app, _) = start_with(
+            &data,
+            &fake,
+            agent.clone(),
+            0,
+            Arc::new(ScriptedUsage::default()),
+            |config| config.park_after_ms = 1,
+        )
+        .await?;
+        let (sandbox, user) = seed(&app, &data, &["claude-only"]).await?;
+        add_codex_account(&app, "a-codex", &codex_auth("2026-11-01T10:00:00Z")).await?;
+        let id = new_codex_task(&app, &sandbox, &user, "First turn").await?;
+        wait_for(
+            "the answered Codex turn",
+            Duration::from_secs(30),
+            || async {
+                screen_contains(&app, &id, "ECHO: First turn").await
+                    && task(&app, &id)
+                        .await
+                        .is_ok_and(|task| task.activity == Some(Activity::Waiting))
+            },
+        )
+        .await?;
+        let run = app.deps.store.live_attempt(&id).await?.ok_or("live run")?;
+        let rollout_id = run.provider_session_id.ok_or("rollout id")?;
+        let db = rusqlite::Connection::open(data.join("yulius.db"))?;
+        db.execute(
+            "UPDATE attempts SET provider_session_id = NULL WHERE id = ?1",
+            [run.id.as_str()],
+        )?;
+        assert_eq!(app.park_idle_sessions_now().await, 0);
+        assert_eq!(task(&app, &id).await?.status, TaskStatus::Running);
+        db.execute(
+            "UPDATE attempts SET provider_session_id = ?1 WHERE id = ?2",
+            [rollout_id.as_str(), run.id.as_str()],
+        )?;
+        wait_for("parking", Duration::from_secs(30), || async {
+            app.park_idle_sessions_now().await;
+            task(&app, &id)
+                .await
+                .is_ok_and(|task| task.status == TaskStatus::Parked)
+        })
+        .await?;
+        let first = app
+            .deps
+            .store
+            .attempts(&id)
+            .await?
+            .pop()
+            .ok_or("first run")?;
+        let session = first.provider_session_id.ok_or("rollout id")?;
+        // A restart between the attempt's ID write and the lineage write.
+        rusqlite::Connection::open(data.join("yulius.db"))?.execute(
+            "DELETE FROM provider_sessions WHERE task_id = ?1",
+            [id.as_str()],
+        )?;
+        // The restarted server must reconstruct native resume from the recorded attempt.
+        let (app, _) = start_with(
+            &data,
+            &fake,
+            agent,
+            0,
+            Arc::new(ScriptedUsage::default()),
+            |_| {},
+        )
+        .await?;
+        let caller = superagent(&sandbox, &user, "admin");
+        let prompt = "Second turn: answer with an echo";
+        db.execute(
+            "UPDATE attempts SET provider_session_id = NULL WHERE id = ?1",
+            [first.id.as_str()],
+        )?;
+        let args = serde_json::json!({"task_id":id.as_str(), "text": prompt});
+        let Err(error) = app.tool_task_message(&caller, &args).await else {
+            return Err("resumed without a recorded rollout".into());
+        };
+        assert!(error.to_string().contains("no recorded rollout"), "{error}");
+        assert_eq!(task(&app, &id).await?.status, TaskStatus::Parked);
+        assert!(app.deps.store.live_attempt(&id).await?.is_none());
+        // A lineage entry from before the parked attempt cannot identify that attempt.
+        db.execute(
+            "INSERT INTO provider_sessions (id, sandbox_id, task_id, harness, session_id, origin, first_seen, last_seen)
+             VALUES ('old-entry', ?1, ?2, 'codex', 'old-session', 'native', 0, 0)",
+            [sandbox.as_str(), id.as_str()],
+        )?;
+        let Err(error) = app.tool_task_message(&caller, &args).await else {
+            return Err("resumed the stale rollout".into());
+        };
+        assert!(error.to_string().contains("no recorded rollout"), "{error}");
+        assert_eq!(task(&app, &id).await?.status, TaskStatus::Parked);
+        db.execute(
+            "UPDATE attempts SET provider_session_id = ?1 WHERE id = ?2",
+            [session.as_str(), first.id.as_str()],
+        )?;
+        let answer = app.tool_task_message(&caller, &args).await?;
+        assert_eq!(answer["delivered"], "resumed");
+        wait_for(
+            "the answer in the resumed rollout",
+            Duration::from_secs(30),
+            || screen_contains(&app, &id, "Second turn: answer with an echo"),
+        )
+        .await?;
+        let second = app
+            .deps
+            .store
+            .live_attempt(&id)
+            .await?
+            .ok_or("resumed run")?;
+        assert_eq!(second.launch_kind, LaunchKind::Resume);
+        assert_eq!(
+            second.provider_session_id.as_deref(),
+            Some(session.as_str())
+        );
+        let home = data
+            .join("sandboxes")
+            .join(sandbox.as_str())
+            .join("codex/a-codex/sessions");
+        let rollout = app
+            .deps
+            .harness
+            .find_codex_rollout(&home, &session)?
+            .ok_or("rollout")?;
+        let history = std::fs::read_to_string(rollout)?;
+        assert!(history.contains("First turn") && history.contains(prompt));
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}

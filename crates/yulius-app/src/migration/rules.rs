@@ -64,11 +64,12 @@ pub fn check_request(request: &MoveRequest) -> Result<(), String> {
         let names_nothing = request.target.is_none()
             && request.ssh_port.is_none()
             && request.public_url.is_none()
-            && request.data_disks.is_empty();
+            && request.data_disks.is_empty()
+            && request.max_downtime.is_none();
         return if names_nothing {
             Ok(())
         } else {
-            Err("an abort names no host, port, URL or disk".into())
+            Err("an abort names no host, port, URL, disk or freeze limit".into())
         };
     }
     let Some(target) = request.target.as_deref() else {
@@ -92,6 +93,9 @@ pub fn check_request(request: &MoveRequest) -> Result<(), String> {
         .is_some_and(|url| url.len() > MAX_TARGET_BYTES || !public_url_ok(url))
     {
         return Err("the public URL must be `https://host`, with nothing after it".into());
+    }
+    if request.max_downtime == Some(0) {
+        return Err("the longest freeze must be at least one minute".into());
     }
     let disks = &request.data_disks;
     if disks.len() > MAX_DATA_DISKS {
@@ -121,6 +125,7 @@ mod tests {
             ssh_port: Some(22),
             public_url: None,
             data_disks: Vec::new(),
+            max_downtime: None,
             requested_at: 1,
         }
     }
@@ -271,7 +276,7 @@ mod tests {
             ..plan()
         };
         assert_eq!(check_request(&abort), Ok(()));
-        const WHY: &str = "an abort names no host, port, URL or disk";
+        const WHY: &str = "an abort names no host, port, URL, disk or freeze limit";
         let changes: [fn(&mut MoveRequest); 4] = [
             |r| r.target = Some("root@new.example".into()),
             |r| r.ssh_port = Some(22),

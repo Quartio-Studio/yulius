@@ -1408,6 +1408,39 @@ impl App {
             .clone()
     }
 
+    /// The model families waiting tasks have excluded from this account. A window reading
+    /// can already have cleared the stored limit by the time a person asks for a refresh.
+    pub(crate) async fn excluded_families(&self, account: &AccountId) -> Vec<ModelFamily> {
+        let mut families = Vec::new();
+        let Ok(pauses) = self.deps.store.open_pauses().await else {
+            return families;
+        };
+        for pause in pauses {
+            if let Some(runtime) = self.existing_runtime(&pause.task_id)
+                && let Ok(limits) = runtime.blind_limits.lock()
+            {
+                for (id, family) in limits.left_out() {
+                    if id == account && !families.contains(family) {
+                        families.push(*family);
+                    }
+                }
+            }
+        }
+        families
+    }
+
+    /// A successful model probe allows this account/model pair in each task's next placement.
+    pub(crate) fn model_available(&self, account: &AccountId, family: ModelFamily) {
+        if let Ok(runtimes) = self.supervisor.runtimes.lock() {
+            for runtime in runtimes.values() {
+                if let Ok(mut limits) = runtime.blind_limits.lock() {
+                    limits.available(account, family);
+                }
+            }
+        }
+        self.capacity_changed();
+    }
+
     /// Drops a deleted task's runtime state.
     pub(crate) fn forget_runtime(&self, task: &TaskId) {
         if let Ok(mut map) = self.supervisor.runtimes.lock() {
@@ -4627,9 +4660,12 @@ impl App {
         {
             return Ok(false);
         }
-        let Some(run) = self.live_attempt_id(task_id).await else {
+        let Some(run) = self.deps.store.live_attempt(task_id).await? else {
             return Ok(false);
         };
+        if run.harness == Harness::Codex && run.provider_session_id.is_none() {
+            return Ok(false);
+        }
         let runtime = self.runtime(task_id);
         if let Ok(mut intent) = runtime.intent.lock() {
             // Any other end under way owns the run's end.
@@ -4643,7 +4679,7 @@ impl App {
             }
         }
         crate::race::reached(crate::race::Point::ParkDecided, Path::new(task_id.as_str()));
-        self.arm_escalation(task_id, Some(run));
+        self.arm_escalation(task_id, Some(run.id));
         request_shutdown(&runtime).await;
         Ok(true)
     }
@@ -4677,6 +4713,53 @@ impl App {
             .task(task_id)
             .await?
             .ok_or(AppError::NotFound)?;
+        if task.status != TaskStatus::Parked {
+            return Ok(false);
+        }
+        if task.harness == Harness::Codex {
+            // Do not fall back to a fresh session if an old attempt has no lineage.
+            // SessionStart stores the attempt id before it records lineage, so a
+            // restart between those writes can recover from the parked attempt.
+            let store = &self.deps.store;
+            let missing = || {
+                AppError::Conflict(
+                    "This parked Codex task has no recorded rollout to resume.".into(),
+                )
+            };
+            let run = store
+                .attempts(task_id)
+                .await?
+                .pop()
+                .filter(|run| run.harness == Harness::Codex)
+                .ok_or_else(missing)?;
+            let sessions = store.provider_sessions(task_id).await?;
+            let latest = sessions
+                .last()
+                .filter(|entry| entry.harness == Harness::Codex);
+            if let Some(id) = run.provider_session_id {
+                if latest.is_none_or(|entry| entry.session_id != id) {
+                    self.record_lineage(&task, Harness::Codex, &id, "native")
+                        .await?;
+                    // The store preserves another task's claim on a rollout. Confirm
+                    // that the launch will actually read this attempt's identity.
+                    if !store
+                        .provider_sessions(task_id)
+                        .await?
+                        .last()
+                        .is_some_and(|entry| {
+                            entry.harness == Harness::Codex && entry.session_id == id
+                        })
+                    {
+                        return Err(missing());
+                    }
+                }
+            } else if latest.is_none_or(|entry| {
+                entry.last_seen < run.started_at
+                    || run.ended_at.is_none_or(|end| entry.last_seen > end)
+            }) {
+                return Err(missing());
+            }
+        }
         let goal_unfinished = self.goal_unfinished_of(&task).await;
         let rest = task
             .activity
@@ -6247,6 +6330,12 @@ impl App {
         // So is a flag that the session's work answers (a notice's), raised before this server
         // started: its reason says so (SPEC-472 ATN-010).
         self.watch_answerable_flag(&task_id).await;
+        // The launched model stays the same for this attempt. For older run records, the
+        // task already read for this watch supplies the model. Polling needs no store read.
+        let family = crate::capacity::run_family(
+            attempt.model.as_deref(),
+            crate::capacity::task_model(&task),
+        );
         let mut session_id = attempt.provider_session_id.clone();
         let mut watch = None;
         let mut last_drift_check = Timestamp(0);
@@ -6390,7 +6479,6 @@ impl App {
             // A workflow agent's limit of another model than the session runs is not the
             // session's (SPEC-486 WFL-002): it goes into the subscription's reading when it is
             // read live, and never into what is known of the session.
-            let family = self.run_family_of(&attempt).await;
             let (other_models, observations): (Vec<_>, Vec<_>) = observations
                 .into_iter()
                 .partition(|observation| binds_another_model(observation, family));

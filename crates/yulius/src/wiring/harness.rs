@@ -1023,6 +1023,9 @@ impl TranscriptWatch for Watch {
         let mut out: Vec<Observation> = Vec::new();
         match self.subagents.poll_sides() {
             Ok(side) => {
+                // A sibling's answer supplies the workflow's default model even if its file
+                // sorts after a first-request refusal in this same bounded poll.
+                let mut refusals = Vec::new();
                 for side in side {
                     // A subagent of the thread: `agent-<id>.jsonl` in the subagents folder.
                     let subagent = side
@@ -1036,9 +1039,16 @@ impl TranscriptWatch for Watch {
                             out.extend(self.subagent_fact(id, &observed));
                         }
                         if let Some(agent) = &side.agent {
-                            self.limits.side(agent, observed);
+                            if matches!(observed, Observed::LimitReached { .. }) {
+                                refusals.push((agent.clone(), observed));
+                            } else {
+                                self.limits.side(agent, observed);
+                            }
                         }
                     }
+                }
+                for (agent, refusal) in refusals {
+                    self.limits.side(&agent, refusal);
                 }
             }
             Err(err) => tracing::debug!(error = %err, "a sub-agent transcript could not be read"),
@@ -1397,6 +1407,46 @@ mod tests {
         );
         let session = r#"{"isSidechain":false,"type":"assistant","timestamp":"2026-11-15T10:13:28.400Z","message":{"id":"e2","model":"<synthetic>","role":"assistant","stop_reason":"stop_sequence","content":[{"type":"text","text":"You've hit your 5-hour limit"}]},"apiError":"usage_limit_reached","apiErrorParams":{"rate_limit_info":{"status":"rejected","resetsAt":4102444800,"rateLimitType":"five_hour"}},"error":"rate_limit","isApiErrorMessage":true}"#;
         assert_eq!(scope_of(&[prompt, &fable, session])?, LimitScope::Account);
+        Ok(())
+    }
+
+    #[test]
+    fn workflow_agents_in_one_poll_agree_on_the_default_model_in_both_file_orders()
+    -> Result<(), Box<dyn std::error::Error>> {
+        for (answered, refused) in [("a", "b"), ("b", "a")] {
+            let dir = tempfile::tempdir()?;
+            let path = dir.path().join("s1.jsonl");
+            std::fs::write(&path, "")?;
+            let run = yulius_harness::subagents::workflow_dir(&path).join("wf_1");
+            std::fs::create_dir_all(&run)?;
+            for agent in [answered, refused] {
+                std::fs::write(
+                    run.join(format!("agent-{agent}.meta.json")),
+                    r#"{"agentType":"workflow-subagent"}"#,
+                )?;
+            }
+            let answer = r#"{"type":"assistant","isSidechain":true,"message":{"id":"m1","role":"assistant","model":"claude-opus-5-5","content":[{"type":"text","text":"yes"}],"usage":{"input_tokens":1,"output_tokens":1}}}"#;
+            let refusal = r#"{"type":"assistant","isSidechain":true,"timestamp":"2026-11-15T10:13:28.400Z","message":{"id":"e2","model":"<synthetic>","role":"assistant","stop_reason":"stop_sequence","content":[{"type":"text","text":"You're out of usage credits. /model to switch models."}]},"apiError":"model_requires_usage_credits","error":"rate_limit","isApiErrorMessage":true}"#;
+            std::fs::write(
+                run.join(format!("agent-{answered}.jsonl")),
+                format!("{answer}\n"),
+            )?;
+            std::fs::write(
+                run.join(format!("agent-{refused}.jsonl")),
+                format!("{refusal}\n"),
+            )?;
+            let seen = watch_of(&path)?.poll().map_err(|err| err.to_string())?;
+            assert!(
+                seen.iter().any(|one| matches!(
+                    one,
+                    Observation::WorkflowLimitReached {
+                        scope: LimitScope::Model(Some(ModelFamily::Opus)),
+                        ..
+                    }
+                )),
+                "{answered}: {seen:?}"
+            );
+        }
         Ok(())
     }
 

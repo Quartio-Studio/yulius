@@ -3800,12 +3800,41 @@ fn a_run_lost_while_the_server_runs_saves_its_live_screen() -> TestResult {
     let (_dir, data) = data_dir()?;
     let rt = runtime()?;
     rt.block_on(async {
-        let (app, _host, id) = gated_goal_task(&data, &fake).await?;
-        wait_for("Done", Duration::from_secs(90), || async {
-            activity(&app, &id).await == Some(Activity::Done)
+        // The saved screen needs a settled turn, including turns with no goal verdict.
+        let agent = FakeAgentOptions {
+            transcript: true,
+            hooks: true,
+            answers_first_message: true,
+            ..FakeAgentOptions::default()
+        };
+        let (app, _) = start(&data, &fake, agent, 0).await?;
+        let (sandbox, user) = seed(&app, &data).await?;
+        let id = app
+            .create_task_internal(NewTask {
+                sandbox,
+                created_by: user,
+                prompt: "one more".into(),
+                harness: Harness::ClaudeCode,
+                title: None,
+                workflow_id: None,
+                steps: Vec::new(),
+                model: None,
+                effort: None,
+                origin: TaskOrigin::Ui,
+                automation_run: None,
+                start: true,
+                mode: TaskMode::Prompt,
+                supertask: false,
+            })
+            .await?
+            .id;
+
+        // Task creation queues its launch. The first response proves the run is attached.
+        let answered = wait_for("the first answer", Duration::from_secs(90), || {
+            screen_contains(&app, &id, "ECHO: one more")
         })
-        .await?;
-        app.send_input(&id, b"one more\r").await?;
+        .await;
+        assert!(answered.is_ok(), "{}", run_states(&app, &id).await);
         let run_dir = PathBuf::from(
             &app.deps
                 .store
@@ -3815,12 +3844,13 @@ fn a_run_lost_while_the_server_runs_saves_its_live_screen() -> TestResult {
                 .run_dir,
         );
         // The settled turn's save, so the output below comes after it.
-        wait_for("the settled turn's screen", Duration::from_secs(20), || {
+        let settled = wait_for("the settled turn's screen", Duration::from_secs(20), || {
             let saved = std::fs::read(run_dir.join("final-screen"))
                 .is_ok_and(|s| String::from_utf8_lossy(&s).contains("ECHO: one more"));
             async move { saved }
         })
-        .await?;
+        .await;
+        assert!(settled.is_ok(), "{}", run_states(&app, &id).await);
         assert_eq!(activity(&app, &id).await, Some(Activity::Waiting));
         // Output since the settled turn, fed to the hub as the run's reader would (the idle fake
         // agent writes none by itself).
@@ -5845,6 +5875,43 @@ fn a_notice_is_answered_by_the_agents_next_work() -> TestResult {
     Ok(())
 }
 
+#[test]
+fn work_before_the_second_ask_leaves_it_standing() -> TestResult {
+    repeated_ask(b"/tool\r/notify permission_prompt\r")
+}
+
+#[test]
+fn a_worker_asking_after_the_session_keeps_its_flag() -> TestResult {
+    repeated_ask(b"/notify worker_permission_prompt\r/tool\r")
+}
+
+fn repeated_ask(sequence: &[u8]) -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built")?;
+    let (_dir, data) = data_dir()?;
+    runtime()?.block_on(async {
+        let agent = FakeAgentOptions {
+            transcript: true,
+            hooks: true,
+            ..FakeAgentOptions::default()
+        };
+        let (app, _) = start(&data, &fake, agent, 0).await?;
+        let id = task_flagged_by_a_notice(&app, &data).await?;
+        app.send_input(&id, sequence).await?;
+        wait_for(
+            "both notices and the work",
+            Duration::from_secs(30),
+            || async {
+                let screen = app.runtime(&id).hub.screen_text();
+                screen.matches("NOTIFIED").count() >= 2 && screen.contains("TOOL")
+            },
+        )
+        .await?;
+        transcript_read(&app, &id).await?;
+        assert_eq!(activity(&app, &id).await, Some(Activity::NeedsAttention));
+        stop(&app, &id).await
+    })
+}
+
 /// SPEC-469 (review round 2), the notice's side of the rule the goal pause shares: the notice's
 /// flag is replaced without a word (a status change) and another matter flags the task later.
 /// The agent's next work does not lift that flag: the notice's time is stale.
@@ -6072,9 +6139,98 @@ fn a_notice_is_answered_by_the_agents_work_after_a_restart() -> TestResult {
 /// while Yulius watches (STA-003).
 #[test]
 fn a_workers_notice_is_not_answered_by_the_agents_work_after_a_restart() -> TestResult {
+    worker_notice_after_restart(false)
+}
+
+#[test]
+fn a_workers_second_ask_stays_unanswered_after_a_restart() -> TestResult {
+    worker_notice_after_restart(true)
+}
+
+/// Recovery read the main question before a worker asked. Only the worker's question
+/// should stand after the session works again, whichever operation obtained the lock first.
+#[test]
+fn a_worker_asking_during_reattachment_keeps_its_flag() -> TestResult {
+    use yulius_app::race::{Point, on};
+    let (read, mut reading) = tokio::sync::watch::channel(false);
+    let (release, released) = std::sync::mpsc::channel();
+    let waiting = release.clone();
     a_restart_after(
         noticing_agent(),
-        async |app, data| task_flagged_by_a_notice_of(app, data, "worker_permission_prompt").await,
+        async move |app, data| {
+            let id = task_flagged_by_a_notice(app, data).await?;
+            on(
+                Point::AttentionRecoveryRead,
+                Path::new(id.as_str()),
+                move || {
+                    read.send_replace(true);
+                    assert!(
+                        tokio::task::block_in_place(
+                            || released.recv_timeout(Duration::from_secs(20))
+                        )
+                        .is_ok(),
+                        "the worker notice arrived during recovery"
+                    );
+                },
+            );
+            // When the worker queues for the lock, let recovery finish first. Without
+            // that lock the worker completes while recovery still holds the stale reason.
+            on(
+                Point::AttentionReplacementWaiting,
+                Path::new(id.as_str()),
+                move || {
+                    let _ = waiting.send(());
+                },
+            );
+            Ok(id)
+        },
+        async |_| Ok(()),
+        async move |app, id| {
+            tokio::time::timeout(Duration::from_secs(20), reading.wait_for(|read| *read)).await??;
+            app.send_input(id, b"/notify worker_permission_prompt\r")
+                .await?;
+            wait_for("the worker's notice", Duration::from_secs(15), || async {
+                matches!(app.deps.store.task_attention(id).await, Ok(Some((reason, _))) if !reason.work_answers)
+            }).await?;
+            let _ = release.send(());
+            still_flagged_after_the_replay(app, id).await?;
+            app.send_input(id, b"/tool\r").await?;
+            wait_for("the session's work", Duration::from_secs(15), || {
+                screen_contains(app, id, "TOOL")
+            })
+            .await?;
+            transcript_read(app, id).await?;
+            assert_eq!(activity(app, id).await, Some(Activity::NeedsAttention));
+            Ok(())
+        },
+    )
+}
+
+fn worker_notice_after_restart(second: bool) -> TestResult {
+    a_restart_after(
+        noticing_agent(),
+        async |app, data| {
+            if !second {
+                return task_flagged_by_a_notice_of(app, data, "worker_permission_prompt").await;
+            }
+            let id = task_flagged_by_a_notice(app, data).await?;
+            app.send_input(&id, b"/notify worker_permission_prompt\r")
+                .await?;
+            wait_for(
+                "the second hook's answer",
+                Duration::from_secs(30),
+                || async {
+                    app.runtime(&id)
+                        .hub
+                        .screen_text()
+                        .matches("NOTIFIED")
+                        .count()
+                        >= 2
+                },
+            )
+            .await?;
+            Ok(id)
+        },
         async |_| Ok(()),
         async |app, id| {
             still_flagged_after_the_replay(app, id).await?;
@@ -6733,7 +6889,12 @@ fn a_done_onboarding_task_is_archived_and_the_sandbox_is_ready() -> TestResult {
             hooks: true,
             ..FakeAgentOptions::default()
         };
-        let (app, _) = start(&data, &fake, agent, 0).await?;
+        // A shell probe that exceeded its budget supplies no process count.
+        let host = Arc::new(support::gated::GatedHost::new(PathBuf::from(env!(
+            "CARGO_BIN_EXE_yulius"
+        ))));
+        host.silence_work_probe(true);
+        let (app, _) = start_on(&data, &fake, agent, 0, Some(host), None, false, None).await?;
         let (sandbox, user) = seed(&app, &data).await?;
         // The project validates in the sandbox's clone.
         let repo = data.join("sandboxes").join(sandbox.as_str()).join("repo");
@@ -6774,10 +6935,15 @@ fn a_done_onboarding_task_is_archived_and_the_sandbox_is_ready() -> TestResult {
             .store
             .set_onboarding(&sandbox, "preparing", Some(&id))
             .await?;
-        wait_for("the shell probe", Duration::from_secs(90), || async {
-            shown(&app, &id).await.ok() == Some((Some("done".into()), Some(0)))
-        })
-        .await?;
+        // Archiving uses the achieved goal and absence of known background work. A
+        // timed-out process probe is represented by an unknown count.
+        let done = wait_for(
+            "the achieved onboarding goal",
+            Duration::from_secs(90),
+            || async { activity(&app, &id).await == Some(Activity::Done) },
+        )
+        .await;
+        assert!(done.is_ok(), "{}", run_states(&app, &id).await);
         let record = app.deps.store.sandbox(&sandbox).await?.ok_or("sandbox")?;
         assert_eq!(record.onboarding_state, "preparing", "the plan is open");
         let archived = app.archive_task(&ctx, id.as_str(), true).await?;

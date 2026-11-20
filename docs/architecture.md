@@ -48,7 +48,7 @@ flowchart LR
   AG -->|"MCP (yulius mcp stdio bridge) + hooks"| INT
   AG -->|"HTTP(S) via the egress proxy: secrets for bound hosts"| INT
   APP <--> GH["GitHub App + REST"]
-  APP -->|"long poll getUpdates, sendMessage"| TG["Telegram Bot API"]
+  APP -->|"long poll getUpdates, sendMessage, getFile"| TG["Telegram Bot API"]
   AG <--> AN["Anthropic"]
   AG <--> OA["OpenAI (Codex)"]
   APP <-->|"DevTools pipe (fds 3/4)"| CH["Chrome on Xvfb"]
@@ -550,7 +550,7 @@ egress proxy serves as that sandbox's browser (`EgressProxy::handle_browser`, wi
 `BrowserProxies`): it connects where the sandbox's processes could, plus the sandbox's own
 dev-server ports on the loopback and the welcome page, and never intercepts, injects or
 redacts; without its proxy a browser is not started
-([ADR-0321](decisions/0321-a-sandboxes-browser-goes-out-through-a-proxy-of-its-own.md)).
+([ADR-0321](decisions/0321-a-sandboxes-browser-goes-out-through-a-proxy-of-its-own.md)). Ranges of removed sandboxes can be reassigned once their work, holders and listeners have ended ([ADR-0393](decisions/0393-sandbox-port-ranges-are-reused-after-retirement.md)).
 The two Superagents drive it with the same tools: the
 sandbox Superagent its own sandbox's browser, the Global Superagent the browser of the project it
 names (`GLOBAL_ONLY_TOOLS`, `Action::Work` per call), both as a `SecretUser`, which says the
@@ -694,6 +694,9 @@ that run alone; after a restart, a limit that such a turn followed is not acted 
 switch of a task left at its limit by a refused automatic switch also resumes past the limit
 ([SPEC-072](../.ai/specs/SPEC-072-fix-276-277-278-usage-limit-resume-respe.md),
 [decision 0058](decisions/0058-the-clis-own-continuation-ends-a-limit-pause.md)).
+
+A capacity pause records whether a Claude prompt was held during a preceding turn. The
+preceding Stop can settle while the prompt waits for capacity. [Decision 0394](decisions/0394-a-held-prompt-remembers-the-turn-running-at-its-enter.md)
 
 ### A limit met while a dynamic workflow runs
 
@@ -919,8 +922,11 @@ hold until its reset even after a person bought credits. The Subscriptions page'
 one request of one output token for each limit stored and in effect, with the model that limit
 binds (`UsageProbe::model_answer`): a model of each family whose own weekly window is used up, and
 the default model for a limit of the whole subscription (`AccountUsage::families_at_a_limit`). A
-window the reading of that call itself carried is not asked about: the reading is Claude's word
-on it. The answer says whether a usage reading came of it (`usage_read`).
+window the reading of that call itself carried needs no probe. If a waiting task
+remembers two refusals of a model on this subscription, Refresh asks that model even after a
+reading cleared its stored limit. A successful answer clears this subscription and model from
+the waiting tasks' exclusions and wakes the capacity loop. The answer also says whether a usage
+reading came of it (`usage_read`).
 
 The response's status is the answer, as Claude Code reads its own responses. A response that ran
 ends the limit, whatever its headers say (one that ran on bought credits still carries
@@ -2034,6 +2040,10 @@ off) counted from `state_at`: the list shows it under Needs you or Done, no turn
 background shell, subagent or dynamic workflow, does not wait in `yulius wait`, has no merge
 armed or pull request news due, no held prompt, no request in the sandbox browser, no pause, no
 possible draft or keystroke within the grace period, and is not an onboarding task.
+Codex parking requires a recorded rollout ID. A message to the parked task resumes that rollout.
+If the server restarted between writing the attempt’s ID and writing its session lineage, the
+resume path recovers the ID from the parked attempt.
+
 `park_task_now` asks again under the launch lock, sets the run's end intent `Park` and ends the
 session as a close does (graceful shutdown, then the escalation). The run's end, by its exit or
 its loss, makes the task `parked` with its activity (`settle_parked`) and audits `task.parked`.
@@ -2857,14 +2867,29 @@ flowchart LR
   X -->|"vault.agent.use, actor ci:run"| AUD["secrets audit"]
 ```
 
+## Handoffs between sandboxes
+
+A task's agent may hand work to another sandbox of the instance
+([SPEC-512](../.ai/specs/SPEC-512-marcin-s-five-issues-1412-1418-1413-1107.md) part 5,
+[decision 0395](decisions/0395-tasks-hand-work-to-another-sandbox-behind-an-instance-switch.md),
+`crates/yulius-app/src/handoffs.rs`). `instance.handoffs` holds the switch; a sandbox's
+`profile` holds its opt-out (`accept_handoffs`). `tools/list` adds `sandbox_handoff` to a task
+agent's tools only while the switch is not off, and `tool_sandbox_handoff` refuses (audited) or
+stores a `task_handoffs` row (migration 0076) with its chain and depth: in ask mode it waits
+there for `answer_handoff`, in automatic mode `create_handoff_task` makes the task at once
+through `create_task_as` (origin `handoff`) under the tools' hourly bound. The background tick's
+`tell_handoff_outcomes` types the target's outcome into the source's session (or resumes a
+parked one with it) once the target ended, is Done or merged.
+
 ## The personal Telegram channel
 
 Each person can get their notifications in their own Telegram chat
 ([SPEC-498](../.ai/specs/SPEC-498-accept-outside-pr-1130-personal-telegram.md),
 [decision 0351](decisions/0351-a-personal-telegram-channel-behind-a-notification-channel-port.md)).
 
-- **The port.** `NotificationChannel` (`crates/yulius-app/src/ports/notify.rs`: `check`, `send`,
-  `receive`) is all a chat service implements; `crates/yulius/src/wiring/telegram.rs` is Telegram's
+- **The port.** `NotificationChannel` (`crates/yulius-app/src/ports/notify.rs`: `check`, `send`
+  (the sent message's id), `receive` (text or caption, the replied-to message, files, album) and
+  `fetch_file` (bounded)) is all a chat service implements; `crates/yulius/src/wiring/telegram.rs` is Telegram's
   Bot API over `reqwest` (`YULIUS_TELEGRAM_API_URL`, no redirects, bounded answers, errors typed
   without the token-bearing URL). The store keeps the bot in the `instance` row (sealed like the Jev
   and Vidoc keys) and `telegram_links` / `telegram_link_codes` (migration 0063).
@@ -2886,6 +2911,21 @@ Each person can get their notifications in their own Telegram chat
   person who chose that kind it applies `App::envelope_reaches`, the same function that filters
   `WS /api/events`, then the person's `Throttle` (5 a minute, the rest folded into a summary). Text
   passes `App::redact_for_sandbox` (account text: the shape-based `redact`).
+- **Intake** (`crates/yulius-app/src/telegram_intake.rs`, SPEC-512 part 4,
+  [decision 0392](decisions/0392-a-linked-telegram-chat-answers-and-starts-tasks-when-its-person-turns-intake-on.md)).
+  A notice about a task is queued with what it is about (`enqueue_about`, `SentAbout`: the task
+  and, for a request, its `at`); once sent, `telegram_sent` (migration 0073) keeps it, the last
+  500 per chat, and the bot's own answers about a task too. With the person's `intake` on,
+  `on_inbound` hands a message to the chat's lane, a queue with one worker that runs
+  `App::telegram_intake` for each message in order (20 waiting at most, a whole poll answer; one
+  past that is logged and the chat told, once per quiet window; each re-reads the chat's link
+  first, so intake off or `/stop` ends what waits), so the poll goes on: a reply to a remembered message is
+  `App::task_message_as` from a `ProjectCaller` for the person (`Channel::Telegram`, every guard
+  of their own agent's, the request's `at` passed to `answer_needs_you`); a reply to any other
+  message starts nothing; `/status` lists what waits for them; any other message (an album merged
+  into one) takes one of the project's 20 hourly tool slots (`reserve_tool_task`) and starts a
+  task through `create_task_as` with origin `telegram`, its files fetched into the person's drafts
+  folder and named in the prompt. Off, the chat gets the help reply.
 
 ```mermaid
 sequenceDiagram
@@ -4308,8 +4348,8 @@ the new one only through `ssh` with a one-time key and a handful of constant rem
 (`remote.rs`): every value travels as JSON or as a stream on standard input, never in a command
 line. The new host's steps (`target.rs`) are Rust code over `host_setup::Host`, run there by the
 same build, which the flow copies first (`yulius instance migrate-target`). The old host's profile
-(`profile.rs`: the unit and its drop-ins, key files, apt sources and the manual package list,
-software outside apt, the update helper, the move helper, Caddy, ufw) is read live and fitted to
+(`profile.rs`: the server’s unit and its drop-ins, the sessions unit’s drop-ins, key files, apt sources,
+the manual package list, software outside apt, the update helper, the move helper, Caddy, ufw) is read live and fitted to
 the new host by pure rewrites (release codename, public URL, host name). The copy is the export's
 own stream, sent in passes into a staged copy (`warm.rs`; SPEC-465, ADR-0303): passes while the old instance
 runs, then one exact pass while it is frozen. The old host keeps a receipt for every path the new
@@ -4366,7 +4406,7 @@ old name is remembered (`moved` in `remote-credentials.json`) and the call is re
 A superadmin asks for the same move from Settings → Instance (SPEC-470, ADR-0305). The server is
 the unprivileged service user and is frozen during the copy, so root runs the command for it, as it
 installs updates: the server writes `<data>/migrate/request.json` (plan, move or abort, with the
-host, SSH port, public URL and data disks; `yulius-contracts::migrate`), the root-owned path unit
+host, SSH port, public URL, data disks and optional freeze limit in minutes; `yulius-contracts::migrate`), the root-owned path unit
 `yulius-migrate.path` starts `yulius migrate-helper` (`crates/yulius/src/migrate_helper.rs`), and
 the helper runs `yulius instance migrate --no-sign-in` as a child process with each value as one
 argument: such a run never signs in as root does (the command's operator sign-in is not tried, no
@@ -4432,18 +4472,18 @@ sequenceDiagram
     T->>M: marker: entries installed and synced
     M->>O: downtime: the estimated freeze (copy again while above --max-downtime)
   end
-  M->>D: systemctl freeze yulius.service
+  M->>D: systemctl freeze yulius.service, then yulius-sandboxes.service where present
   M->>T: the frozen pass: what changed, and every path the old host holds
   T->>T: install, remove what is not among those paths
   T->>M: inventory of the copy
   alt inventories differ or a step fails
-    M->>D: systemctl thaw (the old instance runs on)
+    M->>D: systemctl thaw yulius-sandboxes.service where present, then yulius.service (the old instance runs on)
   else equal
     M->>T: mark the copy, finish host setup, start
     T->>S: systemctl enable, start, wait for the build to answer
     alt not healthy
-      M->>T: stop and disable
-      M->>D: systemctl thaw
+      M->>T: disable and stop the server, kill and stop its sessions unit
+      M->>D: systemctl thaw yulius-sandboxes.service where present, then yulius.service
     else healthy
       M->>D: systemctl disable (stays frozen)
       S->>S: first start: queue the tasks that were live

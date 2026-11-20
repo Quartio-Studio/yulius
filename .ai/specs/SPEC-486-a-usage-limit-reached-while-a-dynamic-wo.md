@@ -151,7 +151,8 @@ reset) only when no subscription can.
 - WFL-006 (a prompt at a paused workflow). A prompt a person or Yulius typed that reaches a
   session whose workflow met a limit gets, through the prompt hook's additional context, a
   note, while the workflow is paused: until it is relaunched or ends, the thread's model
-  answers again, or the limit's reset passes. Claude Code's own wake-ups get nothing added.
+  answers again, or the limit's reset passes. A workflow stopped at another model family's
+  limit gets no prompt note. Claude Code's own wake-ups get nothing added.
   The note: the workflow (run ids named) is paused at a usage limit, it is not to be
   started again, and it can be resumed by its run id. With no subscription free the hook holds
   a prompt as before (ROT-010), so this is the case of a session that stays at its limit with
@@ -413,3 +414,11 @@ reset) only when no subscription can.
      first turn record does.
   6. Nit: the transcript-only notice ends a hand-over of a prompt handed on just before it,
      until that prompt's record is read (the next line in the real order). Left.
+
+Issue #1256 preserves four behaviors of the workflow watcher. A first refusal speaks for the
+turn until the next prompt, so one refused move cannot trigger a move for every subsequent
+agent in that run. After a terminal `/clear`, the new session's first turn record establishes
+the new session before dropping old workflow state. A transcript-only workflow notice ends the queue handover like other
+written records. The next prompt record identifies the handed-on turn, and neither record
+requests a restart. The relaunch notice describes the requested continuation before session
+lookup, and the launch result establishes whether a recorded session was available.

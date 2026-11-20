@@ -75,6 +75,8 @@ struct Systemd {
     /// On its way up or down (`activating`: a restart after a crash, a start in progress).
     /// systemd freezes no unit in that state.
     starting: bool,
+    /// The server has a reload job while it is running.
+    reloading: bool,
     /// The unit has settled (it is `active`) by the time a freeze is asked for.
     settles: bool,
     /// The freezer is on its way.
@@ -155,6 +157,8 @@ impl freeze::Host for FakeSystemd {
                         "inactive"
                     } else if unit.starting {
                         "activating"
+                    } else if unit.reloading {
+                        "reloading"
                     } else {
                         "active"
                     },
@@ -934,7 +938,15 @@ fn setup() -> Result<Setup, Box<dyn std::error::Error>> {
 
 impl Setup {
     fn state(&self) -> Result<State, String> {
-        State::begin(&self.opts.state_dir, "root@185.189.47.160", 22)
+        self.begin("root@185.189.47.160")
+    }
+
+    fn begin(&self, target: &str) -> Result<State, String> {
+        let mut host = FakeSystemd(
+            Arc::clone(&self.world.systemd),
+            Arc::clone(&self.world.events),
+        );
+        State::begin(&self.opts, target, &mut host)
     }
 
     /// Runs the move; its exit code.
@@ -1445,6 +1457,166 @@ fn a_new_instance_that_cannot_be_stopped_names_both_units_to_stop() -> TestResul
     Ok(())
 }
 
+#[test]
+fn a_frozen_reload_during_cutover_is_not_reported_as_a_stopped_server() -> TestResult {
+    let mut s = right_after_the_freeze(|unit| {
+        unit.reloading = true;
+        unit.sessions = Some(false);
+    })?;
+    sessions(&s, false)?;
+    assert_eq!(s.run()?, 1);
+    assert!(!s.old_unit().0, "{}", s.shown());
+    assert!(s.shown().contains("not frozen as a whole"), "{}", s.shown());
+    assert!(s.shown().contains("thawed yulius.service"), "{}", s.shown());
+    assert!(
+        !s.shown()
+            .contains("start it (`systemctl start yulius.service`)"),
+        "{}",
+        s.shown()
+    );
+    Ok(())
+}
+
+#[test]
+fn a_frozen_server_in_transition_is_thawed_after_a_failed_copy() -> TestResult {
+    let mut s = meanwhile(|unit| unit.reloading = true)?;
+    s.remote.lose = vec!["inventory"];
+    assert_eq!(s.run()?, 1);
+    assert!(
+        !s.old_unit().0,
+        "the reloading server is still frozen: {}",
+        s.shown()
+    );
+    assert!(s.shown().contains("thawed yulius.service"), "{}", s.shown());
+    assert!(
+        !s.shown()
+            .contains("start it (`systemctl start yulius.service`)"),
+        "{}",
+        s.shown()
+    );
+    assert!(!s.shown().contains("it runs as before"), "{}", s.shown());
+
+    // This host refuses a thaw while the server's start job is pending.
+    let mut s = meanwhile(|unit| unit.starting = true)?;
+    s.remote.lose = vec!["inventory"];
+    assert_eq!(s.run()?, 1);
+    assert!(s.old_unit().0);
+    assert!(
+        s.shown().contains("`systemctl thaw yulius.service` failed"),
+        "{}",
+        s.shown()
+    );
+    Ok(())
+}
+
+#[test]
+fn after_the_copy_an_unanswered_state_thaws_only_what_the_move_froze() -> TestResult {
+    let mut s = meanwhile(|unit| unit.silent = true)?;
+    assert_eq!(s.run()?, 1);
+    let shown = s.shown();
+    assert!(
+        shown.contains("thawed") && !shown.contains("run it by hand"),
+        "{shown}"
+    );
+    assert!(!shown.contains("it runs as before"), "{shown}");
+    assert!(
+        !shown.contains("systemctl thaw yulius-sandboxes.service"),
+        "{shown}"
+    );
+    assert!(!s.old_unit().0);
+    Ok(())
+}
+
+#[test]
+fn thaw_of_a_sessions_only_freeze_does_not_claim_the_server_runs() -> TestResult {
+    let mut s = setup()?;
+    sessions(&s, false)?;
+    s.remote.meanwhile = Some((
+        "before_start",
+        |unit| {
+            unit.stopped = true;
+            unit.after_freeze = Some((1, |unit| unit.silent = true));
+        },
+        Arc::clone(&s.world.systemd),
+    ));
+    assert_eq!(s.run()?, 1);
+    assert!(!s.shown().contains("it runs as before"), "{}", s.shown());
+    assert!(
+        s.events()
+            .contains(&"old: systemctl thaw sessions".to_owned())
+    );
+    assert!(!s.events().contains(&"old: systemctl thaw".to_owned()));
+    Ok(())
+}
+
+#[test]
+fn an_empty_freeze_when_systemd_falls_silent_reports_that_no_unit_could_be_thawed() -> TestResult {
+    let mut s = setup()?;
+    let systemd = Arc::clone(&s.world.systemd);
+    systemd.lock().map_err(|e| e.to_string())?.stopped = true;
+    let mut movement = Move::new(
+        &s.opts,
+        s.state()?,
+        &mut s.local,
+        &mut s.remote,
+        &mut s.world,
+    );
+    let held = movement
+        .freeze()
+        .map_err(|_| "the stopped instance could not be checked")?;
+    assert!(held.covered().is_empty());
+    movement.claim(held);
+    systemd.lock().map_err(|e| e.to_string())?.silent = true;
+    movement.thaw();
+    let report = movement.lines.last().ok_or("missing thaw report")?;
+    assert_eq!(report.outcome, HostOutcome::Manual);
+    assert!(
+        report.detail.contains("no unit was available to thaw")
+            && report.detail.contains("unknown"),
+        "{}",
+        report.detail
+    );
+    Ok(())
+}
+
+#[test]
+fn a_cutover_that_finds_both_units_gone_has_nothing_to_thaw() -> TestResult {
+    let mut s = right_after_the_freeze(|unit| {
+        unit.frozen = false;
+        unit.stopped = true;
+        unit.sessions = None;
+    })?;
+    sessions(&s, false)?;
+    assert_eq!(s.run()?, 1);
+    assert!(!s.shown().contains("could not thaw"), "{}", s.shown());
+    assert!(!s.shown().contains("systemctl thaw"), "{}", s.shown());
+    let status = s.status()?;
+    let reports = status
+        .lines
+        .iter()
+        .filter(|line| line.name == "old instance" && line.outcome == HostOutcome::Failed)
+        .count();
+    assert_eq!(
+        reports,
+        1,
+        "the stopped server is reported once: {}",
+        s.shown()
+    );
+    Ok(())
+}
+
+#[test]
+fn new_host_checklist_lines_use_the_github_line_display_rules() {
+    let raw = "a\u{202e}b\u{200b}c\u{e0041}d\u{2028}e";
+    let line = crate::instance::migrate::shown(HostLine {
+        name: raw.into(),
+        outcome: HostOutcome::Ok,
+        detail: raw.into(),
+    });
+    assert_eq!(line.name, "abcd e");
+    assert_eq!(line.detail, "abcd e");
+}
+
 /// Review of the merge (low): a server's unit that was stopped from outside during the copy is
 /// not thawed (systemd thaws no unit that does not run) and does not "run as before": the line
 /// says that it is down and how to start it.
@@ -1463,6 +1635,12 @@ fn a_server_stopped_during_the_copy_is_not_reported_as_thawed() -> TestResult {
             s.shown().contains(
                 "yulius.service is not running: start it (`systemctl start yulius.service`)"
             ),
+            "{}",
+            s.shown()
+        );
+        assert_eq!(
+            s.shown().contains("(its sessions were thawed)"),
+            sessions.is_some(),
             "{}",
             s.shown()
         );
@@ -1514,8 +1692,9 @@ fn the_cutover_says_why_the_instance_is_not_frozen_after_its_freeze() {
     let old = |active, stopped| Old {
         active,
         frozen: active,
+        thawable_server: active,
         stopped,
-        sessions_run: false,
+        sessions_frozen: None,
         any_frozen: active,
         all_frozen: false,
     };
@@ -2000,7 +2179,10 @@ fn a_failed_look_right_after_the_freeze_thaws_the_sessions_unit_too() -> TestRes
         shown.contains("systemd does not say whether yulius.service is frozen as a whole"),
         "{shown}"
     );
-    assert!(shown.contains("thawed: it runs as before"), "{shown}");
+    assert!(
+        shown.contains("thawed") && !shown.contains("it runs as before"),
+        "{shown}"
+    );
     let events = s.events();
     let at = |what: &str| {
         events
@@ -2407,6 +2589,15 @@ fn what_cannot_be_moved_from_here_is_refused() -> TestResult {
     );
     assert_eq!(s.run()?, 2);
     assert!(s.shown().contains("would freeze itself"));
+    // An update helper spends its build in the activating state.
+    for active in ["activating", "reloading"] {
+        let mut s = setup()?;
+        s.local
+            .says(&["systemctl", "is-active", "yulius-update.service"], active);
+        assert_eq!(s.run()?, 2, "{}", s.shown());
+        assert!(s.shown().contains("an update is running"), "{}", s.shown());
+        assert!(s.events().iter().all(|e| !e.starts_with("new:")));
+    }
     // While an update runs.
     let mut s = setup()?;
     s.local.says(
@@ -2439,12 +2630,25 @@ fn what_cannot_be_moved_from_here_is_refused() -> TestResult {
     // Another move is recorded.
     let s = setup()?;
     s.state()?;
-    let other = State::begin(&s.opts.state_dir, "root@elsewhere", 22);
+    let other = s.begin("root@elsewhere");
     assert!(other.is_err_and(|why| why.contains("a move to root@185.189.47.160 is recorded")));
     // A state that cannot be read is not "no move".
     fs::write(s.opts.state_dir.join("state.json"), "{ not json")?;
-    let broken = State::begin(&s.opts.state_dir, "root@185.189.47.160", 22);
-    assert!(broken.is_err_and(|why| why.contains("cannot be read as a move's state")));
+    let broken = s.state();
+    let why = broken
+        .err()
+        .ok_or("expected refusal of a corrupt move record")?;
+    assert!(why.contains("cannot be read as a move's state"), "{why}");
+    assert!(why.contains("systemctl thaw yulius.service"), "{why}");
+    sessions(&s, true)?;
+    let why = s
+        .state()
+        .err()
+        .ok_or("expected refusal of a corrupt move record")?;
+    assert!(
+        why.contains("systemctl thaw yulius-sandboxes.service yulius.service"),
+        "{why}"
+    );
     Ok(())
 }
 
@@ -2926,7 +3130,10 @@ fn a_look_that_fails_right_after_the_freeze_thaws_and_says_what_is_known() -> Te
     // What the freeze covered is thawed as the freeze knew it, without another question to a
     // systemd that does not answer: no thaw of a sessions unit this host does not have, and
     // no failure that did not happen.
-    assert!(shown.contains("thawed: it runs as before"), "{shown}");
+    assert!(
+        shown.contains("thawed") && !shown.contains("it runs as before"),
+        "{shown}"
+    );
     assert!(
         !shown.contains("run it by hand") && !shown.contains("yulius-sandboxes.service"),
         "{shown}"
@@ -4516,6 +4723,32 @@ fn a_rerun_does_not_ask_again_for_the_room_the_staged_copy_already_takes() -> Te
     assert_eq!(space.outcome, HostOutcome::Ok);
     assert!(
         space.detail.contains("the staged copy is there already"),
+        "{}",
+        space.detail
+    );
+
+    // A failed proof leaves a copy on the target that Prepare will discard.
+    let mut s = setup()?;
+    s.remote.tamper = Some(|copy| {
+        let _ = fs::write(copy.join("sysroots/sb/upper/tool"), vec![1u8; 1499]);
+    });
+    assert_eq!(s.run()?, 1);
+    assert!(!s.opts.state_dir.join("copy").exists());
+    s.remote
+        .host
+        .says(&["stat", "-f", "-c"], "4096 1000 30000000\n");
+    assert_eq!(s.run()?, 1);
+    let status = s.status()?;
+    let space = line(&status, "disk space").ok_or("no line")?;
+    assert!(
+        space.detail.contains("unfinished copy") && space.detail.contains("rm -rf"),
+        "{}",
+        space.detail
+    );
+    assert!(
+        space
+            .detail
+            .contains(&s.opts.data_dir.display().to_string()),
         "{}",
         space.detail
     );

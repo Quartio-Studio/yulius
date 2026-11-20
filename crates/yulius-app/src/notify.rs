@@ -66,11 +66,13 @@ fn control_subject(task: &TaskId, request: &crate::model::ControlRequest) -> Str
     format!("control:{task}:{}:{}", request.by, request.at.0)
 }
 
-/// One notification, redacted.
+/// One notification, redacted, and the task it is about (a reply to it reaches the task,
+/// SPEC-512 TGI-002).
 struct Notice {
     kind: NoticeKind,
     headline: String,
     text: String,
+    about: Option<crate::ports::notify::SentAbout>,
 }
 
 impl NotifierState {
@@ -255,6 +257,10 @@ impl App {
             kind: NoticeKind::NeedsYou,
             headline: self.redact_for_sandbox(&task.sandbox_id, &headline).await,
             text: self.redact_for_sandbox(&task.sandbox_id, &text).await,
+            about: Some(crate::ports::notify::SentAbout {
+                task: task.id.clone(),
+                asked_at: None,
+            }),
         }))
     }
 
@@ -295,6 +301,10 @@ impl App {
                 kind: NoticeKind::NeedsYou,
                 headline: self.redact_for_sandbox(&task.sandbox_id, &headline).await,
                 text: self.redact_for_sandbox(&task.sandbox_id, &text).await,
+                about: Some(crate::ports::notify::SentAbout {
+                    task: task.id.clone(),
+                    asked_at: None,
+                }),
             },
         )))
     }
@@ -498,6 +508,10 @@ impl App {
             text: self
                 .redact_for_sandbox(&task.sandbox_id, &notice.text())
                 .await,
+            about: Some(crate::ports::notify::SentAbout {
+                task: task.id.clone(),
+                asked_at: asked.as_ref().map(|a| a.at),
+            }),
         }))
     }
 
@@ -529,6 +543,7 @@ impl App {
             kind: NoticeKind::Account,
             headline: redact(headline),
             text: redact(text),
+            about: None,
         })
     }
 
@@ -567,7 +582,7 @@ impl App {
                 throttle.offer(now, notice.headline.clone())
             });
             if send {
-                self.enqueue(link.chat.clone(), notice.text.clone());
+                self.enqueue_about(link.chat.clone(), notice.text.clone(), notice.about.clone());
             }
         }
         Ok(())

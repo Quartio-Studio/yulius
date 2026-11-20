@@ -25,6 +25,7 @@ use yulius_domain::delivery::DeliveryStage;
 use yulius_domain::ids::TaskId;
 use yulius_domain::task::TaskStatus;
 
+use crate::agent_wait::QueueNote;
 use crate::ci::{CiJobRecord, CiRunRecord};
 use crate::context::App;
 use crate::delivery::{delivery_profile, past_merge};
@@ -1121,7 +1122,7 @@ impl App {
             own.is_some_and(|run| matches!(run.state, RunState::Passed | RunState::Skipped));
         let queue_note = self.merge_queue_note(task);
         if let (true, Some(head)) = (green, &head) {
-            let said = green_said(head, armed, hold, queue_note.as_deref(), &integration);
+            let said = green_said(head, armed, hold, queue_note.as_ref(), &integration);
             if let Some((class, text)) = said {
                 events.push(Event {
                     kind: "green",
@@ -1150,7 +1151,7 @@ impl App {
         let has_ci = self.config.ci.enabled
             && (own.is_some() || self.ci_gate(&sandbox).await.gate.is_some());
         let status = if has_ci {
-            status_text(own, armed, hold, queue_note.as_deref(), &integration)
+            status_text(own, armed, hold, queue_note.as_ref(), &integration)
         } else {
             no_ci_status(armed)
         };
@@ -1663,10 +1664,13 @@ fn green_said(
     head: &str,
     armed: bool,
     hold: Hold,
-    note: Option<&str>,
+    note: Option<&QueueNote>,
     integration: &str,
 ) -> Option<(&'static str, String)> {
-    match (armed, hold, note) {
+    if armed && note.is_some_and(|note| note.awaits_own_run) {
+        return None;
+    }
+    match (armed, hold, note.map(|note| note.text.as_str())) {
         (false, _, _) => Some(("unarmed", unarmed_text(head))),
         (true, Hold::Held, note) => Some((
             "held",
@@ -1709,7 +1713,7 @@ fn status_text(
     own: Option<&CiRunRecord>,
     armed: bool,
     hold: Hold,
-    note: Option<&str>,
+    note: Option<&QueueNote>,
     integration: &str,
 ) -> String {
     let Some(run) = own else {
@@ -1739,9 +1743,9 @@ fn status_text(
             yulius_domain::review::KEEP_APPROVAL
         ),
         RunState::Passed | RunState::Skipped => {
-            let note = note.map_or_else(
+            let note = note.filter(|note| !note.awaits_own_run).map_or_else(
                 || "The merge is armed; Yulius decides it on its next pass.".to_owned(),
-                upper_first,
+                |note| upper_first(&note.text),
             );
             if hold == Hold::Held {
                 format!("{note} {}", hands_off(integration))
@@ -1874,6 +1878,57 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_red_browser_job_names_its_test_in_the_notice() {
+        let mut scanner = yulius_domain::ci::failures::FailureScanner::default();
+        scanner.push(b" FAIL  |chromium| tests/editor.e2e.ts > opens a folder\n");
+        let kept = scanner.finish();
+        let jobs = [job("e2e", RunState::Failed, Some(1), kept.as_deref())];
+        let text = red_run_text(&run("r1", RunState::Failed), &jobs);
+        assert!(
+            text.contains("failing tests: tests/editor.e2e.ts › opens a folder"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn green_waits_for_the_queue_to_observe_the_pass() {
+        for (hold, reason) in [
+            (Hold::Free, "The own CI run is pending."),
+            (
+                Hold::Free,
+                "The own CI run ended in error: rerun it with `ci_rerun`.",
+            ),
+            (Hold::Held, "The train waits for this member's own run."),
+        ] {
+            let stale = QueueNote {
+                text: reason.to_owned(),
+                awaits_own_run: true,
+            };
+            assert_eq!(
+                green_said("0123456789", true, hold, Some(&stale), "dev"),
+                None
+            );
+            let status = status_text(
+                Some(&run("r1", RunState::Passed)),
+                true,
+                hold,
+                Some(&stale),
+                "dev",
+            );
+            assert!(!status.contains(reason), "{status}");
+        }
+        let other = QueueNote::current("The train waits for pull request #8's own run.".into());
+        let (_, held) =
+            green_said("0123456789", true, Hold::Held, Some(&other), "dev").unwrap_or_default();
+        assert!(held.contains("waits for pull request #8"), "{held}");
+        let fresh =
+            QueueNote::current("Pull request #7 passed its own run but is behind `dev`.".into());
+        let (_, notice) =
+            green_said("0123456789", true, Hold::Free, Some(&fresh), "dev").unwrap_or_default();
+        assert!(notice.contains("is behind `dev`"), "{notice}");
+    }
+
     /// PRN-003, PRN-006: a red candidate and a held green head both keep the task's hands off.
     #[test]
     fn a_red_candidate_says_hands_off() {
@@ -1902,8 +1957,8 @@ mod tests {
             unarmed.contains("no merge armed") && unarmed.contains("`delivery_merge`"),
             "{unarmed}"
         );
-        let note = "pull request #7 is number 2 of 2 in merge train #5, #7: Yulius CI tests their combined result (run t1) and Yulius merges them in this order when it passes.";
-        let held = status_text(Some(&green), true, Hold::Held, Some(note), "dev");
+        let note = QueueNote::current("pull request #7 is number 2 of 2 in merge train #5, #7: Yulius CI tests their combined result (run t1) and Yulius merges them in this order when it passes.".into());
+        let held = status_text(Some(&green), true, Hold::Held, Some(&note), "dev");
         assert!(
             held.starts_with("Pull request #7 is number 2 of 2 in merge train #5, #7")
                 && held.ends_with(
@@ -1918,7 +1973,7 @@ mod tests {
             None
         );
         let (class, text) =
-            green_said("0123456789", true, Hold::Held, Some(note), "dev").unwrap_or_default();
+            green_said("0123456789", true, Hold::Held, Some(&note), "dev").unwrap_or_default();
         assert_eq!(class, "held");
         assert!(text.ends_with("when the run passes."), "{text}");
         let (class, _) =
@@ -1928,7 +1983,9 @@ mod tests {
             "0123456789",
             true,
             Hold::Free,
-            Some("pull request #7 is behind `dev`."),
+            Some(&QueueNote::current(
+                "pull request #7 is behind `dev`.".into(),
+            )),
             "dev",
         )
         .unwrap_or_default();
@@ -1941,7 +1998,9 @@ mod tests {
             Some(&green),
             true,
             Hold::Free,
-            Some("Pull request #7 passed its own run but is behind `dev`."),
+            Some(&QueueNote::current(
+                "Pull request #7 passed its own run but is behind `dev`.".into(),
+            )),
             "dev",
         );
         assert!(behind.ends_with("never merge by hand."), "{behind}");

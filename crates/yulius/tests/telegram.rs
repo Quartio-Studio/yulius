@@ -52,6 +52,14 @@ struct FakeTelegram {
     /// While set, no poll is answered (released with `release`).
     hold_polls: std::sync::atomic::AtomicBool,
     released: tokio::sync::Notify,
+    /// While set, no file download is answered (released with `release_files`).
+    hold_files: std::sync::atomic::AtomicBool,
+    files_released: tokio::sync::Notify,
+    /// File downloads asked for, and a wake-up for each.
+    files_asked: AtomicUsize,
+    file_asked: tokio::sync::Notify,
+    /// Woken by every poll, once it has dropped the updates it confirms.
+    polled: tokio::sync::Notify,
 }
 
 impl FakeTelegram {
@@ -72,6 +80,80 @@ impl FakeTelegram {
                 "chat": {"id": chat, "type": kind}, "from": {"id": chat}, "text": text}}));
         }
         self.arrived.notify_waiters();
+    }
+
+    /// Any message `body` from the private chat `chat` (a reply, a photo; SPEC-512 TGI-002).
+    fn raw(&self, chat: i64, body: Value) {
+        let id = self.next_update.fetch_add(1, Ordering::SeqCst) + 1;
+        let mut message = json!({"chat": {"id": chat, "type": "private"}, "from": {"id": chat}});
+        if let (Some(m), Some(extra)) = (message.as_object_mut(), body.as_object()) {
+            m.extend(extra.clone());
+        }
+        if let Ok(mut updates) = self.updates.lock() {
+            updates.push_back(json!({"update_id": id, "message": message}));
+        }
+        self.arrived.notify_waiters();
+    }
+
+    /// Messages `bodies` from `chat`, all in the queue before the poll wakes: one batch.
+    fn raw_batch(&self, chat: i64, bodies: &[Value]) {
+        if let Ok(mut updates) = self.updates.lock() {
+            for body in bodies {
+                let id = self.next_update.fetch_add(1, Ordering::SeqCst) + 1;
+                let mut message =
+                    json!({"chat": {"id": chat, "type": "private"}, "from": {"id": chat}});
+                if let (Some(m), Some(extra)) = (message.as_object_mut(), body.as_object()) {
+                    m.extend(extra.clone());
+                }
+                updates.push_back(json!({"update_id": id, "message": message}));
+            }
+        }
+        self.arrived.notify_waiters();
+    }
+
+    fn release_files(&self) {
+        self.hold_files.store(false, Ordering::SeqCst);
+        self.files_released.notify_waiters();
+    }
+
+    /// Waits until a poll confirmed every update sent so far (10 s at most).
+    async fn wait_updates_taken(&self) -> Result<(), String> {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            let polled = self.polled.notified();
+            if self.updates.lock().map(|u| u.is_empty()).unwrap_or(false) {
+                return Ok(());
+            }
+            if tokio::time::timeout_at(deadline, polled).await.is_err() {
+                return Err("the updates were not taken".into());
+            }
+        }
+    }
+
+    /// Waits until a file download was asked for (10 s at most).
+    async fn wait_file_asked(&self) -> Result<(), String> {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            let asked = self.file_asked.notified();
+            if self.files_asked.load(Ordering::SeqCst) > 0 {
+                return Ok(());
+            }
+            if tokio::time::timeout_at(deadline, asked).await.is_err() {
+                return Err("no file download was asked for".into());
+            }
+        }
+    }
+
+    /// The id of the last message sent to `chat` that starts with `lead`.
+    fn sent_id(&self, chat: i64, lead: &str) -> Option<usize> {
+        let chat = chat.to_string();
+        self.sent.lock().ok().and_then(|sent| {
+            sent.iter()
+                .enumerate()
+                .rev()
+                .find(|(_, (c, t))| *c == chat && t.starts_with(lead))
+                .map(|(i, _)| i + 1)
+        })
     }
 
     fn sent_to(&self, chat: i64) -> Vec<String> {
@@ -116,14 +198,19 @@ async fn bot_api(
     };
     let result = match method.as_str() {
         "getMe" => me,
+        "getFile" => {
+            json!({"file_id": body["file_id"], "file_size": 3, "file_path": "photos/p.jpg"})
+        }
         "sendMessage" => {
             let chat = body["chat_id"].as_i64().unwrap_or_default().to_string();
             let text = body["text"].as_str().unwrap_or_default().to_owned();
-            if let Ok(mut sent) = fake.sent.lock() {
+            // Each sent message's id is its place among all sent (SPEC-512 TGI-002).
+            let id = fake.sent.lock().map_or(0, |mut sent| {
                 sent.push((chat, text));
-            }
+                sent.len()
+            });
             fake.sent_changed.notify_waiters();
-            json!({"message_id": 1})
+            json!({"message_id": id})
         }
         "getUpdates" => {
             loop {
@@ -152,6 +239,7 @@ async fn bot_api(
             };
             let arrived = fake.arrived.notified();
             let mut ready = pending(&fake);
+            fake.polled.notify_waiters();
             if ready.is_empty() {
                 let _ = tokio::time::timeout(wait, arrived).await;
                 ready = pending(&fake);
@@ -164,6 +252,20 @@ async fn bot_api(
         _ => return (StatusCode::NOT_FOUND, Json(json!({"ok": false}))),
     };
     (StatusCode::OK, Json(json!({"ok": true, "result": result})))
+}
+
+/// A file's bytes, held while `hold_files` is set.
+async fn file_api(State(fake): State<Arc<FakeTelegram>>) -> (StatusCode, Vec<u8>) {
+    fake.files_asked.fetch_add(1, Ordering::SeqCst);
+    fake.file_asked.notify_waiters();
+    loop {
+        let released = fake.files_released.notified();
+        if !fake.hold_files.load(Ordering::SeqCst) {
+            break;
+        }
+        released.await;
+    }
+    (StatusCode::OK, b"png".to_vec())
 }
 
 struct World {
@@ -203,6 +305,7 @@ async fn world_unstarted() -> Result<World, Box<dyn std::error::Error>> {
     let served = support::serve(
         Router::new()
             .route("/{bot}/{method}", post(bot_api))
+            .route("/file/{bot}/{*path}", axum::routing::get(file_api))
             .with_state(fake.clone()),
     )
     .await?;
@@ -1775,5 +1878,714 @@ async fn a_digest_whose_listing_ends_after_midnight_keeps_the_next_days() -> Tes
         .await?;
     w.h.clock.0.store(claimed + day_ms, Ordering::SeqCst);
     assert_eq!(w.h.app.digest_tick().await.sent, 1, "the next day's digest");
+    Ok(())
+}
+
+/// Turns `who`'s intake on with `sandbox` as its project (SPEC-512 TGI-001).
+async fn intake_on(
+    w: &World,
+    who: &Creds,
+    sandbox: &str,
+) -> Result<support::Resp, Box<dyn std::error::Error>> {
+    api(
+        w,
+        Method::PUT,
+        "/api/me/telegram/intake",
+        Some(json!({"enabled": true, "sandbox_id": sandbox})),
+        who,
+    )
+    .await
+}
+
+/// The reply chat `chat` got after `before` messages (10 s at most).
+async fn next_reply(
+    w: &World,
+    chat: i64,
+    before: usize,
+) -> Result<String, Box<dyn std::error::Error>> {
+    Ok(w.fake.wait_sent(chat, before + 1).await?[before].clone())
+}
+
+/// A signed-in Claude subscription, so tasks may start.
+async fn signed_in_subscription(w: &World) -> TestResult {
+    w.h.store
+        .insert_account(&AccountRecord {
+            id: AccountId::parse("acc-ok")?,
+            provider: Provider::Anthropic,
+            label: "Team Max".into(),
+            credential: Some(
+                w.h.app
+                    .deps
+                    .crypto
+                    .seal(b"synthetic-subscription-credential")?,
+            ),
+            status: AccountStatus::Ok,
+            usage_json: None,
+            last_error: None,
+            created_at: w.h.app.now(),
+            updated_at: w.h.app.now(),
+            email: None,
+            email_checked_at: None,
+            email_typed: false,
+        })
+        .await?;
+    Ok(())
+}
+
+async fn tasks_of(w: &World, sandbox: &str) -> Result<Vec<Value>, Box<dyn std::error::Error>> {
+    let r = api(
+        w,
+        Method::GET,
+        &format!("/api/sandboxes/{sandbox}/tasks"),
+        None,
+        &w.admin,
+    )
+    .await?;
+    Ok(r.body.as_array().cloned().unwrap_or_default())
+}
+
+/// SPEC-512 TGI-001: intake is off by default: a linked chat's message creates nothing and its
+/// answer says how to turn it on; it is turned on from a browser session with a project the
+/// person may work in, audited.
+#[tokio::test]
+async fn telegram_intake_is_off_by_default_and_set_with_a_project() -> TestResult {
+    let w = world().await?;
+    set_bot(&w, TOKEN_A).await?;
+    link(&w, &w.alice, 100).await?;
+    let me = api(&w, Method::GET, "/api/me/telegram", None, &w.alice).await?;
+    assert_eq!(
+        me.body["intake"],
+        json!({"enabled": false, "sandbox_id": null}),
+        "{}",
+        me.body
+    );
+    let before = w.fake.sent_to(100).len();
+    w.fake.message(100, true, "Make the header blue");
+    let reply = next_reply(&w, 100, before).await?;
+    assert!(reply.contains("turn on Telegram intake"), "{reply}");
+    assert!(tasks_of(&w, "s1").await?.is_empty(), "nothing started");
+
+    let none = api(
+        &w,
+        Method::PUT,
+        "/api/me/telegram/intake",
+        Some(json!({"enabled": true, "sandbox_id": null})),
+        &w.alice,
+    )
+    .await?;
+    assert_eq!(
+        none.status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "{}",
+        none.body
+    );
+    let elsewhere = intake_on(&w, &w.alice, "s2").await?;
+    assert!(
+        matches!(
+            elsewhere.status,
+            StatusCode::FORBIDDEN | StatusCode::NOT_FOUND
+        ),
+        "alice cannot work in s2: {}",
+        elsewhere.body
+    );
+    // No API token turns intake on: only a browser session (review round 1).
+    let user = w.h.store.user_by_login("alice").await?.ok_or("alice")?;
+    let token =
+        w.h.app
+            .issue_api_token(&user, "cli", yulius_domain::permission::TokenScope::Operate)
+            .await?;
+    let bearer = Creds {
+        bearer: Some(token.expose().to_owned()),
+        ..Creds::default()
+    };
+    let by_token = intake_on(&w, &bearer, "s1").await?;
+    assert_eq!(by_token.status, StatusCode::FORBIDDEN, "{}", by_token.body);
+    let alice_id = user_id(&w, "alice").await?;
+    assert!(audits(&w, &alice_id, "telegram.intake").await?.is_empty());
+    let me = api(&w, Method::GET, "/api/me/telegram", None, &w.alice).await?;
+    assert_eq!(me.body["intake"]["enabled"], false, "nothing stored");
+    let on = intake_on(&w, &w.alice, "s1").await?;
+    assert_eq!(on.status, StatusCode::OK, "{}", on.body);
+    assert_eq!(
+        on.body["intake"],
+        json!({"enabled": true, "sandbox_id": "s1"})
+    );
+    let alice = user_id(&w, "alice").await?;
+    assert_eq!(audits(&w, &alice, "telegram.intake").await?, ["on s1"]);
+    Ok(())
+}
+
+/// SPEC-512 TGI-003, TGI-004: with intake on, a message starts a task in the default project as
+/// the person, labelled from Telegram; a photo with a caption becomes its attachment; `/task`
+/// names another project; an unknown project is refused.
+#[tokio::test]
+async fn with_intake_a_message_starts_a_task_and_a_photo_is_its_attachment() -> TestResult {
+    let w = world().await?;
+    set_bot(&w, TOKEN_A).await?;
+    signed_in_subscription(&w).await?;
+    // The project's folder, where its attachments live.
+    std::fs::create_dir_all(w.h.app.config.data_dir.join("sandboxes/s1"))?;
+    link(&w, &w.alice, 100).await?;
+    intake_on(&w, &w.alice, "s1").await?;
+    let before = w.fake.sent_to(100).len();
+    w.fake.message(100, true, "Fix the header");
+    let reply = next_reply(&w, 100, before).await?;
+    assert!(reply.starts_with("Started #"), "{reply}");
+    assert!(reply.contains("https://yulius.test/s/app/t/"), "{reply}");
+    let tasks = tasks_of(&w, "s1").await?;
+    assert_eq!(tasks.len(), 1, "{tasks:?}");
+    assert_eq!(tasks[0]["origin"], "telegram");
+    assert_eq!(tasks[0]["owner"]["login"], "alice", "{}", tasks[0]);
+
+    let before = w.fake.sent_to(100).len();
+    w.fake.raw(
+        100,
+        json!({"caption": "What is wrong here?", "photo": [
+            {"file_id": "ph1", "file_unique_id": "u1", "file_size": 3}
+        ]}),
+    );
+    let reply = next_reply(&w, 100, before).await?;
+    assert!(reply.starts_with("Started #"), "{reply}");
+    let mut prompts = Vec::new();
+    for task in tasks_of(&w, "s1").await? {
+        let id = TaskId::parse(task["id"].as_str().unwrap_or_default())?;
+        prompts.extend(w.h.store.task(&id).await?.map(|t| t.prompt));
+    }
+    let prompt = prompts
+        .iter()
+        .find(|p| p.starts_with("What is wrong here?"))
+        .ok_or("photo task")?;
+    assert!(prompt.contains("Attached from Telegram:\n- "), "{prompt}");
+    let path = prompt.rsplit("- ").next().unwrap_or_default().trim();
+    assert_eq!(std::fs::read(path)?, b"png", "the photo's bytes at {path}");
+
+    let before = w.fake.sent_to(100).len();
+    w.fake.message(100, true, "/task nowhere Do it");
+    let reply = next_reply(&w, 100, before).await?;
+    assert!(
+        reply.starts_with("No project you may work in is called nowhere"),
+        "{reply}"
+    );
+    let before = w.fake.sent_to(100).len();
+    w.fake.message(100, true, "/task app Tidy the README");
+    let reply = next_reply(&w, 100, before).await?;
+    assert!(reply.starts_with("Started #"), "{reply}");
+    assert_eq!(tasks_of(&w, "s1").await?.len(), 3);
+    // The full repository name, owner/name, names it too (part 5: owner and name are stored
+    // apart).
+    let before = w.fake.sent_to(100).len();
+    w.fake
+        .message(100, true, "/task acme/app Tidy the CHANGELOG");
+    let reply = next_reply(&w, 100, before).await?;
+    assert!(reply.starts_with("Started #"), "{reply}");
+    assert_eq!(tasks_of(&w, "s1").await?.len(), 4);
+    Ok(())
+}
+
+/// SPEC-512 TGI-002, TGI-004: a reply to a notification reaches its task as the person's
+/// `task_message`; a teammate's reply to it is refused by the owner rule and changes nothing;
+/// `/status` lists what waits for the person, redacted.
+#[tokio::test]
+async fn a_reply_reaches_its_task_under_the_owner_rule() -> TestResult {
+    let w = world().await?;
+    set_bot(&w, TOKEN_A).await?;
+    let created = call(
+        &w.h.router,
+        Method::POST,
+        "/api/sandboxes/s1/agent-secrets",
+        Some(json!({"name": "PAYMENT_KEY", "value": SECRET})),
+        &w.alice,
+    )
+    .await?;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
+    // Carol may write in s1 too, so she sees alice's task and its notice.
+    w.h.github.set_perm("carol", "acme/app", perms("write"));
+    link(&w, &w.alice, 100).await?;
+    link(&w, &w.carol, 300).await?;
+    intake_on(&w, &w.alice, "s1").await?;
+    intake_on(&w, &w.carol, "s1").await?;
+    let alice = user_id(&w, "alice").await?;
+    seed_task(&w.h, "t1", "s1", &alice, TaskStatus::Running, None).await?;
+    ask(&w, "t1", &format!("Checkout fails with {SECRET}")).await?;
+    // The request's action carries the secret too, which `/status` shows (review round 1).
+    let id = TaskId::parse("t1")?;
+    let mut asked = w.h.store.task_needs_you(&id).await?.ok_or("asked")?;
+    asked.action = format!("Rotate {SECRET} first");
+    w.h.store
+        .set_task_needs_you(&id, Some(&asked), w.h.app.now())
+        .await?;
+    w.fake.wait_sent(300, 2).await?;
+    let to_alice = w.fake.sent_id(100, "Needs you").ok_or("alice's notice")?;
+    let to_carol = w.fake.sent_id(300, "Needs you").ok_or("carol's notice")?;
+
+    // Once the request ended, carol's reply is no answer: the owner rule refuses it.
+    let asked = w.h.store.task_needs_you(&id).await?;
+    w.h.store
+        .set_task_needs_you(&id, None, w.h.app.now())
+        .await?;
+    let before = w.fake.sent_to(300).len();
+    w.fake.raw(
+        300,
+        json!({"text": "Use the blue one", "reply_to_message": {"message_id": to_carol}}),
+    );
+    let reply = next_reply(&w, 300, before).await?;
+    assert!(reply.starts_with("Not sent to #"), "{reply}");
+    assert!(reply.contains("alice"), "it says whose task it is: {reply}");
+    assert!(audits(&w, "t1", "task.messaged").await?.is_empty());
+    w.h.store
+        .set_task_needs_you(&id, asked.as_ref(), w.h.app.now())
+        .await?;
+
+    // A new request replaces the one carol's notice told of: her reply to that notice answers
+    // nothing later (review round 2: the notice keeps its request's time, ANS-004).
+    let mut newer = asked.clone().ok_or("asked")?;
+    newer.at += 1;
+    w.h.store
+        .set_task_needs_you(&id, Some(&newer), w.h.app.now())
+        .await?;
+    let before = w.fake.sent_to(300).len();
+    w.fake.raw(
+        300,
+        json!({"text": "Friday", "reply_to_message": {"message_id": to_carol}}),
+    );
+    let reply = next_reply(&w, 300, before).await?;
+    assert_eq!(
+        reply,
+        "Not sent to #1: the question you answered on task #1 was replaced by a new one: read it \
+         and answer again"
+    );
+    assert!(
+        w.h.store.task_needs_you(&id).await?.is_some(),
+        "the new request stays"
+    );
+
+    // Alice's reply is her message to her task: the owner rule lets it through, and here (no
+    // agent runs in this harness) `task_message` answers that the task has no live session; a
+    // live or parked session takes it as `task_message` does (parking and task_message tests).
+    let before = w.fake.sent_to(100).len();
+    w.fake.raw(
+        100,
+        json!({"text": "Use the blue one", "reply_to_message": {"message_id": to_alice}}),
+    );
+    let reply = next_reply(&w, 100, before).await?;
+    assert_eq!(reply, "Not sent to #1: task #1 has no live session");
+    assert!(
+        tasks_of(&w, "s1").await?.len() == 1,
+        "a reply starts no task"
+    );
+
+    // /status lists the task that waits, redacted.
+    let before = w.fake.sent_to(100).len();
+    w.fake.message(100, true, "/status");
+    let status = next_reply(&w, 100, before).await?;
+    assert!(status.starts_with("Waiting for you (1):"), "{status}");
+    assert!(
+        status.contains("Rotate [secret:PAYMENT_KEY] first"),
+        "{status}"
+    );
+    assert!(!status.contains(SECRET), "redacted: {status}");
+    assert!(status.contains("https://yulius.test/s/app/t/"), "{status}");
+    Ok(())
+}
+
+/// SPEC-512 TGI-002 (review round 1): a reply is delivered: to a task that has not started it
+/// joins the request as the person's message, labelled from Telegram and audited; a reply to
+/// the bot's own answer about a task reaches that task too; a reply to a message about no task
+/// starts nothing.
+#[tokio::test]
+async fn a_reply_is_delivered_and_a_reply_never_starts_a_task() -> TestResult {
+    use yulius_app::ports::notify::SentAbout;
+    let w = world().await?;
+    set_bot(&w, TOKEN_A).await?;
+    link(&w, &w.alice, 100).await?;
+    intake_on(&w, &w.alice, "s1").await?;
+    let alice = user_id(&w, "alice").await?;
+    let task = seed_task(&w.h, "t-q", "s1", &alice, TaskStatus::Queued, None).await?;
+    w.h.store
+        .record_sent(
+            "100",
+            "9001",
+            &SentAbout {
+                task: task.id.clone(),
+                asked_at: None,
+            },
+            w.h.app.now(),
+        )
+        .await?;
+    let before = w.fake.sent_to(100).len();
+    w.fake.raw(
+        100,
+        json!({"text": "Use the DO budget", "reply_to_message": {"message_id": 9001}}),
+    );
+    let reply = next_reply(&w, 100, before).await?;
+    assert_eq!(reply, format!("Sent to #{}.", task.number));
+    let request = w.h.store.task(&task.id).await?.ok_or("task")?.prompt;
+    assert!(request.ends_with("Use the DO budget"), "{request}");
+    let messaged = audits(&w, "t-q", "task.messaged").await?;
+    assert!(
+        messaged.iter().any(|d| d.contains("telegram")),
+        "audited as from Telegram: {messaged:?}"
+    );
+
+    // A reply to the bot's own answer reaches the same task.
+    let answer_id = w.fake.sent_id(100, "Sent to #").ok_or("the answer")?;
+    let before = w.fake.sent_to(100).len();
+    w.fake.raw(
+        100,
+        json!({"text": "And the staging budget", "reply_to_message": {"message_id": answer_id}}),
+    );
+    let reply = next_reply(&w, 100, before).await?;
+    assert_eq!(reply, format!("Sent to #{}.", task.number));
+    let request = w.h.store.task(&task.id).await?.ok_or("task")?.prompt;
+    assert!(request.ends_with("And the staging budget"), "{request}");
+
+    // A reply to a message about no task starts nothing.
+    let before = w.fake.sent_to(100).len();
+    w.fake.raw(
+        100,
+        json!({"text": "also fix the footer", "reply_to_message": {"message_id": 1}}),
+    );
+    let reply = next_reply(&w, 100, before).await?;
+    assert!(
+        reply.starts_with("That message is about no task"),
+        "{reply}"
+    );
+    assert_eq!(tasks_of(&w, "s1").await?.len(), 1, "no task started");
+    Ok(())
+}
+
+/// SPEC-512 TGI-003 (review round 1): the hourly bound of tools applies: the 21st task in an
+/// hour is refused and creates nothing; at most 10 files, each at most 20 MB, are taken; a
+/// project the person may not work in is no project to them.
+#[tokio::test]
+async fn telegram_tasks_keep_the_hourly_bound_and_the_file_bounds() -> TestResult {
+    let w = world().await?;
+    set_bot(&w, TOKEN_A).await?;
+    signed_in_subscription(&w).await?;
+    std::fs::create_dir_all(w.h.app.config.data_dir.join("sandboxes/s1"))?;
+    link(&w, &w.alice, 100).await?;
+    intake_on(&w, &w.alice, "s1").await?;
+    let ask = |text: String| {
+        let w = &w;
+        async move {
+            let before = w.fake.sent_to(100).len();
+            w.fake.message(100, true, &text);
+            next_reply(w, 100, before).await
+        }
+    };
+    let before = w.fake.sent_to(100).len();
+    let many: Vec<Value> = (0..11)
+        .map(|n| json!({"file_id": format!("d{n}"), "file_unique_id": format!("u{n}"), "file_name": format!("f{n}.txt")}))
+        .collect();
+    let album: Vec<Value> = many
+        .iter()
+        .enumerate()
+        .map(|(n, doc)| {
+            let mut body = json!({"document": doc, "media_group_id": "g11"});
+            if n == 0 {
+                body["caption"] = json!("Read these");
+            }
+            body
+        })
+        .collect();
+    w.fake.raw_batch(100, &album);
+    let reply = next_reply(&w, 100, before).await?;
+    assert!(
+        reply.starts_with("At most 10 files start a task"),
+        "an album of 11 is one message, refused: {reply}"
+    );
+    let before = w.fake.sent_to(100).len();
+    w.fake.raw(
+        100,
+        json!({"caption": "Big", "document": {"file_id": "big", "file_unique_id": "ub", "file_name": "big.bin", "file_size": 30_000_000}}),
+    );
+    let reply = next_reply(&w, 100, before).await?;
+    assert!(reply.contains("over Telegram's 20 MB"), "{reply}");
+    for n in 0..20 {
+        let reply = ask(format!("Task {n}")).await?;
+        assert!(reply.starts_with("Started #"), "{n}: {reply}");
+    }
+    let reply = ask("Task 21".into()).await?;
+    assert!(
+        reply.starts_with("Not started: tools may create at most 20 tasks an hour"),
+        "{reply}"
+    );
+    assert_eq!(tasks_of(&w, "s1").await?.len(), 20);
+
+    let reply = ask("/task other Do it".into()).await?;
+    assert!(
+        reply.starts_with("No project you may work in is called other"),
+        "alice may not work in acme/other: {reply}"
+    );
+    assert_eq!(tasks_of(&w, "s1").await?.len(), 20, "nothing more started");
+    Ok(())
+}
+
+/// The task numbers and prompts of project `sandbox`, by number.
+async fn prompts_by_number(
+    w: &World,
+    sandbox: &str,
+) -> Result<Vec<(u64, String)>, Box<dyn std::error::Error>> {
+    let mut out = Vec::new();
+    for task in tasks_of(w, sandbox).await? {
+        let id = TaskId::parse(task["id"].as_str().unwrap_or_default())?;
+        let prompt =
+            w.h.store
+                .task(&id)
+                .await?
+                .map(|t| t.prompt)
+                .unwrap_or_default();
+        out.push((task["number"].as_u64().unwrap_or_default(), prompt));
+    }
+    out.sort();
+    Ok(out)
+}
+
+/// SPEC-512 TGI-002, TGI-003 (review of task #538): a whole poll answer from one chat (20
+/// messages, as after a restart) is handled, each message in its turn: while the first (a
+/// photo) is still being fetched, the 19 behind it wait, and every one starts its task in the
+/// order it was sent.
+#[tokio::test]
+async fn a_chats_whole_poll_answer_is_handled_in_order() -> TestResult {
+    let w = world().await?;
+    set_bot(&w, TOKEN_A).await?;
+    signed_in_subscription(&w).await?;
+    std::fs::create_dir_all(w.h.app.config.data_dir.join("sandboxes/s1"))?;
+    link(&w, &w.alice, 100).await?;
+    intake_on(&w, &w.alice, "s1").await?;
+    let before = w.fake.sent_to(100).len();
+    w.fake.hold_files.store(true, Ordering::SeqCst);
+    let mut bodies = vec![json!({"caption": "First", "photo": [
+        {"file_id": "ph1", "file_unique_id": "u1", "file_size": 3}
+    ]})];
+    bodies.extend((0..19).map(|n| json!({"text": format!("Task {n}")})));
+    w.fake.raw_batch(100, &bodies);
+    w.fake.wait_file_asked().await?;
+    w.fake.wait_updates_taken().await?;
+    w.fake.release_files();
+    let sent = w.fake.wait_sent(100, before + 20).await?;
+    for reply in &sent[before..] {
+        assert!(reply.starts_with("Started #"), "{reply}");
+    }
+    let prompts: Vec<String> = prompts_by_number(&w, "s1")
+        .await?
+        .into_iter()
+        .map(|(_, p)| p)
+        .collect();
+    assert_eq!(prompts.len(), 20, "{prompts:?}");
+    assert!(prompts[0].starts_with("First"), "{prompts:?}");
+    let expected: Vec<String> = (0..19).map(|n| format!("Task {n}")).collect();
+    assert_eq!(
+        prompts[1..],
+        expected[..],
+        "one task per message, in the order sent"
+    );
+    Ok(())
+}
+
+/// SPEC-512 TGI-002, TGI-003 (review of task #538): while a chat's message is being handled, 20
+/// more wait their turn; one past that is not dropped silently: the chat is told some were not
+/// handled, and the waiting ones still run.
+#[tokio::test]
+async fn a_message_past_the_chats_waiting_bound_is_answered() -> TestResult {
+    let w = world().await?;
+    set_bot(&w, TOKEN_A).await?;
+    signed_in_subscription(&w).await?;
+    std::fs::create_dir_all(w.h.app.config.data_dir.join("sandboxes/s1"))?;
+    link(&w, &w.alice, 100).await?;
+    intake_on(&w, &w.alice, "s1").await?;
+    let before = w.fake.sent_to(100).len();
+    w.fake.hold_files.store(true, Ordering::SeqCst);
+    w.fake.raw(
+        100,
+        json!({"caption": "First", "photo": [
+            {"file_id": "ph1", "file_unique_id": "u1", "file_size": 3}
+        ]}),
+    );
+    w.fake.wait_file_asked().await?;
+    // Two poll answers (20, then 2): 20 wait behind the photo, the last two do not fit.
+    let bodies: Vec<Value> = (0..22)
+        .map(|n| json!({"text": format!("Task {n}")}))
+        .collect();
+    w.fake.raw_batch(100, &bodies);
+    let told = next_reply(&w, 100, before).await?;
+    assert!(
+        told.starts_with("Too many messages at once"),
+        "told while the photo is still held: {told}"
+    );
+    w.fake.release_files();
+    // The photo's task and 19 more fill the hourly bound of 20; the 20th waiting is refused by it.
+    let sent = w.fake.wait_sent(100, before + 22).await?;
+    let started = sent[before..]
+        .iter()
+        .filter(|r| r.starts_with("Started #"))
+        .count();
+    assert_eq!(started, 20, "{:?}", &sent[before..]);
+    assert!(
+        sent[before..]
+            .iter()
+            .any(|r| r.starts_with("Not started: tools may create at most 20 tasks an hour")),
+        "{:?}",
+        &sent[before..]
+    );
+    let prompts: Vec<String> = prompts_by_number(&w, "s1")
+        .await?
+        .into_iter()
+        .map(|(_, p)| p)
+        .collect();
+    assert!(prompts[0].starts_with("First"), "{prompts:?}");
+    let expected: Vec<String> = (0..19).map(|n| format!("Task {n}")).collect();
+    assert_eq!(prompts[1..], expected[..], "the waiting ones ran in order");
+    Ok(())
+}
+
+/// SPEC-512 TGI-004 (review of task #538): `/start` without a code in a chat whose intake is on
+/// gets the intake help, not "turn on Telegram intake".
+#[tokio::test]
+async fn a_start_with_intake_on_gets_the_intake_help() -> TestResult {
+    let w = world().await?;
+    set_bot(&w, TOKEN_A).await?;
+    link(&w, &w.alice, 100).await?;
+    intake_on(&w, &w.alice, "s1").await?;
+    let before = w.fake.sent_to(100).len();
+    w.fake.message(100, true, "/start");
+    let reply = next_reply(&w, 100, before).await?;
+    assert_eq!(reply, yulius_app::telegram_intake::INTAKE_HELP);
+    Ok(())
+}
+
+/// Sends `chat` a photo that is held while `texts` wait behind it in the chat's lane; returns the
+/// number of messages the chat had before.
+async fn photo_held_with_waiting(
+    w: &World,
+    chat: i64,
+    texts: &[&str],
+) -> Result<usize, Box<dyn std::error::Error>> {
+    let before = w.fake.sent_to(chat).len();
+    w.fake.files_asked.store(0, Ordering::SeqCst);
+    w.fake.hold_files.store(true, Ordering::SeqCst);
+    let mut bodies = vec![json!({"caption": "First", "photo": [
+        {"file_id": "ph1", "file_unique_id": "u1", "file_size": 3}
+    ]})];
+    bodies.extend(texts.iter().map(|t| json!({ "text": t })));
+    w.fake.raw_batch(chat, &bodies);
+    w.fake.wait_file_asked().await?;
+    w.fake.wait_updates_taken().await?;
+    Ok(before)
+}
+
+/// SPEC-512 TGI-001 (review round 2 of task #538): turning intake off, or `/stop`, ends what
+/// waits in the chat's lane too: a message queued behind a slow one starts nothing and gets
+/// the answer it would get now (the help with intake off, the unlinked reply after `/stop`).
+#[tokio::test]
+async fn intake_off_or_stop_ends_what_waits_in_the_lane() -> TestResult {
+    let w = world().await?;
+    set_bot(&w, TOKEN_A).await?;
+    signed_in_subscription(&w).await?;
+    std::fs::create_dir_all(w.h.app.config.data_dir.join("sandboxes/s1"))?;
+    link(&w, &w.alice, 100).await?;
+    intake_on(&w, &w.alice, "s1").await?;
+
+    // Intake off while one waits.
+    let before = photo_held_with_waiting(&w, 100, &["Waiting 1"]).await?;
+    let off = api(
+        &w,
+        Method::PUT,
+        "/api/me/telegram/intake",
+        Some(json!({"enabled": false, "sandbox_id": null})),
+        &w.alice,
+    )
+    .await?;
+    assert_eq!(off.status, StatusCode::OK, "{}", off.body);
+    w.fake.release_files();
+    let sent = w.fake.wait_sent(100, before + 2).await?;
+    assert!(
+        sent[before].starts_with("Started #"),
+        "the running one ends: {sent:?}"
+    );
+    assert!(
+        sent[before + 1].contains("turn on Telegram intake"),
+        "the waiting one is answered as intake off: {sent:?}"
+    );
+
+    // `/stop` while one waits (another chat, so its quiet reply is due).
+    link(&w, &w.alice, 101).await?;
+    intake_on(&w, &w.alice, "s1").await?;
+    let before = photo_held_with_waiting(&w, 101, &["Waiting 2"]).await?;
+    w.fake.message(101, true, "/stop");
+    let reply = next_reply(&w, 101, before).await?;
+    assert!(reply.starts_with("Unlinked"), "{reply}");
+    w.fake.release_files();
+    let sent = w.fake.wait_sent(101, before + 3).await?;
+    assert!(sent[before + 1].starts_with("Started #"), "{sent:?}");
+    assert_eq!(sent[before + 2], UNLINKED_REPLY, "{sent:?}");
+
+    let prompts: Vec<String> = prompts_by_number(&w, "s1")
+        .await?
+        .into_iter()
+        .map(|(_, p)| p)
+        .collect();
+    assert_eq!(
+        prompts.len(),
+        2,
+        "only the running ones started: {prompts:?}"
+    );
+    assert!(
+        prompts.iter().all(|p| p.starts_with("First")),
+        "{prompts:?}"
+    );
+    Ok(())
+}
+
+/// SPEC-512 TGI-001 (review round 3 of task #538): a message that waited while the chat was one
+/// person's never runs as the person the chat is linked to by its turn.
+#[tokio::test]
+async fn what_waits_never_runs_as_the_chats_next_person() -> TestResult {
+    let w = world().await?;
+    set_bot(&w, TOKEN_A).await?;
+    signed_in_subscription(&w).await?;
+    std::fs::create_dir_all(w.h.app.config.data_dir.join("sandboxes/s1"))?;
+    link(&w, &w.alice, 100).await?;
+    intake_on(&w, &w.alice, "s1").await?;
+    photo_held_with_waiting(&w, 100, &["Waiting as alice"]).await?;
+    link(&w, &w.admin, 100).await?;
+    let on = intake_on(&w, &w.admin, "s1").await?;
+    assert_eq!(on.status, StatusCode::OK, "{}", on.body);
+    let before = w.fake.sent_to(100).len();
+    w.fake.release_files();
+    let reply = next_reply(&w, 100, before).await?;
+    assert!(
+        reply.starts_with("Started #"),
+        "alice's running one ends: {reply}"
+    );
+    // Sent after: it runs once the waiting one had its turn.
+    w.fake.message(100, true, "Barrier");
+    let sent = w.fake.wait_sent(100, before + 2).await?;
+    assert!(sent[before + 1].starts_with("Started #"), "{sent:?}");
+    let mut owners = Vec::new();
+    for task in tasks_of(&w, "s1").await? {
+        let id = TaskId::parse(task["id"].as_str().unwrap_or_default())?;
+        let prompt =
+            w.h.store
+                .task(&id)
+                .await?
+                .map(|t| t.prompt)
+                .unwrap_or_default();
+        let owner = task["owner"]["login"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned();
+        owners.push((prompt.lines().next().unwrap_or_default().to_owned(), owner));
+    }
+    owners.sort();
+    assert_eq!(
+        owners.len(),
+        2,
+        "the waiting one started nothing: {owners:?}"
+    );
+    assert_eq!(owners[1].0, "First", "{owners:?}");
+    assert_eq!(owners[1].1, "alice", "{owners:?}");
+    assert_eq!(owners[0].0, "Barrier", "{owners:?}");
+    assert_ne!(owners[0].1, "alice", "{owners:?}");
     Ok(())
 }

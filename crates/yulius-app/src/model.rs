@@ -252,6 +252,10 @@ pub enum TaskOrigin {
     Onboarding,
     /// Created by another agent through MCP.
     Agent,
+    /// Created by a person's message to their Telegram chat (SPEC-512 TGI-003).
+    Telegram,
+    /// Handed off by a task of another sandbox (SPEC-512 HOF-005).
+    Handoff,
 }
 
 impl TaskOrigin {
@@ -264,6 +268,8 @@ impl TaskOrigin {
             Self::Import => "import",
             Self::Onboarding => "onboarding",
             Self::Agent => "agent",
+            Self::Telegram => "telegram",
+            Self::Handoff => "handoff",
         }
     }
 
@@ -275,6 +281,8 @@ impl TaskOrigin {
             "import" => Self::Import,
             "onboarding" => Self::Onboarding,
             "agent" => Self::Agent,
+            "telegram" => Self::Telegram,
+            "handoff" => Self::Handoff,
             _ => Self::Ui,
         }
     }
@@ -708,6 +716,8 @@ pub struct PauseRecord {
     /// Text for the resumed session when it resumes on another account: the held prompt
     /// (`prompt`); `None` otherwise.
     pub continuation: Option<String>,
+    /// A prompt entered while a previous turn still ran: that turn's Stop cannot end the hold.
+    pub during_turn: bool,
     /// When the pause began.
     pub started_at: Timestamp,
     /// When it ended; `None` while open.

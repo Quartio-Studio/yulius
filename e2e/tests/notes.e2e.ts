@@ -24,6 +24,8 @@ type MockNotes = {
     loseNoteResponse: boolean;
     keepaliveRequests: string[];
     noteLoads: number;
+    asked?: Record<string, number>;
+    sandboxRetryDelays?: number[];
   };
 };
 
@@ -343,24 +345,38 @@ test('a conflict kept over a reload is still a choice after another reload', asy
   }
 });
 
-// #1246, review round 1 of SPEC-493 fix 2: the test counted every notepad's loads, and the Team
-// notepad's opening load, answered late (it is held here until the count starts), failed and
-// retried inside the window: "expected 4 to be less than or equal to 3". It counts the sandbox
-// notepad's loads now.
+// The Team pad's opening read can fail late and retry beside the sandbox's reads (#1246).
 test("a failed reload after a teammate's edit backs off", async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio', '&hold=/api/notes'));
   await openNotes(screen);
   await expect(screen.getByRole('status', 'Save state')).toHaveText('Saved');
   await setMock(browser, 'failNoteLoads', true);
-  const before = await sandboxLoads(browser);
-  // The Team notepad's opening load is answered (and fails) only now.
+  await browser.evaluate(() => {
+    const db = (window as unknown as MockNotes).__yuliusMock;
+    const reads = () => db.asked?.['/api/sandboxes/sb_studio/notes'] ?? 0;
+    const initial = reads();
+    const delays: number[] = [];
+    db.sandboxRetryDelays = delays;
+    const schedule = window.setTimeout;
+    // The transport counts GETs synchronously on entry. Record the delay of the timer
+    // whose callback actually issues each retry, even when the event loop runs it late.
+    window.setTimeout = (callback, delay, ...args) => {
+      if (typeof callback !== 'function') return schedule(callback, delay, ...args);
+      return schedule(function (this: Window) {
+        const before = reads();
+        callback.apply(this, args);
+        if (before > initial && reads() > before && delays.length < 2) {
+          delays.push(delay ?? 0);
+          if (delays.length === 2) window.setTimeout = schedule;
+        }
+      }, delay);
+    };
+  });
   await browser.evaluate(() => (window as unknown as { __yuliusMock: { release: () => void } }).__yuliusMock.release());
   await editAs(browser, 'sandbox:sb_studio', 'from alice');
-  await browser.evaluate(() => new Promise((resolve) => setTimeout(resolve, 2500)));
-  const tries = await sandboxLoads(browser);
-  expect(tries - before).toBeLessThanOrEqual(3);
-  // It does try again by itself: the load the edit's event asked for, then its first retry 1 s later.
-  await expect.poll(() => sandboxLoads(browser)).toBeGreaterThanOrEqual(before + 2);
+  const retryDelays = () => browser.evaluate(() => (window as unknown as MockNotes).__yuliusMock.sandboxRetryDelays!);
+  await expect.poll(async () => (await retryDelays()).length, { timeout: 10_000 }).toBe(2);
+  expect(await retryDelays()).toEqual([1_000, 2_000]);
   await setMock(browser, 'failNoteLoads', false);
   await loadAgain(screen);
   await expect(screen.getByRole('textbox', 'Sandbox notes')).toHaveValue('from alice');

@@ -163,10 +163,65 @@ impl App {
         &self,
         sandbox: &SandboxId,
     ) -> AppResult<Option<std::ops::RangeInclusive<u16>>> {
-        Ok(self.deps.store.sandbox(sandbox).await?.map(|record| {
-            let of = self.sandbox_ref(&record);
-            of.port_first..=of.port_last
-        }))
+        Ok(self
+            .deps
+            .store
+            .sandbox(sandbox)
+            .await?
+            .filter(|record| record.removed_at.is_none())
+            .map(|record| {
+                let of = self.sandbox_ref(&record);
+                of.port_first..=of.port_last
+            }))
+    }
+
+    /// The live sandbox's range and the identity a browser proxy holds while it may use it.
+    /// Register the identity before reading the row so removal either sees this lease or the
+    /// reader sees the removal. Connections accepted by that proxy inherit the same lease.
+    ///
+    /// # Errors
+    /// The store could not be read.
+    pub async fn lease_sandbox_ports(
+        &self,
+        sandbox: &SandboxId,
+    ) -> AppResult<Option<(Arc<str>, std::ops::RangeInclusive<u16>)>> {
+        let lease = {
+            let mut leases = self
+                .browser_port_leases
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            leases.retain(|_, lease| lease.strong_count() > 0);
+            match leases.get(sandbox).and_then(std::sync::Weak::upgrade) {
+                Some(lease) => lease,
+                None => {
+                    let lease: Arc<str> = Arc::from(sandbox.as_str());
+                    leases.insert(sandbox.clone(), Arc::downgrade(&lease));
+                    lease
+                }
+            }
+        };
+        Ok(self
+            .sandbox_ports(sandbox)
+            .await?
+            .map(|ports| (lease, ports)))
+    }
+
+    /// Number of sandbox identities retained by the browser proxy lease registry.
+    #[cfg(feature = "test-support")]
+    #[must_use]
+    pub fn browser_port_lease_entries(&self) -> usize {
+        self.browser_port_leases
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .len()
+    }
+
+    pub(crate) fn browser_holds_ports(&self, sandbox: &SandboxId) -> bool {
+        self.browser_port_leases
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(sandbox)
+            .is_some_and(|lease| lease.strong_count() > 0)
     }
 
     /// Whether `sandbox` reads as removed ([`reads_removed`]).

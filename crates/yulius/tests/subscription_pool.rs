@@ -620,6 +620,7 @@ async fn the_capacity_view_reports_burn_forecast_and_recommendation() -> TestRes
             task_id: TaskId::parse("t1")?,
             kind: PauseKind::Turn,
             account_id: Some(a.clone()),
+            during_turn: false,
             continuation: None,
             started_at: at(-10),
             ended_at: None,
@@ -1167,6 +1168,130 @@ async fn a_prompt_typed_into_a_held_turn_takes_the_task_out_of_the_pause() -> Te
         .filter_map(|p| p.outcome)
         .collect();
     assert_eq!(outcomes, ["superseded", "superseded"]);
+    Ok(())
+}
+
+/// A newly launched task already reads Working before any prompt starts its first turn.
+/// If the first submit is held and its client gives up, the corresponding Stop releases it.
+#[tokio::test]
+async fn a_first_prompt_held_at_launch_is_released_by_its_own_stop() -> TestResult {
+    let h = harness()?;
+    seed(&h).await?;
+    let t0 = now(&h);
+    let only = add_account(
+        &h,
+        "acc-only",
+        Some(usage(
+            98.0,
+            t0.plus_millis(HOUR),
+            40.0,
+            t0.plus_millis(90 * HOUR),
+        )),
+    )
+    .await?;
+    let task = running_task(&h, TaskMode::Prompt, &only).await?;
+    h.store
+        .set_activity(&task, Some(yulius_domain::task::Activity::Working), t0)
+        .await?;
+    assert_eq!(
+        hook(&h.internal, "UserPromptSubmit", json!({"prompt": "first"}))
+            .await?
+            .0,
+        202
+    );
+    assert_eq!(hook(&h.internal, "Stop", json!({})).await?.0, 200);
+    assert!(h.store.open_pause(&task).await?.is_none());
+    assert_eq!(status(&h, &task).await?, TaskStatus::Running);
+    Ok(())
+}
+
+#[tokio::test]
+async fn the_preceding_turns_stop_preserves_a_queued_prompts_pause() -> TestResult {
+    queued_prompt_stop(TaskMode::Prompt, 200).await
+}
+
+#[tokio::test]
+async fn a_goal_continuation_stays_held_with_its_queued_prompt() -> TestResult {
+    queued_prompt_stop(TaskMode::Goal, 202).await
+}
+
+async fn queued_prompt_stop(mode: TaskMode, stop_status: u16) -> TestResult {
+    let h = harness()?;
+    seed(&h).await?;
+    let t0 = now(&h);
+    let only = add_account(&h, "acc-only", None).await?;
+    let task = running_task(&h, mode, &only).await?;
+    assert_eq!(
+        hook(&h.internal, "UserPromptSubmit", json!({"prompt": "first"}))
+            .await?
+            .0,
+        200
+    );
+    h.store
+        .set_account_state(
+            &only,
+            AccountStatus::Ok,
+            Some(&usage(
+                98.0,
+                t0.plus_millis(2 * HOUR),
+                40.0,
+                t0.plus_millis(90 * HOUR),
+            )),
+            None,
+            t0,
+        )
+        .await?;
+    assert_eq!(
+        hook(&h.internal, "UserPromptSubmit", json!({"prompt": "second"}))
+            .await?
+            .0,
+        202
+    );
+    let held = h
+        .store
+        .open_pause(&task)
+        .await?
+        .ok_or("second prompt was not held")?;
+    assert_eq!(hook(&h.internal, "Stop", json!({})).await?.0, stop_status);
+    let still_held = h
+        .store
+        .open_pause(&task)
+        .await?
+        .ok_or("preceding Stop removed the queued prompt's hold")?;
+    assert_eq!(still_held.id, held.id);
+    assert_eq!(still_held.continuation.as_deref(), Some("second"));
+    assert_eq!(status(&h, &task).await?, TaskStatus::WaitingCapacity);
+    if mode == TaskMode::Goal {
+        // A real submit poll keeps its pause. After that the submit client gives up.
+        advance(&h, 30_000);
+        assert_eq!(
+            hook(&h.internal, "UserPromptSubmit", json!({"prompt": "second"}))
+                .await?
+                .0,
+            202
+        );
+        for _ in 0..4 {
+            advance(&h, 10_000);
+            assert_eq!(hook(&h.internal, "Stop", json!({})).await?.0, 202);
+            let _ = h.app.resume_round().await;
+            assert_eq!(status(&h, &task).await?, TaskStatus::WaitingCapacity);
+        }
+        // Only the predecessor's Stop has polled for the last 46 seconds.
+        advance(&h, 6_000);
+        assert_eq!(hook(&h.internal, "Stop", json!({})).await?.0, 202);
+        let _ = h.app.resume_round().await;
+        let pauses = h.store.pauses_since(t0).await?;
+        assert_eq!(pauses[0].outcome.as_deref(), Some("abandoned"));
+        // The next Stop can hold its own turn again without carrying the dropped prompt.
+        assert_eq!(hook(&h.internal, "Stop", json!({})).await?.0, 202);
+        let turn = h
+            .store
+            .open_pause(&task)
+            .await?
+            .ok_or("no goal turn hold")?;
+        assert_eq!(turn.kind, PauseKind::Turn);
+        assert!(turn.continuation.is_none());
+    }
     Ok(())
 }
 
