@@ -1,6 +1,6 @@
 ---
 yulius-task: 53a77e47-55cc-48b0-ba87-928491c17f74
-status: in-progress
+status: done
 ---
 
 # SPEC-573 Planned installs and repeated CI execution
@@ -30,7 +30,7 @@ Startup recovery ends orphaned hosts and requeues their runs. SQLite clears indi
 - [x] Verify recovery, outputs and gate timing across workloads
 - [x] Expose the urgent install control and distinguish gate elapsed from workload finish
 - [x] Prove install fallback on CI read failure and preserve Proceed during deploys and restarts
-- [ ] Review and deliver the measured change to dev
+- [x] Review and deliver the measured change to dev
 
 ## Acceptance criteria
 
@@ -98,3 +98,7 @@ The indexed SQLite observation uses the existing partial active-run index and pe
 Independent review of 0c5a357 found that the Instance page hid the urgent control once all tasks paused and that the mixed sweep measured workload finish from time zero. A Chromium regression first failed to locate the button during the CI-only wait. The Instance page now follows the server's proceed permission and explains that unfinished CI runs will be queued again. Both the click through to installation and the running-deploy guard passed in `npx e2e run update --grep 'only a finishing CI|holds the restart'`. A separate timing assertion uses a gate arriving at second 20 and finishing at 80. The replay reports 60 seconds elapsed for that gate and 80 from workload start. The mixed sweep reproduced both values in the table.
 
 Independent review of b8c2131 identified the missing CI read-error test and two mock Proceed responses that differed from the real endpoint. Renaming the CI jobs table in an isolated database made the observation return an error. Treating that error as a reason to wait failed the test on its second ready pass (helper action Build). Restoring the fallback produced Install on that pass with no clock advance. The browser test first observed HTTP 409 during a deploy and the install message on a same-build restart. With the mock corrected, Proceed returned HTTP 200 while retaining the deploy hold and the restart showed the stopping step. All 73 scoped Rust tests and all 25 Chromium update tests passed.
+
+The final independent review approved a4fd57d15. It reproduced both timing sweeps and checked seven eligibility cases and the query plan. `scripts/dev mutants --tests 'test(/local_ci::planned_install::|self_update::/)'` reported 22 listed, 14 caught, 0 missed, 0 timed out, 8 unviable, 0 not reached (bound 30 min, took 582 s). The two review-fix ranges had no mutable Rust product lines. `scripts/dev quick` passed. `scripts/dev security` reported Vidoc disabled for this instance or project.
+
+The full Chromium run (`cd e2e && E2E_TELEMETRY_DISABLED=1 npx e2e run --workers 4`) passed all 1178 executed tests. One model-dependent test skipped. It discovered the 24 update tests present when it started. The subsequent 25-test update run included the deploy-held same-build case. The controlled fixtures used isolated processes, databases and fixed budgets. There was no live restart or production latency measurement.
