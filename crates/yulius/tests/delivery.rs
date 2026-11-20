@@ -9211,3 +9211,35 @@ async fn post_merge_evidence_pages_over_archived_attempts_while_another_run_land
     assert!(last["next_before"].is_null());
     Ok(())
 }
+
+#[tokio::test]
+async fn post_merge_evidence_recovers_the_expected_landing_after_github_returns() -> TestResult {
+    use std::sync::atomic::Ordering;
+    let f = fixture(&DeliveryProfile::standard()).await?;
+    let wt = f
+        .add_task("t1", "Update the guide", "docs/1-guide", "dev")
+        .await?;
+    commit_file(&wt, "guide.md", "guide", "docs: update guide")?;
+    let head = git(&wt, &["rev-parse", "HEAD"])?;
+    let agent = live_agent(&f, "t1", "tok-deferred-merge").await?;
+    f.h.github.set_checks(&head, ChecksState::Success);
+    f.h.github.fail_merged_reads.store(true, Ordering::SeqCst);
+    arm_merge(&f, &agent, &head).await?;
+    f.h.app.merge_armed(&SandboxId::parse("s1")?).await;
+    let sha = f.origin_sha("dev")?;
+    assert!(f.delivery("t1").await?["evidence"].is_null());
+    let mut profile = DeliveryProfile::standard();
+    profile.integration_branch = "another-base".into();
+    f.h.store
+        .set_profile(
+            &SandboxId::parse("s1")?,
+            &serde_json::to_string(&profile_to_contract(&profile))?,
+        )
+        .await?;
+    f.h.github.fail_merged_reads.store(false, Ordering::SeqCst);
+    let view = f.delivery("t1").await?;
+    assert_eq!(view["evidence"]["merged_sha"], sha);
+    assert_eq!(view["evidence"]["head_sha"], head);
+    assert_eq!(view["evidence"]["branch"], "dev");
+    Ok(())
+}
