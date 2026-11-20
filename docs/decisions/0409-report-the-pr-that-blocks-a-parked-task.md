@@ -10,7 +10,7 @@ A task can have an older recorded merge and an open replacement on the same bran
 
 ## Decision
 
-An individual task read verifies the recorded and current branch PRs through the parking and dependency verifier. An exact-head ordinary CI failure identifies both the PR and the reason for Needs you. A held prompt, a request for the owner or locally unfinished work already determines the group and requires no remote verification. Keep known PR identity when an installation cannot provide fresh evidence.
+An individual task read verifies the recorded and current branch PRs through the parking and dependency verifier. An exact-head ordinary CI failure identifies both the PR and the reason for Needs you. With instance CI enabled, select the ordinary run by PR number and SHA. With CI disabled, an independent GitHub failure or a recorded ordinary failure blocks Done. Preserve the distinction between waiting, cancellation, failed checks, a merge conflict and a base update. Reconfirm a failing head before attributing its checks to an open PR. A held prompt, a request for the owner or locally unfinished work already determines the group and requires no remote verification. Keep known PR identity when an installation cannot provide fresh evidence.
 
 Allow 750 ms for the parked status check. A dispatched native Git operation holds one of eight worker permits until it returns, including when the requester times out. The read has no authority to wake a task, resolve a human decision or release a successor.
 

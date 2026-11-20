@@ -105,6 +105,13 @@ pub(crate) enum PrVerification {
     Display,
 }
 
+impl PrVerification {
+    /// Only parking can hand an active ordinary CI run to the parked PR watcher.
+    fn watches_pending(self, ci_enabled: bool) -> bool {
+        self == Self::WatchPending && ci_enabled
+    }
+}
+
 /// Identity to show even when the checks are unfinished or unreadable.
 #[derive(Default)]
 pub(crate) struct ParkedPullRead {
@@ -3892,29 +3899,6 @@ impl App {
         }
     }
 
-    /// The checked-out task commit. A different checkout has no task branch commit to publish.
-    async fn parking_checkout(&self, task: &TaskRecord) -> AppResult<Option<String>> {
-        let (Some(path), Some(branch)) = (&task.worktree_path, &task.branch) else {
-            return Ok(None);
-        };
-        let path = std::fs::canonicalize(path).map_err(AppError::internal)?;
-        let trees = self.deps.git.worktrees(&path).await?;
-        let tree = trees
-            .iter()
-            .find(|tree| tree.path == path)
-            .ok_or_else(|| AppError::internal("task checkout missing from registered worktrees"))?;
-        if tree.branch.as_ref() != Some(branch) {
-            return Ok(None);
-        }
-        let head = self
-            .deps
-            .git
-            .resolve_commit(&path, "HEAD")
-            .await?
-            .ok_or_else(|| AppError::internal("unreadable task checkout HEAD"))?;
-        Ok(Some(head))
-    }
-
     /// Validate the Git facts again after remote lookups and the host probe.
     pub(crate) async fn parking_prs_still_current(
         &self,
@@ -3930,7 +3914,11 @@ impl App {
         task: &TaskRecord,
         facts: &ParkingPrs,
     ) -> AppResult<bool> {
-        Ok(facts.pulls.is_empty() || self.parking_checkout(task).await? == facts.checkout)
+        Ok(facts.pulls.is_empty()
+            || self
+                .verification_checkout(task, PrVerification::WatchPending)
+                .await?
+                == facts.checkout)
     }
 
     async fn parking_ci_blocker(
@@ -3938,45 +3926,58 @@ impl App {
         task: &TaskRecord,
         facts: &ParkingPrs,
     ) -> AppResult<Option<(u64, PullSignal)>> {
-        use yulius_domain::ci::RunState;
         for (number, head) in &facts.pulls {
-            let runs = self
-                .deps
-                .store
-                .ci_runs_for_sha(&task.sandbox_id, head)
-                .await?;
-            let Some(own) = runs
-                .iter()
-                .find(|run| run.reference == yulius_domain::ci::CiRef::PullRequest(*number))
-            else {
-                continue;
-            };
-            match own.state {
-                RunState::Failed => return Ok(Some((*number, PullSignal::Failing))),
-                RunState::Error | RunState::Cancelled => {
-                    return Ok(Some((*number, PullSignal::Errored)));
-                }
-                _ => {}
-            }
-            if own.state.is_active() {
-                if facts.watched != Some(*number) || !self.config.ci.enabled {
-                    return Ok(Some((*number, PullSignal::InReview)));
-                }
-                let recent = self
-                    .deps
-                    .store
-                    .ci_runs(&task.sandbox_id, crate::pr_watch::RUNS_READ)
-                    .await?;
-                if recent
-                    .iter()
-                    .find(|r| r.reference == own.reference)
-                    .is_none_or(|r| r.id != own.id || !r.state.is_active())
-                {
-                    return Ok(Some((*number, PullSignal::InReview)));
-                }
+            if let Some(signal) = self
+                .parking_ci_signal(task, *number, head, facts.watched)
+                .await?
+            {
+                return Ok(Some((*number, signal)));
             }
         }
         Ok(None)
+    }
+
+    async fn parking_ci_signal(
+        &self,
+        task: &TaskRecord,
+        number: u64,
+        head: &str,
+        watched: Option<u64>,
+    ) -> AppResult<Option<PullSignal>> {
+        use yulius_domain::ci::{CiRef, RunState};
+        let runs = self
+            .deps
+            .store
+            .ci_runs_for_sha(&task.sandbox_id, head)
+            .await?;
+        let Some(own) = runs
+            .iter()
+            .find(|run| run.reference == CiRef::PullRequest(number))
+        else {
+            return Ok(None);
+        };
+        match own.state {
+            RunState::Failed => Ok(Some(PullSignal::Failing)),
+            RunState::Error | RunState::Cancelled => Ok(Some(PullSignal::Errored)),
+            RunState::Queued | RunState::Running => {
+                if watched == Some(number) && self.config.ci.enabled {
+                    let recent = self
+                        .deps
+                        .store
+                        .ci_runs(&task.sandbox_id, crate::pr_watch::RUNS_READ)
+                        .await?;
+                    if recent
+                        .iter()
+                        .find(|run| run.reference == own.reference)
+                        .is_some_and(|run| run.id == own.id && run.state.is_active())
+                    {
+                        return Ok(None);
+                    }
+                }
+                Ok(Some(PullSignal::InReview))
+            }
+            RunState::Passed | RunState::Skipped => Ok(None),
+        }
     }
 
     /// Whether the task's worktree head carries work its merged pull request (`record`) did not
@@ -4230,7 +4231,7 @@ impl App {
         };
         // Branch-scoped discovery also finds PRs omitted by a partial sandbox overview
         // and new PRs opened externally while an older recorded delivery is being reconciled.
-        let watched = tracked.filter(|_| purpose == PrVerification::WatchPending);
+        let watched = tracked.filter(|_| purpose.watches_pending(self.config.ci.enabled));
         let branch = branch_pulls().await?;
         *observed = ParkedPullRead::recorded(record);
         observed.note_open_branch(&branch);
@@ -4302,17 +4303,32 @@ impl App {
         }))
     }
 
+    /// Read the commit only when the registered checkout still owns the task branch.
     async fn verification_checkout(
         &self,
         task: &TaskRecord,
         purpose: PrVerification,
     ) -> AppResult<Option<String>> {
-        if task.worktree_path.is_none() || task.branch.is_none() {
+        let (Some(path), Some(branch)) = (&task.worktree_path, &task.branch) else {
             return Ok(None);
-        }
-        let task = task.clone();
+        };
+        let (path, branch) = (path.clone(), branch.clone());
         self.verification_git(purpose, move |app| async move {
-            app.parking_checkout(&task).await
+            let path = std::fs::canonicalize(path).map_err(AppError::internal)?;
+            let trees = app.deps.git.worktrees(&path).await?;
+            let tree = trees.iter().find(|tree| tree.path == path).ok_or_else(|| {
+                AppError::internal("task checkout missing from registered worktrees")
+            })?;
+            if tree.branch.as_ref() != Some(&branch) {
+                return Ok(None);
+            }
+            let head = app
+                .deps
+                .git
+                .resolve_commit(&path, "HEAD")
+                .await?
+                .ok_or_else(|| AppError::internal("unreadable task checkout HEAD"))?;
+            Ok(Some(head))
         })
         .await
     }
@@ -4341,6 +4357,17 @@ impl App {
             return Ok(pull.merged.then_some(pull));
         }
         if pull.behind {
+            if purpose == PrVerification::Display {
+                let current = read().await?;
+                observed.note_closed(&current);
+                if current != pull {
+                    return Ok(current.merged.then_some(current));
+                }
+                let own = self
+                    .parking_ci_signal(task, number, &pull.head_sha, None)
+                    .await?;
+                observed.signal = own.or(Some(PullSignal::Behind));
+            }
             return Ok(None);
         }
         let gate = if self.config.ci.enabled {
@@ -4360,14 +4387,11 @@ impl App {
         let head = self
             .checks_with_gate(sandbox, token, &pull.head_sha, gate)
             .await?;
-        if !head.unreadable.is_empty() {
-            return Ok(None);
-        }
         let profile = delivery_profile(sandbox);
         let checks = tested_checks_word(&profile, head.word);
         let settled = match checks {
             "success" | "none" => true,
-            "pending" if purpose == PrVerification::WatchPending && self.config.ci.enabled => self
+            "pending" if purpose.watches_pending(self.config.ci.enabled) => self
                 .deps
                 .store
                 .ci_runs(&sandbox.id, crate::pr_watch::RUNS_READ)
@@ -4377,18 +4401,32 @@ impl App {
                 .is_some_and(|run| run.sha == pull.head_sha && run.state.is_active()),
             _ => false,
         };
-        if !settled {
-            if purpose == PrVerification::Display {
-                let current = read().await?;
-                observed.note_closed(&current);
-                if !is_open(&current)
-                    || current.head_sha != pull.head_sha
-                    || current.base != pull.base
-                {
-                    return Ok(current.merged.then_some(current));
-                }
+        if !settled || !head.unreadable.is_empty() {
+            if purpose != PrVerification::Display {
+                return Ok(None);
             }
-            observed.signal = PullSignal::from_wire("open", checks, false);
+            let current = read().await?;
+            observed.note_closed(&current);
+            if !is_open(&current) || current.head_sha != pull.head_sha || current.base != pull.base
+            {
+                return Ok(current.merged.then_some(current));
+            }
+            // A merge gate represents cancellation as a failed gate. This is a
+            // status explanation: keep the ordinary run's actual outcome. With
+            // independent GitHub checks, either source can establish a failure.
+            let external = match gate {
+                yulius_domain::ci::GateResult::Run(Some(_)) => None,
+                _ if !head.unreadable.is_empty() => Some(PullSignal::Errored),
+                _ => PullSignal::from_wire("open", checks, false),
+            };
+            let own = self
+                .parking_ci_signal(task, number, &current.head_sha, None)
+                .await?;
+            observed.signal = if external == Some(PullSignal::Failing) {
+                external
+            } else {
+                own.or(external)
+            };
             return Ok(None);
         }
         // The local merge-driver check uses the configured integration branch. For a
@@ -4401,11 +4439,12 @@ impl App {
                 Ok(app.local_conflict(&task, &sandbox, &sha).await)
             })
             .await?
-            .map_or(pull.mergeable == Some(true), |conflict| !conflict)
+            .map(|conflict| !conflict)
+            .or(pull.mergeable)
         } else {
-            pull.mergeable == Some(true)
+            pull.mergeable
         };
-        if !mergeable {
+        if mergeable != Some(true) && purpose != PrVerification::Display {
             return Ok(None);
         }
         // Checks and local conflict detection can take long enough for another push.
@@ -4416,6 +4455,13 @@ impl App {
             && current.head_sha == pull.head_sha
             && current.base == pull.base
             && current.mergeable == pull.mergeable;
+        if same_open_head && mergeable != Some(true) {
+            let own = self
+                .parking_ci_signal(task, number, &current.head_sha, None)
+                .await?;
+            observed.signal = own.or((mergeable == Some(false)).then_some(PullSignal::Conflicting));
+            return Ok(None);
+        }
         Ok((current.merged || same_open_head).then_some(current))
     }
 
@@ -6335,6 +6381,18 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn only_live_ci_can_wake_a_parked_task_after_pending_checks() {
+        for enabled in [true, false] {
+            assert_eq!(
+                PrVerification::WatchPending.watches_pending(enabled),
+                enabled
+            );
+            assert!(!PrVerification::Settled.watches_pending(enabled));
+            assert!(!PrVerification::Display.watches_pending(enabled));
+        }
+    }
 
     fn subjects(list: &[&str]) -> Vec<String> {
         list.iter().map(|s| (*s).to_owned()).collect()

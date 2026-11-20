@@ -70,6 +70,9 @@ fn derived_wait_reason(facts: &AttentionFacts) -> Option<&'static str> {
             Some(PullSignal::Errored) => {
                 Some("The parked task's pull request could not be verified.")
             }
+            Some(PullSignal::Behind) => {
+                Some("The parked task's pull request needs to be updated with its base branch.")
+            }
             Some(PullSignal::Conflicting) => {
                 Some("The parked task's pull request has a merge conflict.")
             }

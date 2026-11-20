@@ -3234,6 +3234,17 @@ async fn a_parked_task_names_the_blocking_pr_when_its_branch_has_two_open_prs() 
         let summary = serde_json::to_value(f.h.app.task_detail(&owner, f.task.as_str()).await?)?;
         assert_eq!(summary["parked_needs_you"], true);
         assert_eq!(summary["parked_pr"], json!({"number":1461, "open":true}));
+        let caller = crate::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
+        let brief =
+            f.h.app
+                .tool_task_get(&caller, &json!({"task_id":f.task.as_str()}))
+                .await?;
+        let reason = if behind {
+            "The parked task's pull request needs to be updated with its base branch."
+        } else {
+            "The parked task's pull request has a merge conflict."
+        };
+        assert_eq!(brief["wait_reason"], reason);
     }
     Ok(())
 }
@@ -3288,6 +3299,17 @@ async fn a_parked_task_names_the_ordinary_ci_failure_on_the_older_open_pr() -> T
         brief["wait_reason"],
         "The agent stopped and its pull request checks are failing."
     );
+    f.h.github
+        .set_checks("abc123", yulius_app::ports::github::ChecksState::Pending);
+    let pending = app
+        .tool_task_get(&caller, &json!({"task_id":f.task.as_str()}))
+        .await?;
+    assert_eq!(
+        pending["wait_reason"],
+        "The agent stopped and its pull request checks are failing."
+    );
+    f.h.github
+        .set_checks("abc123", yulius_app::ports::github::ChecksState::Success);
     // With CI enabled, the newest, failed run belongs to the *other* PR.
     super::delivery::insert_ci_attempt(
         &f.h.store,
@@ -3325,9 +3347,6 @@ async fn a_parked_task_explains_incomplete_ordinary_checks_on_its_head() -> Test
     install_app(&f).await?;
     f.h.github
         .set_checks("abc123", yulius_app::ports::github::ChecksState::Success);
-    let mut config = f.h.app.config.clone();
-    config.ci.enabled = false;
-    let app = yulius_app::context::App::new(config, f.h.app.deps.clone());
     let caller = crate::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
     for (at, state, reason) in [
         (
@@ -3356,11 +3375,16 @@ async fn a_parked_task_explains_incomplete_ordinary_checks_on_its_head() -> Test
             &[],
         )
         .await?;
-        let brief = app
-            .tool_task_get(&caller, &json!({"task_id":f.task.as_str()}))
-            .await?;
-        assert_eq!(brief["shows"], "needs_you");
-        assert_eq!(brief["wait_reason"], reason);
+        for enabled in [false, true] {
+            let mut config = f.h.app.config.clone();
+            config.ci.enabled = enabled;
+            let app = yulius_app::context::App::new(config, f.h.app.deps.clone());
+            let brief = app
+                .tool_task_get(&caller, &json!({"task_id":f.task.as_str()}))
+                .await?;
+            assert_eq!(brief["shows"], "needs_you");
+            assert_eq!(brief["wait_reason"], reason);
+        }
     }
     Ok(())
 }
