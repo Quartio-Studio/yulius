@@ -1,6 +1,6 @@
 ---
 yulius-task: ce65d233-0ed5-403b-b36c-33036e6d1952
-status: in-progress
+status: done
 ---
 
 # SPEC-567. Prevent Chrome's default app policy dialog
@@ -26,7 +26,7 @@ Task #490 saw Chrome's native administrator dialog after host setup. On dev `e15
 - [x] Verify current dev on a private Xvfb display with fresh and older profiles
 - [x] Capture the launch regression and preserve the wildcard policy
 - [x] Verify the corrected launch with real Chrome and document its scope
-- [ ] Obtain independent approval for delivery to dev
+- [x] Obtain independent approval for delivery to dev
 
 ## Acceptance criteria
 
@@ -60,3 +60,8 @@ A fresh headless launch with the default-app switch alone completed an extension
 - `cargo test --locked -p yulius-browser --lib manager::tests` on the old launcher failed both new regressions at the missing switches. Their test-only commit is `f00634c99`.
 - `cargo test --locked -p yulius-browser --lib` on the fix passed all 59 tests, including the wildcard policy and both launch regressions. The generated policy was byte-identical to dev (SHA-256 `e6c303c0c9fbb1d736d5f5e3255a6a6c8a917def4596e3001804245bf7ff5418`).
 - Scoped Clippy passed with all targets, all features and warnings denied. The real-browser checks cover Linux Chrome 157 on disposable profiles. Production sessions and other Chrome versions were outside the experiment. A browser already running old arguments picks up the fix on its next launch.
+
+- A separate copy of the genuine pre-policy profile stored a synthetic persistent cookie and a local-storage value. A fixed launch with policy already loaded read both original values.
+- The independent reviewer approved `241bf4168`, traced the production launch, passed all 59 browser library tests, checked formatting and inspected the Xvfb screenshots. The reviewer used the recorded real-Chrome results.
+- `scripts/dev quick` passed. `scripts/dev security` reported Vidoc disabled by Yulius and scanned nothing. The task's delivery record tracks the PR and landed-commit CI results and GitHub issue closure.
+- `scripts/dev mutants` tested all four mutations of the changed argument builders. Four caught, zero missed, timed out, unviable or unreached.
