@@ -1034,7 +1034,7 @@ async fn read_checked_file(
         .await
         .map_err(|_| Unreadable("the task worktree is missing".into()))?;
     let path = root.join(relative);
-    let path = if spec {
+    if spec {
         let metadata = tokio::fs::symlink_metadata(&path)
             .await
             .map_err(|err| RepoReadError::from_io(relative, &err))?;
@@ -1043,17 +1043,17 @@ async fn read_checked_file(
                 "`{relative}` is a symbolic link. Use a regular file for the task spec"
             )));
         }
-        path
-    } else {
-        tokio::fs::canonicalize(path)
-            .await
-            .map_err(|err| RepoReadError::from_io(relative, &err))?
-    };
-    if !path.starts_with(&root) {
+    }
+    let resolved = tokio::fs::canonicalize(&path)
+        .await
+        .map_err(|err| RepoReadError::from_io(relative, &err))?;
+    if !resolved.starts_with(&root) {
         return Err(Unreadable(format!(
             "`{relative}` points outside the task worktree"
         )));
     }
+    // A spec is opened at its original leaf, so a link swapped in there cannot be followed.
+    let path = if spec { path } else { resolved };
     crate::race::reached(crate::race::Point::RepoFileRead, &path);
     let opened =
         crate::files::open_inside(&root, &path, nix::fcntl::OFlag::O_RDONLY).map_err(|err| {
@@ -1073,14 +1073,7 @@ async fn read_checked_file(
     if !meta.is_file() {
         return Err(Unreadable(format!("`{relative}` is not a file")));
     }
-    let too_large = || TooLarge {
-        path: relative.into(),
-        max,
-    };
-    if meta.len() > max {
-        return Err(too_large());
-    }
-    // A writer may have grown it since metadata(). Check the bytes before decoding UTF-8.
+    // Check the bytes actually read before decoding, including a file that grew since metadata().
     let mut bytes = Vec::new();
     tokio::io::AsyncReadExt::read_to_end(
         &mut tokio::io::AsyncReadExt::take(file, max.saturating_add(1)),
@@ -1089,7 +1082,10 @@ async fn read_checked_file(
     .await
     .map_err(|err| RepoReadError::from_io(relative, &err))?;
     if bytes.len() as u64 > max {
-        return Err(too_large());
+        return Err(TooLarge {
+            path: relative.into(),
+            max,
+        });
     }
     String::from_utf8(bytes).map_err(|_| Unreadable(format!("`{relative}` is not UTF-8 text")))
 }

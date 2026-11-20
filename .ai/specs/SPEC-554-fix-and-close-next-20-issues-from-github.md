@@ -66,14 +66,14 @@ Task #494 owns #1106 and #1107.
 - [x] Correct task-tool guidance and GitHub sign-in errors
 - [x] Report failed browser tests and current merge state
 - [x] Show the available sandbox actions and release direction
-- [ ] Read complete specs and explain linked or oversized files
-- [ ] Make onboarding and lost-run completion tests reliable
+- [x] Read complete specs and explain linked or oversized files
+- [x] Make onboarding and lost-run completion tests reliable
 - [x] Refresh Git task reviews and subscription edits
 - [x] Correct host move and import instructions
 - [x] Preserve accurate freeze, thaw and readiness results
 - [x] Explain staged copy capacity and refuse a running update
 - [ ] Review and verify the combined fixes
-- [ ] Link all twenty fixes for closure when the reviewed delivery merges
+- [x] Link all twenty fixes for closure when the reviewed delivery merges
 
 ## Acceptance criteria
 
@@ -100,6 +100,8 @@ Use controlled command and filesystem fixtures for import and move failures. Run
 
 Use one task and segregate editing by code ownership. Preserve existing protocols and defaults unless the named issue changes them.
 
+Keep doctor and host setup independent of the coreutils implementation (#1166). Import now names the actual user and primary group, and the documented compiler packages work on either implementation. The uutils variant alone requires no corrective host action.
+
 ## Evidence
 
 - #1052. Compared `vidoc_scan.py --help` against `base_ref` and the shared MCP description against the restore handler. The revised help lists both default refs. All 92 tests in `scripts/test_vidoc_scan.py` passed.
@@ -113,3 +115,4 @@ Use one task and segregate editing by code ownership. Preserve existing protocol
 - #1181, #1186, #1187, #1191 and #1196. The original scoped run had nine failures. With the fixes, 246 migration, freeze and import tests, 17 remote client/store tests and one real CLI sign-in integration test passed. Migration fixtures used fake systemd and SSH with temporary directories.
 - The malformed-query HTTP regression and four neighboring GitHub sign-in tests passed. All 13 failure scanner and 15 PR watch unit cases passed.
 - Full Chromium suite on the integrated web changes: 1,154 passed, one model-dependent test skipped, 326.77 seconds.
+- #1078, #1082, #1083 and #1126. Five baseline cases failed, including both 90-second waits. All 45 hook, spec delivery and completion cases passed with the fixes. The final-file read checks the actual byte count against the limit before decoding.
