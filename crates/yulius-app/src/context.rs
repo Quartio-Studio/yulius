@@ -28,6 +28,9 @@ pub struct AppConfig {
     pub yulius_exe: PathBuf,
     /// Whether sandboxes run in OS containment.
     pub contained: bool,
+    /// Whether a server start brings onboarded sandboxes to the current Infra bootstrap revision
+    /// with an upgrade task each (SPEC-575 MFS-012); the server's own setting, off in tests.
+    pub bootstrap_upgrades: bool,
     /// Maximum concurrently live sessions.
     pub max_live_sessions: u32,
     /// How long a task whose turn ended and that waits for a person keeps its idle session
@@ -187,6 +190,7 @@ impl AppConfig {
             internal_url: internal_url.trim_end_matches('/').to_owned(),
             yulius_exe,
             contained: false,
+            bootstrap_upgrades: false,
             max_live_sessions: 8,
             park_after_ms: crate::parking::DEFAULT_PARK_AFTER_MS,
             parked_pr_read_ms: 750,

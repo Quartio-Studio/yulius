@@ -323,7 +323,12 @@ impl App {
         let (head, target) = self.staging_target(sandbox).await?;
         // The running deploy settles first, whatever the environment became (review round 1).
         let now_pending: Vec<&StagingRequestRecord> = pending.iter().collect();
-        self.staging_settle_deploy(&now_pending).await?;
+        // A verified revision may be what an automatic promotion waited for (MFS-009).
+        for request in self.staging_settle_deploy(&now_pending).await? {
+            if let Some(owner) = self.staging_person(&request).await? {
+                self.staging_auto_promote(sandbox, &owner).await;
+            }
+        }
         let mut pending = store.pending_staging_requests(&sandbox.id, env).await?;
         pending.truncate(MAX_PENDING);
         if target.as_ref().is_none_or(|t| t.name != env) {
@@ -529,7 +534,8 @@ impl App {
     async fn staging_settle_deploy(
         self: &Arc<Self>,
         pending: &[&StagingRequestRecord],
-    ) -> AppResult<()> {
+    ) -> AppResult<Vec<StagingRequestRecord>> {
+        let mut verified = Vec::new();
         for request in pending
             .iter()
             .filter(|r| r.state == StagingState::Deploying)
@@ -591,9 +597,11 @@ impl App {
                 note: Some(note),
                 ..StagingChange::default()
             };
-            self.staging_move(request, next, change).await?;
+            if self.staging_move(request, next, change).await? && next == StagingState::Verified {
+                verified.push((*request).clone());
+            }
         }
-        Ok(())
+        Ok(verified)
     }
 
     /// Starts the deploy of `request`: it moves to deploying first (one per environment, by the
@@ -789,6 +797,51 @@ impl App {
             .await
             .unwrap_or(false);
         Ok(contains.then_some(run))
+    }
+
+    /// The integration head a promotion must promote, read through the CD mirror (SPEC-575
+    /// MFS-009): `None` without a merge-first target (any head); with one, the verified head when
+    /// staging serves it, verified, else the refusal. A head or table that cannot be read refuses.
+    ///
+    /// # Errors
+    /// `Conflict` when staging has not verified the integration head; GitHub and Git failures.
+    pub(crate) async fn staging_promotion_head(
+        &self,
+        sandbox: &SandboxRecord,
+    ) -> AppResult<Option<String>> {
+        // A playground has no GitHub and no CD (SPEC-099): nothing to read.
+        if sandbox.is_playground() {
+            return Ok(None);
+        }
+        // The verified tables decide. When they cannot be read, a project known to be
+        // merge-first (it has staging requests) is refused; any other promotes as before, so an
+        // agent breaking its clone can only cause a refusal, never a bypass.
+        let (head, target) = match self.staging_target(sandbox).await {
+            Ok(read) => read,
+            Err(err) if self.deps.store.has_staging_requests(&sandbox.id).await? => {
+                return Err(AppError::Conflict(format!(
+                    "nothing was promoted: this project's staging is merge-first, and its verified integration head cannot be read now ({}); promote again in a minute",
+                    err.public_message()
+                )));
+            }
+            Err(_) => return Ok(None),
+        };
+        let Some(target) = target else {
+            return Ok(None);
+        };
+        let verified = self.staging_verified_revision(sandbox, &target).await?;
+        if verified.as_deref() == Some(head.as_str()) {
+            return Ok(Some(head));
+        }
+        Err(AppError::Conflict(format!(
+            "nothing was promoted: production is promoted from the revision [cd.{}] verified, and the integration head {} is {}; promote once staging verified it",
+            target.name,
+            short(&head),
+            match &verified {
+                Some(sha) => format!("not it (staging verified {})", short(sha)),
+                None => "not verified there (staging verified nothing yet)".to_owned(),
+            }
+        )))
     }
 
     /// The revision production may be promoted from (SPEC-575 MFS-009): what staging serves,

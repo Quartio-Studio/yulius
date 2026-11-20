@@ -5287,26 +5287,12 @@ impl App {
             .ok()
     }
 
-    /// Promotes the integration branch: fast-forward, or open/merge the promotion pull request
-    /// (merge commit). Tasks waiting for promotion advance once production moved. `fetched`
-    /// says the sandbox clone was fetched just before.
-    pub(crate) async fn dlv_promote(
-        &self,
-        sandbox: &SandboxRecord,
-        profile: &DeliveryProfile,
-        by: Initiator,
-        actor: &UserRecord,
-        token: &Secret,
-        fetched: bool,
-    ) -> AppResult<PromoteResult> {
-        self.dlv_promote_exactly(sandbox, profile, by, actor, token, fetched, None)
-            .await
-    }
-
-    /// [`App::dlv_promote`] that promotes only `expected`, the integration commit a person
-    /// confirmed (SPEC-134 review round 3): refused, before anything moves, when the integration
-    /// branch or the promotion pull request's head is another commit.
-    #[allow(clippy::too_many_arguments)] // `dlv_promote`'s context and the confirmed commit.
+    /// Promotes the integration branch (fast-forward, or open/merge the promotion pull request with
+    /// a merge commit); with `expected`, only that integration commit a person confirmed or the
+    /// staging queue verified (SPEC-134 review round 3, SPEC-575 MFS-009): refused, before
+    /// anything moves, when the integration branch or the promotion pull request's head is
+    /// another commit.
+    #[allow(clippy::too_many_arguments)] // The promotion's context and the expected commit.
     pub(crate) async fn dlv_promote_exactly(
         &self,
         sandbox: &SandboxRecord,
@@ -5598,10 +5584,24 @@ impl App {
         {
             return None;
         }
-        match self
-            .dlv_promote(sandbox, profile, Initiator::Policy, actor, token, fetched)
-            .await
-        {
+        // With a merge-first target, only the revision staging verified is promoted (SPEC-575
+        // MFS-009); the staging queue tries again once staging verified the head.
+        let promoted = match self.staging_promotion_head(sandbox).await {
+            Ok(head) => {
+                self.dlv_promote_exactly(
+                    sandbox,
+                    profile,
+                    Initiator::Policy,
+                    actor,
+                    token,
+                    fetched,
+                    head.as_deref(),
+                )
+                .await
+            }
+            Err(err) => Err(err),
+        };
+        match promoted {
             Ok(result) => Some(format!(
                 "Automatic promotion ({}): {} {}",
                 profile.promote.as_str(),
@@ -5664,15 +5664,36 @@ impl App {
                 &format!("Releasing to {}", profile.production_branch),
             )
             .await?;
-        self.dlv_promote(
+        // With a merge-first target, only the revision staging verified (SPEC-575 MFS-009).
+        let head = self.staging_promotion_head(&sandbox).await?;
+        self.dlv_promote_exactly(
             &sandbox,
             &profile,
             Initiator::User,
             &ctx.user,
             &token,
             false,
+            head.as_deref(),
         )
         .await
+    }
+
+    /// The staging queue verified `request`'s revision: the profile's automatic promotion that
+    /// waited for it runs now (SPEC-575 MFS-009), as the request's task's owner.
+    pub(crate) async fn staging_auto_promote(&self, sandbox: &SandboxRecord, owner: &UserRecord) {
+        let profile = delivery_profile(sandbox);
+        if !profile.auto_promote {
+            return;
+        }
+        let Ok(token) = self.user_github_token(owner).await else {
+            return;
+        };
+        if let Some(note) = self
+            .dlv_auto_promote_if_enabled(sandbox, &profile, owner, &token, false)
+            .await
+        {
+            tracing::info!(sandbox = %sandbox.slug, note = %note, "promotion after a verified staging deploy");
+        }
     }
 
     // ---------------------------------------------------------------- environments

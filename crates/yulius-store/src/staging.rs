@@ -261,6 +261,74 @@ impl StagingStore for SqliteStore {
         .await
     }
 
+    async fn claim_bootstrap_upgrade(
+        &self,
+        sandbox: &SandboxId,
+        revision: u32,
+        at: Timestamp,
+    ) -> AppResult<bool> {
+        let sandbox = sandbox.as_str().to_owned();
+        self.call(move |c| {
+            let rows = c
+                .execute(
+                    "INSERT INTO bootstrap_upgrades (sandbox_id, revision, task_id, updated_at) \
+                     VALUES (?1, ?2, NULL, ?3) \
+                     ON CONFLICT(sandbox_id) DO UPDATE SET revision = excluded.revision, \
+                         task_id = NULL, updated_at = excluded.updated_at \
+                     WHERE bootstrap_upgrades.revision < excluded.revision",
+                    params![sandbox, revision, at.0],
+                )
+                .map_err(db)?;
+            Ok(rows == 1)
+        })
+        .await
+    }
+
+    async fn set_bootstrap_task(
+        &self,
+        sandbox: &SandboxId,
+        revision: u32,
+        task: &TaskId,
+    ) -> AppResult<()> {
+        let (sandbox, task) = (sandbox.as_str().to_owned(), task.as_str().to_owned());
+        self.call(move |c| {
+            c.execute(
+                "UPDATE bootstrap_upgrades SET task_id = ?3 WHERE sandbox_id = ?1 AND revision = ?2",
+                params![sandbox, revision, task],
+            )
+            .map_err(db)?;
+            Ok(())
+        })
+        .await
+    }
+
+    async fn release_bootstrap_upgrade(&self, sandbox: &SandboxId, revision: u32) -> AppResult<()> {
+        let sandbox = sandbox.as_str().to_owned();
+        self.call(move |c| {
+            c.execute(
+                "DELETE FROM bootstrap_upgrades \
+                 WHERE sandbox_id = ?1 AND revision = ?2 AND task_id IS NULL",
+                params![sandbox, revision],
+            )
+            .map_err(db)?;
+            Ok(())
+        })
+        .await
+    }
+
+    async fn has_staging_requests(&self, sandbox: &SandboxId) -> AppResult<bool> {
+        let sandbox = sandbox.as_str().to_owned();
+        self.call(move |c| {
+            c.query_row(
+                "SELECT EXISTS (SELECT 1 FROM staging_requests WHERE sandbox_id = ?1)",
+                [sandbox],
+                |row| row.get(0),
+            )
+            .map_err(db)
+        })
+        .await
+    }
+
     async fn mark_staging_told(&self, id: &str) -> AppResult<bool> {
         let id = id.to_owned();
         self.call(move |c| {

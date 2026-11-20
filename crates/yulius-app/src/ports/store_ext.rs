@@ -895,6 +895,27 @@ pub trait StagingStore: Send + Sync {
     async fn untold_staging_requests(&self) -> AppResult<Vec<StagingRequestRecord>>;
     /// Records the outcome as told; `false` when it already was.
     async fn mark_staging_told(&self, id: &str) -> AppResult<bool>;
+    /// Claims bringing `sandbox` to Infra bootstrap `revision` (SPEC-575 MFS-012, migration
+    /// 0079): `true` once, when its recorded revision is older (or none), so one upgrade task is
+    /// created per sandbox and revision, also across restarts.
+    async fn claim_bootstrap_upgrade(
+        &self,
+        sandbox: &SandboxId,
+        revision: u32,
+        at: Timestamp,
+    ) -> AppResult<bool>;
+    /// Records the upgrade task of a claimed revision.
+    async fn set_bootstrap_task(
+        &self,
+        sandbox: &SandboxId,
+        revision: u32,
+        task: &TaskId,
+    ) -> AppResult<()>;
+    /// Gives back a claim whose task could not be created, to be tried at the next start.
+    async fn release_bootstrap_upgrade(&self, sandbox: &SandboxId, revision: u32) -> AppResult<()>;
+    /// Whether the sandbox ever had a staging request: a project known to be merge-first, so a
+    /// promotion whose verified tables cannot be read is refused (SPEC-575 MFS-009).
+    async fn has_staging_requests(&self, sandbox: &SandboxId) -> AppResult<bool>;
     /// The commits a task's pull requests landed on `branch` (migration 0077), in landing order.
     async fn task_landings(&self, task: &TaskId, branch: &str) -> AppResult<Vec<String>>;
 }

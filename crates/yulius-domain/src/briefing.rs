@@ -192,6 +192,10 @@ pub struct Foundations {
     pub cd_defined: bool,
     /// The `[cd.<name>]` tables that deploy without a `rollback` (SPEC-415).
     pub cd_without_rollback: Vec<String>,
+    /// The merge-first staging target's name (SPEC-575 MFS-001), if the project has one.
+    pub merge_first: Option<String>,
+    /// The task-local deployment (`[local]`, SPEC-575 MFS-010), if the project names one.
+    pub local: Option<crate::cd::LocalDeploy>,
 }
 
 impl Default for Foundations {
@@ -204,6 +208,8 @@ impl Default for Foundations {
             actions_workflows: 0,
             cd_defined: true,
             cd_without_rollback: Vec::new(),
+            merge_first: None,
+            local: None,
         }
     }
 }
@@ -764,8 +770,8 @@ fn git_rules(input: &BriefingInput<'_>) -> String {
          something (a credential, a paid plan, a permission outside the repository), ask with \
          `needs_you` and continue with the rest.\n\
          Features and fixes (no human acceptance step): spec → code and tests → independent \
-         review → fixes → green CI → PR → merge into {integration} on green → summary. Merges deploy nothing: `cd_deploy`/`cd_rollback` dev \
-         only if asked; {production} is a person's: never promote. Each `[cd.*]` deploy has a \
+         review → fixes → green CI → PR → merge into {integration} on green → summary. {deploys}; \
+         {production} is a person's: never promote. Each `[cd.*]` deploy has a \
          `rollback`. Report file-free results. Merge evidence is in `delivery_status`.\n\
          - Git (skill `git-hygiene`): work only on {branch}. Never commit or push to \
          {integration} or {production}, never `--no-verify`, never rewrite pushed commits (no \
@@ -794,6 +800,15 @@ fn git_rules(input: &BriefingInput<'_>) -> String {
          nothing stale \
          (`repo_hygiene`, `repo_cleanup`).\n\
          - Delivery path ({preset} profile): {path}.\n\n",
+        deploys = match &input.foundations.merge_first {
+            // SPEC-575 MFS-004: the merge-first target changes through its queue.
+            Some(env) => format!(
+                "Merge-first {}: once your whole delivery merged, `cd_deploy` it once; Yulius \
+                 runs the full gate on that revision, then deploys it",
+                code(&format!("[cd.{env}]"), 60)
+            ),
+            None => "Merges deploy nothing: `cd_deploy`/`cd_rollback` dev only if asked".to_owned(),
+        },
         review_start = if input.harness == Harness::ClaudeCode {
             ", when the review starts"
         } else {
@@ -941,7 +956,23 @@ fn ports(input: &BriefingInput<'_>) -> String {
             input.port_base
         )
     };
-    format!("## Dev servers\n\n{body}\n\n")
+    // SPEC-575 MFS-010: the task-local deployment, inside this sandbox only.
+    let local = input
+        .foundations
+        .local
+        .as_ref()
+        .map_or_else(String::new, |local| {
+            format!(
+                " Local deployment: {}{} deploys and tests the project in this sandbox only, \
+             with test data of its own; staging and production credentials are never here.",
+                code(&local.deploy, 200),
+                local
+                    .verify
+                    .as_ref()
+                    .map_or_else(String::new, |verify| format!(" then {}", code(verify, 200)))
+            )
+        });
+    format!("## Dev servers\n\n{body}{local}\n\n")
 }
 
 /// The end of the engine's section, whole only when nothing cut it (tests).
@@ -2277,6 +2308,40 @@ mod tests {
         Ok(())
     }
 
+    /// SPEC-575 MFS-004, MFS-010: a merge-first project's briefing says how its staging changes,
+    /// in place of "merges deploy nothing", and a `[local]` deployment is named with the ports.
+    #[test]
+    fn merge_first_and_local_deployment_are_briefed() -> TestResult {
+        let profile = DeliveryProfile::standard();
+        let layout = DocsLayout::default();
+        let mut input = base(&profile, &layout)?;
+        let plain = build_briefing(&input, DEFAULT_BUDGET_BYTES);
+        assert!(plain.contains("Merges deploy nothing"), "{plain}");
+        assert!(!plain.contains("Local deployment"), "{plain}");
+        input.foundations.merge_first = Some("staging".into());
+        input.foundations.local = Some(crate::cd::LocalDeploy {
+            deploy: "scripts/cd/deploy.sh local".into(),
+            verify: Some("scripts/cd/verify.sh local".into()),
+            about: None,
+        });
+        let text = build_briefing(&input, DEFAULT_BUDGET_BYTES);
+        assert!(!text.contains("Merges deploy nothing"), "{text}");
+        assert!(
+            text.contains(
+                "Merge-first `[cd.staging]`: once your whole delivery merged, `cd_deploy` it once"
+            ),
+            "{text}"
+        );
+        let ports = text.split("## Dev servers").nth(1).ok_or("ports")?;
+        assert!(
+            ports.contains(
+                "Local deployment: `scripts/cd/deploy.sh local` then `scripts/cd/verify.sh local` deploys and tests the project in this sandbox only"
+            ),
+            "{ports}"
+        );
+        Ok(())
+    }
+
     #[test]
     fn missing_foundations_ask_for_an_infra_bootstrap() -> TestResult {
         let profile = DeliveryProfile::standard();
@@ -2289,6 +2354,8 @@ mod tests {
             actions_workflows: 2,
             cd_defined: false,
             cd_without_rollback: Vec::new(),
+            merge_first: None,
+            local: None,
         };
         let text = build_briefing(&input, DEFAULT_BUDGET_BYTES);
         let section = text
@@ -2318,6 +2385,8 @@ mod tests {
             actions_workflows: 0,
             cd_defined: false,
             cd_without_rollback: Vec::new(),
+            merge_first: None,
+            local: None,
         };
         assert_eq!(
             none.gaps().len(),

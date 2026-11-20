@@ -1180,3 +1180,222 @@ async fn a_pinned_deploy_runs_only_a_commit_of_the_branchs_own_history() -> Test
     assert_eq!(f.ended(&run.id).await?["commit"], r1.as_str());
     Ok(())
 }
+
+/// SPEC-575 acceptance (an existing project adopts the default): a project whose staging was
+/// deployed by hand before merge-first lands the bootstrap change that marks it merge-first.
+/// A delivery staging already serves is answered `included` without a deploy. The next task's
+/// merged revision passes its full gate, is deployed by the queue, and is the revision verified
+/// there.
+#[tokio::test]
+async fn a_project_that_adopts_merge_first_deploys_its_next_delivery_through_the_queue()
+-> TestResult {
+    let before = staging_toml().replace("merge_first = true\n", "");
+    let f = fixture(&before).await?;
+    agent(&f, "t0").await?;
+    agent(&f, "t1").await?;
+    // Before the switch: a person deploys staging's head by hand, carrying t0's landing.
+    let r0 = land(&f, "t0", "zero.txt").await?;
+    let by_hand = f.deploy(&f.alice, "staging", None).await?;
+    assert!(by_hand.status.is_success(), "{}", by_hand.body);
+    f.ended(by_hand.body["run_id"].as_str().ok_or("run")?)
+        .await?;
+    assert_eq!(serving(&f)?, r0);
+    // The bootstrap change lands: staging is merge-first from now on.
+    f.push(
+        "dev",
+        &[(
+            "yulius.toml",
+            Some(&staging_toml().replace("{marks}", f.marks.to_str().ok_or("marks")?)),
+        )],
+    )?;
+    let refused = f.deploy(&f.alice, "staging", None).await?;
+    assert!(
+        refused
+            .body
+            .to_string()
+            .contains("merge-first staging target"),
+        "{}",
+        refused.body
+    );
+    // t0's delivery is already on staging: answered at once, deployed again never.
+    let inside = ask(&f, "t0").await?;
+    assert_eq!(inside["state"], "included", "{inside}");
+    // t1's delivery goes through the queue.
+    let r1 = land(&f, "t1", "one.txt").await?;
+    let ci = gate(&f, &r1, RunState::Passed).await?;
+    let asked = ask(&f, "t1").await?;
+    settle(&f).await?;
+    let one = request(&f, asked["id"].as_str().ok_or("id")?).await?;
+    assert_eq!(one.state, StagingState::Verified, "{one:?}");
+    assert_eq!(one.ci_run_id.as_deref(), Some(ci.as_str()));
+    assert_eq!(serving(&f)?, r1);
+    let revisions = deployed(&f).await?;
+    assert_eq!(revisions, [r0, r1], "one deploy by hand, one by the queue");
+    Ok(())
+}
+
+/// `staging_toml` whose production promotes.
+fn promoting_toml() -> String {
+    staging_toml().replace(
+        "[cd.prod]\nabout = \"nothing yet\"\n",
+        "[cd.prod]\nabout = \"a push to main is the release\"\npromote = true\n",
+    )
+}
+
+/// The Delivery page's promotion, as an administrator who typed the slug.
+async fn promote_page(f: &Fixture) -> BoxResult<support::Resp> {
+    support::call(
+        &f.h.router,
+        axum::http::Method::POST,
+        "/api/sandboxes/s1/delivery/promote",
+        Some(json!({"confirm": "app"})),
+        &f.bob,
+    )
+    .await
+}
+
+/// SPEC-575 MFS-009 (review round 3 of slice 2): the Delivery page's promotion waits, like a
+/// production deploy, until staging serves the integration head, verified. It reads that through
+/// the verified CD mirror: an agent rewriting the `yulius.toml` object in its clone only makes
+/// it refuse. Once staging verified the head, the same promotion promotes exactly it.
+#[tokio::test]
+async fn every_promotion_waits_for_the_revision_staging_verified() -> TestResult {
+    let f = fixture(&promoting_toml()).await?;
+    agent(&f, "t1").await?;
+    agent(&f, "t2").await?;
+    let r1 = land(&f, "t1", "one.txt").await?;
+    gate(&f, &r1, RunState::Passed).await?;
+    ask(&f, "t1").await?;
+    settle(&f).await?;
+    let r2 = land(&f, "t2", "two.txt").await?;
+    // What an agent can do in its own clone before the mirror took r2: rewrite the table's
+    // object without merge_first. The mirror refuses the changed object, and a project known to
+    // be merge-first is then refused, never promoted.
+    let clone = f.h.app.config.data_dir.join("sandboxes/s1/repo");
+    crate::cd::git(&clone, &["fetch", "-q", "origin"])?;
+    let blob = crate::cd::git(&clone, &["rev-parse", &format!("{r2}:yulius.toml")])?;
+    let text = std::fs::read_to_string(f.work.join("yulius.toml"))?;
+    let object = clone.join(".git/objects").join(&blob[..2]).join(&blob[2..]);
+    let rewrite = "import sys, zlib, os\nc = open(sys.argv[2], 'rb').read()\np = sys.argv[1]\n\
+                   os.makedirs(os.path.dirname(p), exist_ok=True)\n\
+                   os.path.exists(p) and os.unlink(p)\n\
+                   open(p, 'wb').write(zlib.compress(b'blob %d\\x00' % len(c) + c))\n";
+    let write_object = |contents: &str, name: &str| -> TestResult {
+        let path = f.marks.join(name);
+        std::fs::write(&path, contents)?;
+        assert!(
+            std::process::Command::new("python3")
+                .args(["-I", "-c", rewrite])
+                .arg(&object)
+                .arg(&path)
+                .status()?
+                .success()
+        );
+        Ok(())
+    };
+    write_object(&text.replace("merge_first = true\n", ""), "tampered.toml")?;
+    let tampered = promote_page(&f).await?;
+    assert_eq!(
+        tampered.status,
+        axum::http::StatusCode::CONFLICT,
+        "{}",
+        tampered.body
+    );
+    assert!(
+        !git_contains(&f, "main", &r2)?,
+        "the tampered clone promoted nothing"
+    );
+    write_object(&text, "original.toml")?;
+    // The verified head cannot be read (the CD mirror is broken): a project known to be
+    // merge-first is refused, naming why, rather than promoted unchecked.
+    let mirror = f.h.app.config.data_dir.join("cd/s1/source.git");
+    let aside = f.marks.join("mirror-aside");
+    std::fs::rename(&mirror, &aside)?;
+    std::fs::write(&mirror, "not a repository")?;
+    let unreadable = promote_page(&f).await?;
+    assert_eq!(
+        unreadable.status,
+        axum::http::StatusCode::CONFLICT,
+        "{}",
+        unreadable.body
+    );
+    assert!(
+        unreadable.body.to_string().contains("cannot be read now"),
+        "{}",
+        unreadable.body
+    );
+    assert!(
+        !git_contains(&f, "main", &r2)?,
+        "an unreadable head promoted nothing"
+    );
+    std::fs::remove_file(&mirror)?;
+    std::fs::rename(&aside, &mirror)?;
+    // Read as it is: the head is not what staging verified.
+    let refused = promote_page(&f).await?;
+    assert_eq!(
+        refused.status,
+        axum::http::StatusCode::CONFLICT,
+        "{}",
+        refused.body
+    );
+    assert!(
+        refused
+            .body
+            .to_string()
+            .contains(&format!("staging verified {}", &r1[..12])),
+        "{}",
+        refused.body
+    );
+    assert!(!git_contains(&f, "main", &r2)?);
+    // Staging verifies r2: the page's promotion now promotes it.
+    gate(&f, &r2, RunState::Passed).await?;
+    ask(&f, "t2").await?;
+    settle(&f).await?;
+    assert_eq!(serving(&f)?, r2);
+    let promoted = promote_page(&f).await?;
+    assert!(promoted.status.is_success(), "{}", promoted.body);
+    // The standard profile promotes with a merge commit: its promotion pull request of r2.
+    assert!(
+        promoted.body["result"] == "pr_opened" || git_contains(&f, "main", &r2)?,
+        "{}",
+        promoted.body
+    );
+    Ok(())
+}
+
+/// SPEC-575 MFS-009 (review round 3 of slice 2): with the profile's automatic promotion, a merge
+/// promotes nothing while staging has not verified it. The queue's verified deploy of that
+/// revision runs the promotion that waited, and production gets exactly it.
+#[tokio::test]
+async fn automatic_promotion_follows_the_verified_staging_deploy() -> TestResult {
+    let f = fixture(&promoting_toml()).await?;
+    f.h.store
+        .set_profile(
+            &SandboxId::parse("s1")?,
+            &json!({
+                "preset": "custom", "integration_branch": "dev", "production_branch": "main",
+                "merge": "squash", "promote": "fast_forward", "auto_promote": true,
+                "require_checks": false, "environments": []
+            })
+            .to_string(),
+        )
+        .await?;
+    agent(&f, "t1").await?;
+    let r1 = land(&f, "t1", "one.txt").await?;
+    f.h.store
+        .execute_for_tests(
+            "INSERT INTO delivery (task_id, stage, pr_number, updated_at) \
+             VALUES ('t1', 'merged_integration', NULL, 1)",
+        )
+        .await?;
+    assert!(!git_contains(&f, "main", &r1)?);
+    gate(&f, &r1, RunState::Passed).await?;
+    ask(&f, "t1").await?;
+    settle(&f).await?;
+    assert_eq!(serving(&f)?, r1);
+    assert!(
+        git_contains(&f, "main", &r1)?,
+        "promoted once staging verified it"
+    );
+    Ok(())
+}

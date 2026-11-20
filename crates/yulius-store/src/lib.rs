@@ -212,6 +212,8 @@ const MIGRATIONS: &[&str] = &[
     include_str!("migrations/0077_task_merge_evidence.sql"),
     // Schema version 78 (SPEC-575 MFS-005).
     include_str!("migrations/0078_staging_requests.sql"),
+    // Schema version 79 (SPEC-575 MFS-012).
+    include_str!("migrations/0079_bootstrap_upgrades.sql"),
 ];
 
 type Job = Box<dyn FnOnce(&mut Connection) + Send + 'static>;
@@ -519,6 +521,7 @@ mod tests {
             (76, include_str!("migrations/0076_task_handoffs.sql")),
             (77, include_str!("migrations/0077_task_merge_evidence.sql")),
             (78, include_str!("migrations/0078_staging_requests.sql")),
+            (79, include_str!("migrations/0079_bootstrap_upgrades.sql")),
         ];
         for (version, sql) in pinned {
             assert_eq!(
@@ -527,7 +530,7 @@ mod tests {
                 "schema version {version}"
             );
         }
-        assert_eq!(MIGRATIONS.len(), 78, "a new migration is pinned here too");
+        assert_eq!(MIGRATIONS.len(), 79, "a new migration is pinned here too");
     }
 
     #[test]
