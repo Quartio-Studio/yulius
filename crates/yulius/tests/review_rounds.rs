@@ -80,6 +80,25 @@ async fn a_round(
     Ok(ran)
 }
 
+/// A first start can clear recovery only if it actually linked to a launched review.
+#[tokio::test]
+async fn a_first_reviewer_start_is_active_only_when_it_links_its_launch() -> TestResult {
+    use yulius_app::ports::store::ReviewStart;
+    let h = harness()?;
+    seed(&h).await?;
+    let account = add_account(&h, "first-review-start", None).await?;
+    let task = running_task(&h, TaskMode::Prompt, &account).await?;
+    let reviewer = "yulius-reviewer";
+    let start = || {
+        h.store
+            .start_review_subagent(&task, reviewer, "rev", "continued", h.app.now())
+    };
+    assert_eq!(start().await?, ReviewStart::Ignored);
+    hook(&h.internal, "PreToolUse", agent_start(reviewer)).await?;
+    assert_eq!(start().await?, ReviewStart::Active);
+    Ok(())
+}
+
 /// SPEC-493 REV-002, REV-004 (AC-5, AC-6): rounds 1 and 2 of a pull request run the Fable
 /// reviewer as asked; the third is given the Opus reviewer as the tool's new input, with the
 /// rest of the input kept. A reviewer started again for a round that ended with no report (cut
