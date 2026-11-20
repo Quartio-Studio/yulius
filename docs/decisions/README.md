@@ -413,10 +413,10 @@ If a reservation skips past all available slots, land an empty extension first w
 - [0401](0401-red-ci-notices-include-partial-sibling-failures.md) Red CI notices and run details include partial failures observed in siblings stopped by fail-fast.
 <!-- ADR 0401 -->
 - [0402](0402-sandbox-browsers-skip-chromes-default-apps.md) records how sandbox launches handle default apps and existing extensions on virtual displays.
-- [0404](0404-restart-one-sandbox-browser-through-its-viewer-grant.md) lets a sandbox writer restart its browser and reopen permitted tabs after the address guard is installed.
 <!-- ADR 0402 -->
 - [0403](0403-reserve-edit-locations-in-the-decision-index.md) gives each upcoming decision its own Git insertion point.
 <!-- ADR 0403 -->
+- [0404](0404-restart-one-sandbox-browser-through-its-viewer-grant.md) lets a sandbox writer restart its browser and reopen permitted tabs after the address guard is installed.
 <!-- ADR 0404 -->
 <!-- ADR 0405 -->
 <!-- ADR 0406 -->
