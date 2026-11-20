@@ -222,7 +222,7 @@ test('a parked task terminal shows its parked banner and Resume action, distinct
   await expect.poll(() => browser.evaluate(() => {
     type Session = { lines: unknown[] };
     const db = (window as unknown as { __yuliusMock: { sessions: Map<string, Session> } }).__yuliusMock;
-    return db.sessions.get('tsk_studio_13')?.lines.some(line => typeof line === 'string' && line.endsWith(' Check CI status'));
+    return db.sessions.get('tsk_studio_13')?.lines.some(line => typeof line === 'string' && line.replace(/\x1b\[[\d;]*m/g, '') === '> Check CI status');
   })).toBe(true);
 
   // Park again and type across BOTH `parked` and `starting` before `running`: all typed characters
