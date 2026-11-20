@@ -29,7 +29,7 @@ On dev `645eff207`, repeating the completion update moves the end time, and appr
 - [x] Protect cut-off recovery and accept reports during a slow head lookup
 - [x] Order recovery against the continued round’s own cut-off
 - [x] Attribute replayed transcript observations to the review round that ran
-- [ ] Preserve same-model answers and recovery during a delayed account write
+- [x] Preserve same-model answers and recovery during a delayed account write
 - [ ] Verify the fix and obtain independent approval for delivery
 
 ## Acceptance criteria
@@ -68,3 +68,4 @@ Use the start after a report as the round boundary. Comparing verdicts or report
 - The first follow-up mutation run listed 23, caught 14, missed 1, timed out 0, found 8 unviable and reached all 23. Inverting the first start's link count left the stored row correct but inverted the start outcome. The added port regression checks both the unmatched start and the successful link. Two head-result mutations the initial run could not compile while the worktree was changing were both caught in this isolated run.
 - The independent reviewer continued on `0fb0baac2`, verified the earlier attribution fix and found two own-code cases. During restart, a second answer on the same model was suppressed by the per-subagent cache. During a slow account write, the reviewer could report and continue before the supervisor installed the old limit’s recovery state.
 - The two regressions in `2272fbf1d` failed on the reviewed implementation. Two Opus answers for consecutive requested Fable rounds left round 2 without an answering model. The held account write left `(Some("rev"), true)` as the reviewer and scheduled move after both a resume and a report followed by continuation.
+- Nextest run `22b06f39-3bdd-448f-9f81-aa446c7ed708` passed all 40 targeted tests on the fix. Both rounds recorded Opus. The held write still recorded Fable usage at 100 percent while both accepted hook sequences cancelled the obsolete recovery.
