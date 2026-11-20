@@ -6,6 +6,9 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-20
 
+- Messaging a parked Codex task resumes the recorded rollout, including after a server restart
+  interrupted session bookkeeping (SPEC-558, #1490).
+
 - Tasks hand work to another sandbox, off by default (SPEC-512 part 5, task #494, delivered by
   SPEC-557, #1106, ADR-0395): an instance administrator turns handoffs to Ask or Automatic; a
   sandbox's writers may close it. A task's agent hands work to another sandbox with
