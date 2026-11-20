@@ -1823,10 +1823,9 @@ fn the_capacity_view_names_providers_and_resumes_with_codex_too() -> TestResult 
     Ok(())
 }
 
-/// The terminal in #517 was erased by the CLI as it exited. Writing to that parked
-/// task continues the rollout that produced its answer.
+/// A cold resume uses the parked attempt's rollout even if SessionStart lost its lineage write.
 #[test]
-fn parked_codex_keeps_the_answer_and_resumes_the_rollout_with_the_next_prompt() -> TestResult {
+fn parked_codex_resumes_the_recorded_rollout_with_the_next_prompt() -> TestResult {
     use crate::first_message::{hooked, start_with};
     use crate::pool_supervision::{ScriptedUsage, seed};
     use crate::task_message::superagent;
@@ -1864,7 +1863,19 @@ fn parked_codex_keeps_the_answer_and_resumes_the_rollout_with_the_next_prompt() 
             },
         )
         .await?;
-        let mut viewer = app.runtime(&id).hub.watch();
+        let run = app.deps.store.live_attempt(&id).await?.ok_or("live run")?;
+        let rollout_id = run.provider_session_id.ok_or("rollout id")?;
+        let db = rusqlite::Connection::open(data.join("yulius.db"))?;
+        db.execute(
+            "UPDATE attempts SET provider_session_id = NULL WHERE id = ?1",
+            [run.id.as_str()],
+        )?;
+        assert_eq!(app.park_idle_sessions_now().await, 0);
+        assert_eq!(task(&app, &id).await?.status, TaskStatus::Running);
+        db.execute(
+            "UPDATE attempts SET provider_session_id = ?1 WHERE id = ?2",
+            [rollout_id.as_str(), run.id.as_str()],
+        )?;
         wait_for("parking", Duration::from_secs(30), || async {
             app.park_idle_sessions_now().await;
             task(&app, &id)
@@ -1872,35 +1883,6 @@ fn parked_codex_keeps_the_answer_and_resumes_the_rollout_with_the_next_prompt() 
                 .is_ok_and(|task| task.status == TaskStatus::Parked)
         })
         .await?;
-        // A browser attached across the park learns the grid before redrawing it.
-        let mut saw_state = false;
-        loop {
-            let frame = tokio::time::timeout(Duration::from_secs(5), viewer.recv()).await??;
-            match frame {
-                yulius_app::hub::HubFrame::State => saw_state = true,
-                yulius_app::hub::HubFrame::Snapshot { bytes, .. }
-                    if String::from_utf8_lossy(&bytes).contains("Yulius parked") =>
-                {
-                    assert!(
-                        saw_state,
-                        "parked snapshot arrived before the terminal state"
-                    );
-                    break;
-                }
-                _ => {}
-            }
-        }
-        let parked_screen = app.runtime(&id).hub.screen_text();
-        assert!(
-            parked_screen.contains("ECHO: First turn"),
-            "{parked_screen}"
-        );
-        assert!(!parked_screen.contains("codex resume"), "{parked_screen}");
-        assert_eq!(
-            parked_screen.matches("Yulius parked").count(),
-            1,
-            "{parked_screen}"
-        );
         let first = app
             .deps
             .store
@@ -1914,7 +1896,7 @@ fn parked_codex_keeps_the_answer_and_resumes_the_rollout_with_the_next_prompt() 
             "DELETE FROM provider_sessions WHERE task_id = ?1",
             [id.as_str()],
         )?;
-        // A new server has only the saved screen and the recorded attempt.
+        // The restarted server must reconstruct native resume from the recorded attempt.
         let (app, _) = start_with(
             &data,
             &fake,
@@ -1924,41 +1906,31 @@ fn parked_codex_keeps_the_answer_and_resumes_the_rollout_with_the_next_prompt() 
             |_| {},
         )
         .await?;
-        let ctx = admin_ctx(&app, &user).await?;
-        let terminal = app.terminal_open(&ctx, id.as_str(), Some((60, 16))).await?;
-        assert_eq!(app.runtime(&id).hub.screen_text(), parked_screen);
-        drop(terminal);
-        let remote = yulius_app::remote::RemoteCaller {
-            ctx,
-            token_id: "screen-test".into(),
-            scope: yulius_domain::permission::TokenScope::Read,
-            login: "admin".into(),
-            superagent: None,
-        };
-        let request = serde_json::from_value(serde_json::json!({
-            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
-            "params": {
-                "name": "task_screen",
-                "arguments": {"project": "acme/pool", "task_id": id.as_str()},
-                "_meta": {"yulius/structured": true}
-            }
-        }))?;
-        let result = app
-            .remote_mcp_handle(&remote, request)
-            .await
-            .and_then(|reply| reply.result)
-            .ok_or("task_screen")?;
-        let shown = support::tool_text(&result);
-        assert_eq!(shown["screen"], parked_screen.trim_end());
-        assert_eq!(shown["last_run"]["exit_reason"], "parked");
         let caller = superagent(&sandbox, &user, "admin");
         let prompt = "Second turn: answer with an echo";
-        let answer = app
-            .tool_task_message(
-                &caller,
-                &serde_json::json!({"task_id":id.as_str(), "text": prompt}),
-            )
-            .await?;
+        db.execute(
+            "UPDATE attempts SET provider_session_id = NULL WHERE id = ?1",
+            [first.id.as_str()],
+        )?;
+        let args = serde_json::json!({"task_id":id.as_str(), "text": prompt});
+        let error = app.tool_task_message(&caller, &args).await.unwrap_err();
+        assert!(error.to_string().contains("no recorded rollout"), "{error}");
+        assert_eq!(task(&app, &id).await?.status, TaskStatus::Parked);
+        assert!(app.deps.store.live_attempt(&id).await?.is_none());
+        // A lineage entry from before the parked attempt cannot identify that attempt.
+        db.execute(
+            "INSERT INTO provider_sessions (id, sandbox_id, task_id, harness, session_id, origin, first_seen, last_seen)
+             VALUES ('old-entry', ?1, ?2, 'codex', 'old-session', 'native', 0, 0)",
+            [sandbox.as_str(), id.as_str()],
+        )?;
+        let error = app.tool_task_message(&caller, &args).await.unwrap_err();
+        assert!(error.to_string().contains("no recorded rollout"), "{error}");
+        assert_eq!(task(&app, &id).await?.status, TaskStatus::Parked);
+        db.execute(
+            "UPDATE attempts SET provider_session_id = ?1 WHERE id = ?2",
+            [session.as_str(), first.id.as_str()],
+        )?;
+        let answer = app.tool_task_message(&caller, &args).await?;
         assert_eq!(answer["delivered"], "resumed");
         wait_for(
             "the answer in the resumed rollout",

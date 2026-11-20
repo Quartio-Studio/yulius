@@ -57,19 +57,7 @@ pub enum HubFrame {
     },
 }
 
-#[derive(Clone, Copy)]
-pub(crate) enum ScreenUpdate {
-    Host,
-    Park,
-    /// Read from disk before any host attached or any other viewer restored the grid.
-    Cold {
-        parked: bool,
-    },
-}
-
 struct Screen {
-    initialized: bool,
-    parked: bool,
     parser: vt100::Parser,
     seq: u64,
 }
@@ -105,8 +93,6 @@ impl Hub {
         Self {
             tx,
             screen: Mutex::new(Screen {
-                initialized: false,
-                parked: false,
                 parser: vt100::Parser::new(rows.max(1), cols.max(1), 0),
                 seq: 0,
             }),
@@ -118,15 +104,10 @@ impl Hub {
 
     /// Feeds PTY output (sequence from the host) and fans it out.
     pub fn output(&self, seq: u64, bytes: &[u8]) {
-        let Ok(mut screen) = self.screen.lock() else {
-            return;
-        };
-        if screen.parked {
-            return;
+        if let Ok(mut screen) = self.screen.lock() {
+            screen.parser.process(bytes);
+            screen.seq = seq;
         }
-        screen.initialized = true;
-        screen.parser.process(bytes);
-        screen.seq = seq;
         for chunk in bytes.chunks(MAX_FRAME_BYTES) {
             let _ = self.tx.send(HubFrame::Output {
                 seq,
@@ -137,40 +118,17 @@ impl Hub {
 
     /// Replaces the screen with a host snapshot (attach/reattach) and tells viewers to redraw.
     pub fn reset(&self, seq: u64, snapshot: &[u8], cols: u16, rows: u16) {
-        self.restore(seq, snapshot, cols, rows, ScreenUpdate::Host);
-    }
-
-    /// Replace the visible grid and announce a change between a parked capture and a host
-    /// screen before sending its bytes. Only a new host screen releases a parked grid.
-    pub(crate) fn restore(
-        &self,
-        seq: u64,
-        snapshot: &[u8],
-        cols: u16,
-        rows: u16,
-        update: ScreenUpdate,
-    ) {
-        let Ok(mut screen) = self.screen.lock() else {
-            return;
+        let formatted = if let Ok(mut screen) = self.screen.lock() {
+            screen.parser = vt100::Parser::new(rows.max(1), cols.max(1), 0);
+            screen.parser.process(snapshot);
+            screen.seq = seq;
+            viewer_snapshot(screen.parser.screen())
+        } else {
+            snapshot.to_vec()
         };
-        let parked = match update {
-            ScreenUpdate::Host => false,
-            ScreenUpdate::Park => true,
-            ScreenUpdate::Cold { .. } if screen.initialized => return,
-            ScreenUpdate::Cold { parked } => parked,
-        };
-        let announce = parked || screen.parked;
-        screen.initialized = true;
-        screen.parked = parked;
-        screen.parser = vt100::Parser::new(rows.max(1), cols.max(1), 0);
-        screen.parser.process(snapshot);
-        screen.seq = seq;
-        if announce {
-            self.state_changed();
-        }
         let _ = self.tx.send(HubFrame::Snapshot {
             seq,
-            bytes: Arc::from(viewer_snapshot(screen.parser.screen())),
+            bytes: Arc::from(formatted),
         });
     }
 
@@ -179,7 +137,7 @@ impl Hub {
     pub fn resize(&self, cols: u16, rows: u16) {
         let (cols, rows) = (cols.max(1), rows.max(1));
         if let Ok(mut screen) = self.screen.lock() {
-            if screen.parked || screen.parser.screen().size() == (rows, cols) {
+            if screen.parser.screen().size() == (rows, cols) {
                 return;
             }
             screen.parser.screen_mut().set_size(rows, cols);
@@ -190,18 +148,13 @@ impl Hub {
     /// Current size (cols, rows).
     #[must_use]
     pub fn size(&self) -> (u16, u16) {
-        self.grid_state().0
-    }
-
-    /// Grid dimensions and source, read from the same snapshot for a state frame.
-    pub(crate) fn grid_state(&self) -> ((u16, u16), bool) {
         self.screen
             .lock()
-            .map(|screen| {
-                let (rows, cols) = screen.parser.screen().size();
-                ((cols, rows), screen.parked)
+            .map(|s| {
+                let (rows, cols) = s.parser.screen().size();
+                (cols, rows)
             })
-            .unwrap_or(((80, 24), false))
+            .unwrap_or((80, 24))
     }
 
     /// The screen as escape sequences that redraw it, with its size (cols, rows).
@@ -422,40 +375,6 @@ fn viewer_snapshot(screen: &vt100::Screen) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn a_parked_grid_ignores_late_output_and_viewer_sizes_until_the_next_host_snapshot() {
-        let hub = Hub::new(80, 24);
-        hub.restore(7, b"last answer", 80, 24, ScreenUpdate::Park);
-        hub.resize(22, 5);
-        hub.output(8, b"old provider exit");
-        assert_eq!(hub.grid_state(), ((80, 24), true));
-        assert_eq!(hub.output_seq(), 7);
-        assert_eq!(hub.screen_text(), "last answer");
-        let mut messages = hub.subscribe().rx;
-        hub.reset(1, b"resumed", 22, 5);
-        assert!(matches!(messages.try_recv(), Ok(HubFrame::State)));
-        assert!(matches!(messages.try_recv(), Ok(HubFrame::Snapshot { .. })));
-        hub.resize(30, 7);
-        hub.output(2, b" answer");
-        assert_eq!(hub.grid_state(), ((30, 7), false));
-        assert_eq!(hub.screen_text(), "resumed answer");
-    }
-
-    #[test]
-    fn a_cold_viewer_finishing_its_read_after_reattach_keeps_the_new_host() {
-        let hub = Hub::new(80, 24);
-        hub.reset(0, b"new host", 40, 12);
-        hub.restore(
-            1,
-            b"old capture",
-            80,
-            24,
-            ScreenUpdate::Cold { parked: true },
-        );
-        assert_eq!(hub.grid_state(), ((40, 12), false));
-        assert_eq!(hub.screen_text(), "new host");
-    }
 
     #[test]
     fn control_moves_tell_every_viewer() {

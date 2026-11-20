@@ -2033,10 +2033,9 @@ off) counted from `state_at`: the list shows it under Needs you or Done, no turn
 background shell, subagent or dynamic workflow, does not wait in `yulius wait`, has no merge
 armed or pull request news due, no held prompt, no request in the sandbox browser, no pause, no
 possible draft or keystroke within the grace period, and is not an onboarding task.
-The supervisor saves the redacted screen with the elapsed idle time before requesting shutdown.
-The web terminal and `task_screen` use that snapshot once the task parks. A parked Codex
-run has a recorded rollout ID, which its next message resumes.
-[Decision 0396](decisions/0396-capture-the-parked-terminal-before-shutdown.md).
+Codex parking requires a recorded rollout ID. A message to the parked task resumes that rollout.
+If the server restarted between writing the attempt’s ID and writing its session lineage, the
+resume path recovers the ID from the parked attempt.
 
 `park_task_now` asks again under the launch lock, sets the run's end intent `Park` and ends the
 session as a close does (graceful shutdown, then the escalation). The run's end, by its exit or

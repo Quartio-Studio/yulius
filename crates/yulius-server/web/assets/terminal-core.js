@@ -231,7 +231,7 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
       onState: (message) => {
         const handedOver = gotState && !state.controller && message.controller;
         gotState = true;
-        state = { ...state, parked_screen: false, ...message };
+        state = { ...state, ...message };
         // Control just came to this viewer (another one went idle or left): the server applied the
         // size this viewer reported; say it again in case that report was lost.
         if (handedOver) lastSent = null;
@@ -679,10 +679,7 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
     }
     // An ended session has no PTY to follow: fit it to this screen (a desktop-sized screen would
     // otherwise overflow a phone).
-    const savedGrid = state.parked_screen === true || state.status === 'parked' || exited?.status === 'parked';
-    const mirroring = Boolean(state.cols && state.rows && (savedGrid || (!state.controller && !exited)));
-    const screen = host.querySelector('.xterm-screen');
-    if (screen) screen.style.zoom = '';
+    const mirroring = Boolean(state.cols && state.rows && !state.controller && !exited);
     host.classList.toggle('term-mirror', mirroring);
     if (!mirroring) {
       if (term.options.fontSize !== termSize()) term.options.fontSize = termSize();
@@ -692,12 +689,6 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
     }
     if (term.cols !== state.cols || term.rows !== state.rows) term.resize(Math.max(2, state.cols), Math.max(1, state.rows));
     fitMirror(state.cols, state.rows);
-    // The smallest legible live font can still clip a saved desktop grid on a phone.
-    // Scale the finished screen as a whole once xterm has laid out its cells.
-    if (savedGrid && screen && shown() && screen.offsetWidth && screen.offsetHeight) {
-      const scale = Math.min(fitBox.clientWidth / screen.offsetWidth, fitBox.clientHeight / screen.offsetHeight);
-      if (scale < 1) screen.style.zoom = String(scale);
-    }
   }
 
   // Another viewer sets the size: its grid fills this box — the font grows or shrinks until the

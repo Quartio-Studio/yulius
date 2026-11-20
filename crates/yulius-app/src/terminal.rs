@@ -63,8 +63,6 @@ pub struct TerminalState {
     pub harness: Option<String>,
     /// PTY size.
     pub size: (u16, u16),
-    /// The visible grid belongs to a completed park.
-    pub parked_screen: bool,
     /// Task status wire name.
     pub status: String,
 }
@@ -97,18 +95,10 @@ impl App {
         if !runtime.hub.has_output()
             && self.deps.store.live_attempt(&task.id).await?.is_none()
             && let Some(last) = self.deps.store.attempts(&task.id).await?.pop()
-            && let Some(saved) = self.ended_screen(&last, &task).await
+            && let Some((cols, rows, screen)) =
+                crate::supervisor::read_final_screen(std::path::Path::new(&last.run_dir))
         {
-            let (cols, rows, screen) = saved.grid;
-            runtime.hub.restore(
-                1,
-                &screen,
-                cols,
-                rows,
-                crate::hub::ScreenUpdate::Cold {
-                    parked: saved.parked,
-                },
-            );
+            runtime.hub.reset(1, &screen, cols, rows);
         }
         if runtime.hub.viewer_count() >= MAX_VIEWERS {
             return Err(AppError::Capacity("too many viewers on this task".into()));
@@ -172,7 +162,6 @@ impl App {
             .await?
             .ok_or(AppError::NotFound)?;
         let attempt = self.deps.store.live_attempt(task_id).await?;
-        let (size, parked_screen) = self.runtime(task_id).hub.grid_state();
         Ok(TerminalState {
             attempt_seq: attempt.as_ref().map(|a| a.seq),
             harness: Some(
@@ -181,8 +170,7 @@ impl App {
                     .as_str()
                     .to_owned(),
             ),
-            size,
-            parked_screen,
+            size: self.runtime(task_id).hub.size(),
             status: task.status.as_str().to_owned(),
         })
     }

@@ -256,7 +256,6 @@ impl LoginTerminal {
                 phase.as_str()
             };
         TerminalServerMsg::State {
-            parked_screen: false,
             attempt_seq: None,
             harness: Some(self.session.provider.harness().as_str().to_owned()),
             cols: LOGIN_COLS,

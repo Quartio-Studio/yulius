@@ -199,7 +199,6 @@ async fn send_state(socket: &mut WebSocket, attach: &ShellAttach) -> bool {
     send_json(
         socket,
         &TerminalServerMsg::State {
-            parked_screen: false,
             attempt_seq: None,
             harness: None,
             cols,

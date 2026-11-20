@@ -22,7 +22,7 @@ const FINAL_CLOSE_CODES = new Set([CLOSE_REVOKED]);
  */
 export function isEndedStatus(status) {
   const s = String(status || '');
-  return s === 'parked' || s === 'closed' || s === 'ok' || s === 'error' || s === 'cancelled' || s.startsWith('stopped') || s.startsWith('failed');
+  return s === 'closed' || s === 'ok' || s === 'error' || s === 'cancelled' || s.startsWith('stopped') || s.startsWith('failed');
 }
 
 /** Decode a terminal binary frame: u8 kind + u64 big-endian seq + bytes. */

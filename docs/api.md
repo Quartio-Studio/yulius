@@ -625,7 +625,6 @@ Server → client:
   "can_write":bool,"controller":bool,"status":"running"}`, `{"type":"notice","text":"↻ switched
   to …"}`, `{"type":"exit","status":"closed","code":0}` (with `"cause":"pids"` or `"memory"` when the run
   ended while its sandbox was at its task or memory limit, SPEC-268), `{"type":"error","code","message"}`.
-- A state frame with `parked_screen: true` keeps the saved grid fitted to the viewer until the next host screen replaces it, including during account waits.
 - Close code 4008: viewer lagged; reconnect with `last_seq`.
 
 Write access is confirmed when the terminal opens and then held as the viewer's grant

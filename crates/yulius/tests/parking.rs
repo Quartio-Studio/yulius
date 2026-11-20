@@ -415,7 +415,7 @@ fn a_stop_during_the_parks_end_stops_the_task() -> TestResult {
     let rt = runtime()?;
     rt.block_on(async {
         let app = app(&data, 8, 1).await?;
-        let (id, caller) = answered(&app, &data).await?;
+        let (id, _) = answered(&app, &data).await?;
         let stopped = Arc::new(std::sync::Mutex::new(None));
         {
             let (app, id, stopped) = (app.clone(), id.clone(), stopped.clone());
@@ -441,9 +441,6 @@ fn a_stop_during_the_parks_end_stops_the_task() -> TestResult {
         let answer = stopped.lock().map_err(|_| "poisoned")?.clone();
         assert!(matches!(answer, Some(Ok(()))), "{answer:?}");
         assert!(app.deps.store.live_attempt(&id).await?.is_none());
-        let original = screen(&app, &id);
-        assert!(!original.contains("Yulius parked"), "{original}");
-        assert_cold_screen(&data, &id, &caller, &original).await?;
         Ok::<_, Error>(())
     })?;
     rt.shutdown_timeout(Duration::from_secs(5));
@@ -744,145 +741,6 @@ fn a_park_that_cannot_end_its_session_gives_up() -> TestResult {
     Ok(())
 }
 
-async fn assert_cold_screen(
-    data: &Path,
-    id: &TaskId,
-    caller: &ProjectCaller,
-    expected: &str,
-) -> TestResult {
-    let restart = self::app(data, 8, 1).await?;
-    let ctx = AuthContext {
-        user: restart
-            .deps
-            .store
-            .user(&caller.user)
-            .await?
-            .ok_or("owner")?,
-        csrf_token: None,
-        session_hash: None,
-        token: None,
-    };
-    let terminal = restart
-        .terminal_open(
-            &ctx,
-            id.as_str(),
-            matches!(
-                status_of(&restart, id).await.0,
-                Some(TaskStatus::Queued | TaskStatus::WaitingCapacity | TaskStatus::Starting)
-            )
-            .then_some((22, 5)),
-        )
-        .await?;
-    assert_eq!(screen(&restart, id), expected);
-    assert_eq!(
-        restart.terminal_state(id).await?.parked_screen,
-        expected.contains("Yulius parked")
-    );
-    drop(terminal);
-    let remote = yulius_app::remote::RemoteCaller {
-        ctx,
-        token_id: "cold-screen".into(),
-        scope: yulius_domain::permission::TokenScope::Read,
-        login: "admin".into(),
-        superagent: None,
-    };
-    let request = serde_json::from_value(json!({
-        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
-        "params": {"name": "task_screen", "arguments": {"project":"acme/pool","task_id":id.as_str()},
-            "_meta": {"yulius/structured":true}}
-    }))?;
-    let result = restart
-        .remote_mcp_handle(&remote, request)
-        .await
-        .and_then(|reply| reply.result)
-        .ok_or("task_screen")?;
-    assert_eq!(
-        crate::support::tool_text(&result)["screen"],
-        expected.trim_end()
-    );
-    Ok(())
-}
-
-/// The last attempt's screen stays visible while capacity holds a parked resume in the queue.
-async fn queued_park_screen(
-    app: &App,
-    id: &TaskId,
-    data: &Path,
-    caller: &ProjectCaller,
-) -> TestResult {
-    wait_for(
-        "the committed park screen",
-        Duration::from_secs(10),
-        || async { screen(app, id).contains("Yulius parked") },
-    )
-    .await?;
-    let captured = screen(app, id);
-    assert!(
-        app.deps
-            .store
-            .transition_task(
-                id,
-                Some(TaskStatus::Parked),
-                TaskStatus::Queued,
-                None,
-                app.now()
-            )
-            .await?
-    );
-    // Loss and normal exit can save identical bytes in this fake agent. Make
-    // the ordinary final screen distinct to prove which snapshot each reader uses.
-    let last = app
-        .deps
-        .store
-        .attempts(id)
-        .await?
-        .pop()
-        .ok_or("parked attempt")?;
-    let dir = Path::new(&last.run_dir);
-    std::fs::write(dir.join("final-screen"), b"80 24\nShutdown screen")?;
-    assert_cold_screen(data, id, caller, &captured).await?;
-    // A restart in the gap between the state commit and the filename change.
-    std::fs::rename(dir.join("parked-screen"), dir.join("parked-screen.pending"))?;
-    assert_cold_screen(data, id, caller, &captured).await?;
-    let renamed = dir.to_owned();
-    yulius_app::race::on(yulius_app::race::Point::ParkScreenRead, dir, move || {
-        let published = std::fs::rename(
-            renamed.join("parked-screen.pending"),
-            renamed.join("parked-screen"),
-        );
-        assert!(published.is_ok(), "{published:?}");
-    });
-    assert_cold_screen(data, id, caller, &captured).await?;
-    // Starting is recorded before the provider acquires its account.
-    assert!(
-        app.deps
-            .store
-            .transition_task(
-                id,
-                Some(TaskStatus::Queued),
-                TaskStatus::Starting,
-                None,
-                app.now()
-            )
-            .await?
-    );
-    assert_cold_screen(data, id, caller, &captured).await?;
-    // The resumed launch has no subscription available, so it waits without a new attempt.
-    assert!(
-        app.deps
-            .store
-            .transition_task(
-                id,
-                Some(TaskStatus::Starting),
-                TaskStatus::WaitingCapacity,
-                None,
-                app.now()
-            )
-            .await?
-    );
-    assert_cold_screen(data, id, caller, &captured).await
-}
-
 /// PRK-003 (review round 2): a switch that starts after the park decided gives way to it: the
 /// task parks with the activity it had, and the switch says why it did not happen.
 #[test]
@@ -891,7 +749,7 @@ fn a_switch_overtaken_by_a_park_parks_with_its_activity() -> TestResult {
     let rt = runtime()?;
     rt.block_on(async {
         let app = app(&data, 8, 1).await?;
-        let (id, caller) = answered(&app, &data).await?;
+        let (id, _) = answered(&app, &data).await?;
         let switched = Arc::new(std::sync::Mutex::new(None));
         {
             let (app, target, switched) = (app.clone(), id.clone(), switched.clone());
@@ -916,7 +774,6 @@ fn a_switch_overtaken_by_a_park_parks_with_its_activity() -> TestResult {
             matches!(&answer, Some(Err(why)) if why.contains("the idle session was parked")),
             "{answer:?}"
         );
-        queued_park_screen(&app, &id, &data, &caller).await?;
         Ok::<_, Error>(())
     })?;
     rt.shutdown_timeout(Duration::from_secs(5));
@@ -1109,7 +966,7 @@ fn a_loss_recorded_while_the_reader_holds_the_park_still_parks() -> TestResult {
             },
         )
         .await?;
-        let (id, caller) = answered(&app, &data).await?;
+        let (id, _) = answered(&app, &data).await?;
         let run = app
             .deps
             .store
@@ -1149,7 +1006,6 @@ fn a_loss_recorded_while_the_reader_holds_the_park_still_parks() -> TestResult {
             "the loss was recorded first"
         );
         assert_eq!(status_of(&app, &id).await.1, Some(Activity::Waiting));
-        queued_park_screen(&app, &id, &data, &caller).await?;
         Ok::<_, Error>(())
     })?;
     rt.shutdown_timeout(Duration::from_secs(5));
