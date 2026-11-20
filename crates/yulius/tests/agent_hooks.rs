@@ -3029,6 +3029,28 @@ async fn parked_list_home_and_mcp_classify_a_green_head_while_the_first_is_slow(
             .await?;
     assert_eq!(listing["tasks"].as_array().ok_or("tasks")?.len(), 1);
     assert_eq!(listing["tasks"][0]["task_id"], slow_id.as_str());
+    // Eight newer local decisions qualify before the held PR is reached.
+    // Consume the preceding MCP lookup's signal, then catch any needless read.
+    tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        f.h.github.checks_entered.notified(),
+    )
+    .await?;
+    for number in 20..28 {
+        let mut asks = slow.clone();
+        asks.id = TaskId::parse(&format!("decision-{number}"))?;
+        asks.branch = None;
+        asks.status = TaskStatus::Running;
+        asks.activity = Some(Activity::NeedsAttention);
+        asks.updated_at = Timestamp(now.0 + number);
+        f.h.store.insert_task(&asks).await?;
+    }
+    let args = serde_json::json!({"scope":"needs_you","limit":1});
+    let listing = tokio::select! {
+        result = f.h.app.tool_tasks_list(&caller, &args) => result?,
+        () = f.h.github.checks_entered.notified() => return Err("read a later parked PR after the first page was filled".into()),
+    };
+    assert_eq!(listing["tasks"][0]["task_id"], "decision-27");
     f.h.github.release_checks(&hold);
     Ok(())
 }

@@ -26,6 +26,24 @@ pub(crate) fn parked_pr_deadline() -> Instant {
     Instant::now() + std::time::Duration::from_millis(750)
 }
 
+/// Reserve a share of the remaining deadline for each unvisited batch.
+pub(crate) fn fair_batches<T>(
+    rows: &[T],
+    deadline: Instant,
+    concurrency: usize,
+) -> impl Iterator<Item = (&[T], Instant)> {
+    let mut batches = rows.chunks(concurrency);
+    std::iter::from_fn(move || {
+        let batch = batches.next()?;
+        let now = Instant::now();
+        let remaining = u32::try_from(batches.len() + 1).unwrap_or(u32::MAX);
+        Some((
+            batch,
+            now + deadline.saturating_duration_since(now) / remaining,
+        ))
+    })
+}
+
 /// Run at most eight reads together and reserve time for later rows. A stalled
 /// GitHub response can consume its batch's share, never the whole list's budget.
 pub(crate) async fn fair_rows<'a, T, R, F>(
@@ -38,11 +56,7 @@ where
     F: std::future::Future<Output = AppResult<R>>,
 {
     let mut results = Vec::with_capacity(rows.len());
-    let mut batches = rows.chunks(concurrency);
-    while let Some(batch) = batches.next() {
-        let now = Instant::now();
-        let remaining = u32::try_from(batches.len() + 1).unwrap_or(u32::MAX);
-        let until = now + deadline.saturating_duration_since(now) / remaining;
+    for (batch, until) in fair_batches(rows, deadline, concurrency) {
         results
             .extend(futures::future::try_join_all(batch.iter().map(|row| read(row, until))).await?);
     }
@@ -198,7 +212,18 @@ impl App {
             .task(&task.id)
             .await?
             .ok_or(crate::error::AppError::NotFound)?;
-        let requested = self.browser_requests(&current.sandbox_id).await;
+        let mut requested = self.browser_tab_requests(&current.sandbox_id).await;
+        // A positive decision needs the owner's request for this task, even
+        // when an earlier sandbox-wide lookup could not read the requests.
+        if self
+            .deps
+            .store
+            .task_needs_you(&current.id)
+            .await
+            .map_or(true, |request| request.is_some())
+        {
+            requested.insert(current.id.to_string());
+        }
         let pull = if current.status == task.status {
             PullRead::Checked(facts.pull)
         } else {

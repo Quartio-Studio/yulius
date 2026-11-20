@@ -4708,6 +4708,21 @@ async fn a_historical_parked_goal_keeps_its_owner_and_chain_state_after_restart(
         f.h.store.task(&child).await?.ok_or("successor")?.status,
         TaskStatus::Chained
     );
+    let saved = dir.with_extension("saved");
+    std::fs::rename(&dir, &saved)?;
+    std::fs::write(&dir, b"not a directory")?;
+    assert_eq!(
+        fresh.task_summary(&parked).await?.parked_needs_you,
+        Some(true),
+        "an unreadable historic goal is still unresolved"
+    );
+    fresh.advance_chains(&before).await;
+    assert_eq!(
+        f.h.store.task(&child).await?.ok_or("successor")?.status,
+        TaskStatus::Chained
+    );
+    std::fs::remove_file(&dir)?;
+    std::fs::rename(saved, &dir)?;
     std::fs::remove_file(marker)?;
     f.h.store
         .set_task_needs_you(

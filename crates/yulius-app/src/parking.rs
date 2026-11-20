@@ -415,9 +415,10 @@ impl App {
             Ok(runs) => runs.last().is_some_and(|run| {
                 std::path::Path::new(&run.run_dir)
                     .join(GOAL_UNFINISHED_MARK)
-                    .exists()
+                    .try_exists()
+                    .unwrap_or(true)
             }),
-            Err(_) => false,
+            Err(_) => true,
         }
     }
 }
