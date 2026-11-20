@@ -8,6 +8,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 - New agent secrets reserve interpreter settings. Managers can rename affected older secrets on the Secrets page. Host-bound GitHub token overrides remain available. [SPEC-574](../.ai/specs/SPEC-574-protect-interpreter-settings-while-prese.md)
 
+- Home and MCP retain a parked task’s known failing PR when another Git overview returns incomplete data. A newer confirmed closure clears it (SPEC-558).
 - Clearing Claude Code’s prompt box releases a waiting session message after the last key’s one-minute grace period. Restored drafts still block delivery. [SPEC-572](../.ai/specs/SPEC-572-deliver-the-empty-prompt-box-fix-from-th.md)
 - A planned install briefly waits for CI gates finishing their last job. The operator can proceed immediately, and interrupted runs still use full recovery. [SPEC-573](../.ai/specs/SPEC-573-reduce-repeated-ci-work-across-planned-y.md)
 

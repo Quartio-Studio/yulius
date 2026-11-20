@@ -2160,6 +2160,7 @@ impl App {
         let sandbox = self
             .dlv_require_sandbox(ctx, sandbox_id, Action::View)
             .await?;
+        let observation = self.observed_pulls.begin(&sandbox.id)?;
         let profile = delivery_profile(&sandbox);
         let (owner, name) = (&sandbox.repo_owner, &sandbox.repo_name);
         let repo = self.sandbox_repo(&sandbox.id);
@@ -2174,12 +2175,15 @@ impl App {
             }
         };
         let mut open_pulls = Vec::new();
+        let mut overview_complete = false;
         let mut checks_by_pr = Vec::new();
         let mut checks_unreadable = Vec::new();
         if let Some(token) = &token {
             match self.deps.github.list_pulls(token, owner, name, None).await {
                 Ok(pulls) => {
-                    open_pulls = pulls.into_iter().filter(is_open).take(MAX_PULLS).collect()
+                    let mut open = pulls.into_iter().filter(is_open);
+                    open_pulls = open.by_ref().take(MAX_PULLS).collect();
+                    overview_complete = open.next().is_none();
                 }
                 Err(err) => notes.push(format!(
                     "Pull requests can't be listed: {}",
@@ -2255,12 +2259,12 @@ impl App {
                 deletions: 0,
                 pr: open_pulls
                     .iter()
-                    .find(|p| p.head == branch)
+                    .find(|p| !p.from_fork && p.head == branch)
                     .map(|p| pull_view(p, checks_of(p.number))),
                 worktree: worktree_state(&task),
             };
             // GitHub's list says nothing about mergeability: Yulius's own clone does (DON-001).
-            if let Some(pull) = open_pulls.iter().find(|p| p.head == branch)
+            if let Some(pull) = open_pulls.iter().find(|p| !p.from_fork && p.head == branch)
                 && self.pull_conflicts(&task, &sandbox, pull).await
             {
                 if let Some(pr) = view.pr.as_mut() {
@@ -2370,17 +2374,13 @@ impl App {
                     conflicts: false,
                 });
             }
-            if let Some(signal) = view
-                .pr
-                .as_ref()
-                .and_then(|pr| PullSignal::from_wire(&pr.state, &pr.checks, pr.conflicts))
-            {
-                observed.insert(task.id.clone(), signal);
-            }
+            let pull = view.pr.as_ref().map(|pr| crate::sandboxes::ObservedPull {
+                number: pr.number,
+                signal: PullSignal::from_wire(&pr.state, &pr.checks, pr.conflicts),
+            });
+            observed.insert(task.id.clone(), pull);
             tasks.push(view);
         }
-        // The "needs you" counts read what this overview said (sandboxes.rs, #147).
-        self.observed_pulls.record(&sandbox.id, observed);
 
         let mut recent_commits = Vec::new();
         if cloned {
@@ -2408,6 +2408,9 @@ impl App {
                 )),
             }
         }
+        // Only a completed overview publishes. Cancellation during the final Git
+        // log drops the guard and frees its slot for the next request.
+        observation.record(overview_complete, observed);
         Ok(GitOverview {
             integration_branch: profile.integration_branch.clone(),
             production_branch: profile.production_branch.clone(),
