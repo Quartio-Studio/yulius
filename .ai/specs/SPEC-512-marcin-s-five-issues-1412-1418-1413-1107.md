@@ -428,6 +428,23 @@ Written when it starts (see Context): HOF (#1106), from its issue's acceptance c
 
 PR #1130 was commented on and closed as superseded by #1362 (part 1), naming this part 2.
 
+Review round 1 (head c6e1a673e, CHANGES REQUESTED), answered test-first:
+
+| Finding | Change | Test |
+|---|---|---|
+| Format gate failed | `cargo fmt --all` | `quality` |
+| The tools' hourly bound was not applied | `reserve_tool_task`/`release_tool_task`, shared with `tool_task_create`, taken before any file is fetched | `telegram::telegram_tasks_keep_the_hourly_bound_and_the_file_bounds` (the 21st is refused, nothing created; fails without the bound: mutation) |
+| The redaction check could not fail | the request's action carries the secret; `/status` asserts `[secret:PAYMENT_KEY]` and no value | `telegram::a_reply_reaches_its_task_under_the_owner_rule` (fails without the redaction: mutation) |
+| No reply was delivered in a test | a reply to a queued task's message joins its request, audited as from Telegram | `telegram::a_reply_is_delivered_and_a_reply_never_starts_a_task` |
+| The browser-only rule was untested | an operate token is refused, nothing stored or audited | `telegram::telegram_intake_is_off_by_default_and_set_with_a_project` (fails without the check: mutation) |
+| A reply to an unremembered message started a task | the bot's answers are remembered as about their task; a reply to a message about no task starts nothing | `telegram::a_reply_is_delivered_and_a_reply_never_starts_a_task` |
+| The label said "their own agent" | `Channel::Telegram`, labelled `Telegram` | by reading (`through`) |
+| An album across two answers is two tasks | recorded as a known limit | Decisions |
+| Intake held the poll; a restart could hand a message over twice | intake runs on its own task; the next poll confirms the update | by reading (`on_inbound`) |
+| A teammate's reply could answer a later request | the notice keeps its request's `at`; a reply passes it (`task_message_as`), as the page does (ANS-004) | store `intake_and_the_bots_messages_follow_the_chat` (kept and read back); the answer path's refusal is part 2's |
+| Origin lists lacked `telegram` | added in `api.md`, `TaskSummary`, `TaskAnalytics` | by reading |
+| Nits | `/task` refuses a short name two projects share; `/status` reads every live state; plain `file_path` only; intake can always be turned off; a person's old chat forgets its messages on a move; drafts of a refused task are a known limit | adapter `only_a_plain_file_path_is_fetched`, store test (move), the bounds test (`/task` without access, 11 files, 30 MB) |
+
 ### Part 3 (#1413)
 
 | Acceptance criterion | Test |
