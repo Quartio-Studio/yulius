@@ -572,6 +572,25 @@ mod tests {
         assert!(hub.prompt_box_shown_empty(), "Claude redrew an empty box");
     }
 
+    #[test]
+    fn a_genuine_repaint_is_recognized_in_every_pty_partition() {
+        let rule = "─".repeat(20);
+        let frame = format!("\x1b[?1049h\x1b[2J\x1b[2;1H{rule}\x1b[3;1H❯ \x1b[4;1H{rule}\x1b[3;3H");
+        for prefix in ["J", "\x1b]0;title[2J\x07"] {
+            let output = format!("{prefix}{frame}");
+            for cut in 0..=output.len() {
+                let hub = Hub::new(20, 6);
+                hub.reset(1, frame.as_bytes(), 20, 6);
+                hub.output(2, &output.as_bytes()[..cut]);
+                hub.output(3, &output.as_bytes()[cut..]);
+                assert!(
+                    hub.prompt_box_shown_empty(),
+                    "partition {cut} of {prefix:?}"
+                );
+            }
+        }
+    }
+
     /// SPEC-572 AC3: a hub rebuilt from a snapshot (a reattached run, as after a restart of the
     /// server) still reads the prompt box: empty, a dim suggestion, and a draft.
     #[test]

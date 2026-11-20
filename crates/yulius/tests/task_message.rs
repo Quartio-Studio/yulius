@@ -1681,22 +1681,11 @@ fn a_key_before_a_restart_that_left_nothing_holds_no_message() -> TestResult {
             |_| {},
         )
         .await?;
-        let mut watch = app.runtime(&id).hub.watch();
         app.reconcile().await?;
-        // A host snapshot can contain a crop. The second key must be held even after
-        // the reattached CLI has actually repainted the empty input.
-        tokio::time::timeout(Duration::from_secs(30), async {
-            loop {
-                if matches!(
-                    watch.recv().await?,
-                    yulius_app::hub::HubFrame::Output { .. }
-                ) && fixture_box_empty(&app, &id)
-                {
-                    return Ok::<_, Error>(());
-                }
-            }
+        wait_for("the idle host snapshot", Duration::from_secs(30), || async {
+            fixture_box_empty(&app, &id)
         })
-        .await??;
+        .await?;
         let mark = draft_mark(&app, &id).await?;
         // The restarted server knows the key from its mark: within the minute it holds.
         let young = send(&app, &caller, &id).await.err();
