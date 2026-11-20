@@ -1,6 +1,6 @@
 ---
 yulius-task: 96665b1d-0ed8-4442-9ddd-54d00e72a8d7
-status: in-progress
+status: done
 ---
 
 # SPEC-574 Protect interpreter settings when naming agent secrets
@@ -24,7 +24,7 @@ Issue #638, tracked under task #541, identified exact interpreter names missing 
 - [x] Specify the creation policy and GitHub override contract
 - [x] Prove interpreter-name refusals at each creation boundary
 - [x] Preserve existing secrets and report them to their managers
-- [ ] Obtain independent approval and verify the dev delivery
+- [x] Obtain independent approval and verification for delivery to dev
 
 ## Acceptance criteria
 
@@ -47,3 +47,7 @@ On the unchanged product, the seven Rust regression cases failed. The API create
 After the assignment check, nine focused nextest cases passed, including task and Superagent launch environments, same-scope rotation, host-bound proxy substitution for both GitHub names, copy approval and dismissal, and the CLI plan. Two targeted Chromium scenarios passed. Repository quick checks passed. Vidoc was disabled by the instance, so nothing was scanned.
 
 Independent review of a8bf22966 requested two changes. The shim assertion failed with `token=none` when the test expected the supplied GITHUB_TOKEN. The fake gh now reads both token variables in priority order, and the gh shim tests passed. Chromium also observed a 68-character suggestion for a 64-character reserved name. The mock now omits suggestions that fail the name grammar. Both interpreter scenarios passed again, including the length limit.
+
+Independent round two approved 026c685dd549bf1e469c976351fc68cb914ac9aa. At this head the related nextest selection passed 101/101. The full Chromium suite passed 1,181 tests with one model-driven editor scenario skipped because no model key was configured. The review follow-up's two changed browser scenarios also passed in a separate focused run. Yulius records the CI and merge results in task #551's delivery evidence.
+
+The bounded mutation run reported 57 listed, 5 caught, 0 missed, 0 timed out, 52 unviable and 0 not reached. Against the first reviewed head, the follow-up contained no mutable Rust production lines. No live GitHub credential was used in the proxy and shim tests. Issue #638 stays open for the owner's decision on its blanket GitHub token reservation.
