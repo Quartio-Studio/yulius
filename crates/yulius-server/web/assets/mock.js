@@ -3443,7 +3443,11 @@ function flattenedKey(value) {
 const INTERPRETER_SETTINGS = new Set(['PYTHONPATH', 'PERL5LIB', 'RUBYOPT', 'JAVA_TOOL_OPTIONS', 'JDK_JAVA_OPTIONS']);
 
 function checkAgentAssignment(name) {
-  if (INTERPRETER_SETTINGS.has(name) || reservedVariable(name)) fail(422, 'invalid', `${name} is reserved. Choose another name, such as APP_${name}`);
+  if (INTERPRETER_SETTINGS.has(name) || reservedVariable(name)) {
+    const alternative = `APP_${name}`;
+    const example = AGENT_NAME_RE.test(alternative) ? `, such as ${alternative}` : '';
+    fail(422, 'invalid', `${name} is reserved. Choose another name${example}`);
+  }
 }
 
 function validateAgent(body, creating, currentName) {

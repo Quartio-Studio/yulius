@@ -23,7 +23,7 @@ Issue #638, tracked under task #541, identified exact interpreter names missing 
 
 - [x] Specify the creation policy and GitHub override contract
 - [x] Prove interpreter-name refusals at each creation boundary
-- [ ] Preserve existing secrets and report them to their managers
+- [x] Preserve existing secrets and report them to their managers
 - [ ] Obtain independent approval and verify the dev delivery
 
 ## Acceptance criteria
@@ -39,3 +39,11 @@ Use synthetic credentials in HTTP, agent tool and CLI import tests. Seed a store
 ## Decisions
 
 Apply the additional exact-name policy only when assigning an agent secret a new name. Existing scopes, values and authorizations persist. Changing the GitHub override contract needs an owner's product decision. Record the compatible policy in ADR-0408.
+
+## Evidence
+
+On the unchanged product, the seven Rust regression cases failed. The API created PYTHONPATH (201), approved a pending PERL5LIB copy (200), and supplied no manager warning. File and copy tools accepted interpreter names, a value request waited for input, and CLI import accepted RUBYOPT. Two Chromium scenarios failed at the missing warning and missing refusal. Regression commit f70d04d71.
+
+After the assignment check, nine focused nextest cases passed, including task and Superagent launch environments, same-scope rotation, host-bound proxy substitution for both GitHub names, copy approval and dismissal, and the CLI plan. Two targeted Chromium scenarios passed. Repository quick checks passed. Vidoc was disabled by the instance, so nothing was scanned.
+
+Independent review of a8bf22966 requested two changes. The shim assertion failed with `token=none` when the test expected the supplied GITHUB_TOKEN. The fake gh now reads both token variables in priority order, and the gh shim tests passed. Chromium also observed a 68-character suggestion for a 64-character reserved name. The mock now omits suggestions that fail the name grammar. Both interpreter scenarios passed again, including the length limit.

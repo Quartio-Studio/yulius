@@ -1239,6 +1239,12 @@ test('the Add agent secret form suggests an available interpreter-safe name', as
   await screen.getByLabel('Value').fill('synthetic-test-value');
   await add.getByRole('button', 'Add').click();
   await expect(screen.getByText(/reserved.*APP_RUBYOPT/)).toBeVisible();
+  // A reserved name at the length limit cannot take the APP_ prefix.
+  const longName = 'GIT_' + 'X'.repeat(60);
+  await screen.getByLabel('Name').fill(longName);
+  await add.getByRole('button', 'Add').click();
+  await expect(screen.getByText(new RegExp(longName + ' is reserved'))).toBeVisible();
+  await expect(screen.getByText(new RegExp('APP_' + longName))).toBeHidden();
   await screen.getByLabel('Name').fill('APP_RUBYOPT');
   await add.getByRole('button', 'Add').click();
   await expect(add).toBeHidden();
