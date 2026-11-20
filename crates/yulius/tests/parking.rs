@@ -14,8 +14,9 @@ use yulius_app::coordination::ProjectCaller;
 use yulius_app::model::{LaunchKind, TaskMode};
 use yulius_app::needs_you::NeedsYouRecord;
 use yulius_app::ports::store::TaskStore;
+use yulius_app::race::Point;
 use yulius_domain::ids::TaskId;
-use yulius_domain::task::{Activity, TaskStatus};
+use yulius_domain::task::{Activity, StopReason, TaskStatus};
 use yulius_ptyhost::test_support::locate_fake_agent;
 
 use crate::first_message::{
@@ -1165,6 +1166,129 @@ fn a_loss_recorded_while_the_reader_holds_the_park_still_parks() -> TestResult {
     })?;
     rt.shutdown_timeout(Duration::from_secs(5));
     Ok(())
+}
+
+#[derive(Clone, Copy)]
+enum EndRequests {
+    Close,
+    Cancel,
+    CloseThenCancel,
+}
+
+/// SPEC-563: escalation records the loss with the reader held just before or just after it
+/// takes the request. EndDecided releases the reader once the loss has consumed the intent.
+fn host_loss_with_request(
+    requests: EndRequests,
+    hold_reader_at: Point,
+    expected: TaskStatus,
+) -> TestResult {
+    use yulius_app::race::on;
+    use yulius_domain::task::AttemptState;
+
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let fake = locate_fake_agent().ok_or("fake-agent is not built")?;
+        let agent = FakeAgentOptions {
+            answers_first_message: true,
+            ..hooked()
+        };
+        let (app, _) = start_with(&data, &fake, agent, 0, Arc::default(), |config| {
+            config.stop_escalation_ms = 1;
+        })
+        .await?;
+        let (id, _) = answered(&app, &data).await?;
+        let key = Path::new(id.as_str());
+        let bound = Duration::from_secs(30);
+        let (reader_ready, wait_reader) = tokio::sync::oneshot::channel();
+        let (escalate, wait_escalate) = std::sync::mpsc::channel();
+        let (lost, wait_lost) = std::sync::mpsc::channel();
+        let (ordered, observed) = tokio::sync::oneshot::channel();
+        on(Point::EndEscalating, key, move || {
+            assert!(
+                tokio::task::block_in_place(|| wait_escalate.recv_timeout(bound)).is_ok(),
+                "reader reached the selected race point"
+            );
+        });
+        on(hold_reader_at, key, move || {
+            let held = reader_ready.send(()).is_ok()
+                && tokio::task::block_in_place(|| wait_lost.recv_timeout(bound)).is_ok();
+            let _ = ordered.send(held);
+        });
+        on(Point::EndDecided, key, move || {
+            let _ = lost.send(());
+        });
+        match requests {
+            EndRequests::Close | EndRequests::CloseThenCancel => app.close_task_now(&id).await?,
+            EndRequests::Cancel => app.stop_task_now(&id).await?,
+        }
+        tokio::time::timeout(bound, wait_reader).await??;
+        if matches!(requests, EndRequests::CloseThenCancel) {
+            // Close is held by the reader. The newer Cancel is in the live intent slot.
+            app.stop_task_now(&id).await?;
+        }
+        escalate.send(())?;
+        assert!(
+            tokio::time::timeout(bound, observed).await??,
+            "reader held until loss"
+        );
+        wait_for("the task to settle after loss", bound, || async {
+            status_of(&app, &id)
+                .await
+                .0
+                .is_some_and(TaskStatus::is_resting)
+        })
+        .await?;
+        let runs = app.deps.store.attempts(&id).await?;
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].state, AttemptState::Lost);
+        assert_eq!(runs[0].exit_reason.as_deref(), Some("lost"));
+        assert_eq!(status_of(&app, &id).await.0, Some(expected));
+        Ok::<_, Error>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+#[test]
+fn host_loss_while_the_reader_holds_close_closes_an_answered_task() -> TestResult {
+    host_loss_with_request(EndRequests::Close, Point::RunEndTaken, TaskStatus::Closed)
+}
+
+#[test]
+fn host_loss_while_the_reader_holds_cancel_stops_an_answered_task() -> TestResult {
+    host_loss_with_request(
+        EndRequests::Cancel,
+        Point::RunEndTaken,
+        TaskStatus::Stopped(StopReason::Cancelled),
+    )
+}
+
+#[test]
+fn host_loss_before_the_reader_takes_close_keeps_the_loss_outcome() -> TestResult {
+    host_loss_with_request(
+        EndRequests::Close,
+        Point::RunEndTaking,
+        TaskStatus::Stopped(StopReason::Lost),
+    )
+}
+
+#[test]
+fn host_loss_before_the_reader_takes_cancel_keeps_the_loss_outcome() -> TestResult {
+    host_loss_with_request(
+        EndRequests::Cancel,
+        Point::RunEndTaking,
+        TaskStatus::Stopped(StopReason::Lost),
+    )
+}
+
+#[test]
+fn host_loss_with_a_newer_cancel_uses_the_live_intent_slot() -> TestResult {
+    host_loss_with_request(
+        EndRequests::CloseThenCancel,
+        Point::RunEndTaken,
+        TaskStatus::Stopped(StopReason::Lost),
+    )
 }
 
 /// A declared unfinished spec keeps the idle session live.
