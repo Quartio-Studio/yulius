@@ -4561,6 +4561,7 @@ flowchart LR
   anew, in bounded rounds. A run that ends on a stop's intent rests its task even before the stop's
   change lands, and a switch overtaken by a stop, a close or its old run's loss starts no new run
   ([SPEC-250](../.ai/specs/SPEC-250-stop-during-a-switch-leaves-the-task-run.md)).
+- The run reader leaves an attempt-scoped copy of the close, cancel or park request it took. If escalation records host loss first and the intent slot is empty, it uses that copy to settle the task. The attempt keeps its lost exit reason. [SPEC-563](../.ai/specs/SPEC-563-honor-close-and-cancel-intents-when-host.md)
 - Persistence is SQLite in WAL mode; the data directory layout is in SPEC-002 section 4.
 - State machines (task, attempt, switch, automation, import, onboarding, delivery, update, CI)
   are in SPEC-002 section 6; runtime contracts in section 7 and

@@ -1,6 +1,6 @@
 ---
 yulius-task: b236ae1b-aff5-4c42-85cf-89cc222ed718
-status: draft
+status: in-progress
 ---
 
 # SPEC-563 Honor a close or stop taken by the reader when escalation records host loss
@@ -21,10 +21,10 @@ On dev at `ba2c36264`, including task #540's PRs #1492 and #1493, the supervisor
 
 ## Plan
 
-- [ ] Reproduce close and stop at the reader’s run-end race point
+- [x] Reproduce close and stop at the reader’s run-end race point
 - [ ] Honor the winning recorder’s task outcome and verify the other orders
 - [ ] Obtain independent approval for the host-loss fix
-- [ ] Deliver the reviewed fix to dev and confirm issue closure
+- [ ] Prepare the verified head and issue-closing reference for delivery
 
 ## Acceptance criteria
 
@@ -38,3 +38,8 @@ Use the real supervisor, detached ptyhost, fake agent and bounded race-point han
 ## Decisions
 
 Reuse the supervisor's attempt-scoped handoff and existing task transitions. The request concerns the in-process competition between two recorders. The existing store transition decides the winner and keeps its factual exit reason.
+
+## Evidence
+
+- At regression commit `cf86be837` on dev `ba2c36264`, both reader-held tests failed at the task status assertion. Each recorded one lost attempt and returned `Stopped(Lost)`. Close expected `Closed` and Cancel expected `Stopped(Cancelled)`.
+- The two loss-before-reader controls passed on the same baseline binary. Both produced `Stopped(Lost)` when loss consumed the live intent first.
