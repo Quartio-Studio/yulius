@@ -27,7 +27,7 @@ Task #517 displayed Codex's exit instructions. The host drained shutdown output 
 - [x] Continue unfinished Codex goals within the Stop retry bound
 - [x] Keep unfinished tasks live and classify parked work accurately
 - [x] Document and verify the parking contract
-- [ ] Deliver native Codex resume to dev
+- [x] Deliver native Codex resume to dev
 - [ ] Preserve the parked grid until the resumed host attaches
 - [ ] Verify chain eligibility and refresh stale PR observations
 - [ ] Deliver goal continuation and parking eligibility to dev
@@ -58,10 +58,14 @@ Capture a separate screen at the park decision because exiting can clear the ent
 - Review of `19b7770a0` found three edge cases. With every step done and the remote response held, the old hook ended the turn. It now asks Codex to verify the recorded PR within the retry budget. A pending recorded head with an empty overview cache previously parked under the digest. The current head now feeds the same final grouping decision for both parking triggers. A three-row historical screen previously retained the Codex resume suffix when token usage scrolled off. The reader now identifies those trailing instructions across wrapped rows. All three regression tests failed on the previous head. The browser suite passed 1,164 tests with one optional test skipped.
 - The initial mutation baseline passed. The author interrupted its workers when compilation logs showed that they had copied files from different revisions during review fixes. Mutation runs started subsequently use detached, immutable checkouts.
 
+- [PR #1492](https://github.com/Quartio-Studio/yulius/pull/1492) delivered PKR-002 into `dev` on green Yulius CI at `ae7f8fa73`. The Clippy integration target and the native rollout regression passed locally on that revision.
+- With the new attempt held at `RunRecorded`, the original cold reader returned an empty string in place of the first answer and parking notice. With unreadable lineage during a subscription retry, the original capacity round left the task in `Failed(SpawnError)` instead of `WaitingCapacity`. Each regression failed on the corresponding uncorrected path.
+- Eight Chromium parking tests passed, including all 90 rows of a saved desktop grid on a phone. The full browser suite on the same web assets passed 1,167 tests with one optional skip.
+
 ## Delivery slices
 
 Deliver native Codex resume independently (PKR-002). The terminal delivery (PKR-001) includes the original pre-stop snapshot, phone geometry, and recovery through the resumed host's first snapshot. Subsequent deliveries cover goal continuation and parking eligibility (PKR-003 and PKR-004), then recovery of pre-upgrade screens. The earlier combined-head evidence describes development verification across these slices.
 
 The native-resume regression checks the rollout in the native launch and reads the first and second user prompts from its on-disk history. It also exercises absent IDs and an older lineage entry. No paid provider is involved.
 
-The terminal review of `50880f241` confirmed that reopening during account selection preserves the committed grid. It found that after a cold restart the viewer arriving between recording a spawning attempt and attaching its host could see an empty grid. The terminal slice will restore the capture before the next launch can record an attempt and verify that precise interval.
+The terminal review of `50880f241` confirmed that reopening during account selection preserves the committed grid. It found that after a cold restart the viewer arriving between recording a spawning attempt and attaching its host could see an empty grid. The terminal readers select the preceding committed capture until the resumed host publishes its first snapshot. A separate capacity retry must keep the held prompt if it cannot read the provider session identity.

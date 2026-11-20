@@ -6,6 +6,9 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-20
 
+- Newly parked tasks show their last agent screen, idle duration and resume instructions
+  on the task page and through `task_screen` (SPEC-558, #1490).
+
 - Messaging a parked Codex task resumes the recorded rollout, including after a server restart
   interrupted session bookkeeping (SPEC-558, #1490).
 

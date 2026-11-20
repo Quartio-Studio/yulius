@@ -10,7 +10,6 @@
 //! - nothing is changed: the checkout is read as it is (no fetch); the answer says when it was
 //!   last fetched.
 
-use std::path::Path;
 use std::sync::Arc;
 
 use serde_json::{Value, json};
@@ -64,7 +63,8 @@ impl App {
             })
             .clamp(1, MAX_SCREEN_LINES);
         let task = self.agent_task_ref(project, args).await?;
-        let last = self.deps.store.attempts(&task.id).await?.pop();
+        let attempts = self.deps.store.attempts(&task.id).await?;
+        let last = attempts.last();
         let runtime = self.runtime(&task.id);
         let live = self.deps.store.live_attempt(&task.id).await?;
         // A run still starting shows nothing of its own yet: not the screen the run before
@@ -72,20 +72,22 @@ impl App {
         let starting = live
             .as_ref()
             .is_some_and(|run| run.state != yulius_domain::task::AttemptState::Live);
-        let (screen, from) = if starting {
-            (String::new(), "starting")
-        } else if live.is_some() && runtime.hub.has_output() {
+        let (screen, from) = if live.is_some() && runtime.hub.grid_state().1 {
+            (runtime.hub.screen_text(), "last run")
+        } else if !starting && live.is_some() && runtime.hub.has_output() {
             (runtime.hub.screen_text(), "live")
-        } else if let Some((cols, rows, bytes)) = last
-            .as_ref()
-            .and_then(|run| crate::supervisor::read_final_screen(Path::new(&run.run_dir)))
+        } else if (live.is_none() || !runtime.hub.initialized())
+            && let Some(saved) = self.visible_ended_screen(&task, &attempts).await
         {
+            let (cols, rows, bytes) = saved.grid;
             // Redacted again: the saved screen is read outside the terminal's own redactor.
             let scrub = crate::vault::TerminalScrub::default();
             let shown = self.terminal_snapshot(&scrub, &sandbox.id, &bytes).await;
             let hub = crate::hub::Hub::new(cols, rows);
             hub.reset(1, &shown, cols, rows);
             (hub.screen_text(), "last run")
+        } else if starting {
+            (String::new(), "starting")
         } else {
             (String::new(), "none")
         };

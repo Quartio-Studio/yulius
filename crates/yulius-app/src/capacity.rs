@@ -927,8 +927,9 @@ impl App {
                     // The start ends the pause once it is made or waits in the queue
                     // (`start_run`); one that is refused (the queue is full) leaves it open.
                     let start = match store.provider_sessions(&task.id).await {
-                        _ if pause.kind == PauseKind::Prompt
-                            && self.held_opening(&task.id).await =>
+                        Ok(_)
+                            if pause.kind == PauseKind::Prompt
+                                && self.held_opening(&task.id).await =>
                         {
                             RunStart::Fresh { prompt: None }
                         }
@@ -938,9 +939,13 @@ impl App {
                         Ok(lineage) if !lineage.is_empty() => RunStart::Resume {
                             prompt: pause.continuation.clone(),
                         },
-                        _ => RunStart::Fresh {
+                        Ok(_) => RunStart::Fresh {
                             prompt: pause.continuation.clone(),
                         },
+                        Err(err) => {
+                            tracing::warn!(error = %err, task = %task.id, "cannot select a session for the capacity retry");
+                            return Resume::Waiting(None);
+                        }
                     };
                     if let Err(err) = self.start_run(&task.id, start, account).await {
                         tracing::warn!(error = %err, task = %task.id, "paused task failed to start");
