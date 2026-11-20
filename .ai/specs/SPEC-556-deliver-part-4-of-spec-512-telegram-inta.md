@@ -38,22 +38,25 @@ head on its own branch.
   at 72, 0074 at 73, 0075 at 74) with 0073 last, at 75.
 - **DLV-004** (review round 1) A chat's intake messages are handled one at a time in the order
   sent; a whole poll answer (20) waits its turn; a message past that is not dropped silently: it
-  is logged and the chat is told, once per quiet window. `/start` with intake on gets the intake
-  help.
+  is logged and the chat is told, once per quiet window. A waiting message runs only if the link
+  it came through still holds with intake on when its turn comes (round 2). `/start` with intake
+  on gets the intake help.
 
 ## Plan
 
-- [x] Branch carries task #494's approved part 4 head
+- [x] Branch carries task #494's part 4 head
 - [x] Touched tests, clippy and repository checks pass
 - [x] Evidence recorded and the head handed to an independent review
 - [x] A chat's intake lane holds a whole poll answer in order and tells what it drops
 - [x] Round 1's findings answered and the head handed to review round 2
+- [x] Dev merged: 0073 at schema version 75, the affected tests rerun
+- [x] Round 2's findings answered and the head handed to review round 3
 
 ## Acceptance criteria
 
 - [x] `git diff origin/dev..HEAD` holds part 4, round 1's fixes and this spec (DLV-001, DLV-002).
-- [x] A full poll answer from one chat starts its tasks in order; one past the bound is answered
-  (DLV-004).
+- [x] A full poll answer from one chat starts its tasks in order; one past the bound is answered;
+  intake off or `/stop` ends what waits (DLV-004).
 - [x] The tests part 4 touches pass on this head (DLV-001, DLV-003).
 - [x] This head is handed to an independent review (`yulius-reviewer`) that knows task #494's
   rounds.
@@ -129,3 +132,28 @@ round.
 0073. Resolved keeping both: `dev`'s first, 0073 last at schema version 75; the pinned test and
 `MIGRATIONS.len()` follow, and 0073's header comment and ADR-0392 say version 75. No other file
 conflicted.
+
+Tests on the merged head 27956906d (side worktree, own target): `telegram::` 33, `task_message::`
+33, `yulius-store --lib` 100, `wiring::telegram` 11, `yulius-app --lib -- telegram notify` 3,
+clippy `-D warnings` and `fmt --check` clean, `telegram.e2e.ts` 6 passed. `check_repository.py`
+failed: the union merge put ADR-0392's index line after 0385; moved after 0390 (fe7360834),
+then passed.
+
+### Review round 2 (head 4799058c6, CHANGES REQUESTED), answered test-first
+
+Round 1's findings were all confirmed resolved (the three lane mutations killed in the
+reviewer's copy).
+
+| Finding | Change | Test |
+|---|---|---|
+| Blocker: CI `quality` failed at `cargo doc`: `INTAKE_FULL_REPLY`'s doc linked the private `QUIET_MS` | plain backticks | `cargo doc --locked --workspace --all-features --no-deps` (failed before, passes) |
+| Blocker: `dev` took schema versions 73 and 74 | the merge above: 0073 at 75, pinned `(75, 0073)`, `MIGRATIONS.len() == 75`, header comment and ADR-0392 | `cargo test -p yulius-store --lib` 100 passed |
+| Minor: a waiting message ran under the link as it was at receipt, so intake off or `/stop` still started up to 20 tasks | `intake_in_turn`: the worker re-reads the chat's link before each message; same link with intake on runs it, intake off gets the help, no link the unlinked reply (both at most every 10 minutes), another link nothing | `telegram::intake_off_or_stop_ends_what_waits_in_the_lane` (a held photo with one waiting, then intake off; then on another chat `/stop`: the waiting ones start nothing and get the help and the unlinked reply; failed before the fix) |
+| Nit: `docs/api.md` lacked the lane | the intake row says it | by reading |
+| Nit: the Plan said "approved part 4 head" | reworded | by reading |
+| Nit: the full-lane answer shares the chat's quiet slot with the help | kept: that slot is what bounds what one chat can put in the shared send queue; a suppressed notice is still logged | — |
+| Nit: a worker that panics loses its waiting messages without an answer | kept: `telegram_intake` returns errors rather than panicking, and an error is answered; the next message starts a new lane (`Closed`) | — |
+
+After the fix (head with fe7360834 and these documents): `telegram::` 34 passed; the three lane
+tests 12 runs in a row without a failure; `cargo doc --locked --workspace --all-features
+--no-deps`, clippy `-D warnings` and `fmt --check` clean; `check_repository.py` passed.

@@ -2881,7 +2881,8 @@ Each person can get their notifications in their own Telegram chat
   500 per chat, and the bot's own answers about a task too. With the person's `intake` on,
   `on_inbound` hands a message to the chat's lane, a queue with one worker that runs
   `App::telegram_intake` for each message in order (20 waiting at most, a whole poll answer; one
-  past that is logged and the chat told, once per quiet window), so the poll goes on: a reply to a remembered message is
+  past that is logged and the chat told, once per quiet window; each re-reads the chat's link
+  first, so intake off or `/stop` ends what waits), so the poll goes on: a reply to a remembered message is
   `App::task_message_as` from a `ProjectCaller` for the person (`Channel::Telegram`, every guard
   of their own agent's, the request's `at` passed to `answer_needs_you`); a reply to any other
   message starts nothing; `/status` lists what waits for them; any other message (an album merged
