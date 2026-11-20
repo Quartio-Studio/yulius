@@ -86,8 +86,12 @@ async fn established_direct_connect_carries_queued_and_fresh_bytes_across_server
         seed(dir.path())?;
         let mut client = BufReader::new(TcpStream::connect(internal).await?);
         let auth = base64::engine::general_purpose::STANDARD.encode(format!("fixture:{TOKEN}"));
-        let head = format!("CONNECT {target} HTTP/1.1\r\nHost: {target}\r\nProxy-Authorization: Basic {auth}\r\n\r\nEARL");
-        client.get_mut().write_all(head.as_bytes()).await?;
+        let header_padding = "x".repeat(20 * 1024);
+        let early: Vec<u8> = (b'a'..=b'w').cycle().take(96 * 1024).collect();
+        let head = format!("CONNECT {target} HTTP/1.1\r\nHost: {target}\r\nProxy-Authorization: Basic {auth}\r\nFixture-Padding: {header_padding}\r\n\r\nEARL");
+        let mut request = head.into_bytes();
+        request.extend_from_slice(&early);
+        client.get_mut().write_all(&request).await?;
         let mut line = String::new();
         client.read_line(&mut line).await?;
         assert!(line.starts_with("HTTP/1.1 200"), "{line}");
@@ -111,6 +115,9 @@ async fn established_direct_connect_carries_queued_and_fresh_bytes_across_server
         assert_eq!(queued.to_be_bytes(), *b"DOWN");
         client.get_mut().write_all(b"NEXT").await?;
         client.get_mut().shutdown().await?;
+        let mut received = vec![0; early.len()];
+        peer.read_exact(&mut received).await?;
+        assert_eq!(received, early, "all early payload bytes arrived once, in order");
         assert_eq!(peer.read_u32().await?.to_be_bytes(), *b"NEXT");
         assert_eq!(peer.read(&mut [0]).await?, 0);
         peer.write_all(b"LAST").await?;

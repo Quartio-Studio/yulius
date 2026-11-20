@@ -71,33 +71,23 @@ impl Direction {
 }
 
 impl CopyState {
-    /// Start with bytes already read from the client when its CONNECT was upgraded.
-    /// Keep one buffer in the copy. If Hyper prefetched more, forward the excess while
-    /// continuing the reverse direction, then the established state fits the normal bound.
+    /// Maximum pending bytes in each direction, including HTTP upgrade lookahead.
+    pub const BUFFER_BYTES: usize = BUFFER_BYTES;
+
+    /// Begin with the opaque bytes already read by the HTTP listener after the headers.
+    /// No forwarding has to complete before the connection can accept a checkpoint.
     ///
     /// # Errors
-    /// Propagates errors forwarding the prefix or the peer's reply.
-    pub async fn with_prefix<A, B>(client: &mut A, peer: &mut B, prefix: &[u8]) -> io::Result<Self>
-    where
-        A: AsyncRead + AsyncWrite + Unpin,
-        B: AsyncRead + AsyncWrite + Unpin,
-    {
-        let mut state = Self::default();
-        let (leading, pending) = prefix.split_at(prefix.len().saturating_sub(BUFFER_BYTES));
-        state.to_peer.pending.get_mut().extend_from_slice(pending);
-        if !leading.is_empty() {
-            let (_, client_write) = split(client);
-            let (peer_read, mut peer_write) = split(peer);
-            let write = peer_write.write_all(leading);
-            tokio::pin!(write);
-            tokio::select! {
-                result = &mut write => result?,
-                result = state.to_client.transfer(peer_read, client_write) => {
-                    result?;
-                    write.await?;
-                }
-            }
+    /// Rejects a prefix larger than the listener's single-read bound.
+    pub fn from_prefix(prefix: &[u8]) -> io::Result<Self> {
+        if prefix.len() > BUFFER_BYTES {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "CONNECT lookahead exceeds the copy buffer",
+            ));
         }
+        let mut state = Self::default();
+        state.to_peer.pending.get_mut().extend_from_slice(prefix);
         Ok(state)
     }
 
@@ -225,31 +215,34 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_large_preread_prefix_allows_a_reply_under_backpressure() -> io::Result<()> {
+    async fn a_stalled_maximum_upgrade_prefix_checkpoints_while_the_peer_can_reply()
+    -> io::Result<()> {
         let (mut client, mut left) = duplex(4);
         let (mut right, mut peer) = duplex(4);
-        let prefix = vec![b'X'; super::BUFFER_BYTES + 12];
+        let prefix = vec![b'X'; CopyState::BUFFER_BYTES];
+        assert!(CopyState::from_prefix(&vec![0; CopyState::BUFFER_BYTES + 1]).is_err());
         peer.write_all(b"HELO").await?;
-        let setup = async {
-            let mut copy = CopyState::with_prefix(&mut left, &mut right, &prefix).await?;
-            copy.transfer(&mut left, &mut right).await
-        };
-        let exchange = async {
-            assert_eq!(client.read_u32().await?.to_be_bytes(), *b"HELO");
-            client.write_all(b"TAIL").await?;
-            client.shutdown().await?;
-            peer.shutdown().await?;
-            let mut received = Vec::new();
-            peer.read_to_end(&mut received).await?;
-            assert_eq!(received.len(), prefix.len() + 4);
-            assert!(received.starts_with(&prefix));
-            assert!(received.ends_with(b"TAIL"));
-            Ok::<_, io::Error>(())
-        };
-        tokio::time::timeout(Duration::from_secs(2), async {
-            tokio::try_join!(setup, exchange)
+        let mut copy = CopyState::from_prefix(&prefix)?;
+        pause(copy.transfer(&mut left, &mut right)).await;
+        assert_eq!(client.read_u32().await?.to_be_bytes(), *b"HELO");
+        // The destination is full, with most of the original header's lookahead still pending.
+        let mut encoded = Vec::new();
+        copy.encode(&mut encoded)?;
+        let mut resumed = CopyState::decode(&encoded)?;
+        client.write_all(b"TAIL").await?;
+        client.shutdown().await?;
+        peer.shutdown().await?;
+        let mut received = Vec::new();
+        tokio::time::timeout(Duration::from_secs(3), async {
+            tokio::try_join!(
+                resumed.transfer(&mut left, &mut right),
+                peer.read_to_end(&mut received)
+            )
         })
         .await??;
+        assert_eq!(received.len(), prefix.len() + 4);
+        assert!(received.starts_with(&prefix));
+        assert!(received.ends_with(b"TAIL"));
         Ok(())
     }
 

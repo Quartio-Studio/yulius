@@ -3,7 +3,7 @@ use std::io;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
-use yulius_sandbox::relay::custodian::{Pair, monotonic_ms};
+use yulius_sandbox::relay::custodian::{Pair, collect, monotonic_ms};
 
 use super::{
     Arc, Bytes, CONNECTION_MAX, CopyState, EgressProxy, PoisonError, Slot, SocketAddr, TcpStream,
@@ -17,7 +17,6 @@ struct Ownership {
     sandbox: String,
     run: String,
     last: u64,
-    expires: u64,
 }
 
 fn invalid() -> io::Error {
@@ -41,7 +40,13 @@ fn register(slot: &Slot) -> Option<oneshot::Receiver<oneshot::Sender<Pair>>> {
         .table
         .lock()
         .unwrap_or_else(PoisonError::into_inner);
-    let (_, control) = table.controls_mut().find(|(id, _)| *id == slot.id)?;
+    if table.stopped {
+        return None;
+    }
+    let (_, control) = table
+        .connections
+        .controls_mut()
+        .find(|(id, _)| *id == slot.id)?;
     let (capture, request) = oneshot::channel();
     control.capture = Some(capture);
     Some(request)
@@ -72,13 +77,13 @@ impl Tunnel {
             sandbox: slot.sandbox.clone(),
             run: self.run,
             last: slot.activity.last(),
-            expires: self.expires,
         };
         let mut state = b"OP1\n".to_vec();
         serde_json::to_writer(&mut state, &owner)?;
         state.push(b'\n');
         self.copy.encode(&mut state)?;
         let pair = Pair {
+            expires: Some(self.expires),
             sockets: [
                 self.client.into_std()?.into(),
                 upstream.inner.into_std()?.into(),
@@ -92,11 +97,11 @@ impl Tunnel {
 
 // Axum's auto server wraps the IO. The standalone HTTP/1 server passes it to Hyper directly.
 fn tcp_upgrade(upgraded: Upgraded) -> Result<(TcpStream, Bytes), Upgraded> {
-    match hyper_util::server::conn::auto::upgrade::downcast::<TokioIo<TcpStream>>(upgraded) {
-        Ok(parts) => Ok((parts.io.into_inner(), parts.read_buf)),
+    match hyper_util::server::conn::auto::upgrade::downcast::<TokioIo<crate::HttpInput>>(upgraded) {
+        Ok(parts) => Ok((parts.io.into_inner().0, parts.read_buf)),
         Err(upgraded) => upgraded
-            .downcast::<TokioIo<TcpStream>>()
-            .map(|parts| (parts.io.into_inner(), parts.read_buf)),
+            .downcast::<TokioIo<crate::HttpInput>>()
+            .map(|parts| (parts.io.into_inner().0, parts.read_buf)),
     }
 }
 
@@ -106,7 +111,7 @@ pub(super) async fn agent_tunnel(
     slot: Slot,
     run: &str,
 ) {
-    let (mut client, prefix) = match tcp_upgrade(upgraded) {
+    let (client, prefix) = match tcp_upgrade(upgraded) {
         Ok(parts) => parts,
         Err(upgraded) => return super::tunnel(addrs, upgraded, slot).await,
     };
@@ -115,13 +120,7 @@ pub(super) async fn agent_tunnel(
     };
     let expires = monotonic_ms()
         .saturating_add(u64::try_from(CONNECTION_MAX.as_millis()).unwrap_or(u64::MAX));
-    let mut upstream = Tracked::new(upstream, &slot);
-    let Ok(Ok(copy)) = tokio::time::timeout(
-        CONNECTION_MAX,
-        CopyState::with_prefix(&mut client, &mut upstream, &prefix),
-    )
-    .await
-    else {
+    let Ok(copy) = CopyState::from_prefix(&prefix) else {
         return;
     };
     drop(prefix);
@@ -130,7 +129,7 @@ pub(super) async fn agent_tunnel(
     };
     let tunnel = Tunnel {
         client,
-        upstream: upstream.inner,
+        upstream,
         copy,
         run: run.to_owned(),
         expires,
@@ -145,23 +144,25 @@ impl EgressProxy {
     /// # Errors
     /// Returns a timeout if the copies do not yield within the shutdown bound.
     pub async fn take_opaque_tunnels(&self) -> io::Result<Vec<Pair>> {
-        let replies: Vec<_> = self
-            .slots
-            .table
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .controls_mut()
-            .filter_map(|(_, control)| {
-                let capture = control.capture.take()?;
-                let (reply, receive) = oneshot::channel();
-                capture.send(reply).ok()?;
-                Some(receive)
-            })
-            .collect();
-        let results =
-            tokio::time::timeout(Duration::from_secs(5), futures::future::join_all(replies))
-                .await?;
-        Ok(results.into_iter().filter_map(Result::ok).collect())
+        let replies: Vec<_> = {
+            let mut admissions = self
+                .slots
+                .table
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            admissions.stopped = true;
+            admissions
+                .connections
+                .controls_mut()
+                .filter_map(|(_, control)| {
+                    let capture = control.capture.take()?;
+                    let (reply, receive) = oneshot::channel();
+                    capture.send(reply).ok()?;
+                    Some(receive)
+                })
+                .collect()
+        };
+        tokio::time::timeout(Duration::from_secs(5), collect(replies)).await?
     }
 
     /// Reattach one established TCP copy before opening the replacement's HTTP listeners.
@@ -173,7 +174,8 @@ impl EgressProxy {
         let state = pair.state.strip_prefix(b"OP1\n").ok_or_else(invalid)?;
         let at = state.iter().position(|b| *b == b'\n').ok_or_else(invalid)?;
         let owner: Ownership = serde_json::from_slice(&state[..at])?;
-        remaining(owner.expires, monotonic_ms())?;
+        let expires = pair.expires.ok_or_else(invalid)?;
+        remaining(expires, monotonic_ms())?;
         if owner.last > monotonic_ms() {
             return Err(invalid());
         }
@@ -193,18 +195,25 @@ impl EgressProxy {
             _end: end,
             capture: Some(capture),
         };
-        let admitted = self
-            .slots
-            .table
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .restore_by(
-                owner.sandbox.clone(),
-                owner.run.clone(),
-                control,
-                owner.last,
-            )
-            .map_err(io::Error::other)?;
+        let admitted = {
+            let mut admissions = self
+                .slots
+                .table
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            if admissions.stopped {
+                return Err(io::ErrorKind::BrokenPipe.into());
+            }
+            admissions
+                .connections
+                .restore_by(
+                    owner.sandbox.clone(),
+                    owner.run.clone(),
+                    control,
+                    owner.last,
+                )
+                .map_err(io::Error::other)?
+        };
         let slot = Slot {
             slots: Arc::clone(&self.slots),
             id: admitted.id,
@@ -216,7 +225,7 @@ impl EgressProxy {
             upstream,
             copy,
             run: owner.run,
-            expires: owner.expires,
+            expires,
         };
         tokio::spawn(async move {
             tokio::select! { _ = tunnel.transfer(slot, request) => {}, _ = ended => {} }
@@ -228,6 +237,26 @@ impl EgressProxy {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // HTTP/1 stops parsing at the end of the CONNECT headers. A read that straddles that
+    // boundary must leave no more private bytes in Hyper than one copy direction can retain.
+    #[tokio::test]
+    async fn internal_tcp_reads_bound_the_prefix_while_excess_bytes_stay_in_the_kernel()
+    -> io::Result<()> {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let mut peer = TcpStream::connect(listener.local_addr()?).await?;
+        let (socket, _) = listener.accept().await?;
+        let mut input = crate::HttpInput(socket);
+        let marker = vec![0x73; 32768];
+        peer.write_all(&marker).await?;
+        let mut buf = vec![0; marker.len()];
+        let n = input.read(&mut buf).await?;
+        assert!(n <= 8192, "HTTP upgrade prefetched {n} bytes");
+        input.read_exact(&mut buf[n..]).await?;
+        assert_eq!(buf, marker);
+        Ok(())
+    }
 
     #[test]
     fn the_original_lifetime_bounds_both_sides_of_a_restart() -> io::Result<()> {

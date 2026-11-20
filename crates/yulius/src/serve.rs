@@ -725,8 +725,12 @@ pub async fn serve(args: ServeArgs) -> Result<(), String> {
     .into_make_service_with_connect_info::<SocketAddr>();
     let public_task = axum::serve(public.tap_io(no_delay), public_router)
         .with_graceful_shutdown(shutdown_signal());
-    let internal_task = axum::serve(internal.tap_io(no_delay), internal_router)
-        .with_graceful_shutdown(shutdown_signal());
+    #[cfg(target_os = "linux")]
+    let internal = InternalListener(internal).tap_io(|io| no_delay(&mut io.0));
+    #[cfg(not(target_os = "linux"))]
+    let internal = internal.tap_io(no_delay);
+    let internal_task =
+        axum::serve(internal, internal_router).with_graceful_shutdown(shutdown_signal());
     let (a, b) = tokio::join!(public_task, internal_task);
     #[cfg(target_os = "linux")]
     if let Some(directory) = &direct_handoff
@@ -774,6 +778,24 @@ pub async fn backup(data_dir: PathBuf, dest: PathBuf) -> Result<(), String> {
     store.backup_to(&dest).await.map_err(|e| e.to_string())?;
     println!("database copied to {}", dest.display());
     Ok(())
+}
+
+#[cfg(target_os = "linux")]
+struct InternalListener(tokio::net::TcpListener);
+
+#[cfg(target_os = "linux")]
+impl axum::serve::Listener for InternalListener {
+    type Io = yulius_egress::HttpInput;
+    type Addr = SocketAddr;
+
+    async fn accept(&mut self) -> (Self::Io, Self::Addr) {
+        let (tcp, address) = axum::serve::Listener::accept(&mut self.0).await;
+        (yulius_egress::HttpInput(tcp), address)
+    }
+
+    fn local_addr(&self) -> std::io::Result<Self::Addr> {
+        self.0.local_addr()
+    }
 }
 
 /// Sends small writes at once (#29). A keystroke's echo is one small WebSocket frame; with

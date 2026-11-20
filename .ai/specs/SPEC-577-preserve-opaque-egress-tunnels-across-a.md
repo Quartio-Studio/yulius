@@ -215,3 +215,21 @@ without adoption support or a remote peer that times out can end a tunnel.
   A service subtree with no enabled controllers and a standalone process keep their
   existing placement. This sandbox has no cgroup filesystem or systemd PID 1, so placement is
   tested with synthetic cgroup files. The two-process socket test runs real Linux binaries.
+- Independent review of direct handoff at `cf48719473` reproduced a lost tunnel when an
+  early CONNECT payload exceeded one copy buffer and the upstream write stalled. A real
+  TCP read took 32,768 bytes on that head. Linux internal HTTP now reads at most 8 KiB per
+  poll. A complete upgrade prefix fits the copy state, so the proxy registers the sockets
+  before forwarding either way. Extra bytes stay on the original socket.
+- A browser arrived after shutdown requested a full proxy's only slot and received HTTP 200.
+  The regression now observes 503 and exchanges bytes on the original restored agent socket.
+  Stopping admissions and claiming eligible records use the same table lock. The eligibility
+  fixture completes intercepted TLS with synthetic host-bound injection and reflected-value
+  redaction, and establishes real opaque streams for the agent, CI, superagent and browser.
+  Broadening eligibility to all authenticated callers yielded three records. With the agent
+  check in place it yields exactly the agent's two original TCP endpoints.
+- A tunnel's original deadline elapsed while a helper waited for a successor. The peers
+  stayed open beyond the test's timeout. Two further regressions timed out on peer closure
+  during capture and on listener cleanup after the last pair expired. The handoff now carries
+  a per-pair monotonic deadline. The collector, sender, helper and receiver all enforce it.
+  An expired pair closes both peers, surviving records retain admission order, and the last
+  expiry releases the waiting helper's listener and directory lock.

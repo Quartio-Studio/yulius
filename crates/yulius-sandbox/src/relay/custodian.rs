@@ -2,7 +2,8 @@
 //!
 //! The original server sends a batch on an inherited Unix stream. Each 'P' carries two
 //! connected descriptors via SCM_RIGHTS, then a big-endian u32 and that many bytes of
-//! private copy state. 'E' ends the batch. The helper acknowledges with 'E' after binding
+//! private copy state. A 'D' record adds the original monotonic deadline (u64) before
+//! the state size. 'E' ends the batch. The helper acknowledges with 'E' after binding
 //! the successor's listener, and sends the same batch to its single accepted successor.
 //! The successor acknowledges complete receipt with 'A'. The helper confirms with 'C'.
 //! Until confirmation the helper can shut down every stream if delivery fails or expires.
@@ -40,6 +41,8 @@ pub fn monotonic_ms() -> u64 {
 pub struct Pair {
     /// The client-side and destination-side stream, in copy order.
     pub sockets: [OwnedFd; 2],
+    /// Original Linux monotonic deadline, when the owning flow has one.
+    pub expires: Option<u64>,
     /// Caller-encoded copy cursor and admission metadata.
     pub state: Vec<u8>,
 }
@@ -63,7 +66,7 @@ fn connected(fd: &OwnedFd) -> io::Result<()> {
     }
 }
 
-async fn header(stream: &UnixStream) -> io::Result<Option<[OwnedFd; 2]>> {
+async fn header(stream: &UnixStream) -> io::Result<Option<([OwnedFd; 2], bool)>> {
     stream
         .async_io(Interest::READABLE, || {
             let mut space = [MaybeUninit::uninit(); rustix::cmsg_space!(ScmRights(2))];
@@ -88,14 +91,14 @@ async fn header(stream: &UnixStream) -> io::Result<Option<[OwnedFd; 2]>> {
             }
             match tag[0] {
                 b'E' if sockets.is_empty() => Ok(None),
-                b'P' => {
+                b'P' | b'D' => {
                     let pair: [OwnedFd; 2] = sockets
                         .try_into()
                         .map_err(|_| invalid("expected a socket pair"))?;
                     for fd in &pair {
                         connected(fd)?;
                     }
-                    Ok(Some(pair))
+                    Ok(Some((pair, tag[0] == b'D')))
                 }
                 _ => Err(invalid("unknown tunnel handoff header")),
             }
@@ -110,19 +113,32 @@ fn check_capacity(count: usize, state_bytes: usize) -> io::Result<()> {
     Ok(())
 }
 
-async fn receive(stream: &mut UnixStream) -> io::Result<Vec<Pair>> {
-    let mut pairs = Vec::new();
-    while let Some(sockets) = header(stream).await? {
-        let size = stream.read_u32().await? as usize;
-        check_capacity(pairs.len().saturating_add(1), size)?;
+async fn receive(stream: &mut UnixStream) -> io::Result<PendingDelivery> {
+    let mut pending = PendingDelivery(Vec::new());
+    while let Some((sockets, timed)) = pending.during(header(stream)).await? {
+        let expires = if timed {
+            Some(pending.during(stream.read_u64()).await?)
+        } else {
+            None
+        };
+        // Track the original deadline even while the producer is still writing the state.
+        pending.0.push(Some(Pair {
+            sockets,
+            expires,
+            state: Vec::new(),
+        }));
+        let size = pending.during(stream.read_u32()).await? as usize;
+        check_capacity(pending.0.len(), size)?;
         let mut state = vec![0; size];
-        stream.read_exact(&mut state).await?;
-        pairs.push(Pair { sockets, state });
+        pending.during(stream.read_exact(&mut state)).await?;
+        if let Some(Some(pair)) = pending.0.last_mut() {
+            pair.state = state;
+        }
     }
-    Ok(pairs)
+    Ok(pending)
 }
 
-async fn send_header(stream: &UnixStream, sockets: &[OwnedFd; 2]) -> io::Result<()> {
+async fn send_header(stream: &UnixStream, sockets: &[OwnedFd; 2], tag: u8) -> io::Result<()> {
     stream
         .async_io(Interest::WRITABLE, || {
             let mut space = [MaybeUninit::uninit(); rustix::cmsg_space!(ScmRights(2))];
@@ -133,7 +149,7 @@ async fn send_header(stream: &UnixStream, sockets: &[OwnedFd; 2]) -> io::Result<
             }
             if net::sendmsg(
                 stream,
-                &[IoSlice::new(b"P")],
+                &[IoSlice::new(&[tag])],
                 &mut ancillary,
                 SendFlags::NOSIGNAL,
             )? != 1
@@ -145,15 +161,16 @@ async fn send_header(stream: &UnixStream, sockets: &[OwnedFd; 2]) -> io::Result<
         .await
 }
 
-async fn send(stream: &mut UnixStream, pairs: &[Pair]) -> io::Result<()> {
-    for Pair { sockets, state } in pairs {
-        send_header(stream, sockets).await?;
-        stream
-            .write_u32(u32::try_from(state.len()).map_err(|_| invalid("copy state too large"))?)
-            .await?;
-        stream.write_all(state).await?;
+async fn send_record(stream: &mut UnixStream, pair: &Pair) -> io::Result<()> {
+    let tag = if pair.expires.is_some() { b'D' } else { b'P' };
+    send_header(stream, &pair.sockets, tag).await?;
+    if let Some(expires) = pair.expires {
+        stream.write_u64(expires).await?;
     }
-    stream.write_all(b"E").await
+    stream
+        .write_u32(u32::try_from(pair.state.len()).map_err(|_| invalid("copy state too large"))?)
+        .await?;
+    stream.write_all(&pair.state).await
 }
 
 struct SocketPath {
@@ -211,14 +228,81 @@ fn service_peer(stream: &UnixStream, owner: u32) -> io::Result<()> {
 // SCM_RIGHTS already queued to a stalled receiver can outlive the sending control socket.
 // Retain the original endpoints until confirmation so an incomplete transfer can close
 // both halves even if a duplicate is still in the receiver's queue or descriptor table.
-struct PendingDelivery(Vec<Pair>);
+struct PendingDelivery(Vec<Option<Pair>>);
+
+fn shut_down(pair: &Pair) {
+    for socket in &pair.sockets {
+        let _ = net::shutdown(socket, net::Shutdown::Both);
+    }
+}
+
+impl PendingDelivery {
+    // A pair that expires releases its state and both original handles. Shutdown also
+    // reaches any rights already queued at the receiving process.
+    fn expire(&mut self) -> Option<Duration> {
+        let now = monotonic_ms();
+        let mut next = None;
+        for slot in &mut self.0 {
+            if let Some(expires) = slot.as_ref().and_then(|p| p.expires) {
+                if expires <= now {
+                    if let Some(pair) = slot.take() {
+                        shut_down(&pair);
+                    }
+                } else {
+                    next = Some(next.map_or(expires, |old: u64| old.min(expires)));
+                }
+            }
+        }
+        next.map(|end| Duration::from_millis(end - now))
+    }
+
+    // Receipt, accept, send and confirmation all run under the original per-pair clocks.
+    async fn during<T>(&mut self, operation: impl Future<Output = io::Result<T>>) -> io::Result<T> {
+        tokio::pin!(operation);
+        loop {
+            let Some(wait) = self.expire() else {
+                return operation.await;
+            };
+            tokio::select! {
+                biased;
+                () = tokio::time::sleep(wait) => {}
+                result = &mut operation => return result,
+            }
+        }
+    }
+
+    async fn send(&mut self, stream: &mut UnixStream) -> io::Result<()> {
+        for index in 0..self.0.len() {
+            self.expire();
+            let Some(pair) = &mut self.0[index] else {
+                continue;
+            };
+            // Only the record being written has transient duplicates. All originals remain
+            // available for shutdown if the successor stalls in the middle of this frame.
+            let [left, right] = &pair.sockets;
+            let sending = Pair {
+                sockets: [
+                    left.as_fd().try_clone_to_owned()?,
+                    right.as_fd().try_clone_to_owned()?,
+                ],
+                expires: pair.expires,
+                state: std::mem::take(&mut pair.state),
+            };
+            self.during(send_record(stream, &sending)).await?;
+        }
+        self.during(stream.write_all(b"E")).await
+    }
+
+    fn release(mut self) -> Vec<Pair> {
+        self.expire();
+        std::mem::take(&mut self.0).into_iter().flatten().collect()
+    }
+}
 
 impl Drop for PendingDelivery {
     fn drop(&mut self) {
-        for pair in &self.0 {
-            for socket in &pair.sockets {
-                let _ = net::shutdown(socket, net::Shutdown::Both);
-            }
+        for pair in self.0.iter().flatten() {
+            shut_down(pair);
         }
     }
 }
@@ -227,7 +311,7 @@ async fn hold(control: &mut UnixStream, directory: &Path) -> io::Result<()> {
     let owner = private_directory(directory)?;
     service_peer(control, owner)?;
     let lock = lock_directory(directory)?;
-    let pairs = receive(control).await?;
+    let mut pending = receive(control).await?;
     let path = directory.join("tunnels.sock");
     remove_stale_socket(&path)?;
     let listener = UnixListener::bind(&path)?;
@@ -235,20 +319,37 @@ async fn hold(control: &mut UnixStream, directory: &Path) -> io::Result<()> {
         inode: fs::symlink_metadata(&path)?.ino(),
         path,
     };
-    control.write_all(b"E").await?;
-    let (mut successor, _) = listener.accept().await?;
+    pending.during(control.write_all(b"E")).await?;
+    // Once every original expires there is no batch left for a successor. An untimed
+    // record keeps the listener available until the helper's overall deadline.
+    let mut last = Some(0);
+    for pair in pending.0.iter().flatten() {
+        last = last
+            .zip(pair.expires)
+            .map(|(end, expires)| end.max(expires));
+    }
+    let accepted = if let Some(last) = last {
+        let wait = Duration::from_millis(last.saturating_sub(monotonic_ms()));
+        let Ok(accepted) = tokio::time::timeout(wait, pending.during(listener.accept())).await
+        else {
+            return Ok(());
+        };
+        accepted?
+    } else {
+        pending.during(listener.accept()).await?
+    };
+    let (mut successor, _) = accepted;
     drop(listener);
     drop(guard);
     service_peer(&successor, owner)?;
     // Keep the helper's one place through a stalled transfer. Bound its kernel send queue
     // as well as the batch it holds in memory.
     net::sockopt::set_socket_send_buffer_size(&successor, MAX_STATE)?;
-    let mut pending = PendingDelivery(pairs);
-    send(&mut successor, &pending.0).await?;
-    if successor.read_u8().await? != b'A' {
+    pending.send(&mut successor).await?;
+    if pending.during(successor.read_u8()).await? != b'A' {
         return Err(invalid("batch receipt was not acknowledged"));
     }
-    successor.write_all(b"C").await?;
+    pending.during(successor.write_all(b"C")).await?;
     pending.0.clear(); // Confirmed. Release our originals without shutting down the sockets.
     drop(lock);
     Ok(())
@@ -283,6 +384,28 @@ pub fn run(directory: &Path) -> io::Result<()> {
         })
 }
 
+/// Collect the replies to a bounded capture in admission order. Keep each original
+/// deadline running while other copies finish pausing. Dropped senders yield no pair.
+///
+/// # Errors
+/// Rejects too many captures or a failed collection task. The caller bounds the whole wait.
+pub async fn collect(replies: Vec<tokio::sync::oneshot::Receiver<Pair>>) -> io::Result<Vec<Pair>> {
+    check_capacity(replies.len(), 0)?;
+    let mut pending = PendingDelivery((0..replies.len()).map(|_| None).collect());
+    let mut waiting = tokio::task::JoinSet::new();
+    for (index, reply) in replies.into_iter().enumerate() {
+        waiting.spawn(async move { (index, reply.await.ok()) });
+    }
+    while let Some(result) = pending
+        .during(async { Ok(waiting.join_next().await) })
+        .await?
+    {
+        let (index, pair) = result?;
+        pending.0[index] = pair;
+    }
+    Ok(pending.release())
+}
+
 /// Send a batch to a helper that survives this process. On success the helper has bound its
 /// single-consumer listener and holds all the sockets. An empty batch starts no helper.
 ///
@@ -314,10 +437,12 @@ pub async fn deposit(executable: &Path, directory: &Path, pairs: Vec<Pair>) -> i
         let _ = child.wait().await;
     });
     tokio::time::timeout(LIFETIME, async {
-        send(&mut stream, &pairs).await?;
-        if stream.read_u8().await? != b'E' {
+        let mut pending = PendingDelivery(pairs.into_iter().map(Some).collect());
+        pending.send(&mut stream).await?;
+        if pending.during(stream.read_u8()).await? != b'E' {
             return Err(invalid("handoff was not acknowledged"));
         }
+        pending.0.clear();
         Ok(())
     })
     .await?
@@ -342,12 +467,12 @@ pub async fn adopt(directory: &Path) -> io::Result<Vec<Pair>> {
             Err(error) => return Err(error),
         };
         service_peer(&stream, owner)?;
-        let pairs = receive(&mut stream).await?;
-        stream.write_all(b"A").await?;
-        if stream.read_u8().await? != b'C' {
+        let mut pairs = receive(&mut stream).await?;
+        pairs.during(stream.write_all(b"A")).await?;
+        if pairs.during(stream.read_u8()).await? != b'C' {
             return Err(invalid("adoption was not confirmed"));
         }
-        Ok(pairs)
+        Ok(pairs.release())
     })
     .await?
 }
@@ -358,6 +483,29 @@ mod tests {
     use std::fs::Permissions;
     use std::os::unix::fs::PermissionsExt as _;
 
+    #[tokio::test]
+    async fn expiry_while_another_copy_is_still_pausing_releases_both_peers() -> io::Result<()> {
+        let (send, short) = tokio::sync::oneshot::channel();
+        let (delayed, other) = tokio::sync::oneshot::channel();
+        let (left, mut client) = UnixStream::pair()?;
+        let (right, mut upstream) = UnixStream::pair()?;
+        let _ = send.send(Pair {
+            sockets: [left.into_std()?.into(), right.into_std()?.into()],
+            state: b"expired".to_vec(),
+            expires: Some(monotonic_ms() + 200),
+        });
+        let collection = tokio::spawn(collect(vec![short, other]));
+        tokio::time::timeout(Duration::from_secs(2), async {
+            assert_eq!(client.read(&mut [0]).await?, 0);
+            assert_eq!(upstream.read(&mut [0]).await?, 0);
+            io::Result::Ok(())
+        })
+        .await??;
+        assert!(!collection.is_finished());
+        drop(delayed);
+        assert!(collection.await??.is_empty());
+        Ok(())
+    }
     #[test]
     fn handoff_clock_uses_the_same_epoch_as_other_processes() -> io::Result<()> {
         use rustix::time::{ClockId, clock_gettime};
@@ -372,11 +520,19 @@ mod tests {
         Ok(())
     }
 
+    async fn send(stream: &mut UnixStream, records: &[Pair]) -> io::Result<()> {
+        for record in records {
+            send_record(stream, record).await?;
+        }
+        stream.write_all(b"E").await
+    }
+
     fn pair(state: Vec<u8>) -> io::Result<(Pair, [UnixStream; 2])> {
         let (left, a) = UnixStream::pair()?;
         let (right, b) = UnixStream::pair()?;
         Ok((
             Pair {
+                expires: None,
                 sockets: [left.into_std()?.into(), right.into_std()?.into()],
                 state,
             },
@@ -421,16 +577,36 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn last_pair_expiring_frees_the_waiting_helpers_listener_and_lock() -> io::Result<()> {
+        let dir = tempfile::tempdir()?;
+        fs::set_permissions(dir.path(), Permissions::from_mode(0o700))?;
+        let (mut old, mut control) = UnixStream::pair()?;
+        let (mut saved, mut peers) = pair(b"short".to_vec())?;
+        saved.expires = Some(monotonic_ms() + 200);
+        let path = dir.path().to_owned();
+        let helper = tokio::spawn(async move { hold(&mut control, &path).await });
+        send(&mut old, &[saved]).await?;
+        assert_eq!(old.read_u8().await?, b'E');
+        for peer in &mut peers {
+            assert_eq!(peer.read(&mut [0]).await?, 0);
+        }
+        tokio::time::timeout(Duration::from_secs(2), helper).await???;
+        assert!(!dir.path().join("tunnels.sock").exists());
+        lock_directory(dir.path())?;
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn a_short_or_oversize_record_drops_the_whole_batch() -> io::Result<()> {
         for size in [MAX_STATE + 1, 10] {
             let (mut source, mut dest) = UnixStream::pair()?;
             let (record, mut peers) = pair(Vec::new())?;
             let (previous, mut previous_peers) = pair(Vec::new())?;
-            send_header(&source, &previous.sockets).await?;
+            send_header(&source, &previous.sockets, b'P').await?;
             source.write_u32(0).await?;
             drop(previous);
             // Send a real pair, then truncate the state or declare more than the limit.
-            send_header(&source, &record.sockets).await?;
+            send_header(&source, &record.sockets, b'P').await?;
             drop(record);
             source
                 .write_u32(u32::try_from(size).map_err(io::Error::other)?)
@@ -526,7 +702,7 @@ mod tests {
         let (datagram, _peer) = std::os::unix::net::UnixDatagram::pair()?;
         let nonstream: OwnedFd = datagram.into();
         let [stream, _] = files.sockets;
-        send_header(&sender, &[stream, nonstream]).await?;
+        send_header(&sender, &[stream, nonstream], b'P').await?;
         assert!(header(&receiver).await.is_err());
         // A terminator carrying descriptors and a truncated rights array both reject the batch.
         let (record, _) = pair(vec![])?;
@@ -625,7 +801,7 @@ mod tests {
                 assert_eq!(old.read_u8().await?, b'E');
                 let mut successor = UnixStream::connect(dir.path().join("tunnels.sock")).await?;
                 // Keep the duplicate descriptors and control connection open without acknowledging.
-                let received = receive(&mut successor).await?;
+                let received = receive(&mut successor).await?.release();
                 assert_eq!(received.len(), 1);
                 let _ = expire.send(());
                 for peer in &mut peers {

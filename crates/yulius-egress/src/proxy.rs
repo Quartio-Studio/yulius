@@ -134,7 +134,7 @@ type Warned = HashMap<(&'static str, Option<String>), Instant>;
 /// sandbox (SPEC-357). Each holds the sender that ends it.
 struct Slots {
     /// By sandbox and run (`EgressClient::use_key`), SPEC-357.
-    table: Mutex<Table>,
+    table: Mutex<Admissions>,
     #[cfg(not(target_os = "linux"))]
     epoch: Instant,
     /// Where a refusing share or proxy is a trouble until it has room (SPEC-361).
@@ -149,6 +149,21 @@ struct Slots {
 
 /// The connections by sandbox and run, each with what ends it.
 type Table = Connections<String, Control, String>;
+
+struct Admissions {
+    connections: Table,
+    /// Guarded by the same lock as capture. A late browser request cannot revoke a claimed slot.
+    stopped: bool,
+}
+
+impl From<Table> for Admissions {
+    fn from(connections: Table) -> Self {
+        Self {
+            connections,
+            stopped: false,
+        }
+    }
+}
 
 struct Control {
     // Eviction drops this sender and ends the connection, including during setup.
@@ -179,6 +194,8 @@ fn table(config: &EgressConfig) -> Table {
 /// A place the table gave, or the limit met.
 type Answer = Result<Admitted<String, Control, String>, connections::Full>;
 
+type Admission = (Answer, Option<(usize, usize)>, Vec<Holder>);
+
 impl Slots {
     fn now(&self) -> u64 {
         #[cfg(target_os = "linux")]
@@ -203,8 +220,12 @@ impl Slots {
         run: &str,
         held: bool,
         end: oneshot::Sender<()>,
-    ) -> (Answer, Option<(usize, usize)>, Vec<Holder>) {
-        let mut table = self.table.lock().unwrap_or_else(PoisonError::into_inner);
+    ) -> Option<Admission> {
+        let mut admissions = self.table.lock().unwrap_or_else(PoisonError::into_inner);
+        if admissions.stopped {
+            return None;
+        }
+        let table = &mut admissions.connections;
         let (key, owner, now) = (sandbox.to_owned(), run.to_owned(), self.now());
         let admitted = if held {
             table.admit_held_by(key.clone(), owner.clone(), end.into(), now)
@@ -245,7 +266,7 @@ impl Slots {
             }
             self.health.refused(trouble, wall_ms());
         }
-        (admitted, counts, holders)
+        Some((admitted, counts, holders))
     }
 }
 
@@ -269,11 +290,12 @@ pub(crate) struct Slot {
 impl Drop for Slot {
     fn drop(&mut self) {
         let health = &self.slots.health;
-        let mut table = self
+        let mut admissions = self
             .slots
             .table
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
+        let table = &mut admissions.connections;
         table.close(self.id);
         // Counted only while a trouble is open there, under the table's lock as a refusal is
         // reported, so no close slips between a refusal and its report (SPEC-361 CHR-002, review
@@ -642,7 +664,7 @@ impl EgressProxy {
             resolve: config.resolve,
             response_head_timeout: config.response_head_timeout,
             slots: Arc::new(Slots {
-                table: Mutex::new(table),
+                table: Mutex::new(table.into()),
                 #[cfg(not(target_os = "linux"))]
                 epoch: Instant::now(),
                 health: config.health,
@@ -674,7 +696,10 @@ impl EgressProxy {
         held: bool,
     ) -> Result<(Slot, oneshot::Receiver<()>), String> {
         let (end, ended) = oneshot::channel();
-        let (admitted, counts, holders) = self.slots.admit(sandbox, run, held, end);
+        let (admitted, counts, holders) = self
+            .slots
+            .admit(sandbox, run, held, end)
+            .ok_or("Yulius egress proxy is shutting down")?;
         let mut warned = self.warned.lock().unwrap_or_else(PoisonError::into_inner);
         match admitted {
             Ok(admitted) => {
@@ -1171,6 +1196,8 @@ pub async fn serve(listener: TcpListener, proxy: Arc<EgressProxy>) {
                 let proxy = Arc::clone(&proxy);
                 async move { Ok::<_, Infallible>(proxy.handle(request).await) }
             });
+            #[cfg(target_os = "linux")]
+            let stream = crate::HttpInput(stream);
             let _ = hyper::server::conn::http1::Builder::new()
                 .serve_connection(TokioIo::new(stream), service)
                 .with_upgrades()
@@ -1212,7 +1239,7 @@ mod tests {
                 .recv_timeout(Duration::from_secs(10));
         };
         let slots = Arc::new(Slots {
-            table: Mutex::new(Connections::with_owners(4, 2, u64::MAX)),
+            table: Mutex::new(Connections::with_owners(4, 2, u64::MAX).into()),
             #[cfg(not(target_os = "linux"))]
             epoch: Instant::now(),
             health: Arc::clone(&health),
@@ -1223,7 +1250,7 @@ mod tests {
         let mut held = Vec::new();
         for _ in 0..2 {
             let (end, _ended) = oneshot::channel();
-            let admitted = slots.admit("s1", "a1", false, end).0?;
+            let admitted = slots.admit("s1", "a1", false, end).ok_or("stopped")?.0?;
             held.push(Slot {
                 slots: Arc::clone(&slots),
                 id: admitted.id,
@@ -1235,7 +1262,9 @@ mod tests {
             let slots = Arc::clone(&slots);
             std::thread::spawn(move || {
                 let (end, _ended) = oneshot::channel();
-                slots.admit("s1", "a1", false, end).0.is_err()
+                slots
+                    .admit("s1", "a1", false, end)
+                    .is_some_and(|answer| answer.0.is_err())
             })
         };
         paused_rx.recv_timeout(Duration::from_secs(10))?;
