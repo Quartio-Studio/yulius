@@ -1823,9 +1823,10 @@ fn the_capacity_view_names_providers_and_resumes_with_codex_too() -> TestResult 
     Ok(())
 }
 
-/// A cold resume uses the parked attempt's rollout even if SessionStart lost its lineage write.
+/// The terminal in #517 was erased by the CLI as it exited. Writing to that parked
+/// task continues the rollout that produced its answer.
 #[test]
-fn parked_codex_resumes_the_recorded_rollout_with_the_next_prompt() -> TestResult {
+fn parked_codex_keeps_the_answer_and_resumes_the_rollout_with_the_next_prompt() -> TestResult {
     use crate::first_message::{hooked, start_with};
     use crate::pool_supervision::{ScriptedUsage, seed};
     use crate::task_message::superagent;
@@ -1876,6 +1877,7 @@ fn parked_codex_resumes_the_recorded_rollout_with_the_next_prompt() -> TestResul
             "UPDATE attempts SET provider_session_id = ?1 WHERE id = ?2",
             [rollout_id.as_str(), run.id.as_str()],
         )?;
+        let mut viewer = app.runtime(&id).hub.watch();
         wait_for("parking", Duration::from_secs(30), || async {
             app.park_idle_sessions_now().await;
             task(&app, &id)
@@ -1883,6 +1885,36 @@ fn parked_codex_resumes_the_recorded_rollout_with_the_next_prompt() -> TestResul
                 .is_ok_and(|task| task.status == TaskStatus::Parked)
         })
         .await?;
+        // A browser attached across the park learns the grid before redrawing it.
+        let mut saw_state = false;
+        loop {
+            let frame = tokio::time::timeout(Duration::from_secs(5), viewer.recv()).await??;
+            match frame {
+                yulius_app::hub::HubFrame::State => saw_state = true,
+                yulius_app::hub::HubFrame::Snapshot { bytes, .. }
+                    if String::from_utf8_lossy(&bytes).contains("Yulius parked") =>
+                {
+                    assert!(
+                        saw_state,
+                        "parked snapshot arrived before the terminal state"
+                    );
+                    break;
+                }
+                _ => {}
+            }
+        }
+        let parked_screen = app.runtime(&id).hub.screen_text();
+        let parked_size = app.runtime(&id).hub.size();
+        assert!(
+            parked_screen.contains("ECHO: First turn"),
+            "{parked_screen}"
+        );
+        assert!(!parked_screen.contains("codex resume"), "{parked_screen}");
+        assert_eq!(
+            parked_screen.matches("Yulius parked").count(),
+            1,
+            "{parked_screen}"
+        );
         let first = app
             .deps
             .store
@@ -1896,16 +1928,47 @@ fn parked_codex_resumes_the_recorded_rollout_with_the_next_prompt() -> TestResul
             "DELETE FROM provider_sessions WHERE task_id = ?1",
             [id.as_str()],
         )?;
-        // The restarted server must reconstruct native resume from the recorded attempt.
+        // A new server has only the saved screen and the recorded attempt.
         let (app, _) = start_with(
             &data,
             &fake,
-            agent,
+            agent.clone(),
             0,
             Arc::new(ScriptedUsage::default()),
             |_| {},
         )
         .await?;
+        let ctx = admin_ctx(&app, &user).await?;
+        let terminal = app.terminal_open(&ctx, id.as_str(), Some((60, 16))).await?;
+        assert_eq!(app.runtime(&id).hub.screen_text(), parked_screen);
+        drop(terminal);
+        let remote = yulius_app::remote::RemoteCaller {
+            ctx,
+            token_id: "screen-test".into(),
+            scope: yulius_domain::permission::TokenScope::Read,
+            login: "admin".into(),
+            superagent: None,
+        };
+        let request = || serde_json::from_value(serde_json::json!({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {
+                "name": "task_screen",
+                "arguments": {"project": "acme/pool", "task_id": id.as_str()},
+                "_meta": {"yulius/structured": true}
+            }
+        }));
+        let result = app
+            .remote_mcp_handle(&remote, request()?)
+            .await
+            .and_then(|reply| reply.result)
+            .ok_or("task_screen")?;
+        let shown = support::tool_text(&result);
+        assert_eq!(shown["screen"], parked_screen.trim_end());
+        assert_eq!(shown["last_run"]["exit_reason"], "parked");
+        // Another restart: the message arrives before any viewer has loaded the capture.
+        let (app, _) = start_with(
+            &data, &fake, agent, 0, Arc::new(ScriptedUsage::default()), |_| {},
+        ).await?;
         let caller = superagent(&sandbox, &user, "admin");
         let prompt = "Second turn: answer with an echo";
         db.execute(
@@ -1934,7 +1997,41 @@ fn parked_codex_resumes_the_recorded_rollout_with_the_next_prompt() -> TestResul
             "UPDATE attempts SET provider_session_id = ?1 WHERE id = ?2",
             [session.as_str(), first.id.as_str()],
         )?;
-        let answer = app.tool_task_message(&caller, &args).await?;
+        let (reached, at) = std::sync::mpsc::channel();
+        let (go, wait) = std::sync::mpsc::channel::<()>();
+        yulius_app::race::on(
+            yulius_app::race::Point::RunRecorded,
+            Path::new(id.as_str()),
+            move || {
+                let _ = reached.send(());
+                let _ = wait.recv_timeout(Duration::from_secs(30));
+            },
+        );
+        let message = {
+            let (app, id) = (app.clone(), id.clone());
+            tokio::spawn(async move {
+                app.tool_task_message(
+                    &caller,
+                    &serde_json::json!({"task_id":id.as_str(), "text": prompt}),
+                ).await
+            })
+        };
+        tokio::task::spawn_blocking(move || at.recv_timeout(Duration::from_secs(30))).await??;
+        let cold_remote = app.remote_mcp_handle(&remote, request()?).await
+            .and_then(|reply| reply.result).ok_or("cold task_screen")?;
+        let cold_remote = support::tool_text(&cold_remote);
+        let ctx = admin_ctx(&app, &user).await?;
+        let terminal = app.terminal_open(&ctx, id.as_str(), Some((22, 5))).await?;
+        let saved = app.runtime(&id).hub.screen_text();
+        let parked_state = app.terminal_state(&id).await?;
+        let _ = go.send(());
+        let answer = message.await??;
+        assert_eq!(cold_remote["screen"], parked_screen.trim_end());
+        assert_eq!(cold_remote["screen_from"], "last run");
+        assert_eq!(saved, parked_screen);
+        assert_eq!(parked_state.size, parked_size);
+        assert!(parked_state.parked_screen);
+        drop(terminal);
         assert_eq!(answer["delivered"], "resumed");
         wait_for(
             "the answer in the resumed rollout",
@@ -1942,6 +2039,7 @@ fn parked_codex_resumes_the_recorded_rollout_with_the_next_prompt() -> TestResul
             || screen_contains(&app, &id, "Second turn: answer with an echo"),
         )
         .await?;
+        assert!(!app.terminal_state(&id).await?.parked_screen);
         let second = app
             .deps
             .store
@@ -1964,6 +2062,177 @@ fn parked_codex_resumes_the_recorded_rollout_with_the_next_prompt() -> TestResul
             .ok_or("rollout")?;
         let history = std::fs::read_to_string(rollout)?;
         assert!(history.contains("First turn") && history.contains(prompt));
+        crate::pool_supervision::stop(&app, &id).await?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// A temporary failure reading lineage in a capacity round keeps the parked
+/// continuation for a later round. Starting fresh here would discard its context.
+#[test]
+fn a_parked_codex_capacity_retry_keeps_its_rollout_and_prompt_on_a_lineage_error() -> TestResult {
+    use crate::first_message::{hooked, start_with};
+    use crate::pool_supervision::{ScriptedUsage, seed};
+    use crate::task_message::superagent;
+    use yulius_domain::task::Activity;
+    let fake = locate_fake_agent().ok_or("fake-agent is not built")?;
+    let (_dir, data) = temp()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let agent = FakeAgentOptions {
+            answers_first_message: true,
+            resume_prompts: true,
+            interrupts: true,
+            ..hooked()
+        };
+        let (app, _) = start_with(
+            &data,
+            &fake,
+            agent,
+            0,
+            Arc::new(ScriptedUsage::default()),
+            |config| config.park_after_ms = 1,
+        )
+        .await?;
+        let (sandbox, user) = seed(&app, &data, &["claude-only"]).await?;
+        let account =
+            add_codex_account(&app, "a-codex", &codex_auth("2026-11-01T10:00:00Z")).await?;
+        let id = new_codex_task(&app, &sandbox, &user, "Before capacity").await?;
+        wait_for("Codex's first answer", Duration::from_secs(30), || async {
+            screen_contains(&app, &id, "ECHO: Before capacity").await
+                && task(&app, &id)
+                    .await
+                    .is_ok_and(|row| row.activity == Some(Activity::Waiting))
+        })
+        .await?;
+        let first = app
+            .deps
+            .store
+            .live_attempt(&id)
+            .await?
+            .ok_or("first attempt")?;
+        let session = first.provider_session_id.ok_or("first rollout")?;
+        wait_for(
+            "parked before the capacity wait",
+            Duration::from_secs(30),
+            || async {
+                app.park_idle_sessions_now().await;
+                task(&app, &id)
+                    .await
+                    .is_ok_and(|row| row.status == TaskStatus::Parked)
+            },
+        )
+        .await?;
+        wait_for("the captured screen", Duration::from_secs(10), || {
+            screen_contains(&app, &id, "Yulius parked")
+        })
+        .await?;
+        let parked_screen = app.runtime(&id).hub.screen_text();
+        // The sole account is removed after selection and before the host spawns.
+        let (chosen, chosen_rx) = std::sync::mpsc::channel();
+        let (removed, removed_rx) = std::sync::mpsc::channel::<()>();
+        yulius_app::race::on(
+            yulius_app::race::Point::AccountChosen,
+            Path::new(id.as_str()),
+            move || {
+                let _ = chosen.send(());
+                let _ = removed_rx.recv_timeout(Duration::from_secs(30));
+            },
+        );
+        let prompt = "Continue after the capacity wait";
+        let message = {
+            let (app, id) = (app.clone(), id.clone());
+            let sender = superagent(&sandbox, &user, "admin");
+            tokio::spawn(async move {
+                app.tool_task_message(
+                    &sender,
+                    &serde_json::json!({"task_id":id.as_str(),"text":prompt}),
+                )
+                .await
+            })
+        };
+        tokio::task::spawn_blocking(move || chosen_rx.recv_timeout(Duration::from_secs(30)))
+            .await??;
+        app.delete_account(&admin_ctx(&app, &user).await?, account.as_str())
+            .await?;
+        removed.send(())?;
+        message.await??;
+        let attempts = app.deps.store.attempts(&id).await?;
+        assert_eq!(attempts.len(), 2);
+        assert_eq!(attempts[1].exit_reason.as_deref(), Some("account_removed"));
+        let caller = superagent(&sandbox, &user, "admin");
+        crate::parking::assert_cold_screen(&data, &id, &caller, &parked_screen).await?;
+        let pause = app
+            .deps
+            .store
+            .open_pause(&id)
+            .await?
+            .ok_or("capacity wait")?;
+        assert!(
+            pause
+                .continuation
+                .as_deref()
+                .is_some_and(|text| text.contains(prompt))
+        );
+        add_codex_account(&app, "replacement", &codex_auth("2026-11-01T10:00:00Z")).await?;
+
+        let db = rusqlite::Connection::open(data.join("yulius.db"))?;
+        db.execute(
+            "UPDATE provider_sessions SET harness = 'unreadable' WHERE task_id = ?1",
+            [id.as_str()],
+        )?;
+        assert!(app.deps.store.provider_sessions(&id).await.is_err());
+        app.resume_round().await;
+        let held = task(&app, &id).await?;
+        let pending = app.deps.store.open_pause(&id).await?;
+        db.execute(
+            "UPDATE provider_sessions SET harness = 'codex' WHERE task_id = ?1",
+            [id.as_str()],
+        )?;
+        assert_eq!(held.status, TaskStatus::WaitingCapacity);
+        assert_eq!(pending.as_ref().map(|p| &p.id), Some(&pause.id));
+        assert_eq!(app.deps.store.attempts(&id).await?.len(), 2);
+
+        let (recorded, recorded_rx) = std::sync::mpsc::channel();
+        let (go, wait) = std::sync::mpsc::channel::<()>();
+        yulius_app::race::on(
+            yulius_app::race::Point::RunRecorded,
+            Path::new(id.as_str()),
+            move || {
+                let _ = recorded.send(());
+                let _ = wait.recv_timeout(Duration::from_secs(30));
+            },
+        );
+        let resumed = {
+            let app = app.clone();
+            tokio::spawn(async move { app.resume_round().await })
+        };
+        tokio::task::spawn_blocking(move || recorded_rx.recv_timeout(Duration::from_secs(30)))
+            .await??;
+        let visible = crate::parking::assert_cold_screen(&data, &id, &caller, &parked_screen).await;
+        go.send(())?;
+        resumed.await?;
+        visible?;
+        wait_for(
+            "the held next prompt in the original rollout",
+            Duration::from_secs(30),
+            || screen_contains(&app, &id, prompt),
+        )
+        .await?;
+        let second = app
+            .deps
+            .store
+            .live_attempt(&id)
+            .await?
+            .ok_or("resumed attempt")?;
+        assert_eq!(second.launch_kind, LaunchKind::Resume);
+        assert_eq!(
+            second.provider_session_id.as_deref(),
+            Some(session.as_str())
+        );
+        crate::pool_supervision::stop(&app, &id).await?;
         Ok::<_, Box<dyn std::error::Error>>(())
     })?;
     rt.shutdown_timeout(Duration::from_secs(5));

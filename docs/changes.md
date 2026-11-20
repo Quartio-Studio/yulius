@@ -8,6 +8,8 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 - A GPT model now selects Codex for API and MCP task creation. Choosing a GPT or Gemini model
   on a Claude Code task fails before creation or update (SPEC-560, #1427).
+- Newly parked tasks show their last agent screen, idle duration and resume instructions
+  on the task page and through `task_screen` (SPEC-558, #1490).
 
 - Messaging a parked Codex task resumes the recorded rollout, including after a server restart
   interrupted session bookkeeping (SPEC-558, #1490).

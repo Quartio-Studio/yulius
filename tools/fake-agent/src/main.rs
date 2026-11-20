@@ -3474,6 +3474,7 @@ impl Keys {
             interrupt: Arc::new(AtomicBool::new(false)),
         };
         let watch = keys.clone();
+        let codex_session = options.session_id.clone().filter(|_| options.codex);
         std::thread::spawn(move || {
             let mut armed: Option<std::time::Instant> = None;
             loop {
@@ -3490,6 +3491,11 @@ impl Keys {
                 if watch.turn.load(Ordering::SeqCst) {
                     watch.interrupt.store(true, Ordering::SeqCst);
                     armed = None;
+                } else if let Some(session) = &codex_session {
+                    let _ = say("\x1b[2J\x1b[HToken usage: total=389,557 input=321,715");
+                    let _ = say("To continue this session, run:");
+                    let _ = say(&format!("  codex resume {session}"));
+                    std::process::exit(0);
                 } else if armed.is_some_and(|at| at.elapsed() <= DOUBLE_CTRL_C) {
                     if let Some(hooks) = &hooks {
                         hooks.session_end("prompt_input_exit");

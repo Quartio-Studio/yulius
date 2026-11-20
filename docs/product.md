@@ -367,9 +367,10 @@ watching, steering and unblocking.
   A person’s open Claude goal in a prompt-mode session follows it to another subscription.
   The task stays Working while it waits for the resumed evaluator’s verdict (SPEC-540).
   A task whose turn ended and that waits for a person (Needs you, Done) is **parked** after
-  half an hour with nothing going on (`YULIUS_PARK_AFTER_MINUTES`): its Claude Code process ends,
+  half an hour with nothing going on (`YULIUS_PARK_AFTER_MINUTES`): its agent process ends,
   so it holds neither a session slot nor memory, and it stays in the list where it was, marked
-  "parked", with its transcript, question and pull request. Writing to it, or Resume, continues
+  "parked", with its last terminal screen, idle duration, transcript, question and pull request.
+  Writing to it, or Resume, continues
   the same session with its history (SPEC-512). A queued task says what it waits for ("Waiting
   for a free session: 8 of 8 in use"), and the Capacity card shows working, parked, idle and
   queued sessions apart.
