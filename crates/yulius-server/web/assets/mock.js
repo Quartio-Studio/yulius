@@ -678,6 +678,7 @@ function delivery(db, task) {
   const pull = state.pr ? { ...state.pr, checks: state.pr.state === 'open' ? state.pr.checks : 'none' } : null;
   return {
     stage: state.stage,
+    evidence: state.evidence,
     environment: state.stage === 'env_done' ? state.environment : null,
     pr: pull,
     spec_path: task.stepsList.length && task.branch ? `docs/specs/2026-10-07-${task.branch.replace('feat/', '')}.md` : null,

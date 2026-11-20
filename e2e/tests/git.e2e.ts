@@ -236,3 +236,21 @@ test('a playground task shows its local squash before delivery and no release af
   await expect(dialog.getByText('Nothing is pending at this stage.')).toBeVisible();
   await expect(dialog.getByText(/Release to production: ready/)).toHaveCount(0);
 });
+
+test('task delivery links to the evidence for its landed commit', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/t/13', '&ambient=0'));
+  const pull = browser.locator('.taskview .strip-pr');
+  await expect(pull).toHaveText(/^PR #520/);
+  const sha = 'b'.repeat(40);
+  const url = `/api/tasks/tsk_studio_13/delivery/evidence/${sha}`;
+  await browser.evaluate(({ sha, url }) => {
+    type Task = { id: string; delivery: { stage: string; pr: { state: string }; evidence?: { merged_sha: string; url: string } } };
+    const db = (window as unknown as { __yuliusMock: { tasks: Task[] } }).__yuliusMock;
+    const task = db.tasks.find((t) => t.id === 'tsk_studio_13')!;
+    task.delivery.stage = 'merged_integration';
+    task.delivery.pr.state = 'merged';
+    task.delivery.evidence = { merged_sha: sha, url };
+  }, { sha, url });
+  await pull.click();
+  await expect(screen.getByRole('link', 'Verification evidence for bbbbbbbbb')).toHaveAttribute('href', url);
+});
