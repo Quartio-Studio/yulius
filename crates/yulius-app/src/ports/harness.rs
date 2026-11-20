@@ -215,13 +215,15 @@ pub enum Observation {
         /// When it was recorded, if known.
         at: Option<Timestamp>,
     },
-    /// A subagent of the session's own thread was answered by `model` (its first answer, and
-    /// each change of model since): the model that really ran a review round (SPEC-493 REV-004).
+    /// The actual model of each subagent answer. Consecutive answers on the same model
+    /// can belong to different rounds (SPEC-493 REV-004).
     SubagentAnswered {
         /// Claude Code's id of the subagent (its transcript `agent-<id>.jsonl`).
         agent_id: String,
         /// The model of its answer.
         model: String,
+        /// When the answer was written, if the transcript says.
+        at: Option<Timestamp>,
     },
     /// A usage limit refused a subagent of the session's own thread: Claude Code ends it with
     /// no report (and no `SubagentStop`); a message to it resumes it (SPEC-493 REV-004). The
