@@ -68,6 +68,9 @@ A human request can take precedence over unfinished work in the task list. Both 
 
 ## Evidence
 
+- Review of `69afcebb4` reproduced a held list hiding an Undo that restored a task after its archive. The regression failed for remote archive events and for both browser archive actions. A strictly newer active row now survives each path. An older snapshot still loses to the archive, and permanent deletion always removes the row. All eight combinations passed in Chromium.
+- The full local browser run that exposed the two onboarding failures recorded 1,187 passes, two failures and one skipped agent test. On the corrected head `69afcebb4`, all 72 tests in the parked, onboarding, PR and task-Done suites passed.
+
 - Two onboarding browser tests failed on PR #1548 at `85f3cd6e7` and both passed on dev `5bdabd1a9`. A slow list request read a newer title from the server after it had already observed the task’s lifecycle event. Applying the entire event erased that title. A direct parked-resume regression failed the same way. The browser now retains list details when the returned row includes the same lifecycle revision or a newer one. All eight targeted cases passed, including both onboarding tests and the earlier list and route recovery regressions.
 
 - Independent review approved `d63673e7083daf2b4d8ff8dcb73358ae11edb6b2` for the full-list reload slice. All five focused Chromium regressions passed, including recovery of the open task page after the sidebar received the only successful list. The parked-page watch remains a separate delivery.

@@ -160,14 +160,14 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
     const map = new Map();
     for (const task of Array.isArray(list) ? list : []) if (!task.archived) map.set(task.id, task);
     for (const [id, task] of read.changes) {
-      if (!task || task.archived) { map.delete(id); continue; }
+      if (!task) { map.delete(id); continue; }
       const row = map.get(id);
+      if (row && Date.parse(row.updated_at) > Date.parse(task.updated_at)) continue;
+      if (task.archived) { map.delete(id); continue; }
       // A slow request can take its snapshot after the event. Once the list has
       // that lifecycle revision (or a newer one), keep its freshly read details.
-      const includesEvent = row && task.updated_at && (
-        Date.parse(row.updated_at) > Date.parse(task.updated_at) ||
-        (row.updated_at === task.updated_at && row.status === task.status && row.activity === task.activity)
-      );
+      const includesEvent = row && task.updated_at && row.updated_at === task.updated_at &&
+        row.status === task.status && row.activity === task.activity;
       if (!includesEvent) map.set(id, task);
     }
     listOrder.set(map, read.order);
@@ -195,8 +195,8 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
   }
 
   /** Drop a task from its list; `byUser` marks a removal this browser asked for (its own toast says so). */
-  function removeTask(taskId, { byUser = false } = {}) {
-    for (const read of loadingLists) read.changes.set(taskId, null);
+  function removeTask(taskId, { byUser = false, archivedTask = null } = {}) {
+    for (const read of loadingLists) read.changes.set(taskId, archivedTask?.archived ? archivedTask : null);
     for (const [sandboxId, map] of state.tasks) {
       if (map.delete(taskId)) emit('tasks', sandboxId);
     }

@@ -383,7 +383,7 @@ export async function deleteTask(ctx, task) {
 export async function archiveTask(ctx, task) {
   const updated = await taskPost(ctx, task, 'archive', () => ctx.api.post(`/api/tasks/${enc(task.id)}/archive`));
   if (updated) {
-    ctx.store.removeTask(task.id, { byUser: true });
+    ctx.store.removeTask(task.id, { byUser: true, archivedTask: updated });
     toast(`Task #${task.number} archived.`, { kind: 'ok', action: { label: 'Undo', run: () => restoreTask(ctx, task) } });
     const route = ctx.route();
     if (route && route.name === 'task' && route.number === task.number) {
@@ -434,7 +434,7 @@ export async function archiveAll(ctx, tasks, what) {
     try {
       const updated = await ctx.api.post(`/api/tasks/${enc(task.id)}/archive`);
       if (updated && updated.id) ctx.store.upsertTask(updated);
-      ctx.store.removeTask(task.id, { byUser: true });
+      ctx.store.removeTask(task.id, { byUser: true, archivedTask: updated });
       archived.push(task);
     } finally {
       inFlight.delete(`${task.id}:archive`);
