@@ -1374,6 +1374,44 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_red_browser_job_names_its_test_in_the_notice() {
+        let jobs = [job(
+            "e2e",
+            RunState::Failed,
+            Some(1),
+            Some("FAIL  |chromium| tests/editor.e2e.ts > opens a folder\n"),
+        )];
+        let text = red_run_text(&run("r1", RunState::Failed), &jobs);
+        assert!(
+            text.contains("failing tests: tests/editor.e2e.ts › opens a folder"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn green_waits_for_the_queue_to_observe_the_pass() {
+        let pending = Some(
+            "Pull request #7 waits for its own Yulius CI run at 012345678 (pending). Yulius never restarts it when `dev` moves.",
+        );
+        assert_eq!(
+            green_said("0123456789", true, Hold::Free, pending, "dev"),
+            None
+        );
+        let status = status_text(
+            Some(&run("r1", RunState::Passed)),
+            true,
+            Hold::Free,
+            pending,
+            "dev",
+        );
+        assert!(!status.contains("(pending)"), "{status}");
+        let fresh = Some("Pull request #7 passed its own run but is behind `dev`.");
+        let (_, notice) =
+            green_said("0123456789", true, Hold::Free, fresh, "dev").unwrap_or_default();
+        assert!(notice.contains("is behind `dev`"), "{notice}");
+    }
+
     /// PRN-003, PRN-006: a red candidate and a held green head both keep the task's hands off.
     #[test]
     fn a_red_candidate_says_hands_off() {

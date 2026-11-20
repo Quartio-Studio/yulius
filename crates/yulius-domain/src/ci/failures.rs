@@ -354,6 +354,24 @@ mod tests {
         scanner.finish()
     }
 
+    #[test]
+    fn browser_failure_headers_survive_the_scanner_and_name_the_tests() {
+        let kept = scan(&[
+            " PASS  |chromium| tests/editor.e2e.ts > opens a file\n",
+            " FAIL  |chromium| tests/editor.e2e.ts > opens a folder\n",
+            " FAIL  |chromium| tests/tasks.e2e.ts > closes a task\n",
+            " FAIL  |chromium| tests/editor.e2e.ts > opens a folder\n",
+        ])
+        .unwrap_or_default();
+        assert_eq!(
+            failed_test_names(&kept),
+            [
+                "tests/editor.e2e.ts › opens a folder",
+                "tests/tasks.e2e.ts › closes a task",
+            ]
+        );
+    }
+
     /// cargo-nextest 0.9.146 with `--profile ci`, captured from a run with two failing tests.
     const NEXTEST: &str = "\
     Finished `test` profile [unoptimized + debuginfo] target(s) in 3.31s
