@@ -277,18 +277,20 @@ impl App {
     pub(crate) async fn parked_status(
         &self,
         task: &TaskRecord,
-        requested: &HashSet<String>,
         deadline: Instant,
-    ) -> AppResult<(bool, Option<ParkedPr>)> {
+    ) -> (bool, Option<ParkedPr>) {
         use crate::delivery::PrVerification;
-        let store = &self.deps.store;
-        let mut facts = self.task_attention_facts(task, requested).await?;
-        let record = store.delivery(&task.id).await?;
-        let mut observed = self.known_parked_pull(task, record.as_ref());
-        if facts.parked_has_local_work_or_request() {
-            return Ok((true, observed.pr));
-        }
+        // Seed from memory before waiting on any store or browser lock. Once
+        // the record is read, a timed-out lookup can still name its delivery.
+        let mut observed = self.known_parked_pull(task, None);
         let check = async {
+            let record = self.deps.store.delivery(&task.id).await?;
+            observed = self.known_parked_pull(task, record.as_ref());
+            let requested = self.browser_requests(&task.sandbox_id).await;
+            let mut facts = self.task_attention_facts(task, &requested).await?;
+            if facts.parked_has_local_work_or_request() {
+                return Ok(true);
+            }
             let Some(prs) = self
                 .verify_task_prs(
                     task,
@@ -298,28 +300,34 @@ impl App {
                 )
                 .await?
             else {
-                return Ok(false);
+                return Ok(true);
             };
-            self.parked_evidence_current(
-                task,
-                record.as_ref(),
-                &prs,
-                PrVerification::Display,
-                &mut observed,
-            )
-            .await
-        };
-        if !matches!(tokio::time::timeout_at(deadline, check).await, Ok(Ok(true))) {
-            return Ok((true, observed.pr));
-        }
-        facts.pull = observed.pr.map(|pr| {
-            if pr.open {
-                PullSignal::Tested
-            } else {
-                PullSignal::Merged
+            if !self
+                .parked_evidence_current(
+                    task,
+                    record.as_ref(),
+                    &prs,
+                    PrVerification::Display,
+                    &mut observed,
+                )
+                .await?
+            {
+                return Ok(true);
             }
-        });
-        Ok((facts.needs_you(), observed.pr))
+            facts.pull = observed.pr.map(|pr| {
+                if pr.open {
+                    PullSignal::Tested
+                } else {
+                    PullSignal::Merged
+                }
+            });
+            Ok::<_, crate::error::AppError>(facts.needs_you())
+        };
+        let needs_you = !matches!(
+            tokio::time::timeout_at(deadline, check).await,
+            Ok(Ok(false))
+        );
+        (needs_you, observed.pr)
     }
 
     /// The facts that place the task in its sidebar group and explain a derived wait.

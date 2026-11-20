@@ -4749,6 +4749,43 @@ impl BrowserPort for HeldBrowserLookup {
 }
 
 #[tokio::test]
+async fn a_parked_detail_bounds_its_initial_browser_lookup_and_keeps_the_recorded_pr() -> TestResult
+{
+    let f = fixture(&DeliveryProfile::standard()).await?;
+    let (_wt, _) = delivered_with_a_successor(&f, &finished_spec("t1")).await?;
+    let id = TaskId::parse("t1")?;
+    f.h.store
+        .transition_task(
+            &id,
+            None,
+            TaskStatus::Parked,
+            Some(Activity::Done),
+            f.h.app.now(),
+        )
+        .await?;
+    let owner =
+        f.h.app
+            .authenticate_bearer(f.alice.bearer.as_deref().ok_or("owner token")?)
+            .await?
+            .ok_or("owner")?;
+    let browser = Arc::new(HeldBrowserLookup::default());
+    browser.calls.store(1, std::sync::atomic::Ordering::SeqCst);
+    let mut deps = f.h.app.deps.clone();
+    deps.browser = browser.clone();
+    let app = yulius_app::context::App::new(f.h.app.config.clone(), deps);
+    let reading = tokio::spawn(async move { app.task_detail(&owner, id.as_str()).await });
+    tokio::time::timeout(Duration::from_secs(5), browser.entered.notified()).await?;
+    let detail = tokio::time::timeout(Duration::from_secs(3), reading).await;
+    browser.release.notify_one();
+    let detail = serde_json::to_value(
+        detail.map_err(|_| "browser startup consumed the parked task read budget")???,
+    )?;
+    assert_eq!(detail["parked_needs_you"], true);
+    assert_eq!(detail["parked_pr"], json!({"number":1,"open":true}));
+    Ok(())
+}
+
+#[tokio::test]
 async fn a_parked_successor_waits_if_its_owner_resumes_during_the_final_browser_read() -> TestResult
 {
     let f = fixture(&DeliveryProfile::standard()).await?;

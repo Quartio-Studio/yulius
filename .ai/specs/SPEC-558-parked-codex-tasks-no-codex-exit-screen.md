@@ -139,6 +139,8 @@ A human request can take precedence over unfinished work in the task list. Both 
 
 - The combined HTTP/MCP prototype passed 95 scoped tests on `cd76a2d05`. Final review isolated three MCP explanation cases. Tests reproduced both a confirmed failure alongside an unreadable source and an unreachable checks endpoint obscuring a durable failure. A third fixture reproduced a retired PR’s cached failure masking an open plan step. Those reason fixtures and their corrective patch are kept for the fair-list/MCP delivery. The HTTP contract reports the verified group and relevant PR number. It reconfirms the PR and branch after an unreadable checks response.
 
+- The HTTP-only head `88ba7556b` passed 94 scoped tests. Three additional fixtures reproduced an unrelated open PR replacing the actual failing blocker, a stale listing reopening a directly confirmed merge in the response, and the initial browser lookup exceeding the status budget. The fix keeps surviving blockers and direct closures, and starts the deadline before store and browser reads.
+
 ## Delivery slices
 
 PRs #1492 and #1493 delivered native Codex resume and the pre-stop screen for new parks. PR #1505 kept sessions with local unfinished work live. PR #1510 verified current ordinary PR checks and unpublished work before parking. PR #1524 delivered the parked predecessor gate. PR #1527 preserved known PR observations across overlapping Git overviews. This delivery verifies the blocking ordinary PR on individual HTTP detail reads. Remaining deliveries cover fair parked task-list reads, page refresh, persisted integration failures, bounded Codex goals and pre-upgrade screens.

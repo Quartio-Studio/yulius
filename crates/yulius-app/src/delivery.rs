@@ -4243,16 +4243,23 @@ impl App {
         let checkout = self.verification_checkout(task, purpose).await?;
         let mut pulls = Vec::new();
         let mut verified = true;
+        let mut closed = std::collections::BTreeSet::new();
         for number in numbers {
             let checks = if purpose == PrVerification::WatchPending && watched != Some(number) {
                 PrVerification::Settled
             } else {
                 purpose
             };
-            let Some(pull) = self
+            let pull = self
                 .pull_allows_parking(task, &sandbox, &token, number, checks, observed)
-                .await?
-            else {
+                .await?;
+            if observed
+                .pr
+                .is_some_and(|pr| !pr.open && pr.number == number)
+            {
+                closed.insert(number);
+            }
+            let Some(pull) = pull else {
                 verified = false;
                 break;
             };
@@ -4280,17 +4287,63 @@ impl App {
             return Ok(None);
         }
         let current = branch_pulls().await?;
-        if current != branch {
-            if current.is_empty() && observed.pr.is_some_and(|pr| pr.open) {
-                // An external PR disappeared between reads. A closure obtained
-                // directly from get_pull is still valid evidence of what closed.
-                *observed = ParkedPullRead::recorded(record);
+        if purpose != PrVerification::Display {
+            return Ok((current == branch).then_some(ParkingPrs {
+                checkout,
+                pulls,
+                watched,
+            }));
+        }
+        // A title edit carries no eligibility evidence. Changes in membership,
+        // head, base or mergeability do. Prefer a directly confirmed blocker
+        // that still has the same facts over a newly listed, unchecked PR.
+        let unchanged = |candidate: &GhPull| {
+            branch.iter().any(|prior| {
+                prior.number == candidate.number
+                    && prior.head_sha == candidate.head_sha
+                    && prior.base == candidate.base
+                    && prior.behind == candidate.behind
+                    && prior.mergeable == candidate.mergeable
+            })
+        };
+        let changed = current.iter().rev().find(|candidate| !unchanged(candidate));
+        if changed.is_some() || current.len() != branch.len() {
+            let blocker_survived = !verified
+                && observed.pr.is_some_and(|pr| {
+                    pr.open
+                        && current
+                            .iter()
+                            .any(|candidate| candidate.number == pr.number && unchanged(candidate))
+                });
+            if !blocker_survived {
+                let known_open = changed
+                    .filter(|pr| !closed.contains(&pr.number))
+                    .or_else(|| current.iter().rev().find(|pr| !closed.contains(&pr.number)));
+                if let Some(open) = known_open {
+                    observed.pr = Some(yulius_contracts::api::tasks::ParkedPr {
+                        number: open.number,
+                        open: true,
+                    });
+                } else if observed.pr.is_some_and(|pr| pr.open) {
+                    *observed = ParkedPullRead::recorded(record);
+                    if let Some(pr) = observed
+                        .pr
+                        .as_mut()
+                        .filter(|pr| closed.contains(&pr.number))
+                    {
+                        pr.open = false;
+                    }
+                }
             }
-            observed.note_open_branch(&current);
             return Ok(None);
         }
-        if verified {
-            observed.note_open_branch(&current);
+        // A branch list can lag a direct get_pull confirmation of a merge.
+        // Among successful reads only a PR confirmed open can replace it.
+        if verified && let Some((number, _)) = pulls.last() {
+            observed.pr = Some(yulius_contracts::api::tasks::ParkedPr {
+                number: *number,
+                open: true,
+            });
         }
         Ok(verified.then_some(ParkingPrs {
             checkout,

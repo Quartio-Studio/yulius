@@ -811,10 +811,9 @@ impl App {
         let steps = store.steps(&task.id).await?;
         let started = !attempts.is_empty() || !store.provider_sessions(&task.id).await?.is_empty();
         let (parked_needs_you, parked_pr) = if task.status == TaskStatus::Parked {
-            let requested = self.browser_requests(&task.sandbox_id).await;
             let (needs_you, pr) = self
-                .parked_status(&task, &requested, crate::sandboxes::parked_pr_deadline())
-                .await?;
+                .parked_status(&task, crate::sandboxes::parked_pr_deadline())
+                .await;
             (Some(needs_you), pr)
         } else {
             (None, None)

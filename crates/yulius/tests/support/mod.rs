@@ -76,6 +76,8 @@ pub struct FakeGitHub {
     pub retarget_on_merge: Mutex<Option<String>>,
     /// GitHub accepted the merge, but reading the closed PR fails until it recovers.
     pub fail_merged_reads: std::sync::atomic::AtomicBool,
+    /// Metadata confirms a merge while the branch listing still has the open PR.
+    pub merged_on_direct_read: Mutex<Option<u64>>,
     /// Simulate a stale closed-PR response naming a different PR.
     pub misnumber_merged_reads: std::sync::atomic::AtomicBool,
     /// Checks per commit SHA (default: `None`, every source read).
@@ -472,6 +474,15 @@ impl GitHubPort for FakeGitHub {
             .find(|p| p.number == number)
             .cloned()
             .ok_or(AppError::NotFound)?;
+        if *self
+            .merged_on_direct_read
+            .lock()
+            .map_err(AppError::internal)?
+            == Some(number)
+        {
+            pull.merged = true;
+            pull.state = "closed".into();
+        }
         if pull.merged && self.fail_merged_reads.load(Ordering::SeqCst) {
             return Err(AppError::Upstream("closed pull request unavailable".into()));
         }
