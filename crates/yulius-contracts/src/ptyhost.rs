@@ -1472,15 +1472,17 @@ mod tests {
 
     #[test]
     fn hello_layout_is_stable() {
-        let frame = ClientFrame::Hello {
-            version: PROTOCOL_VERSION,
-            token: [0xab; TOKEN_BYTES],
-            want_snapshot: true,
-        };
-        let bytes = encode_client(&frame);
-        assert_eq!(&bytes[..7], &[0, 0, 0, 36, T_HELLO, 0, 1]);
-        assert_eq!(bytes.len(), 40);
-        assert_eq!(bytes[39], 1);
+        for (version, wire_byte) in [(LEGACY_PROTOCOL_VERSION, 1), (PROTOCOL_VERSION, 2)] {
+            let frame = ClientFrame::Hello {
+                version,
+                token: [0xab; TOKEN_BYTES],
+                want_snapshot: true,
+            };
+            let bytes = encode_client(&frame);
+            assert_eq!(&bytes[..7], &[0, 0, 0, 36, T_HELLO, 0, wire_byte]);
+            assert_eq!(bytes.len(), 40);
+            assert_eq!(bytes[39], 1);
+        }
     }
 
     #[test]
