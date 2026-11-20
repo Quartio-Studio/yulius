@@ -29,6 +29,7 @@
 //! clone or the sandbox's home, which its agents write. Commands are visible to everyone with
 //! read access, so they must not contain secrets.
 
+pub mod evidence;
 pub(crate) mod playground;
 pub mod runner;
 
@@ -1467,7 +1468,8 @@ impl App {
         expected: &DeliveryStage,
         next: &DeliveryRecord,
     ) -> AppResult<bool> {
-        self.dlv_transition_at(sandbox, expected, next, None).await
+        self.dlv_transition_at(sandbox, expected, next, None, None)
+            .await
     }
 
     /// [`Self::dlv_transition`] of a merge whose merged head is known: the merge record says
@@ -1477,9 +1479,19 @@ impl App {
         sandbox: &SandboxId,
         expected: &DeliveryStage,
         next: &DeliveryRecord,
+        opening_base: Option<&str>,
         merged: Option<&crate::review::MergedHead>,
     ) -> AppResult<bool> {
-        let written = self.deps.store.transition_delivery(expected, next).await?;
+        let written = self
+            .deps
+            .store
+            .transition_with_landing(
+                expected,
+                next,
+                opening_base,
+                merged.and_then(|m| m.landing.as_ref()),
+            )
+            .await?;
         if written && next.stage != *expected {
             self.publish_pulls(sandbox);
         }
@@ -1869,6 +1881,8 @@ impl App {
                     &task.sandbox_id,
                     &observed.record.stage,
                     &reconciled,
+                    // If this transition adopts an open PR, capture its intended base now.
+                    Some(&profile.integration_branch),
                     merged_head.as_ref(),
                 )
                 .await?
@@ -1964,6 +1978,7 @@ impl App {
             notes,
             checks_access,
             review_rounds: Vec::new(),
+            evidence: None,
         }
     }
 
@@ -2044,7 +2059,7 @@ impl App {
         if let Some(pull) = observed.pr.as_ref().filter(|pull| pull.merged) {
             notes.push(crate::agent_wait::merged_text(
                 pull.number,
-                &profile.integration_branch,
+                &pull.base,
                 &pull.head_sha,
                 self.ci_gate_result(&sandbox, &pull.head_sha).await,
                 false,
@@ -2064,6 +2079,30 @@ impl App {
                 access,
             )
             .await;
+        if past_merge(&observed.record.stage) {
+            let known = observed
+                .pr
+                .as_ref()
+                .filter(|p| Some(p.number) == observed.record.pr_number)
+                .and_then(evidence::Landing::closed_pull);
+            if let Some(sha) = self
+                .deps
+                .store
+                .landed_sha(&task.id, observed.record.pr_number, known.as_ref())
+                .await?
+            {
+                view.evidence = self
+                    .deps
+                    .store
+                    .merge_evidence(&task.id, &sha, None, None)
+                    .await?;
+            } else {
+                view.notes.push(
+                    "Post-merge evidence is unavailable because the landed commit is unknown."
+                        .into(),
+                );
+            }
+        }
         view.review_rounds = self.review_round_views(&task.id).await;
         Ok(view)
     }
@@ -2286,14 +2325,14 @@ impl App {
                         updated_at: self.now(),
                         ..record.clone()
                     };
-                    let merged_head = pull
-                        .merged
+                    let merged_head = (pull.merged && pull.number == number)
                         .then(|| crate::review::MergedHead::of_pull(&pull));
                     let _ = self
                         .dlv_transition_at(
                             &sandbox.id,
                             &record.stage,
                             &reconciled,
+                            None,
                             merged_head.as_ref(),
                         )
                         .await;
@@ -2764,7 +2803,13 @@ impl App {
             updated_at: self.now(),
         };
         if !self
-            .dlv_transition(&task.sandbox_id, &observed.record.stage, &next)
+            .dlv_transition_at(
+                &task.sandbox_id,
+                &observed.record.stage,
+                &next,
+                Some(&profile.integration_branch),
+                None,
+            )
             .await?
         {
             return Err(AppError::Conflict(
@@ -4490,6 +4535,29 @@ impl App {
                 &pull.head_sha,
             )
             .await?;
+        // GitHub guards the head in the merge request, but the PR can be retargeted.
+        // Bind evidence only when the closed PR confirms where this merge actually landed.
+        let landing = self
+            .deps
+            .github
+            .get_pull(token, &sandbox.repo_owner, &sandbox.repo_name, pull.number)
+            .await
+            .ok()
+            .and_then(|merged| {
+                evidence::Landing::confirmed_merge(
+                    &merged,
+                    &profile.integration_branch,
+                    pull.number,
+                    &pull.head_sha,
+                    &merge_sha,
+                )
+            });
+        let landing = landing.or_else(|| {
+            let mut expected =
+                evidence::Landing::new(&profile.integration_branch, &pull.head_sha, &merge_sha)?;
+            expected.source = evidence::LandingSource::AwaitingConfirmation;
+            Some(expected)
+        });
         let next = DeliveryRecord {
             task_id: task.id.clone(),
             stage: DeliveryStage::MergedIntegration,
@@ -4500,9 +4568,11 @@ impl App {
             &task.sandbox_id,
             &observed.record.stage,
             &next,
+            None,
             Some(&crate::review::MergedHead {
                 head: pull.head_sha.clone(),
                 base: Some(format!("{merge_sha}^1")),
+                landing,
             }),
         )
         .await?;
@@ -5708,7 +5778,7 @@ impl App {
     ///
     /// # Errors
     /// Store failures.
-    pub async fn tool_delivery_status(&self, ctx: &AgentContext) -> AppResult<Value> {
+    pub async fn tool_delivery_status(&self, ctx: &AgentContext, args: &Value) -> AppResult<Value> {
         let task = self
             .deps
             .store
@@ -5718,6 +5788,29 @@ impl App {
         let sandbox = self.dlv_sandbox_of(&task).await?;
         let profile = delivery_profile(&sandbox);
         let view = self.delivery_view(&task, None).await?;
+        let before = args["before"].as_str();
+        let run_id = args["run_id"].as_str();
+        let selected_sha = args["merged_sha"].as_str();
+        let evidence = if selected_sha.is_some() || before.is_some() || run_id.is_some() {
+            let sha = selected_sha
+                .or_else(|| view.evidence.as_ref().map(|e| e.merged_sha.as_str()))
+                .ok_or(AppError::NotFound)?;
+            let mut selected = self
+                .deps
+                .store
+                .merge_evidence(&task.id, sha, run_id, before)
+                .await?
+                .ok_or(AppError::NotFound)?;
+            if let Some(id) = run_id {
+                selected.url.push_str(&format!(
+                    "?run_id={}",
+                    crate::browser::percent_encode(id, false)
+                ));
+            }
+            Some(selected)
+        } else {
+            view.evidence
+        };
         Ok(json!({
             "stage": view.stage,
             "environment": view.environment,
@@ -5731,6 +5824,10 @@ impl App {
             "notes": view.notes,
             "checks_access": view.checks_access.as_ref().map(|a| &a.message),
             "review_rounds": view.review_rounds,
+            "evidence": evidence.map(|mut evidence| {
+                evidence.url = format!("{}{}", self.config.public_url.trim_end_matches('/'), evidence.url);
+                evidence
+            }),
             "profile": profile_to_contract(&profile),
             "policy": "You deliver your own work (DLV-008): Yulius opens the pull request when your work is ready; merge it on green with delivery_merge after an independent review of its head, and run each command-verified integration environment with delivery_deploy. The same checks a person's action needs apply. Production (promotion and its deploys) is always a person's (ADR-0110): ask one with needs_you; CD runs are cd_status and cd_deploy.",
         }))

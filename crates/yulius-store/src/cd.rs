@@ -728,21 +728,19 @@ mod tests {
     /// SPEC-257 CDN-006: runs written before stages existed read back with their name's stage.
     #[tokio::test]
     async fn runs_from_before_stages_take_their_names_stage() -> TestResult {
-        let store = SqliteStore::open_in_memory()?;
-        let migration = include_str!("migrations/0041_cd_run_stage.sql");
-        store
-            .call(move |c| {
-                c.execute_batch(
-                    "DROP TRIGGER spans_cd_run_insert; DROP INDEX cd_runs_kind; ALTER TABLE cd_runs DROP COLUMN stage;\
-                     INSERT INTO cd_runs (id, sandbox_id, environment, branch, sha, state, requested_by, started_at) \
-                     VALUES ('d', 's1', 'dev', 'dev', 'a', 'passed', 'x', 1), \
-                            ('p', 's1', 'prod', 'main', 'b', 'passed', 'x', 2); \
-                     CREATE TRIGGER spans_cd_run_insert AFTER INSERT ON cd_runs BEGIN SELECT 1; END;",
-                )
-                .map_err(db)?;
-                c.execute_batch(migration).map_err(db)
-            })
-            .await?;
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("before-cd-stages.db");
+        let before = crate::MIGRATIONS
+            .iter()
+            .position(|sql| *sql == include_str!("migrations/0041_cd_run_stage.sql"))
+            .ok_or("CD stage migration")?;
+        crate::create_at_version(&path, before)?;
+        rusqlite::Connection::open(&path)?.execute_batch(
+            "INSERT INTO cd_runs (id, sandbox_id, environment, branch, sha, state, requested_by, started_at)
+             VALUES ('d', 's1', 'dev', 'dev', 'a', 'passed', 'x', 1),
+                    ('p', 's1', 'prod', 'main', 'b', 'passed', 'x', 2);",
+        )?;
+        let store = SqliteStore::open(&path)?;
         let dev = store.cd_run("d", false).await?.ok_or("d")?;
         let prod = store.cd_run("p", false).await?.ok_or("p")?;
         assert_eq!((dev.stage, prod.stage), (CdStage::Dev, CdStage::Prod));

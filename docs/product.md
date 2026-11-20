@@ -498,6 +498,7 @@ watching, steering and unblocking.
   existing directory), in one new note of its own in that folder, named
   `YYYY-MM-DD-<task number>-<short-slug>.md`, so parallel pull requests never conflict on it; the
   briefing then quotes the newest notes as Recent changes (SPEC-363).
+- **Post-merge verification** (SPEC-562). A task's Delivery links to the CI job verdicts and environment attempts for its landed change. Projects that accept task evidence can close a machine-verification step by citing the checked attempts in its note. [Git workflow](engineering/git.md#post-merge-machine-evidence)
 - **Merge queue** (every sandbox, SPEC-441): a pull request's own CI run is never restarted
   because the integration branch moved; armed and green, it merges at once when up to date, else
   Yulius tests it once on top of the current integration branch, together with the others

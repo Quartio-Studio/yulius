@@ -1205,6 +1205,8 @@ pub struct MergedHead {
     /// `<merge>^1` for a GitHub merge: the branch before a squash or merge commit, the previous
     /// (rewritten) copy for a rebase merge. A playground's base after its own squash.
     pub base: Option<String>,
+    /// Actual landed commit, when known. The review base may differ from it.
+    pub landing: Option<crate::delivery::evidence::Landing>,
 }
 
 impl MergedHead {
@@ -1214,6 +1216,7 @@ impl MergedHead {
     pub fn of_pull(pull: &crate::ports::github::GhPull) -> Self {
         Self {
             head: pull.head_sha.clone(),
+            landing: crate::delivery::evidence::Landing::closed_pull(pull),
             base: pull.merge_commit_sha.as_ref().map(|sha| format!("{sha}^1")),
         }
     }

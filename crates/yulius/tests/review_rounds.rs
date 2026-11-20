@@ -23,6 +23,7 @@ fn merged_at(head: &str) -> yulius_app::review::MergedHead {
     yulius_app::review::MergedHead {
         head: head.to_owned(),
         base: None,
+        landing: None,
     }
 }
 

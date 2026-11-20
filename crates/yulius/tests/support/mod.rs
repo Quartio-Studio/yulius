@@ -69,6 +69,12 @@ pub struct FakeGitHub {
     /// Branches (`owner/name:branch`) whose rules agents' tokens cannot bypass (ADR-0114); every
     /// other branch is writable by them.
     pub guarded_branches: Mutex<Vec<String>>,
+    /// A PR retargeted at GitHub after the client observed it and before the merge lands.
+    pub retarget_on_merge: Mutex<Option<String>>,
+    /// GitHub accepted the merge, but reading the closed PR fails until it recovers.
+    pub fail_merged_reads: std::sync::atomic::AtomicBool,
+    /// Simulate a stale closed-PR response naming a different PR.
+    pub misnumber_merged_reads: std::sync::atomic::AtomicBool,
     /// Checks per commit SHA (default: `None`, every source read).
     pub check_states: Mutex<HashMap<String, ChecksReport>>,
     /// When set, reading checks fails with this error (as the adapter maps GitHub errors).
@@ -439,13 +445,21 @@ impl GitHubPort for FakeGitHub {
     }
     async fn get_pull(&self, _: &Secret, _: &str, _: &str, number: u64) -> AppResult<GhPull> {
         self.refresh_heads();
-        self.pulls
+        let mut pull = self
+            .pulls
             .lock()
             .map_err(AppError::internal)?
             .iter()
             .find(|p| p.number == number)
             .cloned()
-            .ok_or(AppError::NotFound)
+            .ok_or(AppError::NotFound)?;
+        if pull.merged && self.fail_merged_reads.load(Ordering::SeqCst) {
+            return Err(AppError::Upstream("closed pull request unavailable".into()));
+        }
+        if pull.merged && self.misnumber_merged_reads.load(Ordering::SeqCst) {
+            pull.number = number.saturating_add(1);
+        }
+        Ok(pull)
     }
     async fn update_pull_title(
         &self,
@@ -520,6 +534,20 @@ impl GitHubPort for FakeGitHub {
         expected_head: &str,
     ) -> AppResult<String> {
         self.refresh_heads();
+        if let Some(base) = self
+            .retarget_on_merge
+            .lock()
+            .map_err(AppError::internal)?
+            .take()
+            && let Some(pr) = self
+                .pulls
+                .lock()
+                .map_err(AppError::internal)?
+                .iter_mut()
+                .find(|p| p.number == number)
+        {
+            pr.base = base;
+        }
         let pull = self
             .pulls
             .lock()
