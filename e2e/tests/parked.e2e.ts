@@ -425,3 +425,24 @@ test('a cold task page recovers when its other list request succeeds', async ({ 
   await expect(browser.locator('.taskview .strip-status')).toBeVisible();
   await expect(screen.getByText(/Couldn’t load the tasks of studio/i)).toHaveCount(0);
 });
+
+test('an aborted task-list fixture cannot return its held reply', async ({ app, browser }) => {
+  await app.open(mock('/settings'));
+  const result = await browser.evaluate(async () => {
+    const url = '/assets/mock.js';
+    const { createMockTransport } = await import(url);
+    const mock = createMockTransport(new URLSearchParams('ambient=0'));
+    let release!: (response: Response) => void;
+    const held = new Promise<Response>(resolve => { release = resolve; });
+    const w = window as unknown as { __yuliusTaskListReply?: () => Promise<Response> };
+    w.__yuliusTaskListReply = () => held;
+    const controller = new AbortController();
+    const read = mock.fetch('/api/sandboxes/sb_studio/tasks?archived=false', { signal: controller.signal })
+      .then((r: Response) => String(r.status), (e: Error) => e.name);
+    controller.abort();
+    release(new Response(null, { status: 200 }));
+    delete w.__yuliusTaskListReply;
+    return await read;
+  });
+  expect(result).toBe('AbortError');
+});

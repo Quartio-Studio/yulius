@@ -7714,14 +7714,15 @@ export function createMockTransport(params) {
     pullClock,
     // Like window.fetch, an aborted signal (a timeout, a view that went away) rejects the request.
     fetch: async (url, init = {}) => {
-      // Exercise overlapping list reads in dispatch order, before the mock's simulated latency.
-      if (window.__yuliusTaskListReply && String(url).includes('/tasks?archived=false')) {
-        const reply = await window.__yuliusTaskListReply(url);
-        if (reply) return reply;
-      }
       if (init.keepalive) db.keepaliveRequests.push(url);
-      const work = handleFetch(db, url, init);
       const { signal } = init;
+      signal?.throwIfAborted();
+      const dispatch = () => handleFetch(db, url, init);
+      // Exercise dispatch order before simulated latency, with the normal abort handler.
+      const intercept = window.__yuliusTaskListReply;
+      const work = intercept && String(url).includes('/tasks?archived=false')
+        ? Promise.resolve(intercept(url)).then(reply => { signal?.throwIfAborted(); return reply ?? dispatch(); })
+        : dispatch();
       if (!signal) return work;
       return new Promise((resolve, reject) => {
         const abort = () => reject(new DOMException('The operation was aborted.', 'AbortError'));
