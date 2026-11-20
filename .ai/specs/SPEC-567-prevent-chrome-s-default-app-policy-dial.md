@@ -7,7 +7,7 @@ status: in-progress
 
 ## Goal
 
-Fixes #1411. Fixes #1517.
+Fixes #1411. Fixes #1517. Fixes #1518.
 
 Sandbox browsers open a usable display when Chrome applies Yulius's extension blocklist, including when a profile already contains Google Docs Offline. [Issue #1411](https://github.com/Quartio-Studio/yulius/issues/1411)
 
@@ -28,6 +28,7 @@ Task #490 saw Chrome's native administrator dialog after host setup. On dev `e15
 - [x] Verify the corrected launch with real Chrome and document its scope
 - [x] Obtain independent approval for delivery to dev
 - [x] Preserve the parked-screen fixture across a late viewer resize
+- [ ] Verify saved assistant names when transcript entries are offscreen
 - [ ] Validate the ordered ADR index on the landed prefix and obtain delivery approval
 
 ## Acceptance criteria
@@ -41,7 +42,7 @@ Task #490 saw Chrome's native administrator dialog after host setup. On dev `e15
 
 Commit a failing launch-argument regression before changing the browser adapter. Compare full Xvfb framebuffers in a disposable container running branded Google Chrome, using a profile Chrome itself populated before applying policy. Exercise fresh and previously populated profiles. Check the browser's extension inventory, profile on disk, policy marker and PDF viewer. Keep all experimental policy files in the container. Record the independent review and Yulius CI run for delivery.
 
-PR CI also exercises the mock terminal shown to owners of parked tasks. Reproduce the loss of row 89 after a viewer's delayed resize, then verify the saved grid and the subsequent live-grid transition. Run the repository checker on the train that includes ADRs 0401 and 0402.
+PR CI also exercises the mock terminal shown to owners of parked tasks. Reproduce the loss of row 89 after a viewer's delayed resize, then verify the saved grid and the subsequent live-grid transition. For the saved assistant name, scroll a long transcript until Chromium skips painting the first answer. Check the exact prefix for each harness and exercise a deliberately incorrect saved name. Run the repository checker on the train that includes ADRs 0401 and 0402.
 
 ## Decisions
 

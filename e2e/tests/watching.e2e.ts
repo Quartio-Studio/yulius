@@ -38,6 +38,8 @@ for (const [harness, name] of [['claude', 'Claude'], ['codex', 'Codex'], ['antig
     await expect(browser.locator(call)).toContainText('Checkout edit completed');
     const reprinted = await browser.locator(`${call} > .sr-only`).textContent();
 
+    // A saved answer keeps its screen-reader prefix when the reader scrolls further on.
+    await append(browser, Array.from({ length: 120 }, (_, i) => ({ role: 'assistant', text: `Checkout note ${i + 1}.` })));
     await browser.evaluate(() => { location.hash = '#/s/studio/sessions'; });
     await screen.getByRole('searchbox', 'Search sessions').fill('idempotency key');
     const taskRow = '.ss-row-link[data-route*="/ses_task_12?line="]';
@@ -48,6 +50,10 @@ for (const [harness, name] of [['claude', 'Claude'], ['codex', 'Codex'], ['antig
     await taskHit.click();
     const saved = browser.locator(`.ss-page ${prefix}`).first();
     await expect(saved).toHaveCount(1);
+    await browser.evaluate(() => document.querySelector('.ss-page .ss-locked')!.scrollIntoView());
+    await expect.poll(() => browser.evaluate((selector) =>
+      document.querySelector(selector)?.checkVisibility({ contentVisibilityAuto: true }), `.ss-page ${prefix}`),
+      { message: 'Chromium skipped painting the offscreen answer' }).toBe(false);
     expect({ watched, reprinted, search, saved: await saved.textContent() }).toEqual({ watched: name, reprinted: name, search: name, saved: name });
   });
 }
