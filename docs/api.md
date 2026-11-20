@@ -997,8 +997,20 @@ The merge-first environment changes only through its staging queue (ADR-0411):
   - `verified`, or `included` in a verified deploy that contains it;
   - `gate_failed`, `deploy_failed` or `superseded`.
 - A repeated request answers with the same one.
-- A plain deploy of the environment (`POST …/cd/{env}/deploy`, an agent's head deploy) is
-  refused with a 409 naming the queue.
+- The request needs the task's owner to have write access, a merged landing and no pending or
+  blocked step.
+- Its outcome is typed into the task's session once.
+- `GET …/cd` lists the queue as the environment's `staging` (`verified`: the revision it serves,
+  `requests`: the newest, each with `task_number`, `revision`, `state`, `ci_run_id`,
+  `cd_run_id`, `note`).
+- `cd_status` shows the same.
+- A person's `POST …/cd/{env}/deploy` of the environment is refused with a 409 naming the queue.
+  Rollbacks stay possible.
+- A failed deploy restores staging to its last verified release, as a rollback run.
+- The deploy scripts of a merge-first target must be idempotent: a run lost to a restart is
+  retried, up to three attempts.
+- With a merge-first target, a production deploy that promotes is refused (409) until staging
+  serves the integration head, verified.
 
 A run deploys the commit GitHub reports for the branch, taken into a mirror only Yulius writes
 (every object checked, replacement refs ignored). It writes the commit's files into the run's own

@@ -3151,20 +3151,31 @@ through its queue (`crates/yulius-app/src/ci/staging.rs`, decisions in
 `yulius_domain::staging`, rows in `staging_requests`, migration 0078).
 
 - **Request.** A task's agent's `cd_deploy` of that environment records a request for the
-  task's newest landing (`task_merges`). A plain deploy of it is refused in `cd_prepare`.
+  task's newest landing (`task_merges`), under the owner's write access. A plain deploy of it is
+  refused in `cd_prepare`.
 - **Candidate gate.** The integration branch's run of that exact commit, or a
   `candidate/<sha>` run queued for it, judges it. A run that skipped the full suite judges
-  nothing.
+  nothing. `dom::plan` counts a candidate run as testing its commit and never supersedes it.
 - **Pick.**
   - Revisions are ordered by their first-parent position on the verified head
     (`Git::first_parent_position`, in the CD mirror).
-  - The newest ready one above the last verified one deploys, and none passes an older request
+  - What staging serves is the current release of its kept history (rollbacks count).
+  - The newest ready one above what staging serves deploys, and none passes an older request
     still testing.
   - Requests staging already contains are `included`.
 - **Deploy.**
   - `CdRequest::DeployRevision` deploys exactly that commit, as the task's owner.
-  - One deploy per environment (unique index), and none while another run of it goes on.
-  - A lost or errored run is retried up to 3 attempts.
+  - One deploy per environment (unique index). It waits, costing no attempt, while another
+    run of it goes on or an update holds deploys.
+  - A lost or errored run is retried up to 3 attempts, and a person's cancel stands.
+- **Failure.** A failed deploy is restored: each part's current kept release is redeployed and
+  verified once (`CdRequest::Restore`, a rollback run).
+- **Told and shown.**
+  - `tell_staging_outcomes` types each task's outcome into its session once.
+  - `cd_status` and the CD page (`CdEnvironment.staging`) list the queue with revisions and run
+    ids.
+  - A person's production deploy that promotes waits until staging verified the integration
+    head.
 - **Idempotence.** Each move is a compare-and-set from the state it was read in. One live
   request per requester and revision, and one success per task and environment. The background
   tick and a request's kick advance each queue under its sandbox's lock.

@@ -11,7 +11,10 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   - Yulius runs the full gate on exactly that commit, then deploys and verifies revisions in
     first-parent order, once per task.
   - A failing candidate leaves staging on its last verified release.
-  - A deploy lost to a restart is retried, and duplicate requests answer with the recorded one
+  - A deploy lost to a restart is retried, and duplicate requests answer with the recorded one.
+  - A failed deploy restores staging and tells the task.
+  - The CD page and `cd_status` show the queue.
+  - Production promotes only the revision staging verified
     ([ADR-0411](decisions/0411-staging-changes-through-a-queue-of-tested-merged-revisions.md),
     [SPEC-575](../.ai/specs/SPEC-575-make-task-local-testing-and-one-staging.md)).
 - A project with a shared staging target can mark it `merge_first = true` and its long jobs

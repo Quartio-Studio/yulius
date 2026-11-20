@@ -110,9 +110,9 @@ What exists today (map of 2026-11-20, `dev` at f80f42cad):
   - A request whose run passed before the crash is marked `verified` from the run.
   - A second request in the same tick creates no second row or run.
 - **MFS-009 Production from verified staging.**
-  - With a merge-first environment, `[cd.prod] promote` promotes that environment's last verified
-    revision instead of the integration head.
-  - The deploy is refused when there is none.
+  - With a merge-first environment, a person's production deploy that promotes is refused until
+    the integration head is the revision that environment serves, verified. Promotion merges the
+    integration branch, so the promoted revision is exactly the verified one (ADR-0411).
   - The authorization rules are unchanged: an administrator types the slug, and the rollback
     gate applies.
 - **MFS-010 Task-local deployment.**
@@ -148,9 +148,9 @@ What exists today (map of 2026-11-20, `dev` at f80f42cad):
 - [x] CD deploys a pinned integration revision
 - [x] Agent cd_deploy of the merge-first environment queues an idempotent staging request; plain deploys are refused
 - [x] Staging coordinator: test, deploy in revision order, include ancestors, retry lost runs
-- [ ] Failures reach the owning task; a failed deploy rolls staging back to its last verified release
-- [ ] cd_status and the CD page show the staging queue with run and revision ids
-- [ ] Production promotion takes the last verified staging revision
+- [x] Failures reach the owning task; a failed deploy rolls staging back to its last verified release
+- [x] cd_status and the CD page show the staging queue with run and revision ids
+- [x] Production promotion takes the last verified staging revision
 - [ ] `[local]` task-local deployment in config and briefing
 - [ ] Bootstrap skill, workflow, delivery-pipeline, onboarding prompt and briefing teach merge-first
 - [ ] Upgrade task per onboarded sandbox for the new bootstrap revision
