@@ -323,7 +323,7 @@ impl CiPriority {
         match reference {
             CiRef::Train(_) | CiRef::Task(_) => Self::Merge,
             CiRef::PullRequest(_) => Self::PullRequest,
-            CiRef::Branch(_) => Self::Branch,
+            CiRef::Branch(_) | CiRef::Candidate(_) => Self::Branch,
         }
     }
 }

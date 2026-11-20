@@ -752,6 +752,10 @@ pub enum CiRef {
     /// A playground task's head merged into the integration branch (SPEC-163): a commit that
     /// exists only in Yulius's clone, tested when its agent calls `delivery_merge`.
     Task(u64),
+    /// A merged revision of the integration branch (its full SHA) that a merge-first staging
+    /// request waits on (SPEC-575 MFS-003): the full gate on exactly that commit, started and
+    /// kept by the staging queue, never superseded by the branch moving on.
+    Candidate(String),
 }
 
 impl CiRef {
@@ -763,6 +767,7 @@ impl CiRef {
             Self::Branch(name) => format!("branch/{name}"),
             Self::Train(numbers) => format!("train/{}", joined(numbers, "+", "")),
             Self::Task(number) => format!("task/{number}"),
+            Self::Candidate(sha) => format!("candidate/{sha}"),
         }
     }
 
@@ -778,6 +783,11 @@ impl CiRef {
         }
         if let Some(number) = key.strip_prefix("task/") {
             return number.parse().ok().filter(|n| *n > 0).map(Self::Task);
+        }
+        if let Some(sha) = key.strip_prefix("candidate/") {
+            let hex =
+                !sha.is_empty() && sha.len() <= 64 && sha.bytes().all(|b| b.is_ascii_hexdigit());
+            return hex.then(|| Self::Candidate(sha.to_owned()));
         }
         if let Some(numbers) = key.strip_prefix("train/") {
             let parsed: Option<Vec<u64>> = numbers
@@ -799,6 +809,7 @@ impl CiRef {
             Self::Branch(name) => name.clone(),
             Self::Train(numbers) => format!("Merge train {}", joined(numbers, " + ", "#")),
             Self::Task(number) => format!("Task #{number}"),
+            Self::Candidate(sha) => format!("Candidate {}", sha.get(..9).unwrap_or(sha)),
         }
     }
 
@@ -808,7 +819,7 @@ impl CiRef {
         match self {
             Self::PullRequest(n) => *n == number,
             Self::Train(numbers) => numbers.contains(&number),
-            Self::Branch(_) | Self::Task(_) => false,
+            Self::Branch(_) | Self::Task(_) | Self::Candidate(_) => false,
         }
     }
 }
@@ -878,7 +889,12 @@ pub fn plan(targets: &[Target], runs: &[RunFacts]) -> Plan {
             out.queue.push(target.clone());
         }
     }
-    for run in runs.iter().filter(|run| run.state.is_active()) {
+    // A candidate run is the staging queue's: the branch moving on never supersedes it
+    // (SPEC-575 MFS-003), and it still counts as testing its commit above.
+    for run in runs
+        .iter()
+        .filter(|run| run.state.is_active() && !matches!(run.reference, CiRef::Candidate(_)))
+    {
         let current = targets.iter().find(|t| t.reference == run.reference);
         match current {
             Some(target) if target.sha == run.sha => {}
@@ -1804,6 +1820,7 @@ mod tests {
             CiRef::Branch("dev".into()),
             CiRef::Train(vec![12, 15, 3]),
             CiRef::Task(7),
+            CiRef::Candidate("0123456789abcdef0123456789abcdef01234567".into()),
         ] {
             assert_eq!(CiRef::parse(&reference.key()), Some(reference.clone()));
         }
@@ -1818,6 +1835,9 @@ mod tests {
             "task/",
             "task/0",
             "task/x",
+            "candidate/",
+            "candidate/xyz",
+            "candidate/../dev",
         ] {
             assert_eq!(CiRef::parse(bad), None, "{bad}");
         }
@@ -1830,6 +1850,11 @@ mod tests {
         assert_eq!(CiRef::Task(7).key(), "task/7");
         assert_eq!(CiRef::Task(7).label(), "Task #7");
         assert!(!CiRef::Task(9).covers(9));
+        // A merged revision's full gate before staging (SPEC-575 MFS-003).
+        let candidate = CiRef::Candidate("0123456789abcdef".into());
+        assert_eq!(candidate.label(), "Candidate 012345678");
+        assert!(!candidate.covers(9));
+        assert_eq!(after_merge_skip(&plain("e2e", true), &candidate), None);
         for state in [
             RunState::Queued,
             RunState::Running,
@@ -1841,6 +1866,29 @@ mod tests {
         ] {
             assert_eq!(RunState::parse(state.as_str()), Some(state));
         }
+    }
+
+    /// SPEC-575 MFS-003 (review round 1 of slice 2): a candidate run is never superseded (it
+    /// has no target of its own) and still counts as testing its commit, so the branch reaching
+    /// that commit queues no second full run of it.
+    #[test]
+    fn a_candidate_run_is_kept_and_counts_as_testing_its_commit() {
+        let dev = CiRef::Branch("dev".into());
+        let candidate = CiRef::Candidate("a1".into());
+        let both = plan(
+            &[target(dev.clone(), "a1")],
+            &[run("c1", candidate.clone(), "a1", RunState::Running)],
+        );
+        assert!(both.queue.is_empty(), "{both:?}");
+        assert!(both.supersede.is_empty(), "{both:?}");
+        let moved = plan(
+            &[target(dev, "b2")],
+            &[run("c1", candidate, "a1", RunState::Queued)],
+        );
+        assert!(
+            moved.supersede.is_empty(),
+            "the branch moving on keeps it: {moved:?}"
+        );
     }
 
     #[test]

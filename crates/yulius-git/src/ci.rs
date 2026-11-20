@@ -273,6 +273,49 @@ impl Git {
         }
     }
 
+    /// The place of commit `sha` on `head`'s first-parent history: how many first-parent
+    /// commits lead up to it, itself included, when walking `head`'s first parents passes it;
+    /// `None` when it does not (a merged side branch's commit, or one `head` does not contain)
+    /// (SPEC-575 MFS-006: staging deploys move forward along the integration branch).
+    ///
+    /// # Errors
+    /// Invalid revisions or Git failures.
+    pub fn first_parent_position(
+        &self,
+        repo: &Path,
+        head: &str,
+        sha: &str,
+    ) -> Result<Option<u64>, GitError> {
+        let head = self.rev_parse(repo, head)?;
+        let sha = self.rev_parse(repo, sha)?;
+        let count = |rev: &str| -> Result<u64, GitError> {
+            let output = self.run_ok(
+                Invocation::new(self, "rev-list", Some(repo))
+                    .args(["rev-list", "--first-parent", "--count", "--end-of-options"])
+                    .arg(rev),
+            )?;
+            output
+                .stdout_trimmed()
+                .parse()
+                .map_err(|_| GitError::InvalidInput {
+                    what: "commit count",
+                    reason: output.stdout_trimmed().to_owned(),
+                })
+        };
+        let (total, at) = (count(&head)?, count(&sha)?);
+        if at == 0 || at > total {
+            return Ok(None);
+        }
+        let output = self.run_ok(
+            Invocation::new(self, "rev-list", Some(repo))
+                .args(["rev-list", "--first-parent", "--max-count=1"])
+                .arg(format!("--skip={}", total - at))
+                .arg("--end-of-options")
+                .arg(&head),
+        )?;
+        Ok((output.stdout_trimmed() == sha).then_some(at))
+    }
+
     /// Whether some remote-tracking branch contains commit `sha` (nothing would be lost by
     /// deleting a local branch at it).
     ///

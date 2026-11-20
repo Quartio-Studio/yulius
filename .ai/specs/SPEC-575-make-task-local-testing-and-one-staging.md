@@ -66,6 +66,9 @@ What exists today (map of 2026-11-20, `dev` at f80f42cad):
   - They run on integration-branch runs and candidate runs.
   - Without such an environment they run everywhere, so a project without a target keeps its
     full suite on the PR.
+  - At least one job is a quick check without `after_merge` (the file is refused otherwise).
+  - A change's own new or changed jobs ("(this change)") never carry the flag: they run on its
+    PR (ADR-0360).
   - A branch run never reuses a tree whose run skipped a job that the branch run would run.
 - **MFS-003 Candidate gate.**
   - A staging request names a revision: the task's newest landing on the integration branch.
@@ -77,8 +80,11 @@ What exists today (map of 2026-11-20, `dev` at f80f42cad):
 - **MFS-004 Agent requests deployment through Yulius.**
   - A task agent's `cd_deploy` of the merge-first environment records a staging request; it
     never deploys the branch head directly.
-  - It is refused while the task has an unfinished step or no landing.
-  - A person's deploy of that environment records a request for the integration head.
+  - It is refused while the task has a pending or blocked step, no landing, or the project no
+    CI gate.
+  - Any plain deploy of that environment (a person's on the CD page, an agent's or an
+    automation's head deploy) is refused, naming the queue. Rollbacks stay a person's
+    (ADR-0411).
 - **MFS-005 One successful staging deployment per completed task.**
   - A task has at most one `verified` request per environment.
   - A repeated request for the same task and revision returns the existing request.
@@ -104,9 +110,12 @@ What exists today (map of 2026-11-20, `dev` at f80f42cad):
   - A request whose run passed before the crash is marked `verified` from the run.
   - A second request in the same tick creates no second row or run.
 - **MFS-009 Production from verified staging.**
-  - With a merge-first environment, `[cd.prod] promote` promotes that environment's last verified
-    revision instead of the integration head.
-  - The deploy is refused when there is none.
+  - With a merge-first environment, every promotion (a person's production deploy, the Delivery
+    page's Promote, the profile's automatic one) is refused until the integration head is the
+    revision that environment serves, verified, with the tables read through the CD mirror.
+    Promotion merges the integration branch, so the promoted revision is exactly the verified one
+    (ADR-0411).
+  - Slice 2 gates the production deploy; the next slice gates the other two.
   - The authorization rules are unchanged: an administrator types the slug, and the rollback
     gate applies.
 - **MFS-010 Task-local deployment.**
@@ -136,18 +145,19 @@ What exists today (map of 2026-11-20, `dev` at f80f42cad):
 - [x] Parse `merge_first` on dev-stage CD tables and `after_merge` on CI jobs
 - [x] Skip after-merge jobs on PRs, trains and playground tasks while a merge-first environment deploys
 - [x] Branch runs never reuse a tree that skipped an after-merge job; ci_status says why a job was skipped
-- [ ] Store staging requests (migration and store API)
-- [ ] Pure staging state machine: request, verdict, ordered pick, deploy outcome, restart
-- [ ] Full gate on the exact merged candidate as a candidate CI run
-- [ ] CD deploys a pinned integration revision
-- [ ] Agent and person cd_deploy of the merge-first environment queue an idempotent staging request
-- [ ] Staging coordinator: test, deploy in revision order, include ancestors, retry lost runs
-- [ ] Failures reach the owning task; a failed deploy rolls staging back to its last verified release
-- [ ] cd_status and the CD page show the staging queue with run and revision ids
-- [ ] Production promotion takes the last verified staging revision
+- [x] Store staging requests (migration and store API)
+- [x] Pure staging state machine: request, verdict, ordered pick, deploy outcome, restart
+- [x] Full gate on the exact merged candidate as a candidate CI run
+- [x] CD deploys a pinned integration revision
+- [x] Agent cd_deploy of the merge-first environment queues an idempotent staging request; plain deploys are refused
+- [x] Staging coordinator: test, deploy in revision order, include ancestors, retry lost runs
+- [x] Failures reach the owning task; a failed deploy rolls staging back to its last verified release
+- [x] cd_status and the CD page show the staging queue with run and revision ids
+- [x] Production promotion takes the last verified staging revision
 - [ ] `[local]` task-local deployment in config and briefing
 - [ ] Bootstrap skill, workflow, delivery-pipeline, onboarding prompt and briefing teach merge-first
 - [ ] Upgrade task per onboarded sandbox for the new bootstrap revision
+- [ ] Every promotion path waits for the verified staging revision, read through the CD mirror
 - [ ] Scenario test: fresh bootstrap, existing sandbox, failed candidate then fix, concurrent tasks with a retried deploy
 - [ ] Independent review in a fresh session, findings fixed test-first
 - [ ] Every gate green, docs and the changes log updated

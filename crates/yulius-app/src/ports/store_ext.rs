@@ -795,6 +795,110 @@ pub trait HandoffStore: Send + Sync {
     async fn settle_creating_handoffs(&self, at: Timestamp) -> AppResult<u64>;
 }
 
+/// One request to change a project's merge-first staging target (SPEC-575, migration 0078).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StagingRequestRecord {
+    /// Its id.
+    pub id: String,
+    /// Its sandbox.
+    pub sandbox_id: SandboxId,
+    /// The merge-first environment's name.
+    pub environment: String,
+    /// The task it delivers; `None`: a person's request for the integration head.
+    pub task_id: Option<TaskId>,
+    /// The integration branch's commit it deploys.
+    pub revision: String,
+    /// Where it stands.
+    pub state: yulius_domain::staging::StagingState,
+    /// The full gate's run that judged its revision.
+    pub ci_run_id: Option<String>,
+    /// The CD run that deployed it, or the verified one that includes it.
+    pub cd_run_id: Option<String>,
+    /// Deploy attempts ended so far.
+    pub attempts: u32,
+    /// What its state means for people (the failed jobs, why it was refused or superseded).
+    pub note: Option<String>,
+    /// Who asked: `task:<number>`.
+    pub requested_by: String,
+    /// Whether its outcome was told to its task's session.
+    pub told: bool,
+    /// When it was asked.
+    pub created_at: Timestamp,
+    /// Its last change.
+    pub updated_at: Timestamp,
+}
+
+/// What a staging request's move also records; `None` keeps the stored value.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct StagingChange {
+    /// The full gate's run.
+    pub ci_run_id: Option<String>,
+    /// The CD run.
+    pub cd_run_id: Option<String>,
+    /// Deploy attempts ended.
+    pub attempts: Option<u32>,
+    /// Its note (replaces the stored one).
+    pub note: Option<String>,
+    /// Forget its CD run (a new attempt starts): a crash before the new run is recorded then
+    /// reads as lost, never as the old run's end.
+    pub clear_cd_run: bool,
+}
+
+/// Merge-first staging requests (SPEC-575 MFS-005, MFS-008, migration 0078). Every move is a
+/// compare-and-set from the state it was decided on, so a restart or a second tick never moves a
+/// request twice.
+#[async_trait]
+pub trait StagingStore: Send + Sync {
+    /// Stores a new request; `false` when the same requester's request for that revision (or a
+    /// second success of the task, or a second deploy) already exists, so nothing was written.
+    async fn insert_staging_request(&self, request: &StagingRequestRecord) -> AppResult<bool>;
+    /// One request.
+    async fn staging_request(&self, id: &str) -> AppResult<Option<StagingRequestRecord>>;
+    /// The requests of `environment` asked by the same requester: the task's, or (for `None`) a
+    /// person's for `revision`; oldest first.
+    async fn staging_requests_of(
+        &self,
+        sandbox: &SandboxId,
+        environment: &str,
+        task: Option<&TaskId>,
+        revision: &str,
+    ) -> AppResult<Vec<StagingRequestRecord>>;
+    /// The requests of `environment` still on their way (testing, ready, deploying), oldest
+    /// first.
+    async fn pending_staging_requests(
+        &self,
+        sandbox: &SandboxId,
+        environment: &str,
+    ) -> AppResult<Vec<StagingRequestRecord>>;
+    /// The sandboxes and environments with a pending request, or a deploy that failed since
+    /// `failed_since` (staging is restored to its last verified release after it).
+    async fn staging_queues(&self, failed_since: Timestamp) -> AppResult<Vec<(SandboxId, String)>>;
+    /// The newest requests of `environment`, newest first.
+    async fn recent_staging_requests(
+        &self,
+        sandbox: &SandboxId,
+        environment: &str,
+        limit: u32,
+    ) -> AppResult<Vec<StagingRequestRecord>>;
+    /// Moves a request from `from` to `to` with `change`, only while it is still `from`;
+    /// `false` when it was not (or the move would break a unique rule).
+    async fn move_staging_request(
+        &self,
+        id: &str,
+        from: yulius_domain::staging::StagingState,
+        to: yulius_domain::staging::StagingState,
+        change: &StagingChange,
+        at: Timestamp,
+    ) -> AppResult<bool>;
+    /// The requests of tasks whose outcome (verified, included, gate failed, deploy failed,
+    /// superseded) was not told yet, oldest first.
+    async fn untold_staging_requests(&self) -> AppResult<Vec<StagingRequestRecord>>;
+    /// Records the outcome as told; `false` when it already was.
+    async fn mark_staging_told(&self, id: &str) -> AppResult<bool>;
+    /// The commits a task's pull requests landed on `branch` (migration 0077), in landing order.
+    async fn task_landings(&self, task: &TaskId, branch: &str) -> AppResult<Vec<String>>;
+}
+
 /// One person's stored digest (SPEC-512 DIG-005).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StoredDigest {
@@ -969,6 +1073,7 @@ pub trait ExtensionStores:
     + NeedsYouStore
     + DigestStore
     + HandoffStore
+    + StagingStore
     + crate::ports::session_docs::SessionDocStore
     + NoteStore
     + SpanStore
@@ -996,6 +1101,7 @@ impl<T> ExtensionStores for T where
         + NeedsYouStore
         + DigestStore
         + HandoffStore
+        + StagingStore
         + crate::ports::session_docs::SessionDocStore
         + NoteStore
         + SpanStore

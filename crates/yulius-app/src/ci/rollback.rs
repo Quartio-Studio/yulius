@@ -240,7 +240,7 @@ impl App {
         sandbox: &SandboxRecord,
         env: &str,
         (requester, actor): (Requester<'_>, &CdActor<'_>),
-        (part, release): (Option<&str>, Option<&str>),
+        (part, release, restore): (Option<&str>, Option<&str>, bool),
         resolved: &mut Option<CdStage>,
     ) -> AppResult<Prepared> {
         let mirror_lock = mirror_lock(&sandbox.id);
@@ -343,12 +343,16 @@ impl App {
                      or cd_status lists"
                 ))
             })?,
+            // A restore redeploys what the history says is deployed (SPEC-575 MFS-007).
+            None if restore => history.current().ok_or_else(|| {
+                AppError::Conflict(format!("{what} has no verified release to restore"))
+            })?,
             None => history.previous().ok_or_else(|| {
                 AppError::Conflict(format!("{what} has no earlier release to roll back to"))
             })?,
         };
         let current = history.current();
-        if current.is_some_and(|now| now.release == to.release) {
+        if !restore && current.is_some_and(|now| now.release == to.release) {
             return Err(AppError::Conflict(format!(
                 "{} is already deployed to {what}",
                 short_release(&to.release)
@@ -472,6 +476,19 @@ impl App {
             run_id: run.id.clone(),
         };
         let mut records = Vec::new();
+        // A failed deploy records no release, so the barriers it announced are kept as the last
+        // lines of its output, where the staging queue's restore reads them (SPEC-575 MFS-007).
+        if run.kind == CdRunKind::Deploy && state != RunState::Passed {
+            for (part, reason) in yulius_domain::rollback::announced_barriers(
+                markers.iter().map(String::as_str),
+                &target.parts,
+            ) {
+                ring.push_str(&format!(
+                    "{}\n",
+                    yulius_domain::rollback::failed_barrier_line(&part, &reason)
+                ));
+            }
+        }
         // What is recorded so far: earlier barriers, and where a part stands (review round 3: a
         // failed read is said, never silently taken as no history).
         let known = match self
@@ -1035,6 +1052,7 @@ mod tests {
                 drill_environment: "dev".into(),
                 ..CdRollback::default()
             },
+            staging: None,
         }
     }
 

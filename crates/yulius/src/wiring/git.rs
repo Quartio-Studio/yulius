@@ -1008,6 +1008,21 @@ impl GitPort for GitAdapter {
         blocking(move || git.is_ancestor(&repo, &a, &d)).await
     }
 
+    async fn first_parent_position(
+        &self,
+        repo: &Path,
+        head: &str,
+        sha: &str,
+    ) -> AppResult<Option<u64>> {
+        let (git, repo, head, sha) = (
+            self.git(),
+            repo.to_path_buf(),
+            head.to_owned(),
+            sha.to_owned(),
+        );
+        blocking(move || git.first_parent_position(&repo, &head, &sha)).await
+    }
+
     async fn parents(&self, repo: &Path, rev: &str) -> AppResult<Vec<String>> {
         let (git, repo, rev) = (self.git(), repo.to_path_buf(), rev.to_owned());
         blocking(move || git.parents(&repo, &rev)).await
