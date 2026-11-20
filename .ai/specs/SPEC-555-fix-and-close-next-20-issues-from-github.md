@@ -1,6 +1,6 @@
 ---
 yulius-task: 33a0a9dc-3729-4100-a6e4-a0fb1cac5b05
-status: in-progress
+status: done
 ---
 
 # SPEC-555 Resolve the next twenty GitHub issues
@@ -72,7 +72,7 @@ upgrade prerequisite for older live wrappers has not been established. Open PR #
 - [x] Reuse a removed sandbox port range after its listeners are retired
 - [x] Synchronize browser checks with the state each assertion measures
 - [x] Refresh open task search when the sandbox tasks arrive
-- [ ] Verify the integrated changes, obtain independent review and close on green delivery
+- [x] Verify the integrated changes, obtain independent review and link the issues for green delivery
 
 ## Acceptance criteria
 
@@ -139,3 +139,13 @@ process ownership rules while applying the individual fixes.
 
 - Completion review verified the merge-attribute fixes and found two remaining conflict-name cases. The checked train decoded raw bytes differently from the preview, and a literal quoted filename collided with an escaped byte name. Both failures reproduced in Git repositories. Preview, unchecked squash and checked train now return the same five distinct names, including both invalid byte suffixes, the literal quoted name and a valid tab. All 115 Git tests passed, as did all-target Git Clippy and quick checks. Integrated Rust verification after the attributes and signal-readiness corrections passed 462 cases.
 - Mutation checks on the first review corrections reported 49 listed, 22 caught, one missed, zero timed out, 26 unviable and zero unreached. A real non-directory at the production holder marker made the focused marker regression catch the missed guard. The public usage probe cases caught both missed HTTP response mutations.
+
+- Independent review approved cb047446e after checking preview, squash and CI train against the same five filename cases. The two HTTP model-answer mutations were caught through the real provider adapter. Three model-refresh mutations were caught by the usage-credits integration cases, including a refused model followed by a fresh window reading.
+
+- The whole-branch mutation run reached its 30-minute bound with 312 listed, 41 caught, 14 missed, zero timed out, 113 unviable and 144 unreached. The recovery test caught removal of the main-session attention marker restoration. Separate provider, account, and namespace integration cases addressed the corresponding package-filter misses.
+- The second review corrections reported 85 listed, 20 caught, five missed, zero timed out, 60 unviable and zero unreached. Git's two malformed-success cases were both caught when the integration fixture returned an invalid tree ID. A separate conflict-path run caught thirteen candidates, including all six control-character escape replacements. One replacement did not compile.
+
+- Targeted proofs for the whole-branch misses caught all three browser lease retention replacements and both first-prompt capacity replacements. Direct GET and POST tests cover the former missing-checkout disjunction in both directions. The current pattern requires both a branch and a worktree. The playground tests also caught removal of the open-plan hold, optional-check gating and unnecessary merge previews on an ancestor-only change.
+- The final conflict-name corrections reported six mutations listed, four caught, zero missed, zero timed out, two unviable and zero unreached. The tests added after independent approval exercise CI verdicts, first-prompt holds, the lease registry and direct Git tree IDs. The only application code added after approval is a ten-line, test-support-only lease count.
+
+- The merge-attribute mutation run tested all 93 candidates in nineteen minutes. It caught 24, missed 16 and found 53 unviable. None timed out. Focused tests caught the seven playground checks, the two direct-tree guards, the six control-character escapes and the malformed tree guard missed by this selection. The integrated Rust regression suite passed 469 cases. After the review, all 212 focused Git, playground, project, account and prompt cases passed.
