@@ -29,6 +29,7 @@ On dev `645eff207`, repeating the completion update moves the end time, and appr
 - [x] Protect cut-off recovery and accept reports during a slow head lookup
 - [x] Order recovery against the continued round’s own cut-off
 - [x] Attribute replayed transcript observations to the review round that ran
+- [ ] Preserve same-model answers and recovery during a delayed account write
 - [ ] Verify the fix and obtain independent approval for delivery
 
 ## Acceptance criteria
@@ -38,6 +39,7 @@ On dev `645eff207`, repeating the completion update moves the end time, and appr
 - **AC-3** Replays with an earlier client send time cannot settle the next round. A continued round takes its own head at start and records its own transcript observations.
 - **AC-4** An old hook preserves the continued reviewer’s pending recovery after a usage limit. A report arriving during its start-time Git lookup still closes the continued round.
 - **AC-5** On restart, replayed model and usage-limit observations for a completed round retain their attribution. A delayed live limit from that round leaves the continued reviewer’s recovery alone.
+- **AC-6** Consecutive rounds preserve the same observed model even when both answers arrive during restart replay. A limit being saved to the account can complete after the reviewer reports without scheduling a move for the next round.
 
 ## Test plan
 

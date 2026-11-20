@@ -605,8 +605,21 @@ impl App {
         id: &str,
         at: Option<Timestamp>,
     ) {
-        if let Some(reviewer) = self.open_round_reviewer(task, id, at).await {
-            self.reviewer_cut_off(task, reviewer, true).await;
+        if let Ok(Some(attempt)) = self.deps.store.live_attempt(task).await {
+            self.subagent_limit(
+                task,
+                &attempt,
+                ModelFamily::Opus,
+                &crate::ports::harness::Observation::SubagentCutOff {
+                    agent_id: id.to_owned(),
+                    at,
+                    scope: yulius_domain::usage::LimitScope::Model(Some(ModelFamily::Fable)),
+                    resets_at: Some(Timestamp(self.now().0 + 86_400_000)),
+                    window_minutes: Some(10_080),
+                    message: "reviewer reached its weekly limit".to_owned(),
+                },
+            )
+            .await;
         }
     }
 

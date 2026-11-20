@@ -1452,7 +1452,7 @@ mod tests {
     }
 
     /// SPEC-493 REV-004: a subagent of the session's own thread names the model that answered
-    /// it (once, and again when it changes), and a usage limit that refuses it says it was cut
+    /// each time it answers, and a usage limit that refuses it says it was cut
     /// off. A workflow agent's lines say neither, and a refusal's own record names no model.
     #[test]
     fn a_subagents_model_and_its_cut_off_are_read_from_its_transcript()
@@ -1487,14 +1487,12 @@ mod tests {
             .iter()
             .filter(|o| matches!(o, Observation::SubagentAnswered { .. }))
             .collect();
-        assert_eq!(
-            answered,
-            [&Observation::SubagentAnswered {
-                agent_id: "a73a9170080d69b92".into(),
-                model: "claude-fable-5-2".into(),
-                at: yulius_domain::time::parse_rfc3339("2026-11-15T10:00:01.000Z")
-            }]
-        );
+        let same_model = Observation::SubagentAnswered {
+            agent_id: "a73a9170080d69b92".into(),
+            model: "claude-fable-5-2".into(),
+            at: yulius_domain::time::parse_rfc3339("2026-11-15T10:00:01.000Z"),
+        };
+        assert_eq!(answered, [&same_model, &same_model]);
         let mut file = std::fs::OpenOptions::new().append(true).open(&agent)?;
         writeln!(file, "{}", answer("m3", "claude-opus-5-5"))?;
         writeln!(file, "{}", refusal("2026-11-15T10:00:02.000Z"))?;

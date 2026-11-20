@@ -6942,7 +6942,7 @@ impl App {
     /// limit does; one of another model leaves the session where it is, unless the subagent is
     /// a review round's reviewer, whose model the session then moves for. Either way a relaunch
     /// tells the session to resume that reviewer.
-    async fn subagent_limit(
+    pub(crate) async fn subagent_limit(
         self: &Arc<Self>,
         task_id: &TaskId,
         attempt: &AttemptRecord,

@@ -578,6 +578,58 @@ async fn a_delayed_limit_from_a_completed_round_does_not_move_its_continuation()
     Ok(())
 }
 
+/// A delayed account write keeps its usage evidence while the reviewer resumes or reports.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_reviewer_resuming_during_the_limit_write_cancels_the_move() -> TestResult {
+    use crate::support::{hold_point, point_reached};
+    use std::sync::atomic::Ordering;
+    use yulius_app::ports::store::AccountStore as _;
+    use yulius_app::race::Point;
+    let h = harness()?;
+    seed(&h).await?;
+    let account = add_account(&h, "held-review-limit", None).await?;
+    let task = running_task(&h, TaskMode::Prompt, &account).await?;
+    a_round(&h, "rev", None).await?;
+    let mut pending = Vec::new();
+    for reports in [false, true] {
+        let (writing, release) = hold_point(Point::LimitRecord, account.as_str());
+        let limit = {
+            let (app, task) = (h.app.clone(), task.clone());
+            tokio::spawn(async move {
+                app.cut_off_review_for_test(&task, "rev", Some(app.now()))
+                    .await
+            })
+        };
+        point_reached(writing).await?;
+        h.clock.0.fetch_add(1, Ordering::SeqCst);
+        if reports {
+            hook(
+                &h.internal,
+                "SubagentStop",
+                json!({"agent_id":"rev","agent_type":"yulius-reviewer",
+                "last_assistant_message":"Verdict: request changes"}),
+            )
+            .await?;
+            h.clock.0.fetch_add(1, Ordering::SeqCst);
+        }
+        hook(
+            &h.internal,
+            "SubagentStart",
+            json!({"agent_id":"rev","agent_type":"yulius-reviewer"}),
+        )
+        .await?;
+        release.send(())?;
+        limit.await?;
+        let record = h.store.account(&account).await?.ok_or("account")?;
+        let usage = yulius_app::usage_json::from_json(record.usage_json.as_deref().unwrap_or("{}"));
+        assert_eq!(usage.weekly_fable.and_then(|w| w.used_percent), Some(100.0));
+        pending.push(h.app.review_recovery_for_test(&task));
+    }
+    assert_eq!(rounds(&h, &task, true).await?.len(), 2);
+    assert_eq!(pending, [(None, false), (None, false)]);
+    Ok(())
+}
+
 /// The detached start handler can still be reading Git when the reviewer reports.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_continued_report_survives_its_start_time_head_lookup() -> TestResult {
