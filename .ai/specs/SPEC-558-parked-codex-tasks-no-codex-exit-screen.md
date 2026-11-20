@@ -36,7 +36,7 @@ Task #517 displayed Codex's exit instructions. The host drained shutdown output 
 - [x] Preserve parked PR observations across overlapping Git overviews
 - [x] Report the blocking ordinary PR in parked HTTP task details
 - [x] Give parked PRs fair status reads in task lists and Home
-- [ ] Return the verified plan snapshot with parked HTTP task rows
+- [x] Return the verified plan snapshot with parked HTTP task rows
 - [ ] Filter and explain verified parked rows in MCP task reads
 - [ ] Refresh parked page and sidebar status independently of the Git overview
 - [ ] Keep failed integration candidates with their original owner
@@ -65,6 +65,8 @@ Capture a separate screen at the park decision because exiting can clear the ent
 A human request can take precedence over unfinished work in the task list. Both parking triggers therefore check the recorded plan, spec and native goal immediately before committing to shutdown. The task’s steps lock orders that decision with plan, spec and goal updates. An update in progress or a store read failure leaves the session live for a later pass.
 
 ## Evidence
+
+- Independent review approved the HTTP/Home slice at `238f1c282bcfee9810f8a514d7d3826cfb836380` and reran eight regressions. The supplemental run against the changes since `713178a04` reported `mutants: 165 listed, 40 caught, 0 missed, 0 timed out, 125 unviable, 0 not reached (bound 30 min, took 1276 s)`. Its baseline passed 3,354 selected tests. The reviewer’s test-helper comment was corrected.
 
 - The combined-prototype mutation campaign at `713178a04` reported `mutants: 156 listed, 28 caught, 4 missed, 0 timed out, 124 unviable, 0 not reached (bound 30 min, took 993 s)`. One survivor inverted which task lists reuse their project snapshot. Three changed the existing attempt-or-provider-session test for whether a task ever started. The added tests exercise the project snapshot when a supertask arrives during parked verification, and the attempt-only, session-only and never-started cases. Applying the generated snapshot inversion and conjunction mutation reproduced both failures.
 - The HTTP/Home review at `e311417b7` reproduced Done alongside a newly displayed owner decision, and an unrelated live row’s PR-news read blocking the parked verifier. The corrected list performs a dedicated parked verification pass. Home shares that pass across all visible projects. Seven fast parked PRs and a stalled PR precede a ninth healthy parked PR in the competition fixture. Another fixture holds the live-row status read while independently observing parked verification. The snapshot fixture now asserts the exact empty plan in the first confirmed Done response and the reopened step on the following read. All 98 scoped tests passed. The holder fixture uses the task number assigned by the store. Repository contracts, formatting and Clippy for both the application and integration test targets passed.

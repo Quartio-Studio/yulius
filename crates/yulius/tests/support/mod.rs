@@ -1360,11 +1360,12 @@ impl FakeGitHub {
             m.insert(sha.into(), report);
         }
     }
-    /// Holds every checks read until the returned handle is released with [`Self::release_checks`].
+    /// Holds checks for this SHA until [`Self::release_checks`]. Other heads are readable.
     pub fn hold_checks_for(&self, sha: &str) -> AppResult<Arc<tokio::sync::Notify>> {
         *self.checks_hold_sha.lock().map_err(AppError::internal)? = Some(sha.into());
         Ok(self.hold_checks())
     }
+    /// Holds checks reads until the returned handle is released with [`Self::release_checks`].
     pub fn hold_checks(&self) -> Arc<tokio::sync::Notify> {
         let hold = Arc::new(tokio::sync::Notify::new());
         if let Ok(mut h) = self.checks_hold.lock() {
