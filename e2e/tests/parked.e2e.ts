@@ -178,10 +178,11 @@ test('a parked task terminal shows its parked banner and Resume action, distinct
   await expect(bar.getByRole('button', { name: 'Resume' })).toBeVisible();
   await expect(bar.getByRole('button', { name: 'Reply' })).toBeVisible();
 
-  // Compare against a crash: crash shows a warning banner, not the parked info banner.
+  // Compare against a crash: crash shows a warning banner with Continue, not the parked info banner.
   await touchTask(browser, 'sb_studio', 13, { status: 'stopped_crashed', activity: null });
   await expect(browser.locator('.term-banner-warn')).toBeVisible();
-  await expect(browser.locator('.term-banner-warn')).toHaveText(/stopped unexpectedly/);
+  await expect(browser.locator('.term-banner-warn')).toHaveText(/The agent stopped/);
+  await expect(browser.locator('.term-banner-warn').getByRole('button', { name: 'Continue' })).toBeVisible();
 
   // Compare against an operator stop: shows stopped banner and typing MUST NOT wake it.
   await touchTask(browser, 'sb_studio', 13, { status: 'stopped_cancelled', activity: null });

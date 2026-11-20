@@ -81,3 +81,17 @@ Fix the full incident observed on `quartio-v2` tasks #322, #323 and #324:
   - Treat `parked` as an ended terminal session state in `termsocket.js` (`isEndedStatus`), stop cursor blinking, and wake parked sessions on owner terminal input / Reply / Resume through `resume_parked` while keeping operator stop, crash, and ownership boundaries intact.
   - Preserve safe idle parking while CI runs and extend `pr_watch` to automatically resume parked tasks once per actionable PR/CI event (persisted in `pr-notices.json`).
   - Publish eligible clean committed CI repairs on existing task-owned failing open PRs even while verification steps remain open, with fail-closed cleanliness/branch/fast-forward checks and immediate `ci_sync_sandbox`.
+
+## Evidence
+
+- **Quick repository contracts & formatting (`scripts/dev quick`)**: passed (`check_repository.py` + `cargo fmt --all -- --check`).
+- **Lint (`cargo clippy -p yulius-domain -p yulius-app -p yulius-server --all-targets -- -D warnings`)**: passed with 0 warnings.
+- **Rust unit tests (`cargo test -p yulius-domain -p yulius-app -p yulius-server --lib`)**: passed (including `delivery::tests::open_pr_repair_eligibility_enforces_every_safeguard`, `pr_watch::tests::failed_publication_notice_is_told_once_and_counts_as_news_due_until_told`, `terminal::tests::parked_input_wake_distinguishes_typing_from_control_and_noise`).
+- **Rust integration tests (`cargo test -p yulius --test main -- delivery:: parking:: pr_watch:: terminal_ws::`, and post-merge `cargo build -p fake-agent && cargo test -p yulius --test main -- parking::`)**: passed (113/113 across `delivery::`, `parking::`, `pr_watch::`, `terminal_ws::`; 25/25 `parking::` after merging `origin/dev`), including:
+  - `delivery::a_clean_committed_ci_repair_publishes_to_failing_open_pr_with_verification_open`
+  - `delivery::open_pr_ci_repair_preserves_safeguards_and_surfaces_actionable_failures`
+  - `parking::ordinary_owner_terminal_input_and_continue_prompt_wake_parked_session_with_continuity`
+  - `parking::parked_task_parks_safely_during_ci_and_auto_wakes_on_actionable_check_results`
+- **Web UI end-to-end suite (`cd e2e && npx e2e run`)**: passed (94 passed, 1 skipped of 95 files; 1144 passed, 1 skipped of 1145 tests), and post-merge `npx e2e run tests/parked.e2e.ts` passed 5/5 (including the new parked Codex terminal banner / crash distinction / operator-stop boundary / Resume / Reply / terminal typing / non-owner test).
+- **Security scan (`scripts/dev security`)**: disabled in Yulius for this project/instance (`Security scan disabled: Vidoc is turned off in Yulius, for this project or the whole instance; nothing was scanned`); reported as disabled, not passed.
+- **Limits**: Live Quartio VM (`quartio-v2` #322/#323/#324) was not modified, restarted, or deployed from this task; live Codex rollout continuity on the VM was verified by the operator and covered locally through `provider_session_id` + `worktree_path` supervisor tests and Web UI mock e2e tests.
