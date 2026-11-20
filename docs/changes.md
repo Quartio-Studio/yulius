@@ -12,7 +12,6 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   approves it on the task's page (Ask) or it starts as the owner (Automatic), within depth,
   cycle and daily bounds; the new task shows its source and the source is told the outcome.
 
-- Work from Telegram, off by default (SPEC-512 part 4, task #494, #1107, ADR-0392): a person
 - Work from Telegram, off by default (SPEC-512 part 4, task #494, delivered by SPEC-556, #1107, ADR-0392): a person
   turns on their chat's intake in Settings → Notifications with a project. A reply to a
   notification then answers its task as their message (the owner rule holds), any other message,

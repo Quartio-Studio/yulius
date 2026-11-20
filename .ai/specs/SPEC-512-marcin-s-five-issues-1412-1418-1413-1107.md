@@ -305,7 +305,7 @@ only ask a person with `needs_you`. Nothing records where a task came from.
 - [x] Ask mode: a stored request the owner approves in a browser session
 - [x] Provenance on the target, the outcome sent back, task.handoff audited on both
 - [x] ADR amending ADR-0227 and docs for handoffs
-- [ ] Review of the #1106 pull request answered test-first
+- [x] Review of the #1106 pull request answered test-first
 
 ## Acceptance criteria
 
@@ -509,6 +509,13 @@ Review round 2 (head 84113ff1a, CHANGES REQUESTED), answered test-first:
 | A weak outcome test | removed; the live-session test holds the guard (`parking::a_handed_off_tasks_outcome_reaches_its_source`) | — |
 | Non-request rows floated for good | only a request floats; provenance and history are on the info page | e2e "a handed-off task shows where it came from on its info page", "the task's owner approves…" (answered, it floats no more) |
 | Docs and nits | `creating` and the new refusals in the API, spec and contracts; a playground's label; `ACCEPT_KEY`; `creating` worded on the page | by reading |
+
+Review round 3 (head 0868ae83c): APPROVED, nothing blocking. After it: a stray changes line
+removed and a refusal redacts before it cuts (14 product lines). Nits left: a claim in flight while
+the server starts could be settled as refused; a settled claim in ask mode is refused rather than
+asked again; the options (`harness`, `model`, `effort`, `mode`) of a refusal are kept as given;
+`sandbox_named` duplicates `sandbox_by_reference`; the pause and update-hold halves of the outcome
+guard have no test.
 
 Also in this pull request (a part 4 defect found while building part 5): `/task acme/app` (a
 project's full repository name) named no project, because owner and name are stored apart;

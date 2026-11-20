@@ -589,15 +589,13 @@ impl App {
         // The arguments of a refusal are kept bounded: the reason is what matters.
         // ... and redacted with the source sandbox's secrets: a refusal for carrying one keeps
         // no value (review round 2).
-        let sandbox_name: String = args.sandbox.chars().take(100).collect();
-        let title: String = args.title.chars().take(200).collect();
-        let prompt: String = args.prompt.chars().take(2_000).collect();
+        // Redacted first, then cut, so no part of a secret survives at the cut (review round 3).
+        let src = &source.sandbox_id;
+        let cut = |text: String, max: usize| text.chars().take(max).collect::<String>();
         let kept = HandoffArgs {
-            sandbox: self
-                .redact_for_sandbox(&source.sandbox_id, &sandbox_name)
-                .await,
-            title: self.redact_for_sandbox(&source.sandbox_id, &title).await,
-            prompt: self.redact_for_sandbox(&source.sandbox_id, &prompt).await,
+            sandbox: cut(self.redact_for_sandbox(src, &args.sandbox).await, 100),
+            title: cut(self.redact_for_sandbox(src, &args.title).await, 200),
+            prompt: cut(self.redact_for_sandbox(src, &args.prompt).await, 2_000),
             ..args.clone()
         };
         let record = HandoffRecord {
