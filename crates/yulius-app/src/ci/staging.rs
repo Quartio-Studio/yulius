@@ -1,19 +1,24 @@
-//! The merge-first staging queue (SPEC-575 MFS-003 to MFS-008, ADR-0411).
+//! The merge-first staging queue (SPEC-575 MFS-003 to MFS-009, ADR-0411).
 //!
 //! A project's shared staging target is the dev-stage `[cd.<name>]` with `merge_first = true`
-//! at the verified integration head. Nothing deploys it directly:
+//! at the verified integration head. Nothing deploys its head directly:
 //!
-//! 1. **Request.** A task's agent (`cd_deploy`) or a person (the CD page) asks for it, and Yulius
-//!    records a staging request for a revision. For a task that is its newest landing on the
-//!    integration branch; for a person, the verified integration head.
-//! 2. **Candidate gate.** The full gate must pass on exactly that revision. A branch's or
-//!    candidate's run that already judged the commit counts; otherwise a
-//!    [`CiRef::Candidate`] run is queued.
+//! 1. **Request.** A task's agent asks with `cd_deploy` under its owner's write access, and
+//!    Yulius records a staging request for the task's newest landing on the integration
+//!    branch.
+//! 2. **Candidate gate.** The full gate must pass on exactly that revision. The integration
+//!    branch's run or a candidate's run that judged the commit counts; otherwise one
+//!    [`CiRef::Candidate`] run is queued, which the branch moving on never supersedes.
 //! 3. **Deploy in revision order.** One deploy per environment at a time, of the newest ready
-//!    revision above the last verified one. Requests it contains are included in it.
-//! 4. **Outcome.** A passed run (deploy and verify) is verified; a failed one is the task's to
-//!    fix. A run lost to a restart or ended in error is tried again, up to
-//!    [`MAX_DEPLOY_ATTEMPTS`].
+//!    revision above what staging serves. It waits, costing no attempt, while another run of
+//!    the environment goes on or an update holds deploys. Requests staging contains are
+//!    included in it.
+//! 4. **Outcome.**
+//!    - A passed run (deploy and verify) is verified.
+//!    - A failed one is the task's to fix, and staging is restored to its last verified release.
+//!    - A person's cancel stands.
+//!    - A run lost to a restart or ended in error is tried again, up to [`MAX_DEPLOY_ATTEMPTS`].
+//!    - The task's session is told the outcome once.
 //!
 //! Every move is a compare-and-set from the state it was decided on
 //! ([`crate::ports::store_ext::StagingStore`]), and the decisions are
@@ -24,20 +29,29 @@ use std::sync::Arc;
 
 use yulius_domain::cd::{CdStage, CdTarget, Requester};
 use yulius_domain::ci::{CiRef, RunState};
+use yulius_domain::rollback::CdRunKind;
 use yulius_domain::staging::{
     self as stg, Admission, DeployEnd, Facts, MAX_DEPLOY_ATTEMPTS, StagingState,
 };
+use yulius_domain::task::{Activity, TaskStatus};
 
 use super::cd::{CdActor, CdRequest, mirror_lock};
+use yulius_domain::permission::Action;
+
 use crate::context::App;
 use crate::coordination::AgentContext;
 use crate::delivery::delivery_profile;
 use crate::error::{AppError, AppResult};
-use crate::model::SandboxRecord;
+use crate::model::{SandboxRecord, UserRecord};
 use crate::ports::store_ext::{StagingChange, StagingRequestRecord};
+use crate::task_message::{Sender, Typed};
 
 /// Most requests a queue reads at once (the requests still on their way).
 const MAX_PENDING: usize = 200;
+/// How a staging deploy's run note starts: the queue knows its own runs by it.
+const DEPLOY_NOTE: &str = "merge-first staging: request";
+/// How a restore's run note starts, before the part's label.
+const RESTORE_NOTE: &str = "merge-first staging: restoring the last verified release of";
 
 /// One lock per sandbox around its staging queue's decisions.
 fn queue_lock(sandbox: &yulius_domain::ids::SandboxId) -> Arc<tokio::sync::Mutex<()>> {
@@ -89,6 +103,12 @@ impl App {
         head: &str,
     ) -> AppResult<StagingRequestRecord> {
         let profile = delivery_profile(sandbox);
+        // Under its owner's write access, as any deploy for a task (review round 1, B1).
+        if self.staging_owner(&ctx.task).await?.is_none() {
+            return Err(AppError::Forbidden(
+                "staging deploys for a task under its owner's write access, and the person who owns this task has none (or is no longer active)".into(),
+            ));
+        }
         let (task, requested_by, revision) = {
             {
                 let open: Vec<String> = self
@@ -120,7 +140,7 @@ impl App {
                 (Some(ctx.task.id.clone()), ctx.actor(), revision)
             }
         };
-        if self.ci_gate(sandbox).await.gate.is_none() {
+        if !self.config.ci.enabled || self.ci_gate(sandbox).await.gate.is_none() {
             return Err(AppError::Conflict(
                 "merge-first staging deploys only a revision whose full gate passed, and this project has no CI gate".into(),
             ));
@@ -133,9 +153,19 @@ impl App {
             .await?;
         let positions = self
             .staging_positions(sandbox, head, own.iter().map(|r| r.revision.as_str()))
-            .await;
+            .await?;
         let facts: Vec<Facts> = own.iter().map(|r| facts_of(r, &positions)).collect();
-        let contained = self.staging_contained(sandbox, env, &revision).await?;
+        let Some(target) = self
+            .staging_target(sandbox)
+            .await?
+            .1
+            .filter(|t| t.name == env)
+        else {
+            return Err(AppError::Conflict(format!(
+                "[cd.{env}] is no longer the merge-first staging target"
+            )));
+        };
+        let contained = self.staging_contained(sandbox, &target, &revision).await?;
         let now = self.now();
         match stg::admit(&revision, &facts, contained.is_some()) {
             Admission::Existing(id) => store.staging_request(&id).await?.ok_or(AppError::NotFound),
@@ -232,7 +262,9 @@ impl App {
 
     /// Advances every queue with a request on its way (the background tick).
     pub async fn staging_tick(self: &Arc<Self>) {
-        let queues = match self.deps.store.staging_queues().await {
+        // A failed deploy's queue is visited for an hour, which restores staging (MFS-007).
+        let since = yulius_domain::time::Timestamp(self.now().0 - 60 * 60 * 1000);
+        let queues = match self.deps.store.staging_queues(since).await {
             Ok(queues) => queues,
             Err(err) => {
                 tracing::warn!(error = %err, "staging queues could not be read");
@@ -250,6 +282,7 @@ impl App {
                 tracing::warn!(error = %err, sandbox = %sandbox.slug, "the staging queue could not advance");
             }
         }
+        self.tell_staging_outcomes().await;
     }
 
     /// One round of a queue (SPEC-575 MFS-003, MFS-006 to MFS-008): verdicts, candidate runs,
@@ -267,10 +300,12 @@ impl App {
         let store = &self.deps.store;
         let mut pending = store.pending_staging_requests(&sandbox.id, env).await?;
         pending.truncate(MAX_PENDING);
-        if pending.is_empty() {
-            return Ok(());
-        }
         let (head, target) = self.staging_target(sandbox).await?;
+        // The running deploy settles first, whatever the environment became (review round 1).
+        let now_pending: Vec<&StagingRequestRecord> = pending.iter().collect();
+        self.staging_settle_deploy(&now_pending).await?;
+        let mut pending = store.pending_staging_requests(&sandbox.id, env).await?;
+        pending.truncate(MAX_PENDING);
         if target.as_ref().is_none_or(|t| t.name != env) {
             // The environment is no longer the staging target: nothing it waits for will come.
             for request in pending
@@ -291,15 +326,16 @@ impl App {
             }
             return Ok(());
         }
-        let now_pending: Vec<&StagingRequestRecord> = pending.iter().collect();
-        self.staging_settle_deploy(&now_pending).await?;
-        let mut pending = store.pending_staging_requests(&sandbox.id, env).await?;
-        pending.truncate(MAX_PENDING);
+        let Some(target) = target else {
+            return Ok(());
+        };
+        self.staging_restore(sandbox, &target).await?;
         self.staging_judge(sandbox, &pending).await?;
         let pending = store.pending_staging_requests(&sandbox.id, env).await?;
+        // A Git failure ends the round, to be tried again: it never reads as "not on the branch".
         let positions = self
             .staging_positions(sandbox, &head, pending.iter().map(|r| r.revision.as_str()))
-            .await;
+            .await?;
         // A revision no longer on the branch's own history never deploys.
         for request in &pending {
             if request.state != StagingState::Deploying
@@ -318,7 +354,7 @@ impl App {
                     .await?;
             }
         }
-        let (current, verified_run) = self.staging_current(sandbox, env, &head).await?;
+        let (current, verified_run) = self.staging_current(sandbox, &target, &head).await?;
         let facts: Vec<Facts> = pending.iter().map(|r| facts_of(r, &positions)).collect();
         let pick = stg::pick(&facts, current);
         for id in &pick.included {
@@ -357,14 +393,22 @@ impl App {
                 .store
                 .ci_runs_for_sha(&sandbox.id, &request.revision)
                 .await?;
-            // Only the merged revision's own runs judge it: a branch's run or a candidate's,
-            // never one that skipped the full suite.
+            // Only the merged revision's own runs judge it: the integration branch's run or a
+            // candidate's, never one that skipped the full suite.
+            let integration = delivery_profile(sandbox).integration_branch;
             let mut judging = None;
-            for run in runs
-                .iter()
-                .filter(|r| matches!(r.reference, CiRef::Branch(_) | CiRef::Candidate(_)))
-            {
+            for run in runs.iter().filter(|r| match &r.reference {
+                CiRef::Branch(name) => *name == integration,
+                CiRef::Candidate(_) => true,
+                _ => false,
+            }) {
+                // A superseded branch run says nothing; a cancelled candidate is a person's
+                // decision to stop its full gate (review round 1): the gate failed.
                 if run.state == RunState::Cancelled {
+                    if matches!(run.reference, CiRef::Candidate(_)) {
+                        judging = Some(run.clone());
+                        break;
+                    }
                     continue;
                 }
                 if run.state.is_active() {
@@ -383,7 +427,12 @@ impl App {
             }
             match judging {
                 Some(run) => {
-                    let Some(next) = stg::after_verdict(Some(run.state)) else {
+                    let verdict = if run.state == RunState::Cancelled {
+                        RunState::Error
+                    } else {
+                        run.state
+                    };
+                    let Some(next) = stg::after_verdict(Some(verdict)) else {
                         continue;
                     };
                     let note = if next == StagingState::GateFailed {
@@ -414,7 +463,21 @@ impl App {
                     self.staging_move(request, next, change).await?;
                 }
                 None => {
-                    let Some(gate) = self.ci_gate(sandbox).await.gate else {
+                    let gate = self
+                        .ci_gate(sandbox)
+                        .await
+                        .gate
+                        .filter(|_| self.config.ci.enabled);
+                    let Some(gate) = gate else {
+                        // Nothing can judge it, and it would hold every newer request back.
+                        let change = StagingChange {
+                            note: Some(
+                                "no full gate can run: this project has no CI gate in force".into(),
+                            ),
+                            ..StagingChange::default()
+                        };
+                        self.staging_move(request, StagingState::GateFailed, change)
+                            .await?;
                         continue;
                     };
                     let run = self
@@ -459,6 +522,8 @@ impl App {
                 Some(RunState::Running | RunState::Queued) => continue,
                 Some(RunState::Passed) => DeployEnd::Passed,
                 Some(RunState::Failed) => DeployEnd::Failed,
+                // A person stopped it: their decision stands (review round 1).
+                Some(RunState::Cancelled) => DeployEnd::Cancelled,
                 // No run was recorded (a start lost before its record) or it ended in error
                 // (a restart reconciles a running run to an error).
                 _ => DeployEnd::Lost,
@@ -474,6 +539,9 @@ impl App {
                 (DeployEnd::Failed, _) => format!(
                     "the deploy or verify failed: run {run_id}; fix it forward, merge, and ask again"
                 ),
+                (DeployEnd::Cancelled, _) => {
+                    format!("a person cancelled its deploy, run {run_id}; ask again to deploy it")
+                }
                 (DeployEnd::Lost, StagingState::Ready) => format!(
                     "attempt {attempts} of {MAX_DEPLOY_ATTEMPTS} ended without a verdict (run {}): tried again",
                     if run_id.is_empty() {
@@ -505,14 +573,9 @@ impl App {
         request: &StagingRequestRecord,
     ) -> AppResult<()> {
         let store = &self.deps.store;
-        // Another run of the environment (a rollback, its drill) runs: the deploy waits for it,
-        // costing no attempt.
-        if store
-            .running_cd_runs()
-            .await?
-            .iter()
-            .any(|run| run.sandbox_id == sandbox.id && run.environment == env)
-        {
+        // Another run of the environment (a rollback, its drill) runs, or an update holds new
+        // deploys: the deploy waits, costing no attempt (review round 1).
+        if self.staging_must_wait(sandbox, env).await? {
             return Ok(());
         }
         let moved = store
@@ -522,6 +585,7 @@ impl App {
                 StagingState::Deploying,
                 &StagingChange {
                     note: Some(format!("deploying revision {}", short(&request.revision))),
+                    clear_cd_run: true,
                     ..StagingChange::default()
                 },
                 self.now(),
@@ -530,27 +594,16 @@ impl App {
         if !moved {
             return Ok(());
         }
-        // The deploy acts for the person behind the request: the task's owner, or the person.
-        let person = match &request.task_id {
-            Some(task) => match store.task(task).await? {
-                Some(task) => store.user(&task.owner).await?,
-                None => None,
-            },
-            None => match yulius_domain::ids::UserId::parse(&request.requested_by) {
-                Ok(id) => store.user(&id).await?,
-                Err(_) => None,
-            },
-        }
-        .filter(|user| user.disabled_at.is_none());
+        let person = self.staging_person(request).await?;
         let started = match &person {
             Some(person) => {
                 let note = format!(
-                    "merge-first staging: request {} ({})",
+                    "{DEPLOY_NOTE} {} ({})",
                     request.id,
-                    match &request.task_id {
-                        Some(_) => "a task's delivery",
-                        None => "a person's request",
-                    }
+                    request
+                        .task_id
+                        .as_ref()
+                        .map_or("a delivery", |_| "a task's delivery")
                 );
                 self.cd_start(
                     sandbox,
@@ -568,7 +621,7 @@ impl App {
                 .await
             }
             None => Err(AppError::Forbidden(
-                "nobody active can deploy for this request".into(),
+                "its task's owner is no longer active or lost write access: nobody can deploy for it".into(),
             )),
         };
         let now = self.now();
@@ -586,6 +639,24 @@ impl App {
                                 short(&request.revision),
                                 run.id
                             )),
+                            ..StagingChange::default()
+                        },
+                        now,
+                    )
+                    .await?;
+            }
+            // What started meanwhile (a rollback between the look and the start, an update
+            // closing the gate) is waited for, costing no attempt.
+            Err(AppError::Conflict(_)) if self.staging_must_wait(sandbox, env).await? => {
+                store
+                    .move_staging_request(
+                        &request.id,
+                        StagingState::Deploying,
+                        StagingState::Ready,
+                        &StagingChange {
+                            note: Some(
+                                "waiting for another run of the environment or an update".into(),
+                            ),
                             ..StagingChange::default()
                         },
                         now,
@@ -620,106 +691,98 @@ impl App {
         Ok(())
     }
 
-    /// The position of the last verified staging revision and the run that verified it: the
-    /// newest verified request's, else (before merge-first) the newest passed deploy of the
-    /// environment.
+    /// What staging serves now: the commit and run of the current release of its first part
+    /// in the kept history (deploys, restores and rollbacks alike), else the newest passed
+    /// deploy's (SPEC-575 MFS-006; review round 1: a rollback moves it back).
+    async fn staging_serving(
+        &self,
+        sandbox: &SandboxRecord,
+        target: &CdTarget,
+    ) -> AppResult<Option<(String, String)>> {
+        let store = &self.deps.store;
+        let part = target.part_names().into_iter().next().unwrap_or_default();
+        let records: Vec<_> = store
+            .cd_releases(&sandbox.id, &target.name, CdStage::Dev)
+            .await?
+            .into_iter()
+            .filter(|r| r.part == part)
+            .collect();
+        if let Some(current) = yulius_domain::rollback::History(&records).current() {
+            return Ok(Some((current.sha.clone(), current.run_id.clone())));
+        }
+        Ok(store
+            .last_passed_cd_run(&sandbox.id, &target.name, CdStage::Dev)
+            .await?
+            .map(|run| (run.sha, run.id)))
+    }
+
+    /// The position of what staging serves and the run that put it there.
     async fn staging_current(
         &self,
         sandbox: &SandboxRecord,
-        env: &str,
+        target: &CdTarget,
         head: &str,
     ) -> AppResult<(Option<u64>, Option<String>)> {
-        let recent = self
-            .deps
-            .store
-            .recent_staging_requests(&sandbox.id, env, 50)
-            .await?;
-        let mut best: Option<(u64, Option<String>)> = None;
-        let verified: Vec<&StagingRequestRecord> = recent
-            .iter()
-            .filter(|r| r.state == StagingState::Verified)
-            .collect();
-        let revisions: Vec<&str> = verified.iter().map(|r| r.revision.as_str()).collect();
+        let Some((sha, run)) = self.staging_serving(sandbox, target).await? else {
+            return Ok((None, None));
+        };
         let positions = self
-            .staging_positions(sandbox, head, revisions.into_iter())
-            .await;
-        for request in verified {
-            if let Some(Some(at)) = positions
-                .iter()
-                .find(|(sha, _)| sha == &request.revision)
-                .map(|(_, at)| *at)
-                && best.as_ref().is_none_or(|(b, _)| at > *b)
-            {
-                best = Some((at, request.cd_run_id.clone()));
-            }
-        }
-        if best.is_none()
-            && let Some(run) = self
-                .deps
-                .store
-                .last_passed_cd_run(&sandbox.id, env, CdStage::Dev)
-                .await?
-        {
-            let positions = self
-                .staging_positions(sandbox, head, std::iter::once(run.sha.as_str()))
-                .await;
-            if let Some((_, Some(at))) = positions.first() {
-                best = Some((*at, Some(run.id.clone())));
-            }
-        }
-        Ok(best.map_or((None, None), |(at, run)| (Some(at), run)))
+            .staging_positions(sandbox, head, std::iter::once(sha.as_str()))
+            .await?;
+        Ok((positions.first().and_then(|(_, at)| *at), Some(run)))
     }
 
-    /// The verified run of `env` whose revision contains `revision`, if one does (SPEC-575
-    /// MFS-005: a delivery already on staging, also from before merge-first, is not deployed
-    /// twice).
+    /// The run that put on staging a revision containing `revision`, if what staging serves
+    /// does (SPEC-575 MFS-005: a delivery already on staging, also from before merge-first, is
+    /// not deployed twice).
     async fn staging_contained(
         &self,
         sandbox: &SandboxRecord,
-        env: &str,
+        target: &CdTarget,
         revision: &str,
     ) -> AppResult<Option<String>> {
-        let mirror = self.cd_mirror(&sandbox.id);
-        let recent = self
+        let Some((serving, run)) = self.staging_serving(sandbox, target).await? else {
+            return Ok(None);
+        };
+        let contains = self
             .deps
-            .store
-            .recent_staging_requests(&sandbox.id, env, 50)
+            .git
+            .is_ancestor(&self.cd_mirror(&sandbox.id), revision, &serving)
             .await?;
-        let mut candidates: Vec<(String, String)> = recent
-            .iter()
-            .filter(|r| r.state == StagingState::Verified)
-            .filter_map(|r| r.cd_run_id.clone().map(|run| (r.revision.clone(), run)))
-            .collect();
-        if let Some(run) = self
+        Ok(contains.then_some(run))
+    }
+
+    /// The revision production may be promoted from (SPEC-575 MFS-009): what staging serves,
+    /// when a verified request deployed it.
+    pub(crate) async fn staging_verified_revision(
+        &self,
+        sandbox: &SandboxRecord,
+        target: &CdTarget,
+    ) -> AppResult<Option<String>> {
+        let Some((serving, _)) = self.staging_serving(sandbox, target).await? else {
+            return Ok(None);
+        };
+        let verified = self
             .deps
             .store
-            .last_passed_cd_run(&sandbox.id, env, CdStage::Dev)
+            .recent_staging_requests(&sandbox.id, &target.name, 50)
             .await?
-        {
-            candidates.push((run.sha.clone(), run.id.clone()));
-        }
-        for (deployed, run) in candidates {
-            if self
-                .deps
-                .git
-                .is_ancestor(&mirror, revision, &deployed)
-                .await
-                .unwrap_or(false)
-            {
-                return Ok(Some(run));
-            }
-        }
-        Ok(None)
+            .iter()
+            .any(|r| r.state == StagingState::Verified && r.revision == serving);
+        Ok(verified.then_some(serving))
     }
 
     /// Each revision's first-parent position on the verified integration head (in the CD
-    /// mirror); `None` for one off that history or that Git cannot place.
+    /// mirror); `None` for one off that history.
+    ///
+    /// # Errors
+    /// Git failures: never read as "not on the branch".
     async fn staging_positions<'a>(
         &self,
         sandbox: &SandboxRecord,
         head: &str,
         revisions: impl Iterator<Item = &'a str>,
-    ) -> Vec<(String, Option<u64>)> {
+    ) -> AppResult<Vec<(String, Option<u64>)>> {
         let mirror = self.cd_mirror(&sandbox.id);
         let mut out: Vec<(String, Option<u64>)> = Vec::new();
         for revision in revisions {
@@ -730,12 +793,211 @@ impl App {
                 .deps
                 .git
                 .first_parent_position(&mirror, head, revision)
-                .await
-                .ok()
-                .flatten();
+                .await?;
             out.push((revision.to_owned(), at));
         }
-        out
+        Ok(out)
+    }
+
+    /// Whether a deploy of `env` must wait now: another run of it goes on, or an update holds
+    /// new deploys.
+    async fn staging_must_wait(&self, sandbox: &SandboxRecord, env: &str) -> AppResult<bool> {
+        Ok(self.deploy_permit().is_err()
+            || self
+                .deps
+                .store
+                .running_cd_runs()
+                .await?
+                .iter()
+                .any(|run| run.sandbox_id == sandbox.id && run.environment == env))
+    }
+
+    /// The task's owner when active with write access to its sandbox, as every deploy for a
+    /// task needs (review round 1, B1).
+    async fn staging_owner(
+        &self,
+        task: &crate::model::TaskRecord,
+    ) -> AppResult<Option<UserRecord>> {
+        let Some(owner) = self
+            .deps
+            .store
+            .user(&task.owner)
+            .await?
+            .filter(|u| u.disabled_at.is_none())
+        else {
+            return Ok(None);
+        };
+        match self.require(&owner, &task.sandbox_id, Action::Work).await {
+            Ok(_) => Ok(Some(owner)),
+            Err(AppError::Forbidden(_) | AppError::NotFound) => Ok(None),
+            Err(err) => Err(err),
+        }
+    }
+
+    /// The person a request's deploy acts for: its task's owner with write access, now.
+    async fn staging_person(
+        &self,
+        request: &StagingRequestRecord,
+    ) -> AppResult<Option<UserRecord>> {
+        let Some(task) = &request.task_id else {
+            return Ok(None);
+        };
+        match self.deps.store.task(task).await? {
+            Some(task) => self.staging_owner(&task).await,
+            None => Ok(None),
+        }
+    }
+
+    /// After the queue's newest deploy failed, puts staging back on its last verified release
+    /// (SPEC-575 MFS-007): each part's current kept release is redeployed and verified once, as a
+    /// rollback run, one part per round. A failed deploy records no release, so the history's
+    /// current release is the last verified one. Nothing happens once a later run of the
+    /// environment ran, or for a part with no verified release yet.
+    async fn staging_restore(
+        self: &Arc<Self>,
+        sandbox: &SandboxRecord,
+        target: &CdTarget,
+    ) -> AppResult<()> {
+        let store = &self.deps.store;
+        let env = target.name.as_str();
+        let runs: Vec<_> = store
+            .cd_runs(&sandbox.id, super::cd::CD_RUN_LIST_LIMIT)
+            .await?
+            .into_iter()
+            .filter(|run| run.environment == env)
+            .collect();
+        if runs.iter().any(|run| run.state == RunState::Running) {
+            return Ok(());
+        }
+        let Some(failed_at) = runs.iter().position(|run| {
+            run.kind == CdRunKind::Deploy
+                && run
+                    .note
+                    .as_deref()
+                    .is_some_and(|n| n.starts_with(DEPLOY_NOTE))
+        }) else {
+            return Ok(());
+        };
+        let failed = &runs[failed_at];
+        if failed.state != RunState::Failed {
+            return Ok(());
+        }
+        let after = &runs[..failed_at];
+        // Anything else that deployed meanwhile (a person's rollback) decides what runs there.
+        if after.iter().any(|run| {
+            !run.note
+                .as_deref()
+                .is_some_and(|n| n.starts_with(RESTORE_NOTE))
+        }) {
+            return Ok(());
+        }
+        let releases = store.cd_releases(&sandbox.id, env, CdStage::Dev).await?;
+        for part in target.part_names() {
+            let label = if part.is_empty() {
+                "staging".to_owned()
+            } else {
+                part.clone()
+            };
+            let note = format!("{RESTORE_NOTE} {label} after failed run {}", failed.id);
+            if after
+                .iter()
+                .any(|run| run.note.as_deref().is_some_and(|n| n.starts_with(&note)))
+                || !releases.iter().any(|r| r.part == part)
+            {
+                continue;
+            }
+            let request = store
+                .recent_staging_requests(&sandbox.id, env, 50)
+                .await?
+                .into_iter()
+                .find(|r| r.cd_run_id.as_deref() == Some(failed.id.as_str()));
+            let person = match &request {
+                Some(request) => self.staging_person(request).await?,
+                None => None,
+            };
+            let Some(person) = person else {
+                return Ok(());
+            };
+            if let Err(err) = self
+                .cd_start(
+                    sandbox,
+                    env,
+                    Requester::Person {
+                        administrator: false,
+                        confirmation: None,
+                    },
+                    &CdActor::Person(&person),
+                    CdRequest::Restore {
+                        part: &part,
+                        note: &note,
+                    },
+                )
+                .await
+            {
+                tracing::warn!(error = %err, sandbox = %sandbox.slug, "staging could not be restored to its last verified release");
+            }
+            return Ok(());
+        }
+        Ok(())
+    }
+
+    /// Tells each task its staging request's outcome once (SPEC-575 MFS-007): verified,
+    /// included, a failed gate with its run and jobs, or a failed deploy. Typed into its running
+    /// session, or resuming a parked one; nothing is typed while a person must act in it first,
+    /// it is paused or an update holds starts (tried at the next tick); a task that ended is not
+    /// told.
+    pub async fn tell_staging_outcomes(self: &Arc<Self>) -> usize {
+        let Ok(untold) = self.deps.store.untold_staging_requests().await else {
+            return 0;
+        };
+        let mut told = 0;
+        for request in untold {
+            let store = &self.deps.store;
+            let Some(task_id) = &request.task_id else {
+                continue;
+            };
+            let task = match store.task(task_id).await {
+                Ok(Some(task)) => task,
+                Ok(None) => {
+                    let _ = store.mark_staging_told(&request.id).await;
+                    continue;
+                }
+                Err(_) => continue,
+            };
+            if task.status.is_resting() {
+                let _ = store.mark_staging_told(&request.id).await;
+                continue;
+            }
+            if task.activity == Some(Activity::NeedsAttention)
+                || self.is_paused(&task).await
+                || self.update_holds_starts()
+            {
+                continue;
+            }
+            let text = self
+                .redact_for_sandbox(&task.sandbox_id, &staging_outcome_text(&request))
+                .await;
+            let delivered = match task.status {
+                TaskStatus::Parked => self
+                    .resume_parked(&task.id, Some(text))
+                    .await
+                    .unwrap_or(false),
+                TaskStatus::Running => {
+                    let paste = format!(
+                        "\x1b[200~{}\x1b[201~",
+                        crate::task_message::clean_message(&text)
+                    );
+                    self.type_into_session(&task, paste.as_bytes(), Typed::Prompt, Sender::Yulius)
+                        .await
+                        .is_ok()
+                }
+                _ => false,
+            };
+            if delivered && store.mark_staging_told(&request.id).await.unwrap_or(false) {
+                told += 1;
+            }
+        }
+        told
     }
 
     /// Moves `request` from the state it was read in; a request another round moved meanwhile
@@ -770,4 +1032,107 @@ fn facts_of(request: &StagingRequestRecord, positions: &[(String, Option<u64>)])
             .and_then(|(_, at)| *at),
         attempts: request.attempts,
     }
+}
+
+impl App {
+    /// The queue of the merge-first environment `env` for the CD page and `cd_status`: the
+    /// verified revision and the newest requests with their run ids (SPEC-575).
+    pub(crate) async fn cd_staging_view(
+        &self,
+        sandbox: &SandboxRecord,
+        env: &str,
+    ) -> AppResult<yulius_contracts::api::cd::CdStaging> {
+        let store = &self.deps.store;
+        let recent = store.recent_staging_requests(&sandbox.id, env, 20).await?;
+        let mut requests = Vec::with_capacity(recent.len());
+        for request in &recent {
+            let task_number = match &request.task_id {
+                Some(task) => store.task(task).await?.map(|t| t.number),
+                None => None,
+            };
+            requests.push(yulius_contracts::api::cd::CdStagingRequest {
+                id: request.id.clone(),
+                task_number,
+                revision: request.revision.clone(),
+                state: request.state.as_str().to_owned(),
+                ci_run_id: request.ci_run_id.clone(),
+                cd_run_id: request.cd_run_id.clone(),
+                note: request.note.clone(),
+                updated_at: crate::auth::rfc3339(request.updated_at),
+            });
+        }
+        // The newest verified request (they verify in revision order) is what staging serves.
+        let verified = recent
+            .iter()
+            .find(|r| r.state == StagingState::Verified)
+            .map(|r| r.revision.clone());
+        Ok(yulius_contracts::api::cd::CdStaging { verified, requests })
+    }
+}
+
+/// `cd_status`'s lines for a merge-first environment's queue.
+pub(crate) fn staging_text(
+    text: &mut String,
+    env: &str,
+    staging: &yulius_contracts::api::cd::CdStaging,
+) {
+    text.push_str(&format!(
+        "  staging queue of [cd.{env}] (merge-first: a task's cd_deploy asks for its merged revision; the full gate runs on exactly it first): verified revision {}\n",
+        staging.verified.as_deref().map_or("none yet", short)
+    ));
+    for request in staging.requests.iter().take(8) {
+        text.push_str(&format!(
+            "  - request {} {} revision {}: {}{}{}{}\n",
+            request.id,
+            request
+                .task_number
+                .map_or_else(|| "a person's".to_owned(), |n| format!("task #{n}")),
+            short(&request.revision),
+            request.state,
+            request
+                .ci_run_id
+                .as_deref()
+                .map_or_else(String::new, |id| format!(", CI run {id}")),
+            request
+                .cd_run_id
+                .as_deref()
+                .map_or_else(String::new, |id| format!(", CD run {id}")),
+            request
+                .note
+                .as_deref()
+                .map_or_else(String::new, |n| format!(" ({n})")),
+        ));
+    }
+}
+
+/// What a task reads about its staging request's outcome, with the next step.
+fn staging_outcome_text(request: &StagingRequestRecord) -> String {
+    let what = format!(
+        "Yulius: staging request {} for revision {} of [cd.{}] is {}",
+        request.id,
+        short(&request.revision),
+        request.environment,
+        request.state.as_str()
+    );
+    let note = request.note.as_deref().unwrap_or_default();
+    let next = match request.state {
+        StagingState::Verified => {
+            "Staging serves your tested revision: this task's staging deployment is done."
+                .to_owned()
+        }
+        StagingState::Included => format!(
+            "Staging serves a verified revision that contains yours (run {}): nothing more to deploy.",
+            request.cd_run_id.as_deref().unwrap_or("?")
+        ),
+        StagingState::GateFailed => format!(
+            "Staging did not change. Read the failed jobs with ci_status {{\"run_id\": \"{}\"}}, fix them forward on this branch, merge with delivery_merge, then cd_deploy again.",
+            request.ci_run_id.as_deref().unwrap_or("?")
+        ),
+        StagingState::DeployFailed => format!(
+            "Staging goes back to its last verified release. Read the run with cd_status {{\"run_id\": \"{}\"}}; fix it forward and merge, or cd_deploy again to retry the same revision.",
+            request.cd_run_id.as_deref().unwrap_or("?")
+        ),
+        _ => String::new(),
+    };
+    format!("{what}: {note}. {next}")
 }

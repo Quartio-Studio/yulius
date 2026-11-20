@@ -53,6 +53,7 @@ use super::OUTPUT_BYTES;
 use super::exec::{DiskBound, Ended, RunLog, Sink, ci_join};
 use super::prove::ProveOnDev;
 use super::rollback::steps_text;
+use super::staging::staging_text;
 use crate::auth::{AuthContext, rfc3339};
 use crate::context::App;
 use crate::coordination::AgentContext;
@@ -200,6 +201,14 @@ pub(crate) enum CdRequest<'a> {
         /// The full SHA; it must be on the integration head's first-parent history.
         revision: &'a str,
         /// What the run says about why (the staging request it serves).
+        note: &'a str,
+    },
+    /// Redeploy a part's current kept release (its last verified one): the merge-first staging
+    /// queue after a failed deploy, which records no release (SPEC-575 MFS-007).
+    Restore {
+        /// The part (empty: the environment's only one).
+        part: &'a str,
+        /// What the run says about why.
         note: &'a str,
     },
     /// Roll a part back (or forward) to a kept release (SPEC-415).
@@ -581,6 +590,11 @@ impl App {
                 deployed,
                 last_run,
                 rollback,
+                staging: if target.merge_first && stage == CdStage::Dev {
+                    Some(self.cd_staging_view(sandbox, &target.name).await?)
+                } else {
+                    None
+                },
             });
         }
         super::rollback::mark_rollback_not_needed(&mut environments, &profile.integration_branch);
@@ -790,11 +804,29 @@ impl App {
                     sandbox,
                     env,
                     (requester, actor),
-                    (part, release),
+                    (part, release, false),
                     &mut resolved,
                 )
                 .await,
                 confirm_ms,
+            ),
+            CdRequest::Restore { part, note } => (
+                self.cd_prepare_rollback(
+                    sandbox,
+                    env,
+                    (requester, actor),
+                    (Some(part).filter(|p| !p.is_empty()), None, true),
+                    &mut resolved,
+                )
+                .await
+                .map(|mut prepared| {
+                    prepared.note = Some(match prepared.note.take() {
+                        Some(own) => format!("{note}; {own}"),
+                        None => note.to_owned(),
+                    });
+                    prepared
+                }),
+                None,
             ),
         };
         let prepared = match prepared {
@@ -1137,6 +1169,25 @@ impl App {
             && integration_config
                 .target_of(env, CdStage::Prod)
                 .is_some_and(|prod| prod.promote);
+        // A promotion comes from a verified staging revision (SPEC-575 MFS-009): with a
+        // merge-first target, the integration head it would promote must be the revision that
+        // target last deployed and verified.
+        if promotes && let Some(staging) = integration_config.merge_first() {
+            let verified = self.staging_verified_revision(sandbox, staging).await?;
+            if verified.as_deref() != Some(integration.as_str()) {
+                return Err(AppError::Conflict(format!(
+                    "nothing ran: production is promoted from the revision [cd.{}] verified, and {} at {} is {}; promote once staging verified it",
+                    staging.name,
+                    profile.integration_branch,
+                    integration.get(..7).unwrap_or(&integration),
+                    match &verified {
+                        Some(sha) =>
+                            format!("not it (staging verified {})", sha.get(..7).unwrap_or(sha)),
+                        None => "not verified there (staging verified nothing yet)".to_owned(),
+                    }
+                )));
+            }
+        }
         // What dev would deploy, should production's rollback need proving there (SPEC-438).
         let integration_tables = prove
             .is_some()
@@ -1964,7 +2015,8 @@ impl App {
                 continue;
             }
             let reason = "Yulius restarted while it ran: it was stopped, its outcome is unknown, \
-                          and it is not run again by itself";
+                          and it is not run again by itself (a merge-first staging deploy's \
+                          queue tries it again)";
             if self.cd_end_lost(run, RunState::Error, reason).await? {
                 closed += 1;
             }
@@ -2366,6 +2418,9 @@ impl App {
         let mut text = String::from("CD (deployment):\n");
         for env in &overview.environments {
             environment_text(&mut text, env);
+            if let Some(staging) = &env.staging {
+                staging_text(&mut text, &env.name, staging);
+            }
         }
         if overview.runs.is_empty() {
             text.push_str("No runs yet.\n");
@@ -2376,7 +2431,7 @@ impl App {
             }
         }
         text.push_str(&format!(
-            "You may deploy and roll back the dev-stage environments (cd_deploy, cd_rollback); production-stage ones are deployed and rolled back by a person on {}/s/{}/ci?section=cd.",
+            "You may deploy and roll back the dev-stage environments (cd_deploy, cd_rollback; the merge-first staging target's cd_deploy asks its queue for this task's merged revision); production-stage ones are deployed and rolled back by a person on {}/s/{}/ci?section=cd.",
             self.config.public_url, sandbox.slug
         ));
         Ok(serde_json::json!({"text": text, "cd": overview}))
@@ -2404,7 +2459,7 @@ impl App {
         {
             let request = self.staging_request(&sandbox, &env, ctx, &head).await?;
             let text = format!(
-                "Staging request {} for revision {} of {}: {}. {} Start `yulius wait` in the background; cd_status shows the queue with its run ids.",
+                "Staging request {} for revision {} of {}: {}. {} Yulius tells this session its outcome; meanwhile cd_status shows the queue with its run ids, and cd_deploy again answers with this request.",
                 request.id,
                 short_sha(&request.revision),
                 env_label(&env),
@@ -2474,6 +2529,7 @@ mod tests {
             deployed: None,
             last_run: None,
             rollback: yulius_contracts::api::cd::CdRollback::default(),
+            staging: None,
         };
         let mut text = String::new();
         environment_text(&mut text, &env);
@@ -2508,6 +2564,7 @@ mod tests {
             deployed: None,
             last_run: None,
             rollback: yulius_contracts::api::cd::CdRollback::default(),
+            staging: None,
         };
         let mut text = String::new();
         environment_text(&mut text, &env);

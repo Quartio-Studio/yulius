@@ -3320,7 +3320,7 @@ async fn staging_requests_are_idempotent_and_move_once() -> R {
         ["a", "p", "b"]
     );
     assert_eq!(
-        store.staging_queues().await?,
+        store.staging_queues(Timestamp(0)).await?,
         [(sid.clone(), "staging".to_owned())]
     );
     let verified = StagingChange {

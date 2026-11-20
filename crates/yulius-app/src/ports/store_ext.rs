@@ -818,7 +818,7 @@ pub struct StagingRequestRecord {
     pub attempts: u32,
     /// What its state means for people (the failed jobs, why it was refused or superseded).
     pub note: Option<String>,
-    /// Who asked: a user id, or `agent:<task>`.
+    /// Who asked: `task:<number>`.
     pub requested_by: String,
     /// Whether its outcome was told to its task's session.
     pub told: bool,
@@ -839,6 +839,9 @@ pub struct StagingChange {
     pub attempts: Option<u32>,
     /// Its note (replaces the stored one).
     pub note: Option<String>,
+    /// Forget its CD run (a new attempt starts): a crash before the new run is recorded then
+    /// reads as lost, never as the old run's end.
+    pub clear_cd_run: bool,
 }
 
 /// Merge-first staging requests (SPEC-575 MFS-005, MFS-008, migration 0078). Every move is a
@@ -867,8 +870,9 @@ pub trait StagingStore: Send + Sync {
         sandbox: &SandboxId,
         environment: &str,
     ) -> AppResult<Vec<StagingRequestRecord>>;
-    /// The sandboxes and environments with a pending request.
-    async fn staging_queues(&self) -> AppResult<Vec<(SandboxId, String)>>;
+    /// The sandboxes and environments with a pending request, or a deploy that failed since
+    /// `failed_since` (staging is restored to its last verified release after it).
+    async fn staging_queues(&self, failed_since: Timestamp) -> AppResult<Vec<(SandboxId, String)>>;
     /// The newest requests of `environment`, newest first.
     async fn recent_staging_requests(
         &self,

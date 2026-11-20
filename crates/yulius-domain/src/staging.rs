@@ -248,6 +248,8 @@ pub enum DeployEnd {
     Failed,
     /// The run ended in error or was lost to a restart: nothing says the scripts failed.
     Lost,
+    /// A person cancelled the run: their decision stands, nothing deploys it again.
+    Cancelled,
 }
 
 /// The request's state after its deploy run ended, `attempts` counting this one (SPEC-575
@@ -256,7 +258,7 @@ pub enum DeployEnd {
 pub fn after_deploy(end: DeployEnd, attempts: u32) -> StagingState {
     match end {
         DeployEnd::Passed => StagingState::Verified,
-        DeployEnd::Failed => StagingState::DeployFailed,
+        DeployEnd::Failed | DeployEnd::Cancelled => StagingState::DeployFailed,
         DeployEnd::Lost if attempts < MAX_DEPLOY_ATTEMPTS => StagingState::Ready,
         DeployEnd::Lost => StagingState::DeployFailed,
     }
@@ -472,6 +474,11 @@ mod tests {
         assert_eq!(
             after_deploy(DeployEnd::Failed, 1),
             StagingState::DeployFailed
+        );
+        assert_eq!(
+            after_deploy(DeployEnd::Cancelled, 1),
+            StagingState::DeployFailed,
+            "a person's cancel is never undone"
         );
         for attempts in 1..MAX_DEPLOY_ATTEMPTS {
             assert_eq!(after_deploy(DeployEnd::Lost, attempts), StagingState::Ready);

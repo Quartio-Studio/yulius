@@ -1464,12 +1464,9 @@ impl App {
         let dev_valid = view.problem.is_none();
         let facts: Vec<RunFacts> = runs
             .iter()
-            .filter(|run| {
-                !matches!(
-                    run.reference,
-                    CiRef::Train(_) | CiRef::Task(_) | CiRef::Candidate(_)
-                )
-            })
+            // A candidate run (SPEC-575) stays in the facts: it tests its commit once for the
+            // branch too, and `plan` never supersedes it.
+            .filter(|run| !matches!(run.reference, CiRef::Train(_) | CiRef::Task(_)))
             .filter(|run| {
                 !(dev_valid
                     && run

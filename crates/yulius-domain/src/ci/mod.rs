@@ -889,7 +889,12 @@ pub fn plan(targets: &[Target], runs: &[RunFacts]) -> Plan {
             out.queue.push(target.clone());
         }
     }
-    for run in runs.iter().filter(|run| run.state.is_active()) {
+    // A candidate run is the staging queue's: the branch moving on never supersedes it
+    // (SPEC-575 MFS-003), and it still counts as testing its commit above.
+    for run in runs
+        .iter()
+        .filter(|run| run.state.is_active() && !matches!(run.reference, CiRef::Candidate(_)))
+    {
         let current = targets.iter().find(|t| t.reference == run.reference);
         match current {
             Some(target) if target.sha == run.sha => {}
@@ -1861,6 +1866,29 @@ mod tests {
         ] {
             assert_eq!(RunState::parse(state.as_str()), Some(state));
         }
+    }
+
+    /// SPEC-575 MFS-003 (review round 1 of slice 2): a candidate run is never superseded (it
+    /// has no target of its own) and still counts as testing its commit, so the branch reaching
+    /// that commit queues no second full run of it.
+    #[test]
+    fn a_candidate_run_is_kept_and_counts_as_testing_its_commit() {
+        let dev = CiRef::Branch("dev".into());
+        let candidate = CiRef::Candidate("a1".into());
+        let both = plan(
+            &[target(dev.clone(), "a1")],
+            &[run("c1", candidate.clone(), "a1", RunState::Running)],
+        );
+        assert!(both.queue.is_empty(), "{both:?}");
+        assert!(both.supersede.is_empty(), "{both:?}");
+        let moved = plan(
+            &[target(dev, "b2")],
+            &[run("c1", candidate, "a1", RunState::Queued)],
+        );
+        assert!(
+            moved.supersede.is_empty(),
+            "the branch moving on keeps it: {moved:?}"
+        );
     }
 
     #[test]

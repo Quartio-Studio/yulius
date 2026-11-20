@@ -1,10 +1,10 @@
--- Merge-first staging (SPEC-575 MFS-003 to MFS-008): each request to change a project's shared
--- staging target to a revision of the integration branch, for a task or a person.
+-- Merge-first staging (SPEC-575 MFS-003 to MFS-008): each request of a task to change its
+-- project's shared staging target to a revision of the integration branch.
 CREATE TABLE staging_requests (
     id TEXT PRIMARY KEY,
     sandbox_id TEXT NOT NULL REFERENCES sandboxes(id) ON DELETE CASCADE,
     environment TEXT NOT NULL,
-    task_id TEXT REFERENCES tasks(id) ON DELETE SET NULL,
+    task_id TEXT REFERENCES tasks(id) ON DELETE CASCADE,
     revision TEXT NOT NULL,
     state TEXT NOT NULL CHECK (state IN ('testing', 'ready', 'deploying', 'verified', 'included',
         'gate_failed', 'deploy_failed', 'superseded')),

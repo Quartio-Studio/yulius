@@ -142,16 +142,17 @@ impl StagingStore for SqliteStore {
         .await
     }
 
-    async fn staging_queues(&self) -> AppResult<Vec<(SandboxId, String)>> {
-        self.call(|c| {
+    async fn staging_queues(&self, failed_since: Timestamp) -> AppResult<Vec<(SandboxId, String)>> {
+        self.call(move |c| {
             let mut statement = c
                 .prepare(
                     "SELECT DISTINCT sandbox_id, environment FROM staging_requests \
-                     WHERE state IN ('testing', 'ready', 'deploying') ORDER BY sandbox_id",
+                     WHERE state IN ('testing', 'ready', 'deploying') \
+                        OR (state = 'deploy_failed' AND updated_at >= ?1) ORDER BY sandbox_id",
                 )
                 .map_err(db)?;
             let rows = statement
-                .query_map([], |row| {
+                .query_map([failed_since.0], |row| {
                     let sandbox: String = row.get(0)?;
                     Ok((
                         SandboxId::parse(&sandbox)
@@ -200,7 +201,8 @@ impl StagingStore for SqliteStore {
         self.call(move |c| {
             let moved = c.execute(
                 "UPDATE staging_requests SET state = ?3, \
-                     ci_run_id = COALESCE(?4, ci_run_id), cd_run_id = COALESCE(?5, cd_run_id), \
+                     ci_run_id = COALESCE(?4, ci_run_id), \
+                     cd_run_id = CASE WHEN ?9 THEN NULL ELSE COALESCE(?5, cd_run_id) END, \
                      attempts = COALESCE(?6, attempts), note = COALESCE(?7, note), \
                      told = 0, updated_at = ?8 \
                  WHERE id = ?1 AND state = ?2",
@@ -213,6 +215,7 @@ impl StagingStore for SqliteStore {
                     change.attempts,
                     change.note,
                     at.0,
+                    change.clear_cd_run,
                 ],
             );
             match moved {
