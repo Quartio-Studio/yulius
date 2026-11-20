@@ -2601,7 +2601,7 @@ async fn telegram_needs_you_notification_redacts_generic_credential_shapes() -> 
     seed_task(&w.h, "t1", "s1", &alice, TaskStatus::Running, None).await?;
 
     let id = TaskId::parse("t1")?;
-    let fake_token = "ghp_1234567890abcdef1234567890abcdef1234";
+    let fake_token = concat!("ghp_", "1234567890abcdef1234567890abcdef1234");
     w.h.store
         .set_task_needs_you(
             &id,

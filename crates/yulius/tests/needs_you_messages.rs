@@ -538,7 +538,7 @@ async fn secrets_in_needs_you_are_redacted_across_projections_and_history() -> T
     seed_task(&h, "t1", "s1", "u-alice", TaskStatus::Running, None).await?;
     seed_live_attempt(&h, "t1", TOKEN).await?;
 
-    let fake_token = "ghp_1234567890abcdef1234567890abcdef1234";
+    let fake_token = concat!("ghp_", "1234567890abcdef1234567890abcdef1234");
     let res = mcp_tool(
         &h,
         TOKEN,
