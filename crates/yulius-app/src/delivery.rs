@@ -4524,13 +4524,27 @@ impl App {
     }
 
     /// Local work and decisions must still be settled after GitHub replies.
-    async fn parked_chain_clear(&self, task: &TaskRecord) -> AppResult<bool> {
+    pub(crate) async fn parked_chain_clear(
+        &self,
+        task: &TaskRecord,
+        requested: Option<&std::collections::HashSet<String>>,
+        snapshot: &mut Option<Vec<crate::model::StepRecord>>,
+    ) -> AppResult<bool> {
         let store = &self.deps.store;
-        Ok(!self
-            .browser_tab_requests(&task.sandbox_id)
-            .await
-            .contains(task.id.as_str())
-            && !crate::sandboxes::plan_open(&store.steps(&task.id).await?)
+        let browser_request = match requested {
+            Some(requests) => requests.contains(task.id.as_str()),
+            None => self
+                .browser_tab_requests(&task.sandbox_id)
+                .await
+                .contains(task.id.as_str()),
+        };
+        if browser_request {
+            return Ok(false);
+        }
+        let steps = store.steps(&task.id).await?;
+        let plan_open = crate::sandboxes::plan_open(&steps);
+        *snapshot = Some(steps);
+        Ok(!plan_open
             && !self.read_spec_unfinished(&task.id).await?
             && !self.goal_unfinished_of(task).await
             && store.pending_hold(&task.id).await?.is_none()
@@ -4544,7 +4558,7 @@ impl App {
             .as_ref()
             .is_some_and(|r| r.stage == DeliveryStage::PrOpen || past_merge(&r.stage));
         if (task.activity != Some(yulius_domain::task::Activity::Done) && !delivered)
-            || !self.parked_chain_clear(task).await?
+            || !self.parked_chain_clear(task, None, &mut None).await?
         {
             return Ok(false);
         }
@@ -4560,6 +4574,7 @@ impl App {
             &prs,
             PrVerification::Settled,
             &mut ParkedPullRead::default(),
+            &mut None,
         )
         .await
     }
@@ -4573,11 +4588,12 @@ impl App {
         prs: &ParkingPrs,
         purpose: PrVerification,
         observed: &mut ParkedPullRead,
+        snapshot: &mut Option<Vec<crate::model::StepRecord>>,
     ) -> AppResult<bool> {
         let store = &self.deps.store;
         if (!prs.pulls.is_empty()
             && self.verification_checkout(task, purpose).await? != prs.checkout)
-            || !self.parked_chain_clear(task).await?
+            || !self.parked_chain_clear(task, None, snapshot).await?
         {
             return Ok(false);
         }
