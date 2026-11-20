@@ -9,6 +9,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 - Browser tests can start after a burst of host network changes interrupts the initial mock page and its recovery reload. Recovery has one 30-second budget (SPEC-545).
 
 - MCP task reads explain which checks or local work keep a parked task under Needs you. Filtered pages use the plan they display and stop at the requested limit (SPEC-558).
+- The Linux tunnel custodian enforces each socket pair’s original lifetime during receipt, waiting and delivery. Expired TCP pairs release their peers while the successor receives the live remainder. [SPEC-577](../.ai/specs/SPEC-577-preserve-opaque-egress-tunnels-across-a.md)
 
 - Merge-first staging target: a task's `cd_deploy` now queues a staging request for the task's
   merged revision instead of deploying the branch head.

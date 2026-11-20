@@ -3795,7 +3795,9 @@ the copy resumes any pending write-half shutdown before marking that half closed
 [SPEC-577](../.ai/specs/SPEC-577-preserve-opaque-egress-tunnels-across-a.md)
 The Linux `sandbox-host hold-tunnels` helper holds a bounded batch of connected descriptors
 and private copy state for one successor. Its two-minute deadline includes the time spent
-receiving and returning the batch. The server integration is tracked in SPEC-577.
+receiving and returning the batch. Each timed pair also retains its original monotonic
+deadline. The helper releases expired pairs while a successor receives the remaining live
+records. The server integration is tracked in SPEC-577.
 [ADR-0413](decisions/0413-a-bounded-helper-holds-connected-tunnel-sockets-between-servers.md)
 The proxy also counts each connection's run (agent run, CI job, Superagent shell). When nothing was
 idle for 5 minutes, a full sandbox share takes the oldest connection of its busiest other run, and

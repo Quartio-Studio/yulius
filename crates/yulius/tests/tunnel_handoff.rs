@@ -85,6 +85,7 @@ async fn an_overlapping_deposit_leaves_the_live_batch_for_its_successor() -> io:
             Ok((
                 [a, b],
                 Pair {
+                    expires: None,
                     sockets: [left.into_std()?.into(), right.into_std()?.into()],
                     state: state.to_vec(),
                 },
@@ -119,6 +120,7 @@ async fn a_stalled_successor_holds_the_only_helper_place_until_its_transfer_ends
         // the listener has accepted; leaving the rest unread stalls the helper in send.
         for _ in 0..16 {
             batch.push(Pair {
+                expires: None,
                 sockets: [
                     left.as_fd().try_clone_to_owned()?,
                     right.as_fd().try_clone_to_owned()?,
@@ -155,6 +157,7 @@ async fn deposit_in_the_old_process(directory: PathBuf) -> io::Result<()> {
     let addr = std::env::var("YULIUS_FIXTURE_HANDOFF_PEER").map_err(io::Error::other)?;
     let right = TcpStream::connect(addr).await?;
     let saved = Pair {
+        expires: None,
         sockets: [
             std::io::stdin().as_fd().try_clone_to_owned()?,
             right.into_std()?.into(),
@@ -167,4 +170,90 @@ async fn deposit_in_the_old_process(directory: PathBuf) -> io::Result<()> {
         vec![saved],
     )
     .await
+}
+
+#[tokio::test]
+async fn one_tunnel_expires_in_custody_while_another_stays_adoptable() -> io::Result<()> {
+    use yulius_sandbox::relay::custodian::monotonic_ms;
+    tokio::time::timeout(Duration::from_secs(5), async {
+        let dir = tempfile::tempdir()?;
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700))?;
+        let fixture = |expires: u64| -> io::Result<_> {
+            let (a, left) = UnixStream::pair()?;
+            let (b, right) = UnixStream::pair()?;
+            Ok((
+                [a, b],
+                Pair {
+                    expires: Some(expires),
+                    sockets: [left.into_std()?.into(), right.into_std()?.into()],
+                    state: b"synthetic copy state".to_vec(),
+                },
+            ))
+        };
+        let now = monotonic_ms();
+        let (mut short, first) = fixture(now + 500)?;
+        let ([mut long, _], second) = fixture(now + 60_000)?;
+        deposit(
+            Path::new(env!("CARGO_BIN_EXE_yulius")),
+            dir.path(),
+            vec![first, second],
+        )
+        .await?;
+        for peer in &mut short {
+            assert_eq!(
+                peer.read(&mut [0]).await?,
+                0,
+                "the tunnel expired before a successor arrived"
+            );
+        }
+        long.write_all(b"live").await?;
+        let mut pairs = adopt(dir.path()).await?;
+        assert_eq!(
+            pairs.len(),
+            1,
+            "the successor receives only the longer-lived pair"
+        );
+        let [left, _] = pairs
+            .pop()
+            .ok_or_else(|| io::Error::other("missing live tunnel"))?
+            .sockets;
+        let mut left = UnixStream::from_std(left.into())?;
+        assert_eq!(left.read_u32().await?.to_be_bytes(), *b"live");
+        Ok(())
+    })
+    .await?
+}
+
+#[tokio::test]
+async fn a_depositor_refuses_a_listener_before_shutting_down_expired_records() -> io::Result<()> {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        let dir = tempfile::tempdir()?;
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700))?;
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let address = listener.local_addr()?;
+        let (wire, _peer) = UnixStream::pair()?;
+        let malformed = Pair {
+            expires: Some(0),
+            sockets: [
+                listener.as_fd().try_clone_to_owned()?,
+                wire.into_std()?.into(),
+            ],
+            state: Vec::new(),
+        };
+        let result = deposit(
+            Path::new(env!("CARGO_BIN_EXE_yulius")),
+            dir.path(),
+            vec![malformed],
+        )
+        .await;
+        assert!(
+            result.is_err_and(|e| e.kind() == io::ErrorKind::InvalidData),
+            "deposit must reject a listener"
+        );
+        let client = TcpStream::connect(address).await?;
+        assert_eq!(listener.accept().await?.1, client.local_addr()?);
+        assert!(!dir.path().join("tunnels.sock").exists());
+        Ok(())
+    })
+    .await?
 }
