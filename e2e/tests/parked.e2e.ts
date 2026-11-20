@@ -541,3 +541,129 @@ test('a held parked summary leaves Git rows readable and refreshes a newly parke
   });
   expect(result).toEqual({ whileHeld: { summaryReads: 2, gitVisible: true }, summaryReads: 3, needs: true, steps: { total: 7, done: 5 } });
 });
+
+test('an older Task Info detail cannot undo a verified parked rerun', async ({ app, browser }) => {
+  await app.open(mock('/s/studio/tasks/13', '&ambient=0&pullgap=0'));
+  const state = browser.locator('.gt-state');
+  await expect(state).toBeVisible();
+  type Fixture = {
+    __release: () => void;
+    __yuliusMock: {
+      detailReads?: Record<string, number>; holdDetail?: Promise<void>; heldDetailAnswered?: boolean;
+      holdGitReads: boolean; tasks: { id: string; parked_needs_you?: boolean }[];
+      changePull(sid: string, pr: number, changes: object): void;
+    };
+  };
+  await expect.poll(() => browser.evaluate(() => Boolean((window as unknown as Fixture).__yuliusMock.detailReads?.tsk_studio_13))).toBe(true);
+  await browser.evaluate(() => {
+    const w = window as unknown as Fixture;
+    w.__yuliusMock.holdDetail = new Promise<void>(resolve => { w.__release = resolve; });
+  });
+  await touchTask(browser, 'sb_studio', 13, { status: 'parked', activity: 'done', parked_needs_you: false, parked_pr: { number: 520, open: true } });
+  await expect(state).toHaveText(/Done.*parked/);
+  await expect.poll(() => browser.evaluate(() => !(window as unknown as Fixture).__yuliusMock.holdDetail)).toBe(true);
+  await browser.evaluate(() => {
+    const db = (window as unknown as Fixture).__yuliusMock;
+    db.holdGitReads = true;
+    db.tasks.find(t => t.id === 'tsk_studio_13')!.parked_needs_you = true;
+    db.changePull('sb_studio', 520, { checks: 'failure' });
+  });
+  await expect(state).toHaveText(/Your turn.*parked/);
+  await browser.evaluate(() => (window as unknown as Fixture).__release());
+  await expect.poll(() => browser.evaluate(() => Boolean((window as unknown as Fixture).__yuliusMock.heldDetailAnswered))).toBe(true);
+  await expect(state).toHaveText(/Your turn.*parked/);
+});
+
+test('failed parked verification accounts for open replacement PRs in either response order', async ({ app, browser }) => {
+  await app.open(mock('/s/studio'));
+  const groups = await browser.evaluate(async () => {
+    const storeUrl = '/assets/store.js', statusUrl = '/assets/status.js';
+    const { createStore } = await import(storeUrl);
+    const { taskInfo } = await import(statusUrl);
+    const seen = [];
+    const settled = () => new Promise<void>(resolve => {
+      const channel = new MessageChannel();
+      channel.port1.onmessage = () => { channel.port1.close(); channel.port2.close(); resolve(); };
+      channel.port2.postMessage(null);
+    });
+    for (const gitFirst of [true, false]) {
+      const sid = 'replacement';
+      const row = { id: 'pr', sandbox_id: sid, status: 'parked', activity: 'done', parked_needs_you: false, parked_pr: { number: 7, open: false } };
+      let release!: () => void;
+      const held = new Promise<void>(resolve => { release = resolve; });
+      let unavailable = false;
+      let tick = () => {};
+      const store = createStore({ get: async (path: string) => {
+        if (path.endsWith('/git')) {
+          if (!gitFirst) await held;
+          return { tasks: [{ task_id: row.id, pr: { number: 8, state: 'open', checks: 'success' } }] };
+        }
+        if (!path.includes('/tasks?')) return [];
+        if (unavailable) { if (gitFirst) await held; throw new Error('summary unavailable'); }
+        return [row];
+      } }, { clock: { now: () => 50_000, setInterval: (fn: () => void) => { tick = fn; return 1; }, clearInterval() {}, clearTimeout() {} } });
+      await store.loadTasks(sid);
+      unavailable = true;
+      const stop = store.watchPulls(sid);
+      await settled();
+      release();
+      await settled();
+      const group = () => taskInfo(store.findTask(row.id), null, store.pullsOf(sid).get(row.id)).group;
+      seen.push(group());
+      unavailable = false;
+      tick();
+      await settled();
+      seen.push(group());
+      stop();
+      store.stopEvents();
+    }
+    return seen;
+  });
+  expect(groups).toEqual(['needs', 'done', 'needs', 'done']);
+});
+
+test('parked reads keep their three-second gap while Git is held', async ({ app, browser }) => {
+  await app.open(mock('/s/studio'));
+  const starts = await browser.evaluate(async () => {
+    const url = '/assets/store.js';
+    const { createStore } = await import(url);
+    const sid = 'busy';
+    let now = 50_000;
+    let release!: () => void;
+    const held = new Promise<void>(resolve => { release = resolve; });
+    const starts: number[] = [];
+    const timers = new Map<number, { at: number; fn: () => void }>();
+    let timer = 0;
+    const store = createStore({ get: async (path: string) => {
+      if (path.endsWith('/git')) { await held; return { tasks: [] }; }
+      if (!path.includes('/tasks?')) return [];
+      starts.push(now);
+      return [{ id: 'pr', sandbox_id: sid, status: 'parked', parked_needs_you: true }];
+    } }, { clock: { now: () => now, setInterval: () => 1, clearInterval() {},
+      setTimeout(fn: () => void, ms: number) { timers.set(++timer, { fn, at: now + ms }); return timer; },
+      clearTimeout(id: number) { timers.delete(id); },
+    } });
+    const settled = () => new Promise<void>(resolve => {
+      const channel = new MessageChannel();
+      channel.port1.onmessage = () => { channel.port1.close(); channel.port2.close(); resolve(); };
+      channel.port2.postMessage(null);
+    });
+    await store.loadTasks(sid);
+    starts.length = 0;
+    const stop = store.watchPulls(sid);
+    await settled();
+    for (const at of [53_000, 53_100, 53_200, 53_300]) {
+      now = at;
+      store.handleEvent({ type: 'pulls.updated', sandbox_id: sid });
+      await settled();
+    }
+    now = 56_000;
+    for (const [id, job] of [...timers]) if (job.at <= now) { timers.delete(id); job.fn(); }
+    await settled();
+    stop();
+    release();
+    store.stopEvents();
+    return starts;
+  });
+  expect(starts).toEqual([50_000, 53_000, 56_000]);
+});

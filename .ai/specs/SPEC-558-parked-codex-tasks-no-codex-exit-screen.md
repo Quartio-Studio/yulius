@@ -66,6 +66,9 @@ A human request can take precedence over unfinished work in the task list. Both 
 
 ## Evidence
 
+- Independent review of `6890b885e` reproduced three browser races. The three review regressions failed before correction and passed afterward. A held Task Info response now preserves a newer verified row. An open replacement discovered before or after a failed summary stays under Needs you until the next successful verification. At the production three-second watch gap, announcements at 53.0, 53.1, 53.2 and 53.3 seconds now start one summary at 53 seconds and one at 56 seconds while the overview is held.
+- `scripts/dev quick` passed. `scripts/dev mutants --base 5bdabd1a9` found no changed Rust code. Removing the summary watch call in an isolated copy made both held-source regressions fail. Vidoc was disabled.
+
 - Browser status refresh (ADR-0417). On dev `5bdabd1a9`, three Chromium regressions failed for parked classification and status updates during an unavailable or held overview. Against the same assets the held-overview terminal and Task Info tests both stayed Done after CI failed, and a newly parked row never acquired its verified facts. The corrected `e2e run tests/parked.e2e.ts` passed all 14 cases. They cover both directions of a CI rerun, an unavailable summary, coalesced announcements, a later task event, an open plan and owner decisions.
 
 - PR #1542 delivered verified MCP filtering and wait explanations to dev at `5bdabd1a9`. The passing train ran the quality, Rust and browser jobs. Vidoc was disabled. [Delivery evidence](https://yulius.quartio.ai/api/tasks/09d643c4-9df9-4abe-9c9c-d0cfe7fdf205/delivery/evidence/5bdabd1a93590ac7b9d7552d2dffc1f8dbf27d2f)
