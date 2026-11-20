@@ -30,7 +30,7 @@ Task #517 displayed Codex's exit instructions. The host drained shutdown output 
 - [x] Deliver native Codex resume to dev
 - [x] Preserve the parked grid until the resumed host attaches
 - [x] Verify chain eligibility and refresh stale PR observations
-- [ ] Keep unfinished plans, specs and goals live
+- [x] Keep unfinished plans, specs and goals live
 - [ ] Verify PR checks and unpublished repairs before parking
 - [ ] Give parked PRs fair status reads and gate dependent tasks
 - [ ] Deliver bounded Codex goal continuation to dev
@@ -74,6 +74,8 @@ A human request can take precedence over unfinished work in the task list. Both 
 - On dev at `3cc2b1969`, the one-open-step, in-progress-spec and failed-native-goal regressions each observed one park where zero was expected. Positive controls let the idle session park after the step or spec finishes. The step fixture exercises both the grace timer and the digest.
 
 - The first local guard at `311e7e09b` passed 41 parking tests. Review found that a step could be committed after the final eligibility read and that a failed spec-status read could let digest parking proceed. Three deterministic regressions reproduced one incorrect park each on that head. They cover a step added before the park intent, an in-progress step writer, and a recorded spec made unreadable in SQLite. The spec fixture restores the status, verifies that it was in progress, and parks successfully after completion.
+
+- Independent review approved the local parking guard at `dad583243`. All 44 scoped Rust tests passed, including grace and digest parking, concurrent updates and recovery after the stored spec becomes readable. Repository contracts and formatting passed.
 
 ## Delivery slices
 
