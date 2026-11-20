@@ -2251,6 +2251,35 @@ fn a_squash_lands_one_commit_on_the_remote_branch_or_names_the_conflicts() -> Te
     Ok(())
 }
 
+/// Exit zero from merge-tree requires a valid tree object id. An invalid answer remains
+/// a parse error even though both input revisions resolve through the real Git executable.
+#[cfg(unix)]
+#[test]
+fn a_successful_merge_tree_with_an_invalid_tree_id_is_a_parse_error() -> TestResult {
+    let fx = Fixture::new()?;
+    let (_, repo) = fx.repo_with_remote()?;
+    let wrapper = fx.path("malformed-tree-git");
+    write_hook(
+        &wrapper,
+        r#"#!/bin/sh
+for arg do
+    if [ "$arg" = merge-tree ]; then
+        printf 'not-a-tree-id\000'
+        exit 0
+    fi
+done
+exec git "$@"
+"#,
+    )?;
+    let git = isolated(Git::new(&wrapper), &fx.home);
+    let result = git.merge_tree(&repo, "main", "HEAD");
+    assert!(
+        matches!(result, Err(GitError::Parse { command: "merge-tree", ref detail }) if detail.contains("not-a-tree-id")),
+        "{result:?}"
+    );
+    Ok(())
+}
+
 /// Preview, squash and the checked train distinguish raw bytes from literal quoting in real filenames.
 #[cfg(unix)]
 #[test]
