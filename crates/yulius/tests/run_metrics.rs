@@ -118,6 +118,7 @@ fn a_restart_keeps_a_resumed_run_s_metrics() -> TestResult {
             id.as_str(),
             &yulius_contracts::api::tasks::ContinueTask {
                 account_id: Some("b-second".into()),
+                ..Default::default()
             },
         )
         .await?;

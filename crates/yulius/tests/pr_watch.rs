@@ -370,6 +370,280 @@ fn a_conflict_is_told_without_a_run_at_the_head() -> TestResult {
     Ok(())
 }
 
+/// SPEC-553 REP-002, REP-004: with a real live agent PTY and FakeGitHub:
+/// 1. An actionable failed publication (`DirtyWorktree`) is delivered once by `watch_prs` and not
+///    repeated on subsequent passes.
+/// 2. Resolving a newer `DirtyWorktree` failure by committing cleanly and pushing `repair2` never
+///    emits a stale `"publish"` notice for the superseded commit.
+/// 3. After `repair2` is pushed past a failing `pr_head` with no new CI run yet, repeated
+///    `watch_prs` passes (Pass 1 and Pass 2) never emit a stale failed-run notice for `pr_head`,
+///    while a fresh failure at `repair2` itself IS delivered.
+#[test]
+fn failed_publication_and_superseded_repair_notices_in_pr_watch() -> TestResult {
+    use std::sync::Arc;
+    use yulius_app::model::{GitHubTokenRecord, Secret};
+    use yulius_app::ports::github::{ChecksState, GitHubPort, NewPull};
+    use yulius_domain::time::Timestamp;
+    use yulius_ptyhost::test_support::locate_fake_agent;
+
+    struct BareOrigin(std::path::PathBuf);
+    impl crate::support::FakeRemote for BareOrigin {
+        fn branch_sha(&self, branch: &str) -> Option<String> {
+            git(
+                &self.0,
+                &[
+                    "rev-parse",
+                    "--verify",
+                    "--quiet",
+                    &format!("refs/heads/{branch}"),
+                ],
+            )
+            .ok()
+        }
+        fn merge(&self, _: &str, _: &str, _: &str, _: &str) -> Result<String, String> {
+            Err("merge not used in this test".into())
+        }
+        fn fast_forward(&self, _: &str, _: &str) -> Result<(), String> {
+            Err("fast_forward not used in this test".into())
+        }
+    }
+
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = temp()?;
+    let github = Arc::new(crate::support::FakeGitHub::default());
+    github.set_remote(Arc::new(BareOrigin(data.join("origin.git"))));
+    github.add_user("code-admin", 1, "admin");
+    github.set_perm("admin", "acme/pool", crate::support::perms("write"));
+    let agent = crate::support::agents::FakeAgentOptions {
+        transcript: true,
+        answers_first_message: true,
+        ..crate::support::agents::FakeAgentOptions::default()
+    };
+    let rt = runtime()?;
+    rt.block_on(async {
+        let app = crate::pool_supervision::build_served_tuned(
+            &data,
+            &fake,
+            Arc::new(crate::pool_supervision::ScriptedUsage::default()),
+            agent,
+            github.clone(),
+            "http://127.0.0.1:9",
+            |config| config.goal_ready_ms = 2_000,
+        )?;
+        let (sandbox, user) = seed(&app, &data, &["a-only"]).await?;
+        yulius_app::ports::store::PermissionStore::put_access(
+            app.deps.store.as_ref(),
+            &user,
+            &sandbox,
+            yulius_domain::permission::AccessLevel::Write,
+            app.now(),
+        )
+        .await?;
+        let profile_json = serde_json::to_string(&yulius_app::delivery::profile_to_contract(
+            &yulius_domain::delivery::DeliveryProfile::standard(),
+        ))?;
+        app.deps.store.set_profile(&sandbox, &profile_json).await?;
+        let access = app.deps.crypto.seal(b"token-admin")?;
+        app.deps
+            .store
+            .save_github_token(
+                &GitHubTokenRecord {
+                    user_id: user.clone(),
+                    access,
+                    refresh: None,
+                    expires_at: None,
+                    refresh_expires_at: None,
+                },
+                Timestamp(1),
+            )
+            .await?;
+        let seed_dir = data.join("seed");
+        git(&seed_dir, &["push", "-q", "origin", "main:dev"])?;
+        let repo = data.join("sandboxes").join(sandbox.as_str()).join("repo");
+        git(&repo, &["fetch", "-q", "origin"])?;
+        let id = new_task(&app, &sandbox, &user, "Watched repair").await?;
+        wait_for("the first answer", Duration::from_secs(30), || {
+            let shown = screen(&app, &id);
+            async move { shown.contains("ECHO: Watched repair: answer with an echo") }
+        })
+        .await?;
+        let task = app.deps.store.task(&id).await?.ok_or("task")?;
+        let branch = task.branch.clone().ok_or("branch")?;
+        let worktree = Path::new(task.worktree_path.as_deref().ok_or("worktree")?).to_path_buf();
+        let spec_dir = worktree.join("docs/specs");
+        std::fs::create_dir_all(&spec_dir)?;
+        std::fs::write(
+            spec_dir.join("2026-10-07-repair.md"),
+            format!(
+                "---\nyulius-task: {}\nstatus: in-progress\n---\n\n# Repair\n\n## Goal\nFix CI.\n\n## Context\nOpen PR.\n\n## Requirements\n- R1\n\n## Plan\n- [x] Fix\n- [ ] Verify\n\n## Acceptance criteria\n- Green\n\n## Test plan\n- Unit\n\n## Decisions\n- None.\n",
+                id.as_str()
+            ),
+        )?;
+        git(&worktree, &["add", "docs/specs/2026-10-07-repair.md"])?;
+        git(&worktree, &["commit", "-q", "-m", "Initial spec"])?;
+        git(&worktree, &["push", "-q", "origin", &branch])?;
+        let pr_head = git(&worktree, &["rev-parse", "HEAD"])?;
+        let pull = github
+            .create_pull(
+                &Secret("token-admin".into()),
+                "acme",
+                "pool",
+                &NewPull {
+                    title: "feat: repair".into(),
+                    body: String::new(),
+                    head: branch.clone(),
+                    base: "dev".into(),
+                },
+            )
+            .await?;
+        let open = DeliveryRecord {
+            task_id: id.clone(),
+            stage: DeliveryStage::PrOpen,
+            pr_number: Some(pull.number),
+            updated_at: app.now(),
+        };
+        app.deps
+            .store
+            .transition_delivery(&DeliveryStage::None, &open)
+            .await?;
+        github.set_checks(&pr_head, ChecksState::Failure);
+        let steps = ["done", "in_progress"]
+            .iter()
+            .enumerate()
+            .map(|(i, status)| -> Result<_, Box<dyn std::error::Error>> {
+                Ok(yulius_app::model::StepRecord {
+                    id: yulius_domain::ids::StepId::parse(&format!("s-pw-{i}"))?,
+                    task_id: id.clone(),
+                    ordinal: u32::try_from(i)?,
+                    title: format!("Step {i}"),
+                    status: (*status).to_owned(),
+                    note: None,
+                    updated_by: None,
+                    updated_at: None,
+                    effort: 1,
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        app.deps
+            .store
+            .replace_steps(&id, &steps, "agent", app.now())
+            .await?;
+        let bounds = WatchBounds::default();
+
+        // 1. Dirty worktree on `repair1`: `auto_open_pr` records actionable `push_problem`, and
+        // `watch_prs` delivers it into the real PTY once (never duplicated on pass 2).
+        std::fs::write(worktree.join("app.txt"), "repair1\n")?;
+        git(&worktree, &["add", "app.txt"])?;
+        git(&worktree, &["commit", "-q", "-m", "Repair 1"])?;
+        std::fs::write(worktree.join("dirty.tmp"), "uncommitted\n")?;
+        app.auto_open_pr(&id).await;
+        let owner_ctx = yulius_app::auth::AuthContext {
+            user: app.deps.store.user(&user).await?.ok_or("user")?,
+            csrf_token: None,
+            session_hash: None,
+            token: None,
+        };
+        let dlv_view = app.task_delivery(&owner_ctx, id.as_str()).await?;
+        assert!(
+            dlv_view
+                .notes
+                .iter()
+                .any(|n| n.contains("uncommitted changes")),
+            "expected dirty-worktree push_problem after auto_open_pr: {dlv_view:?}"
+        );
+        let typed = typed_within(&app, &bounds, &id)
+            .await?
+            .ok_or("publish failure notice was not typed by watch_prs")?;
+        assert!(
+            typed.contains("uncommitted changes"),
+            "expected dirty-worktree publish notice: {typed}"
+        );
+        echoed(&app, &id, "uncommitted changes").await?;
+        assert!(
+            watch(&app, &bounds, &id).await?.is_none(),
+            "publish notice must be told once"
+        );
+
+        // 2. Record a brand-new `DirtyWorktree` failure on `repair1b` (never delivered to
+        // `pr_watch`), then resolve it cleanly by committing `dirty.tmp` in `repair2` and pushing
+        // `repair2` past failing `pr_head` (which also has an untold `RunState::Failed` run).
+        std::fs::remove_file(worktree.join("dirty.tmp"))?;
+        std::fs::write(worktree.join("app.txt"), "repair1b\n")?;
+        git(&worktree, &["add", "app.txt"])?;
+        git(&worktree, &["commit", "-q", "-m", "Repair 1b"])?;
+        std::fs::write(worktree.join("dirty2.tmp"), "new dirty file\n")?;
+        app.auto_open_pr(&id).await;
+        // Now resolve the dirty worktree with a clean commit `repair2` and publish it.
+        git(&worktree, &["add", "dirty2.tmp"])?;
+        git(&worktree, &["commit", "-q", "-m", "Repair 2 clean"])?;
+        let repair2 = git(&worktree, &["rev-parse", "HEAD"])?;
+        app.auto_open_pr(&id).await;
+        let origin_head = git(
+            &data.join("origin.git"),
+            &["rev-parse", &format!("refs/heads/{branch}")],
+        )?;
+        assert_eq!(origin_head, repair2, "repair2 published cleanly");
+
+        // Record an untold failed CI run at the superseded `pr_head` with NO CI run yet for
+        // `repair2`: BOTH Pass 1 and Pass 2 of `watch_prs` must emit neither a stale `"publish"`
+        // notice for `repair1b` nor a stale `"run"` failure notice for `pr_head`.
+        let (old_red, old_job) = run(
+            &sandbox,
+            "r-old",
+            &pr_head,
+            RunState::Failed,
+            Some("FAIL old\n"),
+            10,
+        );
+        let old_red = CiRunRecord {
+            reference: CiRef::PullRequest(pull.number),
+            ..old_red
+        };
+        app.deps
+            .store
+            .insert_ci_run(&old_red, std::slice::from_ref(&old_job))
+            .await?;
+        assert!(
+            watch(&app, &bounds, &id).await?.is_none(),
+            "pass 1 must emit neither stale publish nor stale failed-run notice"
+        );
+        assert!(
+            watch(&app, &bounds, &id).await?.is_none(),
+            "pass 2 must also emit neither stale publish nor stale failed-run notice"
+        );
+
+        // 3. Negative control: a real failure at `repair2` itself IS delivered into the PTY.
+        let (new_red, new_job) = run(
+            &sandbox,
+            "r-new",
+            &repair2,
+            RunState::Failed,
+            Some("FAIL new\n"),
+            20,
+        );
+        let new_red = CiRunRecord {
+            reference: CiRef::PullRequest(pull.number),
+            ..new_red
+        };
+        app.deps
+            .store
+            .insert_ci_run(&new_red, std::slice::from_ref(&new_job))
+            .await?;
+        let red_typed = typed_within(&app, &bounds, &id)
+            .await?
+            .ok_or("failed run at current repair2 head was not typed")?;
+        assert!(
+            red_typed.contains("failed"),
+            "expected current-head failure notice: {red_typed}"
+        );
+
+        stop(&app, &id).await?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
 /// One watch pass: what it typed into `id`'s session.
 async fn watch(
     app: &std::sync::Arc<yulius_app::context::App>,

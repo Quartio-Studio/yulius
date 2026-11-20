@@ -196,7 +196,24 @@ export function mountTaskView(ctx, sandbox, task) {
   // is drawn for the owner's window, so a watcher reads the session as the Sessions view prints it.
   // `terminal` stays a terminal's interface: while watching, one that sends nothing.
   const makeTerminal = () => {
-    const view = createTerminalView({
+    // Ordinary owner typing into a parked terminal wakes it through the supervisor and replays
+    // the buffered keys once running (SPEC-553 PRK-102). Never wakes operator-stopped or crashed
+    // tasks or non-owners.
+    let parkedHeld = [];
+    let resumingParked = false;
+    const PARKED_HELD_MAX = 65536;
+    const heldText = () => parkedHeld.join('');
+    const bufferParkedInput = (data) => {
+      // Ignore bare interrupts/escape/navigation sequences; bracketed paste (\x1b[200~) counts as typing.
+      const unbracketed = data.replace(/\x1b\[200~/g, '').replace(/\x1b\[201~/g, '');
+      if (!unbracketed || /^[\x03\x04\x1b]+$/.test(unbracketed) || unbracketed.startsWith('\x1b')) return false;
+      const keys = data.replace(/[\x03\x04]/g, '');
+      if (keys) parkedHeld.push(keys);
+      while (parkedHeld.length > 1 && heldText().length > PARKED_HELD_MAX) parkedHeld.shift();
+      return true;
+    };
+    let view = null;
+    view = createTerminalView({
       transport: ctx.transport,
       path: `/api/tasks/${enc(task.id)}/terminal`,
       onLink: (uri, event) => ctx.openLink(uri, event),
@@ -210,6 +227,42 @@ export function mountTaskView(ctx, sandbox, task) {
       // whole session is offered (SPEC-326).
       // A task that never started has no session to show.
       topOffer: { label: 'Earlier messages: show the whole session', open: () => openHistory(), when: () => !(detail && detail.started === false) },
+      onExitedInput: (data, exit) => {
+        if (current.status !== 'parked' || (exit.status && exit.status !== 'parked')) return false;
+        if (!allows((ctx.store.sandboxById(sandbox.id) || sandbox).access, 'write') || owner() || current.archived) return false;
+        if (!bufferParkedInput(data)) return false;
+        if (!resumingParked) {
+          resumingParked = true;
+          continueTask(ctx, current).then((updated) => {
+            if (!updated) { resumingParked = false; parkedHeld = []; }
+          });
+        }
+        return true;
+      },
+      onPendingInput: (data) => {
+        // Keep buffering while `continueTask` transitions `parked -> starting/queued -> running`
+        // until WS `onState({ status: 'running' })` flushes `parkedHeld` atomically (preserving
+        // FIFO order even if SSE `task.updated` arrives before WS `state`, SPEC-553 PRK-102).
+        if (!resumingParked) return false;
+        if (!['parked', 'starting', 'queued', 'running'].includes(current.status)) {
+          resumingParked = false;
+          parkedHeld = [];
+          return false;
+        }
+        bufferParkedInput(data);
+        return true;
+      },
+      onState: (next) => {
+        if (next.status === 'running' && (resumingParked || parkedHeld.length)) {
+          resumingParked = false;
+          const queued = heldText();
+          parkedHeld = [];
+          if (queued) queueMicrotask(() => { if (alive && view && view.sendKeys) view.sendKeys(queued); });
+        } else if (next.status && !['parked', 'starting', 'queued', 'running'].includes(next.status)) {
+          resumingParked = false;
+          parkedHeld = [];
+        }
+      },
       exitActions: (exit) => {
         const message = endedMessage(exit.status || current.status, exit.cause || lastLimitCause(), current.harness);
         const actions = [];
@@ -316,8 +369,13 @@ export function mountTaskView(ctx, sandbox, task) {
     setTimeout(() => terminal.sendKeys('\r'), 60);
     return true;
   };
-  const sendQuick = () => {
+  const sendQuick = async () => {
     const text = quickInput.value;
+    if (current.status === 'parked' && !owner() && allows((ctx.store.sandboxById(sandbox.id) || sandbox).access, 'write') && !current.archived) {
+      const updated = await continueTask(ctx, current, text.trim() || null);
+      if (updated && alive) quickInput.value = '';
+      return;
+    }
     if (!text) { terminal.sendKeys('\r'); return; }
     if (typeAndSubmit(text)) quickInput.value = '';
   };
@@ -418,6 +476,22 @@ export function mountTaskView(ctx, sandbox, task) {
       renderAttention();
       return;
     }
+    // A parked task resumes through the supervisor with the owner's reply as its prompt
+    // (SPEC-553 PRK-102): typing into a dead PTY would fail.
+    if (current.status === 'parked') {
+      answering = true;
+      replyInput.readOnly = true;
+      const resumed = await continueTask(ctx, current, text).finally(() => {
+        answering = false;
+        replyInput.readOnly = false;
+      });
+      if (!alive) return;
+      if (!resumed) { if (replying) replyInput.focus(); return; }
+      replyInput.value = '';
+      replying = false;
+      renderAttention();
+      return;
+    }
     // The answer is for the terminal, sent or not: why it was not shows there (SPEC-326).
     closeHistory(false);
     if (!typeAndSubmit(text)) return;
@@ -442,6 +516,7 @@ export function mountTaskView(ctx, sandbox, task) {
     const info = taskInfo(current, ctx.store.state.actionRequests, pr);
     // Failed checks already have their PR action in the strip.
     const waitingForReply = current.status === 'running' && current.activity === 'waiting' && info.group === 'needs' && !info.pr;
+    const parkedWaiting = current.status === 'parked' && current.activity === 'waiting' && info.group === 'needs';
     let content = null;
     let asksPerson = false; // the bar shows a `needs_you` request
     let textAnswer = false; // the bar asks for an answer written in its reply field
@@ -565,11 +640,21 @@ export function mountTaskView(ctx, sandbox, task) {
         owner() ? null : replying ? null : replyButton];
       replyButton.title = '';
       textAnswer = !owner();
+    } else if (parkedWaiting) {
+      // Idle parked session waiting for input (SPEC-553 PRK-101, PRK-102): distinguished from a
+      // crash and offers Resume / Reply to the owner only.
+      content = [icon('st-paused', { size: 16 }), h('span', { class: 'attention-text' }, owner()
+        ? [h('strong', null, `This idle session was parked while waiting for @${owner()}. `), 'Its session and worktree are intact.']
+        : [h('strong', null, 'This idle session was parked (your turn). '), 'Resume it or reply to continue in the same session.']),
+      !owner() && can.continue ? h('button', { type: 'button', class: 'btn btn-sm btn-primary', onClick: () => continueTask(ctx, current) }, 'Resume') : null,
+      !owner() && can.continue ? (replying ? null : replyButton) : null];
+      replyButton.title = '';
+      textAnswer = !owner() && can.continue;
     }
     attention.hidden = !content && !control;
     // A request's buttons go under it when the bar is too narrow for both (SPEC-327 review).
     attention.classList.toggle('needs-you', asksPerson);
-    attention.classList.toggle('waiting', !control && !info.request && waitingForReply);
+    attention.classList.toggle('waiting', !control && !info.request && (waitingForReply || parkedWaiting));
     attention.classList.toggle('stacked', Boolean(control && content));
     // A waiting task's start chip and buttons go below its words (SPEC-126).
     const waits = (current.status === 'chained' || current.status === 'prepared') && can.startNow;
@@ -1036,7 +1121,10 @@ export function mountTaskView(ctx, sandbox, task) {
       if (detail && RAN.has(current.status)) detail = { ...detail, started: true };
       if (current.status !== previousStatus || (queueOpen() && current.updated_at !== previousUpdate)) loadDetail();
       renderStrip();
-      if (current.status !== previousStatus) terminal.refreshEmpty();
+      if (current.status !== previousStatus) {
+        terminal.refreshEmpty();
+        terminal.refreshBanner(current.status);
+      }
       if (watch) watch.update();
       if (history) history.update();
       if (current.status !== previousStatus) loadDelivery(); // a finished task may now be ready for a pull request

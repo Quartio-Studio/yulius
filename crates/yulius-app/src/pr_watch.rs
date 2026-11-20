@@ -383,6 +383,12 @@ fn outcome_key(head: &str, text: &str) -> String {
     format!("{}:{}", short(head), fingerprint(text))
 }
 
+/// The key under which the watch tells an actionable failed publication of `head` (`text`)
+/// (SPEC-553 REP-004).
+fn publish_key(head: &str, text: &str) -> String {
+    format!("{}:{}", short(head), fingerprint(text))
+}
+
 /// News the watch typed into a session whose turn has not begun (SPEC-487 CHN-002).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct TypedNews {
@@ -438,6 +444,9 @@ pub(crate) struct NewsFacts {
     pub pull: Option<(u64, bool)>,
     /// How its last armed merge ended (its head and the line for the agent), when it has one.
     pub outcome: Option<(String, String)>,
+    /// An actionable failed publication on an open pull request (head and text) not yet told
+    /// (SPEC-553 REP-004).
+    pub publish_problem: Option<(String, String)>,
     /// Its sandbox is a playground: the watch tells its tasks nothing.
     pub playground: bool,
 }
@@ -475,6 +484,11 @@ pub(crate) fn news_due(facts: &NewsFacts, told: &Told) -> bool {
         return false;
     }
     if facts.typed_pending() {
+        return true;
+    }
+    if let (Some((_, false)), Some((head, text))) = (facts.pull, &facts.publish_problem)
+        && told.keys.get("publish") != Some(&publish_key(head, text))
+    {
         return true;
     }
     match (facts.pull, &facts.outcome) {
@@ -658,6 +672,81 @@ impl App {
             }
             kept.insert(task.id.as_str().to_owned(), next);
         }
+        // SPEC-553 PRK-103: parked tasks continue to park safely while CI runs and resume
+        // automatically in their saved session/worktree when an actionable PR/CI result arrives,
+        // never on check-ins, stalls, active CI, human decisions, or stopped/crashed tasks.
+        if !update_holds
+            && let Ok(parked_tasks) = self
+                .deps
+                .store
+                .tasks_with_status(&[TaskStatus::Parked])
+                .await
+        {
+            for task in parked_tasks {
+                if task.archived_at.is_some() || kept.contains_key(task.id.as_str()) {
+                    continue;
+                }
+                let told = saved.get(task.id.as_str()).cloned().unwrap_or_default();
+                let paused = !matches!(self.deps.store.open_pause(&task.id).await, Ok(None));
+                let facts = if !paused {
+                    self.pr_facts_parked(&task, &told, &mut runs).await
+                } else {
+                    None
+                };
+                let Some(facts) = facts else {
+                    if told.pr > 0 {
+                        kept.insert(task.id.as_str().to_owned(), told);
+                    }
+                    continue;
+                };
+                let (text, next) = decide(&facts, &told, bounds);
+                let next = match text {
+                    None => next,
+                    Some(text) => {
+                        if let Err(err) = self.ensure_agent_account(task.harness.provider()).await {
+                            tracing::debug!(
+                                task = %task.id,
+                                pr = facts.pr,
+                                error = %err,
+                                "keeping parked task parked while no usable account is available"
+                            );
+                            untold(told, &next)
+                        } else {
+                            let text = crate::task_message::clean_message(&text);
+                            match self.resume_parked(&task.id, Some(text.clone())).await {
+                                Ok(true) => {
+                                    tracing::info!(
+                                        task = %task.id,
+                                        pr = facts.pr,
+                                        "resumed parked task for its pull request"
+                                    );
+                                    typed.push((task.id.clone(), text));
+                                    next
+                                }
+                                Ok(false) => {
+                                    tracing::debug!(
+                                        task = %task.id,
+                                        pr = facts.pr,
+                                        "parked task changed before pull request wake"
+                                    );
+                                    untold(told, &next)
+                                }
+                                Err(err) => {
+                                    tracing::warn!(
+                                        task = %task.id,
+                                        pr = facts.pr,
+                                        error = %err,
+                                        "could not resume parked task for its pull request"
+                                    );
+                                    untold(told, &next)
+                                }
+                            }
+                        }
+                    }
+                };
+                kept.insert(task.id.as_str().to_owned(), next);
+            }
+        }
         // A task not live this pass (a session switching, a capacity pause) keeps what it was
         // told while it is not resting: its next run is not told it all again.
         for (id, told) in &saved {
@@ -781,9 +870,14 @@ impl App {
                 .map(|pr| (pr, merged))
         });
         let outcome = self.armed_view(&task.id).1;
-        // Asked only where it decides: an armed merge that ended on an open pull request.
+        let publish_problem = if !self.agent_waits_on_yulius(&task.id) {
+            self.current_actionable_push_problem(task, None).await
+        } else {
+            None
+        };
+        // Asked only where it decides: an armed merge or failed publication on an open PR.
         let playground = matches!(pull, Some((_, false)))
-            && outcome.is_some()
+            && (outcome.is_some() || publish_problem.is_some())
             && matches!(
                 store.sandbox(&task.sandbox_id).await,
                 Ok(Some(sandbox)) if sandbox.is_playground()
@@ -794,6 +888,7 @@ impl App {
             paused: matches!(store.person_pause(&task.id).await, Ok(Some(_))),
             pull,
             outcome,
+            publish_problem,
             playground,
             ..typed
         };
@@ -897,6 +992,37 @@ impl App {
                 .into_iter()
                 .find(|run| run.reference == CiRef::PullRequest(pr));
         }
+        // SPEC-553 REP-004: recover an idle task whose clean committed CI repair on a failing
+        // open PR missed turn-end publication (for example across a server restart). Reads only
+        // local HEAD unless it differs from the failing PR run's SHA.
+        if !armed
+            && !person_must_act
+            && let Some(failed_sha) = own
+                .as_ref()
+                .filter(|run| run.state == RunState::Failed)
+                .map(|run| run.sha.clone())
+            && self.maybe_publish_repair_for_watch(task, &failed_sha).await
+        {
+            let read = self
+                .deps
+                .store
+                .ci_runs(&sandbox.id, RUNS_READ)
+                .await
+                .unwrap_or_default();
+            runs.insert(sandbox.id.as_str().to_owned(), read);
+            let refreshed = runs.get(sandbox.id.as_str()).map_or(&[][..], Vec::as_slice);
+            own = refreshed
+                .iter()
+                .find(|run| run.reference == CiRef::PullRequest(pr))
+                .cloned();
+        }
+        if let Some(run) = own.as_ref()
+            && run.state == RunState::Failed
+            && self.run_superseded_by_pushed_head(task, &run.sha).await
+        {
+            own = None;
+        }
+        let sandbox_runs = runs.get(sandbox.id.as_str()).map_or(&[][..], Vec::as_slice);
         let own = own.as_ref();
         // A candidate older than the pull request's own newest run is about an earlier head.
         let candidate = sandbox_runs
@@ -965,6 +1091,23 @@ impl App {
             Some(head) => Some(head.clone()),
             None => self.branch_head(task).await,
         };
+        // SPEC-553 REP-004: deliver an actionable failed publication once when `yulius wait` is
+        // not already actively waking the agent on it and the failed head is still current.
+        if !armed
+            && !self.agent_waits_on_yulius(&task.id)
+            && let Some((note_head, text)) = self
+                .current_actionable_push_problem(task, conflict_head.as_deref())
+                .await
+        {
+            let key = publish_key(&note_head, &text);
+            if !told_key("publish", &key) {
+                events.push(Event {
+                    kind: "publish",
+                    key,
+                    text,
+                });
+            }
+        }
         if let Some(head) = &conflict_head
             && hold == Hold::Free
             && self.conflicts(task, &sandbox, head).await
@@ -1060,6 +1203,363 @@ impl App {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((pr, text.clone()));
         Some(text)
+    }
+
+    /// What the watch knows of a parked task's pull request for automatic wake (SPEC-553
+    /// PRK-103): only actionable events (failed/errored/unarmed-green CI runs, conflicts, failed
+    /// publication, or untold merges with work remaining), never check-ins, stalls, active CI,
+    /// or tasks waiting on a human decision.
+    async fn pr_facts_parked(
+        &self,
+        task: &TaskRecord,
+        told: &Told,
+        runs: &mut BTreeMap<String, Vec<CiRunRecord>>,
+    ) -> Option<PrFacts> {
+        let record = self.deps.store.delivery(&task.id).await.ok()??;
+        let pr = record.pr_number?;
+        let sandbox = self.deps.store.sandbox(&task.sandbox_id).await.ok()??;
+        if sandbox.is_playground() {
+            return None;
+        }
+        // Preserve actual human-decision and consent boundaries: never auto-wake while a person
+        // must act (`needs_you`, held prompt, browser request, terminal attention).
+        let person_must_act = task.activity == Some(yulius_domain::task::Activity::NeedsAttention)
+            || !matches!(self.deps.store.task_needs_you(&task.id).await, Ok(None))
+            || !matches!(self.deps.store.pending_hold(&task.id).await, Ok(None))
+            || self
+                .browser_tab_requests(&task.sandbox_id)
+                .await
+                .contains(task.id.as_str());
+        if person_must_act {
+            return None;
+        }
+        let now_ms = self.now().0;
+        if past_merge(&record.stage) {
+            if !merge_untold(told, pr) {
+                return None;
+            }
+            let plan_open = self
+                .deps
+                .store
+                .steps(&task.id)
+                .await
+                .ok()
+                .is_some_and(|steps| crate::sandboxes::plan_open(&steps));
+            let spec_open = self.spec_unfinished(&task.id).await;
+            if task.activity == Some(yulius_domain::task::Activity::Done)
+                && !plan_open
+                && !spec_open
+            {
+                return None;
+            }
+            let text = self.merged_note(task, &sandbox, pr, true).await;
+            return Some(PrFacts {
+                now_ms,
+                pr,
+                events: vec![Event {
+                    kind: "merged",
+                    key: pr.to_string(),
+                    text,
+                }],
+                progress: told.progress.clone(),
+                ..PrFacts::default()
+            });
+        }
+        if record.stage != DeliveryStage::PrOpen {
+            return None;
+        }
+        let integration = delivery_profile(&sandbox).integration_branch;
+        if !runs.contains_key(sandbox.id.as_str()) {
+            let read = self
+                .deps
+                .store
+                .ci_runs(&sandbox.id, RUNS_READ)
+                .await
+                .unwrap_or_default();
+            runs.insert(sandbox.id.as_str().to_owned(), read);
+        }
+        let sandbox_runs = runs.get(sandbox.id.as_str()).map_or(&[][..], Vec::as_slice);
+        let mut own = sandbox_runs
+            .iter()
+            .find(|run| run.reference == CiRef::PullRequest(pr))
+            .cloned();
+        if own.is_none() && !told.head.is_empty() {
+            own = self
+                .deps
+                .store
+                .ci_runs_for_sha(&sandbox.id, &told.head)
+                .await
+                .unwrap_or_default()
+                .into_iter()
+                .find(|run| run.reference == CiRef::PullRequest(pr));
+        }
+        if let Some(failed_sha) = own
+            .as_ref()
+            .filter(|run| run.state == RunState::Failed)
+            .map(|run| run.sha.clone())
+            && self
+                .maybe_publish_repair_for_parked(task, &failed_sha)
+                .await
+        {
+            let read = self
+                .deps
+                .store
+                .ci_runs(&sandbox.id, RUNS_READ)
+                .await
+                .unwrap_or_default();
+            runs.insert(sandbox.id.as_str().to_owned(), read);
+            let refreshed = runs.get(sandbox.id.as_str()).map_or(&[][..], Vec::as_slice);
+            own = refreshed
+                .iter()
+                .find(|run| run.reference == CiRef::PullRequest(pr))
+                .cloned();
+        }
+        if let Some(run) = own.as_ref()
+            && run.state == RunState::Failed
+            && self.run_superseded_by_pushed_head(task, &run.sha).await
+        {
+            own = None;
+        }
+        let own = own.as_ref();
+        let mut events = Vec::new();
+        let told_key = |kind: &str, key: &str| told.keys.get(kind).is_some_and(|k| k == key);
+        if let Some(run) = own {
+            match run.state {
+                RunState::Failed if !told_key("run", &run.id) => {
+                    let jobs = self
+                        .deps
+                        .store
+                        .ci_jobs(&run.id, true)
+                        .await
+                        .unwrap_or_default();
+                    events.push(Event {
+                        kind: "run",
+                        key: run.id.clone(),
+                        text: red_run_text(run, &jobs),
+                    });
+                }
+                RunState::Error if !told_key("run", &run.id) => events.push(Event {
+                    kind: "run",
+                    key: run.id.clone(),
+                    text: errored_run_text(run),
+                }),
+                _ => {}
+            }
+        }
+        let head = own.map(|run| run.sha.clone());
+        let conflict_head = match &head {
+            Some(head) => Some(head.clone()),
+            None => self.branch_head(task).await,
+        };
+        if let Some((note_head, text)) = self
+            .current_actionable_push_problem(task, conflict_head.as_deref())
+            .await
+        {
+            let key = publish_key(&note_head, &text);
+            if !told_key("publish", &key) {
+                events.push(Event {
+                    kind: "publish",
+                    key,
+                    text,
+                });
+            }
+        }
+        if let Some(head) = &conflict_head
+            && self.conflicts(task, &sandbox, head).await
+        {
+            events.push(Event {
+                kind: "conflict",
+                key: head.clone(),
+                text: conflict_text(head, &integration),
+            });
+        }
+        let green =
+            own.is_some_and(|run| matches!(run.state, RunState::Passed | RunState::Skipped));
+        if let (true, Some(head)) = (green, &head)
+            && let Some((class, text)) = green_said(head, false, Hold::Free, None, &integration)
+        {
+            events.push(Event {
+                kind: "green",
+                key: format!("{head}:{class}"),
+                text,
+            });
+        }
+        let progress = format!(
+            "{}||{}|",
+            own.map_or_else(String::new, |run| format!(
+                "{}:{}",
+                run.id,
+                run.state.as_str()
+            )),
+            record.stage.encode(),
+        );
+        // `idle`, `check_ins`, `working` and `has_ci` stay false so `decide` wakes a parked task
+        // ONLY on real actionable `events`, never on periodic check-ins or stalls.
+        Some(PrFacts {
+            now_ms,
+            pr,
+            events,
+            progress,
+            ci_busy: own.is_some_and(|run| run.state.is_active()),
+            head: own.map(|run| run.sha.clone()).unwrap_or_default(),
+            ..PrFacts::default()
+        })
+    }
+
+    /// Local check + one-shot repair publication for a parked task on a failing open PR.
+    async fn maybe_publish_repair_for_parked(&self, task: &TaskRecord, failed_sha: &str) -> bool {
+        let Some(worktree) = task.worktree_path.as_deref().map(std::path::Path::new) else {
+            return false;
+        };
+        let Some(head) = self
+            .deps
+            .git
+            .log(worktree, "HEAD", 1)
+            .await
+            .ok()
+            .and_then(|log| log.into_iter().next())
+            .map(|c| c.sha)
+        else {
+            return false;
+        };
+        if head.eq_ignore_ascii_case(failed_sha) || self.has_push_problem_for(&task.id, &head) {
+            return false;
+        }
+        {
+            let runtime = self.runtime(&task.id);
+            let mut checked = runtime
+                .repair_checked_head
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if checked
+                .as_deref()
+                .is_some_and(|h| h.eq_ignore_ascii_case(&head))
+            {
+                return false;
+            }
+            *checked = Some(head.clone());
+        }
+        self.try_publish_open_pr_repair(&task.id, Some(&head)).await
+    }
+
+    /// Whether `task`'s actionable failed publication still applies to its current unpublished
+    /// worktree `HEAD` (SPEC-553 REP-004). Returns `None` once the branch or worktree has moved
+    /// past `note_head`, preventing stale notices or parked wakes after a clean follow-up commit
+    /// while preserving SPEC-139 PSH-001 push-note semantics.
+    async fn current_actionable_push_problem(
+        &self,
+        task: &TaskRecord,
+        remote_head: Option<&str>,
+    ) -> Option<(String, String)> {
+        let (note_head, text) = self.actionable_push_problem(&task.id)?;
+        if remote_head.is_some_and(|h| h.eq_ignore_ascii_case(&note_head)) {
+            return None;
+        }
+        if let Some(worktree) = task.worktree_path.as_deref()
+            && let Some(local_head) = self
+                .deps
+                .git
+                .log(std::path::Path::new(worktree), "HEAD", 1)
+                .await
+                .ok()
+                .and_then(|log| log.into_iter().next())
+                .map(|c| c.sha)
+            && !local_head.eq_ignore_ascii_case(&note_head)
+        {
+            return None;
+        }
+        if remote_head.is_none()
+            && self
+                .branch_head(task)
+                .await
+                .is_some_and(|h| h.eq_ignore_ascii_case(&note_head))
+        {
+            return None;
+        }
+        Some((note_head, text))
+    }
+
+    /// Whether a failed CI run at `failed_sha` has already been superseded by a newer commit
+    /// pushed to `task`'s feature branch (SPEC-553 REP-002). Keeps stale failed-run notices
+    /// suppressed across repeated `watch_prs` passes (and restarts) when no new CI run exists yet.
+    async fn run_superseded_by_pushed_head(&self, task: &TaskRecord, failed_sha: &str) -> bool {
+        let Some(worktree) = task.worktree_path.as_deref() else {
+            return false;
+        };
+        let worktree = std::path::Path::new(worktree);
+        if let Some(pushed) = self
+            .existing_runtime(&task.id)
+            .and_then(|rt| rt.auto_pr_head.lock().ok().and_then(|g| g.clone()))
+            && !pushed.eq_ignore_ascii_case(failed_sha)
+            && matches!(
+                self.deps
+                    .git
+                    .is_ancestor(worktree, failed_sha, &pushed)
+                    .await,
+                Ok(true)
+            )
+        {
+            return true;
+        }
+        if let Some(remote) = self.branch_head(task).await
+            && !remote.eq_ignore_ascii_case(failed_sha)
+            && matches!(
+                self.deps
+                    .git
+                    .is_ancestor(worktree, failed_sha, &remote)
+                    .await,
+                Ok(true)
+            )
+        {
+            return true;
+        }
+        false
+    }
+
+    /// Local check + one-shot repair publication for an idle running task on a failing open PR
+    /// (SPEC-553 REP-004). Returns `true` when it pushed a repair commit.
+    async fn maybe_publish_repair_for_watch(&self, task: &TaskRecord, failed_sha: &str) -> bool {
+        let Some(runtime) = self.existing_runtime(&task.id) else {
+            return false;
+        };
+        if runtime.turn_in_progress()
+            || !task
+                .activity
+                .is_some_and(yulius_domain::task::Activity::is_idle)
+        {
+            return false;
+        }
+        let Some(worktree) = task.worktree_path.as_deref().map(std::path::Path::new) else {
+            return false;
+        };
+        let Some(head) = self
+            .deps
+            .git
+            .log(worktree, "HEAD", 1)
+            .await
+            .ok()
+            .and_then(|log| log.into_iter().next())
+            .map(|c| c.sha)
+        else {
+            return false;
+        };
+        if head.eq_ignore_ascii_case(failed_sha) || self.has_push_problem_for(&task.id, &head) {
+            return false;
+        }
+        {
+            let mut checked = runtime
+                .repair_checked_head
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if checked
+                .as_deref()
+                .is_some_and(|h| h.eq_ignore_ascii_case(&head))
+            {
+                return false;
+            }
+            *checked = Some(head.clone());
+        }
+        self.try_publish_open_pr_repair(&task.id, Some(&head)).await
     }
 
     /// The head of the task's branch as last pushed (the clone's remote-tracking branch), which
@@ -1951,5 +2451,49 @@ mod tests {
         );
         let (_, told) = decide(&facts(vec![event("run", "r1")]), &stalled, &bounds);
         assert_eq!(told.stalled, None, "a message to the task ends it");
+    }
+
+    /// SPEC-553 REP-004: an actionable failed publication is told once per `(head, message)`,
+    /// survives a restart through `Told`, and counts as news due only until told.
+    #[test]
+    fn failed_publication_notice_is_told_once_and_counts_as_news_due_until_told() {
+        let bounds = WatchBounds::default();
+        let text = "Yulius could not push 3a3b0b620 to pull request #7: diverged".to_owned();
+        let key = publish_key("3a3b0b6201111111", &text);
+        let pub_event = Event {
+            kind: "publish",
+            key: key.clone(),
+            text: text.clone(),
+        };
+        let news = NewsFacts {
+            pull: Some((7, false)),
+            publish_problem: Some(("3a3b0b6201111111".to_owned(), text.clone())),
+            ..NewsFacts::default()
+        };
+        assert!(news_due(&news, &Told::default()), "untold failure is due");
+
+        let (said, told) = decide(&facts(vec![pub_event.clone()]), &Told::default(), &bounds);
+        assert!(said.is_some_and(|s| s.contains("3a3b0b620")));
+        assert_eq!(told.keys.get("publish"), Some(&key));
+        assert!(!news_due(&news, &told), "told failure is no longer due");
+
+        // Second pass and after a restart (reloaded `told`): no duplicate notice.
+        let reloaded: Told =
+            serde_json::from_str(&serde_json::to_string(&told).unwrap_or_else(|_| String::new()))
+                .unwrap_or_default();
+        assert_eq!(decide(&facts(vec![pub_event]), &reloaded, &bounds).0, None);
+
+        // A new head's failure gets its own one-time notice.
+        let next_key = publish_key("c367788262222222", &text);
+        let next_event = Event {
+            kind: "publish",
+            key: next_key,
+            text,
+        };
+        assert!(
+            decide(&facts(vec![next_event]), &reloaded, &bounds)
+                .0
+                .is_some()
+        );
     }
 }

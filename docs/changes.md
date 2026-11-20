@@ -6,6 +6,14 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-20
 
+- Parked sessions (including Codex) now show the parked terminal banner with a visible Resume
+  action (and owner Reply bar) instead of an inert terminal with a blinking cursor, wake in the
+  same saved session and worktree on Resume, Reply, or ordinary owner terminal typing (preserving
+  operator-stop and ownership boundaries), stay safely parked while PR CI runs, and wake
+  automatically on actionable PR/CI check results. Clean committed fast-forward CI repairs on a
+  task-owned failing open PR now publish to the same feature branch and trigger exact-head CI even
+  while a verification step remains open ([SPEC-553](../.ai/specs/SPEC-553-publish-committed-ci-repairs-to-open-tas.md),
+  [ADR-0391](decisions/0391-publish-committed-ci-repairs-to-open-task-prs.md)).
 - The store migration regression counts SQLite instructions and verifies completed step spans,
   so host contention cannot fail the backfill test (SPEC-559, #1484).
 - Newly parked tasks show their last agent screen, idle duration and resume instructions

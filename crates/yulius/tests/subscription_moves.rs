@@ -141,6 +141,7 @@ fn a_continued_task_never_runs_on_its_deleted_subscription() -> TestResult {
                 id.as_str(),
                 &ContinueTask {
                     account_id: Some("a-first".into()),
+                    ..Default::default()
                 },
             )
             .await;
@@ -151,8 +152,15 @@ fn a_continued_task_never_runs_on_its_deleted_subscription() -> TestResult {
             other => return Err(format!("expected a refusal, got {other:?}").into()),
         }
         assert_eq!(run_accounts(&app, &id).await.len(), 1, "nothing started");
-        app.continue_task(&ctx, id.as_str(), &ContinueTask { account_id: None })
-            .await?;
+        app.continue_task(
+            &ctx,
+            id.as_str(),
+            &ContinueTask {
+                account_id: None,
+                prompt: None,
+            },
+        )
+        .await?;
         live_run(&app, &id, 2).await?;
         assert_eq!(
             run_accounts(&app, &id).await[1].as_deref(),
@@ -443,6 +451,7 @@ fn a_person_moves_a_running_task_to_another_subscription() -> TestResult {
             id.as_str(),
             &ContinueTask {
                 account_id: Some("b-second".into()),
+                ..Default::default()
             },
         )
         .await?;
@@ -490,6 +499,7 @@ fn a_person_moves_a_waiting_task_to_the_subscription_they_choose() -> TestResult
                 id.as_str(),
                 &ContinueTask {
                     account_id: Some("b-second".into()),
+                    ..Default::default()
                 },
             )
             .await;
@@ -504,6 +514,7 @@ fn a_person_moves_a_waiting_task_to_the_subscription_they_choose() -> TestResult
             id.as_str(),
             &ContinueTask {
                 account_id: Some("a-first".into()),
+                ..Default::default()
             },
         )
         .await?;
@@ -571,8 +582,15 @@ fn a_launch_that_chose_a_removed_subscription_chooses_again() -> TestResult {
         let continuing = {
             let (app, ctx, id) = (app.clone(), ctx.clone(), id.clone());
             tokio::spawn(async move {
-                app.continue_task(&ctx, id.as_str(), &ContinueTask { account_id: None })
-                    .await
+                app.continue_task(
+                    &ctx,
+                    id.as_str(),
+                    &ContinueTask {
+                        account_id: None,
+                        prompt: None,
+                    },
+                )
+                .await
             })
         };
         reached(at).await?;
@@ -621,6 +639,7 @@ fn a_removal_during_a_switch_lets_the_switch_finish() -> TestResult {
                     id.as_str(),
                     &ContinueTask {
                         account_id: Some("b-second".into()),
+                        ..Default::default()
                     },
                 )
                 .await
@@ -750,6 +769,7 @@ fn a_move_to_a_subscription_removed_meanwhile_goes_where_the_pool_chooses() -> T
                     id.as_str(),
                     &ContinueTask {
                         account_id: Some("b-second".into()),
+                        ..Default::default()
                     },
                 )
                 .await
