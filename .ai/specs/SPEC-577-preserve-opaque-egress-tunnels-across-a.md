@@ -120,3 +120,9 @@ without adoption support or a remote peer that times out can end a tunnel.
   `cargo test --locked -p yulius-egress` passed 42 unit and integration tests, including
   opaque forwarding, host-bound injection, response redaction and admission under load.
   Clippy passed for both crates and all their test targets with warnings denied.
+- Independent review of `5ee4cb804` found two failures. A synthetic interrupted read ended
+  both directions before the marker arrived. A pause during write-half shutdown caused a second
+  read past EOF, which returned a connection reset. Both regression tests failed on the reviewed
+  code. The copy now retries interrupted reads and records EOF before polling shutdown. The
+  new tests verify the marker, fatal error propagation, shutdown completion on resume and the
+  peer's complete reply. All 20 relay tests and 42 egress tests passed with the corrections.
