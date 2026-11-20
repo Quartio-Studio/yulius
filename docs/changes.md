@@ -11,6 +11,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   threshold. Once a day each person gets what waits for them, what was parked with the end of its
   last message, and how many tasks still work, under the bell (`/digest`) and in their Telegram
   chat; with a threshold it first parks quiet tasks that ask nobody (never Done or waiting ones).
+- Codex tasks stay under Working while waiting for Yulius. Failed PR checks no longer display a terminal reply prompt (SPEC-552, #1482).
 
 - Claude Code's scheduled wake-ups preserve unsent drafts, achieved goals and open requests for a person, including when the hook carries plain text (SPEC-541, #1225).
 - A Claude run refused after its subscription signs in again now moves or waits while the new

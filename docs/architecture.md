@@ -3704,6 +3704,11 @@ every agent mid-turn: a run that is watched again takes the time back from the f
 on, after a restart as before one. The same holds for a question that took a secret request's
 flag over.
 
+A live `yulius wait` under Codex counts as a wait whether Codex execs it directly or launches
+it through a shell. The process probe excludes waits adopted by the sandbox init. A failed PR
+check has its own action in the task strip. The terminal reply banner is for a person's turn
+or an explicit request ([SPEC-552](../.ai/specs/SPEC-552-on-codex-agent-keeps-calling-me-even-if.md)).
+
 Needs you means a person has to act. An idle agent that stopped reads "Your turn" under Needs you only
 while its work is visibly unfinished: plan steps open, or a goal that Claude Code last recorded as set,
 not met or failed (`goal_unfinished` in the task view). With neither, and nothing asked (a question or

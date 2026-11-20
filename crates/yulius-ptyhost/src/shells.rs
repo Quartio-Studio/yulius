@@ -13,7 +13,8 @@
 //! waits for Yulius (checks, a merge, a message) and builds nothing (SPEC-050 DSK-102), so its
 //! caches may go under disk pressure. Such shells are counted apart ([`ShellCount::waits`]): the
 //! agent goes on by itself when Yulius has news, so its task is not the person's turn (SPEC-085
-//! STT-002).
+//! STT-002). Codex can launch the wait directly or under an ordinary shell. Its live wait
+//! counts in the same way when it belongs to the agent.
 //!
 //! In the sandbox the probe's root is `bwrap`, and the agent runs in a PID namespace whose init
 //! adopts orphans. A foreground command's backgrounded subshell (`(server &)`) keeps the wrapper's
@@ -105,7 +106,7 @@ pub fn is_ns_init(status: &str) -> bool {
 pub struct ShellCount {
     /// Background shells that run something ([`count_shells`]).
     pub shells: u32,
-    /// Background shells whose only processes are `yulius wait` (DSK-102): the agent waits for
+    /// Agent-owned `yulius wait` processes or wrapper shells that only wait (DSK-102): the agent waits for
     /// Yulius and is woken when the wait ends.
     pub waits: u32,
 }
@@ -122,6 +123,13 @@ pub fn count_shells(table: &[ProcessEntry], root: u32) -> u32 {
 /// [`count_shells`], with the shells that only run `yulius wait` counted apart.
 #[must_use]
 pub fn count_background(table: &[ProcessEntry], root: u32) -> ShellCount {
+    // Per wrapper, keep its ownership and whether it runs a wait, another command, or both.
+    #[derive(Default)]
+    struct Wrapper {
+        owned: bool,
+        waits: bool,
+        other: bool,
+    }
     let mut children: HashMap<u32, Vec<&ProcessEntry>> = HashMap::new();
     let mut inits = HashSet::new();
     for entry in table {
@@ -132,48 +140,73 @@ pub fn count_background(table: &[ProcessEntry], root: u32) -> ShellCount {
             inits.insert(entry.pid);
         }
     }
-    // Per counted shell: whether a `yulius wait` and whether anything else runs below it.
-    let mut shells: HashMap<u32, (bool, bool)> = HashMap::new();
+    let mut shells: HashMap<u32, Wrapper> = HashMap::new();
     let mut seen = HashSet::from([root]);
-    let mut queue = VecDeque::from([(root, None::<u32>, 0usize)]);
-    while let Some((pid, shell, depth)) = queue.pop_front() {
+    let mut unwrapped_waits = 0;
+    let mut queue = VecDeque::from([(root, None::<u32>, 0usize, true)]);
+    while let Some((pid, shell, depth, owned)) = queue.pop_front() {
         if depth >= MAX_DEPTH {
             continue;
         }
-        for child in children.get(&pid).into_iter().flatten() {
+        let kids = children.get(&pid).map_or(&[][..], Vec::as_slice);
+        let sandbox_init = depth == 1 && inits.contains(&pid);
+        let agent = if sandbox_init {
+            namespace_agent(kids)
+        } else {
+            None
+        };
+        for child in kids {
             if seen.len() > MAX_PROCESSES || !seen.insert(child.pid) {
                 continue;
             }
+            if agent.is_some_and(|agent| agent != child.pid) {
+                continue; // The sandbox adopted this entire subtree.
+            }
+            let owned = owned && (!sandbox_init || agent.is_some());
             let shell = match shell {
                 Some(top) => {
                     if !child.shell
-                        && let Some((waits, other)) = shells.get_mut(&top)
+                        && let Some(wrapper) = shells.get_mut(&top)
                     {
-                        *waits |= child.waits;
-                        *other |= !child.waits;
+                        wrapper.waits |= child.waits;
+                        wrapper.other |= !child.waits;
                     }
                     Some(top)
                 }
                 // An orphan the sandbox's init adopted: not the agent's (DMD-001).
                 None if child.shell && inits.contains(&pid) => continue,
                 None if child.shell => {
-                    shells.insert(child.pid, (false, false));
+                    shells.insert(
+                        child.pid,
+                        Wrapper {
+                            owned,
+                            ..Wrapper::default()
+                        },
+                    );
                     Some(child.pid)
                 }
-                None => None,
+                None => {
+                    if owned && child.waits {
+                        unwrapped_waits += 1;
+                    }
+                    None
+                }
             };
-            queue.push_back((child.pid, shell, depth + 1));
+            queue.push_back((child.pid, shell, depth + 1, owned));
         }
     }
-    let waits = shells
-        .values()
-        .filter(|(waits, other)| *waits && !*other)
-        .count();
-    let count = |n: usize| u32::try_from(n).unwrap_or(u32::MAX);
-    ShellCount {
-        shells: count(shells.len().saturating_sub(waits)),
-        waits: count(waits),
+    let mut count = ShellCount {
+        shells: 0,
+        waits: unwrapped_waits,
+    };
+    for wrapper in shells.into_values() {
+        if wrapper.waits && !wrapper.other {
+            count.waits += u32::from(wrapper.owned);
+        } else {
+            count.shells += 1;
+        }
     }
+    count
 }
 
 /// Background shells left under the agent process `root`; `None` when the process table cannot
@@ -201,6 +234,17 @@ pub struct Stray {
     pub processes: Vec<(u32, u64)>,
 }
 
+/// The sandbox init's first child is the agent. A partial snapshot cannot establish ownership.
+fn namespace_agent(adopted: &[&ProcessEntry]) -> Option<u32> {
+    if adopted.iter().any(|entry| entry.started == 0) {
+        return None;
+    }
+    adopted
+        .iter()
+        .min_by_key(|entry| (entry.started, entry.pid))
+        .map(|entry| entry.pid)
+}
+
 /// The strays below `root` in `table` (LAP-003): the children of the run's sandbox init (a
 /// namespace init directly below `root`, the outer `bwrap`) other than the agent, its
 /// earliest-started child, each with its subtree. A namespace deeper down (one a command of the
@@ -220,13 +264,10 @@ pub fn strays(table: &[ProcessEntry], root: u32) -> Vec<Stray> {
     let mut listed = 0usize;
     for init in kids(root).iter().filter(|e| e.ns_init) {
         let adopted = kids(init.pid);
-        if adopted.iter().any(|e| e.started == 0) {
-            continue;
-        }
-        let Some(agent) = adopted.iter().min_by_key(|e| (e.started, e.pid)) else {
+        let Some(agent) = namespace_agent(adopted) else {
             continue;
         };
-        for stray in adopted.iter().filter(|e| e.pid != agent.pid) {
+        for stray in adopted.iter().filter(|e| e.pid != agent) {
             let mut processes = Vec::new();
             let mut below = VecDeque::from([(*stray, 0usize)]);
             let mut inside = HashSet::from([stray.pid]);
@@ -591,6 +632,65 @@ mod tests {
                 waits: 1
             }
         );
+    }
+
+    #[test]
+    fn a_codex_wait_belongs_to_the_agent_until_it_exits() {
+        let table = [
+            ns_init(11, 10),
+            entry(12, 11, false), // Codex
+            entry(13, 12, false), // its ordinary shell
+            entry(14, 11, false), // a process adopted by the sandbox
+            wait(15, 14),
+            wait(16, 11),        // an adopted wait itself
+            entry(22, 14, true), // a wrapped wait underneath the adopted process
+            wait(23, 22),
+            wait(21, 20), // another task
+            wait(17, 13),
+            wait(18, 12), // the shell exec'd the wait
+        ];
+        assert_eq!(
+            count_background(&table, 10),
+            ShellCount {
+                shells: 0,
+                waits: 2
+            }
+        );
+        assert_eq!(count_background(&table[..9], 10), ShellCount::default());
+        assert_eq!(count_background(&table, 12).waits, 2, "unsandboxed agent");
+
+        let partial = [
+            ns_init(11, 10),
+            ProcessEntry {
+                started: 0,
+                ..entry(12, 11, false)
+            },
+            wait(17, 12),
+            entry(14, 11, false), // adopted, but its sibling's start is unknown
+            entry(22, 14, true),
+            wait(23, 22),
+        ];
+        assert_eq!(
+            count_background(&partial, 10),
+            ShellCount::default(),
+            "unknown ownership"
+        );
+        let mut building = partial;
+        building[5].waits = false;
+        assert_eq!(
+            count_background(&building, 10),
+            ShellCount {
+                shells: 1,
+                waits: 0
+            },
+            "ordinary wrapper accounting"
+        );
+    }
+
+    #[test]
+    fn an_unsandboxed_command_can_own_more_than_one_wait() {
+        let table = [entry(13, 12, false), wait(17, 13), wait(18, 13)];
+        assert_eq!(count_background(&table, 12).waits, 2);
     }
 
     #[test]
