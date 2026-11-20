@@ -187,6 +187,9 @@ pub enum Point {
     /// A subscription Claude refused for good is about to be marked as needing a new sign-in
     /// (#1211): nothing is read or written yet. The path is the account id.
     AccessLostRecord,
+    /// An idle Cockpit finished looking for stray processes, including a probe with no usable
+    /// answer. The path is its transcript.
+    CockpitStraysProbed,
     /// A turn's end (SPEC-461) looked at the background work of a session on an older Claude
     /// Code, whatever it found; who typed and what pauses it are not read again yet. The path is
     /// the task id.
