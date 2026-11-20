@@ -71,7 +71,7 @@ fn check_username(injection: &Injection, username: Option<&str>, set: bool) -> A
 
 /// Validated metadata of an agent secret.
 pub(super) struct Meta {
-    pub(super) name: String,
+    pub(super) name: SecretName,
     pub(super) hosts: Vec<String>,
     pub(super) injection: Injection,
 }
@@ -120,7 +120,7 @@ fn meta(name: &str, hosts: &[String], kind: Option<&str>, header: Option<&str>) 
     let hosts = parse_hosts(hosts).map_err(invalid)?;
     let injection = Injection::parse(kind.unwrap_or("none"), header).map_err(invalid)?;
     Ok(Meta {
-        name: name.as_str().to_owned(),
+        name,
         hosts: hosts.iter().map(ToString::to_string).collect(),
         injection,
     })
@@ -233,6 +233,7 @@ impl App {
             last_used_at: record.last_used_at.map(rfc3339),
             rotate_due: self.now().millis_since(record.value_updated_at) >= ROTATE_AFTER_MS,
             flattened,
+            interpreter_name: manage && name.is_interpreter_setting(),
             can_manage: manage,
             copy_request: here.copy_request,
         })
@@ -478,6 +479,7 @@ impl App {
         &self,
         new: &NewAgentSecret<'_>,
     ) -> AppResult<VaultSecretRecord> {
+        new.meta.name.check_assignment().map_err(invalid)?;
         let (sandbox_id, owner_id) = match &new.scope {
             AgentScope::Project(s) => (Some(s.clone()), None),
             AgentScope::Global => (None, None),
@@ -490,7 +492,7 @@ impl App {
             section: VaultSection::Agent,
             sandbox_id,
             owner_id,
-            name: new.meta.name.clone(),
+            name: new.meta.name.to_string(),
             description: new.description.clone(),
             hosts: new.meta.hosts.clone(),
             injection: new.meta.injection.kind().into(),
@@ -651,6 +653,9 @@ impl App {
                 .as_deref()
                 .or(record.header_name.as_deref()),
         )?;
+        if meta.name.as_str() != record.name {
+            meta.name.check_assignment().map_err(invalid)?;
+        }
         // A host it was not bound to, or agents binding it from now on: its value may go
         // somewhere new (ADR-0317).
         let bound: Vec<HostPattern> = record
@@ -698,7 +703,7 @@ impl App {
             payload.username.as_deref(),
             patch.username.is_some(),
         )?;
-        record.name = meta.name;
+        record.name = meta.name.to_string();
         record.hosts = meta.hosts;
         record.injection = meta.injection.kind().into();
         record.header_name = match &meta.injection {

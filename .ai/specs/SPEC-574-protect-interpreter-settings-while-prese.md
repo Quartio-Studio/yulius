@@ -22,7 +22,7 @@ Issue #638, tracked under task #541, identified exact interpreter names missing 
 ## Plan
 
 - [x] Specify the creation policy and GitHub override contract
-- [ ] Prove interpreter-name refusals at each creation boundary
+- [x] Prove interpreter-name refusals at each creation boundary
 - [ ] Preserve existing secrets and report them to their managers
 - [ ] Obtain independent approval and verify the dev delivery
 

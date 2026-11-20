@@ -2609,6 +2609,8 @@ LF and CR as a private-use character that the form turns back on save, so the va
 value as pasted ([SPEC-299](../.ai/specs/SPEC-299-team-secret-value-field-keeps-pasted-lin.md),
 [decision 0214](decisions/0214-a-team-secret-value-carries-pasted-line-breaks-in-its-password-field.md)).
 
+New agent-secret names and renames reserve five interpreter settings. Stored names still resolve in run environments, proxy bindings and CI grants. Their managers see a rename notice in the existing vault metadata view. [ADR-0408](decisions/0408-interpreter-settings-are-reserved-for-new-agent-secret-names.md)
+
 Agents create agent secrets from a file with `secret_create_from_file` (`vault/create.rs`, for
 a task's agent or the Superagent as a `SecretUser`). The tool takes a path relative to the work
 folder or `~/` for the caller's home (the sandbox home for a task, its person's home for the
