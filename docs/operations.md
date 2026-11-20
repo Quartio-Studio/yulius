@@ -1352,8 +1352,8 @@ Vidoc off, it also says `Vidoc scans are switched off for the instance`.
    card says "Claude did not say when it resets"; Refresh then gets the reset from Claude's
    refusal, the background round's next reading of the subscription ends the limit (a
    session's own reading does not), and a task with nowhere else to go is tried once more. Refused again, it waits for
-   another subscription's reset when one is known, off the subscription that refused it;
-   otherwise it is under Needs you (audit `task.limit_without_end`) until a person runs it
+   another subscription's reset when one is known. Refresh can also release that wait if
+   the model runs on the subscription that refused it. With no known reset, it is under Needs you (audit `task.limit_without_end`) until a person runs it
    elsewhere or sends it a message, until its agent works again because the limit is over, or
    until Yulius takes it on after all (a restart of Yulius retries it once; audit
    `task.needs_you.resolved` says which; SPEC-464).

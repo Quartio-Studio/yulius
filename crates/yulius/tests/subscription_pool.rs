@@ -620,6 +620,7 @@ async fn the_capacity_view_reports_burn_forecast_and_recommendation() -> TestRes
             task_id: TaskId::parse("t1")?,
             kind: PauseKind::Turn,
             account_id: Some(a.clone()),
+            during_turn: false,
             continuation: None,
             started_at: at(-10),
             ended_at: None,
@@ -1172,11 +1173,20 @@ async fn a_prompt_typed_into_a_held_turn_takes_the_task_out_of_the_pause() -> Te
 
 #[tokio::test]
 async fn the_preceding_turns_stop_preserves_a_queued_prompts_pause() -> TestResult {
+    queued_prompt_stop(TaskMode::Prompt, 200).await
+}
+
+#[tokio::test]
+async fn a_goal_continuation_stays_held_with_its_queued_prompt() -> TestResult {
+    queued_prompt_stop(TaskMode::Goal, 202).await
+}
+
+async fn queued_prompt_stop(mode: TaskMode, stop_status: u16) -> TestResult {
     let h = harness()?;
     seed(&h).await?;
     let t0 = now(&h);
     let only = add_account(&h, "acc-only", None).await?;
-    let task = running_task(&h, TaskMode::Prompt, &only).await?;
+    let task = running_task(&h, mode, &only).await?;
     assert_eq!(
         hook(&h.internal, "UserPromptSubmit", json!({"prompt": "first"}))
             .await?
@@ -1208,7 +1218,7 @@ async fn the_preceding_turns_stop_preserves_a_queued_prompts_pause() -> TestResu
         .open_pause(&task)
         .await?
         .ok_or("second prompt was not held")?;
-    assert_eq!(hook(&h.internal, "Stop", json!({})).await?.0, 200);
+    assert_eq!(hook(&h.internal, "Stop", json!({})).await?.0, stop_status);
     let still_held = h
         .store
         .open_pause(&task)

@@ -1285,6 +1285,71 @@ pub(crate) async fn first_turn_transcript(
     Ok(transcript.ok_or("transcript")?)
 }
 
+/// An interruption of the running turn leaves its queued prompt held. A transcript prompt
+/// after that pause shows the CLI ran the held prompt and ends the hold.
+#[test]
+fn a_queued_prompts_own_record_overtakes_its_hold_after_an_interrupt() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built")?;
+    let (_dir, data) = temp()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let agent = FakeAgentOptions {
+            transcript: true,
+            ..FakeAgentOptions::default()
+        };
+        let app = build_with(&data, &fake, Arc::new(ScriptedUsage::default()), agent)?;
+        let (id, _user, transcript) = first_turn(&app, &data, Some("claude-opus-5-5")).await?;
+        let run = app.runtime(&id);
+        append_lines(&transcript, "running", &[Line::Prompt, Line::Work])?;
+        let round = run.transcript_rounds();
+        wait_for("the preceding turn", Duration::from_secs(30), || async {
+            run.transcript_rounds() >= round + 2
+        })
+        .await?;
+        app.pause_task(
+            &id,
+            PauseKind::Prompt,
+            Some(AccountId::parse("a-first")?),
+            Some("go on".into()),
+        )
+        .await?;
+        let pause = app
+            .deps
+            .store
+            .open_pause(&id)
+            .await?
+            .ok_or("no prompt hold")?;
+        assert!(pause.during_turn);
+        wait_for(
+            "a later transcript timestamp",
+            Duration::from_secs(2),
+            || async { app.now() > pause.started_at },
+        )
+        .await?;
+        append_lines(&transcript, "interrupt", &[Line::Interrupt])?;
+        let round = run.transcript_rounds();
+        wait_for(
+            "the preceding interruption",
+            Duration::from_secs(30),
+            || async { run.transcript_rounds() >= round + 2 },
+        )
+        .await?;
+        assert_eq!(
+            app.deps.store.open_pause(&id).await?.map(|p| p.id),
+            Some(pause.id)
+        );
+        append_lines(&transcript, "queued", &[Line::Prompt])?;
+        wait_for("the queued prompt's turn", Duration::from_secs(30), || {
+            has_status(&app, &id, TaskStatus::Running)
+        })
+        .await?;
+        assert!(app.deps.store.open_pause(&id).await?.is_none());
+        stop(&app, &id).await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
 /// A default task switched to Fable meets its credit limit, with Opus also full here.
 pub(crate) async fn append_switched_fable_limit(app: &App, data: &Path) -> TestResult {
     let transcript = first_turn_transcript(data).await?;
@@ -2341,6 +2406,19 @@ fn repeated_refusal(refresh_first: bool) -> TestResult {
             assert!(refresh(&app, &user, "a-first").await.is_err());
             let _ = app.resume_round().await;
             assert!(has_status(&app, &id, TaskStatus::WaitingCapacity).await);
+            probe.answer(
+                "a-first",
+                ModelAnswer {
+                    refused: Some(yulius_domain::usage::ReportedLimit {
+                        scope: yulius_domain::usage::LimitScope::Model(None),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                },
+            );
+            refresh(&app, &user, "a-first").await?;
+            let _ = app.resume_round().await;
+            assert!(has_status(&app, &id, TaskStatus::WaitingCapacity).await);
             probe.answer("a-first", ModelAnswer::default());
             refresh(&app, &user, "a-first").await?;
             let _ = app.resume_round().await;
@@ -2418,6 +2496,8 @@ fn session_transcript(data: &Path, marker: &str) -> Option<PathBuf> {
 enum Line {
     /// A prompt someone typed.
     Prompt,
+    /// The person interrupted the running turn.
+    Interrupt,
     /// The refusal of a model for its usage credits, as Claude Code 2.1.311 writes it (task
     /// #438's record of 2026-11-11): no window, no reset.
     CreditsRefusal,
@@ -2466,6 +2546,10 @@ fn append_lines(transcript: &Path, tag: &str, lines: &[Line]) -> TestResult {
             Line::Prompt => (
                 "user",
                 json!({"message": {"role": "user", "content": "go on"}}),
+            ),
+            Line::Interrupt => (
+                "user",
+                json!({"message": {"role": "user", "content": "[Request interrupted by user]"}}),
             ),
             Line::CreditsRefusal => (
                 "assistant",

@@ -1023,6 +1023,9 @@ impl TranscriptWatch for Watch {
         let mut out: Vec<Observation> = Vec::new();
         match self.subagents.poll_sides() {
             Ok(side) => {
+                // A sibling's answer supplies the workflow's default model even if its file
+                // sorts after a first-request refusal in this same bounded poll.
+                let mut refusals = Vec::new();
                 for side in side {
                     // A subagent of the thread: `agent-<id>.jsonl` in the subagents folder.
                     let subagent = side
@@ -1036,9 +1039,16 @@ impl TranscriptWatch for Watch {
                             out.extend(self.subagent_fact(id, &observed));
                         }
                         if let Some(agent) = &side.agent {
-                            self.limits.side(agent, observed);
+                            if matches!(observed, Observed::LimitReached { .. }) {
+                                refusals.push((agent.clone(), observed));
+                            } else {
+                                self.limits.side(agent, observed);
+                            }
                         }
                     }
+                }
+                for (agent, refusal) in refusals {
+                    self.limits.side(&agent, refusal);
                 }
             }
             Err(err) => tracing::debug!(error = %err, "a sub-agent transcript could not be read"),

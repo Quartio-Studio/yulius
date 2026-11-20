@@ -6130,9 +6130,39 @@ fn a_notice_is_answered_by_the_agents_work_after_a_restart() -> TestResult {
 /// while Yulius watches (STA-003).
 #[test]
 fn a_workers_notice_is_not_answered_by_the_agents_work_after_a_restart() -> TestResult {
+    worker_notice_after_restart(false)
+}
+
+#[test]
+fn a_workers_second_ask_stays_unanswered_after_a_restart() -> TestResult {
+    worker_notice_after_restart(true)
+}
+
+fn worker_notice_after_restart(second: bool) -> TestResult {
     a_restart_after(
         noticing_agent(),
-        async |app, data| task_flagged_by_a_notice_of(app, data, "worker_permission_prompt").await,
+        async |app, data| {
+            if !second {
+                return task_flagged_by_a_notice_of(app, data, "worker_permission_prompt").await;
+            }
+            let id = task_flagged_by_a_notice(app, data).await?;
+            app.send_input(&id, b"/notify worker_permission_prompt\r")
+                .await?;
+            wait_for(
+                "the second hook's answer",
+                Duration::from_secs(30),
+                || async {
+                    app.runtime(&id)
+                        .hub
+                        .screen_text()
+                        .matches("NOTIFIED")
+                        .count()
+                        >= 2
+                },
+            )
+            .await?;
+            Ok(id)
+        },
         async |_| Ok(()),
         async |app, id| {
             still_flagged_after_the_replay(app, id).await?;

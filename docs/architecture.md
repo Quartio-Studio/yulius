@@ -695,6 +695,9 @@ switch of a task left at its limit by a refused automatic switch also resumes pa
 ([SPEC-072](../.ai/specs/SPEC-072-fix-276-277-278-usage-limit-resume-respe.md),
 [decision 0058](decisions/0058-the-clis-own-continuation-ends-a-limit-pause.md)).
 
+A capacity pause records whether a Claude prompt was held during a preceding turn. The
+preceding Stop can settle while the prompt waits for capacity. [Decision 0394](decisions/0394-a-held-prompt-remembers-the-turn-running-at-its-enter.md)
+
 ### A limit met while a dynamic workflow runs
 
 Claude Code's Workflow tool ("ultracode") runs a script's agents inside the session's process.
@@ -919,8 +922,11 @@ hold until its reset even after a person bought credits. The Subscriptions page'
 one request of one output token for each limit stored and in effect, with the model that limit
 binds (`UsageProbe::model_answer`): a model of each family whose own weekly window is used up, and
 the default model for a limit of the whole subscription (`AccountUsage::families_at_a_limit`). A
-window the reading of that call itself carried is not asked about: the reading is Claude's word
-on it. The answer says whether a usage reading came of it (`usage_read`).
+window the reading of that call itself carried needs no probe. If a waiting task
+remembers two refusals of a model on this subscription, Refresh asks that model even after a
+reading cleared its stored limit. A successful answer clears this subscription and model from
+the waiting tasks' exclusions and wakes the capacity loop. The answer also says whether a usage
+reading came of it (`usage_read`).
 
 The response's status is the answer, as Claude Code reads its own responses. A response that ran
 ends the limit, whatever its headers say (one that ran on bought credits still carries

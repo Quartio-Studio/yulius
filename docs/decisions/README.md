@@ -394,3 +394,4 @@ number differs from the file name, an unlisted record, and entries out of number
 - [0389](0389-a-reattach-finishes-its-hand-over-before-a-limit-moves-the-run.md) gives a reattached run's hand-over priority over a move requested by transcript replay (SPEC-547).
 - [0390](0390-linux-host-exit-is-observed-for-the-whole-process.md) Linux host exit is observed for the whole process.
 - [0393](0393-sandbox-port-ranges-are-reused-after-retirement.md): Sandbox port ranges are reused after retirement.
+- [0394](0394-a-held-prompt-remembers-the-turn-running-at-its-enter.md) records the preceding turn with a capacity hold at prompt submission.

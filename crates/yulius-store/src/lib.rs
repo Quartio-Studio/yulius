@@ -202,6 +202,7 @@ const MIGRATIONS: &[&str] = &[
     // Schema version 72 (SPEC-535); 0071 is the reserved file number.
     include_str!("migrations/0071_reindex_session_passages.sql"),
     REUSABLE_SANDBOX_PORTS,
+    include_str!("migrations/0075_prompt_held_during_turn.sql"),
 ];
 
 type Job = Box<dyn FnOnce(&mut Connection) + Send + 'static>;
@@ -501,6 +502,10 @@ mod tests {
                 include_str!("migrations/0071_reindex_session_passages.sql"),
             ),
             (73, REUSABLE_SANDBOX_PORTS),
+            (
+                74,
+                include_str!("migrations/0075_prompt_held_during_turn.sql"),
+            ),
         ];
         for (version, sql) in pinned {
             assert_eq!(
@@ -509,7 +514,7 @@ mod tests {
                 "schema version {version}"
             );
         }
-        assert_eq!(MIGRATIONS.len(), 73, "a new migration is pinned here too");
+        assert_eq!(MIGRATIONS.len(), 74, "a new migration is pinned here too");
     }
 
     #[test]

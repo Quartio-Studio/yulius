@@ -118,15 +118,24 @@ impl ProviderUsage {
         ) {
             return Err(failure);
         }
-        let bytes = response.bytes().await.map_err(|e| {
-            tracing::debug!(error = %e.without_url(), "reading the usage answer failed");
-            UsageFailure::new(TRY_AGAIN)
-        })?;
-        if bytes.len() > MAX_BODY {
-            return Err(UsageFailure::new(TRY_AGAIN));
-        }
+        let bytes = bounded_body(response).await?;
         serde_json::from_slice(&bytes).map_err(|_| UsageFailure::new(TRY_AGAIN))
     }
+}
+
+/// Keep at most the usage probe's byte budget, including for chunked responses.
+async fn bounded_body(mut response: reqwest::Response) -> Result<Vec<u8>, UsageFailure> {
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response.chunk().await.map_err(|e| {
+        tracing::debug!(error = %e.without_url(), "reading the usage answer failed");
+        UsageFailure::new(TRY_AGAIN)
+    })? {
+        if chunk.len() > MAX_BODY - bytes.len() {
+            return Err(UsageFailure::new(TRY_AGAIN));
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    Ok(bytes)
 }
 
 /// The failure an HTTP status means (`None` for success): 403 is a sign-in without the
@@ -560,16 +569,11 @@ impl UsageProbe for ProviderUsage {
                 let headers = response.headers().clone();
                 // Only a refusal's body is read: it says whether the model needs usage credits.
                 let body = if status == 429 {
-                    response.bytes().await.unwrap_or_default()
+                    bounded_body(response).await.unwrap_or_default()
                 } else {
-                    Default::default()
+                    Vec::new()
                 };
-                let body = if body.len() > MAX_BODY {
-                    &[][..]
-                } else {
-                    &body[..]
-                };
-                parse_model_answer(status, &headers, body).inspect_err(|failure| {
+                parse_model_answer(status, &headers, &body).inspect_err(|failure| {
                     tracing::debug!(
                         status,
                         kind = ?failure.kind,
@@ -674,8 +678,7 @@ mod tests {
         let request = probe.http.get(&base);
         let read = tokio::spawn(async move { probe.get_json(request).await });
         let (mut socket, _) = listener.accept().await?;
-        let mut buffer = [0; 4096];
-        socket.read(&mut buffer).await?;
+        socket.read_u8().await?;
         socket
             .write_all(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n")
             .await?;
@@ -704,8 +707,7 @@ mod tests {
         let request = probe.http.get(&base);
         let read = tokio::spawn(async move { probe.get_json(request).await });
         let (mut socket, _) = listener.accept().await?;
-        let mut buffer = [0; 4096];
-        socket.read(&mut buffer).await?;
+        socket.read_u8().await?;
         socket
             .write_all(format!("HTTP/1.1 200 OK\r\nContent-Length: {MAX_BODY}\r\n\r\n").as_bytes())
             .await?;
