@@ -996,6 +996,16 @@ impl RepoReadError {
             Self::Unreadable(format!("`{relative}` cannot be read"))
         }
     }
+
+    fn from_open(relative: &str, err: AppError) -> Self {
+        match err {
+            AppError::NotFound => Self::Missing(relative.into()),
+            AppError::Forbidden(message) if message == crate::files::OUTSIDE => {
+                Self::Unreadable(format!("`{relative}` points outside the task worktree"))
+            }
+            _ => Self::Unreadable(format!("`{relative}` cannot be read")),
+        }
+    }
 }
 
 /// Reads a whole spec through an in-worktree handle, refusing links and partial documents.
@@ -1055,16 +1065,8 @@ async fn read_checked_file(
     // A spec is opened at its original leaf, so a link swapped in there cannot be followed.
     let path = if spec { path } else { resolved };
     crate::race::reached(crate::race::Point::RepoFileRead, &path);
-    let opened =
-        crate::files::open_inside(&root, &path, nix::fcntl::OFlag::O_RDONLY).map_err(|err| {
-            match err {
-                AppError::NotFound => RepoReadError::Missing(relative.into()),
-                AppError::Forbidden(message) if message == crate::files::OUTSIDE => {
-                    Unreadable(format!("`{relative}` points outside the task worktree"))
-                }
-                _ => Unreadable(format!("`{relative}` cannot be read")),
-            }
-        })?;
+    let opened = crate::files::open_inside(&root, &path, nix::fcntl::OFlag::O_RDONLY)
+        .map_err(|err| RepoReadError::from_open(relative, err))?;
     let file = tokio::fs::File::from_std(std::fs::File::from(opened));
     let meta = file
         .metadata()
@@ -5399,6 +5401,22 @@ mod tests {
     type TestResult = Result<(), Box<dyn std::error::Error>>;
 
     /// SPEC-069 BPL-006: the titles Yulius generates for task pull requests pass the policy.
+    #[test]
+    fn a_spec_open_reports_missing_unreadable_and_outside_paths() {
+        let missing = RepoReadError::from_open("spec.md", AppError::NotFound);
+        assert!(matches!(missing, RepoReadError::Missing(path) if path == "spec.md"));
+        let outside = AppError::Forbidden(crate::files::OUTSIDE.into());
+        let denied = crate::files::io_error(&std::io::ErrorKind::PermissionDenied.into());
+        assert_eq!(
+            RepoReadError::from_open("spec.md", outside).to_string(),
+            "`spec.md` points outside the task worktree"
+        );
+        assert_eq!(
+            RepoReadError::from_open("spec.md", denied).to_string(),
+            "`spec.md` cannot be read"
+        );
+    }
+
     #[tokio::test]
     async fn a_missing_spec_and_an_unreadable_path_have_distinct_errors() -> TestResult {
         let repo = tempfile::tempdir()?;
