@@ -4674,10 +4674,18 @@ impl App {
         task_id: &TaskId,
         rule: crate::parking::ParkRule,
     ) -> AppResult<bool> {
-        // The list's counters are a probe's last answer: before a session ends, its background
-        // work is looked at now, and a look that gives no answer counts as work running, as
-        // for a move (SPEC-483 SWT-001, SPEC-461 CCM-013). Looked at before the launch lock, so
-        // a slow look holds no start: a turn begun since is seen under the lock.
+        let Some(candidate) = self.deps.store.task(task_id).await? else {
+            return Ok(false);
+        };
+        let delivery = self.deps.store.delivery(task_id).await?;
+        // Neither a slow PR read nor the fresh process probe should hold up another launch.
+        // Probe last so background work started during the PR read keeps its session.
+        let Some(prs) = self
+            .verify_parking_prs(&candidate, delivery.as_ref())
+            .await?
+        else {
+            return Ok(false);
+        };
         if self.background_or_wait_now(task_id).await != Some(false) {
             return Ok(false);
         }
@@ -4685,6 +4693,9 @@ impl App {
         let Some(task) = self.deps.store.task(task_id).await? else {
             return Ok(false);
         };
+        if task.branch != candidate.branch || task.worktree_path != candidate.worktree_path {
+            return Ok(false);
+        }
         let Some(quiet_ms) = self.parkable_now(&task, rule).await else {
             return Ok(false);
         };
@@ -4705,6 +4716,9 @@ impl App {
             crate::race::Point::ParkPrepared,
             Path::new(task_id.as_str()),
         );
+        if self.deps.store.delivery(task_id).await? != delivery {
+            return Ok(false);
+        }
         let runtime = self.runtime(task_id);
         // Step edits, spec reads and native goal updates share this lock. A writer already
         // at work keeps the session for this pass. Hold it through the park intent.
@@ -4713,6 +4727,7 @@ impl App {
         };
         if crate::sandboxes::plan_open(&self.deps.store.steps(task_id).await?)
             || self.read_spec_unfinished(task_id).await?
+            || !self.parking_prs_still_current(&task, &prs).await?
             || runtime.goal_unfinished.load(Ordering::SeqCst)
         {
             return Ok(false);

@@ -31,6 +31,14 @@ type Error = Box<dyn std::error::Error>;
 
 /// A hooked app whose idle sessions park at once (`park_after_ms` 1) under a limit of `slots`.
 async fn app(data: &Path, slots: u32, park_after_ms: u64) -> Result<Arc<App>, Error> {
+    Ok(app_with_pulls(data, slots, park_after_ms).await?.0)
+}
+
+async fn app_with_pulls(
+    data: &Path,
+    slots: u32,
+    park_after_ms: u64,
+) -> Result<(Arc<App>, Arc<crate::support::FakeGitHub>), Error> {
     let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
     let agent = FakeAgentOptions {
         answers_first_message: true,
@@ -38,19 +46,81 @@ async fn app(data: &Path, slots: u32, park_after_ms: u64) -> Result<Arc<App>, Er
         resume_prompts: true,
         ..hooked()
     };
-    let (app, _) = start_with(
+    let (app, _, github) = crate::first_message::start_hosted_with_github(
         data,
         &fake,
         agent,
-        0,
-        Arc::new(ScriptedUsage::default()),
+        (
+            0,
+            Arc::new(ScriptedUsage::default()),
+            Arc::new(yulius::wiring::clock::SystemClock),
+        ),
+        None,
         |config| {
             config.max_live_sessions = slots;
             config.park_after_ms = park_after_ms;
         },
     )
     .await?;
-    Ok(app)
+    Ok((app, github))
+}
+
+/// Give the real parking decision a readable open PR at the head the fixture controls.
+async fn open_pull_at(
+    app: &App,
+    github: &crate::support::FakeGitHub,
+    task: &TaskId,
+    number: u64,
+    head: &str,
+) -> TestResult {
+    use yulius_app::ports::github::GhPull;
+    let store = &app.deps.store;
+    store.init_instance("https://yulius.test", "x").await?;
+    let cfg = json!({"app_id":1,"slug":"test","client_id":"test","client_secret":"synthetic","private_key_pem":"synthetic"});
+    store
+        .set_github_app(
+            &app.deps.crypto.seal(&serde_json::to_vec(&cfg)?)?,
+            "acme",
+            "org",
+        )
+        .await?;
+    store.set_installation(Some(7)).await?;
+    let branch = store
+        .task(task)
+        .await?
+        .and_then(|t| t.branch)
+        .ok_or("task branch")?;
+    github
+        .pulls
+        .lock()
+        .map_err(|_| "fixture pull")?
+        .push(GhPull {
+            number,
+            html_url: format!("https://github.test/acme/pool/pull/{number}"),
+            title: "Repair checks".into(),
+            state: "open".into(),
+            merged: false,
+            base: "dev".into(),
+            head: branch,
+            head_sha: head.into(),
+            mergeable: Some(true),
+            behind: false,
+            from_fork: false,
+            merge_commit_sha: None,
+        });
+    Ok(())
+}
+
+fn set_pull_head(github: &crate::support::FakeGitHub, number: u64, head: &str) -> TestResult {
+    github
+        .pulls
+        .lock()
+        .map_err(|_| "fixture pull")?
+        .iter_mut()
+        .find(|p| p.number == number)
+        .ok_or("open fixture pull")?
+        .head_sha = head.into();
+    Ok(())
 }
 
 /// A running task whose agent answered its first message and waits for a person.
@@ -1757,6 +1827,112 @@ fn ordinary_owner_terminal_input_and_continue_prompt_wake_parked_session_with_co
     Ok(())
 }
 
+/// #325: initial pending checks become a durable failure before digest parking.
+#[test]
+fn a_ci_failure_before_digest_parking_reaches_the_idle_author_once() -> TestResult {
+    use yulius_app::ci::CiRunRecord;
+    use yulius_app::delivery::DeliveryRecord;
+    use yulius_app::ports::github::ChecksState;
+    use yulius_app::pr_watch::WatchBounds;
+    use yulius_domain::ci::{CiRef, GateSource, RunState};
+    use yulius_domain::delivery::DeliveryStage;
+    use yulius_domain::time::Timestamp;
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let (app, github) = app_with_pulls(&data, 8, 1).await?;
+        let (id, caller) = answered(&app, &data).await?;
+        let task = app.deps.store.task(&id).await?.ok_or("task")?;
+        let wt = Path::new(task.worktree_path.as_deref().ok_or("worktree")?);
+        let sha = app
+            .deps
+            .git
+            .resolve_commit(wt, "HEAD")
+            .await?
+            .ok_or("head")?;
+        open_pull_at(&app, &github, &id, 1461, &sha).await?;
+        app.deps
+            .store
+            .transition_delivery(
+                &DeliveryStage::None,
+                &DeliveryRecord {
+                    task_id: id.clone(),
+                    stage: DeliveryStage::PrOpen,
+                    pr_number: Some(1461),
+                    updated_at: app.now(),
+                },
+            )
+            .await?;
+        github.set_checks(&sha, ChecksState::Pending);
+        let pending = CiRunRecord {
+            id: "before-digest".into(),
+            sandbox_id: caller.sandbox.clone(),
+            reference: CiRef::PullRequest(1461),
+            sha: sha.clone(),
+            source: GateSource::ProjectConfig,
+            state: RunState::Running,
+            reason: None,
+            requested_by: "yulius".into(),
+            status_for: None,
+            status_note: None,
+            status_attempts: 0,
+            queued_at: Timestamp(10),
+            started_at: Some(Timestamp(11)),
+            ended_at: None,
+        };
+        app.deps.store.insert_ci_run(&pending, &[]).await?;
+        let obsolete = CiRunRecord {
+            id: "obsolete-train".into(),
+            reference: CiRef::Train(vec![1461]),
+            sha: "obsolete-candidate-sha".into(),
+            state: RunState::Failed,
+            queued_at: Timestamp(9),
+            ended_at: Some(Timestamp(15)),
+            ..pending.clone()
+        };
+        app.deps.store.insert_ci_run(&obsolete, &[]).await?;
+        let failed = CiRunRecord {
+            id: "red-before-digest".into(),
+            state: RunState::Failed,
+            queued_at: Timestamp(20),
+            ended_at: Some(Timestamp(22)),
+            ..pending
+        };
+        app.deps.store.insert_ci_run(&failed, &[]).await?;
+        // The remote result still looks green from the previous check.
+        github.set_checks(&sha, ChecksState::Success);
+        ask(&app, &id).await?;
+        past_the_grace(&app, &id).await?;
+        assert_eq!(app.park_idle_sessions_now().await, 0);
+        let bounds = WatchBounds::default();
+        assert!(app.watch_prs(&bounds).await.is_empty());
+        app.deps
+            .store
+            .set_task_needs_you(&id, None, app.now())
+            .await?;
+        assert_eq!(app.send_digests_now(Some(1)).await.parked, 0);
+        let notices = app.watch_prs(&bounds).await;
+        assert_eq!(
+            notices
+                .iter()
+                .filter(|(task, text)| task == &id && text.contains("red-before-digest"))
+                .count(),
+            1,
+            "{notices:?}"
+        );
+        assert!(app.watch_prs(&bounds).await.is_empty());
+        assert!(
+            notices
+                .iter()
+                .all(|(_, text)| !text.contains("obsolete-train"))
+        );
+        assert_eq!(app.deps.store.attempts(&id).await?.len(), 1);
+        Ok::<_, Error>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
 /// SPEC-553 PRK-103: an idle task continues to park safely while CI runs on its open PR, does not
 /// wake while CI is still running or while a human `needs_you` decision is open, and resumes
 /// automatically once in its saved session/worktree when an actionable check result arrives.
@@ -1773,7 +1949,7 @@ fn parked_task_parks_safely_during_ci_and_auto_wakes_on_actionable_check_results
     let (_dir, data) = data_dir()?;
     let rt = runtime()?;
     rt.block_on(async {
-        let app = app(&data, 8, 1).await?;
+        let (app, github) = app_with_pulls(&data, 8, 1).await?;
         let (id, caller) = answered(&app, &data).await?;
         let session_id = app.deps.store.attempts(&id).await?[0]
             .provider_session_id
@@ -1790,11 +1966,19 @@ fn parked_task_parks_safely_during_ci_and_auto_wakes_on_actionable_check_results
             .await?;
 
         // Active CI run on PR #42: safe parking while CI runs is preserved.
+        let task = app.deps.store.task(&id).await?.ok_or("task")?;
+        let wt = Path::new(task.worktree_path.as_deref().ok_or("worktree")?);
+        let initial_head = app
+            .deps
+            .git
+            .resolve_commit(wt, "HEAD")
+            .await?
+            .ok_or("head")?;
         let running_ci = CiRunRecord {
             id: "run-running".into(),
             sandbox_id: caller.sandbox.clone(),
             reference: CiRef::PullRequest(42),
-            sha: "1111111111111111111111111111111111111111".into(),
+            sha: initial_head.clone(),
             source: GateSource::ProjectConfig,
             state: RunState::Running,
             reason: None,
@@ -1806,6 +1990,11 @@ fn parked_task_parks_safely_during_ci_and_auto_wakes_on_actionable_check_results
             started_at: Some(Timestamp(11)),
             ended_at: None,
         };
+        open_pull_at(&app, &github, &id, 42, &running_ci.sha).await?;
+        github.set_checks(
+            &running_ci.sha,
+            yulius_app::ports::github::ChecksState::Pending,
+        );
         let running_job = CiJobRecord {
             id: "job-running".into(),
             run_id: "run-running".into(),
@@ -1831,6 +2020,80 @@ fn parked_task_parks_safely_during_ci_and_auto_wakes_on_actionable_check_results
             .insert_ci_run(&running_ci, &[running_job])
             .await?;
 
+        // The CI run exists, but without a recorded PR the parked watcher cannot deliver it.
+        let external = DeliveryRecord {
+            stage: DeliveryStage::None,
+            pr_number: None,
+            ..open.clone()
+        };
+        assert!(
+            app.deps
+                .store
+                .transition_delivery(&open.stage, &external)
+                .await?
+        );
+        past_the_grace(&app, &id).await?;
+        assert_eq!(
+            app.park_idle_sessions_now().await,
+            0,
+            "external pending checks have no parked watcher"
+        );
+        assert!(
+            app.deps
+                .store
+                .transition_delivery(&external.stage, &open)
+                .await?
+        );
+        // A watch for an older head cannot take responsibility for the current checks.
+        let newer = "4444444444444444444444444444444444444444";
+        set_pull_head(&github, 42, newer)?;
+        github.set_checks(newer, yulius_app::ports::github::ChecksState::Pending);
+        past_the_grace(&app, &id).await?;
+        assert_eq!(
+            app.park_idle_sessions_now().await,
+            0,
+            "the active run is for an older PR head"
+        );
+        // Displaying an achieved goal or a human request does not hand its
+        // unobserved current-head checks to the CI watcher.
+        app.deps
+            .store
+            .transition_task(
+                &id,
+                Some(TaskStatus::Running),
+                TaskStatus::Running,
+                Some(Activity::Done),
+                app.now(),
+            )
+            .await?;
+        past_the_grace(&app, &id).await?;
+        assert_eq!(
+            app.park_idle_sessions_now().await,
+            0,
+            "an achieved goal still owns the unwatched checks"
+        );
+        app.deps
+            .store
+            .transition_task(
+                &id,
+                Some(TaskStatus::Running),
+                TaskStatus::Running,
+                Some(Activity::Waiting),
+                app.now(),
+            )
+            .await?;
+        ask(&app, &id).await?;
+        past_the_grace(&app, &id).await?;
+        assert_eq!(
+            app.park_idle_sessions_now().await,
+            0,
+            "a pending human request does not settle unwatched checks"
+        );
+        app.deps
+            .store
+            .set_task_needs_you(&id, None, app.now())
+            .await?;
+        set_pull_head(&github, 42, &running_ci.sha)?;
         parked(&app, &id).await?;
         let bounds = WatchBounds::default();
         // Still running: `watch_prs` must NOT wake the parked task.
@@ -1851,6 +2114,10 @@ fn parked_task_parks_safely_during_ci_and_auto_wakes_on_actionable_check_results
             ended_at: Some(Timestamp(22)),
             ..running_ci.clone()
         };
+        github.set_checks(
+            &passed_ci.sha,
+            yulius_app::ports::github::ChecksState::Success,
+        );
         let passed_job = CiJobRecord {
             id: "job-passed".into(),
             run_id: "run-passed".into(),
@@ -1930,6 +2197,11 @@ fn parked_task_parks_safely_during_ci_and_auto_wakes_on_actionable_check_results
             ended_at: Some(Timestamp(32)),
             ..running_ci
         };
+        set_pull_head(&github, 42, &failed_ci.sha)?;
+        github.set_checks(
+            &failed_ci.sha,
+            yulius_app::ports::github::ChecksState::Failure,
+        );
         let failed_job = CiJobRecord {
             id: "job-failed".into(),
             run_id: "run-failed".into(),
@@ -2009,6 +2281,16 @@ fn parked_task_parks_safely_during_ci_and_auto_wakes_on_actionable_check_results
             status_of(&app, &id).await.1 == Some(Activity::Waiting)
         })
         .await?;
+        past_the_grace(&app, &id).await?;
+        assert_eq!(
+            app.park_idle_sessions_now().await,
+            0,
+            "the known red head is still unfinished"
+        );
+        // The agent publishes a repair. The old failed-run notice remains delivered.
+        let repaired = initial_head.as_str();
+        set_pull_head(&github, 42, repaired)?;
+        github.set_checks(repaired, yulius_app::ports::github::ChecksState::Success);
         parked(&app, &id).await?;
         // Simulate a server restart on the same data directory (re-reading `pr-notices.json`):
         // the already-delivered `run-failed` must NOT double-wake the parked task.
@@ -2026,10 +2308,9 @@ fn parked_task_parks_safely_during_ci_and_auto_wakes_on_actionable_check_results
 }
 
 /// SPEC-553 PRK-103: an unpublished clean committed fast-forward CI repair above a failing open
-/// PR head defers parking (`open_pr_work_pending`), while a pending human `needs_you` decision
-/// or active (`Running`) CI run allows safe parking.
+/// PR head still needs its session when the task requests a person (SPEC-558 PKR-004).
 #[test]
-fn unpublished_open_pr_ci_repair_defers_parking_unless_needs_you_or_ci_running() -> TestResult {
+fn an_unpublished_ci_repair_keeps_its_session_even_with_a_human_request() -> TestResult {
     use std::process::Command;
     use yulius_app::ci::{CiJobRecord, CiRunRecord};
     use yulius_app::delivery::DeliveryRecord;
@@ -2041,7 +2322,7 @@ fn unpublished_open_pr_ci_repair_defers_parking_unless_needs_you_or_ci_running()
     let (_dir, data) = data_dir()?;
     let rt = runtime()?;
     rt.block_on(async {
-        let app = app(&data, 8, 1).await?;
+        let (app, github) = app_with_pulls(&data, 8, 1).await?;
         let (id, caller) = answered(&app, &data).await?;
         let task = TaskStore::task(app.deps.store.as_ref(), &id)
             .await?
@@ -2068,6 +2349,11 @@ fn unpublished_open_pr_ci_repair_defers_parking_unless_needs_you_or_ci_running()
         let repair_head = git(&["rev-parse", "HEAD"])?;
         assert_ne!(repair_head, failed_head);
 
+        open_pull_at(&app, &github, &id, 99, &failed_head).await?;
+        github.set_checks(
+            &failed_head,
+            yulius_app::ports::github::ChecksState::Failure,
+        );
         let open = DeliveryRecord {
             task_id: id.clone(),
             stage: DeliveryStage::PrOpen,
@@ -2119,8 +2405,7 @@ fn unpublished_open_pr_ci_repair_defers_parking_unless_needs_you_or_ci_running()
             .insert_ci_run(&failed_ci, &[failed_job])
             .await?;
         // Pre-seed `pr-notices.json` at `PR_NOTICES_FILE` (`data/pr-notices.json`) so `pr_news_due`
-        // is false and ONLY `open_pr_work_pending` keeps the session from parking while
-        // `repair_head` is unpublished.
+        // is false while the upstream is red and the repair still needs to be pushed.
         let told_json = json!({
             id.as_str(): {
                 "pr": 99,
@@ -2145,11 +2430,16 @@ fn unpublished_open_pr_ci_repair_defers_parking_unless_needs_you_or_ci_running()
         // safe parking is no longer deferred.
         let branch = task.branch.as_deref().ok_or("branch")?;
         git(&["push", "-q", "origin", branch])?;
+        set_pull_head(&github, 99, &repair_head)?;
+        github.set_checks(
+            &repair_head,
+            yulius_app::ports::github::ChecksState::Success,
+        );
         parked(&app, &id).await?;
         assert_eq!(status_of(&app, &id).await.0, Some(TaskStatus::Parked));
 
-        // Resume, commit a second unpublished repair, and verify an open `needs_you` human
-        // decision still allows safe parking instead of deferring for the repair.
+        // With green upstream checks the newer local commit alone keeps the session live,
+        // including while a human request is pending.
         let owner_ctx = AuthContext {
             user: app.deps.store.user(&caller.user).await?.ok_or("user")?,
             csrf_token: None,
@@ -2174,7 +2464,121 @@ fn unpublished_open_pr_ci_repair_defers_parking_unless_needs_you_or_ci_running()
         std::fs::write(wt.join("repair2.txt"), "second fix\n")?;
         git(&["add", "repair2.txt"])?;
         git(&["commit", "-m", "Second unpublished CI repair"])?;
+        past_the_grace(&app, &id).await?;
+        assert_eq!(
+            app.park_idle_sessions_now().await,
+            0,
+            "the upstream is green but the newer repair is unpublished"
+        );
         ask(&app, &id).await?;
+        past_the_grace(&app, &id).await?;
+        assert_eq!(
+            app.park_idle_sessions_now().await,
+            0,
+            "a human request does not publish the outstanding repair"
+        );
+        // Re-running CI on the *published* head cannot hand the newer local commit to the watcher.
+        for (offset, state) in [(1, RunState::Running), (2, RunState::Passed)] {
+            let rerun = CiRunRecord {
+                id: format!("repeat-{offset}"),
+                sha: repair_head.clone(),
+                state,
+                queued_at: Timestamp(20 + offset),
+                started_at: Some(Timestamp(20 + offset)),
+                ended_at: (state == RunState::Passed).then_some(Timestamp(23)),
+                ..failed_ci.clone()
+            };
+            app.deps.store.insert_ci_run(&rerun, &[]).await?;
+            assert_eq!(
+                app.park_idle_sessions_now().await,
+                0,
+                "a rerun on an older published commit cannot deliver the new one: {state:?}"
+            );
+        }
+        let other = data.join("independent-clone");
+        let other_path = other.to_str().ok_or("clone path")?;
+        git(&[
+            "clone",
+            "-q",
+            "-b",
+            branch,
+            &git(&["remote", "get-url", "origin"])?,
+            other_path,
+        ])?;
+        git(&[
+            "-C",
+            other_path,
+            "commit",
+            "--allow-empty",
+            "-m",
+            "Parallel upstream update",
+        ])?;
+        git(&["-C", other_path, "push", "-q", "origin", branch])?;
+        let parallel = git(&["-C", other_path, "rev-parse", "HEAD"])?;
+        assert!(git(&["cat-file", "-e", &parallel]).is_err());
+        set_pull_head(&github, 99, &parallel)?;
+        github.set_checks(&parallel, yulius_app::ports::github::ChecksState::Success);
+        assert_eq!(
+            app.park_idle_sessions_now().await,
+            0,
+            "the external commit cannot prove publication"
+        );
+        git(&["fetch", "-q", "origin", branch])?;
+        assert_eq!(
+            app.park_idle_sessions_now().await,
+            0,
+            "the fetched head lacks the repair"
+        );
+        git(&["merge", "--no-edit", &parallel])?;
+        git(&["push", "-q", "origin", branch])?;
+        let last = git(&["rev-parse", "HEAD"])?;
+        set_pull_head(&github, 99, &last)?;
+        github.set_checks(&last, yulius_app::ports::github::ChecksState::Success);
+        // The upstream may advance again. It now contains the repair, so the older checkout can park.
+        let tree = git(&["rev-parse", "HEAD^{tree}"])?;
+        let upstream = git(&[
+            "commit-tree",
+            &tree,
+            "-p",
+            &last,
+            "-m",
+            "Upstream after publication",
+        ])?;
+        git(&[
+            "push",
+            "-q",
+            "origin",
+            &format!("{upstream}:refs/heads/{branch}"),
+        ])?;
+        set_pull_head(&github, 99, &upstream)?;
+        github.set_checks(&upstream, yulius_app::ports::github::ChecksState::Success);
+        let path = wt.to_path_buf();
+        yulius_app::race::on(Point::ParkPrepared, Path::new(id.as_str()), move || {
+            let status = Command::new("git")
+                .current_dir(path)
+                .args([
+                    "-c",
+                    "user.name=Fixture",
+                    "-c",
+                    "user.email=t@example.com",
+                    "commit",
+                    "--allow-empty",
+                    "-m",
+                    "Repair during park",
+                ])
+                .status();
+            assert!(status.is_ok_and(|s| s.success()));
+        });
+        assert_eq!(
+            app.park_idle_sessions_now().await,
+            0,
+            "commit after the PR lookup needs publication"
+        );
+        git(&["merge", "--no-edit", &upstream])?;
+        git(&["push", "-q", "origin", branch])?;
+        let latest = git(&["rev-parse", "HEAD"])?;
+        set_pull_head(&github, 99, &latest)?;
+        github.set_checks(&latest, yulius_app::ports::github::ChecksState::Success);
         parked(&app, &id).await?;
         assert_eq!(status_of(&app, &id).await.0, Some(TaskStatus::Parked));
         Ok::<_, Error>(())
@@ -2399,6 +2803,38 @@ fn a_handed_off_tasks_outcome_reaches_its_source() -> TestResult {
             app.deps.store.untold_handoffs().await?.is_empty(),
             "told once"
         );
+        Ok::<_, Error>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+#[test]
+fn an_idle_task_keeps_its_session_while_its_recorded_pr_cannot_be_read() -> TestResult {
+    use yulius_domain::delivery::DeliveryStage;
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let app = app(&data, 1, 1).await?;
+        let (id, _) = answered(&app, &data).await?;
+        app.deps
+            .store
+            .transition_delivery(
+                &DeliveryStage::None,
+                &yulius_app::delivery::DeliveryRecord {
+                    task_id: id.clone(),
+                    stage: DeliveryStage::PrOpen,
+                    pr_number: Some(1461),
+                    updated_at: app.now(),
+                },
+            )
+            .await?;
+        past_the_grace(&app, &id).await?;
+        // The fake project has no installation from which to read this head.
+        let digest = app.send_digests_now(Some(1)).await;
+        assert_eq!(digest.parked, 0);
+        assert_eq!(app.park_idle_sessions_now().await, 0);
+        assert_eq!(status_of(&app, &id).await.0, Some(TaskStatus::Running));
         Ok::<_, Error>(())
     })?;
     rt.shutdown_timeout(Duration::from_secs(5));

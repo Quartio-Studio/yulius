@@ -6,6 +6,8 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-20
 
+- Parking verifies the task checkout and current PR checks, including CI failures awaiting publication to GitHub (SPEC-558).
+
 - Idle sessions with an open step, unfinished spec or unfinished goal stay live through grace-period and digest parking, including when their owner has been asked (SPEC-558, #1490).
 - The merge queue attributes a failed candidate to a member whose own run failed during
   the split decision (SPEC-559, #1398).

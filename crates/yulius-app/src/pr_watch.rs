@@ -46,7 +46,7 @@ pub const STALL_QUIET_MS: i64 = 5 * 60 * 1000;
 /// The file in the data directory that keeps what each task was told across restarts.
 pub const PR_NOTICES_FILE: &str = "pr-notices.json";
 /// Runs of a sandbox read per pass, newest first.
-const RUNS_READ: u32 = 100;
+pub(crate) const RUNS_READ: u32 = 100;
 /// Failing test names said per job.
 const MAX_TESTS: usize = 5;
 
@@ -1621,17 +1621,16 @@ impl App {
         {
             return Some(conflicts);
         }
-        let conflicts = match self.deps.git.merge_base(&repo, &base, head).await.ok()? {
-            // No common history: nothing to merge three ways, and no conflict to report.
-            None => false,
-            Some(since) => self
-                .deps
-                .git
-                .adds_to(&repo, &base, &since, head)
-                .await
-                .ok()?
-                .is_none(),
-        };
+        // A missing commit, missing common history or failed lookup cannot establish
+        // mergeability. Let the caller fall back to GitHub and keep the cache empty.
+        let since = self.deps.git.merge_base(&repo, &base, head).await.ok()??;
+        let conflicts = self
+            .deps
+            .git
+            .adds_to(&repo, &base, &since, head)
+            .await
+            .ok()?
+            .is_none();
         if let Some(runtime) = runtime {
             *runtime
                 .pr_conflict
