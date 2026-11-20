@@ -1,6 +1,6 @@
 ---
 yulius-task: 389d1a3c-436b-4cb5-97fd-d753c19c6d06
-status: in-progress
+status: done
 ---
 
 # SPEC-568. Preserve ADR index order across parallel delivery
@@ -26,7 +26,7 @@ Both the committed attributes and Yulius's higher-precedence managed info/attrib
 - [x] Trace both Git paths and reproduce the failures on the recorded trees
 - [x] Make distinct decision entries merge in numeric order and keep conflicts visible
 - [x] Prove both orders on the author and protected candidate paths
-- [ ] Review and deliver the verified repository change
+- [x] Review and deliver the verified repository change
 
 ## Acceptance criteria
 
@@ -52,3 +52,4 @@ Use shared, hidden Markdown slots allocated ahead of authors in bounded blocks. 
 - A CommonMark render of the index with adjacent slots filled exposed all 398 decision links in source order.
 - Independent round one identified unshared new slots, duplicate displayed numbers with different existing targets, and extension without a final line feed. Regressions reproduced all three. The common-base test builds two divergent Git histories for 0465 and 0466 and checks each before and after the shared empty extension. The duplicate-number and unterminated-line fixtures now pass. The final replay used the merge-base-aware repository decision check.
 - scripts/dev mutants reported no changed Rust code to mutate. scripts/dev security reported Vidoc disabled.
+- Independent round two approved e083e3b55 after checking all three fixes, running all 50 focused tests, repository contracts and both neighboring merge orientations against an unterminated base. The task delivery record supplies the protected run and landed SHA.
