@@ -9162,6 +9162,16 @@ async fn post_merge_evidence_pages_over_archived_attempts_while_another_run_land
             .as_str()
             .is_some_and(|s| s.contains("?run_id=staging-smoke"))
     );
+    let by_cursor = agent_tool(&f, &agent, "delivery_status", json!({"before":cursor})).await?;
+    assert_eq!(answer(&by_cursor)?["evidence"]["runs"], last["runs"]);
+    let wrong_landing = agent_tool(
+        &f,
+        &agent,
+        "delivery_status",
+        json!({"merged_sha":f.origin_sha("main")?}),
+    )
+    .await?;
+    assert_eq!(wrong_landing["isError"], true);
     f.add_task("t2", "Another task", "docs/2-other", "dev")
         .await?;
     let other = live_agent(&f, "t2", "tok-other-evidence").await?;
