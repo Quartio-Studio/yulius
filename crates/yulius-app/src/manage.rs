@@ -190,7 +190,7 @@ impl App {
             }
         }
         tasks.retain(|task| task.status != TaskStatus::Prepared && !held.contains(&task.number));
-        let groups = self.list_groups(&tasks, self.status_deadline()).await?;
+        let groups = self.list_groups(&tasks).await?;
         let mut numbers: Vec<_> = tasks
             .iter()
             .zip(groups)

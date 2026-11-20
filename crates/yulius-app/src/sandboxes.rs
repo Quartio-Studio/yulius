@@ -43,25 +43,6 @@ pub(crate) fn fair_batches<T>(
     })
 }
 
-/// Run at most eight reads together and reserve time for later rows. A stalled
-/// GitHub response can consume its batch's share, never the whole list's budget.
-pub(crate) async fn fair_rows<'a, T, R, F>(
-    rows: &'a [T],
-    deadline: Instant,
-    concurrency: usize,
-    read: impl Fn(&'a T, Instant) -> F,
-) -> AppResult<Vec<R>>
-where
-    F: std::future::Future<Output = AppResult<R>>,
-{
-    let mut results = Vec::with_capacity(rows.len());
-    for (batch, until) in fair_batches(rows, deadline, concurrency) {
-        results
-            .extend(futures::future::try_join_all(batch.iter().map(|row| read(row, until))).await?);
-    }
-    Ok(results)
-}
-
 /// Display result of one bounded read. An early timeout may precede the plan lookup.
 pub(crate) struct ParkedStatus {
     pub(crate) needs_you: bool,
@@ -252,19 +233,18 @@ impl App {
         record: &SandboxRecord,
         access: AccessLevel,
     ) -> AppResult<Sandbox> {
-        self.sandbox_view_until(record, access, self.status_deadline())
-            .await
+        let tasks = self.deps.store.tasks(&record.id, false).await?;
+        let groups = self.list_groups(&tasks).await?;
+        Ok(Self::sandbox_with_groups(record, access, groups))
     }
 
-    async fn sandbox_view_until(
-        &self,
+    fn sandbox_with_groups(
         record: &SandboxRecord,
         access: AccessLevel,
-        deadline: Instant,
-    ) -> AppResult<Sandbox> {
-        let tasks = self.deps.store.tasks(&record.id, false).await?;
+        groups: Vec<TaskGroup>,
+    ) -> Sandbox {
         let mut counts = SandboxCounts::default();
-        for group in self.list_groups(&tasks, deadline).await? {
+        for group in groups {
             match group {
                 TaskGroup::NeedsYou => counts.needs_attention += 1,
                 TaskGroup::Working => counts.running += 1,
@@ -277,7 +257,7 @@ impl App {
         // Always a value (SPEC-338 VOF-001), read on its own like the scans read it.
         profile.vidoc = Some(crate::delivery::vidoc_switched_on(record));
         profile.protect_production = Some(crate::delivery::production_protection_required(record));
-        Ok(Sandbox {
+        Sandbox {
             id: record.id.to_string(),
             slug: record.slug.clone(),
             name: record.repo_name.clone(),
@@ -301,7 +281,7 @@ impl App {
             port_base: record.port_base,
             port_count: record.port_count,
             counts,
-        })
+        }
     }
 
     /// Whether the sidebar shows `task` under Done: an achieved goal, a tested pull request with
@@ -330,31 +310,56 @@ impl App {
         parked_pr_deadline(self.config.parked_pr_read_ms)
     }
 
-    /// A list shares one request snapshot per sandbox and one verification deadline.
-    pub(crate) async fn list_groups(
+    /// Verify just the parked rows, before unrelated local work can spend their budget.
+    pub(crate) async fn parked_list_statuses(
+        &self,
+        mut parked: Vec<(&TaskRecord, &OnceCell<HashSet<String>>)>,
+    ) -> HashMap<TaskId, ParkedStatus> {
+        parked.retain(|(task, _)| task.status == TaskStatus::Parked);
+        let mut statuses = HashMap::with_capacity(parked.len());
+        for (batch, until) in fair_batches(&parked, self.status_deadline(), PARKED_READS) {
+            let reads = batch.iter().map(|&(task, requests)| async move {
+                (
+                    task.id.clone(),
+                    self.parked_status(task, requests, until).await,
+                )
+            });
+            statuses.extend(futures::future::join_all(reads).await);
+        }
+        statuses
+    }
+
+    pub(crate) async fn list_groups(&self, tasks: &[TaskRecord]) -> AppResult<Vec<TaskGroup>> {
+        let requests = OnceCell::new();
+        let parked = self
+            .parked_list_statuses(tasks.iter().map(|task| (task, &requests)).collect())
+            .await;
+        self.groups_with_parked(tasks, &requests, &parked).await
+    }
+
+    async fn groups_with_parked(
         &self,
         tasks: &[TaskRecord],
-        deadline: Instant,
+        requests: &OnceCell<HashSet<String>>,
+        parked: &HashMap<TaskId, ParkedStatus>,
     ) -> AppResult<Vec<TaskGroup>> {
-        let requests = OnceCell::new();
-        fair_rows(tasks, deadline, PARKED_READS, |task, until| {
-            let requests = &requests;
-            async move {
-                if task.status == TaskStatus::Parked {
-                    let status = self.parked_status(task, requests, until).await;
-                    return Ok(if status.needs_you {
-                        TaskGroup::NeedsYou
-                    } else {
-                        TaskGroup::Done
-                    });
+        let mut groups = Vec::with_capacity(tasks.len());
+        for task in tasks {
+            let group = if let Some(status) = parked.get(&task.id) {
+                if status.needs_you {
+                    TaskGroup::NeedsYou
+                } else {
+                    TaskGroup::Done
                 }
+            } else {
                 let requested = requests
                     .get_or_init(|| self.browser_requests(&task.sandbox_id))
                     .await;
-                self.task_group(task, requested).await
-            }
-        })
-        .await
+                self.task_group(task, requested).await?
+            };
+            groups.push(group);
+        }
+        Ok(groups)
     }
 
     /// Check the recorded and branch PRs before reporting Done, even before
@@ -527,14 +532,27 @@ impl App {
     /// # Errors
     /// Store failures.
     pub async fn list_sandboxes(&self, ctx: &AuthContext) -> AppResult<Vec<Sandbox>> {
-        let visible = self.visible_sandboxes(&ctx.user).await?;
-        fair_rows(
-            &visible,
-            self.status_deadline(),
-            1,
-            |(record, level), until| self.sandbox_view_until(record, *level, until),
-        )
-        .await
+        let mut projects = Vec::new();
+        for (record, level) in self.visible_sandboxes(&ctx.user).await? {
+            let tasks = self.deps.store.tasks(&record.id, false).await?;
+            projects.push((record, level, tasks, OnceCell::new()));
+        }
+        let parked = self
+            .parked_list_statuses(
+                projects
+                    .iter()
+                    .flat_map(|(_, _, tasks, requests)| {
+                        tasks.iter().map(move |task| (task, requests))
+                    })
+                    .collect(),
+            )
+            .await;
+        let mut out = Vec::with_capacity(projects.len());
+        for (record, level, tasks, requests) in projects {
+            let groups = self.groups_with_parked(&tasks, &requests, &parked).await?;
+            out.push(Self::sandbox_with_groups(&record, level, groups));
+        }
+        Ok(out)
     }
 
     /// One sandbox, if visible.

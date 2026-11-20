@@ -675,19 +675,17 @@ impl App {
         // Unarchived, the list is the project the summaries need; archived ones wait for nothing.
         let project = (!archived).then_some(tasks.as_slice());
         let requests = tokio::sync::OnceCell::new();
-        crate::sandboxes::fair_rows(
-            &tasks,
-            self.status_deadline(),
-            crate::sandboxes::PARKED_READS,
-            |task, until| {
-                let requests = &requests;
-                async move {
-                    let (row, _) = self.display_summary(task, project, requests, until).await?;
-                    Ok(row)
-                }
-            },
-        )
-        .await
+        let mut parked = self
+            .parked_list_statuses(tasks.iter().map(|task| (task, &requests)).collect())
+            .await;
+        let mut out = Vec::with_capacity(tasks.len());
+        for task in &tasks {
+            let (summary, _) = self
+                .display_summary(task, project, parked.remove(&task.id))
+                .await?;
+            out.push(summary);
+        }
+        Ok(out)
     }
 
     /// Render the plan from the parked eligibility check in both its progress and detail.
@@ -695,22 +693,21 @@ impl App {
         &self,
         task: &TaskRecord,
         project: Option<&[TaskRecord]>,
-        requests: &tokio::sync::OnceCell<std::collections::HashSet<String>>,
-        deadline: tokio::time::Instant,
+        mut status: Option<crate::sandboxes::ParkedStatus>,
     ) -> AppResult<(TaskSummary, Vec<StepRecord>)> {
-        let mut status = if task.status == TaskStatus::Parked {
-            Some(self.parked_status(task, requests, deadline).await)
-        } else {
-            None
-        };
         let steps = match status.as_mut().and_then(|read| read.steps.take()) {
             Some(snapshot) => snapshot,
             None => self.deps.store.steps(&task.id).await?,
         };
         let mut summary = self.task_summary_among(task, project, &steps).await?;
         if let Some(read) = status {
-            summary.parked_needs_you =
-                Some(read.needs_you || summary.spec_unfinished || summary.goal_unfinished);
+            summary.parked_needs_you = Some(
+                read.needs_you
+                    || summary.spec_unfinished
+                    || summary.goal_unfinished
+                    || summary.needs_you.is_some()
+                    || summary.held_prompt.is_some(),
+            );
             summary.parked_pr = read.pr;
         }
         Ok((summary, steps))
@@ -737,14 +734,15 @@ impl App {
     pub async fn task_detail(&self, ctx: &AuthContext, id: &str) -> AppResult<TaskDetail> {
         let task = self.load_task(ctx, id, Action::View).await?;
         let store = &self.deps.store;
-        let (mut summary, steps) = self
-            .display_summary(
-                &task,
-                None,
-                &tokio::sync::OnceCell::new(),
-                self.status_deadline(),
+        let parked = if task.status == TaskStatus::Parked {
+            Some(
+                self.parked_status(&task, &tokio::sync::OnceCell::new(), self.status_deadline())
+                    .await,
             )
-            .await?;
+        } else {
+            None
+        };
+        let (mut summary, steps) = self.display_summary(&task, None, parked).await?;
         // Subscription emails are for administrators (UI-022, SPEC-244 SUB-005).
         let admin = ctx.user.is_superadmin || ctx.user.is_instance_admin;
         if admin
