@@ -246,6 +246,15 @@ fn json(change: impl FnOnce(&mut serde_json::Value)) -> Vec<u8> {
 fn a_request_is_parsed_strictly() -> TestResult {
     let request = parse_request(&json(|_| {}), NOW)?;
     assert_eq!(request.target.as_deref(), Some("root@new.example"));
+    for value in [
+        serde_json::json!(0),
+        serde_json::json!(-1),
+        serde_json::json!("1"),
+        serde_json::json!(1.5),
+    ] {
+        assert!(parse_request(&json(|v| v["max_downtime"] = value), NOW).is_err());
+    }
+    assert!(parse_request(&json(|v| v["max_downtime"] = 1.into()), NOW).is_ok());
     let refused = |change: &dyn Fn(&mut serde_json::Value), now: i64| {
         parse_request(&json(|v| change(v)), now)
             .err()

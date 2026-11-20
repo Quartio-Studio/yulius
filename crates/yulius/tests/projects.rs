@@ -1191,6 +1191,11 @@ impl yulius_app::ports::isolation::SandboxIsolation for Retiring {
         Ok(None)
     }
     fn release(&self, _: &SandboxId) {}
+    async fn holder_live(&self, name: &str) -> bool {
+        self.0
+            .lock()
+            .is_ok_and(|names| names.iter().any(|n| n == name))
+    }
     fn retire(&self, sandbox: &SandboxId) {
         if let Ok(mut retired) = self.0.lock() {
             retired.push(sandbox.as_str().to_owned());
@@ -1216,7 +1221,17 @@ async fn remove_retires_the_sandbox_holder() -> TestResult {
     let path = format!("/api/sandboxes/{sid}");
     let removed = call(&w.h.router, Method::DELETE, &path, None, &alice).await?;
     assert_eq!(removed.status, StatusCode::NO_CONTENT);
-    assert_eq!(*isolation.0.lock().map_err(|_| "lock")?, [sid]);
+    assert_eq!(*isolation.0.lock().map_err(|_| "lock")?, [sid.clone()]);
+    let replacement = import(&w, &alice, "Quartio-Studio/shop").await?;
+    assert_eq!(
+        replacement.body["port_base"], 20020,
+        "retiring holder still runs"
+    );
+    isolation.0.lock().map_err(|_| "lock")?.clear();
+    w.remote(OWNER, "third", &[("README.md", "# Third\n")], &[])?;
+    w.grant("alice", "third", "admin");
+    let third = import(&w, &alice, "Quartio-Studio/third").await?;
+    assert_eq!(third.body["port_base"], 20000, "retired holder ended");
     Ok(())
 }
 
@@ -1395,6 +1410,10 @@ async fn adding_a_removed_repository_again_gets_its_name_back() -> TestResult {
             .sandbox(&SandboxId::parse(&first_id)?)
             .await?
             .ok_or("removed sandbox")?;
+    assert_eq!(
+        again.body["port_base"], first.body["port_base"],
+        "the freed range is assigned again"
+    );
     assert!(old.removed_at.is_some());
     assert!(old.slug.starts_with("product-removed-"), "{}", old.slug);
     Ok(())
