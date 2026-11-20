@@ -2118,14 +2118,12 @@ impl App {
             }
         };
         let mut open_pulls = Vec::new();
-        let mut complete_pull_list = false;
         let mut checks_by_pr = Vec::new();
         let mut checks_unreadable = Vec::new();
         if let Some(token) = &token {
             match self.deps.github.list_pulls(token, owner, name, None).await {
                 Ok(pulls) => {
-                    complete_pull_list = pulls.len() <= MAX_PULLS;
-                    open_pulls = pulls.into_iter().filter(is_open).take(MAX_PULLS).collect();
+                    open_pulls = pulls.into_iter().filter(is_open).take(MAX_PULLS).collect()
                 }
                 Err(err) => notes.push(format!(
                     "Pull requests can't be listed: {}",
@@ -2316,22 +2314,17 @@ impl App {
                     conflicts: false,
                 });
             }
-            if let Some(pr) = &view.pr
-                && let Some(signal) = PullSignal::from_wire(&pr.state, &pr.checks, pr.conflicts)
+            if let Some(signal) = view
+                .pr
+                .as_ref()
+                .and_then(|pr| PullSignal::from_wire(&pr.state, &pr.checks, pr.conflicts))
             {
-                observed.insert(
-                    task.id.clone(),
-                    crate::sandboxes::ObservedPull {
-                        number: pr.number,
-                        signal,
-                    },
-                );
+                observed.insert(task.id.clone(), signal);
             }
             tasks.push(view);
         }
         // The "needs you" counts read what this overview said (sandboxes.rs, #147).
-        self.observed_pulls
-            .record(&sandbox.id, observed, complete_pull_list);
+        self.observed_pulls.record(&sandbox.id, observed);
 
         let mut recent_commits = Vec::new();
         if cloned {
@@ -3996,7 +3989,6 @@ impl App {
         &self,
         task: &TaskRecord,
         record: Option<&DeliveryRecord>,
-        observed: Option<crate::sandboxes::ObservedPull>,
     ) -> AppResult<bool> {
         let tracked = record
             .filter(|r| r.stage == DeliveryStage::PrOpen)
@@ -4010,12 +4002,7 @@ impl App {
         // A playground or an instance with no GitHub App can still park an answered task.
         // A known open PR requires verification, even when its installation is unavailable.
         if sandbox.is_playground() || !self.github_configured().await? {
-            return Ok(tracked.is_none()
-                && observed.is_none_or(|p| {
-                    p.signal == PullSignal::Merged
-                        || record
-                            .is_some_and(|r| past_merge(&r.stage) && r.pr_number == Some(p.number))
-                }));
+            return Ok(tracked.is_none());
         }
         let token = self.dlv_installation_token(&sandbox).await?;
         let branch_pulls = || async {
@@ -4032,6 +4019,7 @@ impl App {
                     Some(branch),
                 )
                 .await?;
+            pulls.retain(|pull| !pull.from_fork && pull.head == branch && is_open(pull));
             pulls.sort_unstable_by_key(|pull| pull.number);
             Ok::<_, AppError>(pulls)
         };
@@ -4041,12 +4029,8 @@ impl App {
         if branch.len() > MAX_PULLS {
             return Ok(false);
         }
-        let numbers: std::collections::BTreeSet<_> = branch
-            .iter()
-            .map(|p| p.number)
-            .chain(tracked)
-            .chain(observed.map(|p| p.number))
-            .collect();
+        let numbers: std::collections::BTreeSet<_> =
+            branch.iter().map(|p| p.number).chain(tracked).collect();
         if numbers.is_empty() {
             return Ok(true);
         }

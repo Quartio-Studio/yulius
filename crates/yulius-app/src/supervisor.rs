@@ -4661,16 +4661,10 @@ impl App {
             return Ok(false);
         };
         let delivery = self.deps.store.delivery(task_id).await?;
-        let observed = || {
-            self.observed_pulls
-                .get(&candidate.sandbox_id, task_id)
-                .flatten()
-        };
-        let association = observed();
         // Neither a slow PR read nor the fresh process probe should hold up another launch.
         // Probe last so background work started during the PR read keeps its session.
         if !self
-            .pr_allows_parking(&candidate, delivery.as_ref(), association)
+            .pr_allows_parking(&candidate, delivery.as_ref())
             .await?
             || self.background_or_wait_now(task_id).await != Some(false)
         {
@@ -4699,7 +4693,7 @@ impl App {
         if run.harness == Harness::Codex && run.provider_session_id.is_none() {
             return Ok(false);
         }
-        if self.deps.store.delivery(task_id).await? != delivery || observed() != association {
+        if self.deps.store.delivery(task_id).await? != delivery {
             return Ok(false);
         }
         let runtime = self.runtime(task_id);

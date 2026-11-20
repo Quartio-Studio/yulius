@@ -1716,6 +1716,30 @@ fn parked_task_parks_safely_during_ci_and_auto_wakes_on_actionable_check_results
             .insert_ci_run(&running_ci, &[running_job])
             .await?;
 
+        // The CI run exists, but without a recorded PR the parked watcher cannot deliver it.
+        let external = DeliveryRecord {
+            stage: DeliveryStage::None,
+            pr_number: None,
+            ..open.clone()
+        };
+        assert!(
+            app.deps
+                .store
+                .transition_delivery(&open.stage, &external)
+                .await?
+        );
+        past_the_grace(&app, &id).await?;
+        assert_eq!(
+            app.park_idle_sessions_now().await,
+            0,
+            "external pending checks have no parked watcher"
+        );
+        assert!(
+            app.deps
+                .store
+                .transition_delivery(&external.stage, &open)
+                .await?
+        );
         // A watch for an older head cannot take responsibility for the current checks.
         let newer = "4444444444444444444444444444444444444444";
         set_pull_head(&github, 42, newer)?;

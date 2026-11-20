@@ -2479,9 +2479,8 @@ async fn idle_for_parking(
     Ok(owner)
 }
 
-#[tokio::test]
-async fn parking_rechecks_a_green_overview_for_an_externally_opened_pr() -> TestResult {
-    use yulius_app::ports::github::ChecksState;
+async fn untracked_parking_fixture()
+-> Result<(Fixture, yulius_app::auth::AuthContext), Box<dyn std::error::Error>> {
     use yulius_domain::delivery::DeliveryStage;
     let f = fixture().await?;
     install_compatibility_pull(&f).await?;
@@ -2507,6 +2506,34 @@ async fn parking_rechecks_a_green_overview_for_an_externally_opened_pr() -> Test
             .await?
     );
     let owner = idle_for_parking(&f).await?;
+    Ok((f, owner))
+}
+
+#[tokio::test]
+async fn a_failing_same_branch_pr_from_a_fork_does_not_keep_an_answered_task_live() -> TestResult {
+    use yulius_app::ports::github::ChecksState;
+    let (f, owner) = untracked_parking_fixture().await?;
+    f.h.github.pulls.lock().map_err(|_| "pull fixture")?[0].from_fork = true;
+    f.h.github.set_checks("abc123", ChecksState::Failure);
+    let overview = f.h.app.git_overview(&owner, f.sandbox.as_str()).await?;
+    assert!(
+        overview
+            .pulls
+            .iter()
+            .any(|p| p.number == 1461 && p.checks == "failure")
+    );
+    assert_eq!(
+        f.h.app.park_idle_sessions_now().await,
+        1,
+        "only the unrelated fork is red"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn parking_rechecks_a_green_overview_for_an_externally_opened_pr() -> TestResult {
+    use yulius_app::ports::github::ChecksState;
+    let (f, owner) = untracked_parking_fixture().await?;
     f.h.github.set_checks("abc123", ChecksState::Success);
     let overview = f.h.app.git_overview(&owner, f.sandbox.as_str()).await?;
     assert_eq!(
