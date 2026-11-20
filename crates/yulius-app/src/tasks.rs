@@ -180,7 +180,8 @@ impl App {
     /// # Errors
     /// Store failures.
     pub async fn task_summary(&self, task: &TaskRecord) -> AppResult<TaskSummary> {
-        self.task_summary_among(task, None).await
+        let steps = self.deps.store.steps(&task.id).await?;
+        self.task_summary_among(task, None, &steps).await
     }
 
     /// [`Self::task_summary`] of a task listed with the rest of its project's unarchived tasks
@@ -192,9 +193,9 @@ impl App {
         &self,
         task: &TaskRecord,
         project: Option<&[TaskRecord]>,
+        steps: &[StepRecord],
     ) -> AppResult<TaskSummary> {
         let store = &self.deps.store;
-        let steps = store.steps(&task.id).await?;
         // A removed subscription is no task's (SPEC-447): neither its name nor its id is shown.
         let (account_id, account_label) = match store.live_attempt(&task.id).await? {
             Some(attempt) => match attempt.account_id {
@@ -228,6 +229,8 @@ impl App {
         let idle_run = matches!(task.status, TaskStatus::Running | TaskStatus::Parked)
             && task.activity.is_some_and(Activity::is_idle);
         Ok(TaskSummary {
+            parked_pr: None,
+            parked_needs_you: None,
             id: task.id.to_string(),
             sandbox_id: task.sandbox_id.to_string(),
             number: task.number,
@@ -264,7 +267,7 @@ impl App {
             updated_at: rfc3339(task.updated_at),
             state_since: times.map(|t| rfc3339(t.state_at)),
             working_since: times.and_then(|t| t.working_since).map(rfc3339),
-            steps: self.step_progress(&task.id, &steps).await?,
+            steps: self.step_progress(&task.id, steps).await?,
             archived: task.archived_at.is_some(),
             account_label,
             account_id,
@@ -671,11 +674,43 @@ impl App {
         let tasks = self.deps.store.tasks(&sid, archived).await?;
         // Unarchived, the list is the project the summaries need; archived ones wait for nothing.
         let project = (!archived).then_some(tasks.as_slice());
+        let requests = tokio::sync::OnceCell::new();
+        let mut parked = self
+            .parked_list_statuses(tasks.iter().map(|task| (task, &requests)).collect())
+            .await;
         let mut out = Vec::with_capacity(tasks.len());
         for task in &tasks {
-            out.push(self.task_summary_among(task, project).await?);
+            let (summary, _) = self
+                .display_summary(task, project, parked.remove(&task.id))
+                .await?;
+            out.push(summary);
         }
         Ok(out)
+    }
+
+    /// Render the plan from the parked eligibility check in both its progress and detail.
+    async fn display_summary(
+        &self,
+        task: &TaskRecord,
+        project: Option<&[TaskRecord]>,
+        mut status: Option<crate::sandboxes::ParkedStatus>,
+    ) -> AppResult<(TaskSummary, Vec<StepRecord>)> {
+        let steps = match status.as_mut().and_then(|read| read.steps.take()) {
+            Some(snapshot) => snapshot,
+            None => self.deps.store.steps(&task.id).await?,
+        };
+        let mut summary = self.task_summary_among(task, project, &steps).await?;
+        if let Some(read) = status {
+            summary.parked_needs_you = Some(
+                read.needs_you
+                    || summary.spec_unfinished
+                    || summary.goal_unfinished
+                    || summary.needs_you.is_some()
+                    || summary.held_prompt.is_some(),
+            );
+            summary.parked_pr = read.pr;
+        }
+        Ok((summary, steps))
     }
 
     /// Archived tasks across all visible sandboxes.
@@ -699,7 +734,15 @@ impl App {
     pub async fn task_detail(&self, ctx: &AuthContext, id: &str) -> AppResult<TaskDetail> {
         let task = self.load_task(ctx, id, Action::View).await?;
         let store = &self.deps.store;
-        let mut summary = self.task_summary(&task).await?;
+        let parked = if task.status == TaskStatus::Parked {
+            Some(
+                self.parked_status(&task, &tokio::sync::OnceCell::new(), self.status_deadline())
+                    .await,
+            )
+        } else {
+            None
+        };
+        let (mut summary, steps) = self.display_summary(&task, None, parked).await?;
         // Subscription emails are for administrators (UI-022, SPEC-244 SUB-005).
         let admin = ctx.user.is_superadmin || ctx.user.is_instance_admin;
         if admin
@@ -808,22 +851,8 @@ impl App {
                 at: rfc3339(f.at),
             });
         }
-        let steps = store.steps(&task.id).await?;
         let started = !attempts.is_empty() || !store.provider_sessions(&task.id).await?.is_empty();
-        let (parked_needs_you, parked_pr) = if task.status == TaskStatus::Parked {
-            let (needs_you, pr) = self
-                .parked_status(
-                    &task,
-                    crate::sandboxes::parked_pr_deadline(self.config.parked_pr_read_ms),
-                )
-                .await;
-            (Some(needs_you), pr)
-        } else {
-            (None, None)
-        };
         Ok(TaskDetail {
-            parked_needs_you,
-            parked_pr,
             summary,
             spec_path: task.spec_path.clone(),
             worktree: task.worktree_path.clone(),

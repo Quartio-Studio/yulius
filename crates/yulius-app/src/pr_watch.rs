@@ -849,6 +849,10 @@ impl App {
         if task.status != TaskStatus::Running {
             return false;
         }
+        crate::race::reached(
+            crate::race::Point::LiveRowPrNews,
+            std::path::Path::new(task.id.as_str()),
+        );
         let record = self.deps.store.delivery(&task.id).await.ok().flatten();
         self.pr_news_due_of(task, record.as_ref(), false).await
     }

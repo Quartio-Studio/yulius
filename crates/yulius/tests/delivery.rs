@@ -4926,7 +4926,7 @@ async fn a_historical_parked_goal_keeps_its_owner_and_chain_state_after_restart(
     let parked = f.h.store.task(&before).await?.ok_or("parked")?;
     let summary = fresh.task_detail(&owner, parked.id.as_str()).await?;
     assert!(summary.summary.goal_unfinished);
-    assert_eq!(summary.parked_needs_you, Some(true));
+    assert_eq!(summary.summary.parked_needs_you, Some(true));
     fresh.advance_chains(&before).await;
     assert_eq!(
         f.h.store.task(&child).await?.ok_or("successor")?.status,
@@ -4938,6 +4938,7 @@ async fn a_historical_parked_goal_keeps_its_owner_and_chain_state_after_restart(
         fresh
             .task_detail(&owner, parked.id.as_str())
             .await?
+            .summary
             .parked_needs_you,
         Some(true)
     );
@@ -4981,6 +4982,7 @@ async fn a_historical_parked_goal_keeps_its_owner_and_chain_state_after_restart(
         fresh
             .task_detail(&owner, parked.id.as_str())
             .await?
+            .summary
             .parked_needs_you,
         Some(true)
     );
@@ -5018,6 +5020,7 @@ async fn a_historical_parked_goal_keeps_its_owner_and_chain_state_after_restart(
         fresh
             .task_detail(&owner, parked.id.as_str())
             .await?
+            .summary
             .parked_needs_you,
         Some(false)
     );
@@ -5245,7 +5248,10 @@ async fn parked_detail_checks_a_local_conflict_only_against_its_integration_base
     let app = yulius_app::context::App::new(f.h.app.config.clone(), deps);
     edit_pull(&f, 1, |pr| pr.mergeable = Some(false));
     assert_eq!(
-        app.task_detail(&owner, "t1").await?.parked_needs_you,
+        app.task_detail(&owner, "t1")
+            .await?
+            .summary
+            .parked_needs_you,
         Some(false),
         "the integration base merges cleanly with the configured Git drivers"
     );
@@ -5253,13 +5259,19 @@ async fn parked_detail_checks_a_local_conflict_only_against_its_integration_base
     git(&wt, &["fetch", "origin", "dev"])?;
     edit_pull(&f, 1, |pr| pr.mergeable = Some(true));
     assert_eq!(
-        app.task_detail(&owner, "t1").await?.parked_needs_you,
+        app.task_detail(&owner, "t1")
+            .await?
+            .summary
+            .parked_needs_you,
         Some(true),
         "the actual integration base now conflicts"
     );
     edit_pull(&f, 1, |pr| pr.base = "release".into());
     assert_eq!(
-        app.task_detail(&owner, "t1").await?.parked_needs_you,
+        app.task_detail(&owner, "t1")
+            .await?
+            .summary
+            .parked_needs_you,
         Some(false),
         "the release base has its own mergeability"
     );
@@ -5301,7 +5313,7 @@ async fn overlapping_parked_status_reads_bound_git_workers_after_timeouts() -> T
         for _ in 0..2 {
             let reads = (0..12).map(|_| app.task_detail(&owner, task.id.as_str()));
             for row in futures::future::try_join_all(reads).await? {
-                assert_eq!(row.parked_needs_you, Some(true));
+                assert_eq!(row.summary.parked_needs_you, Some(true));
             }
         }
         Ok::<_, AppError>(())
@@ -5318,6 +5330,7 @@ async fn overlapping_parked_status_reads_bound_git_workers_after_timeouts() -> T
     assert_eq!(
         app.task_detail(&owner, task.id.as_str())
             .await?
+            .summary
             .parked_needs_you,
         Some(false)
     );
