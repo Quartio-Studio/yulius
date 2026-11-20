@@ -1062,9 +1062,9 @@ impl App {
 
         if preceding_turn {
             // Preserve the later prompt's pause. A gate or goal that requires further work
-            // waits at this Stop too, until the resume loop restores capacity.
+            // waits at this Stop too. Only the submit client keeps the prompt hold alive.
             return Ok(if continues {
-                self.hold_for(&task.id)
+                hold()
             } else {
                 HookReply::Output(HookOutput::default())
             });

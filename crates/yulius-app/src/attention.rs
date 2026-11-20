@@ -224,6 +224,9 @@ impl App {
     /// reading Needs your action over a working session until its turn ends.
     pub(crate) async fn watch_answerable_flag(&self, task_id: &TaskId) {
         let runtime = self.runtime(task_id);
+        // A worker can replace an answerable question with a flag whose marker is zero.
+        // Hold the same lock as that replacement from reading the reason to installing it.
+        let _held = runtime.attention_lock.lock().await;
         if runtime.notice_attention_ms.load(Ordering::SeqCst) != 0 {
             return;
         }
