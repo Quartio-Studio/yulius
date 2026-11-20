@@ -13,6 +13,8 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   deployment inside each task's sandbox. Each onboarded sandbox gets one Infra bootstrap task
   that adopts it, keeping the project's own commands, targets and grants, or records that the
   project has no shared target ([ADR-0415](decisions/0415-merge-first-is-the-bootstrap-default-and-reaches-onboarded-projects-through-a-task.md)).
+- The Linux tunnel custodian enforces each socket pair’s original lifetime during receipt, waiting and delivery. Expired TCP pairs release their peers while the successor receives the live remainder. [SPEC-577](../.ai/specs/SPEC-577-preserve-opaque-egress-tunnels-across-a.md)
+
 - Merge-first staging target: a task's `cd_deploy` now queues a staging request for the task's
   merged revision instead of deploying the branch head.
   - Yulius runs the full gate on exactly that commit, then deploys and verifies revisions in
