@@ -387,6 +387,9 @@ mod tests {
     fn browser_failure_headers_survive_the_scanner_and_name_the_tests() {
         let kept = scan(&[
             " PASS  |chromium| tests/editor.e2e.ts > opens a file\n",
+            " FAIL  || tests/editor.e2e.ts > missing target\n",
+            " FAIL  |chromium| tests/editor.rs > wrong file type\n",
+            " FAIL  |chromium| tests/editor.e2e.ts >    \n",
             " FAIL  |chromium| tests/editor.e2e.ts > opens a folder\n",
             " FAIL  |chromium| tests/tasks.e2e.ts > closes a task\n",
             " FAIL  |chromium| tests/editor.e2e.ts > opens a folder\n",
