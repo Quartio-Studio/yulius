@@ -63,7 +63,7 @@ upgrade prerequisite for older live wrappers has not been established. Open PR #
 
 - [x] Identify the next twenty actionable open issues
 - [ ] Correct playground delivery and cross-sandbox request actions
-- [ ] Repair repository test and decision indexes
+- [x] Repair repository test and decision indexes
 - [ ] Measure complete CPU samples and synchronize access and cockpit tests
 - [ ] Preserve attention and held prompts across overlapping hooks
 - [ ] Resume eligible subscriptions and classify workflow limits consistently

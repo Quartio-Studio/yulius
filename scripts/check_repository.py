@@ -171,6 +171,10 @@ def decision_errors(directory):
     if not readme.is_file():
         return [f"{directory}: missing README.md index of the decision records"]
     index = readme.read_text()
+    numbers = re.findall(r"^- \[(\d{4})\]\(", index, re.MULTILINE)
+    for previous, current in zip(numbers, numbers[1:]):
+        if previous > current:
+            errors.append(f"{readme}: decisions must appear in number order (found {previous} before {current})")
     for path in sorted(directory.glob("*.md")):
         if path.name == "README.md":
             continue
