@@ -744,7 +744,7 @@ fn a_park_that_cannot_end_its_session_gives_up() -> TestResult {
     Ok(())
 }
 
-async fn assert_cold_screen(
+pub(crate) async fn assert_cold_screen(
     data: &Path,
     id: &TaskId,
     caller: &ProjectCaller,
@@ -762,25 +762,9 @@ async fn assert_cold_screen(
         session_hash: None,
         token: None,
     };
-    let terminal = restart
-        .terminal_open(
-            &ctx,
-            id.as_str(),
-            matches!(
-                status_of(&restart, id).await.0,
-                Some(TaskStatus::Queued | TaskStatus::WaitingCapacity | TaskStatus::Starting)
-            )
-            .then_some((22, 5)),
-        )
-        .await?;
-    assert_eq!(screen(&restart, id), expected);
-    assert_eq!(
-        restart.terminal_state(id).await?.parked_screen,
-        expected.contains("Yulius parked")
-    );
-    drop(terminal);
+    // Read through MCP first, before a page can warm the terminal hub.
     let remote = yulius_app::remote::RemoteCaller {
-        ctx,
+        ctx: ctx.clone(),
         token_id: "cold-screen".into(),
         scope: yulius_domain::permission::TokenScope::Read,
         login: "admin".into(),
@@ -800,6 +784,23 @@ async fn assert_cold_screen(
         crate::support::tool_text(&result)["screen"],
         expected.trim_end()
     );
+    let terminal = restart
+        .terminal_open(
+            &ctx,
+            id.as_str(),
+            matches!(
+                status_of(&restart, id).await.0,
+                Some(TaskStatus::Queued | TaskStatus::WaitingCapacity | TaskStatus::Starting)
+            )
+            .then_some((22, 5)),
+        )
+        .await?;
+    assert_eq!(screen(&restart, id), expected);
+    assert_eq!(
+        restart.terminal_state(id).await?.parked_screen,
+        expected.contains("Yulius parked")
+    );
+    drop(terminal);
     Ok(())
 }
 

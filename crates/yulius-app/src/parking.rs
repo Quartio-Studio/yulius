@@ -307,13 +307,24 @@ impl App {
         attempts: &[AttemptRecord],
     ) -> Option<EndedScreen> {
         let (latest, prior) = attempts.split_last()?;
-        if latest.state.is_terminal() {
+        // Losing the selected account records an ended attempt before any host
+        // spawns. Its replacement still belongs to the original resume.
+        let removed_before_spawn = |run: &AttemptRecord| {
+            run.launch_kind == crate::model::LaunchKind::Resume
+                && run.exit_reason.as_deref() == Some("account_removed")
+        };
+        let retrying = matches!(
+            task.status,
+            TaskStatus::Starting | TaskStatus::WaitingCapacity | TaskStatus::Queued
+        ) && removed_before_spawn(latest);
+        if latest.state.is_terminal() && !retrying {
             return self.ended_screen(latest, task).await;
         }
         if latest.launch_kind != crate::model::LaunchKind::Resume {
             return None;
         }
-        self.ended_screen(prior.last()?, task)
+        let previous = prior.iter().rev().find(|run| !removed_before_spawn(run))?;
+        self.ended_screen(previous, task)
             .await
             .filter(|screen| screen.parked)
     }

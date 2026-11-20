@@ -62,6 +62,8 @@ Capture a separate screen at the park decision because exiting can clear the ent
 - With the new attempt held at `RunRecorded`, the original cold reader returned an empty string in place of the first answer and parking notice. With unreadable lineage during a subscription retry, the original capacity round left the task in `Failed(SpawnError)` instead of `WaitingCapacity`. Each regression failed on the corresponding uncorrected path.
 - Eight Chromium parking tests passed, including all 90 rows of a saved desktop grid on a phone. The full browser suite on the same web assets passed 1,167 tests with one optional skip.
 
+- The first screen delivery candidate passed 76 scoped Rust tests and Clippy on the app, server and integration targets. Its reviewer identified an account removed after selection but before spawn. The real supervisor recorded the discarded attempt. With no replacement subscription, the prior reader then returned an empty string. The lookup now follows that resume past its discarded attempts. The regression exercises the cold tool and page while capacity waits and again while the replacement launch is held at `RunRecorded`.
+
 ## Delivery slices
 
 Deliver native Codex resume independently (PKR-002). The terminal delivery (PKR-001) includes the original pre-stop snapshot, phone geometry, and recovery through the resumed host's first snapshot. Subsequent deliveries cover goal continuation and parking eligibility (PKR-003 and PKR-004), then recovery of pre-upgrade screens. The earlier combined-head evidence describes development verification across these slices.

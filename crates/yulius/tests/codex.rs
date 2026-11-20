@@ -2125,14 +2125,45 @@ fn a_parked_codex_capacity_retry_keeps_its_rollout_and_prompt_on_a_lineage_error
             },
         )
         .await?;
-        limit_until(&app, &account, app.now().0 + 3_600_000).await?;
-        let prompt = "Continue after the capacity wait";
-        let sender = superagent(&sandbox, &user, "admin");
-        app.tool_task_message(
-            &sender,
-            &serde_json::json!({"task_id":id.as_str(),"text":prompt}),
-        )
+        wait_for("the captured screen", Duration::from_secs(10), || {
+            screen_contains(&app, &id, "Yulius parked")
+        })
         .await?;
+        let parked_screen = app.runtime(&id).hub.screen_text();
+        // The sole account is removed after selection and before the host spawns.
+        let (chosen, chosen_rx) = std::sync::mpsc::channel();
+        let (removed, removed_rx) = std::sync::mpsc::channel::<()>();
+        yulius_app::race::on(
+            yulius_app::race::Point::AccountChosen,
+            Path::new(id.as_str()),
+            move || {
+                let _ = chosen.send(());
+                let _ = removed_rx.recv_timeout(Duration::from_secs(30));
+            },
+        );
+        let prompt = "Continue after the capacity wait";
+        let message = {
+            let (app, id) = (app.clone(), id.clone());
+            let sender = superagent(&sandbox, &user, "admin");
+            tokio::spawn(async move {
+                app.tool_task_message(
+                    &sender,
+                    &serde_json::json!({"task_id":id.as_str(),"text":prompt}),
+                )
+                .await
+            })
+        };
+        tokio::task::spawn_blocking(move || chosen_rx.recv_timeout(Duration::from_secs(30)))
+            .await??;
+        app.delete_account(&admin_ctx(&app, &user).await?, account.as_str())
+            .await?;
+        removed.send(())?;
+        message.await??;
+        let attempts = app.deps.store.attempts(&id).await?;
+        assert_eq!(attempts.len(), 2);
+        assert_eq!(attempts[1].exit_reason.as_deref(), Some("account_removed"));
+        let caller = superagent(&sandbox, &user, "admin");
+        crate::parking::assert_cold_screen(&data, &id, &caller, &parked_screen).await?;
         let pause = app
             .deps
             .store
@@ -2145,10 +2176,7 @@ fn a_parked_codex_capacity_retry_keeps_its_rollout_and_prompt_on_a_lineage_error
                 .as_deref()
                 .is_some_and(|text| text.contains(prompt))
         );
-        app.deps
-            .store
-            .set_account_state(&account, AccountStatus::Ok, Some("{}"), None, app.now())
-            .await?;
+        add_codex_account(&app, "replacement", &codex_auth("2026-11-01T10:00:00Z")).await?;
 
         let db = rusqlite::Connection::open(data.join("yulius.db"))?;
         db.execute(
@@ -2165,9 +2193,28 @@ fn a_parked_codex_capacity_retry_keeps_its_rollout_and_prompt_on_a_lineage_error
         )?;
         assert_eq!(held.status, TaskStatus::WaitingCapacity);
         assert_eq!(pending.as_ref().map(|p| &p.id), Some(&pause.id));
-        assert_eq!(app.deps.store.attempts(&id).await?.len(), 1);
+        assert_eq!(app.deps.store.attempts(&id).await?.len(), 2);
 
-        app.resume_round().await;
+        let (recorded, recorded_rx) = std::sync::mpsc::channel();
+        let (go, wait) = std::sync::mpsc::channel::<()>();
+        yulius_app::race::on(
+            yulius_app::race::Point::RunRecorded,
+            Path::new(id.as_str()),
+            move || {
+                let _ = recorded.send(());
+                let _ = wait.recv_timeout(Duration::from_secs(30));
+            },
+        );
+        let resumed = {
+            let app = app.clone();
+            tokio::spawn(async move { app.resume_round().await })
+        };
+        tokio::task::spawn_blocking(move || recorded_rx.recv_timeout(Duration::from_secs(30)))
+            .await??;
+        let visible = crate::parking::assert_cold_screen(&data, &id, &caller, &parked_screen).await;
+        go.send(())?;
+        resumed.await?;
+        visible?;
         wait_for(
             "the held next prompt in the original rollout",
             Duration::from_secs(30),
