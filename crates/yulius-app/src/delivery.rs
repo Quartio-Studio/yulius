@@ -97,6 +97,13 @@ const GOAL_EXCERPT_CHARS: usize = 2_000;
 
 const DIRTY_WORKTREE: &str = "the task worktree has uncommitted changes; commit (or discard) them first so the pull request contains exactly what was validated";
 
+#[derive(Default)]
+pub(crate) struct ParkingPrs {
+    checkout: Option<String>,
+    watched: Option<u64>,
+    pulls: Vec<(u64, String)>,
+}
+
 /// The persisted delivery stage of one task.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeliveryRecord {
@@ -3828,70 +3835,79 @@ impl App {
         }
     }
 
-    /// Local, zero-GitHub-call check for `parking.rs` (SPEC-553 PRK-103): whether `task` has an
-    /// unpublished clean committed fast-forward repair on `task.branch` above `failing_pr_head`
-    /// with no recorded `push_problem`.
-    pub(crate) async fn open_pr_repair_pending_locally(
+    /// The checked-out task commit. A different checkout has no task branch commit to publish.
+    async fn parking_checkout(&self, task: &TaskRecord) -> AppResult<Option<String>> {
+        let (Some(path), Some(branch)) = (&task.worktree_path, &task.branch) else {
+            return Ok(None);
+        };
+        let path = std::fs::canonicalize(path).map_err(AppError::internal)?;
+        let trees = self.deps.git.worktrees(&path).await?;
+        let tree = trees
+            .iter()
+            .find(|tree| tree.path == path)
+            .ok_or_else(|| AppError::internal("task checkout missing from registered worktrees"))?;
+        if tree.branch.as_ref() != Some(branch) {
+            return Ok(None);
+        }
+        let head = self
+            .deps
+            .git
+            .resolve_commit(&path, "HEAD")
+            .await?
+            .ok_or_else(|| AppError::internal("unreadable task checkout HEAD"))?;
+        Ok(Some(head))
+    }
+
+    /// Validate the Git facts again after remote lookups and the host probe.
+    pub(crate) async fn parking_prs_still_current(
         &self,
         task: &TaskRecord,
-        failing_pr_head: &str,
-    ) -> bool {
-        let (Some(branch), Some(worktree)) =
-            (task.branch.as_deref(), task.worktree_path.as_deref())
-        else {
-            return false;
-        };
-        let path = Path::new(worktree);
-        let Some(head) = self
-            .deps
-            .git
-            .log(path, "HEAD", 1)
-            .await
-            .ok()
-            .and_then(|log| log.into_iter().next())
-            .map(|c| c.sha)
-        else {
-            return false;
-        };
-        if head.eq_ignore_ascii_case(failing_pr_head) || self.has_push_problem_for(&task.id, &head)
-        {
-            return false;
+        facts: &ParkingPrs,
+    ) -> AppResult<bool> {
+        use yulius_domain::ci::RunState;
+        if facts.pulls.is_empty() {
+            return Ok(true);
         }
-        // Already published locally (by Yulius or on `origin/<branch>`): do not defer parking even
-        // if no new `CiRunRecord` exists yet (SPEC-553 PRK-103).
-        if self
-            .existing_runtime(&task.id)
-            .and_then(|rt| rt.auto_pr_head.lock().ok().and_then(|g| g.clone()))
-            .is_some_and(|pushed| pushed.eq_ignore_ascii_case(&head))
-        {
-            return false;
+        if self.parking_checkout(task).await? != facts.checkout {
+            return Ok(false);
         }
-        if let Ok(Some(remote)) = self
-            .deps
-            .git
-            .resolve_commit(path, &format!("refs/remotes/origin/{branch}"))
-            .await
-            && (remote.eq_ignore_ascii_case(&head)
-                || matches!(
-                    self.deps.git.is_ancestor(path, &head, &remote).await,
-                    Ok(true)
-                ))
-        {
-            return false;
+        for (number, head) in &facts.pulls {
+            let runs = self
+                .deps
+                .store
+                .ci_runs_for_sha(&task.sandbox_id, head)
+                .await?;
+            let Some(own) = runs
+                .iter()
+                .find(|run| run.reference == yulius_domain::ci::CiRef::PullRequest(*number))
+            else {
+                continue;
+            };
+            if matches!(
+                own.state,
+                RunState::Failed | RunState::Error | RunState::Cancelled
+            ) {
+                return Ok(false);
+            }
+            if own.state.is_active() {
+                if facts.watched != Some(*number) || !self.config.ci.enabled {
+                    return Ok(false);
+                }
+                let recent = self
+                    .deps
+                    .store
+                    .ci_runs(&task.sandbox_id, crate::pr_watch::RUNS_READ)
+                    .await?;
+                if recent
+                    .iter()
+                    .find(|r| r.reference == own.reference)
+                    .is_none_or(|r| r.id != own.id || !r.state.is_active())
+                {
+                    return Ok(false);
+                }
+            }
         }
-        if !self.worktree_on_branch(path, branch, &head).await {
-            return false;
-        }
-        if !matches!(self.deps.git.has_changes(path).await, Ok(false)) {
-            return false;
-        }
-        matches!(
-            self.deps
-                .git
-                .is_ancestor(path, failing_pr_head, &head)
-                .await,
-            Ok(true)
-        )
+        Ok(true)
     }
 
     /// Whether the task's worktree head carries work its merged pull request (`record`) did not
@@ -4029,6 +4045,159 @@ impl App {
             )),
             Err(err) => unknown(err.public_message()),
         }
+    }
+
+    /// Verify that the task's own current PR leaves no work in the session about to park.
+    /// The parked PR watcher delivers the result of an active Yulius CI run on this head.
+    pub(crate) async fn verify_parking_prs(
+        &self,
+        task: &TaskRecord,
+        record: Option<&DeliveryRecord>,
+    ) -> AppResult<Option<ParkingPrs>> {
+        let tracked = record
+            .filter(|r| r.stage == DeliveryStage::PrOpen)
+            .map(|r| {
+                r.pr_number.ok_or_else(|| {
+                    AppError::Internal("open delivery has no pull request number".into())
+                })
+            })
+            .transpose()?;
+        let sandbox = self.dlv_sandbox_of(task).await?;
+        // A playground or an instance with no GitHub App can still park an answered task.
+        // A known open PR requires verification, even when its installation is unavailable.
+        if sandbox.is_playground() || !self.github_configured().await? {
+            return Ok(tracked.is_none().then(ParkingPrs::default));
+        }
+        let token = self.dlv_installation_token(&sandbox).await?;
+        let branch_pulls = || async {
+            let Some(branch) = task.branch.as_deref() else {
+                return Ok(Vec::new());
+            };
+            let mut pulls = self
+                .deps
+                .github
+                .list_pulls(
+                    &token,
+                    &sandbox.repo_owner,
+                    &sandbox.repo_name,
+                    Some(branch),
+                )
+                .await?;
+            pulls.retain(|pull| !pull.from_fork && pull.head == branch && is_open(pull));
+            pulls.sort_unstable_by_key(|pull| pull.number);
+            Ok::<_, AppError>(pulls)
+        };
+        // Branch-scoped discovery also finds PRs omitted by a partial sandbox overview
+        // and new PRs opened externally while an older recorded delivery is being reconciled.
+        let branch = branch_pulls().await?;
+        if branch.len() > MAX_PULLS {
+            return Ok(None);
+        }
+        let numbers: std::collections::BTreeSet<_> =
+            branch.iter().map(|p| p.number).chain(tracked).collect();
+        if numbers.is_empty() {
+            return Ok(Some(ParkingPrs::default()));
+        }
+        let checkout = self.parking_checkout(task).await?;
+        let mut pulls = Vec::new();
+        for number in numbers {
+            if record.is_some_and(|r| past_merge(&r.stage) && r.pr_number == Some(number)) {
+                continue;
+            }
+            let Some(pull) = self
+                .pull_allows_parking(task, &sandbox, &token, number, tracked == Some(number))
+                .await?
+            else {
+                return Ok(None);
+            };
+            if let Some(head) = &checkout
+                && !pull.from_fork
+                && task.branch.as_ref() == Some(&pull.head)
+                && head != &pull.head_sha
+                && !self
+                    .deps
+                    .git
+                    .is_ancestor(
+                        Path::new(task.worktree_path.as_deref().ok_or(AppError::NotFound)?),
+                        head,
+                        &pull.head_sha,
+                    )
+                    .await?
+            {
+                return Ok(None);
+            }
+            pulls.push((number, pull.head_sha));
+        }
+        Ok((branch_pulls().await? == branch).then_some(ParkingPrs {
+            checkout,
+            pulls,
+            watched: tracked,
+        }))
+    }
+
+    /// Check one PR and reconfirm its head and mergeability after the slower checks.
+    async fn pull_allows_parking(
+        &self,
+        task: &TaskRecord,
+        sandbox: &SandboxRecord,
+        token: &Secret,
+        number: u64,
+        watched: bool,
+    ) -> AppResult<Option<GhPull>> {
+        use yulius_domain::ci::CiRef;
+        let read = || {
+            self.deps
+                .github
+                .get_pull(token, &sandbox.repo_owner, &sandbox.repo_name, number)
+        };
+        let pull = read().await?;
+        if !is_open(&pull) {
+            return Ok(pull.merged.then_some(pull));
+        }
+        if pull.behind {
+            return Ok(None);
+        }
+        let head = self.dlv_checks_at(sandbox, token, &pull.head_sha).await?;
+        if !head.unreadable.is_empty() {
+            return Ok(None);
+        }
+        let profile = delivery_profile(sandbox);
+        let checks = tested_checks_word(&profile, head.word);
+        let settled = match checks {
+            "success" | "none" => true,
+            "pending" if watched && self.config.ci.enabled => self
+                .deps
+                .store
+                .ci_runs(&sandbox.id, crate::pr_watch::RUNS_READ)
+                .await?
+                .iter()
+                .find(|run| run.reference == CiRef::PullRequest(number))
+                .is_some_and(|run| run.sha == pull.head_sha && run.state.is_active()),
+            _ => false,
+        };
+        if !settled {
+            return Ok(None);
+        }
+        // The local merge-driver check uses the configured integration branch. For a
+        // PR targeting another branch, GitHub computes mergeability against its real base.
+        let mergeable = if pull.base == profile.integration_branch {
+            self.local_conflict(task, sandbox, &pull.head_sha)
+                .await
+                .map_or(pull.mergeable == Some(true), |conflict| !conflict)
+        } else {
+            pull.mergeable == Some(true)
+        };
+        if !mergeable {
+            return Ok(None);
+        }
+        // Checks and local conflict detection can take long enough for another push.
+        let current = read().await?;
+        let same_open_head = is_open(&current)
+            && !current.behind
+            && current.head_sha == pull.head_sha
+            && current.base == pull.base
+            && current.mergeable == pull.mergeable;
+        Ok((current.merged || same_open_head).then_some(current))
     }
 
     /// The part of [`App::task_is_done`] that needs no GitHub call: the turn ended, no background

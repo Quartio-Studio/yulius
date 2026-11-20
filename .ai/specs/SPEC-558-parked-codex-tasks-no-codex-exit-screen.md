@@ -31,10 +31,14 @@ Task #517 displayed Codex's exit instructions. The host drained shutdown output 
 - [x] Preserve the parked grid until the resumed host attaches
 - [x] Verify chain eligibility and refresh stale PR observations
 - [x] Keep unfinished plans, specs and goals live
-- [ ] Verify PR checks and unpublished repairs before parking
+- [x] Verify PR checks and unpublished repairs before parking
 - [ ] Give parked PRs fair status reads and gate dependent tasks
 - [ ] Deliver bounded Codex goal continuation to dev
 - [ ] Recover screens from tasks parked before the upgrade
+
+The owner supplied the ordering of #325. On November 20 UTC the last answer at 04:22:19 reported pending CI, review and mutation checks on `f86cbd49f`. Ordinary PR #1461 CI failed at 04:30:56. The digest parked the waiting session at 04:52:52. It resumed at 10:30:20 and resubmitted at 10:36:52. The process was absent for 337.46 minutes. Step 10 covers this ordering, including a lagging GitHub status, a newer local commit during the parking decision, and a published head that exists only in another clone.
+
+Step 11 also covers the owner's November 20 observation from quartio-v2 #331. All four steps were complete and ordinary CI on open PR #1481 was green. The integration candidate at `e57c30b8c` failed at 15:08:43 UTC, four seconds before the daemon restarted. Run `dc945ada-86fc-42ba-a4d1-bbc8240130ce` reported 292.1 ms against a 200 ms search limit in shard 2. At 15:09:25 the board showed Done with the PR unarmed. Attempt 2 returned to Working at 15:09:31, rearmed at 15:09:35 and went idle at 15:09:41, before the operator message at 15:09:43. The observation establishes a transient display error. The restart fixture checks the waiting task, the parked view and the dependent task against the applicable candidate. Verify delivery of its recorded reason to the existing owner, including deduplication after rearm or earlier notification. A stale display alone triggers no wake or new work. Human decisions take precedence and superseded candidates are excluded.
 
 ## Acceptance criteria
 
@@ -76,6 +80,15 @@ A human request can take precedence over unfinished work in the task list. Both 
 - The first local guard at `311e7e09b` passed 41 parking tests. Review found that a step could be committed after the final eligibility read and that a failed spec-status read could let digest parking proceed. Three deterministic regressions reproduced one incorrect park each on that head. They cover a step added before the park intent, an in-progress step writer, and a recorded spec made unreadable in SQLite. The spec fixture restores the status, verifies that it was in progress, and parks successfully after completion.
 
 - Independent review approved the local parking guard at `dad583243`. All 44 scoped Rust tests passed, including grace and digest parking, concurrent updates and recovery after the stored spec becomes readable. Repository contracts and formatting passed.
+
+- PR #1505 delivered local plan, spec and goal guards at dev commit `21810b880`, whose tree matched the passing merge train.
+- The reverse-order fixture initially passed against the existing PR verification candidate. Its ordinary failed CI run was durable before parking while GitHub still showed success. The human decision held the watch, then clearing it produced one actionable notice in the existing attempt. The second-clone fixture on that candidate reproduced one incorrect park. The task checkout did not have the upstream commit needed for the ancestry comparison.
+- The integrated test `a_ci_failure_before_digest_parking_reaches_the_idle_author_once` runs a synthetic agent turn with ordinary CI pending, records a failed run before the digest, and leaves the remote status green. An open human decision holds both parking and the notification. Once cleared, the watcher sends the ordinary failure exactly once to the original attempt and ignores the obsolete train. The companion test `parked_task_parks_safely_during_ci_and_auto_wakes_on_actionable_check_results` covers failure after parking.
+- The second-clone test keeps the session live through an unknown upstream SHA and through a new local commit at the final host probe. It permits parking once publication covers the checkout. On `ec068537d` two further regressions each observed one incorrect park, when GitHub required a base update and when an unwatched CI rerun started during the final probe. Both pass on the integrated change. Independent review approved `b64f4aea4`. The scoped parking and PR-watch run passed all 69 tests.
+- The review-fix mutation campaign reported `mutants: 32 listed, 9 caught, 2 missed, 0 timed out, 21 unviable, 0 not reached (bound 30 min, took 1095 s)`. Two additional tests caught the survivors. A different active head takes over the watcher at the final host probe, and a recorded PR absent from branch discovery falls behind its base during the checks read. Each weakened condition produced one incorrect park in the corresponding test. The test-only changes preserve the independently reviewed product code.
+- The final scoped nextest run passed all 72 parking, PR-watch and eligibility tests, including both mutation regressions. Clippy passed on the app and integration targets. Repository contracts and Rust formatting passed. Vidoc was disabled.
+- Live verification still needs an instance running this Yulius release. On a disposable task, observe a failed ordinary run between Stop and the scheduled digest, then verify that the same live attempt receives one watcher prompt despite lagging remote status. Repository tests used real Git and synthetic agents. Quartio-v2 #325 remains under its owner's control.
+- A test-only reproduction for step 11 reopened the database with four completed steps, a green ordinary head and a newer failed single-member candidate. The waiting task counted as Done. The live owner received one generic green-head rearm prompt that omitted the candidate's failure. This fixture does not establish which prompt reached the real #331 owner. Its attempt resumed work before the operator message.
 
 ## Delivery slices
 

@@ -1607,7 +1607,8 @@ person must act first (a prompt on screen, `needs_you`) or may have a draft in t
 (SPEC-480: the notice stays untold and is tried again):
 
 - a red run at its head (each failed job, its exit code and up to 5 failing test names read from
-  the kept failures, and the `ci_status` run and job), or one that errored;
+  the kept failures, partial observations from siblings stopped by a failed job, and the exact
+  `ci_status` run), or one that errored;
 - a red merge candidate of two or more holding it, with "do not re-arm, merge or push";
 - a conflict with the integration branch (checked in the task's worktree), once per head;
 - how its armed merge ended (the slot's outcome), and its merge (`merged_text`), after which the
@@ -2072,8 +2073,7 @@ session as a close does (graceful shutdown, then the escalation). The run's end,
 its loss, makes the task `parked` with its activity (`settle_parked`) and audits `task.parked`.
 `parked` is neither live nor resting: no slot (`sessions_in_use` counts live runs only), its
 worktree, claims, `needs_you` and delivery stay, and the list groups it as an idle run with no
-live overlay. Idle sessions continue to park safely while CI runs on an open pull request (only an
-unpublished clean fast-forward CI repair awaiting publication defers parking). While the park is
+live overlay. Parking verifies the recorded PR and open repository PRs on the task branch. The published head must contain the current task checkout. An unreadable or failing check keeps the author live, including a failed ordinary CI run whose GitHub status still looks green. The PR watcher can take over pending checks for an active ordinary run on the recorded head. While the park is
 under way nothing is typed into the session. The web terminal treats `parked` as a non-live ended
 status so it shows the calm parked banner (distinct from a crash or operator stop) and a visible
 `Resume` button (plus `Reply` in the waiting bar for the owner), disables cursor blink, and wakes
@@ -3968,6 +3968,9 @@ job ends. `ci_status` with a `run_id` shows them before the end of a failed job'
 that failed early in a long job stays diagnosable
 ([SPEC-145](../.ai/specs/SPEC-145-fix-460-485-ci-keeps-a-failed-test-s-out.md),
 [decision 0119](decisions/0119-ci-keeps-failing-tests-output-from-the-whole-job.md)).
+On a failed run, retained blocks from a sibling stopped by fail-fast share the run detail budget.
+Asking for the job by name shows its full retained blocks.
+[Decision 0401](decisions/0401-red-ci-notices-include-partial-sibling-failures.md)
 
 ## CI job waits and time limits
 

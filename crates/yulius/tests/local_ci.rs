@@ -5060,28 +5060,37 @@ async fn a_raised_job_limit_starts_waiting_jobs_while_one_runs() -> TestResult {
     Ok(())
 }
 
-/// Two jobs per run: `a` runs until `<data>/go-a` exists and `b` until `<data>/go-b`; each
-/// writes `s` to `<data>/log` when it starts and `e` when it ends.
+/// Each job logs its start and end, and waits for its own release or a release of all jobs.
 fn two_logged_toml(data: &Path) -> String {
     let dir = data.display();
     let job = |name: &str| {
         format!(
             "[[ci.jobs]]\nname = \"{name}\"\ncpus = 1\ncommand = 'echo s >> \"{dir}/log\"; \
-             while [ ! -e \"{dir}/go-{name}\" ]; do sleep 0.05; done; echo e >> \"{dir}/log\"'\n"
+             while [ ! -e \"{dir}/go-$YULIUS_CI_RUN-{name}\" ] && [ ! -e \"{dir}/go-all\" ]; do sleep 0.05; done; echo e >> \"{dir}/log\"'\n"
         )
     };
-    format!("{}\n{}", job("a"), job("b"))
+    format!("{}\n{}", job("slot-waiter"), job("b"))
 }
 
 /// SPEC-459 HSL-007: lowered in Settings while jobs run, the limit lets them finish and starts
 /// no waiting job beside them: with two of four jobs running and the limit lowered to one, no
 /// two jobs run at once after the first of them ended.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_lowered_job_limit_starts_no_job_beside_the_ones_it_lets_finish() -> TestResult {
     use yulius_domain::limits::Limit;
-    let f = fixture_with(false, two_logged_toml).await?;
+    let f = fixture_tuned(false, two_logged_toml, None, |config| {
+        config.ci.job_timeout = WAIT * 3;
+    })
+    .await?;
     f.h.app.load_limits([(Limit::CiJobs, 2)].into()).await;
     let admin = support::superadmin_bearer(&f.h).await?;
+    // Make both runs of b take the initial slots, a valid admission order.
+    let (dev_at, dev_go) = support::hold_point(
+        yulius_app::race::Point::CiJobAdmission,
+        "branch/dev/slot-waiter",
+    );
+    let (pr_at, pr_go) =
+        support::hold_point(yulius_app::race::Point::CiJobAdmission, "pr/1/slot-waiter");
     f.h.app.ci_sync_sandbox(&f.sandbox).await?;
     let in_state = |runs: &[(String, Vec<Value>)], state: &str| {
         runs.iter()
@@ -5089,10 +5098,16 @@ async fn a_lowered_job_limit_starts_no_job_beside_the_ones_it_lets_finish() -> T
             .filter(|job| job["state"] == state)
             .count()
     };
-    until_runs(&f, |runs| {
-        in_state(runs, "running") == 2 && in_state(runs, "queued") == 2
+    let runs = until_runs(&f, |runs| {
+        in_state(runs, "running") == 2
+            && in_state(runs, "queued") == 2
+            && std::fs::read_to_string(f.data.join("log")).is_ok_and(|log| log == "s\ns\n")
     })
     .await?;
+    support::point_reached(dev_at).await?;
+    support::point_reached(pr_at).await?;
+    dev_go.send(())?;
+    pr_go.send(())?;
     let lowered = call(
         &f.h.router,
         Method::PUT,
@@ -5102,26 +5117,24 @@ async fn a_lowered_job_limit_starts_no_job_beside_the_ones_it_lets_finish() -> T
     )
     .await?;
     assert_eq!(lowered.status, StatusCode::OK, "{}", lowered.body);
-    std::fs::write(f.data.join("go-a"), "")?;
+    let (run, job) = runs
+        .iter()
+        .find_map(|(run, jobs)| {
+            let job = jobs.iter().find(|job| job["state"] == "running")?;
+            Some((run, job["name"].as_str()?))
+        })
+        .ok_or("a running job to release")?;
+    std::fs::write(f.data.join(format!("go-{run}-{job}")), "")?;
     until_runs(&f, |runs| in_state(runs, "passed") >= 1).await?;
-    std::fs::write(f.data.join("go-b"), "")?;
+    std::fs::write(f.data.join("go-all"), "")?;
     f.settle().await?;
 
     let log = std::fs::read_to_string(f.data.join("log"))?;
-    let (mut running, mut ended) = (0_u32, 0_u32);
-    for line in log.lines() {
-        if line == "s" {
-            running += 1;
-            assert!(
-                ended == 0 || running <= 1,
-                "two at once under a limit of 1: {log}"
-            );
-        } else {
-            running = running.saturating_sub(1);
-            ended += 1;
-        }
-    }
-    assert_eq!(ended, 4, "{log}");
+    assert_eq!(
+        log.lines().collect::<Vec<_>>(),
+        ["s", "s", "e", "e", "s", "e", "s", "e"],
+        "both initial jobs must finish before the other jobs run one at a time"
+    );
     Ok(())
 }
 
