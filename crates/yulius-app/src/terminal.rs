@@ -125,7 +125,10 @@ impl App {
                     if runtime.hub.size() != before && runtime.has_run().await {
                         runtime.hub.settle(watch, since, REDRAW_WAIT).await;
                     }
-                } else if task.status != yulius_domain::task::TaskStatus::Parked {
+                } else if task.status != yulius_domain::task::TaskStatus::Parked
+                    && !(task.status == yulius_domain::task::TaskStatus::Queued
+                        && runtime.hub.has_output())
+                {
                     // No run yet (queued, about to start): the screen takes the size now, so the
                     // first state already says it and the run spawns at it (SPEC-050 TRM-101; a
                     // viewer of a task just created saw 120x40 first on the fast VM).

@@ -245,82 +245,20 @@ impl App {
 const PARKED_SCREEN: &str = "parked-screen";
 const PARKING_SCREEN: &str = "parked-screen.pending";
 
-/// Match the trailing Codex exit instructions, including when the top of the
-/// block has scrolled off a small legacy screen. Join wrapped physical rows
-/// for recognition and keep their original row numbers for erasing.
-fn legacy_footer_start(screen: &vt100::Screen, lines: &[String]) -> Option<usize> {
-    let mut logical: Vec<(usize, String)> = Vec::new();
-    for (row, line) in lines.iter().enumerate() {
-        if row > 0 && screen.row_wrapped(u16::try_from(row - 1).ok()?) {
-            logical.last_mut()?.1.push_str(line);
-        } else {
-            logical.push((row, line.clone()));
-        }
-    }
-    let mut start = logical
-        .iter()
-        .rposition(|(_, line)| !line.trim().is_empty())?;
-    let clipped = lines
-        .iter()
-        .rev()
-        .take(2)
-        .any(|line| !line.trim().is_empty());
-    let has_selection = logical[start]
-        .1
-        .trim_start()
-        .starts_with("Or run codex resume and select ");
-    if has_selection {
-        if start == 0 {
-            return clipped.then_some(logical[start].0);
-        }
-        start -= 1;
-    }
-    let id = logical[start].1.trim().strip_prefix("codex resume ")?;
-    if start == 0 {
-        return ((has_selection || clipped) && yulius_domain::harness::valid_session_id(id))
-            .then_some(logical[start].0);
-    }
-    if logical[start - 1].1.trim() == "To continue this session, run:" {
-        start -= 1;
-        if start > 0 && logical[start - 1].1.starts_with("Token usage:") {
-            start -= 1;
-        }
-        return Some(logical[start].0);
-    }
-    None
-}
-
-/// Formats a parking notice below the last occupied terminal row. Old snapshots
-/// may still contain the Codex shutdown block, beginning at a physical row.
-fn with_park_notice(
-    cols: u16,
-    rows: u16,
-    bytes: &[u8],
-    quiet_ms: Option<i64>,
-    legacy_codex: bool,
-) -> (u16, u16, Vec<u8>) {
+/// Append one parking notice after the last occupied row of the captured screen.
+fn with_park_notice(cols: u16, rows: u16, bytes: &[u8], quiet_ms: i64) -> (u16, u16, Vec<u8>) {
     let mut parser = vt100::Parser::new(rows.max(1), cols.max(1), 0);
     parser.process(bytes);
-    let lines: Vec<_> = parser.screen().rows(0, cols).collect();
-    let footer = legacy_codex
-        .then(|| legacy_footer_start(parser.screen(), &lines))
-        .flatten();
-    if let Some(row) = footer {
-        parser.process(format!("\x1b[{};1H\x1b[J", row + 1).as_bytes());
-    }
-    let kept = &lines[..footer.unwrap_or(lines.len())];
-    let last = kept.iter().rposition(|line| !line.trim_end().is_empty());
-    let reason = quiet_ms.map_or_else(
-        || "because it stayed idle after its turn ended".to_owned(),
-        |ms| {
-            format!(
-                "after {} idle since its turn ended",
-                yulius_domain::ci::format_duration(ms)
-            )
-        },
-    );
+    let last = parser
+        .screen()
+        .rows(0, cols)
+        .enumerate()
+        .filter(|(_, line)| !line.trim_end().is_empty())
+        .map(|(row, _)| row)
+        .last();
+    let elapsed = yulius_domain::ci::format_duration(quiet_ms);
     let notice = format!(
-        "Yulius parked this session {reason}. Send a message or choose Resume to continue."
+        "Yulius parked this session after {elapsed} idle since its turn ended. Send a message or choose Resume to continue."
     );
     let next = last.map_or(1, |row| row + 2);
     // A full TUI needs another row. Keep the first row as well as the last
@@ -338,7 +276,7 @@ pub(crate) fn save_parked_screen(
     quiet_ms: i64,
 ) -> std::io::Result<()> {
     let (bytes, (cols, rows)) = hub.formatted_screen();
-    let (cols, rows, screen) = with_park_notice(cols, rows, &bytes, Some(quiet_ms), false);
+    let (cols, rows, screen) = with_park_notice(cols, rows, &bytes, quiet_ms);
     let mut record = format!("{cols} {rows}\n").into_bytes();
     record.extend(screen);
     crate::supervisor::write_private_file(&dir.join(PARKING_SCREEN), &record)
@@ -356,60 +294,47 @@ pub(crate) fn publish_parked_screen(dir: &Path) -> Option<(u16, u16, Vec<u8>)> {
 }
 
 impl App {
-    /// The visible final screen. Old parked attempts have only the ordinary final
-    /// screen and the state span that ended when the idle task parked.
+    /// Restore the capture for a committed park, or the ordinary final screen.
     pub(crate) async fn ended_screen(
         &self,
         run: &AttemptRecord,
         task: &TaskRecord,
     ) -> Option<(u16, u16, Vec<u8>)> {
         let dir = Path::new(&run.run_dir);
+        // Read the pending name first: a concurrent rename then leaves either these
+        // bytes or the committed name visible to this reader.
+        let pending = crate::supervisor::read_saved_screen(&dir.join(PARKING_SCREEN));
+        crate::race::reached(crate::race::Point::ParkScreenRead, dir);
         if let Some(saved) = crate::supervisor::read_saved_screen(&dir.join(PARKED_SCREEN)) {
             return Some(saved);
         }
-        if task.status != TaskStatus::Parked
-            && !matches!(run.exit_reason.as_deref(), Some("parked" | "lost"))
-        {
+        let Some(pending) = pending else {
             return crate::supervisor::read_final_screen(dir);
-        }
-        // Older attempts and a restart between committing the state and renaming its
-        // snapshot: a switch or an escalated loss can also have settled as Parked.
-        let transition = self
-            .deps
-            .store
-            .subject_spans(
-                &task.sandbox_id,
-                yulius_domain::stages::SubjectKind::Task,
-                task.id.as_str(),
-                32,
-            )
-            .await
-            .ok()
-            .and_then(|spans| {
-                spans.into_iter().rev().find(|span| {
-                    span.kind == "state"
-                        && span.ended_at == run.ended_at
-                        && span.outcome.as_deref() == Some("parked")
+        };
+        // A restart between the state commit and the rename. A stop that won the
+        // transition keeps its ordinary screen, including after a queued resume.
+        if task.status == TaskStatus::Parked
+            || self
+                .deps
+                .store
+                .subject_spans(
+                    &task.sandbox_id,
+                    yulius_domain::stages::SubjectKind::Task,
+                    task.id.as_str(),
+                    32,
+                )
+                .await
+                .is_ok_and(|spans| {
+                    spans.iter().any(|span| {
+                        span.kind == "state"
+                            && span.ended_at == run.ended_at
+                            && span.outcome.as_deref() == Some("parked")
+                    })
                 })
-            });
-        if task.status != TaskStatus::Parked && transition.is_none() {
-            return crate::supervisor::read_final_screen(dir);
+        {
+            return Some(pending);
         }
-        if let Some(saved) = crate::supervisor::read_saved_screen(&dir.join(PARKING_SCREEN)) {
-            return Some(saved);
-        }
-        let quiet_ms = transition
-            .filter(|span| matches!(span.name.as_str(), "done" | "idle"))
-            .and_then(|span| span.duration_ms());
-        let (cols, rows, bytes) =
-            crate::supervisor::read_final_screen(dir).unwrap_or((80, 24, Vec::new()));
-        Some(with_park_notice(
-            cols,
-            rows,
-            &bytes,
-            quiet_ms,
-            run.harness == yulius_domain::harness::Harness::Codex,
-        ))
+        crate::supervisor::read_final_screen(dir)
     }
 }
 
@@ -521,8 +446,7 @@ mod tests {
 
     #[test]
     fn parking_preserves_every_occupied_row_and_adds_one_timed_notice() {
-        let (cols, rows, bytes) =
-            with_park_notice(72, 2, b"first row\r\nlast row", Some(1_800_000), false);
+        let (cols, rows, bytes) = with_park_notice(72, 2, b"first row\r\nlast row", 1_800_000);
         let hub = crate::hub::Hub::new(cols, rows);
         hub.reset(1, &bytes, cols, rows);
         let shown = hub.screen_text();
@@ -534,45 +458,6 @@ mod tests {
                 .trim_end()
                 .ends_with("Send a message or choose Resume to continue.")
         );
-    }
-
-    #[test]
-    fn legacy_codex_exit_instructions_scrolled_past_token_usage_are_removed() {
-        let (cols, rows, bytes) = with_park_notice(80, 3,
-            b"To continue this session, run:\r\n  codex resume synthetic-rollout\r\nOr run codex resume and select Resolve compatibility",
-            None, true);
-        let hub = crate::hub::Hub::new(cols, rows);
-        hub.reset(1, &bytes, cols, rows);
-        let shown = hub.screen_text();
-        assert!(shown.starts_with("Yulius parked"), "{shown}");
-        assert!(!shown.contains("codex resume"), "{shown}");
-    }
-
-    #[test]
-    fn a_codex_resume_command_in_a_parked_answer_remains_visible() {
-        for command in [
-            "codex resume --last",
-            "Or run codex resume and select yesterday's task.",
-        ] {
-            let answer = format!("To reopen yesterday's worktree, use\r\n{command}");
-            let (cols, rows, bytes) = with_park_notice(80, 8, answer.as_bytes(), None, true);
-            let hub = crate::hub::Hub::new(cols, rows);
-            hub.reset(1, &bytes, cols, rows);
-            assert!(hub.screen_text().contains(command), "{command}");
-        }
-    }
-
-    #[test]
-    fn a_single_line_resume_suggestion_with_room_above_the_footer_is_an_answer() {
-        for line in [
-            "Or run codex resume and select yesterday's task.",
-            "codex resume yesterday",
-        ] {
-            let (cols, rows, bytes) = with_park_notice(80, 24, line.as_bytes(), None, true);
-            let hub = crate::hub::Hub::new(cols, rows);
-            hub.reset(1, &bytes, cols, rows);
-            assert!(hub.screen_text().starts_with(line), "{line}");
-        }
     }
 
     fn idle() -> ParkFacts {

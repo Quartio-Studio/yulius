@@ -30,6 +30,7 @@ Task #517 displayed Codex's exit instructions. The host drained shutdown output 
 - [ ] Deliver the parked screen and native resume to dev
 - [ ] Verify chain eligibility and refresh stale PR observations
 - [ ] Deliver goal continuation and parking eligibility to dev
+- [ ] Recover screens from tasks parked before the upgrade
 
 ## Acceptance criteria
 
@@ -62,3 +63,5 @@ The third review requested separate corrections to historical screen recognition
 - First delivery slice addresses the third review's terminal finding. The regression demonstrated that a legitimate final answer containing `codex resume --last` lost the command. Legacy cleanup now requires the adjacent instruction heading when a command follows earlier content. A clipped command at the top must name a valid provider session ID. The three PR eligibility findings belong to the second delivery slice and remain open until that slice's tests pass.
 - Review of the first slice at `185467e7d` found a clipped phone viewport, a stop overtaking parking and a second false positive in legacy footer recognition. Chromium reproduced the clipping with a 220 × 90 grid on a 390 × 844 phone. The parked grid now scales below the normal live font floor when needed. All five parked-page tests passed, including pixel bounds for the last row. Both Rust regressions failed on the reviewed code. The cold screen readers now check the committed task transition when a stop overtakes a park, and both resume instruction forms require surrounding footer text when earlier content is visible.
 - The second terminal review of `bb9de3dd5` identified queued resumes whose previous attempt recorded a loss or parked during a switch, and a legitimate standalone resume suggestion with room left in the viewport. The switch test and the standalone-answer test failed on that head. The supervisor now renames the captured screen after the Parked transition commits. Both cold readers recognize the committed capture regardless of how the attempt ended. The legacy reader requires corroborating footer lines or visible evidence that a standalone suffix could have scrolled to the top.
+
+- The third terminal review passed the parked and native resume regressions and found one queue-specific viewport defect. Chromium showed 39 instead of 90 rows for a queued owner. The first PR now captures new parks and preserves the grid for queued resumes. Recovery using only a historical final screen is a separate delivery, following goal and eligibility changes.

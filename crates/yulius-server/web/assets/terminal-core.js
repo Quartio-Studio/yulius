@@ -679,8 +679,8 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
     }
     // An ended session has no PTY to follow: fit it to this screen (a desktop-sized screen would
     // otherwise overflow a phone).
-    const parked = state.status === 'parked' || exited?.status === 'parked';
-    const mirroring = Boolean(state.cols && state.rows && (parked || (!state.controller && !exited)));
+    const savedGrid = state.status === 'queued' || state.status === 'parked' || exited?.status === 'parked';
+    const mirroring = Boolean(state.cols && state.rows && (savedGrid || (!state.controller && !exited)));
     const screen = host.querySelector('.xterm-screen');
     if (screen) screen.style.zoom = '';
     host.classList.toggle('term-mirror', mirroring);
@@ -694,7 +694,7 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
     fitMirror(state.cols, state.rows);
     // The smallest legible live font can still clip a saved desktop grid on a phone.
     // Scale the finished screen as a whole once xterm has laid out its cells.
-    if (parked && screen && shown() && screen.offsetWidth && screen.offsetHeight) {
+    if (savedGrid && screen && shown() && screen.offsetWidth && screen.offsetHeight) {
       const scale = Math.min(fitBox.clientWidth / screen.offsetWidth, fitBox.clientHeight / screen.offsetHeight);
       if (scale < 1) screen.style.zoom = String(scale);
     }

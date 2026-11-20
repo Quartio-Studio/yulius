@@ -762,7 +762,13 @@ async fn assert_cold_screen(
         session_hash: None,
         token: None,
     };
-    let terminal = restart.terminal_open(&ctx, id.as_str(), None).await?;
+    let terminal = restart
+        .terminal_open(
+            &ctx,
+            id.as_str(),
+            (status_of(&restart, id).await.0 == Some(TaskStatus::Queued)).then_some((22, 5)),
+        )
+        .await?;
     assert_eq!(screen(&restart, id), expected);
     drop(terminal);
     let remote = yulius_app::remote::RemoteCaller {
@@ -829,6 +835,15 @@ async fn queued_park_screen(
     assert_cold_screen(data, id, caller, &captured).await?;
     // A restart in the gap between the state commit and the filename change.
     std::fs::rename(dir.join("parked-screen"), dir.join("parked-screen.pending"))?;
+    assert_cold_screen(data, id, caller, &captured).await?;
+    let renamed = dir.to_owned();
+    yulius_app::race::on(yulius_app::race::Point::ParkScreenRead, dir, move || {
+        let published = std::fs::rename(
+            renamed.join("parked-screen.pending"),
+            renamed.join("parked-screen"),
+        );
+        assert!(published.is_ok(), "{published:?}");
+    });
     assert_cold_screen(data, id, caller, &captured).await
 }
 
