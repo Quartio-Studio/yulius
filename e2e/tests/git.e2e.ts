@@ -223,3 +223,16 @@ test('the Git task review follows a request for a person without navigation', as
   await touchTask(browser, 'sb_studio', 12, { needs_you: null });
   await expect(state).toHaveText(initial!);
 });
+
+test('a playground task shows its local squash before delivery and no release after it', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/lab/git', '&guest=1&labtask=1&ambient=0'));
+  const details = browser.locator('.dl-deliver').first();
+  await details.click();
+  const dialog = screen.getByRole('dialog', /^Delivery · #/);
+  await expect(dialog.getByText('Merge: ready')).toBeVisible();
+  await browser.keyboard.press('Escape');
+  await touchTask(browser, 'sb_lab', 1, { delivery: { stage: 'merged_integration', environment: null, pr: null } });
+  await details.click();
+  await expect(dialog.getByText('Nothing is pending at this stage.')).toBeVisible();
+  await expect(dialog.getByText(/Release to production: ready/)).toHaveCount(0);
+});

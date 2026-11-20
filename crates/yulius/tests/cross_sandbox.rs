@@ -1717,6 +1717,39 @@ async fn another_owners_message_and_update_are_refused_before_asking() -> TestRe
     Ok(())
 }
 
+/// The needs_you answer rule still applies across sandboxes. A named teammate may be asked
+/// to send an answer, and withdrawing that name prevents a new card.
+#[tokio::test]
+async fn cross_sandbox_messages_follow_the_open_questions_recipients() -> TestResult {
+    use yulius_app::ports::store_ext::NeedsYouStore;
+    let w = world(100).await?;
+    let (id, number) = task_in(&w, "s2", "bob", json!({"prompt":"Bob", "prepared":true})).await?;
+    let now = w.h.app.now();
+    w.h.store
+        .transition_task(&id, None, TaskStatus::Parked, None, now)
+        .await?;
+    let mut asked: yulius_app::needs_you::NeedsYouRecord = serde_json::from_value(json!({
+        "action":"Choose a date", "at":now.0, "who":["alice"],
+    }))?;
+    w.h.store.set_task_needs_you(&id, Some(&asked), now).await?;
+    let args = json!({"sandbox":"website", "number":number, "text":"Friday"});
+    let accepted = ask_to(&w, CrossAction::Message, args.clone())?.await??;
+    assert_eq!(accepted["outcome"], "waiting");
+    asked.named.who.clear();
+    asked.named.withdrawn.push("alice".to_owned());
+    w.h.store.set_task_needs_you(&id, Some(&asked), now).await?;
+    let result = ask_to(&w, CrossAction::Message, args)?.await?;
+    assert!(
+        result
+            .err()
+            .ok_or("a withdrawn name got a new card")?
+            .public_message()
+            .contains("withdrew")
+    );
+    assert_eq!(requests(&w, &w.alice, "s1").await?.len(), 1);
+    Ok(())
+}
+
 /// An approved message still requires control after the request outlives a server restart.
 #[tokio::test]
 async fn a_restored_request_checks_the_tasks_current_owner_on_approval() -> TestResult {
