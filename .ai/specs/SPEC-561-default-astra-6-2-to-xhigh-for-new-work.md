@@ -36,7 +36,7 @@ as the default. The subscription and service tier are selected independently of 
 
 - [x] Specify the Astra default and the release comparison
 - [x] Resolve inherited effort for fresh and resumed Codex launches
-- [ ] Distinguish inherited effort in task details and creation controls
+- [x] Distinguish inherited effort in task details and creation controls
 - [ ] Verify the change and obtain independent review
 - [ ] Deliver the reviewed change to dev on green CI
 
@@ -81,3 +81,13 @@ comparison. No migration or new measurement infrastructure is required.
 - The independent review of `b93d80c00` requested two changes. The fake-process assertion
   needed the production plan's arguments. The Superagent mock created a Codex task with
   `claude-opus-4` and `default` effort. The approval regression reproduced that mock result.
+- The Chromium suite finished with 1,168 passed and one credential-dependent test skipped.
+  After the mock fix, all 38 Codex, model-choice and Superagent request tests passed.
+- Round two approved `1b8624094` with a minor mock issue. A literal model ID `codex` inherited
+  Astra's effort. The Superagent test reproduced it. Only the composer's “Codex default” entry
+  now resolves that alias to Astra. The mock checks effective model IDs exactly like the server.
+- Without the fixture change, the fake-process test failed on the missing model argument.
+  Its capture contained only the model and effort inputs (both absent) and the program name.
+- The final four browser cases for the literal model, both composer choices and Settings passed.
+  The initial mutation baseline passed 3,207 tests. No Rust mutation applies to the review fixes
+  (the Rust edits are integration tests and their fixture).

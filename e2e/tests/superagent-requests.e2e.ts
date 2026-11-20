@@ -70,12 +70,16 @@ test('a request shows in full above the Superagent and Create task starts it in 
 test('approving an Astra task preserves its inherited or explicit effort', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/tasks'));
   await openSuperagent(browser, screen);
-  for (const effort of [undefined, 'high']) {
-    await ask(browser, 'sb_studio', { sandbox: 'product', prompt: PROMPT, options: { harness: 'codex', prepared: true, ...(effort ? { effort } : {}) } });
+  for (const [choice, model, effort, inherited] of [
+    [{}, 'gpt-6.2-astra', 'xhigh', true],
+    [{ effort: 'high' }, 'gpt-6.2-astra', 'high', false],
+    [{ model: 'codex' }, 'codex', 'high', true],
+  ] as const) {
+    await ask(browser, 'sb_studio', { sandbox: 'product', prompt: PROMPT, options: { harness: 'codex', prepared: true, ...choice } });
     await screen.getByRole('button', 'Create task').click();
     await expect(screen.getByRole('group', 'Your Superagent asks to start a task in product')).toBeHidden();
     const task = await browser.evaluate(() => (window as unknown as Asking).__yuliusMock.tasks.filter((t) => t.sandbox_id === 'sb_product').at(-1));
-    expect(task).toMatchObject({ harness: 'codex', model: 'gpt-6.2-astra', effort: effort || 'xhigh', effort_default: !effort });
+    expect(task).toMatchObject({ harness: 'codex', model, effort, effort_default: inherited });
   }
 });
 

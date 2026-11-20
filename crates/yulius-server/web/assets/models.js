@@ -180,13 +180,14 @@ export function modelMenuItems(selected, onPick) {
 
 /** An inherited effort on a model that supports effort levels (SPEC-561). */
 export function defaultEffort(model) {
-  return model === 'gpt-6.2-astra' || model === 'codex' ? 'xhigh' : 'high';
+  return model === 'gpt-6.2-astra' ? 'xhigh' : 'high';
 }
 
 /** Menu items to pick an effort level; `onPick(id|null)`. */
 export function effortMenuItems(model, selected, onPick) {
+  const modelId = model === 'codex' ? 'gpt-6.2-astra' : model;
   return [
-    { label: 'Default', description: model ? findEffort(defaultEffort(model)).name : 'Depends on the drawn model', checked: selected === null, onSelect: () => onPick(null) },
+    { label: 'Default', description: modelId ? findEffort(defaultEffort(modelId)).name : 'Depends on the drawn model', checked: selected === null, onSelect: () => onPick(null) },
     ...effortLevels(model).map(findEffort).map((effort) => ({ label: effort.name, description: effort.description, checked: effort.id === selected, onSelect: () => onPick(effort.id) })),
   ];
 }
