@@ -2730,3 +2730,43 @@ async fn parking_checks_a_release_pr_against_its_actual_base() -> TestResult {
     assert_eq!(f.h.app.park_idle_sessions_now().await, 1);
     Ok(())
 }
+
+#[tokio::test]
+async fn parking_needs_positive_mergeability_when_the_integration_pr_head_is_missing_locally()
+-> TestResult {
+    use yulius_app::ports::github::ChecksState;
+    let (f, _) = untracked_parking_fixture().await?;
+    let absent = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
+    assert!(
+        f.h.app
+            .deps
+            .git
+            .resolve_commit(&f.worktree, "origin/dev")
+            .await?
+            .is_some()
+    );
+    assert!(
+        f.h.app
+            .deps
+            .git
+            .resolve_commit(&f.worktree, absent)
+            .await?
+            .is_none()
+    );
+    f.h.github.set_checks(absent, ChecksState::Success);
+    for evidence in [None, Some(false)] {
+        {
+            let mut pulls = f.h.github.pulls.lock().map_err(|_| "pull fixture")?;
+            pulls[0].head_sha = absent.into();
+            pulls[0].mergeable = evidence;
+        }
+        assert_eq!(
+            f.h.app.park_idle_sessions_now().await,
+            0,
+            "the missing local head cannot prove mergeability: {evidence:?}"
+        );
+    }
+    f.h.github.pulls.lock().map_err(|_| "pull fixture")?[0].mergeable = Some(true);
+    assert_eq!(f.h.app.park_idle_sessions_now().await, 1);
+    Ok(())
+}

@@ -2173,6 +2173,24 @@ fn an_unpublished_ci_repair_keeps_its_session_even_with_a_human_request() -> Tes
             0,
             "a human request does not publish the outstanding repair"
         );
+        // Re-running CI on the *published* head cannot hand the newer local commit to the watcher.
+        for (offset, state) in [(1, RunState::Running), (2, RunState::Passed)] {
+            let rerun = CiRunRecord {
+                id: format!("repeat-{offset}"),
+                sha: repair_head.clone(),
+                state,
+                queued_at: Timestamp(20 + offset),
+                started_at: Some(Timestamp(20 + offset)),
+                ended_at: (state == RunState::Passed).then_some(Timestamp(23)),
+                ..failed_ci.clone()
+            };
+            app.deps.store.insert_ci_run(&rerun, &[]).await?;
+            assert_eq!(
+                app.park_idle_sessions_now().await,
+                0,
+                "a rerun on an older published commit cannot deliver the new one: {state:?}"
+            );
+        }
         git(&["push", "-q", "origin", branch])?;
         let last = git(&["rev-parse", "HEAD"])?;
         set_pull_head(&github, 99, &last)?;

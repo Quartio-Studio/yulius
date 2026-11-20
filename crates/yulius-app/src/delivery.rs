@@ -3780,70 +3780,25 @@ impl App {
         }
     }
 
-    /// Local, zero-GitHub-call check for `parking.rs` (SPEC-553 PRK-103): whether `task` has an
-    /// unpublished clean committed fast-forward repair on `task.branch` above `failing_pr_head`
-    /// with no recorded `push_problem`.
-    pub(crate) async fn open_pr_repair_pending_locally(
-        &self,
-        task: &TaskRecord,
-        failing_pr_head: &str,
-    ) -> bool {
-        let (Some(branch), Some(worktree)) =
-            (task.branch.as_deref(), task.worktree_path.as_deref())
-        else {
+    /// A newer commit on this task's checked-out branch still needs publication.
+    /// Compare against GitHub's actual PR head, including when CI reruns the published commit.
+    async fn unpublished_pr_commit(&self, task: &TaskRecord, pull: &GhPull) -> bool {
+        let Some(worktree) = task.worktree_path.as_deref().map(Path::new) else {
             return false;
         };
-        let path = Path::new(worktree);
-        let Some(head) = self
-            .deps
-            .git
-            .log(path, "HEAD", 1)
-            .await
-            .ok()
-            .and_then(|log| log.into_iter().next())
-            .map(|c| c.sha)
-        else {
+        if pull.from_fork || task.branch.as_deref() != Some(pull.head.as_str()) {
+            return false;
+        }
+        let git = &self.deps.git;
+        let Ok(Some(head)) = git.resolve_commit(worktree, "HEAD").await else {
             return false;
         };
-        if head.eq_ignore_ascii_case(failing_pr_head) || self.has_push_problem_for(&task.id, &head)
-        {
-            return false;
-        }
-        // Already published locally (by Yulius or on `origin/<branch>`): do not defer parking even
-        // if no new `CiRunRecord` exists yet (SPEC-553 PRK-103).
-        if self
-            .existing_runtime(&task.id)
-            .and_then(|rt| rt.auto_pr_head.lock().ok().and_then(|g| g.clone()))
-            .is_some_and(|pushed| pushed.eq_ignore_ascii_case(&head))
-        {
-            return false;
-        }
-        if let Ok(Some(remote)) = self
-            .deps
-            .git
-            .resolve_commit(path, &format!("refs/remotes/origin/{branch}"))
-            .await
-            && (remote.eq_ignore_ascii_case(&head)
-                || matches!(
-                    self.deps.git.is_ancestor(path, &head, &remote).await,
-                    Ok(true)
-                ))
-        {
-            return false;
-        }
-        if !self.worktree_on_branch(path, branch, &head).await {
-            return false;
-        }
-        if !matches!(self.deps.git.has_changes(path).await, Ok(false)) {
-            return false;
-        }
-        matches!(
-            self.deps
-                .git
-                .is_ancestor(path, failing_pr_head, &head)
-                .await,
-            Ok(true)
-        )
+        head != pull.head_sha
+            && self.worktree_on_branch(worktree, &pull.head, &head).await
+            && matches!(
+                git.is_ancestor(worktree, &pull.head_sha, &head).await,
+                Ok(true)
+            )
     }
 
     /// Whether the task's worktree head carries work its merged pull request (`record`) did not
@@ -4065,7 +4020,7 @@ impl App {
         };
         let pull = read().await?;
         if !is_open(&pull) {
-            return Ok(pull.merged);
+            return Ok(pull.merged && !self.unpublished_pr_commit(task, &pull).await);
         }
         let head = self.dlv_checks_at(sandbox, token, &pull.head_sha).await?;
         if !head.unreadable.is_empty() {
@@ -4091,7 +4046,9 @@ impl App {
         // The local merge-driver check uses the configured integration branch. For a
         // PR targeting another branch, GitHub computes mergeability against its real base.
         let mergeable = if pull.base == profile.integration_branch {
-            !self.pull_conflicts(task, sandbox, &pull).await
+            self.local_conflict(task, sandbox, &pull.head_sha)
+                .await
+                .map_or(pull.mergeable == Some(true), |conflict| !conflict)
         } else {
             pull.mergeable == Some(true)
         };
@@ -4100,11 +4057,11 @@ impl App {
         }
         // Checks and local conflict detection can take long enough for another push.
         let current = read().await?;
-        Ok(current.merged
-            || (is_open(&current)
-                && current.head_sha == pull.head_sha
-                && current.base == pull.base
-                && current.mergeable == pull.mergeable))
+        let same_open_head = is_open(&current)
+            && current.head_sha == pull.head_sha
+            && current.base == pull.base
+            && current.mergeable == pull.mergeable;
+        Ok((current.merged || same_open_head) && !self.unpublished_pr_commit(task, &current).await)
     }
 
     /// The part of [`App::task_is_done`] that needs no GitHub call: the turn ended, no background

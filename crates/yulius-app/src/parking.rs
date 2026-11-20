@@ -18,8 +18,6 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use serde_json::json;
-use yulius_domain::ci::{CiRef, RunState};
-use yulius_domain::delivery::DeliveryStage;
 use yulius_domain::ids::SandboxId;
 use yulius_domain::task::{Activity, TaskGroup, TaskStatus};
 
@@ -240,8 +238,7 @@ impl App {
             background,
             yulius: self.agent_waits_on_yulius(&task.id)
                 || self.merge_is_armed(&task.id)
-                || self.pr_news_due(task).await
-                || self.open_pr_work_pending(task).await,
+                || self.pr_news_due(task).await,
             held_prompt: self
                 .deps
                 .store
@@ -252,30 +249,6 @@ impl App {
             paused: self.is_paused(task).await,
             keyboard,
             onboarding: task.origin == TaskOrigin::Onboarding,
-        }
-    }
-
-    /// Whether `task` holds an unpublished clean committed fast-forward CI repair above its
-    /// failing open pull request head (SPEC-553 REP-002, SPEC-558 PKR-004). Requesting a
-    /// person does not publish that repair. An active CI run can still take over verification.
-    async fn open_pr_work_pending(&self, task: &TaskRecord) -> bool {
-        let Ok(Some(record)) = self.deps.store.delivery(&task.id).await else {
-            return false;
-        };
-        let (DeliveryStage::PrOpen, Some(pr)) = (record.stage, record.pr_number) else {
-            return false;
-        };
-        let Ok(runs) = self.deps.store.ci_runs(&task.sandbox_id, 50).await else {
-            return false;
-        };
-        let own = runs
-            .iter()
-            .find(|run| run.reference == CiRef::PullRequest(pr));
-        match own {
-            Some(run) if run.state == RunState::Failed => {
-                self.open_pr_repair_pending_locally(task, &run.sha).await
-            }
-            _ => false,
         }
     }
 }
