@@ -595,15 +595,20 @@ test('failed parked verification accounts for open replacement PRs in either res
         if (!path.includes('/tasks?')) return [];
         if (unavailable) { if (gitFirst) await held; throw new Error('summary unavailable'); }
         return [row];
-      } }, { clock: { now: () => 50_000, setInterval: (fn: () => void) => { tick = fn; return 1; }, clearInterval() {}, clearTimeout() {} } });
+      } }, { pullGapMs: 0, clock: { now: () => 50_000, setInterval: (fn: () => void) => { tick = fn; return 1; }, clearInterval() {}, clearTimeout() {} } });
       await store.loadTasks(sid);
       unavailable = true;
       const stop = store.watchPulls(sid);
       await settled();
+      const rename = () => store.upsertTask({ id: row.id, sandbox_id: sid, status: 'parked', activity: 'done', title: 'Renamed' });
+      if (!gitFirst) rename(); // The list failed before Git discovered the replacement.
       release();
       await settled();
       const group = () => taskInfo(store.findTask(row.id), null, store.pullsOf(sid).get(row.id)).group;
       seen.push(group());
+      if (gitFirst) rename();
+      seen.push(group(), store.findTask(row.id).parked_pr?.number ?? null);
+      await settled();
       unavailable = false;
       tick();
       await settled();
@@ -613,7 +618,7 @@ test('failed parked verification accounts for open replacement PRs in either res
     }
     return seen;
   });
-  expect(groups).toEqual(['needs', 'done', 'needs', 'done']);
+  expect(groups).toEqual(['needs', 'needs', 8, 'done', 'needs', 'needs', 8, 'done']);
 });
 
 test('parked reads keep their three-second gap while Git is held', async ({ app, browser }) => {
@@ -767,4 +772,32 @@ test('a parked lifecycle event preserves a known open PR until its status is ver
     return [interim.parked_needs_you ?? null, interim.parked_pr?.number ?? null, current.parked_needs_you];
   });
   expect(seen).toEqual([true, 8, false]);
+});
+
+test('a full list read cannot reverse a newer resume or removal', async ({ app, browser }) => {
+  await app.open(mock('/s/studio'));
+  const result = await browser.evaluate(async () => {
+    const url = '/assets/store.js';
+    const { createStore } = await import(url);
+    const sid = 'late-list';
+    const row = { id: 'p', sandbox_id: sid, status: 'parked', parked_needs_you: false };
+    const removed = { ...row, id: 'removed' };
+    let release!: () => void;
+    const held = new Promise<void>(resolve => { release = resolve; });
+    let hold = false;
+    const store = createStore({ get: async () => { if (hold) await held; return [row, removed]; } });
+    await store.loadTasks(sid);
+    hold = true;
+    const read = store.loadTasks(sid);
+    const events: string[] = [];
+    const off = store.on('task', (t: { status: string }) => events.push(t.status));
+    store.upsertTask({ ...row, status: 'running' });
+    store.removeTask(removed.id);
+    release();
+    await read;
+    off();
+    store.stopEvents();
+    return [events, store.findTask(row.id).status, Boolean(store.findTask(removed.id))];
+  });
+  expect(result).toEqual([['running'], 'running', false]);
 });

@@ -129,19 +129,39 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
     emit('sandboxes');
   }
 
-  async function loadTasks(sandboxId) {
+  const pendingLists = new Map();
+  let nextListRead = 0;
+  function loadTasks(sandboxId) {
+    const previous = pendingLists.get(sandboxId);
+    const read = { changes: new Map(), serial: ++nextListRead };
+    pendingLists.set(sandboxId, read);
+    const result = readTaskList(sandboxId, read);
+    if (previous) previous.next = result;
+    return result;
+  }
+
+  async function readTaskList(sandboxId, read) {
     let list;
     try {
       list = await api.get(`/api/sandboxes/${enc(sandboxId)}/tasks?archived=false`);
     } catch (error) {
+      if (read.next) return read.next;
+      pendingLists.delete(sandboxId);
       // Lists show this with a retry instead of "Loading…" forever.
       state.taskErrors.set(sandboxId, error);
       emit('tasks', sandboxId);
       throw error;
     }
+    if (read.next) return read.next;
+    pendingLists.delete(sandboxId);
     state.taskErrors.delete(sandboxId);
     const map = new Map();
     for (const task of Array.isArray(list) ? list : []) if (!task.archived) map.set(task.id, task);
+    // Preserve later lifecycle events, removals and newer verified reads.
+    for (const [id, task] of read.changes) {
+      if (task && !task.archived) map.set(id, task);
+      else map.delete(id);
+    }
     const previous = state.tasks.get(sandboxId);
     state.tasks.set(sandboxId, map);
     if (previous) {
@@ -161,15 +181,24 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
     // just the tasks that changed and look complete. Watchers of the task still hear about it.
     const map = state.tasks.get(task.sandbox_id);
     if (!map) {
+      pendingLists.get(task.sandbox_id)?.changes.set(task.id, task);
       emit('task', task);
       return;
     }
     // Lifecycle events omit the verifier's facts. A previously identified open
     // PR still needs verification even when Git has not supplied an overview.
     const prior = map.get(task.id);
+    const overview = state.pulls.get(task.sandbox_id)?.get(task.id);
+    const openPr = prior?.parked_pr?.open ? prior.parked_pr
+      : overview?.state === 'open' ? { number: overview.number, open: true } : null;
     const recheck = !task.archived && task.status === 'parked' && prior?.status === 'parked' &&
-      typeof task.parked_needs_you !== 'boolean' && prior.parked_pr?.open;
-    if (recheck) task = { ...task, parked_pr: prior.parked_pr, parked_needs_you: true };
+      typeof task.parked_needs_you !== 'boolean' &&
+      (unverified.has(prior) || (typeof prior.parked_needs_you === 'boolean' && openPr));
+    if (recheck) {
+      if (openPr) task = { ...task, parked_pr: openPr, parked_needs_you: true };
+      unverified.set(task, task); // A later Git discovery belongs to this event's row.
+    }
+    pendingLists.get(task.sandbox_id)?.changes.set(task.id, task);
     if (task.archived) map.delete(task.id);
     else map.set(task.id, task);
     emit('tasks', task.sandbox_id);
@@ -179,6 +208,7 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
 
   /** Drop a task from its list; `byUser` marks a removal this browser asked for (its own toast says so). */
   function removeTask(taskId, { byUser = false } = {}) {
+    for (const read of pendingLists.values()) read.changes.set(taskId, null);
     for (const [sandboxId, map] of state.tasks) {
       if (map.delete(taskId)) emit('tasks', sandboxId);
     }
@@ -329,6 +359,7 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
     if (!tasks) return;
     const watched = [...tasks.values()].filter(task => task.status === 'parked');
     if (!watched.length) return;
+    const serial = ++nextListRead;
     let refreshed;
     try {
       const rows = await api.get(`/api/sandboxes/${enc(sandboxId)}/tasks?archived=false`);
@@ -342,6 +373,8 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
       const row = refreshed?.get(prior.id);
       if (refreshed && (!row || row.status !== prior.status)) continue;
       if (row) {
+        const list = pendingLists.get(sandboxId);
+        if (list && serial > list.serial) list.changes.set(prior.id, row);
         unverified.delete(current);
         unverified.delete(row);
         if (typeof row.parked_needs_you !== 'boolean') continue;
@@ -374,7 +407,7 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
       for (const [id, pr] of pulls) {
         const prior = tasks?.get(id);
         if (pr.state !== 'open' || !unverified.has(prior) || prior.parked_needs_you) continue;
-        const updated = { ...prior, parked_needs_you: true };
+        const updated = { ...prior, parked_needs_you: true, parked_pr: { number: pr.number, open: true } };
         unverified.delete(prior);
         unverified.set(updated, prior);
         tasks.set(id, updated);

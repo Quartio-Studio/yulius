@@ -66,6 +66,8 @@ A human request can take precedence over unfinished work in the task list. Both 
 
 ## Evidence
 
+- The final read-order review placed a rename event on each side of Git discovering open replacement #8 after verification failed on closed #7. The old browser showed Done after the rename in both orders. A held full list also reversed a newer resume and restored a removed task. The replacement, resume/removal and successful-recovery regressions all passed after correction. Full list reads retain later task changes, and a lifecycle event carries an unavailable verification forward so discovery of an open replacement can still correct the display.
+
 - Review of `9fbcb4348` reproduced two open pages retaining old verified fields after a lifecycle event, a replacement list failing to notify the mounted task, and a late Git fallback invalidating a successful pending verification. Four Chromium regressions failed on that head. A fifth showed a known open PR disappearing on an ordinary event before the overview was available. The store now notifies mounted views once for a changed parked row, keeps known open PRs under Needs you until verification, and distinguishes a conservative display update from a later authoritative event. The terminal and Task Info replace optional PR facts when they receive a new summary.
 
 - The two-source watch fixture originally advanced its fake interval inside a Git notification, before request cleanup. It timed out with 59 of 60 scoped cases passing. The fixture now lets both synchronous fake replies and their cleanup settle before advancing the clock. The same expected groups passed in Chromium.
