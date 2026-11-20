@@ -111,6 +111,12 @@ fn replace_intent(slot: &mut Option<EndIntent>, next: Option<EndIntent>, why: Sw
     }
 }
 
+#[derive(Clone, Copy)]
+enum ObservationSource {
+    Replay,
+    Live,
+}
+
 struct ActiveRun {
     attempt_id: AttemptId,
     writer: Box<dyn RunWriter>,
@@ -170,9 +176,9 @@ pub struct TaskRuntime {
     /// row, and the subscription the pool no longer starts it on by itself (SPEC-464 UCL-010).
     pub(crate) blind_limits: Mutex<crate::moves::BlindLimits>,
     /// The model family a limit refused after the session's person switched to it (`/model`),
-    /// written by every placement after a limit and taken by the next launch, which says it
-    /// with the model it runs when it is the launch past that limit (SPEC-493 MDL-002).
-    pub(crate) switched_limit: Mutex<Option<ModelFamily>>,
+    /// recorded with the reporting attempt before either a pool move or an ownership restart
+    /// can launch its replacement (SPEC-493 MDL-002).
+    switched_limit: Mutex<Option<(AttemptId, ModelFamily)>>,
     /// When the current turn started (ms, 0 = no turn in progress). Active agent time comes
     /// from the transcript (SPEC-087 MET-001), not from this.
     turn_started_ms: AtomicI64,
@@ -226,6 +232,9 @@ pub struct TaskRuntime {
     /// that is submitted, never as holding none. A new run holds none
     /// ([`Self::run_starts`]).
     pub(crate) prompt_held: AtomicBool,
+    /// A reattach owns the old attempt's recovery until any required hand-over finishes.
+    /// A limit move from its transcript waits here before deciding which attempt to move.
+    pub(crate) reattach_move: Arc<tokio::sync::Mutex<()>>,
     /// Whose personal MCP servers the current run was started with (SPEC-332 MSC-009): a live
     /// run keeps its MCP configuration, so a hand-over restarts it, and only that person messages
     /// it meanwhile.
@@ -622,6 +631,7 @@ impl TaskRuntime {
             emptied_seq: AtomicU64::new(0),
             prompt_held: AtomicBool::new(false),
             typed_by: Mutex::new(None),
+            reattach_move: Arc::default(),
             personal_mcp_of: Mutex::new(None),
             goal_achieved: AtomicBool::new(false),
             goal_submitted: AtomicBool::new(false),
@@ -734,7 +744,15 @@ impl TaskRuntime {
 
     /// A usage limit or a refused subscription, recorded `at`, cut the run's turn: the run is at
     /// its limit, and nothing is known yet of a goal pause written there (SPEC-464 UCL-007).
-    pub(crate) fn limit_cut_the_turn(&self, at: Option<Timestamp>) {
+    fn limit_cut_the_turn(
+        &self,
+        attempt: &AttemptId,
+        at: Option<Timestamp>,
+        ran: Option<ModelFamily>,
+    ) {
+        if let Ok(mut kept) = self.switched_limit.lock() {
+            *kept = ran.map(|family| (attempt.clone(), family));
+        }
         if let Ok(mut pause) = self.limit_goal_pause.lock() {
             *pause = crate::goal_retry::LimitGoalPause::None;
         }
@@ -2404,7 +2422,12 @@ impl App {
             .lock()
             .ok()
             .and_then(|mut kept| kept.take());
-        let ran = kept.filter(|_| matches!(start, RunStart::AfterLimit));
+        let ran = kept
+            .filter(|(id, _)| {
+                matches!(start, RunStart::AfterLimit)
+                    && earlier.last().is_some_and(|run| &run.id == id)
+            })
+            .map(|(_, family)| family);
         if let Some(ran) = ran.filter(|ran| ModelFamily::of(Some(model)) != *ran) {
             self.runtime(&task.id)
                 .hub
@@ -5063,7 +5086,22 @@ impl App {
         let account = match account {
             Some(kept) if keeps_subscription(reason) => {
                 let input = self.rotation_input(&task, None).await?;
-                rotation::keeps_account(&input, &kept).then_some(kept)
+                // A replayed access refusal can make the kept subscription unusable.
+                // Only relinquish it for a pool placement that can actually take the turn.
+                if reason == "handover" && matches!(start, RunStart::AfterLimit) {
+                    let asked = Trigger::Manual {
+                        account: kept.clone(),
+                    };
+                    match (
+                        rotation::decide(&input, asked).0,
+                        rotation::decide(&input, Trigger::Start).0,
+                    ) {
+                        (Decision::Stay, Decision::Switch { account }) => Some(account),
+                        _ => Some(kept),
+                    }
+                } else {
+                    rotation::keeps_account(&input, &kept).then_some(kept)
+                }
             }
             other => other,
         };
@@ -5077,6 +5115,10 @@ impl App {
                 return Err(err);
             }
         };
+        crate::race::reached(
+            crate::race::Point::SwitchPrepared,
+            Path::new(task_id.as_str()),
+        );
         if !store
             .transition_task(task_id, Some(task.status), next, None, self.now())
             .await?
@@ -5710,6 +5752,7 @@ impl App {
             // The run's transcript so far is history: its watcher catches up on it (TSK-014).
             // Until it did, what waits in Claude Code's queue is not known (SPEC-471 CCQ-001).
             let runtime = self.runtime(&attempt.task_id);
+            let recovery = runtime.reattach_move.clone().lock_owned().await;
             runtime.replay_transcript.store(true, Ordering::SeqCst);
             runtime.queue_unread.store(true, Ordering::SeqCst);
             // Before the run is attached, so no message is typed meanwhile (SPEC-230): when it
@@ -5844,6 +5887,7 @@ impl App {
                     tokio::spawn(async move {
                         // How the run is resumed (past a usage limit, with the workflows it
                         // left) is read from its transcript: the restart waits for the replay.
+                        let _recovery = recovery;
                         let asked = tokio::time::Instant::now();
                         while app.runtime(&task_id).queue_unread.load(Ordering::SeqCst)
                             && asked.elapsed() < REPLAY_WAIT
@@ -6385,8 +6429,13 @@ impl App {
                     if let Observation::SubagentAnswered { .. }
                     | Observation::SubagentCutOff { .. } = observation
                     {
-                        self.on_observation(&task_id, &attempt, observation.clone())
-                            .await;
+                        self.on_observation(
+                            &task_id,
+                            &attempt,
+                            observation.clone(),
+                            ObservationSource::Replay,
+                        )
+                        .await;
                     }
                 }
                 // Turns, the goal and a usage limit are applied once, as the replay's final
@@ -6407,7 +6456,8 @@ impl App {
                     if let Some(limit) = replayed_limit.take()
                         && facts.limit_pending
                     {
-                        self.on_observation(&task_id, &attempt, limit).await;
+                        self.on_observation(&task_id, &attempt, limit, ObservationSource::Replay)
+                            .await;
                         // The goal pause Claude Code wrote at that limit is the limit's too.
                         if let Some(notice) = &facts.limit_goal_pause {
                             self.goal_retry_observed(&task_id, false, notice).await;
@@ -6433,7 +6483,8 @@ impl App {
                     .cloned()
                     .collect();
                 for observation in observations {
-                    self.on_observation(&task_id, &attempt, observation).await;
+                    self.on_observation(&task_id, &attempt, observation, ObservationSource::Live)
+                        .await;
                 }
                 for observation in &cut_offs {
                     self.subagent_limit(&task_id, &attempt, family, observation)
@@ -6459,6 +6510,7 @@ impl App {
         task_id: &TaskId,
         attempt: &AttemptRecord,
         observation: Observation,
+        source: ObservationSource,
     ) {
         let runtime = self.runtime(task_id);
         // The model answered: a later limit nothing says the end of is no repeat of an earlier
@@ -6493,7 +6545,7 @@ impl App {
                     window_minutes,
                     resets_at,
                 };
-                self.limit_met(task_id, attempt, limit, at).await;
+                self.limit_met(task_id, attempt, limit, at, source).await;
             }
             Observation::WorkflowLimitReached {
                 resets_at,
@@ -6511,13 +6563,13 @@ impl App {
                     window_minutes,
                     resets_at,
                 };
-                self.limit_met(task_id, attempt, limit, at).await;
+                self.limit_met(task_id, attempt, limit, at, source).await;
             }
             Observation::AccessLost { message, at } => {
                 // The refused turn moves on like a limit's, including after another sign-in.
                 tracing::warn!(task = %task_id, %message, "subscription access refused");
                 runtime.end_turn();
-                runtime.limit_cut_the_turn(at);
+                runtime.limit_cut_the_turn(&attempt.id, at, None);
                 let refused = match &attempt.account_id {
                     Some(account) => {
                         self.record_access_lost(account, Path::new(&attempt.run_dir), &message)
@@ -6529,8 +6581,10 @@ impl App {
                 let tid = task_id.clone();
                 let account = attempt.account_id.clone();
                 let provider = attempt.harness.provider();
+                let attempt_id = attempt.id.clone();
                 tokio::spawn(async move {
-                    app.rotate(&tid, account, Trigger::LimitReached).await;
+                    app.rotate_limited_attempt(&tid, &attempt_id, account, false, None, source)
+                        .await;
                     // Said in one line, with a Needs you when nothing is left (SPEC-447 MOV-006).
                     if let Some(label) = refused {
                         let left = crate::moves::Left::Refused {
@@ -6759,7 +6813,8 @@ impl App {
             if let Some(reviewer) = reviewer {
                 self.reviewer_cut_off(task_id, reviewer, false).await;
             }
-            self.limit_met(task_id, attempt, limit, *at).await;
+            self.limit_met(task_id, attempt, limit, *at, ObservationSource::Live)
+                .await;
             return;
         }
         // Recorded before the move is decided: where the session is reads as unable to run the
@@ -6781,25 +6836,67 @@ impl App {
         attempt: &AttemptRecord,
         limit: ReportedLimit,
         at: Option<Timestamp>,
+        source: ObservationSource,
     ) {
         let runtime = self.runtime(task_id);
         runtime.end_turn();
-        runtime.limit_cut_the_turn(at);
         let blind = limit.without_an_end(self.now());
         // The limit of the model this run was launched with (SPEC-482 FBK-006), unless it names
         // another one: the model the session was switched to inside it (SPEC-493 MDL-002).
         let family = self.run_family_of(attempt).await;
         let ran = switched_model(&limit, family);
+        runtime.limit_cut_the_turn(&attempt.id, at, ran);
         if let Some(account) = &attempt.account_id {
+            // A hand-over may place the replacement itself. The reporting account and
+            // model still count if the pool later exhausts its retry without an answer.
+            if blind && let Ok(mut met) = runtime.blind_limits.lock() {
+                met.met(account, ran.unwrap_or(family));
+            }
             self.record_limit(account, limit, family).await;
         }
         let app = self.clone();
         let tid = task_id.clone();
         let account = attempt.account_id.clone();
+        let attempt_id = attempt.id.clone();
         tokio::spawn(async move {
-            app.rotate_past(&tid, account, Trigger::LimitReached, blind, ran)
+            crate::race::reached(crate::race::Point::LimitMoveReady, Path::new(tid.as_str()));
+            app.rotate_limited_attempt(&tid, &attempt_id, account, blind, ran, source)
                 .await;
+            crate::race::reached(
+                crate::race::Point::LimitMoveFinished,
+                Path::new(tid.as_str()),
+            );
         });
+    }
+
+    /// Reconciliation can replace a run holding the previous owner's servers after reading
+    /// this limit. Apply the pool decision only if the reporting attempt still owns the run.
+    async fn rotate_limited_attempt(
+        self: &Arc<Self>,
+        task_id: &TaskId,
+        attempt_id: &AttemptId,
+        account: Option<AccountId>,
+        blind: bool,
+        ran: Option<ModelFamily>,
+        source: ObservationSource,
+    ) {
+        let Some(runtime) = self.existing_runtime(task_id) else {
+            return;
+        };
+        let recovery = runtime.reattach_move.lock().await;
+        // All reports wait for a pending hand-over. Only a replayed move holds the lock
+        // through its decision. A new live pause can resume while its notices finish.
+        let _recovery = matches!(source, ObservationSource::Replay).then_some(recovery);
+        let current = runtime
+            .run
+            .lock()
+            .await
+            .as_ref()
+            .is_some_and(|run| &run.attempt_id == attempt_id);
+        if current {
+            self.rotate_past(task_id, account, Trigger::LimitReached, blind, ran)
+                .await;
+        }
     }
 
     /// Applies the pool policy for a running task and acts on the decision (SPEC-001 §7.4):
@@ -6854,24 +6951,10 @@ impl App {
         if ran.is_some() {
             input.running = ran;
         }
-        // Remembered for the model this run was launched with: a task of a Fable model may be
-        // refused its fallback on the same subscription too (SPEC-482 FBK-007).
-        if blind
-            && limit
-            && let Some(account) = &current
-            && let Ok(mut met) = self.runtime(task_id).blind_limits.lock()
-        {
-            met.met(account, input.running.unwrap_or(input.family));
-        }
         let (decision, reason) = rotation::decide(&input, trigger);
         self.runtime(task_id)
             .proactive_switch
             .store(false, Ordering::SeqCst);
-        // Kept for the launch past this limit (now, or when a pause for it ends), which says it
-        // with the model it runs; every limit's decision writes it.
-        if let (true, Ok(mut kept)) = (limit, self.runtime(task_id).switched_limit.lock()) {
-            *kept = ran;
-        }
         match decision {
             Decision::Stay => {}
             Decision::Switch { account } => {
@@ -6913,6 +6996,10 @@ impl App {
                     // that says it does not go on by itself is answered, as at a move past
                     // the limit (SPEC-464 UCL-007).
                     if paused.is_ok() {
+                        crate::race::reached(
+                            crate::race::Point::LimitPauseStored,
+                            Path::new(task_id.as_str()),
+                        );
                         self.end_limit_requests(task_id, crate::goal_retry::TakenOn::Paused)
                             .await;
                     }

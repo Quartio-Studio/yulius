@@ -508,8 +508,8 @@ impl App {
         Ok(())
     }
 
-    /// Resumes a task's live run for its new owner on the same subscription, as a manual switch
-    /// does but with nothing typed: past a usage limit, afresh for a first message never taken,
+    /// Resumes a task's live run for its new owner, keeping its subscription when it can take
+    /// the run: past a usage limit, afresh for a first message never taken,
     /// else the same conversation. A run that cannot be restarted is stopped, so the previous
     /// owner's credential never stays with the new owner (fail closed).
     pub(crate) async fn restart_for_new_owner(
