@@ -1474,6 +1474,7 @@ mod tests {
             &agent,
             [
                 answer("m1", "claude-fable-5-2"),
+                answer("local-notice", "<synthetic>"),
                 answer("m2", "claude-fable-5-2"),
             ]
             .join("\n")
