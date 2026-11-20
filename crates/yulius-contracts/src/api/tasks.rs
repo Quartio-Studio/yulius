@@ -436,6 +436,10 @@ pub struct ContinueTask {
     /// Target account (another Claude account); the best one when absent.
     #[serde(default)]
     pub account_id: Option<String>,
+    /// Optional prompt delivered when waking a parked task via `/continue` (SPEC-553 PRK-102);
+    /// bounded to 64 KiB and ignored for non-parked tasks.
+    #[serde(default)]
+    pub prompt: Option<String>,
 }
 
 /// One process run.
@@ -590,6 +594,9 @@ pub struct TaskDetail {
     /// takes none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effort: Option<String>,
+    /// Whether the task inherits its effort when the next process starts.
+    #[serde(default)]
+    pub effort_default: bool,
     /// The Claude Code version of its latest session that names one (absent while unknown).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cli_version: Option<String>,

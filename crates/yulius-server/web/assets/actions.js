@@ -197,8 +197,10 @@ export async function stopTask(ctx, task) {
 }
 
 /** Resume a closed/stopped task on the same session lineage (TSK-007). */
-export function continueTask(ctx, task) {
-  return taskPost(ctx, task, 'continue', () => ctx.api.post(`/api/tasks/${enc(task.id)}/continue`, {}), `Continuing #${task.number}…`);
+export function continueTask(ctx, task, prompt = null) {
+  const payload = prompt ? { prompt } : {};
+  const label = task.status === 'parked' ? `Resuming #${task.number}…` : `Continuing #${task.number}…`;
+  return taskPost(ctx, task, 'continue', () => ctx.api.post(`/api/tasks/${enc(task.id)}/continue`, payload), label);
 }
 
 /**
@@ -603,7 +605,8 @@ export function openDeliveryDialog(ctx, task) {
       checksAccessNote(ctx, d.checks_access),
       h('div', { class: 'card card-pad stack-sm' },
         h('div', { class: 'row' }, h('strong', null, 'Pull request')),
-        prLine(d.pr)),
+        prLine(d.pr),
+        d.evidence ? h('a', { href: d.evidence.url }, `Verification evidence for ${d.evidence.merged_sha.slice(0, 9)}`) : null),
       h('div', { class: 'card card-pad stack-sm' },
         h('div', { class: 'row' }, h('strong', null, 'Task spec'), d.spec_valid ? badge('valid', 'ok') : badge('needs work', 'danger')),
         d.spec_path ? h('div', { class: 'muted small' }, h('code', null, d.spec_path)) : h('div', { class: 'muted small' }, 'No spec registered for this task yet.'),

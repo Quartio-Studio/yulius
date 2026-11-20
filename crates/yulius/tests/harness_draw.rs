@@ -121,6 +121,50 @@ async fn shown(h: &Harness, alice: &Creds, id: &str) -> Result<(String, String),
     ))
 }
 
+/// SPEC-561: the HTTP request keeps the owner's choice, including an explicit default value.
+#[tokio::test]
+async fn codex_task_creation_preserves_effort_provenance() -> TestResult {
+    let (h, alice) = world().await?;
+    available(&h, "a-codex", Provider::OpenAi).await?;
+    for (model, effort, expected) in [
+        (None, None, "xhigh"),
+        (Some("gpt-6.2-astra"), None, "xhigh"),
+        (None, Some("high"), "high"),
+        (Some("gpt-6.2-astra"), Some("xhigh"), "xhigh"),
+        (Some("gpt-6.2-sol"), None, "high"),
+    ] {
+        let mut body = json!({"prompt":"Compare effort", "harness":"codex"});
+        if let Some(model) = model {
+            body["model"] = json!(model);
+        }
+        if let Some(effort) = effort {
+            body["effort"] = json!(effort);
+        }
+        let response = call(&h.router, Method::POST, CREATE, Some(body), &alice).await?;
+        assert_eq!(response.status, StatusCode::CREATED, "{:?}", response.body);
+        let id = response.body["id"].as_str().ok_or("task id")?;
+        let record = h
+            .store
+            .task(&yulius_domain::ids::TaskId::parse(id)?)
+            .await?
+            .ok_or("task")?;
+        assert_eq!(record.effort.as_deref(), effort);
+        let detail = call(
+            &h.router,
+            Method::GET,
+            &format!("/api/tasks/{id}"),
+            None,
+            &alice,
+        )
+        .await?;
+        assert_eq!(detail.status, StatusCode::OK);
+        assert_eq!(detail.body["effort"], expected);
+        assert_eq!(detail.body["effort_default"], effort.is_none());
+        assert_eq!(detail.body["model_default"], model.is_none());
+    }
+    Ok(())
+}
+
 /// RHM-001, RHM-003 (AC-1): with 5 Claude, 1 Codex and 1 Antigravity subscriptions available,
 /// tasks without an agent (or with `auto`) draw across all three harnesses as `random`; an
 /// explicit harness or model-implied harness stays `chosen`.
@@ -199,6 +243,111 @@ async fn a_task_without_an_agent_draws_across_all_harnesses_and_keeps_explicit_c
             "{body}"
         );
     }
+    Ok(())
+}
+
+/// SPEC-560: a supplied GPT model chooses Codex independently of the subscription draw.
+#[tokio::test]
+async fn the_api_chooses_codex_for_gpt_and_preserves_unqualified_aliases() -> TestResult {
+    let (h, alice) = world().await?;
+    for (selection, expected) in [
+        (json!({"model": "gpt-6.2-astra"}), "codex"),
+        (
+            json!({"harness": "auto", "model": " GPT-synthetic "}),
+            "codex",
+        ),
+        (json!({"model": "opus"}), "claude"),
+        (json!({"harness": "codex", "model": "o3"}), "codex"),
+    ] {
+        let mut body = selection.clone();
+        body["prompt"] = json!("Check model routing");
+        body["prepared"] = json!(true);
+        let response = call(&h.router, Method::POST, CREATE, Some(body), &alice).await?;
+        assert_eq!(response.status, StatusCode::CREATED, "{:?}", response.body);
+        let id = response.body["id"].as_str().ok_or("id")?;
+        let detail = call(
+            &h.router,
+            Method::GET,
+            &format!("/api/tasks/{id}"),
+            None,
+            &alice,
+        )
+        .await?;
+        assert_eq!(detail.status, StatusCode::OK);
+        assert_eq!(detail.body["harness"], expected, "{selection}");
+        assert_eq!(detail.body["harness_choice"], "chosen");
+        assert_eq!(
+            detail.body["model"],
+            selection["model"].as_str().ok_or("model")?.trim()
+        );
+        assert_eq!(detail.body["model_default"], false);
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_blank_model_uses_the_named_harness_default() -> TestResult {
+    let (h, alice) = world().await?;
+    let response = call(
+        &h.router,
+        Method::POST,
+        CREATE,
+        Some(json!({"prompt": "Default Gemini model", "prepared": true, "harness": "antigravity", "model": "  "})),
+        &alice,
+    ).await?;
+    assert_eq!(response.status, StatusCode::CREATED, "{:?}", response.body);
+    let id = response.body["id"].as_str().ok_or("id")?;
+    let detail = call(
+        &h.router,
+        Method::GET,
+        &format!("/api/tasks/{id}"),
+        None,
+        &alice,
+    )
+    .await?;
+    assert_eq!(detail.status, StatusCode::OK);
+    assert_eq!(detail.body["harness"], "antigravity");
+    assert_eq!(
+        detail.body["model"],
+        yulius_domain::harness::DEFAULT_ANTIGRAVITY_MODEL
+    );
+    assert_eq!(detail.body["model_default"], true);
+    Ok(())
+}
+
+#[tokio::test]
+async fn an_explicit_harness_refuses_a_foreign_model_before_creation() -> TestResult {
+    let (h, alice) = world().await?;
+    for (harness, model, guidance) in [
+        ("claude", "gpt-6.2-astra", "Codex"),
+        ("claude", " Gemini-4-neon ", "Antigravity"),
+        ("codex", "gemini-4-neon", "Antigravity"),
+        ("codex", "claude-opus-5-5", "OpenAI model"),
+        ("antigravity", "o3", "takes a Gemini model"),
+    ] {
+        let response = call(
+            &h.router, Method::POST, CREATE,
+            Some(json!({"prompt": "Conflicting choice", "prepared": true, "harness": harness, "model": model})),
+            &alice,
+        ).await?;
+        assert_eq!(
+            response.status,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "{:?}",
+            response.body
+        );
+        assert!(
+            response.body.to_string().contains(guidance),
+            "{:?}",
+            response.body
+        );
+    }
+    assert!(
+        h.store
+            .tasks(&SandboxId::parse("s1")?, false)
+            .await?
+            .is_empty()
+    );
     Ok(())
 }
 
@@ -410,6 +559,11 @@ async fn agent_follow_ups_keep_their_caller_while_auto_and_superagent_draw() -> 
         (
             json!({"prompt": "Follow-up", "title": "Gemini asks Sonnet", "model": "claude-sonnet-5-5"}),
             Some("claude"),
+            "chosen",
+        ),
+        (
+            json!({"prompt": "Follow-up", "title": "Gemini asks for GPT", "model": "gpt-6.2-astra"}),
+            Some("codex"),
             "chosen",
         ),
         (

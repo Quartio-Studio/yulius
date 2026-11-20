@@ -57,19 +57,25 @@ pub struct NewTask {
     pub supertask: bool,
 }
 
-/// Codex runs OpenAI's models and Antigravity Google's Gemini models: another provider's model,
-/// given at creation or set later, would make its run fail at start (SPEC-503, SPEC-505).
+/// Refuse another provider's model before creating a task or updating its settings.
 pub(crate) fn model_of_its_harness(harness: Harness, model: Option<&str>) -> AppResult<()> {
-    let Some(model) = model.map(|m| m.trim().to_ascii_lowercase()) else {
+    let Some(model) = model else {
         return Ok(());
     };
-    match harness {
-        Harness::Codex if model.starts_with("claude") => Err(AppError::Invalid(
-            "a Codex task takes an OpenAI model, not a Claude one".into(),
+    match (harness, Harness::for_model_prefix(model)) {
+        (Harness::Antigravity, owner) if owner != Some(Harness::Antigravity) => {
+            Err(AppError::Invalid(format!(
+                "an Antigravity task takes a Gemini model (such as {})",
+                yulius_domain::harness::DEFAULT_ANTIGRAVITY_MODEL
+            )))
+        }
+        (Harness::Codex, Some(Harness::ClaudeCode)) => Err(AppError::Invalid(
+            "a Codex task takes an OpenAI model. Choose Claude Code for a Claude model.".into(),
         )),
-        Harness::Antigravity if !model.starts_with("gemini-") => Err(AppError::Invalid(format!(
-            "an Antigravity task takes a Gemini model (such as {})",
-            yulius_domain::harness::DEFAULT_ANTIGRAVITY_MODEL
+        (_, Some(owner)) if owner != harness => Err(AppError::Invalid(format!(
+            "Choose {} for this model. This task uses {}.",
+            owner.display_name(),
+            harness.display_name()
         ))),
         _ => Ok(()),
     }
@@ -469,7 +475,7 @@ impl App {
             text => Some(parse_harness(text)?),
         };
         if let Some(harness) = explicit_harness {
-            model_of_its_harness(harness, req.model.as_deref())?;
+            model_of_its_harness(harness, model)?;
         }
         // New tasks run in goal mode unless the user picks prompt mode (TSK-010); `auto` lets Jev
         // choose (TSK-015).
@@ -539,7 +545,7 @@ impl App {
                         .as_ref()
                         .map(|w| w.steps.clone())
                         .unwrap_or_default(),
-                    model: req.model.clone().filter(|m| !m.trim().is_empty()),
+                    model: model.map(str::to_owned),
                     effort: req.effort.clone().filter(|e| !e.trim().is_empty()),
                     origin,
                     automation_run: None,
@@ -630,20 +636,60 @@ impl App {
         id: &str,
         req: &ContinueTask,
     ) -> AppResult<TaskSummary> {
+        self.continue_task_with_prompt(ctx, id, req, req.prompt.as_deref())
+            .await
+    }
+
+    /// [`App::continue_task`] with an optional prompt delivered on wake for a parked task
+    /// (SPEC-553 PRK-102). A prompt for a non-parked task is ignored (normal continue).
+    ///
+    /// # Errors
+    /// As [`App::continue_task`], plus `Invalid` when `prompt` exceeds [`crate::task_message::MAX_MESSAGE_BYTES`].
+    pub async fn continue_task_with_prompt(
+        self: &Arc<Self>,
+        ctx: &AuthContext,
+        id: &str,
+        req: &ContinueTask,
+        prompt: Option<&str>,
+    ) -> AppResult<TaskSummary> {
         let task = self.load_task(ctx, id, Action::Work).await?;
         // A parked task resumes in its session (SPEC-512 PRK-005): with nothing typed, its
-        // request stays until the person writes.
+        // request stays until the person writes; with a prompt, it wakes with that prompt and
+        // ends any open `needs_you` request (SPEC-553 PRK-102).
         if task.status == TaskStatus::Parked {
-            self.ensure_agent_account(task.harness.provider()).await?;
             if parse_account(req)?.is_some() {
                 return Err(AppError::Invalid(
                     "a parked task resumes where it ran; move it after it resumed".into(),
                 ));
             }
-            if !self.resume_parked(&task.id, None).await? {
+            if let Some(raw) = prompt
+                && raw.len() > crate::task_message::MAX_MESSAGE_BYTES
+            {
+                return Err(AppError::Invalid(format!(
+                    "prompt exceeds {} bytes",
+                    crate::task_message::MAX_MESSAGE_BYTES
+                )));
+            }
+            let cleaned = prompt
+                .map(crate::task_message::clean_message)
+                .map(|s| s.trim().to_owned())
+                .filter(|s| !s.is_empty());
+            if let Some(text) = cleaned.as_deref()
+                && text.len() > crate::task_message::MAX_MESSAGE_BYTES
+            {
+                return Err(AppError::Invalid(format!(
+                    "prompt exceeds {} bytes",
+                    crate::task_message::MAX_MESSAGE_BYTES
+                )));
+            }
+            self.ensure_agent_account(task.harness.provider()).await?;
+            if !self.resume_parked(&task.id, cleaned.clone()).await? {
                 return Err(AppError::Conflict(
                     "the task changed while it was resumed; try again".into(),
                 ));
+            }
+            if cleaned.is_some() {
+                self.end_needs_you(&task.id).await;
             }
             let task = self
                 .deps

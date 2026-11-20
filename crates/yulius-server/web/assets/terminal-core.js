@@ -115,7 +115,7 @@ const ANSWER_HERE = 'The terminal has the keyboard: answer there.';
  *                              files in the terminal's folder become links (termlinks.js)
  * Call start() after the element is in the document; destroy() when done.
  */
-export function createTerminalView({ transport, path, onLink, readOnlyLabel, onState, onExit, onNotice, exitActions, exitMessage, emptyMessage, onReady, onConnection, onFatal, topOffer = null, fontSize, fileLinks = null, followServerSize = false, onExitedInput = null }) {
+export function createTerminalView({ transport, path, onLink, readOnlyLabel, onState, onExit, onNotice, exitActions, exitMessage, emptyMessage, onReady, onConnection, onFatal, topOffer = null, fontSize, fileLinks = null, followServerSize = false, onExitedInput = null, onPendingInput = null }) {
   const banner = h('div', { class: 'term-banner', hidden: true, role: 'status' });
   const noticeEl = h('div', { class: 'term-notice', hidden: true, role: 'status', 'aria-live': 'polite' });
   // Connection trouble floats over the terminal: it never changes the terminal's size.
@@ -138,13 +138,14 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
 
   const termSize = () => fontSize || px(isPhone() ? '--fs-sm' : '--fs-term'); // tokens.css
   const size = termSize();
+  const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
   const term = new Terminal({
     fontFamily: token('--font-mono'), // the same typeface as the UI's code (tokens.css)
     fontWeight: 400,
     fontWeightBold: 600, // a weight the UI scale (and a brand font's files) provides
     fontSize: size,
     lineHeight: LINE_HEIGHT,
-    cursorBlink: !window.matchMedia('(prefers-reduced-motion: reduce)').matches,
+    cursorBlink: !reducedMotion,
     scrollback: 5000,
     theme: terminalColors(),
     // Agents print 256-colour and true-colour text that bypasses the theme; xterm lifts any cell
@@ -204,6 +205,13 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
   // The working directory a shell reports (OSC 7), absolute.
   let cwd = '';
 
+  const syncCursorBlink = () => {
+    const blink = !exited && !reducedMotion;
+    term.options.cursorBlink = blink;
+    el.dataset.cursorBlink = String(blink);
+  };
+  syncCursorBlink();
+
   const socket = new TerminalSocket({
     transport,
     path,
@@ -231,13 +239,17 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
       onState: (message) => {
         const handedOver = gotState && !state.controller && message.controller;
         gotState = true;
-        state = { ...state, ...message };
+        state = { ...state, parked_screen: false, ...message };
         // Control just came to this viewer (another one went idle or left): the server applied the
         // size this viewer reported; say it again in case that report was lost.
         if (handedOver) lastSent = null;
         if (message.status && !isEndedStatus(message.status)) exited = null;
-        // A task that ended before this page opened still shows how it ended (and Continue).
-        else if (message.status && isEndedStatus(message.status) && !exited) exited = { status: message.status, code: null };
+        // A task that ended or parked before this page opened (or changed ended state, e.g.
+        // parked -> stopped_cancelled) shows its current ended banner (and Resume/Continue).
+        else if (message.status && isEndedStatus(message.status) && (!exited || exited.status !== message.status)) {
+          exited = { status: message.status, code: null };
+        }
+        syncCursorBlink();
         term.options.disableStdin = !state.can_write;
         if (mouse.appMouse() !== state.can_write) term.write(mouse.setAppMouse(state.can_write));
         applySize();
@@ -247,7 +259,7 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
         if (onState) onState(state);
       },
       onNotice: (text) => { showNotice(text); if (onNotice) onNotice(text); },
-      onExit: (message) => { exited = message; applySize(); render(); reveal(); if (onExit) onExit(message); },
+      onExit: (message) => { exited = message; syncCursorBlink(); applySize(); render(); reveal(); if (onExit) onExit(message); },
       onError: (message) => {
         if (['unauthenticated', 'not_found'].includes(message.code)) { fatal = message; reveal(); if (onFatal) onFatal(message); }
         else showNotice(message.message || message.code || 'Terminal error');
@@ -679,7 +691,10 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
     }
     // An ended session has no PTY to follow: fit it to this screen (a desktop-sized screen would
     // otherwise overflow a phone).
-    const mirroring = Boolean(state.cols && state.rows && !state.controller && !exited);
+    const savedGrid = state.parked_screen === true || state.status === 'parked' || exited?.status === 'parked';
+    const mirroring = Boolean(state.cols && state.rows && (savedGrid || (!state.controller && !exited)));
+    const screen = host.querySelector('.xterm-screen');
+    if (screen) screen.style.zoom = '';
     host.classList.toggle('term-mirror', mirroring);
     if (!mirroring) {
       if (term.options.fontSize !== termSize()) term.options.fontSize = termSize();
@@ -689,6 +704,12 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
     }
     if (term.cols !== state.cols || term.rows !== state.rows) term.resize(Math.max(2, state.cols), Math.max(1, state.rows));
     fitMirror(state.cols, state.rows);
+    // The smallest legible live font can still clip a saved desktop grid on a phone.
+    // Scale the finished screen as a whole once xterm has laid out its cells.
+    if (savedGrid && screen && shown() && screen.offsetWidth && screen.offsetHeight) {
+      const scale = Math.min(fitBox.clientWidth / screen.offsetWidth, fitBox.clientHeight / screen.offsetHeight);
+      if (scale < 1) screen.style.zoom = String(scale);
+    }
   }
 
   // Another viewer sets the size: its grid fills this box — the font grows or shrinks until the
@@ -754,8 +775,16 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
   }
 
   function send(data) {
-    // Typed after the session ended: its owner may keep it for the session that follows (SPEC-487 SES-001).
-    if (exited && onExitedInput && isTyping(data) && onExitedInput(data, exited)) return true;
+    // Typed while ended or parked: a resumable owner (Superagent switch, parked task) may wake and
+    // keep it; otherwise never send dead keystrokes over the socket (SPEC-487 SES-001, SPEC-553).
+    if (exited) {
+      if (onExitedInput && isTyping(data) && onExitedInput(data, exited)) return true;
+      return false;
+    }
+    // While a parked resume is transitioning through `starting`/`queued` before a live run is
+    // attached, let the caller buffer typed keys instead of sending them to hit a 409 conflict
+    // (SPEC-553 PRK-102).
+    if (onPendingInput && isTyping(data) && onPendingInput(data)) return true;
     if (!state.can_write) {
       showNotice(readOnlyText());
       return false;
@@ -907,9 +936,14 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
     cancelAnimationFrame(resizeFrame);
     resizeFrame = requestAnimationFrame(() => { if (!destroyed) applySize(); });
   });
-  // The floating corner (notices, the size chip, the mouse switch) sits below the banner, never over
-  // its buttons (Continue, Try again, Check subscriptions; #147).
-  const bannerObserver = new ResizeObserver(() => el.style.setProperty('--term-banner-h', `${banner.offsetHeight}px`));
+  // The floating corner (notices, the size chip, the mouse switch) and any taskview attention bar
+  // sit below the banner, never over its buttons (Continue, Resume, Try again, Check subscriptions).
+  const setBannerHeight = (px) => {
+    el.style.setProperty('--term-banner-h', px);
+    const area = el.closest && el.closest('.taskview-term');
+    if (area) area.style.setProperty('--term-banner-h', px);
+  };
+  const bannerObserver = new ResizeObserver(() => setBannerHeight(`${banner.offsetHeight}px`));
 
   return {
     el,
@@ -970,10 +1004,16 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
       renderEmpty();
     },
     /**
-     * The caller's exit message may have changed (e.g. the task's details arrived, SPEC-268). Every
+     * The caller's exit message may have changed (e.g. the task's details arrived, SPEC-268, or a
+     * parked task was stopped/closed via SSE while the terminal socket was already ended). Every
      * detail read redraws it: a keyboard user on Continue or Try again stays there (SPEC-272).
      */
-    refreshBanner() {
+    refreshBanner(status) {
+      if (status) {
+        if (!isEndedStatus(status)) exited = null;
+        else if (!exited || exited.status !== status) exited = { status, code: null };
+        syncCursorBlink();
+      }
       if (opened && !destroyed) keepFocus(banner, render);
     },
     refit() {
@@ -994,6 +1034,7 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
       cancelAnimationFrame(resizeFrame);
       observer.disconnect();
       bannerObserver.disconnect();
+      setBannerHeight('0px');
       if (document.fonts && document.fonts.removeEventListener) document.fonts.removeEventListener('loadingdone', onFontsLoaded);
       socket.close();
       offTheme();

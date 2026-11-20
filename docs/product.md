@@ -6,9 +6,12 @@ contained sandboxes on a single Linux VM, and enforces engineering discipline ar
 Yulius develops itself with Yulius.
 
 It also runs native Codex CLI sessions on Codex (OpenAI) subscriptions, chosen per task or
-automation, on GPT-6.2 Astra at high effort unless a task names another model or effort (task
-#493, [SPEC-511](../.ai/specs/SPEC-511-default-model-for-codex-should-be-astra.md)); a task keeps
-its agent for life, and a Codex task moves only between Codex subscriptions. On ChatGPT Pro 500,
+automation. GPT-6.2 Astra is the default model and inherits extra high effort. Other Codex models
+inherit high effort. A task's explicit effort takes precedence.
+[SPEC-561](../.ai/specs/SPEC-561-default-astra-6-2-to-xhigh-for-new-work.md)
+
+A task created with a `gpt-*` model and no explicit agent selects Codex.
+A task keeps its agent for life, and a Codex task moves only between Codex subscriptions. On ChatGPT Pro 500,
 Codex defaults to Ultrafast for models that support it. A Codex
 subscription signs in by device code, by an imported `auth.json` of a `codex login` made elsewhere,
 or with an OpenAI API key, and Yulius provides the pinned Codex CLI
@@ -366,9 +369,10 @@ watching, steering and unblocking.
   A person’s open Claude goal in a prompt-mode session follows it to another subscription.
   The task stays Working while it waits for the resumed evaluator’s verdict (SPEC-540).
   A task whose turn ended and that waits for a person (Needs you, Done) is **parked** after
-  half an hour with nothing going on (`YULIUS_PARK_AFTER_MINUTES`): its Claude Code process ends,
+  half an hour with nothing going on (`YULIUS_PARK_AFTER_MINUTES`): its agent process ends,
   so it holds neither a session slot nor memory, and it stays in the list where it was, marked
-  "parked", with its transcript, question and pull request. Writing to it, or Resume, continues
+  "parked", with its last terminal screen, idle duration, transcript, question and pull request.
+  An open step, unfinished spec or unfinished goal keeps the session live. Writing to it, or Resume, continues
   the same session with its history (SPEC-512). A queued task says what it waits for ("Waiting
   for a free session: 8 of 8 in use"), and the Capacity card shows working, parked, idle and
   queued sessions apart.
@@ -493,6 +497,7 @@ watching, steering and unblocking.
   existing directory), in one new note of its own in that folder, named
   `YYYY-MM-DD-<task number>-<short-slug>.md`, so parallel pull requests never conflict on it; the
   briefing then quotes the newest notes as Recent changes (SPEC-363).
+- **Post-merge verification** (SPEC-562). A task's Delivery links to the CI job verdicts and environment attempts for its landed change. Projects that accept task evidence can close a machine-verification step by citing the checked attempts in its note. [Git workflow](engineering/git.md#post-merge-machine-evidence)
 - **Merge queue** (every sandbox, SPEC-441): a pull request's own CI run is never restarted
   because the integration branch moved; armed and green, it merges at once when up to date, else
   Yulius tests it once on top of the current integration branch, together with the others

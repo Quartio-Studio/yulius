@@ -239,11 +239,21 @@ impl App {
     /// complete its plan reads. A task without a spec, or whose spec was never read, declares
     /// its work by its steps alone; a status that cannot be read counts as none.
     pub(crate) async fn spec_unfinished(&self, task: &yulius_domain::ids::TaskId) -> bool {
+        self.read_spec_unfinished(task).await.unwrap_or(false)
+    }
+
+    /// Parking must distinguish a missing spec from a status it could not read.
+    pub(crate) async fn read_spec_unfinished(
+        &self,
+        task: &yulius_domain::ids::TaskId,
+    ) -> AppResult<bool> {
         use yulius_domain::spec_format::SpecStatus;
-        matches!(
-            self.deps.store.spec_status(task).await,
-            Ok(Some(status)) if SpecStatus::parse(&status).is_some_and(SpecStatus::work_left)
-        )
+        let Some(status) = self.deps.store.spec_status(task).await? else {
+            return Ok(false);
+        };
+        SpecStatus::parse(&status)
+            .map(SpecStatus::work_left)
+            .ok_or_else(|| crate::error::AppError::internal("unrecognized stored spec status"))
     }
 
     /// Keeps what the task's spec says of its work, whenever Yulius reads the spec (DON-004);

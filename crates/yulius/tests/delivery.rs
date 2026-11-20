@@ -323,6 +323,10 @@ impl GitPort for RealGit {
             .await
     }
 
+    async fn worktrees(&self, repo: &Path) -> AppResult<Vec<yulius_app::ports::git::WorktreeInfo>> {
+        crate::support::confined_git().worktrees(repo).await
+    }
+
     async fn adds_to(
         &self,
         worktree: &Path,
@@ -1404,14 +1408,53 @@ async fn yulius_ci_run(
     state: yulius_domain::ci::RunState,
     at: i64,
 ) -> TestResult {
+    use yulius_domain::ci::CiRef;
+    insert_ci_attempt(store, id, sha, CiRef::Branch("dev".into()), state, at, &[]).await
+}
+
+async fn insert_ci_attempt(
+    store: &impl yulius_app::ports::store_ext::CiStore,
+    id: &str,
+    sha: &str,
+    reference: yulius_domain::ci::CiRef,
+    state: yulius_domain::ci::RunState,
+    at: i64,
+    checks: &[(&str, yulius_domain::ci::RunState)],
+) -> TestResult {
+    let jobs: Vec<_> = checks
+        .iter()
+        .enumerate()
+        .map(|(index, (name, verdict))| {
+            Ok(yulius_app::ci::CiJobRecord {
+                id: format!("{id}-{index}"),
+                run_id: id.into(),
+                ordinal: u32::try_from(index)?,
+                name: (*name).into(),
+                key: (*name).into(),
+                command: "test".into(),
+                matrix: None,
+                state: *verdict,
+                reason: None,
+                exit_code: None,
+                output: String::new(),
+                failures: None,
+                started_at: Some(Timestamp(at)),
+                ended_at: Some(Timestamp(at + 1)),
+                need: Default::default(),
+                timeout_minutes: None,
+                exclusive: false,
+                waited_ms: None,
+            })
+        })
+        .collect::<BoxResult<_>>()?;
     use yulius_app::ci::CiRunRecord;
-    use yulius_domain::ci::{CiRef, GateSource};
+    use yulius_domain::ci::GateSource;
     store
         .insert_ci_run(
             &CiRunRecord {
                 id: id.to_owned(),
                 sandbox_id: SandboxId::parse("s1")?,
-                reference: CiRef::Branch("dev".to_owned()),
+                reference,
                 sha: sha.to_owned(),
                 source: GateSource::Profile,
                 state,
@@ -1424,7 +1467,7 @@ async fn yulius_ci_run(
                 started_at: Some(Timestamp(at)),
                 ended_at: Some(Timestamp(at + 1)),
             },
-            &[],
+            &jobs,
         )
         .await?;
     Ok(())
@@ -8154,5 +8197,1216 @@ async fn a_production_environment_run_starts_in_production_containment() -> Test
     );
     assert_eq!(home, &work.join("home"));
     assert_eq!(plan.cwd, work.join("src"));
+    Ok(())
+}
+
+/// SPEC-553 REP-001, REP-002, REP-004: reproduces and verifies the fix for the circular wait
+/// (`quartio-v2` #322/#323/#324) where an open task-owned PR on a failing previous head waited for
+/// CI on an unpublished clean committed repair while the final verification step remained open.
+#[tokio::test]
+async fn a_clean_committed_ci_repair_publishes_to_failing_open_pr_with_verification_open()
+-> TestResult {
+    let f = fixture(&DeliveryProfile::standard()).await?;
+    let wt = f
+        .add_task("t1", "Fix failing CI", "feat/322-ci-repair", "dev")
+        .await?;
+    commit_file(&wt, SPEC_PATH, &valid_spec("t1"), "Spec")?;
+    commit_file(&wt, "app.txt", "v1\n", "Initial change")?;
+    set_steps(&f, "t1", &["done", "done"]).await?;
+    let t1 = TaskId::parse("t1")?;
+    let agent = live_agent(&f, "t1", "tok-agent").await?;
+
+    // Open PR #1 on initial head `failing1` and fail CI there.
+    f.h.app.auto_open_pr(&t1).await;
+    assert_eq!(pulls_opened(&f), 1);
+    let failing1 = git(&wt, &["rev-parse", "HEAD"])?;
+    assert_eq!(f.origin_sha("feat/322-ci-repair")?, failing1);
+    f.h.github.set_checks(&failing1, ChecksState::Failure);
+
+    // Final verification step is open (`in_progress`) while waiting for CI on the committed repair.
+    set_steps(&f, "t1", &["done", "in_progress"]).await?;
+    commit_file(&wt, "app.txt", "v2 repair\n", "Commit tested repair")?;
+    let repair1 = git(&wt, &["rev-parse", "HEAD"])?;
+
+    // Turn-end auto delivery publishes the clean committed repair to the SAME open PR without
+    // requiring the verification step to be falsely marked done, and never arms or merges.
+    f.h.app.auto_open_pr(&t1).await;
+    assert_eq!(pulls_opened(&f), 1, "same open PR updated, no new PR");
+    assert_eq!(
+        f.origin_sha("feat/322-ci-repair")?,
+        repair1,
+        "repair pushed to feature branch"
+    );
+    let view = f.delivery("t1").await?;
+    assert_eq!(view["stage"], "pr_open", "{view}");
+    assert_eq!(view["pr"]["number"], 1, "{view}");
+    assert_eq!(view["pr"]["head"], "feat/322-ci-repair", "{view}");
+    assert_eq!(
+        view["pr"]["checks"], "none",
+        "new published repair head has no failing checks yet: {view}"
+    );
+    let wait = wait_state(&f, &agent, &repair1).await?;
+    assert_eq!(
+        wait["merge_armed"], false,
+        "publication never arms merge: {wait}"
+    );
+    assert_eq!(wait["push_problem"], Value::Null, "{wait}");
+
+    // Second failing head + pending final verification step: `yulius wait` (and post-restart
+    // reconnect) also publishes the eligible repair once with no duplicate push.
+    f.h.github.set_checks(&repair1, ChecksState::Failure);
+    set_steps(&f, "t1", &["done", "pending"]).await?;
+    commit_file(&wt, "app.txt", "v3 repair\n", "Second CI repair")?;
+    let repair2 = git(&wt, &["rev-parse", "HEAD"])?;
+    let pushes_before = f.git.pushes.lock().map(|p| p.len()).unwrap_or(0);
+    let wait2 = wait_state(&f, &agent, &repair2).await?;
+    assert_eq!(wait2["push_problem"], Value::Null, "{wait2}");
+    assert_eq!(
+        f.origin_sha("feat/322-ci-repair")?,
+        repair2,
+        "yulius wait published eligible repair"
+    );
+    let pushes_after = f.git.pushes.lock().map(|p| p.len()).unwrap_or(0);
+    assert_eq!(pushes_after, pushes_before + 1, "pushed once");
+
+    // Repeated turn-end and wait calls for the same head do not push again.
+    f.h.app.auto_open_pr(&t1).await;
+    let _ = wait_state(&f, &agent, &repair2).await?;
+    let pushes_repeat = f.git.pushes.lock().map(|p| p.len()).unwrap_or(0);
+    assert_eq!(pushes_repeat, pushes_after, "no duplicate push");
+    Ok(())
+}
+
+/// SPEC-553 REP-001, REP-003, REP-004: preserves safeguards for new PRs, non-failing/armed open
+/// PRs, dirty worktrees, divergent branches, detached HEAD, human decisions (`needs_you` and
+/// `Blocked` steps), fork/mismatched PRs, and surfaces failed publication in `yulius wait` and
+/// `delivery_status`.
+#[tokio::test]
+async fn open_pr_ci_repair_preserves_safeguards_and_surfaces_actionable_failures() -> TestResult {
+    use yulius_app::ports::store_ext::NeedsYouStore;
+    let f = fixture(&DeliveryProfile::standard()).await?;
+    let wt = f
+        .add_task("t1", "Guarded repair", "feat/323-guards", "dev")
+        .await?;
+    commit_file(&wt, SPEC_PATH, &valid_spec("t1"), "Spec")?;
+    commit_file(&wt, "app.txt", "v1\n", "Initial")?;
+    let t1 = TaskId::parse("t1")?;
+    let agent = live_agent(&f, "t1", "tok-agent").await?;
+
+    // 1. New PR with open step: still blocked at TurnEnd (no PR opened).
+    set_steps(&f, "t1", &["done", "in_progress"]).await?;
+    f.h.app.auto_open_pr(&t1).await;
+    assert_eq!(pulls_opened(&f), 0, "new PR still waits for full plan");
+
+    // Open PR #1 cleanly.
+    set_steps(&f, "t1", &["done", "done"]).await?;
+    f.h.app.auto_open_pr(&t1).await;
+    assert_eq!(pulls_opened(&f), 1);
+    let pr_head = git(&wt, &["rev-parse", "HEAD"])?;
+
+    // 2. Non-failing (Pending) open PR with open step: NOT pushed.
+    f.h.github.set_checks(&pr_head, ChecksState::Pending);
+    set_steps(&f, "t1", &["done", "in_progress"]).await?;
+    commit_file(&wt, "app.txt", "v2\n", "Next slice")?;
+    let v2 = git(&wt, &["rev-parse", "HEAD"])?;
+    f.h.app.auto_open_pr(&t1).await;
+    assert_eq!(
+        f.origin_sha("feat/323-guards")?,
+        pr_head,
+        "pending PR does not bypass plan_hold"
+    );
+
+    // 3. Failing open PR + dirty worktree: refused with actionable note in wait & delivery_status.
+    f.h.github.set_checks(&pr_head, ChecksState::Failure);
+    std::fs::write(wt.join("dirty.tmp"), "uncommitted\n")?;
+    f.h.app.auto_open_pr(&t1).await;
+    assert_eq!(
+        f.origin_sha("feat/323-guards")?,
+        pr_head,
+        "dirty worktree must not push"
+    );
+    let dirty_wait = wait_state(&f, &agent, &v2).await?;
+    assert!(
+        dirty_wait["push_problem"]
+            .as_str()
+            .is_some_and(|s| s.contains("uncommitted changes")),
+        "{dirty_wait}"
+    );
+    let dirty_view = f.delivery("t1").await?;
+    assert!(
+        dirty_view["notes"]
+            .as_array()
+            .is_some_and(|notes| notes.iter().any(|n| n
+                .as_str()
+                .is_some_and(|s| s.contains("uncommitted changes")))),
+        "{dirty_view}"
+    );
+    std::fs::remove_file(wt.join("dirty.tmp"))?;
+
+    // 4. Failing open PR + pending human decision (`needs_you`): NOT pushed.
+    let asked = yulius_app::needs_you::NeedsYouRecord {
+        action: "Approve migration".into(),
+        happened: None,
+        problem: None,
+        decision: true,
+        link: None,
+        at: 10,
+        cause: None,
+        named: Default::default(),
+    };
+    f.h.store
+        .set_task_needs_you(&t1, Some(&asked), Timestamp(10))
+        .await?;
+    f.h.app.auto_open_pr(&t1).await;
+    assert_eq!(
+        f.origin_sha("feat/323-guards")?,
+        pr_head,
+        "needs_you blocks auto repair publication"
+    );
+    f.h.store
+        .set_task_needs_you(&t1, None, Timestamp(11))
+        .await?;
+
+    // 5. Failing open PR + Blocked step: NOT pushed.
+    set_steps(&f, "t1", &["done", "blocked"]).await?;
+    f.h.app.auto_open_pr(&t1).await;
+    assert_eq!(
+        f.origin_sha("feat/323-guards")?,
+        pr_head,
+        "blocked step prevents auto repair publication"
+    );
+    set_steps(&f, "t1", &["done", "in_progress"]).await?;
+
+    // 6. Failing open PR + detached HEAD (even at the exact same SHA as `refs/heads/<branch>`,
+    // and also with a detached commit): NOT pushed, actionable note set.
+    git(&wt, &["checkout", "--quiet", "--detach", &v2])?;
+    f.h.app.auto_open_pr(&t1).await;
+    assert_eq!(
+        f.origin_sha("feat/323-guards")?,
+        pr_head,
+        "detached HEAD at same SHA must not push"
+    );
+    commit_file(&wt, "app.txt", "detached\n", "Detached commit")?;
+    let detached = git(&wt, &["rev-parse", "HEAD"])?;
+    f.h.app.auto_open_pr(&t1).await;
+    assert_eq!(
+        f.origin_sha("feat/323-guards")?,
+        pr_head,
+        "detached HEAD must not push"
+    );
+    let detached_wait = wait_state(&f, &agent, &detached).await?;
+    assert!(
+        detached_wait["push_problem"]
+            .as_str()
+            .is_some_and(|s| s.contains("not on `feat/323-guards`")),
+        "{detached_wait}"
+    );
+    git(&wt, &["checkout", "--quiet", "feat/323-guards"])?;
+
+    // 7. Failing open PR + diverged/amended branch: NOT force-pushed, actionable remedy recorded.
+    git(&wt, &["reset", "--quiet", "--hard", &pr_head])?;
+    std::fs::write(wt.join("app.txt"), "amended\n")?;
+    git(&wt, &["commit", "--quiet", "--amend", "-am", "Amended"])?;
+    let amended = git(&wt, &["rev-parse", "HEAD"])?;
+    assert_ne!(amended, pr_head);
+    f.h.app.auto_open_pr(&t1).await;
+    assert_eq!(
+        f.origin_sha("feat/323-guards")?,
+        pr_head,
+        "diverged branch must never force-push"
+    );
+    let div_wait = wait_state(&f, &agent, &amended).await?;
+    assert!(
+        div_wait["push_problem"].as_str().is_some_and(
+            |s| s.contains("Do not force-push") && s.contains("origin/feat/323-guards")
+        ),
+        "{div_wait}"
+    );
+    let div_view = f.delivery("t1").await?;
+    assert!(
+        div_view["notes"].as_array().is_some_and(|notes| notes
+            .iter()
+            .any(|n| n.as_str().is_some_and(|s| s.contains("Do not force-push")))),
+        "{div_view}"
+    );
+
+    // 8. Push failure on an otherwise eligible clean fast-forward repair is actionable in both
+    // `yulius wait` and `delivery_status`, then succeeds once the remote accepts pushes again.
+    git(&wt, &["reset", "--quiet", "--hard", &pr_head])?;
+    commit_file(&wt, "app.txt", "clean repair\n", "Clean repair")?;
+    let clean = git(&wt, &["rev-parse", "HEAD"])?;
+    f.git.fail_pushes(Some(PushFailure::Refused));
+    f.h.app.auto_open_pr(&t1).await;
+    assert_eq!(f.origin_sha("feat/323-guards")?, pr_head);
+    let fail_wait = wait_state(&f, &agent, &clean).await?;
+    assert!(
+        fail_wait["push_problem"]
+            .as_str()
+            .is_some_and(|s| s.starts_with("Yulius could not push")),
+        "{fail_wait}"
+    );
+    let fail_view = f.delivery("t1").await?;
+    assert!(
+        fail_view["notes"]
+            .as_array()
+            .is_some_and(|notes| notes.iter().any(|n| n
+                .as_str()
+                .is_some_and(|s| s.starts_with("Yulius could not push")))),
+        "{fail_view}"
+    );
+
+    // Clear push fault: publishes cleanly and clears the note.
+    f.git.fail_pushes(None);
+    f.h.app.auto_open_pr(&t1).await;
+    assert_eq!(f.origin_sha("feat/323-guards")?, clean);
+    assert_eq!(
+        wait_state(&f, &agent, &clean).await?["push_problem"],
+        Value::Null
+    );
+    Ok(())
+}
+
+/// SPEC-553 REP-002, REP-004: publishing an eligible open-PR CI repair immediately queues
+/// exact-head Yulius CI; `watch_prs` recovers an unpublished repair for a live task without
+/// emitting a stale failed-run notice across passes, and failed publications surface cleanly in
+/// `yulius wait` and `delivery_status` (live PTY `pr_watch` delivery is tested in `pr_watch.rs`).
+#[tokio::test]
+async fn open_pr_ci_repair_queues_exact_head_ci_and_recovers_via_pr_watch_without_stale_notice()
+-> TestResult {
+    use yulius_app::ci::{CiJobRecord, CiRunRecord};
+    use yulius_app::ports::store_ext::CiStore;
+    use yulius_app::pr_watch::WatchBounds;
+    use yulius_domain::ci::{CiRef, GateSource, RunState};
+    use yulius_domain::resources::Need;
+
+    let f = fixture(&DeliveryProfile::standard()).await?;
+    let sandbox = SandboxId::parse("s1")?;
+    let record = f.h.store.sandbox(&sandbox).await?.ok_or("s1")?;
+    let mut profile: Value = serde_json::from_str(&record.profile_json)?;
+    profile["gate"] = json!("true");
+    f.h.store
+        .set_profile(&sandbox, &profile.to_string())
+        .await?;
+
+    let wt = f
+        .add_task("t1", "CI repair sync", "feat/324-ci-sync", "dev")
+        .await?;
+    commit_file(&wt, SPEC_PATH, &valid_spec("t1"), "Spec")?;
+    commit_file(&wt, "app.txt", "v1\n", "Initial")?;
+    let t1 = TaskId::parse("t1")?;
+    let agent = live_agent(&f, "t1", "tok-agent").await?;
+
+    // Open PR #1 cleanly.
+    set_steps(&f, "t1", &["done", "done"]).await?;
+    f.h.app.auto_open_pr(&t1).await;
+    assert_eq!(pulls_opened(&f), 1);
+    let pr_head = git(&wt, &["rev-parse", "HEAD"])?;
+
+    // Record a failing CI run at `pr_head` (newer than any run queued when PR #1 opened), leave
+    // final verification step open, and commit repair1.
+    f.h.github.set_checks(&pr_head, ChecksState::Failure);
+    let t_now = f.h.app.now().0;
+    let failed_run = CiRunRecord {
+        id: "run-failed-1".into(),
+        sandbox_id: sandbox.clone(),
+        reference: CiRef::PullRequest(1),
+        sha: pr_head.clone(),
+        source: GateSource::ProjectConfig,
+        state: RunState::Failed,
+        reason: None,
+        requested_by: "yulius".into(),
+        status_for: None,
+        status_note: None,
+        status_attempts: 0,
+        queued_at: Timestamp(t_now + 10),
+        started_at: Some(Timestamp(t_now + 11)),
+        ended_at: Some(Timestamp(t_now + 12)),
+    };
+    let failed_job = CiJobRecord {
+        id: "job-failed-1".into(),
+        run_id: "run-failed-1".into(),
+        ordinal: 0,
+        name: "checks".into(),
+        key: "checks".into(),
+        command: "true".into(),
+        matrix: None,
+        state: RunState::Failed,
+        reason: None,
+        exit_code: Some(1),
+        output: String::new(),
+        failures: None,
+        started_at: Some(Timestamp(t_now + 11)),
+        ended_at: Some(Timestamp(t_now + 12)),
+        need: Need::default(),
+        timeout_minutes: None,
+        exclusive: false,
+        waited_ms: None,
+    };
+    f.h.store.insert_ci_run(&failed_run, &[failed_job]).await?;
+
+    set_steps(&f, "t1", &["done", "in_progress"]).await?;
+    commit_file(&wt, "app.txt", "v2 repair\n", "CI repair 1")?;
+    let repair1 = git(&wt, &["rev-parse", "HEAD"])?;
+
+    // 1. `auto_open_pr` publishes `repair1` AND immediately triggers `ci_sync_sandbox`, queueing
+    // an exact-head `CiRunRecord` for `repair1`.
+    f.h.app.auto_open_pr(&t1).await;
+    assert_eq!(f.origin_sha("feat/324-ci-sync")?, repair1);
+    let runs_after_push = f.h.store.ci_runs(&sandbox, 20).await?;
+    assert!(
+        runs_after_push
+            .iter()
+            .any(|r| r.reference == CiRef::PullRequest(1) && r.sha == repair1),
+        "expected exact-head CI run queued for {repair1}: {runs_after_push:?}"
+    );
+
+    // 2. Mark `repair1` failed, remove the gate so `ci_sync_sandbox` queues no new run, commit
+    // `repair2` cleanly (without calling `auto_open_pr`), and run `watch_prs`:
+    // `watch_prs` must publish `repair2` AND must NOT emit a stale failed-run notice for `repair1`.
+    profile["gate"] = Value::Null;
+    f.h.store
+        .set_profile(&sandbox, &profile.to_string())
+        .await?;
+    f.h.github.set_checks(&repair1, ChecksState::Failure);
+    let failed_run2 = CiRunRecord {
+        id: "run-failed-2".into(),
+        sha: repair1.clone(),
+        queued_at: Timestamp(t_now + 30_000),
+        started_at: Some(Timestamp(t_now + 30_001)),
+        ended_at: Some(Timestamp(t_now + 30_002)),
+        ..failed_run.clone()
+    };
+    let failed_job2 = CiJobRecord {
+        id: "job-failed-2".into(),
+        run_id: "run-failed-2".into(),
+        ordinal: 0,
+        name: "checks".into(),
+        key: "checks".into(),
+        command: "true".into(),
+        matrix: None,
+        state: RunState::Failed,
+        reason: None,
+        exit_code: Some(1),
+        output: String::new(),
+        failures: None,
+        started_at: Some(Timestamp(t_now + 30_001)),
+        ended_at: Some(Timestamp(t_now + 30_002)),
+        need: Need::default(),
+        timeout_minutes: None,
+        exclusive: false,
+        waited_ms: None,
+    };
+    f.h.store
+        .insert_ci_run(&failed_run2, &[failed_job2])
+        .await?;
+    commit_file(&wt, "app.txt", "v3 repair\n", "CI repair 2")?;
+    let repair2 = git(&wt, &["rev-parse", "HEAD"])?;
+    let bounds = WatchBounds::default();
+    let typed = f.h.app.watch_prs(&bounds).await;
+    assert_eq!(
+        f.origin_sha("feat/324-ci-sync")?,
+        repair2,
+        "watch_prs must recover and publish eligible repair2"
+    );
+    assert!(
+        !typed
+            .iter()
+            .any(|(task, text)| task == &t1 && text.contains("failed")),
+        "watch_prs must not emit a stale failed-run notice after pushing repair2: {typed:?}"
+    );
+    // Second pass with no new CI run queued yet must also stay silent.
+    let typed_pass2 = f.h.app.watch_prs(&bounds).await;
+    assert!(
+        !typed_pass2
+            .iter()
+            .any(|(task, text)| task == &t1 && text.contains("failed")),
+        "watch_prs pass 2 must not emit a stale failed-run notice: {typed_pass2:?}"
+    );
+
+    // 3. Failed publication surfaces in `yulius wait` and `delivery_status` notes.
+    f.h.github.set_checks(&repair2, ChecksState::Failure);
+    let failed_run3 = CiRunRecord {
+        id: "run-failed-3".into(),
+        sha: repair2.clone(),
+        queued_at: Timestamp(t_now + 40_000),
+        started_at: Some(Timestamp(t_now + 40_001)),
+        ended_at: Some(Timestamp(t_now + 40_002)),
+        ..failed_run
+    };
+    let failed_job3 = CiJobRecord {
+        id: "job-failed-3".into(),
+        run_id: "run-failed-3".into(),
+        ordinal: 0,
+        name: "checks".into(),
+        key: "checks".into(),
+        command: "true".into(),
+        matrix: None,
+        state: RunState::Failed,
+        reason: None,
+        exit_code: Some(1),
+        output: String::new(),
+        failures: None,
+        started_at: Some(Timestamp(t_now + 40_001)),
+        ended_at: Some(Timestamp(t_now + 40_002)),
+        need: Need::default(),
+        timeout_minutes: None,
+        exclusive: false,
+        waited_ms: None,
+    };
+    f.h.store
+        .insert_ci_run(&failed_run3, &[failed_job3])
+        .await?;
+    commit_file(&wt, "app.txt", "v4 repair\n", "CI repair 3")?;
+    let repair3 = git(&wt, &["rev-parse", "HEAD"])?;
+    f.git.fail_pushes(Some(PushFailure::Refused));
+    f.h.app.auto_open_pr(&t1).await;
+    assert_eq!(f.origin_sha("feat/324-ci-sync")?, repair2);
+    let wait_fail = wait_state(&f, &agent, &repair3).await?;
+    assert!(
+        wait_fail["push_problem"]
+            .as_str()
+            .is_some_and(|s| s.starts_with("Yulius could not push")),
+        "{wait_fail}"
+    );
+    // Actionable failed publication also surfaces in `delivery_status` notes.
+    let fail_view = f.delivery("t1").await?;
+    assert!(
+        fail_view["notes"]
+            .as_array()
+            .is_some_and(|notes| notes.iter().any(|n| n
+                .as_str()
+                .is_some_and(|s| s.starts_with("Yulius could not push")))),
+        "failed publication must surface in delivery_status: {fail_view}"
+    );
+    Ok(())
+}
+
+/// A landed change has its own verification record even if dev moves or CI runs again.
+#[tokio::test]
+async fn post_merge_evidence_follows_the_landing_through_reruns_and_retention() -> TestResult {
+    use yulius_app::ports::store_ext::CiStore;
+    use yulius_domain::ci::RunState;
+
+    // This repository accepts a task note for machine results. Its source work and changelog
+    // ship in the first PR, with the post-merge check already in the plan.
+    let f = fixture(&DeliveryProfile::standard()).await?;
+    let wt = f
+        .add_task("t1", "Publish the setup guide", "docs/1-setup", "dev")
+        .await?;
+    commit_file(
+        &wt,
+        "docs/setup.md",
+        "# Setup guide",
+        "docs: document setup",
+    )?;
+    commit_file(
+        &wt,
+        "docs/changes.md",
+        "Added the setup guide.",
+        "docs: record setup change",
+    )?;
+    let head = git(&wt, &["rev-parse", "HEAD"])?;
+    let agent = live_agent(&f, "t1", "tok-evidence").await?;
+    answer(
+        &agent_tool(
+            &f,
+            &agent,
+            "steps_set",
+            json!({"steps":[
+                {"title":"Publish setup and changelog","status":"done"},
+                {"title":"Verify the published guide on dev","status":"pending"}
+            ]}),
+        )
+        .await?,
+    )?;
+    f.h.github.set_checks(&head, ChecksState::Success);
+    arm_merge(&f, &agent, &head).await?;
+    f.h.app.merge_armed(&SandboxId::parse("s1")?).await;
+    assert_eq!(f.delivery("t1").await?["steps_open"], 1);
+    let landed = f.origin_sha("dev")?;
+    let path = format!("/api/tasks/t1/delivery/evidence/{landed}");
+    let view = f.delivery("t1").await?;
+    assert_eq!(view["evidence"]["url"], path);
+    let read = || f.req(Method::GET, &path, None, &f.rita);
+    let missing = read().await?;
+    assert_eq!(missing.status, StatusCode::OK);
+    assert_eq!(missing.body["task_id"], "t1");
+    assert_eq!(missing.body["pr_number"], 1);
+    assert_eq!(missing.body["merged_sha"], landed);
+    assert_eq!(missing.body["head_sha"], head);
+    assert_eq!(missing.body["runs"], json!([]));
+
+    let ancestor = git(&f.origin, &["rev-parse", "dev^"])?;
+    yulius_ci_run(&f.h.store, "before", &ancestor, RunState::Passed, 1).await?;
+    advance_base(&f, "dev", "docs/setup.md", "Changed after publication")?;
+    let later = f.origin_sha("dev")?;
+    assert_ne!(later, landed);
+    yulius_ci_run(&f.h.store, "after", &later, RunState::Passed, 4).await?;
+    assert_eq!(read().await?.body["runs"], json!([]));
+    yulius_ci_run(&f.h.store, "first", &landed, RunState::Failed, 2).await?;
+    use yulius_domain::ci::CiRef;
+    insert_ci_attempt(
+        &f.h.store,
+        "pr-head",
+        &head,
+        CiRef::PullRequest(1),
+        RunState::Passed,
+        0,
+        &[("security", RunState::Skipped)],
+    )
+    .await?;
+    let provenance =
+        "not run again: merge train #1 passed at aaaa000 (run candidate); this is step 1 of 1";
+    assert!(
+        f.h.store
+            .transition_ci_run(
+                "pr-head",
+                &[RunState::Passed],
+                RunState::Passed,
+                &yulius_app::ci::CiRunUpdate {
+                    reason: Some(provenance.into()),
+                    ..Default::default()
+                },
+            )
+            .await?
+    );
+    insert_ci_attempt(
+        &f.h.store,
+        "candidate",
+        &landed,
+        CiRef::Train(vec![1]),
+        RunState::Passed,
+        8,
+        &[],
+    )
+    .await?;
+    insert_ci_attempt(
+        &f.h.store,
+        "other-pr",
+        &head,
+        CiRef::PullRequest(2),
+        RunState::Passed,
+        7,
+        &[],
+    )
+    .await?;
+    insert_ci_attempt(
+        &f.h.store,
+        "rerun",
+        &landed,
+        CiRef::Branch("dev".into()),
+        RunState::Passed,
+        3,
+        &[
+            ("published guide", RunState::Passed),
+            ("security", RunState::Skipped),
+        ],
+    )
+    .await?;
+    let mut other_project = f.h.store.ci_run("rerun").await?.ok_or("CI attempt")?;
+    other_project.id = "parallel-sandbox".into();
+    other_project.sandbox_id = SandboxId::parse("s2")?;
+    f.h.store.insert_ci_run(&other_project, &[]).await?;
+    let evidence = read().await?.body;
+    assert_eq!(evidence["runs"][0]["run_id"], "rerun", "{evidence}");
+    assert_eq!(evidence["runs"][0]["state"], "passed");
+    assert_eq!(
+        evidence["runs"][0]["checks"],
+        json!([
+            {"name":"published guide","state":"passed"},{"name":"security","state":"skipped"}
+        ])
+    );
+    assert_eq!(evidence["runs"][1]["state"], "failed");
+    assert_eq!(evidence["runs"].as_array().ok_or("runs")?.len(), 3);
+    assert_eq!(evidence["runs"][2]["reference"], "pr/1");
+    assert_eq!(evidence["runs"][2]["sha"], head);
+    assert_eq!(evidence["runs"][2]["reason"], provenance);
+    assert_eq!(evidence["runs"][2]["checks"][0]["state"], "skipped");
+    f.h.store.prune_ci_runs(0, Timestamp(i64::MAX)).await?;
+    assert!(f.h.store.ci_run("rerun").await?.is_none());
+    assert_eq!(read().await?.body, evidence);
+    let pinned = f
+        .req(Method::GET, &format!("{path}?run_id=first"), None, &f.rita)
+        .await?;
+    assert_eq!(pinned.body["runs"], json!([evidence["runs"][1]]));
+    for unknown in [
+        format!("{path}?before=parallel-sandbox"),
+        format!("{path}?run_id=parallel-sandbox"),
+        format!("{path}?run_id=after"),
+        format!("/api/tasks/t1/delivery/evidence/{later}"),
+    ] {
+        assert_eq!(
+            f.req(Method::GET, &unknown, None, &f.rita).await?.status,
+            StatusCode::NOT_FOUND
+        );
+    }
+    assert_ne!(
+        f.req(Method::GET, &path, None, &Creds::default())
+            .await?
+            .status,
+        StatusCode::OK
+    );
+
+    let outsider = add_user(&f.h, "u-outsider", "outsider", Default::default()).await?;
+    assert_eq!(
+        f.req(Method::GET, &path, None, &outsider).await?.status,
+        StatusCode::NOT_FOUND
+    );
+    let status = agent_tool(&f, &agent, "delivery_status", json!({})).await?;
+    let text = status["content"][0]["text"].as_str().ok_or("status")?;
+    assert!(text.contains(&path) && text.contains("rerun"), "{text}");
+    let closed = agent_tool(
+        &f,
+        &agent,
+        "step_update",
+        json!({
+            "ordinal": 2, "status": "done", "note": format!("Published guide passed. Security scan skipped. {path}?run_id=rerun")
+        }),
+    )
+    .await?;
+    assert_eq!(answer(&closed)?["progress"]["done"], 2);
+    let steps = f.h.store.steps(&TaskId::parse("t1")?).await?;
+    assert_eq!(steps[1].status, "done");
+    assert!(steps[1].note.as_deref().is_some_and(|n| n.contains(&path)));
+    f.h.app.auto_open_pr(&TaskId::parse("t1")?).await;
+    assert_eq!(pulls_opened(&f), 1);
+    assert_eq!(git(&wt, &["rev-parse", "HEAD"])?, head);
+    assert!(git(&wt, &["status", "--porcelain"])?.is_empty());
+    // A later failing scan is visible under its own ID. The note still cites the attempt
+    // whose scan was skipped, so neither attempt becomes a passing security scan.
+    insert_ci_attempt(
+        &f.h.store,
+        "scan-rerun",
+        &landed,
+        CiRef::Branch("dev".into()),
+        RunState::Failed,
+        9,
+        &[("security", RunState::Failed)],
+    )
+    .await?;
+    assert_eq!(
+        read().await?.body["runs"][0]["checks"][0]["state"],
+        "failed"
+    );
+    let cited = f
+        .req(Method::GET, &format!("{path}?run_id=rerun"), None, &f.rita)
+        .await?;
+    assert_eq!(cited.body["runs"][0]["checks"][1]["state"], "skipped");
+    Ok(())
+}
+
+#[tokio::test]
+async fn post_merge_evidence_requires_the_verified_cd_commit_and_both_commands() -> TestResult {
+    use yulius_app::ci::cd::CdRunRecord;
+    use yulius_app::ports::store_ext::{CdStore, SpanStore};
+    use yulius_domain::ci::RunState;
+    use yulius_domain::rollback::CdRunKind;
+
+    let (f, _, head) = merged_task().await?;
+    let landed = f.origin_sha("dev")?;
+    let path = format!("/api/tasks/t1/delivery/evidence/{landed}");
+    let attempt = |id: &str, sha: &str, state, at| -> BoxResult<CdRunRecord> {
+        Ok(CdRunRecord {
+            id: id.into(),
+            sandbox_id: SandboxId::parse("s1")?,
+            environment: "staging".into(),
+            stage: yulius_domain::cd::CdStage::Dev,
+            branch: "dev".into(),
+            sha: sha.into(),
+            state,
+            reason: None,
+            requested_by: "person".into(),
+            task_id: None,
+            deploy: Some("deploy".into()),
+            verify: Some("smoke".into()),
+            note: None,
+            output: String::new(),
+            exit_code: Some(if state == RunState::Passed { 0 } else { 1 }),
+            started_at: Timestamp(at),
+            ended_at: Some(Timestamp(at + 1)),
+            kind: CdRunKind::Deploy,
+            source: None,
+            steps: Vec::new(),
+        })
+    };
+    let store = &f.h.store;
+    let insert = |run| async move { store.insert_cd_run(&run).await };
+    insert(attempt("previous", &head, RunState::Passed, 1)?).await?;
+    insert(CdRunRecord {
+        kind: CdRunKind::Drill,
+        ..attempt("drill", &landed, RunState::Passed, 2)?
+    })
+    .await?;
+    insert(CdRunRecord {
+        verify: None,
+        ..attempt("deploy-only", &landed, RunState::Passed, 3)?
+    })
+    .await?;
+    insert(attempt("broken", &landed, RunState::Failed, 4)?).await?;
+    // A nested command printed phase markers before the wrapper failed.
+    for phase in ["deploy", "verify"] {
+        assert!(
+            store
+                .insert_span(&yulius_app::stages::NewSpan {
+                    sandbox_id: SandboxId::parse("s1")?,
+                    subject_kind: yulius_domain::stages::SubjectKind::CdRun,
+                    subject_id: "broken".into(),
+                    key: format!("run/{phase}"),
+                    parent_key: Some("run".into()),
+                    kind: phase.into(),
+                    name: phase.into(),
+                    environment: Some("staging".into()),
+                    job: None,
+                    started_at: Timestamp(4),
+                    ended_at: Some(Timestamp(5)),
+                    outcome: Some("passed".into()),
+                    detail: None,
+                })
+                .await?
+        );
+    }
+    insert(attempt("smoke", &landed, RunState::Passed, 5)?).await?;
+    advance_base(&f, "dev", "feature.txt", "Replacement behavior")?;
+    insert(attempt(
+        "different",
+        &f.origin_sha("dev")?,
+        RunState::Passed,
+        6,
+    )?)
+    .await?;
+    use yulius_app::delivery::{EnvironmentRunKind, EnvironmentRunRecord, EnvironmentRunState};
+    let profile_run = EnvironmentRunRecord {
+        id: "profile-command".into(),
+        sandbox_id: SandboxId::parse("s1")?,
+        environment: "dev-vm".into(),
+        kind: EnvironmentRunKind::Command,
+        requested_by: UserId::parse("u-bob")?,
+        command: Some("smoke".into()),
+        commit: Some(landed.clone()),
+        state: EnvironmentRunState::Succeeded,
+        output: String::new(),
+        exit_code: Some(0),
+        started_at: Timestamp(0),
+        ended_at: Some(Timestamp(1)),
+    };
+    store.insert_environment_run(&profile_run).await?;
+    store
+        .insert_environment_run(&EnvironmentRunRecord {
+            id: "person-confirmed".into(),
+            kind: EnvironmentRunKind::Manual,
+            command: None,
+            commit: None,
+            ..profile_run
+        })
+        .await?;
+    let read = || f.req(Method::GET, &path, None, &f.rita);
+    let response = read().await?;
+    assert_eq!(response.status, StatusCode::OK, "{}", response.body);
+    let body = response.body;
+    let runs = body["runs"].as_array().ok_or("CD attempts")?;
+    assert_eq!(runs.len(), 4, "{body}");
+    assert_eq!(runs[3]["kind"], "environment command");
+    assert_eq!(runs[3]["reference"], "dev-vm");
+    assert_eq!(
+        runs[3]["checks"],
+        json!([{"name":"command","state":"succeeded"}])
+    );
+    assert_eq!(runs[0]["reference"], "staging");
+    assert_eq!(runs[0]["sha"], landed);
+    assert_eq!(
+        runs[0]["checks"],
+        json!([{"name":"deploy","state":"passed"},{"name":"verify","state":"passed"}])
+    );
+    assert_eq!(runs[1]["state"], "failed");
+    assert_eq!(runs[1]["checks"][0]["state"], "unconfirmed");
+    assert_eq!(runs[1]["checks"][1]["state"], "unconfirmed");
+    assert_eq!(runs[2]["checks"][1]["state"], "not configured");
+    store.prune_spans(Timestamp(i64::MAX)).await?;
+    assert_eq!(read().await?.body, body);
+    f.h.store.prune_cd_runs(0, Timestamp(i64::MAX)).await?;
+    assert!(f.h.store.cd_run("smoke", false).await?.is_none());
+    assert_eq!(read().await?.body, body);
+    Ok(())
+}
+
+#[tokio::test]
+async fn post_merge_evidence_refuses_a_pr_retargeted_at_merge() -> TestResult {
+    let f = fixture(&DeliveryProfile::standard()).await?;
+    let wt = f
+        .add_task("t1", "Update the guide", "docs/1-guide", "dev")
+        .await?;
+    commit_file(&wt, "guide.md", "guide", "docs: update guide")?;
+    let head = git(&wt, &["rev-parse", "HEAD"])?;
+    let base = f.origin_sha("dev")?;
+    git(&f.origin, &["branch", "another-base", &base])?;
+    let agent = live_agent(&f, "t1", "tok-retarget").await?;
+    f.h.github.set_checks(&head, ChecksState::Success);
+    *f.h.github
+        .retarget_on_merge
+        .lock()
+        .map_err(|_| "retarget lock")? = Some("another-base".into());
+    arm_merge(&f, &agent, &head).await?;
+    f.h.app.merge_armed(&SandboxId::parse("s1")?).await;
+    assert_eq!(f.origin_sha("dev")?, base);
+    let other = f.origin_sha("another-base")?;
+    assert_ne!(other, base);
+    assert!(f.delivery("t1").await?["evidence"].is_null());
+    assert_eq!(
+        f.req(
+            Method::GET,
+            &format!("/api/tasks/t1/delivery/evidence/{other}"),
+            None,
+            &f.rita
+        )
+        .await?
+        .status,
+        StatusCode::NOT_FOUND
+    );
+    let mut profile = DeliveryProfile::standard();
+    profile.integration_branch = "another-base".into();
+    f.h.store
+        .set_profile(
+            &SandboxId::parse("s1")?,
+            &serde_json::to_string(&profile_to_contract(&profile))?,
+        )
+        .await?;
+    assert!(
+        f.delivery("t1").await?["evidence"].is_null(),
+        "changing the integration branch cannot reinterpret a rejected landing"
+    );
+    assert_eq!(
+        f.req(
+            Method::GET,
+            &format!("/api/tasks/t1/delivery/evidence/{other}"),
+            None,
+            &f.rita
+        )
+        .await?
+        .status,
+        StatusCode::NOT_FOUND
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn post_merge_evidence_pages_over_archived_attempts_while_another_run_lands() -> TestResult {
+    use yulius_app::ports::store_ext::CiStore;
+    use yulius_domain::ci::RunState;
+    let (f, _, _) = merged_task().await?;
+    let sha = f.origin_sha("dev")?;
+    let agent = live_agent(&f, "t1", "tok-page-evidence").await?;
+    let path = format!("/api/tasks/t1/delivery/evidence/{sha}");
+    let store = &f.h.store;
+    use yulius_app::ci::cd::CdRunRecord;
+    use yulius_app::ports::store_ext::CdStore;
+    let deployment = CdRunRecord {
+        id: "staging-smoke".into(),
+        sandbox_id: SandboxId::parse("s1")?,
+        environment: "staging".into(),
+        stage: yulius_domain::cd::CdStage::Dev,
+        branch: "dev".into(),
+        sha: sha.clone(),
+        state: RunState::Passed,
+        reason: None,
+        requested_by: "person".into(),
+        task_id: None,
+        deploy: Some("deploy".into()),
+        verify: Some("smoke".into()),
+        note: None,
+        output: String::new(),
+        exit_code: Some(0),
+        started_at: Timestamp(0),
+        ended_at: Some(Timestamp(1)),
+        kind: yulius_domain::rollback::CdRunKind::Deploy,
+        source: None,
+        steps: vec![],
+    };
+    store.insert_cd_run(&deployment).await?;
+    store
+        .insert_cd_run(&CdRunRecord {
+            id: "other-release".into(),
+            sha: f.origin_sha("main")?,
+            started_at: Timestamp(53),
+            ended_at: Some(Timestamp(54)),
+            ..deployment
+        })
+        .await?;
+    store.prune_cd_runs(0, Timestamp(i64::MAX)).await?;
+    assert!(store.cd_run("staging-smoke", false).await?.is_none());
+    for at in 1..51 {
+        yulius_ci_run(store, &format!("attempt-{at}"), &sha, RunState::Passed, at).await?;
+    }
+    yulius_ci_run(
+        store,
+        "new-tip",
+        &f.origin_sha("main")?,
+        RunState::Passed,
+        51,
+    )
+    .await?;
+    store.prune_ci_runs(0, Timestamp(i64::MAX)).await?;
+    assert!(store.ci_run("attempt-1").await?.is_none());
+    let first = f.req(Method::GET, &path, None, &f.rita).await?.body;
+    assert_eq!(first["runs"].as_array().ok_or("page")?.len(), 50);
+    assert_eq!(first["runs"][0]["run_id"], "attempt-50");
+    let cursor = first["next_before"].as_str().ok_or("missing next page")?;
+    yulius_ci_run(store, "new-rerun", &sha, RunState::Failed, 52).await?;
+    let last = f
+        .req(
+            Method::GET,
+            &format!("{path}?before={cursor}"),
+            None,
+            &f.rita,
+        )
+        .await?
+        .body;
+    assert_eq!(last["runs"].as_array().ok_or("last page")?.len(), 1);
+    assert_eq!(last["runs"][0]["run_id"], "staging-smoke");
+    let tool_page = agent_tool(
+        &f,
+        &agent,
+        "delivery_status",
+        json!({"merged_sha": sha, "before": cursor}),
+    )
+    .await?;
+    assert_eq!(answer(&tool_page)?["evidence"]["runs"], last["runs"]);
+    let pin = agent_tool(
+        &f,
+        &agent,
+        "delivery_status",
+        json!({"run_id":"staging-smoke"}),
+    )
+    .await?;
+    let selected = answer(&pin)?["evidence"].clone();
+    assert_eq!(selected["runs"], last["runs"]);
+    assert_eq!(selected["runs"][0]["checks"][1]["state"], "passed");
+    assert!(
+        pin["content"][0]["text"]
+            .as_str()
+            .is_some_and(|s| s.contains("?run_id=staging-smoke"))
+    );
+    let by_cursor = agent_tool(&f, &agent, "delivery_status", json!({"before":cursor})).await?;
+    assert_eq!(answer(&by_cursor)?["evidence"]["runs"], last["runs"]);
+    let wrong_landing = agent_tool(
+        &f,
+        &agent,
+        "delivery_status",
+        json!({"merged_sha":f.origin_sha("main")?}),
+    )
+    .await?;
+    assert_eq!(wrong_landing["isError"], true);
+    f.add_task("t2", "Another task", "docs/2-other", "dev")
+        .await?;
+    let other = live_agent(&f, "t2", "tok-other-evidence").await?;
+    assert_eq!(
+        agent_tool(
+            &f,
+            &other,
+            "delivery_status",
+            json!({"merged_sha":sha, "run_id":"staging-smoke"})
+        )
+        .await?["isError"],
+        true
+    );
+    assert!(last["next_before"].is_null());
+    Ok(())
+}
+
+#[tokio::test]
+async fn post_merge_evidence_recovers_the_expected_landing_after_github_returns() -> TestResult {
+    use std::sync::atomic::Ordering;
+    let f = fixture(&DeliveryProfile::standard()).await?;
+    let wt = f
+        .add_task("t1", "Update the guide", "docs/1-guide", "dev")
+        .await?;
+    commit_file(&wt, "guide.md", "guide", "docs: update guide")?;
+    let head = git(&wt, &["rev-parse", "HEAD"])?;
+    let agent = live_agent(&f, "t1", "tok-deferred-merge").await?;
+    f.h.github.set_checks(&head, ChecksState::Success);
+    f.h.github.fail_merged_reads.store(true, Ordering::SeqCst);
+    arm_merge(&f, &agent, &head).await?;
+    f.h.app.merge_armed(&SandboxId::parse("s1")?).await;
+    let sha = f.origin_sha("dev")?;
+    assert!(f.delivery("t1").await?["evidence"].is_null());
+    let mut profile = DeliveryProfile::standard();
+    profile.integration_branch = "another-base".into();
+    f.h.store
+        .set_profile(
+            &SandboxId::parse("s1")?,
+            &serde_json::to_string(&profile_to_contract(&profile))?,
+        )
+        .await?;
+    f.h.github.fail_merged_reads.store(false, Ordering::SeqCst);
+    let view = f.delivery("t1").await?;
+    assert_eq!(view["evidence"]["merged_sha"], sha);
+    assert_eq!(view["evidence"]["head_sha"], head);
+    assert_eq!(view["evidence"]["branch"], "dev");
+    Ok(())
+}
+
+/// A project's integration branch can change between an external merge and Yulius's first
+/// observation of the closed PR. Both task delivery and the Git page can reconcile it.
+#[tokio::test]
+async fn post_merge_evidence_reconciles_an_external_merge_against_its_original_base() -> TestResult
+{
+    for landed_on_dev in [false, true] {
+        for read_git_page in [false, true] {
+            let f = fixture(&DeliveryProfile::standard()).await?;
+            let wt = f
+                .add_task("t1", "Update the guide", "docs/1-guide", "dev")
+                .await?;
+            commit_file(&wt, "guide.md", "guide", "docs: update guide")?;
+            let head = git(&wt, &["rev-parse", "HEAD"])?;
+            git(&f.origin, &["branch", "another-base", "dev"])?;
+            if read_git_page {
+                git(&wt, &["push", "--quiet", "origin", "HEAD:docs/1-guide"])?;
+                yulius_app::ports::github::GitHubPort::create_pull(
+                    f.h.github.as_ref(),
+                    &Secret("token-carol".into()),
+                    "Quartio-Studio",
+                    "shop",
+                    &yulius_app::ports::github::NewPull {
+                        title: "docs: update guide".into(),
+                        head: "docs/1-guide".into(),
+                        base: "dev".into(),
+                        body: String::new(),
+                    },
+                )
+                .await?;
+                assert_eq!(
+                    f.delivery("t1").await?["stage"],
+                    "pr_open",
+                    "adopt the open PR"
+                );
+            } else {
+                let agent = live_agent(&f, "t1", "tok-external-base").await?;
+                arm_merge(&f, &agent, &head).await?;
+            }
+            if !landed_on_dev {
+                *f.h.github
+                    .retarget_on_merge
+                    .lock()
+                    .map_err(|_| "retarget lock")? = Some("another-base".into());
+            }
+            f.h.github.set_checks(&head, ChecksState::Success);
+            let sha = yulius_app::ports::github::GitHubPort::merge_pull(
+                f.h.github.as_ref(),
+                &Secret("token-carol".into()),
+                "Quartio-Studio",
+                "shop",
+                1,
+                "squash",
+                &head,
+            )
+            .await?;
+            let mut profile = DeliveryProfile::standard();
+            profile.integration_branch = "another-base".into();
+            f.h.store
+                .set_profile(
+                    &SandboxId::parse("s1")?,
+                    &serde_json::to_string(&profile_to_contract(&profile))?,
+                )
+                .await?;
+            if read_git_page {
+                let page = f
+                    .req(Method::GET, "/api/sandboxes/s1/git", None, &f.bob)
+                    .await?;
+                assert_eq!(page.status, StatusCode::OK);
+                // Read the permalink before a task delivery read gets a chance to recover it.
+                let proof = f
+                    .req(
+                        Method::GET,
+                        &format!("/api/tasks/t1/delivery/evidence/{sha}"),
+                        None,
+                        &f.rita,
+                    )
+                    .await?;
+                assert_eq!(
+                    proof.status,
+                    if landed_on_dev {
+                        StatusCode::OK
+                    } else {
+                        StatusCode::NOT_FOUND
+                    }
+                );
+            }
+            let view = f.delivery("t1").await?;
+            let proof = f
+                .req(
+                    Method::GET,
+                    &format!("/api/tasks/t1/delivery/evidence/{sha}"),
+                    None,
+                    &f.rita,
+                )
+                .await?;
+            if landed_on_dev {
+                assert_eq!(proof.status, StatusCode::OK);
+                assert_eq!(view["evidence"]["branch"], "dev");
+                assert_eq!(proof.body["merged_sha"], sha);
+                assert!(
+                    view["notes"]
+                        .as_array()
+                        .ok_or("delivery notes")?
+                        .iter()
+                        .any(|note| {
+                            note.as_str()
+                                .is_some_and(|text| text.contains("is merged into `dev`"))
+                        }),
+                    "the delivery note must report the observed PR base: {}",
+                    view["notes"]
+                );
+            } else {
+                assert_eq!(
+                    proof.status,
+                    StatusCode::NOT_FOUND,
+                    "retargeted external merge"
+                );
+                assert!(view["evidence"].is_null());
+            }
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn post_merge_evidence_checks_the_pr_number_on_the_git_page() -> TestResult {
+    use std::sync::atomic::Ordering;
+
+    let f = fixture(&DeliveryProfile::standard()).await?;
+    let wt = f
+        .add_task("t1", "Update the guide", "docs/1-guide", "dev")
+        .await?;
+    commit_file(&wt, "guide.md", "guide", "docs: update guide")?;
+    let head = git(&wt, &["rev-parse", "HEAD"])?;
+    let agent = live_agent(&f, "t1", "tok-mismatched-pr").await?;
+    arm_merge(&f, &agent, &head).await?;
+    f.h.github.set_checks(&head, ChecksState::Success);
+    let sha = yulius_app::ports::github::GitHubPort::merge_pull(
+        f.h.github.as_ref(),
+        &Secret("token-carol".into()),
+        "Quartio-Studio",
+        "shop",
+        1,
+        "squash",
+        &head,
+    )
+    .await?;
+    f.h.github
+        .misnumber_merged_reads
+        .store(true, Ordering::SeqCst);
+    let page = f
+        .req(Method::GET, "/api/sandboxes/s1/git", None, &f.bob)
+        .await?;
+    assert_eq!(page.status, StatusCode::OK);
+    assert!(f.delivery("t1").await?["evidence"].is_null());
+    let path = format!("/api/tasks/t1/delivery/evidence/{sha}");
+    assert_eq!(
+        f.req(Method::GET, &path, None, &f.rita).await?.status,
+        StatusCode::NOT_FOUND
+    );
+    f.h.github
+        .misnumber_merged_reads
+        .store(false, Ordering::SeqCst);
+    assert_eq!(f.delivery("t1").await?["evidence"]["pr_number"], 1);
     Ok(())
 }

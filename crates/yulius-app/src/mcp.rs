@@ -6,7 +6,9 @@ use serde_json::{Value, json};
 use yulius_contracts::mcp::{
     RpcRequest, RpcResponse, SUPPORTED_PROTOCOL_VERSIONS, ToolDescriptor, text_result,
 };
-use yulius_domain::harness::{DEFAULT_CLAUDE_EFFORT, DEFAULT_CLAUDE_MODEL};
+use yulius_domain::harness::{
+    DEFAULT_CLAUDE_EFFORT, DEFAULT_CLAUDE_MODEL, GPT_6_2_ASTRA, codex_effort,
+};
 use yulius_domain::ids::SandboxId;
 use yulius_domain::vault::redact::redact_text;
 
@@ -137,7 +139,8 @@ fn model_property() -> Value {
 
 /// `task_create`'s and `sandbox_task_create`'s `effort` argument, one definition for both.
 fn effort_property() -> Value {
-    json!({"type": "string", "description": format!("Effort override (default {DEFAULT_CLAUDE_EFFORT}; none for Haiku)")})
+    let astra_effort = codex_effort(GPT_6_2_ASTRA, None);
+    json!({"type": "string", "description": format!("Effort override (default {astra_effort} for {GPT_6_2_ASTRA}, {DEFAULT_CLAUDE_EFFORT} for other models, none for Haiku)")})
 }
 
 /// What the Yulius MCP tells a task's agent at `initialize`.
@@ -596,8 +599,8 @@ pub fn tool_descriptors() -> Vec<ToolDescriptor> {
         },
         ToolDescriptor {
             name: "delivery_status".into(),
-            description: "Delivery state of this task: pull request, checks, spec validity, open steps, the project's delivery profile and the next actions. Deliver with delivery_merge; deploys are CD runs (cd_status, cd_deploy).".into(),
-            input_schema: schema(json!({}), &[]),
+            description: "Delivery state of this task: pull request, checks, spec validity, open steps, the project's delivery profile and the next actions. The evidence link identifies the landed commit. Pass before to read older attempts or run_id to cite one attempt. merged_sha selects an earlier landing of this task. Deliver with delivery_merge; deploys are CD runs (cd_status, cd_deploy).".into(),
+            input_schema: schema(json!({"merged_sha":{"type":"string"}, "before":{"type":"string"}, "run_id":{"type":"string"}}), &[]),
         },
         ToolDescriptor {
             name: "ci_status".into(),
@@ -1213,7 +1216,7 @@ impl App {
             "steps_set" => self.tool_steps_set(ctx, &args).await,
             "step_update" => self.tool_step_update(ctx, &args).await,
             "steps_get" => self.tool_steps_get(ctx).await,
-            "delivery_status" => self.tool_delivery_status(ctx).await,
+            "delivery_status" => self.tool_delivery_status(ctx, &args).await,
             "ci_status" => self.tool_ci_status(ctx, &args).await,
             "ci_rerun" => self.tool_ci_rerun(ctx, &args).await,
             "ci_setup" => self.tool_ci_setup(ctx).await,
@@ -1823,7 +1826,7 @@ mod tests {
         );
         assert_eq!(
             described("effort"),
-            format!("Effort override (default {DEFAULT_CLAUDE_EFFORT}; none for Haiku)")
+            "Effort override (default xhigh for gpt-6.2-astra, high for other models, none for Haiku)"
         );
         assert_eq!(
             (DEFAULT_CLAUDE_MODEL, DEFAULT_CLAUDE_EFFORT),

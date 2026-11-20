@@ -103,13 +103,24 @@ pub const DEFAULT_ANTIGRAVITY_MODEL: &str = "gemini-4-neon";
 /// The effort of an Antigravity task that names none: high (SPEC-505).
 pub const DEFAULT_ANTIGRAVITY_EFFORT: &str = "high";
 
-/// The model of a Codex task that names none: GPT-6.2 Astra (the person's request of 2026-11-19,
-/// SPEC-511: "default model for codex should be astra 6.2 effort high"; the account's own default
-/// before, SPEC-503). Codex's id for it, served to Codex CLI 0.166.0 and later.
-pub const DEFAULT_CODEX_MODEL: &str = "gpt-6.2-astra";
+/// Codex model with a model-specific effort default (SPEC-561).
+pub const GPT_6_2_ASTRA: &str = "gpt-6.2-astra";
 
-/// The effort of a Codex task that names none: high (SPEC-511).
+/// The model of a Codex task that names none (SPEC-511).
+pub const DEFAULT_CODEX_MODEL: &str = GPT_6_2_ASTRA;
+
+/// The fallback effort for Codex models without a model-specific default (SPEC-511).
 pub const DEFAULT_CODEX_EFFORT: &str = "high";
+
+/// The task's choice takes precedence over the effective model's default at each launch.
+#[must_use]
+pub fn codex_effort<'a>(model: &str, effort: Option<&'a str>) -> &'a str {
+    effort.unwrap_or(if model == GPT_6_2_ASTRA {
+        "xhigh"
+    } else {
+        DEFAULT_CODEX_EFFORT
+    })
+}
 
 /// The effort a task runs at: its own, else [`DEFAULT_CLAUDE_EFFORT`], except for a Haiku model,
 /// which takes no effort level.
@@ -194,15 +205,27 @@ impl Harness {
         }
     }
 
-    /// The agent a model given without one implies: Antigravity for a Gemini model, else Claude
-    /// Code (SPEC-505 RND-001).
+    /// The harness identified by a provider-specific model prefix. Unqualified aliases can be
+    /// interpreted by the explicitly selected harness.
+    #[must_use]
+    pub fn for_model_prefix(model: &str) -> Option<Self> {
+        let model = model.trim().to_ascii_lowercase();
+        if model.starts_with("gpt-") {
+            Some(Self::Codex)
+        } else if model.starts_with("gemini-") {
+            Some(Self::Antigravity)
+        } else if model.starts_with("claude") {
+            Some(Self::ClaudeCode)
+        } else {
+            None
+        }
+    }
+
+    /// The agent a model given without a harness implies. Unqualified aliases default to Claude
+    /// Code (SPEC-505, SPEC-560).
     #[must_use]
     pub fn implied_by(model: &str) -> Self {
-        if model.trim().to_ascii_lowercase().starts_with("gemini-") {
-            Self::Antigravity
-        } else {
-            Self::ClaudeCode
-        }
+        Self::for_model_prefix(model).unwrap_or(Self::ClaudeCode)
     }
 
     /// The provider whose accounts this harness uses.

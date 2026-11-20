@@ -14,8 +14,9 @@ use yulius_app::coordination::ProjectCaller;
 use yulius_app::model::{LaunchKind, TaskMode};
 use yulius_app::needs_you::NeedsYouRecord;
 use yulius_app::ports::store::TaskStore;
+use yulius_app::race::Point;
 use yulius_domain::ids::TaskId;
-use yulius_domain::task::{Activity, TaskStatus};
+use yulius_domain::task::{Activity, StopReason, TaskStatus};
 use yulius_ptyhost::test_support::locate_fake_agent;
 
 use crate::first_message::{
@@ -415,7 +416,7 @@ fn a_stop_during_the_parks_end_stops_the_task() -> TestResult {
     let rt = runtime()?;
     rt.block_on(async {
         let app = app(&data, 8, 1).await?;
-        let (id, _) = answered(&app, &data).await?;
+        let (id, caller) = answered(&app, &data).await?;
         let stopped = Arc::new(std::sync::Mutex::new(None));
         {
             let (app, id, stopped) = (app.clone(), id.clone(), stopped.clone());
@@ -441,6 +442,9 @@ fn a_stop_during_the_parks_end_stops_the_task() -> TestResult {
         let answer = stopped.lock().map_err(|_| "poisoned")?.clone();
         assert!(matches!(answer, Some(Ok(()))), "{answer:?}");
         assert!(app.deps.store.live_attempt(&id).await?.is_none());
+        let original = screen(&app, &id);
+        assert!(!original.contains("Yulius parked"), "{original}");
+        assert_cold_screen(&data, &id, &caller, &original).await?;
         Ok::<_, Error>(())
     })?;
     rt.shutdown_timeout(Duration::from_secs(5));
@@ -741,6 +745,156 @@ fn a_park_that_cannot_end_its_session_gives_up() -> TestResult {
     Ok(())
 }
 
+pub(crate) async fn assert_cold_screen(
+    data: &Path,
+    id: &TaskId,
+    caller: &ProjectCaller,
+    expected: &str,
+) -> TestResult {
+    let restart = self::app(data, 8, 1).await?;
+    let ctx = AuthContext {
+        user: restart
+            .deps
+            .store
+            .user(&caller.user)
+            .await?
+            .ok_or("owner")?,
+        csrf_token: None,
+        session_hash: None,
+        token: None,
+    };
+    // Read through MCP first, before a page can warm the terminal hub.
+    let remote = yulius_app::remote::RemoteCaller {
+        ctx: ctx.clone(),
+        token_id: "cold-screen".into(),
+        scope: yulius_domain::permission::TokenScope::Read,
+        login: "admin".into(),
+        superagent: None,
+    };
+    let request = serde_json::from_value(json!({
+        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "params": {"name": "task_screen", "arguments": {"project":"acme/pool","task_id":id.as_str()},
+            "_meta": {"yulius/structured":true}}
+    }))?;
+    let result = restart
+        .remote_mcp_handle(&remote, request)
+        .await
+        .and_then(|reply| reply.result)
+        .ok_or("task_screen")?;
+    assert_eq!(
+        crate::support::tool_text(&result)["screen"],
+        expected.trim_end()
+    );
+    let terminal = restart
+        .terminal_open(
+            &ctx,
+            id.as_str(),
+            matches!(
+                status_of(&restart, id).await.0,
+                Some(TaskStatus::Queued | TaskStatus::WaitingCapacity | TaskStatus::Starting)
+            )
+            .then_some((22, 5)),
+        )
+        .await?;
+    assert_eq!(screen(&restart, id), expected);
+    assert_eq!(
+        restart.terminal_state(id).await?.parked_screen,
+        expected.contains("Yulius parked")
+    );
+    drop(terminal);
+    Ok(())
+}
+
+/// The last attempt's screen stays visible while capacity holds a parked resume in the queue.
+async fn queued_park_screen(
+    app: &Arc<App>,
+    id: &TaskId,
+    data: &Path,
+    caller: &ProjectCaller,
+) -> TestResult {
+    wait_for(
+        "the committed park screen",
+        Duration::from_secs(10),
+        || async { screen(app, id).contains("Yulius parked") },
+    )
+    .await?;
+    let captured = screen(app, id);
+    // A real park wakes the queue asynchronously. Reconstruct the cold states
+    // on a consistent copy so that drain cannot launch the synthetic queued run.
+    let (_cold_dir, cold_data) = data_dir()?;
+    yulius_store::SqliteStore::open(&data.join("yulius.db"))?
+        .backup_to(&cold_data.join("yulius.db"))
+        .await?;
+    let cold = self::app(&cold_data, 8, 1).await?;
+    assert!(
+        cold.deps
+            .store
+            .transition_task(
+                id,
+                Some(TaskStatus::Parked),
+                TaskStatus::Queued,
+                None,
+                cold.now()
+            )
+            .await?
+    );
+    // Force the live queue pass that previously resumed the synthetic queued task.
+    app.drain_queue_now().await;
+    assert_eq!(status_of(&cold, id).await.0, Some(TaskStatus::Queued));
+    // Loss and normal exit can save identical bytes in this fake agent. Make
+    // the ordinary final screen distinct to prove which snapshot each reader uses.
+    let last = cold
+        .deps
+        .store
+        .attempts(id)
+        .await?
+        .pop()
+        .ok_or("parked attempt")?;
+    let dir = Path::new(&last.run_dir);
+    std::fs::write(dir.join("final-screen"), b"80 24\nShutdown screen")?;
+    assert_cold_screen(&cold_data, id, caller, &captured).await?;
+    // A restart in the gap between the state commit and the filename change.
+    std::fs::rename(dir.join("parked-screen"), dir.join("parked-screen.pending"))?;
+    assert_cold_screen(&cold_data, id, caller, &captured).await?;
+    let renamed = dir.to_owned();
+    yulius_app::race::on(yulius_app::race::Point::ParkScreenRead, dir, move || {
+        let published = std::fs::rename(
+            renamed.join("parked-screen.pending"),
+            renamed.join("parked-screen"),
+        );
+        assert!(published.is_ok(), "{published:?}");
+    });
+    assert_cold_screen(&cold_data, id, caller, &captured).await?;
+    // Starting is recorded before the provider acquires its account.
+    assert!(
+        cold.deps
+            .store
+            .transition_task(
+                id,
+                Some(TaskStatus::Queued),
+                TaskStatus::Starting,
+                None,
+                cold.now()
+            )
+            .await?
+    );
+    assert_cold_screen(&cold_data, id, caller, &captured).await?;
+    // The resumed launch has no subscription available, so it waits without a new attempt.
+    assert!(
+        cold.deps
+            .store
+            .transition_task(
+                id,
+                Some(TaskStatus::Starting),
+                TaskStatus::WaitingCapacity,
+                None,
+                cold.now()
+            )
+            .await?
+    );
+    assert_cold_screen(&cold_data, id, caller, &captured).await
+}
+
 /// PRK-003 (review round 2): a switch that starts after the park decided gives way to it: the
 /// task parks with the activity it had, and the switch says why it did not happen.
 #[test]
@@ -749,7 +903,7 @@ fn a_switch_overtaken_by_a_park_parks_with_its_activity() -> TestResult {
     let rt = runtime()?;
     rt.block_on(async {
         let app = app(&data, 8, 1).await?;
-        let (id, _) = answered(&app, &data).await?;
+        let (id, caller) = answered(&app, &data).await?;
         let switched = Arc::new(std::sync::Mutex::new(None));
         {
             let (app, target, switched) = (app.clone(), id.clone(), switched.clone());
@@ -774,6 +928,7 @@ fn a_switch_overtaken_by_a_park_parks_with_its_activity() -> TestResult {
             matches!(&answer, Some(Err(why)) if why.contains("the idle session was parked")),
             "{answer:?}"
         );
+        queued_park_screen(&app, &id, &data, &caller).await?;
         Ok::<_, Error>(())
     })?;
     rt.shutdown_timeout(Duration::from_secs(5));
@@ -966,7 +1121,7 @@ fn a_loss_recorded_while_the_reader_holds_the_park_still_parks() -> TestResult {
             },
         )
         .await?;
-        let (id, _) = answered(&app, &data).await?;
+        let (id, caller) = answered(&app, &data).await?;
         let run = app
             .deps
             .store
@@ -1006,16 +1161,139 @@ fn a_loss_recorded_while_the_reader_holds_the_park_still_parks() -> TestResult {
             "the loss was recorded first"
         );
         assert_eq!(status_of(&app, &id).await.1, Some(Activity::Waiting));
+        queued_park_screen(&app, &id, &data, &caller).await?;
         Ok::<_, Error>(())
     })?;
     rt.shutdown_timeout(Duration::from_secs(5));
     Ok(())
 }
 
-/// PRK-004 (review round 3, W1): a parked task's summary says what its idle run's did: a spec
-/// that does not say done keeps it "Your turn" on the web as on the server.
+#[derive(Clone, Copy)]
+enum EndRequests {
+    Close,
+    Cancel,
+    CloseThenCancel,
+}
+
+/// SPEC-563: escalation records the loss with the reader held just before or just after it
+/// takes the request. EndDecided releases the reader once the loss has consumed the intent.
+fn host_loss_with_request(
+    requests: EndRequests,
+    hold_reader_at: Point,
+    expected: TaskStatus,
+) -> TestResult {
+    use yulius_app::race::on;
+    use yulius_domain::task::AttemptState;
+
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let fake = locate_fake_agent().ok_or("fake-agent is not built")?;
+        let agent = FakeAgentOptions {
+            answers_first_message: true,
+            ..hooked()
+        };
+        let (app, _) = start_with(&data, &fake, agent, 0, Arc::default(), |config| {
+            config.stop_escalation_ms = 1;
+        })
+        .await?;
+        let (id, _) = answered(&app, &data).await?;
+        let key = Path::new(id.as_str());
+        let bound = Duration::from_secs(30);
+        let (reader_ready, wait_reader) = tokio::sync::oneshot::channel();
+        let (escalate, wait_escalate) = std::sync::mpsc::channel();
+        let (lost, wait_lost) = std::sync::mpsc::channel();
+        let (ordered, observed) = tokio::sync::oneshot::channel();
+        on(Point::EndEscalating, key, move || {
+            assert!(
+                tokio::task::block_in_place(|| wait_escalate.recv_timeout(bound)).is_ok(),
+                "reader reached the selected race point"
+            );
+        });
+        on(hold_reader_at, key, move || {
+            let held = reader_ready.send(()).is_ok()
+                && tokio::task::block_in_place(|| wait_lost.recv_timeout(bound)).is_ok();
+            let _ = ordered.send(held);
+        });
+        on(Point::EndDecided, key, move || {
+            let _ = lost.send(());
+        });
+        match requests {
+            EndRequests::Close | EndRequests::CloseThenCancel => app.close_task_now(&id).await?,
+            EndRequests::Cancel => app.stop_task_now(&id).await?,
+        }
+        tokio::time::timeout(bound, wait_reader).await??;
+        if matches!(requests, EndRequests::CloseThenCancel) {
+            // Close is held by the reader. The newer Cancel is in the live intent slot.
+            app.stop_task_now(&id).await?;
+        }
+        escalate.send(())?;
+        assert!(
+            tokio::time::timeout(bound, observed).await??,
+            "reader held until loss"
+        );
+        wait_for("the task to settle after loss", bound, || async {
+            status_of(&app, &id)
+                .await
+                .0
+                .is_some_and(TaskStatus::is_resting)
+        })
+        .await?;
+        let runs = app.deps.store.attempts(&id).await?;
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].state, AttemptState::Lost);
+        assert_eq!(runs[0].exit_reason.as_deref(), Some("lost"));
+        assert_eq!(status_of(&app, &id).await.0, Some(expected));
+        Ok::<_, Error>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
 #[test]
-fn a_parked_tasks_summary_keeps_its_unfinished_work() -> TestResult {
+fn host_loss_while_the_reader_holds_close_closes_an_answered_task() -> TestResult {
+    host_loss_with_request(EndRequests::Close, Point::RunEndTaken, TaskStatus::Closed)
+}
+
+#[test]
+fn host_loss_while_the_reader_holds_cancel_stops_an_answered_task() -> TestResult {
+    host_loss_with_request(
+        EndRequests::Cancel,
+        Point::RunEndTaken,
+        TaskStatus::Stopped(StopReason::Cancelled),
+    )
+}
+
+#[test]
+fn host_loss_before_the_reader_takes_close_keeps_the_loss_outcome() -> TestResult {
+    host_loss_with_request(
+        EndRequests::Close,
+        Point::RunEndTaking,
+        TaskStatus::Stopped(StopReason::Lost),
+    )
+}
+
+#[test]
+fn host_loss_before_the_reader_takes_cancel_keeps_the_loss_outcome() -> TestResult {
+    host_loss_with_request(
+        EndRequests::Cancel,
+        Point::RunEndTaking,
+        TaskStatus::Stopped(StopReason::Lost),
+    )
+}
+
+#[test]
+fn host_loss_with_a_newer_cancel_uses_the_live_intent_slot() -> TestResult {
+    host_loss_with_request(
+        EndRequests::CloseThenCancel,
+        Point::RunEndTaken,
+        TaskStatus::Stopped(StopReason::Lost),
+    )
+}
+
+/// A declared unfinished spec keeps the idle session live.
+#[test]
+fn an_unfinished_spec_keeps_its_session() -> TestResult {
     let (_dir, data) = data_dir()?;
     let rt = runtime()?;
     rt.block_on(async {
@@ -1029,22 +1307,85 @@ fn a_parked_tasks_summary_keeps_its_unfinished_work() -> TestResult {
             .await?
             .ok_or("task")?;
         assert!(app.task_summary(&before).await?.spec_unfinished);
-        parked(&app, &id).await?;
+        past_the_grace(&app, &id).await?;
+        assert_eq!(app.park_idle_sessions_now().await, 0);
         let after = TaskStore::task(app.deps.store.as_ref(), &id)
             .await?
             .ok_or("task")?;
+        assert_eq!(after.status, TaskStatus::Running);
         assert!(app.task_summary(&after).await?.spec_unfinished);
+        // Both a person request and an achieved activity can take precedence in the display.
+        ask(&app, &id).await?;
+        app.deps
+            .store
+            .transition_task(
+                &id,
+                Some(TaskStatus::Running),
+                TaskStatus::Running,
+                Some(Activity::Done),
+                app.now(),
+            )
+            .await?;
+        past_the_grace(&app, &id).await?;
+        assert_eq!(
+            app.park_idle_sessions_now().await,
+            0,
+            "a human request cannot hide the unfinished spec"
+        );
+        app.deps.store.set_spec_status(&id, Some("done")).await?;
+        parked(&app, &id).await?;
         Ok::<_, Error>(())
     })?;
     rt.shutdown_timeout(Duration::from_secs(5));
     Ok(())
 }
 
-/// PRK-004 (review round 4, G1): a goal task whose goal failed is parked "Your turn", and stays
-/// so for a server started afresh, which has no session that knew the goal: the parked run's
-/// directory keeps it.
 #[test]
-fn a_parked_unfinished_goal_stays_your_turn_across_a_restart() -> TestResult {
+fn an_unreadable_recorded_spec_keeps_the_session_through_digest_parking() -> TestResult {
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let app = app(&data, 8, 1).await?;
+        let (id, _) = answered(&app, &data).await?;
+        app.deps
+            .store
+            .set_spec_status(&id, Some("in-progress"))
+            .await?;
+        let store = yulius_store::SqliteStore::open(&data.join("yulius.db"))?;
+        store
+            .execute_for_tests(
+                "ALTER TABLE tasks RENAME COLUMN spec_status TO unavailable_spec_status",
+            )
+            .await?;
+        assert!(app.deps.store.spec_status(&id).await.is_err());
+        past_the_grace(&app, &id).await?;
+        assert_eq!(app.send_digests_now(Some(1)).await.parked, 0);
+        assert_eq!(app.park_idle_sessions_now().await, 0);
+        store
+            .execute_for_tests(
+                "ALTER TABLE tasks RENAME COLUMN unavailable_spec_status TO spec_status",
+            )
+            .await?;
+        assert_eq!(
+            app.deps.store.spec_status(&id).await?.as_deref(),
+            Some("in-progress")
+        );
+        app.deps
+            .store
+            .set_spec_status(&id, Some("unknown-status"))
+            .await?;
+        assert_eq!(app.park_idle_sessions_now().await, 0);
+        app.deps.store.set_spec_status(&id, Some("done")).await?;
+        parked(&app, &id).await?;
+        Ok::<_, Error>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// A failed native goal has unfinished work even without a plan or pull request.
+#[test]
+fn an_unfinished_goal_keeps_its_session() -> TestResult {
     let (_dir, data) = data_dir()?;
     let rt = runtime()?;
     rt.block_on(async {
@@ -1081,24 +1422,9 @@ fn a_parked_unfinished_goal_stays_your_turn_across_a_restart() -> TestResult {
             },
         )
         .await?;
-        parked(&app, &id).await?;
-        assert!(summary(app.clone(), id.clone()).await?.goal_unfinished);
-        // A server started afresh on the same data: no runtime knows the goal.
-        let (fresh, _) = start_with(
-            &data,
-            &fake,
-            agent,
-            0,
-            Arc::new(ScriptedUsage::default()),
-            |config| config.park_after_ms = 1,
-        )
-        .await?;
-        let shown = summary(fresh.clone(), id.clone()).await?;
-        assert_eq!(shown.status, "parked");
-        assert!(
-            shown.goal_unfinished,
-            "the parked run's directory keeps the goal's state"
-        );
+        past_the_grace(&app, &id).await?;
+        assert_eq!(app.park_idle_sessions_now().await, 0);
+        assert_eq!(summary(app.clone(), id.clone()).await?.status, "running");
         Ok::<_, Error>(())
     })?;
     rt.shutdown_timeout(Duration::from_secs(5));
@@ -1259,6 +1585,598 @@ fn a_named_persons_message_resumes_a_parked_task() -> TestResult {
             .await?
             .ok_or("task")?;
         assert_eq!(task.owner, caller.user);
+        Ok::<_, Error>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// SPEC-553 PRK-102: ordinary owner terminal input and `continue_task_with_prompt` wake a parked
+/// task through the supervisor preserving its exact `provider_session_id` and `worktree_path`,
+/// while bare interrupts/scroll, non-owners, and operator-stopped tasks are never woken.
+#[test]
+fn ordinary_owner_terminal_input_and_continue_prompt_wake_parked_session_with_continuity()
+-> TestResult {
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let app = app(&data, 8, 1).await?;
+        let (id, caller) = answered(&app, &data).await?;
+        let first_runs = app.deps.store.attempts(&id).await?;
+        let session_id = first_runs[0].provider_session_id.clone();
+        assert!(session_id.is_some(), "provider_session_id recorded");
+        let worktree = TaskStore::task(app.deps.store.as_ref(), &id)
+            .await?
+            .ok_or("task")?
+            .worktree_path;
+        assert!(worktree.is_some(), "worktree recorded");
+        let owner_ctx = AuthContext {
+            user: app.deps.store.user(&caller.user).await?.ok_or("user")?,
+            csrf_token: None,
+            session_hash: None,
+            token: None,
+        };
+
+        parked(&app, &id).await?;
+        let attach = app.terminal_open(&owner_ctx, id.as_str(), None).await?;
+        assert!(attach.can_write);
+
+        // Scroll and bare Ctrl-C must NOT wake the parked session.
+        app.terminal_input(&owner_ctx, &attach, b"a", true).await?;
+        app.terminal_input(&owner_ctx, &attach, b"\x03", false)
+            .await?;
+        assert_eq!(status_of(&app, &id).await.0, Some(TaskStatus::Parked));
+
+        // Ownership boundary: a non-owner with sandbox write access MUST NOT wake via terminal.
+        let bob = yulius_app::model::UserRecord {
+            id: yulius_domain::ids::UserId::parse("u-bob-term")?,
+            github_login: Some("bob-term".into()),
+            github_id: None,
+            display_name: "Bob".into(),
+            avatar_url: None,
+            is_superadmin: false,
+            is_instance_admin: false,
+            password_hash: None,
+            created_at: yulius_domain::time::Timestamp(1),
+            disabled_at: None,
+        };
+        yulius_app::ports::store::UserStore::insert_user(app.deps.store.as_ref(), &bob).await?;
+        yulius_app::ports::store::PermissionStore::put_access(
+            app.deps.store.as_ref(),
+            &bob.id,
+            &caller.sandbox,
+            yulius_domain::permission::AccessLevel::Write,
+            app.now(),
+        )
+        .await?;
+        let bob_ctx = AuthContext {
+            user: bob,
+            csrf_token: None,
+            session_hash: None,
+            token: None,
+        };
+        let bob_attach = app.terminal_open(&bob_ctx, id.as_str(), None).await?;
+        assert!(!bob_attach.can_write);
+        assert!(
+            app.terminal_input(&bob_ctx, &bob_attach, b"bob wake\r", false)
+                .await
+                .is_err(),
+            "non-owner terminal input must be refused"
+        );
+        assert_eq!(status_of(&app, &id).await.0, Some(TaskStatus::Parked));
+
+        // Ordinary submitted owner typing wakes the parked session with the exact rollout/worktree.
+        app.terminal_input(
+            &owner_ctx,
+            &attach,
+            b"Wake from terminal: answer with an echo\r",
+            false,
+        )
+        .await?;
+        wait_for("terminal wake echo", Duration::from_secs(30), || async {
+            screen(&app, &id).contains("ECHO: Wake from terminal: answer with an echo")
+        })
+        .await?;
+        let runs_after_term = app.deps.store.attempts(&id).await?;
+        assert_eq!(runs_after_term.len(), 2);
+        assert_eq!(runs_after_term[1].launch_kind, LaunchKind::Resume);
+        assert_eq!(runs_after_term[1].provider_session_id, session_id);
+        assert_eq!(
+            TaskStore::task(app.deps.store.as_ref(), &id)
+                .await?
+                .ok_or("task")?
+                .worktree_path,
+            worktree
+        );
+
+        // Park again and verify oversized ContinueTask.prompt (> 64 KiB) is rejected with Invalid
+        // while keeping the task Parked, then wake cleanly via `continue_task` with a bounded prompt.
+        wait_for("idle again", Duration::from_secs(30), || async {
+            status_of(&app, &id).await.1 == Some(Activity::Waiting)
+        })
+        .await?;
+        parked(&app, &id).await?;
+        let oversized = "x".repeat(yulius_app::task_message::MAX_MESSAGE_BYTES + 1);
+        let too_big = app
+            .continue_task(
+                &owner_ctx,
+                id.as_str(),
+                &yulius_contracts::api::tasks::ContinueTask {
+                    account_id: None,
+                    prompt: Some(oversized),
+                },
+            )
+            .await;
+        assert!(
+            matches!(too_big, Err(yulius_app::error::AppError::Invalid(_))),
+            "oversized prompt must return Invalid: {too_big:?}"
+        );
+        assert_eq!(
+            status_of(&app, &id).await.0,
+            Some(TaskStatus::Parked),
+            "rejected prompt must keep task parked"
+        );
+        app.continue_task(
+            &owner_ctx,
+            id.as_str(),
+            &yulius_contracts::api::tasks::ContinueTask {
+                account_id: None,
+                prompt: Some("Wake from reply: answer with an echo".into()),
+            },
+        )
+        .await?;
+        wait_for("reply wake echo", Duration::from_secs(30), || async {
+            screen(&app, &id).contains("ECHO: Wake from reply: answer with an echo")
+        })
+        .await?;
+        let runs_after_reply = app.deps.store.attempts(&id).await?;
+        assert_eq!(runs_after_reply.len(), 3);
+        assert_eq!(runs_after_reply[2].launch_kind, LaunchKind::Resume);
+        assert_eq!(runs_after_reply[2].provider_session_id, session_id);
+
+        // Operator stop boundary: an explicitly stopped task MUST NOT wake on terminal input.
+        app.stop_task_now(&id).await?;
+        wait_for("stopped", Duration::from_secs(30), || async {
+            matches!(status_of(&app, &id).await.0, Some(TaskStatus::Stopped(_)))
+        })
+        .await?;
+        let stopped_err = app
+            .terminal_input(&owner_ctx, &attach, b"should not wake\r", false)
+            .await;
+        assert!(
+            stopped_err.is_err(),
+            "operator-stopped task must refuse terminal input instead of waking"
+        );
+        assert!(matches!(
+            status_of(&app, &id).await.0,
+            Some(TaskStatus::Stopped(_))
+        ));
+        Ok::<_, Error>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// SPEC-553 PRK-103: an idle task continues to park safely while CI runs on its open PR, does not
+/// wake while CI is still running or while a human `needs_you` decision is open, and resumes
+/// automatically once in its saved session/worktree when an actionable check result arrives.
+#[test]
+fn parked_task_parks_safely_during_ci_and_auto_wakes_on_actionable_check_results() -> TestResult {
+    use yulius_app::ci::{CiJobRecord, CiRunRecord};
+    use yulius_app::delivery::DeliveryRecord;
+    use yulius_app::pr_watch::WatchBounds;
+    use yulius_domain::ci::{CiRef, GateSource, RunState};
+    use yulius_domain::delivery::DeliveryStage;
+    use yulius_domain::resources::Need;
+    use yulius_domain::time::Timestamp;
+
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let app = app(&data, 8, 1).await?;
+        let (id, caller) = answered(&app, &data).await?;
+        let session_id = app.deps.store.attempts(&id).await?[0]
+            .provider_session_id
+            .clone();
+        let open = DeliveryRecord {
+            task_id: id.clone(),
+            stage: DeliveryStage::PrOpen,
+            pr_number: Some(42),
+            updated_at: app.now(),
+        };
+        app.deps
+            .store
+            .transition_delivery(&DeliveryStage::None, &open)
+            .await?;
+
+        // Active CI run on PR #42: safe parking while CI runs is preserved.
+        let running_ci = CiRunRecord {
+            id: "run-running".into(),
+            sandbox_id: caller.sandbox.clone(),
+            reference: CiRef::PullRequest(42),
+            sha: "1111111111111111111111111111111111111111".into(),
+            source: GateSource::ProjectConfig,
+            state: RunState::Running,
+            reason: None,
+            requested_by: "yulius".into(),
+            status_for: None,
+            status_note: None,
+            status_attempts: 0,
+            queued_at: Timestamp(10),
+            started_at: Some(Timestamp(11)),
+            ended_at: None,
+        };
+        let running_job = CiJobRecord {
+            id: "job-running".into(),
+            run_id: "run-running".into(),
+            ordinal: 0,
+            name: "checks".into(),
+            key: "checks".into(),
+            command: "scripts/dev ci".into(),
+            matrix: None,
+            state: RunState::Running,
+            reason: None,
+            exit_code: None,
+            output: String::new(),
+            failures: None,
+            started_at: Some(Timestamp(11)),
+            ended_at: None,
+            need: Need::default(),
+            timeout_minutes: None,
+            exclusive: false,
+            waited_ms: None,
+        };
+        app.deps
+            .store
+            .insert_ci_run(&running_ci, &[running_job])
+            .await?;
+
+        parked(&app, &id).await?;
+        let bounds = WatchBounds::default();
+        // Still running: `watch_prs` must NOT wake the parked task.
+        let woke = app.watch_prs(&bounds).await;
+        assert!(
+            woke.is_empty(),
+            "active CI must not wake parked task: {woke:?}"
+        );
+        assert_eq!(status_of(&app, &id).await.0, Some(TaskStatus::Parked));
+
+        // CI finishes passed (unarmed green): `watch_prs` resumes the parked session once with
+        // the exact saved `provider_session_id`.
+        let passed_ci = CiRunRecord {
+            id: "run-passed".into(),
+            state: RunState::Passed,
+            queued_at: Timestamp(20),
+            started_at: Some(Timestamp(21)),
+            ended_at: Some(Timestamp(22)),
+            ..running_ci.clone()
+        };
+        let passed_job = CiJobRecord {
+            id: "job-passed".into(),
+            run_id: "run-passed".into(),
+            ordinal: 0,
+            name: "checks".into(),
+            key: "checks".into(),
+            command: "scripts/dev ci".into(),
+            matrix: None,
+            state: RunState::Passed,
+            reason: None,
+            exit_code: Some(0),
+            output: String::new(),
+            failures: None,
+            started_at: Some(Timestamp(21)),
+            ended_at: Some(Timestamp(22)),
+            need: Need::default(),
+            timeout_minutes: None,
+            exclusive: false,
+            waited_ms: None,
+        };
+        app.deps
+            .store
+            .insert_ci_run(&passed_ci, &[passed_job])
+            .await?;
+
+        let woke = app.watch_prs(&bounds).await;
+        assert!(
+            woke.iter()
+                .any(|(task, text)| task == &id && text.contains("passed its own Yulius CI run")),
+            "expected green wake: {woke:?}"
+        );
+        wait_for(
+            "resumed after green CI",
+            Duration::from_secs(30),
+            || async { status_of(&app, &id).await.0 == Some(TaskStatus::Running) },
+        )
+        .await?;
+        let runs = app.deps.store.attempts(&id).await?;
+        assert_eq!(runs.len(), 2);
+        assert_eq!(runs[1].launch_kind, LaunchKind::Resume);
+        assert_eq!(runs[1].provider_session_id, session_id);
+
+        // Second watch pass does not duplicate the notice.
+        let repeat = app.watch_prs(&bounds).await;
+        assert!(
+            !repeat.iter().any(|(task, _)| task == &id),
+            "no duplicate wake/notice: {repeat:?}"
+        );
+
+        // Park again with an open `needs_you` human decision + a new failed CI run:
+        // human decision boundary MUST prevent auto-wake.
+        wait_for("idle after wake", Duration::from_secs(30), || async {
+            status_of(&app, &id).await.1 == Some(Activity::Waiting)
+        })
+        .await?;
+        let asked = NeedsYouRecord {
+            action: "Approve deploy".into(),
+            happened: None,
+            problem: None,
+            decision: true,
+            link: None,
+            at: 30,
+            cause: None,
+            named: Default::default(),
+        };
+        app.deps
+            .store
+            .set_task_needs_you(&id, Some(&asked), app.now())
+            .await?;
+        parked(&app, &id).await?;
+        let failed_ci = CiRunRecord {
+            id: "run-failed".into(),
+            sha: "2222222222222222222222222222222222222222".into(),
+            state: RunState::Failed,
+            queued_at: Timestamp(30),
+            started_at: Some(Timestamp(31)),
+            ended_at: Some(Timestamp(32)),
+            ..running_ci
+        };
+        let failed_job = CiJobRecord {
+            id: "job-failed".into(),
+            run_id: "run-failed".into(),
+            ordinal: 0,
+            name: "checks".into(),
+            key: "checks".into(),
+            command: "scripts/dev ci".into(),
+            matrix: None,
+            state: RunState::Failed,
+            reason: None,
+            exit_code: Some(1),
+            output: String::new(),
+            failures: None,
+            started_at: Some(Timestamp(31)),
+            ended_at: Some(Timestamp(32)),
+            need: Need::default(),
+            timeout_minutes: None,
+            exclusive: false,
+            waited_ms: None,
+        };
+        app.deps
+            .store
+            .insert_ci_run(&failed_ci, &[failed_job])
+            .await?;
+        let held = app.watch_prs(&bounds).await;
+        assert!(
+            !held.iter().any(|(task, _)| task == &id),
+            "needs_you prevents auto-wake: {held:?}"
+        );
+        assert_eq!(status_of(&app, &id).await.0, Some(TaskStatus::Parked));
+
+        // Once the human decision is cleared, first simulate no usable account (Relogin):
+        // `watch_prs` MUST keep the task safely `Parked` (never destructively `Failed`), and once
+        // the account is healthy again, wake it cleanly once — and across a restart reading
+        // persisted `pr-notices.json`, never double-wake it.
+        app.deps
+            .store
+            .set_task_needs_you(&id, None, app.now())
+            .await?;
+        let acc = yulius_domain::ids::AccountId::parse("a-only")?;
+        yulius_app::ports::store::AccountStore::set_account_state(
+            app.deps.store.as_ref(),
+            &acc,
+            yulius_app::model::AccountStatus::Relogin,
+            None,
+            Some("needs sign-in"),
+            app.now(),
+        )
+        .await?;
+        let no_acc = app.watch_prs(&bounds).await;
+        assert!(
+            !no_acc.iter().any(|(task, _)| task == &id),
+            "no usable account must not wake parked task: {no_acc:?}"
+        );
+        assert_eq!(
+            status_of(&app, &id).await.0,
+            Some(TaskStatus::Parked),
+            "no usable account must keep task Parked, never Failed"
+        );
+        yulius_app::ports::store::AccountStore::set_account_state(
+            app.deps.store.as_ref(),
+            &acc,
+            yulius_app::model::AccountStatus::Ok,
+            None,
+            None,
+            app.now(),
+        )
+        .await?;
+        let woke_red = app.watch_prs(&bounds).await;
+        assert!(
+            woke_red
+                .iter()
+                .any(|(task, text)| task == &id && text.contains("failed")),
+            "expected failed CI wake once account is usable: {woke_red:?}"
+        );
+        wait_for("idle after red wake", Duration::from_secs(30), || async {
+            status_of(&app, &id).await.1 == Some(Activity::Waiting)
+        })
+        .await?;
+        parked(&app, &id).await?;
+        // Simulate a server restart on the same data directory (re-reading `pr-notices.json`):
+        // the already-delivered `run-failed` must NOT double-wake the parked task.
+        let restarted = super::parking::app(&data, 8, 1).await?;
+        let after_restart = restarted.watch_prs(&bounds).await;
+        assert!(
+            !after_restart.iter().any(|(task, _)| task == &id),
+            "restart must not double-wake already-delivered CI failure: {after_restart:?}"
+        );
+        assert_eq!(status_of(&restarted, &id).await.0, Some(TaskStatus::Parked));
+        Ok::<_, Error>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// SPEC-553 PRK-103: an unpublished clean committed fast-forward CI repair above a failing open
+/// PR head defers parking (`open_pr_work_pending`), while a pending human `needs_you` decision
+/// or active (`Running`) CI run allows safe parking.
+#[test]
+fn unpublished_open_pr_ci_repair_defers_parking_unless_needs_you_or_ci_running() -> TestResult {
+    use std::process::Command;
+    use yulius_app::ci::{CiJobRecord, CiRunRecord};
+    use yulius_app::delivery::DeliveryRecord;
+    use yulius_domain::ci::{CiRef, GateSource, RunState};
+    use yulius_domain::delivery::DeliveryStage;
+    use yulius_domain::resources::Need;
+    use yulius_domain::time::Timestamp;
+
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let app = app(&data, 8, 1).await?;
+        let (id, caller) = answered(&app, &data).await?;
+        let task = TaskStore::task(app.deps.store.as_ref(), &id)
+            .await?
+            .ok_or("task")?;
+        let wt = Path::new(task.worktree_path.as_deref().ok_or("worktree")?);
+        let git = |args: &[&str]| -> Result<String, Error> {
+            let out = Command::new("git")
+                .args(args)
+                .current_dir(wt)
+                .env("GIT_AUTHOR_NAME", "t")
+                .env("GIT_AUTHOR_EMAIL", "t@example.com")
+                .env("GIT_COMMITTER_NAME", "t")
+                .env("GIT_COMMITTER_EMAIL", "t@example.com")
+                .output()?;
+            if !out.status.success() {
+                return Err(String::from_utf8_lossy(&out.stderr).into_owned().into());
+            }
+            Ok(String::from_utf8_lossy(&out.stdout).trim().to_owned())
+        };
+        let failed_head = git(&["rev-parse", "HEAD"])?;
+        std::fs::write(wt.join("repair.txt"), "clean fix\n")?;
+        git(&["add", "repair.txt"])?;
+        git(&["commit", "-m", "Clean CI repair"])?;
+        let repair_head = git(&["rev-parse", "HEAD"])?;
+        assert_ne!(repair_head, failed_head);
+
+        let open = DeliveryRecord {
+            task_id: id.clone(),
+            stage: DeliveryStage::PrOpen,
+            pr_number: Some(99),
+            updated_at: app.now(),
+        };
+        app.deps
+            .store
+            .transition_delivery(&DeliveryStage::None, &open)
+            .await?;
+        let failed_ci = CiRunRecord {
+            id: "run-park-fail".into(),
+            sandbox_id: caller.sandbox.clone(),
+            reference: CiRef::PullRequest(99),
+            sha: failed_head.clone(),
+            source: GateSource::ProjectConfig,
+            state: RunState::Failed,
+            reason: None,
+            requested_by: "yulius".into(),
+            status_for: None,
+            status_note: None,
+            status_attempts: 0,
+            queued_at: Timestamp(10),
+            started_at: Some(Timestamp(11)),
+            ended_at: Some(Timestamp(12)),
+        };
+        let failed_job = CiJobRecord {
+            id: "job-park-fail".into(),
+            run_id: "run-park-fail".into(),
+            ordinal: 0,
+            name: "checks".into(),
+            key: "checks".into(),
+            command: "true".into(),
+            matrix: None,
+            state: RunState::Failed,
+            reason: None,
+            exit_code: Some(1),
+            output: String::new(),
+            failures: None,
+            started_at: Some(Timestamp(11)),
+            ended_at: Some(Timestamp(12)),
+            need: Need::default(),
+            timeout_minutes: None,
+            exclusive: false,
+            waited_ms: None,
+        };
+        app.deps
+            .store
+            .insert_ci_run(&failed_ci, &[failed_job])
+            .await?;
+        // Pre-seed `pr-notices.json` at `PR_NOTICES_FILE` (`data/pr-notices.json`) so `pr_news_due`
+        // is false and ONLY `open_pr_work_pending` keeps the session from parking while
+        // `repair_head` is unpublished.
+        let told_json = json!({
+            id.as_str(): {
+                "pr": 99,
+                "head": failed_head,
+                "keys": { "run": "run-park-fail" }
+            }
+        });
+        std::fs::write(
+            data.join("pr-notices.json"),
+            serde_json::to_vec(&told_json)?,
+        )?;
+
+        past_the_grace(&app, &id).await?;
+        assert_eq!(
+            app.park_idle_sessions_now().await,
+            0,
+            "unpublished clean fast-forward CI repair must defer parking"
+        );
+        assert_eq!(status_of(&app, &id).await.0, Some(TaskStatus::Running));
+
+        // Once the repair IS pushed to `origin/<branch>` (even with no new `CiRunRecord` yet),
+        // safe parking is no longer deferred.
+        let branch = task.branch.as_deref().ok_or("branch")?;
+        git(&["push", "-q", "origin", branch])?;
+        parked(&app, &id).await?;
+        assert_eq!(status_of(&app, &id).await.0, Some(TaskStatus::Parked));
+
+        // Resume, commit a second unpublished repair, and verify an open `needs_you` human
+        // decision still allows safe parking instead of deferring for the repair.
+        let owner_ctx = AuthContext {
+            user: app.deps.store.user(&caller.user).await?.ok_or("user")?,
+            csrf_token: None,
+            session_hash: None,
+            token: None,
+        };
+        app.continue_task(
+            &owner_ctx,
+            id.as_str(),
+            &yulius_contracts::api::tasks::ContinueTask::default(),
+        )
+        .await?;
+        wait_for(
+            "resumed for second repair",
+            Duration::from_secs(30),
+            || async {
+                status_of(&app, &id).await.0 == Some(TaskStatus::Running)
+                    && status_of(&app, &id).await.1 == Some(Activity::Waiting)
+            },
+        )
+        .await?;
+        std::fs::write(wt.join("repair2.txt"), "second fix\n")?;
+        git(&["add", "repair2.txt"])?;
+        git(&["commit", "-m", "Second unpublished CI repair"])?;
+        ask(&app, &id).await?;
+        parked(&app, &id).await?;
+        assert_eq!(status_of(&app, &id).await.0, Some(TaskStatus::Parked));
         Ok::<_, Error>(())
     })?;
     rt.shutdown_timeout(Duration::from_secs(5));
@@ -1481,6 +2399,38 @@ fn a_handed_off_tasks_outcome_reaches_its_source() -> TestResult {
             app.deps.store.untold_handoffs().await?.is_empty(),
             "told once"
         );
+        Ok::<_, Error>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+#[test]
+fn a_cold_parked_summary_reads_historical_spec_and_goal_evidence() -> TestResult {
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let live = app(&data, 8, 1).await?;
+        let (id, _) = answered(&live, &data).await?;
+        parked(&live, &id).await?;
+        live.deps
+            .store
+            .set_spec_status(&id, Some("in-progress"))
+            .await?;
+        let run = live
+            .deps
+            .store
+            .attempts(&id)
+            .await?
+            .pop()
+            .ok_or("parked run")?;
+        std::fs::write(Path::new(&run.run_dir).join("parked-goal-unfinished"), [])?;
+        let cold = app(&data, 8, 1).await?;
+        let task = cold.deps.store.task(&id).await?.ok_or("parked task")?;
+        assert_eq!(task.status, TaskStatus::Parked);
+        let summary = cold.task_summary(&task).await?;
+        assert!(summary.spec_unfinished);
+        assert!(summary.goal_unfinished);
         Ok::<_, Error>(())
     })?;
     rt.shutdown_timeout(Duration::from_secs(5));

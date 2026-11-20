@@ -17,12 +17,12 @@ export const CLOSE_SERVER_ERROR = 1011;
 const FINAL_CLOSE_CODES = new Set([CLOSE_REVOKED]);
 
 /**
- * True for a status that means the session is over: task end states (closed, stopped_*,
- * failed_*), the login terminal's ok/error/cancelled and a finished shell (closed).
+ * True for a status that means the session is not live: task end states (closed, parked,
+ * stopped_*, failed_*), the login terminal's ok/error/cancelled and a finished shell (closed).
  */
 export function isEndedStatus(status) {
   const s = String(status || '');
-  return s === 'closed' || s === 'ok' || s === 'error' || s === 'cancelled' || s.startsWith('stopped') || s.startsWith('failed');
+  return s === 'parked' || s === 'closed' || s === 'ok' || s === 'error' || s === 'cancelled' || s.startsWith('stopped') || s.startsWith('failed');
 }
 
 /** Decode a terminal binary frame: u8 kind + u64 big-endian seq + bytes. */

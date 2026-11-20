@@ -31,6 +31,8 @@ flowchart LR
   APP --- SUP
   APP --- CI
   APP --- CD
+  CI -->|"run and job outcomes"| DB
+  CD -->|"environment, commit and check outcomes"| DB
   CD -->|"dev: deploy + verify, allowed secrets"| SB
   CD -->|"production: deploy + verify (or rollback), allowed secrets"| PSB
   APP -->|"prune caches, quota"| SB
@@ -57,8 +59,9 @@ flowchart LR
 ## Codex
 
 A Codex task runs `codex --no-daemon` in its worktree with `CODEX_HOME=<sandbox>/codex/<account>`,
-on its own model and effort or else `-m gpt-6.2-astra -c model_reasoning_effort="high"` (SPEC-511,
-[decision 0366](decisions/0366-a-codex-task-runs-gpt-6-2-astra-at-high-effort-by-default.md)).
+using its chosen model or `-m gpt-6.2-astra`. Each new or resumed process receives the task's
+chosen effort or the model default. Astra 6.2 gets `-c model_reasoning_effort="xhigh"` and other
+Codex models get `high`. [Decision 0398](decisions/0398-astra-6-2-inherits-extra-high-effort.md)
 For a ChatGPT Pro 500 sign-in, the launch planner writes `service_tier = "ultrafast"` as the
 home default ([decision 0375](decisions/0375-codex-selects-ultrafast-for-pro-500.md)).
 The supervisor writes the home's `auth.json` (the account's sealed credential), `config.toml` and
@@ -98,8 +101,8 @@ subscription usable it asks for one.
 
 A task's agent is assigned at creation and kept for life (SPEC-520, ADR-0377, superseding the
 no-draw part of SPEC-514 / ADR-0368): without an explicit agent (or with `auto`) it takes the one
-its model implies, else draws uniformly (`1 / k`, rejection-sampled over `random_bytes`) across the
-harnesses in `Harness::ALL` (`claude`, `codex`, `antigravity`) that have at least one healthy
+its model implies (Codex for `gpt-*`, Antigravity for `gemini-*`, otherwise Claude Code), else
+draws uniformly (`1 / k`, rejection-sampled over `random_bytes`) across the harnesses in `Harness::ALL` (`claude`, `codex`, `antigravity`) that have at least one healthy
 non-exhausted subscription for their default model (falling back to healthy `Usable` pools when
 every connected pool is temporarily limited, else `ClaudeCode`), recorded in `task_harness_draws`
 (`harness_choice: random`). A running task agent's `task_create` and `automation_create` without
@@ -1398,6 +1401,8 @@ subagent off sends no `SubagentStop`, so such a round stays without a report. Th
 pull request's rounds in the same transaction that records its merge
 (`transition_delivery`), so the task's next pull request starts at round 1.
 
+The delivery transaction also binds the task, PR, accepted head, integration branch and landed commit in `task_merges`. Delivery reads the existing CI jobs, CD runs and delivery-profile command runs by sandbox and exact commit. A historical link keeps its identity when a branch moves or the task opens another PR. Retention archives the compact results before deleting a linked run. A clean CD wrapper exit confirms each configured command. Other exits leave their individual outcomes unconfirmed. Legacy deliveries recover their binding from the recorded PR on the branch named by the task's historical PR-opening audit entry. A direct merge awaiting confirmation recovers only when the closed PR matches the original expected branch, head and merge result. An unavailable historical result supplies no proof. [Decision 0399](decisions/0399-task-evidence-belongs-to-the-landed-commit.md)
+
 The transcript watch also reads each subagent of the session's own thread
 (`<session>/subagents/agent-<id>.jsonl`): the model of its answers, once per change
 (`Observation::SubagentAnswered`), and a usage limit that refused it
@@ -1476,7 +1481,14 @@ train holds the task) it refuses with the reason
 [decision 0269](decisions/0269-work-after-a-tasks-merge-is-delivered-as-a-new-pull-request.md)).
 A head it cannot deliver yet (open step, no plan for a task that needs a spec, invalid spec,
 uncommitted work) is refused with the reason, and a push GitHub refuses answers with the remedy
-(merge the pushed head, never force): only a note that same call wrote replaces its error. A head
+(merge the pushed head, never force): only a note that same call wrote replaces its error. For an
+existing task-owned open pull request whose previous head failed checks and whose merge is not
+armed, a clean committed fast-forward repair on the feature branch publishes at turn end, on
+`yulius wait`, or during PR watch and triggers exact-head CI even while a verification step
+remains open, unless a human `needs_you` decision or `Blocked` step is pending; failed
+publications surface in `delivery_status`, `yulius wait`, and `pr_watch`
+([SPEC-553](../.ai/specs/SPEC-553-publish-committed-ci-repairs-to-open-tas.md),
+[decision 0391](decisions/0391-publish-committed-ci-repairs-to-open-task-prs.md)). A head
 is pushed when GitHub's branch is at it, whatever `git push` said: every push of a task's head
 (end of turn, `delivery_merge`, Deliver…, armed-merge upkeep, merge trains) goes through one helper
 that asks the remote (`git ls-remote`) when Git reports a failure, and the wait drops a failed-push
@@ -2033,16 +2045,38 @@ off) counted from `state_at`: the list shows it under Needs you or Done, no turn
 background shell, subagent or dynamic workflow, does not wait in `yulius wait`, has no merge
 armed or pull request news due, no held prompt, no request in the sandbox browser, no pause, no
 possible draft or keystroke within the grace period, and is not an onboarding task.
+A task keeps its session while its plan has an open step, its spec is unfinished, or its goal still needs work. Both grace and digest parking recheck these facts before stopping the session, including when a person has been asked.
+The supervisor saves the redacted screen with the elapsed idle time before requesting shutdown.
+The web terminal and `task_screen` use that snapshot once the task parks and while a resumed host attaches.
+[Decision 0396](decisions/0396-capture-the-parked-terminal-before-shutdown.md).
+
+Codex parking requires a recorded rollout ID. A message to the parked task resumes that rollout.
+If the server restarted between writing the attempt’s ID and writing its session lineage, the
+resume path recovers the ID from the parked attempt. If capacity holds a resume, an unreadable
+rollout history leaves its pause and prompt in place for the next capacity round.
+
 `park_task_now` asks again under the launch lock, sets the run's end intent `Park` and ends the
 session as a close does (graceful shutdown, then the escalation). The run's end, by its exit or
 its loss, makes the task `parked` with its activity (`settle_parked`) and audits `task.parked`.
 `parked` is neither live nor resting: no slot (`sessions_in_use` counts live runs only), its
 worktree, claims, `needs_you` and delivery stay, and the list groups it as an idle run with no
-live overlay. While the park is under way nothing is typed into the session. A message
-(`task_message`) or the web's Resume (`/continue`) resumes it through `start_run` with
-`RunStart::Resume`, in the same provider session; at the limit the resume waits `queued` with its
-prompt. A queued task's summary carries `queue_reason` (the session limit or an update), and
-`GET /api/capacity` counts working, idle, parked and queued sessions for the Capacity card.
+live overlay. Idle sessions continue to park safely while CI runs on an open pull request (only an
+unpublished clean fast-forward CI repair awaiting publication defers parking). While the park is
+under way nothing is typed into the session. The web terminal treats `parked` as a non-live ended
+status so it shows the calm parked banner (distinct from a crash or operator stop) and a visible
+`Resume` button (plus `Reply` in the waiting bar for the owner), disables cursor blink, and wakes
+the exact saved provider session and worktree through `start_run` with `RunStart::Resume` on
+`task_message`, `Resume`, `Reply` (`POST /api/tasks/{tid}/continue` with optional `prompt`), or
+ordinary owner terminal input; bare interrupts/scroll, non-owners, and operator-stopped/crashed
+tasks never auto-wake. `pr_watch` also wakes parked tasks once per actionable PR/CI event (failed
+or errored CI, green unarmed CI, conflict, failed repair publication, or merge with open work),
+never while CI is still running or a human decision (`needs_you`, `NeedsAttention`, held prompt,
+browser request) is open
+([SPEC-553](../.ai/specs/SPEC-553-publish-committed-ci-repairs-to-open-tas.md),
+[decision 0391](decisions/0391-publish-committed-ci-repairs-to-open-task-prs.md)); at the limit the
+resume waits `queued` with its prompt. A queued task's summary carries `queue_reason` (the session
+limit or an update), and `GET /api/capacity` counts working, idle, parked and queued sessions for
+the Capacity card.
 
 The end-of-day digest (`yulius-app/src/digest.rs`, SPEC-512 part 3,
 [decision 0380](decisions/0380-an-end-of-day-digest-built-from-task-state.md)) runs from the same
@@ -2060,7 +2094,7 @@ tick.
 ```mermaid
 stateDiagram-v2
   running --> parked: idle past the grace period, nothing goes on (session ended)
-  parked --> starting: task_message or Resume (same session)
+  parked --> starting: task_message, Resume/Reply, owner terminal input, or actionable PR/CI wake (same session)
   parked --> queued: resume at the session limit
   parked --> closed: archive or close
   parked --> stopped_cancelled: Stop
@@ -4533,6 +4567,7 @@ flowchart LR
   anew, in bounded rounds. A run that ends on a stop's intent rests its task even before the stop's
   change lands, and a switch overtaken by a stop, a close or its old run's loss starts no new run
   ([SPEC-250](../.ai/specs/SPEC-250-stop-during-a-switch-leaves-the-task-run.md)).
+- The run reader leaves an attempt-scoped copy of the close, cancel or park request it took. If escalation records host loss first and the intent slot is empty, it uses that copy to settle the task. The attempt keeps its lost exit reason. [SPEC-563](../.ai/specs/SPEC-563-honor-close-and-cancel-intents-when-host.md)
 - Persistence is SQLite in WAL mode; the data directory layout is in SPEC-002 section 4.
 - State machines (task, attempt, switch, automation, import, onboarding, delivery, update, CI)
   are in SPEC-002 section 6; runtime contracts in section 7 and

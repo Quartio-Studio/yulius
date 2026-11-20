@@ -31,6 +31,7 @@
 // movepoll=<ms> (how often the card reads a move in flight; 3 s without it).
 
 import { counter, taskInfo } from './status.js';
+import { defaultEffort } from './models.js';
 import { plausibleEmail } from './format.js';
 import { agentOfHarness, agentOfProvider, aName } from './agents.js';
 import { parsePrompt } from './promptparts.js';
@@ -677,6 +678,7 @@ function delivery(db, task) {
   const pull = state.pr ? { ...state.pr, checks: state.pr.state === 'open' ? state.pr.checks : 'none' } : null;
   return {
     stage: state.stage,
+    evidence: state.evidence,
     environment: state.stage === 'env_done' ? state.environment : null,
     pr: pull,
     spec_path: task.stepsList.length && task.branch ? `docs/specs/2026-10-07-${task.branch.replace('feat/', '')}.md` : null,
@@ -740,7 +742,8 @@ function detail(db, task) {
     started: hasStarted(task),
     // What the task asks for, and the Claude Code its latest session runs (SPEC-461 CCM-012).
     model: task.model || 'claude-opus-5-5',
-    model_default: Boolean(task.model_default) || !task.model || task.effort === 'default',
+    model_default: task.model_default ?? (!task.model || task.effort === 'default'),
+    effort_default: task.effort_default ?? (!task.effort || task.effort === 'default'),
     // The model its run was launched with while no subscription could run its own (SPEC-482).
     ...(task.fallback_model ? { fallback_model: task.fallback_model } : {}),
     ...(task.effort && task.effort !== 'default' ? { effort: task.effort } : { effort: 'high' }),
@@ -1497,6 +1500,12 @@ route('GET', `/api/sandboxes/${ID}/tasks`, ({ db, p, query }) => {
   const archived = query.get('archived') === 'true';
   return db.tasks.filter((t) => t.sandbox_id === p[0] && t.archived === archived).map(summary);
 });
+/** The effective model and effort, retaining each omitted task setting (SPEC-561). */
+function taskModelSettings(harness, options = {}) {
+  const model = options.model || (harness === 'codex' ? 'gpt-6.2-astra' : harness === 'antigravity' ? 'gemini-4-neon' : 'claude-opus-4');
+  const effort = options.effort || (harness === 'codex' ? defaultEffort(model) : harness === 'antigravity' ? 'high' : 'default');
+  return { model, model_default: !options.model, effort, effort_default: !options.effort };
+}
 route('POST', `/api/sandboxes/${ID}/tasks`, async ({ db, p, body }) => {
   db.lastTaskCreate = body; // Request received before the mock resolves model and effort defaults.
   const sandbox = sandboxOf(db, p[0]);
@@ -1505,10 +1514,9 @@ route('POST', `/api/sandboxes/${ID}/tasks`, async ({ db, p, body }) => {
   if (body.harness && !['auto', 'claude', 'codex', 'antigravity'].includes(body.harness)) fail(422, 'invalid', 'harness must be claude, codex or antigravity');
   // No agent (or `auto`): the one the model implies, else drawn uniformly across harnesses with
   // non-exhausted subscriptions (SPEC-520 RHM-001..003).
-  const drawn = (!body.harness || body.harness === 'auto') && !body.model;
-  const harness = drawn ? drawHarness(db) : body.harness && body.harness !== 'auto' ? body.harness : impliedHarness(body.model);
-  // Antigravity runs Google's Gemini models only, as on the server (SPEC-505, SPEC-519).
-  if (harness === 'antigravity' && body.model && !body.model.startsWith('gemini-')) fail(422, 'invalid', 'an Antigravity task takes a Gemini model (such as gemini-4-neon)');
+  const model = body.model?.trim();
+  const drawn = (!body.harness || body.harness === 'auto') && !model;
+  const harness = drawn ? drawHarness(db) : chosenHarness(body.harness, model);
   if (body.mode && !['goal', 'prompt', 'auto'].includes(body.mode)) fail(422, 'invalid', 'mode must be goal, prompt or auto');
   const visible = db.workflows.filter((w) => w.scope === 'instance' || w.sandbox === sandbox.id);
   if (body.workflow_id && body.workflow_id !== 'auto' && !visible.some((w) => w.id === body.workflow_id)) fail(422, 'invalid', `unknown workflow \`${body.workflow_id}\``);
@@ -1553,9 +1561,7 @@ route('POST', `/api/sandboxes/${ID}/tasks`, async ({ db, p, body }) => {
     origin: 'ui', created_by: { login: db.me.user.login, id: db.me.user.id }, created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
     archived: false, account_label: null,
     stepsList: wf ? wf.steps.map((title2, i) => ({ id: `${id}-s${i + 1}`, ordinal: i + 1, title: title2, status: 'pending', note: '', updated_by: 'workflow', updated_at: new Date().toISOString() })) : [],
-    model: body.model || (harness === 'codex' ? 'gpt-6.2-astra' : harness === 'antigravity' ? 'gemini-4-neon' : 'claude-opus-4'), effort: body.effort || (harness === 'codex' ? 'high' : harness === 'antigravity' ? 'high' : 'default'), prompt: body.prompt,
-    // A task without a model asks for its agent's default, as on the server (`model_default`).
-    model_default: !body.model,
+    ...taskModelSettings(harness, { model, effort: body.effort }), prompt: body.prompt,
     delivery: null, mode: choice ? choice.mode : body.mode || 'goal', auto: choice ? choice.auto : null,
     supertask: body.supertask === true,
   };
@@ -1861,7 +1867,20 @@ function drawHarness(db) {
   const roll = db.harnessRolls && db.harnessRolls.length ? db.harnessRolls.shift() : Math.floor(Math.random() * candidates.length);
   return candidates[roll % candidates.length];
 }
-const impliedHarness = (model) => (String(model || '').trim().toLowerCase().startsWith('gemini-') ? 'antigravity' : 'claude');
+function harnessForModelPrefix(model) {
+  const id = String(model || '').trim().toLowerCase();
+  if (id.startsWith('gpt-')) return 'codex';
+  if (id.startsWith('gemini-')) return 'antigravity';
+  if (id.startsWith('claude')) return 'claude';
+  return null;
+}
+function chosenHarness(named, model) {
+  const owner = harnessForModelPrefix(model);
+  const harness = named && named !== 'auto' ? named : owner || 'claude';
+  if (harness === 'antigravity' && model && owner !== harness) fail(422, 'invalid', 'an Antigravity task takes a Gemini model (such as gemini-4-neon)');
+  if (owner && owner !== harness) fail(422, 'invalid', `Choose ${agentOfHarness(owner).cli} for this model. This task uses ${agentOfHarness(harness).cli}.`);
+  return harness;
+}
 // An automation without a named agent (`auto`) draws one for each run (SPEC-520 RHM-005).
 const automationHarness = (db, a) => (!a.harness || a.harness === 'auto' ? { harness: drawHarness(db), harness_choice: 'random' } : { harness: a.harness, harness_choice: 'chosen' });
 // A task runs on subscriptions of its harness's provider only (SPEC-503 CDX-013, SPEC-505).
@@ -1877,8 +1896,15 @@ const continueHandler = ({ db, p, body }) => {
   needClaude(db, providerOfTask(task));
   const account = db.accounts.find((a) => body && a.id === body.account_id);
   refuseOtherProvider(task, account);
+  const prompt = body && typeof body.prompt === 'string' ? body.prompt.trim() : '';
   touch(db, task, { status: 'starting', activity: null });
-  later(() => touch(db, task, { status: 'running', activity: 'waiting', account_label: account ? account.label : `${kindOf(providerOfTask(task))} #1` }), 1300);
+  later(() => {
+    touch(db, task, { status: 'running', activity: prompt ? 'working' : 'waiting', account_label: account ? account.label : `${kindOf(providerOfTask(task))} #1` });
+    if (prompt) {
+      const session = db.sessions.get(task.id);
+      if (session) session.appendLine(`${c(245, '>')} ${prompt}`);
+    }
+  }, 1300);
   return summary(task);
 };
 route('POST', `/api/tasks/${ID}/continue`, continueHandler);
@@ -3238,7 +3264,8 @@ function automationTask(db, a, start) {
   const task = {
     id, sandbox_id: a.sandbox, number, title: a.name, ...chosen, status: before ? 'chained' : start.prepared ? 'prepared' : 'queued', activity: null,
     branch: `feat/${number}-automation`, origin: 'automation', created_by: { login: db.me.user.login }, created_at: now, updated_at: now,
-    archived: false, account_label: null, stepsList: [], model: chosen.harness === 'codex' ? 'gpt-6.2-astra' : chosen.harness === 'antigravity' ? 'gemini-4-neon' : 'claude-opus-4', effort: chosen.harness === 'claude' ? 'default' : 'high', prompt: a.prompt,
+    archived: false, account_label: null, stepsList: [],
+    ...taskModelSettings(chosen.harness), prompt: a.prompt,
     delivery: null, mode: 'goal', auto: null, supertask: start.supertask,
   };
   db.tasks.push(task);
@@ -3907,14 +3934,16 @@ route('POST', `/api/sandboxes/${ID}/superagent/requests/${ID}`, async ({ db, p, 
   const id = `tsk_${target.id.slice(3)}_${number}`;
   const opts = request.view.options || {};
   const prepared = opts.prepared === true;
-  const drawn = (!opts.harness || opts.harness === 'auto') && !opts.model;
-  const harness = drawn ? drawHarness(db) : opts.harness && opts.harness !== 'auto' ? opts.harness : impliedHarness(opts.model);
+  const model = opts.model?.trim();
+  const drawn = (!opts.harness || opts.harness === 'auto') && !model;
+  const harness = drawn ? drawHarness(db) : chosenHarness(opts.harness, model);
   const task = {
     id, sandbox_id: target.id, number, title, harness, harness_choice: drawn ? 'random' : 'chosen',
     status: prepared ? 'prepared' : 'queued', activity: null,
     branch: `feat/${number}-${title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40)}`,
     origin: 'agent', created_by: { login: db.me.user.login, id: db.me.user.id }, created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
-    archived: false, account_label: null, stepsList: [], model: 'claude-opus-4', effort: 'default', prompt: request.view.prompt,
+    archived: false, account_label: null, stepsList: [],
+    ...taskModelSettings(harness, { model, effort: opts.effort }), prompt: request.view.prompt,
     delivery: null, mode: request.view.options.mode || 'goal', auto: null, supertask: false,
   };
   db.tasks.push(task);
@@ -5935,8 +5964,8 @@ function sessionDocs(db) {
   const add = (doc) => docs.push({ bytes: 4096, redactions: 0, git_branch: 'main', continued_in: null, ...doc });
   const t12 = task('tsk_studio_12', 12);
   const t4 = task('tsk_studio_4', 4);
-  if (t12) add({ id: 'ses_task_12', sandbox_id: 'sb_studio', kind: 'task', task_id: t12.id, session_id: 'b1f0-12', title: t12.title, author: t12.created_by, git_branch: t12.branch, started_at: iso(2 * HOUR), ended_at: iso(MIN), imported_at: null, transcript: checkout.slice(0, 4) });
-  if (t4) add({ id: 'ses_task_4', sandbox_id: 'sb_studio', kind: 'task', task_id: t4.id, session_id: 'b1f0-04', title: t4.title, author: t4.created_by, git_branch: t4.branch, started_at: iso(10 * HOUR), ended_at: iso(9 * HOUR), imported_at: null, transcript: webhook });
+  if (t12) add({ id: 'ses_task_12', sandbox_id: 'sb_studio', kind: 'task', task_id: t12.id, harness: t12.harness, session_id: 'b1f0-12', title: t12.title, author: t12.created_by, git_branch: t12.branch, started_at: iso(2 * HOUR), ended_at: iso(MIN), imported_at: null, transcript: checkout.slice(0, 4) });
+  if (t4) add({ id: 'ses_task_4', sandbox_id: 'sb_studio', kind: 'task', task_id: t4.id, harness: t4.harness, session_id: 'b1f0-04', title: t4.title, author: t4.created_by, git_branch: t4.branch, started_at: iso(10 * HOUR), ended_at: iso(9 * HOUR), imported_at: null, transcript: webhook });
   add({ id: 'ses_imp_checkout', sandbox_id: 'sb_studio', kind: 'imported', task_id: null, session_id: '5d2c-checkout', title: 'Add Stripe checkout to the cart page', author: { login: 'mkarp' }, started_at: iso(3 * DAY), ended_at: iso(3 * DAY - 20 * MIN), imported_at: iso(2 * DAY), redactions: 3, bytes: 182000, transcript: checkout });
   add({ id: 'ses_imp_flaky', sandbox_id: 'sb_studio', kind: 'imported', task_id: null, session_id: '7a1e-flaky', title: 'Why is the e2e login test flaky on CI?', author: { login: 'anna-q' }, git_branch: 'fix/e2e', started_at: iso(5 * DAY), ended_at: iso(5 * DAY - 30 * MIN), imported_at: iso(4 * DAY), bytes: 64000, transcript: flaky });
   db.sessionDocs = docs;
@@ -5954,7 +5983,7 @@ function sessionView(db, doc) {
   const imported = doc.kind === 'imported';
   return {
     id: doc.id, sandbox_id: doc.sandbox_id, kind: doc.kind, title: doc.kind === 'task' && taskRef(doc.task_id) ? taskRef(doc.task_id).title : doc.title,
-    harness: 'claude', session_id: doc.session_id, author: doc.author, task: taskRef(doc.task_id), continued_in: taskRef(doc.continued_in),
+    harness: doc.harness || 'claude', session_id: doc.session_id, author: doc.author, task: taskRef(doc.task_id), continued_in: taskRef(doc.continued_in),
     git_branch: doc.git_branch, started_at: doc.started_at, ended_at: doc.ended_at, imported_at: doc.imported_at, bytes: doc.bytes, redactions: doc.redactions,
     can_continue: imported && write, can_delete: imported && (admin || (write && doc.author && doc.author.login === db.me.user.login)), hits: [],
   };
@@ -6473,7 +6502,7 @@ class TermSession {
       return;
     }
     const bottom = this.regionBottom();
-    this.broadcast(`${E}?25l${E}${bottom};1H\r\n${line}${E}${bottom + 2};${3 + this.input.length}H${E}?25h`);
+    this.broadcast(`${E}?25l${E}1;${bottom}r${E}${bottom};1H\r\n${E}2K${line}${E}${bottom + 2};${3 + this.input.length}H${E}?25h`);
   }
 
   redrawPrompt() {
@@ -6482,7 +6511,8 @@ class TermSession {
   }
 
   canWrite() {
-    return (RANK[this.sandbox().access] || 0) >= RANK.write && LIVE.has(this.task.status)
+    return (RANK[this.sandbox().access] || 0) >= RANK.write
+      && (LIVE.has(this.task.status) || this.task.status === 'parked')
       && ownerOf(this.task).login === this.db.me.user.login;
   }
 
@@ -7388,7 +7418,7 @@ export function createMockTransport(params) {
     const docs = sessionDocs(db);
     let doc = docs.find((d) => d.kind === 'task' && d.task_id === task.id);
     if (!doc) {
-      doc = { id: `ses_task_${number}`, sandbox_id: sandboxId, kind: 'task', task_id: task.id, session_id: `live-${number}`, title: task.title, author: task.created_by, git_branch: task.branch, started_at: new Date().toISOString(), ended_at: null, imported_at: null, bytes: 0, redactions: 0, continued_in: null, transcript: [] };
+      doc = { id: `ses_task_${number}`, sandbox_id: sandboxId, kind: 'task', task_id: task.id, harness: task.harness, session_id: `live-${number}`, title: task.title, author: task.created_by, git_branch: task.branch, started_at: new Date().toISOString(), ended_at: null, imported_at: null, bytes: 0, redactions: 0, continued_in: null, transcript: [] };
       docs.push(doc);
     }
     let line = doc.transcript.length ? doc.transcript[doc.transcript.length - 1].line + 1 : 0;

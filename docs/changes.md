@@ -6,6 +6,37 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-20
 
+- Task delivery links the landed commit to its CI and deployment checks, including individual reruns and skipped jobs. Projects can cite these results in a verification step without opening a bookkeeping PR (SPEC-562, task #555).
+- Idle sessions with an open step, unfinished spec or unfinished goal stay live through grace-period and digest parking, including when their owner has been asked (SPEC-558, #1490).
+- The merge queue attributes a failed candidate to a member whose own run failed during
+  the split decision (SPEC-559, #1398).
+- Screen readers now identify Claude, Codex and Antigravity in watched and saved transcripts.
+  Sessions search uses the same assistant names (SPEC-564, #1455).
+- Closing or stopping an answered task now honors the request when its reader has taken it and escalation records host loss. The attempt retains its lost exit reason. [SPEC-563](../.ai/specs/SPEC-563-honor-close-and-cancel-intents-when-host.md)
+
+- A GPT model now selects Codex for API and MCP task creation. Choosing a GPT or Gemini model
+  on a Claude Code task fails before creation or update (SPEC-560, #1427).
+- GPT-6.2 Astra now inherits extra high reasoning effort on new Codex launches and resumes.
+  Task details mark inherited effort so an explicit High control is identifiable (SPEC-561, task #554).
+- Intake browser tests wait up to the shared first-load budget for the sandbox task list.
+  Proposal interactions keep their usual timeouts (SPEC-559, #1441).
+
+- Parked sessions (including Codex) now show the parked terminal banner with a visible Resume
+  action (and owner Reply bar) instead of an inert terminal with a blinking cursor, wake in the
+  same saved session and worktree on Resume, Reply, or ordinary owner terminal typing (preserving
+  operator-stop and ownership boundaries), stay safely parked while PR CI runs, and wake
+  automatically on actionable PR/CI check results. Clean committed fast-forward CI repairs on a
+  task-owned failing open PR now publish to the same feature branch and trigger exact-head CI even
+  while a verification step remains open ([SPEC-553](../.ai/specs/SPEC-553-publish-committed-ci-repairs-to-open-tas.md),
+  [ADR-0391](decisions/0391-publish-committed-ci-repairs-to-open-task-prs.md)).
+- The store migration regression counts SQLite instructions and verifies completed step spans,
+  so host contention cannot fail the backfill test (SPEC-559, #1484).
+- Newly parked tasks show their last agent screen, idle duration and resume instructions
+  on the task page and through `task_screen` (SPEC-558, #1490).
+
+- Messaging a parked Codex task resumes the recorded rollout, including after a server restart
+  interrupted session bookkeeping (SPEC-558, #1490).
+
 - Tasks hand work to another sandbox, off by default (SPEC-512 part 5, task #494, delivered by
   SPEC-557, #1106, ADR-0395): an instance administrator turns handoffs to Ask or Automatic; a
   sandbox's writers may close it. A task's agent hands work to another sandbox with

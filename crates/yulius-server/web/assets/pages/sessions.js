@@ -6,6 +6,7 @@
 // POST /api/sessions/{id}/continue and DELETE /api/sessions/{id} (docs/api.md "Sessions").
 
 import { enc } from '../api.js';
+import { agentOfHarness } from '../agents.js';
 import { h, icon, setChildren, placeholder, bar, emptyState, filterTabs, badge, toast, errorToast, confirmDialog, openModal, loadError, coalesce } from '../dom.js';
 import { href, navigate, replaceQuietly, currentLocation, placeFor } from '../router.js';
 import { relLong, dateTime, bytes, plural } from '../format.js';
@@ -17,8 +18,12 @@ const KIND_OPTIONS = [
   { value: 'task', label: 'Tasks', icon: 'terminal' },
   { value: 'imported', label: 'Imported', icon: 'upload' },
 ];
-const ROLE_LABEL = { user: 'Prompt', assistant: 'Claude', tool: 'Tool', wake: 'Background task', summary: 'Summary', system: 'System' };
+const ROLE_LABEL = { user: 'Prompt', tool: 'Tool', wake: 'Background task', summary: 'Summary', system: 'System' };
 const PAGE = 200;
+
+function roleLabel(role, harness) {
+  return role === 'assistant' ? agentOfHarness(harness).name : ROLE_LABEL[role] || role;
+}
 
 const sessionsPath = (sandbox) => `/s/${encodeURIComponent(sandbox.slug)}/sessions`;
 const sessionPath = (sandbox, id, line) => `${sessionsPath(sandbox)}/${encodeURIComponent(id)}${line !== undefined ? `?line=${line}` : ''}`;
@@ -121,7 +126,7 @@ export function mountSessionsPage(ctx, sandbox) {
             h('span', null, bytes(session.bytes)),
             session.redactions ? badge(`${plural(session.redactions, 'secret')} redacted`, 'warn', 'Redacted on the uploader’s computer before upload') : null,
             session.continued_in ? badge(`continued in #${session.continued_in.number}`, 'accent') : null),
-          (session.hits || []).map((hit) => h('span', { class: 'ss-hit' }, h('span', { class: 'ss-hit-role' }, ROLE_LABEL[hit.role] || hit.role), snippet(hit.snippet)))),
+          (session.hits || []).map((hit) => h('span', { class: 'ss-hit' }, h('span', { class: 'ss-hit-role' }, roleLabel(hit.role, session.harness)), snippet(hit.snippet)))),
         icon('right', { size: 14 })));
   }
 
@@ -698,14 +703,14 @@ export function transcriptEntries({ target = null } = {}) {
   const regions = typeof ResizeObserver === 'function' ? new ResizeObserver((changes) => changes.forEach((change) => markRegion(change.target))) : null;
   const regionNames = new Set(); // a name used again (a command run twice) names its line, then a count
 
-  function entry(item) {
+  function entry(item, harness) {
     const role = item.role !== 'user' ? item.role
       : item.blocks.every((b) => b.type === 'tool_result' || b.type === 'meta') ? 'tool'
         : item.blocks.every((b) => b.type === 'text' && noticesOf(b)) ? 'wake' : 'user';
     const shown = item.blocks.map((b) => block(b, results, role, item.line)).filter(Boolean);
     if (!shown.length) return null;
     const typed = item.blocks.some((b) => b.type === 'meta' && metaOf(b).some((line) => line.kind === 'command' || line.kind === 'shell'));
-    const label = role === 'user' || typed ? 'Prompt' : role === 'assistant' ? 'Claude' : ROLE_LABEL[role] || role;
+    const label = roleLabel(typed ? 'user' : role, harness);
     // A prompt (typed or a command) carries its time, as turns start there.
     const when = label === 'Prompt' && item.at;
     return h('li', { class: ['ss-entry', `ss-${role}`, item.sidechain && 'ss-sidechain', item.line === target && 'ss-target', when && 'ss-has-when'], id: `line-${item.line}`, dataset: { line: String(item.line) } },
@@ -748,7 +753,7 @@ export function transcriptEntries({ target = null } = {}) {
    * Prints `entries` after those already shown; calls already shown take their new results.
    * Returns how many entries it added at the end (results folded into earlier calls not counted).
    */
-  function append(entries) {
+  function append(entries, harness) {
     for (const item of entries) for (const b of item.blocks) if (b.type === 'tool_result') results.set(b.tool_use_id, { ...b });
     const answered = new Set();
     for (const item of entries) {
@@ -760,7 +765,7 @@ export function transcriptEntries({ target = null } = {}) {
     }
     for (const item of entries) for (const b of item.blocks) if (b.type === 'tool_call' && results.has(b.id)) results.get(b.id).shown = true;
     for (const printed of answered) {
-      const fresh = entry(printed.item);
+      const fresh = entry(printed.item, harness);
       if (!fresh || !printed.node.isConnected) continue;
       keepState(printed.node, fresh);
       unregister(printed.node);
@@ -775,7 +780,7 @@ export function transcriptEntries({ target = null } = {}) {
     }
     let added = 0;
     for (const item of entries) {
-      const node = entry(item);
+      const node = entry(item, harness);
       if (!node) continue;
       el.append(node);
       register(node);
@@ -927,7 +932,7 @@ export function mountSessionView(ctx, sandbox, id, route) {
         setChildren(body, earlier, tui);
         stopCockroaches = scheduleCockroaches(tui);
       }
-      transcript.append(page.entries || []);
+      transcript.append(page.entries || [], session.harness);
       if (first && !entriesEl.children.length && next === null) {
         stopCockroaches();
         setChildren(body, emptyState({ iconName: 'chat', title: 'Nothing to show', text: 'This transcript has no messages yet, or it is no longer on the server.' }));

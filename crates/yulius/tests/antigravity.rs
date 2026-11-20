@@ -455,6 +455,7 @@ fn an_antigravity_task_moves_only_between_antigravity_subscriptions() -> TestRes
                 id.as_str(),
                 &yulius_contracts::api::tasks::ContinueTask {
                     account_id: Some("a-claude".into()),
+                    ..Default::default()
                 },
             )
             .await;

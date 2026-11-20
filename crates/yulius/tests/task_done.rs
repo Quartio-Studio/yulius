@@ -966,7 +966,10 @@ async fn continued_goal_task_with(
     app.continue_task(
         &ctx,
         id.as_str(),
-        &yulius_contracts::api::tasks::ContinueTask { account_id: None },
+        &yulius_contracts::api::tasks::ContinueTask {
+            account_id: None,
+            prompt: None,
+        },
     )
     .await?;
     wait_for("the resumed session", Duration::from_secs(60), || async {
@@ -2737,7 +2740,10 @@ fn a_stop_that_ended_no_run_does_not_end_the_next_one() -> TestResult {
         app.continue_task(
             &ctx,
             id.as_str(),
-            &yulius_contracts::api::tasks::ContinueTask { account_id: None },
+            &yulius_contracts::api::tasks::ContinueTask {
+                account_id: None,
+                prompt: None,
+            },
         )
         .await?;
         // The resumed run gets its goal typed; ending first is the failure.
@@ -3433,7 +3439,12 @@ fn a_run_that_ends_before_the_stops_change_still_ends_the_task() -> TestResult {
             );
         }
         stop_on_worker(&app, &id).await?;
-        expect_stopped(&app, &id).await
+        expect_stopped(&app, &id).await?;
+        let runs = app.deps.store.attempts(&id).await?;
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].state, AttemptState::Killed);
+        assert_eq!(runs[0].exit_reason.as_deref(), Some("cancelled"));
+        Ok::<(), BoxError>(())
     })?;
     rt.shutdown_timeout(Duration::from_secs(5));
     Ok(())
@@ -3664,7 +3675,10 @@ fn a_close_that_overtakes_a_switch_closes_the_task() -> TestResult {
         assert!(rests.is_ok(), "{}", run_states(&app, &id).await);
         assert_eq!(task(&app, &id).await?.status, TaskStatus::Closed);
         assert!(app.deps.store.live_attempt(&id).await?.is_none());
-        assert_eq!(app.deps.store.attempts(&id).await?.len(), 1);
+        let runs = app.deps.store.attempts(&id).await?;
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].state, AttemptState::Killed);
+        assert_eq!(runs[0].exit_reason.as_deref(), Some("closed"));
         Ok::<(), BoxError>(())
     })?;
     rt.shutdown_timeout(Duration::from_secs(5));
@@ -3925,7 +3939,10 @@ async fn continue_on_held_attach(data: &Path, fake: &Path) -> Result<HeldContinu
             app.continue_task(
                 &ctx,
                 id.as_str(),
-                &yulius_contracts::api::tasks::ContinueTask { account_id: None },
+                &yulius_contracts::api::tasks::ContinueTask {
+                    account_id: None,
+                    prompt: None,
+                },
             )
             .await
             .map(drop)
