@@ -69,8 +69,8 @@ function needsYouText(asked) {
   const when = asked.at ? relLong(asked.at) : '';
   // The list scrolls when long (a phone), its to-do held in view at its foot (`fitNeedsYou`).
   return h('div', { class: 'attention-text needs-you-text' },
-    h('strong', { class: 'needs-you-head' },
-      asked.decision ? 'Needs your decision' : 'Needs you',
+    h('div', { class: 'needs-you-title' },
+      h('strong', { class: 'needs-you-head' }, asked.decision ? 'Needs your decision' : 'Needs you'),
       when ? h('span', { class: 'needs-you-time muted xs', title: dateTime(asked.at) }, ` · ${when}`) : null),
     h('dl', { class: 'needs-you-parts' }, parts.map(([label, text], i) =>
       h('div', { class: i === parts.length - 1 ? 'needs-you-todo' : null }, h('dt', null, label), h('dd', null, withCode(text))))));

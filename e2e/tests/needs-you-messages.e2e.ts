@@ -169,8 +169,8 @@ test('live browser handoff while needs_attention offers inline Reply with timest
     needs_you_notice: { ...asked, source: 'browser', episode: `browser:tab-live:${asked.at_ms}` },
   });
 
-  // Finding #9: timestamp is shown in the heading.
-  await expect(browser.locator('.attention-bar .needs-you-head .needs-you-time')).toBeVisible();
+  // Finding #9: timestamp is shown beside the heading.
+  await expect(browser.locator('.attention-bar .needs-you-time')).toBeVisible();
   // Finding #1: clicking Reply opens the inline text answer form (not terminal-only focus).
   await bar(browser).getByRole('button', { name: 'Reply' }).click();
   await expect(browser.locator('.attention-bar .attention-reply input')).toBeVisible();
