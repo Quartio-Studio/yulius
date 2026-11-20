@@ -3573,11 +3573,29 @@ impl App {
         if running && self.merge_is_armed(&task.id) {
             return false;
         }
-        if parked && self.goal_unfinished_of(task).await {
-            return false;
+        if parked {
+            let requested = self.browser_requests(&task.sandbox_id).await;
+            let Ok(facts) = self
+                .task_attention_facts(task, &requested, crate::sandboxes::parked_pr_deadline())
+                .await
+            else {
+                return false;
+            };
+            if facts.group() != yulius_domain::task::TaskGroup::Done {
+                return false;
+            }
+            // An achieved goal can release a successor without a PR. An idle answer
+            // releases it only with a tested or merged delivery recorded for this task.
+            if task.activity == Some(Activity::Done) {
+                return true;
+            }
+            let record = self.deps.store.delivery(&task.id).await.ok().flatten();
+            return matches!(facts.pull, Some(PullSignal::Tested | PullSignal::Merged))
+                && record
+                    .is_some_and(|r| past_merge(&r.stage) || r.stage == DeliveryStage::PrOpen);
         }
-        if (running || parked) && task.activity == Some(Activity::Done) {
-            return !parked || self.shows_done(task).await;
+        if running && task.activity == Some(Activity::Done) {
+            return true;
         }
         // One reading of its delivery for the whole decision: a merge recorded between two
         // readings would be "no news due" by the first and "merged" by the second.
@@ -3586,7 +3604,7 @@ impl App {
         };
         // Yulius still has news of its pull request for its agent (an armed merge, a merge not
         // said yet): it goes on by itself, so it is not Done (SPEC-487 CHN-001, CHN-002).
-        if !parked && self.pr_news_due_of(task, record.as_ref(), false).await {
+        if self.pr_news_due_of(task, record.as_ref(), false).await {
             return false;
         }
         // A pull request makes a task Done only when no work it declared is left: its plan is
@@ -3602,15 +3620,6 @@ impl App {
         }
         if record.stage != DeliveryStage::PrOpen {
             return false;
-        }
-        if parked {
-            let Some(number) = record.pr_number else {
-                return false;
-            };
-            return matches!(
-                self.recorded_pull_signal(task, number).await,
-                Ok(Some(PullSignal::Tested | PullSignal::Merged))
-            );
         }
         let Ok(sandbox) = self.dlv_sandbox_of(task).await else {
             return false;

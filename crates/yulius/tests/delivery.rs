@@ -4602,6 +4602,101 @@ async fn a_parked_achieved_goal_releases_its_chain_without_a_pr() -> TestResult 
     Ok(())
 }
 
+/// A cold server reads the old attempt's unfinished-goal marker even with all
+/// steps done and a tested PR. An unresolved owner request also holds the chain.
+#[tokio::test]
+async fn a_historical_parked_goal_keeps_its_owner_and_chain_state_after_restart() -> TestResult {
+    use yulius_app::ports::store_ext::NeedsYouStore as _;
+    let f = fixture(&DeliveryProfile::standard()).await?;
+    let (_wt, head) = delivered_with_a_successor(&f, &finished_spec("t1")).await?;
+    f.h.github.set_checks(&head, ChecksState::Success);
+    let before = TaskId::parse("t1")?;
+    let child = TaskId::parse("t2")?;
+    let dir = f.root.path().join("old-park");
+    std::fs::create_dir(&dir)?;
+    let marker = dir.join("parked-goal-unfinished");
+    std::fs::write(&marker, b"")?;
+    let now = f.h.app.now();
+    f.h.store
+        .insert_attempt(&AttemptRecord {
+            id: AttemptId::parse("historic-goal")?,
+            task_id: before.clone(),
+            seq: 1,
+            harness: Harness::ClaudeCode,
+            account_id: None,
+            provider_session_id: None,
+            launch_kind: LaunchKind::New,
+            model: None,
+            state: AttemptState::Killed,
+            run_dir: dir.to_string_lossy().into_owned(),
+            token_hash: "synthetic".into(),
+            host_token: Sealed(vec![0]),
+            ptyhost_pid: None,
+            child_pid: None,
+            started_at: now,
+            ended_at: Some(now),
+            exit_code: Some(0),
+            exit_reason: Some("parked".into()),
+        })
+        .await?;
+    f.h.store
+        .transition_task(
+            &before,
+            None,
+            TaskStatus::Parked,
+            Some(Activity::Waiting),
+            now,
+        )
+        .await?;
+    let fresh = yulius_app::context::App::new(f.h.app.config.clone(), f.h.app.deps.clone());
+    let parked = f.h.store.task(&before).await?.ok_or("parked")?;
+    let summary = fresh.task_summary(&parked).await?;
+    assert!(summary.goal_unfinished);
+    assert_eq!(summary.parked_needs_you, Some(true));
+    fresh.advance_chains(&before).await;
+    assert_eq!(
+        f.h.store.task(&child).await?.ok_or("successor")?.status,
+        TaskStatus::Chained
+    );
+    std::fs::remove_file(marker)?;
+    f.h.store
+        .set_task_needs_you(
+            &before,
+            Some(&yulius_app::needs_you::NeedsYouRecord {
+                action: "Choose the target".into(),
+                happened: None,
+                problem: None,
+                decision: true,
+                link: None,
+                at: now.0,
+                cause: None,
+                named: Default::default(),
+            }),
+            now,
+        )
+        .await?;
+    assert_eq!(
+        fresh.task_summary(&parked).await?.parked_needs_you,
+        Some(true)
+    );
+    fresh.advance_chains(&before).await;
+    assert_eq!(
+        f.h.store.task(&child).await?.ok_or("successor")?.status,
+        TaskStatus::Chained
+    );
+    f.h.store.set_task_needs_you(&before, None, now).await?;
+    assert_eq!(
+        fresh.task_summary(&parked).await?.parked_needs_you,
+        Some(false)
+    );
+    fresh.advance_chains(&before).await;
+    assert_ne!(
+        f.h.store.task(&child).await?.ok_or("successor")?.status,
+        TaskStatus::Chained
+    );
+    Ok(())
+}
+
 /// A parked Waiting predecessor releases its chain only when all its PR checks can be read.
 #[tokio::test]
 async fn a_parked_predecessor_waits_for_the_complete_check_report() -> TestResult {

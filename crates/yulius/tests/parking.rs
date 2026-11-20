@@ -818,21 +818,28 @@ async fn queued_park_screen(
     )
     .await?;
     let captured = screen(app, id);
+    // A real park wakes the queue asynchronously. Reconstruct the cold states
+    // on a consistent copy so that drain cannot launch the synthetic queued run.
+    let (_cold_dir, cold_data) = data_dir()?;
+    yulius_store::SqliteStore::open(&data.join("yulius.db"))?
+        .backup_to(&cold_data.join("yulius.db"))
+        .await?;
+    let cold = self::app(&cold_data, 8, 1).await?;
     assert!(
-        app.deps
+        cold.deps
             .store
             .transition_task(
                 id,
                 Some(TaskStatus::Parked),
                 TaskStatus::Queued,
                 None,
-                app.now()
+                cold.now()
             )
             .await?
     );
     // Loss and normal exit can save identical bytes in this fake agent. Make
     // the ordinary final screen distinct to prove which snapshot each reader uses.
-    let last = app
+    let last = cold
         .deps
         .store
         .attempts(id)
@@ -841,10 +848,10 @@ async fn queued_park_screen(
         .ok_or("parked attempt")?;
     let dir = Path::new(&last.run_dir);
     std::fs::write(dir.join("final-screen"), b"80 24\nShutdown screen")?;
-    assert_cold_screen(data, id, caller, &captured).await?;
+    assert_cold_screen(&cold_data, id, caller, &captured).await?;
     // A restart in the gap between the state commit and the filename change.
     std::fs::rename(dir.join("parked-screen"), dir.join("parked-screen.pending"))?;
-    assert_cold_screen(data, id, caller, &captured).await?;
+    assert_cold_screen(&cold_data, id, caller, &captured).await?;
     let renamed = dir.to_owned();
     yulius_app::race::on(yulius_app::race::Point::ParkScreenRead, dir, move || {
         let published = std::fs::rename(
@@ -853,35 +860,35 @@ async fn queued_park_screen(
         );
         assert!(published.is_ok(), "{published:?}");
     });
-    assert_cold_screen(data, id, caller, &captured).await?;
+    assert_cold_screen(&cold_data, id, caller, &captured).await?;
     // Starting is recorded before the provider acquires its account.
     assert!(
-        app.deps
+        cold.deps
             .store
             .transition_task(
                 id,
                 Some(TaskStatus::Queued),
                 TaskStatus::Starting,
                 None,
-                app.now()
+                cold.now()
             )
             .await?
     );
-    assert_cold_screen(data, id, caller, &captured).await?;
+    assert_cold_screen(&cold_data, id, caller, &captured).await?;
     // The resumed launch has no subscription available, so it waits without a new attempt.
     assert!(
-        app.deps
+        cold.deps
             .store
             .transition_task(
                 id,
                 Some(TaskStatus::Starting),
                 TaskStatus::WaitingCapacity,
                 None,
-                app.now()
+                cold.now()
             )
             .await?
     );
-    assert_cold_screen(data, id, caller, &captured).await
+    assert_cold_screen(&cold_data, id, caller, &captured).await
 }
 
 /// PRK-003 (review round 2): a switch that starts after the park decided gives way to it: the

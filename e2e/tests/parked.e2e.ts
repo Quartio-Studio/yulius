@@ -195,3 +195,59 @@ for (const status of ['parked', 'queued', 'starting', 'waiting_capacity']) {
     }
   });
 }
+
+test('the PR watch refreshes the parked group in both directions', async ({ app, browser }) => {
+  await app.open(mock('/s/studio'));
+  const groups = await browser.evaluate(async () => {
+    const storeModule = '/assets/store.js';
+    const statusModule = '/assets/status.js';
+    const { createStore } = await import(storeModule);
+    const { taskInfo } = await import(statusModule);
+    const sid = 'fixture';
+    const id = 't-parked';
+    const task = { id, sandbox_id: sid, activity: 'waiting', status: 'parked', steps: { total: 2, done: 2 } };
+    let fails = false;
+    let unavailable = false;
+    let newerEvent = false;
+    let tick = () => {};
+    const store = createStore({
+      get: async (path: string) => {
+        if (path.endsWith('/git')) return { tasks: [{ task_id: id, pr: { number: 7, state: 'open', checks: fails ? 'failure' : 'success' } }] };
+        if (path.includes('/tasks?')) {
+          if (unavailable) throw new Error('summary temporarily unavailable');
+          if (newerEvent) store.upsertTask({ ...task, parked_needs_you: true });
+          return [{ ...task, parked_needs_you: fails }, { ...task, id: 'answered', parked_needs_you: false }];
+        }
+        return [];
+      },
+    }, { clock: { now: () => 50_000, setInterval: (fn: () => void) => { tick = fn; return 1; }, clearInterval() {}, clearTimeout() {} } });
+    const read = () => new Promise<void>((resolve) => {
+      const off = store.on('pulls', () => { off(); resolve(); });
+    });
+    const group = (taskId = id) => taskInfo(store.state.tasks.get(sid).get(taskId), null, store.pullsOf(sid).get(taskId)).group;
+    await store.loadTasks(sid);
+    const initial = read();
+    const stop = store.watchPulls(sid);
+    await initial;
+    const seen = [[group(), group('answered')]];
+    for (const [red, failure, event] of [
+      [true, false, false], [false, false, false],
+      [true, true, false], [false, false, false], [false, false, true],
+    ]) {
+      fails = red;
+      unavailable = failure;
+      newerEvent = event;
+      const updated = read();
+      tick();
+      await updated;
+      seen.push([group(), group('answered')]);
+    }
+    stop();
+    store.stopEvents();
+    return seen;
+  });
+  expect(groups).toEqual([
+    ['done', 'done'], ['needs', 'done'], ['done', 'done'],
+    ['needs', 'done'], ['done', 'done'], ['needs', 'done'],
+  ]);
+});
