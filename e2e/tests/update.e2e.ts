@@ -181,6 +181,21 @@ test('a superadmin can proceed while only a finishing CI run holds the update', 
   await expect(screen.getByRole('button', 'Continue without waiting')).toBeHidden();
 });
 
+test('Proceed during a deploy holds a same-build restart until the deploy finishes', async ({ app, browser }) => {
+  await app.open(mock('/admin/instance'));
+  const result = await updateMock(browser, async (m) => {
+    await m.request('POST', '/api/admin/restart', { confirm: true });
+    const run = m.update.run;
+    Object.assign(run, { can_proceed: false, deploys: [{ sandbox: 'studio', environment: 'dev', kind: 'cd', run: 'cdr_late' }] });
+    const held = await m.request('POST', '/api/admin/update/proceed');
+    const heldState = run.state;
+    Object.assign(run, { can_proceed: true, deploys: [] });
+    const released = await m.request('POST', '/api/admin/update/proceed');
+    return [held, heldState, released, run.step, run.message];
+  });
+  expect(result).toEqual([200, 'pausing', 200, 'stopping', 'Stopping the server. Agent sessions keep running.']);
+});
+
 // The superadmin's Update button beside the account button (SPEC-133, task #121).
 const footButton = (browser: Browser, name: string | RegExp) => browser.locator('.sidebar-foot').getByRole('button', name);
 
@@ -427,7 +442,8 @@ test('an automatic check that fails keeps the last result and raises no error', 
 // #502 (SPEC-226 UPC-002): reads of the update view overlap (events, the reconnect, the poll); an
 // older read answering after a newer one must not bring its older view back.
 type UpdateMock = {
-  update: { offer: string | null; run: object };
+  update: { offer: string | null; run: { state: string; step: string; message: string } };
+  request(method: string, path: string, body?: object): Promise<number>;
   holdUpdateReads: boolean;
   updateReads: () => number;
   updateHolds: (() => void)[];

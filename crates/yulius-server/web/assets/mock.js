@@ -4796,6 +4796,12 @@ function moveUpdate(db, state, patch = {}) {
   emit(db, { type: 'update.updated', phase: UPDATE_STATES.includes(state) ? state : null });
 }
 
+function enterRestarting(db) {
+  moveUpdate(db, 'restarting', db.update.run.restart
+    ? { step: 'stopping', message: 'Stopping the server. Agent sessions keep running.' }
+    : { step: 'installing', message: 'Installing the new version.' });
+}
+
 /** Walks a started update through its phases, like the server and helper do. */
 function runUpdate(db, id) {
   const live = () => db.update.run && db.update.run.id === id && UPDATE_STATES.includes(db.update.run.state);
@@ -4835,7 +4841,7 @@ function runUpdate(db, id) {
   }, UPDATE_STEP_MS + 100 + wait);
   later(() => {
     if (!live()) return;
-    moveUpdate(db, 'restarting', { step: 'installing', message: 'Installing the new version.' });
+    enterRestarting(db);
   }, UPDATE_STEP_MS * 2 + wait);
   later(() => {
     if (!live()) return;
@@ -4902,7 +4908,7 @@ function runRestart(db, id) {
   const live = () => db.update.run && db.update.run.id === id && UPDATE_STATES.includes(db.update.run.state);
   later(() => {
     if (!live()) return;
-    moveUpdate(db, 'restarting', { step: 'stopping', message: 'Stopping the server. Agent sessions keep running.' });
+    enterRestarting(db);
   }, UPDATE_STEP_MS);
   later(() => {
     if (!live()) return;
@@ -4944,8 +4950,7 @@ route('POST', '/api/admin/update/cancel', ({ db }) => {
 route('POST', '/api/admin/update/proceed', ({ db }) => {
   if (!db.me.user.is_superadmin) fail(403, 'forbidden', 'superadmin only');
   if (!db.update.run || db.update.run.state !== 'pausing') fail(409, 'conflict', 'the update is not pausing tasks');
-  if (!db.update.run.can_proceed) fail(409, 'conflict', 'waiting for a running deploy');
-  moveUpdate(db, 'restarting', { step: 'installing', message: 'Installing the new version.' });
+  if (db.update.run.can_proceed) enterRestarting(db);
   return updateView(db);
 });
 
