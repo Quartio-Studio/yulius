@@ -1,6 +1,6 @@
 ---
 yulius-task: 471b3694-e07c-467b-b0bc-29a0822f3fbb
-status: done
+status: in-progress
 ---
 
 # SPEC-540 — Restore prompt-mode goal state after subscription switches
@@ -27,6 +27,7 @@ Issue #1182 records a real session and inspections of Claude Code 2.1.292, 2.1.3
 - [x] Verify the fix and obtain independent review
 - [x] Preserve dropped goal submission retries in the resumed fake terminal
 - [x] Verify restart recovery with and without a restored goal
+- [ ] Preserve Enter submission of a restored terminal draft
 
 ## Acceptance criteria
 

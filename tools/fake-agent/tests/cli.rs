@@ -1640,3 +1640,26 @@ fn a_blank_retry_does_not_evaluate_a_restored_goal() -> TestResult {
     }
     Ok(())
 }
+
+#[test]
+fn enter_submits_a_restored_draft_and_ignores_an_empty_prompt_box() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let path = dir.path().join("conversation.jsonl");
+    for queued in [false, true] {
+        std::fs::write(&path, "")?;
+        let mut args = vec!["--tui", "--transcript", path.to_str().ok_or("path")?];
+        if queued {
+            args.push("--queue-prompts");
+        }
+        let output = run(&args, "\nmy draft\x13/color\n\n\n")?;
+        assert!(output.status.success());
+        let records = read_jsonl(&path)?;
+        let prompts: Vec<_> = records
+            .iter()
+            .filter(|r| r["type"] == "user")
+            .map(|r| r["message"]["content"].as_str())
+            .collect();
+        assert_eq!(prompts, [Some("my draft")], "queued={queued}");
+    }
+    Ok(())
+}
