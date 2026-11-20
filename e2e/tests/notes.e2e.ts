@@ -24,8 +24,8 @@ type MockNotes = {
     loseNoteResponse: boolean;
     keepaliveRequests: string[];
     noteLoads: number;
-    observeNoteLoad?: (scope: string) => void;
-    sandboxReloadTimes?: number[];
+    asked?: Record<string, number>;
+    sandboxRetryDelays?: number[];
   };
 };
 
@@ -346,7 +346,6 @@ test('a conflict kept over a reload is still a choice after another reload', asy
 });
 
 // The Team pad's opening read can fail late and retry beside the sandbox's reads (#1246).
-// Observe the gaps between this sandbox's own failed requests.
 test("a failed reload after a teammate's edit backs off", async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio', '&hold=/api/notes'));
   await openNotes(screen);
@@ -354,19 +353,30 @@ test("a failed reload after a teammate's edit backs off", async ({ app, browser,
   await setMock(browser, 'failNoteLoads', true);
   await browser.evaluate(() => {
     const db = (window as unknown as MockNotes).__yuliusMock;
-    const times: number[] = [];
-    db.sandboxReloadTimes = times;
-    db.observeNoteLoad = (scope) => {
-      if (scope === 'sandbox:sb_studio' && times.length < 3) times.push(performance.now());
+    const reads = () => db.asked?.['/api/sandboxes/sb_studio/notes'] ?? 0;
+    const initial = reads();
+    const delays: number[] = [];
+    db.sandboxRetryDelays = delays;
+    const schedule = window.setTimeout;
+    // The transport counts GETs synchronously on entry. Record the delay of the timer
+    // whose callback actually issues each retry, even when the event loop runs it late.
+    window.setTimeout = (callback, delay, ...args) => {
+      if (typeof callback !== 'function') return schedule(callback, delay, ...args);
+      return schedule(function (this: Window) {
+        const before = reads();
+        callback.apply(this, args);
+        if (before > initial && reads() > before && delays.length < 2) {
+          delays.push(delay ?? 0);
+          if (delays.length === 2) window.setTimeout = schedule;
+        }
+      }, delay);
     };
   });
   await browser.evaluate(() => (window as unknown as { __yuliusMock: { release: () => void } }).__yuliusMock.release());
   await editAs(browser, 'sandbox:sb_studio', 'from alice');
-  const reads = () => browser.evaluate(() => (window as unknown as MockNotes).__yuliusMock.sandboxReloadTimes!);
-  await expect.poll(async () => (await reads()).length, { timeout: 10_000 }).toBe(3);
-  const [first, second, third] = await reads();
-  expect(second - first).toBeGreaterThanOrEqual(999);
-  expect(third - second).toBeGreaterThanOrEqual(1999);
+  const retryDelays = () => browser.evaluate(() => (window as unknown as MockNotes).__yuliusMock.sandboxRetryDelays!);
+  await expect.poll(async () => (await retryDelays()).length, { timeout: 10_000 }).toBe(2);
+  expect(await retryDelays()).toEqual([1_000, 2_000]);
   await setMock(browser, 'failNoteLoads', false);
   await loadAgain(screen);
   await expect(screen.getByRole('textbox', 'Sandbox notes')).toHaveValue('from alice');
