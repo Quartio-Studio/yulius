@@ -19,7 +19,7 @@ use crate::ci::playground::TaskChecks;
 use crate::ci::short;
 use crate::context::App;
 use crate::error::{AppError, AppResult};
-use crate::model::{TaskRecord, UserRecord};
+use crate::model::{SandboxRecord, TaskRecord, UserRecord};
 use crate::ports::git::{SquashLanding, SquashRequest};
 
 /// Most branch commits read for the squash's title.
@@ -46,6 +46,12 @@ fn conflict_refusal(branch: &str, integration: &str, files: &[String]) -> AppErr
         } else {
             files.join(", ")
         }
+    ))
+}
+
+fn nothing_to_deliver(branch: &str, integration: &str) -> AppError {
+    AppError::Conflict(format!(
+        "nothing to deliver: `{branch}` has no change that `{integration}` lacks"
     ))
 }
 
@@ -85,6 +91,27 @@ fn playground_plan_hold(steps: &[crate::model::StepRecord]) -> Option<String> {
 }
 
 impl App {
+    /// Checks whether there are task commits ahead of the current local integration branch.
+    pub(super) async fn playground_delivery_base(
+        &self,
+        sandbox: &SandboxRecord,
+        worktree: &str,
+        branch: &str,
+        integration: &str,
+    ) -> AppResult<String> {
+        self.dlv_refresh_clone(sandbox).await?;
+        let base = format!("origin/{integration}");
+        let (ahead, _) = self
+            .deps
+            .git
+            .ahead_behind(Path::new(worktree), &base, "HEAD")
+            .await?;
+        if ahead == 0 {
+            return Err(nothing_to_deliver(branch, integration));
+        }
+        Ok(base)
+    }
+
     /// [`App::playground_merge`] for a person, who never arms a merge: while Yulius CI tests it,
     /// it is a `Conflict` saying so, unless the profile requires no checks (SPEC-163 PCI-004, as
     /// on GitHub). A merge the task's agent armed is then over.
@@ -167,19 +194,10 @@ impl App {
                  the new head and merge again"
             )));
         }
-        // The integration branch as it is now in the playground's `origin`.
-        self.dlv_refresh_clone(&sandbox).await?;
-        let base = format!("origin/{integration}");
+        let base = self
+            .playground_delivery_base(&sandbox, worktree, branch, integration)
+            .await?;
         let git = &self.deps.git;
-        let nothing = || {
-            AppError::Conflict(format!(
-                "nothing to deliver: `{branch}` has no change that `{integration}` lacks"
-            ))
-        };
-        let (ahead, _) = git.ahead_behind(Path::new(worktree), &base, "HEAD").await?;
-        if ahead == 0 {
-            return Err(nothing());
-        }
         // Merge on green (SPEC-163 PCI-003): the head merged into the integration branch as it
         // is now, tested by Yulius CI when the playground has CI. What lands is the tree it
         // tested: Git's own squash of the head can order a `merge=union` file the other way.
@@ -282,9 +300,9 @@ impl App {
                 let since = git
                     .merge_base(&repo, &base, &head)
                     .await?
-                    .ok_or_else(nothing)?;
+                    .ok_or_else(|| nothing_to_deliver(branch, integration))?;
                 if git.diff_stat(&repo, &since, &head).await?.files == 0 {
-                    return Err(nothing());
+                    return Err(nothing_to_deliver(branch, integration));
                 }
                 format!("{base} (already there)")
             }

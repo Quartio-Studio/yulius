@@ -1879,8 +1879,9 @@ impl App {
         Ok(observed)
     }
 
-    fn dlv_delivery_of(
-        playground_task: Option<&TaskRecord>,
+    async fn dlv_delivery_of(
+        &self,
+        playground: Option<(&SandboxRecord, &TaskRecord)>,
         profile: &DeliveryProfile,
         observed: &Observed,
         mut notes: Vec<String>,
@@ -1888,14 +1889,25 @@ impl App {
     ) -> Delivery {
         let facts = observed.facts();
         let stage = &observed.record.stage;
-        let (next_actions, blocked) = if let Some(task) = playground_task {
+        let (next_actions, blocked) = if let Some((sandbox, task)) = playground {
             if past_merge(stage) {
                 (Vec::new(), Vec::new())
             } else {
-                let hold = if task.branch.is_none() || task.worktree_path.is_none() {
-                    Some("this task has no branch to deliver yet".to_owned())
-                } else {
-                    playground::merge_hold(observed)
+                let hold = match (task.branch.as_deref(), task.worktree_path.as_deref()) {
+                    (Some(branch), Some(worktree)) => match playground::merge_hold(observed) {
+                        Some(reason) => Some(reason),
+                        None => self
+                            .playground_delivery_base(
+                                sandbox,
+                                worktree,
+                                branch,
+                                &profile.integration_branch,
+                            )
+                            .await
+                            .err()
+                            .map(|err| err.public_message()),
+                    },
+                    _ => Some("this task has no branch to deliver yet".to_owned()),
                 };
                 match hold {
                     Some(reason) => (
@@ -2029,13 +2041,15 @@ impl App {
         let access = self
             .dlv_checks_access(&sandbox, &observed.checks_unreadable, user)
             .await;
-        let mut view = Self::dlv_delivery_of(
-            sandbox.is_playground().then_some(task),
-            &profile,
-            &observed,
-            notes,
-            access,
-        );
+        let mut view = self
+            .dlv_delivery_of(
+                sandbox.is_playground().then_some((&sandbox, task)),
+                &profile,
+                &observed,
+                notes,
+                access,
+            )
+            .await;
         view.review_rounds = self.review_round_views(&task.id).await;
         Ok(view)
     }
