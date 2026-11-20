@@ -1,11 +1,11 @@
 ---
 yulius-task: c2fc38ad-443d-48d0-ab7b-549eb0d1e4b0
-status: in-progress
+status: done
 ---
 
 # SPEC-512: Marcin's five issues: parked sessions, answers from a second person, the digest, Telegram intake, handoffs
 
-Status: in-progress
+Status: done (part 5 delivered by task #539, as part 4 was by task #538: the running server's #1299 judge)
 Date: 2026-11-19
 Owner: Yulius task #494
 Scope authorization: the request of task #494 (by MrFishPL for the owner, Michal Karp,
@@ -299,7 +299,7 @@ only ask a person with `needs_you`. Nothing records where a task came from.
 - [x] A new Telegram message or file becomes a task with attachments
 - [x] Telegram commands /status and /task; ADR and docs for intake
 - [x] Pull request #1130 answered and closed as superseded
-- [ ] Review of the #1107 pull request answered test-first
+- [x] Review of the #1107 pull request answered test-first
 - [x] Handoff setting off, ask or automatic and a per-project opt-out
 - [x] The sandbox_handoff tool with its checks and bounds
 - [x] Ask mode: a stored request the owner approves in a browser session
