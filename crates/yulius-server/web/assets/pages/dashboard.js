@@ -24,7 +24,7 @@ const DAY = 86400000;
 const SHORT_DATE = new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric', timeZone: 'UTC' });
 const LONG_DATE = new Intl.DateTimeFormat(undefined, { weekday: 'short', month: 'short', day: 'numeric', timeZone: 'UTC' });
 const WEEKDAY = new Intl.DateTimeFormat(undefined, { weekday: 'short', timeZone: 'UTC' });
-const ORIGIN_NAMES = { ui: 'Started here', automation: 'Automation', import: 'Imported', onboarding: 'Onboarding', agent: 'Another task', telegram: 'From Telegram' };
+const ORIGIN_NAMES = { ui: 'Started here', automation: 'Automation', import: 'Imported', onboarding: 'Onboarding', agent: 'Another task', telegram: 'From Telegram', handoff: 'Handed off' };
 
 /** How often an open dashboard refreshes itself. */
 const LIVE_MS = 30_000;

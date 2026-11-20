@@ -17,6 +17,7 @@ import { openDeliveryDialog, notesBanner, checksAccessNote, openRunViewer } from
 import { pageFrame } from './common.js';
 import { BRAND } from '../brand.js';
 import { productionProtectionCard, watchProductionProtection, PROTECTION_ID } from './gitprotection.js';
+import { sandboxHandoffsCard } from '../handoffs.js';
 
 const LIVE_LIMIT = 5;
 const ACTIVITY_LIMIT = 8;
@@ -130,7 +131,7 @@ export function mountGitPage(ctx, sandbox) {
   // The Production protection card is drawn apart from the overview, so it is there also when the
   // overview cannot be read (SPEC-423 PPR-005).
   const protection = h('div', { class: 'dl' });
-  frame.body.append(intro, body, protection);
+  frame.body.append(intro, body, protection, sandboxHandoffsCard(ctx, sandbox, allows(sandbox.access, 'write')));
   let model = null;
   let showAllActivity = false;
   let showAllNeeds = false;

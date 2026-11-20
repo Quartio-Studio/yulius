@@ -16,7 +16,7 @@ import { loadWaterfall } from '../stages.js';
 import { pipelineHref } from './pipeline.js';
 import { worktreeMissing } from './git.js';
 
-const ORIGINS = { ui: 'Started here', automation: 'Automation', import: 'Imported', onboarding: 'Onboarding', agent: 'Another task', telegram: 'From Telegram' };
+const ORIGINS = { ui: 'Started here', automation: 'Automation', import: 'Imported', onboarding: 'Onboarding', agent: 'Another task', telegram: 'From Telegram', handoff: 'Handed off' };
 const STEP_MARK = { done: '✓', in_progress: '▸', pending: '·', skipped: '–', blocked: '✕' };
 const STEP_LABEL = { done: 'Done', in_progress: 'In progress', pending: 'To do', blocked: 'Blocked', skipped: 'Skipped' };
 const ATTEMPT_STATE = { live: 'Running', exited: 'Ended', failed: 'Failed', lost: 'Lost' };
