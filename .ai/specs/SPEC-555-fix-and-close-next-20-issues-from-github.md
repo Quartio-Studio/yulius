@@ -65,11 +65,11 @@ upgrade prerequisite for older live wrappers has not been established. Open PR #
 - [x] Correct playground delivery and cross-sandbox request actions
 - [x] Repair repository test and decision indexes
 - [ ] Measure complete CPU samples and synchronize access and cockpit tests
-- [ ] Preserve attention and held prompts across overlapping hooks
-- [ ] Resume eligible subscriptions and classify workflow limits consistently
-- [ ] Bound provider usage reads before buffering the response
+- [x] Preserve attention and held prompts across overlapping hooks
+- [x] Resume eligible subscriptions and classify workflow limits consistently
+- [x] Bound provider usage reads before buffering the response
 - [x] Carry the freeze budget through the instance move form and helper
-- [ ] Reuse a removed sandbox port range after its listeners are retired
+- [x] Reuse a removed sandbox port range after its listeners are retired
 - [x] Synchronize browser checks with the state each assertion measures
 - [x] Refresh open task search when the sandbox tasks arrive
 - [ ] Verify the integrated changes, obtain independent review and close on green delivery
@@ -117,3 +117,9 @@ process ownership rules while applying the individual fixes.
 - #1258, #1302, #1351 and #1369. Before the fixes, the delivery API offered open_pr and promote, a cross-project request reached the panel, a heartbeat failed the revoked-access assertion and the sandbox sampler returned 1,500 microseconds for an incomplete reading. Afterward the scoped nextest run passed 127 cases. The Chromium playground delivery dialog failed before the fix and passed afterward.
 - #1351. A temporary fixture retaining read permission failed on the real task.removed event for t-hidden. The fixture change was removed.
 - #1202 and #1249. Baseline failures included the missing Settings field and an unavailable historical port. After the changes, all 223 focused Rust cases and all 12 instance-move Chromium cases passed. The host transition was exercised using the migration fixtures.
+
+- #1200 and #1206. Older work could clear a second notice and an earlier Stop could release a queued prompt. The corrected cases passed, including worker questions after restart, interrupted predecessor turns, upgraded open holds and continued goals.
+- #1237, #1256 and #1380. The refresh test distinguishes a running model from repeated refusals and inconclusive reads. Workflow classification passed with both file orders. A held-open oversized response failed promptly and a valid response exactly at 256 KiB parsed.
+- #1249. The extended five-crate run passed all 272 selected tests. The upgraded database preserved child rows and leases. IPv4 and IPv6 listeners held ranges, as did a browser connection after its proxy listener ended. Schema versions 73 and 74 apply the port and held-prompt migrations in that order.
+- #1361. With a 3,500 ms delay, all three original Cockpit cases identified the dropped first probe within 4.19–6.71 seconds. The injected delay was removed.
+- The full Chromium suite passed 1,157 tests with one opt-in agent test skipped. The stricter short-list assertion also passed twenty times after the full run began. The scoped access and delivery rerun passed 125 tests. Vidoc was disabled by the instance or project setting. Host-move verification used fixtures.
