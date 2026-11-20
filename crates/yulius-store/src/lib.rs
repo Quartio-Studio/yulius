@@ -494,6 +494,40 @@ mod tests {
         assert_eq!(MIGRATIONS.len(), 72, "a new migration is pinned here too");
     }
 
+    #[test]
+    fn port_reuse_upgrade_keeps_existing_leases_and_sandbox_children()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut conn = Connection::open_in_memory()?;
+        for sql in &MIGRATIONS[..72] {
+            conn.execute_batch(sql)?;
+        }
+        conn.pragma_update(None, "user_version", 72)?;
+        conn.execute_batch(
+            "INSERT INTO users (id, display_name, is_superadmin, is_instance_admin, created_at)
+             VALUES ('u', 'User', 0, 0, 1);
+             INSERT INTO sandboxes (id, slug, repo_owner, repo_name, default_branch, profile,
+                 port_base, port_count, created_by, onboarding_state, created_at, removed_at)
+             VALUES ('s', 'shop', 'org', 'shop', 'dev', '{}', 20000, 20, 'u', 'ready', 1, 2);
+             INSERT INTO permission_cache VALUES ('u', 's', 'admin', 1);",
+        )?;
+        prepare(&mut conn)?;
+        let held: (u16, bool) = conn.query_row(
+            "SELECT port_base, ports_released FROM sandboxes WHERE id='s'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?;
+        assert_eq!(held, (20000, false));
+        let owner: String = conn.query_row(
+            "SELECT user_id FROM permission_cache WHERE sandbox_id='s'",
+            [],
+            |r| r.get(0),
+        )?;
+        assert_eq!(owner, "u");
+        let keys: bool = conn.query_row("PRAGMA foreign_keys", [], |r| r.get(0))?;
+        assert!(keys);
+        Ok(())
+    }
+
     /// SPEC-514 PIN-003: a version-67 database's automations saved as `auto` (drawn for each
     /// run, SPEC-505 RND-002) run Claude Code from version 68 on, and say so; one that names an
     /// agent keeps it.
