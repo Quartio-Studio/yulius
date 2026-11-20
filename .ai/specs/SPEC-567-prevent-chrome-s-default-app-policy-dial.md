@@ -27,7 +27,7 @@ Task #490 saw Chrome's native administrator dialog after host setup. On dev `e15
 - [x] Capture the launch regression and preserve the wildcard policy
 - [x] Verify the corrected launch with real Chrome and document its scope
 - [x] Obtain independent approval for delivery to dev
-- [ ] Preserve the parked-screen fixture across a late viewer resize
+- [x] Preserve the parked-screen fixture across a late viewer resize
 - [ ] Validate the ordered ADR index on the landed prefix and obtain delivery approval
 
 ## Acceptance criteria
@@ -75,3 +75,5 @@ A fresh headless launch with the default-app switch alone completed an extension
 The original PR head passed quality and both Rust test shards. Yulius run `244e8360-1160-4e37-9d0e-28f732cd1df3` failed the queued parked-screen e2e assertion because row 89 had no node. On `0bd899936`, delivering a 44×28 resize after the first saved row appeared reproduced the identical assertion. The mock had announced the 220×90 capture to viewers once, then reported its live terminal state on the next resize. The production terminal hub reports the retained screen's dimensions on subsequent state messages. [CI fixture issue #1517](https://github.com/Quartio-Studio/yulius/issues/1517)
 
 The three-PR train `fa2269928` failed the repository checker with 0402 before 0401. Its immediate parent listed 0400 then 0401. Swapping only those two intact entries in a detached copy of the failed train made `python3 scripts/check_repository.py` pass. Task #560 owns the general merge-order fix.
+
+The test-first commit `fce570f41` forces the delayed resize. The corrected mock reads its retained capture for both state and snapshot replies until a live attempt takes over. All nine Chromium parking scenarios passed, including all four saved-grid statuses and the transition back to a live viewport.
