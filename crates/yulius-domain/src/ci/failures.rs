@@ -407,6 +407,15 @@ mod tests {
         let success =
             format!("successes:\n\n---- passing stdout ----\n\n{browser}\n\ntest result: ok.\n");
         assert_eq!(scan(&[&success]), None);
+        let after_success = scan(&[
+            &success,
+            " FAIL  |chromium| tests/real.e2e.ts > fails after Rust tests\n",
+        ])
+        .unwrap_or_default();
+        assert_eq!(
+            failed_test_names(&after_success),
+            ["tests/real.e2e.ts › fails after Rust tests"]
+        );
         let failed = format!(
             "failures:\n\n---- failing stdout ----\nfirst line\n\n{browser}\n\nfailures:\n"
         );
