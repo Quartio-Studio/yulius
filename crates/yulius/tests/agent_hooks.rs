@@ -2874,6 +2874,56 @@ async fn parking_rechecks_a_recorded_pr_when_its_base_advances_during_checks() -
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn parking_waits_for_external_checks_when_an_old_local_run_finishes() -> TestResult {
+    use yulius_app::ci::CiRunUpdate;
+    use yulius_domain::ci::{CiRef, RunState};
+    let (f, _) = untracked_parking_fixture().await?;
+    let mut config = f.h.app.config.clone();
+    config.ci.enabled = false;
+    let app = yulius_app::context::App::new(config, f.h.app.deps.clone());
+    app.runtime(&f.task);
+    f.h.github
+        .set_checks("abc123", yulius_app::ports::github::ChecksState::Pending);
+    super::delivery::insert_ci_attempt(
+        &f.h.store,
+        "old-ordinary",
+        "abc123",
+        CiRef::PullRequest(1461),
+        RunState::Queued,
+        10,
+        &[],
+    )
+    .await?;
+    let store = app.deps.store.clone();
+    let handle = tokio::runtime::Handle::current();
+    yulius_app::race::on(
+        yulius_app::race::Point::ParkPrepared,
+        Path::new(f.task.as_str()),
+        move || {
+            assert!(
+                tokio::task::block_in_place(|| handle.block_on(store.transition_ci_run(
+                    "old-ordinary",
+                    &[RunState::Queued],
+                    RunState::Passed,
+                    &CiRunUpdate::default()
+                )))
+                .is_ok()
+            );
+        },
+    );
+    assert_eq!(
+        app.park_idle_sessions_now().await,
+        0,
+        "an independent pending check still owns the decision"
+    );
+    // Once the external check passes the final lookup can accept the old run's completion.
+    f.h.github
+        .set_checks("abc123", yulius_app::ports::github::ChecksState::Success);
+    assert_eq!(app.park_idle_sessions_now().await, 1);
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn parking_keeps_an_external_pr_when_its_checked_head_starts_an_unwatched_rerun() -> TestResult
 {
     use yulius_app::ci::{CiRunRecord, CiRunUpdate};
@@ -3229,12 +3279,32 @@ async fn released_parked_check_reads_leave_the_next_two_reads_unblocked() -> Tes
 #[tokio::test]
 async fn a_parked_detail_keeps_the_failed_pr_when_another_pr_opens_during_checks() -> TestResult {
     use yulius_domain::delivery::DeliveryStage;
-    for (durable, recorded_elsewhere) in
-        [(false, false), (true, false), (false, true), (true, true)]
-    {
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum Publication {
+        OnBranch,
+        RecordedElsewhere,
+        Superseded,
+    }
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum Checks {
+        GitHubRed,
+        OrdinaryRed,
+        Green,
+    }
+    use Checks::{GitHubRed, Green, OrdinaryRed};
+    use Publication::{OnBranch, RecordedElsewhere, Superseded};
+    for (checks, publication, expected) in [
+        (GitHubRed, OnBranch, 1461),
+        (OrdinaryRed, OnBranch, 1461),
+        (GitHubRed, RecordedElsewhere, 1461),
+        (OrdinaryRed, RecordedElsewhere, 1461),
+        (GitHubRed, Superseded, 1462),
+        (OrdinaryRed, Superseded, 1462),
+        (Green, OnBranch, 1462),
+    ] {
         let (f, owner) = owner_observed_external_pr().await?;
         install_app(&f).await?;
-        if recorded_elsewhere {
+        if publication == RecordedElsewhere {
             f.h.github.pulls.lock().map_err(|_| "pulls")?[0].head = "published-elsewhere".into();
             assert!(
                 f.h.app
@@ -3256,9 +3326,11 @@ async fn a_parked_detail_keeps_the_failed_pr_when_another_pr_opens_during_checks
         let mut config = f.h.app.config.clone();
         config.ci.enabled = false;
         let app = yulius_app::context::App::new(config, f.h.app.deps.clone());
-        if durable {
+        if checks != GitHubRed {
             f.h.github
                 .set_checks("abc123", yulius_app::ports::github::ChecksState::Success);
+        }
+        if checks == OrdinaryRed {
             super::delivery::insert_ci_attempt(
                 &f.h.store,
                 "durable-survivor",
@@ -3289,13 +3361,17 @@ async fn a_parked_detail_keeps_the_failed_pr_when_another_pr_opens_during_checks
             });
         f.h.github
             .set_checks("healthy", yulius_app::ports::github::ChecksState::Success);
+        if publication == Superseded {
+            f.h.github
+                .change_before_branch_list(1461, |pr| pr.head_sha = "repaired".into())?;
+        }
         f.h.github.release_checks(&held);
         let detail = serde_json::to_value(reading.await??)?;
         assert_eq!(detail["parked_needs_you"], true);
         assert_eq!(
             detail["parked_pr"],
-            json!({"number":1461,"open":true}),
-            "durable={durable}, recorded_elsewhere={recorded_elsewhere}"
+            json!({"number":expected,"open":true}),
+            "{checks:?}, {publication:?}"
         );
     }
     Ok(())
@@ -3341,6 +3417,17 @@ async fn a_parked_detail_checks_each_eligibility_field_in_the_final_branch_listi
         install_app(&f).await?;
         f.h.github
             .set_checks("abc123", yulius_app::ports::github::ChecksState::Success);
+        // The highest numbered PR is healthy and stable. Only a change to
+        // eligibility should make the older PR the one named in the detail.
+        f.h.github
+            .pulls
+            .lock()
+            .map_err(|_| "pulls")?
+            .push(yulius_app::ports::github::GhPull {
+                number: 1463,
+                base: "release-3".into(),
+                ..compatibility_pull()
+            });
         let held = f.h.github.hold_checks();
         let app = f.h.app.clone();
         let id = f.task.clone();
@@ -3363,7 +3450,11 @@ async fn a_parked_detail_checks_each_eligibility_field_in_the_final_branch_listi
         f.h.github.release_checks(&held);
         let detail = serde_json::to_value(reading.await??)?;
         assert_eq!(detail["parked_needs_you"], field != "title", "{field}");
-        let number = if field == "number" { 1462 } else { 1461 };
+        let number = match field {
+            "title" => 1463,
+            "number" => 1462,
+            _ => 1461,
+        };
         assert_eq!(
             detail["parked_pr"],
             json!({"number":number,"open":true}),
