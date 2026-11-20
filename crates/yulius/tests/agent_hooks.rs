@@ -2630,6 +2630,32 @@ async fn a_merged_recorded_pr_cannot_park_a_new_failing_branch_pr() -> TestResul
         "the external replacement is failing"
     );
     assert_eq!(f.h.app.send_digests_now(Some(1)).await.parked, 0);
+    // Reconciliation of the original merge must not settle the replacement.
+    let recorded =
+        f.h.app
+            .deps
+            .store
+            .delivery(&f.task)
+            .await?
+            .ok_or("recorded PR")?;
+    assert!(
+        f.h.app
+            .deps
+            .store
+            .transition_delivery(
+                &recorded.stage,
+                &yulius_app::delivery::DeliveryRecord {
+                    stage: yulius_domain::delivery::DeliveryStage::MergedIntegration,
+                    ..recorded.clone()
+                }
+            )
+            .await?
+    );
+    assert_eq!(
+        f.h.app.park_idle_sessions_now().await,
+        0,
+        "only the older PR merged"
+    );
     f.h.github.set_checks("new-pr", ChecksState::Success);
     assert_eq!(f.h.app.park_idle_sessions_now().await, 1);
     Ok(())
