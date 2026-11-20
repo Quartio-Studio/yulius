@@ -3733,6 +3733,10 @@ The host-side relay and the opaque CONNECT proxy each keep up to 8 KiB per direc
 their copy state. Pausing preserves the first unwritten byte in each direction. After EOF
 the copy resumes any pending write-half shutdown before marking that half closed.
 [SPEC-577](../.ai/specs/SPEC-577-preserve-opaque-egress-tunnels-across-a.md)
+The Linux `sandbox-host hold-tunnels` helper holds a bounded batch of connected descriptors
+and private copy state for one successor. Its two-minute deadline includes the time spent
+receiving and returning the batch. The server integration is tracked in SPEC-577.
+[ADR-0413](decisions/0413-a-bounded-helper-holds-connected-tunnel-sockets-between-servers.md)
 The proxy also counts each connection's run (agent run, CI job, Superagent shell). When nothing was
 idle for 5 minutes, a full sandbox share takes the oldest connection of its busiest other run, and
 the full proxy that of the busiest sandbox, if it holds at least 2 more than the asker, so one busy

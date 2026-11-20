@@ -48,6 +48,8 @@ new request after the old sockets reach EOF. The issue requires the original con
 - [x] Obtain independent approval for the relay lifecycle slice
 - [x] Preserve buffered bytes and half-closes when an established copy pauses
 - [x] Obtain independent approval for the resumable copy slice
+- [ ] Hold connected socket pairs and bounded copy state for one successor
+- [ ] Obtain independent approval for the socket custodian slice
 - [ ] Hand established opaque connections and matching relay sockets to the restarted server
 - [ ] Verify same-socket continuity, admission limits and intercepted traffic through restart
 - [ ] Independent review in a fresh session, findings fixed test-first
@@ -133,3 +135,14 @@ without adoption support or a remote peer that times out can end a tunnel.
 - The mutation run against the review fixes (`scripts/dev mutants --base 5ee4cb804`) listed
   6 mutants and caught all 6, with 0 missed, 0 timed out, 0 unviable and 0 not reached.
   Its unmutated baseline passed 3,256 tests (2 skipped).
+- PR #1536 landed at dev squash `4b1cc7149`. PR run `3888a35a-e5d9-4cfe-9f6c-9b103513cbd1` passed at `f4bcc2dc7`. Dev run `e35dfcce-4bd1-40c5-9148-9a3cdd6c2fb0` passed on the identical tree. Both test shards, quality and e2e passed. Security was disabled.
+- After #1536 the retained client still read EOF in the two-server restart probe. In an
+  isolated helper process fixture, the old executable rejected the handoff command and closed
+  the control connection. With the helper, a successor obtained the original descriptors and
+  private state, read bytes queued during the gap and wrote fresh bytes to the original peer.
+  The first helper implementation failed with address-in-use on a stale socket name. The
+  regression test starts with that exact condition. An exclusive lock on the private directory
+  now protects stale socket cleanup and prevents a second deposit from displacing a live one.
+- The isolated PR-watch timeout on #1536 was absent on the base (1.26 s), its reviewed head
+  (1.80 s), and four concurrent head runs sharing one CPU (2.57–2.66 s). Both revisions
+  observed the draft, held the news, saw the cleared box, delivered the news, then observed idle.

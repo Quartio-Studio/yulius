@@ -13,6 +13,13 @@ use crate::wiring::sandbox::{Egress, IsolationArgs, resolve};
 /// `yulius sandbox-host …` (internal).
 #[derive(Debug, Subcommand)]
 pub enum HostAction {
+    /// Hold established tunnel descriptors during an orderly server restart (SPEC-577).
+    #[cfg(target_os = "linux")]
+    HoldTunnels {
+        /// Service-owned private handoff directory.
+        #[arg(long)]
+        directory: PathBuf,
+    },
     /// Create a sandbox's namespaces and holder, then exit (the holder stays).
     Start {
         /// The holder spec (`runtime/sandboxes/<sandbox>/holder.json`).
@@ -112,6 +119,13 @@ fn fail(message: &str) -> ExitCode {
 #[must_use]
 pub fn host(action: HostAction) -> ExitCode {
     match action {
+        #[cfg(target_os = "linux")]
+        HostAction::HoldTunnels { directory } => {
+            match yulius_sandbox::relay::custodian::run(&directory) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(error) => fail(&format!("tunnel handoff: {error}")),
+            }
+        }
         HostAction::Start { spec } => match yulius_sandbox::holder::start(&spec) {
             Ok(record) => {
                 println!("holder {} ready", record.inner_pid);

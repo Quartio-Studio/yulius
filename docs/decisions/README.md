@@ -432,6 +432,7 @@ If a reservation skips past all available slots, land an empty extension first w
 <!-- ADR 0410 -->
 <!-- ADR 0411 -->
 <!-- ADR 0412 -->
+- [0413](0413-a-bounded-helper-holds-connected-tunnel-sockets-between-servers.md) A bounded helper holds connected tunnel sockets between servers.
 <!-- ADR 0413 -->
 <!-- ADR 0414 -->
 <!-- ADR 0415 -->
