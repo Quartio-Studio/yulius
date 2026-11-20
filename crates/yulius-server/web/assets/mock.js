@@ -6086,7 +6086,13 @@ const PUBLIC = ['/api/setup/status', '/api/setup', '/api/auth/password', '/api/a
 // A guest link is its own credential (SPEC-410).
 const isPublic = (path) => PUBLIC.includes(path) || /^\/api\/guest-invites\//.test(path);
 
+// `unanswered`: the page's requests not answered yet, so a test reads what they did once they settled.
 async function handleFetch(db, url, init = {}) {
+  db.unanswered = (db.unanswered || 0) + 1;
+  try { return await handleFetchCounted(db, url, init); } finally { db.unanswered -= 1; }
+}
+
+async function handleFetchCounted(db, url, init) {
   // Counted as the page asks, before the simulated latency (SPEC-108 tests); `asked` counts every
   // GET by path (SPEC-197).
   if ((init.method || 'GET') === 'GET') {
