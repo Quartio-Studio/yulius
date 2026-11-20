@@ -240,9 +240,10 @@ export function mountTaskView(ctx, sandbox, task) {
       },
       onPendingInput: (data) => {
         // Keep buffering while `continueTask` transitions `parked -> starting/queued -> running`
-        // so subsequent characters never hit a 409 conflict before the PTY is attached.
-        if (!resumingParked || current.status === 'running') return false;
-        if (!['parked', 'starting', 'queued'].includes(current.status)) {
+        // until WS `onState({ status: 'running' })` flushes `parkedHeld` atomically (preserving
+        // FIFO order even if SSE `task.updated` arrives before WS `state`, SPEC-553 PRK-102).
+        if (!resumingParked) return false;
+        if (!['parked', 'starting', 'queued', 'running'].includes(current.status)) {
           resumingParked = false;
           parkedHeld = [];
           return false;

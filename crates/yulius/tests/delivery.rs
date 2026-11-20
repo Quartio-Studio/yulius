@@ -8428,9 +8428,9 @@ async fn open_pr_ci_repair_preserves_safeguards_and_surfaces_actionable_failures
 }
 
 /// SPEC-553 REP-002, REP-004: publishing an eligible open-PR CI repair immediately queues
-/// exact-head Yulius CI; `watch_prs` also recovers an unpublished repair for a live task without
-/// emitting a stale failed-run notice for the old head, and delivers failed-publication notices
-/// once (suppressed while `yulius wait` is active).
+/// exact-head Yulius CI; `watch_prs` recovers an unpublished repair for a live task without
+/// emitting a stale failed-run notice across passes, and failed publications surface cleanly in
+/// `yulius wait` and `delivery_status` (live PTY `pr_watch` delivery is tested in `pr_watch.rs`).
 #[tokio::test]
 async fn open_pr_ci_repair_queues_exact_head_ci_and_recovers_via_pr_watch_without_stale_notice()
 -> TestResult {
@@ -8575,10 +8575,16 @@ async fn open_pr_ci_repair_queues_exact_head_ci_and_recovers_via_pr_watch_withou
             .any(|(task, text)| task == &t1 && text.contains("failed")),
         "watch_prs must not emit a stale failed-run notice after pushing repair2: {typed:?}"
     );
+    // Second pass with no new CI run queued yet must also stay silent.
+    let typed_pass2 = f.h.app.watch_prs(&bounds).await;
+    assert!(
+        !typed_pass2
+            .iter()
+            .any(|(task, text)| task == &t1 && text.contains("failed")),
+        "watch_prs pass 2 must not emit a stale failed-run notice: {typed_pass2:?}"
+    );
 
-    // 3. Failed publication notice: fail pushes on `repair3`, verify `pr_watch` suppresses
-    // `"publish"` while `yulius wait` is active (`agent_waits_on_yulius`) and delivers it when
-    // `yulius wait` is not active (tested cleanly via `wait_state` + `pr_news_due`).
+    // 3. Failed publication surfaces in `yulius wait` and `delivery_status` notes.
     f.h.github.set_checks(&repair2, ChecksState::Failure);
     let failed_run3 = CiRunRecord {
         id: "run-failed-3".into(),

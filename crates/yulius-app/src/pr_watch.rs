@@ -870,7 +870,7 @@ impl App {
         });
         let outcome = self.armed_view(&task.id).1;
         let publish_problem = if !self.agent_waits_on_yulius(&task.id) {
-            self.actionable_push_problem(&task.id)
+            self.current_actionable_push_problem(task, None).await
         } else {
             None
         };
@@ -1013,10 +1013,13 @@ impl App {
             own = refreshed
                 .iter()
                 .find(|run| run.reference == CiRef::PullRequest(pr))
-                .cloned()
-                .filter(|run| {
-                    !(run.state == RunState::Failed && run.sha.eq_ignore_ascii_case(&failed_sha))
-                });
+                .cloned();
+        }
+        if let Some(run) = own.as_ref()
+            && run.state == RunState::Failed
+            && self.run_superseded_by_pushed_head(task, &run.sha).await
+        {
+            own = None;
         }
         let sandbox_runs = runs.get(sandbox.id.as_str()).map_or(&[][..], Vec::as_slice);
         let own = own.as_ref();
@@ -1087,14 +1090,13 @@ impl App {
             Some(head) => Some(head.clone()),
             None => self.branch_head(task).await,
         };
-        // SPEC-553 REP-005: deliver an actionable failed publication once when `yulius wait` is
-        // not already actively waking the agent on it.
+        // SPEC-553 REP-004: deliver an actionable failed publication once when `yulius wait` is
+        // not already actively waking the agent on it and the failed head is still current.
         if !armed
             && !self.agent_waits_on_yulius(&task.id)
-            && let Some((note_head, text)) = self.actionable_push_problem(&task.id)
-            && !conflict_head
-                .as_deref()
-                .is_some_and(|h| h.eq_ignore_ascii_case(&note_head))
+            && let Some((note_head, text)) = self
+                .current_actionable_push_problem(task, conflict_head.as_deref())
+                .await
         {
             let key = publish_key(&note_head, &text);
             if !told_key("publish", &key) {
@@ -1309,10 +1311,13 @@ impl App {
             own = refreshed
                 .iter()
                 .find(|run| run.reference == CiRef::PullRequest(pr))
-                .cloned()
-                .filter(|run| {
-                    !(run.state == RunState::Failed && run.sha.eq_ignore_ascii_case(&failed_sha))
-                });
+                .cloned();
+        }
+        if let Some(run) = own.as_ref()
+            && run.state == RunState::Failed
+            && self.run_superseded_by_pushed_head(task, &run.sha).await
+        {
+            own = None;
         }
         let own = own.as_ref();
         let mut events = Vec::new();
@@ -1345,10 +1350,9 @@ impl App {
             Some(head) => Some(head.clone()),
             None => self.branch_head(task).await,
         };
-        if let Some((note_head, text)) = self.actionable_push_problem(&task.id)
-            && !conflict_head
-                .as_deref()
-                .is_some_and(|h| h.eq_ignore_ascii_case(&note_head))
+        if let Some((note_head, text)) = self
+            .current_actionable_push_problem(task, conflict_head.as_deref())
+            .await
         {
             let key = publish_key(&note_head, &text);
             if !told_key("publish", &key) {
@@ -1435,6 +1439,80 @@ impl App {
             *checked = Some(head.clone());
         }
         self.try_publish_open_pr_repair(&task.id, Some(&head)).await
+    }
+
+    /// Whether `task`'s actionable failed publication still applies to its current unpublished
+    /// worktree `HEAD` (SPEC-553 REP-004). Returns `None` once the branch or worktree has moved
+    /// past `note_head`, preventing stale notices or parked wakes after a clean follow-up commit
+    /// while preserving SPEC-139 PSH-001 push-note semantics.
+    async fn current_actionable_push_problem(
+        &self,
+        task: &TaskRecord,
+        remote_head: Option<&str>,
+    ) -> Option<(String, String)> {
+        let (note_head, text) = self.actionable_push_problem(&task.id)?;
+        if remote_head.is_some_and(|h| h.eq_ignore_ascii_case(&note_head)) {
+            return None;
+        }
+        if let Some(worktree) = task.worktree_path.as_deref()
+            && let Some(local_head) = self
+                .deps
+                .git
+                .log(std::path::Path::new(worktree), "HEAD", 1)
+                .await
+                .ok()
+                .and_then(|log| log.into_iter().next())
+                .map(|c| c.sha)
+            && !local_head.eq_ignore_ascii_case(&note_head)
+        {
+            return None;
+        }
+        if remote_head.is_none()
+            && self
+                .branch_head(task)
+                .await
+                .is_some_and(|h| h.eq_ignore_ascii_case(&note_head))
+        {
+            return None;
+        }
+        Some((note_head, text))
+    }
+
+    /// Whether a failed CI run at `failed_sha` has already been superseded by a newer commit
+    /// pushed to `task`'s feature branch (SPEC-553 REP-002). Keeps stale failed-run notices
+    /// suppressed across repeated `watch_prs` passes (and restarts) when no new CI run exists yet.
+    async fn run_superseded_by_pushed_head(&self, task: &TaskRecord, failed_sha: &str) -> bool {
+        let Some(worktree) = task.worktree_path.as_deref() else {
+            return false;
+        };
+        let worktree = std::path::Path::new(worktree);
+        if let Some(pushed) = self
+            .existing_runtime(&task.id)
+            .and_then(|rt| rt.auto_pr_head.lock().ok().and_then(|g| g.clone()))
+            && !pushed.eq_ignore_ascii_case(failed_sha)
+            && matches!(
+                self.deps
+                    .git
+                    .is_ancestor(worktree, failed_sha, &pushed)
+                    .await,
+                Ok(true)
+            )
+        {
+            return true;
+        }
+        if let Some(remote) = self.branch_head(task).await
+            && !remote.eq_ignore_ascii_case(failed_sha)
+            && matches!(
+                self.deps
+                    .git
+                    .is_ancestor(worktree, failed_sha, &remote)
+                    .await,
+                Ok(true)
+            )
+        {
+            return true;
+        }
+        false
     }
 
     /// Local check + one-shot repair publication for an idle running task on a failing open PR

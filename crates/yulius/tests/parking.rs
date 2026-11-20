@@ -1792,10 +1792,9 @@ fn unpublished_open_pr_ci_repair_defers_parking_unless_needs_you_or_ci_running()
             .store
             .insert_ci_run(&failed_ci, &[failed_job])
             .await?;
-        // Pre-seed `pr-notices.json` so `pr_news_due` is false and ONLY `open_pr_work_pending`
-        // keeps the session from parking while `repair_head` is unpublished.
-        let notices_dir = data.join("state");
-        std::fs::create_dir_all(&notices_dir)?;
+        // Pre-seed `pr-notices.json` at `PR_NOTICES_FILE` (`data/pr-notices.json`) so `pr_news_due`
+        // is false and ONLY `open_pr_work_pending` keeps the session from parking while
+        // `repair_head` is unpublished.
         let told_json = json!({
             id.as_str(): {
                 "pr": 99,
@@ -1804,7 +1803,7 @@ fn unpublished_open_pr_ci_repair_defers_parking_unless_needs_you_or_ci_running()
             }
         });
         std::fs::write(
-            notices_dir.join("pr-notices.json"),
+            data.join("pr-notices.json"),
             serde_json::to_vec(&told_json)?,
         )?;
 

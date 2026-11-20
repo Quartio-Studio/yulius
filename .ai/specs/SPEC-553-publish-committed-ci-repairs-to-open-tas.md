@@ -87,10 +87,11 @@ Fix the full incident observed on `quartio-v2` tasks #322, #323 and #324:
 - **Quick repository contracts & formatting (`scripts/dev quick`)**: passed (`check_repository.py` + `cargo fmt --all -- --check`).
 - **Lint (`cargo clippy -p yulius-contracts -p yulius-domain -p yulius-app -p yulius-server --all-targets -- -D warnings`)**: passed with 0 warnings.
 - **Rust unit tests (`cargo test -p yulius-domain -p yulius-app -p yulius-server --lib`)**: passed (including `delivery::tests::open_pr_repair_eligibility_enforces_every_safeguard`, `pr_watch::tests::failed_publication_notice_is_told_once_and_counts_as_news_due_until_told`, `terminal::tests::parked_input_wake_distinguishes_typing_from_control_and_noise`).
-- **Rust integration tests (`cargo test -p yulius --test main -- ...`)**: passed (113/113 across `delivery::`, `parking::`, `pr_watch::`, `terminal_ws::`; 25/25 `parking::` post-merge; all 6 SPEC-553 integration tests passing after Round 1 review fixes):
+- **Rust integration tests (`cargo test -p yulius --test main -- ...`)**: passed (113/113 across `delivery::`, `parking::`, `pr_watch::`, `terminal_ws::`; 25/25 `parking::` post-merge; all 7 SPEC-553 integration tests + `delivery::a_push_clears_only_the_note_about_its_own_head` passing after Round 2 review fixes):
   - `delivery::a_clean_committed_ci_repair_publishes_to_failing_open_pr_with_verification_open`
   - `delivery::open_pr_ci_repair_preserves_safeguards_and_surfaces_actionable_failures` (including detached HEAD at same SHA)
-  - `delivery::open_pr_ci_repair_queues_exact_head_ci_and_recovers_via_pr_watch_without_stale_notice`
+  - `delivery::open_pr_ci_repair_queues_exact_head_ci_and_recovers_via_pr_watch_without_stale_notice` (including Pass 2 silence)
+  - `pr_watch::failed_publication_and_superseded_repair_notices_in_pr_watch` (real live PTY + `FakeGitHub`: one-time `"publish"` delivery, no stale `"publish"` after clean follow-up commit, Pass 1 & Pass 2 stale-failed-run suppression + negative control)
   - `parking::ordinary_owner_terminal_input_and_continue_prompt_wake_parked_session_with_continuity` (including oversized `ContinueTask.prompt` 422 rejection)
   - `parking::parked_task_parks_safely_during_ci_and_auto_wakes_on_actionable_check_results` (including no-usable-account preflight and restart `pr-notices.json` deduplication)
   - `parking::unpublished_open_pr_ci_repair_defers_parking_unless_needs_you_or_ci_running`

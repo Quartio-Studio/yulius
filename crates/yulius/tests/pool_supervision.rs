@@ -180,7 +180,7 @@ pub(crate) fn build_served(
 }
 
 /// [`build_served`] whose configuration `tune` changes.
-fn build_served_tuned(
+pub(crate) fn build_served_tuned(
     data: &Path,
     fake: &Path,
     usage: Arc<ScriptedUsage>,
