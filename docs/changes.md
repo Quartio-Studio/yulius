@@ -6,6 +6,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-20
 
+- Parked task summaries, Home counts and MCP task lists verify ordinary PRs within a shared lookup budget. Later rows get time to resolve when an earlier PR stalls (SPEC-558).
 - Home and MCP retain a parked task’s known failing PR when another Git overview returns incomplete data. A newer confirmed closure clears it (SPEC-558).
 - Clearing Claude Code’s prompt box releases a waiting session message after the last key’s one-minute grace period. Restored drafts still block delivery. [SPEC-572](../.ai/specs/SPEC-572-deliver-the-empty-prompt-box-fix-from-th.md)
 - A planned install briefly waits for CI gates finishing their last job. The operator can proceed immediately, and interrupted runs still use full recovery. [SPEC-573](../.ai/specs/SPEC-573-reduce-repeated-ci-work-across-planned-y.md)

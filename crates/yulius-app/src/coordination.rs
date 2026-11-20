@@ -207,24 +207,41 @@ impl App {
         let requested = self.browser_requests(&caller.sandbox).await;
         let limit = usize::try_from(limit).unwrap_or(30);
         let mut out = Vec::new();
-        for t in &tasks {
-            if out.len() >= limit {
-                break;
+        let deadline = crate::sandboxes::parked_pr_deadline();
+        if scope != "needs_you" || limit == 0 {
+            tasks.truncate(limit);
+        }
+        use futures::{StreamExt, stream::FuturesOrdered};
+        let requested = &requested;
+        'batches: for (batch, until) in
+            crate::sandboxes::fair_batches(&tasks, deadline, crate::sandboxes::PARKED_READS)
+        {
+            let mut reads = FuturesOrdered::new();
+            for task in batch {
+                reads.push_back(async move {
+                    self.task_attention_facts_until(task, requested, until)
+                        .await
+                        .map(|facts| (task, facts))
+                });
             }
-            // The tasks the list shows under "Needs you" (SPEC-487 QST-002), by its own rule.
-            let facts = self.task_attention_facts(t, &requested).await?;
-            if scope == "needs_you" && facts.group() != TaskGroup::NeedsYou {
-                continue;
+            while let Some(result) = reads.next().await {
+                let (task, facts) = result?;
+                if scope == "needs_you" && facts.group() != TaskGroup::NeedsYou {
+                    continue;
+                }
+                out.push(
+                    self.task_brief_shown(task, facts, caller.task.is_none())
+                        .await?,
+                );
+                if out.len() == limit {
+                    break 'batches;
+                }
             }
-            out.push(
-                self.task_brief_shown(t, facts, caller.task.is_none())
-                    .await?,
-            );
         }
         // A Cockpit has no task of its own (MGT-007).
         match &caller.task {
             Some(own) => Ok(json!({
-                "you": self.task_brief_among(own, &requested, false).await?,
+                "you": self.task_brief_among(own, requested, false).await?,
                 "tasks": out,
             })),
             None => Ok(json!({"tasks": out})),
