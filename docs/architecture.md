@@ -2041,6 +2041,7 @@ off) counted from `state_at`: the list shows it under Needs you or Done, no turn
 background shell, subagent or dynamic workflow, does not wait in `yulius wait`, has no merge
 armed or pull request news due, no held prompt, no request in the sandbox browser, no pause, no
 possible draft or keystroke within the grace period, and is not an onboarding task.
+A task keeps its session while its plan has an open step, its spec is unfinished, or its goal still needs work. Both grace and digest parking recheck these facts before stopping the session, including when a person has been asked.
 The supervisor saves the redacted screen with the elapsed idle time before requesting shutdown.
 The web terminal and `task_screen` use that snapshot once the task parks and while a resumed host attaches.
 [Decision 0396](decisions/0396-capture-the-parked-terminal-before-shutdown.md).
