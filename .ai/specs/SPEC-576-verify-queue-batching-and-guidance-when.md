@@ -27,6 +27,7 @@ The requester reports that quartio-v2 task #331, PR #1481, named checked head `b
 - [x] Verify queue behavior and the November 9 evidence
 - [x] Cover the next four heads and reproduce the singleton verdict
 - [x] Report the landed commit and verify agent guidance
+- [x] Preserve immediate receipts and reject mismatched PR observations
 - [ ] Obtain independent approval for delivery to dev
 
 ## Acceptance criteria
@@ -51,3 +52,5 @@ Use the existing protected merge operation, candidate CI verdict and dependency 
 - Five queue guidance assertions failed on that code. A non-ancestor squash with an identical tree produced the source SHA followed by `in a merge train with :`. Ordinary armed and externally observed merges likewise named the source as the landing. Member and fallback wait notes omitted the instruction about who updates the base. [Reporting defect #1529](https://github.com/Quartio-Studio/yulius/issues/1529)
 - With the closed-PR read unavailable, relying on the refreshed delivery view omitted the SHA returned by the successful merge. The regression in `a_green_current_pull_request_merges_on_the_next_pass` failed on that implementation.
 - After the fix, `cargo nextest run --no-fail-fast -p yulius -p yulius-app -E 'test(/^(merge_train|agent_wait|pr_watch)::/) | test(/^delivery::post_merge_evidence/)'` passed all 91 selected tests. The singleton compared the bare origin's dev SHA, checked head, trees and ancestry against the last verdict and status note. Multi-member verdicts named the correct intermediate landings, peers and candidate. The tests also covered incomplete and stale PR reads, protected merge refusals, red candidates and continuation of partially delivered plans.
+- Round one reviewed `54662c4ca` and requested three changes. With GitHub returning #2 for #1, the task's status displayed #2's landing and the Git overview could advance the stored delivery. With a failed closed-PR read, an immediate green merge returned no receipt. Both acceptance tests failed on the reviewed code. Temporarily reversing peer display made the four-head test fail with `#3, #5, #4` in place of `#4, #5, #3`. The probe was removed.
+- After those fixes, all 91 queue, wait, watcher and post-merge evidence tests passed again, including the extended four-head landing through PR #2's peer list. The separate immediate-merge test `delivery::a_task_of_several_slices_merges_each_with_the_rest_ahead` also passed.

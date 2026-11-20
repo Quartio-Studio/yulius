@@ -10188,7 +10188,7 @@ async fn post_merge_evidence_checks_the_pr_number_on_the_git_page() -> TestResul
     let status = answer(&status)?;
     assert_eq!(status["stage"], "pr_open", "{status}");
     assert!(
-        status["pr"].is_null() && status["evidence"].is_null(),
+        status["pull_request"].is_null() && status["evidence"].is_null(),
         "{status}"
     );
     let notes = status["notes"].as_array().ok_or("status notes")?;

@@ -1816,10 +1816,14 @@ impl App {
             let (owner, repo) = (&sandbox.repo_owner, &sandbox.repo_name);
             if let Some(number) = record.pr_number {
                 match github.get_pull(token, owner, repo, number).await {
-                    Ok(pull) => {
+                    Ok(pull) if pull.number == number => {
                         pr = Some(pull);
                         pr_known = true;
                     }
+                    Ok(pull) => notes.push(format!(
+                        "GitHub returned pull request #{} for the requested #{number}.",
+                        pull.number
+                    )),
                     Err(err) => notes.push(format!(
                         "Pull request #{number} can't be read: {}",
                         github_reason(&err)
@@ -2320,6 +2324,7 @@ impl App {
                 && record.stage == DeliveryStage::PrOpen
                 && let Some(number) = record.pr_number
                 && let Ok(pull) = self.deps.github.get_pull(token, owner, name, number).await
+                && pull.number == number
             {
                 // Merged or closed outside Yulius: show it and reconcile the stage. An open one
                 // missing from the listed page has unread checks (#68).
@@ -2352,7 +2357,8 @@ impl App {
                         updated_at: self.now(),
                         ..record.clone()
                     };
-                    let merged_head = (pull.merged && pull.number == number)
+                    let merged_head = pull
+                        .merged
                         .then(|| crate::review::MergedHead::of_pull(&pull));
                     let _ = self
                         .dlv_transition_at(
