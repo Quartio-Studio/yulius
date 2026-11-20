@@ -1,6 +1,6 @@
 ---
 yulius-task: 7f21f67e-0c92-4473-b8e5-832c47e6bc63
-status: in-progress
+status: done
 ---
 
 # SPEC-569 Shorten required mutation verification
@@ -24,7 +24,7 @@ The trusted entry point is `scripts/dev mutants`. It applies [ADR-0347](../../do
 - [x] Profile a retained campaign and its representative revision
 - [x] Compare isolated builds under a matched resource budget
 - [x] Verify workspace controls and select the supported runner
-- [ ] Publish the independently reviewed measurements
+- [x] Publish the independently reviewed measurements
 
 ## Acceptance criteria
 
@@ -63,7 +63,7 @@ The trial set `RUSTC_WRAPPER` to sccache 0.13.0 (Ubuntu package `0.13.0+ds-3buil
 
 Phase totals come from `outcomes.json`. Worker phases overlap. CPU-s is accounted user plus system CPU time. Mean occupied cores is CPU-s divided by wall time. Host CPU pressure is the fraction of elapsed time with runnable work waiting for CPU (Linux PSI `some`). Mean busy host cores were 40.75, 44.08, 56.16 and 56.06 of 64 respectively. Peak sampled process-tree RSS ranged from 14.4 to 16.3 GiB and can count shared pages more than once.
 
-On the weak trusted baseline, Cargo fingerprint timestamps for the 257 external packages spanned 11.7 s, overlapping workspace work. The main workspace integration binary alone had an 88.7 s build interval. The two additional workers' first viable builds took 183.9 and 185.3 s. Later viable builds in warm targets included two at about 23 s. One-second process samples observed 33.17 registry rustc CPU-s in the baseline and 112.48 across the other two workers. That rustc subtotal omits native C and assembly work and processes that exit between samples.
+In the weak trusted run, registry rustc processes were observed from command seconds 11.02 to 21.04 during the 171.74 s baseline build, overlapping workspace compilation. The corresponding interval across the two additional workers was 221.29 to 239.37 s. Across the command, samples accounted for 2,857.21 workspace rustc CPU-s. The two additional workers' first viable builds took 183.9 and 185.3 s. Later viable builds in warm targets included two at about 23 s. One-second process samples observed 33.17 registry rustc CPU-s in the baseline and 112.48 across the other two workers. That rustc subtotal omits native C and assembly work and processes that exit between samples.
 
 The weak cache trial served 456 Rust, 34 C and 28 assembly cache hits. Across the command and its nested builds, sccache declined 862 incremental invocations and 167 requests for unsupported crate types. The store ended at 192 MB. Sampled registry rustc time fell from 145.65 to 53.95 CPU-s, while the complete command consumed 91.21 more CPU-s and took 18.89 s longer. The first viable builds in the two additional workers took 197.1 and 204.1 s.
 
@@ -84,3 +84,7 @@ The existing xtask regression `a_real_run_finds_the_line_no_test_holds` passed i
 A two-package Git fixture ran the repository's xtask entry point with two workers pinned to the same two CPUs, a 5 s mutant test bound and a 60 s campaign bound. The unmutated peer asserted one value and parked indefinitely when another changed. All four raw identities were reached once in both orders. `held` was caught, `escape` missed, `completes` timed out and `value` failed to compile. Each command exited 1. Trusted runs took 5.84 and 5.83 s. Cached runs took 5.91 and 6.11 s. The deliberate timeout dominates these fixture times.
 
 A separate Cargo fixture exercised actual compiler-cache reuse. Each test started with an empty writable build directory. The peer asserted values compiled from local source, a locked Git dependency, a Cargo feature, a rustc cfg flag, a build-script environment value and the compiler version. The unchanged rebuild produced three Rust cache hits, and a fresh server reopening the same cache produced three more. All eleven test invocations passed, including the changed inputs, a switch from Rust 1.99.0 to 1.100.0 and concurrent worktrees with different expected values. The restarted server recorded nine Rust hits and 18 misses in total. These are fixture results for the tested inputs and a graceful server restart.
+
+`spec_check`, `scripts/dev quick` and `git diff --check` passed. On the documentation head, `scripts/dev mutants` reported no changed Rust code against `origin/dev`. `scripts/dev security` reported Vidoc disabled for this project or instance.
+
+Independent review of `17748ea9d` verified the saved diffs, execution multiplicities, phase arguments, outcomes, timings, resource samples and retained controls. It approved with one documentation correction. The baseline compilation intervals above now use the retained process samples.
