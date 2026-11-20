@@ -1,4 +1,4 @@
-# 0385. Recover an interrupted initial mock load once
+# 0385. Bound recovery of an interrupted initial mock load
 
 ## Status
 
@@ -10,7 +10,7 @@ The browser and static server use loopback. When another process changes an inte
 
 ## Decision
 
-Watch the first mock `app.open` for that exact failed-request code on the main frame's app document or same-origin scripts under `/assets/`. If the document failed, open the requested URL again. If a script failed and the mock is missing, reload the document. Report the recovery in the test output and wait for mock readiness as usual. Allow one recovery per test.
+Watch the first mock `app.open` for that exact failed-request code on the main frame's app document or same-origin scripts under `/assets/`. If the document failed, open the requested URL again. If a script failed and the mock is missing, reload the document. Report the recovery in the test output and wait for mock readiness as usual. On the first confirmed interruption, start one 30-second recovery deadline. Charge subsequent navigation, mock installation, error-page commits and backoff to that deadline. Pace recovery from 250 ms up to 2 seconds between attempts. Record each navigation’s failures separately and propagate ordinary startup failures. PR #1542 lost startup scripts on the first navigation and its recovery reload in two CI runs. Three immediate attempts exhausted in under one second on the development host.
 
 ## Alternatives
 
@@ -18,4 +18,4 @@ A blanket test retry would repeat the test's actions and could hide product fail
 
 ## Consequences
 
-An interrupted initial mock load costs one more navigation. A second interruption fails the test. The existing budgets apply to mock installation and to later actions.
+A burst of host network changes can settle during the first open. Persistent interruption exhausts the shared deadline. The existing budgets apply to mock installation and to later actions.

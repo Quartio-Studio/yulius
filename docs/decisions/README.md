@@ -394,7 +394,7 @@ If a reservation skips past all available slots, land an empty extension first w
 - [0382](0382-session-index-resumption-replays-redaction-context.md) records how session search recovers dotenv context at a saved index offset.
 - [0383](0383-a-merge-candidate-reuses-its-trees-failed-run.md): a rebuilt merge candidate uses the original failure for its tree (SPEC-542, #1384).
 - [0384](0384-visible-prompt-text-holds-session-messages.md) extends the session message guard to text Claude Code restores into its visible prompt box (SPEC-537, #1264).
-- [0385](0385-recover-an-interrupted-initial-mock-load-once.md) records when a Chromium network change permits one recovery of a browser test's initial mock load.
+- [0385](0385-recover-an-interrupted-initial-mock-load-once.md) records when a Chromium network change permits bounded recovery of a browser test's initial mock load.
 - [0386](0386-prompt-goals-follow-the-resumed-claude-conversation.md) records how a prompt-mode Claude resume follows the conversation’s last goal status (SPEC-540).
 - [0387](0387-bind-claude-refusals-to-the-launch-credential.md) records how a Claude refusal is attributed to the sign-in that launched the run (SPEC-539).
 - [0388](0388-claude-scheduled-submits-use-the-transcript-hand-over.md) Claude scheduled submits use the transcript hand-over

@@ -6,6 +6,8 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-20
 
+- Browser tests can start after a burst of host network changes interrupts the initial mock page and its recovery reload. Recovery has one 30-second budget (SPEC-545).
+
 - MCP task reads explain which checks or local work keep a parked task under Needs you. Filtered pages use the plan they display and stop at the requested limit (SPEC-558).
 
 - Merge-first staging target: a task's `cd_deploy` now queues a staging request for the task's

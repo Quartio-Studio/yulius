@@ -16,7 +16,7 @@ Issue #1331 records failed script requests in runs `2e3cac12` and `f897cb92`. Ch
 ## Requirements
 
 - **LOAD-001** Recover an initial mock page load interrupted by Chromium's exact network-change error for the app document or its startup scripts. Identify the recovery in run output.
-- **LOAD-002** Make at most one additional navigation, preserving the original route and mock options. Return once the mock is installed.
+- **LOAD-002** Preserve the original route and mock options. After a confirmed interruption, give recovery navigations, backoff and mock installation one shared first-load time budget. Return once the mock is installed.
 - **LOAD-003** Surface other failures and a failed recovery. Keep later test steps, explicit reloads and the runner's zero test retries intact.
 
 ## Plan
@@ -29,17 +29,19 @@ Issue #1331 records failed script requests in runs `2e3cac12` and `f897cb92`. Ch
 ## Acceptance criteria
 
 - An interrupted initial asset load prevents the original harness from reaching mock readiness. With recovery, the same test reaches the requested page with the mock installed.
-- A second interruption surfaces after two loads. An ordinary failure surfaces after one. The test body executes once.
+- A burst of consecutive host interruptions can settle within the recovery budget. Persistent interruption fails at the deadline. An ordinary startup failure surfaces even alongside a network change. The test body executes once.
 
 ## Test plan
 
-Use the archived CI trace and an isolated Chromium network namespace to exercise the host event. Add deterministic coverage of the qualifying browser error, the one-recovery limit and ordinary failures. Run the mock-ready suite, affected browser flows, quick checks, security command and Yulius CI.
+Use the archived CI trace and an isolated Chromium network namespace to exercise the host event. Add deterministic coverage of the qualifying browser error, the recovery limit and ordinary failures. Run the mock-ready suite, affected browser flows, quick checks, security command and Yulius CI.
 
 ## Decisions
 
 Observe Chromium's request failure during mock startup ([ADR-0385](../../docs/decisions/0385-recover-an-interrupted-initial-mock-load-once.md)). The exact failure code identifies the interrupted load where the readiness timeout alone cannot distinguish a broken app from a host network change.
 
 ## Evidence
+
+- The repeated-interruption repair in PR #1542 extends the original one-recovery implementation below. On the original head, aborting two startup script requests left the mock missing. Three immediate loads later failed within one second on real host interruptions. The repaired Chromium fixture follows interrupted scripts and fresh error-document commits, distinguishes a simultaneous ordinary error and expires persistent interruptions under one recovery deadline. All 12 focused initial-load and mock-readiness checks passed. [Issue #1546](https://github.com/Quartio-Studio/yulius/issues/1546)
 
 - On dev `8d05c25bf`, a disposable Linux network namespace served the real UI on loopback. The server held six script requests, then added `192.0.2.42/24` to its dummy interface. The test timed out after 30 seconds waiting for the mock. Its trace recorded `net::ERR_NETWORK_CHANGED` for startup modules including `/assets/pages/pipeline.js`. With the fix, the same probe logged one recovery and passed in 1.46 seconds.
 - The test-first commit covers intercepted entry-script and document requests. Before recovery, the interrupted script left the mock missing, repeated interruption made only one request, and navigation to the interrupted document rejected. The fixtures abort real browser requests and supply the Chromium network-change code on the Playwright request because interception cannot select that particular abort reason.
