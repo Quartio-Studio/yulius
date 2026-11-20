@@ -1334,7 +1334,11 @@ impl App {
                     command: job.command.clone(),
                     matrix: job.matrix.clone(),
                     state,
-                    reason: Some(note.clone()),
+                    // A full-suite skip stays one through the copy (SPEC-575 MFS-002).
+                    reason: Some(yulius_domain::ci::copied_job_reason(
+                        job.reason.as_deref(),
+                        &note,
+                    )),
                     exit_code: Some(exit_code),
                     output: format!("{note}.\n"),
                     failures: None,
