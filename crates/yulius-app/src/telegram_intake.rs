@@ -264,7 +264,7 @@ impl App {
             if sandbox.removed_at.is_some() {
                 continue;
             }
-            // The repository is `owner/name`; its owner and name are stored apart.
+            // The repository is `owner/name`; its owner and name are stored apart (part 5).
             let full = format!("{}/{}", sandbox.repo_owner, sandbox.repo_name).to_lowercase();
             let short = sandbox.repo_name.to_lowercase();
             let exact = sandbox.slug.to_lowercase() == name || full == name;

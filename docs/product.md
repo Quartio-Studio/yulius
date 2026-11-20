@@ -719,7 +719,9 @@ watching, steering and unblocking.
   the notice told of); a new message (not a reply), with photos, documents or voice notes up to
   20 MB, starts a task as them, marked "From Telegram", at most 20 an hour in a project as for
   agents' tools; `/task <project> <text>` picks another project and `/status` lists what waits
-  for them.
+  for them. A chat's messages are handled one at a time in the order sent; with more than 20
+  waiting, the chat is told the latest were not handled and to send them again. Turning intake
+  off or `/stop` also stops messages still waiting.
 - **Tasks hand work to another sandbox** (SPEC-512 part 5, ADR-0395, #1106), off by default:
   an instance administrator chooses Ask or Automatic in Settings → Administration (with a chain's
   depth and a daily bound per owner), and a sandbox's writers can close it to handoffs on its Git
