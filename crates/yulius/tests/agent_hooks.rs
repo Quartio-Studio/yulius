@@ -1425,9 +1425,13 @@ async fn the_spec_sync_waits_for_the_steps_lock_and_keeps_a_concurrent_update() 
 async fn a_renamed_spec_is_followed_by_its_frontmatter() -> TestResult {
     let f = fixture().await?;
     std::fs::write(f.worktree.join("api.rs"), "fn main() {}\n")?;
-    std::fs::create_dir_all(f.worktree.join("docs/specs"))?;
     std::fs::write(
-        f.worktree.join("docs/specs/renamed.md"),
+        f.worktree.join("yulius.toml"),
+        "[docs]\nspecs_dir = \"docs/plans\"\n",
+    )?;
+    std::fs::create_dir_all(f.worktree.join("docs/plans"))?;
+    std::fs::write(
+        f.worktree.join("docs/plans/renamed.md"),
         "---\nyulius-task: t-main\nstatus: in-progress\n---\n# Checkout API\n\n\
          ## Goal\n\nCustomers can pay.\n\n## Context\n\nNo checkout yet.\n\n\
          ## Requirements\n\n- Card payments.\n\n## Plan\n\n- [x] Write spec\n- [ ] Implement API\n\n\
@@ -1437,7 +1441,7 @@ async fn a_renamed_spec_is_followed_by_its_frontmatter() -> TestResult {
     let body = hook(&f, "Stop", json!({})).await?;
     assert!(body.is_null(), "the renamed spec is found: {body:?}");
     let task = f.h.app.deps.store.task(&f.task).await?.ok_or("task")?;
-    assert_eq!(task.spec_path.as_deref(), Some("docs/specs/renamed.md"));
+    assert_eq!(task.spec_path.as_deref(), Some("docs/plans/renamed.md"));
     Ok(())
 }
 

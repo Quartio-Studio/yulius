@@ -5399,6 +5399,18 @@ mod tests {
     type TestResult = Result<(), Box<dyn std::error::Error>>;
 
     /// SPEC-069 BPL-006: the titles Yulius generates for task pull requests pass the policy.
+    #[tokio::test]
+    async fn a_missing_spec_and_an_unreadable_path_have_distinct_errors() -> TestResult {
+        let repo = tempfile::tempdir()?;
+        let result = read_spec(repo.path(), "gone.md").await;
+        assert!(matches!(result, Err(RepoReadError::Missing(path)) if path == "gone.md"));
+
+        std::fs::write(repo.path().join("file"), "text")?;
+        let result = read_spec(repo.path(), "file/spec.md").await;
+        assert!(matches!(result, Err(RepoReadError::Unreadable(_))));
+        Ok(())
+    }
+
     #[test]
     fn generated_titles_pass_the_policy() {
         let policy = BranchPolicy::standard();
