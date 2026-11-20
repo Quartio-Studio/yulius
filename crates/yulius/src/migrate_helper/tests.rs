@@ -212,6 +212,16 @@ if [ -f "$d/command.do" ]; then . "$d/command.do"; fi"#,
             .map_or(0, |text| text.lines().count())
     }
 
+    /// The helper publishes Running before spawning its command. A signal test proceeds
+    /// once the command's own shell has installed its TERM handler.
+    fn wait_for_trap(&self) -> TestResult {
+        until("the command set its trap", || {
+            self.bin.join("trapped").exists()
+        })?;
+        assert_eq!(self.said()?.state, MoveHelperState::Running);
+        Ok(())
+    }
+
     fn does(&self, body: &str) -> TestResult {
         Ok(std::fs::write(self.bin.join("command.do"), body)?)
     }
@@ -772,11 +782,7 @@ while :; do sleep 0.02; done"#,
     env.request(&moved)?;
     let helper = env.helper();
     let run = std::thread::spawn(move || helper.run());
-    until("the move runs", || {
-        env.status()
-            .is_some_and(|s| s.state == MoveHelperState::Running)
-    })?;
-    until("the move set its trap", || env.bin.join("trapped").exists())?;
+    env.wait_for_trap()?;
 
     // The same request written again, another plan, an unreadable file: the move runs on.
     let path = env.args.data_dir.join(REQUEST_DIR).join(REQUEST_FILE);
@@ -816,16 +822,14 @@ fn an_abort_that_runs_is_not_stopped_by_its_own_request() -> TestResult {
     let env = Env::new()?;
     env.does(
         r#"trap 'echo terminated >> "$d/order"; exit 1' TERM
+: > "$d/trapped"
 while [ ! -f "$d/go" ]; do sleep 0.02; done
 exit 0"#,
     )?;
     env.request(&abort("0123abcd-abort"))?;
     let helper = env.helper();
     let run = std::thread::spawn(move || helper.run());
-    until("the abort runs", || {
-        env.status()
-            .is_some_and(|s| s.state == MoveHelperState::Running)
-    })?;
+    env.wait_for_trap()?;
     // Its file is looked at meanwhile: a heartbeat comes after a look.
     for _ in 0..2 {
         let before = env.said()?.updated_at;
@@ -855,6 +859,7 @@ fn a_command_that_ignores_the_signal_ends_by_itself_first() -> TestResult {
   *--abort*) echo aborted >> "$d/order"; exit 0 ;;
 esac
 trap 'echo ignored >> "$d/order"' TERM
+: > "$d/trapped"
 while [ ! -f "$d/go" ]; do sleep 0.02; done
 echo moved >> "$d/order"; exit 0"#,
     )?;
@@ -864,10 +869,7 @@ echo moved >> "$d/order"; exit 0"#,
     })?;
     let helper = env.helper();
     let run = std::thread::spawn(move || helper.run());
-    until("the move runs", || {
-        env.status()
-            .is_some_and(|s| s.state == MoveHelperState::Running)
-    })?;
+    env.wait_for_trap()?;
     env.request(&abort("0123abcd-abort"))?;
     until("the signal arrived", || env.bin.join("order").exists())?;
     assert_eq!(env.said()?.id, "0123abcd-move", "the abort did not wait");
@@ -895,10 +897,7 @@ while :; do sleep 0.02; done"#,
     let stop = Arc::new(AtomicBool::new(false));
     helper.stop = Arc::clone(&stop);
     let run = std::thread::spawn(move || helper.run());
-    // Running is said once the command started, before its shell set its trap (#1375).
-    until("the command set its trap", || {
-        env.bin.join("trapped").exists()
-    })?;
+    env.wait_for_trap()?;
     // A request that waits behind the command is not taken by a helper that was stopped.
     env.request(&plan("0123abcd-next"))?;
     stop.store(true, Ordering::SeqCst);
