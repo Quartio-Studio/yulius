@@ -31,7 +31,10 @@ and [ADR-0379](0379-a-needs-you-names-who-may-answer-it.md) (who steers or answe
   request the notice told of, never a later one), the owner's personal reach, a parked task
   resumed; it is labelled as from Telegram. The bot's answers about a task count too; a reply
   to a message about no task starts nothing. Intake runs off the poll, so the next poll
-  confirms the update and a restart does not hand a message over twice.
+  confirms the update and a restart does not hand a message over twice. Each chat has one
+  lane, a queue and one worker, so its messages are handled in the order sent; it holds 20
+  waiting (a whole poll answer, as after a restart), and a message past that is not lost
+  silently: it is logged and the chat is told to send it again (once per quiet window).
 - **A message is a task as the person.** Any other message (text, caption, photo, document,
   voice, audio, video; an album is one) starts a task in the default project through
   `create_task_as` (access, onboarding gate) under the tools' hourly bound, origin `telegram`

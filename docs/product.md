@@ -719,7 +719,8 @@ watching, steering and unblocking.
   the notice told of); a new message (not a reply), with photos, documents or voice notes up to
   20 MB, starts a task as them, marked "From Telegram", at most 20 an hour in a project as for
   agents' tools; `/task <project> <text>` picks another project and `/status` lists what waits
-  for them.
+  for them. A chat's messages are handled one at a time in the order sent; with more than 20
+  waiting, the chat is told the latest were not handled and to send them again.
 - **An end-of-day digest** (SPEC-512 part 3, ADR-0380, #1413), off by default: an instance
   administrator turns it on in Settings → Administration with a time (UTC) and, if they want, an
   idle threshold. Once a day each person with something to report gets what waits for them first,
