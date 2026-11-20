@@ -3307,6 +3307,31 @@ async fn a_partial_overview_still_resolves_the_parked_tasks_recorded_pr() -> Tes
     let summary = serde_json::to_value(f.h.app.task_detail(&owner, f.task.as_str()).await?)?;
     assert_eq!(summary["parked_needs_you"], true);
     assert_eq!(summary["parked_pr"], json!({"number": 1461, "open": false}));
+    // The recorded PR merges and a replacement opens while its green checks are in flight.
+    f.h.github.pulls.lock().map_err(|_| "pulls")?[0].state = "open".into();
+    let held = f.h.github.hold_checks();
+    let app = f.h.app.clone();
+    let parked = app.deps.store.task(&f.task).await?.ok_or("parked task")?;
+    let reading = tokio::spawn(async move { app.task_summary(&parked).await });
+    tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        f.h.github.checks_entered.notified(),
+    )
+    .await?;
+    {
+        let mut pulls = f.h.github.pulls.lock().map_err(|_| "pulls")?;
+        pulls[0].merged = true;
+        pulls[0].state = "closed".into();
+        pulls.push(yulius_app::ports::github::GhPull {
+            number: 1462,
+            head_sha: "replacement".into(),
+            ..compatibility_pull()
+        });
+    }
+    f.h.github.release_checks(&held);
+    let during = serde_json::to_value(reading.await??)?;
+    assert_eq!(during["parked_needs_you"], true);
+    assert_eq!(during["parked_pr"], json!({"number": 1462, "open": true}));
     Ok(())
 }
 
@@ -3580,6 +3605,15 @@ async fn parked_lists_share_one_budget_for_unreadable_pr_heads() -> TestResult {
     })
     .await
     .map_err(|_| "parked PR reads stalled the lists")??;
+    let caller = crate::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
+    let args = json!({"prompt":"Wait for the outstanding PRs", "after_all_tasks":true});
+    let chained = tokio::time::timeout(limit, f.h.app.tool_task_create(&caller, &args))
+        .await
+        .map_err(|_| "after_all_tasks waited a full deadline for each parked task")??;
+    let rule = chained["task"]["start_rule"].as_str().ok_or("start rule")?;
+    for number in 3..=10 {
+        assert!(rule.contains(&format!("#{number} done")), "{rule}");
+    }
     f.h.github.release_checks(&hold);
     let parked: Vec<_> = tasks
         .iter()

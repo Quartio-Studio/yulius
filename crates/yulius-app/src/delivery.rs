@@ -113,6 +113,15 @@ pub(crate) struct ParkedPullRead {
 }
 
 impl ParkedPullRead {
+    fn note_open_branch(&mut self, branch: &[GhPull]) {
+        if let Some(pull) = branch.last() {
+            self.pr = Some(yulius_contracts::api::tasks::ParkedPr {
+                number: pull.number,
+                open: true,
+            });
+        }
+    }
+
     fn note_closed(&mut self, pull: &GhPull) {
         if !is_open(pull)
             && let Some(pr) = self.pr.as_mut().filter(|pr| pr.number == pull.number)
@@ -4223,12 +4232,7 @@ impl App {
         let watched = tracked.filter(|_| purpose == PrVerification::WatchPending);
         let branch = branch_pulls().await?;
         *observed = ParkedPullRead::recorded(record);
-        if let Some(pull) = branch.last() {
-            observed.pr = Some(yulius_contracts::api::tasks::ParkedPr {
-                number: pull.number,
-                open: true,
-            });
-        }
+        observed.note_open_branch(&branch);
         if branch.len() > MAX_PULLS {
             return Ok(None);
         }
@@ -4270,7 +4274,12 @@ impl App {
             }
             pulls.push((number, pull.head_sha));
         }
-        Ok((branch_pulls().await? == branch).then_some(ParkingPrs {
+        let current = branch_pulls().await?;
+        if current != branch {
+            observed.note_open_branch(&current);
+            return Ok(None);
+        }
+        Ok(Some(ParkingPrs {
             checkout,
             pulls,
             watched,

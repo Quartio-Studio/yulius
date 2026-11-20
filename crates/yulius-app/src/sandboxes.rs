@@ -255,12 +255,10 @@ impl App {
         deadline: Instant,
     ) -> AppResult<Sandbox> {
         let tasks = self.deps.store.tasks(&record.id, false).await?;
-        let requested = self.browser_requests(&record.id).await;
         let mut counts = SandboxCounts::default();
-        let facts = fair_rows(&tasks, deadline, PARKED_READS, |task, until| {
-            self.task_attention_facts_until(task, &requested, until)
-        })
-        .await?;
+        let facts = self
+            .list_attention_facts(&tasks, &record.id, deadline)
+            .await?;
         for row in facts {
             match row.group() {
                 TaskGroup::NeedsYou => counts.needs_attention += 1,
@@ -306,21 +304,31 @@ impl App {
     /// and delete close such a task's session, as the UI offers them.
     pub(crate) async fn shows_done(&self, task: &TaskRecord) -> bool {
         let requested = self.browser_requests(&task.sandbox_id).await;
-        matches!(self.task_group(task, &requested).await, Ok(TaskGroup::Done))
+        self.task_attention_facts(task, &requested)
+            .await
+            .is_ok_and(|facts| facts.group() == TaskGroup::Done)
     }
 
-    /// A task's sidebar group (`AttentionFacts::group`), so Home's cards and the sandbox tabs
-    /// count what the sidebar lists (#147, #170). Of an ended task only whether it is the
-    /// onboarding task its sandbox waits for is read.
-    ///
-    /// # Errors
-    /// Store failures.
+    /// Notifications and digests describe known task state and never start remote PR reads.
     pub(crate) async fn task_group(
         &self,
         task: &TaskRecord,
         requested: &HashSet<String>,
     ) -> AppResult<TaskGroup> {
-        Ok(self.task_attention_facts(task, requested).await?.group())
+        Ok(self.local_attention_facts(task, requested).await?.group())
+    }
+
+    pub(crate) async fn list_attention_facts(
+        &self,
+        tasks: &[TaskRecord],
+        sandbox: &SandboxId,
+        deadline: Instant,
+    ) -> AppResult<Vec<AttentionFacts>> {
+        let requested = self.browser_requests(sandbox).await;
+        fair_rows(tasks, deadline, PARKED_READS, |task, until| {
+            self.task_attention_facts_until(task, &requested, until)
+        })
+        .await
     }
 
     /// The facts that place the task in its sidebar group and explain a derived wait.
