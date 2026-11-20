@@ -77,3 +77,5 @@ The original PR head passed quality and both Rust test shards. Yulius run `244e8
 The three-PR train `fa2269928` failed the repository checker with 0402 before 0401. Its immediate parent listed 0400 then 0401. Swapping only those two intact entries in a detached copy of the failed train made `python3 scripts/check_repository.py` pass. Task #560 owns the general merge-order fix.
 
 The test-first commit `fce570f41` forces the delayed resize. The corrected mock reads its retained capture for both state and snapshot replies until a live attempt takes over. All nine Chromium parking scenarios passed, including all four saved-grid statuses and the transition back to a live viewport.
+
+Review of the fixture found that an incorrect live terminal could still pass by mirroring 28 rows. With the UI deliberately forced to mirror every waiting-capacity terminal, the initial recovery test passed. Offering the original 220×90 server size at the live transition and checking that the owner leaves mirror mode failed that mutant (one mirrored host, expected zero). All nine parking scenarios passed with the actual UI.

@@ -244,6 +244,8 @@ test('a parked task terminal shows its parked banner and Resume action, distinct
 
 type TerminalViewer = { push(message: string): void };
 type ParkedSession = {
+  cols: number;
+  rows: number;
   task: { status: string };
   parkedScreen: { cols: number; rows: number; text: string } | null;
   viewers: Set<TerminalViewer>;
@@ -300,12 +302,15 @@ for (const status of ['parked', 'queued', 'starting', 'waiting_capacity']) {
     });
     expect(fits).toBe(true);
     if (status === 'waiting_capacity') {
-      // A held live process still uses its owner's viewport.
+      // Offer the same desktop grid on resume. A phone that still mirrors it would show 90 rows.
       await browser.evaluate(() => {
         const session = (window as unknown as TerminalMock).__yuliusMock.sessions.get('tsk_studio_12')!;
         session.parkedScreen = null;
+        session.cols = 220;
+        session.rows = 90;
         session.sendStates();
       });
+      await expect(browser.locator('.taskview .term-host.term-mirror')).toHaveCount(0);
       await expect(rows).not.toHaveCount(90);
     }
   });
