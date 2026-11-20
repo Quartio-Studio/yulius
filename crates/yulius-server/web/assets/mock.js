@@ -1211,7 +1211,9 @@ route('PATCH', `/api/sandboxes/${ID}`, ({ db, p, body }) => {
   need(sandbox, 'admin');
   // SPEC-338 VOF-001: the Vidoc switch is set on its own; a profile update keeps it.
   // The server writes both switches in one write: a refused protection switch changes neither.
-  if (body.protect_production !== undefined && body.protect_production !== null && db.protectPatchFail) fail(500, 'internal', 'the store is busy');
+  const setsProtection = body.protect_production !== undefined && body.protect_production !== null;
+  if (setsProtection && sandbox.playground) fail(422, 'invalid', 'a playground has no GitHub production branch: it has no protection switch to turn');
+  if (setsProtection && db.protectPatchFail) fail(500, 'internal', 'the store is busy');
   if (body.vidoc !== undefined && body.vidoc !== null) {
     if (sandbox.playground) fail(422, 'invalid', 'a playground runs no Vidoc scan: it has no switch to turn');
     if (db.vidoc.patchFail) fail(500, 'internal', 'the store is busy');
@@ -1221,8 +1223,7 @@ route('PATCH', `/api/sandboxes/${ID}`, ({ db, p, body }) => {
   // SPEC-423 PPR-002: the production protection switch, set on its own like the Vidoc one; a
   // refused profile changes nothing.
   if (body.profile) validateProfile(body.profile);
-  if (body.protect_production !== undefined && body.protect_production !== null) {
-    if (sandbox.playground) fail(422, 'invalid', 'a playground has no GitHub production branch: it has no protection switch to turn');
+  if (setsProtection) {
     sandbox.profile = { ...sandbox.profile, protect_production: Boolean(body.protect_production) };
   }
   if (body.profile) {
@@ -3082,6 +3083,7 @@ route('POST', '/api/superagent/attachments', ({ db, query, body }) => {
   // How many reached the server: the page sends images only (review round 1).
   db.globalUploads = (db.globalUploads || 0) + 1;
   if (![...db.shells.values()].some((s) => s.global)) fail(404, 'not_found', 'not found');
+  // Keep this list in sync with IMAGE_EXTENSIONS in uploads.rs and GLOBAL_IMAGE in filedrop.js.
   if (!/\.(png|jpe?g|gif|webp)$/i.test(mockAttachmentName(query.get('name')))) fail(422, 'invalid', 'the Global Superagent takes images only (PNG, JPEG, GIF or WebP): it has no file tools to open other files');
   return storeAttachment(db, null, 'superagent', query, body, '/srv/yulius/users/you/superagent/attachments');
 });

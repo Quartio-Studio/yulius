@@ -137,7 +137,7 @@ test('a change answered after leaving the Git page and coming back shows on the 
 test('a playground refuses the protection switch before the mock store failure', async ({ app, browser }) => {
   await app.open(mock('/s/lab', '&guestlink=mine&protect_patch_fail=1'));
   const result = await browser.evaluate(async () => {
-    const db = (window as unknown as { __yuliusMock: { request: Function; sandboxes: { id: string; profile: Record<string, unknown> }[] } }).__yuliusMock;
+    const db = (window as unknown as { __yuliusMock: { request: (method: string, path: string, body: Record<string, boolean>) => Promise<number>; sandboxes: { id: string; profile: Record<string, unknown> }[] } }).__yuliusMock;
     const switches = (id: string) => {
       const profile = db.sandboxes.find(s => s.id === id)!.profile;
       return [profile.vidoc ?? true, profile.protect_production ?? true];
@@ -146,7 +146,7 @@ test('a playground refuses the protection switch before the mock store failure',
     for (const id of ['sb_lab', 'sb_studio']) {
       const before = switches(id);
       const status = await db.request('PATCH', '/api/sandboxes/' + id, { protect_production: !before[1], vidoc: !before[0] });
-      results.push({ status, unchanged: JSON.stringify(switches(id)) === JSON.stringify(before) });
+      results.push({ status, unchanged: switches(id).every((value, index) => value === before[index]) });
     }
     return results;
   });

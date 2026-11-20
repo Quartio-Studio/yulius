@@ -11,7 +11,7 @@ failOnPageErrors();
 // shell must not make fails the test as a page error.
 
 type Invite = { id: string; code: string; revoked?: boolean; guests: { name: string }[] };
-type Mocked = Window & { __yuliusMock: { guestInvites: Invite[]; guestRefusals?: string[] } };
+type Mocked = Window & { __yuliusMock: { guestInvites: Invite[]; guestRefusals?: string[]; sent?: Record<string, number> } };
 
 const CODE = 'c0ffee'.repeat(10) + 'c0de';
 
@@ -182,6 +182,8 @@ test('a guest can open the tools rail and visit both Superagent links without st
     await expect.poll(() => browser.evaluate(() => location.hash)).toBe('#/s/lab');
     await expect(screen.getByRole('region', 'Tool panel')).toBeHidden();
     expect(await browser.evaluate(() => (window as unknown as Mocked).__yuliusMock.guestRefusals ?? [])).toEqual([]);
-    expect(await browser.evaluate(() => Object.keys((window as unknown as { __yuliusMock: { sent?: Record<string, number> } }).__yuliusMock.sent ?? {}).filter(k => /^(POST \/api\/superagent$|POST .*\/cockpit$)/.test(k)))).toEqual([]);
+    const sent = await browser.evaluate(() => (window as unknown as Mocked).__yuliusMock.sent ?? {});
+    expect(sent['POST /api/superagent'] ?? 0).toBe(0);
+    expect(sent['POST /api/sandboxes/sb_lab/cockpit'] ?? 0).toBe(0);
   }
 });

@@ -509,6 +509,7 @@ export function mountAccountsPage(ctx, route) {
   // `data-refresh="waiting"`) and is read once no field is open; the reload keeps focus on the
   // same control.
   let pendingReload = false;
+  let pendingOwnRead = false;
   let gone = false;
   /** A field is open: in use, or set aside (refused as it was left, `data-set-aside`). */
   const open = () => Boolean(host.querySelector('.account-rename-input'));
@@ -520,14 +521,16 @@ export function mountAccountsPage(ctx, route) {
   };
   const settled = () => {
     pendingReload = false;
+    pendingOwnRead = false;
     delete host.dataset.refresh;
   };
   /** Reads the list again now, or notes that it must be read once no field is open. */
   const refresh = () => {
     if (gone) return;
-    if (open()) { defer(); return; }
-    settled();
-    reload({ quiet: true });
+    if (pendingOwnRead ? inUse() : open()) { defer(); return; }
+    pendingReload = false;
+    delete host.dataset.refresh;
+    reload({ quiet: !pendingOwnRead });
   };
   const flush = () => { if (pendingReload) refresh(); };
   // An update from elsewhere waits for every open field, so a refused value can be come back
@@ -535,7 +538,8 @@ export function mountAccountsPage(ctx, route) {
   // waits only for a field in use: one set aside goes with the redraw, and the list shows what
   // they did.
   const held = ({ quiet }) => {
-    const wait = quiet ? open() : inUse();
+    if (!quiet) pendingOwnRead = true;
+    const wait = pendingOwnRead ? inUse() : open();
     if (wait) defer();
     else settled();
     return wait;
@@ -543,6 +547,7 @@ export function mountAccountsPage(ctx, route) {
   // A field closes without any focus leaving the list when it is left as it was or saved by
   // leaving it, so the field itself says that it is gone.
   host.addEventListener('yulius:edit-closed', flush);
+  host.addEventListener('yulius:edit-set-aside', () => { if (pendingOwnRead) flush(); });
 
   // Every reading the page asks for goes through one queue (SPEC-473 RFR-015): three
   // subscriptions at a time and one request per subscription at a time, so a second ask joins

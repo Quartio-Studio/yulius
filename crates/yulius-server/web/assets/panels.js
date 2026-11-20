@@ -199,6 +199,7 @@ export function createPanelHost(ctx) {
   }
 
   function show(k, opts = {}) {
+    if (k === 'agent' && ctx.guest()) return;
     kind = k;
     if (sandbox) toolOf.set(sandbox.id, k);
     const key = viewKey(k);
@@ -324,6 +325,7 @@ export function createPanelHost(ctx) {
     const write = sandbox && allows(sandbox.access, 'write');
     for (const [k] of KINDS) {
       const button = buttons.get(k);
+      button.hidden = k === 'agent' && Boolean(ctx.guest());
       // Outside a sandbox only the Superagent, the Global one, is there (SPEC-427 GSA-006); the
       // tools of a sandbox whose page loads can be chosen already.
       button.disabled = !sandbox && !arriving.size && k !== 'agent';
