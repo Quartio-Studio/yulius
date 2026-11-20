@@ -1178,6 +1178,41 @@ async fn remove_stops_tasks_and_keeps_the_repository() -> TestResult {
     Ok(())
 }
 
+/// A proxy or its accepted connections can outlive the browser that opened them.
+#[tokio::test]
+async fn an_outstanding_browser_port_lease_holds_the_removed_range() -> TestResult {
+    let w = World::new("org").await?;
+    let (_, alice) = w.user("alice", true).await?;
+    for repo in ["shop", "cart", "basket"] {
+        w.remote(OWNER, repo, &[("README.md", "# Shop\n")], &[])?;
+        w.grant("alice", repo, "admin");
+    }
+    let shop = import(&w, &alice, "Quartio-Studio/shop").await?.body;
+    let sid = SandboxId::parse(text(&shop["id"]))?;
+    let lease = w.h.app.sandbox_ports(&sid).await?.ok_or("browser ports")?;
+    let removed = call(
+        &w.h.router,
+        Method::DELETE,
+        &format!("/api/sandboxes/{sid}"),
+        None,
+        &alice,
+    )
+    .await?;
+    assert_eq!(removed.status, StatusCode::NO_CONTENT);
+    let cart = import(&w, &alice, "Quartio-Studio/cart").await?.body;
+    assert_eq!(
+        cart["port_base"], 20020,
+        "the proxy still holds the first range"
+    );
+    drop(lease);
+    let basket = import(&w, &alice, "Quartio-Studio/basket").await?.body;
+    assert_eq!(
+        basket["port_base"], 20000,
+        "the final proxy lease was dropped"
+    );
+    Ok(())
+}
+
 /// Records the sandboxes retired through the isolation port.
 #[derive(Default)]
 struct Retiring(std::sync::Mutex<Vec<String>>);
