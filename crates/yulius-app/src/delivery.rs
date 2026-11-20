@@ -3871,13 +3871,24 @@ impl App {
         task: &TaskRecord,
         facts: &ParkingPrs,
     ) -> AppResult<bool> {
+        Ok(self.parking_checkout_matches(task, facts).await?
+            && self.parking_ci_still_current(task, facts).await?)
+    }
+
+    async fn parking_checkout_matches(
+        &self,
+        task: &TaskRecord,
+        facts: &ParkingPrs,
+    ) -> AppResult<bool> {
+        Ok(facts.pulls.is_empty() || self.parking_checkout(task).await? == facts.checkout)
+    }
+
+    async fn parking_ci_still_current(
+        &self,
+        task: &TaskRecord,
+        facts: &ParkingPrs,
+    ) -> AppResult<bool> {
         use yulius_domain::ci::RunState;
-        if facts.pulls.is_empty() {
-            return Ok(true);
-        }
-        if self.parking_checkout(task).await? != facts.checkout {
-            return Ok(false);
-        }
         for (number, head) in &facts.pulls {
             let runs = self
                 .deps
@@ -4245,6 +4256,9 @@ impl App {
         else {
             return Ok(false);
         };
+        if !self.parking_checkout_matches(task, &prs).await? {
+            return Ok(false);
+        }
         let Some(current) = store.task(&task.id).await? else {
             return Ok(false);
         };
@@ -4254,7 +4268,7 @@ impl App {
             && current.worktree_path == task.worktree_path
             && store.delivery(&task.id).await? == record
             && self.parked_chain_clear(&current).await?
-            && self.parking_prs_still_current(&current, &prs).await?)
+            && self.parking_ci_still_current(&current, &prs).await?)
     }
 
     /// The part of [`App::task_is_done`] that needs no GitHub call: the turn ended, no background

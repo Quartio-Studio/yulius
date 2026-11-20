@@ -93,11 +93,20 @@ struct RealGit {
     ahead_behind_error: std::sync::Mutex<Option<String>>,
     /// While set, the remote's branches cannot be read (`ls-remote` fails, SPEC-139).
     remote_unreadable: std::sync::atomic::AtomicBool,
+    /// Hold the second checkout probe while the predecessor changes state.
+    checkout_probe: std::sync::Mutex<Option<Arc<CheckoutProbe>>>,
     /// While set, a refresh of a clone fails (SPEC-493 fix 6).
     fetch_fails: std::sync::atomic::AtomicBool,
     /// Moved right after every refresh of a clone, as an agent racing it would: `(ref, commit)`
     /// (review round 2 of SPEC-493 fix 6).
     forged_after_fetch: std::sync::Mutex<Option<(String, String)>>,
+}
+
+#[derive(Default)]
+struct CheckoutProbe {
+    calls: std::sync::atomic::AtomicUsize,
+    entered: tokio::sync::Notify,
+    release: tokio::sync::Notify,
 }
 
 /// An injected push failure, as GitHub's `! [remote rejected] … (failed)` (#366).
@@ -324,6 +333,20 @@ impl GitPort for RealGit {
     }
 
     async fn worktrees(&self, repo: &Path) -> AppResult<Vec<yulius_app::ports::git::WorktreeInfo>> {
+        let probe = self
+            .checkout_probe
+            .lock()
+            .map_err(AppError::internal)?
+            .clone();
+        if let Some(probe) = probe
+            && probe
+                .calls
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+                == 1
+        {
+            probe.entered.notify_one();
+            probe.release.notified().await;
+        }
         crate::support::confined_git().worktrees(repo).await
     }
 
@@ -818,6 +841,7 @@ async fn fixture_with(
         push_failure: std::sync::Mutex::default(),
         ahead_behind_error: std::sync::Mutex::default(),
         remote_unreadable: std::sync::atomic::AtomicBool::default(),
+        checkout_probe: Default::default(),
         fetch_fails: std::sync::atomic::AtomicBool::default(),
         forged_after_fetch: std::sync::Mutex::default(),
     });
@@ -4709,6 +4733,12 @@ async fn a_historical_parked_goal_keeps_its_owner_and_chain_state_after_restart(
     );
     let saved = dir.with_extension("saved");
     std::fs::rename(&dir, &saved)?;
+    fresh.advance_chains(&before).await;
+    assert_eq!(
+        f.h.store.task(&child).await?.ok_or("successor")?.status,
+        TaskStatus::Chained,
+        "a missing run directory cannot prove the goal finished"
+    );
     std::fs::write(&dir, b"not a directory")?;
     fresh.advance_chains(&before).await;
     assert_eq!(
@@ -4897,6 +4927,7 @@ async fn a_parked_successor_waits_for_the_replacement_ordinary_pr() -> TestResul
 /// A parked Waiting predecessor releases its chain only when all its PR checks can be read.
 #[tokio::test]
 async fn a_parked_predecessor_waits_for_the_complete_check_report() -> TestResult {
+    use yulius_app::ports::store_ext::CiStore;
     let f = fixture(&DeliveryProfile::standard()).await?;
     let (_wt, head) = delivered_with_a_successor(&f, &finished_spec("t1")).await?;
     // The fixture changes the remote PR metadata independently of local Git.
@@ -4966,23 +4997,19 @@ async fn a_parked_predecessor_waits_for_the_complete_check_report() -> TestResul
         "the verified green head was replaced during its checks read"
     );
     edit_pull(&f, 1, |pull| pull.head_sha.clone_from(&head));
-    // Neither Git nor GitHub can yet confirm an external PR head is mergeable.
+    // The real green head is published. On a release base only GitHub can
+    // answer mergeability, independently of checkout ancestry.
     edit_pull(&f, 1, |pull| {
+        pull.base = "release".into();
         pull.mergeable = None;
-        pull.head_sha = "external-green".into();
     });
-    f.h.github
-        .set_checks("external-green", ChecksState::Success);
     f.h.app.advance_chains(&before).await;
     assert_eq!(
         f.h.store.task(&child).await?.ok_or("successor")?.status,
         TaskStatus::Chained,
-        "green checks with unknown mergeability released the successor"
+        "the release base had unknown mergeability"
     );
-    edit_pull(&f, 1, |pull| {
-        pull.mergeable = Some(true);
-        pull.head_sha.clone_from(&head);
-    });
+    edit_pull(&f, 1, |pull| pull.mergeable = Some(true));
     // A step is reopened while the server is checking a positive PR.
     let read = f.h.github.hold_checks();
     let app = f.h.app.clone();
@@ -5047,15 +5074,62 @@ async fn a_parked_predecessor_waits_for_the_complete_check_report() -> TestResul
     );
     insert_ci_attempt(
         &f.h.store,
-        "rerun-green",
+        "rerun-active",
         &head,
         CiRef::PullRequest(1),
-        RunState::Passed,
+        RunState::Running,
         11,
         &[],
     )
     .await?;
-    f.h.app.advance_chains(&TaskId::parse("t1")?).await;
+    f.h.app.advance_chains(&before).await;
+    assert_eq!(
+        f.h.store.task(&child).await?.ok_or("successor")?.status,
+        TaskStatus::Chained,
+        "a successor cannot rely on the parked PR watcher to settle a running check"
+    );
+    assert!(
+        f.h.store
+            .transition_ci_run(
+                "rerun-active",
+                &[RunState::Running],
+                RunState::Passed,
+                &Default::default()
+            )
+            .await?
+    );
+    let probe = Arc::new(CheckoutProbe::default());
+    *f.git.checkout_probe.lock().map_err(|_| "checkout probe")? = Some(probe.clone());
+    let app = f.h.app.clone();
+    let predecessor = before.clone();
+    let advance = tokio::spawn(async move { app.advance_chains(&predecessor).await });
+    tokio::time::timeout(Duration::from_secs(5), probe.entered.notified()).await?;
+    f.h.store
+        .transition_task(
+            &before,
+            None,
+            TaskStatus::Running,
+            Some(Activity::Working),
+            f.h.app.now(),
+        )
+        .await?;
+    probe.release.notify_one();
+    advance.await?;
+    assert_eq!(
+        f.h.store.task(&child).await?.ok_or("successor")?.status,
+        TaskStatus::Chained,
+        "the predecessor resumed while the final checkout check waited"
+    );
+    f.h.store
+        .transition_task(
+            &before,
+            None,
+            TaskStatus::Parked,
+            Some(Activity::Waiting),
+            f.h.app.now(),
+        )
+        .await?;
+    f.h.app.advance_chains(&before).await;
     assert_ne!(
         f.h.store.task(&child).await?.ok_or("successor")?.status,
         TaskStatus::Chained
