@@ -2400,6 +2400,13 @@ async fn a_persons_merge_without_required_checks_lands_at_once() -> TestResult {
     let origin = origin_of(&h, &body);
     let dev = git(&origin, &["rev-parse", "dev"])?.trim().to_owned();
     let sid = body["id"].as_str().ok_or("id")?;
+    playground_task(&h, &body, "t1", &[("broken", "yes\n")], &["done"]).await?;
+    let tested = merge(&h, &owner, "t1").await?;
+    assert_eq!(tested.status, StatusCode::CONFLICT, "{}", tested.body);
+    let overview = ci_settle(&h, &owner, &body).await?;
+    assert_eq!(task_run(&overview)?["state"], "failed", "{overview}");
+    assert_delivery_ci(&h, &owner, &body, Some("failed")).await?;
+
     let patched = call(
         &h.router,
         Method::PATCH,
@@ -2413,7 +2420,7 @@ async fn a_persons_merge_without_required_checks_lands_at_once() -> TestResult {
     )
     .await?;
     assert_eq!(patched.status, StatusCode::OK, "{:?}", patched.body);
-    playground_task(&h, &body, "t1", &[("feature.txt", "one\n")], &["done"]).await?;
+    assert_delivery_ci(&h, &owner, &body, None).await?;
     let merged = merge(&h, &owner, "t1").await?;
     assert_eq!(merged.status, StatusCode::OK, "{:?}", merged.body);
     assert_eq!(git(&origin, &["rev-parse", "dev^"])?.trim(), dev);
