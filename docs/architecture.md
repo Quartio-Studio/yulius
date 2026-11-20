@@ -3798,7 +3798,9 @@ deadline. The helper releases expired pairs while a successor receives the remai
 records. On Linux without a namespace manager, the server pauses established direct opaque
 agent tunnels on the shutdown signal. Capture and deposit have fifteen seconds, concurrent
 with five seconds to drain in-flight HTTP responses. A reset ends its affected pair, while
-the helper drains its frame and retains other connected pairs. The successor restores their original TCP sockets, pending
+the helper drains its frame and retains other connected pairs. After both FINs the original
+kernel socket identities let the successor drain any last bytes and the saved copy cursor.
+The successor restores their original TCP sockets, pending
 bytes, admission owners, last activity and absolute expiry before serving HTTP. Intercepted
 connections close at restart. Fresh connections use the successor's host-bound injection and
 redaction policy. Continuity through a namespace holder still requires its matching outbound relay.

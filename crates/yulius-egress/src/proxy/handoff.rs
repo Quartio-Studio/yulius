@@ -3,7 +3,7 @@ use std::io;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
-use yulius_sandbox::relay::custodian::{Pair, collect, monotonic_ms};
+use yulius_sandbox::relay::custodian::{Established, Pair, collect, monotonic_ms};
 
 use super::{
     Arc, Bytes, CONNECTION_MAX, CopyState, EgressProxy, PoisonError, Slot, SocketAddr, TcpStream,
@@ -59,6 +59,7 @@ struct Tunnel {
     client: TcpStream,
     upstream: TcpStream,
     copy: CopyState,
+    established: Option<Established>,
     run: String,
     expires: u64,
 }
@@ -87,6 +88,7 @@ impl Tunnel {
         self.copy.encode(&mut state)?;
         let pair = Pair {
             expires: Some(self.expires),
+            established: self.established,
             sockets: [
                 self.client.into_std()?.into(),
                 upstream.inner.into_std()?.into(),
@@ -130,7 +132,9 @@ pub(super) async fn agent_tunnel(
     let Some(request) = register(&slot) else {
         return;
     };
+    let established = Established::connected(&client, &upstream).ok();
     let tunnel = Tunnel {
+        established,
         client,
         upstream,
         copy,
@@ -180,10 +184,16 @@ impl EgressProxy {
         let expires = pair.expires.ok_or_else(invalid)?;
         remaining(owner.last, expires, monotonic_ms())?;
         let copy = CopyState::decode(&state[at + 1..])?;
+        if !pair.resumable()? {
+            return Err(io::ErrorKind::NotConnected.into());
+        }
+        let established = pair
+            .established
+            .or_else(|| Established::connected(&pair.sockets[0], &pair.sockets[1]).ok());
         let [client, upstream] = pair.sockets;
         let tcp = |fd| {
             let socket = std::net::TcpStream::from(fd);
-            socket.peer_addr()?;
+            socket.local_addr()?; // Reject non-IP sockets, including a connected Unix stream.
             socket.set_nonblocking(true)?;
             TcpStream::from_std(socket)
         };
@@ -221,6 +231,7 @@ impl EgressProxy {
             sandbox: owner.sandbox,
         };
         let tunnel = Tunnel {
+            established,
             client,
             upstream,
             copy,

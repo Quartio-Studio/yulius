@@ -268,3 +268,44 @@ async fn an_unfinished_http_download_cannot_delay_opaque_handoff_or_shutdown() -
     })
     .await?
 }
+
+#[tokio::test]
+async fn final_bytes_and_fin_during_restart_reach_the_half_closed_peer() -> Result<(), Error> {
+    tokio::time::timeout(Duration::from_secs(30), async {
+        let listener = TcpListener::bind((fixture_ip()?, 0)).await?;
+        let target = listener.local_addr()?;
+        let internal = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+            .await?
+            .local_addr()?;
+        let dir = tempfile::tempdir()?;
+        let mut first = start(dir.path(), internal).await?;
+        seed(dir.path())?;
+        let (mut client, mut origin) = open_tunnel(internal, target, &listener).await?;
+        let (mut sender, mut recipient) = open_tunnel(internal, target, &listener).await?;
+        drop(listener);
+        client.get_mut().shutdown().await?;
+        assert_eq!(origin.read(&mut [0]).await?, 0);
+        recipient.shutdown().await?;
+        assert_eq!(sender.read(&mut [0]).await?, 0);
+        stop(&mut first).await?;
+        origin.write_all(b"last reply").await?;
+        origin.shutdown().await?;
+        sender.get_mut().write_all(b"last request").await?;
+        sender.get_mut().shutdown().await?;
+        let mut next = start(dir.path(), internal).await?;
+        let mut delivered = Vec::new();
+        client.read_to_end(&mut delivered).await?;
+        assert_eq!(
+            delivered, b"last reply",
+            "destination bytes preceding its final FIN"
+        );
+        delivered.clear();
+        recipient.read_to_end(&mut delivered).await?;
+        assert_eq!(
+            delivered, b"last request",
+            "client bytes preceding its final FIN"
+        );
+        stop(&mut next).await
+    })
+    .await?
+}

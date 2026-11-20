@@ -27,7 +27,11 @@ The batch accommodates 256 opaque tunnels and 256 relay pairs. Each pair has up 
 private state. One two-minute deadline covers receipt, adoption and delivery. Each timed
 record also carries its original monotonic deadline. Its expiry shuts down its two sockets
 throughout the exchange. The successor drains the expired frame and adopts the live remainder.
-A peer that has disconnected before deposit or adoption ends its own pair. The receiver
+Linux can discard a TCP peer name after both FINs while the original receive queue still
+contains the last application bytes. The server records both kernel socket cookies while the
+connection is established. A timed handoff checks those identities and can resume the terminal
+receive queue, including EOF after bytes already saved in the copy cursor.
+A peer that has reset before deposit or adoption ends its own pair. The receiver
 still drains and validates the frame before resuming its surviving siblings.
 Once every pair expires the helper releases its only place. On batch expiry,
 disconnection or invalid input the helper drops its descriptors and state. During delivery it

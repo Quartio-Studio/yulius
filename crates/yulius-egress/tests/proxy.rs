@@ -1093,11 +1093,46 @@ mod handoff {
             client,
             peer,
             Pair {
+                established: None,
                 expires: Some(expires),
                 sockets: [left, right],
                 state,
             },
         ))
+    }
+
+    #[tokio::test]
+    async fn a_final_fin_with_an_empty_receive_queue_still_flushes_the_saved_copy_bytes()
+    -> TestResult {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            use std::os::fd::AsFd as _;
+
+            let next = setup_with(Duration::from_secs(300), 1).await?;
+            let now = monotonic_ms();
+            let (mut client, mut origin, mut pair) = record(now, now + 5_000).await?;
+            pair.established = Some(yulius_sandbox::relay::custodian::Established::connected(
+                &pair.sockets[0],
+                &pair.sockets[1],
+            )?);
+            // The old copy already forwarded the destination's FIN to the client.
+            origin.shutdown().await?;
+            let retained = std::net::TcpStream::from(pair.sockets[0].as_fd().try_clone_to_owned()?);
+            retained.shutdown(std::net::Shutdown::Write)?;
+            assert_eq!(client.read(&mut [0]).await?, 0);
+            client.shutdown().await?;
+            while retained.peer_addr().is_ok() {
+                tokio::task::yield_now().await;
+            }
+            // Five bytes are in the old copy cursor, with no more bytes in the kernel queue.
+            pair.state.truncate(pair.state.len() - 6);
+            pair.state.extend_from_slice(b"\0\0\x05saved\x02\0\0");
+            next.service.restore_opaque_tunnel(pair)?;
+            let mut delivered = Vec::new();
+            origin.read_to_end(&mut delivered).await?;
+            assert_eq!(delivered, b"saved");
+            Ok::<_, Box<dyn std::error::Error>>(())
+        })
+        .await?
     }
 
     #[tokio::test]

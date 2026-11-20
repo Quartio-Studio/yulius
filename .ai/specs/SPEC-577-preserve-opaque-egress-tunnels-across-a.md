@@ -357,3 +357,22 @@ without adoption support or a remote peer that times out can end a tunnel.
   in parallel. This reproduced on the older test binary. Each passed in isolation, as run
   by nextest in CI. The independent test issue is tracked in
   [#1544](https://github.com/Quartio-Studio/yulius/issues/1544).
+- On corrected head `959ab7448`, both isolated real-process tests passed. The unfinished
+  download stayed open while the old process exited and the original CONNECT carried new
+  bytes through the successor. Resetting a second destination during downtime preserved the
+  healthy original sockets. The domain, egress and sandbox suites passed 920 tests with two
+  environment-dependent tests ignored. Targeted Clippy and quick checks passed. Vidoc was disabled.
+- The second independent reader identified an orderly close that resembled a disconnected
+  socket. The client half-closed first and the destination observed EOF. In the restart gap
+  the destination sent `last reply` followed by its FIN. The original client received zero
+  of the ten bytes after the successor became healthy. The real-server regression reproduced
+  this on `959ab7448`. With both FINs already exchanged before deposit, a separate helper
+  fixture also returned `NotConnected` with the final reply still in the original TCP queue.
+  The regression covers both transfer directions and a terminal receive queue whose remaining
+  application bytes are already in the saved copy cursor.
+- With the final-FIN correction, all five direct real-server tests passed. The two original
+  peers delivered the last reply and last request, then EOF, across the replacement. A
+  separate proxy test previously failed with errno 107 after both FINs and an empty kernel
+  receive queue. It now flushes exactly five pending application bytes to its original
+  destination. A mismatched socket identity is rejected and its original Unix peer can
+  still transfer bytes. Targeted Clippy and the repository quick checks passed.
