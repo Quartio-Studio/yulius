@@ -398,3 +398,13 @@ without adoption support or a remote peer that times out can end a tunnel.
   tests passed. They cover the original final receive queue before deposit, single adoption,
   independent expiry, reset isolation, identity mismatches, interrupted metadata and final
   confirmation. Repository contract and formatting checks passed.
+- Independent review of the separated scope at `7d815ba59` passed the 47 relay and seven
+  helper-process tests. It found that the earlier, in-process collection of capture replies
+  could enroll a pair before verifying its identity. The live capture regression expected
+  rejection for a mismatched cookie and received a pair instead. Additional fixtures found
+  that collection accepted oversized state and an identified record without a deadline.
+  Collection now performs the same checks as deposit before its cleanup state takes a
+  socket. The original peer can still send its marker after the refused record's deadline.
+  The updated relay library suite passed all 49 tests.
+- The mutation run on the first direct review's corrections passed 3,312 selected baseline
+  tests. Its summary was 17 listed, 15 caught, 0 missed, 0 timed out, 2 unviable and 0 not reached.

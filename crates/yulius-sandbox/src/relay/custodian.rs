@@ -92,8 +92,13 @@ impl Pair {
     /// remains readable after the final FIN even when Linux has discarded the peer name.
     ///
     /// # Errors
-    /// Invalid stream roles or identities, or a socket error other than peer closure.
+    /// Invalid state size, timing metadata, stream roles or identities, or a failed
+    /// kernel query for the original socket.
     pub fn resumable(&self) -> io::Result<bool> {
+        check_capacity(1, self.state.len())?;
+        if self.established.is_some() && self.expires.is_none() {
+            return Err(invalid("identified handoff requires a deadline"));
+        }
         for (index, fd) in self.sockets.iter().enumerate() {
             stream_socket(fd)?;
             if let Some(ids) = self.established
@@ -519,7 +524,11 @@ pub async fn collect(replies: Vec<tokio::sync::oneshot::Receiver<Pair>>) -> io::
         .await?
     {
         let (index, pair) = result?;
-        pending.0[index] = pair;
+        if let Some(pair) = pair
+            && pair.resumable()?
+        {
+            pending.0[index] = Some(pair);
+        }
     }
     Ok(pending.release())
 }
@@ -533,10 +542,9 @@ pub async fn deposit(executable: &Path, directory: &Path, pairs: Vec<Pair>) -> i
     if pairs.is_empty() {
         return Ok(());
     }
-    let count = pairs.len();
-    let mut connected = Vec::with_capacity(count.min(MAX_PAIRS));
+    check_capacity(pairs.len(), 0)?;
+    let mut connected = Vec::with_capacity(pairs.len());
     for pair in pairs {
-        check_capacity(count, pair.state.len())?;
         if pair.resumable()? {
             connected.push(pair);
         }
@@ -874,6 +882,70 @@ mod tests {
             receive(&mut receiver)
                 .await
                 .is_err_and(|e| e.kind() == io::ErrorKind::NotConnected)
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn collecting_a_capture_checks_identity_before_its_deadline_owns_the_original()
+    -> io::Result<()> {
+        tokio::time::timeout(Duration::from_secs(3), async {
+            let (other, _other_peers) = pair(Vec::new())?;
+            let (mut captured, [mut client, _right]) = pair(b"cursor".to_vec())?;
+            let retained = captured.sockets[0].as_fd().try_clone_to_owned()?;
+            let mut original = UnixStream::from_std(retained.into())?;
+            let end = monotonic_ms() + 100;
+            captured.expires = Some(end);
+            captured.established = Some(Established::connected(
+                &other.sockets[0],
+                &captured.sockets[1],
+            )?);
+            let (reply, ready) = tokio::sync::oneshot::channel();
+            assert!(reply.send(captured).is_ok());
+            assert!(
+                collect(vec![ready])
+                    .await
+                    .is_err_and(|e| e.kind() == io::ErrorKind::InvalidData)
+            );
+            // Passing the refused record's original deadline cannot take the sender's connection.
+            assert!(
+                tokio::time::timeout(time_left(end, monotonic_ms()), client.read_u8())
+                    .await
+                    .is_err()
+            );
+            client.write_all(b"kept").await?;
+            assert_eq!(original.read_u32().await?.to_be_bytes(), *b"kept");
+            Ok(())
+        })
+        .await?
+    }
+
+    #[tokio::test]
+    async fn collecting_rejects_out_of_bounds_state_and_untimed_identities_before_custody()
+    -> io::Result<()> {
+        let mut refused = Vec::new();
+        for oversized in [true, false] {
+            let (mut captured, _peers) = pair(Vec::new())?;
+            if oversized {
+                captured.state.resize(MAX_STATE + 1, 0);
+            } else {
+                captured.established = Some(Established::connected(
+                    &captured.sockets[0],
+                    &captured.sockets[1],
+                )?);
+            }
+            let (reply, ready) = tokio::sync::oneshot::channel();
+            assert!(reply.send(captured).is_ok());
+            refused.push(
+                collect(vec![ready])
+                    .await
+                    .is_err_and(|e| e.kind() == io::ErrorKind::InvalidData),
+            );
+        }
+        assert_eq!(
+            refused,
+            [true, true],
+            "oversized state and untimed identity"
         );
         Ok(())
     }

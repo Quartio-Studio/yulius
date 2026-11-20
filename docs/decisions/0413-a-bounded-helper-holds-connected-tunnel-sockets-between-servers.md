@@ -28,8 +28,8 @@ throughout the exchange. The successor drains the expired frame and adopts the l
 When both FINs complete, Linux can forget the TCP peer name while the original socket still
 has its final bytes or EOF to deliver. A timed copy can record its two kernel socket cookies
 while both endpoints have peers. The sender completes an identity prefix without transferring
-descriptors. The receiver checks the roles and cookies before enrolling the original sockets
-for delivery and cleanup. A validated terminal queue can drain its last bytes and a saved copy
+descriptors. Local capture, deposit and receipt check the stream roles, identities and state bounds before
+enrolling a pair for delivery and cleanup. A validated terminal queue can drain its last bytes and a saved copy
 cursor. If a stream resets or times out, the remaining pairs can still transfer.
 Once every pair expires the helper releases its only place. On batch expiry,
 disconnection or invalid input the helper drops its descriptors and state. During delivery it
