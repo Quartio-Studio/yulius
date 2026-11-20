@@ -112,6 +112,7 @@ mod sessions;
 mod shells;
 mod skills_mcp;
 mod stages;
+mod staging;
 mod start_change;
 mod strays;
 mod subscription_moves;

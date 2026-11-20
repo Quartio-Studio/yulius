@@ -112,6 +112,12 @@ impl App {
                 app.drain_queue().await;
                 // Chained tasks start once their predecessor is Done (TSK-012).
                 app.advance_all_chains().await;
+                // Merge-first staging queues move on (SPEC-575 MFS-003 to MFS-008), on their own
+                // task: GitHub and Git reads must not hold the tick.
+                let staging = Arc::clone(&app);
+                tokio::spawn(async move {
+                    staging.staging_tick().await;
+                });
                 // Prepared tasks start at their time (SPEC-105 PRP-003).
                 app.release_due_prepared().await;
                 // Idle sessions past their grace period are parked (SPEC-512 PRK-002), once the

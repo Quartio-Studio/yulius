@@ -10,6 +10,10 @@ use std::path::Path;
 /// Where the server pauses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Point {
+    /// A parked read classified the task, before the response renders its plan. Keyed by task ID.
+    ParkedStatusRead,
+    /// An idle running row reads its pending PR news. Keyed by task ID.
+    LiveRowPrNews,
     /// A review starts reading its Git head. Keyed by worktree path.
     ReviewHead,
     /// `file_read`: the path was resolved and checked, the file is not opened yet.

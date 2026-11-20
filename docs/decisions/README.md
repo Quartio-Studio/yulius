@@ -430,7 +430,9 @@ If a reservation skips past all available slots, land an empty extension first w
 <!-- ADR 0409 -->
 - [0410](0410-the-full-suite-runs-on-the-merged-revision-beside-a-merge-first-staging-target.md) The full suite runs on the merged revision beside a merge-first staging target.
 <!-- ADR 0410 -->
+- [0411](0411-staging-changes-through-a-queue-of-tested-merged-revisions.md) Staging changes through a queue of tested merged revisions.
 <!-- ADR 0411 -->
+- [0412](0412-share-parked-pr-read-time-across-task-lists.md) shares the parked PR lookup budget across task lists and Home.
 <!-- ADR 0412 -->
 - [0413](0413-a-bounded-helper-holds-connected-tunnel-sockets-between-servers.md) A bounded helper holds connected tunnel sockets between servers.
 <!-- ADR 0413 -->

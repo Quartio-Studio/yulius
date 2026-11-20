@@ -522,7 +522,7 @@ session limit the resume waits `queued` with its prompt. Archive and close make 
 `stopped_cancelled`. A message while the park is ending the session is 409 ("is parking its idle
 session"). Each park is audited `task.parked` by `yulius`.
 
-A parked task detail includes `parked_needs_you`, the server’s classification from its
+A parked task in the sandbox task list or the task detail includes `parked_needs_you`, the server’s classification from its
 local work, owner decisions and current ordinary PR checks. When a PR is known, `parked_pr`
 gives its `number` and whether it is `open`. A branch lookup can identify a replacement
 for an older recorded delivery. With outstanding local work, the detail keeps an owner-observed open PR
@@ -990,6 +990,34 @@ stage = "dev"
 merge_first = true                  # at most one; needs deploy, verify and rollback; moves the
                                     #   after_merge jobs off pull requests (SPEC-575, ADR-0410)
 ```
+
+The merge-first environment changes only through its staging queue (ADR-0411):
+
+- A task's agent's `cd_deploy` of it records a staging request for the task's newest landing on
+  the integration branch. It answers with the request: `id`, `revision`, `state`, `ci_run_id`,
+  `cd_run_id`, `note`.
+- The request moves through these states:
+  - `testing`: the full gate on exactly that commit;
+  - `ready`;
+  - `deploying`;
+  - `verified`, or `included` in a verified deploy that contains it;
+  - `gate_failed`, `deploy_failed` or `superseded`.
+- A repeated request answers with the same one.
+- The request needs the task's owner to have write access, a merged landing and no pending or
+  blocked step.
+- Its outcome is typed into the task's session once.
+- `GET …/cd` lists the queue as the environment's `staging` (`verified`: the revision it serves,
+  `requests`: the newest, each with `task_number`, `revision`, `state`, `ci_run_id`,
+  `cd_run_id`, `note`).
+- `cd_status` shows the same.
+- A person's `POST …/cd/{env}/deploy` of the environment is refused with a 409 naming the queue.
+  Rollbacks stay possible.
+- A failed deploy restores staging to its last verified release, as a rollback run.
+- The deploy scripts of a merge-first target must be idempotent: a run lost to a restart is
+  retried, up to three attempts.
+- A failed deploy that announced a rollback barrier is not restored; its request says so.
+- With a merge-first target, a production deploy that promotes is refused (409) until staging
+  serves the integration head, verified.
 
 A run deploys the commit GitHub reports for the branch, taken into a mirror only Yulius writes
 (every object checked, replacement refs ignored). It writes the commit's files into the run's own

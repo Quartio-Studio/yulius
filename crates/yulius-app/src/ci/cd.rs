@@ -53,6 +53,7 @@ use super::OUTPUT_BYTES;
 use super::exec::{DiskBound, Ended, RunLog, Sink, ci_join};
 use super::prove::ProveOnDev;
 use super::rollback::steps_text;
+use super::staging::staging_text;
 use crate::auth::{AuthContext, rfc3339};
 use crate::context::App;
 use crate::coordination::AgentContext;
@@ -193,6 +194,22 @@ pub(crate) enum CdRequest<'a> {
         confirm_ms: Option<u64>,
         /// A deploy of the drill environment proving a production deploy's rollback (SPEC-438).
         proving: Option<Proving<'a>>,
+    },
+    /// Deploy exactly `revision` of the integration branch, a dev-stage environment only: a
+    /// merged revision whose full gate passed, for the staging queue (SPEC-575 MFS-003).
+    DeployRevision {
+        /// The full SHA; it must be on the integration head's first-parent history.
+        revision: &'a str,
+        /// What the run says about why (the staging request it serves).
+        note: &'a str,
+    },
+    /// Redeploy a part's current kept release (its last verified one): the merge-first staging
+    /// queue after a failed deploy, which records no release (SPEC-575 MFS-007).
+    Restore {
+        /// The part (empty: the environment's only one).
+        part: &'a str,
+        /// What the run says about why.
+        note: &'a str,
     },
     /// Roll a part back (or forward) to a kept release (SPEC-415).
     Rollback {
@@ -555,6 +572,11 @@ impl App {
             let target = target.unwrap_or_else(|| CdTarget::new(&name, stage));
             let deploying = source.promotes_from.as_deref().or(source.head.as_deref());
             let rollback = self.cd_rollback_view(sandbox, &target, deploying).await?;
+            let staging = if target.merge_first && stage == CdStage::Dev {
+                Some(self.cd_staging_view(sandbox, &target).await?)
+            } else {
+                None
+            };
             environments.push(CdEnvironment {
                 label: env_label(&name).to_owned(),
                 name,
@@ -573,6 +595,7 @@ impl App {
                 deployed,
                 last_run,
                 rollback,
+                staging,
             });
         }
         super::rollback::mark_rollback_not_needed(&mut environments, &profile.integration_branch);
@@ -635,6 +658,36 @@ impl App {
             )
             .await?;
         Ok(self.cd_run_view(&run, false).await)
+    }
+
+    /// The staging queue's pinned deploy of `revision` (`CdRequest::DeployRevision`) as `user`,
+    /// for tests of its refusals (SPEC-575 MFS-003).
+    ///
+    /// # Errors
+    /// Every refusal of a deploy, and a revision off the integration head's first-parent history
+    /// or of a production-stage environment.
+    #[doc(hidden)]
+    pub async fn cd_deploy_revision_for_tests(
+        self: &Arc<Self>,
+        sandbox: &SandboxRecord,
+        env: &str,
+        user: &UserRecord,
+        revision: &str,
+    ) -> AppResult<CdRunRecord> {
+        self.cd_start(
+            sandbox,
+            env,
+            Requester::Person {
+                administrator: true,
+                confirmation: Some(&sandbox.slug),
+            },
+            &CdActor::Person(user),
+            CdRequest::DeployRevision {
+                revision,
+                note: "a test of pinned deploys",
+            },
+        )
+        .await
     }
 
     /// A deploy of `env` for a task's agent (`cd_deploy`) under its owner's write access.
@@ -743,6 +796,7 @@ impl App {
                     (requester, actor),
                     expected,
                     (&mut resolved, prove),
+                    None,
                 )
                 .await
                 .map(|mut prepared| {
@@ -756,6 +810,22 @@ impl App {
                 }),
                 confirm_ms,
             ),
+            CdRequest::DeployRevision { revision, note } => (
+                self.cd_prepare(
+                    sandbox,
+                    env,
+                    (requester, actor),
+                    None,
+                    (&mut resolved, None),
+                    Some(revision),
+                )
+                .await
+                .map(|mut prepared| {
+                    prepared.note = Some(note.to_owned());
+                    prepared
+                }),
+                None,
+            ),
             CdRequest::Rollback {
                 part,
                 release,
@@ -765,11 +835,29 @@ impl App {
                     sandbox,
                     env,
                     (requester, actor),
-                    (part, release),
+                    (part, release, false),
                     &mut resolved,
                 )
                 .await,
                 confirm_ms,
+            ),
+            CdRequest::Restore { part, note } => (
+                self.cd_prepare_rollback(
+                    sandbox,
+                    env,
+                    (requester, actor),
+                    (Some(part).filter(|p| !p.is_empty()), None, true),
+                    &mut resolved,
+                )
+                .await
+                .map(|mut prepared| {
+                    prepared.note = Some(match prepared.note.take() {
+                        Some(own) => format!("{note}; {own}"),
+                        None => note.to_owned(),
+                    });
+                    prepared
+                }),
+                None,
             ),
         };
         let prepared = match prepared {
@@ -1075,6 +1163,7 @@ impl App {
         (requester, actor): (Requester<'_>, &CdActor<'_>),
         expected: Option<&str>,
         (resolved, prove): (&mut Option<CdStage>, Option<&mut Option<ProveOnDev>>),
+        revision: Option<&str>,
     ) -> AppResult<Prepared> {
         // One deploy at a time reads and writes a sandbox's mirror (round 2, L-b).
         let mirror_lock = mirror_lock(&sandbox.id);
@@ -1111,22 +1200,77 @@ impl App {
             && integration_config
                 .target_of(env, CdStage::Prod)
                 .is_some_and(|prod| prod.promote);
+        // A promotion comes from a verified staging revision (SPEC-575 MFS-009): with a
+        // merge-first target, the integration head it would promote must be the revision that
+        // target last deployed and verified.
+        if promotes && let Some(staging) = integration_config.merge_first() {
+            let verified = self.staging_verified_revision(sandbox, staging).await?;
+            if verified.as_deref() != Some(integration.as_str()) {
+                return Err(AppError::Conflict(format!(
+                    "nothing ran: production is promoted from the revision [cd.{}] verified, and {} at {} is {}; promote once staging verified it",
+                    staging.name,
+                    profile.integration_branch,
+                    integration.get(..7).unwrap_or(&integration),
+                    match &verified {
+                        Some(sha) =>
+                            format!("not it (staging verified {})", sha.get(..7).unwrap_or(sha)),
+                        None => "not verified there (staging verified nothing yet)".to_owned(),
+                    }
+                )));
+            }
+        }
         // What dev would deploy, should production's rollback need proving there (SPEC-438).
         let integration_tables = prove
             .is_some()
             .then(|| (integration.clone(), integration_config.clone()));
-        let (branch, sha, config) = match stage {
-            CdStage::Dev => (
+        let (branch, sha, config) = match (stage, revision) {
+            (CdStage::Dev, None) => (
                 profile.integration_branch.clone(),
                 integration,
                 integration_config,
             ),
-            CdStage::Prod if promotes => (
+            // A pinned revision (SPEC-575 MFS-003): exactly that merged commit, with the tables
+            // and scripts of its own tree, only while it is on the integration head's
+            // first-parent history (a commit of the branch itself, never of a side branch).
+            (CdStage::Dev, Some(revision)) => {
+                let full = revision.len() == 40 && revision.bytes().all(|b| b.is_ascii_hexdigit());
+                let on = if full {
+                    // A commit the mirror does not have is no commit of the branch's history.
+                    self.deps
+                        .git
+                        .first_parent_position(&self.cd_mirror(&sandbox.id), &integration, revision)
+                        .await
+                        .ok()
+                        .flatten()
+                } else {
+                    None
+                };
+                if on.is_none() {
+                    return Err(AppError::Conflict(format!(
+                        "nothing ran: {} is not a commit of {}'s own history at {}",
+                        revision.get(..12).unwrap_or(revision),
+                        profile.integration_branch,
+                        integration.get(..7).unwrap_or(&integration)
+                    )));
+                }
+                let config = self.cd_verified_config(sandbox, revision).await?;
+                (
+                    profile.integration_branch.clone(),
+                    revision.to_ascii_lowercase(),
+                    config,
+                )
+            }
+            (CdStage::Prod, Some(_)) => {
+                return Err(AppError::Invalid(
+                    "only a dev-stage environment deploys a pinned revision".into(),
+                ));
+            }
+            (CdStage::Prod, None) if promotes => (
                 profile.production_branch.clone(),
                 integration,
                 integration_config,
             ),
-            CdStage::Prod => {
+            (CdStage::Prod, None) => {
                 let production = self
                     .cd_verified_head(sandbox, &profile.production_branch, &token)
                     .await?;
@@ -1156,6 +1300,13 @@ impl App {
                 "an authorized environment has a table".into(),
             ));
         };
+        // The shared staging target changes only to a merged revision whose full gate passed,
+        // through its queue (SPEC-575 MFS-003, MFS-004): never to whatever the head is now.
+        if target.merge_first && revision.is_none() {
+            return Err(AppError::Conflict(format!(
+                "nothing ran: [cd.{env}] is the merge-first staging target; it changes only to a merged revision whose full gate passed, when a task asks with cd_deploy (roll it back on the CD page)"
+            )));
+        }
         // Production waits for a proven rollback of what it deploys (SPEC-415 RBK-031); a dev
         // deploy may prove it (SPEC-438).
         if let Some(refused) = self
@@ -1898,7 +2049,8 @@ impl App {
                 continue;
             }
             let reason = "Yulius restarted while it ran: it was stopped, its outcome is unknown, \
-                          and it is not run again by itself";
+                          and it is not run again by itself (a merge-first staging deploy's \
+                          queue tries it again)";
             if self.cd_end_lost(run, RunState::Error, reason).await? {
                 closed += 1;
             }
@@ -2300,6 +2452,9 @@ impl App {
         let mut text = String::from("CD (deployment):\n");
         for env in &overview.environments {
             environment_text(&mut text, env);
+            if let Some(staging) = &env.staging {
+                staging_text(&mut text, &env.name, staging);
+            }
         }
         if overview.runs.is_empty() {
             text.push_str("No runs yet.\n");
@@ -2310,7 +2465,7 @@ impl App {
             }
         }
         text.push_str(&format!(
-            "You may deploy and roll back the dev-stage environments (cd_deploy, cd_rollback); production-stage ones are deployed and rolled back by a person on {}/s/{}/ci?section=cd.",
+            "You may deploy and roll back the dev-stage environments (cd_deploy, cd_rollback; the merge-first staging target's cd_deploy asks its queue for this task's merged revision); production-stage ones are deployed and rolled back by a person on {}/s/{}/ci?section=cd.",
             self.config.public_url, sandbox.slug
         ));
         Ok(serde_json::json!({"text": text, "cd": overview}))
@@ -2330,6 +2485,36 @@ impl App {
             .and_then(serde_json::Value::as_str)
             .ok_or_else(|| AppError::Invalid("environment is required (dev)".into()))?;
         let env = dom::env_name(name).ok_or_else(|| AppError::Invalid(UNKNOWN_ENV.into()))?;
+        // The merge-first staging target changes only through its queue (SPEC-575 MFS-004).
+        if let Some(sandbox) = self.deps.store.sandbox(&ctx.task.sandbox_id).await?
+            && !sandbox.is_playground()
+            && let Ok((head, Some(target))) = self.staging_target(&sandbox).await
+            && target.name == env
+        {
+            let request = self.staging_request(&sandbox, &env, ctx, &head).await?;
+            let text = format!(
+                "Staging request {} for revision {} of {}: {}. {}. Yulius tells this session its outcome; meanwhile cd_status shows the queue with its run ids, and cd_deploy again answers with this request.",
+                request.id,
+                short_sha(&request.revision),
+                env_label(&env),
+                request.state.as_str(),
+                request.note.as_deref().unwrap_or(
+                    "Yulius runs the full gate on exactly that merged revision, then deploys and verifies it in revision order"
+                ),
+            );
+            return Ok(serde_json::json!({
+                "text": text,
+                "staging": {
+                    "id": request.id,
+                    "environment": request.environment,
+                    "revision": request.revision,
+                    "state": request.state.as_str(),
+                    "ci_run_id": request.ci_run_id,
+                    "cd_run_id": request.cd_run_id,
+                    "note": request.note,
+                },
+            }));
+        }
         let run = self.cd_deploy_for_task(ctx, &env).await?;
         let view = self.cd_run_view(&run, false).await;
         let text = format!(
@@ -2378,6 +2563,7 @@ mod tests {
             deployed: None,
             last_run: None,
             rollback: yulius_contracts::api::cd::CdRollback::default(),
+            staging: None,
         };
         let mut text = String::new();
         environment_text(&mut text, &env);
@@ -2412,6 +2598,7 @@ mod tests {
             deployed: None,
             last_run: None,
             rollback: yulius_contracts::api::cd::CdRollback::default(),
+            staging: None,
         };
         let mut text = String::new();
         environment_text(&mut text, &env);

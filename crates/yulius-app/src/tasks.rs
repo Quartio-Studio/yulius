@@ -180,7 +180,8 @@ impl App {
     /// # Errors
     /// Store failures.
     pub async fn task_summary(&self, task: &TaskRecord) -> AppResult<TaskSummary> {
-        self.task_summary_with(task, None, None, task.archived_at.is_none())
+        let steps = self.deps.store.steps(&task.id).await?;
+        self.task_summary_with(task, None, &steps, None, task.archived_at.is_none())
             .await
     }
 
@@ -188,11 +189,11 @@ impl App {
         &self,
         task: &TaskRecord,
         project: Option<&[TaskRecord]>,
+        steps: &[StepRecord],
         requested: Option<&std::collections::HashSet<String>>,
         sync_wait: bool,
     ) -> AppResult<TaskSummary> {
         let store = &self.deps.store;
-        let steps = store.steps(&task.id).await?;
         // A removed subscription is no task's (SPEC-447): neither its name nor its id is shown.
         let (account_id, account_label) = match store.live_attempt(&task.id).await? {
             Some(attempt) => match attempt.account_id {
@@ -247,6 +248,8 @@ impl App {
                 && !facts.goal_unfinished
                 && self.pr_ci_progressing(task).await);
         Ok(TaskSummary {
+            parked_pr: None,
+            parked_needs_you: None,
             id: task.id.to_string(),
             sandbox_id: task.sandbox_id.to_string(),
             number: task.number,
@@ -283,7 +286,7 @@ impl App {
             updated_at: rfc3339(task.updated_at),
             state_since: times.map(|t| rfc3339(t.state_at)),
             working_since: times.and_then(|t| t.working_since).map(rfc3339),
-            steps: self.step_progress(&task.id, &steps).await?,
+            steps: self.step_progress(&task.id, steps).await?,
             archived: task.archived_at.is_some(),
             account_label,
             account_id,
@@ -693,20 +696,72 @@ impl App {
         let tasks = self.deps.store.tasks(&sid, archived).await?;
         // Unarchived, the list is the project the summaries need; archived ones wait for nothing.
         let project = (!archived).then_some(tasks.as_slice());
+        let requests = tokio::sync::OnceCell::new();
+        let mut parked = self
+            .parked_list_statuses(tasks.iter().map(|task| (task, &requests)).collect())
+            .await;
         let requested = if archived {
             std::collections::HashSet::new()
         } else {
-            self.browser_requests(&sid).await
+            requests
+                .get_or_init(|| self.browser_requests(&sid))
+                .await
+                .clone()
         };
         let mut out = Vec::with_capacity(tasks.len());
         for task in &tasks {
             let sync_wait = !archived && !task.status.is_resting();
-            out.push(
-                self.task_summary_with(task, project, Some(&requested), sync_wait)
-                    .await?,
-            );
+            let (summary, _) = self
+                .display_summary(
+                    task,
+                    project,
+                    parked.remove(&task.id),
+                    Some(&requested),
+                    sync_wait,
+                )
+                .await?;
+            out.push(summary);
         }
         Ok(out)
+    }
+
+    /// Render the plan from the parked eligibility check in both its progress and detail, and
+    /// reconcile `needs_you_notice` / `task_wait_messages` once `parked_needs_you` is settled
+    /// (SPEC-578).
+    async fn display_summary(
+        &self,
+        task: &TaskRecord,
+        project: Option<&[TaskRecord]>,
+        mut status: Option<crate::sandboxes::ParkedStatus>,
+        requested: Option<&std::collections::HashSet<String>>,
+        sync_wait: bool,
+    ) -> AppResult<(TaskSummary, Vec<StepRecord>)> {
+        let steps = match status.as_mut().and_then(|read| read.steps.take()) {
+            Some(snapshot) => snapshot,
+            None => self.deps.store.steps(&task.id).await?,
+        };
+        // Defer `sync_wait_message` until after `parked_needs_you` is settled so a parked task
+        // whose PR is already green/merged does not record a phantom `parked:resume` history row.
+        let mut summary = self
+            .task_summary_with(task, project, &steps, requested, false)
+            .await?;
+        if let Some(read) = status {
+            let parked_needs_you = read.needs_you
+                || summary.spec_unfinished
+                || summary.goal_unfinished
+                || summary.needs_you.is_some()
+                || summary.held_prompt.is_some();
+            summary.parked_needs_you = Some(parked_needs_you);
+            summary.parked_pr = read.pr;
+            if !parked_needs_you && summary.needs_you.is_none() {
+                summary.needs_you_notice = None;
+            }
+        }
+        if sync_wait && task.archived_at.is_none() && !task.status.is_resting() {
+            self.sync_wait_message(task, summary.needs_you_notice.as_ref())
+                .await;
+        }
+        Ok((summary, steps))
     }
 
     /// Archived tasks across all visible sandboxes.
@@ -718,8 +773,9 @@ impl App {
         let mut out = Vec::new();
         for (sandbox, _) in self.visible_sandboxes(&ctx.user).await? {
             for task in self.deps.store.tasks(&sandbox.id, true).await? {
+                let steps = self.deps.store.steps(&task.id).await?;
                 out.push(
-                    self.task_summary_with(&task, None, Some(&empty), false)
+                    self.task_summary_with(&task, None, &steps, Some(&empty), false)
                         .await?,
                 );
             }
@@ -734,10 +790,17 @@ impl App {
     pub async fn task_detail(&self, ctx: &AuthContext, id: &str) -> AppResult<TaskDetail> {
         let task = self.load_task(ctx, id, Action::View).await?;
         let store = &self.deps.store;
-        // Defer `sync_wait_message` until after `parked_status` below so a parked task whose PR
-        // is already green/merged does not record and immediately resolve a phantom `parked:resume`
-        // wait-history row (SPEC-578).
-        let mut summary = self.task_summary_with(&task, None, None, false).await?;
+        let parked = if task.status == TaskStatus::Parked {
+            Some(
+                self.parked_status(&task, &tokio::sync::OnceCell::new(), self.status_deadline())
+                    .await,
+            )
+        } else {
+            None
+        };
+        let (mut summary, steps) = self
+            .display_summary(&task, None, parked, None, true)
+            .await?;
         // Subscription emails are for administrators (UI-022, SPEC-244 SUB-005).
         let admin = ctx.user.is_superadmin || ctx.user.is_instance_admin;
         if admin
@@ -846,30 +909,9 @@ impl App {
                 at: rfc3339(f.at),
             });
         }
-        let steps = store.steps(&task.id).await?;
         let started = !attempts.is_empty() || !store.provider_sessions(&task.id).await?.is_empty();
-        let (parked_needs_you, parked_pr) = if task.status == TaskStatus::Parked {
-            let (needs_you, pr) = self
-                .parked_status(
-                    &task,
-                    crate::sandboxes::parked_pr_deadline(self.config.parked_pr_read_ms),
-                )
-                .await;
-            if !needs_you && summary.needs_you.is_none() {
-                summary.needs_you_notice = None;
-            }
-            (Some(needs_you), pr)
-        } else {
-            (None, None)
-        };
-        if task.archived_at.is_none() && !task.status.is_resting() {
-            self.sync_wait_message(&task, summary.needs_you_notice.as_ref())
-                .await;
-        }
         let wait_history = self.wait_history_view(&task).await;
         Ok(TaskDetail {
-            parked_needs_you,
-            parked_pr,
             summary,
             spec_path: task.spec_path.clone(),
             worktree: task.worktree_path.clone(),

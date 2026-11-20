@@ -3798,3 +3798,89 @@ async fn a_train_skips_the_full_suite_and_the_merged_head_runs_it() -> TestResul
     );
     Ok(())
 }
+
+/// SPEC-575 MFS-002 (review round 2): a merge candidate formed again reuses its tree, and its
+/// copied verdict keeps the full suite's skip, so the member's verdict built from it never
+/// stands in for the full suite: the merged head runs it.
+#[tokio::test]
+async fn a_reused_candidate_still_leaves_the_full_suite_to_the_merged_head() -> TestResult {
+    let f = fixture().await?;
+    let app = f.h.app.clone();
+    let sandbox = app.deps.store.sandbox(&f.sandbox).await?.ok_or("s1")?;
+    f.advance_dev_with(
+        "yulius.toml",
+        &format!(
+            "{YULIUS_TOML}\n[[ci.jobs]]\nname = \"full\"\ncommand = 'echo full suite ran'\n\
+             after_merge = true\n\n[cd.dev]\n[cd.prod]\n\n[cd.staging]\nstage = \"dev\"\n\
+             merge_first = true\ndeploy = \"d\"\nverify = \"v\"\nrollback = \"r\"\n\
+             migrations = \"none: stateless\"\n"
+        ),
+    )?;
+    app.ci_sync_sandbox(&sandbox).await?;
+    f.settle(&app).await?;
+    let worktree = f.task(1, &[("f1.txt", "x\n")]).await?;
+    f.arm(1, &worktree).await?;
+    f.record_passed(&app, 1, &git(&worktree, &["rev-parse", "HEAD"])?)
+        .await?;
+    f.advance_dev("other-1.txt")?;
+    app.merge_armed(&f.sandbox).await;
+    let id = TaskId::parse("t1")?;
+    f.h.store
+        .transition_task(
+            &id,
+            None,
+            TaskStatus::Running,
+            Some(Activity::Working),
+            app.now(),
+        )
+        .await?;
+    f.settle(&app).await?;
+    app.merge_armed(&f.sandbox).await;
+    assert!(!f.merged(&app, 1).await?);
+    f.h.clock.0.fetch_add(
+        yulius_app::merge_train::WAIT_LIMIT_MS + 1000,
+        Ordering::SeqCst,
+    );
+    app.merge_armed(&f.sandbox).await;
+    f.h.store
+        .transition_task(
+            &id,
+            None,
+            TaskStatus::Running,
+            Some(Activity::Waiting),
+            app.now(),
+        )
+        .await?;
+    f.decide_until(&app, || async {
+        f.settle(&app).await?;
+        f.merged(&app, 1).await
+    })
+    .await?;
+    app.ci_sync_sandbox(&sandbox).await?;
+    f.settle(&app).await?;
+    app.ci_sync_sandbox(&sandbox).await?;
+    f.settle(&app).await?;
+    let trains = f.train_runs(&app).await?;
+    assert!(
+        trains.iter().any(|r| r
+            .reason
+            .as_deref()
+            .is_some_and(|x| x.starts_with("not run again"))),
+        "a candidate reused its tree: {trains:?}"
+    );
+    let dev = git(&f.origin, &["rev-parse", "dev"])?;
+    let head_run = f
+        .runs(&app)
+        .await?
+        .into_iter()
+        .find(|r| r.sha == dev && matches!(r.reference, CiRef::Branch(_)))
+        .ok_or("dev head run")?;
+    let jobs = app.deps.store.ci_jobs(&head_run.id, true).await?;
+    assert!(
+        jobs.iter().any(|j| j.key == "full"
+            && j.state == RunState::Passed
+            && j.output.contains("full suite ran")),
+        "the merged head ran the full suite: {head_run:?} {jobs:?}"
+    );
+    Ok(())
+}

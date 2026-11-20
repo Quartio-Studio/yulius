@@ -7,6 +7,18 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 ## 2026-11-20
 
 - Every task entering Needs You now carries a redacted, actionable notice explaining what happened, what a person needs to do, and where to do it—shown beside the task status (even when stopped or parked), in the attention bar, Needs You lists, notifications, and identically in `tasks_list` and `task_get`—alongside deduplicated timestamped wait-episode history (`task_wait_messages`). Browser handoffs persist across activity transitions, parking, and restarts and clear cleanly when answered, dismissed, superseded, closed, or marked done; untold agent-recoverable CI failures and progressing reruns stay in Working until human action is needed ([ADR-0414](decisions/0414-actionable-needs-you-notices-and-wait-history.md), [SPEC-578](../.ai/specs/SPEC-578-show-an-actionable-message-whenever-a-ta.md)).
+- Merge-first staging target: a task's `cd_deploy` now queues a staging request for the task's
+  merged revision instead of deploying the branch head.
+  - Yulius runs the full gate on exactly that commit, then deploys and verifies revisions in
+    first-parent order, once per task.
+  - A failing candidate leaves staging on its last verified release.
+  - A deploy lost to a restart is retried, and duplicate requests answer with the recorded one.
+  - A failed deploy restores staging and tells the task.
+  - The CD page and `cd_status` show the queue.
+  - Production promotes only the revision staging verified
+    ([ADR-0411](decisions/0411-staging-changes-through-a-queue-of-tested-merged-revisions.md),
+    [SPEC-575](../.ai/specs/SPEC-575-make-task-local-testing-and-one-staging.md)).
+- Task lists and Home check parked PRs in bounded batches. A stalled check leaves its task under Needs you and gives later tasks time to verify their own checks (SPEC-558).
 - Added the Linux tunnel handoff helper. It retains connected sockets and private copy state for one successor for up to two minutes. [ADR-0413](decisions/0413-a-bounded-helper-holds-connected-tunnel-sockets-between-servers.md)
 
 - Opaque proxy and host-side relay copies retain partial writes and half-closes when paused on the same sockets. [SPEC-577](../.ai/specs/SPEC-577-preserve-opaque-egress-tunnels-across-a.md)

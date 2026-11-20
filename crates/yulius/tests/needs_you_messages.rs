@@ -967,7 +967,7 @@ async fn parked_task_with_merged_pr_does_not_record_phantom_wait_history() -> Te
 
     let owner = auth_ctx(&h, "u-alice").await?;
     let detail = h.app.task_detail(&owner, "t1").await?;
-    assert_eq!(detail.parked_needs_you, Some(false));
+    assert_eq!(detail.summary.parked_needs_you, Some(false));
     assert!(detail.summary.needs_you_notice.is_none());
     assert!(
         detail.wait_history.is_empty(),

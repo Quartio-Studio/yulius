@@ -12,16 +12,42 @@ use yulius_domain::task::{AttentionFacts, PullSignal, TaskGroup, TaskStatus};
 use crate::auth::AuthContext;
 use crate::context::App;
 use crate::error::AppResult;
-use crate::model::{SandboxRecord, TaskRecord};
+use crate::model::{SandboxRecord, StepRecord, TaskRecord};
+use tokio::sync::OnceCell;
 use tokio::time::Instant;
 use yulius_contracts::api::tasks::ParkedPr;
 
-/// Maximum active native Git workers used by parked status reads.
+/// Maximum concurrent reads per batch and active native Git workers per application.
 pub(crate) const PARKED_READS: usize = 8;
 
 /// Time allowed for remote verification of one parked task.
 pub(crate) fn parked_pr_deadline(budget_ms: u64) -> Instant {
     Instant::now() + std::time::Duration::from_millis(budget_ms)
+}
+
+/// Reserve a share of the remaining deadline for each unvisited batch.
+pub(crate) fn fair_batches<T>(
+    rows: &[T],
+    deadline: Instant,
+    concurrency: usize,
+) -> impl Iterator<Item = (&[T], Instant)> {
+    let mut batches = rows.chunks(concurrency);
+    std::iter::from_fn(move || {
+        let batch = batches.next()?;
+        let now = Instant::now();
+        let remaining = u32::try_from(batches.len() + 1).unwrap_or(u32::MAX);
+        Some((
+            batch,
+            now + deadline.saturating_duration_since(now) / remaining,
+        ))
+    })
+}
+
+/// Display result of one bounded read. An early timeout may precede the plan lookup.
+pub(crate) struct ParkedStatus {
+    pub(crate) needs_you: bool,
+    pub(crate) pr: Option<ParkedPr>,
+    pub(crate) steps: Option<Vec<StepRecord>>,
 }
 
 /// PR facts the Git overview supplied for a single task. A closed, unmerged PR
@@ -208,10 +234,18 @@ impl App {
         access: AccessLevel,
     ) -> AppResult<Sandbox> {
         let tasks = self.deps.store.tasks(&record.id, false).await?;
-        let requested = self.browser_requests(&record.id).await;
+        let groups = self.list_groups(&tasks).await?;
+        Ok(Self::sandbox_with_groups(record, access, groups))
+    }
+
+    fn sandbox_with_groups(
+        record: &SandboxRecord,
+        access: AccessLevel,
+        groups: Vec<TaskGroup>,
+    ) -> Sandbox {
         let mut counts = SandboxCounts::default();
-        for task in &tasks {
-            match self.task_group(task, &requested).await? {
+        for group in groups {
+            match group {
                 TaskGroup::NeedsYou => counts.needs_attention += 1,
                 TaskGroup::Working => counts.running += 1,
                 TaskGroup::Queued => counts.queued += 1,
@@ -223,7 +257,7 @@ impl App {
         // Always a value (SPEC-338 VOF-001), read on its own like the scans read it.
         profile.vidoc = Some(crate::delivery::vidoc_switched_on(record));
         profile.protect_production = Some(crate::delivery::production_protection_required(record));
-        Ok(Sandbox {
+        Sandbox {
             id: record.id.to_string(),
             slug: record.slug.clone(),
             name: record.repo_name.clone(),
@@ -247,7 +281,7 @@ impl App {
             port_base: record.port_base,
             port_count: record.port_count,
             counts,
-        })
+        }
     }
 
     /// Whether the sidebar shows `task` under Done: an achieved goal, a tested pull request with
@@ -272,23 +306,85 @@ impl App {
         Ok(self.task_attention_facts(task, requested).await?.group())
     }
 
+    pub(crate) fn status_deadline(&self) -> Instant {
+        parked_pr_deadline(self.config.parked_pr_read_ms)
+    }
+
+    /// Verify just the parked rows, before unrelated local work can spend their budget.
+    pub(crate) async fn parked_list_statuses(
+        &self,
+        mut parked: Vec<(&TaskRecord, &OnceCell<HashSet<String>>)>,
+    ) -> HashMap<TaskId, ParkedStatus> {
+        parked.retain(|(task, _)| task.status == TaskStatus::Parked);
+        let mut statuses = HashMap::with_capacity(parked.len());
+        for (batch, until) in fair_batches(&parked, self.status_deadline(), PARKED_READS) {
+            let reads = batch.iter().map(|&(task, requests)| async move {
+                (
+                    task.id.clone(),
+                    self.parked_status(task, requests, until).await,
+                )
+            });
+            statuses.extend(futures::future::join_all(reads).await);
+        }
+        statuses
+    }
+
+    pub(crate) async fn list_groups(&self, tasks: &[TaskRecord]) -> AppResult<Vec<TaskGroup>> {
+        let requests = OnceCell::new();
+        let parked = self
+            .parked_list_statuses(tasks.iter().map(|task| (task, &requests)).collect())
+            .await;
+        self.groups_with_parked(tasks, &requests, &parked).await
+    }
+
+    async fn groups_with_parked(
+        &self,
+        tasks: &[TaskRecord],
+        requests: &OnceCell<HashSet<String>>,
+        parked: &HashMap<TaskId, ParkedStatus>,
+    ) -> AppResult<Vec<TaskGroup>> {
+        let mut groups = Vec::with_capacity(tasks.len());
+        for task in tasks {
+            let group = if let Some(status) = parked.get(&task.id) {
+                if status.needs_you {
+                    TaskGroup::NeedsYou
+                } else {
+                    TaskGroup::Done
+                }
+            } else {
+                let requested = requests
+                    .get_or_init(|| self.browser_requests(&task.sandbox_id))
+                    .await;
+                self.task_group(task, requested).await?
+            };
+            groups.push(group);
+        }
+        Ok(groups)
+    }
+
     /// Check the recorded and branch PRs before reporting Done, even before
     /// anyone opens the sandbox Git overview. A missed deadline leaves work open.
     pub(crate) async fn parked_status(
         &self,
         task: &TaskRecord,
+        requests: &OnceCell<HashSet<String>>,
         deadline: Instant,
-    ) -> (bool, Option<ParkedPr>) {
+    ) -> ParkedStatus {
         use crate::delivery::PrVerification;
         // Seed from memory before waiting on any store or browser lock. Once
         // the record is read, a timed-out lookup can still name its delivery.
         let mut observed = self.known_parked_pull(task, None);
+        let mut steps = None;
         let check = async {
             let record = self.deps.store.delivery(&task.id).await?;
             observed = self.known_parked_pull(task, record.as_ref());
-            let requested = self.browser_requests(&task.sandbox_id).await;
-            let mut facts = self.task_attention_facts(task, &requested).await?;
-            if facts.parked_has_local_work_or_request() {
+            let requested = requests
+                .get_or_init(|| self.browser_requests(&task.sandbox_id))
+                .await;
+            if !self
+                .parked_chain_clear(task, Some(requested), &mut steps)
+                .await?
+            {
                 return Ok(true);
             }
             let Some(prs) = self
@@ -309,11 +405,13 @@ impl App {
                     &prs,
                     PrVerification::Display,
                     &mut observed,
+                    &mut steps,
                 )
                 .await?
             {
                 return Ok(true);
             }
+            let mut facts = AttentionFacts::new(task.status, task.activity);
             facts.pull = observed.pr.map(|pr| {
                 if pr.open {
                     PullSignal::Tested
@@ -327,7 +425,15 @@ impl App {
             tokio::time::timeout_at(deadline, check).await,
             Ok(Ok(false))
         );
-        (needs_you, observed.pr)
+        crate::race::reached(
+            crate::race::Point::ParkedStatusRead,
+            std::path::Path::new(task.id.as_str()),
+        );
+        ParkedStatus {
+            needs_you,
+            pr: observed.pr,
+            steps,
+        }
     }
 
     /// The facts that place the task in its sidebar group and explain a derived wait.
@@ -456,9 +562,25 @@ impl App {
     /// # Errors
     /// Store failures.
     pub async fn list_sandboxes(&self, ctx: &AuthContext) -> AppResult<Vec<Sandbox>> {
-        let mut out = Vec::new();
+        let mut projects = Vec::new();
         for (record, level) in self.visible_sandboxes(&ctx.user).await? {
-            out.push(self.sandbox_view(&record, level).await?);
+            let tasks = self.deps.store.tasks(&record.id, false).await?;
+            projects.push((record, level, tasks, OnceCell::new()));
+        }
+        let parked = self
+            .parked_list_statuses(
+                projects
+                    .iter()
+                    .flat_map(|(_, _, tasks, requests)| {
+                        tasks.iter().map(move |task| (task, requests))
+                    })
+                    .collect(),
+            )
+            .await;
+        let mut out = Vec::with_capacity(projects.len());
+        for (record, level, tasks, requests) in projects {
+            let groups = self.groups_with_parked(&tasks, &requests, &parked).await?;
+            out.push(Self::sandbox_with_groups(&record, level, groups));
         }
         Ok(out)
     }
