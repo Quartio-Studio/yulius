@@ -844,3 +844,118 @@ async fn the_tool_is_called_over_mcp() -> TestResult {
     assert_eq!(tasks.body[0]["title"], "Over MCP");
     Ok(())
 }
+
+/// SPEC-512 HOF-003 (task #539's review): a refusal redacts before it cuts, so a secret that
+/// lies across a kept field's bound leaves no part of itself in the page or the audit.
+#[tokio::test]
+async fn a_secret_across_a_refusals_cut_leaves_no_part_of_it() -> TestResult {
+    let w = world().await?;
+    set_mode(&w, "automatic", 3, 100).await?;
+    let value = "shop-token-value-0123456789";
+    let created = call(
+        &w.h.router,
+        Method::POST,
+        "/api/sandboxes/s1/agent-secrets",
+        Some(json!({"name": "SHOP_TOKEN", "value": value})),
+        &w.alice,
+    )
+    .await?;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
+    // Each field is kept to 100 (sandbox), 200 (title) and 2,000 (prompt) characters: the
+    // secret starts just before each bound.
+    let refused = hand(
+        &w,
+        "t1",
+        json!({
+            "sandbox": format!("{}{value}", "z".repeat(95)),
+            "title": format!("{}{value}", "y".repeat(190)),
+            "prompt": format!("{}{value}", "x".repeat(1_990)),
+        }),
+    )
+    .await?;
+    assert!(
+        refused.is_err_and(|e| e.contains("agent secret") && e.contains("SHOP_TOKEN")),
+        "a secret stays in its sandbox"
+    );
+    let page = call(
+        &w.h.router,
+        Method::GET,
+        "/api/tasks/t1/handoffs",
+        None,
+        &w.alice,
+    )
+    .await?;
+    assert_eq!(page.status, StatusCode::OK, "{}", page.body);
+    assert!(
+        !page.body.to_string().contains("shop-token"),
+        "no part of the secret is kept: {}",
+        page.body
+    );
+    assert!(
+        audits(&w, "s1")
+            .await?
+            .iter()
+            .all(|d| !d.contains("shop-token"))
+    );
+    Ok(())
+}
+
+/// SPEC-512 HOF-005, HOF-006 (task #539's review): a refusal's audit row on the target names the
+/// task's sandbox, as every other `task.handoff` row does, and a refused row lists the sandbox
+/// that was asked for, not the task's own.
+#[tokio::test]
+async fn a_refusal_names_its_source_and_what_was_asked() -> TestResult {
+    let w = world().await?;
+    set_mode(&w, "automatic", 3, 100).await?;
+    let closed = call(
+        &w.h.router,
+        Method::PUT,
+        "/api/sandboxes/s3/handoffs",
+        Some(json!({"accept": false})),
+        &w.alice,
+    )
+    .await?;
+    assert_eq!(closed.status, StatusCode::OK, "{}", closed.body);
+    let opted_out = hand(
+        &w,
+        "t1",
+        json!({"sandbox": "web", "title": "T", "prompt": "P"}),
+    )
+    .await?;
+    assert!(opted_out.is_err_and(|e| e.contains("does not accept")));
+    let number =
+        w.h.store
+            .task(&TaskId::parse("t1")?)
+            .await?
+            .ok_or("t1")?
+            .number;
+    let on_target = audits(&w, "s3").await?;
+    assert!(
+        on_target
+            .iter()
+            .any(|d| d.starts_with("refused:") && d.contains(&format!("s1 #{number} to acme/web"))),
+        "{on_target:?}"
+    );
+    let missing = hand(
+        &w,
+        "t1",
+        json!({"sandbox": "nowhere", "title": "T", "prompt": "P"}),
+    )
+    .await?;
+    assert!(missing.is_err_and(|e| e.contains("no sandbox nowhere found")));
+    let page = call(
+        &w.h.router,
+        Method::GET,
+        "/api/tasks/t1/handoffs",
+        None,
+        &w.alice,
+    )
+    .await?;
+    let rows = page.body["handoffs"].as_array().ok_or("handoffs")?;
+    let row = rows
+        .iter()
+        .find(|r| r["reason"].as_str().is_some_and(|r| r.contains("nowhere")))
+        .ok_or("the refused row")?;
+    assert_eq!(row["target_sandbox"], "nowhere", "{row}");
+    Ok(())
+}

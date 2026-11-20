@@ -614,7 +614,14 @@ impl App {
         };
         self.deps.store.insert_handoff(&record).await?;
         let actor = format!("task:{}", source.number);
-        let detail = format!("refused: {reason}");
+        // Named as `audit_handoff` names the others, so the target's row says whose it is.
+        let to = target
+            .map(|t| format!(" to {}", label(t)))
+            .unwrap_or_default();
+        let detail = format!(
+            "refused: {} #{}{to}: {reason}",
+            source.sandbox_id, source.number
+        );
         let mut sandboxes = vec![source.sandbox_id.clone()];
         if let Some(target) = target
             && target.id != source.sandbox_id
@@ -742,7 +749,13 @@ impl App {
             handoffs.push(HandoffView {
                 id: h.id,
                 target_sandbox_id: h.target_sandbox.as_str().to_owned(),
-                target_sandbox: target.map_or_else(|| args.sandbox.clone(), |t| label(&t)),
+                // A refusal with no target found keeps the task's own sandbox: show what was asked.
+                target_sandbox: match target {
+                    Some(t) if h.state != "refused" || h.target_sandbox != task.sandbox_id => {
+                        label(&t)
+                    }
+                    _ => args.sandbox.clone(),
+                },
                 // Shown redacted as the sandbox's other text is (review round 2).
                 title: self.redact_for_sandbox(&task.sandbox_id, &args.title).await,
                 prompt: self
