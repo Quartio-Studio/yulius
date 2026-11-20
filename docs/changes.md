@@ -8,6 +8,8 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 - A GPT model now selects Codex for API and MCP task creation. Choosing a GPT or Gemini model
   on a Claude Code task fails before creation or update (SPEC-560, #1427).
+- The store migration regression counts SQLite instructions and verifies completed step spans,
+  so host contention cannot fail the backfill test (SPEC-559, #1484).
 - Newly parked tasks show their last agent screen, idle duration and resume instructions
   on the task page and through `task_screen` (SPEC-558, #1490).
 
