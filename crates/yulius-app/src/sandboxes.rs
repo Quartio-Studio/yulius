@@ -15,6 +15,12 @@ use crate::context::App;
 use crate::error::AppResult;
 use crate::model::{SandboxRecord, TaskRecord};
 
+/// A chain reuses its just-verified pull while it rechecks local owner facts.
+enum PullRead {
+    Read,
+    Checked(Option<PullSignal>),
+}
+
 /// All parked PRs rendered by one list share the same remote lookup deadline.
 pub(crate) fn parked_pr_deadline() -> Instant {
     Instant::now() + std::time::Duration::from_millis(750)
@@ -178,6 +184,42 @@ impl App {
         requested: &HashSet<String>,
         deadline: Option<Instant>,
     ) -> AppResult<AttentionFacts> {
+        let facts = self
+            .attention_with_pull(task, requested, deadline, PullRead::Read)
+            .await?;
+        if facts.group() != TaskGroup::Done
+            || !(task.status == TaskStatus::Parked
+                || task.status == TaskStatus::Running
+                    && task.activity == Some(yulius_domain::task::Activity::Done))
+        {
+            return Ok(facts);
+        }
+        // Checking the PR may have waited on GitHub while its owner answered,
+        // rearmed or reopened a step. The page and the chain use the current facts.
+        let current = self
+            .deps
+            .store
+            .task(&task.id)
+            .await?
+            .ok_or(crate::error::AppError::NotFound)?;
+        let requested = self.browser_requests(&current.sandbox_id).await;
+        let pull = if current.status == task.status {
+            PullRead::Checked(facts.pull)
+        } else {
+            PullRead::Read
+        };
+        self.attention_with_pull(&current, &requested, deadline, pull)
+            .await
+    }
+
+    /// Reuse verified PR evidence when rechecking a predecessor's local work.
+    async fn attention_with_pull(
+        &self,
+        task: &TaskRecord,
+        requested: &HashSet<String>,
+        deadline: Option<Instant>,
+        checked_pull: PullRead,
+    ) -> AppResult<AttentionFacts> {
         let store = &self.deps.store;
         if task.status.is_resting() || task.status == TaskStatus::Stopping {
             let mut facts = AttentionFacts::new(task.status, task.activity);
@@ -214,7 +256,9 @@ impl App {
                 || goal_unfinished
                 || held_prompt
                 || requested.contains(task.id.as_str());
-            let pull = if task.status == TaskStatus::Parked && !local_needs {
+            let pull = if let PullRead::Checked(pull) = checked_pull {
+                pull
+            } else if task.status == TaskStatus::Parked && !local_needs {
                 // An incomplete overview can omit a task's recorded open PR.
                 self.task_pull_signal(task, deadline)
                     .await

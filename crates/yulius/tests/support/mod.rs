@@ -61,6 +61,9 @@ pub struct FakeGitHub {
     pub callback_entered: tokio::sync::Notify,
     /// Pull requests (delivery tests).
     pub pulls: Mutex<Vec<GhPull>>,
+    /// Hold a PR metadata read while an owner decision is committed.
+    pub pull_read_hold: Mutex<Option<Arc<tokio::sync::Notify>>>,
+    pub pull_read_entered: tokio::sync::Notify,
     /// Simulates a failed repository-wide overview while individual PRs remain readable.
     pub fail_overview_pulls: std::sync::atomic::AtomicBool,
     /// The branch of every `branch_pulls` call, in order: one GitHub request each (the hygiene
@@ -447,6 +450,15 @@ impl GitHubPort for FakeGitHub {
         Ok(created)
     }
     async fn get_pull(&self, _: &Secret, _: &str, _: &str, number: u64) -> AppResult<GhPull> {
+        let hold = self
+            .pull_read_hold
+            .lock()
+            .map_err(AppError::internal)?
+            .clone();
+        if let Some(hold) = hold {
+            self.pull_read_entered.notify_one();
+            hold.notified().await;
+        }
         self.refresh_heads();
         let mut pull = self
             .pulls

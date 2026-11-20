@@ -2995,10 +2995,15 @@ async fn parked_list_home_and_mcp_classify_a_green_head_while_the_first_is_slow(
             .needs_attention,
         1
     );
+    // The healthy task is newest for MCP. Apply the owner's limit only after
+    // filtering Needs you, otherwise the slow task disappears from the page.
+    f.h.store
+        .set_activity(&f.task, Some(Activity::Waiting), Timestamp(now.0 + 2))
+        .await?;
     let caller = crate::task_message::superagent(&f.sandbox, &slow.created_by, "admin");
     let listing =
         f.h.app
-            .tool_tasks_list(&caller, &serde_json::json!({"scope":"needs_you"}))
+            .tool_tasks_list(&caller, &serde_json::json!({"scope":"needs_you","limit":1}))
             .await?;
     assert_eq!(listing["tasks"].as_array().ok_or("tasks")?.len(), 1);
     assert_eq!(listing["tasks"][0]["task_id"], slow_id.as_str());

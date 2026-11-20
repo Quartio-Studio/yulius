@@ -2237,6 +2237,9 @@ impl App {
             let Some(branch) = task.branch.clone() else {
                 continue;
             };
+            let task_pull = open_pulls
+                .iter()
+                .find(|pull| !pull.from_fork && pull.head == branch);
             let mut view = TaskBranch {
                 task_id: task.id.to_string(),
                 title: task.title.clone(),
@@ -2246,29 +2249,11 @@ impl App {
                 files_changed: 0,
                 insertions: 0,
                 deletions: 0,
-                pr: open_pulls
-                    .iter()
-                    .find(|p| !p.from_fork && p.head == branch)
-                    .map(|p| pull_view(p, checks_of(p.number))),
+                pr: task_pull.map(|p| pull_view(p, checks_of(p.number))),
                 worktree: worktree_state(&task),
             };
-            if let Some(pr) = &mut view.pr
-                && pr.checks == "success"
-                && let Some(pull) = open_pulls
-                    .iter()
-                    .find(|p| p.number == pr.number && p.base == profile.integration_branch)
-            {
-                match self
-                    .pull_has_failed_candidate(&sandbox, pull, &pr.checks)
-                    .await
-                {
-                    Ok(true) => pr.checks = "failure".into(),
-                    Err(_) => pr.checks = "error".into(),
-                    Ok(false) => {}
-                }
-            }
             // GitHub's list says nothing about mergeability: Yulius's own clone does (DON-001).
-            if let Some(pull) = open_pulls.iter().find(|p| !p.from_fork && p.head == branch)
+            if let Some(pull) = task_pull
                 && self.pull_conflicts(&task, &sandbox, pull).await
             {
                 if let Some(pr) = view.pr.as_mut() {
@@ -2384,6 +2369,18 @@ impl App {
                 .and_then(|pr| PullSignal::from_wire(&pr.state, &pr.checks, pr.conflicts))
             {
                 observed.insert(task.id.clone(), signal);
+            }
+            // A replacement candidate can clear while this overview stays cached.
+            // Keep ordinary CI above, overlay integration evidence on the wire row only.
+            if let (Some(pr), Some(pull)) = (&mut view.pr, task_pull) {
+                match self
+                    .pull_has_failed_candidate(&sandbox, pull, &pr.checks)
+                    .await
+                {
+                    Ok(true) => pr.checks = "failure".into(),
+                    Err(_) => pr.checks = "error".into(),
+                    Ok(false) => {}
+                }
             }
             tasks.push(view);
         }
@@ -4395,15 +4392,18 @@ impl App {
         if running && self.merge_is_armed(&task.id) {
             return false;
         }
-        if parked {
+        if parked || (running && task.activity == Some(Activity::Done)) {
             let requested = self.browser_requests(&task.sandbox_id).await;
             let Ok(facts) = self.task_attention_facts(task, &requested, None).await else {
                 return false;
             };
-            if facts.group() != yulius_domain::task::TaskGroup::Done {
+            if facts.status != task.status
+                || facts.activity != task.activity
+                || facts.group() != yulius_domain::task::TaskGroup::Done
+            {
                 return false;
             }
-            if task.activity == Some(Activity::Done) {
+            if facts.activity == Some(Activity::Done) {
                 return true;
             }
             return matches!(facts.pull, Some(PullSignal::Tested | PullSignal::Merged))
@@ -4415,17 +4415,6 @@ impl App {
                     .ok()
                     .flatten()
                     .is_some_and(|r| past_merge(&r.stage) || r.stage == DeliveryStage::PrOpen);
-        }
-        if running && task.activity == Some(Activity::Done) {
-            let requested = self.browser_requests(&task.sandbox_id).await;
-            return self
-                .task_attention_facts(
-                    task,
-                    &requested,
-                    Some(crate::sandboxes::parked_pr_deadline()),
-                )
-                .await
-                .is_ok_and(|facts| facts.group() == yulius_domain::task::TaskGroup::Done);
         }
         // One reading of its delivery for the whole decision: a merge recorded between two
         // readings would be "no news due" by the first and "merged" by the second.

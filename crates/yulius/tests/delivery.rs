@@ -4807,6 +4807,9 @@ async fn a_parked_predecessor_waits_for_the_complete_check_report() -> TestResul
         f.h.app.task_summary(&parked).await?.parked_needs_you,
         Some(true)
     );
+    // The summary started a second held read. Consume its notification so the
+    // later plan-reopening fixture waits for its own read.
+    tokio::time::timeout(Duration::from_secs(5), f.h.github.checks_entered.notified()).await?;
     edit_pull(&f, 1, |pull| pull.head_sha = "replacement-head".into());
     *f.h.github.stale_reads.lock().map_err(|_| "pull fixture")? = 2;
     f.h.github
@@ -4837,6 +4840,30 @@ async fn a_parked_predecessor_waits_for_the_complete_check_report() -> TestResul
         pull.mergeable = Some(true);
         pull.head_sha.clone_from(&head);
     });
+    // A step is reopened while the server is checking a positive PR.
+    let read = f.h.github.hold_checks();
+    let app = f.h.app.clone();
+    let predecessor = before.clone();
+    let advance = tokio::spawn(async move { app.advance_chains(&predecessor).await });
+    tokio::time::timeout(Duration::from_secs(5), f.h.github.checks_entered.notified()).await?;
+    let app = f.h.app.clone();
+    let before_reopen = parked.clone();
+    let summary = tokio::spawn(async move { app.task_summary(&before_reopen).await });
+    tokio::time::timeout(Duration::from_secs(5), f.h.github.checks_entered.notified()).await?;
+    set_steps(&f, "t1", &["done", "in_progress"]).await?;
+    f.h.github.release_checks(&read);
+    assert_eq!(
+        summary.await??.parked_needs_you,
+        Some(true),
+        "the page also saw the open step before its PR read finished"
+    );
+    advance.await?;
+    assert_eq!(
+        f.h.store.task(&child).await?.ok_or("successor")?.status,
+        TaskStatus::Chained,
+        "work reopened during the final PR read"
+    );
+    set_steps(&f, "t1", &["done", "done"]).await?;
     f.h.app.advance_chains(&TaskId::parse("t1")?).await;
     assert_ne!(
         f.h.store.task(&child).await?.ok_or("successor")?.status,

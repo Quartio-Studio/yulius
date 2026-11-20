@@ -3126,7 +3126,24 @@ fn cold_candidate_case(queue_place: i64, later_runs: i64, prior_notice: bool) ->
                 1481
             ))
         );
-        cold.git_overview(&owner, caller.sandbox.as_str()).await?;
+        let overview = cold.git_overview(&owner, caller.sandbox.as_str()).await?;
+        assert_eq!(
+            overview
+                .tasks
+                .iter()
+                .find(|row| row.task_id == id.as_str())
+                .and_then(|row| row.pr.as_ref())
+                .map(|pr| pr.checks.as_str()),
+            Some("failure")
+        );
+        assert_eq!(
+            overview
+                .pulls
+                .iter()
+                .find(|pr| pr.number == 1481)
+                .map(|pr| pr.checks.as_str()),
+            Some("success")
+        );
         let counts = cold
             .sandbox_view(&sandbox, AccessLevel::Write)
             .await?
@@ -3200,6 +3217,45 @@ fn cold_candidate_case(queue_place: i64, later_runs: i64, prior_notice: bool) ->
                     None,
                 )
                 .await?;
+        }
+        if prior_notice {
+            let arms = cold
+                .config
+                .data_dir
+                .join(yulius_app::agent_wait::ARMED_MERGES_FILE);
+            for rearmed in [false, true] {
+                let gate = Arc::new(tokio::sync::Notify::new());
+                *remote.pull_read_hold.lock().map_err(|_| "PR read gate")? = Some(gate.clone());
+                let watcher = cold.clone();
+                let pass =
+                    tokio::spawn(async move { watcher.watch_prs(&WatchBounds::default()).await });
+                tokio::time::timeout(Duration::from_secs(5), remote.pull_read_entered.notified())
+                    .await?;
+                if rearmed {
+                    std::fs::write(
+                        &arms,
+                        serde_json::to_vec(
+                            &json!([{"task":id.as_str(),"head":head,"summary":"approved"}]),
+                        )?,
+                    )?;
+                } else {
+                    ask(&cold, &id).await?;
+                }
+                *remote.pull_read_hold.lock().map_err(|_| "PR read gate")? = None;
+                gate.notify_one();
+                assert!(
+                    pass.await?.is_empty(),
+                    "the owner acted during candidate verification, rearmed={rearmed}"
+                );
+                if rearmed {
+                    std::fs::write(&arms, b"[]")?;
+                } else {
+                    cold.deps
+                        .store
+                        .set_task_needs_you(&id, None, cold.now())
+                        .await?;
+                }
+            }
         }
         let notices = cold.watch_prs(&bounds).await;
         assert!(
@@ -3290,6 +3346,39 @@ fn cold_candidate_case(queue_place: i64, later_runs: i64, prior_notice: bool) ->
                 .iter()
                 .all(|(who, _)| who != &id),
             "the earlier head must not send the original owner another notice"
+        );
+        // Keep the Git overview untouched after the failed attempt. A successful
+        // rerun of that same candidate clears the old failure from the chain.
+        set_pull_head(&remote, 1481, &head)?;
+        let red = cold
+            .deps
+            .store
+            .ci_run("candidate-red")
+            .await?
+            .ok_or("failed candidate")?;
+        let (mut passed, job) = crate::pr_watch::run(
+            &caller.sandbox,
+            "candidate-passed",
+            &red.sha,
+            RunState::Passed,
+            None,
+            40,
+        );
+        passed.reference = CiRef::Train(vec![1481]);
+        cold.deps.store.insert_ci_run(&passed, &[job]).await?;
+        cold.deps
+            .store
+            .set_activity(&id, Some(Activity::Done), cold.now())
+            .await?;
+        assert_eq!(
+            cold.task_summary(&achieved).await?.integration_candidate,
+            None
+        );
+        cold.advance_chains(&id).await;
+        assert_ne!(
+            status_of(&cold, &live_successor.id).await.0,
+            Some(TaskStatus::Chained),
+            "the overview cached a superseded candidate as ordinary CI"
         );
         cold.stop_task_now(&id).await?;
         Ok::<_, Error>(())

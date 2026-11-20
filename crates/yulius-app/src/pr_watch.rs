@@ -610,6 +610,7 @@ impl App {
             let (text, next) = decide(&facts, &told, bounds);
             let next = match text {
                 None => next,
+                Some(_) if self.candidate_notice_held(&task, &facts).await => untold(told, &next),
                 Some(text) => {
                     // Job names, reasons and test names come from the project: no control
                     // character may end the paste early (review minor 4).
@@ -718,6 +719,8 @@ impl App {
                                 error = %err,
                                 "keeping parked task parked while no usable account is available"
                             );
+                            untold(told, &next)
+                        } else if self.candidate_notice_held(&task, &facts).await {
                             untold(told, &next)
                         } else {
                             let text = crate::task_message::clean_message(&text);
@@ -1097,6 +1100,27 @@ impl App {
             key: format!("{head}:{class}"),
             text,
         })
+    }
+
+    /// A verified failure may become hands-off while the watcher reads GitHub
+    /// or prepares the account. Leave its notice pending until it can be sent.
+    async fn candidate_notice_held(&self, task: &TaskRecord, facts: &PrFacts) -> bool {
+        let Some(event) = facts.events.iter().find(|e| e.kind == "integration") else {
+            return false;
+        };
+        let store = &self.deps.store;
+        let Ok(Some(current)) = store.task(&task.id).await else {
+            return true;
+        };
+        let needs_you = !matches!(store.task_needs_you(&task.id).await, Ok(None));
+        current.status != task.status
+            || current.archived_at.is_some()
+            || self.person_must_act_on_pr(&current, needs_you).await
+            || !matches!(store.open_pause(&current.id).await, Ok(None))
+            || !matches!(store.delivery(&current.id).await, Ok(Some(d)) if d.stage == DeliveryStage::PrOpen && d.pr_number == Some(facts.pr))
+            || !matches!(store.ci_runs_for_pr(&current.sandbox_id, facts.pr).await, Ok(runs) if runs.first().is_some_and(|r| r.id == event.key))
+            || self.merge_is_armed(&current.id)
+            || self.train_hold(&current) != Hold::Free
     }
 
     async fn person_must_act_on_pr(&self, task: &TaskRecord, needs_you: bool) -> bool {

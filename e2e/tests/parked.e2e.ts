@@ -438,7 +438,8 @@ test('the waiting owner sees a failed integration candidate until the verified r
     stop();
     const after = group();
     store.stopEvents();
-    return [before, after];
+    const unresolved = taskInfo({ ...task, integration_candidate: { unverified: 1481 } }, null, { number: 1481, state: 'open', checks: 'success' });
+    return [before, unresolved.group, unresolved.label, after];
   });
-  expect(groups).toEqual(['needs', 'done']);
+  expect(groups).toEqual(['needs', 'working', 'Verifying integration candidate · PR #1481', 'done']);
 });
