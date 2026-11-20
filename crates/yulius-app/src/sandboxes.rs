@@ -1,8 +1,8 @@
 //! Sandbox (project) queries and views (SPEC-001 §5.2). Creation/import lives with the Git and
 //! GitHub integration.
 
-use std::collections::{HashMap, HashSet};
-use std::sync::Mutex;
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::sync::{Arc, Mutex};
 
 use yulius_contracts::api::sandboxes::{Profile, RepoRef, Sandbox, SandboxCounts};
 use yulius_domain::ids::{SandboxId, TaskId};
@@ -14,26 +14,165 @@ use crate::context::App;
 use crate::error::AppResult;
 use crate::model::{SandboxRecord, TaskRecord};
 
-/// What each sandbox's Git overview last said about its tasks' pull requests (GIT-001): the same
-/// facts the web UI's sidebar reads, so the "needs you" counts agree with it without calling
-/// GitHub for every sandbox list. Replaced per sandbox on every overview read; bounded by the
-/// sandboxes' tasks; empty after a restart until the next overview read.
-#[derive(Debug, Default)]
-pub(crate) struct ObservedPulls(Mutex<HashMap<SandboxId, HashMap<TaskId, PullSignal>>>);
+/// PR facts the Git overview supplied for a single task. A closed, unmerged PR
+/// has a number and no attention signal.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ObservedPull {
+    pub(crate) number: u64,
+    pub(crate) signal: Option<PullSignal>,
+}
 
-impl ObservedPulls {
-    /// Records one overview read of a sandbox.
-    pub(crate) fn record(&self, sandbox: &SandboxId, pulls: HashMap<TaskId, PullSignal>) {
-        if let Ok(mut map) = self.0.lock() {
-            map.insert(sandbox.clone(), pulls);
+impl ObservedPull {
+    fn open(self) -> bool {
+        self.signal
+            .is_some_and(|signal| signal != PullSignal::Merged)
+    }
+}
+
+/// Maximum number of overlapping responses held for start-order publication per sandbox.
+const OVERVIEW_WINDOW: usize = 30;
+
+type PullRows = HashMap<TaskId, Option<ObservedPull>>;
+
+#[derive(Debug)]
+struct Overview {
+    complete: bool,
+    rows: PullRows,
+}
+
+impl Overview {
+    fn reading(&self, task: &TaskId, prior: Option<ObservedPull>) -> Option<ObservedPull> {
+        let read = *self.rows.get(task)?;
+        if !self.complete
+            && let Some(open) = prior.filter(|pr| pr.open())
+            && read.is_none_or(|pr| !pr.open() && pr.number != open.number)
+        {
+            return Some(open);
+        }
+        read
+    }
+}
+
+#[derive(Debug)]
+struct Slot {
+    id: u64,
+    published: Option<Overview>,
+}
+
+#[derive(Debug, Default)]
+struct ReadOrder {
+    next: u64,
+    committed: Option<HashMap<TaskId, ObservedPull>>,
+    slots: VecDeque<Slot>,
+}
+
+impl ReadOrder {
+    fn finish(&mut self, id: u64, result: Option<Overview>) {
+        let Some(index) = self.slots.iter().position(|slot| slot.id == id) else {
+            return;
+        };
+        if result.is_some() {
+            self.slots[index].published = result;
+        } else {
+            self.slots.remove(index);
+        }
+        while self
+            .slots
+            .front()
+            .is_some_and(|slot| slot.published.is_some())
+        {
+            if let Some(read) = self.slots.pop_front().and_then(|slot| slot.published) {
+                let prior = self.committed.get_or_insert_with(HashMap::new);
+                *prior = read
+                    .rows
+                    .keys()
+                    .filter_map(|task| {
+                        read.reading(task, prior.get(task).copied())
+                            .map(|pr| (task.clone(), pr))
+                    })
+                    .collect();
+            }
         }
     }
 
-    /// The last observed pull request of a task: `Some(None)` when the overview listed the task
-    /// without one, `None` when its sandbox was not read since the server started.
+    fn current(&self, task: &TaskId) -> Option<Option<ObservedPull>> {
+        let mut known = self.committed.as_ref().map(|rows| rows.get(task).copied());
+        for slot in &self.slots {
+            if let Some(read) = &slot.published {
+                known = Some(read.reading(task, known.flatten()));
+            }
+        }
+        known
+    }
+}
+
+/// A bounded per-sandbox publication window. Home/MCP can read a finished
+/// response immediately, including when an earlier request is still in flight.
+#[derive(Debug, Default)]
+pub(crate) struct ObservedPulls(Mutex<HashMap<SandboxId, Arc<Mutex<ReadOrder>>>>);
+
+pub(crate) struct OverviewRead {
+    cache: Arc<Mutex<ReadOrder>>,
+    id: Option<u64>,
+}
+
+impl OverviewRead {
+    pub(crate) fn record(mut self, complete: bool, rows: PullRows) {
+        if let Some(id) = self.id.take()
+            && let Ok(mut order) = self.cache.lock()
+        {
+            order.finish(id, Some(Overview { complete, rows }));
+        }
+    }
+}
+
+impl Drop for OverviewRead {
+    fn drop(&mut self) {
+        if let Some(id) = self.id.take()
+            && let Ok(mut order) = self.cache.lock()
+        {
+            order.finish(id, None);
+        }
+    }
+}
+
+impl ObservedPulls {
+    pub(crate) fn begin(&self, sandbox: &SandboxId) -> AppResult<OverviewRead> {
+        let cache = self
+            .0
+            .lock()
+            .map_err(crate::error::AppError::internal)?
+            .entry(sandbox.clone())
+            .or_default()
+            .clone();
+        let id = {
+            let mut order = cache.lock().map_err(crate::error::AppError::internal)?;
+            if order.slots.len() >= OVERVIEW_WINDOW {
+                return Err(crate::error::AppError::Capacity(
+                    "too many overlapping Git overview reads in this sandbox".into(),
+                ));
+            }
+            let id = order.next;
+            order.next = order.next.wrapping_add(1);
+            order.slots.push_back(Slot {
+                id,
+                published: None,
+            });
+            id
+        };
+        Ok(OverviewRead {
+            cache,
+            id: Some(id),
+        })
+    }
+
     fn get(&self, sandbox: &SandboxId, task: &TaskId) -> Option<Option<PullSignal>> {
-        let map = self.0.lock().ok()?;
-        map.get(sandbox).map(|pulls| pulls.get(task).copied())
+        let cache = self.0.lock().ok()?.get(sandbox)?.clone();
+        cache
+            .lock()
+            .ok()?
+            .current(task)
+            .map(|pr| pr.and_then(|pr| pr.signal))
     }
 }
 
@@ -279,4 +418,99 @@ impl App {
 pub(crate) fn plan_open(steps: &[crate::model::StepRecord]) -> bool {
     let progress = crate::tasks::progress(steps);
     progress.total > 0 && progress.done < progress.total
+}
+
+#[cfg(test)]
+mod overview_tests {
+    use super::*;
+
+    #[test]
+    fn overlapping_overviews_update_each_tasks_last_authoritative_pr_read() -> AppResult<()> {
+        let cache = ObservedPulls::default();
+        let sandbox = SandboxId::parse("sandbox").map_err(crate::error::AppError::internal)?;
+        let task = TaskId::parse("task").map_err(crate::error::AppError::internal)?;
+        let rows = |pull| HashMap::from([(task.clone(), pull)]);
+        let red = Some(ObservedPull {
+            number: 2,
+            signal: Some(PullSignal::Failing),
+        });
+        let landed = Some(ObservedPull {
+            number: 1,
+            signal: Some(PullSignal::Merged),
+        });
+        for (complete, later, expected) in [
+            (false, None, Some(PullSignal::Failing)),
+            (false, landed, Some(PullSignal::Failing)),
+            (
+                false,
+                Some(ObservedPull {
+                    number: 2,
+                    signal: None,
+                }),
+                None,
+            ),
+            (true, None, None),
+            (true, landed, Some(PullSignal::Merged)),
+        ] {
+            for reverse in [false, true] {
+                let earlier = cache.begin(&sandbox)?;
+                let newer = cache.begin(&sandbox)?;
+                if reverse {
+                    newer.record(complete, rows(later));
+                    earlier.record(true, rows(red));
+                } else {
+                    earlier.record(true, rows(red));
+                    newer.record(complete, rows(later));
+                }
+                assert_eq!(cache.get(&sandbox, &task), Some(expected));
+                cache.begin(&sandbox)?.record(true, HashMap::new());
+            }
+        }
+
+        let older = cache.begin(&sandbox)?;
+        cache.begin(&sandbox)?.record(true, HashMap::new());
+        older.record(false, rows(red));
+        assert_eq!(cache.get(&sandbox, &task), Some(None));
+        Ok(())
+    }
+
+    #[test]
+    fn cancelling_an_older_overview_releases_its_publication_window() -> AppResult<()> {
+        let cache = ObservedPulls::default();
+        let sandbox = SandboxId::parse("one").map_err(crate::error::AppError::internal)?;
+        let other = SandboxId::parse("two").map_err(crate::error::AppError::internal)?;
+        let task = TaskId::parse("task").map_err(crate::error::AppError::internal)?;
+        let old = cache.begin(&sandbox)?;
+        let red = Some(ObservedPull {
+            number: 2,
+            signal: Some(PullSignal::Failing),
+        });
+        for _ in 1..OVERVIEW_WINDOW {
+            cache
+                .begin(&sandbox)?
+                .record(false, HashMap::from([(task.clone(), red)]));
+        }
+        assert!(matches!(
+            cache.begin(&sandbox),
+            Err(crate::error::AppError::Capacity(_))
+        ));
+        assert_eq!(cache.get(&sandbox, &task), Some(Some(PullSignal::Failing)));
+        cache.begin(&other)?.record(true, HashMap::new());
+        drop(old);
+        cache.begin(&sandbox)?.record(true, HashMap::new());
+        assert_eq!(cache.get(&sandbox, &task), Some(None));
+        Ok(())
+    }
+    #[test]
+    fn cancelling_later_overviews_returns_capacity_while_the_first_read_is_pending() -> AppResult<()>
+    {
+        let cache = ObservedPulls::default();
+        let sandbox = SandboxId::parse("one").map_err(crate::error::AppError::internal)?;
+        let _old = cache.begin(&sandbox)?;
+        for _ in 1..OVERVIEW_WINDOW {
+            drop(cache.begin(&sandbox)?);
+        }
+        drop(cache.begin(&sandbox)?);
+        Ok(())
+    }
 }

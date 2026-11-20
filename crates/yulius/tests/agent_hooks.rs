@@ -2599,6 +2599,16 @@ async fn a_failing_same_branch_pr_from_a_fork_does_not_keep_an_answered_task_liv
     let overview = f.h.app.git_overview(&owner, f.sandbox.as_str()).await?;
     assert!(
         overview
+            .tasks
+            .iter()
+            .find(|row| row.task_id == f.task.as_str())
+            .ok_or("task")?
+            .pr
+            .is_none(),
+        "a fork does not own the local task row"
+    );
+    assert!(
+        overview
             .pulls
             .iter()
             .any(|p| p.number == 1461 && p.checks == "failure")
@@ -2908,5 +2918,158 @@ async fn parking_keeps_an_external_pr_when_its_checked_head_starts_an_unwatched_
             .await?
     );
     assert_eq!(f.h.app.park_idle_sessions_now().await, 1);
+    Ok(())
+}
+
+/// Both overviews inspect parked task #2 before the partial one waits on #1's recorded PR.
+#[tokio::test]
+async fn incomplete_git_overviews_preserve_the_current_parked_pr_observation() -> TestResult {
+    let f = fixture().await?;
+    install_compatibility_pull(&f).await?;
+    let owner = idle_for_parking(&f).await?;
+    f.h.app
+        .deps
+        .store
+        .set_activity(&f.task, Some(Activity::Working), f.h.app.now())
+        .await?;
+    let id = TaskId::parse("t-other")?;
+    let store = &f.h.app.deps.store;
+    store
+        .transition_task(
+            &id,
+            None,
+            TaskStatus::Parked,
+            Some(Activity::Waiting),
+            f.h.app.now(),
+        )
+        .await?;
+    f.h.github
+        .set_checks("abc123", yulius_app::ports::github::ChecksState::Success);
+    f.h.github
+        .set_checks("external", yulius_app::ports::github::ChecksState::Failure);
+    let caller = crate::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
+    for open in [true, false] {
+        // Omit both PRs; task #1 now needs a direct lookup. Hold it after #2's row was read.
+        f.h.github.fail_overview_pulls.store(true, Ordering::SeqCst);
+        let gate = Arc::new(tokio::sync::Notify::new());
+        *f.h.github.pull_read_hold.lock().map_err(|_| "get pull")? = Some(gate.clone());
+        let pending = f.h.app.git_overview(&owner, f.sandbox.as_str());
+        tokio::pin!(pending);
+        tokio::select! {
+            result = &mut pending => return Err(format!("partial overview completed before the barrier: {result:?}").into()),
+            result = tokio::time::timeout(std::time::Duration::from_secs(5), f.h.github.pull_read_entered.notified()) => result?,
+        }
+        f.h.github
+            .fail_overview_pulls
+            .store(false, Ordering::SeqCst);
+        *f.h.github.pull_read_hold.lock().map_err(|_| "get pull")? = None;
+        {
+            let mut pulls = f.h.github.pulls.lock().map_err(|_| "pulls")?;
+            if open {
+                let external = yulius_app::ports::github::GhPull {
+                    number: 1462,
+                    head: "feat/2-x".into(),
+                    head_sha: "external".into(),
+                    base: "release".into(),
+                    mergeable: Some(false),
+                    ..pulls[0].clone()
+                };
+                pulls.push(external);
+            } else {
+                pulls.retain(|pr| pr.number != 1462);
+            }
+        }
+        let fresh = f.h.app.git_overview(&owner, f.sandbox.as_str()).await?;
+        if open {
+            let pr = fresh
+                .tasks
+                .iter()
+                .find(|t| t.task_id == id.as_str())
+                .and_then(|t| t.pr.as_ref())
+                .ok_or("external PR")?;
+            assert!(pr.conflicts, "use the mergeability of the task's own PR");
+        }
+        gate.notify_one();
+        pending.await?;
+        let list =
+            f.h.app
+                .tool_tasks_list(&caller, &json!({"scope":"needs_you"}))
+                .await?;
+        let row = list["tasks"]
+            .as_array()
+            .ok_or("tasks")?
+            .iter()
+            .find(|row| row["task_id"] == id.as_str());
+        assert_eq!(
+            row.is_some(),
+            open,
+            "the partial overview overwrote the concurrent complete observation"
+        );
+        if let Some(row) = row {
+            assert_eq!(
+                row["wait_reason"],
+                "The agent stopped and its pull request checks are failing."
+            );
+        }
+        assert_eq!(
+            f.h.app.list_sandboxes(&owner).await?[0]
+                .counts
+                .needs_attention,
+            u32::from(open)
+        );
+    }
+    // A full upstream reply may still omit the external PR from the capped overview.
+    {
+        let mut pulls = f.h.github.pulls.lock().map_err(|_| "pulls")?;
+        let external = yulius_app::ports::github::GhPull {
+            number: 1462,
+            head: "feat/2-x".into(),
+            head_sha: "external".into(),
+            base: "release".into(),
+            ..pulls[0].clone()
+        };
+        pulls.push(external);
+    }
+    f.h.app.git_overview(&owner, f.sandbox.as_str()).await?;
+    let cap = yulius_app::delivery::MAX_PULLS;
+    {
+        let mut pulls = f.h.github.pulls.lock().map_err(|_| "pulls")?;
+        for i in 1..cap {
+            let other = yulius_app::ports::github::GhPull {
+                number: u64::try_from(i)?,
+                head: format!("other-{i}"),
+                ..pulls[0].clone()
+            };
+            pulls.insert(0, other);
+        }
+    }
+    let limited = f.h.app.git_overview(&owner, f.sandbox.as_str()).await?;
+    assert_eq!(limited.pulls.len(), cap);
+    assert!(limited.pulls.iter().all(|pr| pr.number != 1462));
+    assert_eq!(
+        f.h.app.list_sandboxes(&owner).await?[0]
+            .counts
+            .needs_attention,
+        1
+    );
+    f.h.github
+        .pulls
+        .lock()
+        .map_err(|_| "pulls")?
+        .retain(|pr| pr.number != 1462);
+    assert_eq!(
+        f.h.app
+            .git_overview(&owner, f.sandbox.as_str())
+            .await?
+            .pulls
+            .len(),
+        cap
+    );
+    assert_eq!(
+        f.h.app.list_sandboxes(&owner).await?[0]
+            .counts
+            .needs_attention,
+        0
+    );
     Ok(())
 }

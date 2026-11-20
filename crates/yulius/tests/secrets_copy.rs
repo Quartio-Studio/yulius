@@ -630,3 +630,48 @@ async fn copies_are_answered_only_where_and_by_whom_they_may_be() -> TestResult 
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn interpreter_copy_requests_are_refused_including_approval_after_upgrade() -> TestResult {
+    let w = world().await?;
+    let name = "PERL5LIB";
+    let args = json!({"secret":"N3_DEV_CI_TOKEN", "name":name, "hosts":[HOST]});
+    let refused = ask(&w, TOKEN, args).await?;
+    assert_eq!(refused["isError"], true);
+    assert!(
+        support::tool_text(&refused)
+            .to_string()
+            .contains("APP_PERL5LIB")
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_saved_interpreter_copy_request_can_only_be_dismissed() -> TestResult {
+    let w = world().await?;
+    let sid = SandboxId::parse("s1")?;
+    let req = yulius_app::ports::vault::VaultCopyRequest {
+        secret_id: w.prod.clone(),
+        sandbox_id: sid.clone(),
+        name: "PERL5LIB".into(),
+        hosts: vec![HOST.into()],
+        requested_by: "#1".into(),
+        reason: String::new(),
+        asked_at: w.h.app.now(),
+    };
+    assert!(w.h.store.vault_put_copy_request(&req, None).await?);
+    crate::secrets::enroll(&w.h, &w.browser).await?;
+    let refused = answer(&w, &w.browser, true, &req.name, &[HOST]).await?;
+    assert_eq!(refused.status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(
+        !w.h.store
+            .vault_agent_in(&sid)
+            .await?
+            .iter()
+            .any(|r| r.name == req.name)
+    );
+    let dismissed = answer(&w, &w.browser, false, &req.name, &[HOST]).await?;
+    assert_eq!(dismissed.status, StatusCode::OK);
+    assert!(w.h.store.vault_copy_requests(&sid).await?.is_empty());
+    Ok(())
+}

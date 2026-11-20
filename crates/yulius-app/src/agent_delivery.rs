@@ -34,17 +34,6 @@ use crate::model::SandboxRecord;
 /// Longest review summary kept in the audit.
 const MAX_REVIEW_SUMMARY_CHARS: usize = 500;
 
-/// `delivery_merge`'s answer to a merge it made: the delivery, and with steps of the plan still
-/// ahead (`ahead`, [`crate::delivery::steps_ahead_note`]) that the task goes on (SPEC-484
-/// PLN-003).
-fn merged_answer(view: &impl serde::Serialize, ahead: &str) -> Value {
-    let mut answer = json!({"merged": true, "delivery": view});
-    if !ahead.is_empty() {
-        answer["next"] = json!(format!("Merged: the finished part is delivered.{ahead}"));
-    }
-    answer
-}
-
 /// Why an issue is not ready (Definition of Ready, DLV-008), or `None`.
 #[must_use]
 pub fn definition_of_ready_problem(labels: &[String], body: &str) -> Option<String> {
@@ -441,8 +430,8 @@ impl App {
                 }));
             }
         }
-        let view = match self.merge_task_pr_for_task(&auth, &task_id).await {
-            Ok(view) => view,
+        let merged = match self.merge_task_pr_for_task(&auth, &task_id).await {
+            Ok(merged) => merged,
             Err(MergeFailure::Refused(err)) => return Err(err),
             // GitHub could not take the pull request's new title for now (SPEC-069 BPL-008):
             // armed, so Yulius merges this head on its next pass.
@@ -488,7 +477,11 @@ impl App {
             ),
         )
         .await;
-        Ok(merged_answer(&view, &ahead))
+        Ok(json!({
+            "merged": true,
+            "delivery": merged.view,
+            "next": format!("{}.{ahead}", merged.receipt),
+        }))
     }
 
     /// `delivery_deploy`: runs a command-verified environment of the profile (DLV-008).

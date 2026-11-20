@@ -95,6 +95,8 @@ struct RealGit {
     remote_unreadable: std::sync::atomic::AtomicBool,
     /// Hold the second checkout probe while the predecessor changes state.
     checkout_probe: std::sync::Mutex<Option<Arc<CheckoutProbe>>>,
+    overview_log_entered: tokio::sync::Notify,
+    overview_log_hold: std::sync::Mutex<Option<Arc<tokio::sync::Notify>>>,
     /// While set, a refresh of a clone fails (SPEC-493 fix 6).
     fetch_fails: std::sync::atomic::AtomicBool,
     /// Moved right after every refresh of a clone, as an agent racing it would: `(ref, commit)`
@@ -417,6 +419,15 @@ impl GitPort for RealGit {
         Ok((ahead, behind))
     }
     async fn log(&self, repo: &Path, rev: &str, limit: u32) -> AppResult<Vec<CommitInfo>> {
+        let hold = self
+            .overview_log_hold
+            .lock()
+            .map_err(AppError::internal)?
+            .clone();
+        if let Some(hold) = hold {
+            self.overview_log_entered.notify_one();
+            hold.notified().await;
+        }
         let text = self
             .run(
                 repo,
@@ -842,6 +853,8 @@ async fn fixture_with(
         ahead_behind_error: std::sync::Mutex::default(),
         remote_unreadable: std::sync::atomic::AtomicBool::default(),
         checkout_probe: Default::default(),
+        overview_log_entered: Default::default(),
+        overview_log_hold: Default::default(),
         fetch_fails: std::sync::atomic::AtomicBool::default(),
         forged_after_fetch: std::sync::Mutex::default(),
     });
@@ -8297,6 +8310,46 @@ async fn pull_request_changes_are_announced_to_the_sandbox() -> TestResult {
     Ok(())
 }
 
+/// Cancelling HTTP during the final Git log must return even a non-front slot.
+#[tokio::test]
+async fn cancelling_an_overview_at_the_final_git_log_admits_a_replacement() -> TestResult {
+    let f = fixture(&DeliveryProfile::standard()).await?;
+    let (_wt, head) = delivered_with_a_successor(&f, &finished_spec("t1")).await?;
+    f.h.github.set_checks(&head, ChecksState::Success);
+    let overview = || f.req(Method::GET, "/api/sandboxes/s1/git", None, &f.bob);
+    let held = f.h.github.hold_checks();
+    let mut oldest = Box::pin(overview());
+    tokio::select! {
+        _ = &mut oldest => return Err("oldest request did not reach the held PR check".into()),
+        reached = tokio::time::timeout(Duration::from_secs(5), f.h.github.checks_entered.notified()) => reached?,
+    }
+    // The first request owns a reference to the held check. Later requests finish.
+    *f.h.github.checks_hold.lock().map_err(|_| "check hold")? = None;
+    for _ in 1..29 {
+        assert_eq!(overview().await?.status, StatusCode::OK);
+    }
+    let log_hold = Arc::new(tokio::sync::Notify::new());
+    *f.git.overview_log_hold.lock().map_err(|_| "log hold")? = Some(log_hold);
+    let mut last = Box::pin(overview());
+    tokio::select! {
+        _ = &mut last => return Err("last request did not reach its held Git log".into()),
+        reached = tokio::time::timeout(Duration::from_secs(5), f.git.overview_log_entered.notified()) => reached?,
+    }
+    assert_eq!(overview().await?.status, StatusCode::TOO_MANY_REQUESTS);
+    drop(last);
+    *f.git.overview_log_hold.lock().map_err(|_| "log hold")? = None;
+    let replacement = overview().await?;
+    assert_eq!(
+        replacement.status,
+        StatusCode::OK,
+        "the cancelled HTTP request kept its slot: {}",
+        replacement.body
+    );
+    f.h.github.release_checks(&held);
+    assert_eq!(oldest.await?.status, StatusCode::OK);
+    Ok(())
+}
+
 /// SPEC-108 PRL-007: the read a merge's announcement brings may reach GitHub before its list of
 /// open pull requests caught up; a pull request Yulius recorded as merged reads merged anyway.
 #[tokio::test]
@@ -9952,9 +10005,18 @@ async fn post_merge_evidence_recovers_the_expected_landing_after_github_returns(
     let agent = live_agent(&f, "t1", "tok-deferred-merge").await?;
     f.h.github.set_checks(&head, ChecksState::Success);
     f.h.github.fail_merged_reads.store(true, Ordering::SeqCst);
-    arm_merge(&f, &agent, &head).await?;
-    f.h.app.merge_armed(&SandboxId::parse("s1")?).await;
+    let answer = arm_merge(&f, &agent, &head).await?;
+    assert_eq!(answer["merged"], true, "immediate merge: {answer}");
     let sha = f.origin_sha("dev")?;
+    let receipt = answer["next"].as_str().ok_or("immediate merge receipt")?;
+    assert!(
+        receipt.contains(&format!(
+            "pull request #1 at {} from PR head {}",
+            &sha[..9],
+            &head[..9]
+        )),
+        "{receipt}"
+    );
     assert!(f.delivery("t1").await?["evidence"].is_null());
     let mut profile = DeliveryProfile::standard();
     profile.integration_branch = "another-base".into();
@@ -10122,11 +10184,41 @@ async fn post_merge_evidence_checks_the_pr_number_on_the_git_page() -> TestResul
     f.h.github
         .misnumber_merged_reads
         .store(true, Ordering::SeqCst);
+    let status = agent_tool(&f, &agent, "delivery_status", json!({})).await?;
+    let status = answer(&status)?;
+    assert_eq!(status["stage"], "pr_open", "{status}");
+    assert!(
+        status["pull_request"].is_null() && status["evidence"].is_null(),
+        "{status}"
+    );
+    let notes = status["notes"].as_array().ok_or("status notes")?;
+    assert!(
+        notes.iter().any(|note| note.as_str().is_some_and(
+            |text| text.contains("GitHub returned pull request #2 for the requested #1")
+        )),
+        "{status}"
+    );
+    assert!(
+        !notes.iter().any(|note| note
+            .as_str()
+            .is_some_and(|text| text.contains("is merged into"))),
+        "{status}"
+    );
+    let record =
+        f.h.app
+            .deps
+            .store
+            .delivery(&TaskId::parse("t1")?)
+            .await?
+            .ok_or("delivery")?;
+    assert_eq!(record.pr_number, Some(1));
     let page = f
         .req(Method::GET, "/api/sandboxes/s1/git", None, &f.bob)
         .await?;
     assert_eq!(page.status, StatusCode::OK);
-    assert!(f.delivery("t1").await?["evidence"].is_null());
+    let view = f.delivery("t1").await?;
+    assert_eq!(view["stage"], "pr_open");
+    assert!(view["evidence"].is_null());
     let path = format!("/api/tasks/t1/delivery/evidence/{sha}");
     assert_eq!(
         f.req(Method::GET, &path, None, &f.rita).await?.status,

@@ -3354,7 +3354,7 @@ function agentShadow(db, s, sandbox) {
 function agentView(db, s, sandbox) {
   const admin = Boolean(db.me.user.is_instance_admin || db.me.user.is_superadmin);
   const manage = s.scope === 'instance' ? admin : s.scope === 'personal' ? s.owner === db.me.user.login : RANK[sandbox.access] >= RANK.write;
-  return { id: s.id, name: s.name, description: s.description, scope: s.scope, enabled: agentOn(s, sandbox), shadowed_by: agentShadow(db, s, sandbox), hosts: s.hosts, requested_hosts: s.requested_hosts, requested_by: s.requested_by, env_files: s.env_files || 'no', env_requested_by: s.env_requested_by || null, cd_prod: Boolean(s.cd_prod), auto_allow: Boolean(s.auto_allow), injection: s.injection, header_name: s.header_name, injection_text: s.injection === 'header' ? `${s.header_name}: <value>` : INJECTION_TEXT[s.injection], placeholder: `yulius-secret-${s.name}`, has_username: Boolean(s.username), has_totp: false, created_by: s.created_by, updated_at: s.updated_at, value_updated_at: s.value_updated_at, last_used_at: s.last_used_at, rotate_due: false, flattened: manage && flattenedKey(s.value), can_manage: manage, ...copyRequestOf(s, sandbox, manage) };
+  return { id: s.id, name: s.name, description: s.description, scope: s.scope, enabled: agentOn(s, sandbox), shadowed_by: agentShadow(db, s, sandbox), hosts: s.hosts, requested_hosts: s.requested_hosts, requested_by: s.requested_by, env_files: s.env_files || 'no', env_requested_by: s.env_requested_by || null, cd_prod: Boolean(s.cd_prod), auto_allow: Boolean(s.auto_allow), injection: s.injection, header_name: s.header_name, injection_text: s.injection === 'header' ? `${s.header_name}: <value>` : INJECTION_TEXT[s.injection], placeholder: `yulius-secret-${s.name}`, has_username: Boolean(s.username), has_totp: false, created_by: s.created_by, updated_at: s.updated_at, value_updated_at: s.value_updated_at, last_used_at: s.last_used_at, rotate_due: false, flattened: manage && flattenedKey(s.value), interpreter_name: manage && INTERPRETER_SETTINGS.has(s.name), can_manage: manage, ...copyRequestOf(s, sandbox, manage) };
 }
 
 /** The copy of a production secret an agent of `sandbox` asked for (SPEC-440), as the list shows it. */
@@ -3440,8 +3440,19 @@ function flattenedKey(value) {
   return Boolean(match) && !value.includes('\\n') && match[2].trim() !== '';
 }
 
-function validateAgent(body, creating) {
+const INTERPRETER_SETTINGS = new Set(['PYTHONPATH', 'PERL5LIB', 'RUBYOPT', 'JAVA_TOOL_OPTIONS', 'JDK_JAVA_OPTIONS']);
+
+function checkAgentAssignment(name) {
+  if (INTERPRETER_SETTINGS.has(name) || reservedVariable(name)) {
+    const alternative = `APP_${name}`;
+    const example = AGENT_NAME_RE.test(alternative) ? `, such as ${alternative}` : '';
+    fail(422, 'invalid', `${name} is reserved. Choose another name${example}`);
+  }
+}
+
+function validateAgent(body, creating, currentName) {
   if (body.name !== undefined && !AGENT_NAME_RE.test(body.name)) fail(422, 'invalid', `invalid name "${body.name}"`);
+  if (body.name !== undefined && body.name !== currentName) checkAgentAssignment(body.name);
   if (body.hosts !== undefined && (!Array.isArray(body.hosts) || body.hosts.length > 16)) fail(422, 'invalid', 'at most 16 hosts');
   if ((creating || body.value !== undefined) && [...(body.value || '')].length < 8) fail(422, 'invalid', 'an agent secret needs at least 8 characters');
   if (body.value !== undefined && flattenedKey(body.value)) fail(422, 'invalid', "this key's line breaks were lost (a one-line field turns them into spaces): paste it into the Secrets page's Value field, which keeps them as \\n, or write each line break as \\n");
@@ -3539,7 +3550,7 @@ route('PATCH', `/api/agent-secrets/${ID}`, ({ db, p, body }) => {
   const secret = agentSecret(db, p[0]);
   const sandbox = secret.sandbox ? sandboxOf(db, secret.sandbox) : db.sandboxes[0];
   if (secret.scope === 'sandbox') need(sandbox, 'write');
-  validateAgent(body, false);
+  validateAgent(body, false, secret.name);
   if (body.username && (body.injection || secret.injection) !== 'basic') fail(422, 'invalid', 'a user name is only for Basic credentials: put a login\'s user name in the notes');
   // A production secret is never set up by agents (SPEC-216 SSA-004).
   if (body.auto_allow === true && secret.cd_prod) fail(409, 'conflict', PRODUCTION_SECRET);
@@ -3606,6 +3617,7 @@ route('POST', `/api/sandboxes/${ID}/agent-secrets/${ID}/copy`, ({ db, p, body })
     if (refused) return refused;
     if (vaultOf(db).agent.some((s) => s.name === req.name && s.scope === 'sandbox' && s.sandbox === sandbox.id)) fail(409, 'conflict', `an agent secret named ${req.name} already exists in this project`);
     const now = new Date().toISOString();
+    checkAgentAssignment(req.name);
     const copy = { id: `as_${db.nextId++}`, sandbox: sandbox.id, scope: 'sandbox', name: req.name, description: `Copy of ${secret.name} for agents (asked by ${req.requested_by}${req.reason ? `: ${req.reason}` : ''})`, hosts: [...req.hosts], injection: secret.injection, header_name: secret.header_name, username: secret.username, value: secret.value, created_by: db.me.user.login, updated_at: now, value_updated_at: now, last_used_at: null, requested_hosts: [], requested_by: null, env_files: 'no', env_requested_by: null, auto_allow: false };
     vaultOf(db).agent.push(copy);
     audit(db, 'vault.agent.create', copy.id, `${copy.name} → ${copy.hosts.join(', ')}, copy of ${secret.name}`);

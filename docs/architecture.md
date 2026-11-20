@@ -1574,6 +1574,9 @@ reads them per day with the minutes from arming to merge and the last ten dissol
 reason (`merge_queue::queue_numbers`; the Pipeline tab's Merge queue card)
 ([decision 0357](decisions/0357-a-merge-candidate-is-decided-by-its-own-run.md)).
 
+The armed merge verdict uses the SHA returned by the protected merge and the head GitHub accepted.
+It names the base when the closed PR confirms it. A train also names the candidate commit whose run passed.
+
 Each kept decision leaves a sentence in the armed slot (`ArmedSlot::note`), which `yulius wait`
 (`merge_train`), `delivery_status` and the task page show. `delivery_merge` for an armed head
 keeps it and its place. A merge found made, by anyone, is judged by its head's own run: a passed
@@ -2095,6 +2098,8 @@ resume waits `queued` with its prompt. A queued task's summary carries `queue_re
 limit or an update), and `GET /api/capacity` counts working, idle, parked and queued sessions for
 the Capacity card.
 
+Home and MCP apply Git overview results to each task in read order. A failed or truncated list preserves a known open PR, including one reported through the owner’s token. A direct closure or complete list can clear it. Overlapping requests publish their observations under one lock. [ADR-0407](decisions/0407-keep-current-pr-observations-across-incomplete-overviews.md)
+
 When a successor waits for its predecessor to be Done (`after_task` or `#N done`), Yulius
 checks the parked predecessor’s declared work, goal and outstanding owner requests. It verifies
 the recorded PR and current open PRs on the task branch through the same lookup used
@@ -2608,6 +2613,8 @@ A team secret keeps real line breaks: its value field, a password input too, car
 LF and CR as a private-use character that the form turns back on save, so the vault stores the
 value as pasted ([SPEC-299](../.ai/specs/SPEC-299-team-secret-value-field-keeps-pasted-lin.md),
 [decision 0214](decisions/0214-a-team-secret-value-carries-pasted-line-breaks-in-its-password-field.md)).
+
+New agent-secret names and renames reserve five interpreter settings. Stored names still resolve in run environments, proxy bindings and CI grants. Their managers see a rename notice in the existing vault metadata view. [ADR-0408](decisions/0408-interpreter-settings-are-reserved-for-new-agent-secret-names.md)
 
 Agents create agent secrets from a file with `secret_create_from_file` (`vault/create.rs`, for
 a task's agent or the Superagent as a `SecretUser`). The tool takes a path relative to the work
