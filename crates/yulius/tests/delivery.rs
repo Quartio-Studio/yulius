@@ -4633,11 +4633,8 @@ async fn working_and_queued_counts_split_the_sidebar_working_group() -> TestResu
     Ok(())
 }
 
-/// An achieved goal can release its chain even when its work produced no pull request.
-#[tokio::test]
-async fn a_parked_achieved_goal_releases_its_chain_without_a_pr() -> TestResult {
+async fn answer_with_a_successor(f: &Fixture) -> BoxResult<(TaskId, TaskId)> {
     use yulius_app::ports::store_ext::IntakeStore as _;
-    let f = fixture(&DeliveryProfile::standard()).await?;
     let before = TaskId::parse("t1")?;
     let child = TaskId::parse("t2")?;
     f.add_task("t1", "Answer the question", "feat/1-answer", "dev")
@@ -4658,6 +4655,101 @@ async fn a_parked_achieved_goal_releases_its_chain_without_a_pr() -> TestResult 
             rule: None,
         })
         .await?;
+    Ok((before, child))
+}
+
+/// Chromium startup can hold the final lookup for outstanding browser decisions.
+#[derive(Default)]
+struct HeldBrowserLookup {
+    calls: std::sync::atomic::AtomicUsize,
+    entered: tokio::sync::Notify,
+    release: tokio::sync::Notify,
+}
+
+use yulius_app::ports::browser::{BrowserFailure, BrowserPort, BrowserSession};
+
+#[async_trait]
+impl BrowserPort for HeldBrowserLookup {
+    async fn ensure(
+        &self,
+        sandbox: &SandboxId,
+        profile_dir: &Path,
+    ) -> Result<Arc<dyn BrowserSession>, BrowserFailure> {
+        yulius::wiring::browser::UnavailableBrowser
+            .ensure(sandbox, profile_dir)
+            .await
+    }
+
+    async fn running(&self, _: &SandboxId) -> Option<Arc<dyn BrowserSession>> {
+        if self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 1 {
+            self.entered.notify_one();
+            self.release.notified().await;
+        }
+        None
+    }
+
+    async fn reap_idle(&self) -> Vec<SandboxId> {
+        Vec::new()
+    }
+
+    async fn stop(&self, _: &SandboxId) -> bool {
+        false
+    }
+
+    async fn shutdown_all(&self) -> Vec<SandboxId> {
+        Vec::new()
+    }
+}
+
+#[tokio::test]
+async fn a_parked_successor_waits_if_its_owner_resumes_during_the_final_browser_read() -> TestResult
+{
+    let f = fixture(&DeliveryProfile::standard()).await?;
+    let (before, child) = answer_with_a_successor(&f).await?;
+    let browser = Arc::new(HeldBrowserLookup::default());
+    let mut deps = f.h.app.deps.clone();
+    deps.browser = browser.clone();
+    let app = yulius_app::context::App::new(f.h.app.config.clone(), deps);
+    let now = app.now();
+    f.h.store
+        .transition_task(&before, None, TaskStatus::Parked, Some(Activity::Done), now)
+        .await?;
+    let predecessor = before.clone();
+    let checking = app.clone();
+    let advance = tokio::spawn(async move { checking.advance_chains(&predecessor).await });
+    tokio::time::timeout(Duration::from_secs(5), browser.entered.notified()).await?;
+    f.h.store
+        .transition_task(
+            &before,
+            None,
+            TaskStatus::Running,
+            Some(Activity::Working),
+            now,
+        )
+        .await?;
+    browser.release.notify_one();
+    advance.await?;
+    assert_eq!(
+        f.h.store.task(&child).await?.ok_or("successor")?.status,
+        TaskStatus::Chained
+    );
+    f.h.store
+        .transition_task(&before, None, TaskStatus::Parked, Some(Activity::Done), now)
+        .await?;
+    app.advance_chains(&before).await;
+    assert_ne!(
+        f.h.store.task(&child).await?.ok_or("successor")?.status,
+        TaskStatus::Chained
+    );
+    Ok(())
+}
+
+/// An achieved goal can release its chain even when its work produced no pull request.
+#[tokio::test]
+async fn a_parked_achieved_goal_releases_its_chain_without_a_pr() -> TestResult {
+    let f = fixture(&DeliveryProfile::standard()).await?;
+    let (before, child) = answer_with_a_successor(&f).await?;
+    let now = f.h.app.now();
     for activity in [Activity::Waiting, Activity::Done] {
         f.h.store
             .transition_task(&before, None, TaskStatus::Parked, Some(activity), now)

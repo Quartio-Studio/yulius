@@ -4228,15 +4228,15 @@ impl App {
     /// Local work and decisions must still be settled after GitHub replies.
     async fn parked_chain_clear(&self, task: &TaskRecord) -> AppResult<bool> {
         let store = &self.deps.store;
-        Ok(!crate::sandboxes::plan_open(&store.steps(&task.id).await?)
+        Ok(!self
+            .browser_tab_requests(&task.sandbox_id)
+            .await
+            .contains(task.id.as_str())
+            && !crate::sandboxes::plan_open(&store.steps(&task.id).await?)
             && !self.read_spec_unfinished(&task.id).await?
             && !self.goal_unfinished_of(task).await
             && store.pending_hold(&task.id).await?.is_none()
-            && store.task_needs_you(&task.id).await?.is_none()
-            && !self
-                .browser_tab_requests(&task.sandbox_id)
-                .await
-                .contains(task.id.as_str()))
+            && store.task_needs_you(&task.id).await?.is_none())
     }
 
     async fn parked_predecessor_done(&self, task: &TaskRecord) -> AppResult<bool> {
@@ -4256,19 +4256,20 @@ impl App {
         else {
             return Ok(false);
         };
-        if !self.parking_checkout_matches(task, &prs).await? {
+        if !self.parking_checkout_matches(task, &prs).await?
+            || !self.parked_chain_clear(task).await?
+            || !self.parking_ci_still_current(task, &prs).await?
+            || store.delivery(&task.id).await? != record
+        {
             return Ok(false);
         }
-        let Some(current) = store.task(&task.id).await? else {
-            return Ok(false);
-        };
-        Ok(current.status == task.status
-            && current.activity == task.activity
-            && current.branch == task.branch
-            && current.worktree_path == task.worktree_path
-            && store.delivery(&task.id).await? == record
-            && self.parked_chain_clear(&current).await?
-            && self.parking_ci_still_current(&current, &prs).await?)
+        // Browser startup and checkout verification can outlast an owner resume.
+        Ok(store.task(&task.id).await?.is_some_and(|current| {
+            current.status == task.status
+                && current.activity == task.activity
+                && current.branch == task.branch
+                && current.worktree_path == task.worktree_path
+        }))
     }
 
     /// The part of [`App::task_is_done`] that needs no GitHub call: the turn ended, no background

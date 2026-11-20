@@ -2092,11 +2092,13 @@ resume waits `queued` with its prompt. A queued task's summary carries `queue_re
 limit or an update), and `GET /api/capacity` counts working, idle, parked and queued sessions for
 the Capacity card.
 
-Before a successor starts, Yulius checks its parked predecessor’s declared work, goal and
-outstanding owner requests. It verifies the recorded PR and current open PRs on the task
-branch through the same lookup used for parking. A waiting successor requires settled checks.
+When a successor waits for its predecessor to be Done (`after_task` or `#N done`), Yulius
+checks the parked predecessor’s declared work, goal and outstanding owner requests. It verifies
+the recorded PR and current open PRs on the task branch through the same lookup used
+for parking. A waiting successor requires settled checks.
 An externally opened replacement can hold the successor after the recorded delivery merged.
-Yulius rechecks local work and durable CI after the remote reads.
+Yulius rechecks local work, durable CI and the owner’s state after the remote reads.
+An explicit `#N merged` rule follows the recorded merge.
 
 The end-of-day digest (`yulius-app/src/digest.rs`, SPEC-512 part 3,
 [decision 0380](decisions/0380-an-end-of-day-digest-built-from-task-state.md)) runs from the same
