@@ -348,11 +348,15 @@ test('the PR watch refreshes the parked group in both directions', async ({ app,
     const task = { id, sandbox_id: sid, activity: 'waiting', status: 'parked', steps: { total: 2, done: 2 } };
     let fails = false;
     let unavailable = false;
+    let overviewUnavailable = false;
     let newerEvent = false;
     let tick = () => {};
     const store = createStore({
       get: async (path: string) => {
-        if (path.endsWith('/git')) return { tasks: [{ task_id: id, pr: { number: 7, state: 'open', checks: fails ? 'failure' : 'success' } }] };
+        if (path.endsWith('/git')) {
+          if (overviewUnavailable) throw new Error('overview temporarily unavailable');
+          return { tasks: [{ task_id: id, pr: { number: 7, state: 'open', checks: fails ? 'failure' : 'success' } }] };
+        }
         if (path.includes('/tasks?')) {
           if (unavailable) throw new Error('summary temporarily unavailable');
           if (newerEvent) store.upsertTask({ ...task, parked_needs_you: true });
@@ -382,6 +386,24 @@ test('the PR watch refreshes the parked group in both directions', async ({ app,
       await updated;
       seen.push([group(), group('answered')]);
     }
+    // The overview may fail independently of the task summaries. Wait for the
+    // mock fetch promises to settle before sampling the next browser turn.
+    newerEvent = false;
+    overviewUnavailable = true;
+    for (const red of [false, true]) {
+      fails = red;
+      tick();
+      await new Promise<void>((resolve) => {
+        const channel = new MessageChannel();
+        channel.port1.onmessage = () => {
+          channel.port1.close();
+          channel.port2.close();
+          resolve();
+        };
+        channel.port2.postMessage(null);
+      });
+      seen.push([group(), group('answered')]);
+    }
     stop();
     store.stopEvents();
     return seen;
@@ -389,6 +411,7 @@ test('the PR watch refreshes the parked group in both directions', async ({ app,
   expect(groups).toEqual([
     ['done', 'done'], ['needs', 'done'], ['done', 'done'],
     ['needs', 'done'], ['done', 'done'], ['needs', 'done'],
+    ['done', 'done'], ['needs', 'done'],
   ]);
 });
 

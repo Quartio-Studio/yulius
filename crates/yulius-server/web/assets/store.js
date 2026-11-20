@@ -332,7 +332,10 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
         changed = true;
       }
     }
-    if (changed) emit('tasks', sandboxId);
+    if (changed) {
+      emit('tasks', sandboxId);
+      scheduleCountsRefresh();
+    }
   }
 
   /** Reads the sandbox's pull requests; `fresh`: a change was announced, so a read in flight (which may predate it) is followed by another. */
@@ -363,6 +366,8 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
       state.gitRows.set(sandboxId, new Map(rows.map((t) => [t.task_id, t])));
       emit('pulls', sandboxId);
     } catch {
+      // Task summaries can still verify the PR when the broader Git overview fails.
+      await refreshParkedGroups(sandboxId, state.pulls.get(sandboxId) ?? new Map());
       // The chips of an earlier read on this page stay; stored ones of any age do not pass for
       // current when this page could not read (SPEC-104), shown already or not (an empty entry
       // keeps pullsOf from reading them later): the lists work without them.

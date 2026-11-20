@@ -4257,9 +4257,12 @@ impl App {
         if current != pull || current.behind || ordinary_run().await? != before {
             return Ok(Some(PullSignal::Errored));
         }
+        use yulius_domain::ci::RunState;
         let word = match before.map(|(_, state)| state) {
-            Some(state) if matches!(word, "success" | "none") => {
-                ci_checks_word(yulius_domain::ci::GateResult::Run(Some(state))).unwrap_or(word)
+            Some(RunState::Failed | RunState::Cancelled) => "failure",
+            Some(RunState::Error) if word != "failure" => "error",
+            Some(RunState::Running | RunState::Queued) if matches!(word, "none" | "success") => {
+                "pending"
             }
             _ => word,
         };

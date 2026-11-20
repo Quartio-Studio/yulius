@@ -4741,6 +4741,73 @@ async fn a_historical_parked_goal_keeps_its_owner_and_chain_state_after_restart(
     Ok(())
 }
 
+#[tokio::test]
+async fn a_parked_achieved_goal_waits_for_its_failed_ordinary_run() -> TestResult {
+    use yulius_domain::ci::{CiRef, RunState};
+    let f = fixture(&DeliveryProfile::standard()).await?;
+    let (_wt, head) = delivered_with_a_successor(&f, &finished_spec("t1")).await?;
+    let before = TaskId::parse("t1")?;
+    let child = TaskId::parse("t2")?;
+    f.h.store
+        .transition_task(
+            &before,
+            None,
+            TaskStatus::Parked,
+            Some(Activity::Done),
+            f.h.app.now(),
+        )
+        .await?;
+    let parked = f.h.store.task(&before).await?.ok_or("parked")?;
+    edit_pull(&f, 1, |pull| pull.mergeable = Some(true));
+    f.h.github.set_checks(&head, ChecksState::Pending);
+    insert_ci_attempt(
+        &f.h.store,
+        "ordinary-red",
+        &head,
+        CiRef::PullRequest(1),
+        RunState::Failed,
+        10,
+        &[],
+    )
+    .await?;
+    assert_eq!(
+        f.h.app.task_summary(&parked).await?.parked_needs_you,
+        Some(true),
+        "a pending remote report hid the failed ordinary run"
+    );
+    f.h.app.advance_chains(&before).await;
+    assert_eq!(
+        f.h.store.task(&child).await?.ok_or("successor")?.status,
+        TaskStatus::Chained
+    );
+    insert_ci_attempt(
+        &f.h.store,
+        "ordinary-green",
+        &head,
+        CiRef::PullRequest(1),
+        RunState::Passed,
+        11,
+        &[],
+    )
+    .await?;
+    f.h.github.set_checks(&head, ChecksState::Failure);
+    assert_eq!(
+        f.h.app.task_summary(&parked).await?.parked_needs_you,
+        Some(true)
+    );
+    f.h.github.set_checks(&head, ChecksState::Success);
+    assert_eq!(
+        f.h.app.task_summary(&parked).await?.parked_needs_you,
+        Some(false)
+    );
+    f.h.app.advance_chains(&before).await;
+    assert_ne!(
+        f.h.store.task(&child).await?.ok_or("successor")?.status,
+        TaskStatus::Chained
+    );
+    Ok(())
+}
+
 /// A parked Waiting predecessor releases its chain only when all its PR checks can be read.
 #[tokio::test]
 async fn a_parked_predecessor_waits_for_the_complete_check_report() -> TestResult {

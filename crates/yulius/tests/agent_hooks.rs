@@ -2947,6 +2947,17 @@ async fn parked_list_home_and_mcp_classify_a_green_head_while_the_first_is_slow(
     slow.activity = Some(Activity::Waiting);
     slow.updated_at = Timestamp(now.0 + 1);
     f.h.store.insert_task(&slow).await?;
+    // Lists order by descending task number. The slow PR occupies the final
+    // slot of the first batch, and the healthy PR starts the second batch.
+    for number in 13..20 {
+        let mut closed = slow.clone();
+        closed.id = TaskId::parse(&format!("closed-{number}"))?;
+        closed.number = number;
+        closed.branch = None;
+        closed.activity = None;
+        closed.status = TaskStatus::Closed;
+        f.h.store.insert_task(&closed).await?;
+    }
     let original = f.h.store.delivery(&f.task).await?.ok_or("PR")?;
     f.h.store
         .transition_delivery(
@@ -2974,6 +2985,14 @@ async fn parked_list_home_and_mcp_classify_a_green_head_while_the_first_is_slow(
         f.h.app
             .list_tasks(&owner, f.sandbox.as_str(), false)
             .await?;
+    assert_eq!(
+        rows.get(7).map(|row| row.id.as_str()),
+        Some(slow_id.as_str())
+    );
+    assert_eq!(
+        rows.get(8).map(|row| row.id.as_str()),
+        Some(f.task.as_str())
+    );
     assert_eq!(
         rows.iter()
             .find(|t| t.id == f.task.as_str())
