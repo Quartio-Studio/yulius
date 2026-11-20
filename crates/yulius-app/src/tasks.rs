@@ -180,8 +180,7 @@ impl App {
     /// # Errors
     /// Store failures.
     pub async fn task_summary(&self, task: &TaskRecord) -> AppResult<TaskSummary> {
-        self.task_summary_among(task, None, None, crate::sandboxes::parked_pr_deadline())
-            .await
+        self.task_summary_among(task, None).await
     }
 
     /// [`Self::task_summary`] of a task listed with the rest of its project's unarchived tasks
@@ -193,8 +192,6 @@ impl App {
         &self,
         task: &TaskRecord,
         project: Option<&[TaskRecord]>,
-        requested: Option<&std::collections::HashSet<String>>,
-        deadline: tokio::time::Instant,
     ) -> AppResult<TaskSummary> {
         let store = &self.deps.store;
         let steps = store.steps(&task.id).await?;
@@ -230,23 +227,6 @@ impl App {
         };
         let idle_run = matches!(task.status, TaskStatus::Running | TaskStatus::Parked)
             && task.activity.is_some_and(Activity::is_idle);
-        let (parked_needs_you, parked_pr) = if task.status == TaskStatus::Parked {
-            let own_requests;
-            let requests = match requested {
-                Some(requests) => requests,
-                None => {
-                    own_requests = self.browser_requests(&task.sandbox_id).await;
-                    &own_requests
-                }
-            };
-            let (facts, pr) = self.parked_attention(task, requests, deadline).await?;
-            (
-                Some(facts.group() != yulius_domain::task::TaskGroup::Done),
-                pr,
-            )
-        } else {
-            (None, None)
-        };
         Ok(TaskSummary {
             id: task.id.to_string(),
             sandbox_id: task.sandbox_id.to_string(),
@@ -330,8 +310,6 @@ impl App {
             // that run.
             goal_unfinished: idle_run && self.goal_unfinished_of(task).await,
             spec_unfinished: idle_run && self.spec_unfinished(&task.id).await,
-            parked_needs_you,
-            parked_pr,
             not_started,
             awaits_start_onboarding,
             pause: self.pause_view(task).await,
@@ -693,18 +671,11 @@ impl App {
         let tasks = self.deps.store.tasks(&sid, archived).await?;
         // Unarchived, the list is the project the summaries need; archived ones wait for nothing.
         let project = (!archived).then_some(tasks.as_slice());
-        let requested = if tasks.iter().any(|task| task.status == TaskStatus::Parked) {
-            self.browser_requests(&sid).await
-        } else {
-            Default::default()
-        };
-        crate::sandboxes::fair_rows(
-            &tasks,
-            crate::sandboxes::parked_pr_deadline(),
-            crate::sandboxes::PARKED_READS,
-            |task, until| self.task_summary_among(task, project, Some(&requested), until),
-        )
-        .await
+        let mut out = Vec::with_capacity(tasks.len());
+        for task in &tasks {
+            out.push(self.task_summary_among(task, project).await?);
+        }
+        Ok(out)
     }
 
     /// Archived tasks across all visible sandboxes.
@@ -713,10 +684,9 @@ impl App {
     /// Store failures.
     pub async fn archived_tasks(&self, ctx: &AuthContext) -> AppResult<Vec<TaskSummary>> {
         let mut out = Vec::new();
-        let deadline = crate::sandboxes::parked_pr_deadline();
         for (sandbox, _) in self.visible_sandboxes(&ctx.user).await? {
             for task in self.deps.store.tasks(&sandbox.id, true).await? {
-                out.push(self.task_summary_among(&task, None, None, deadline).await?);
+                out.push(self.task_summary(&task).await?);
             }
         }
         Ok(out)
@@ -840,7 +810,18 @@ impl App {
         }
         let steps = store.steps(&task.id).await?;
         let started = !attempts.is_empty() || !store.provider_sessions(&task.id).await?.is_empty();
+        let (parked_needs_you, parked_pr) = if task.status == TaskStatus::Parked {
+            let requested = self.browser_requests(&task.sandbox_id).await;
+            let (facts, pr) = self
+                .parked_attention(&task, &requested, crate::sandboxes::parked_pr_deadline())
+                .await?;
+            (Some(facts.needs_you()), pr)
+        } else {
+            (None, None)
+        };
         Ok(TaskDetail {
+            parked_needs_you,
+            parked_pr,
             summary,
             spec_path: task.spec_path.clone(),
             worktree: task.worktree_path.clone(),

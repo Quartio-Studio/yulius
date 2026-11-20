@@ -3922,7 +3922,7 @@ impl App {
         facts: &ParkingPrs,
     ) -> AppResult<bool> {
         Ok(self.parking_checkout_matches(task, facts).await?
-            && self.parking_ci_still_current(task, facts).await?)
+            && self.parking_ci_blocker(task, facts).await?.is_none())
     }
 
     async fn parking_checkout_matches(
@@ -3933,11 +3933,11 @@ impl App {
         Ok(facts.pulls.is_empty() || self.parking_checkout(task).await? == facts.checkout)
     }
 
-    async fn parking_ci_still_current(
+    async fn parking_ci_blocker(
         &self,
         task: &TaskRecord,
         facts: &ParkingPrs,
-    ) -> AppResult<bool> {
+    ) -> AppResult<Option<(u64, PullSignal)>> {
         use yulius_domain::ci::RunState;
         for (number, head) in &facts.pulls {
             let runs = self
@@ -3951,15 +3951,16 @@ impl App {
             else {
                 continue;
             };
-            if matches!(
-                own.state,
-                RunState::Failed | RunState::Error | RunState::Cancelled
-            ) {
-                return Ok(false);
+            match own.state {
+                RunState::Failed => return Ok(Some((*number, PullSignal::Failing))),
+                RunState::Error | RunState::Cancelled => {
+                    return Ok(Some((*number, PullSignal::Errored)));
+                }
+                _ => {}
             }
             if own.state.is_active() {
                 if facts.watched != Some(*number) || !self.config.ci.enabled {
-                    return Ok(false);
+                    return Ok(Some((*number, PullSignal::InReview)));
                 }
                 let recent = self
                     .deps
@@ -3971,11 +3972,11 @@ impl App {
                     .find(|r| r.reference == own.reference)
                     .is_none_or(|r| r.id != own.id || !r.state.is_active())
                 {
-                    return Ok(false);
+                    return Ok(Some((*number, PullSignal::InReview)));
                 }
             }
         }
-        Ok(true)
+        Ok(None)
     }
 
     /// Whether the task's worktree head carries work its merged pull request (`record`) did not
@@ -4422,8 +4423,14 @@ impl App {
         else {
             return Ok(false);
         };
-        self.parked_evidence_current(task, record.as_ref(), &prs, PrVerification::Settled)
-            .await
+        self.parked_evidence_current(
+            task,
+            record.as_ref(),
+            &prs,
+            PrVerification::Settled,
+            &mut ParkedPullRead::default(),
+        )
+        .await
     }
 
     /// Reconfirm the checkout and owner decisions before the final durable CI
@@ -4434,14 +4441,21 @@ impl App {
         record: Option<&DeliveryRecord>,
         prs: &ParkingPrs,
         purpose: PrVerification,
+        observed: &mut ParkedPullRead,
     ) -> AppResult<bool> {
         let store = &self.deps.store;
         if (!prs.pulls.is_empty()
             && self.verification_checkout(task, purpose).await? != prs.checkout)
             || !self.parked_chain_clear(task).await?
-            || !self.parking_ci_still_current(task, prs).await?
-            || store.delivery(&task.id).await?.as_ref() != record
         {
+            return Ok(false);
+        }
+        if let Some((number, signal)) = self.parking_ci_blocker(task, prs).await? {
+            observed.pr = Some(yulius_contracts::api::tasks::ParkedPr { number, open: true });
+            observed.signal = Some(signal);
+            return Ok(false);
+        }
+        if store.delivery(&task.id).await?.as_ref() != record {
             return Ok(false);
         }
         // Browser startup and checkout verification can outlast an owner resume.

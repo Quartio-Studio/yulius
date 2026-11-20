@@ -34,6 +34,7 @@ Task #517 displayed Codex's exit instructions. The host drained shutdown output 
 - [x] Verify PR checks and unpublished repairs before parking
 - [x] Gate parked successors on declared work, owner decisions and current branch PRs
 - [x] Preserve parked PR observations across overlapping Git overviews
+- [ ] Report the blocking ordinary PR on individual parked task reads
 - [ ] Give parked PRs fair status reads in task lists and Home
 - [ ] Refresh parked page and sidebar status independently of the Git overview
 - [ ] Keep failed integration candidates with their original owner
@@ -125,15 +126,17 @@ A human request can take precedence over unfinished work in the task list. Both 
 - The ordered publication campaign reported `mutants: 28 listed, 15 caught, 0 missed, 0 timed out, 13 unviable, 0 not reached (bound 30 min, took 913 s)`. The admission repair reported `mutants: 21 listed, 9 caught, 0 missed, 0 timed out, 12 unviable, 0 not reached (bound 30 min, took 629 s)`. Moving publication past the final Git log reported `mutants: 4 listed, 0 caught, 0 missed, 0 timed out, 4 unviable, 0 not reached (bound 30 min, took 330 s)`. Its HTTP red/green regression directly verified the changed lifetime.
 
 - PR #1527 delivered the ordered Git overview cache at `a1f42f8eb`. The exact PR head `a7ea115e3` passed Yulius CI run `e80317f4-3320-40d4-bab2-66799b1f5cdf` through train `d44d77bc-4b53-4281-a829-fe9cea66b5c1`. Security was skipped.
-- Fair parked summary reads share the parking verifier and its branch-scoped search. Batches reserve lookup time for subsequent rows, and native Git workers keep their capacity until completion. [ADR-0409](../../docs/decisions/0409-share-parked-pr-read-time-across-task-lists.md)
+- Individual parked task reads share the parking verifier and its branch-scoped search. Native Git workers keep their capacity until completion. The separate list delivery divides lookup time across batches. [ADR-0409](../../docs/decisions/0409-report-the-pr-that-blocks-a-parked-task.md)
 
 - The ninth-row fixture verifies both Home and MCP under a held earlier PR. An open local step originally hid owner-observed PR #1461 even though the row showed Needs you. The direct HTTP regression returned its identity after the repair. The initial scoped run then passed 96 tests.
 - On `e0390b2cf`, a PR merging while its checks were held left the row naming closed #1461 after the same request discovered open #1462. The shared rule scan for `after_all_tasks` also exhausted its four-second test deadline. Rule construction now shares the Home read budget. The test uses the rule-size limit to isolate that scan from the subsequent chain eligibility check. The notifier and digest continue to read local state.
 - On `138f511b3`, the two-base fixture named the newer healthy PR instead of the older blocking PR. A separate final-confirmation fixture returned an external PR as open after it disappeared from the branch, despite the previously recorded merge. Both regressions assert the identity and group returned by the same request.
 
+- On `8a0799bb6`, ordinary PR #1461 had failed while #1462 had passed on the same SHA. GitHub reported green and instance CI was disabled. The combined fixture reproduced the review finding: the row showed Needs you but named #1462. The individual-read delivery keeps the number and reason from the final PR-specific durable CI read. The batch scheduler, filtered pagination and Home counts are saved for the subsequent list delivery.
+
 ## Delivery slices
 
-PRs #1492 and #1493 delivered native Codex resume and the pre-stop screen for new parks. PR #1505 kept sessions with local unfinished work live. PR #1510 verified current ordinary PR checks and unpublished work before parking. PR #1524 delivered the parked predecessor gate. PR #1527 preserved known PR observations across overlapping Git overviews. Remaining deliveries cover fair parked task-list reads, page refresh, persisted integration failures, bounded Codex goals and pre-upgrade screens.
+PRs #1492 and #1493 delivered native Codex resume and the pre-stop screen for new parks. PR #1505 kept sessions with local unfinished work live. PR #1510 verified current ordinary PR checks and unpublished work before parking. PR #1524 delivered the parked predecessor gate. PR #1527 preserved known PR observations across overlapping Git overviews. This delivery verifies the blocking PR and ordinary CI reason on individual reads. Remaining deliveries cover fair parked task-list reads, page refresh, persisted integration failures, bounded Codex goals and pre-upgrade screens.
 
 The native-resume regression checks the rollout in the native launch and reads the first and second user prompts from its on-disk history. It also exercises absent IDs and an older lineage entry. No paid provider is involved.
 

@@ -1473,7 +1473,7 @@ async fn yulius_ci_run(
     insert_ci_attempt(store, id, sha, CiRef::Branch("dev".into()), state, at, &[]).await
 }
 
-async fn insert_ci_attempt(
+pub(super) async fn insert_ci_attempt(
     store: &impl yulius_app::ports::store_ext::CiStore,
     id: &str,
     sha: &str,
@@ -4829,6 +4829,11 @@ async fn a_parked_achieved_goal_releases_its_chain_without_a_pr() -> TestResult 
 async fn a_historical_parked_goal_keeps_its_owner_and_chain_state_after_restart() -> TestResult {
     use yulius_app::ports::store_ext::NeedsYouStore as _;
     let f = fixture(&DeliveryProfile::standard()).await?;
+    let owner =
+        f.h.app
+            .authenticate_bearer(f.alice.bearer.as_deref().ok_or("owner token")?)
+            .await?
+            .ok_or("owner")?;
     let (_wt, head) = delivered_with_a_successor(&f, &finished_spec("t1")).await?;
     f.h.github.set_checks(&head, ChecksState::Success);
     // This test owns a fixed external PR. The independent head-replacement
@@ -4877,8 +4882,8 @@ async fn a_historical_parked_goal_keeps_its_owner_and_chain_state_after_restart(
         .await?;
     let fresh = yulius_app::context::App::new(f.h.app.config.clone(), f.h.app.deps.clone());
     let parked = f.h.store.task(&before).await?.ok_or("parked")?;
-    let summary = fresh.task_summary(&parked).await?;
-    assert!(summary.goal_unfinished);
+    let summary = fresh.task_detail(&owner, parked.id.as_str()).await?;
+    assert!(summary.summary.goal_unfinished);
     assert_eq!(summary.parked_needs_you, Some(true));
     fresh.advance_chains(&before).await;
     assert_eq!(
@@ -4888,7 +4893,10 @@ async fn a_historical_parked_goal_keeps_its_owner_and_chain_state_after_restart(
     let saved = dir.with_extension("saved");
     std::fs::rename(&dir, &saved)?;
     assert_eq!(
-        fresh.task_summary(&parked).await?.parked_needs_you,
+        fresh
+            .task_detail(&owner, parked.id.as_str())
+            .await?
+            .parked_needs_you,
         Some(true)
     );
     fresh.advance_chains(&before).await;
@@ -4928,7 +4936,10 @@ async fn a_historical_parked_goal_keeps_its_owner_and_chain_state_after_restart(
         TaskStatus::Chained
     );
     assert_eq!(
-        fresh.task_summary(&parked).await?.parked_needs_you,
+        fresh
+            .task_detail(&owner, parked.id.as_str())
+            .await?
+            .parked_needs_you,
         Some(true)
     );
     f.h.store.set_task_needs_you(&before, None, now).await?;
@@ -4962,7 +4973,10 @@ async fn a_historical_parked_goal_keeps_its_owner_and_chain_state_after_restart(
     attempt.run_dir = dir.to_string_lossy().into_owned();
     f.h.store.insert_attempt(&attempt).await?;
     assert_eq!(
-        fresh.task_summary(&parked).await?.parked_needs_you,
+        fresh
+            .task_detail(&owner, parked.id.as_str())
+            .await?
+            .parked_needs_you,
         Some(false)
     );
     fresh.advance_chains(&before).await;
@@ -5063,6 +5077,11 @@ async fn a_parked_achieved_goal_waits_for_its_failed_ordinary_run() -> TestResul
 async fn a_parked_successor_waits_for_the_replacement_ordinary_pr() -> TestResult {
     use yulius_domain::delivery::DeliveryStage;
     let f = fixture(&DeliveryProfile::standard()).await?;
+    let owner =
+        f.h.app
+            .authenticate_bearer(f.alice.bearer.as_deref().ok_or("owner token")?)
+            .await?
+            .ok_or("owner")?;
     let (_wt, head) = delivered_with_a_successor(&f, &finished_spec("t1")).await?;
     let before = TaskId::parse("t1")?;
     let child = TaskId::parse("t2")?;
@@ -5089,7 +5108,7 @@ async fn a_parked_successor_waits_for_the_replacement_ordinary_pr() -> TestResul
     f.h.github.set_checks(&head, ChecksState::Failure);
     // GitHub recorded the merge before Yulius; the new PR is already red.
     let parked = f.h.store.task(&before).await?.ok_or("parked predecessor")?;
-    let summary = serde_json::to_value(f.h.app.task_summary(&parked).await?)?;
+    let summary = serde_json::to_value(f.h.app.task_detail(&owner, parked.id.as_str()).await?)?;
     assert_eq!(
         summary["parked_needs_you"], true,
         "replacement is already red"
@@ -5117,18 +5136,19 @@ async fn a_parked_successor_waits_for_the_replacement_ordinary_pr() -> TestResul
         f.h.store.task(&child).await?.ok_or("successor")?.status,
         TaskStatus::Chained
     );
-    let summary = serde_json::to_value(f.h.app.task_summary(&parked).await?)?;
+    let summary = serde_json::to_value(f.h.app.task_detail(&owner, parked.id.as_str()).await?)?;
     assert_eq!(
         summary["parked_needs_you"], true,
         "old merge cannot mask replacement"
     );
     assert_eq!(summary["parked_pr"], json!({"number": 2, "open": true}));
     f.h.github.set_checks(&head, ChecksState::Success);
-    let summary = serde_json::to_value(f.h.app.task_summary(&parked).await?)?;
+    let summary = serde_json::to_value(f.h.app.task_detail(&owner, parked.id.as_str()).await?)?;
     assert_eq!(summary["parked_needs_you"], false, "replacement settled");
     let held = f.h.github.hold_checks();
     let app = f.h.app.clone();
-    let reading = tokio::spawn(async move { app.task_summary(&parked).await });
+    let auth = owner.clone();
+    let reading = tokio::spawn(async move { app.task_detail(&auth, parked.id.as_str()).await });
     tokio::time::timeout(Duration::from_secs(5), f.h.github.checks_entered.notified()).await?;
     *f.h.github
         .close_before_branch_list
@@ -5152,6 +5172,11 @@ async fn a_parked_successor_waits_for_the_replacement_ordinary_pr() -> TestResul
 #[tokio::test]
 async fn overlapping_parked_status_reads_bound_git_workers_after_timeouts() -> TestResult {
     let f = fixture(&DeliveryProfile::standard()).await?;
+    let owner =
+        f.h.app
+            .authenticate_bearer(f.alice.bearer.as_deref().ok_or("owner token")?)
+            .await?
+            .ok_or("owner")?;
     let (_wt, head) = delivered_with_a_successor(&f, &finished_spec("t1")).await?;
     let id = TaskId::parse("t1")?;
     f.h.store
@@ -5175,11 +5200,13 @@ async fn overlapping_parked_status_reads_bound_git_workers_after_timeouts() -> T
         released: tokio::sync::Semaphore::new(0),
     });
     *f.git.parked_git_hold.lock().map_err(|_| "git hold")? = Some(hold.clone());
+    let caller = crate::task_message::superagent(&task.sandbox_id, &owner.user.id, "admin");
+    let args = json!({"task_id":task.id.as_str()});
     let checked = async {
         for _ in 0..2 {
-            let reads = (0..12).map(|_| app.task_summary(&task));
+            let reads = (0..12).map(|_| app.tool_task_get(&caller, &args));
             for row in futures::future::try_join_all(reads).await? {
-                assert_eq!(row.parked_needs_you, Some(true));
+                assert_eq!(row["shows"], "needs_you");
             }
         }
         Ok::<_, AppError>(())
@@ -5193,7 +5220,7 @@ async fn overlapping_parked_status_reads_bound_git_workers_after_timeouts() -> T
         (1..=8).contains(&started),
         "{started} Git workers started before any finished"
     );
-    assert_eq!(app.task_summary(&task).await?.parked_needs_you, Some(false));
+    assert_eq!(app.tool_task_get(&caller, &args).await?["shows"], "done");
     Ok(())
 }
 
@@ -8470,6 +8497,11 @@ async fn cancelling_an_overview_at_the_final_git_log_admits_a_replacement() -> T
 #[tokio::test]
 async fn a_merged_pull_request_github_still_lists_as_open_reads_merged() -> TestResult {
     let f = fixture(&DeliveryProfile::standard()).await?;
+    let owner =
+        f.h.app
+            .authenticate_bearer(f.alice.bearer.as_deref().ok_or("owner token")?)
+            .await?
+            .ok_or("owner")?;
     let wt = f
         .add_task("t1", "Checkout API", "feat/1-checkout-api", "dev")
         .await?;
@@ -8527,7 +8559,7 @@ async fn a_merged_pull_request_github_still_lists_as_open_reads_merged() -> Test
         )
         .await?;
     let task = f.h.store.task(&id).await?.ok_or("parked task")?;
-    let summary = serde_json::to_value(f.h.app.task_summary(&task).await?)?;
+    let summary = serde_json::to_value(f.h.app.task_detail(&owner, task.id.as_str()).await?)?;
     assert_eq!(summary["parked_needs_you"], false);
     assert_eq!(summary["parked_pr"], json!({"number":1,"open":false}));
     Ok(())

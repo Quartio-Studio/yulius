@@ -3,8 +3,6 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex};
-use tokio::time::Instant;
-use yulius_contracts::api::tasks::ParkedPr;
 
 use yulius_contracts::api::sandboxes::{Profile, RepoRef, Sandbox, SandboxCounts};
 use yulius_domain::ids::{SandboxId, TaskId};
@@ -15,50 +13,15 @@ use crate::auth::AuthContext;
 use crate::context::App;
 use crate::error::AppResult;
 use crate::model::{SandboxRecord, TaskRecord};
+use tokio::time::Instant;
+use yulius_contracts::api::tasks::ParkedPr;
 
-/// Concurrent parked PR reads per list and active local Git workers per application.
+/// Maximum active native Git workers used by parked status reads.
 pub(crate) const PARKED_READS: usize = 8;
 
-/// All parked PRs rendered by one list share the same remote lookup deadline.
+/// Time allowed for remote verification of one parked task.
 pub(crate) fn parked_pr_deadline() -> Instant {
     Instant::now() + std::time::Duration::from_millis(750)
-}
-
-/// Reserve a share of the remaining deadline for each unvisited batch.
-pub(crate) fn fair_batches<T>(
-    rows: &[T],
-    deadline: Instant,
-    concurrency: usize,
-) -> impl Iterator<Item = (&[T], Instant)> {
-    let mut batches = rows.chunks(concurrency);
-    std::iter::from_fn(move || {
-        let batch = batches.next()?;
-        let now = Instant::now();
-        let remaining = u32::try_from(batches.len() + 1).unwrap_or(u32::MAX);
-        Some((
-            batch,
-            now + deadline.saturating_duration_since(now) / remaining,
-        ))
-    })
-}
-
-/// Run at most eight reads together and reserve time for later rows. A stalled
-/// GitHub response can consume its batch's share, never the whole list's budget.
-pub(crate) async fn fair_rows<'a, T, R, F>(
-    rows: &'a [T],
-    deadline: Instant,
-    concurrency: usize,
-    read: impl Fn(&'a T, Instant) -> F,
-) -> AppResult<Vec<R>>
-where
-    F: std::future::Future<Output = AppResult<R>>,
-{
-    let mut results = Vec::with_capacity(rows.len());
-    for (batch, until) in fair_batches(rows, deadline, concurrency) {
-        results
-            .extend(futures::future::try_join_all(batch.iter().map(|row| read(row, until))).await?);
-    }
-    Ok(results)
 }
 
 /// PR facts the Git overview supplied for a single task. A closed, unmerged PR
@@ -244,23 +207,11 @@ impl App {
         record: &SandboxRecord,
         access: AccessLevel,
     ) -> AppResult<Sandbox> {
-        self.sandbox_view_until(record, access, parked_pr_deadline())
-            .await
-    }
-
-    async fn sandbox_view_until(
-        &self,
-        record: &SandboxRecord,
-        access: AccessLevel,
-        deadline: Instant,
-    ) -> AppResult<Sandbox> {
         let tasks = self.deps.store.tasks(&record.id, false).await?;
+        let requested = self.browser_requests(&record.id).await;
         let mut counts = SandboxCounts::default();
-        let facts = self
-            .list_attention_facts(&tasks, &record.id, deadline)
-            .await?;
-        for row in facts {
-            match row.group() {
+        for task in &tasks {
+            match self.task_group(task, &requested).await? {
                 TaskGroup::NeedsYou => counts.needs_attention += 1,
                 TaskGroup::Working => counts.running += 1,
                 TaskGroup::Queued => counts.queued += 1,
@@ -304,53 +255,21 @@ impl App {
     /// and delete close such a task's session, as the UI offers them.
     pub(crate) async fn shows_done(&self, task: &TaskRecord) -> bool {
         let requested = self.browser_requests(&task.sandbox_id).await;
-        self.task_attention_facts(task, &requested)
-            .await
-            .is_ok_and(|facts| facts.group() == TaskGroup::Done)
+        matches!(self.task_group(task, &requested).await, Ok(TaskGroup::Done))
     }
 
-    /// Notifications and digests describe known task state and never start remote PR reads.
+    /// A task's sidebar group (`AttentionFacts::group`), so Home's cards and the sandbox tabs
+    /// count what the sidebar lists (#147, #170). Of an ended task only whether it is the
+    /// onboarding task its sandbox waits for is read.
+    ///
+    /// # Errors
+    /// Store failures.
     pub(crate) async fn task_group(
         &self,
         task: &TaskRecord,
         requested: &HashSet<String>,
     ) -> AppResult<TaskGroup> {
-        Ok(self.local_attention_facts(task, requested).await?.group())
-    }
-
-    pub(crate) async fn list_attention_facts(
-        &self,
-        tasks: &[TaskRecord],
-        sandbox: &SandboxId,
-        deadline: Instant,
-    ) -> AppResult<Vec<AttentionFacts>> {
-        let requested = self.browser_requests(sandbox).await;
-        fair_rows(tasks, deadline, PARKED_READS, |task, until| {
-            self.task_attention_facts_until(task, &requested, until)
-        })
-        .await
-    }
-
-    /// The facts that place the task in its sidebar group and explain a derived wait.
-    pub(crate) async fn task_attention_facts(
-        &self,
-        task: &TaskRecord,
-        requested: &HashSet<String>,
-    ) -> AppResult<AttentionFacts> {
-        self.task_attention_facts_until(task, requested, parked_pr_deadline())
-            .await
-    }
-
-    pub(crate) async fn task_attention_facts_until(
-        &self,
-        task: &TaskRecord,
-        requested: &HashSet<String>,
-        deadline: Instant,
-    ) -> AppResult<AttentionFacts> {
-        if task.status == TaskStatus::Parked {
-            return Ok(self.parked_attention(task, requested, deadline).await?.0);
-        }
-        self.local_attention_facts(task, requested).await
+        Ok(self.task_attention_facts(task, requested).await?.group())
     }
 
     /// Check the recorded and branch PRs before reporting Done, even before
@@ -363,7 +282,7 @@ impl App {
     ) -> AppResult<(AttentionFacts, Option<ParkedPr>)> {
         use crate::delivery::PrVerification;
         let store = &self.deps.store;
-        let mut facts = self.local_attention_facts(task, requested).await?;
+        let mut facts = self.task_attention_facts(task, requested).await?;
         let record = store.delivery(&task.id).await?;
         let mut observed = self.known_parked_pull(task, record.as_ref());
         if facts.parked_has_local_work_or_request() {
@@ -381,8 +300,14 @@ impl App {
             else {
                 return Ok(false);
             };
-            self.parked_evidence_current(task, record.as_ref(), &prs, PrVerification::Display)
-                .await
+            self.parked_evidence_current(
+                task,
+                record.as_ref(),
+                &prs,
+                PrVerification::Display,
+                &mut observed,
+            )
+            .await
         };
         facts.pull = match tokio::time::timeout_at(deadline, check).await {
             Ok(Ok(true)) => observed.pr.map(|pr| {
@@ -397,7 +322,8 @@ impl App {
         Ok((facts, observed.pr))
     }
 
-    pub(crate) async fn local_attention_facts(
+    /// The facts that place the task in its sidebar group and explain a derived wait.
+    pub(crate) async fn task_attention_facts(
         &self,
         task: &TaskRecord,
         requested: &HashSet<String>,
@@ -436,12 +362,7 @@ impl App {
                     .map(|_| PullSignal::Merged),
             };
             let plan_open = plan_open(&store.steps(&task.id).await?);
-            let spec_unfinished = if task.status == TaskStatus::Parked {
-                self.read_spec_unfinished(&task.id).await.unwrap_or(true)
-            } else {
-                self.spec_unfinished(&task.id).await
-            };
-            (pull, plan_open, spec_unfinished)
+            (pull, plan_open, self.spec_unfinished(&task.id).await)
         } else {
             (None, false, false)
         };
@@ -497,14 +418,11 @@ impl App {
     /// # Errors
     /// Store failures.
     pub async fn list_sandboxes(&self, ctx: &AuthContext) -> AppResult<Vec<Sandbox>> {
-        let visible = self.visible_sandboxes(&ctx.user).await?;
-        fair_rows(
-            &visible,
-            parked_pr_deadline(),
-            1,
-            |(record, level), until| self.sandbox_view_until(record, *level, until),
-        )
-        .await
+        let mut out = Vec::new();
+        for (record, level) in self.visible_sandboxes(&ctx.user).await? {
+            out.push(self.sandbox_view(&record, level).await?);
+        }
+        Ok(out)
     }
 
     /// One sandbox, if visible.

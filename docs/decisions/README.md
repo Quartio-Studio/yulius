@@ -425,7 +425,7 @@ If a reservation skips past all available slots, land an empty extension first w
 - [0407](0407-keep-current-pr-observations-across-incomplete-overviews.md): Keep current PR observations across incomplete Git overviews
 <!-- ADR 0407 -->
 <!-- ADR 0408 -->
-- [0409](0409-share-parked-pr-read-time-across-task-lists.md): Share parked PR read time across task lists
+- [0409](0409-report-the-pr-that-blocks-a-parked-task.md): Report the PR that blocks a parked task
 <!-- ADR 0409 -->
 <!-- ADR 0410 -->
 <!-- ADR 0411 -->
