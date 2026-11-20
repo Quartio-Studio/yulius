@@ -75,6 +75,8 @@ struct Systemd {
     /// On its way up or down (`activating`: a restart after a crash, a start in progress).
     /// systemd freezes no unit in that state.
     starting: bool,
+    /// The server has a reload job while it is running.
+    reloading: bool,
     /// The unit has settled (it is `active`) by the time a freeze is asked for.
     settles: bool,
     /// The freezer is on its way.
@@ -155,6 +157,8 @@ impl freeze::Host for FakeSystemd {
                         "inactive"
                     } else if unit.starting {
                         "activating"
+                    } else if unit.reloading {
+                        "reloading"
                     } else {
                         "active"
                     },
@@ -1450,6 +1454,38 @@ fn a_new_instance_that_cannot_be_stopped_names_both_units_to_stop() -> TestResul
     );
     // Frozen is safe: nothing of the old instance was thawed.
     assert!(s.world.systemd.lock().map_err(|e| e.to_string())?.frozen);
+    Ok(())
+}
+
+#[test]
+fn a_frozen_server_in_transition_is_thawed_after_a_failed_copy() -> TestResult {
+    let mut s = meanwhile(|unit| unit.reloading = true)?;
+    s.remote.lose = vec!["inventory"];
+    assert_eq!(s.run()?, 1);
+    assert!(
+        !s.old_unit().0,
+        "the reloading server is still frozen: {}",
+        s.shown()
+    );
+    assert!(s.shown().contains("thawed yulius.service"), "{}", s.shown());
+    assert!(
+        !s.shown()
+            .contains("start it (`systemctl start yulius.service`)"),
+        "{}",
+        s.shown()
+    );
+    assert!(!s.shown().contains("it runs as before"), "{}", s.shown());
+
+    // This host refuses a thaw while the server's start job is pending.
+    let mut s = meanwhile(|unit| unit.starting = true)?;
+    s.remote.lose = vec!["inventory"];
+    assert_eq!(s.run()?, 1);
+    assert!(s.old_unit().0);
+    assert!(
+        s.shown().contains("`systemctl thaw yulius.service` failed"),
+        "{}",
+        s.shown()
+    );
     Ok(())
 }
 
