@@ -244,6 +244,7 @@ impl App {
             }
             // A prompt submitted soon after is this person's (TSK-013).
             let mut mark = attach.runtime.draft_mark.lock().await;
+            mark.recovered_at = None;
             self.record_typing(&attach.task_id, &ctx.user.id);
             recorded_typing = true;
             // What they type may stay in the prompt box, unsent: the run's folder keeps that

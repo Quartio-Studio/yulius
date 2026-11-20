@@ -173,6 +173,7 @@ impl SessionHost for SignInHost {
         });
         Ok(AttachedRun {
             welcome: RunWelcome {
+                rendered: false,
                 child_pid: 2,
                 seq: 0,
                 cols: 500,
