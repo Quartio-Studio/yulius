@@ -139,7 +139,7 @@ test('a parked task shows where it was, marked parked; a queued task page says w
   await expect(browser.locator('.strip-status')).toHaveText(/Queued · Waiting for a free session: 8 of 8 in use/);
 });
 
-for (const status of ['parked', 'queued']) {
+for (const status of ['parked', 'queued', 'waiting_capacity']) {
   test(`the owner sees every row of a parked screen while the task is ${status}`, async ({ app, browser }) => {
     await browser.setViewport({ width: 390, height: 844 });
     await app.open(mock('/s/studio/t/12', '&still=1'));
@@ -150,7 +150,7 @@ for (const status of ['parked', 'queued']) {
       session.task.status = status;
       // The owner still controls the terminal when the actual process ends.
       for (const viewer of session.viewers) {
-        viewer.push(JSON.stringify({ type: 'state', status, can_write: true, controller: true, rows: 90, cols: 220 }));
+        viewer.push(JSON.stringify({ type: 'state', status, attempt_seq: null, can_write: true, controller: true, rows: 90, cols: 220 }));
       }
       session.broadcast('\x1b[2J\x1b[HLast answer begins\x1b[89;1HLast answer ends\x1b[90;1HYulius parked this session. Write to resume.');
     }, status);
@@ -176,5 +176,14 @@ for (const status of ['parked', 'queued']) {
       return grid.left >= host.left - 1 && grid.right <= host.right + 1 && grid.top >= host.top - 1 && notice.bottom <= host.bottom + 1;
     });
     expect(fits).toBe(true);
+    if (status === 'waiting_capacity') {
+      // A held live process still uses its owner's viewport.
+      await browser.evaluate(() => {
+        type Session = { viewers: Set<{ push(message: string): void }> };
+        const session = (window as unknown as { __yuliusMock: { sessions: Map<string, Session> } }).__yuliusMock.sessions.get('tsk_studio_12')!;
+        for (const viewer of session.viewers) viewer.push(JSON.stringify({ type: 'state', status: 'waiting_capacity', attempt_seq: 2, can_write: true, controller: true, rows: 90, cols: 220 }));
+      });
+      await expect(rows).not.toHaveCount(90);
+    }
   });
 }

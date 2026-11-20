@@ -8,6 +8,7 @@ use std::time::Duration;
 
 use yulius_domain::ids::TaskId;
 use yulius_domain::permission::Action;
+use yulius_domain::task::TaskStatus;
 use yulius_domain::task_access::{self, TaskAction};
 
 use crate::auth::AuthContext;
@@ -92,8 +93,9 @@ impl App {
             .require_for(ctx, &task.sandbox_id, Action::View)
             .await?;
         let runtime = self.runtime(&task.id);
+        let no_attempt = self.deps.store.live_attempt(&task.id).await?.is_none();
         if !runtime.hub.has_output()
-            && self.deps.store.live_attempt(&task.id).await?.is_none()
+            && no_attempt
             && let Some(last) = self.deps.store.attempts(&task.id).await?.pop()
             && let Some((cols, rows, screen)) = self.ended_screen(&last, &task).await
         {
@@ -110,6 +112,12 @@ impl App {
                 crate::tasks::owns(&task, &ctx.user.id),
             )
             .is_ok();
+        let saved_grid = task.status == TaskStatus::Parked
+            || (matches!(
+                task.status,
+                TaskStatus::Queued | TaskStatus::WaitingCapacity
+            ) && no_attempt
+                && runtime.hub.has_output());
         let viewer_id = runtime.hub.new_viewer_id();
         if can_write {
             let before = runtime.hub.size();
@@ -125,10 +133,7 @@ impl App {
                     if runtime.hub.size() != before && runtime.has_run().await {
                         runtime.hub.settle(watch, since, REDRAW_WAIT).await;
                     }
-                } else if task.status != yulius_domain::task::TaskStatus::Parked
-                    && !(task.status == yulius_domain::task::TaskStatus::Queued
-                        && runtime.hub.has_output())
-                {
+                } else if !saved_grid {
                     // No run yet (queued, about to start): the screen takes the size now, so the
                     // first state already says it and the run spawns at it (SPEC-050 TRM-101; a
                     // viewer of a task just created saw 120x40 first on the fast VM).

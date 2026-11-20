@@ -679,7 +679,8 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
     }
     // An ended session has no PTY to follow: fit it to this screen (a desktop-sized screen would
     // otherwise overflow a phone).
-    const savedGrid = state.status === 'queued' || state.status === 'parked' || exited?.status === 'parked';
+    const waitingToLaunch = state.attempt_seq == null && (state.status === 'queued' || state.status === 'waiting_capacity');
+    const savedGrid = waitingToLaunch || state.status === 'parked' || exited?.status === 'parked';
     const mirroring = Boolean(state.cols && state.rows && (savedGrid || (!state.controller && !exited)));
     const screen = host.querySelector('.xterm-screen');
     if (screen) screen.style.zoom = '';

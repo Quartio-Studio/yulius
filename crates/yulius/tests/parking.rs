@@ -766,7 +766,11 @@ async fn assert_cold_screen(
         .terminal_open(
             &ctx,
             id.as_str(),
-            (status_of(&restart, id).await.0 == Some(TaskStatus::Queued)).then_some((22, 5)),
+            matches!(
+                status_of(&restart, id).await.0,
+                Some(TaskStatus::Queued | TaskStatus::WaitingCapacity)
+            )
+            .then_some((22, 5)),
         )
         .await?;
     assert_eq!(screen(&restart, id), expected);
@@ -844,6 +848,20 @@ async fn queued_park_screen(
         );
         assert!(published.is_ok(), "{published:?}");
     });
+    assert_cold_screen(data, id, caller, &captured).await?;
+    // The resumed launch has no subscription available, so it waits without a new attempt.
+    assert!(
+        app.deps
+            .store
+            .transition_task(
+                id,
+                Some(TaskStatus::Queued),
+                TaskStatus::WaitingCapacity,
+                None,
+                app.now()
+            )
+            .await?
+    );
     assert_cold_screen(data, id, caller, &captured).await
 }
 
