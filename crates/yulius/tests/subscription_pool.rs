@@ -225,14 +225,28 @@ async fn hook_of(
     event: &str,
     body: serde_json::Value,
 ) -> Result<(u16, Option<String>, serde_json::Value), Box<dyn std::error::Error>> {
+    hook_sent_at(internal, harness, event, body, None).await
+}
+
+/// A hook delivered with its original client send time, including a delayed delivery.
+pub(crate) async fn hook_sent_at(
+    internal: &axum::Router,
+    harness: &str,
+    event: &str,
+    body: serde_json::Value,
+    sent: Option<i64>,
+) -> Result<(u16, Option<String>, serde_json::Value), Box<dyn std::error::Error>> {
     use http_body_util::BodyExt;
     use tower::ServiceExt;
-    let request = axum::http::Request::builder()
+    let mut request = axum::http::Request::builder()
         .method(Method::POST)
         .uri(format!("/hooks/{harness}/{event}"))
         .header(axum::http::header::AUTHORIZATION, format!("Bearer {TOKEN}"))
-        .header(axum::http::header::CONTENT_TYPE, "application/json")
-        .body(axum::body::Body::from(body.to_string()))?;
+        .header(axum::http::header::CONTENT_TYPE, "application/json");
+    if let Some(sent) = sent {
+        request = request.header(yulius_contracts::hooks::SENT_AT_HEADER, sent);
+    }
+    let request = request.body(axum::body::Body::from(body.to_string()))?;
     let response = internal.clone().oneshot(request).await?;
     let status = response.status().as_u16();
     let retry_after = response

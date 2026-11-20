@@ -1395,8 +1395,10 @@ there is none) and `ci_sync_sandbox` queues its Yulius CI run at once, so CI tes
 reviewer reads. A newer head's run supersedes the older one. When the head cannot go out the
 agent is told why, and the reviewer starts anyway. Merging still needs `delivery_merge` with the
 reviewed head and that head's passed run. `SubagentStart`
-links the round to Claude Code's subagent (a resumed one changes nothing), `SubagentStop` ends it
-with the verdict of its report's last line (`review::verdict_of`). A usage limit that cuts a
+links the round to Claude Code's subagent. Resuming an unfinished reviewer continues that round.
+Resuming it after its report opens the next round on the current head and keeps its model
+([ADR-0400](decisions/0400-continuing-a-reviewer-after-its-report-opens-the-next-round.md)).
+The first `SubagentStop` ends the round with the verdict of its report's last line (`review::verdict_of`). A usage limit that cuts a
 subagent off sends no `SubagentStop`, so such a round stays without a report. The store closes a
 pull request's rounds in the same transaction that records its merge
 (`transition_delivery`), so the task's next pull request starts at round 1.
@@ -1404,9 +1406,10 @@ pull request's rounds in the same transaction that records its merge
 The delivery transaction also binds the task, PR, accepted head, integration branch and landed commit in `task_merges`. Delivery reads the existing CI jobs, CD runs and delivery-profile command runs by sandbox and exact commit. A historical link keeps its identity when a branch moves or the task opens another PR. Retention archives the compact results before deleting a linked run. A clean CD wrapper exit confirms each configured command. Other exits leave their individual outcomes unconfirmed. Legacy deliveries recover their binding from the recorded PR on the branch named by the task's historical PR-opening audit entry. A direct merge awaiting confirmation recovers only when the closed PR matches the original expected branch, head and merge result. An unavailable historical result supplies no proof. [Decision 0399](decisions/0399-task-evidence-belongs-to-the-landed-commit.md)
 
 The transcript watch also reads each subagent of the session's own thread
-(`<session>/subagents/agent-<id>.jsonl`): the model of its answers, once per change
+(`<session>/subagents/agent-<id>.jsonl`): the model and time of each answer
 (`Observation::SubagentAnswered`), and a usage limit that refused it
-(`Observation::SubagentCutOff`); the supervisor notes both on the round that subagent runs
+(`Observation::SubagentCutOff`). The supervisor uses the transcript time to identify the round
+that ran when the observation was written, including during restart replay
 (`model_answered`, `cut_off`). The delivery view (`Delivery.review_rounds`, also in
 `delivery_status`) lists the open pull request's rounds. When a merge is recorded,
 `dlv_transition_at` writes the merge record `delivery.review.models` (actor `yulius`): the
@@ -1435,7 +1438,13 @@ sequenceDiagram
     A->>H: SubagentStart (agent_id, agent_type)
     H->>Y: link the round to the subagent
     A->>H: SubagentStop (last_assistant_message)
-    H->>Y: end the round with its verdict
+    H->>Y: end the unfinished round with its verdict
+    opt Author continues the same reviewer after its report
+        A->>H: SubagentStart (same agent_id)
+        H->>Y: open the next round on the current head
+        A->>H: SubagentStop (new report)
+        H->>Y: record that round's verdict
+    end
 ```
 
 ## Harness comparison
@@ -1595,7 +1604,8 @@ person must act first (a prompt on screen, `needs_you`) or may have a draft in t
 (SPEC-480: the notice stays untold and is tried again):
 
 - a red run at its head (each failed job, its exit code and up to 5 failing test names read from
-  the kept failures, and the `ci_status` run and job), or one that errored;
+  the kept failures, partial observations from siblings stopped by a failed job, and the exact
+  `ci_status` run), or one that errored;
 - a red merge candidate of two or more holding it, with "do not re-arm, merge or push";
 - a conflict with the integration branch (checked in the task's worktree), once per head;
 - how its armed merge ended (the slot's outcome), and its merge (`merged_text`), after which the
@@ -3955,6 +3965,9 @@ job ends. `ci_status` with a `run_id` shows them before the end of a failed job'
 that failed early in a long job stays diagnosable
 ([SPEC-145](../.ai/specs/SPEC-145-fix-460-485-ci-keeps-a-failed-test-s-out.md),
 [decision 0119](decisions/0119-ci-keeps-failing-tests-output-from-the-whole-job.md)).
+On a failed run, retained blocks from a sibling stopped by fail-fast share the run detail budget.
+Asking for the job by name shows its full retained blocks.
+[Decision 0401](decisions/0401-red-ci-notices-include-partial-sibling-failures.md)
 
 ## CI job waits and time limits
 

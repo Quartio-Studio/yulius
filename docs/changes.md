@@ -7,6 +7,10 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 ## 2026-11-20
 
 - Parking verifies the task checkout and current PR checks, including CI failures awaiting publication to GitHub (SPEC-558).
+- A red CI notice includes partial test failures observed before a sibling stopped the job. Agents can read each job’s retained diagnostics through `ci_status`. [SPEC-566](../.ai/specs/SPEC-566-report-tests-that-failed-in-a-ci-shard-b.md)
+- The parked terminal Chromium test waits for the second park after Resume and checks that Reply delivers its prompt to the resumed session (#1501).
+- Continuing a reviewer after its report preserves both verdicts and counts the re-review
+  in the Review card. Duplicate stops preserve the original end time (SPEC-565, #1401).
 
 - Task delivery links the landed commit to its CI and deployment checks, including individual reruns and skipped jobs. Projects can cite these results in a verification step without opening a bookkeeping PR (SPEC-562, task #555).
 - Idle sessions with an open step, unfinished spec or unfinished goal stay live through grace-period and digest parking, including when their owner has been asked (SPEC-558, #1490).
