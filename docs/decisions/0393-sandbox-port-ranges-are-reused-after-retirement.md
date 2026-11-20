@@ -14,7 +14,8 @@ the assigned ports when the removal request returns.
 
 Keep the original range on the sandbox record. A partial unique index reserves each base
 until runtime checks establish that the removed sandbox has ended its work, its holder can no
-longer start, and the host loopback ports are free. The allocator rechecks these conditions
+longer start, all browser proxies and connections have dropped their range leases, and the
+host loopback ports are free. The allocator rechecks these conditions
 when a new sandbox needs a range. It uses complete blocks of 20 between 20000 and 32767.
 
 ## Alternatives

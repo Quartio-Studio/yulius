@@ -1189,7 +1189,11 @@ async fn an_outstanding_browser_port_lease_holds_the_removed_range() -> TestResu
     }
     let shop = import(&w, &alice, "Quartio-Studio/shop").await?.body;
     let sid = SandboxId::parse(text(&shop["id"]))?;
-    let lease = w.h.app.sandbox_ports(&sid).await?.ok_or("browser ports")?;
+    let lease =
+        w.h.app
+            .lease_sandbox_ports(&sid)
+            .await?
+            .ok_or("browser ports")?;
     let removed = call(
         &w.h.router,
         Method::DELETE,
@@ -1256,7 +1260,10 @@ async fn remove_retires_the_sandbox_holder() -> TestResult {
     let path = format!("/api/sandboxes/{sid}");
     let removed = call(&w.h.router, Method::DELETE, &path, None, &alice).await?;
     assert_eq!(removed.status, StatusCode::NO_CONTENT);
-    assert_eq!(*isolation.0.lock().map_err(|_| "lock")?, [sid.clone()]);
+    assert_eq!(
+        isolation.0.lock().map_err(|_| "lock")?.as_slice(),
+        std::slice::from_ref(&sid)
+    );
     assert!(
         w.h.app
             .sandbox_ports(&SandboxId::parse(&sid)?)

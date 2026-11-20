@@ -720,7 +720,10 @@ impl App {
         // Older removed rows still hold their range after an upgrade. Retirement
         // can also outlive DELETE. Recheck the lowest candidates when a range is needed.
         for old in store.retiring_port_owners().await? {
-            if old.port_count != PORT_RANGE_SIZE || !self.still_running(&old.id).await?.is_empty() {
+            if old.port_count != PORT_RANGE_SIZE
+                || self.browser_holds_ports(&old.id)
+                || !self.still_running(&old.id).await?.is_empty()
+            {
                 continue;
             }
             if let Some(isolation) = self.isolation.get()

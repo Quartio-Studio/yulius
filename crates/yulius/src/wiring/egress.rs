@@ -154,10 +154,10 @@ impl BrowserNetwork for BrowserProxies {
             // The sandbox's ports are read once: they are given at its creation. Connections
             // made meanwhile wait in the listener's queue.
             let ports = match app.upgrade() {
-                Some(app) => app.sandbox_ports(&sandbox).await,
+                Some(app) => app.lease_sandbox_ports(&sandbox).await,
                 None => return,
             };
-            let ports = match ports {
+            let (sandbox, ports) = match ports {
                 Ok(Some(ports)) => ports,
                 Ok(None) => return,
                 Err(error) => {
@@ -165,12 +165,12 @@ impl BrowserNetwork for BrowserProxies {
                     tracing::error!(%sandbox, %error, "a sandbox's ports could not be read for its browser");
                     #[allow(clippy::reversed_empty_ranges)]
                     {
-                        1..=0
+                        (Arc::from(sandbox.as_str()), 1..=0)
                     }
                 }
             };
             let browser = BrowserEgress {
-                sandbox: sandbox.as_str().to_owned(),
+                sandbox,
                 ports,
                 pages: Some(pages),
                 listeners,

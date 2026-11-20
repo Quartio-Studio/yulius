@@ -163,6 +163,8 @@ async fn origin(
 struct Setup {
     /// The browser's own proxy listener.
     proxy: SocketAddr,
+    listener: tokio::task::JoinHandle<()>,
+    port_lease: std::sync::Weak<str>,
     /// The proxy as agent runs reach it (with a run's token).
     agents: SocketAddr,
     policy: Arc<Policy>,
@@ -226,11 +228,14 @@ async fn setup(options: Options) -> Result<Setup, Box<dyn std::error::Error>> {
             .map(|addr| (addr, vec!["/browser/welcome?".to_owned()])),
         listeners: Vec::new(),
     });
-    tokio::spawn(serve_browser(listener, Arc::clone(&proxy), browser));
+    let port_lease = Arc::downgrade(&browser.sandbox);
+    let listener = tokio::spawn(serve_browser(listener, Arc::clone(&proxy), browser));
     let agents = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
     let agents_addr = agents.local_addr()?;
     tokio::spawn(yulius_egress::serve(agents, proxy));
     Ok(Setup {
+        listener,
+        port_lease,
         proxy: addr,
         agents: agents_addr,
         policy,
@@ -495,6 +500,27 @@ async fn nothing_is_added_to_or_taken_from_a_browsers_requests() -> TestResult {
         0,
         "the policy of agent runs (interception, injection, redaction) is never asked"
     );
+    Ok(())
+}
+
+/// An established connection can outlive its HTTP listener. The former sandbox's port
+/// range stays reserved until that connection gives up its last reference.
+#[tokio::test]
+async fn an_upgraded_browser_connection_keeps_its_port_lease_until_it_ends() -> TestResult {
+    let (own, _) = origin("own").await?;
+    let setup = setup(Options::new(own.port()..=own.port())).await?;
+    let (stream, status) = connect(setup.proxy, &own.to_string()).await?;
+    assert_eq!(status, "HTTP/1.1 200 OK");
+    setup.listener.abort();
+    assert!(setup.listener.await.is_err_and(|e| e.is_cancelled()));
+    assert!(setup.port_lease.upgrade().is_some());
+    drop(stream);
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while setup.port_lease.strong_count() > 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await?;
     Ok(())
 }
 
