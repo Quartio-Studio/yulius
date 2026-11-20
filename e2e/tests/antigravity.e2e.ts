@@ -162,7 +162,7 @@ test('choosing Gemini 4 Neon or Gemini 4 Carbon in the composer starts an Antigr
   await expect.poll(() => browser.evaluate(() => {
     const dt = [...document.querySelectorAll('.ti-kv dt')].find((el) => (el as HTMLElement).innerText === 'Model');
     return dt ? (dt.nextElementSibling as HTMLElement).innerText : null;
-  })).toBe('Gemini 4 Neon · High effort');
+  })).toBe('Gemini 4 Neon · High effort (default)');
 
   // Gemini 4 Carbon stays selectable for tasks that ask for it.
   await browser.evaluate(() => { location.hash = '#/s/studio'; });

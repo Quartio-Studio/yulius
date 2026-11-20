@@ -8,6 +8,8 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 - Closing or stopping an answered task now honors the request when its reader has taken it and escalation records host loss. The attempt retains its lost exit reason. [SPEC-563](../.ai/specs/SPEC-563-honor-close-and-cancel-intents-when-host.md)
 
+- GPT-6.2 Astra now inherits extra high reasoning effort on new Codex launches and resumes.
+  Task details mark inherited effort so an explicit High control is identifiable (SPEC-561, task #554).
 - Intake browser tests wait up to the shared first-load budget for the sandbox task list.
   Proposal interactions keep their usual timeouts (SPEC-559, #1441).
 

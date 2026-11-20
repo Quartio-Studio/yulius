@@ -167,7 +167,12 @@ export function mountTaskInfoView(ctx, sandbox, task) {
       // newer one, only its next start is promised (SPEC-468 CCF-003).
       // A session started while no subscription could run it runs the fallback until its next
       // start (SPEC-482 FBK-009).
-      ['Model', detail.model ? [modelLabel(detail.model), detail.model_default ? h('span', { class: 'muted' }, ' (default)') : null, detail.effort ? h('span', { class: 'muted' }, ` · ${(findEffort(detail.effort) || { name: detail.effort }).name} effort`) : null, detail.fallback_model ? h('span', { class: 'muted' }, ` · this session runs on ${modelLabel(detail.fallback_model)} (${modelLabel(detail.model)} was used up when it started)`) : null] : '—'],
+      ['Model', detail.model ? [
+        modelLabel(detail.model),
+        detail.model_default ? h('span', { class: 'muted' }, ' (default)') : null,
+        detail.effort ? h('span', { class: 'muted' }, ` · ${findEffort(detail.effort)?.name || detail.effort} effort${detail.effort_default ? ' (default)' : ''}`) : null,
+        detail.fallback_model ? h('span', { class: 'muted' }, ` · this session runs on ${modelLabel(detail.fallback_model)} (${modelLabel(detail.model)} was used up when it started)`) : null,
+      ] : '—'],
       ['Answered by', m.models && m.models.length ? m.models.map((id) => modelLabel(id)).join(', ') : '—'],
       // Whether the agent was drawn at creation (SPEC-505 RND-001).
       ['Agent', `${cliOf(current)}${current.harness_choice === 'random' ? ' (drawn at random)' : ''}`],
