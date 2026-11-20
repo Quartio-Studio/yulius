@@ -6,7 +6,7 @@ Two modes, both reading commits (`HEAD`'s tree and its `.config/vidoc.toml`), ne
 tree:
 
 - change scan (default): the files that differ between the merge base of `HEAD` and the
-  integration branch (`--base`, else `origin/HEAD`) and `HEAD`;
+  integration branch (`--base`, else `origin/$YULIUS_INTEGRATION_BRANCH` if present, else `origin/HEAD`) and `HEAD`;
 - broad scan (`--all`): every file tracked in `HEAD`.
 
 A finding is in the change when its line is within 3 lines of a line the branch added or modified
@@ -963,7 +963,7 @@ def print_finding(finding, out, fingerprint=False):
 def arguments(argv):
     parser = argparse.ArgumentParser(prog="security-scan", description=__doc__.split("\n\n")[0])
     parser.add_argument("--all", action="store_true", help="broad scan: the whole repository")
-    parser.add_argument("--base", help="the integration branch to compare with (default origin/HEAD)")
+    parser.add_argument("--base", help="the integration branch to compare with (default: origin/$YULIUS_INTEGRATION_BRANCH if present, else origin/HEAD)")
     parser.add_argument("--ci", action="store_true",
                         help="Yulius CI: scan pull request heads only, not run ends skipped")
     parser.add_argument("--report", help="write the result as JSON to this file")
