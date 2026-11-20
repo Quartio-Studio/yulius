@@ -2347,6 +2347,30 @@ fn conflict_paths_preserve_distinct_non_utf8_names() -> TestResult {
     Ok(())
 }
 
+#[test]
+fn show_file_reads_a_preview_tree_by_id_and_requires_refs_to_resolve_to_commits() -> TestResult {
+    let fx = Fixture::new()?;
+    let (_, repo) = fx.repo_with_remote()?;
+    let tree = fx.raw(&repo, &["rev-parse", "main^{tree}"])?;
+    fx.raw(&repo, &["update-ref", "refs/tags/tree-alias", &tree])?;
+    let blob = fx.raw(&repo, &["rev-parse", "main:README.md"])?;
+
+    for rev in ["main", tree.as_str()] {
+        assert_eq!(
+            fx.git.show_file(&repo, rev, "README.md")?.as_deref(),
+            Some("hello\n")
+        );
+    }
+    for rev in ["tree-alias", blob.as_str()] {
+        let result = fx.git.show_file(&repo, rev, "README.md");
+        assert!(
+            matches!(&result, Err(GitError::RevisionNotFound(name)) if name == rev),
+            "expected commit resolution to reject {rev}, got {result:?}"
+        );
+    }
+    Ok(())
+}
+
 /// SPEC-134 (review C1): CD reads a project's scripts from a mirror only Yulius writes. A
 /// replacement planted in the sandbox clone (`git replace`, writable by its agents) never reaches
 /// it, a tracking ref that moved away from the expected commit is refused, and the exported tree
