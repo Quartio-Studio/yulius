@@ -611,8 +611,19 @@ impl App {
             }
         }
         // A permission menu or a question in the terminal is answered with keys the paste would
-        // press unseen (NYA-004).
-        if task.activity == Some(Activity::NeedsAttention) {
+        // press unseen (NYA-004). A live browser handoff also sets `activity = NeedsAttention` via
+        // `AttentionKind::Yulius`, and has no terminal prompt blocking an inline answer (SPEC-578).
+        let is_browser_attention = matches!(
+            self.deps.store.stored_task_attention(&task.id).await,
+            Ok(Some((attn, _)))
+                if attn.kind == crate::attention::AttentionKind::Yulius
+                    && attn
+                        .link
+                        .as_deref()
+                        .and_then(crate::browser::browser_tab_from_link)
+                        .is_some()
+        );
+        if task.activity == Some(Activity::NeedsAttention) && !is_browser_attention {
             return Err(AppError::Conflict(format!(
                 "task #{}'s agent asks in its terminal now: @{owner} answers there, or take \
                  control of the task",

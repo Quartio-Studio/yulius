@@ -362,6 +362,21 @@ pub struct App {
     /// The overlaps a holding task was told of (or is being told), by holder, claimer and paths:
     /// one message each (SPEC-493 SCO-001).
     pub(crate) scope_told: std::sync::Mutex<std::collections::BTreeSet<String>>,
+    /// Per-sandbox browser session notice watchers `(watcher_id, AbortHandle)` so
+    /// `ActionCleared` / `Disconnected` run once per sandbox regardless of connected viewer count
+    /// or `BrowserPort::ensure` wrapper allocations (SPEC-578).
+    pub(crate) browser_watchers:
+        Mutex<HashMap<yulius_domain::ids::SandboxId, (u64, tokio::task::AbortHandle)>>,
+    /// Monotonic id generator for [`Self::browser_watchers`] entries.
+    pub(crate) next_browser_watcher_id: std::sync::atomic::AtomicU64,
+    /// Counts of `(sandbox, tab_id)` browser action clears already persisted and broadcast by
+    /// `App` before `session.clear_action` emitted `BrowserNotice::ActionCleared`, so the sandbox
+    /// watcher skips duplicate DB scans and duplicate `UiEvent::BrowserActionCleared` (SPEC-578).
+    pub(crate) handled_browser_clears:
+        Mutex<HashMap<(yulius_domain::ids::SandboxId, String), usize>>,
+    /// True once server shutdown begins (`stop_workspace_services`), so persisted browser
+    /// handoffs survive orderly restarts instead of being cleared on browser disconnect (SPEC-578).
+    pub(crate) shutting_down: std::sync::atomic::AtomicBool,
 }
 
 impl App {
@@ -436,6 +451,10 @@ impl App {
             github_callback: crate::github_callback::CallbackKept::default(),
             docker_told: crate::docker_trouble::DockerTold::default(),
             scope_told: std::sync::Mutex::default(),
+            browser_watchers: Mutex::default(),
+            next_browser_watcher_id: std::sync::atomic::AtomicU64::new(1),
+            handled_browser_clears: Mutex::default(),
+            shutting_down: std::sync::atomic::AtomicBool::new(false),
         })
     }
 

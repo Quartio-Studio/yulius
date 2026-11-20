@@ -180,18 +180,16 @@ impl App {
     /// # Errors
     /// Store failures.
     pub async fn task_summary(&self, task: &TaskRecord) -> AppResult<TaskSummary> {
-        self.task_summary_among(task, None).await
+        self.task_summary_with(task, None, None, task.archived_at.is_none())
+            .await
     }
 
-    /// [`Self::task_summary`] of a task listed with the rest of its project's unarchived tasks
-    /// (`project`): what it needs of the others is read from the list (SPEC-483 slice 37).
-    ///
-    /// # Errors
-    /// Store failures.
-    pub(crate) async fn task_summary_among(
+    async fn task_summary_with(
         &self,
         task: &TaskRecord,
         project: Option<&[TaskRecord]>,
+        requested: Option<&std::collections::HashSet<String>>,
+        sync_wait: bool,
     ) -> AppResult<TaskSummary> {
         let store = &self.deps.store;
         let steps = store.steps(&task.id).await?;
@@ -227,11 +225,27 @@ impl App {
         };
         let idle_run = matches!(task.status, TaskStatus::Running | TaskStatus::Parked)
             && task.activity.is_some_and(Activity::is_idle);
-        let requested = self.browser_requests(&task.sandbox_id).await;
-        let facts = self.task_attention_facts(task, &requested).await?;
+        let owned_requested;
+        let requested = match requested {
+            Some(set) => set,
+            None => {
+                owned_requested = self.browser_requests(&task.sandbox_id).await;
+                &owned_requested
+            }
+        };
+        let facts = self.task_attention_facts(task, requested).await?;
         let needs_you_notice = self.resolve_needs_you_notice(task, &facts).await;
-        self.sync_wait_message(task, needs_you_notice.as_ref())
-            .await;
+        if sync_wait {
+            self.sync_wait_message(task, needs_you_notice.as_ref())
+                .await;
+        }
+        let yulius_wait = facts.yulius_wait
+            || (task.status == TaskStatus::Running
+                && task.activity == Some(Activity::Waiting)
+                && !facts.plan_open
+                && !facts.spec_unfinished
+                && !facts.goal_unfinished
+                && self.pr_ci_progressing(task).await);
         Ok(TaskSummary {
             id: task.id.to_string(),
             sandbox_id: task.sandbox_id.to_string(),
@@ -306,9 +320,7 @@ impl App {
             background_shells_since: self
                 .background_shells_since(&task.id)
                 .map(|ms| rfc3339(yulius_domain::time::Timestamp(ms))),
-            yulius_wait: task.status == TaskStatus::Running
-                && task.activity.is_some_and(Activity::is_idle)
-                && (self.agent_waits_on_yulius(&task.id) || self.pr_news_due(task).await),
+            yulius_wait,
             merge_armed: task.status == TaskStatus::Running
                 && task.activity.is_some_and(Activity::is_idle)
                 && self.merge_is_armed(&task.id),
@@ -681,9 +693,18 @@ impl App {
         let tasks = self.deps.store.tasks(&sid, archived).await?;
         // Unarchived, the list is the project the summaries need; archived ones wait for nothing.
         let project = (!archived).then_some(tasks.as_slice());
+        let requested = if archived {
+            std::collections::HashSet::new()
+        } else {
+            self.browser_requests(&sid).await
+        };
         let mut out = Vec::with_capacity(tasks.len());
         for task in &tasks {
-            out.push(self.task_summary_among(task, project).await?);
+            let sync_wait = !archived && !task.status.is_resting();
+            out.push(
+                self.task_summary_with(task, project, Some(&requested), sync_wait)
+                    .await?,
+            );
         }
         Ok(out)
     }
@@ -693,10 +714,14 @@ impl App {
     /// # Errors
     /// Store failures.
     pub async fn archived_tasks(&self, ctx: &AuthContext) -> AppResult<Vec<TaskSummary>> {
+        let empty = std::collections::HashSet::new();
         let mut out = Vec::new();
         for (sandbox, _) in self.visible_sandboxes(&ctx.user).await? {
             for task in self.deps.store.tasks(&sandbox.id, true).await? {
-                out.push(self.task_summary(&task).await?);
+                out.push(
+                    self.task_summary_with(&task, None, Some(&empty), false)
+                        .await?,
+                );
             }
         }
         Ok(out)
@@ -709,7 +734,10 @@ impl App {
     pub async fn task_detail(&self, ctx: &AuthContext, id: &str) -> AppResult<TaskDetail> {
         let task = self.load_task(ctx, id, Action::View).await?;
         let store = &self.deps.store;
-        let mut summary = self.task_summary(&task).await?;
+        // Defer `sync_wait_message` until after `parked_status` below so a parked task whose PR
+        // is already green/merged does not record and immediately resolve a phantom `parked:resume`
+        // wait-history row (SPEC-578).
+        let mut summary = self.task_summary_with(&task, None, None, false).await?;
         // Subscription emails are for administrators (UI-022, SPEC-244 SUB-005).
         let admin = ctx.user.is_superadmin || ctx.user.is_instance_admin;
         if admin
@@ -829,12 +857,15 @@ impl App {
                 .await;
             if !needs_you && summary.needs_you.is_none() {
                 summary.needs_you_notice = None;
-                self.sync_wait_message(&task, None).await;
             }
             (Some(needs_you), pr)
         } else {
             (None, None)
         };
+        if task.archived_at.is_none() && !task.status.is_resting() {
+            self.sync_wait_message(&task, summary.needs_you_notice.as_ref())
+                .await;
+        }
         let wait_history = self.wait_history_view(&task).await;
         Ok(TaskDetail {
             parked_needs_you,
@@ -1014,6 +1045,10 @@ impl App {
                 "stop the task before deleting it".into(),
             ));
         }
+        // A parked (or resting) task being deleted may still hold a live browser tab handoff
+        // (SPEC-578): clear it before removing the row.
+        self.clear_task_browser_actions(&task.sandbox_id, &task.id, None)
+            .await;
         let attempts = self.deps.store.attempts(&task.id).await?;
         if let Some(path) = &task.worktree_path {
             let repo = self.sandbox_repo(&task.sandbox_id);

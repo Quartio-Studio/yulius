@@ -746,7 +746,6 @@ async fn pump(
                         }
                     }
                     Some(BrowserNotice::ActionCleared { tab_id }) => {
-                        app.on_browser_action_cleared(&grant.sandbox_id, &tab_id).await;
                         if !out.json(&ViewerServerMsg::ActionCleared { tab_id }).await {
                             return;
                         }
@@ -878,19 +877,6 @@ async fn pump(
                         app.clear_browser_action_for_sandbox(&grant.sandbox_id, &tab_id)
                             .await;
                         Ok(())
-                    }
-                    Ok(ViewerClientMsg::Close { tab_id }) => {
-                        let closed = session
-                            .apply_viewer(ViewerClientMsg::Close {
-                                tab_id: tab_id.clone(),
-                            })
-                            .await
-                            .map_err(|failure| (failure.viewer_code(), failure.message));
-                        if closed.is_ok() {
-                            app.on_browser_action_cleared(&grant.sandbox_id, &tab_id)
-                                .await;
-                        }
-                        closed
                     }
                     Ok(message) => session.apply_viewer(message).await.map_err(|failure| {
                         (failure.viewer_code(), failure.message)

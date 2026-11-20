@@ -189,7 +189,9 @@ impl App {
         }
         let profile = self.browser_profile_dir(sandbox);
         let session = if restart {
-            self.deps.browser.restart(sandbox, &profile).await?
+            let session = self.deps.browser.restart(sandbox, &profile).await?;
+            self.clear_sandbox_browser_actions(sandbox).await;
+            session
         } else {
             self.deps.browser.ensure(sandbox, &profile).await?
         };
@@ -197,7 +199,119 @@ impl App {
             self.deps.browser.stop(sandbox).await;
             return Err(removed());
         }
+        self.ensure_browser_watcher(sandbox, &session, restart);
         Ok(session)
+    }
+
+    fn ensure_browser_watcher(
+        &self,
+        sandbox: &SandboxId,
+        session: &Arc<dyn BrowserSession>,
+        replace: bool,
+    ) {
+        let mut watchers = self
+            .browser_watchers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        watchers.retain(|_, (_, handle)| !handle.is_finished());
+        if !replace && watchers.contains_key(sandbox) {
+            return;
+        }
+        if let Some((_, old)) = watchers.remove(sandbox) {
+            old.abort();
+        }
+        let watcher_id = self
+            .next_browser_watcher_id
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let mut notices = session.notices();
+        let app_weak = self.parked_git_app.clone();
+        let sandbox_owned = sandbox.clone();
+        let handle = tokio::spawn(async move {
+            let mut disconnected = false;
+            while let Some(notice) = notices.next().await {
+                let Some(app) = app_weak.upgrade() else {
+                    return;
+                };
+                match notice {
+                    crate::ports::browser::BrowserNotice::ActionCleared { tab_id } => {
+                        if app.take_handled_browser_clear(&sandbox_owned, tab_id.as_str()) {
+                            continue;
+                        }
+                        app.on_browser_action_cleared_with(&sandbox_owned, &tab_id, None, true)
+                            .await;
+                    }
+                    crate::ports::browser::BrowserNotice::Disconnected => {
+                        disconnected = true;
+                        if !app.shutting_down.load(std::sync::atomic::Ordering::SeqCst) {
+                            app.clear_sandbox_browser_actions(&sandbox_owned).await;
+                        }
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+            if let Some(app) = app_weak.upgrade() {
+                let is_current = {
+                    let mut watchers = app
+                        .browser_watchers
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    let current = watchers
+                        .get(&sandbox_owned)
+                        .is_some_and(|(id, _)| *id == watcher_id);
+                    if current {
+                        watchers.remove(&sandbox_owned);
+                    }
+                    current
+                };
+                if is_current
+                    && !disconnected
+                    && !app.shutting_down.load(std::sync::atomic::Ordering::SeqCst)
+                {
+                    app.reconcile_sandbox_browser_actions(&sandbox_owned).await;
+                }
+            }
+        })
+        .abort_handle();
+        watchers.insert(sandbox.clone(), (watcher_id, handle));
+    }
+
+    fn note_handled_browser_clear(&self, sandbox: &SandboxId, tab_id: &str) {
+        let has_watcher = self
+            .browser_watchers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(sandbox)
+            .is_some_and(|(_, handle)| !handle.is_finished());
+        if !has_watcher {
+            return;
+        }
+        let mut handled = self
+            .handled_browser_clears
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *handled
+            .entry((sandbox.clone(), tab_id.to_owned()))
+            .or_insert(0) += 1;
+    }
+
+    fn take_handled_browser_clear(&self, sandbox: &SandboxId, tab_id: &str) -> bool {
+        let mut handled = self
+            .handled_browser_clears
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let key = (sandbox.clone(), tab_id.to_owned());
+        match handled.get_mut(&key) {
+            Some(count) if *count > 1 => {
+                *count -= 1;
+                true
+            }
+            Some(_) => {
+                handled.remove(&key);
+                true
+            }
+            None => false,
+        }
     }
 
     /// The dev-server ports of `sandbox`, which the host relays from its loopback into the
@@ -626,18 +740,22 @@ impl App {
                     .as_ref()
                     .and_then(|req| req.task_id.as_deref())
                     == Some(task.as_str())
-                    && session.clear_action(&tab.id)
                 {
-                    cleared += 1;
-                    self.events.publish(
-                        Some(sandbox.clone()),
-                        false,
-                        UiEvent::BrowserActionCleared {
-                            sandbox_id: sandbox.to_string(),
-                            tab_id: tab.id.to_string(),
-                            task_id: Some(task.to_string()),
-                        },
-                    );
+                    self.note_handled_browser_clear(sandbox, tab.id.as_str());
+                    if session.clear_action(&tab.id) {
+                        cleared += 1;
+                        self.events.publish(
+                            Some(sandbox.clone()),
+                            false,
+                            UiEvent::BrowserActionCleared {
+                                sandbox_id: sandbox.to_string(),
+                                tab_id: tab.id.to_string(),
+                                task_id: Some(task.to_string()),
+                            },
+                        );
+                    } else {
+                        let _ = self.take_handled_browser_clear(sandbox, tab.id.as_str());
+                    }
                 }
             }
         }
@@ -680,31 +798,41 @@ impl App {
     /// (SPEC-578) and reconciles any task pointing at that tab.
     pub async fn clear_browser_action_for_sandbox(&self, sandbox: &SandboxId, tab: &TabId) {
         let mut task_id = None;
-        if let Some(session) = self.deps.browser.running(sandbox).await {
+        let running = self.deps.browser.running(sandbox).await;
+        if let Some(session) = &running {
             for info in session.tabs() {
                 if &info.id == tab {
                     task_id = info.action_requested.and_then(|req| req.task_id);
                     break;
                 }
             }
-            let _ = session.clear_action(tab);
         }
-        self.on_browser_action_cleared_for(sandbox, tab, task_id.as_deref())
+        // Clear persisted task state and emit `BrowserActionCleared` before clearing the session
+        // tab so viewers immediately see consistent HTTP/store state after `ActionCleared`.
+        self.on_browser_action_cleared_with(sandbox, tab, task_id.as_deref(), true)
             .await;
+        if let Some(session) = running {
+            self.note_handled_browser_clear(sandbox, tab.as_str());
+            if !session.clear_action(tab) {
+                let _ = self.take_handled_browser_clear(sandbox, tab.as_str());
+            }
+        }
     }
 
     /// Handles a tab's browser user-action request being cleared (tab closed or viewer cleared):
     /// resolves matching persisted `needs_you` and legacy browser `attention` rows and publishes
     /// `browser.action_cleared` + `task.updated` (SPEC-578).
     pub async fn on_browser_action_cleared(&self, sandbox: &SandboxId, tab: &TabId) {
-        self.on_browser_action_cleared_for(sandbox, tab, None).await;
+        self.on_browser_action_cleared_with(sandbox, tab, None, true)
+            .await;
     }
 
-    async fn on_browser_action_cleared_for(
+    async fn on_browser_action_cleared_with(
         &self,
         sandbox: &SandboxId,
         tab: &TabId,
         known_task: Option<&str>,
+        emit_event: bool,
     ) {
         let store = &self.deps.store;
         let now = self.now();
@@ -775,15 +903,127 @@ impl App {
                 }
             }
         }
-        self.events.publish(
-            Some(sandbox.clone()),
-            false,
-            UiEvent::BrowserActionCleared {
-                sandbox_id: sandbox.to_string(),
-                tab_id: tab.to_string(),
-                task_id: affected_task,
-            },
-        );
+        if emit_event {
+            self.events.publish(
+                Some(sandbox.clone()),
+                false,
+                UiEvent::BrowserActionCleared {
+                    sandbox_id: sandbox.to_string(),
+                    tab_id: tab.to_string(),
+                    task_id: affected_task,
+                },
+            );
+        }
+    }
+
+    /// Clears every persisted browser handoff (`tasks.needs_you` and legacy `tasks.attention`) in
+    /// `sandbox` because its browser was restarted, stopped, or disconnected (SPEC-578).
+    pub(crate) async fn clear_sandbox_browser_actions(&self, sandbox: &SandboxId) {
+        self.handled_browser_clears
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .retain(|(sid, _), _| sid != sandbox);
+        self.reconcile_sandbox_browser_actions_except(sandbox, &std::collections::HashSet::new())
+            .await;
+    }
+
+    /// Reconciles persisted browser handoffs in `sandbox` against the currently live tabs with
+    /// pending user-action requests (SPEC-578).
+    async fn reconcile_sandbox_browser_actions(&self, sandbox: &SandboxId) {
+        let active_tabs: std::collections::HashSet<String> =
+            match self.deps.browser.running(sandbox).await {
+                Some(session) => session
+                    .tabs()
+                    .into_iter()
+                    .filter(|tab| tab.action_requested.is_some())
+                    .map(|tab| tab.id.to_string())
+                    .collect(),
+                None => std::collections::HashSet::new(),
+            };
+        self.reconcile_sandbox_browser_actions_except(sandbox, &active_tabs)
+            .await;
+    }
+
+    async fn reconcile_sandbox_browser_actions_except(
+        &self,
+        sandbox: &SandboxId,
+        keep_tabs: &std::collections::HashSet<String>,
+    ) {
+        let store = &self.deps.store;
+        let now = self.now();
+        if let Ok(tasks) = store.needs_you_tasks(sandbox).await {
+            for task_id in tasks {
+                if let Ok(Some(req)) = store.task_needs_you(&task_id).await
+                    && let Some(tab_id) = req.link.as_deref().and_then(browser_tab_from_link)
+                    && !keep_tabs.contains(&tab_id)
+                    && store
+                        .end_task_needs_you_at(&task_id, req.at, now)
+                        .await
+                        .unwrap_or(false)
+                {
+                    if let Ok(Some((attn, _))) = store.stored_task_attention(&task_id).await
+                        && attn
+                            .link
+                            .as_deref()
+                            .and_then(browser_tab_from_link)
+                            .is_some()
+                    {
+                        let _ = store.clear_stored_task_attention(&task_id).await;
+                        if let Ok(Some(record)) = store.task(&task_id).await
+                            && record.status == yulius_domain::task::TaskStatus::Running
+                            && record.activity
+                                == Some(yulius_domain::task::Activity::NeedsAttention)
+                        {
+                            let _ = self
+                                .set_task_activity(&record, yulius_domain::task::Activity::Waiting)
+                                .await;
+                        }
+                    }
+                    self.publish_task(&task_id).await;
+                    self.events.publish(
+                        Some(sandbox.clone()),
+                        false,
+                        UiEvent::BrowserActionCleared {
+                            sandbox_id: sandbox.to_string(),
+                            tab_id,
+                            task_id: Some(task_id.to_string()),
+                        },
+                    );
+                }
+            }
+        }
+        // Legacy rows where `tasks.needs_you` was never written (only `tasks.attention`).
+        if let Ok(tasks) = store.tasks(sandbox, false).await {
+            for record in tasks {
+                if record.status.is_resting() {
+                    continue;
+                }
+                if let Ok(Some((attn, _))) = store.stored_task_attention(&record.id).await
+                    && let Some(tab_id) = attn.link.as_deref().and_then(browser_tab_from_link)
+                    && !keep_tabs.contains(&tab_id)
+                {
+                    let _ = store.clear_stored_task_attention(&record.id).await;
+                    if record.status == yulius_domain::task::TaskStatus::Running
+                        && record.activity == Some(yulius_domain::task::Activity::NeedsAttention)
+                    {
+                        let _ = self
+                            .set_task_activity(&record, yulius_domain::task::Activity::Waiting)
+                            .await;
+                    } else {
+                        self.publish_task(&record.id).await;
+                    }
+                    self.events.publish(
+                        Some(sandbox.clone()),
+                        false,
+                        UiEvent::BrowserActionCleared {
+                            sandbox_id: sandbox.to_string(),
+                            tab_id,
+                            task_id: Some(record.id.to_string()),
+                        },
+                    );
+                }
+            }
+        }
     }
 }
 

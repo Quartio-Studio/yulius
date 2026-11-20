@@ -921,14 +921,22 @@ impl App {
         }
         // An untold failed/errored Yulius CI run on a live, unpaused, non-playground session
         // with no open human request will be pasted into the agent by `watch_prs` so the agent
-        // can recover it without escalating to Needs You (SPEC-578).
+        // can recover it without escalating to Needs You (SPEC-578). Check `store.live_attempt`
+        // (what `watch_prs` itself iterates) rather than `existing_runtime`, because `armed_view`
+        // above lazily allocates a `TaskRuntime`.
         if !paused
-            && self.existing_runtime(&task.id).is_some()
+            && matches!(store.live_attempt(&task.id).await, Ok(Some(_)))
             && let Some((pr, false)) = pull
             && task.activity != Some(yulius_domain::task::Activity::NeedsAttention)
             && matches!(store.task_needs_you(&task.id).await, Ok(None))
+            && self
+                .browser_tab_request_for(&task.sandbox_id, &task.id)
+                .await
+                .is_none()
             && let Some(run) = self.latest_pr_ci_run(&task.sandbox_id, pr).await
             && matches!(run.state, RunState::Failed | RunState::Error)
+            && !(run.state == RunState::Failed
+                && self.run_superseded_by_pushed_head(task, &run.sha).await)
             && !matches!(
                 store.sandbox(&task.sandbox_id).await,
                 Ok(Some(sandbox)) if sandbox.is_playground()
@@ -988,9 +996,13 @@ impl App {
         // A person must act first (a prompt on screen, `needs_you`): nothing is typed, the merge
         // notice included (review M1, round 2).
         let needs_you = !matches!(self.deps.store.task_needs_you(&task.id).await, Ok(None));
+        let browser_req = self
+            .browser_tab_request_for(&task.sandbox_id, &task.id)
+            .await
+            .is_some();
         let flagged = task.activity == Some(yulius_domain::task::Activity::NeedsAttention);
         let person_must_act =
-            needs_you || (flagged && !self.held_message_flag_outlived(task).await);
+            needs_you || browser_req || (flagged && !self.held_message_flag_outlived(task).await);
         if past_merge(&record.stage) {
             // Merged: said once, to a task the watch saw with it open (PRN-005, PRN-007).
             if !merge_untold(told, pr) {

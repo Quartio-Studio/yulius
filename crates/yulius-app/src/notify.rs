@@ -525,14 +525,15 @@ impl App {
             shared: shared.map(|(_, _, words)| words),
             link,
         };
-        // The same redaction as the sandbox's transcripts (TGC-023).
+        // The same redaction as the sandbox's transcripts and notices (TGC-023, SPEC-578):
+        // vault values plus generic credential shapes.
         Ok(Some(Notice {
             kind,
             headline: self
-                .redact_for_sandbox(&task.sandbox_id, &notice.headline())
+                .redact_notice_text(&task.sandbox_id, &notice.headline())
                 .await,
             text: self
-                .redact_for_sandbox(&task.sandbox_id, &notice.text())
+                .redact_notice_text(&task.sandbox_id, &notice.text())
                 .await,
             about: Some(crate::ports::notify::SentAbout {
                 task: task.id.clone(),

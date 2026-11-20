@@ -234,7 +234,7 @@ impl App {
                 .unwrap_or_else(|| "its predecessor did not finish".to_owned());
             NeedsYouNoticeView {
                 source: "system".to_owned(),
-                episode: format!("chain:{}", episode_hash(&reason)),
+                episode: format!("chain:{}:{episode_at_ms}", episode_hash(&reason)),
                 happened: format!("This chained task cannot start automatically: {reason}."),
                 problem: None,
                 action: "Open the task to start it manually or adjust its dependency.".to_owned(),
@@ -273,7 +273,7 @@ impl App {
                         ),
                         None => task_link.clone(),
                     };
-                    let at_ms = run.ended_at.unwrap_or(run.queued_at).0;
+                    let at_ms = run.ended_at.unwrap_or(run.queued_at).0.max(episode_at_ms);
                     let action = if task.status == TaskStatus::Parked {
                         format!("Inspect CI run {} and resume the task or rerun CI.", run.id)
                     } else {
@@ -284,7 +284,7 @@ impl App {
                     };
                     NeedsYouNoticeView {
                         source: "system".to_owned(),
-                        episode: format!("pr_fail:{pr}:{}", run.id),
+                        episode: format!("pr_fail:{pr}:{}:{episode_at_ms}", run.id),
                         happened: format!(
                             "{verb} pull request #{pr} CI run {} failed: {failed}.",
                             run.id

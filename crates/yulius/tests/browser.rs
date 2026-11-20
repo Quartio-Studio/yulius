@@ -23,7 +23,8 @@ use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 use yulius::wiring::browser::ChromiumBrowsers;
 use yulius_app::model::WebSessionRecord;
-use yulius_app::ports::store::{SessionStore as _, TaskStore};
+use yulius_app::ports::store::{AttemptUpdate, SessionStore as _, TaskStore};
+use yulius_app::ports::store_ext::NeedsYouStore as _;
 use yulius_browser::fake::{
     FAKE_ARGV_FILE, FAKE_AVCC, FAKE_PID_FILE, FakeCdpServer, FakeChromium, FakeDisplay,
     write_fake_chromium,
@@ -2961,6 +2962,339 @@ async fn browser_handoff_supersedes_old_tab_survives_park_and_clears_from_viewer
                 .is_none_or(|n| n.source != "browser"),
             "browser handoff must stay cleared after viewer clear: {:?}",
             after.summary.needs_you_notice
+        );
+        Ok(())
+    })
+    .await
+}
+
+/// SPEC-578 (round 1 findings #1 & #3):
+/// - `answer_needs_you` accepts a live browser handoff while `activity == NeedsAttention` (only a
+///   terminal attention flag blocks inline answers with "asks in its terminal now").
+/// - Closing a tab with 0 viewers connected automatically clears `tasks.needs_you` and legacy
+///   `tasks.attention` through the single per-sandbox watcher.
+/// - Clearing a tab with 2 viewers connected emits exactly ONE `UiEvent::BrowserActionCleared`.
+#[tokio::test]
+async fn browser_handoff_allows_inline_answer_clears_without_viewers_and_emits_once() -> TestResult
+{
+    with_fixture(|f| async move {
+        let task_id = TaskId::parse("t1")?;
+        let sandbox_id = SandboxId::parse("s1")?;
+        let owner = auth_ctx(&f.h, "u-alice").await?;
+
+        // Open a browser session directly via MCP tool with ZERO viewer WebSockets connected.
+        let tabs_res = mcp_tool(&f.h, TOKEN, "browser_tabs", json!({})).await?;
+        assert_eq!(tabs_res["isError"], false, "{tabs_res}");
+        let tab1 = tabs_res["structuredContent"]["tabs"][0]["id"]
+            .as_str()
+            .ok_or("tab1")?
+            .to_owned();
+
+        let req = mcp_tool(
+            &f.h,
+            TOKEN,
+            "browser_request_user_action",
+            json!({"tab_id": tab1, "reason": "Complete OAuth consent"}),
+        )
+        .await?;
+        assert_eq!(req["isError"], false, "{req}");
+
+        // Finding #1: `t1` has `activity == NeedsAttention` and `attention.kind == Yulius` (browser
+        // handoff). `answer_needs_you` must pass `check_answer_authority` (reaching `no live
+        // session`, NOT refusing with `asks in its terminal now`).
+        let task = f.h.store.task(&task_id).await?.ok_or("t1")?;
+        assert_eq!(task.activity, Some(Activity::NeedsAttention));
+        let err =
+            f.h.app
+                .answer_needs_you(&owner, "t1", "Signed in", None)
+                .await
+                .err()
+                .ok_or("expected no live session error")?;
+        let msg = err.to_string();
+        assert!(
+            (msg.contains("no live session") || msg.contains("not running"))
+                && !msg.contains("asks in its terminal"),
+            "browser handoff must not be rejected as a terminal prompt: {msg}"
+        );
+        // If a terminal prompt replaces the browser attention flag, `answer_needs_you` MUST still
+        // refuse with "asks in its terminal now" (NYA-004).
+        let (_, flagged_at) =
+            f.h.store
+                .stored_task_attention(&task_id)
+                .await?
+                .ok_or("browser attention")?;
+        let replaced =
+            f.h.store
+                .replace_attention(
+                    &task_id,
+                    flagged_at,
+                    Some(&yulius_app::attention::AttentionRecord::terminal(Some(
+                        "Allow bash command?",
+                    ))),
+                    f.h.app.now(),
+                )
+                .await?;
+        assert!(replaced, "terminal attention must replace browser flag");
+        let term_err =
+            f.h.app
+                .answer_needs_you(&owner, "t1", "yes", None)
+                .await
+                .err()
+                .ok_or("expected terminal conflict")?;
+        assert!(
+            term_err.to_string().contains("asks in its terminal"),
+            "terminal prompt must still block inline answer: {term_err}"
+        );
+        // Clear the synthetic terminal prompt back to Waiting so the next browser handoff sets
+        // its own Yulius browser attention cleanly.
+        f.h.store
+            .set_activity(&task_id, Some(Activity::Waiting), f.h.app.now())
+            .await?;
+
+        // Open a second tab, re-request browser action on it (with 0 viewers connected), then
+        // close the tab directly in Chrome so no viewer WS is involved.
+        let open2 = mcp_tool(
+            &f.h,
+            TOKEN,
+            "browser_open",
+            json!({"url": "https://example.com/zero-viewers"}),
+        )
+        .await?;
+        assert_eq!(open2["isError"], false, "{open2}");
+        let browser =
+            f.h.app
+                .deps
+                .browser
+                .running(&sandbox_id)
+                .await
+                .ok_or("browser")?;
+        let tab2 = browser
+            .tabs()
+            .into_iter()
+            .find(|t| t.id.as_str() != tab1)
+            .ok_or("tab2")?
+            .id
+            .clone();
+        let req2 = mcp_tool(
+            &f.h,
+            TOKEN,
+            "browser_request_user_action",
+            json!({"tab_id": tab2.as_str(), "reason": "Verify email code"}),
+        )
+        .await?;
+        assert_eq!(req2["isError"], false, "{req2}");
+        assert!(f.h.store.task_needs_you(&task_id).await?.is_some());
+
+        // Close `tab2` with zero viewer sockets attached: the sandbox watcher must clear DB state.
+        browser
+            .apply_viewer(yulius_contracts::browser::ViewerClientMsg::Close {
+                tab_id: tab2.clone(),
+            })
+            .await?;
+        let deadline = tokio::time::Instant::now() + WAIT;
+        loop {
+            if f.h.store.task_needs_you(&task_id).await?.is_none() {
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "zero-viewer tab close must clear persisted browser needs_you"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(f.h.store.stored_task_attention(&task_id).await?.is_none());
+
+        // Finding #3 (N viewers): connect TWO viewer WebSockets, request action on `tab1`, clear
+        // via viewer 1, and assert exactly ONE `UiEvent::BrowserActionCleared` is published.
+        let served = serve(f.h.router.clone()).await?;
+        let mut ws1 =
+            ws_connect(served.addr, "/api/sandboxes/s1/browser", &f.writer, ORIGIN).await?;
+        let mut ws2 =
+            ws_connect(served.addr, "/api/sandboxes/s1/browser", &f.writer, ORIGIN).await?;
+        let _ = next_json(&mut ws1).await?;
+        let _ = next_json(&mut ws2).await?;
+
+        let req3 = mcp_tool(
+            &f.h,
+            TOKEN,
+            "browser_request_user_action",
+            json!({"tab_id": tab1, "reason": "Approve 2FA prompt"}),
+        )
+        .await?;
+        assert_eq!(req3["isError"], false, "{req3}");
+
+        let mut events = f.h.app.events.subscribe();
+        send(&mut ws1, json!({"type": "clear_action", "tab_id": tab1})).await?;
+        let _ = wait_json(&mut ws1, |m| {
+            m["type"] == "action_cleared" && m["tab_id"] == tab1
+        })
+        .await?;
+        let _ = wait_json(&mut ws2, |m| {
+            m["type"] == "action_cleared" && m["tab_id"] == tab1
+        })
+        .await?;
+        // Drain UI events briefly to ensure no duplicate `BrowserActionCleared` arrives.
+        tokio::time::sleep(Duration::from_millis(80)).await;
+        let mut cleared_events = Vec::new();
+        while let Ok(env) = events.try_recv() {
+            if let yulius_contracts::events::UiEvent::BrowserActionCleared {
+                tab_id, task_id, ..
+            } = env.event
+                && tab_id == tab1
+            {
+                cleared_events.push((tab_id, task_id));
+            }
+        }
+        assert_eq!(
+            cleared_events,
+            vec![(tab1, Some("t1".to_owned()))],
+            "two viewers must produce exactly one BrowserActionCleared UiEvent"
+        );
+        Ok(())
+    })
+    .await
+}
+
+/// SPEC-578 (round 1 findings #2 & #4):
+/// - `restart_browser` clears persisted browser `tasks.needs_you` and legacy browser
+///   `tasks.attention` (since old tabs die with the restarted browser).
+/// - Deleting a `Parked` task with an open browser handoff clears `tab.action_requested` in
+///   `BrowserSession`.
+/// - Orderly server shutdown (`stop_workspace_services`) does NOT clear persisted `tasks.needs_you`
+///   so genuine handoffs survive server restart.
+#[tokio::test]
+async fn browser_restart_and_parked_delete_clear_handoffs_while_shutdown_keeps_them() -> TestResult
+{
+    with_fixture(|f| async move {
+        let task_id = TaskId::parse("t1")?;
+        let sandbox_id = SandboxId::parse("s1")?;
+        let owner = auth_ctx(&f.h, "u-alice").await?;
+
+        let tabs_res = mcp_tool(&f.h, TOKEN, "browser_tabs", json!({})).await?;
+        let tab1 = tabs_res["structuredContent"]["tabs"][0]["id"]
+            .as_str()
+            .ok_or("tab1")?
+            .to_owned();
+        let req = mcp_tool(
+            &f.h,
+            TOKEN,
+            "browser_request_user_action",
+            json!({"tab_id": tab1, "reason": "Sign in before restart"}),
+        )
+        .await?;
+        assert_eq!(req["isError"], false, "{req}");
+
+        // Legacy second task with only a browser `tasks.attention` row (no `tasks.needs_you`).
+        seed_task(&f.h, "t-legacy", "s1", "u-alice", TaskStatus::Running, None).await?;
+        let legacy_id = TaskId::parse("t-legacy")?;
+        let legacy_attn = yulius_app::attention::AttentionRecord::yulius(
+            "Legacy browser sign-in",
+            "Open tab and sign in",
+        )
+        .on_page(&format!("https://yulius.test/s/fixture/browser?tab={tab1}"));
+        f.h.store
+            .flag_attention(&legacy_id, None, Some(&legacy_attn), f.h.app.now())
+            .await?;
+
+        // Finding #2: restarting the browser clears both persisted and legacy browser handoffs.
+        f.h.app.restart_browser(&owner, "s1").await?;
+        assert!(
+            f.h.store.task_needs_you(&task_id).await?.is_none(),
+            "restart_browser must clear persisted browser needs_you"
+        );
+        assert!(
+            f.h.store.stored_task_attention(&task_id).await?.is_none(),
+            "restart_browser must clear browser attention"
+        );
+        assert!(
+            f.h.store.stored_task_attention(&legacy_id).await?.is_none(),
+            "restart_browser must clear legacy browser attention"
+        );
+
+        // Finding #4: deleting a parked task with an open browser handoff clears
+        // `tab.action_requested` in `BrowserSession`.
+        seed_task(&f.h, "t-parked", "s1", "u-alice", TaskStatus::Running, None).await?;
+        let parked_id = TaskId::parse("t-parked")?;
+        let parked_token = "parked-delete-token";
+        seed_live_attempt(&f.h, "t-parked", parked_token).await?;
+        let tabs2 = mcp_tool(&f.h, parked_token, "browser_tabs", json!({})).await?;
+        let tab_new = tabs2["structuredContent"]["tabs"][0]["id"]
+            .as_str()
+            .ok_or("tab_new")?
+            .to_owned();
+        let req_parked = mcp_tool(
+            &f.h,
+            parked_token,
+            "browser_request_user_action",
+            json!({"tab_id": tab_new, "reason": "Parked task OAuth"}),
+        )
+        .await?;
+        assert_eq!(req_parked["isError"], false, "{req_parked}");
+        // End the attempt and park the task so `delete_task` is permitted.
+        let parked_attempt =
+            f.h.store
+                .live_attempt(&parked_id)
+                .await?
+                .ok_or("parked live attempt")?
+                .id;
+        f.h.store
+            .transition_attempt(
+                &parked_attempt,
+                yulius_domain::task::AttemptState::Exited,
+                &AttemptUpdate {
+                    ended_at: Some(f.h.app.now()),
+                    exit_code: Some(0),
+                    exit_reason: Some("parked".into()),
+                    ..Default::default()
+                },
+            )
+            .await?;
+        f.h.store
+            .transition_task(
+                &parked_id,
+                None,
+                TaskStatus::Parked,
+                Some(Activity::Waiting),
+                f.h.app.now(),
+            )
+            .await?;
+        let browser =
+            f.h.app
+                .deps
+                .browser
+                .running(&sandbox_id)
+                .await
+                .ok_or("browser")?;
+        assert!(
+            browser.tabs().iter().any(|t| {
+                t.action_requested
+                    .as_ref()
+                    .and_then(|r| r.task_id.as_deref())
+                    == Some("t-parked")
+            }),
+            "parked task tab must be marked before deletion"
+        );
+        f.h.app.delete_task(&owner, "t-parked").await?;
+        assert!(
+            browser.tabs().iter().all(|t| t.action_requested.is_none()),
+            "deleting a parked task must clear its BrowserSession tab.action_requested"
+        );
+
+        // Orderly server shutdown (`stop_workspace_services`) must preserve persisted
+        // `tasks.needs_you` so genuine handoffs survive restart.
+        let req_restart = mcp_tool(
+            &f.h,
+            TOKEN,
+            "browser_request_user_action",
+            json!({"tab_id": tab_new, "reason": "Must survive server restart"}),
+        )
+        .await?;
+        assert_eq!(req_restart["isError"], false, "{req_restart}");
+        f.h.app.stop_workspace_services().await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(
+            f.h.store.task_needs_you(&task_id).await?.is_some(),
+            "orderly server shutdown must keep persisted browser needs_you across restart"
         );
         Ok(())
     })

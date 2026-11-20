@@ -371,25 +371,8 @@ impl App {
             };
             // A newer Yulius CI run already queued or running supersedes a stale failing
             // pull-request observation on a live task (SPEC-578).
-            if live && pull == Some(PullSignal::Failing) {
-                let pr = self
-                    .observed_pulls
-                    .known_pull(&task.sandbox_id, &task.id)
-                    .flatten()
-                    .map(|obs| obs.number)
-                    .or(match store.delivery(&task.id).await? {
-                        Some(rec) => rec.pr_number,
-                        None => None,
-                    });
-                if let Some(pr) = pr
-                    && let Some(run) = self.latest_pr_ci_run(&task.sandbox_id, pr).await
-                    && matches!(
-                        run.state,
-                        yulius_domain::ci::RunState::Queued | yulius_domain::ci::RunState::Running
-                    )
-                {
-                    pull = Some(PullSignal::InReview);
-                }
+            if live && pull == Some(PullSignal::Failing) && self.pr_ci_progressing(task).await {
+                pull = Some(PullSignal::InReview);
             }
             let plan_open = plan_open(&store.steps(&task.id).await?);
             (pull, plan_open, self.spec_unfinished(&task.id).await)
@@ -416,6 +399,31 @@ impl App {
             awaits_start_onboarding: false,
             merge_armed: live && self.merge_is_armed(&task.id),
         })
+    }
+
+    /// Whether `task`'s open pull request currently has a Yulius CI run queued or running
+    /// (SPEC-578), so a stale cached failure does not keep a live task in Needs You.
+    pub(crate) async fn pr_ci_progressing(&self, task: &TaskRecord) -> bool {
+        let pr = self
+            .observed_pulls
+            .known_pull(&task.sandbox_id, &task.id)
+            .flatten()
+            .map(|obs| obs.number)
+            .or(match self.deps.store.delivery(&task.id).await {
+                Ok(Some(rec)) => rec.pr_number,
+                _ => None,
+            });
+        let Some(pr) = pr else {
+            return false;
+        };
+        self.latest_pr_ci_run(&task.sandbox_id, pr)
+            .await
+            .is_some_and(|run| {
+                matches!(
+                    run.state,
+                    yulius_domain::ci::RunState::Queued | yulius_domain::ci::RunState::Running
+                )
+            })
     }
 
     /// Tasks with a pending request for a person to act: in the sandbox's browser (BRW-004),

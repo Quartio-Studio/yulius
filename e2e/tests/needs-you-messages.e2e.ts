@@ -144,3 +144,48 @@ test('browser handoff reaches notifications, stays visible after activity change
   });
   await expect(bar(browser)).toBeHidden();
 });
+
+test('live browser handoff while needs_attention offers inline Reply with timestamp, and progressing CI stays Working', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/t/12', '&ambient=0'));
+  await terminalShown(browser);
+  const origin = await browser.evaluate(() => location.origin);
+  const link = `${origin}/s/studio/browser?tab=tab-live`;
+  const at = new Date(Date.now() - 120_000).toISOString();
+  const asked = {
+    action: 'Open the browser tab: Approve Google OAuth consent.',
+    happened: 'The agent asked you to act in the sandbox browser: Approve Google OAuth consent.',
+    problem: null,
+    decision: false,
+    link,
+    browser_tab: 'tab-live',
+    at,
+    at_ms: Date.now() - 120_000,
+  };
+  await touchTask(browser, 'sb_studio', 12, {
+    status: 'running',
+    activity: 'needs_attention',
+    attention: { kind: 'yulius', problem: asked.happened, action: asked.action, link },
+    needs_you: asked,
+    needs_you_notice: { ...asked, source: 'browser', episode: `browser:tab-live:${asked.at_ms}` },
+  });
+
+  // Finding #9: timestamp is shown in the heading.
+  await expect(browser.locator('.attention-bar .needs-you-head .needs-you-time')).toBeVisible();
+  // Finding #1: clicking Reply opens the inline text answer form (not terminal-only focus).
+  await bar(browser).getByRole('button', { name: 'Reply' }).click();
+  await expect(browser.locator('.attention-bar .attention-reply input')).toBeVisible();
+  expect(await axeViolations(browser)).toEqual([]);
+
+  // Finding #8: when a newer CI run is progressing (`yulius_wait: true`), even a failing cached PR
+  // does not show the Needs You attention bar.
+  await touchTask(browser, 'sb_studio', 12, {
+    status: 'running',
+    activity: 'waiting',
+    attention: null,
+    needs_you: null,
+    needs_you_notice: null,
+    yulius_wait: true,
+  });
+  await expect(stripStatus(browser)).toHaveText(/Waiting for checks or merge/);
+  await expect(bar(browser)).toBeHidden();
+});

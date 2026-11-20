@@ -66,9 +66,12 @@ function needsYouText(asked) {
     ['Problem', asked.problem],
     [asked.decision ? 'Decide' : 'To do', asked.action],
   ].filter(([, text]) => text);
+  const when = asked.at ? relLong(asked.at) : '';
   // The list scrolls when long (a phone), its to-do held in view at its foot (`fitNeedsYou`).
   return h('div', { class: 'attention-text needs-you-text' },
-    h('strong', { class: 'needs-you-head' }, asked.decision ? 'Needs your decision' : 'Needs you'),
+    h('strong', { class: 'needs-you-head' },
+      asked.decision ? 'Needs your decision' : 'Needs you',
+      when ? h('span', { class: 'needs-you-time muted xs', title: dateTime(asked.at) }, ` · ${when}`) : null),
     h('dl', { class: 'needs-you-parts' }, parts.map(([label, text], i) =>
       h('div', { class: i === parts.length - 1 ? 'needs-you-todo' : null }, h('dt', null, label), h('dd', null, withCode(text))))));
 }
@@ -611,7 +614,10 @@ export function mountTaskView(ctx, sandbox, task) {
       const asked = info.needsYou;
       // The request stays while the agent asks something in the terminal (a permission menu): text
       // typed there would pick the menu's options unseen, so Reply goes to the terminal then.
-      const asksInTerminal = current.activity === 'needs_attention';
+      // A live browser handoff also sets `activity = needs_attention` via a Yulius flag and still
+      // accepts an inline Reply unless a terminal prompt took over (SPEC-578).
+      const isBrowserAttention = Boolean(asked.browser_tab && (!current.attention || current.attention.kind !== 'terminal'));
+      const asksInTerminal = current.activity === 'needs_attention' && !isBrowserAttention;
       // Someone else's task: anyone who may work there but a guest answers it without taking
       // control (SPEC-516), while it runs and unless the agent asks in its terminal.
       // A request that names people is theirs and its owner's (SPEC-512 ANS-002).
