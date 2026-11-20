@@ -41,7 +41,7 @@ The inventory at dev 56f08db7f contained 20 issues. #1490 belongs to task #540. 
 - [x] Verify the green dev merge for the store regression
 - [x] Reproduce the intake rail timeout with a held task list
 - [x] Verify the intake scenarios against the first-load budget
-- [ ] Obtain independent approval for the intake regression
+- [x] Obtain independent approval for the intake regression
 - [ ] Verify the independent fixes and reconcile the remaining issues
 
 ## Acceptance criteria
@@ -71,3 +71,4 @@ Use one pull request per independent concern. Retain outstanding reports that re
 - Task #541 took #1441 from the queue after its first delivery. Task #544 will verify the issue after delivery.
 - PR #1494 merged and GitHub closed #1484. Yulius CI run 21f32f87 passed quality, both Rust shards and e2e on PR head c1c940306. Run 9f9b51c0 recorded the same passing tree on dev at 9c3b3d92f. Security was skipped with Vidoc disabled.
 - #1441 reproduced in Chromium with the task-list response held for 6.5 seconds. The five-second visibility check failed on the seeded Checkout API link before the proposal. With the shared first-load budget, all 18 scenarios in the intake file passed. In a separate probe with the response held indefinitely, the browser trace recorded a 30.0-second visibility check followed by failure on that same link. The probe was removed.
+- Independent review approved the intake fix at 015dd8f7c. The reviewer reran the delayed proposal and checked all eleven first-load assertions and the permanently held trace. The repository quick checks passed. The mutation command found no changed Rust code in this slice. Vidoc was disabled.
