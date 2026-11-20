@@ -59,7 +59,10 @@ pub enum HubFrame {
 
 #[derive(Clone, Copy)]
 pub(crate) enum ScreenUpdate {
-    Host,
+    /// Host snapshot attested at the dimensions used to restore it.
+    Host {
+        rendered: bool,
+    },
     Park,
     /// Read from disk before any host attached or any other viewer restored the grid.
     Cold {
@@ -72,33 +75,9 @@ struct Screen {
     parked: bool,
     /// Resizing can crop a hint or a draft. A host snapshot can already contain that
     /// crop. Only fresh PTY output can reestablish an empty-box proof.
-    needs_redraw: bool,
+    redraw: yulius_contracts::ptyhost::Redraw,
     parser: vt100::Parser,
     seq: u64,
-}
-
-impl Screen {
-    fn process_output(&mut self, bytes: &[u8]) {
-        if !self.needs_redraw {
-            self.parser.process(bytes);
-            return;
-        }
-        // Claude clears the alternate screen with ED 2 before repainting it. Parse through
-        // the J (also when the control straddles frames) and inspect the actual grid. A
-        // literal escape in an OSC payload cannot certify a crop. At most one grid scan
-        // per output frame while awaiting a redraw.
-        let clear = b"\x1b[2J";
-        let mut checked = false;
-        for part in bytes.split_inclusive(|byte| *byte == b'J') {
-            self.parser.process(part);
-            if !checked && (part.ends_with(clear) || clear.ends_with(part)) {
-                checked = true;
-                let grid = self.parser.screen();
-                self.needs_redraw = !(grid.alternate_screen()
-                    && grid.rows(0, grid.size().1).all(|row| row.trim().is_empty()));
-            }
-        }
-    }
 }
 
 /// Terminal fan-out for one task.
@@ -134,7 +113,7 @@ impl Hub {
             screen: Mutex::new(Screen {
                 initialized: false,
                 parked: false,
-                needs_redraw: false,
+                redraw: Default::default(),
                 parser: vt100::Parser::new(rows.max(1), cols.max(1), 0),
                 seq: 0,
             }),
@@ -153,7 +132,8 @@ impl Hub {
             return;
         }
         screen.initialized = true;
-        screen.process_output(bytes);
+        let Screen { redraw, parser, .. } = &mut *screen;
+        redraw.process(parser, bytes);
         screen.seq = seq;
         for chunk in bytes.chunks(MAX_FRAME_BYTES) {
             let _ = self.tx.send(HubFrame::Output {
@@ -165,7 +145,13 @@ impl Hub {
 
     /// Replaces the screen with a host snapshot (attach/reattach) and tells viewers to redraw.
     pub fn reset(&self, seq: u64, snapshot: &[u8], cols: u16, rows: u16) {
-        self.restore(seq, snapshot, cols, rows, ScreenUpdate::Host);
+        self.restore(
+            seq,
+            snapshot,
+            cols,
+            rows,
+            ScreenUpdate::Host { rendered: false },
+        );
     }
 
     /// Replace the visible grid and announce a change between a parked capture and a host
@@ -182,7 +168,7 @@ impl Hub {
             return;
         };
         let parked = match update {
-            ScreenUpdate::Host => false,
+            ScreenUpdate::Host { .. } => false,
             ScreenUpdate::Park => true,
             ScreenUpdate::Cold { .. } if screen.initialized => return,
             ScreenUpdate::Cold { parked } => parked,
@@ -190,7 +176,10 @@ impl Hub {
         let announce = parked || screen.parked;
         screen.initialized = true;
         screen.parked = parked;
-        screen.needs_redraw = true;
+        screen.redraw = yulius_contracts::ptyhost::Redraw::restored(matches!(
+            update,
+            ScreenUpdate::Host { rendered: true }
+        ));
         screen.parser = vt100::Parser::new(rows.max(1), cols.max(1), 0);
         screen.parser.process(snapshot);
         screen.seq = seq;
@@ -211,7 +200,7 @@ impl Hub {
             if screen.parked || screen.parser.screen().size() == (rows, cols) {
                 return;
             }
-            screen.needs_redraw = true;
+            screen.redraw.invalidate();
             screen.parser.screen_mut().set_size(rows, cols);
         }
         let _ = self.tx.send(HubFrame::State);
@@ -267,7 +256,7 @@ impl Hub {
     pub(crate) fn prompt_box_shown_empty(&self) -> bool {
         self.screen
             .lock()
-            .is_ok_and(|s| !s.needs_redraw && crate::prompt_box::shown_empty(s.parser.screen()))
+            .is_ok_and(|s| s.redraw.rendered() && crate::prompt_box::shown_empty(s.parser.screen()))
     }
 
     /// Whether the live VT screen shows text in Claude Code's conversation input.
@@ -594,7 +583,7 @@ mod tests {
     /// SPEC-572 AC3: a hub rebuilt from a snapshot (a reattached run, as after a restart of the
     /// server) still reads the prompt box: empty, a dim suggestion, and a draft.
     #[test]
-    fn a_snapshot_requires_a_live_redraw_before_releasing_typing() {
+    fn a_snapshot_requires_a_live_redraw_before_releasing_typing() -> Result<(), std::io::Error> {
         let rule = "─".repeat(20);
         let framed = |row: &str| {
             format!(
@@ -628,7 +617,9 @@ mod tests {
                 "a snapshot may contain a host-side crop"
             );
             let repaint = framed(row);
-            let (before_clear, after_clear) = repaint.split_once("2J").expect("ED 2");
+            let (before_clear, after_clear) = repaint
+                .split_once("2J")
+                .ok_or_else(|| std::io::Error::other("fixture lacks ED 2"))?;
             again.output(3, before_clear.as_bytes());
             again.output(4, format!("2J{after_clear}").as_bytes());
             assert_eq!(
@@ -636,7 +627,20 @@ mod tests {
                 empty,
                 "after a renderer repaint: {row:?}"
             );
+            again.restore(
+                5,
+                &snapshot,
+                20,
+                6,
+                super::ScreenUpdate::Host { rendered: true },
+            );
+            assert_eq!(
+                again.prompt_box_shown_empty(),
+                empty,
+                "rendered host: {row:?}"
+            );
         }
+        Ok(())
     }
 
     /// #78: a viewer who opens or reloads the task while a full-screen app runs gets the

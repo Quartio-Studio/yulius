@@ -315,6 +315,7 @@ fn start_run(
         queue_limit: launch.client_queue_bytes(),
         state: Mutex::new(State {
             parser: vt100::Parser::new(launch.rows, launch.cols, 0),
+            redraw: Default::default(),
             seq: 0,
             cols: launch.cols,
             rows: launch.rows,
@@ -423,6 +424,7 @@ struct Shared {
 }
 
 struct State {
+    redraw: yulius_contracts::ptyhost::Redraw,
     parser: vt100::Parser,
     seq: u64,
     cols: u16,
@@ -526,7 +528,10 @@ impl Shared {
         unpoison(self.master.lock())
             .resize(size)
             .map_err(|e| e.to_string())?;
-        state.parser.screen_mut().set_size(rows, cols);
+        if (cols, rows) != (state.cols, state.rows) {
+            state.redraw.invalidate();
+            state.parser.screen_mut().set_size(rows, cols);
+        }
         state.cols = cols;
         state.rows = rows;
         Ok(())
@@ -576,7 +581,8 @@ fn pump_output(shared: &Shared, mut reader: PtyReader) {
         };
         let chunk = buf.get(..n).unwrap_or_default();
         let mut state = shared.lock();
-        state.parser.process(chunk);
+        let State { parser, redraw, .. } = &mut *state;
+        redraw.process(parser, chunk);
         state.seq += 1;
         if state.exit.is_none() {
             let frame = HostFrame::Output {
@@ -833,7 +839,7 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
 }
 
 /// Reads the first frame within the hello timeout and authenticates it.
-fn handshake(shared: &Shared, stream: &mut UnixStream) -> Option<(bool, FrameDecoder)> {
+fn handshake(shared: &Shared, stream: &mut UnixStream) -> Option<(u16, bool, FrameDecoder)> {
     let deadline = Instant::now() + Duration::from_millis(HELLO_TIMEOUT_MS);
     let mut decoder = FrameDecoder::new();
     let mut buf = [0u8; 1024];
@@ -844,7 +850,10 @@ fn handshake(shared: &Shared, stream: &mut UnixStream) -> Option<(bool, FrameDec
                 token,
                 want_snapshot,
             })) => {
-                if version != PROTOCOL_VERSION {
+                if !matches!(
+                    version,
+                    PROTOCOL_VERSION | yulius_contracts::ptyhost::LEGACY_PROTOCOL_VERSION
+                ) {
                     reject(
                         stream,
                         error_code::UNSUPPORTED_VERSION,
@@ -857,7 +866,7 @@ fn handshake(shared: &Shared, stream: &mut UnixStream) -> Option<(bool, FrameDec
                     reject(stream, error_code::AUTH_FAILED, "authentication failed");
                     return None;
                 }
-                return Some((want_snapshot, decoder));
+                return Some((version, want_snapshot, decoder));
             }
             Ok(Some(_)) => {
                 reject(stream, error_code::PROTOCOL, "first frame must be Hello");
@@ -901,7 +910,7 @@ fn serve_connection(shared: &Arc<Shared>, mut stream: UnixStream) {
         let _pending = PendingGuard(&shared.pending_handshakes);
         handshake(shared, &mut stream)
     };
-    let Some((want_snapshot, decoder)) = hello else {
+    let Some((version, want_snapshot, decoder)) = hello else {
         return;
     };
     if stream.set_read_timeout(None).is_err()
@@ -911,7 +920,7 @@ fn serve_connection(shared: &Arc<Shared>, mut stream: UnixStream) {
     {
         return;
     }
-    let Ok((id, queue)) = attach(shared, &stream, want_snapshot) else {
+    let Ok((id, queue)) = attach(shared, &stream, want_snapshot, version) else {
         return;
     };
     serve_client(shared, id, &queue, stream, decoder);
@@ -947,6 +956,7 @@ fn attach(
     shared: &Arc<Shared>,
     stream: &UnixStream,
     want_snapshot: bool,
+    version: u16,
 ) -> io::Result<(u64, Arc<ClientQueue>)> {
     let writer_stream = stream.try_clone()?;
     let socket = stream.try_clone()?;
@@ -966,15 +976,13 @@ fn attach(
         let _ = queue.push(&welcome);
         if want_snapshot {
             let snapshot = HostFrame::Snapshot(Snapshot {
+                rendered: version == PROTOCOL_VERSION
+                    && state.redraw.rendered()
+                    && state.parser.screen().alternate_screen(),
                 seq: state.seq,
                 bytes: snapshot_bytes(&state.parser),
             });
             let _ = queue.push(&snapshot);
-            // A saved alternate grid can contain clipped cells after a resize. Ask the
-            // full-screen child for a fresh paint, queued after the snapshot under this lock.
-            if !state.reaped && state.parser.screen().alternate_screen() {
-                let _ = signal_group(shared.child_pid, Signal::SIGWINCH);
-            }
         }
         if let Some(exit) = &state.exit {
             let _ = queue.push(&HostFrame::Exit(exit.clone()));

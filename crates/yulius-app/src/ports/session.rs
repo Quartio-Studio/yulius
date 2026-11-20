@@ -179,6 +179,8 @@ pub struct RunWelcome {
     pub cols: u16,
     /// PTY rows.
     pub rows: u16,
+    /// Whether the host witnessed the displayed grid at this size.
+    pub rendered: bool,
     /// Current screen.
     pub snapshot: Option<Vec<u8>>,
 }

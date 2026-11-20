@@ -3834,7 +3834,15 @@ impl App {
             .hub
             .controller_size()
             .unwrap_or((welcome.cols, welcome.rows));
-        runtime.hub.reset(welcome.seq, &screen, cols, rows);
+        runtime.hub.restore(
+            welcome.seq,
+            &screen,
+            cols,
+            rows,
+            crate::hub::ScreenUpdate::Host {
+                rendered: welcome.rendered && (cols, rows) == (welcome.cols, welcome.rows),
+            },
+        );
         // The hub shows this run from now on (SPEC-301 LRS-001).
         if let Ok(mut shown) = runtime.screen_of.lock() {
             *shown = Some(attempt.id.clone());
@@ -3897,11 +3905,14 @@ impl App {
                                         attempt_id: aid.clone(),
                                         writer: again.writer,
                                     });
-                                    rt.hub.reset(
+                                    rt.hub.restore(
                                         again.welcome.seq,
                                         &screen,
                                         again.welcome.cols,
                                         again.welcome.rows,
+                                        crate::hub::ScreenUpdate::Host {
+                                            rendered: again.welcome.rendered,
+                                        },
                                     );
                                     reader = again.reader;
                                     continue;

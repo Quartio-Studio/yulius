@@ -828,7 +828,9 @@ async fn unauthenticated_connections_are_refused_without_disturbing_the_controll
     );
 
     let mut wrong_version = raw_connect(&run.run_dir).await?;
-    wrong_version.write_all(&hello(2, TOKEN, false)).await?;
+    wrong_version
+        .write_all(&hello(PROTOCOL_VERSION + 1, TOKEN, false))
+        .await?;
     let frames = frames_until_eof(&mut wrong_version, WAIT).await?;
     assert!(
         matches!(frames.as_slice(), [HostFrame::Error { code, .. }] if *code == error_code::UNSUPPORTED_VERSION)
@@ -989,6 +991,49 @@ async fn deleting_the_run_directory_ends_the_orphaned_run() -> TestResult {
             return Err("the orphaned agent is still running".into());
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn snapshots_report_a_live_repaint_at_the_current_size_and_preserve_v1() -> TestResult {
+    let run = start(&[]).await?;
+    let mut session = Session::connect(&run.run_dir).await?;
+    session.wait_for("FAKE-AGENT READY").await?;
+    // The line-mode fixture echoes our chosen VT bytes and stays idle on resize.
+    session.line("\x1b[?1049h\x1b[2JPAINTED").await?;
+    session.wait_for("ECHO: \x1b[?1049h\x1b[2JPAINTED").await?;
+    drop(session);
+    let (_, _, current) = PtyClient::connect(&run.run_dir, &TOKEN, true).await?;
+    assert!(current.ok_or("missing v2 snapshot")?.rendered);
+    let mut resized = Session::connect(&run.run_dir).await?;
+    resized
+        .client
+        .send(ClientFrame::Resize { cols: 40, rows: 24 })
+        .await?;
+    resized.client.send(ClientFrame::Ping(39)).await?;
+    while resized.pongs.is_empty() {
+        resized.step().await?;
+    }
+    drop(resized);
+    let (_, _, cropped) = PtyClient::connect(&run.run_dir, &TOKEN, true).await?;
+    assert!(!cropped.ok_or("missing cropped snapshot")?.rendered);
+    let mut repaint = Session::connect(&run.run_dir).await?;
+    repaint.line("J\x1b[2JREPAINTED").await?;
+    repaint.wait_for("ECHO: J\x1b[2JREPAINTED").await?;
+    drop(repaint);
+    let (_, _, finished) = PtyClient::connect(&run.run_dir, &TOKEN, true).await?;
+    assert!(finished.ok_or("missing repainted snapshot")?.rendered);
+
+    let mut stream = raw_connect(&run.run_dir).await?;
+    stream.write_all(&hello(1, TOKEN, true)).await?;
+    // The old client's decoder accepts the original welcome and snapshot frame tags.
+    for tag in [0x81, 0x82] {
+        let length = within("legacy frame length", stream.read_u32()).await??;
+        assert!(length <= yulius_contracts::ptyhost::MAX_FRAME_BYTES as u32);
+        let mut frame = vec![0; length as usize];
+        within("legacy frame", stream.read_exact(&mut frame)).await??;
+        assert_eq!(frame.first(), Some(&tag));
     }
     Ok(())
 }

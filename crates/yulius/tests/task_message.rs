@@ -1682,9 +1682,11 @@ fn a_key_before_a_restart_that_left_nothing_holds_no_message() -> TestResult {
         )
         .await?;
         app.reconcile().await?;
-        wait_for("the idle host snapshot", Duration::from_secs(30), || async {
-            fixture_box_empty(&app, &id)
-        })
+        wait_for(
+            "the idle host snapshot",
+            Duration::from_secs(30),
+            || async { fixture_box_empty(&app, &id) },
+        )
         .await?;
         let mark = draft_mark(&app, &id).await?;
         // The restarted server knows the key from its mark: within the minute it holds.
