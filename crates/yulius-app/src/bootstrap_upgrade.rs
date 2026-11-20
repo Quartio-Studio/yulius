@@ -151,8 +151,12 @@ impl App {
         // A task made for the claim before a stop (or before a store error that followed its
         // record), not linked yet, is adopted: never made twice.
         // A failed read ends this start's pass for the sandbox: never read as "nothing made".
-        let Ok(made) = self.bootstrap_task_since(sandbox, claim.claimed_at).await else {
-            return false;
+        let made = match self.bootstrap_task_since(sandbox, claim.claimed_at).await {
+            Ok(made) => made,
+            Err(err) => {
+                tracing::warn!(error = %err, sandbox = %sandbox.slug, "bootstrap upgrade: its tasks could not be read; tried again at the next start");
+                return false;
+            }
         };
         if let Some(made) = made {
             match store
@@ -163,7 +167,7 @@ impl App {
                     self.dlv_audit(
                         "yulius",
                         "bootstrap.upgrade",
-                        &format!("{} task {}", sandbox.slug, made.as_str()),
+                        &format!("{}/task {}", sandbox.slug, made.as_str()),
                         &format!(
                             "Infra bootstrap revision {BOOTSTRAP_REVISION} (adopted after a stop)"
                         ),

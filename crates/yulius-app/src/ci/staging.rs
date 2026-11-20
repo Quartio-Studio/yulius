@@ -811,7 +811,7 @@ impl App {
     /// that cannot be read is the error.
     ///
     /// # Errors
-    /// `Conflict` when staging has not verified the integration head; GitHub and Git failures.
+    /// `Conflict` when the verified head or its tables cannot be read.
     pub(crate) async fn staging_promotion_head(
         &self,
         sandbox: &SandboxRecord,

@@ -1505,3 +1505,77 @@ async fn automatic_promotion_never_takes_an_unverified_head() -> TestResult {
     assert_eq!(f.head("main")?, r2, "the verified head is promoted");
     Ok(())
 }
+
+/// SPEC-575 MFS-009 (review round 3 of slice 4, probe R9-A): an automatic promotion whose
+/// verified head cannot be read fails (audited as failed, not as waiting for staging), and
+/// production stays where it was. It runs outside the queue: a person confirms a manual
+/// integration environment.
+#[tokio::test]
+async fn an_unreadable_head_fails_the_automatic_promotion() -> TestResult {
+    let f = fixture(&promoting_toml()).await?;
+    f.h.store
+        .set_profile(
+            &SandboxId::parse("s1")?,
+            &json!({
+                "preset": "custom", "integration_branch": "dev", "production_branch": "main",
+                "merge": "squash", "promote": "fast_forward", "auto_promote": true,
+                "require_checks": false,
+                "environments": [
+                    {"name": "check", "after": "integration", "verify": "manual", "command": null}
+                ]
+            })
+            .to_string(),
+        )
+        .await?;
+    agent(&f, "t1").await?;
+    let r1 = land(&f, "t1", "one.txt").await?;
+    f.h.store
+        .execute_for_tests(
+            "INSERT INTO delivery (task_id, stage, pr_number, updated_at) \
+             VALUES ('t1', 'merged_integration', NULL, 1)",
+        )
+        .await?;
+    let config =
+        f.h.app
+            .config
+            .data_dir
+            .join("sandboxes/s1/repo/.git/config");
+    let original = std::fs::read_to_string(&config)?;
+    std::fs::write(&config, format!("{original}\n[broken\n"))?;
+    let confirmed = support::call(
+        &f.h.router,
+        axum::http::Method::POST,
+        "/api/sandboxes/s1/delivery/environments/check/confirm",
+        Some(json!({"confirm": true})),
+        &f.bob,
+    )
+    .await?;
+    std::fs::write(&config, original)?;
+    assert!(
+        confirmed
+            .body
+            .to_string()
+            .contains("Automatic promotion did not happen"),
+        "{}",
+        confirmed.body
+    );
+    let rows = |action: &'static str| {
+        let store = f.h.store.clone();
+        async move {
+            store
+                .audit_of_sandbox("app", &[], &[action], None, None, 10)
+                .await
+        }
+    };
+    let failed = rows("delivery.promote.failed").await?;
+    assert!(
+        failed.iter().any(|(_, e)| e
+            .detail
+            .as_deref()
+            .is_some_and(|d| d.contains("cannot be read now"))),
+        "{failed:?}"
+    );
+    assert!(rows("delivery.promote.waiting").await?.is_empty());
+    assert!(!git_contains(&f, "main", &r1)?, "nothing was promoted");
+    Ok(())
+}
