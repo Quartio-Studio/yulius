@@ -170,6 +170,7 @@ Environment=YULIUS_INTERNAL_BIND=127.0.0.1:8081
 # A message to a parked Codex task resumes its recorded rollout with the message as its next prompt.
 # While it waits for a subscription the message is retained and its last parked screen stays visible.
 # Open work or an unreadable recorded PR keeps the session live.
+# A finished turn can park while Yulius CI runs on its current PR head. The PR watcher delivers the result.
 # For an already parked task, the sidebar refreshes Done or Needs you when it reads PR checks.
 # An outstanding owner request keeps a dependent task waiting.
 #Environment=YULIUS_PARK_AFTER_MINUTES=30

@@ -189,7 +189,7 @@ impl App {
                 || requested.contains(task.id.as_str());
             let pull = if task.status == TaskStatus::Parked && !local_needs {
                 // An incomplete overview can omit a task's recorded open PR.
-                self.task_pull_signal(task, deadline)
+                self.task_pull_signal(task, crate::delivery::PullRead::Status(deadline))
                     .await
                     .unwrap_or(Some(PullSignal::Errored))
             } else {

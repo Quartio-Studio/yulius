@@ -2042,6 +2042,8 @@ armed or pull request news due, no held prompt, no request in the sandbox browse
 possible draft or keystroke within the grace period, and is not an onboarding task.
 Parking also requires that no step, spec, goal or failing PR check needs the session.
 An unreadable recorded PR keeps its session through both grace-period and digest parking.
+When the current PR head has a queued or running Yulius CI run, the PR watcher can resume
+the parked session on its result. Open agent work still requires the session.
 Home, the task list and the tool list give their parked PR lookups one shared 750 ms deadline.
 Local unfinished work settles the group immediately. A recorded open PR whose checks cannot be
 read before the deadline remains under Needs you until a subsequent read resolves it.

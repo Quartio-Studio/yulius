@@ -4708,6 +4708,22 @@ async fn a_parked_predecessor_waits_for_the_complete_check_report() -> TestResul
     let (_wt, head) = delivered_with_a_successor(&f, &finished_spec("t1")).await?;
     let before = TaskId::parse("t1")?;
     let child = TaskId::parse("t2")?;
+    // A running agent that ended its turn with a red PR still holds this chain.
+    f.h.github.set_checks(&head, ChecksState::Failure);
+    f.h.store
+        .transition_task(
+            &before,
+            None,
+            TaskStatus::Running,
+            Some(Activity::Waiting),
+            f.h.app.now(),
+        )
+        .await?;
+    f.h.app.advance_chains(&before).await;
+    assert_eq!(
+        f.h.store.task(&child).await?.ok_or("successor")?.status,
+        TaskStatus::Chained
+    );
     f.h.store
         .transition_task(
             &before,
@@ -4717,6 +4733,15 @@ async fn a_parked_predecessor_waits_for_the_complete_check_report() -> TestResul
             f.h.app.now(),
         )
         .await?;
+    // A recorded PrOpen stage by itself cannot release a parked idle answer.
+    // GitHub closed this PR without merging before the stored stage caught up.
+    edit_pull(&f, 1, |pull| pull.state = "closed".into());
+    f.h.app.advance_chains(&before).await;
+    assert_eq!(
+        f.h.store.task(&child).await?.ok_or("successor")?.status,
+        TaskStatus::Chained
+    );
+    edit_pull(&f, 1, |pull| pull.state = "open".into());
     f.h.github.set_checks_report(
         &head,
         ChecksReport {

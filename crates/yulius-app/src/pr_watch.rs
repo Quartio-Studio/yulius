@@ -46,7 +46,7 @@ pub const STALL_QUIET_MS: i64 = 5 * 60 * 1000;
 /// The file in the data directory that keeps what each task was told across restarts.
 pub const PR_NOTICES_FILE: &str = "pr-notices.json";
 /// Runs of a sandbox read per pass, newest first.
-const RUNS_READ: u32 = 100;
+pub(crate) const RUNS_READ: u32 = 100;
 /// Failing test names said per job.
 const MAX_TESTS: usize = 5;
 

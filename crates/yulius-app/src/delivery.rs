@@ -591,6 +591,14 @@ fn pr_wire_state(pull: &GhPull) -> &'static str {
     }
 }
 
+/// A display or chain classifies every PR check. A parking decision can hand
+/// an already running Yulius CI check to the parked PR watcher (SPEC-553).
+#[derive(Clone, Copy)]
+pub(crate) enum PullRead {
+    Status(Option<tokio::time::Instant>),
+    Parking,
+}
+
 /// What the checks at a commit say ([`App::dlv_checks_at`]).
 pub(crate) struct HeadChecks {
     /// What a gate reads.
@@ -3988,6 +3996,7 @@ impl App {
         &self,
         task: &TaskRecord,
         number: u64,
+        read: PullRead,
     ) -> AppResult<Option<PullSignal>> {
         let sandbox = self.dlv_sandbox_of(task).await?;
         let token = self.dlv_installation_token(&sandbox).await?;
@@ -4006,6 +4015,24 @@ impl App {
             ));
         }
         let checks = tested_checks_word(&delivery_profile(&sandbox), head.word);
+        // While this PR's own exact-head CI run is active, the parked PR watch
+        // will deliver its result. Pending checks elsewhere still need the live run.
+        if matches!(read, PullRead::Parking)
+            && checks == "pending"
+            && self.config.ci.enabled
+            && !sandbox.is_playground()
+            && self
+                .deps
+                .store
+                .ci_runs(&sandbox.id, crate::pr_watch::RUNS_READ)
+                .await?
+                .iter()
+                .find(|run| run.reference == yulius_domain::ci::CiRef::PullRequest(number))
+                .is_some_and(|run| run.sha == pull.head_sha && run.state.is_active())
+            && !self.pull_conflicts(task, &sandbox, &pull).await
+        {
+            return Ok(None);
+        }
         let conflicts = matches!(checks, "success" | "none")
             && self.pull_conflicts(task, &sandbox, &pull).await;
         Ok(PullSignal::from_wire("open", checks, conflicts))
@@ -4016,7 +4043,7 @@ impl App {
     pub(crate) async fn task_pull_signal(
         &self,
         task: &TaskRecord,
-        deadline: Option<tokio::time::Instant>,
+        read: PullRead,
     ) -> AppResult<Option<PullSignal>> {
         if let Some(record) = self.deps.store.delivery(&task.id).await? {
             if past_merge(&record.stage) {
@@ -4026,16 +4053,14 @@ impl App {
                 let number = record.pr_number.ok_or_else(|| {
                     AppError::Internal("open delivery has no pull request number".into())
                 })?;
-                let current = self.recorded_pull_signal(task, number);
-                return match deadline {
-                    Some(deadline) => {
-                        tokio::time::timeout_at(deadline, current)
-                            .await
-                            .map_err(|_| {
-                                AppError::Upstream("the parked PR lookup deadline expired".into())
-                            })?
-                    }
-                    None => current.await,
+                let current = self.recorded_pull_signal(task, number, read);
+                return match read {
+                    PullRead::Status(Some(deadline)) => tokio::time::timeout_at(deadline, current)
+                        .await
+                        .map_err(|_| {
+                            AppError::Upstream("the parked PR lookup deadline expired".into())
+                        })?,
+                    PullRead::Status(None) | PullRead::Parking => current.await,
                 };
             }
         }

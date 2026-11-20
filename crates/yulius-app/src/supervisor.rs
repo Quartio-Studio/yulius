@@ -4667,7 +4667,9 @@ impl App {
         let Some(candidate) = self.deps.store.task(task_id).await? else {
             return Ok(false);
         };
-        let current_pull = self.task_pull_signal(&candidate, None).await?;
+        let current_pull = self
+            .task_pull_signal(&candidate, crate::delivery::PullRead::Parking)
+            .await?;
         let _guard = self.supervisor.launch.lock().await;
         let Some(task) = self.deps.store.task(task_id).await? else {
             return Ok(false);
