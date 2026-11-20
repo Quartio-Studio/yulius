@@ -1,11 +1,11 @@
 ---
 yulius-task: 594bf22e-eb0e-422c-a19c-441d5e6ac95a
-status: in-progress
+status: done
 ---
 
 # SPEC-557: Deliver SPEC-512 part 5 (handoffs between sandboxes, #1106)
 
-Status: in-progress
+Status: done
 Date: 2026-11-20
 Owner: Yulius task #539
 
