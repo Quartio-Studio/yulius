@@ -33,7 +33,7 @@ Task #517 displayed Codex's exit instructions. The host drained shutdown output 
 - [x] Keep unfinished plans, specs and goals live
 - [x] Verify PR checks and unpublished repairs before parking
 - [x] Gate parked successors on declared work, owner decisions and current branch PRs
-- [ ] Preserve parked PR observations across overlapping Git overviews
+- [x] Preserve parked PR observations across overlapping Git overviews
 - [ ] Give parked PRs fair status reads in task lists and Home
 - [ ] Refresh parked page and sidebar status independently of the Git overview
 - [ ] Keep failed integration candidates with their original owner
@@ -119,9 +119,14 @@ A human request can take precedence over unfinished work in the task list. Both 
 
 - On dev head `4b3497496` the held partial overview overwrote a newer complete response. MCP omitted the parked task with failing external PR #1462. On `719deb087` a newer partial closure of #1 suppressed the earlier complete failure of #2 when it published first. Both are covered in the ordered overview fixtures. A separate fork assertion checks the task row, and the list boundary fixture distinguishes 31 open PRs from a complete result of exactly 30.
 
+- The overview admission regression failed on `5129e2ab0` when cancelled requests retained capacity and an excess request waited indefinitely. The repaired cache releases cancelled slots immediately and returns HTTP 429 on saturation. The HTTP regression failed on `396d34a3d` with 429 after cancelling a request in the final Git log. Its replacement received 200 on `ad638e4e8` while the oldest request remained pending.
+- Independent review approved `ad638e4e8` and reran the HTTP regression, three cache tests and the overlap integration fixture. The final scoped nextest run passed all 11 tests, including parked successor, Home, MCP, fork identity and cancellation checks. Clippy passed for the app and integration targets with warnings denied. Repository contracts, Rust formatting and spec validation passed. Vidoc was disabled.
+- The first overview campaign reported `mutants: 32 listed, 22 caught, 5 missed, 0 timed out, 5 unviable, 0 not reached (bound 30 min, took 991 s)`. The ordering repair removed the per-row revision guard and its generation arithmetic. For the other three survivors, applying each generated mutation to the branch identity check made the integration fixture fail its assertion that the external task's own PR supplied its conflict flag. The unmodified test passed.
+- The ordered publication campaign reported `mutants: 28 listed, 15 caught, 0 missed, 0 timed out, 13 unviable, 0 not reached (bound 30 min, took 913 s)`. The admission repair reported `mutants: 21 listed, 9 caught, 0 missed, 0 timed out, 12 unviable, 0 not reached (bound 30 min, took 629 s)`. Moving publication past the final Git log reported `mutants: 4 listed, 0 caught, 0 missed, 0 timed out, 4 unviable, 0 not reached (bound 30 min, took 330 s)`. Its HTTP red/green regression directly verified the changed lifetime.
+
 ## Delivery slices
 
-PRs #1492 and #1493 delivered native Codex resume and the pre-stop screen for new parks. PR #1505 kept sessions with local unfinished work live. PR #1510 verified current ordinary PR checks and unpublished work before parking. Step 11 verifies parked predecessors for successors waiting for Done. Remaining deliveries cover fair parked task-list reads, page refresh, persisted integration failures, bounded Codex goals and pre-upgrade screens.
+PRs #1492 and #1493 delivered native Codex resume and the pre-stop screen for new parks. PR #1505 kept sessions with local unfinished work live. PR #1510 verified current ordinary PR checks and unpublished work before parking. PR #1524 delivered the parked predecessor gate. The next delivery preserves known PR observations across overlapping Git overviews. Remaining deliveries cover fair parked task-list reads, page refresh, persisted integration failures, bounded Codex goals and pre-upgrade screens.
 
 The native-resume regression checks the rollout in the native launch and reads the first and second user prompts from its on-disk history. It also exercises absent IDs and an older lineage entry. No paid provider is involved.
 
