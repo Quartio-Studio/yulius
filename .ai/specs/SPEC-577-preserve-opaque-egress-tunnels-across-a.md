@@ -265,3 +265,14 @@ without adoption support or a remote peer that times out can end a tunnel.
   tests passed. They include the real mixed TCP queue regression, malformed expired frames,
   an unconnected live stream, independent expiry before adoption and lock release when a
   successor keeps its received descriptors open without acknowledging them.
+- Review of the separated custody protocol at `309f9aaac` found that a listening TCP
+  descriptor in an expired frame could pass the stream-type check and lose its ability to
+  accept connections when the helper shut down the pair. The wire regression observed that
+  the retained listener had stopped listening. The public deposit regression also failed
+  to reject it. The depositor now validates both descriptors before enrolling any for
+  shutdown, and the receiver checks the listening flag before accepting either descriptor.
+  Both fixtures exercise the retained listener by accepting a new local synthetic peer.
+- In a partial timed frame, bypassing the per-pair deadline around the state read made a
+  three-second fixture time out. The restored check releases both peers while the producer
+  withholds the state suffix, then consumes that suffix and the following live frame. The
+  listener-cleanup fixture now also bounds its entire acknowledgement and EOF sequence.

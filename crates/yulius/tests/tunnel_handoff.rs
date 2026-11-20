@@ -223,3 +223,37 @@ async fn one_tunnel_expires_in_custody_while_another_stays_adoptable() -> io::Re
     })
     .await?
 }
+
+#[tokio::test]
+async fn a_depositor_refuses_a_listener_before_shutting_down_expired_records() -> io::Result<()> {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        let dir = tempfile::tempdir()?;
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700))?;
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let address = listener.local_addr()?;
+        let (wire, _peer) = UnixStream::pair()?;
+        let malformed = Pair {
+            expires: Some(0),
+            sockets: [
+                listener.as_fd().try_clone_to_owned()?,
+                wire.into_std()?.into(),
+            ],
+            state: Vec::new(),
+        };
+        let result = deposit(
+            Path::new(env!("CARGO_BIN_EXE_yulius")),
+            dir.path(),
+            vec![malformed],
+        )
+        .await;
+        assert!(
+            result.is_err_and(|e| e.kind() == io::ErrorKind::InvalidData),
+            "deposit must reject a listener"
+        );
+        let client = TcpStream::connect(address).await?;
+        assert_eq!(listener.accept().await?.1, client.local_addr()?);
+        assert!(!dir.path().join("tunnels.sock").exists());
+        Ok(())
+    })
+    .await?
+}

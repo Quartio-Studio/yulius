@@ -53,6 +53,7 @@ fn invalid(message: &'static str) -> io::Error {
 
 fn stream_socket(fd: &OwnedFd) -> io::Result<()> {
     if net::sockopt::socket_type(fd)? == SocketType::STREAM
+        && !net::sockopt::socket_acceptconn(fd)?
         && matches!(
             net::sockopt::socket_domain(fd)?,
             AddressFamily::INET | AddressFamily::INET6 | AddressFamily::UNIX
@@ -405,6 +406,10 @@ pub async fn deposit(executable: &Path, directory: &Path, pairs: Vec<Pair>) -> i
     }
     for pair in &pairs {
         check_capacity(pairs.len(), pair.state.len())?;
+        for fd in &pair.sockets {
+            stream_socket(fd)?;
+        }
+        require_live_peers(&pair.sockets, pair.expires)?;
     }
     private_directory(directory)?;
     let (mut stream, child_socket) = UnixStream::pair()?;
@@ -543,22 +548,25 @@ mod tests {
 
     #[tokio::test]
     async fn last_pair_expiring_frees_the_waiting_helpers_listener_and_lock() -> io::Result<()> {
-        let dir = tempfile::tempdir()?;
-        fs::set_permissions(dir.path(), Permissions::from_mode(0o700))?;
-        let (mut old, mut control) = UnixStream::pair()?;
-        let (mut saved, mut peers) = pair(b"short".to_vec())?;
-        saved.expires = Some(monotonic_ms() + 200);
-        let path = dir.path().to_owned();
-        let helper = tokio::spawn(async move { hold(&mut control, &path).await });
-        send(&mut old, &[saved]).await?;
-        assert_eq!(old.read_u8().await?, b'E');
-        for peer in &mut peers {
-            assert_eq!(peer.read(&mut [0]).await?, 0);
-        }
-        tokio::time::timeout(Duration::from_secs(2), helper).await???;
-        assert!(!dir.path().join("tunnels.sock").exists());
-        lock_directory(dir.path())?;
-        Ok(())
+        tokio::time::timeout(Duration::from_secs(3), async {
+            let dir = tempfile::tempdir()?;
+            fs::set_permissions(dir.path(), Permissions::from_mode(0o700))?;
+            let (mut old, mut control) = UnixStream::pair()?;
+            let (mut saved, mut peers) = pair(b"short".to_vec())?;
+            saved.expires = Some(monotonic_ms() + 200);
+            let path = dir.path().to_owned();
+            let helper = tokio::spawn(async move { hold(&mut control, &path).await });
+            send(&mut old, &[saved]).await?;
+            assert_eq!(old.read_u8().await?, b'E');
+            for peer in &mut peers {
+                assert_eq!(peer.read(&mut [0]).await?, 0);
+            }
+            helper.await??;
+            assert!(!dir.path().join("tunnels.sock").exists());
+            lock_directory(dir.path())?;
+            Ok(())
+        })
+        .await?
     }
 
     #[tokio::test]
@@ -681,6 +689,57 @@ mod tests {
         send(&mut sender, &[live]).await?;
         assert!(receive(&mut receiver).await.is_err());
         Ok(())
+    }
+
+    #[tokio::test]
+    async fn an_expired_record_cannot_claim_or_shut_down_a_listening_socket() -> io::Result<()> {
+        use tokio::net::{TcpListener, TcpStream};
+        tokio::time::timeout(Duration::from_secs(3), async {
+            let listener = TcpListener::bind("127.0.0.1:0").await?;
+            let address = listener.local_addr()?;
+            let (mut sender, mut receiver) = UnixStream::pair()?;
+            let (mut saved, _peers) = pair(b"expired".to_vec())?;
+            saved.expires = Some(0);
+            saved.sockets[1] = listener.as_fd().try_clone_to_owned()?;
+            send(&mut sender, &[saved]).await?;
+            let result = receive(&mut receiver).await;
+            assert!(
+                net::sockopt::socket_acceptconn(&listener)?,
+                "the sender retained a live listener"
+            );
+            assert!(result.is_err_and(|e| e.kind() == io::ErrorKind::InvalidData));
+            let client = TcpStream::connect(address).await?;
+            assert_eq!(listener.accept().await?.1, client.local_addr()?);
+            Ok(())
+        })
+        .await?
+    }
+
+    #[tokio::test]
+    async fn a_partial_timed_frame_expires_before_its_producer_finishes_writing() -> io::Result<()>
+    {
+        tokio::time::timeout(Duration::from_secs(3), async {
+            let (mut sender, mut receiver) = UnixStream::pair()?;
+            let (short, mut peers) = pair(Vec::new())?;
+            let (long, _live_peers) = pair(b"survivor".to_vec())?;
+            let reading = tokio::spawn(async move { receive(&mut receiver).await });
+            send_header(&sender, &short.sockets, b'D').await?;
+            sender.write_u64(monotonic_ms() + 100).await?;
+            sender.write_u32(6).await?;
+            sender.write_all(b"pre").await?;
+            for peer in &mut peers {
+                assert_eq!(peer.read(&mut [0]).await?, 0);
+            }
+            assert!(!reading.is_finished());
+            sender.write_all(b"fix").await?;
+            send(&mut sender, &[long]).await?;
+            let live = reading.await??.release();
+            assert_eq!(live.len(), 1);
+            assert_eq!(live[0].state, b"survivor");
+            drop(short);
+            Ok(())
+        })
+        .await?
     }
 
     #[tokio::test]
