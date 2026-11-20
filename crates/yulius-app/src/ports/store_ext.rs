@@ -715,7 +715,8 @@ pub struct HandoffRecord {
     pub chain: Vec<String>,
     /// Its depth: 1 for a task no handoff made.
     pub depth: u32,
-    /// `requested`, `created`, `declined` or `refused`.
+    /// `requested`, `creating` (claimed, its task being made), `created`, `declined` or
+    /// `refused`.
     pub state: String,
     /// Why it was refused or declined.
     pub reason: Option<String>,
@@ -760,6 +761,9 @@ pub trait HandoffStore: Send + Sync {
     async fn untold_handoffs(&self) -> AppResult<Vec<HandoffRecord>>;
     /// Records the outcome as told; `false` when it already was.
     async fn mark_handoff_told(&self, id: &str) -> AppResult<bool>;
+    /// At start: a handoff left `creating` by a server that stopped is `created` when its task
+    /// was recorded, else `refused` (asked again by its agent, never created twice); how many.
+    async fn settle_creating_handoffs(&self, at: Timestamp) -> AppResult<u64>;
 }
 
 /// One person's stored digest (SPEC-512 DIG-005).

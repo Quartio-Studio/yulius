@@ -51,7 +51,8 @@ pub struct HandoffView {
     pub effort: Option<String>,
     /// `goal` or `prompt`.
     pub mode: Option<String>,
-    /// `requested`, `created`, `declined` or `refused`.
+    /// `requested`, `creating` (approved, its task being made), `created`, `declined` or
+    /// `refused`.
     pub state: String,
     /// Why it was refused or declined.
     pub reason: Option<String>,

@@ -2552,7 +2552,7 @@ impl App {
         // A sandbox's opt-out of handoffs is kept too (SPEC-512 HOF-002, review round 1).
         let mut stored = serde_json::to_value(&stored).map_err(AppError::internal)?;
         if !crate::handoffs::accepts_handoffs(&sandbox) {
-            stored["accept_handoffs"] = Value::Bool(false);
+            stored[crate::handoffs::ACCEPT_KEY] = Value::Bool(false);
         }
         let json = serde_json::to_string(&stored).map_err(AppError::internal)?;
         self.deps.store.set_profile(&sid, &json).await?;

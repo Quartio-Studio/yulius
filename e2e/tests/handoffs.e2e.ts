@@ -31,13 +31,14 @@ test("the task's owner approves a handoff its agent asked for, exactly as shown 
   expect(await axeViolations(browser)).toEqual([]);
   await request.getByRole('button', 'Approve').click();
   await expect(screen.getByText('Handed off to quartio/web')).toBeVisible();
-  await expect(screen.getByText(/Created: quartio\/web · Add the items endpoint/)).toBeVisible();
+  // Answered, it floats no more (review round 2): its history is on the task's info page.
+  await expect(screen.getByRole('region', 'Handoff to quartio/web')).toHaveCount(0);
   expect(await browser.evaluate(() => (window as unknown as Mocked).__yuliusMock.handoffAnswers ?? 0)).toBe(1);
 });
 
-test('a handed-off task shows where it came from (SPEC-512 HOF-005)', async ({ app, screen }) => {
-  await app.open(mock('/s/studio/t/11', '&ambient=0&handoff=1'));
-  await firstShown(screen.getByText('Handed off from'));
+test('a handed-off task shows where it came from on its info page (SPEC-512 HOF-005)', async ({ app, screen }) => {
+  await app.open(mock('/s/studio/tasks/11', '&ambient=0&handoff=1'));
+  await firstShown(screen.getByText(/^Handed off from/));
   await expect(screen.getByRole('link', 'quartio/web #4')).toBeVisible();
 });
 

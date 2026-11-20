@@ -5,7 +5,7 @@
 import { h, icon, setChildren, toast, errorToast } from './dom.js';
 import { href } from './router.js';
 
-const STATE_TEXT = { created: 'Created', declined: 'Declined', refused: 'Refused' };
+const STATE_TEXT = { requested: 'Waits for its owner', creating: 'Being created', created: 'Created', declined: 'Declined', refused: 'Refused' };
 
 function routeOf(link) {
   try {
@@ -37,35 +37,22 @@ export function handoffsPanel(ctx, task, isOwner) {
     }
   }
 
+  // Only requests to answer float over the terminal (review round 2); where the task came from
+  // and its past handoffs are on its info page (`handoffsInfo`).
   function render() {
     const rows = [];
-    if (state.from) {
-      rows.push(h('div', { class: 'handoff-from' }, icon('git-branch', { size: 14 }), h('span', null, 'Handed off from '), linkTo(state.from.link, `${state.from.sandbox} #${state.from.number}`)));
-    }
-    // Every request still to answer, then the five newest others (review round 1: a refusal
-    // never hides a request).
-    const requested = state.handoffs.filter((x) => x.state === 'requested');
-    const others = state.handoffs.filter((x) => x.state !== 'requested').slice(0, 5);
-    for (const handoff of [...requested, ...others]) {
-      if (handoff.state === 'requested') {
-        const options = ['harness', 'model', 'effort', 'mode'].filter((k) => handoff[k]).map((k) => `${k}: ${handoff[k]}`).join(' · ');
-        const approve = h('button', { type: 'button', class: 'btn btn-sm btn-primary' }, 'Approve');
-        const decline = h('button', { type: 'button', class: 'btn btn-sm' }, 'Decline');
-        approve.addEventListener('click', () => answer(handoff, true, [approve, decline]));
-        decline.addEventListener('click', () => answer(handoff, false, [approve, decline]));
-        rows.push(h('section', { class: 'handoff-request', 'aria-label': `Handoff to ${handoff.target_sandbox}` },
-          h('div', null, h('strong', null, `This task asks to hand work to ${handoff.target_sandbox}: `), handoff.title),
-          h('pre', { class: 'handoff-prompt' }, handoff.prompt),
-          options ? h('div', { class: 'muted xs' }, options) : null,
-          isOwner() ? h('div', { class: 'row' }, approve, decline, h('span', { class: 'muted xs' }, 'Approving creates exactly this task there, as you.'))
-            : h('div', { class: 'muted xs' }, 'Waits for the task’s owner.')));
-      } else {
-        const what = STATE_TEXT[handoff.state] || handoff.state;
-        rows.push(h('div', { class: 'handoff-line muted small' },
-          `${what}: ${handoff.target_sandbox} · ${handoff.title}`,
-          handoff.target_link ? [' · ', linkTo(handoff.target_link, `#${handoff.target_number}`)] : null,
-          handoff.reason ? ` · ${handoff.reason}` : null));
-      }
+    for (const handoff of state.handoffs.filter((x) => x.state === 'requested')) {
+      const options = ['harness', 'model', 'effort', 'mode'].filter((k) => handoff[k]).map((k) => `${k}: ${handoff[k]}`).join(' · ');
+      const approve = h('button', { type: 'button', class: 'btn btn-sm btn-primary' }, 'Approve');
+      const decline = h('button', { type: 'button', class: 'btn btn-sm' }, 'Decline');
+      approve.addEventListener('click', () => answer(handoff, true, [approve, decline]));
+      decline.addEventListener('click', () => answer(handoff, false, [approve, decline]));
+      rows.push(h('section', { class: 'handoff-request', 'aria-label': `Handoff to ${handoff.target_sandbox}` },
+        h('div', null, h('strong', null, `This task asks to hand work to ${handoff.target_sandbox}: `), handoff.title),
+        h('pre', { class: 'handoff-prompt' }, handoff.prompt),
+        options ? h('div', { class: 'muted xs' }, options) : null,
+        isOwner() ? h('div', { class: 'row' }, approve, decline, h('span', { class: 'muted xs' }, 'Approving creates exactly this task there, as you.'))
+          : h('div', { class: 'muted xs' }, 'Waits for the task’s owner.')));
     }
     el.hidden = rows.length === 0;
     setChildren(el, ...rows);
@@ -152,4 +139,23 @@ export function sandboxHandoffsCard(ctx, sandbox, canWrite) {
     box.disabled = !canWrite;
   }, () => { card.hidden = true; });
   return card;
+}
+
+
+/** The task info page's Handoffs row: where the task came from and what it handed off. */
+export function handoffsInfo(ctx, task) {
+  const el = h('span', { class: 'muted' }, '—');
+  ctx.api.get(`/api/tasks/${encodeURIComponent(task.id)}/handoffs`).then((state) => {
+    const parts = [];
+    if (state.from) parts.push(h('div', { class: 'handoff-from' }, 'Handed off from ', linkTo(state.from.link, `${state.from.sandbox} #${state.from.number}`)));
+    for (const handoff of state.handoffs.slice(0, 10)) {
+      parts.push(h('div', { class: 'handoff-line small' },
+        `${STATE_TEXT[handoff.state] || handoff.state}: ${handoff.target_sandbox} · ${handoff.title}`,
+        handoff.target_link ? [' · ', linkTo(handoff.target_link, `#${handoff.target_number}`)] : null,
+        handoff.reason ? h('span', { class: 'muted' }, ` · ${handoff.reason}`) : null));
+    }
+    if (parts.length) setChildren(el, ...parts);
+    el.classList.toggle('muted', parts.length === 0);
+  }, () => {});
+  return el;
 }

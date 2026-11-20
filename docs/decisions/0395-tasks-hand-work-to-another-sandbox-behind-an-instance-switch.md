@@ -26,8 +26,9 @@ allows it. The Superagent's tools and their approval stay as ADR-0227 and ADR-03
 - **A sandbox opts out.** Its writers close it to handoffs; it stays closed whatever the switch.
 - **`sandbox_handoff` for task agents.** `{sandbox, title, prompt}` with `task_create`'s options.
   The checks of `sandbox_task_create` (a sandbox the owner can work in, else not found; visible
-  text only; the tools' hourly bound; nothing from an automation's task, which holds nobody) plus
-  depth, cycles (a sandbox already in the chain) and the daily bound. Every refusal is audited
+  text only; a bounded prompt; the tools' hourly bound; nothing from an automation's task, which
+  holds nobody) plus depth, cycles (a sandbox already in the chain), the daily bound and no agent
+  secret of the source sandbox in the text (a refusal keeps it redacted). Every refusal is audited
   and says why.
 - **Ask stores; automatic creates.** In ask mode the request is stored and the call returns; the
   task's owner approves or declines it on the task's page, in a browser session only, and

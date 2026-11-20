@@ -217,6 +217,30 @@ impl HandoffStore for SqliteStore {
         .await
     }
 
+    async fn settle_creating_handoffs(&self, at: Timestamp) -> AppResult<u64> {
+        self.call(move |c| {
+            let tx = c.transaction().map_err(db)?;
+            let made = tx
+                .execute(
+                    "UPDATE task_handoffs SET state = 'created', decided_at = ?1 \
+                     WHERE state = 'creating' AND target_task IS NOT NULL",
+                    [at.0],
+                )
+                .map_err(db)?;
+            let lost = tx
+                .execute(
+                    "UPDATE task_handoffs SET state = 'refused', decided_at = ?1, \
+                     reason = 'interrupted before its task was made: ask again' \
+                     WHERE state = 'creating' AND target_task IS NULL",
+                    [at.0],
+                )
+                .map_err(db)?;
+            tx.commit().map_err(db)?;
+            Ok(u64::try_from(made + lost).unwrap_or(u64::MAX))
+        })
+        .await
+    }
+
     async fn mark_handoff_told(&self, id: &str) -> AppResult<bool> {
         let id = id.to_owned();
         self.call(move |c| {
@@ -322,6 +346,12 @@ mod tests {
             2
         );
         assert_eq!(store.untold_handoffs().await?.len(), 1);
+        // A claim a stopped server left: refused when no task was made (review round 2).
+        store.insert_handoff(&record("h3", "creating", 14)?).await?;
+        assert_eq!(store.settle_creating_handoffs(Timestamp(15)).await?, 1);
+        let h3 = store.handoff("h3").await?.ok_or("h3")?;
+        assert_eq!(h3.state, "refused");
+        assert!(h3.reason.is_some_and(|r| r.contains("ask again")));
         assert!(store.mark_handoff_told("h1").await?);
         assert!(!store.mark_handoff_told("h1").await?);
         assert!(store.untold_handoffs().await?.is_empty());

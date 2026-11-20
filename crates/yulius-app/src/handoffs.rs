@@ -68,9 +68,25 @@ pub struct HandoffArgs {
     pub mode: Option<String>,
 }
 
-/// A sandbox's label: its repository, `owner/name`.
+/// A sandbox's label: its repository, `owner/name` (a playground's name alone).
 fn label(sandbox: &SandboxRecord) -> String {
-    format!("{}/{}", sandbox.repo_owner, sandbox.repo_name)
+    if sandbox.repo_owner.is_empty() {
+        sandbox.repo_name.clone()
+    } else {
+        format!("{}/{}", sandbox.repo_owner, sandbox.repo_name)
+    }
+}
+
+/// The names in a redacted text's `[secret:NAME]` marks, for a refusal the agent can act on.
+fn secret_names(redacted: &str) -> String {
+    let mut names: Vec<&str> = redacted
+        .split("[secret:")
+        .skip(1)
+        .filter_map(|rest| rest.split_once(']').map(|(name, _)| name))
+        .collect();
+    names.sort_unstable();
+    names.dedup();
+    names.join(", ")
 }
 
 /// The mode of a setting, read leniently: anything unknown is off.
@@ -296,16 +312,14 @@ impl App {
         }
         // An agent secret of this sandbox never travels to another, where nothing would know to
         // hide it (review round 1).
-        let text = format!("{}\n{}", args.title, args.prompt);
-        if self.redact_for_sandbox(&source.sandbox_id, &text).await != text {
-            return self
-                .refuse_handoff(
-                    source,
-                    None,
-                    &args,
-                    "the handoff carries an agent secret of this sandbox",
-                )
-                .await;
+        let text = format!("{}\n{}\n{}", args.sandbox, args.title, args.prompt);
+        let redacted = self.redact_for_sandbox(&source.sandbox_id, &text).await;
+        if redacted != text {
+            let reason = format!(
+                "the handoff carries an agent secret of this sandbox ({}): leave it out",
+                secret_names(&redacted)
+            );
+            return self.refuse_handoff(source, None, &args, &reason).await;
         }
         let Some(owner) = self
             .deps
@@ -333,7 +347,8 @@ impl App {
             Some(t) if self.require(&owner, &t.id, Action::Work).await.is_ok() => t,
             // A sandbox the owner cannot work in is not found, as `sandbox_task_create` says.
             _ => {
-                let reason = format!("no sandbox {} found", args.sandbox);
+                let name: String = args.sandbox.chars().take(100).collect();
+                let reason = format!("no sandbox {name} found");
                 return self.refuse_handoff(source, None, &args, &reason).await;
             }
         };
@@ -436,31 +451,39 @@ impl App {
                          page. Go on with your work, or end with needs_you if you must wait.",
             }));
         };
-        let task = match self
-            .create_handoff_task(&record, &owner, &target, &args, Some(slot))
-            .await
-        {
-            Ok(task) => task,
-            Err(err) => {
-                // Automatic: a creation that fails is a refusal, audited (review round 1).
-                let reason = err.public_message();
-                self.deps
-                    .store
-                    .decide_handoff(
-                        &record.id,
-                        "creating",
-                        "refused",
-                        Some(&reason),
-                        None,
-                        self.now(),
-                    )
-                    .await?;
-                self.audit_handoff(&record, &target, "refused", Some(&reason), &actor)
-                    .await;
-                self.announce_handoffs(&record);
-                return Err(AppError::Forbidden(format!("handoff refused: {reason}")));
+        // Finished on its own task: a cancelled call does not leave the claim half done
+        // (review round 2).
+        let app = Arc::clone(self);
+        let (claimed, to, made_args) = (record.clone(), target.clone(), args.clone());
+        let task = tokio::spawn(async move {
+            match app
+                .create_handoff_task(&claimed, &owner, &to, &made_args, Some(slot))
+                .await
+            {
+                Ok(task) => Ok(task),
+                Err(err) => {
+                    // Automatic: a creation that fails is a refusal, audited (review round 1).
+                    let reason = err.public_message();
+                    app.deps
+                        .store
+                        .decide_handoff(
+                            &claimed.id,
+                            "creating",
+                            "refused",
+                            Some(&reason),
+                            None,
+                            app.now(),
+                        )
+                        .await?;
+                    app.audit_handoff(&claimed, &to, "refused", Some(&reason), &actor)
+                        .await;
+                    app.announce_handoffs(&claimed);
+                    Err(AppError::Forbidden(format!("handoff refused: {reason}")))
+                }
             }
-        };
+        })
+        .await
+        .map_err(AppError::internal)??;
         Ok(json!({
             "state": "created",
             "id": record.id,
@@ -510,7 +533,9 @@ impl App {
                 return Err(err);
             }
         };
-        if !self
+        // The task exists: a write that fails here is logged, never reported as "not created",
+        // which would let it be made twice (review round 2).
+        match self
             .deps
             .store
             .decide_handoff(
@@ -521,9 +546,15 @@ impl App {
                 Some(&task.id),
                 self.now(),
             )
-            .await?
+            .await
         {
-            tracing::warn!(handoff = %record.id, task = %task.id, "a created handoff was not claimed");
+            Ok(true) => {}
+            Ok(false) => {
+                tracing::warn!(handoff = %record.id, task = %task.id, "a created handoff was not claimed");
+            }
+            Err(err) => {
+                tracing::error!(handoff = %record.id, task = %task.id, error = %err, "a created handoff could not be recorded");
+            }
         }
         self.audit_handoff(
             record,
@@ -556,9 +587,19 @@ impl App {
         reason: &str,
     ) -> AppResult<Value> {
         // The arguments of a refusal are kept bounded: the reason is what matters.
-        let mut kept = args.clone();
-        kept.prompt = kept.prompt.chars().take(2_000).collect();
-        kept.title = kept.title.chars().take(200).collect();
+        // ... and redacted with the source sandbox's secrets: a refusal for carrying one keeps
+        // no value (review round 2).
+        let sandbox_name: String = args.sandbox.chars().take(100).collect();
+        let title: String = args.title.chars().take(200).collect();
+        let prompt: String = args.prompt.chars().take(2_000).collect();
+        let kept = HandoffArgs {
+            sandbox: self
+                .redact_for_sandbox(&source.sandbox_id, &sandbox_name)
+                .await,
+            title: self.redact_for_sandbox(&source.sandbox_id, &title).await,
+            prompt: self.redact_for_sandbox(&source.sandbox_id, &prompt).await,
+            ..args.clone()
+        };
         let record = HandoffRecord {
             id: self.new_handoff_id(),
             source_task: source.id.clone(),
@@ -704,8 +745,11 @@ impl App {
                 id: h.id,
                 target_sandbox_id: h.target_sandbox.as_str().to_owned(),
                 target_sandbox: target.map_or_else(|| args.sandbox.clone(), |t| label(&t)),
-                title: args.title,
-                prompt: args.prompt,
+                // Shown redacted as the sandbox's other text is (review round 2).
+                title: self.redact_for_sandbox(&task.sandbox_id, &args.title).await,
+                prompt: self
+                    .redact_for_sandbox(&task.sandbox_id, &args.prompt)
+                    .await,
                 harness: args.harness,
                 model: args.model,
                 effort: args.effort,
@@ -798,25 +842,42 @@ impl App {
                     "this handoff was answered meanwhile".into(),
                 ));
             }
-            match self
-                .create_handoff_task(&record, &ctx.user, &target, &args, None)
-                .await
-            {
-                Ok(made) => {
-                    let number = format!("#{}", made.number);
-                    self.audit_handoff(&record, &target, "approved", Some(&number), &login)
-                        .await;
+            // Finished on its own task: a page that goes away mid-way does not leave the claim
+            // half done (review round 2).
+            let app = Arc::clone(self);
+            let (owner, claimed, to) = (ctx.user.clone(), record.clone(), target.clone());
+            let done = tokio::spawn(async move {
+                match app
+                    .create_handoff_task(&claimed, &owner, &to, &args, None)
+                    .await
+                {
+                    Ok(made) => {
+                        let number = format!("#{}", made.number);
+                        app.audit_handoff(&claimed, &to, "approved", Some(&number), &login)
+                            .await;
+                        Ok(())
+                    }
+                    Err(err) => {
+                        // Not created: the request waits again, to be approved once it can be.
+                        app.deps
+                            .store
+                            .decide_handoff(
+                                &claimed.id,
+                                "creating",
+                                "requested",
+                                None,
+                                None,
+                                app.now(),
+                            )
+                            .await?;
+                        app.announce_handoffs(&claimed);
+                        Err(err)
+                    }
                 }
-                Err(err) => {
-                    // Not created: the request waits again, to be approved once it can be.
-                    self.deps
-                        .store
-                        .decide_handoff(&record.id, "creating", "requested", None, None, self.now())
-                        .await?;
-                    self.announce_handoffs(&record);
-                    return Err(err);
-                }
-            }
+            })
+            .await
+            .map_err(AppError::internal)?;
+            done?;
         } else {
             if !self
                 .deps

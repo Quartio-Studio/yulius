@@ -253,7 +253,8 @@ only ask a person with `needs_you`. Nothing records where a task came from.
 - **HOF-003 The tool.** `sandbox_handoff` `{sandbox, title, prompt}` with `task_create`'s
   `harness`, `model`, `effort` and `mode`, served to task agents only while the mode is not off
   (in `tools/list` and in the call). Refused with a reason the agent reads: an automation's task
-  (it holds nobody); text with characters a person cannot see; a target that is the task's own
+  (it holds nobody); text with characters a person cannot see; a prompt over 64 KiB; an agent
+  secret of the source sandbox (named; nothing stored keeps its value); a disabled owner; a target that is the task's own
   sandbox, one its owner cannot work in (reported as not found), one that opted out; a chain
   deeper than `max_depth` (a handed-off task's own handoff is one deeper); a sandbox already in
   the chain (a cycle); more than `per_day` handoffs of the owner in 24 hours; the hourly bound
@@ -264,7 +265,9 @@ only ask a person with `needs_you`. Nothing records where a task came from.
   token); approval re-checks the target and creates the task with exactly those arguments;
   decline ends it. **Automatic:** the task is created at once.
 - **HOF-005 Provenance and the result.** A created task belongs to the source task's owner,
-  origin `handoff` ("Handed off"), and shows "Handed off from <sandbox> #N" with a link. When it
+  origin `handoff` ("Handed off"), and its info page shows "Handed off from <sandbox> #N" with a
+  link (the source's info page lists its handoffs; only a request to answer floats on the task's
+  page). When it
   ends (Done, closed, stopped, failed, or merged), the source task gets one message from Yulius
   with its outcome and pull request (queued for it when it has no live session).
 - **HOF-006 Audit.** `task.handoff` on both sandboxes with `requested`, `approved`,
@@ -494,6 +497,18 @@ Review round 1 (head 9ea4cd1b3, CHANGES REQUESTED), answered test-first:
 | The request card had no styles and could push Approve off screen | it floats over the terminal, bounded, its prompt scrolls; every request is listed first | e2e "a long handoff floats over the terminal and its answer stays in view" (fails when static: mutation) |
 | The pull request link lacked the owner | `owner/name`, none for a playground | `parking::a_handed_off_tasks_outcome_reaches_its_source` (merged, `https://github.com/<owner>/api/pull/7`) |
 | Minors | `past_merge` for merged; a gone task is not asked again; answers audited as their person, `approved` after creation; prompts bounded; an agent secret of the source sandbox refused; `owner/name` labels; the told title is the one asked for; `tools/call` over `/mcp` tested; docs (Git page, ADR-0227's Status, Decisions) | `handoffs::every_refusal_…` (secret), `handoffs::the_tool_is_called_over_mcp` |
+
+Review round 2 (head 84113ff1a, CHANGES REQUESTED), answered test-first:
+
+| Finding | Change | Test |
+|---|---|---|
+| The head lacked dev's tip (part 4 as #1487) | merged `225bf38fc`, taking dev's part 4 and keeping only the `/task owner/name` fix | `telegram::` (35 tests) |
+| A refusal for an agent secret stored and served it | a refusal stores its text redacted with the source sandbox's secrets, bounded (the sandbox name too); the page's view redacts again; the reason names the secret | `handoffs::every_refusal_is_audited_and_a_full_hour_leaves_no_request` (the value in neither the GET nor the audit; failed before) |
+| `creating` had no way out | the claimed part runs on its own task (approval and automatic); at start a leftover `creating` is `created` with its task, else `refused` ("ask again") | store `a_handoff_is_decided_once_and_told_once` (settled) |
+| A store error after creation read as "not created" | logged; the task is never reported unmade | by reading |
+| A weak outcome test | removed; the live-session test holds the guard (`parking::a_handed_off_tasks_outcome_reaches_its_source`) | — |
+| Non-request rows floated for good | only a request floats; provenance and history are on the info page | e2e "a handed-off task shows where it came from on its info page", "the task's owner approves…" (answered, it floats no more) |
+| Docs and nits | `creating` and the new refusals in the API, spec and contracts; a playground's label; `ACCEPT_KEY`; `creating` worded on the page | by reading |
 
 Also in this pull request (a part 4 defect found while building part 5): `/task acme/app` (a
 project's full repository name) named no project, because owner and name are stored apart;

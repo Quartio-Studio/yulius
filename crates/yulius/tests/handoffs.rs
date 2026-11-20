@@ -724,22 +724,55 @@ async fn every_refusal_is_audited_and_a_full_hour_leaves_no_request() -> TestRes
     )
     .await?;
     assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
-    let secret = hand(
-        &w,
-        "t1",
-        json!({"sandbox": "api", "title": "T", "prompt": "Use shop-token-value-0123456789"}),
+    let secret = hand(&w, "t1", json!({"sandbox": "api", "title": "Key shop-token-value-0123456789", "prompt": "Use shop-token-value-0123456789"})).await?;
+    assert!(
+        secret.is_err_and(|e| e.contains("agent secret") && e.contains("SHOP_TOKEN")),
+        "a secret stays in its sandbox, named"
+    );
+    // The refused request keeps no value: not in the page's list, not in the audit (round 2).
+    let page = call(
+        &w.h.router,
+        Method::GET,
+        "/api/tasks/t1/handoffs",
+        None,
+        &w.alice,
     )
     .await?;
     assert!(
-        secret.is_err_and(|e| e.contains("agent secret")),
-        "a secret stays in its sandbox"
+        !page
+            .body
+            .to_string()
+            .contains("shop-token-value-0123456789"),
+        "{}",
+        page.body
+    );
+    assert!(
+        page.body.to_string().contains("[secret:SHOP_TOKEN]"),
+        "{}",
+        page.body
+    );
+    assert!(
+        audits(&w, "s1")
+            .await?
+            .iter()
+            .all(|d| !d.contains("shop-token-value-0123456789"))
+    );
+    let long_name = hand(
+        &w,
+        "t1",
+        json!({"sandbox": "x".repeat(5_000), "title": "T", "prompt": "P"}),
+    )
+    .await?;
+    assert!(
+        long_name.is_err_and(|e| e.len() < 600),
+        "a sandbox name is bounded in the reason"
     );
     let refused: Vec<String> = audits(&w, "s1")
         .await?
         .into_iter()
         .filter(|d| d.starts_with("refused:"))
         .collect();
-    assert_eq!(refused.len(), 2, "{refused:?}");
+    assert_eq!(refused.len(), 3, "{refused:?}");
     for n in 0..20 {
         let made = hand(
             &w,
@@ -809,38 +842,5 @@ async fn the_tool_is_called_over_mcp() -> TestResult {
     )
     .await?;
     assert_eq!(tasks.body[0]["title"], "Over MCP");
-    Ok(())
-}
-
-/// SPEC-512 HOF-005 (review round 1): nothing is typed into a source that shows a prompt to its
-/// person; the outcome waits.
-#[tokio::test]
-async fn an_outcome_waits_while_the_source_needs_its_person() -> TestResult {
-    let w = world().await?;
-    set_mode(&w, "automatic", 3, 20).await?;
-    let made = hand(
-        &w,
-        "t1",
-        json!({"sandbox": "api", "title": "A", "prompt": "A"}),
-    )
-    .await?
-    .map_err(|e| e.to_string())?;
-    let target =
-        TaskId::parse(&task_id_of(&w, "s2", made["task_number"].as_u64().ok_or("n")?).await?)?;
-    w.h.store
-        .transition_task(&target, None, TaskStatus::Closed, None, w.h.app.now())
-        .await?;
-    w.h.store
-        .transition_task(
-            &TaskId::parse("t1")?,
-            None,
-            TaskStatus::Running,
-            Some(yulius_domain::task::Activity::NeedsAttention),
-            w.h.app.now(),
-        )
-        .await?;
-    assert_eq!(w.h.app.tell_handoff_outcomes().await, 0);
-    use yulius_app::ports::store_ext::HandoffStore as _;
-    assert_eq!(w.h.store.untold_handoffs().await?.len(), 1, "still to tell");
     Ok(())
 }

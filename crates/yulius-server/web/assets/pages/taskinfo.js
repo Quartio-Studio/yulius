@@ -13,6 +13,7 @@ import { openDeliveryDialog, stageLabel } from '../actions.js';
 import { initials } from '../layout.js';
 import { modelLabel, findEffort } from '../models.js';
 import { loadWaterfall } from '../stages.js';
+import { handoffsInfo } from '../handoffs.js';
 import { pipelineHref } from './pipeline.js';
 import { worktreeMissing } from './git.js';
 
@@ -157,6 +158,8 @@ export function mountTaskInfoView(ctx, sandbox, task) {
       // Who the task acts on GitHub as, and the only person who changes it (SPEC-070).
       ['Owner', ownerLogin ? h('span', { class: 'ti-person' }, h('span', { class: 'avatar ti-avatar', 'aria-hidden': 'true' }, initials(ownerLogin)), ownerLogin) : '—'],
       ['Origin', ORIGINS[current.origin] || current.origin || '—'],
+      // Where it was handed off from and what it handed off (SPEC-512 HOF-005).
+      ['Handoffs', handoffsInfo(ctx, current)],
       ['Mode', current.mode === 'prompt' ? 'Prompt' : 'Goal (works until it is met)'],
       ['Subscription', accountRef(current.account_label, current.account_email, { unknown: ctx.isInstanceAdmin() }) || '—'],
       // What the task asks Claude Code for, what answered (its transcripts' word) and which

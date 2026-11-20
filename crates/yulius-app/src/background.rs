@@ -94,6 +94,10 @@ impl App {
             // Tasks hear once that their sandbox's Docker is full, and when it no longer is
             // (SPEC-494 DFJ-007).
             app.start_docker_watch();
+            // A handoff a stopped server left mid-creation is settled (SPEC-512 HOF-004).
+            if let Err(err) = app.deps.store.settle_creating_handoffs(app.now()).await {
+                tracing::warn!(error = %err, "handoffs left creating could not be settled");
+            }
             // Merges armed before the restart stay armed (DLV-205), and one whose checks passed
             // meanwhile merges now (SPEC-358 MSB-008).
             app.resume_armed_merges().await;
