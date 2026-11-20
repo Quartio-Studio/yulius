@@ -2603,6 +2603,13 @@ async fn a_failing_same_branch_pr_from_a_fork_does_not_keep_an_answered_task_liv
             .iter()
             .any(|p| p.number == 1461 && p.checks == "failure")
     );
+    assert!(
+        overview
+            .tasks
+            .iter()
+            .find(|t| t.task_id == f.task.as_str())
+            .is_some_and(|t| t.pr.is_none())
+    );
     assert_eq!(
         f.h.app.park_idle_sessions_now().await,
         1,
@@ -2908,5 +2915,233 @@ async fn parking_keeps_an_external_pr_when_its_checked_head_starts_an_unwatched_
             .await?
     );
     assert_eq!(f.h.app.park_idle_sessions_now().await, 1);
+    Ok(())
+}
+
+/// A slow PR at the front of a list cannot consume another parked PR's lookup time.
+#[tokio::test]
+async fn parked_list_home_and_mcp_classify_a_green_head_while_the_first_is_slow() -> TestResult {
+    use yulius_app::ports::github::ChecksState;
+    use yulius_app::ports::store::{SandboxStore as _, TaskStore as _};
+    use yulius_app::ports::store_ext::DeliveryStore as _;
+    use yulius_domain::delivery::DeliveryStage;
+    let f = fixture().await?;
+    install_compatibility_pull(&f).await?;
+    let owner = idle_for_parking(&f).await?;
+    let mut slow = f.h.store.task(&f.task).await?.ok_or("task")?;
+    let now = f.h.app.now();
+    f.h.store
+        .transition_task(
+            &slow.id,
+            None,
+            TaskStatus::Parked,
+            Some(Activity::Waiting),
+            now,
+        )
+        .await?;
+    let slow_id = TaskId::parse("parked-slow")?;
+    slow.id = slow_id.clone();
+    slow.number = 12;
+    slow.branch = Some("feat/slow".into());
+    slow.status = TaskStatus::Parked;
+    slow.activity = Some(Activity::Waiting);
+    slow.updated_at = Timestamp(now.0 + 1);
+    f.h.store.insert_task(&slow).await?;
+    let original = f.h.store.delivery(&f.task).await?.ok_or("PR")?;
+    f.h.store
+        .transition_delivery(
+            &DeliveryStage::None,
+            &yulius_app::delivery::DeliveryRecord {
+                task_id: slow_id.clone(),
+                pr_number: Some(1462),
+                ..original
+            },
+        )
+        .await?;
+    {
+        let mut pulls = f.h.github.pulls.lock().map_err(|_| "pulls")?;
+        let other = yulius_app::ports::github::GhPull {
+            number: 1462,
+            head_sha: "slow-head".into(),
+            head: "feat/slow".into(),
+            ..pulls[0].clone()
+        };
+        pulls.push(other);
+    }
+    f.h.github.set_checks("abc123", ChecksState::Success);
+    let hold = f.h.github.hold_checks_for("slow-head")?;
+    let rows =
+        f.h.app
+            .list_tasks(&owner, f.sandbox.as_str(), false)
+            .await?;
+    assert_eq!(
+        rows.iter()
+            .find(|t| t.id == f.task.as_str())
+            .and_then(|t| t.parked_needs_you),
+        Some(false)
+    );
+    assert_eq!(
+        rows.iter()
+            .find(|t| t.id == slow_id.as_str())
+            .and_then(|t| t.parked_needs_you),
+        Some(true)
+    );
+    let project = f.h.store.sandbox(&f.sandbox).await?.ok_or("project")?;
+    assert_eq!(
+        f.h.app
+            .sandbox_view(&project, yulius_domain::permission::AccessLevel::Write)
+            .await?
+            .counts
+            .needs_attention,
+        1
+    );
+    let caller = crate::task_message::superagent(&f.sandbox, &slow.created_by, "admin");
+    let listing =
+        f.h.app
+            .tool_tasks_list(&caller, &serde_json::json!({"scope":"needs_you"}))
+            .await?;
+    assert_eq!(listing["tasks"].as_array().ok_or("tasks")?.len(), 1);
+    assert_eq!(listing["tasks"][0]["task_id"], slow_id.as_str());
+    f.h.github.release_checks(&hold);
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_partial_overview_still_resolves_the_parked_tasks_recorded_pr() -> TestResult {
+    let f = fixture().await?;
+    install_compatibility_pull(&f).await?;
+    let ctx = f.h.app.agent_context(TOKEN).await?;
+    let owner = yulius_app::auth::AuthContext {
+        user: f
+            .h
+            .app
+            .deps
+            .store
+            .user(&ctx.task.created_by)
+            .await?
+            .ok_or("owner")?,
+        csrf_token: None,
+        session_hash: None,
+        token: None,
+    };
+    f.h.app
+        .deps
+        .store
+        .transition_task(
+            &f.task,
+            None,
+            TaskStatus::Parked,
+            Some(Activity::Done),
+            f.h.app.now(),
+        )
+        .await?;
+    let unavailable =
+        f.h.github
+            .pulls
+            .lock()
+            .map_err(|_| "pull fixture")?
+            .pop()
+            .ok_or("recorded PR")?;
+    f.h.app.git_overview(&owner, f.sandbox.as_str()).await?;
+    f.h.github
+        .pulls
+        .lock()
+        .map_err(|_| "pull fixture")?
+        .push(unavailable);
+    f.h.github
+        .set_checks("abc123", yulius_app::ports::github::ChecksState::Failure);
+    let brief =
+        f.h.app
+            .tool_task_get(&ctx.caller(), &json!({"task_id": f.task.as_str()}))
+            .await?;
+    assert_eq!(brief["shows"], "needs_you", "{brief}");
+    // The browser renders the task summary before its independent Git overview is available.
+    let detail = f.h.app.task_detail(&owner, f.task.as_str()).await?;
+    assert_eq!(serde_json::to_value(detail)?["parked_needs_you"], true);
+    f.h.github
+        .set_checks("abc123", yulius_app::ports::github::ChecksState::Success);
+    let detail = f.h.app.task_detail(&owner, f.task.as_str()).await?;
+    assert_eq!(serde_json::to_value(detail)?["parked_needs_you"], false);
+    Ok(())
+}
+
+/// A list has one remote lookup budget for all its parked tasks. Local unfinished
+/// work takes no remote lookup; an unreadable open head counts as Needs you.
+#[tokio::test]
+async fn parked_lists_share_one_budget_for_unreadable_pr_heads() -> TestResult {
+    use std::time::Duration;
+    use yulius_domain::delivery::DeliveryStage;
+    let f = fixture().await?;
+    let ctx = f.h.app.agent_context(TOKEN).await?;
+    install_compatibility_pull(&f).await?;
+    let store = &f.h.app.deps.store;
+    let owner = yulius_app::auth::AuthContext {
+        user: store.user(&ctx.task.owner).await?.ok_or("owner")?,
+        csrf_token: None,
+        session_hash: None,
+        token: None,
+    };
+    let now = f.h.app.now();
+    f.h.app
+        .tool_steps_set(&ctx, &json!({"steps":["Complete this open step"]}))
+        .await?;
+    store
+        .transition_task(
+            &f.task,
+            None,
+            TaskStatus::Parked,
+            Some(Activity::Waiting),
+            now,
+        )
+        .await?;
+    let mut record = store.task(&f.task).await?.ok_or("parked task")?;
+    for number in 3..=10 {
+        record.id = TaskId::parse(&format!("t-parked-{number}"))?;
+        record.number = number;
+        store.insert_task(&record).await?;
+        store
+            .transition_delivery(
+                &DeliveryStage::None,
+                &yulius_app::delivery::DeliveryRecord {
+                    task_id: record.id.clone(),
+                    stage: DeliveryStage::PrOpen,
+                    pr_number: Some(1461),
+                    updated_at: now,
+                },
+            )
+            .await?;
+    }
+    let hold = f.h.github.hold_checks();
+    let original = store.task(&f.task).await?.ok_or("original task")?;
+    let local = tokio::select! {
+        result = f.h.app.task_summary(&original) => result?,
+        () = f.h.github.checks_entered.notified() => return Err("looked up checks despite a locally unfinished plan".into()),
+    };
+    assert_eq!(local.parked_needs_you, Some(true));
+    let limit = Duration::from_secs(4);
+    let (tasks, home) = tokio::time::timeout(limit, async {
+        tokio::try_join!(
+            f.h.app.list_tasks(&owner, f.sandbox.as_str(), false),
+            f.h.app.list_sandboxes(&owner)
+        )
+    })
+    .await
+    .map_err(|_| "parked PR reads stalled the lists")??;
+    f.h.github.release_checks(&hold);
+    let parked: Vec<_> = tasks
+        .iter()
+        .filter(|task| task.status == "parked")
+        .collect();
+    assert_eq!(parked.len(), 9);
+    assert!(
+        parked
+            .iter()
+            .all(|task| task.parked_needs_you == Some(true))
+    );
+    assert!(
+        home.iter()
+            .find(|s| s.id == f.sandbox.as_str())
+            .is_some_and(|s| s.counts.needs_attention >= 9)
+    );
     Ok(())
 }

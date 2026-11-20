@@ -2230,6 +2230,11 @@ impl App {
         if !cloned {
             notes.push("Git: the sandbox repository is not cloned yet.".into());
         }
+        let recent_ci = self
+            .deps
+            .store
+            .ci_runs(&sandbox.id, crate::pr_watch::RUNS_READ)
+            .await?;
         let mut tasks = Vec::new();
         let mut observed = std::collections::HashMap::new();
         let mut git_failed = false;
@@ -2248,12 +2253,24 @@ impl App {
                 deletions: 0,
                 pr: open_pulls
                     .iter()
-                    .find(|p| p.head == branch)
+                    .find(|p| !p.from_fork && p.head == branch)
                     .map(|p| pull_view(p, checks_of(p.number))),
                 worktree: worktree_state(&task),
             };
+            if let Some(pr) = &mut view.pr
+                && pr.checks == "success"
+                && let Some(pull) = open_pulls
+                    .iter()
+                    .find(|p| p.number == pr.number && p.base == profile.integration_branch)
+                && self
+                    .failed_integration_run(&sandbox, pr.number, &pull.head_sha, &recent_ci)
+                    .await
+                    .is_some()
+            {
+                pr.checks = "failure".into();
+            }
             // GitHub's list says nothing about mergeability: Yulius's own clone does (DON-001).
-            if let Some(pull) = open_pulls.iter().find(|p| p.head == branch)
+            if let Some(pull) = open_pulls.iter().find(|p| !p.from_fork && p.head == branch)
                 && self.pull_conflicts(&task, &sandbox, pull).await
             {
                 if let Some(pr) = view.pr.as_mut() {
@@ -4178,6 +4195,12 @@ impl App {
         if !settled {
             return Ok(None);
         }
+        if self
+            .pull_has_failed_candidate(sandbox, &pull, checks)
+            .await?
+        {
+            return Ok(None);
+        }
         // The local merge-driver check uses the configured integration branch. For a
         // PR targeting another branch, GitHub computes mergeability against its real base.
         let mergeable = if pull.base == profile.integration_branch {
@@ -4198,6 +4221,108 @@ impl App {
             && current.base == pull.base
             && current.mergeable == pull.mergeable;
         Ok((current.merged || same_open_head).then_some(current))
+    }
+
+    async fn pull_has_failed_candidate(
+        &self,
+        sandbox: &SandboxRecord,
+        pull: &GhPull,
+        checks: &str,
+    ) -> AppResult<bool> {
+        if checks != "success" || pull.base != delivery_profile(sandbox).integration_branch {
+            return Ok(false);
+        }
+        let runs = self
+            .deps
+            .store
+            .ci_runs(&sandbox.id, crate::pr_watch::RUNS_READ)
+            .await?;
+        Ok(self
+            .failed_integration_run(sandbox, pull.number, &pull.head_sha, &runs)
+            .await
+            .is_some())
+    }
+
+    /// Read a parked task's recorded delivery even when the Git overview was never opened.
+    async fn recorded_pull_signal(
+        &self,
+        task: &TaskRecord,
+        number: u64,
+    ) -> AppResult<Option<PullSignal>> {
+        let sandbox = self.dlv_sandbox_of(task).await?;
+        let token = self.dlv_installation_token(&sandbox).await?;
+        let pull = self
+            .deps
+            .github
+            .get_pull(&token, &sandbox.repo_owner, &sandbox.repo_name, number)
+            .await?;
+        if !is_open(&pull) {
+            return Ok(Some(if pull.merged {
+                PullSignal::Merged
+            } else {
+                PullSignal::Errored
+            }));
+        }
+        let checks = self.dlv_checks_at(&sandbox, &token, &pull.head_sha).await?;
+        if !checks.unreadable.is_empty() || checks.word == "unknown" {
+            return Ok(Some(PullSignal::Errored));
+        }
+        let word = tested_checks_word(&delivery_profile(&sandbox), checks.word);
+        if self
+            .pull_has_failed_candidate(&sandbox, &pull, word)
+            .await?
+        {
+            return Ok(Some(PullSignal::Failing));
+        }
+        let conflict = if pull.base == delivery_profile(&sandbox).integration_branch {
+            self.pull_conflicts(task, &sandbox, &pull).await
+        } else {
+            pull.mergeable != Some(true)
+        };
+        let current = self
+            .deps
+            .github
+            .get_pull(&token, &sandbox.repo_owner, &sandbox.repo_name, number)
+            .await?;
+        if current.merged {
+            return Ok(Some(PullSignal::Merged));
+        }
+        if current != pull || current.behind {
+            return Ok(Some(PullSignal::Errored));
+        }
+        Ok(PullSignal::from_wire("open", word, conflict))
+    }
+
+    pub(crate) async fn task_pull_signal(
+        &self,
+        task: &TaskRecord,
+        deadline: Option<tokio::time::Instant>,
+    ) -> AppResult<Option<PullSignal>> {
+        if let Some(record) = self.deps.store.delivery(&task.id).await? {
+            if past_merge(&record.stage) {
+                return Ok(Some(PullSignal::Merged));
+            }
+            if record.stage == DeliveryStage::PrOpen {
+                let number = record
+                    .pr_number
+                    .ok_or_else(|| AppError::internal("open delivery without its pull request"))?;
+                let read = self.recorded_pull_signal(task, number);
+                let signal = match deadline {
+                    Some(deadline) => tokio::time::timeout_at(deadline, read)
+                        .await
+                        .unwrap_or(Ok(Some(PullSignal::Errored))),
+                    None => read.await,
+                }?;
+                if self.deps.store.delivery(&task.id).await?.as_ref() != Some(&record) {
+                    return Ok(Some(PullSignal::Errored));
+                }
+                return Ok(signal);
+            }
+        }
+        Ok(self
+            .observed_pulls
+            .get(&task.sandbox_id, &task.id)
+            .flatten())
     }
 
     /// The part of [`App::task_is_done`] that needs no GitHub call: the turn ended, no background
@@ -4262,8 +4387,32 @@ impl App {
         if running && self.merge_is_armed(&task.id) {
             return false;
         }
-        if (running || parked) && task.activity == Some(Activity::Done) {
-            return true;
+        if parked {
+            let requested = self.browser_requests(&task.sandbox_id).await;
+            let Ok(facts) = self.task_attention_facts(task, &requested, None).await else {
+                return false;
+            };
+            if facts.group() != yulius_domain::task::TaskGroup::Done {
+                return false;
+            }
+            if task.activity == Some(Activity::Done) {
+                return true;
+            }
+            return matches!(facts.pull, Some(PullSignal::Tested | PullSignal::Merged))
+                && self
+                    .deps
+                    .store
+                    .delivery(&task.id)
+                    .await
+                    .ok()
+                    .flatten()
+                    .is_some_and(|r| past_merge(&r.stage) || r.stage == DeliveryStage::PrOpen);
+        }
+        if running && task.activity == Some(Activity::Done) {
+            return self
+                .task_failed_candidate(task, crate::sandboxes::parked_pr_deadline())
+                .await
+                .is_none();
         }
         // One reading of its delivery for the whole decision: a merge recorded between two
         // readings would be "no news due" by the first and "merged" by the second.
@@ -4272,7 +4421,7 @@ impl App {
         };
         // Yulius still has news of its pull request for its agent (an armed merge, a merge not
         // said yet): it goes on by itself, so it is not Done (SPEC-487 CHN-001, CHN-002).
-        if !parked && self.pr_news_due_of(task, record.as_ref(), false).await {
+        if self.pr_news_due_of(task, record.as_ref(), false).await {
             return false;
         }
         // A pull request makes a task Done only when no work it declared is left: its plan is
@@ -4312,6 +4461,13 @@ impl App {
                     } else {
                         observed.checks.as_str()
                     };
+                    if self
+                        .pull_has_failed_candidate(&sandbox, pull, word)
+                        .await
+                        .unwrap_or(true)
+                    {
+                        return false;
+                    }
                     // Tested, by the reading the sidebar and the counts have (DON-001).
                     PullSignal::from_wire(
                         "open",

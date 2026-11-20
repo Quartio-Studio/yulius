@@ -521,6 +521,34 @@ fn a_stop_during_the_parks_end_stops_the_task() -> TestResult {
     Ok(())
 }
 
+async fn create_chained_successor(
+    app: &App,
+    before: &yulius_app::model::TaskRecord,
+) -> Result<yulius_app::model::TaskRecord, Error> {
+    let mut waiting = before.clone();
+    waiting.id = TaskId::parse("t-next")?;
+    waiting.number = 99;
+    waiting.title = "Next".into();
+    waiting.status = TaskStatus::Chained;
+    waiting.activity = None;
+    waiting.branch = None;
+    waiting.worktree_path = None;
+    let waiting = app.deps.store.insert_task(&waiting).await?;
+    yulius_app::ports::store_ext::IntakeStore::insert_chain(
+        app.deps.store.as_ref(),
+        &yulius_app::intake::ChainRecord {
+            task_id: waiting.id.clone(),
+            after_task_id: Some(before.id.clone()),
+            after_number: before.number,
+            blocked_reason: None,
+            created_at: app.now(),
+            rule: None,
+        },
+    )
+    .await?;
+    Ok(waiting)
+}
+
 /// PRK-004 (review round 1, M3): a task chained after one that is Done and parked starts, as it
 /// starts after a Done one that kept its session.
 #[test]
@@ -540,27 +568,7 @@ fn a_task_chained_after_a_parked_done_task_starts() -> TestResult {
         let before = TaskStore::task(app.deps.store.as_ref(), &id)
             .await?
             .ok_or("task")?;
-        let mut waiting = before.clone();
-        waiting.id = TaskId::parse("t-next")?;
-        waiting.number = 99;
-        waiting.title = "Next".into();
-        waiting.status = TaskStatus::Chained;
-        waiting.activity = None;
-        waiting.branch = None;
-        waiting.worktree_path = None;
-        let waiting = app.deps.store.insert_task(&waiting).await?;
-        yulius_app::ports::store_ext::IntakeStore::insert_chain(
-            app.deps.store.as_ref(),
-            &yulius_app::intake::ChainRecord {
-                task_id: waiting.id.clone(),
-                after_task_id: Some(id.clone()),
-                after_number: before.number,
-                blocked_reason: None,
-                created_at: app.now(),
-                rule: None,
-            },
-        )
-        .await?;
+        let waiting = create_chained_successor(&app, &before).await?;
         app.advance_all_chains().await;
         wait_for(
             "the chained task to leave its chain",
@@ -2918,6 +2926,226 @@ fn a_cold_parked_summary_reads_historical_spec_and_goal_evidence() -> TestResult
         let summary = cold.task_summary(&task).await?;
         assert!(summary.spec_unfinished);
         assert!(summary.goal_unfinished);
+        Ok::<_, Error>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// #331: a failing integration candidate ends immediately before daemon restart.
+#[test]
+fn cold_done_and_the_watcher_honor_an_unarmed_red_integration_candidate() -> TestResult {
+    use yulius_app::delivery::DeliveryRecord;
+    use yulius_app::ports::github::ChecksState;
+    use yulius_app::pr_watch::WatchBounds;
+    use yulius_domain::ci::{CiRef, RunState};
+    use yulius_domain::delivery::DeliveryStage;
+    use yulius_domain::permission::AccessLevel;
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    let (id, caller, head, sandbox, original) = rt.block_on(async {
+        let (app, github) = app_with_pulls(&data, 8, 1).await?;
+        let (id, caller) = answered(&app, &data).await?;
+        let task = app.deps.store.task(&id).await?.ok_or("task")?;
+        let sandbox = app
+            .deps
+            .store
+            .sandbox(&caller.sandbox)
+            .await?
+            .ok_or("sandbox")?;
+        let tree = Path::new(task.worktree_path.as_deref().ok_or("checkout")?);
+        crate::pr_watch::git(&data.join("seed"), &["push", "-q", "origin", "main:dev"])?;
+        crate::pr_watch::git(tree, &["fetch", "-q", "origin"])?;
+        std::fs::write(tree.join("latency-check"), b"search limit")?;
+        crate::pr_watch::git(tree, &["add", "latency-check"])?;
+        crate::pr_watch::git(tree, &["commit", "-qm", "Check latency"])?;
+        let head = app
+            .deps
+            .git
+            .resolve_commit(tree, "HEAD")
+            .await?
+            .ok_or("head")?;
+        open_pull_at(&app, &github, &id, 1481, &head).await?;
+        github.set_checks(&head, ChecksState::Success);
+        app.deps
+            .store
+            .transition_delivery(
+                &DeliveryStage::None,
+                &DeliveryRecord {
+                    task_id: id.clone(),
+                    stage: DeliveryStage::PrOpen,
+                    pr_number: Some(1481),
+                    updated_at: app.now(),
+                },
+            )
+            .await?;
+        let steps = (1..=4)
+            .map(|ordinal| {
+                Ok(yulius_app::model::StepRecord {
+                    id: yulius_domain::ids::StepId::parse(&format!("done-{ordinal}"))?,
+                    task_id: id.clone(),
+                    ordinal,
+                    title: format!("Step {ordinal}"),
+                    status: "done".into(),
+                    note: None,
+                    updated_by: None,
+                    updated_at: None,
+                    effort: 1,
+                })
+            })
+            .collect::<Result<Vec<_>, Error>>()?;
+        app.deps
+            .store
+            .replace_steps(&id, &steps, "agent", app.now())
+            .await?;
+        let (mut green, job) = crate::pr_watch::run(
+            &caller.sandbox,
+            "ordinary-green",
+            &head,
+            RunState::Passed,
+            None,
+            10,
+        );
+        green.reference = CiRef::PullRequest(1481);
+        app.deps.store.insert_ci_run(&green, &[job]).await?;
+        let failures = concat!(
+            "FAIL [0.292s] (1/1) search latency\n",
+            "  stderr ───\n",
+            "    search took 292.1 ms, limit 200 ms\n",
+        );
+        let integrated = crate::pr_watch::git(
+            tree,
+            &[
+                "commit-tree",
+                "HEAD^{tree}",
+                "-p",
+                "origin/dev",
+                "-m",
+                "candidate",
+            ],
+        )?;
+        let (mut candidate, mut job) = crate::pr_watch::run(
+            &caller.sandbox,
+            "candidate-red",
+            &integrated,
+            RunState::Failed,
+            Some(failures),
+            20,
+        );
+        candidate.reference = CiRef::Train(vec![1481]);
+        job.name = "shard 2".into();
+        app.deps.store.insert_ci_run(&candidate, &[job]).await?;
+        app.deps
+            .store
+            .transition_ci_job(
+                "candidate-red-quality",
+                &[RunState::Failed],
+                RunState::Failed,
+                &yulius_app::ci::CiJobUpdate {
+                    failures: Some(failures.into()),
+                    exit_code: Some(100),
+                    ..Default::default()
+                },
+            )
+            .await?;
+        let original = app
+            .deps
+            .store
+            .live_attempt(&id)
+            .await?
+            .ok_or("original attempt")?
+            .id;
+        Ok::<_, Error>((id, caller, head, sandbox, original))
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    let rt = runtime()?;
+    rt.block_on(async {
+        let (cold, remote) = app_with_pulls(&data, 8, 1).await?;
+        open_pull_at(&cold, &remote, &id, 1481, &head).await?;
+        cold.reconcile().await?;
+        assert_eq!(
+            cold.deps
+                .store
+                .live_attempt(&id)
+                .await?
+                .ok_or("reattached")?
+                .id,
+            original
+        );
+        remote.set_checks(&head, ChecksState::Success);
+        let owner = AuthContext {
+            user: cold.deps.store.user(&caller.user).await?.ok_or("owner")?,
+            csrf_token: None,
+            session_hash: None,
+            token: None,
+        };
+        let current = cold.deps.store.task(&id).await?.ok_or("task")?;
+        assert_eq!(
+            cold.task_summary(&current).await?.failed_candidate_pr,
+            Some(1481)
+        );
+        cold.git_overview(&owner, caller.sandbox.as_str()).await?;
+        let counts = cold
+            .sandbox_view(&sandbox, AccessLevel::Write)
+            .await?
+            .counts;
+        let bounds = WatchBounds::default();
+        ask(&cold, &id).await?;
+        assert!(cold.watch_prs(&bounds).await.is_empty());
+        cold.deps
+            .store
+            .set_task_needs_you(&id, None, cold.now())
+            .await?;
+        let notices = cold.watch_prs(&bounds).await;
+        assert!(
+            counts.needs_attention + counts.running > 0
+                && notices.len() == 1
+                && notices[0].0 == id
+                && notices[0].1.contains("candidate-red")
+                && notices[0].1.contains("shard 2")
+                && notices[0].1.contains("292.1 ms"),
+            "running {}, needs attention {}, notices {notices:?}",
+            counts.running,
+            counts.needs_attention
+        );
+        assert!(cold.watch_prs(&bounds).await.is_empty());
+        assert_eq!(cold.deps.store.attempts(&id).await?.len(), 1);
+        // Project the persisted historical parked state through both the task
+        // summary and the chain, without starting a second owner attempt.
+        let mut parked = current.clone();
+        parked.id = TaskId::parse("historic-park")?;
+        parked.number = 98;
+        parked.status = TaskStatus::Parked;
+        parked.activity = Some(Activity::Done);
+        parked.branch = None;
+        parked.worktree_path = None;
+        let parked = cold.deps.store.insert_task(&parked).await?;
+        cold.deps
+            .store
+            .transition_delivery(
+                &DeliveryStage::None,
+                &DeliveryRecord {
+                    task_id: parked.id.clone(),
+                    stage: DeliveryStage::PrOpen,
+                    pr_number: Some(1481),
+                    updated_at: cold.now(),
+                },
+            )
+            .await?;
+        let successor = create_chained_successor(&cold, &parked).await?;
+        assert_eq!(
+            cold.task_summary(&parked).await?.parked_needs_you,
+            Some(true)
+        );
+        cold.advance_chains(&parked.id).await;
+        assert_eq!(
+            status_of(&cold, &successor.id).await.0,
+            Some(TaskStatus::Chained)
+        );
+        // A different published head must not inherit this earlier candidate.
+        set_pull_head(&remote, 1481, "superseding-head")?;
+        assert_eq!(cold.task_summary(&current).await?.failed_candidate_pr, None);
+        cold.stop_task_now(&id).await?;
         Ok::<_, Error>(())
     })?;
     rt.shutdown_timeout(Duration::from_secs(5));

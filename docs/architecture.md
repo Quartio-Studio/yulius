@@ -2087,6 +2087,13 @@ resume waits `queued` with its prompt. A queued task's summary carries `queue_re
 limit or an update), and `GET /api/capacity` counts working, idle, parked and queued sessions for
 the Capacity card.
 
+The parked group reads the recorded PR head, plan, spec and goal. Task rows share a bounded
+lookup budget, with up to eight independent reads in parallel. The chain applies the same
+eligibility facts. An ended turn can have green ordinary CI and a failed integration candidate.
+Yulius compares the singleton candidate's tested tree with the merge of the currently fetched
+integration branch and the current PR head. The PR watcher uses its existing notification key
+when reporting that failure. Reading the task's status has no delivery side effect.
+
 The end-of-day digest (`yulius-app/src/digest.rs`, SPEC-512 part 3,
 [decision 0380](decisions/0380-an-end-of-day-digest-built-from-task-state.md)) runs from the same
 tick: `digest_tick` reads `instance.digest`, and once today's time (UTC) passed takes the run with

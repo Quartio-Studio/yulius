@@ -927,6 +927,129 @@ impl App {
         }
     }
 
+    /// A singleton candidate tests this PR on the integration branch. Confirm the
+    /// newest ordinary head and the actual tree before attributing a failure.
+    pub(crate) async fn failed_integration_run<'a>(
+        &self,
+        sandbox: &SandboxRecord,
+        pr: u64,
+        head: &str,
+        runs: &'a [CiRunRecord],
+    ) -> Option<&'a CiRunRecord> {
+        let ordinary = runs
+            .iter()
+            .find(|r| r.reference == CiRef::PullRequest(pr))?;
+        if ordinary.sha != head || ordinary.state != RunState::Passed {
+            return None;
+        }
+        let latest = runs
+            .iter()
+            .find(|r| matches!(&r.reference, CiRef::Train(m) if m.contains(&pr)))?;
+        if latest.state != RunState::Failed
+            || !matches!(&latest.reference, CiRef::Train(m) if m.as_slice() == [pr])
+            || latest.queued_at < ordinary.queued_at
+            || latest.ended_at < ordinary.ended_at
+        {
+            return None;
+        }
+        let repo = self.sandbox_repo(&sandbox.id);
+        let base = format!("origin/{}", delivery_profile(sandbox).integration_branch);
+        let tree = self.deps.git.tree_of(&repo, &latest.sha).await.ok()??;
+        match self.deps.git.preview_merge(&repo, head, &base).await.ok()? {
+            crate::ports::git::TrainStep::Clean { tree: current } if current == tree => {
+                Some(latest)
+            }
+            _ => None,
+        }
+    }
+
+    /// Confirm the recorded PR still has the candidate's ordinary head. This is only
+    /// a read; displaying an incident never types into an agent or resumes a session.
+    async fn current_failed_run<'a>(
+        &self,
+        sandbox: &SandboxRecord,
+        pr: u64,
+        head: &str,
+        runs: &'a [CiRunRecord],
+    ) -> Option<&'a CiRunRecord> {
+        let run = self.failed_integration_run(sandbox, pr, head, runs).await?;
+        let token = self.dlv_installation_token(sandbox).await.ok()?;
+        let pull = self
+            .deps
+            .github
+            .get_pull(&token, &sandbox.repo_owner, &sandbox.repo_name, pr)
+            .await
+            .ok()?;
+        (pull.state == "open"
+            && !pull.from_fork
+            && pull.head_sha == head
+            && pull.base == delivery_profile(sandbox).integration_branch)
+            .then_some(run)
+    }
+
+    pub(crate) async fn task_failed_candidate(
+        &self,
+        task: &TaskRecord,
+        deadline: tokio::time::Instant,
+    ) -> Option<u64> {
+        let record = self.deps.store.delivery(&task.id).await.ok()??;
+        if record.stage != DeliveryStage::PrOpen {
+            return None;
+        }
+        let pr = record.pr_number?;
+        let runs = self
+            .deps
+            .store
+            .ci_runs(&task.sandbox_id, RUNS_READ)
+            .await
+            .ok()?;
+        let own = runs
+            .iter()
+            .find(|r| r.reference == CiRef::PullRequest(pr))?;
+        let sandbox = self.deps.store.sandbox(&task.sandbox_id).await.ok()??;
+        tokio::time::timeout_at(
+            deadline,
+            self.current_failed_run(&sandbox, pr, &own.sha, &runs),
+        )
+        .await
+        .ok()??;
+        Some(pr)
+    }
+
+    /// Replace the ordinary unarmed-head message in place. Its existing key
+    /// prevents a restart or another board refresh from prompting the owner twice.
+    async fn unarmed_failure_text(
+        &self,
+        sandbox: &SandboxRecord,
+        pr: u64,
+        head: &str,
+        runs: &[CiRunRecord],
+    ) -> Option<String> {
+        let run = self.current_failed_run(sandbox, pr, head, runs).await?;
+        let jobs = self.deps.store.ci_jobs(&run.id, true).await.ok()?;
+        let excerpt = jobs
+            .iter()
+            .filter_map(|j| j.failures.as_deref())
+            .find_map(|block| {
+                block.lines().rev().map(str::trim).find(|line| {
+                    !line.is_empty() && !line.starts_with("FAIL") && !line.contains("───")
+                })
+            });
+        let detail: String = excerpt
+            .unwrap_or_default()
+            .chars()
+            .filter(|c| !c.is_control())
+            .take(320)
+            .collect();
+        Some(format!(
+            "Ordinary CI passed at {}, but its integration candidate failed (run {}): {}. {} Read the failure with `ci_status` and repair the failing check before rearming.",
+            short(head),
+            run.id,
+            failed_jobs(&jobs),
+            detail
+        ))
+    }
+
     /// What the watch knows of `task`'s pull request, or `None` when it has no open one (nor
     /// one the watch saw open that just merged). `runs` caches each sandbox's runs for the pass.
     async fn pr_facts(
@@ -1131,7 +1254,16 @@ impl App {
         let queue_note = self.merge_queue_note(task);
         if let (true, Some(head)) = (green, &head) {
             let said = green_said(head, armed, hold, queue_note.as_ref(), &integration);
-            if let Some((class, text)) = said {
+            if let Some((class, mut text)) = said {
+                if class == "unarmed"
+                    && !person_must_act
+                    && !told_key("green", &format!("{head}:{class}"))
+                    && let Some(failure) = self
+                        .unarmed_failure_text(&sandbox, pr, head, sandbox_runs)
+                        .await
+                {
+                    text = failure;
+                }
                 events.push(Event {
                     kind: "green",
                     key: format!("{head}:{class}"),
@@ -1384,8 +1516,20 @@ impl App {
         let green =
             own.is_some_and(|run| matches!(run.state, RunState::Passed | RunState::Skipped));
         if let (true, Some(head)) = (green, &head)
-            && let Some((class, text)) = green_said(head, false, Hold::Free, None, &integration)
+            && let Some((class, mut text)) = green_said(head, false, Hold::Free, None, &integration)
         {
+            if !told_key("green", &format!("{head}:{class}"))
+                && let Some(failure) = self
+                    .unarmed_failure_text(
+                        &sandbox,
+                        pr,
+                        head,
+                        runs.get(sandbox.id.as_str()).map_or(&[][..], Vec::as_slice),
+                    )
+                    .await
+            {
+                text = failure;
+            }
             events.push(Event {
                 kind: "green",
                 key: format!("{head}:{class}"),

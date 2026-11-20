@@ -522,6 +522,10 @@ session limit the resume waits `queued` with its prompt. Archive and close make 
 `stopped_cancelled`. A message while the park is ending the session is 409 ("is parking its idle
 session"). Each park is audited `task.parked` by `yulius`.
 
+Parked summaries include `parked_needs_you`. The page and project tools use this group even when
+the repository overview has yet to load. An idle running task can also carry `failed_candidate_pr`,
+the number of its open PR whose integrated tree failed despite a green ordinary run.
+
 A `queued` task not held by a supertask carries `queue_reason`, one line: "Waiting for a free
 session: N of M in use", "Waiting for the Yulius update to finish", or "Starting: a session is
 free" (the queue's next pass starts it) (SPEC-512 PRK-007); null otherwise, and in `tasks_list`

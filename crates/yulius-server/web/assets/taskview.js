@@ -951,7 +951,10 @@ export function mountTaskView(ctx, sandbox, task) {
     renderQueue();
     const steps = current.steps || { done: 0, total: 0, current: null };
     // The session's state as the sidebar says it (pull request, browser request, usage limit).
-    const info = taskInfo(current, ctx.store.state.actionRequests, ctx.store.pullsOf(current.sandbox_id).get(current.id));
+    const row = ctx.store.state.tasks.get(current.sandbox_id)?.get(current.id);
+    const summary = row?.status === current.status && row.updated_at === current.updated_at
+      ? { ...current, parked_needs_you: row.parked_needs_you, failed_candidate_pr: row.failed_candidate_pr } : current;
+    const info = taskInfo(summary, ctx.store.state.actionRequests, ctx.store.pullsOf(current.sandbox_id).get(current.id));
     const total = steps.total || 0;
     const done = steps.done || 0;
     let n = total ? Math.min(total, done + (steps.current ? 1 : 0)) : 0;

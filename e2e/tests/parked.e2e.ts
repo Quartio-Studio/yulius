@@ -31,8 +31,12 @@ test('a parked task reads as it did, marked parked, and resumes from its menu (u
     const acts = taskActions(parked, 'write', null, 'me');
     return {
       done: info(parked),
+      unfinishedDone: info({ ...asked, activity: 'done' }),
       yourTurn: info(asked),
-      request: info(withRequest),
+      noPullOverview: info({ ...parked, parked_needs_you: true }),
+      staleGreenOverview: info({ ...parked, parked_needs_you: true }, open('success')),
+      staleRedOverview: info({ ...merged, parked_needs_you: false }, open('failure')),
+      request: info({ ...withRequest, parked_needs_you: false }, open('success')),
       stale: info(stale),
       merged: info(merged, { number: 7, state: 'merged', checks: 'success' }),
       checksRunning: info(merged, open('pending')),
@@ -42,7 +46,7 @@ test('a parked task reads as it did, marked parked, and resumes from its menu (u
       neverWorking: groups.every((group) => group === 'needs' || group === 'done'),
       // Its idle run's facts, as the server sends them for a parked task (review round 3, W1).
       specLeft: info({ ...merged, spec_unfinished: true }, { number: 7, state: 'open', checks: 'success' }),
-      goalLeft: info({ ...merged, goal_unfinished: true }),
+      goalLeft: info({ ...merged, goal_unfinished: true }, open('success')),
       line: activityLine(parked),
       live: isLive('parked'),
       actions: { continue: acts.continue, stop: acts.stop, archive: acts.archive, delete: acts.delete, move: acts.move },
@@ -54,7 +58,11 @@ test('a parked task reads as it did, marked parked, and resumes from its menu (u
   });
   expect(read).toEqual({
     done: ['Done · parked', 'done'],
+    unfinishedDone: ['Your turn · parked', 'needs'],
     yourTurn: ['Your turn · parked', 'needs'],
+    noPullOverview: ['Your turn · parked', 'needs'],
+    staleGreenOverview: ['Your turn · parked', 'needs'],
+    staleRedOverview: ['Done · parked', 'done'],
     request: ['Needs you: Choose the colour · parked', 'needs'],
     stale: ['Done · parked', 'done'],
     merged: ['Done · PR #7 merged · parked', 'done'],
@@ -260,14 +268,19 @@ for (const status of ['parked', 'queued', 'starting', 'waiting_capacity']) {
     await app.open(mock('/s/studio/t/12', '&still=1'));
     await terminalShown(browser);
     await browser.evaluate((status) => {
-      type Session = { viewers: Set<{ push(message: string): void }>; task: { status: string }; broadcast(text: string): void };
+      type Viewer = { push(message: string): void };
+      type Session = {
+        viewers: Set<Viewer>; task: { status: string }; state(viewer: Viewer): string;
+        snapshot(): string; sendStates(): void; sendSnapshot(viewer: Viewer): void;
+      };
       const session = (window as unknown as { __yuliusMock: { sessions: Map<string, Session> } }).__yuliusMock.sessions.get('tsk_studio_12')!;
       session.task.status = status;
-      // The owner still controls the terminal when the actual process ends.
-      for (const viewer of session.viewers) {
-        viewer.push(JSON.stringify({ type: 'state', status, parked_screen: true, attempt_seq: null, can_write: true, controller: true, rows: 90, cols: 220 }));
-      }
-      session.broadcast('\x1b[2J\x1b[HLast answer begins\x1b[89;1HLast answer ends\x1b[90;1HYulius parked this session. Write to resume.');
+      // The saved screen is the server's snapshot on reconnect, too. A late
+      // resize or hello must not read the fake live agent's original screen.
+      session.state = () => JSON.stringify({ type: 'state', status, parked_screen: true, attempt_seq: null, can_write: true, controller: true, rows: 90, cols: 220 });
+      session.snapshot = () => '\x1b[2J\x1b[HLast answer begins\x1b[89;1HLast answer ends\x1b[90;1HYulius parked this session. Write to resume.';
+      session.sendStates();
+      for (const viewer of session.viewers) session.sendSnapshot(viewer);
     }, status);
     const rows = browser.locator('.taskview .xterm-rows > div');
     await expect(rows).toHaveCount(90);
@@ -302,3 +315,110 @@ for (const status of ['parked', 'queued', 'starting', 'waiting_capacity']) {
     }
   });
 }
+
+test('the PR watch refreshes the parked group in both directions', async ({ app, browser }) => {
+  await app.open(mock('/s/studio'));
+  const groups = await browser.evaluate(async () => {
+    const storeModule = '/assets/store.js';
+    const statusModule = '/assets/status.js';
+    const { createStore } = await import(storeModule);
+    const { taskInfo } = await import(statusModule);
+    const sid = 'fixture';
+    const id = 't-parked';
+    const task = { id, sandbox_id: sid, activity: 'waiting', status: 'parked', steps: { total: 2, done: 2 } };
+    let fails = false;
+    let unavailable = false;
+    let newerEvent = false;
+    let tick = () => {};
+    const store = createStore({
+      get: async (path: string) => {
+        if (path.endsWith('/git')) return { tasks: [{ task_id: id, pr: { number: 7, state: 'open', checks: fails ? 'failure' : 'success' } }] };
+        if (path.includes('/tasks?')) {
+          if (unavailable) throw new Error('summary temporarily unavailable');
+          if (newerEvent) store.upsertTask({ ...task, parked_needs_you: true });
+          return [{ ...task, parked_needs_you: fails }, { ...task, id: 'answered', parked_needs_you: false }];
+        }
+        return [];
+      },
+    }, { clock: { now: () => 50_000, setInterval: (fn: () => void) => { tick = fn; return 1; }, clearInterval() {}, clearTimeout() {} } });
+    const read = () => new Promise<void>((resolve) => {
+      const off = store.on('pulls', () => { off(); resolve(); });
+    });
+    const group = (taskId = id) => taskInfo(store.state.tasks.get(sid).get(taskId), null, store.pullsOf(sid).get(taskId)).group;
+    await store.loadTasks(sid);
+    const initial = read();
+    const stop = store.watchPulls(sid);
+    await initial;
+    const seen = [[group(), group('answered')]];
+    for (const [red, failure, event] of [
+      [true, false, false], [false, false, false],
+      [true, true, false], [false, false, false], [false, false, true],
+    ]) {
+      fails = red;
+      unavailable = failure;
+      newerEvent = event;
+      const updated = read();
+      tick();
+      await updated;
+      seen.push([group(), group('answered')]);
+    }
+    stop();
+    store.stopEvents();
+    return seen;
+  });
+  expect(groups).toEqual([
+    ['done', 'done'], ['needs', 'done'], ['done', 'done'],
+    ['needs', 'done'], ['done', 'done'], ['needs', 'done'],
+  ]);
+});
+
+for (const [page, route, selector] of [['terminal', 't', '.strip-status'], ['Task Info', 'tasks', '.gt-state']]) {
+  test(`the parked ${page} page and sidebar follow the PR rerun together`, async ({ app, browser, screen }) => {
+    await app.open(mock(`/s/studio/${route}/13`, '&ambient=0&pullgap=0'));
+    await touchTask(browser, 'sb_studio', 13, { status: 'parked', activity: 'done', parked_needs_you: false });
+    const status = browser.locator(selector);
+    await expect(status).toHaveText(/Done.*parked/);
+    for (const fails of [true, false]) {
+      await browser.evaluate((red) => {
+        type Mock = { tasks: { id: string; parked_needs_you?: boolean }[]; changePull(sandbox: string, number: number, changes: object): void };
+        const db = (window as unknown as { __yuliusMock: Mock }).__yuliusMock;
+        // The summary changes on the server. The only event is the PR watch.
+        db.tasks.find((t) => t.id === 'tsk_studio_13')!.parked_needs_you = red;
+        db.changePull('sb_studio', 520, { checks: red ? 'failure' : 'success' });
+      }, fails);
+      await expect(screen.getByRole('region', fails ? 'Needs you' : 'Done').getByRole('link', /Improve the code/)).toBeVisible();
+      await expect(status).toHaveText(fails ? /checks failing.*parked/ : /Done.*parked/);
+    }
+  });
+}
+
+test('the waiting owner sees a failed integration candidate until the verified result changes', async ({ app, browser }) => {
+  await app.open(mock('/s/studio'));
+  const groups = await browser.evaluate(async () => {
+    const storeModule = '/assets/store.js';
+    const statusModule = '/assets/status.js';
+    const { createStore } = await import(storeModule);
+    const { taskInfo } = await import(statusModule);
+    const sid = 'fixture';
+    const id = 'author331';
+    let failed = true;
+    const task = { id, sandbox_id: sid, activity: 'waiting', status: 'running', steps: { total: 4, done: 4 } };
+    const store = createStore({ get: async (path: string) => {
+      if (path.endsWith('/git')) return { tasks: [{ task_id: id, pr: { state: 'open', number: 1481, checks: failed ? 'failure' : 'success' } }] };
+      if (path.includes('/tasks?')) return [{ ...task, failed_candidate_pr: failed ? 1481 : undefined }];
+      return [];
+    } });
+    const group = () => taskInfo(store.state.tasks.get(sid).get(id), null, store.pullsOf(sid).get(id)).group;
+    await store.loadTasks(sid);
+    const before = group();
+    failed = false;
+    const refreshed = new Promise<void>((resolve) => { const off = store.on('pulls', () => { off(); resolve(); }); });
+    const stop = store.watchPulls(sid);
+    await refreshed;
+    stop();
+    const after = group();
+    store.stopEvents();
+    return [before, after];
+  });
+  expect(groups).toEqual(['needs', 'done']);
+});
