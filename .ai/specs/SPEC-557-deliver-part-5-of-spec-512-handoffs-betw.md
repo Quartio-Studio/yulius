@@ -37,12 +37,16 @@ head on its own branch, as task #538 did for part 4 (SPEC-556, PR #1487).
 - **DLV-002** SPEC-512 is not edited here: task #494 owns it.
 - **DLV-003** Migrations keep `dev`'s order with `0076_task_handoffs.sql` last, at schema
   version 76.
+- **DLV-004** (Yulius CI, review round 1) A playground guest's Git page asks nothing the guest
+  fence refuses; a refusal's audit row names its source task (`refused: <sandbox> #N to
+  <target>: <reason>`), and a refused row whose target was not found lists the sandbox asked for.
 
 ## Plan
 
 - [x] Branch carries task #494's part 5 head
 - [x] Touched tests, clippy and repository checks pass
 - [ ] Evidence recorded and the head handed to an independent review
+- [ ] Round 1's findings answered and the head handed to review round 2
 
 ## Acceptance criteria
 
@@ -98,3 +102,24 @@ route the guest fence (SPEC-410 GST-004) refuses. A guest never sets a sandbox's
 Git page draws the card only for a person who is not a guest. Reproduced locally before the fix
 (1 failed, 8 passed); after it `npx e2e run tests/playground-guests.e2e.ts tests/git.e2e.ts
 tests/handoffs.e2e.ts` 22 passed.
+
+### Review round 1 (head bd46d12e1, CHANGES REQUESTED), answered test-first
+
+The reviewer confirmed the claim about 0868ae83c..a8c6d4a80 (each field is redacted whole and
+then cut by characters), found no blocker in authorization, the claim before creation,
+migration 0076 or the docs, and found bd46d12e1 and SPEC-557 correct.
+
+| Finding | Change | Test |
+|---|---|---|
+| Major (a8c6d4a80): the redact-before-cut fix had no test that fails without it | a test | `handoffs::a_secret_across_a_refusals_cut_leaves_no_part_of_it` (a secret starting 5, 10 and 10 characters before the sandbox, title and prompt bounds: no `shop-token` in the page or the audit; fails with cut-then-redact: mutation, the prompt and title kept `…shop-token`) |
+| Minor (pre-existing test, the only guard of bd46d12e1): `guestRefusals` was read before the mock answered (50 to 200 ms latency) | the mock counts `unanswered` requests; the test waits for 0 before reading | with the Git page's guest guard removed, `playground-guests.e2e.ts --grep "nothing else"` failed 5 runs of 5 (the reviewer saw 1 of 3 before) |
+| Minor: a refusal's audit row on the target named no source (`task:N`, `refused: <reason>`) | `refused: <source sandbox> #N to <target>: <reason>`, as `audit_handoff` names the others | `handoffs::a_refusal_names_its_source_and_what_was_asked` (failed before) |
+| Nit: a refusal with no target found listed the task's own repository as its target | the view shows the sandbox asked for | the same test (`target_sandbox` "nowhere"; was `acme/app`) |
+| Nit: `harness`, `model`, `effort` and `mode` are outside the secret check | kept, as SPEC-512 records: short option strings a person reads on the request before approving | — |
+| Nit: PR #1489's title said `feat(digest)` | retitled "feat(handoffs): tasks hand work to another sandbox, SPEC-512 part 5 (#1106), from task #494's branch" (100 characters) | `gh pr view 1489` |
+| Nit: the changes entry did not name this delivery | "delivered by SPEC-557" | by reading |
+
+After the fixes: `cargo test -p yulius --test main -- handoffs:: parking::a_handed_off_tasks_outcome_reaches_its_source`
+11 passed; `npx e2e run` of `playground-guests`, `git`, `handoffs`, `telegram`, `playground`,
+`initial-load`, `loading`, `mock-ready`, `editor` and `consistency` 96 passed; clippy
+`-D warnings` and `fmt --check` clean; `check_repository.py` passed.
