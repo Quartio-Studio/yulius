@@ -662,6 +662,7 @@ mod tests {
         sender
             .write_u32(u32::try_from(MAX_STATE + 1).map_err(io::Error::other)?)
             .await?;
+        sender.shutdown().await?;
         assert!(
             receive(&mut receiver)
                 .await
@@ -684,10 +685,14 @@ mod tests {
         let (mut sender, mut receiver) = UnixStream::pair()?;
         let (mut live, _peers) = pair(Vec::new())?;
         live.expires = Some(monotonic_ms() + 60_000);
-        // A listening socket has the correct domain and type but no connected peer.
-        live.sockets[0] = std::net::TcpListener::bind("127.0.0.1:0")?.into();
+        // A fresh TCP endpoint passes role and family checks but has never had a peer.
+        live.sockets[0] = net::socket(AddressFamily::INET, SocketType::STREAM, None)?;
         send(&mut sender, &[live]).await?;
-        assert!(receive(&mut receiver).await.is_err());
+        assert!(
+            receive(&mut receiver)
+                .await
+                .is_err_and(|e| e.kind() == io::ErrorKind::NotConnected)
+        );
         Ok(())
     }
 

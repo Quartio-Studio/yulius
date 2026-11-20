@@ -276,3 +276,8 @@ without adoption support or a remote peer that times out can end a tunnel.
   three-second fixture time out. The restored check releases both peers while the producer
   withholds the state suffix, then consumes that suffix and the following live frame. The
   listener-cleanup fixture now also bounds its entire acknowledgement and EOF sequence.
+- The next reviewer independently passed 39 relay and five process tests on `4ef3da2bb`
+  and found two gaps in one fixture. Its live-invalid case now uses a TCP stream that has
+  never connected and expects `NotConnected`. The oversized sender half-closes after the
+  size field, so a missing size guard reaches EOF promptly. Removing each matching guard
+  made its assertion fail in under a second.
