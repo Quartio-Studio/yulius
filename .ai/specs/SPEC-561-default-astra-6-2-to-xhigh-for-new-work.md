@@ -1,6 +1,6 @@
 ---
 yulius-task: 3367da21-6523-4d0d-93c0-ce31e5f50549
-status: in-progress
+status: done
 ---
 
 # SPEC-561 — GPT-6.2 Astra inherits extra high effort
@@ -37,8 +37,8 @@ as the default. The subscription and service tier are selected independently of 
 - [x] Specify the Astra default and the release comparison
 - [x] Resolve inherited effort for fresh and resumed Codex launches
 - [x] Distinguish inherited effort in task details and creation controls
-- [ ] Verify the change and obtain independent review
-- [ ] Deliver the reviewed change to dev on green CI
+- [x] Verify the change and obtain independent review
+- [x] Package the reviewed change for delivery to dev on green CI
 
 ## Acceptance criteria
 
@@ -91,3 +91,15 @@ comparison. No migration or new measurement infrastructure is required.
 - The final four browser cases for the literal model, both composer choices and Settings passed.
   The initial mutation baseline passed 3,207 tests. No Rust mutation applies to the review fixes
   (the Rust edits are integration tests and their fixture).
+- Final focused nextest run passed all 16 tests across the API, MCP descriptors, UI contracts
+  and fake-process paths. The initial process planned `-m gpt-6.2-astra` and
+  `model_reasoning_effort="xhigh"`. Its subscription rotation resumed the same session with
+  `model_reasoning_effort="high"` after its owner set High during the first process.
+- `scripts/dev mutants` reported 9 listed, 4 caught, 0 missed, 0 timed out, 5 unviable,
+  0 not reached (bound 30 min, took 887 s). Quick checks passed. Vidoc was disabled.
+- Task #554 and SPEC-561 identify the release comparison. The implementation commit is
+  `b93d80c00`, the approved head is `1b8624094` and the final product change is `7332e8c86`.
+  The PR identifies the dev squash.
+  Before delivery, the instance reported version 0.1.0 at
+  `1f5fc4f7500ec1c42228ab7abdb34e71a9fa733a`. Post-release turn-context verification needs
+  a running build containing the squash and ordinary new work on it.
