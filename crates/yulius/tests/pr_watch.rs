@@ -693,6 +693,19 @@ fn failed_publication_and_superseded_repair_notices_in_pr_watch() -> TestResult 
             "expected current-head failure notice: {red_typed}"
         );
 
+        // A later pass at repair2 is green. The delivery is recorded as merged before
+        // GitHub's PR read catches up. The watcher still knows the plan for the next slice.
+        let (green, job) = run(&sandbox, "r-green", &repair2, RunState::Passed, None, 30);
+        let green = CiRunRecord { reference: CiRef::PullRequest(pull.number), ..green };
+        app.deps.store.insert_ci_run(&green, &[job]).await?;
+        assert!(!github.pull(pull.number).ok_or("open PR")?.merged);
+        let merged = DeliveryRecord { stage: DeliveryStage::MergedIntegration, ..open };
+        app.deps.store.transition_delivery(&DeliveryStage::PrOpen, &merged).await?;
+        let notice = typed_within(&app, &bounds, &id).await?.ok_or("merge notice")?;
+        assert!(notice.contains("could not read its merged head"), "{notice}");
+        assert!(!notice.contains("into `dev`") && !notice.contains(&repair2[..9]), "{notice}");
+        assert!(notice.contains("1 step(s) of your plan are still ahead (next: \"Step 1\")"), "{notice}");
+
         stop(&app, &id).await?;
         Ok::<_, Box<dyn std::error::Error>>(())
     })?;
