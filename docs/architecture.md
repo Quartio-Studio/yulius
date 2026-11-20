@@ -2456,8 +2456,12 @@ the task owner's alone (SPEC-490), so nobody else's words reach a run holding th
 server. `TaskRuntime::personal_mcp_of` records whose servers a live run was started with (the run
 directory's `personal-mcp-of` gives that back to a server that restarted, which also restarts a
 run whose record names someone who is not the task's holder any more, SPEC-483 RST-001); a
-hand-over resumes such a run with the new
-owner's servers. `App::mcp_secret_values` adds the servers' literal secret values to
+hand-over resumes such a run with the new owner's servers. After a replayed refusal the
+hand-over places the interrupted turn on an available subscription and carries the reporting
+attempt's model-change notice into its replacement. A deferred limit move acts only on the
+attempt that reported it. The capacity loop defers the persisted pause while that hand-over runs
+([ADR-0389](decisions/0389-a-reattach-finishes-its-hand-over-before-a-limit-moves-the-run.md)).
+`App::mcp_secret_values` adds the servers' literal secret values to
 `App::matcher_for`, so redaction covers them with the agent secrets (MCP changes bump the vault
 generation).
 
@@ -3642,7 +3646,10 @@ that waits in `yulius wait` goes on by itself. Its task reads Working ("Waiting 
 merge"), even with a complete plan and a tested pull request; only an achieved goal makes it Done.
 
 While a goal is open, a clean Stop reads idle only after the goal verdict (or the turn record, or
-20 s). A proactive switch waits for any of this background work
+20 s). For a prompt-mode Claude resume, the supervisor reads the conversation’s last goal
+status before spawning the process. The new attempt still counts its turns and usage from its
+own start. [ADR-0386](decisions/0386-prompt-goals-follow-the-resumed-claude-conversation.md).
+A proactive switch waits for any of this background work
 ([ADR-0063](decisions/0063-background-work-and-goal-verdict-from-the-transcript.md)), also when
 the look at the session's processes gives no answer (`background_work_now` is `None`: not known
 counts as running for everyone who asks before a session ends, so a host whose look never

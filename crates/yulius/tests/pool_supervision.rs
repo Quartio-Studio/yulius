@@ -1059,6 +1059,17 @@ fn a_hand_over_after_a_restart_still_restarts_a_run_with_personal_servers() -> T
 /// server restarts the run at once.
 #[test]
 fn a_reattached_run_with_another_persons_servers_is_restarted() -> TestResult {
+    reattach_for_new_owner(false)
+}
+
+/// Only a refusal that interrupted the session lets hand-over replace a revoked subscription.
+/// A normal hand-over keeps its existing preflight refusal, even with another account.
+#[test]
+fn a_reattached_handover_without_a_reported_limit_keeps_its_preflight_refusal() -> TestResult {
+    reattach_for_new_owner(true)
+}
+
+fn reattach_for_new_owner(revoked: bool) -> TestResult {
     let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
     let (_dir, data) = temp()?;
     let agent = || FakeAgentOptions {
@@ -1087,6 +1098,11 @@ fn a_reattached_run_with_another_persons_servers_is_restarted() -> TestResult {
         })
         .await?;
         let run = app.deps.store.live_attempt(&id).await?.ok_or("run")?;
+        if revoked {
+            crate::subscription_moves::ready(&app, &id).await?;
+            app.send_input(&id, b"first turn\r").await?;
+            crate::usage_credits::first_turn_transcript(&data).await?;
+        }
         let mark = Path::new(&run.run_dir).join("personal-mcp-of");
         assert_eq!(std::fs::read_to_string(&mark)?, admin.as_str());
         std::fs::write(&mark, "u-bob")?;
@@ -1097,15 +1113,46 @@ fn a_reattached_run_with_another_persons_servers_is_restarted() -> TestResult {
     let second = runtime()?;
     second.block_on(async {
         let app = build()?;
+        if revoked {
+            add_account(&app, "b-second").await?;
+            app.deps
+                .store
+                .set_account_state(
+                    &AccountId::parse("a-first")?,
+                    AccountStatus::Relogin,
+                    None,
+                    None,
+                    app.now(),
+                )
+                .await?;
+        }
         app.reconcile().await?;
         wait_for("the restarted run", Duration::from_secs(60), || async {
             let attempts = app.deps.store.attempts(&id).await.unwrap_or_default();
-            attempts.len() == 2 && attempts[1].state == yulius_domain::task::AttemptState::Live
+            task(&app, &id)
+                .await
+                .is_ok_and(|task| task.status.is_resting())
+                || (attempts.len() == 2
+                    && attempts[1].state == yulius_domain::task::AttemptState::Live)
         })
         .await?;
-        let resumed = app.deps.store.attempts(&id).await?.remove(1);
-        assert_eq!(resumed.launch_kind, LaunchKind::Resume);
+        let attempts = app.deps.store.attempts(&id).await?;
+        let status = task(&app, &id).await?.status;
         stop(&app, &id).await?;
+        if revoked {
+            assert_eq!(
+                status,
+                TaskStatus::Stopped(yulius_domain::task::StopReason::Cancelled)
+            );
+            assert_eq!(
+                attempts.len(),
+                1,
+                "a normal hand-over cannot move off a revoked account"
+            );
+        } else {
+            assert_eq!(attempts.len(), 2);
+            assert_eq!(attempts[1].launch_kind, LaunchKind::Resume);
+        }
         Ok::<_, Box<dyn std::error::Error>>(())
     })?;
     second.shutdown_timeout(Duration::from_secs(5));
@@ -1118,13 +1165,76 @@ fn a_reattached_run_with_another_persons_servers_is_restarted() -> TestResult {
 /// continued, on a subscription with room), not into the limit's error.
 #[test]
 fn a_reattached_run_at_a_limit_is_restarted_past_it() -> TestResult {
+    reattach_at_limit(LimitRestartRace::Natural)
+}
+
+/// A pool move delayed after replay belongs to the old attempt. If the hand-over already
+/// replaced it, processing the old limit must leave the replacement running.
+#[test]
+fn a_delayed_limit_move_leaves_the_reattached_runs_replacement_running() -> TestResult {
+    reattach_at_limit(LimitRestartRace::LateLimit)
+}
+
+/// Startup's first capacity round sees the persisted pause while its hand-over prepares
+/// the restart. It must leave that pause to the hand-over.
+#[test]
+fn a_capacity_round_leaves_the_reattached_runs_hand_over_to_finish() -> TestResult {
+    reattach_at_limit(LimitRestartRace::CapacityRound)
+}
+
+/// The recorded refusal makes the old subscription unusable before the hand-over.
+#[test]
+fn a_reattached_refused_subscription_restarts_on_a_working_one() -> TestResult {
+    reattach_at_limit(LimitRestartRace::AccessLost)
+}
+
+/// The ownership restart reports why a session switched inside the CLI resumes on Opus.
+#[test]
+fn a_reattached_switched_model_limit_is_said_at_the_ownership_restart() -> TestResult {
+    reattach_at_limit(LimitRestartRace::SwitchedModel)
+}
+
+/// A required hand-over with no usable subscription ends the prior owner's host.
+#[test]
+fn a_reattached_limit_without_a_usable_subscription_fails_closed() -> TestResult {
+    reattach_at_limit(LimitRestartRace::NoCapacity)
+}
+
+/// A refusal with no reset still belongs to the pool's retry history when the hand-over
+/// moves the task. After its next subscription spends the retry, both refusals count.
+#[test]
+fn a_reattached_blind_limit_stays_out_of_the_pool_after_the_retry() -> TestResult {
+    reattach_at_limit(LimitRestartRace::BlindRetry)
+}
+
+enum LimitRestartRace {
+    Natural,
+    LateLimit,
+    CapacityRound,
+    AccessLost,
+    SwitchedModel,
+    NoCapacity,
+    BlindRetry,
+}
+
+fn reattach_at_limit(order: LimitRestartRace) -> TestResult {
+    use yulius_app::race::Point;
     let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
     let (_dir, data) = temp()?;
     let probe = Arc::new(ScriptedUsage::default());
     let build = || {
         let agent = FakeAgentOptions {
             transcript: true,
-            limit_after: Some(1),
+            limit_after: match order {
+                LimitRestartRace::SwitchedModel => None,
+                LimitRestartRace::NoCapacity | LimitRestartRace::BlindRetry => Some(0),
+                _ => Some(1),
+            },
+            credits_out: matches!(
+                order,
+                LimitRestartRace::NoCapacity | LimitRestartRace::BlindRetry
+            ),
+            access_lost: matches!(order, LimitRestartRace::AccessLost),
             ..FakeAgentOptions::default()
         };
         build_with_github(
@@ -1138,7 +1248,16 @@ fn a_reattached_run_at_a_limit_is_restarted_past_it() -> TestResult {
     let first = runtime()?;
     let (admin, id) = first.block_on(async {
         let app = build()?;
-        let (sandbox, admin) = seed(&app, &data, &["a-first", "b-second"]).await?;
+        let accounts: &[&str] = if matches!(order, LimitRestartRace::BlindRetry) {
+            &["a-first", "b-second", "c-later"]
+        } else {
+            &["a-first", "b-second"]
+        };
+        let (sandbox, admin) = seed(&app, &data, accounts).await?;
+        if matches!(order, LimitRestartRace::BlindRetry) {
+            probe.set("c-later", usage(99.0, 4 * HOUR, 30.0, 100));
+            reading(&app, "c-later").await?;
+        }
         probe.set("b-second", usage(99.0, 4 * HOUR, 30.0, 100));
         refresh(&app, &admin, "b-second").await?;
         second_person(&app, &admin).await?;
@@ -1152,6 +1271,9 @@ fn a_reattached_run_at_a_limit_is_restarted_past_it() -> TestResult {
         })
         .await?;
         app.send_input(&id, b"hello\r").await?;
+        if matches!(order, LimitRestartRace::SwitchedModel) {
+            crate::usage_credits::append_switched_fable_limit(&app, &data).await?;
+        }
         wait_for("the pause at the limit", Duration::from_secs(30), || {
             has_status(&app, &id, TaskStatus::WaitingCapacity)
         })
@@ -1162,25 +1284,200 @@ fn a_reattached_run_at_a_limit_is_restarted_past_it() -> TestResult {
     })?;
     first.shutdown_timeout(Duration::from_secs(5));
 
-    let second = runtime()?;
+    // Under a controlled delay the hand-over must still progress with a single async worker.
+    let second = if matches!(
+        order,
+        LimitRestartRace::LateLimit
+            | LimitRestartRace::CapacityRound
+            | LimitRestartRace::BlindRetry
+    ) {
+        tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()?
+    } else {
+        runtime()?
+    };
     second.block_on(async {
         let app = build()?;
-        probe.set("b-second", usage(10.0, 4 * HOUR, 30.0, 100));
-        refresh(&app, &admin, "b-second").await?;
+        if !matches!(order, LimitRestartRace::NoCapacity) {
+            probe.set("b-second", usage(10.0, 4 * HOUR, 30.0, 100));
+            refresh(&app, &admin, "b-second").await?;
+        }
+        let delayed = matches!(
+            order,
+            LimitRestartRace::LateLimit | LimitRestartRace::BlindRetry
+        )
+        .then(|| {
+            let (ready, go) = hold_pool_move(Point::LimitMoveReady, &id);
+            (ready, go, limit_move_finished(&id))
+        });
+        let capacity = matches!(order, LimitRestartRace::CapacityRound)
+            .then(|| hold_pool_move(Point::SwitchPrepared, &id));
+        let mut watch = app.runtime(&id).hub.watch();
         app.reconcile().await?;
-        wait_for("the restarted run", Duration::from_secs(60), || async {
-            let attempts = app.deps.store.attempts(&id).await.unwrap_or_default();
-            attempts.len() == 2 && attempts[1].state == yulius_domain::task::AttemptState::Live
+        let after_round = if let Some((ready, go)) = capacity {
+            support::point_reached(ready).await?;
+            let retry = app.resume_round().await;
+            let status = task(&app, &id).await?.status;
+            go.send(())?;
+            Some((status, retry))
+        } else {
+            None
+        };
+        wait_for("the hand-over restart", Duration::from_secs(60), || async {
+            task(&app, &id)
+                .await
+                .is_ok_and(|task| task.status.is_resting())
+                || app.deps.store.switches(&id).await.is_ok_and(|switches| {
+                    switches.iter().any(|s| {
+                        s.reason == "handover"
+                            && matches!(s.outcome.as_str(), "completed" | "waiting")
+                    })
+                })
         })
         .await?;
+        if let Some((ready, go, finished)) = delayed {
+            support::point_reached(ready).await?;
+            go.send(())?;
+            support::point_reached(finished).await?;
+        }
+        let status = task(&app, &id).await?.status;
         let attempts = app.deps.store.attempts(&id).await?;
-        let problems = limit_resume_problems(Path::new(&attempts[1].run_dir), &data);
-        assert!(problems.is_empty(), "{problems:?}");
+        if matches!(order, LimitRestartRace::NoCapacity) {
+            stop(&app, &id).await?;
+            assert_eq!(
+                status,
+                TaskStatus::Stopped(yulius_domain::task::StopReason::Cancelled)
+            );
+            assert_eq!(attempts.len(), 1);
+            wait_for(
+                "the previous owner's host to exit",
+                Duration::from_secs(30),
+                || async {
+                    app.deps
+                        .store
+                        .attempt(&attempts[0].id)
+                        .await
+                        .is_ok_and(|run| run.is_some_and(|run| run.ended_at.is_some()))
+                },
+            )
+            .await?;
+            return Ok(());
+        }
+        let resumed = attempts.last().ok_or("no attempt after the hand-over")?;
+        let run_dir = Path::new(&resumed.run_dir);
+        let owner = std::fs::read_to_string(run_dir.join("personal-mcp-of"));
+        let problems = limit_resume_problems(run_dir, &data);
+        let after_retries = if matches!(order, LimitRestartRace::BlindRetry) {
+            Some(spend_blind_retry(&app, &id, &probe).await?)
+        } else {
+            None
+        };
         stop(&app, &id).await?;
+        if let Some(result) = after_retries {
+            assert_eq!(
+                result,
+                (3, TaskStatus::WaitingCapacity),
+                "both refusing subscriptions stay out"
+            );
+        }
+        if let Some((status, retry)) = after_round {
+            assert_eq!(
+                status,
+                TaskStatus::WaitingCapacity,
+                "the hand-over owns the pause"
+            );
+            assert_eq!(
+                retry,
+                Duration::from_secs(1),
+                "retry the deferred pause promptly"
+            );
+        }
+        assert_eq!(
+            status,
+            TaskStatus::Running,
+            "the resumed task keeps running"
+        );
+        assert_eq!(attempts.len(), 2, "one replacement for the limited run");
+        assert_eq!(resumed.state, yulius_domain::task::AttemptState::Live);
+        assert_eq!(
+            resumed.account_id.as_ref().map(AccountId::as_str),
+            Some("b-second")
+        );
+        assert_eq!(owner?, admin.as_str());
+        if matches!(order, LimitRestartRace::SwitchedModel) {
+            let said = crate::subscription_moves::notices(&mut watch);
+            assert!(said.iter().any(|n| n ==
+                "Fable is used up on this subscription: this session goes on with Opus 5.5."),
+                "{said:?}");
+        }
+        assert!(problems.is_empty(), "{problems:?}");
         Ok::<_, Box<dyn std::error::Error>>(())
     })?;
     second.shutdown_timeout(Duration::from_secs(5));
     Ok(())
+}
+
+/// The delayed task gives its worker back to Tokio so the competing move can finish.
+pub(crate) fn hold_pool_move(
+    point: yulius_app::race::Point,
+    id: &TaskId,
+) -> (std::sync::mpsc::Receiver<()>, std::sync::mpsc::Sender<()>) {
+    let (ready, reached) = std::sync::mpsc::channel();
+    let (go, release) = std::sync::mpsc::channel();
+    yulius_app::race::on(point, Path::new(id.as_str()), move || {
+        tokio::task::block_in_place(|| {
+            let _ = ready.send(());
+            let _ = release.recv_timeout(Duration::from_secs(60));
+        });
+    });
+    (reached, go)
+}
+
+fn limit_move_finished(id: &TaskId) -> std::sync::mpsc::Receiver<()> {
+    let (done, finished) = std::sync::mpsc::channel();
+    yulius_app::race::on(
+        yulius_app::race::Point::LimitMoveFinished,
+        Path::new(id.as_str()),
+        move || {
+            let _ = done.send(());
+        },
+    );
+    finished
+}
+
+/// Spend the replacement's retry, then refresh the old account while a third account
+/// has a known reset. The number of attempts and the task's status show what the pool did.
+async fn spend_blind_retry(
+    app: &Arc<App>,
+    id: &TaskId,
+    probe: &ScriptedUsage,
+) -> Result<(usize, TaskStatus), Box<dyn std::error::Error>> {
+    for seq in 2..=3 {
+        crate::subscription_moves::live_run(app, id, seq).await?;
+        crate::subscription_moves::ready(app, id).await?;
+        let finished = limit_move_finished(id);
+        app.send_input(id, b"again\r").await?;
+        support::point_reached(finished).await?;
+        wait_for(
+            "the pause after another refusal",
+            Duration::from_secs(30),
+            || has_status(app, id, TaskStatus::WaitingCapacity),
+        )
+        .await?;
+        if seq == 2 {
+            reading(app, "b-second").await?;
+            app.resume_round().await;
+        }
+    }
+    probe.set("a-first", usage(10.0, 4 * HOUR, 30.0, 100));
+    reading(app, "a-first").await?;
+    app.resume_round().await;
+    Ok((
+        app.deps.store.attempts(id).await?.len(),
+        task(app, id).await?.status,
+    ))
 }
 
 /// SPEC-332 MSC-004, MSC-009: a person's task run gets their personal MCP server, a task an
@@ -2045,26 +2342,64 @@ fn a_refused_subscription_moves_the_task_to_a_working_one() -> TestResult {
 /// no prompt, and nothing typed into the paused process (it used to get "Continue.").
 #[test]
 fn a_limit_on_the_only_subscription_resumes_past_the_limit_when_it_recovers() -> TestResult {
+    resume_live_limit(false)
+}
+
+/// A later refusal on a reattached attempt is live once its unchanged owner's replay ends.
+#[test]
+fn a_live_limit_after_an_unchanged_owner_reattach_resumes_in_the_capacity_round() -> TestResult {
+    resume_live_limit(true)
+}
+
+fn resume_live_limit(reattach: bool) -> TestResult {
     let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
     let (_dir, data) = temp()?;
-    let rt = runtime()?;
-    rt.block_on(async {
-        let probe = Arc::new(ScriptedUsage::default());
-        let agent = FakeAgentOptions {
-            transcript: true,
-            limit_after: Some(1),
-            ..FakeAgentOptions::default()
-        };
-        let app = build_with(&data, &fake, probe.clone(), agent)?;
+    let probe = Arc::new(ScriptedUsage::default());
+    let build = || {
+        build_with(
+            &data,
+            &fake,
+            probe.clone(),
+            FakeAgentOptions {
+                transcript: true,
+                limit_after: Some(if reattach { 2 } else { 1 }),
+                ..FakeAgentOptions::default()
+            },
+        )
+    };
+    let first = runtime()?;
+    let (app, user, id) = first.block_on(async {
+        let app = build()?;
         let (sandbox, user) = seed(&app, &data, &["a-first"]).await?;
         let id = new_task(&app, &sandbox, &user, "Limit").await?;
-        wait_for("the run", Duration::from_secs(30), || {
-            let app = app.clone();
-            let id = id.clone();
-            async move { screen(&app, &id).contains("FAKE-AGENT READY") }
-        })
-        .await?;
+        crate::subscription_moves::ready(&app, &id).await?;
+        if reattach {
+            app.send_input(&id, b"first turn\r").await?;
+            crate::usage_credits::first_turn_transcript(&data).await?;
+        }
+        Ok::<_, Box<dyn std::error::Error>>((app, user, id))
+    })?;
+    let (rt, app) = if reattach {
+        drop(app);
+        first.shutdown_timeout(Duration::from_secs(5));
+        let second = runtime()?;
+        let app = second.block_on(async {
+            let app = build()?;
+            app.reconcile().await?;
+            wait_for("the transcript replay", Duration::from_secs(30), || async {
+                app.runtime(&id).transcript_rounds() >= 2
+            })
+            .await?;
+            Ok::<_, Box<dyn std::error::Error>>(app)
+        })?;
+        (second, app)
+    } else {
+        (first, app)
+    };
+    rt.block_on(async {
+        let (paused, go) = hold_pool_move(yulius_app::race::Point::LimitPauseStored, &id);
         app.send_input(&id, b"hello\r").await?;
+        support::point_reached(paused).await?;
         wait_for("the pause at the limit", Duration::from_secs(30), || {
             has_status(&app, &id, TaskStatus::WaitingCapacity)
         })
@@ -2078,6 +2413,13 @@ fn a_limit_on_the_only_subscription_resumes_past_the_limit_when_it_recovers() ->
         probe.set("a-first", usage(0.0, 5 * HOUR, 30.0, 100));
         refresh(&app, &user, "a-first").await?;
         let _ = app.resume_round().await;
+        let after_round = task(&app, &id).await?.status;
+        go.send(())?;
+        assert_eq!(
+            after_round,
+            TaskStatus::Running,
+            "a live limit pause resumes in this round"
+        );
         wait_for("the resumed run", Duration::from_secs(60), || async {
             let attempts = app.deps.store.attempts(&id).await.unwrap_or_default();
             attempts.len() == 2 && attempts[1].state == yulius_domain::task::AttemptState::Live

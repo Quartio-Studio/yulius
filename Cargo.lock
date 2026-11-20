@@ -670,6 +670,7 @@ dependencies = [
  "serde_json",
  "signal-hook",
  "tempfile",
+ "yulius-harness",
 ]
 
 [[package]]
