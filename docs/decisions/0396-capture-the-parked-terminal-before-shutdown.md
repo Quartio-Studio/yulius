@@ -14,6 +14,8 @@ Capture the redacted terminal in the attempt directory at the parking decision, 
 
 For native Codex resume, keep the rollout ID on the attempt. If its lineage write was interrupted, restore that ID before launching. A historical lineage entry can identify a run only if it was observed during that attempt. A missing identity leaves the task parked and the sender gets an error.
 
+A Codex goal uses the existing three-attempt Stop gate. Keep its counter through capacity holds and subscription moves. The replacement receives the numbered repair as its opening prompt. Count the dispatch before the CLI can call its hooks so a delayed or repeated submit preserves the budget.
+
 ## Alternatives
 
 Filtering shutdown text cannot recover a cleared TUI. Changing the process termination signal couples the display to each CLI's shutdown behavior. Injecting a new user message after Stop introduces a race with owner input and other wakeups.

@@ -2300,6 +2300,47 @@ async fn install_compatibility_pull(f: &Fixture) -> TestResult {
     Ok(())
 }
 
+#[tokio::test]
+async fn a_codex_goal_held_for_capacity_keeps_its_two_repairs() -> TestResult {
+    let f = fixture_of(
+        None,
+        |task| {
+            task.mode = yulius_app::model::TaskMode::Goal;
+            task.gate_blocks = 2;
+        },
+        Agent::Codex,
+    )
+    .await?;
+    let ctx = f.h.app.agent_context(TOKEN).await?;
+    f.h.app
+        .tool_steps_set(&ctx, &json!({"steps":["Finish the review"]}))
+        .await?;
+    f.h.app
+        .deps
+        .store
+        .set_account_state(
+            ctx.attempt.account_id.as_ref().ok_or("account")?,
+            yulius_app::model::AccountStatus::Relogin,
+            None,
+            None,
+            f.h.app.now(),
+        )
+        .await?;
+    let response = call(
+        &f.h.internal,
+        Method::POST,
+        "/hooks/codex/Stop",
+        Some(json!({"hook_event_name":"Stop"})),
+        &agent(),
+    )
+    .await?;
+    assert_eq!(response.status, 202);
+    let held = f.h.app.deps.store.task(&f.task).await?.ok_or("task")?;
+    assert_eq!(held.status, TaskStatus::WaitingCapacity);
+    assert_eq!(held.gate_blocks, 2);
+    Ok(())
+}
+
 /// Quartio-v2 #325 stopped after five of seven steps with its pull request red.
 #[tokio::test]
 async fn codex_goal_stop_continues_open_work_and_flags_only_at_the_bound() -> TestResult {
@@ -2666,5 +2707,9 @@ async fn a_partial_overview_still_resolves_the_parked_tasks_recorded_pr() -> Tes
     // The browser renders the task summary before its independent Git overview is available.
     let detail = f.h.app.task_detail(&owner, f.task.as_str()).await?;
     assert_eq!(serde_json::to_value(detail)?["parked_needs_you"], true);
+    f.h.github
+        .set_checks("abc123", yulius_app::ports::github::ChecksState::Success);
+    let detail = f.h.app.task_detail(&owner, f.task.as_str()).await?;
+    assert_eq!(serde_json::to_value(detail)?["parked_needs_you"], false);
     Ok(())
 }

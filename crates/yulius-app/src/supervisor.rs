@@ -2213,6 +2213,9 @@ impl App {
                 )
             }
         };
+        let next_block = task.gate_blocks.saturating_add(1);
+        let moved_goal_repair = matches!(&mode, SessionMode::Resume { prompt, .. }
+            if crate::hooks::moved_goal_repair(&task, prompt.as_deref(), next_block));
         let goal_in_prompt = sets_goal(&mode);
         // A continued turn opens the run like a first message: the goal is set after its Stop.
         let opens_with_turn = goal_mode
@@ -2504,6 +2507,20 @@ impl App {
                 .transition_attempt(&attempt_id, AttemptState::Exited, &update)
                 .await?;
             return Box::pin(self.launch_attempt(&task, relaunch, None, rest)).await;
+        }
+        // The native launch carries this repair. Charge it once, after account
+        // revalidation and before the new CLI can submit the prompt or Stop.
+        if moved_goal_repair {
+            store
+                .update_task(
+                    &task.id,
+                    &TaskFieldUpdate {
+                        gate_blocks: Some(next_block),
+                        ..TaskFieldUpdate::default()
+                    },
+                    self.now(),
+                )
+                .await?;
         }
         // Before the spawn, so the first prompt's hook always finds it (SPEC-068).
         if typed_opening.is_some()

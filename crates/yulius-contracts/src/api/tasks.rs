@@ -137,10 +137,10 @@ pub struct TaskSummary {
     /// reads: the task is not Done, whatever its pull request says (SPEC-491 DON-004).
     #[serde(default)]
     pub spec_unfinished: bool,
-    /// The server groups this parked task under Needs you. A missing or stale Git
-    /// overview must not override this result with Done.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub parked_needs_you: bool,
+    /// The server's group for a parked task (true for Needs you, false for Done).
+    /// Other tasks and summaries from earlier servers omit it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parked_needs_you: Option<bool>,
     /// The task this one runs after (SPEC-001 TSK-012): while `chained` it waits for it; the
     /// link stays after the task started.
     #[serde(default)]

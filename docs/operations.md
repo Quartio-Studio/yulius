@@ -170,7 +170,7 @@ Environment=YULIUS_INTERNAL_BIND=127.0.0.1:8081
 # A message to a parked Codex task resumes its recorded rollout with the message as its next prompt.
 # While it waits for a subscription the message is retained and its last parked screen stays visible.
 # Open work or an unreadable recorded PR keeps the session live.
-# Codex goal turns with open steps or red PR checks receive up to three Stop continuations.
+# Codex goal turns with open steps or red PR checks receive up to three Stop continuations across subscription moves.
 #Environment=YULIUS_PARK_AFTER_MINUTES=30
 # A server older than parking cannot read the status `parked`: before rolling back past it,
 # resume or archive the tasks marked "parked" in the task lists, with this set to 0 so no task

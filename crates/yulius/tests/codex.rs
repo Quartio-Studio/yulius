@@ -2238,3 +2238,192 @@ fn a_parked_codex_capacity_retry_keeps_its_rollout_and_prompt_on_a_lineage_error
     rt.shutdown_timeout(Duration::from_secs(5));
     Ok(())
 }
+
+/// Moving a goal's third repair to another account consumes the same Stop budget.
+#[test]
+fn a_codex_goal_repair_rotates_once_and_flags_at_the_original_bound() -> TestResult {
+    use yulius_app::hooks::HookReply;
+    use yulius_app::ports::store::TaskFieldUpdate;
+    use yulius_contracts::hooks::HookInput;
+    use yulius_domain::task::Activity;
+    let fake = locate_fake_agent().ok_or("fake-agent is not built")?;
+    let (_dir, data) = temp()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let app = build_full(
+            &data,
+            Some(&fake),
+            FakeAgentOptions {
+                answers_first_message: true,
+                resume_prompts: true,
+                transcript: true,
+                ..Default::default()
+            },
+            8,
+        )?;
+        let (sandbox, user) = seed_records(&app).await?;
+        let auth = codex_auth("2026-11-01T10:00:00Z");
+        add_codex_account(&app, "a-one", &auth).await?;
+        add_codex_account(&app, "a-two", &auth).await?;
+        seed_repo(&data, &sandbox)?;
+        let id = new_codex_task_in(
+            &app,
+            &sandbox,
+            &user,
+            "Compatibility",
+            yulius_app::model::TaskMode::Goal,
+        )
+        .await?;
+        wait_for(
+            "the first Codex rollout",
+            Duration::from_secs(30),
+            || async {
+                app.deps
+                    .store
+                    .live_attempt(&id)
+                    .await
+                    .ok()
+                    .flatten()
+                    .is_some_and(|run| run.provider_session_id.is_some())
+            },
+        )
+        .await?;
+        let first = app
+            .deps
+            .store
+            .live_attempt(&id)
+            .await?
+            .ok_or("original attempt")?;
+        let db = rusqlite::Connection::open(data.join("yulius.db"))?;
+        let authenticate = |id: &yulius_domain::ids::AttemptId, token: &str| {
+            db.execute(
+                "UPDATE attempts SET token_hash = ?1 WHERE id = ?2",
+                [
+                    app.deps.crypto.sha256_hex(token.as_bytes()).as_str(),
+                    id.as_str(),
+                ],
+            )
+        };
+        authenticate(&first.id, "test-first")?;
+        let ctx = app.agent_context("test-first").await?;
+        app.tool_steps_set(&ctx, &serde_json::json!({"steps":["Check compatibility"]}))
+            .await?;
+        app.deps
+            .store
+            .update_task(
+                &id,
+                &TaskFieldUpdate {
+                    gate_blocks: Some(2),
+                    ..Default::default()
+                },
+                app.now(),
+            )
+            .await?;
+        let old = first.account_id.as_ref().ok_or("old account")?;
+        app.deps
+            .store
+            .set_account_state(old, AccountStatus::Relogin, None, None, app.now())
+            .await?;
+        assert!(matches!(
+            app.hook_event("test-first", "codex", "Stop", &Default::default(), None)
+                .await?,
+            HookReply::Hold { .. }
+        ));
+        wait_for(
+            "the repair prompt on the replacement account",
+            Duration::from_secs(30),
+            || async {
+                app.deps
+                    .store
+                    .live_attempt(&id)
+                    .await
+                    .ok()
+                    .flatten()
+                    .is_some_and(|a| a.seq == 2)
+                    && screen_contains(&app, &id, "unfinished steps").await
+            },
+        )
+        .await?;
+        let second = app
+            .deps
+            .store
+            .live_attempt(&id)
+            .await?
+            .ok_or("replacement attempt")?;
+        authenticate(&second.id, "test-second")?;
+        let account = second.account_id.as_ref().ok_or("replacement account")?;
+        assert_ne!(old, account);
+        let session = first.provider_session_id.as_deref().ok_or("session")?;
+        let sessions = data
+            .join("sandboxes")
+            .join(sandbox.as_str())
+            .join("codex")
+            .join(account.as_str())
+            .join("sessions");
+        let path = app
+            .deps
+            .harness
+            .find_codex_rollout(&sessions, session)?
+            .ok_or("rollout")?;
+        let prompt = std::fs::read_to_string(path)?
+            .lines()
+            .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+            .filter(|event| event["payload"]["role"] == "user")
+            .filter_map(|event| {
+                event["payload"]["content"][0]["text"]
+                    .as_str()
+                    .map(str::to_owned)
+            })
+            .next_back()
+            .ok_or("repair prompt")?;
+        assert!(prompt.contains("unfinished steps"), "{prompt}");
+        // The native launch has taken the repair even if its submit hook is delayed.
+        assert_eq!(task(&app, &id).await?.gate_blocks, 3);
+        let input = HookInput {
+            prompt: Some(prompt),
+            ..Default::default()
+        };
+        app.hook_event("test-second", "codex", "UserPromptSubmit", &input, None)
+            .await?;
+        assert_eq!(task(&app, &id).await?.gate_blocks, 3);
+        // Even when the next Stop would switch back, the exhausted repair flags its owner.
+        app.deps
+            .store
+            .set_account_state(old, AccountStatus::Ok, None, None, app.now())
+            .await?;
+        app.deps
+            .store
+            .set_account_state(account, AccountStatus::Relogin, None, None, app.now())
+            .await?;
+        assert!(matches!(
+            app.hook_event("test-second", "codex", "Stop", &Default::default(), None)
+                .await?,
+            HookReply::Output(_)
+        ));
+        assert_eq!(
+            task(&app, &id).await?.activity,
+            Some(Activity::NeedsAttention)
+        );
+        assert_eq!(app.deps.store.attempts(&id).await?.len(), 2);
+        app.deps
+            .store
+            .set_account_state(account, AccountStatus::Ok, None, None, app.now())
+            .await?;
+        app.hook_event(
+            "test-second",
+            "codex",
+            "UserPromptSubmit",
+            &HookInput {
+                prompt: Some("Use the owner's compatibility decision.".into()),
+                ..Default::default()
+            },
+            None,
+        )
+        .await?;
+        assert_eq!(task(&app, &id).await?.gate_blocks, 0);
+        crate::pool_supervision::stop(&app, &id).await?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}

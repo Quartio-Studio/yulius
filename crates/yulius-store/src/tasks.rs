@@ -42,7 +42,8 @@ fn transition(
                COALESCE(closed_at, ?3) ELSE ?3 END, \
              queued_at = CASE WHEN ?4 IS NOT NULL THEN ?4 WHEN ?1 = 'queued' THEN queued_at ELSE NULL END, \
              queued_start = CASE WHEN ?1 = 'queued' THEN queued_start ELSE NULL END, \
-             gate_blocks = CASE WHEN ?1 = 'running' THEN gate_blocks ELSE 0 END \
+             gate_blocks = CASE WHEN ?1 = 'running' OR (harness = 'codex' AND mode = 'goal' \
+               AND ?1 IN ('switching','waiting_capacity','queued','starting')) THEN gate_blocks ELSE 0 END \
              WHERE id = ?5 AND (?6 IS NULL OR status = ?6)",
             params![
                 next.as_str(),

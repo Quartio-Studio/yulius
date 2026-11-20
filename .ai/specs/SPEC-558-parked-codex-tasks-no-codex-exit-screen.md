@@ -46,7 +46,7 @@ Use the fake Codex executable, its rollout, real PTY shutdown and the applicatio
 
 ## Decisions
 
-Capture a separate screen at the park decision because exiting can clear the entire alternate screen. Changing shutdown signals would couple presentation to the harness and could interfere with reaping. A separate snapshot lets an unsuccessful park keep its real terminal. Reuse native Codex resume and the Stop hook's persisted three-block budget. Older runs can only recover content still present in their saved screen. A parked owner terminal fits the saved grid to the viewport so the first row, last row and notice survive a smaller window. If the PR is the only remaining work and the Stop lookup cannot finish, the continuation asks the agent to verify its checks. Parking reads the current head before acquiring the launch lock and supplies that signal to the final eligibility check.
+Capture a separate screen at the park decision because exiting can clear the entire alternate screen. Changing shutdown signals would couple presentation to the harness and could interfere with reaping. A separate snapshot lets an unsuccessful park keep its real terminal. Reuse native Codex resume and the Stop hook's persisted three-block budget. A subscription move carries the numbered repair as its opening prompt. The replacement launch uses the same budget, including when its submit hook is delayed. Older runs can only recover content still present in their saved screen. A parked owner terminal fits the saved grid to the viewport so the first row, last row and notice survive a smaller window. If the PR is the only remaining work and the Stop lookup cannot finish, the continuation asks the agent to verify its checks. Parking reads the current head before acquiring the launch lock and supplies that signal to the final eligibility check.
 
 ## Evidence
 
@@ -68,6 +68,8 @@ Capture a separate screen at the park decision because exiting can clear the ent
 - The goal and delivery regression fixtures separately cover a current green head after an older failing observation, incomplete check sources, and whether a chained task can start after a historical parked predecessor.
 
 - Chromium reproduced a stale green PR in the overview overriding a parked task’s current Needs you classification from the server. With the server result taking precedence over a Done label, the stale and missing overview cases both passed in the eight parked-page tests.
+
+- Independent review of `516b93cab` identified three mismatches. With every step finished but one check source unreadable, the old chain released its successor. With fresh green checks and a stale red overview, the API omitted its Done result and the browser said checks were failing. At its third repair, a real PTY Codex fixture switched to another synthetic account and reset the retry count to zero when the resumed prompt was submitted. A separate capacity-hold regression observed two retries becoming zero in the database. All 46 related Rust tests passed after the fixes, including release on a complete green report, the third repair on a replacement account, the exhausted Stop and a new owner prompt. All eight parked Chromium tests passed. The fixtures use no paid provider or live owner task.
 
 ## Delivery slices
 

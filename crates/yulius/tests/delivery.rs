@@ -4566,6 +4566,43 @@ async fn working_and_queued_counts_split_the_sidebar_working_group() -> TestResu
     Ok(())
 }
 
+/// A parked Waiting predecessor releases its chain only when all its PR checks can be read.
+#[tokio::test]
+async fn a_parked_predecessor_waits_for_the_complete_check_report() -> TestResult {
+    let f = fixture(&DeliveryProfile::standard()).await?;
+    let (_wt, head) = delivered_with_a_successor(&f, &finished_spec("t1")).await?;
+    let before = TaskId::parse("t1")?;
+    let child = TaskId::parse("t2")?;
+    f.h.store
+        .transition_task(
+            &before,
+            None,
+            TaskStatus::Parked,
+            Some(Activity::Waiting),
+            f.h.app.now(),
+        )
+        .await?;
+    f.h.github.set_checks_report(
+        &head,
+        ChecksReport {
+            state: ChecksState::Success,
+            unreadable: vec![ChecksSource::WorkflowRuns],
+        },
+    );
+    f.h.app.advance_chains(&before).await;
+    assert_eq!(
+        f.h.store.task(&child).await?.ok_or("successor")?.status,
+        TaskStatus::Chained
+    );
+    f.h.github.set_checks(&head, ChecksState::Success);
+    f.h.app.advance_chains(&before).await;
+    assert_ne!(
+        f.h.store.task(&child).await?.ok_or("successor")?.status,
+        TaskStatus::Chained
+    );
+    Ok(())
+}
+
 /// A task with an open pull request at `head` (checks pending) and a live run whose agent calls
 /// the internal endpoints with `agent`.
 struct ArmedTask {

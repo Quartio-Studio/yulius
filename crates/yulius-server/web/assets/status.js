@@ -391,7 +391,9 @@ export function taskInfo(task, actionRequests, pr) {
     const idle = asIdleRun(task);
     let shown = taskInfo(idle, actionRequests, pr);
     if (shown.group === 'done' && task.goal_unfinished) shown = statusInfo(idle);
-    if (shown.group === 'done' && task.parked_needs_you) {
+    if (task.parked_needs_you === false && shown.group !== 'done') {
+      shown = statusInfo({ ...idle, activity: 'done' });
+    } else if (shown.group === 'done' && task.parked_needs_you) {
       shown = statusInfo({ ...idle, activity: 'waiting', goal_unfinished: true });
     }
     // Nothing of it goes on by itself: what would keep a running agent busy (its checks, a

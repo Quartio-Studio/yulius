@@ -3592,6 +3592,15 @@ impl App {
         if record.stage != DeliveryStage::PrOpen {
             return false;
         }
+        if parked {
+            let Some(number) = record.pr_number else {
+                return false;
+            };
+            return matches!(
+                self.recorded_pull_signal(task, number).await,
+                Ok(Some(PullSignal::Tested | PullSignal::Merged))
+            );
+        }
         let Ok(sandbox) = self.dlv_sandbox_of(task).await else {
             return false;
         };
