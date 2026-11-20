@@ -1,6 +1,6 @@
 ---
 yulius-task: 389d1a3c-436b-4cb5-97fd-d753c19c6d06
-status: in-progress
+status: done
 ---
 
 # SPEC-568. Preserve ADR index order across parallel delivery
@@ -30,7 +30,7 @@ Both the committed attributes and Yulius's higher-precedence managed info/attrib
 - [x] Prove both orders on the author and protected candidate paths
 - [x] Review and deliver the verified repository change
 - [x] Prove tree-reusable CI verdicts and validate shared slots on the author path
-- [ ] Verify and reconcile pre-migration ADRs on the landed dev prefix
+- [x] Verify and reconcile pre-migration ADRs on the landed dev prefix
 
 ## Acceptance criteria
 
@@ -63,3 +63,6 @@ Use shared, hidden Markdown slots allocated ahead of authors in bounded blocks. 
 - The first cache regression ran the normal repository checker twice with one complete tree, different parents, and a fixed origin/dev. At f50a2d4ab it exited 1 then 0. After moving ancestry validation to the documented author command, the protected checker passed both commits (852bca4c and 999251da, identical tree 3526a8d67e05cc008eef4d98f2b9d46af9e177da). The author CLI rejected first use of unshared 0465 and 0466 and accepted each after it had a shared insertion point.
 - Replayed the revised checker and layout with the same immutable heads. Both production train orders matched their author update and squash, at 492e6afccf9fa1a82770f3df6661e2a1f0828483 and 9002b688ab143bb3d042d4b5f7cf2fd76717f318. Both contained index blob fdba027b2576233eef86e22fa4f09f5d94a722d7. The competing-description tree dd9816a6ccadda42785906bcf71109157f80a0de failed the content-only decision check.
 - The published correction 393c12d8d superseded the f50a2d4ab arm. Yulius explicitly reported that arm dropped. PR #1511 then landed at 7645d73dc (tree 7ad0da687decaab71de57d1a63ced0082d27c154). Its ordinary merge into the task reproduced both 0401 errors. Moving its exact 165-byte row before the 0401 marker retained record blob 7fca1cd65f6607c7fc2e2e8b6657f2debd8ca863. The integration prefix contained no 0402 record. The corrected decision check and the author command passed.
+- Independent review approved correction 393c12d8d and its 8 decision-slot tests and 43 repository tests. Its own Yulius CI passed in run 374726a2-142f-4e3b-a4ed-3d751ccc6d3a. The 0401 migration head 59443cfac was separately approved against the landed prefix, and Git::build_train produced its exact tree 2bee278427d9e9813d461dfe1bcd68c121569de2.
+- PR #1513 subsequently landed at f97bf8ccc, whose tree 4d96ae28ab0c3f8d0f0ab0a841550291bbe73b15 contains both legacy ADRs. The ordinary author update placed 0402 outside its marker after 0403. Moved the exact 155-byte 0402 row to its marker, checked both rows against the landed index and immutable inputs, and verified both record blobs (0401 7fca1cd65f6607c7fc2e2e8b6657f2debd8ca863, 0402 43d7728169ada136731dec6c2538abcd1cdf3265). Neither record file is in the PR diff against landed dev.
+- On the reconciled head 4987f2013, the production single-member Git::build_train against f97bf8ccc and the author head agreed on tree b6ca9c73d0fbd5732772cb9f34206c20434e84ae and index blob f48cc2c64237e6723d9352d9940fbe38dbe932d1. The full repository check passed on the candidate checkout. The author command, 51 focused tests and quick checks passed. Vidoc was disabled. A mutation invocation against the pre-migration review head included incoming upstream Rust and could not start cargo-mutants locally. Against the landed dev prefix, the PR changes no Rust code and has no mutation targets.
