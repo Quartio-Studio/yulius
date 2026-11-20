@@ -1568,6 +1568,9 @@ impl App {
                 "The task has no worktree yet, so its spec cannot be read.".into(),
             );
         };
+        // As in the periodic spec sync, order this read and its recorded status with parking.
+        let runtime = self.runtime(&task.id);
+        let _work = runtime.steps_lock.lock().await;
         let path = match self.task_spec_path(task, &worktree).await {
             Ok(path) => path,
             Err(dir) => {

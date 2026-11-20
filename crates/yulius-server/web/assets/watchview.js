@@ -153,7 +153,7 @@ export function createWatchView(ctx, { taskId, task, owner, emptyMessage, sessio
       earlier.hidden = !page.earlier;
       setChildren(earlier, page.earlier ? ['Earlier messages are in the whole session', path ? [': ', h('a', { href: href(path), dataset: { route: path } }, 'open it in Sessions')] : null, '.'] : null);
     }
-    const added = transcript.append(entries);
+    const added = transcript.append(entries, task().harness);
     seen = { session: page.session_id || null, end: page.end || 0, bytes: page.bytes || 0, loaded: true };
     render();
     if (follow) toBottom();

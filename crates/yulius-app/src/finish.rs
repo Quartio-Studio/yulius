@@ -972,7 +972,7 @@ impl App {
         // The UI reads it beside an idle task (Answered or Your turn): a record that came after the
         // turn settled is published (SPEC-429 ANS-008).
         let unfinished = goal_unfinished(outcome);
-        if runtime.goal_unfinished.swap(unfinished, Ordering::SeqCst) != unfinished {
+        if runtime.replace_goal_unfinished(unfinished).await != unfinished {
             self.publish_task(task_id).await;
         }
         let verdict = matches!(
@@ -1037,9 +1037,7 @@ impl App {
         // A resumed run can have an inherited goal and no goal records of its own.
         if facts.goal_recorded {
             runtime.goal_open.store(facts.goal_open, Ordering::SeqCst);
-            runtime
-                .goal_unfinished
-                .store(facts.goal_unfinished, Ordering::SeqCst);
+            runtime.replace_goal_unfinished(facts.goal_unfinished).await;
             // A goal recorded while Yulius was down was taken: a restarted launch-goal watch ends.
             runtime.goal_submitted.store(true, Ordering::SeqCst);
         }

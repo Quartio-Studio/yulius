@@ -14,8 +14,9 @@ use yulius_app::coordination::ProjectCaller;
 use yulius_app::model::{LaunchKind, TaskMode};
 use yulius_app::needs_you::NeedsYouRecord;
 use yulius_app::ports::store::TaskStore;
+use yulius_app::race::Point;
 use yulius_domain::ids::TaskId;
-use yulius_domain::task::{Activity, TaskStatus};
+use yulius_domain::task::{Activity, StopReason, TaskStatus};
 use yulius_ptyhost::test_support::locate_fake_agent;
 
 use crate::first_message::{
@@ -1167,10 +1168,132 @@ fn a_loss_recorded_while_the_reader_holds_the_park_still_parks() -> TestResult {
     Ok(())
 }
 
-/// PRK-004 (review round 3, W1): a parked task's summary says what its idle run's did: a spec
-/// that does not say done keeps it "Your turn" on the web as on the server.
+#[derive(Clone, Copy)]
+enum EndRequests {
+    Close,
+    Cancel,
+    CloseThenCancel,
+}
+
+/// SPEC-563: escalation records the loss with the reader held just before or just after it
+/// takes the request. EndDecided releases the reader once the loss has consumed the intent.
+fn host_loss_with_request(
+    requests: EndRequests,
+    hold_reader_at: Point,
+    expected: TaskStatus,
+) -> TestResult {
+    use yulius_app::race::on;
+    use yulius_domain::task::AttemptState;
+
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let fake = locate_fake_agent().ok_or("fake-agent is not built")?;
+        let agent = FakeAgentOptions {
+            answers_first_message: true,
+            ..hooked()
+        };
+        let (app, _) = start_with(&data, &fake, agent, 0, Arc::default(), |config| {
+            config.stop_escalation_ms = 1;
+        })
+        .await?;
+        let (id, _) = answered(&app, &data).await?;
+        let key = Path::new(id.as_str());
+        let bound = Duration::from_secs(30);
+        let (reader_ready, wait_reader) = tokio::sync::oneshot::channel();
+        let (escalate, wait_escalate) = std::sync::mpsc::channel();
+        let (lost, wait_lost) = std::sync::mpsc::channel();
+        let (ordered, observed) = tokio::sync::oneshot::channel();
+        on(Point::EndEscalating, key, move || {
+            assert!(
+                tokio::task::block_in_place(|| wait_escalate.recv_timeout(bound)).is_ok(),
+                "reader reached the selected race point"
+            );
+        });
+        on(hold_reader_at, key, move || {
+            let held = reader_ready.send(()).is_ok()
+                && tokio::task::block_in_place(|| wait_lost.recv_timeout(bound)).is_ok();
+            let _ = ordered.send(held);
+        });
+        on(Point::EndDecided, key, move || {
+            let _ = lost.send(());
+        });
+        match requests {
+            EndRequests::Close | EndRequests::CloseThenCancel => app.close_task_now(&id).await?,
+            EndRequests::Cancel => app.stop_task_now(&id).await?,
+        }
+        tokio::time::timeout(bound, wait_reader).await??;
+        if matches!(requests, EndRequests::CloseThenCancel) {
+            // Close is held by the reader. The newer Cancel is in the live intent slot.
+            app.stop_task_now(&id).await?;
+        }
+        escalate.send(())?;
+        assert!(
+            tokio::time::timeout(bound, observed).await??,
+            "reader held until loss"
+        );
+        wait_for("the task to settle after loss", bound, || async {
+            status_of(&app, &id)
+                .await
+                .0
+                .is_some_and(TaskStatus::is_resting)
+        })
+        .await?;
+        let runs = app.deps.store.attempts(&id).await?;
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].state, AttemptState::Lost);
+        assert_eq!(runs[0].exit_reason.as_deref(), Some("lost"));
+        assert_eq!(status_of(&app, &id).await.0, Some(expected));
+        Ok::<_, Error>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
 #[test]
-fn a_parked_tasks_summary_keeps_its_unfinished_work() -> TestResult {
+fn host_loss_while_the_reader_holds_close_closes_an_answered_task() -> TestResult {
+    host_loss_with_request(EndRequests::Close, Point::RunEndTaken, TaskStatus::Closed)
+}
+
+#[test]
+fn host_loss_while_the_reader_holds_cancel_stops_an_answered_task() -> TestResult {
+    host_loss_with_request(
+        EndRequests::Cancel,
+        Point::RunEndTaken,
+        TaskStatus::Stopped(StopReason::Cancelled),
+    )
+}
+
+#[test]
+fn host_loss_before_the_reader_takes_close_keeps_the_loss_outcome() -> TestResult {
+    host_loss_with_request(
+        EndRequests::Close,
+        Point::RunEndTaking,
+        TaskStatus::Stopped(StopReason::Lost),
+    )
+}
+
+#[test]
+fn host_loss_before_the_reader_takes_cancel_keeps_the_loss_outcome() -> TestResult {
+    host_loss_with_request(
+        EndRequests::Cancel,
+        Point::RunEndTaking,
+        TaskStatus::Stopped(StopReason::Lost),
+    )
+}
+
+#[test]
+fn host_loss_with_a_newer_cancel_uses_the_live_intent_slot() -> TestResult {
+    host_loss_with_request(
+        EndRequests::CloseThenCancel,
+        Point::RunEndTaken,
+        TaskStatus::Stopped(StopReason::Lost),
+    )
+}
+
+/// A declared unfinished spec keeps the idle session live.
+#[test]
+fn an_unfinished_spec_keeps_its_session() -> TestResult {
     let (_dir, data) = data_dir()?;
     let rt = runtime()?;
     rt.block_on(async {
@@ -1184,22 +1307,85 @@ fn a_parked_tasks_summary_keeps_its_unfinished_work() -> TestResult {
             .await?
             .ok_or("task")?;
         assert!(app.task_summary(&before).await?.spec_unfinished);
-        parked(&app, &id).await?;
+        past_the_grace(&app, &id).await?;
+        assert_eq!(app.park_idle_sessions_now().await, 0);
         let after = TaskStore::task(app.deps.store.as_ref(), &id)
             .await?
             .ok_or("task")?;
+        assert_eq!(after.status, TaskStatus::Running);
         assert!(app.task_summary(&after).await?.spec_unfinished);
+        // Both a person request and an achieved activity can take precedence in the display.
+        ask(&app, &id).await?;
+        app.deps
+            .store
+            .transition_task(
+                &id,
+                Some(TaskStatus::Running),
+                TaskStatus::Running,
+                Some(Activity::Done),
+                app.now(),
+            )
+            .await?;
+        past_the_grace(&app, &id).await?;
+        assert_eq!(
+            app.park_idle_sessions_now().await,
+            0,
+            "a human request cannot hide the unfinished spec"
+        );
+        app.deps.store.set_spec_status(&id, Some("done")).await?;
+        parked(&app, &id).await?;
         Ok::<_, Error>(())
     })?;
     rt.shutdown_timeout(Duration::from_secs(5));
     Ok(())
 }
 
-/// PRK-004 (review round 4, G1): a goal task whose goal failed is parked "Your turn", and stays
-/// so for a server started afresh, which has no session that knew the goal: the parked run's
-/// directory keeps it.
 #[test]
-fn a_parked_unfinished_goal_stays_your_turn_across_a_restart() -> TestResult {
+fn an_unreadable_recorded_spec_keeps_the_session_through_digest_parking() -> TestResult {
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let app = app(&data, 8, 1).await?;
+        let (id, _) = answered(&app, &data).await?;
+        app.deps
+            .store
+            .set_spec_status(&id, Some("in-progress"))
+            .await?;
+        let store = yulius_store::SqliteStore::open(&data.join("yulius.db"))?;
+        store
+            .execute_for_tests(
+                "ALTER TABLE tasks RENAME COLUMN spec_status TO unavailable_spec_status",
+            )
+            .await?;
+        assert!(app.deps.store.spec_status(&id).await.is_err());
+        past_the_grace(&app, &id).await?;
+        assert_eq!(app.send_digests_now(Some(1)).await.parked, 0);
+        assert_eq!(app.park_idle_sessions_now().await, 0);
+        store
+            .execute_for_tests(
+                "ALTER TABLE tasks RENAME COLUMN unavailable_spec_status TO spec_status",
+            )
+            .await?;
+        assert_eq!(
+            app.deps.store.spec_status(&id).await?.as_deref(),
+            Some("in-progress")
+        );
+        app.deps
+            .store
+            .set_spec_status(&id, Some("unknown-status"))
+            .await?;
+        assert_eq!(app.park_idle_sessions_now().await, 0);
+        app.deps.store.set_spec_status(&id, Some("done")).await?;
+        parked(&app, &id).await?;
+        Ok::<_, Error>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// A failed native goal has unfinished work even without a plan or pull request.
+#[test]
+fn an_unfinished_goal_keeps_its_session() -> TestResult {
     let (_dir, data) = data_dir()?;
     let rt = runtime()?;
     rt.block_on(async {
@@ -1236,24 +1422,9 @@ fn a_parked_unfinished_goal_stays_your_turn_across_a_restart() -> TestResult {
             },
         )
         .await?;
-        parked(&app, &id).await?;
-        assert!(summary(app.clone(), id.clone()).await?.goal_unfinished);
-        // A server started afresh on the same data: no runtime knows the goal.
-        let (fresh, _) = start_with(
-            &data,
-            &fake,
-            agent,
-            0,
-            Arc::new(ScriptedUsage::default()),
-            |config| config.park_after_ms = 1,
-        )
-        .await?;
-        let shown = summary(fresh.clone(), id.clone()).await?;
-        assert_eq!(shown.status, "parked");
-        assert!(
-            shown.goal_unfinished,
-            "the parked run's directory keeps the goal's state"
-        );
+        past_the_grace(&app, &id).await?;
+        assert_eq!(app.park_idle_sessions_now().await, 0);
+        assert_eq!(summary(app.clone(), id.clone()).await?.status, "running");
         Ok::<_, Error>(())
     })?;
     rt.shutdown_timeout(Duration::from_secs(5));
@@ -2228,6 +2399,38 @@ fn a_handed_off_tasks_outcome_reaches_its_source() -> TestResult {
             app.deps.store.untold_handoffs().await?.is_empty(),
             "told once"
         );
+        Ok::<_, Error>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+#[test]
+fn a_cold_parked_summary_reads_historical_spec_and_goal_evidence() -> TestResult {
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let live = app(&data, 8, 1).await?;
+        let (id, _) = answered(&live, &data).await?;
+        parked(&live, &id).await?;
+        live.deps
+            .store
+            .set_spec_status(&id, Some("in-progress"))
+            .await?;
+        let run = live
+            .deps
+            .store
+            .attempts(&id)
+            .await?
+            .pop()
+            .ok_or("parked run")?;
+        std::fs::write(Path::new(&run.run_dir).join("parked-goal-unfinished"), [])?;
+        let cold = app(&data, 8, 1).await?;
+        let task = cold.deps.store.task(&id).await?.ok_or("parked task")?;
+        assert_eq!(task.status, TaskStatus::Parked);
+        let summary = cold.task_summary(&task).await?;
+        assert!(summary.spec_unfinished);
+        assert!(summary.goal_unfinished);
         Ok::<_, Error>(())
     })?;
     rt.shutdown_timeout(Duration::from_secs(5));

@@ -105,6 +105,7 @@ test('a session reads as Claude Code’s TUI: prompts, messages, calls with resu
 
 test('a failed call is marked in the TUI’s error colour and says error', async ({ app, browser }) => {
   await app.open(mock('/s/studio/sessions/ses_imp_flaky'));
+  await expect(browser.locator('.ss-sidechain.ss-assistant > .sr-only')).toHaveText('Claude (subagent)');
   const failed = browser.locator('.ss-tui details.ss-tool.ss-tool-error > summary').filter({ hasText: 'npx playwright test login' });
   await expect(failed).toContainText(/⏺\s*Bash\(npx playwright test login\).*error/s);
   await expect(failed).toContainText(/⎿\s*Error: Timed out 5000ms/);

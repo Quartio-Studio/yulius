@@ -60,6 +60,8 @@ pub enum Point {
     /// `close_task_now` (SPEC-250): the task was read `Running`; the close's end intent is not set
     /// yet. The path is the task id.
     CloseDecided,
+    /// A park passed the idle checks and is about to claim the run. Keyed by task id.
+    ParkPrepared,
     /// A park (SPEC-512 PRK-003): its end intent is set under the launch lock; the session has
     /// not been asked to end yet. The path is the task id.
     ParkDecided,
@@ -67,6 +69,9 @@ pub enum Point {
     ParkScreenRead,
     /// A live disconnected run was inspected and is about to be terminated. Keyed by run directory.
     LostRunTermination,
+    /// A close or stop escalation has found its attempt live and is about to terminate it.
+    /// The path is the task id.
+    EndEscalating,
     /// `mark_lost`: the run's loss won its record; the run's end intent is not read yet. The
     /// path is the task id.
     LossRecorded,
@@ -89,6 +94,8 @@ pub enum Point {
     /// Yulius sent the Enter of a line it typed into a session (SPEC-483 TYP-002); what Claude
     /// Code does with it is not known yet. The path is the task id.
     LineEntered,
+    /// The reader is about to take the run's end intent. The path is the task id.
+    RunEndTaking,
     /// A run's end reached its recorder (SPEC-483): the task's end intent was taken; nothing is
     /// recorded yet. The path is the task id.
     RunEndTaken,
@@ -104,6 +111,9 @@ pub enum Point {
     /// A passed merge candidate (SPEC-497 MQW-002) comes to a member to merge: members before it
     /// merged; its own run is not read again yet. The path is the member's task id.
     TrainMemberMerging,
+    /// A failed candidate has checked its members for failures and is deciding how to
+    /// account for their runs. The path is the candidate run id.
+    FailedTrainDeciding,
     /// Start onboarding (SPEC-256) read the sandbox `pending`; the start has not read it again
     /// yet. The path is the sandbox id.
     OnboardingApproved,
