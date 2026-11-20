@@ -30,7 +30,8 @@ Task #517 displayed Codex's exit instructions. The host drained shutdown output 
 - [x] Deliver native Codex resume to dev
 - [x] Preserve the parked grid until the resumed host attaches
 - [x] Verify chain eligibility and refresh stale PR observations
-- [ ] Deliver goal continuation and parking eligibility to dev
+- [ ] Deliver parking eligibility and Done status to dev
+- [ ] Deliver bounded Codex goal continuation to dev
 - [ ] Recover screens from tasks parked before the upgrade
 
 ## Acceptance criteria
@@ -76,7 +77,7 @@ Capture a separate screen at the park decision because exiting can clear the ent
 
 ## Delivery slices
 
-Deliver native Codex resume independently (PKR-002). The terminal delivery (PKR-001) includes the original pre-stop snapshot, phone geometry, and recovery through the resumed host's first snapshot. Subsequent deliveries cover goal continuation and parking eligibility (PKR-003 and PKR-004), then recovery of pre-upgrade screens. The earlier combined-head evidence describes development verification across these slices.
+Deliver native Codex resume independently (PKR-002). The terminal delivery (PKR-001) includes the original pre-stop snapshot, phone geometry, and recovery through the resumed host's first snapshot. After three goal review rounds the remaining work is split by behavior. Deliver parking eligibility, honest Done and bounded list reads (PKR-004) first. Then deliver Codex goal continuation (PKR-003) with regressions for a wait starting during rotation and a missing rollout on a replacement launch. Recover pre-upgrade screens in the final delivery. The earlier combined-head evidence describes development verification across these slices.
 
 The native-resume regression checks the rollout in the native launch and reads the first and second user prompts from its on-disk history. It also exercises absent IDs and an older lineage entry. No paid provider is involved.
 

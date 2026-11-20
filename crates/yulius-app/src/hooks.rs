@@ -17,7 +17,7 @@ use yulius_domain::ids::TaskId;
 use yulius_domain::rotation::{self, Decision, Trigger};
 use yulius_domain::spec_format::{DecisionFiles, NamedFile, decision_titles, project_layout};
 use yulius_domain::spec_format::{DecisionsLocation, SpecPolicy, validate_spec_for};
-use yulius_domain::task::{Activity, PullSignal, TaskStatus};
+use yulius_domain::task::{Activity, TaskStatus};
 
 use crate::capacity::{CONTINUATION_MAX, HOLD_RETRY_SECS};
 use crate::context::App;
@@ -29,32 +29,6 @@ use crate::ports::store::TaskFieldUpdate;
 
 /// Consecutive Stop-hook blocks per turn before the task needs attention (AC-DSC-3).
 pub const MAX_GATE_BLOCKS: u32 = 3;
-/// The resumed CLI submits a moved Stop continuation as an ordinary prompt. Carry
-/// its retry number with it so a failed switch costs nothing and a repeated
-/// submit cannot charge twice. Workflow and reviewer instructions may follow it.
-const MOVED_GOAL_REPAIR: &str = "Yulius goal continuation, attempt ";
-
-fn moved_gate_prompt(task: &TaskRecord, reasons: &[String]) -> String {
-    let why = reasons.join("\n\n");
-    if task.harness == Harness::Codex && task.mode == TaskMode::Goal {
-        format!("{MOVED_GOAL_REPAIR}{}\n\n{why}", task.gate_blocks + 1)
-    } else {
-        why
-    }
-}
-
-/// True only for the numbered repair a moved Codex goal is opening with.
-pub(crate) fn moved_goal_repair(task: &TaskRecord, prompt: Option<&str>, block: u32) -> bool {
-    task.harness == Harness::Codex
-        && task.mode == TaskMode::Goal
-        && (1..=MAX_GATE_BLOCKS).contains(&block)
-        && prompt
-            .and_then(|text| text.lines().next())
-            .is_some_and(|line| {
-                line.strip_prefix(MOVED_GOAL_REPAIR) == Some(block.to_string().as_str())
-            })
-}
-
 /// Largest repository document read for the briefing or the gate.
 const MAX_DOC_BYTES: u64 = 256 * 1024;
 /// Largest number of decision records read.
@@ -971,9 +945,7 @@ impl App {
         }
         // As it is now: a Stop of the turn before may have settled it since it was read.
         let task = store.task(&ctx.task.id).await?.ok_or(AppError::NotFound)?;
-        let resumed_repair = ctx.attempt.launch_kind == crate::model::LaunchKind::Resume
-            && moved_goal_repair(&task, input.prompt.as_deref(), task.gate_blocks);
-        if task.gate_blocks != 0 && !resumed_repair {
+        if task.gate_blocks != 0 {
             let update = TaskFieldUpdate {
                 gate_blocks: Some(0),
                 ..TaskFieldUpdate::default()
@@ -1017,85 +989,23 @@ impl App {
         Ok(HookReply::Output(HookOutput::default()))
     }
 
-    /// A person, a held prompt or a pending delivery event owns the next move.
-    async fn codex_goal_waits(&self, task: &TaskRecord) -> AppResult<bool> {
-        if task.harness != Harness::Codex || task.mode != TaskMode::Goal {
-            return Ok(false);
-        }
-        Ok(self.deps.store.task_needs_you(&task.id).await?.is_some()
-            || self
-                .browser_tab_requests(&task.sandbox_id)
-                .await
-                .contains(task.id.as_str())
-            || self.deps.store.pending_hold(&task.id).await?.is_some()
-            || self.is_paused(task).await
-            || self.pr_news_due(task).await
-            || self.background_or_wait_now(&task.id).await == Some(true))
-    }
-
-    /// Why the discipline gate continues this turn on its present or next subscription.
+    /// The discipline gate's reasons at a turn end (the spec gate).
     async fn stop_reasons(&self, task: &TaskRecord) -> AppResult<Vec<String>> {
-        let mut reasons: Vec<_> = self.spec_gate(task).await?.into_iter().collect();
-        if task.harness == Harness::Codex && task.mode == TaskMode::Goal {
-            if crate::sandboxes::plan_open(&self.deps.store.steps(&task.id).await?) {
-                reasons.push(
-                    "Continue the goal by completing the unfinished steps in your plan.".into(),
-                );
-            }
-            // The CLI's hook request lasts five seconds. A remote check must
-            // leave time for rotation and the response, even on a slow GitHub.
-            let pull = tokio::time::timeout(
-                std::time::Duration::from_millis(750),
-                self.task_pull_signal(task, None),
-            )
-            .await;
-            let failing = match pull {
-                Ok(Ok(signal)) => signal == Some(PullSignal::Failing),
-                _ => {
-                    let cached = self
-                        .observed_pulls
-                        .get(&task.sandbox_id, &task.id)
-                        .flatten();
-                    // A known open delivery remains the agent's to verify even
-                    // when this hook cannot read its head before the deadline.
-                    if cached != Some(PullSignal::Failing)
-                        && reasons.is_empty()
-                        && self
-                            .deps
-                            .store
-                            .delivery(&task.id)
-                            .await?
-                            .is_some_and(|record| {
-                                record.stage == yulius_domain::delivery::DeliveryStage::PrOpen
-                            })
-                    {
-                        reasons.push("Continue the goal: verify the current pull request checks and repair any failures.".into());
-                    }
-                    cached == Some(PullSignal::Failing)
-                }
-            };
-            if failing {
-                reasons.push(
-                    "Continue the goal by repairing the failing checks on your pull request."
-                        .into(),
-                );
-            }
-        }
-        Ok(reasons)
+        Ok(self.spec_gate(task).await?.into_iter().collect())
     }
 
     /// The prompt for a session resumed on another subscription after a held turn: the gate's
     /// reasons when the gate would have kept the agent working, else none (a goal-mode session
     /// gets its goal again when it launches).
     pub(crate) async fn stop_continuation(&self, task: &TaskRecord) -> Option<String> {
-        if task.gate_blocks >= MAX_GATE_BLOCKS || self.codex_goal_waits(task).await.ok()? {
+        if task.gate_blocks >= MAX_GATE_BLOCKS {
             return None;
         }
         let reasons = self.stop_reasons(task).await.ok()?;
         if reasons.is_empty() {
             return None;
         }
-        Some(moved_gate_prompt(task, &reasons))
+        Some(reasons.join("\n\n"))
     }
 
     async fn hook_stop(
@@ -1141,8 +1051,7 @@ impl App {
         if let Err(err) = self.sync_steps_from_spec(task).await {
             tracing::warn!(error = %err, task = %task.id, "step sync from the spec failed");
         }
-        let goal_waits = self.codex_goal_waits(task).await?;
-        let reasons = if failed || goal_waits {
+        let reasons = if failed {
             Vec::new()
         } else {
             self.stop_reasons(task).await?
@@ -1180,15 +1089,6 @@ impl App {
         let now = self.now();
         self.runtime(&task.id)
             .with_queue(|queue| queue.stop_seen(now, read));
-        // A Codex goal has no CLI-driven goal check after a silent move.
-        // Flag its exhausted repair before rotation can leave it idle.
-        if task.harness == Harness::Codex
-            && task.mode == TaskMode::Goal
-            && !reasons.is_empty()
-            && task.gate_blocks >= MAX_GATE_BLOCKS
-        {
-            return self.exhausted_stop(task, &reasons).await;
-        }
         // A reviewer a usage limit cut off moves the session to a subscription that can run
         // its model, at this turn's end, as a switch the pool decides would (SPEC-493 RLM-002).
         // While a round is open its cut-off may be in this turn's lines: they are read first.
@@ -1210,15 +1110,13 @@ impl App {
                 crate::review::ReviewerMove::To(account) => {
                     let prompts_before = self.prompts_passed(&task.id);
                     self.await_transcript_read(&task.id).await;
-                    if goal_waits
-                        || background
+                    if background
                         || self.background_work_now(&task.id).await != Some(false)
                         || self.prompt_waits_for_turns_end(&task.id, prompts_before)
                     {
                         later();
                     } else {
-                        let continuation =
-                            gate_continues.then(|| moved_gate_prompt(task, &reasons));
+                        let continuation = gate_continues.then(|| reasons.join("\n\n"));
                         let app = Arc::clone(self);
                         let task_id = task.id.clone();
                         tokio::spawn(async move {
@@ -1301,7 +1199,7 @@ impl App {
             && let Some(version) = self.claude_code_move_due(&task.id, &ctx.attempt.id).await
             && !self.keeps_own_goal(task)
         {
-            let continuation = gate_continues.then(|| moved_gate_prompt(task, &reasons));
+            let continuation = gate_continues.then(|| reasons.join("\n\n"));
             let app = Arc::clone(self);
             let task_id = task.id.clone();
             let run = (ctx.attempt.id.clone(), current.clone());
@@ -1313,7 +1211,7 @@ impl App {
         }
         let stays = match decision {
             (Decision::Stay, _) => true,
-            (Decision::Switch { .. }, _) if goal_waits || background || busy => true,
+            (Decision::Switch { .. }, _) if background || busy => true,
             (Decision::Switch { .. }, _) if prompt_waits => {
                 tracing::info!(
                     task = %task.id,
@@ -1327,7 +1225,7 @@ impl App {
             (Decision::Switch { account }, reason) => {
                 // The agent waits here while it moves; the resumed session gets the gate's
                 // reasons as its prompt when the gate would have kept it working.
-                let continuation = gate_continues.then(|| moved_gate_prompt(task, &reasons));
+                let continuation = gate_continues.then(|| reasons.join("\n\n"));
                 let app = Arc::clone(self);
                 let task_id = task.id.clone();
                 let reason = format!("{reason:?}");
@@ -1352,7 +1250,7 @@ impl App {
 
         // A clean turn end on the same subscription may carry one gentle step nudge (STP-008).
         // It is not a gate block: it is given once and never escalates to "needs attention".
-        if reasons.is_empty() && stays && !failed && !background && !goal_waits {
+        if reasons.is_empty() && stays && !failed && !background {
             match self.take_turn_end_nudge(task).await {
                 Ok(Some(text)) => return Ok(HookReply::Output(HookOutput::block(text))),
                 Ok(None) => {}
@@ -1360,7 +1258,7 @@ impl App {
             }
         }
         if reasons.is_empty() {
-            if !goal_waits && task.gate_blocks != 0 {
+            if task.gate_blocks != 0 {
                 let update = TaskFieldUpdate {
                     gate_blocks: Some(0),
                     ..TaskFieldUpdate::default()
@@ -1378,7 +1276,24 @@ impl App {
         }
 
         if task.gate_blocks >= MAX_GATE_BLOCKS {
-            return self.exhausted_stop(task, &reasons).await;
+            let stopped = format!(
+                "stopped {MAX_GATE_BLOCKS} times without fixing: {}",
+                reasons.join(" ").chars().take(300).collect::<String>()
+            );
+            // Said by the task itself, for whoever opens it later (SPEC-472), and in its
+            // terminal for the viewers there now.
+            self.flag_attention(
+                &task.id,
+                crate::attention::AttentionRecord::yulius(
+                    &format!("The agent {stopped}"),
+                    "Tell it how to go on, in the terminal.",
+                ),
+            )
+            .await?;
+            self.runtime(&task.id)
+                .hub
+                .notice(format!("Yulius: the agent {stopped}"));
+            return Ok(HookReply::Output(HookOutput::default()));
         }
         let update = TaskFieldUpdate {
             gate_blocks: Some(task.gate_blocks + 1),
@@ -1387,27 +1302,6 @@ impl App {
         store.update_task(&task.id, &update, self.now()).await?;
         self.publish_task(&task.id).await;
         Ok(HookReply::Output(HookOutput::block(reasons.join("\n\n"))))
-    }
-
-    async fn exhausted_stop(&self, task: &TaskRecord, reasons: &[String]) -> AppResult<HookReply> {
-        let stopped = format!(
-            "stopped {MAX_GATE_BLOCKS} times without fixing: {}",
-            reasons.join(" ").chars().take(300).collect::<String>()
-        );
-        // Said by the task itself, for whoever opens it later (SPEC-472), and in its
-        // terminal for the viewers there now.
-        self.flag_attention(
-            &task.id,
-            crate::attention::AttentionRecord::yulius(
-                &format!("The agent {stopped}"),
-                "Tell it how to go on, in the terminal.",
-            ),
-        )
-        .await?;
-        self.runtime(&task.id)
-            .hub
-            .notice(format!("Yulius: the agent {stopped}"));
-        Ok(HookReply::Output(HookOutput::default()))
     }
 
     /// A turn of a run without hooks ended (seen in its transcript): run a pending proactive

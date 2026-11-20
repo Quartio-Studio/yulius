@@ -369,8 +369,7 @@ watching, steering and unblocking.
   half an hour with nothing going on (`YULIUS_PARK_AFTER_MINUTES`): its agent process ends,
   so it holds neither a session slot nor memory, and it stays in the list where it was, marked
   "parked", with its last terminal screen, idle duration, transcript, question and pull request.
-  Unfinished work keeps the session live. Codex goal tasks get up to three Stop continuations
-  for open steps or failing PR checks before Yulius flags them for their owner. Writing to it, or Resume, continues
+  Unfinished work keeps the session live. Writing to it, or Resume, continues
   the same session with its history (SPEC-512). A queued task says what it waits for ("Waiting
   for a free session: 8 of 8 in use"), and the Capacity card shows working, parked, idle and
   queued sessions apart.

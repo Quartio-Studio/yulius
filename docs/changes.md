@@ -6,8 +6,8 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-20
 
-- Codex goal tasks continue after a turn with open steps or failing PR checks. Unfinished work
-  keeps its session through the idle grace period and digest parking (SPEC-558, #1490).
+- Tasks keep their sessions while work is unfinished or PR checks cannot be verified.
+  Previously parked tasks with open work appear under Needs you (SPEC-558, #1490).
 
 - The store migration regression counts SQLite instructions and verifies completed step spans,
   so host contention cannot fail the backfill test (SPEC-559, #1484).
