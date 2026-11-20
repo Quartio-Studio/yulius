@@ -88,7 +88,12 @@ test('a short request starts at once and "Run after" chains it', async ({ app, b
 const BROAD = 'Harden the security of the whole product: headers, secrets and every endpoint.';
 
 test('a broad request started now is stopped and offered as a supertask; "Run as a supertask" creates one (SPEC-188)', async ({ app, browser, screen }) => {
-  await app.open(mock('/s/studio'));
+  await app.open(mock('/s/studio', '&hold=/api/sandboxes/sb_studio/tasks'));
+  // Simulate a first list response that arrives after the ordinary five-second assertion budget.
+  await browser.evaluate(() => {
+    const db = (window as unknown as { __yuliusMock: { release(): void } }).__yuliusMock;
+    setTimeout(() => db.release(), 6_500);
+  });
   await expect(screen.getByRole('link', /Checkout API/).first()).toBeVisible();
   const prompt = screen.getByRole('textbox', 'Task prompt');
   await prompt.fill(BROAD);
