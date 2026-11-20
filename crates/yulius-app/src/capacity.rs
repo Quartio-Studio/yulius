@@ -804,6 +804,21 @@ impl App {
     }
 
     async fn resume_paused(self: &Arc<Self>, pause: &PauseRecord) -> Resume {
+        // Startup can be handing the reattached run to its owner. Leave this pause for the
+        // next pass and keep serving the other tasks in the pool.
+        let runtime = self.existing_runtime(&pause.task_id);
+        let _moving = if let Some(runtime) = &runtime {
+            let Ok(moving) = runtime.reattach_move.try_lock() else {
+                return Resume::Waiting(Some(self.now()));
+            };
+            Some(moving)
+        } else {
+            None
+        };
+        // The hand-over may have finished since the round listed this pause.
+        if !self.pause_open(pause).await {
+            return Resume::Gone;
+        }
         let store = &self.deps.store;
         let task = match store.task(&pause.task_id).await {
             Ok(Some(task)) if task.status == TaskStatus::WaitingCapacity => task,

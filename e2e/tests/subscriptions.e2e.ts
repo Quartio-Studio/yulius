@@ -144,23 +144,24 @@ test('a folded subscription marks a reading that may be out of date, and a windo
  * Opens the Subscriptions page with Claude #4 stored `ok`, read just now, its 5-hour window at
  * 100 % and resetting in ten minutes: at its limit until then, by the clock alone.
  */
-async function openWithAWindowThatResetsInTenMinutes(app: { open: (path: string) => Promise<void> }, browser: Browser) {
+async function openWithAWindowThatResetsInTenMinutes(app: { open: (path: string) => Promise<void> }, browser: Browser, startHour: number) {
   await app.open(mock('/s/studio', '&ambient=0'));
-  const resetAt = await browser.evaluate(() => {
+  const resetLabel = await browser.evaluate((hour) => {
+    const now = new Date().setHours(hour, 55, 0, 0);
+    const reset = new Date(now + 10 * 60e3);
+    Date.now = () => now;
     type Account = { label: string; status: string; usage: Record<string, unknown> };
     const db = (window as unknown as { __yuliusMock: { accounts: Account[] } }).__yuliusMock;
     const four = db.accounts.find((a) => a.label === 'Claude #4')!;
-    // Ten minutes from 23:55 is on the next local calendar day, whatever time CI runs.
-    const reading = new Date();
-    reading.setHours(23, 55, 0, 0);
-    Date.now = () => reading.getTime();
-    const reset = new Date(Date.now() + 10 * 60e3);
-    Object.assign(four, { status: 'ok', usage: { ...four.usage, primary: { used_percent: 100, resets_at: reset.toISOString(), window_minutes: 300 }, observed_at: reading.toISOString() } });
+    Object.assign(four, { status: 'ok', usage: { ...four.usage, primary: { used_percent: 100, resets_at: reset.toISOString(), window_minutes: 300 }, observed_at: new Date(now).toISOString() } });
     location.hash = '#/admin/accounts';
-    return reset.toLocaleDateString(undefined, { weekday: 'long' }) + ' ' + reset.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
-  });
+    return {
+      weekday: reset.toLocaleDateString(undefined, { weekday: 'long' }),
+      time: new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit' }).format(reset),
+    };
+  }, startHour);
   await firstShown(browser.locator('main .account-card').first());
-  return resetAt;
+  return resetLabel;
 }
 
 /**
@@ -180,7 +181,7 @@ type Sent = { __yuliusMock: { sent?: Record<string, number>; asked?: Record<stri
 // the card stops saying so, with no reading and no list read; the row then says the window has
 // reset since.
 test('a card stops saying Limit reached the moment its window resets, with no new reading (SPEC-473)', async ({ app, browser }) => {
-  const resetAt = await openWithAWindowThatResetsInTenMinutes(app, browser);
+  const reset = await openWithAWindowThatResetsInTenMinutes(app, browser, 23);
   // A card that has nothing new to say is not drawn again by the clock: its line stays the
   // very element it was (marked here, looked at once the clock has gone on). Claude #3 was
   // never read, so nothing on its card depends on the time.
@@ -190,7 +191,7 @@ test('a card stops saying Limit reached the moment its window resets, with no ne
   });
   const before = await cardSays(browser, 'main .account-card', 'pawel@example.com');
   expect(before.state).toBe('Limit reached');
-  expect(before.limits).toEqual([`5-hour window used up · resets ${resetAt}`]);
+  expect(before.limits).toEqual([`5-hour window used up · resets ${reset.weekday} ${reset.time}`]);
   expect(before.rows[0].slice(0, 1).concat(before.rows[0].slice(2))).toEqual(['5-hour window', '100% used']);
   expect(before.age).toBe('Usage read just now');
   expect(await axeViolations(browser)).toEqual([]);
@@ -218,7 +219,9 @@ test('a card stops saying Limit reached the moment its window resets, with no ne
 // SPEC-473 RFR-012: the clock draws only what depends on it. A name being typed stays as it is,
 // with the keyboard in its field, while the card's state changes beside it.
 test('a name being edited survives the clock drawing its card again (SPEC-473)', async ({ app, browser, screen }) => {
-  await openWithAWindowThatResetsInTenMinutes(app, browser);
+  const reset = await openWithAWindowThatResetsInTenMinutes(app, browser, 12);
+  const before = await cardSays(browser, 'main .account-card', 'pawel@example.com');
+  expect(before.limits).toEqual([`5-hour window used up · resets at ${reset.time}`]);
   await screen.getByRole('button', 'Rename Claude #4').click();
   const name = screen.getByRole('textbox', 'New name for Claude #4');
   await name.fill('Half typed');

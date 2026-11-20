@@ -720,9 +720,9 @@ impl App {
     async fn await_goal_verdict(self: &Arc<Self>, task_id: &TaskId, stop_ms: i64) {
         let runtime = self.runtime(task_id);
         let deadline = tokio::time::Instant::now() + GOAL_VERDICT_WAIT;
-        while runtime.verdict_stop_ms.pending() == stop_ms
-            && runtime.is_watching()
-            && tokio::time::Instant::now() < deadline
+        // A resumed process can send Stop before its watcher attaches. The run’s exit or loss
+        // cancels the slot directly.
+        while runtime.verdict_stop_ms.pending() == stop_ms && tokio::time::Instant::now() < deadline
         {
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
@@ -1028,12 +1028,13 @@ impl App {
         if let Some(achieved) = facts.goal_achieved {
             runtime.goal_achieved.store(achieved, Ordering::SeqCst);
         }
-        runtime.goal_open.store(facts.goal_open, Ordering::SeqCst);
-        runtime
-            .goal_unfinished
-            .store(facts.goal_unfinished, Ordering::SeqCst);
-        // A goal recorded while Yulius was down was taken: a restarted launch-goal watch ends.
+        // A resumed run can have an inherited goal and no goal records of its own.
         if facts.goal_recorded {
+            runtime.goal_open.store(facts.goal_open, Ordering::SeqCst);
+            runtime
+                .goal_unfinished
+                .store(facts.goal_unfinished, Ordering::SeqCst);
+            // A goal recorded while Yulius was down was taken: a restarted launch-goal watch ends.
             runtime.goal_submitted.store(true, Ordering::SeqCst);
         }
         runtime
