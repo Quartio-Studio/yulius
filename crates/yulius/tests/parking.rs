@@ -1410,9 +1410,23 @@ fn a_handed_off_tasks_outcome_reaches_its_source() -> TestResult {
         target.sandbox_id = other.id.clone();
         target.number = 1;
         target.title = "Add the endpoint".into();
-        target.status = TaskStatus::Closed;
-        target.activity = None;
+        target.status = TaskStatus::Running;
+        target.activity = Some(Activity::Working);
         TaskStore::insert_task(app.deps.store.as_ref(), &target).await?;
+        // Its pull request merged (review round 1: the link names owner and repository).
+        use yulius_app::ports::store_ext::DeliveryStore as _;
+        app.deps
+            .store
+            .transition_delivery(
+                &yulius_domain::delivery::DeliveryStage::None,
+                &yulius_app::delivery::DeliveryRecord {
+                    task_id: target.id.clone(),
+                    stage: yulius_domain::delivery::DeliveryStage::MergedIntegration,
+                    pr_number: Some(7),
+                    updated_at: app.now(),
+                },
+            )
+            .await?;
         app.deps
             .store
             .insert_handoff(&HandoffRecord {
@@ -1432,7 +1446,14 @@ fn a_handed_off_tasks_outcome_reaches_its_source() -> TestResult {
             .await?;
         wait_for("the outcome told", Duration::from_secs(30), || async {
             app.tell_handoff_outcomes().await;
-            screen(&app, &id).contains("Yulius: the task you handed off, api #1")
+            let shown = screen(&app, &id);
+            shown.contains(&format!(
+                "the task you handed off, {}/api #1",
+                other.repo_owner
+            )) && shown.contains(&format!(
+                "is merged. Pull request: https://github.com/{}/api/pull/7",
+                other.repo_owner
+            ))
         })
         .await?;
         assert!(

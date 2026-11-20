@@ -3163,3 +3163,12 @@ a.update-text:hover { text-decoration: underline; text-underline-offset: 2px; }
 .digest-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
 .digest-item a { display: inline-flex; align-items: center; min-height: 24px; }
 .digest-detail { overflow-wrap: anywhere; }
+
+/* A task's handoffs (SPEC-512 HOF-004, HOF-005): floating over the terminal, never resizing it;
+   a long prompt scrolls inside its card and the answer stays in view. */
+.handoffs { position: absolute; bottom: 8px; right: 16px; z-index: var(--z-float); display: flex; flex-direction: column; gap: 8px; width: min(560px, calc(100% - 32px)); max-height: 60%; overflow: auto; }
+.handoffs[hidden] { display: none; }
+.handoffs > * { padding: 8px 12px; border: 1px solid var(--border-strong); border-radius: var(--radius); background: var(--surface); color: var(--text); font-size: var(--fs-sm); line-height: var(--lh-sm); box-shadow: var(--shadow); }
+.handoff-request { display: flex; flex-direction: column; gap: 8px; border-left: 3px solid var(--warn); }
+.handoff-prompt { margin: 0; max-height: 30vh; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-family: var(--font-mono); font-size: var(--fs-xs); }
+.handoff-from { display: flex; align-items: center; gap: 6px; }

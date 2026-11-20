@@ -51,3 +51,17 @@ test("a sandbox's writers close it to handoffs (SPEC-512 HOF-002)", async ({ app
   const accept = await browser.evaluate(() => JSON.parse(JSON.stringify((window as unknown as Mocked).__yuliusMock.handoffs?.accept ?? {})));
   expect(Object.values(accept)).toEqual([false]);
 });
+
+test('a long handoff floats over the terminal and its answer stays in view (SPEC-512 HOF-004, review)', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/t/12', '&ambient=0&handoff=long'));
+  const request = screen.getByRole('region', 'Handoff to quartio/web');
+  await firstShown(request);
+  const placed = await browser.evaluate(() => {
+    const panel = document.querySelector('.handoffs');
+    const approve = [...document.querySelectorAll('.handoff-request button')].find((b) => b.textContent === 'Approve');
+    if (!panel || !approve) return null;
+    const box = approve.getBoundingClientRect();
+    return { position: getComputedStyle(panel).position, inView: box.top >= 0 && box.bottom <= window.innerHeight };
+  });
+  expect(placed).toEqual({ position: 'absolute', inView: true });
+});

@@ -234,7 +234,7 @@ function seed(params) {
     digest: { setting: { enabled: false, at: '18:00', park_idle_hours: null }, latest: params.get('digest') ? mockDigest('dg_mock_1') : null },
     // Handoffs between sandboxes (SPEC-512 part 5): `handoff=1` seeds a request on #12 and a
     // provenance on #11.
-    handoffs: mockHandoffs(params.get('handoff')),
+    handoffs: mockHandoffs(params.get('handoff'), params.get('handoff') === 'long'),
     vidoc: { key: null, setAt: null, setBy: null, config: params.get('vidoc') === 'config', offAt: params.get('vidoc_off') ? '2026-10-30T09:00:00Z' : null, offBy: params.get('vidoc_off') ? 'superadmin' : null, fail: params.get('vidoc_fail') === '1', repo: params.get('vidoc_repo'), patchFail: params.get('vidoc_patch_fail') === '1' },
     // fail=<path> answers 500 to GET requests of that exact path, to show how a view says a load
     // failed (in place, naming what failed, with Try again; #147). A test may set `failPath` later;
@@ -5683,10 +5683,10 @@ route('PUT', '/api/admin/digest', ({ db, body }) => {
 function handoffsOf(db) {
   return db.handoffs;
 }
-function mockHandoffs(seeded) {
+function mockHandoffs(seeded, long) {
   const handoffs = { setting: { mode: seeded ? 'ask' : 'off', max_depth: 3, per_day: 20 }, accept: {}, byTask: {} };
   if (seeded) {
-    handoffs.byTask.tsk_studio_12 = { from: null, handoffs: [{ id: 'ho_1', target_sandbox_id: 'sb_web', target_sandbox: 'quartio/web', title: 'Add the items endpoint', prompt: 'Add GET /v1/items returning the catalog, with tests.', harness: null, model: null, effort: null, mode: 'goal', state: 'requested', reason: null, target_number: null, target_link: null, created_at: new Date().toISOString() }] };
+    handoffs.byTask.tsk_studio_12 = { from: null, handoffs: [{ id: 'ho_1', target_sandbox_id: 'sb_web', target_sandbox: 'quartio/web', title: 'Add the items endpoint', prompt: long ? Array.from({ length: 60 }, (_, i) => `Step ${i + 1}: add part ${i + 1} of the items endpoint.`).join('\n') : 'Add GET /v1/items returning the catalog, with tests.', harness: null, model: null, effort: null, mode: 'goal', state: 'requested', reason: null, target_number: null, target_link: null, created_at: new Date().toISOString() }] };
     handoffs.byTask.tsk_studio_11 = { from: { sandbox: 'quartio/web', number: 4, link: `${ORIGIN}/s/web/t/4` }, handoffs: [] };
   }
   return handoffs;

@@ -42,7 +42,11 @@ export function handoffsPanel(ctx, task, isOwner) {
     if (state.from) {
       rows.push(h('div', { class: 'handoff-from' }, icon('git-branch', { size: 14 }), h('span', null, 'Handed off from '), linkTo(state.from.link, `${state.from.sandbox} #${state.from.number}`)));
     }
-    for (const handoff of state.handoffs.slice(0, 5)) {
+    // Every request still to answer, then the five newest others (review round 1: a refusal
+    // never hides a request).
+    const requested = state.handoffs.filter((x) => x.state === 'requested');
+    const others = state.handoffs.filter((x) => x.state !== 'requested').slice(0, 5);
+    for (const handoff of [...requested, ...others]) {
       if (handoff.state === 'requested') {
         const options = ['harness', 'model', 'effort', 'mode'].filter((k) => handoff[k]).map((k) => `${k}: ${handoff[k]}`).join(' · ');
         const approve = h('button', { type: 'button', class: 'btn btn-sm btn-primary' }, 'Approve');
@@ -99,7 +103,7 @@ export function handoffSettingCard(ctx) {
       h('div', { class: 'field' }, h('label', { class: 'field-label', for: 'handoffs-mode' }, 'Mode'), mode),
       h('div', { class: 'field' }, h('label', { class: 'field-label', for: 'handoffs-depth' }, 'Deepest chain'), depth),
       h('div', { class: 'field' }, h('label', { class: 'field-label', for: 'handoffs-per-day' }, 'Handoffs per owner a day'), perDay),
-      h('p', { class: 'muted xs' }, 'Off by default. A sandbox’s writers can close it to handoffs on its Settings page. Every handoff is audited on both sandboxes, and its work reaches dev only through its own pull request.'),
+      h('p', { class: 'muted xs' }, 'Off by default. A sandbox’s writers can close it to handoffs on its Git page. Every handoff is audited on both sandboxes, and its work reaches dev only through its own pull request.'),
       h('div', { class: 'row' }, save));
     form.addEventListener('submit', async (event) => {
       event.preventDefault();

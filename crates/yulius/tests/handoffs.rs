@@ -30,7 +30,7 @@ struct World {
     bob: Creds,
 }
 
-/// Alice (an instance administrator) may write in `s1` (`app`), `s2` (`api`) and `s3` (`web`);
+/// Alice (an instance administrator) may write in `s1` (`app`), `s2` (`api`) and administers `s3` (`web`);
 /// `s4` (`secret`) is not hers. Her task `t1` in `s1` runs with the token `tok-t1`.
 async fn world() -> Result<World, Error> {
     let h = harness()?;
@@ -47,9 +47,11 @@ async fn world() -> Result<World, Error> {
     ] {
         seed_sandbox(&h, id, slug, alice_id.as_str()).await?;
     }
-    for repo in ["acme/app", "acme/api", "acme/web"] {
+    for repo in ["acme/app", "acme/api"] {
         h.github.set_perm("alice", repo, perms("write"));
     }
+    // An administrator of `web`, who also saves its delivery profile.
+    h.github.set_perm("alice", "acme/web", perms("admin"));
     h.github.set_perm("bob", "acme/app", perms("write"));
     // A signed-in subscription, so tasks may start.
     h.store
@@ -255,7 +257,7 @@ async fn automatic_creates_the_task_as_the_owner_within_the_checks() -> TestResu
         &w.alice,
     )
     .await?;
-    assert_eq!(from.body["from"]["sandbox"], "app", "{}", from.body);
+    assert_eq!(from.body["from"]["sandbox"], "acme/app", "{}", from.body);
     assert_eq!(from.body["from"]["number"], 1);
     for sandbox in ["s1", "s2"] {
         let rows = audits(&w, sandbox).await?;
@@ -323,6 +325,28 @@ async fn automatic_creates_the_task_as_the_owner_within_the_checks() -> TestResu
             .await?
         )
         .contains("does not accept")
+    );
+    // Saving the sandbox's delivery profile keeps its opt-out (review round 1).
+    let saved = call(
+        &w.h.router,
+        Method::PATCH,
+        "/api/sandboxes/s3",
+        Some(json!({"profile": {"preset": "standard", "integration_branch": "dev", "production_branch": "main", "merge": "squash", "promote": "merge_commit", "auto_promote": false, "require_checks": true, "environments": []}})),
+        &w.alice,
+    )
+    .await?;
+    assert_eq!(saved.status, StatusCode::OK, "{}", saved.body);
+    let still = call(
+        &w.h.router,
+        Method::GET,
+        "/api/sandboxes/s3/handoffs",
+        None,
+        &w.alice,
+    )
+    .await?;
+    assert_eq!(
+        still.body["accept"], false,
+        "the opt-out survives a profile save"
     );
     assert!(
         audits(&w, "s1")
@@ -459,7 +483,7 @@ async fn ask_stores_a_request_the_owner_answers_in_a_browser() -> TestResult {
             shown["prompt"].as_str(),
             shown["target_sandbox"].as_str()
         ),
-        (Some("requested"), Some("Add GET /v1/items"), Some("api")),
+        (Some("requested"), Some("Add GET /v1/items"), Some("acme/api")),
         "{}",
         page.body
     );
@@ -622,5 +646,197 @@ async fn an_outcome_waits_for_the_targets_end() -> TestResult {
         w.h.store.untold_handoffs().await?.is_empty(),
         "and is not asked again"
     );
+    Ok(())
+}
+
+/// SPEC-512 HOF-004 (review round 1): two approvals at once create one task; the other is told
+/// it was answered meanwhile.
+#[tokio::test]
+async fn two_approvals_at_once_create_one_task() -> TestResult {
+    let w = world().await?;
+    set_mode(&w, "ask", 3, 20).await?;
+    let asked = hand(
+        &w,
+        "t1",
+        json!({"sandbox": "api", "title": "Once", "prompt": "Once"}),
+    )
+    .await?
+    .map_err(|e| e.to_string())?;
+    let path = format!(
+        "/api/tasks/t1/handoffs/{}",
+        asked["id"].as_str().unwrap_or_default()
+    );
+    let (a, b) = tokio::join!(
+        call(
+            &w.h.router,
+            Method::POST,
+            &path,
+            Some(json!({"approve": true})),
+            &w.alice
+        ),
+        call(
+            &w.h.router,
+            Method::POST,
+            &path,
+            Some(json!({"approve": true})),
+            &w.alice
+        ),
+    );
+    let mut statuses = [a?.status, b?.status];
+    statuses.sort();
+    assert_eq!(statuses, [StatusCode::OK, StatusCode::CONFLICT]);
+    let tasks = call(
+        &w.h.router,
+        Method::GET,
+        "/api/sandboxes/s2/tasks",
+        None,
+        &w.alice,
+    )
+    .await?;
+    assert_eq!(tasks.body.as_array().map(Vec::len), Some(1), "one task");
+    Ok(())
+}
+
+/// SPEC-512 HOF-003 (review round 1): every refusal is audited, also invisible text and an
+/// agent secret of the source sandbox; a full hour of tools refuses in automatic mode without
+/// leaving a request, and is not counted in the day.
+#[tokio::test]
+async fn every_refusal_is_audited_and_a_full_hour_leaves_no_request() -> TestResult {
+    let w = world().await?;
+    set_mode(&w, "automatic", 3, 100).await?;
+    let hidden = hand(
+        &w,
+        "t1",
+        json!({"sandbox": "api", "title": "T", "prompt": "P\u{200b}"}),
+    )
+    .await?;
+    assert!(hidden.is_err());
+    let created = call(
+        &w.h.router,
+        Method::POST,
+        "/api/sandboxes/s1/agent-secrets",
+        Some(json!({"name": "SHOP_TOKEN", "value": "shop-token-value-0123456789"})),
+        &w.alice,
+    )
+    .await?;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
+    let secret = hand(
+        &w,
+        "t1",
+        json!({"sandbox": "api", "title": "T", "prompt": "Use shop-token-value-0123456789"}),
+    )
+    .await?;
+    assert!(
+        secret.is_err_and(|e| e.contains("agent secret")),
+        "a secret stays in its sandbox"
+    );
+    let refused: Vec<String> = audits(&w, "s1")
+        .await?
+        .into_iter()
+        .filter(|d| d.starts_with("refused:"))
+        .collect();
+    assert_eq!(refused.len(), 2, "{refused:?}");
+    for n in 0..20 {
+        let made = hand(
+            &w,
+            "t1",
+            json!({"sandbox": "api", "title": format!("T{n}"), "prompt": "P"}),
+        )
+        .await?;
+        assert!(made.is_ok(), "{n}: {made:?}");
+    }
+    let full = hand(
+        &w,
+        "t1",
+        json!({"sandbox": "api", "title": "T21", "prompt": "P"}),
+    )
+    .await?;
+    assert!(full.is_err_and(|e| e.contains("at most 20 tasks an hour")));
+    let page = call(
+        &w.h.router,
+        Method::GET,
+        "/api/tasks/t1/handoffs",
+        None,
+        &w.alice,
+    )
+    .await?;
+    let requested = page.body["handoffs"].as_array().map_or(0, |h| {
+        h.iter()
+            .filter(|h| h["state"] == "requested" || h["state"] == "creating")
+            .count()
+    });
+    assert_eq!(requested, 0, "no request left behind");
+    use yulius_app::ports::store_ext::HandoffStore as _;
+    let alice = w.h.store.user_by_login("alice").await?.ok_or("alice")?.id;
+    assert_eq!(
+        w.h.store
+            .handoffs_since(&alice, yulius_domain::time::Timestamp(0))
+            .await?,
+        20
+    );
+    Ok(())
+}
+
+/// SPEC-512 HOF-003 (review round 1): an agent calls the tool over MCP once it is served.
+#[tokio::test]
+async fn the_tool_is_called_over_mcp() -> TestResult {
+    let w = world().await?;
+    set_mode(&w, "automatic", 3, 20).await?;
+    let r = call(
+        &w.internal,
+        Method::POST,
+        "/mcp",
+        Some(json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "sandbox_handoff", "arguments": {"sandbox": "api", "title": "Over MCP", "prompt": "P"}}})),
+        &Creds { bearer: Some("tok-t1".into()), ..Creds::default() },
+    )
+    .await?;
+    let text = r.body["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap_or_default()
+        .to_owned();
+    assert_eq!(r.body["result"]["isError"], json!(false), "{}", r.body);
+    assert!(text.contains("created"), "{text}");
+    let tasks = call(
+        &w.h.router,
+        Method::GET,
+        "/api/sandboxes/s2/tasks",
+        None,
+        &w.alice,
+    )
+    .await?;
+    assert_eq!(tasks.body[0]["title"], "Over MCP");
+    Ok(())
+}
+
+/// SPEC-512 HOF-005 (review round 1): nothing is typed into a source that shows a prompt to its
+/// person; the outcome waits.
+#[tokio::test]
+async fn an_outcome_waits_while_the_source_needs_its_person() -> TestResult {
+    let w = world().await?;
+    set_mode(&w, "automatic", 3, 20).await?;
+    let made = hand(
+        &w,
+        "t1",
+        json!({"sandbox": "api", "title": "A", "prompt": "A"}),
+    )
+    .await?
+    .map_err(|e| e.to_string())?;
+    let target =
+        TaskId::parse(&task_id_of(&w, "s2", made["task_number"].as_u64().ok_or("n")?).await?)?;
+    w.h.store
+        .transition_task(&target, None, TaskStatus::Closed, None, w.h.app.now())
+        .await?;
+    w.h.store
+        .transition_task(
+            &TaskId::parse("t1")?,
+            None,
+            TaskStatus::Running,
+            Some(yulius_domain::task::Activity::NeedsAttention),
+            w.h.app.now(),
+        )
+        .await?;
+    assert_eq!(w.h.app.tell_handoff_outcomes().await, 0);
+    use yulius_app::ports::store_ext::HandoffStore as _;
+    assert_eq!(w.h.store.untold_handoffs().await?.len(), 1, "still to tell");
     Ok(())
 }

@@ -9,6 +9,10 @@
 //! - HOF-001: [`App::set_handoff_setting`]; HOF-002: [`App::set_sandbox_handoffs`];
 //! - HOF-003: [`App::tool_sandbox_handoff`]; HOF-004: [`App::answer_handoff`];
 //! - HOF-005: [`App::task_handoffs`], [`App::tell_handoff_outcomes`]; HOF-006: `audit_handoff`.
+//!
+//! A handoff's row moves `requested` → `creating` → `created` (or back to `requested` when the
+//! creation fails), `requested` → `declined`, or is stored `refused`; each move is one
+//! conditional write, so two answers never both act.
 
 use std::sync::Arc;
 
@@ -19,7 +23,6 @@ use yulius_contracts::api::handoffs::{
 };
 use yulius_contracts::api::tasks::CreateTask;
 use yulius_contracts::events::UiEvent;
-use yulius_domain::delivery::DeliveryStage;
 use yulius_domain::ids::SandboxId;
 use yulius_domain::permission::Action;
 use yulius_domain::task::{Activity, TaskStatus};
@@ -28,12 +31,13 @@ use crate::auth::{AuthContext, rfc3339};
 use crate::context::App;
 use crate::coordination::AgentContext;
 use crate::error::{AppError, AppResult};
+use crate::lifecycle::MAX_PROMPT_BYTES;
 use crate::model::{SandboxRecord, TaskOrigin, TaskRecord, UserRecord};
 use crate::ports::store_ext::HandoffRecord;
 use crate::task_message::{Sender, Typed};
 
 /// The profile key of a sandbox's opt-out (HOF-002): anything but `false` accepts.
-const ACCEPT_KEY: &str = "accept_handoffs";
+pub(crate) const ACCEPT_KEY: &str = "accept_handoffs";
 /// The deepest a chain may be set to go.
 pub const MAX_DEPTH_LIMIT: u32 = 5;
 /// The most handoffs a day an owner may be allowed.
@@ -64,6 +68,11 @@ pub struct HandoffArgs {
     pub mode: Option<String>,
 }
 
+/// A sandbox's label: its repository, `owner/name`.
+fn label(sandbox: &SandboxRecord) -> String {
+    format!("{}/{}", sandbox.repo_owner, sandbox.repo_name)
+}
+
 /// The mode of a setting, read leniently: anything unknown is off.
 fn mode_of(setting: &HandoffSetting) -> &'static str {
     match setting.mode.as_str() {
@@ -82,7 +91,7 @@ pub fn accepts_handoffs(sandbox: &SandboxRecord) -> bool {
         != Some(false)
 }
 
-/// Why a handoff is refused before anything is stored for its chain (HOF-003), if it is.
+/// Why a handoff is refused for its chain (HOF-003), if it is.
 #[must_use]
 pub fn chain_refusal(chain: &[String], depth: u32, target: &str, max_depth: u32) -> Option<String> {
     if depth > max_depth {
@@ -228,7 +237,7 @@ impl App {
         Ok(*req)
     }
 
-    /// The sandbox `name` names (its id, slug, full repository or a short name only one has).
+    /// The sandbox `name` names (its id, slug, `owner/name`, or a name only one sandbox has).
     async fn sandbox_named(&self, name: &str) -> AppResult<Option<SandboxRecord>> {
         let wanted = name.trim().to_lowercase();
         let mut short = Vec::new();
@@ -236,11 +245,9 @@ impl App {
             if sandbox.removed_at.is_some() {
                 continue;
             }
-            // The repository is `owner/name`; its owner and name are stored apart.
-            let full = format!("{}/{}", sandbox.repo_owner, sandbox.repo_name).to_lowercase();
             if sandbox.id.as_str() == name.trim()
                 || sandbox.slug.to_lowercase() == wanted
-                || full == wanted
+                || label(&sandbox).to_lowercase() == wanted
             {
                 return Ok(Some(sandbox));
             }
@@ -271,21 +278,46 @@ impl App {
                 "sandbox_handoff takes sandbox, title, prompt: {err}"
             ))
         })?;
-        crate::cross_sandbox::check_visible(
-            &serde_json::to_value(&args).map_err(AppError::internal)?,
-        )?;
         if args.title.trim().is_empty() || args.prompt.trim().is_empty() {
             return Err(AppError::Invalid(
                 "a handoff needs a title and a prompt".into(),
             ));
         }
-        let owner = self
+        // Every refusal of HOF-003 is audited, these early ones too (review round 1).
+        if args.prompt.len() > MAX_PROMPT_BYTES || args.title.len() > MAX_PROMPT_BYTES {
+            let reason = format!("a handoff's prompt is at most {MAX_PROMPT_BYTES} bytes");
+            return self.refuse_handoff(source, None, &args, &reason).await;
+        }
+        let as_value = serde_json::to_value(&args).map_err(AppError::internal)?;
+        if let Err(err) = crate::cross_sandbox::check_visible(&as_value) {
+            return self
+                .refuse_handoff(source, None, &args, &err.public_message())
+                .await;
+        }
+        // An agent secret of this sandbox never travels to another, where nothing would know to
+        // hide it (review round 1).
+        let text = format!("{}\n{}", args.title, args.prompt);
+        if self.redact_for_sandbox(&source.sandbox_id, &text).await != text {
+            return self
+                .refuse_handoff(
+                    source,
+                    None,
+                    &args,
+                    "the handoff carries an agent secret of this sandbox",
+                )
+                .await;
+        }
+        let Some(owner) = self
             .deps
             .store
             .user(&source.owner)
             .await?
             .filter(|u| u.disabled_at.is_none())
-            .ok_or_else(|| AppError::Forbidden("this task's owner is disabled".into()))?;
+        else {
+            return self
+                .refuse_handoff(source, None, &args, "this task's owner is disabled")
+                .await;
+        };
         // An automation's task, CI and CD hold nobody: they hand nothing over (HOF-003).
         if crate::vault::Holder::of_task(source) == crate::vault::Holder::Nobody {
             return self
@@ -301,14 +333,8 @@ impl App {
             Some(t) if self.require(&owner, &t.id, Action::Work).await.is_ok() => t,
             // A sandbox the owner cannot work in is not found, as `sandbox_task_create` says.
             _ => {
-                return self
-                    .refuse_handoff(
-                        source,
-                        None,
-                        &args,
-                        &format!("no sandbox {} found", args.sandbox),
-                    )
-                    .await;
+                let reason = format!("no sandbox {} found", args.sandbox);
+                return self.refuse_handoff(source, None, &args, &reason).await;
             }
         };
         if target.id == source.sandbox_id {
@@ -351,12 +377,27 @@ impl App {
             .await?;
         if today >= setting.per_day {
             let reason = format!(
-                "its owner's tasks handed off {today} times in 24 hours, the most this instance allows"
+                "its owner's tasks handed off {today} times in 24 hours, the most this instance \
+                 allows"
             );
             return self
                 .refuse_handoff(source, Some(&target), &args, &reason)
                 .await;
         }
+        // In automatic mode the tools' hourly slot is taken before anything is stored, so a full
+        // hour leaves no request behind (review round 1).
+        let slot = if mode == "automatic" {
+            match self.reserve_tool_task(&target.id) {
+                Ok(slot) => Some(slot),
+                Err(err) => {
+                    return self
+                        .refuse_handoff(source, Some(&target), &args, &err.public_message())
+                        .await;
+                }
+            }
+        } else {
+            None
+        };
         let record = HandoffRecord {
             id: self.new_handoff_id(),
             source_task: source.id.clone(),
@@ -366,53 +407,85 @@ impl App {
             args: serde_json::to_string(&args).map_err(AppError::internal)?,
             chain,
             depth,
-            state: "requested".into(),
+            state: if slot.is_some() {
+                "creating"
+            } else {
+                "requested"
+            }
+            .into(),
             reason: None,
             target_task: None,
             created_at: self.now(),
         };
-        self.deps.store.insert_handoff(&record).await?;
-        self.audit_handoff(&record, &target, "requested", None)
+        if let Err(err) = self.deps.store.insert_handoff(&record).await {
+            if let Some(slot) = slot {
+                self.release_tool_task(&target.id, slot);
+            }
+            return Err(err);
+        }
+        let actor = format!("task:{}", source.number);
+        self.audit_handoff(&record, &target, "requested", None, &actor)
             .await;
-        self.events.publish(
-            Some(source.sandbox_id.clone()),
-            false,
-            UiEvent::HandoffsUpdated {
-                task_id: source.id.as_str().to_owned(),
-            },
-        );
-        if mode == "ask" {
+        self.announce_handoffs(&record);
+        let Some(slot) = slot else {
             return Ok(json!({
                 "state": "requested",
                 "id": record.id,
-                "sandbox": target.repo_name,
+                "sandbox": label(&target),
                 "note": "Stored for this task's owner, who approves or declines it on this task's \
                          page. Go on with your work, or end with needs_you if you must wait.",
             }));
-        }
-        let task = self
-            .create_handoff_task(&record, &owner, &target, &args)
-            .await?;
+        };
+        let task = match self
+            .create_handoff_task(&record, &owner, &target, &args, Some(slot))
+            .await
+        {
+            Ok(task) => task,
+            Err(err) => {
+                // Automatic: a creation that fails is a refusal, audited (review round 1).
+                let reason = err.public_message();
+                self.deps
+                    .store
+                    .decide_handoff(
+                        &record.id,
+                        "creating",
+                        "refused",
+                        Some(&reason),
+                        None,
+                        self.now(),
+                    )
+                    .await?;
+                self.audit_handoff(&record, &target, "refused", Some(&reason), &actor)
+                    .await;
+                self.announce_handoffs(&record);
+                return Err(AppError::Forbidden(format!("handoff refused: {reason}")));
+            }
+        };
         Ok(json!({
             "state": "created",
             "id": record.id,
-            "sandbox": target.repo_name,
+            "sandbox": label(&target),
             "task_number": task.number,
             "link": self.task_link(&target, task.number),
             "note": "Created as this task's owner. You will be told its outcome here when it ends.",
         }))
     }
 
-    /// Creates the handoff's task as its owner, with exactly its arguments (HOF-004, HOF-005),
-    /// under the tools' hourly bound; records and audits it.
+    /// Creates the task of a claimed handoff (its row `creating`) as its owner, with exactly its
+    /// arguments (HOF-004, HOF-005), under the tools' hourly bound (`slot` when taken already);
+    /// on success the row is `created` with the task. A failure leaves the row to the caller.
     async fn create_handoff_task(
         self: &Arc<Self>,
         record: &HandoffRecord,
         owner: &UserRecord,
         target: &SandboxRecord,
         args: &HandoffArgs,
+        slot: Option<i64>,
     ) -> AppResult<TaskRecord> {
-        let slot = self.reserve_tool_task(&target.id)?;
+        let slot = match slot {
+            Some(slot) => slot,
+            None => self.reserve_tool_task(&target.id)?,
+        };
         let req = CreateTask {
             prompt: args.prompt.clone(),
             harness: args.harness.clone().unwrap_or_default(),
@@ -434,41 +507,37 @@ impl App {
             Ok(task) => task,
             Err(err) => {
                 self.release_tool_task(&target.id, slot);
-                let reason = err.public_message();
-                self.deps
-                    .store
-                    .decide_handoff(
-                        &record.id,
-                        "requested",
-                        "refused",
-                        Some(&reason),
-                        None,
-                        self.now(),
-                    )
-                    .await?;
-                self.audit_handoff(record, target, "refused", Some(&reason))
-                    .await;
                 return Err(err);
             }
         };
-        self.deps
+        if !self
+            .deps
             .store
             .decide_handoff(
                 &record.id,
-                "requested",
+                "creating",
                 "created",
                 None,
                 Some(&task.id),
                 self.now(),
             )
-            .await?;
+            .await?
+        {
+            tracing::warn!(handoff = %record.id, task = %task.id, "a created handoff was not claimed");
+        }
         self.audit_handoff(
             record,
             target,
             "created",
             Some(&format!("#{}", task.number)),
+            "yulius",
         )
         .await;
+        self.announce_handoffs(record);
+        Ok(task)
+    }
+
+    fn announce_handoffs(&self, record: &HandoffRecord) {
         self.events.publish(
             Some(record.source_sandbox.clone()),
             false,
@@ -476,7 +545,6 @@ impl App {
                 task_id: record.source_task.as_str().to_owned(),
             },
         );
-        Ok(task)
     }
 
     /// Records, audits and returns a refusal with its reason (HOF-003, HOF-006).
@@ -487,13 +555,17 @@ impl App {
         args: &HandoffArgs,
         reason: &str,
     ) -> AppResult<Value> {
+        // The arguments of a refusal are kept bounded: the reason is what matters.
+        let mut kept = args.clone();
+        kept.prompt = kept.prompt.chars().take(2_000).collect();
+        kept.title = kept.title.chars().take(200).collect();
         let record = HandoffRecord {
             id: self.new_handoff_id(),
             source_task: source.id.clone(),
             source_sandbox: source.sandbox_id.clone(),
             target_sandbox: target.map_or_else(|| source.sandbox_id.clone(), |t| t.id.clone()),
             owner: source.owner.clone(),
-            args: serde_json::to_string(args).map_err(AppError::internal)?,
+            args: serde_json::to_string(&kept).map_err(AppError::internal)?,
             chain: vec![source.sandbox_id.as_str().to_owned()],
             depth: 0,
             state: "refused".into(),
@@ -502,34 +574,31 @@ impl App {
             created_at: self.now(),
         };
         self.deps.store.insert_handoff(&record).await?;
-        let login = format!("task:{}", source.number);
+        let actor = format!("task:{}", source.number);
         let detail = format!("refused: {reason}");
-        let _ = self
-            .deps
-            .store
-            .audit(
-                self.now(),
-                &login,
-                "task.handoff",
-                Some(source.sandbox_id.as_str()),
-                Some(&detail),
-            )
-            .await;
+        let mut sandboxes = vec![source.sandbox_id.clone()];
         if let Some(target) = target
             && target.id != source.sandbox_id
         {
-            let _ = self
+            sandboxes.push(target.id.clone());
+        }
+        for sandbox in sandboxes {
+            if let Err(err) = self
                 .deps
                 .store
                 .audit(
                     self.now(),
-                    &login,
+                    &actor,
                     "task.handoff",
-                    Some(target.id.as_str()),
+                    Some(sandbox.as_str()),
                     Some(&detail),
                 )
-                .await;
+                .await
+            {
+                tracing::warn!(error = %err, "a handoff refusal could not be audited");
+            }
         }
+        self.announce_handoffs(&record);
         Err(AppError::Forbidden(format!("handoff refused: {reason}")))
     }
 
@@ -540,6 +609,7 @@ impl App {
         target: &SandboxRecord,
         what: &str,
         extra: Option<&str>,
+        actor: &str,
     ) {
         let source = self
             .deps
@@ -552,7 +622,7 @@ impl App {
         let detail = format!(
             "{what}: {} {source} to {}{}",
             record.source_sandbox,
-            target.repo_name,
+            label(target),
             extra.map(|e| format!(" {e}")).unwrap_or_default()
         );
         for sandbox in [&record.source_sandbox, &record.target_sandbox] {
@@ -561,7 +631,7 @@ impl App {
                 .store
                 .audit(
                     self.now(),
-                    "yulius",
+                    actor,
                     "task.handoff",
                     Some(sandbox.as_str()),
                     Some(&detail),
@@ -608,7 +678,7 @@ impl App {
             ) {
                 (Some(source), Some(sandbox)) if self.can_view(&ctx.user, &sandbox.id).await => {
                     Some(HandoffFrom {
-                        sandbox: sandbox.repo_name.clone(),
+                        sandbox: label(&sandbox),
                         number: source.number,
                         link: self.task_link(&sandbox, source.number),
                     })
@@ -633,7 +703,7 @@ impl App {
             handoffs.push(HandoffView {
                 id: h.id,
                 target_sandbox_id: h.target_sandbox.as_str().to_owned(),
-                target_sandbox: target.map_or_else(|| args.sandbox.clone(), |t| t.repo_name),
+                target_sandbox: target.map_or_else(|| args.sandbox.clone(), |t| label(&t)),
                 title: args.title,
                 prompt: args.prompt,
                 harness: args.harness,
@@ -651,12 +721,13 @@ impl App {
     }
 
     /// `POST /api/tasks/{tid}/handoffs/{hid}` (HOF-004): the task's owner approves or declines a
-    /// stored request, in a browser session only. Approval checks the target again and creates
-    /// the task with exactly the stored arguments.
+    /// stored request, in a browser session only. Approval claims the request first, checks the
+    /// target again and creates the task with exactly the stored arguments; a creation that
+    /// fails puts the request back.
     ///
     /// # Errors
     /// `Forbidden` for an API token or anyone but the owner, `Conflict` for a request already
-    /// answered or a target that no longer takes it.
+    /// answered (also meanwhile) or a target that no longer takes it; creation errors.
     pub async fn answer_handoff(
         self: &Arc<Self>,
         ctx: &AuthContext,
@@ -694,7 +765,59 @@ impl App {
             .sandbox(&record.target_sandbox)
             .await?
             .ok_or(AppError::NotFound)?;
-        if !approve {
+        let login = self.login_of(&ctx.user.id).await;
+        if approve {
+            let args: HandoffArgs =
+                serde_json::from_str(&record.args).map_err(AppError::internal)?;
+            if mode_of(&self.handoffs_setting_now().await) == "off" {
+                return Err(AppError::Conflict(
+                    "handoffs are off on this instance now".into(),
+                ));
+            }
+            if target.removed_at.is_some()
+                || !accepts_handoffs(&target)
+                || self
+                    .require(&ctx.user, &target.id, Action::Work)
+                    .await
+                    .is_err()
+            {
+                return Err(AppError::Conflict(format!(
+                    "{} does not take this handoff now",
+                    label(&target)
+                )));
+            }
+            // Claimed before anything is created: a second approval or a decline meanwhile
+            // finds it taken (review round 1).
+            if !self
+                .deps
+                .store
+                .decide_handoff(&record.id, "requested", "creating", None, None, self.now())
+                .await?
+            {
+                return Err(AppError::Conflict(
+                    "this handoff was answered meanwhile".into(),
+                ));
+            }
+            match self
+                .create_handoff_task(&record, &ctx.user, &target, &args, None)
+                .await
+            {
+                Ok(made) => {
+                    let number = format!("#{}", made.number);
+                    self.audit_handoff(&record, &target, "approved", Some(&number), &login)
+                        .await;
+                }
+                Err(err) => {
+                    // Not created: the request waits again, to be approved once it can be.
+                    self.deps
+                        .store
+                        .decide_handoff(&record.id, "creating", "requested", None, None, self.now())
+                        .await?;
+                    self.announce_handoffs(&record);
+                    return Err(err);
+                }
+            }
+        } else {
             if !self
                 .deps
                 .store
@@ -712,43 +835,17 @@ impl App {
                     "this handoff was answered meanwhile".into(),
                 ));
             }
-            self.audit_handoff(&record, &target, "declined", None).await;
-        } else {
-            let args: HandoffArgs =
-                serde_json::from_str(&record.args).map_err(AppError::internal)?;
-            if self.handoffs_setting_now().await.mode == "off" {
-                return Err(AppError::Conflict(
-                    "handoffs are off on this instance now".into(),
-                ));
-            }
-            if !accepts_handoffs(&target)
-                || self
-                    .require(&ctx.user, &target.id, Action::Work)
-                    .await
-                    .is_err()
-            {
-                return Err(AppError::Conflict(format!(
-                    "{} does not take this handoff now",
-                    target.repo_name
-                )));
-            }
-            self.audit_handoff(&record, &target, "approved", None).await;
-            self.create_handoff_task(&record, &ctx.user, &target, &args)
-                .await?;
+            self.audit_handoff(&record, &target, "declined", None, &login)
+                .await;
+            self.announce_handoffs(&record);
         }
-        self.events.publish(
-            Some(task.sandbox_id.clone()),
-            false,
-            UiEvent::HandoffsUpdated {
-                task_id: task.id.as_str().to_owned(),
-            },
-        );
         self.task_handoffs(ctx, tid).await
     }
 
     /// HOF-005, from the background tick: tells each created handoff's source task its target's
-    /// outcome once the target ended, is Done or merged; a source that cannot take it now is
-    /// tried at the next tick, one that ended is not told.
+    /// outcome once the target ended, is Done or merged. Nothing is typed while a person must act
+    /// in the source first, it is paused or an update holds starts (tried at the next tick); a
+    /// parked source is resumed with it; a source or target that ended or is gone is not told.
     pub async fn tell_handoff_outcomes(self: &Arc<Self>) -> usize {
         let Ok(untold) = self.deps.store.untold_handoffs().await else {
             return 0;
@@ -759,21 +856,22 @@ impl App {
                 continue;
             };
             let store = &self.deps.store;
-            let (Ok(Some(target)), Ok(Some(source))) = (
+            let (target, source) = match (
                 store.task(target_id).await,
                 store.task(&h.source_task).await,
-            ) else {
-                continue;
+            ) {
+                (Ok(Some(target)), Ok(Some(source))) => (target, source),
+                // A task that is gone has nothing to tell or to hear (review round 1).
+                (Ok(None), _) | (_, Ok(None)) => {
+                    let _ = store.mark_handoff_told(&h.id).await;
+                    continue;
+                }
+                _ => continue,
             };
             let delivery = store.delivery(target_id).await.ok().flatten();
-            let merged = delivery.as_ref().is_some_and(|d| {
-                matches!(
-                    d.stage,
-                    DeliveryStage::MergedIntegration
-                        | DeliveryStage::Promoted
-                        | DeliveryStage::ProductionDone
-                )
-            });
+            let merged = delivery
+                .as_ref()
+                .is_some_and(|d| crate::delivery::past_merge(&d.stage));
             let outcome = if merged {
                 "merged".to_owned()
             } else if target.status.is_resting() {
@@ -787,19 +885,37 @@ impl App {
                 let _ = store.mark_handoff_told(&h.id).await;
                 continue;
             }
+            // As for Yulius's other news (review round 1). An open `needs_you` does not hold it:
+            // the outcome is what such a task waits for.
+            if source.activity == Some(Activity::NeedsAttention)
+                || self.is_paused(&source).await
+                || self.update_holds_starts()
+            {
+                continue;
+            }
             let Ok(Some(sandbox)) = store.sandbox(&h.target_sandbox).await else {
                 continue;
             };
-            let pr = delivery.and_then(|d| d.pr_number).map_or_else(
-                || "none".to_owned(),
-                |n| format!("https://github.com/{}/pull/{n}", sandbox.repo_name),
-            );
+            let pr = delivery
+                .and_then(|d| d.pr_number)
+                .filter(|_| !sandbox.is_playground())
+                .map_or_else(
+                    || "none".to_owned(),
+                    |n| {
+                        format!(
+                            "https://github.com/{}/{}/pull/{n}",
+                            sandbox.repo_owner, sandbox.repo_name
+                        )
+                    },
+                );
+            // The title the source asked for, not the target's current one.
+            let title = serde_json::from_str::<HandoffArgs>(&h.args)
+                .map_or_else(|_| target.title.clone(), |a| a.title);
             let text = format!(
-                "Yulius: the task you handed off, {} #{} \"{}\", is {outcome}. Pull request: {pr}. \
-                 Page: {}",
-                sandbox.repo_name,
+                "Yulius: the task you handed off, {} #{} \"{title}\", is {outcome}. Pull \
+                 request: {pr}. Page: {}",
+                label(&sandbox),
                 target.number,
-                target.title,
                 self.task_link(&sandbox, target.number)
             );
             let text = self.redact_for_sandbox(&source.sandbox_id, &text).await;
@@ -820,7 +936,7 @@ impl App {
                 _ => false,
             };
             if delivered && store.mark_handoff_told(&h.id).await.unwrap_or(false) {
-                self.audit_handoff(&h, &sandbox, "outcome", Some(&outcome))
+                self.audit_handoff(&h, &sandbox, "outcome", Some(&outcome), "yulius")
                     .await;
                 told += 1;
             }
