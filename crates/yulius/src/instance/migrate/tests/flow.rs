@@ -1458,6 +1458,26 @@ fn a_new_instance_that_cannot_be_stopped_names_both_units_to_stop() -> TestResul
 }
 
 #[test]
+fn a_frozen_reload_during_cutover_is_not_reported_as_a_stopped_server() -> TestResult {
+    let mut s = right_after_the_freeze(|unit| {
+        unit.reloading = true;
+        unit.sessions = Some(false);
+    })?;
+    sessions(&s, false)?;
+    assert_eq!(s.run()?, 1);
+    assert!(!s.old_unit().0, "{}", s.shown());
+    assert!(s.shown().contains("not frozen as a whole"), "{}", s.shown());
+    assert!(s.shown().contains("thawed yulius.service"), "{}", s.shown());
+    assert!(
+        !s.shown()
+            .contains("start it (`systemctl start yulius.service`)"),
+        "{}",
+        s.shown()
+    );
+    Ok(())
+}
+
+#[test]
 fn a_frozen_server_in_transition_is_thawed_after_a_failed_copy() -> TestResult {
     let mut s = meanwhile(|unit| unit.reloading = true)?;
     s.remote.lose = vec!["inventory"];
