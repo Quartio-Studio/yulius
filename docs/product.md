@@ -720,6 +720,13 @@ watching, steering and unblocking.
   20 MB, starts a task as them, marked "From Telegram", at most 20 an hour in a project as for
   agents' tools; `/task <project> <text>` picks another project and `/status` lists what waits
   for them.
+- **Tasks hand work to another sandbox** (SPEC-512 part 5, ADR-0395, #1106), off by default:
+  an instance administrator chooses Ask or Automatic in Settings → Administration (with a chain's
+  depth and a daily bound per owner), and a sandbox's writers can close it to handoffs on its Git
+  page. A task's agent then hands the part of its work that belongs elsewhere to another sandbox
+  its owner can work in: in Ask mode the owner approves it on the task's page, in Automatic it
+  starts at once as the owner. The new task shows where it came from, the source task is told
+  when it is done or merged, and both sandboxes' audit logs say so.
 - **An end-of-day digest** (SPEC-512 part 3, ADR-0380, #1413), off by default: an instance
   administrator turns it on in Settings → Administration with a time (UTC) and, if they want, an
   idle threshold. Once a day each person with something to report gets what waits for them first,

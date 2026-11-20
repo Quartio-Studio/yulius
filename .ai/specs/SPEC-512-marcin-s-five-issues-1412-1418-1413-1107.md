@@ -296,11 +296,11 @@ only ask a person with `needs_you`. Nothing records where a task came from.
 - [x] Telegram commands /status and /task; ADR and docs for intake
 - [x] Pull request #1130 answered and closed as superseded
 - [ ] Review of the #1107 pull request answered test-first
-- [ ] Handoff setting off, ask or automatic and a per-project opt-out
-- [ ] The sandbox_handoff tool with its checks and bounds
-- [ ] Ask mode: a stored request the owner approves in a browser session
-- [ ] Provenance on the target, the outcome sent back, task.handoff audited on both
-- [ ] ADR amending ADR-0227 and docs for handoffs
+- [x] Handoff setting off, ask or automatic and a per-project opt-out
+- [x] The sandbox_handoff tool with its checks and bounds
+- [x] Ask mode: a stored request the owner approves in a browser session
+- [x] Provenance on the target, the outcome sent back, task.handoff audited on both
+- [x] ADR amending ADR-0227 and docs for handoffs
 - [ ] Review of the #1106 pull request answered test-first
 
 ## Acceptance criteria
@@ -351,17 +351,17 @@ only ask a person with `needs_you`. Nothing records where a task came from.
 
 ### #1106
 
-- [ ] Off by default: task agents are not served `sandbox_handoff`; the existing test that
+- [x] Off by default: task agents are not served `sandbox_handoff`; the existing test that
   tasks lack cross-sandbox tools still passes (HOF-001, HOF-003).
-- [ ] Ask: a stored request the owner approves or declines in a browser session only; approval
+- [x] Ask: a stored request the owner approves or declines in a browser session only; approval
   creates the task with exactly the arguments shown (HOF-004).
-- [ ] Automatic: the task is created as the owner; a fourth level, a cycle and the daily bound are
+- [x] Automatic: the task is created as the owner; a fourth level, a cycle and the daily bound are
   refused with a reason (HOF-003, HOF-004).
-- [ ] An opted-out sandbox, one the owner cannot work in (not found) and an automation's task are
+- [x] An opted-out sandbox, one the owner cannot work in (not found) and an automation's task are
   refused (HOF-002, HOF-003).
-- [ ] The target shows its source; the source gets the outcome; `task.handoff` on both
+- [x] The target shows its source; the source gets the outcome; `task.handoff` on both
   (HOF-005, HOF-006).
-- [ ] Docs: `product.md`, `api.md`, `changes.md` and an ADR amending ADR-0227.
+- [x] Docs: `product.md`, `api.md`, `changes.md` and an ADR amending ADR-0227.
 
 ## Test plan
 
@@ -458,6 +458,21 @@ only ask a person with `needs_you`. Nothing records where a task came from.
   with the other drafts after a week.
 
 ## Evidence
+
+### Part 5 (#1106, handoffs)
+
+| Acceptance criterion | Test |
+|---|---|
+| Off by default: task agents are not served `sandbox_handoff`; tasks still lack the Superagent's cross-sandbox tools | `handoffs::handoffs_are_off_by_default_and_set_by_an_instance_administrator` (`tools/list` over `/mcp` with a task token, a call is an unknown tool, only instance administrators set it, 422 for bad values); `mcp::tests::only_the_superagent_is_served_the_other_sandboxes` unchanged and passing |
+| Ask: a stored request the owner answers in a browser session only; approval creates exactly what was shown | `handoffs::ask_stores_a_request_the_owner_answers_in_a_browser` (an operate token and another person get 403; the created task's title, prompt and owner equal the request; answered once; decline creates nothing); e2e `handoffs.e2e.ts` "the task's owner approves a handoff" |
+| Automatic: created as the owner; a deeper level, a cycle and the daily bound refused with a reason | `handoffs::automatic_creates_the_task_as_the_owner_within_the_checks`, `handoffs::depth_cycles_and_the_daily_bound_are_refused`; `handoffs::tests::a_chain_has_a_depth_and_no_cycle` |
+| An opted-out sandbox, one the owner cannot work in (not found) and an automation's task refused | `handoffs::automatic_creates_the_task_as_the_owner_within_the_checks`; e2e "a sandbox's writers close it to handoffs" |
+| The target shows its source; the source gets the outcome; `task.handoff` on both | `handoffs::automatic_…` (`from`, audits on s1 and s2 without the prompt), `parking::a_handed_off_tasks_outcome_reaches_its_source` (real processes: the source's session reads the outcome, told once), `handoffs::an_outcome_waits_for_the_targets_end`; e2e "a handed-off task shows where it came from"; store `a_handoff_is_decided_once_and_told_once` |
+| Docs and ADR | ADR-0395 (amends ADR-0227), `docs/product.md`, `docs/api.md`, `docs/architecture.md`, `docs/changes.md` |
+
+Also in this pull request (a part 4 defect found while building part 5): `/task acme/app` (a
+project's full repository name) named no project, because owner and name are stored apart;
+`telegram::with_intake_a_message_starts_a_task_and_a_photo_is_its_attachment` now covers it.
 
 ### Part 4 (#1107, intake)
 
