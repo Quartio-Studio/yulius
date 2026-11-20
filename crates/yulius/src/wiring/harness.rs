@@ -947,7 +947,7 @@ impl Watch {
         match observed {
             Observed::AssistantMessage {
                 model: Some(model), ..
-            } if model != "<synthetic>" => {
+            } => {
                 self.subagent_models.insert(id.to_owned(), model.clone());
                 Some(Observation::SubagentAnswered {
                     at: claude::record_time(line),
