@@ -73,6 +73,8 @@ pub struct FakeGitHub {
     pub retarget_on_merge: Mutex<Option<String>>,
     /// GitHub accepted the merge, but reading the closed PR fails until it recovers.
     pub fail_merged_reads: std::sync::atomic::AtomicBool,
+    /// Simulate a stale closed-PR response naming a different PR.
+    pub misnumber_merged_reads: std::sync::atomic::AtomicBool,
     /// Checks per commit SHA (default: `None`, every source read).
     pub check_states: Mutex<HashMap<String, ChecksReport>>,
     /// When set, reading checks fails with this error (as the adapter maps GitHub errors).
@@ -443,7 +445,7 @@ impl GitHubPort for FakeGitHub {
     }
     async fn get_pull(&self, _: &Secret, _: &str, _: &str, number: u64) -> AppResult<GhPull> {
         self.refresh_heads();
-        let pull = self
+        let mut pull = self
             .pulls
             .lock()
             .map_err(AppError::internal)?
@@ -453,6 +455,9 @@ impl GitHubPort for FakeGitHub {
             .ok_or(AppError::NotFound)?;
         if pull.merged && self.fail_merged_reads.load(Ordering::SeqCst) {
             return Err(AppError::Upstream("closed pull request unavailable".into()));
+        }
+        if pull.merged && self.misnumber_merged_reads.load(Ordering::SeqCst) {
+            pull.number = number.saturating_add(1);
         }
         Ok(pull)
     }

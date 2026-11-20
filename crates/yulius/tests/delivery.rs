@@ -9326,6 +9326,18 @@ async fn post_merge_evidence_reconciles_an_external_merge_against_its_original_b
                 assert_eq!(proof.status, StatusCode::OK);
                 assert_eq!(view["evidence"]["branch"], "dev");
                 assert_eq!(proof.body["merged_sha"], sha);
+                assert!(
+                    view["notes"]
+                        .as_array()
+                        .ok_or("delivery notes")?
+                        .iter()
+                        .any(|note| {
+                            note.as_str()
+                                .is_some_and(|text| text.contains("is merged into `dev`"))
+                        }),
+                    "the delivery note must report the observed PR base: {}",
+                    view["notes"]
+                );
             } else {
                 assert_eq!(
                     proof.status,
@@ -9336,5 +9348,48 @@ async fn post_merge_evidence_reconciles_an_external_merge_against_its_original_b
             }
         }
     }
+    Ok(())
+}
+
+#[tokio::test]
+async fn post_merge_evidence_checks_the_pr_number_on_the_git_page() -> TestResult {
+    use std::sync::atomic::Ordering;
+
+    let f = fixture(&DeliveryProfile::standard()).await?;
+    let wt = f
+        .add_task("t1", "Update the guide", "docs/1-guide", "dev")
+        .await?;
+    commit_file(&wt, "guide.md", "guide", "docs: update guide")?;
+    let head = git(&wt, &["rev-parse", "HEAD"])?;
+    let agent = live_agent(&f, "t1", "tok-mismatched-pr").await?;
+    arm_merge(&f, &agent, &head).await?;
+    f.h.github.set_checks(&head, ChecksState::Success);
+    let sha = yulius_app::ports::github::GitHubPort::merge_pull(
+        f.h.github.as_ref(),
+        &Secret("token-carol".into()),
+        "Quartio-Studio",
+        "shop",
+        1,
+        "squash",
+        &head,
+    )
+    .await?;
+    f.h.github
+        .misnumber_merged_reads
+        .store(true, Ordering::SeqCst);
+    let page = f
+        .req(Method::GET, "/api/sandboxes/s1/git", None, &f.bob)
+        .await?;
+    assert_eq!(page.status, StatusCode::OK);
+    assert!(f.delivery("t1").await?["evidence"].is_null());
+    let path = format!("/api/tasks/t1/delivery/evidence/{sha}");
+    assert_eq!(
+        f.req(Method::GET, &path, None, &f.rita).await?.status,
+        StatusCode::NOT_FOUND
+    );
+    f.h.github
+        .misnumber_merged_reads
+        .store(false, Ordering::SeqCst);
+    assert_eq!(f.delivery("t1").await?["evidence"]["pr_number"], 1);
     Ok(())
 }

@@ -2056,7 +2056,7 @@ impl App {
         if let Some(pull) = observed.pr.as_ref().filter(|pull| pull.merged) {
             notes.push(crate::agent_wait::merged_text(
                 pull.number,
-                &profile.integration_branch,
+                &pull.base,
                 &pull.head_sha,
                 self.ci_gate_result(&sandbox, &pull.head_sha).await,
                 false,
