@@ -786,6 +786,31 @@ fn text(resp: &support::Resp) -> String {
         .to_owned()
 }
 
+/// #1258: every local prerequisite can be met while the branch has nothing to deliver.
+#[tokio::test]
+async fn a_playground_task_level_with_dev_offers_no_squash() -> TestResult {
+    let (h, owner) = world().await?;
+    let made = from_template(&h, &owner, "shop").await?;
+    let worktree = playground_task(&h, &made.body, "t1", &[], &["done"]).await?;
+    // Both branches have the valid spec and point at the same commit.
+    git(&worktree, &["push", "origin", "HEAD:dev"])?;
+    let view = call(
+        &h.router,
+        Method::GET,
+        "/api/tasks/t1/delivery",
+        None,
+        &owner,
+    )
+    .await?;
+    assert_eq!(view.status, StatusCode::OK);
+    assert_eq!(view.body["next_actions"], json!([]));
+    assert_eq!(view.body["blocked"][0]["action"], "merge");
+    let reason = view.body["blocked"][0]["reason"].as_str().ok_or("reason")?;
+    assert!(reason.contains("nothing to deliver"), "{reason}");
+    assert!(text(&merge(&h, &owner, "t1").await?).contains(reason));
+    Ok(())
+}
+
 /// PLY-007: a branch that conflicts with the playground's `dev` is refused naming the files and
 /// the remedy.
 #[tokio::test]
