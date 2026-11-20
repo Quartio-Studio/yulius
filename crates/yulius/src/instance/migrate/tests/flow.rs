@@ -1550,6 +1550,36 @@ fn thaw_of_a_sessions_only_freeze_does_not_claim_the_server_runs() -> TestResult
 }
 
 #[test]
+fn an_empty_freeze_when_systemd_falls_silent_reports_that_no_unit_could_be_thawed() -> TestResult {
+    let mut s = setup()?;
+    let systemd = Arc::clone(&s.world.systemd);
+    systemd.lock().map_err(|e| e.to_string())?.stopped = true;
+    let mut movement = Move::new(
+        &s.opts,
+        s.state()?,
+        &mut s.local,
+        &mut s.remote,
+        &mut s.world,
+    );
+    let held = movement
+        .freeze()
+        .map_err(|_| "the stopped instance could not be checked")?;
+    assert!(held.covered().is_empty());
+    movement.claim(held);
+    systemd.lock().map_err(|e| e.to_string())?.silent = true;
+    movement.thaw();
+    let report = movement.lines.last().ok_or("missing thaw report")?;
+    assert_eq!(report.outcome, HostOutcome::Manual);
+    assert!(
+        report.detail.contains("no unit was available to thaw")
+            && report.detail.contains("unknown"),
+        "{}",
+        report.detail
+    );
+    Ok(())
+}
+
+#[test]
 fn a_cutover_that_finds_both_units_gone_has_nothing_to_thaw() -> TestResult {
     let mut s = right_after_the_freeze(|unit| {
         unit.frozen = false;
@@ -1560,6 +1590,18 @@ fn a_cutover_that_finds_both_units_gone_has_nothing_to_thaw() -> TestResult {
     assert_eq!(s.run()?, 1);
     assert!(!s.shown().contains("could not thaw"), "{}", s.shown());
     assert!(!s.shown().contains("systemctl thaw"), "{}", s.shown());
+    let status = s.status()?;
+    let reports = status
+        .lines
+        .iter()
+        .filter(|line| line.name == "old instance" && line.outcome == HostOutcome::Failed)
+        .count();
+    assert_eq!(
+        reports,
+        1,
+        "the stopped server is reported once: {}",
+        s.shown()
+    );
     Ok(())
 }
 
@@ -1593,6 +1635,12 @@ fn a_server_stopped_during_the_copy_is_not_reported_as_thawed() -> TestResult {
             s.shown().contains(
                 "yulius.service is not running: start it (`systemctl start yulius.service`)"
             ),
+            "{}",
+            s.shown()
+        );
+        assert_eq!(
+            s.shown().contains("(its sessions were thawed)"),
+            sessions.is_some(),
             "{}",
             s.shown()
         );
