@@ -46,7 +46,7 @@ const QUIET_CHATS: usize = 1024;
 /// A chat's intake messages waiting behind the one being handled, at most: a whole poll answer
 /// (SPEC-512 TGI-002).
 const INTAKE_WAITING: usize = 20;
-/// The answer to a chat whose messages did not all fit its lane (at most every [`QUIET_MS`]).
+/// The answer to a chat whose messages did not all fit its lane (at most every `QUIET_MS`).
 pub const INTAKE_FULL_REPLY: &str = "Too many messages at once: Yulius is still working through \
      your earlier ones, so some of the latest were not handled. Send them again once it has \
      answered.";
@@ -496,8 +496,11 @@ impl App {
         let mut item = first;
         loop {
             let (link, message) = &item;
-            match self.telegram_intake(link, message).await {
-                Ok(answer) => self.enqueue_about(message.chat.clone(), answer.text, answer.about),
+            match self.intake_in_turn(link, message).await {
+                Ok(Some(answer)) => {
+                    self.enqueue_about(message.chat.clone(), answer.text, answer.about);
+                }
+                Ok(None) => {}
                 Err(err) => {
                     tracing::warn!(error = %err, "a Telegram message could not be handled");
                     self.enqueue(
@@ -514,6 +517,32 @@ impl App {
                 None => return,
             }
         }
+    }
+
+    /// A message whose turn in its lane came: handled only while the link it came through still
+    /// holds with intake on (TGI-001: turning intake off or `/stop` ends what waits too). Else it
+    /// gets the answer it would get now, at most every `QUIET_MS`: the help with intake off, the
+    /// unlinked reply without a link; a message of an earlier link of the chat gets nothing.
+    async fn intake_in_turn(
+        self: &Arc<Self>,
+        received: &ChatLink,
+        message: &Inbound,
+    ) -> AppResult<Option<crate::telegram_intake::IntakeAnswer>> {
+        let now = self.deps.store.chat_link_of(&message.chat).await?;
+        let reply = match now {
+            Some(link) if link.user == received.user && link.linked_at == received.linked_at => {
+                if link.intake {
+                    return self.telegram_intake(&link, message).await.map(Some);
+                }
+                LINKED_HELP
+            }
+            Some(_) => return Ok(None),
+            None => UNLINKED_REPLY,
+        };
+        let due = self
+            .channel_services()?
+            .quiet_reply_due(&message.chat, self.now().0);
+        Ok(due.then(|| reply.into()))
     }
 
     async fn link_chat(&self, user: &UserId, chat: &str) -> AppResult<()> {

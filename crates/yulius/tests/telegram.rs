@@ -2445,3 +2445,86 @@ async fn a_start_with_intake_on_gets_the_intake_help() -> TestResult {
     assert_eq!(reply, yulius_app::telegram_intake::INTAKE_HELP);
     Ok(())
 }
+
+/// Sends `chat` a photo that is held while `texts` wait behind it in the chat's lane; returns the
+/// number of messages the chat had before.
+async fn photo_held_with_waiting(
+    w: &World,
+    chat: i64,
+    texts: &[&str],
+) -> Result<usize, Box<dyn std::error::Error>> {
+    let before = w.fake.sent_to(chat).len();
+    w.fake.files_asked.store(0, Ordering::SeqCst);
+    w.fake.hold_files.store(true, Ordering::SeqCst);
+    let mut bodies = vec![json!({"caption": "First", "photo": [
+        {"file_id": "ph1", "file_unique_id": "u1", "file_size": 3}
+    ]})];
+    bodies.extend(texts.iter().map(|t| json!({ "text": t })));
+    w.fake.raw_batch(chat, &bodies);
+    w.fake.wait_file_asked().await?;
+    w.fake.wait_updates_taken().await?;
+    Ok(before)
+}
+
+/// SPEC-512 TGI-001 (review round 2 of task #538): turning intake off, or `/stop`, ends what
+/// waits in the chat's lane too: a message queued behind a slow one starts nothing and gets
+/// the answer it would get now (the help with intake off, the unlinked reply after `/stop`).
+#[tokio::test]
+async fn intake_off_or_stop_ends_what_waits_in_the_lane() -> TestResult {
+    let w = world().await?;
+    set_bot(&w, TOKEN_A).await?;
+    signed_in_subscription(&w).await?;
+    std::fs::create_dir_all(w.h.app.config.data_dir.join("sandboxes/s1"))?;
+    link(&w, &w.alice, 100).await?;
+    intake_on(&w, &w.alice, "s1").await?;
+
+    // Intake off while one waits.
+    let before = photo_held_with_waiting(&w, 100, &["Waiting 1"]).await?;
+    let off = api(
+        &w,
+        Method::PUT,
+        "/api/me/telegram/intake",
+        Some(json!({"enabled": false, "sandbox_id": null})),
+        &w.alice,
+    )
+    .await?;
+    assert_eq!(off.status, StatusCode::OK, "{}", off.body);
+    w.fake.release_files();
+    let sent = w.fake.wait_sent(100, before + 2).await?;
+    assert!(
+        sent[before].starts_with("Started #"),
+        "the running one ends: {sent:?}"
+    );
+    assert!(
+        sent[before + 1].contains("turn on Telegram intake"),
+        "the waiting one is answered as intake off: {sent:?}"
+    );
+
+    // `/stop` while one waits (another chat, so its quiet reply is due).
+    link(&w, &w.alice, 101).await?;
+    intake_on(&w, &w.alice, "s1").await?;
+    let before = photo_held_with_waiting(&w, 101, &["Waiting 2"]).await?;
+    w.fake.message(101, true, "/stop");
+    let reply = next_reply(&w, 101, before).await?;
+    assert!(reply.starts_with("Unlinked"), "{reply}");
+    w.fake.release_files();
+    let sent = w.fake.wait_sent(101, before + 3).await?;
+    assert!(sent[before + 1].starts_with("Started #"), "{sent:?}");
+    assert_eq!(sent[before + 2], UNLINKED_REPLY, "{sent:?}");
+
+    let prompts: Vec<String> = prompts_by_number(&w, "s1")
+        .await?
+        .into_iter()
+        .map(|(_, p)| p)
+        .collect();
+    assert_eq!(
+        prompts.len(),
+        2,
+        "only the running ones started: {prompts:?}"
+    );
+    assert!(
+        prompts.iter().all(|p| p.starts_with("First")),
+        "{prompts:?}"
+    );
+    Ok(())
+}
