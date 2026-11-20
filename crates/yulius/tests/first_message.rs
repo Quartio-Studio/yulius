@@ -270,6 +270,7 @@ async fn goal_in_a_continued_turn(
         id.as_str(),
         &ContinueTask {
             account_id: Some("b-second".into()),
+            ..Default::default()
         },
     )
     .await?;
@@ -1677,6 +1678,7 @@ fn a_manual_switch_of_a_held_first_message_keeps_its_image() -> TestResult {
             id.as_str(),
             &ContinueTask {
                 account_id: Some("b-second".into()),
+                ..Default::default()
             },
         )
         .await?;

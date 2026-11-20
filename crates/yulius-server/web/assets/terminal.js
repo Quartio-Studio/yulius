@@ -124,8 +124,8 @@ export function createTerminalView(options) {
     refreshEmpty() {
       if (view) view.refreshEmpty();
     },
-    refreshBanner() {
-      if (view) view.refreshBanner();
+    refreshBanner(status) {
+      if (view) view.refreshBanner(status);
     },
     get ready() {
       return view ? view.ready : false;

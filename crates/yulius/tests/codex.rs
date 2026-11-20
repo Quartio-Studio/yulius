@@ -797,6 +797,7 @@ fn a_codex_task_moves_only_between_codex_subscriptions() -> TestResult {
                 id.as_str(),
                 &yulius_contracts::api::tasks::ContinueTask {
                     account_id: Some("a-claude".into()),
+                    ..Default::default()
                 },
             )
             .await;
@@ -961,6 +962,7 @@ fn a_codex_start_that_loses_its_subscription_leaves_no_credentials() -> TestResu
                 id.as_str(),
                 &yulius_contracts::api::tasks::ContinueTask {
                     account_id: Some("a-claude".into()),
+                    ..Default::default()
                 },
             )
             .await;
@@ -999,6 +1001,7 @@ fn a_codex_start_that_loses_its_subscription_leaves_no_credentials() -> TestResu
                     id.as_str(),
                     &yulius_contracts::api::tasks::ContinueTask {
                         account_id: Some(on.as_str().to_owned()),
+                        ..Default::default()
                     },
                 )
                 .await
