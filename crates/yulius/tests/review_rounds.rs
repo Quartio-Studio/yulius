@@ -81,6 +81,25 @@ async fn a_round(
     Ok(ran)
 }
 
+/// A first start can clear recovery only if it actually linked to a launched review.
+#[tokio::test]
+async fn a_first_reviewer_start_is_active_only_when_it_links_its_launch() -> TestResult {
+    use yulius_app::ports::store::ReviewStart;
+    let h = harness()?;
+    seed(&h).await?;
+    let account = add_account(&h, "first-review-start", None).await?;
+    let task = running_task(&h, TaskMode::Prompt, &account).await?;
+    let reviewer = "yulius-reviewer";
+    let start = || {
+        h.store
+            .start_review_subagent(&task, reviewer, "rev", "continued", h.app.now())
+    };
+    assert_eq!(start().await?, ReviewStart::Ignored);
+    hook(&h.internal, "PreToolUse", agent_start(reviewer)).await?;
+    assert_eq!(start().await?, ReviewStart::Active);
+    Ok(())
+}
+
 /// SPEC-493 REV-002, REV-004 (AC-5, AC-6): rounds 1 and 2 of a pull request run the Fable
 /// reviewer as asked; the third is given the Opus reviewer as the tool's new input, with the
 /// rest of the input kept. A reviewer started again for a round that ended with no report (cut
@@ -274,6 +293,417 @@ async fn a_resumed_reviewer_and_other_subagents_change_no_round() -> TestResult 
     .await?;
     let open = rounds(&h, &task, true).await?;
     assert!(open[0].ended_at.is_some() && open[0].verdict.is_none());
+    Ok(())
+}
+
+/// A post-report continuation gets its own head and transcript observations. An old
+/// delivery can neither reopen the completed round nor close the one now running.
+#[tokio::test]
+async fn continued_review_keeps_history_across_repeated_hook_delivery() -> TestResult {
+    use crate::subscription_pool::hook_sent_at;
+    use crate::support::{confined_git, harness_with_git, repos::git};
+    use std::sync::{Arc, atomic::Ordering};
+    use yulius_app::ports::store::TaskFieldUpdate;
+    let h = harness_with_git(Arc::new(confined_git()))?;
+    seed(&h).await?;
+    let account = add_account(&h, "acc-1", None).await?;
+    let task = running_task(&h, TaskMode::Prompt, &account).await?;
+    let repo = h._dir.path().join("sandboxes/s1/worktrees/review");
+    std::fs::create_dir_all(&repo)?;
+    git(&repo, &["init"])?;
+    git(&repo, &["commit", "--allow-empty", "-m", "first head"])?;
+    let first_head = git(&repo, &["rev-parse", "HEAD"])?;
+    let start_at = h.clock.0.load(Ordering::SeqCst);
+    h.store
+        .update_task(
+            &task,
+            &TaskFieldUpdate {
+                worktree_path: Some(repo.to_string_lossy().into_owned()),
+                ..Default::default()
+            },
+            Timestamp(start_at),
+        )
+        .await?;
+    a_round(&h, "rev-1", None).await?;
+    h.store
+        .note_review_subagent(&task, "rev-1", Some("first-model"), true, Some(h.app.now()))
+        .await?;
+    let start = json!({"agent_id":"rev-1","agent_type":"yulius-reviewer"});
+    let stop = json!({"agent_id":"rev-1","agent_type":"yulius-reviewer",
+        "last_assistant_message":"Verdict: request changes"});
+    h.clock.0.store(start_at + 1, Ordering::SeqCst);
+    hook(&h.internal, "SubagentStop", stop.clone()).await?;
+    let first = rounds(&h, &task, true).await?.remove(0);
+    assert_eq!(first.head.as_deref(), Some(first_head.trim()));
+    assert_eq!(first.verdict.as_deref(), Some("request_changes"));
+    h.clock.0.store(start_at + 2, Ordering::SeqCst);
+    hook(&h.internal, "SubagentStop", stop.clone()).await?;
+    hook_sent_at(
+        &h.internal,
+        "claude",
+        "SubagentStart",
+        start.clone(),
+        Some(start_at),
+    )
+    .await?;
+    assert_eq!(
+        rounds(&h, &task, true).await?.as_slice(),
+        std::slice::from_ref(&first)
+    );
+
+    git(&repo, &["commit", "--allow-empty", "-m", "review fixes"])?;
+    let fixed_head = git(&repo, &["rev-parse", "HEAD"])?;
+    hook(&h.internal, "SubagentStart", start.clone()).await?;
+    hook(&h.internal, "SubagentStart", start).await?;
+    hook_sent_at(
+        &h.internal,
+        "claude",
+        "SubagentStop",
+        stop,
+        Some(start_at + 1),
+    )
+    .await?;
+    let open = rounds(&h, &task, true).await?;
+    assert_eq!(open.len(), 2);
+    assert_eq!(open[0], first);
+    assert_eq!(open[1].round, 2);
+    assert_eq!(open[1].reason, "kept");
+    assert_eq!(open[1].agent, first.agent);
+    assert_eq!(open[1].model, first.model);
+    assert_eq!(open[1].subagent_id, first.subagent_id);
+    assert_eq!(open[1].head.as_deref(), Some(fixed_head.trim()));
+    assert_eq!(open[1].model_answered.as_deref(), Some("first-model"));
+    assert_eq!(open[1].started_at, Timestamp(start_at + 2));
+    assert!(open[1].ended_at.is_none());
+    assert!(!open[1].cut_off);
+    h.store
+        .note_review_subagent(
+            &task,
+            "rev-1",
+            Some("second-model"),
+            false,
+            Some(h.app.now()),
+        )
+        .await?;
+    let approve = json!({"agent_id":"rev-1","agent_type":"yulius-reviewer",
+        "last_assistant_message":"Verdict: approve"});
+    hook(&h.internal, "SubagentStop", approve).await?;
+    let ended = rounds(&h, &task, true).await?;
+    assert_eq!(ended[0], first);
+    assert_eq!(ended[1].verdict.as_deref(), Some("approve"));
+    assert_eq!(ended[1].model_answered.as_deref(), Some("second-model"));
+
+    // A different reviewer has since reported. Continuing the first uses the PR's next number.
+    a_round(&h, "rev-other", Some("Verdict: request changes")).await?;
+    h.clock.0.fetch_add(1, Ordering::SeqCst);
+    hook(
+        &h.internal,
+        "SubagentStart",
+        json!({"agent_id":"rev-1","agent_type":"yulius-reviewer"}),
+    )
+    .await?;
+    let after_other = rounds(&h, &task, true).await?;
+    assert_eq!(after_other.len(), 4);
+    assert_eq!(after_other[3].round, 4);
+    assert_eq!(after_other[3].model, first.model);
+    Ok(())
+}
+
+/// One reviewer can give the exact same report in distinct rounds. Analytics counts
+/// the sequence once, and late events for the merged reviewer leave the next PR alone.
+#[tokio::test]
+async fn continued_review_counts_each_report_in_merged_analytics() -> TestResult {
+    use crate::support::{call, setup_superadmin_creds};
+    use axum::http::Method;
+    use std::sync::atomic::Ordering;
+    let h = harness()?;
+    seed(&h).await?;
+    let admin = setup_superadmin_creds(&h).await?;
+    let account = add_account(&h, "acc-1", None).await?;
+    let task = running_task(&h, TaskMode::Prompt, &account).await?;
+    a_round(&h, "rev-1", Some("Verdict: request changes")).await?;
+    let start = json!({"agent_id":"rev-1","agent_type":"yulius-reviewer"});
+    let approve = json!({"agent_id":"rev-1","agent_type":"yulius-reviewer",
+        "last_assistant_message":"Verdict: approve"});
+    for _ in 0..2 {
+        h.clock.0.fetch_add(1, Ordering::SeqCst);
+        hook(&h.internal, "SubagentStart", start.clone()).await?;
+        hook(&h.internal, "SubagentStop", approve.clone()).await?;
+        hook(&h.internal, "SubagentStop", approve.clone()).await?;
+    }
+    assert!(
+        h.store
+            .transition_delivery(
+                &DeliveryStage::None,
+                &DeliveryRecord {
+                    task_id: task.clone(),
+                    stage: DeliveryStage::MergedIntegration,
+                    pr_number: Some(7),
+                    updated_at: Timestamp(h.clock.0.load(Ordering::SeqCst)),
+                }
+            )
+            .await?
+    );
+    let r = call(
+        &h.router,
+        Method::GET,
+        "/api/analytics/reviews",
+        None,
+        &admin,
+    )
+    .await?;
+    assert_eq!(r.status, 200, "{}", r.body);
+    assert_eq!(r.body["median_rounds"], 3.0, "{}", r.body);
+    assert_eq!(r.body["first_rounds_requesting_changes"], 1);
+    assert_eq!(r.body["re_reviews_after_changes"], 1);
+    assert_eq!(r.body["rounds_after_approval"], 1);
+    assert_eq!(
+        r.body["rounds_by_model"],
+        json!([{"model":"claude-fable-5-2","rounds":3}])
+    );
+    let closed = rounds(&h, &task, false).await?;
+    hook(&h.internal, "PreToolUse", agent_start("yulius-reviewer")).await?;
+    hook(&h.internal, "SubagentStart", start).await?;
+    hook(&h.internal, "SubagentStop", approve).await?;
+    let next = rounds(&h, &task, true).await?;
+    assert_eq!(next.len(), 1);
+    assert_eq!(next[0].round, 1);
+    assert!(next[0].subagent_id.is_none() && next[0].ended_at.is_none());
+    assert_eq!(&rounds(&h, &task, false).await?[..3], closed.as_slice());
+    Ok(())
+}
+
+/// A stale hook must preserve the resume instruction and the pending subscription move
+/// of a continued reviewer. Its own resume and report must clear them.
+#[tokio::test]
+async fn a_cut_off_continuation_keeps_its_recovery_on_older_hooks() -> TestResult {
+    use crate::subscription_pool::hook_sent_at;
+    use std::sync::atomic::Ordering;
+    let h = harness()?;
+    seed(&h).await?;
+    let account = add_account(&h, "acc-1", None).await?;
+    let task = running_task(&h, TaskMode::Prompt, &account).await?;
+    let old = h.clock.0.load(Ordering::SeqCst);
+    a_round(&h, "rev", Some("Verdict: approve")).await?;
+    let start = json!({"agent_id":"rev","agent_type":"yulius-reviewer"});
+    let stop = json!({"agent_id":"rev","agent_type":"yulius-reviewer",
+        "last_assistant_message":"Verdict: approve"});
+    h.clock.0.fetch_add(1, Ordering::SeqCst);
+    hook(&h.internal, "SubagentStart", start.clone()).await?;
+    let mut after_replay = Vec::new();
+    for (event, body) in [("SubagentStart", &start), ("SubagentStop", &stop)] {
+        h.app.cut_off_review_for_test(&task, "rev", None).await;
+        let pending = (Some(String::from("rev")), true);
+        assert_eq!(h.app.review_recovery_for_test(&task).await, pending);
+        hook_sent_at(&h.internal, "claude", event, body.clone(), Some(old)).await?;
+        after_replay.push(h.app.review_recovery_for_test(&task).await);
+        hook(&h.internal, event, body.clone()).await?;
+        assert_eq!(
+            h.app.review_recovery_for_test(&task).await,
+            (None, false),
+            "{event}"
+        );
+    }
+    assert_eq!(
+        after_replay,
+        [
+            (Some("rev".to_owned()), true),
+            (Some("rev".to_owned()), true)
+        ]
+    );
+    assert_eq!(
+        rounds(&h, &task, true).await?[1].verdict.as_deref(),
+        Some("approve")
+    );
+    Ok(())
+}
+
+/// Replaying the current round's own start before its cutoff was observed is still a replay.
+#[tokio::test]
+async fn a_replayed_continuation_start_cannot_clear_a_later_cut_off() -> TestResult {
+    use crate::subscription_pool::hook_sent_at;
+    use std::sync::atomic::Ordering;
+    let h = harness()?;
+    seed(&h).await?;
+    let account = add_account(&h, "acc-1", None).await?;
+    let task = running_task(&h, TaskMode::Prompt, &account).await?;
+    a_round(&h, "rev", Some("Verdict: request changes")).await?;
+    let start = json!({"agent_id":"rev","agent_type":"yulius-reviewer"});
+    h.clock.0.fetch_add(1, Ordering::SeqCst);
+    let sent = h.app.now().0;
+    hook_sent_at(
+        &h.internal,
+        "claude",
+        "SubagentStart",
+        start.clone(),
+        Some(sent),
+    )
+    .await?;
+    // The watcher reads the limit after the genuine resume was sent. Compare send times.
+    h.clock.0.store(sent + 3, Ordering::SeqCst);
+    h.app
+        .cut_off_review_for_test(&task, "rev", Some(Timestamp(sent + 1)))
+        .await;
+    hook_sent_at(
+        &h.internal,
+        "claude",
+        "SubagentStart",
+        start.clone(),
+        Some(sent),
+    )
+    .await?;
+    assert_eq!(
+        h.app.review_recovery_for_test(&task).await,
+        (Some("rev".to_owned()), true)
+    );
+    hook_sent_at(
+        &h.internal,
+        "claude",
+        "SubagentStart",
+        start,
+        Some(sent + 2),
+    )
+    .await?;
+    assert_eq!(h.app.review_recovery_for_test(&task).await, (None, false));
+    assert_eq!(rounds(&h, &task, true).await?.len(), 2);
+    Ok(())
+}
+
+/// A delayed usage-limit observation from a completed review belongs to that round.
+#[tokio::test]
+async fn a_delayed_limit_from_a_completed_round_does_not_move_its_continuation() -> TestResult {
+    use std::sync::atomic::Ordering;
+    let h = harness()?;
+    seed(&h).await?;
+    let account = add_account(&h, "acc-1", None).await?;
+    let task = running_task(&h, TaskMode::Prompt, &account).await?;
+    a_round(&h, "rev", Some("Verdict: request changes")).await?;
+    let old = h.app.now();
+    h.clock.0.fetch_add(1, Ordering::SeqCst);
+    hook(
+        &h.internal,
+        "SubagentStart",
+        json!({"agent_id":"rev","agent_type":"yulius-reviewer"}),
+    )
+    .await?;
+    h.app.cut_off_review_for_test(&task, "rev", Some(old)).await;
+    assert_eq!(h.app.review_recovery_for_test(&task).await, (None, false));
+    h.app
+        .cut_off_review_for_test(&task, "rev", Some(h.app.now()))
+        .await;
+    assert_eq!(
+        h.app.review_recovery_for_test(&task).await,
+        (Some("rev".to_owned()), true)
+    );
+    Ok(())
+}
+
+/// A delayed account write keeps its usage evidence while the reviewer resumes or reports.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_reviewer_resuming_during_the_limit_write_cancels_the_move() -> TestResult {
+    use crate::support::{hold_point, point_reached};
+    use std::sync::atomic::Ordering;
+    use yulius_app::ports::store::AccountStore as _;
+    use yulius_app::race::Point;
+    let h = harness()?;
+    seed(&h).await?;
+    let account = add_account(&h, "held-review-limit", None).await?;
+    let task = running_task(&h, TaskMode::Prompt, &account).await?;
+    a_round(&h, "rev", None).await?;
+    let mut pending = Vec::new();
+    for reports in [false, true] {
+        let (writing, release) = hold_point(Point::LimitRecord, account.as_str());
+        let limit = {
+            let (app, task) = (h.app.clone(), task.clone());
+            tokio::spawn(async move {
+                app.cut_off_review_for_test(&task, "rev", Some(app.now()))
+                    .await
+            })
+        };
+        point_reached(writing).await?;
+        h.clock.0.fetch_add(1, Ordering::SeqCst);
+        if reports {
+            hook(
+                &h.internal,
+                "SubagentStop",
+                json!({"agent_id":"rev","agent_type":"yulius-reviewer",
+                "last_assistant_message":"Verdict: request changes"}),
+            )
+            .await?;
+            h.clock.0.fetch_add(1, Ordering::SeqCst);
+        }
+        hook(
+            &h.internal,
+            "SubagentStart",
+            json!({"agent_id":"rev","agent_type":"yulius-reviewer"}),
+        )
+        .await?;
+        release.send(())?;
+        limit.await?;
+        let record = h.store.account(&account).await?.ok_or("account")?;
+        let usage = yulius_app::usage_json::from_json(record.usage_json.as_deref().unwrap_or("{}"));
+        assert_eq!(usage.weekly_fable.and_then(|w| w.used_percent), Some(100.0));
+        pending.push(h.app.review_recovery_for_test(&task).await);
+    }
+    assert_eq!(rounds(&h, &task, true).await?.len(), 2);
+    assert_eq!(pending, [(None, false), (None, false)]);
+    Ok(())
+}
+
+/// The detached start handler can still be reading Git when the reviewer reports.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_continued_report_survives_its_start_time_head_lookup() -> TestResult {
+    use crate::support::{confined_git, harness_with_git, repos::git};
+    use std::sync::{Arc, atomic::Ordering, mpsc};
+    use std::time::Duration;
+    use yulius_app::ports::store::TaskFieldUpdate;
+    let h = harness_with_git(Arc::new(confined_git()))?;
+    seed(&h).await?;
+    let account = add_account(&h, "acc-1", None).await?;
+    let task = running_task(&h, TaskMode::Prompt, &account).await?;
+    a_round(&h, "rev", Some("Verdict: request changes")).await?;
+    let repo = h._dir.path().join("sandboxes/s1/worktrees/slow-review");
+    std::fs::create_dir_all(&repo)?;
+    git(&repo, &["init"])?;
+    git(&repo, &["commit", "--allow-empty", "-m", "fixes"])?;
+    let head = git(&repo, &["rev-parse", "HEAD"])?;
+    h.store
+        .update_task(
+            &task,
+            &TaskFieldUpdate {
+                worktree_path: Some(repo.to_string_lossy().into_owned()),
+                ..Default::default()
+            },
+            h.app.now(),
+        )
+        .await?;
+    let (entered, at_git) = tokio::sync::oneshot::channel();
+    let (release, held) = mpsc::channel();
+    yulius_app::race::on(yulius_app::race::Point::ReviewHead, &repo, move || {
+        let _ = entered.send(());
+        let _ = held.recv_timeout(Duration::from_secs(20));
+    });
+    h.clock.0.fetch_add(1, Ordering::SeqCst);
+    let router = h.internal.clone();
+    let start = tokio::spawn(async move {
+        hook(
+            &router,
+            "SubagentStart",
+            json!({"agent_id":"rev","agent_type":"yulius-reviewer"}),
+        )
+        .await
+        .map(|r| r.0)
+        .map_err(|e| e.to_string())
+    });
+    tokio::time::timeout(Duration::from_secs(10), at_git).await??;
+    hook(&h.internal, "SubagentStop", json!({"agent_id":"rev","agent_type":"yulius-reviewer","last_assistant_message":"Verdict: approve"})).await?;
+    release.send(())?;
+    assert_eq!(start.await??, 200);
+    let rows = rounds(&h, &task, true).await?;
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0].verdict.as_deref(), Some("request_changes"));
+    assert_eq!(rows[1].verdict.as_deref(), Some("approve"));
+    assert_eq!(rows[1].head.as_deref(), Some(head.trim()));
     Ok(())
 }
 
@@ -720,14 +1150,26 @@ async fn a_rounds_answering_model_and_cut_off_are_noted() -> TestResult {
     a_round(&h, "rev-1", None).await?;
     let store = &h.store;
     store
-        .note_review_subagent(&task, "rev-1", Some("claude-fable-5-2"), false)
+        .note_review_subagent(
+            &task,
+            "rev-1",
+            Some("claude-fable-5-2"),
+            false,
+            Some(h.app.now()),
+        )
         .await?;
     store
-        .note_review_subagent(&task, "rev-1", None, true)
+        .note_review_subagent(&task, "rev-1", None, true, Some(h.app.now()))
         .await?;
     // A subagent that is no round's changes nothing.
     store
-        .note_review_subagent(&task, "other", Some("claude-haiku-4-5"), true)
+        .note_review_subagent(
+            &task,
+            "other",
+            Some("claude-haiku-4-5"),
+            true,
+            Some(h.app.now()),
+        )
         .await?;
     let open = rounds(&h, &task, true).await?;
     assert_eq!(open.len(), 1);

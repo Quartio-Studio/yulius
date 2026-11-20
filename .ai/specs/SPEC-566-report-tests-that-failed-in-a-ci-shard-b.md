@@ -27,6 +27,7 @@ The supplied audit found five quartio-v2 runs with 4, 1, 38, 4 and 1 distinct te
 - [x] Report partial observations in the red-run notification
 - [x] Expose the stored blocks through CI run details
 - [x] Verify the fixture and deliver the reviewed change
+- [x] Restore numeric decision order on the combined branch
 
 ## Acceptance criteria
 
@@ -53,3 +54,4 @@ Use the runner's persisted sibling-stop reason and the existing failure-block pa
 - The second independent review approved commit `9c016fd83` after running all 40 focused tests. The quick checks passed. Vidoc was disabled for the project.
 - `scripts/dev mutants` reported 39 listed, 37 caught, 0 missed, 0 timed out, 2 unviable and 0 not reached. Its unmutated workspace baseline passed 3,212 tests.
 - `scripts/dev mutants --base 953654ab6` reported 5 listed, 5 caught, 0 missed, 0 timed out, 0 unviable and 0 not reached on the review fix. The task delivery record identifies the exact CI and merge results.
+- Merge candidate `8fd11ce29` failed the numeric decision-index check. Merging dev `e15f4f188` into this branch reproduced the 0401/0400 order. After restoring 0399, 0400, 0401, `python3 scripts/check_repository.py` passed on the combined tree. Both decision entries retain their original text and links. The 40 focused PR-watch and MCP tests passed on the combined tree.

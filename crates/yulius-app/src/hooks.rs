@@ -18,6 +18,7 @@ use yulius_domain::rotation::{self, Decision, Trigger};
 use yulius_domain::spec_format::{DecisionFiles, NamedFile, decision_titles, project_layout};
 use yulius_domain::spec_format::{DecisionsLocation, SpecPolicy, validate_spec_for};
 use yulius_domain::task::{Activity, TaskStatus};
+use yulius_domain::time::Timestamp;
 
 use crate::capacity::{CONTINUATION_MAX, HOLD_RETRY_SECS};
 use crate::context::App;
@@ -464,11 +465,13 @@ impl App {
             events::STOP => self.hook_stop(ctx, input, sent).await,
             events::PRE_TOOL_USE => Ok(HookReply::Output(self.hook_pre_tool_use(ctx, input).await)),
             events::SUBAGENT_START => {
-                self.review_subagent_started(ctx, input).await;
+                self.review_subagent_started(ctx, input, Timestamp(sent))
+                    .await;
                 Ok(HookReply::Output(HookOutput::default()))
             }
             events::SUBAGENT_STOP => {
-                self.review_subagent_stopped(ctx, input).await;
+                self.review_subagent_stopped(ctx, input, Timestamp(sent))
+                    .await;
                 Ok(HookReply::Output(HookOutput::default()))
             }
             events::NOTIFICATION => {
