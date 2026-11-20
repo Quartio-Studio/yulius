@@ -747,6 +747,7 @@ async fn restart_refuses_excess_web_tabs_before_stopping_the_old_browser() -> Te
 #[tokio::test]
 async fn replacement_cleanup_holds_the_slot_and_saved_tabs_until_the_display_stops() -> TestResult {
     for method in [
+        "spawn",
         "Browser.getVersion",
         "Target.setDiscoverTargets",
         "Target.getTargets",
