@@ -4680,6 +4680,16 @@ impl BrowserPort for HeldBrowserLookup {
             .await
     }
 
+    async fn restart(
+        &self,
+        sandbox: &SandboxId,
+        profile_dir: &Path,
+    ) -> Result<Arc<dyn BrowserSession>, BrowserFailure> {
+        yulius::wiring::browser::UnavailableBrowser
+            .restart(sandbox, profile_dir)
+            .await
+    }
+
     async fn running(&self, _: &SandboxId) -> Option<Arc<dyn BrowserSession>> {
         if self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 1 {
             self.entered.notify_one();
