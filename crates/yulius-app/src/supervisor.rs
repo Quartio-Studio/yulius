@@ -4256,6 +4256,10 @@ impl App {
         let store = &self.deps.store;
         let runtime = self.runtime(task_id);
         let _finalizing = Finalizing::start(&runtime.finalizing);
+        crate::race::reached(
+            crate::race::Point::RunEndTaking,
+            Path::new(task_id.as_str()),
+        );
         let intent = runtime.intent.lock().ok().and_then(|mut g| {
             let intent = g.take();
             // Who records the run's end first decides it: a loss recorded meanwhile must still
@@ -4911,6 +4915,7 @@ impl App {
             if let Ok(Some(live)) = app.deps.store.live_attempt(&tid).await
                 && live.id == attempt
             {
+                crate::race::reached(crate::race::Point::EndEscalating, Path::new(tid.as_str()));
                 tracing::warn!(task = %tid, "run did not exit after escalation; terminating host");
                 app.terminate_then_mark_lost(&tid, &live, StopReason::Lost)
                     .await;
