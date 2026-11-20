@@ -420,7 +420,7 @@ If a reservation skips past all available slots, land an empty extension first w
 <!-- ADR 0404 -->
 <!-- ADR 0405 -->
 <!-- ADR 0406 -->
-- [0407](0407-share-parked-pr-read-time-across-task-lists.md) reserves PR lookup time for later parked rows and bounds local Git workers.
+- [0407. Keep current PR observations across incomplete Git overviews](0407-keep-current-pr-observations-across-incomplete-overviews.md)
 <!-- ADR 0407 -->
 <!-- ADR 0408 -->
 <!-- ADR 0409 -->

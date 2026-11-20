@@ -6,7 +6,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-20
 
-- Parked task summaries, Home counts and MCP task lists verify ordinary PRs within a shared lookup budget. Later rows get time to resolve when an earlier PR stalls (SPEC-558).
+- Home and MCP retain a parked task’s known failing PR when another Git overview returns incomplete data. A newer confirmed closure clears it (SPEC-558).
 
 - Successors wait for a parked predecessor’s plan, goal, owner decision and current PR checks, including a replacement PR opened after the recorded delivery merged (SPEC-558).
 - A sandbox writer can choose **Restart browser** when Chrome's input stays locked after host setup. The panel reconnects with the same sandbox profile and reopened web tabs. [SPEC-570](../.ai/specs/SPEC-570-restart-the-locked-browser-of-one-sandbo.md)

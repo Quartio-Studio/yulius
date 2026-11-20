@@ -618,15 +618,6 @@ impl AttentionFacts {
     /// conflict its pull request watch tells it of, a CI run to run again, a first turn) waits
     /// for a person, who resumes it.
     fn parked_group(&self) -> TaskGroup {
-        if self.plan_open
-            || self.spec_unfinished
-            || self.goal_unfinished
-            || self
-                .pull
-                .is_some_and(|pull| !matches!(pull, PullSignal::Tested | PullSignal::Merged))
-        {
-            return TaskGroup::NeedsYou;
-        }
         // The idle run it was, with nothing of a session going on (review round 2 of SPEC-512
         // part 1: the web's `asIdleRun` reads it the same way).
         let run = Self {
@@ -979,10 +970,10 @@ mod tests {
             waiting.pull = Some(pull);
             assert_eq!(waiting.group(), TaskGroup::NeedsYou, "{pull:?}");
         }
-        // An achieved parked goal still owns its unsettled PR.
+        // An achieved goal is Done whatever its checks still do, as for a running task.
         let mut achieved = parked(Activity::Done);
         achieved.pull = Some(PullSignal::InReview);
-        assert_eq!(achieved.group(), TaskGroup::NeedsYou);
+        assert_eq!(achieved.group(), TaskGroup::Done);
         // Review round 2 (N1): it reads as the idle run it was, whatever the facts, and only
         // what would keep that run Working is a person's: the web's rule (`asIdleRun`) is the
         // same.
@@ -1009,13 +1000,7 @@ mod tests {
                         ..facts
                     }
                     .group();
-                    let want = if run == TaskGroup::Working
-                        || plan_open
-                        || spec_unfinished
-                        || goal_unfinished
-                        || pull
-                            .is_some_and(|p| !matches!(p, PullSignal::Tested | PullSignal::Merged))
-                    {
+                    let want = if run == TaskGroup::Working {
                         TaskGroup::NeedsYou
                     } else {
                         run

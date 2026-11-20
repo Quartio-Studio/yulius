@@ -3,8 +3,6 @@
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
-use tokio::time::Instant;
-use yulius_contracts::api::tasks::ParkedPr;
 
 use yulius_contracts::api::sandboxes::{Profile, RepoRef, Sandbox, SandboxCounts};
 use yulius_domain::ids::{SandboxId, TaskId};
@@ -16,77 +14,102 @@ use crate::context::App;
 use crate::error::AppResult;
 use crate::model::{SandboxRecord, TaskRecord};
 
-/// Concurrent parked PR reads per list and active local Git workers per application.
-pub(crate) const PARKED_READS: usize = 8;
-
-/// All parked PRs rendered by one list share the same remote lookup deadline.
-pub(crate) fn parked_pr_deadline() -> Instant {
-    Instant::now() + std::time::Duration::from_millis(750)
-}
-
-/// Reserve a share of the remaining deadline for each unvisited batch.
-pub(crate) fn fair_batches<T>(
-    rows: &[T],
-    deadline: Instant,
-    concurrency: usize,
-) -> impl Iterator<Item = (&[T], Instant)> {
-    let mut batches = rows.chunks(concurrency);
-    std::iter::from_fn(move || {
-        let batch = batches.next()?;
-        let now = Instant::now();
-        let remaining = u32::try_from(batches.len() + 1).unwrap_or(u32::MAX);
-        Some((
-            batch,
-            now + deadline.saturating_duration_since(now) / remaining,
-        ))
-    })
-}
-
-/// Run at most eight reads together and reserve time for later rows. A stalled
-/// GitHub response can consume its batch's share, never the whole list's budget.
-pub(crate) async fn fair_rows<'a, T, R, F>(
-    rows: &'a [T],
-    deadline: Instant,
-    concurrency: usize,
-    read: impl Fn(&'a T, Instant) -> F,
-) -> AppResult<Vec<R>>
-where
-    F: std::future::Future<Output = AppResult<R>>,
-{
-    let mut results = Vec::with_capacity(rows.len());
-    for (batch, until) in fair_batches(rows, deadline, concurrency) {
-        results
-            .extend(futures::future::try_join_all(batch.iter().map(|row| read(row, until))).await?);
-    }
-    Ok(results)
-}
-
-/// What each sandbox's Git overview last said about its tasks' pull requests (GIT-001): the same
-/// facts the web UI's sidebar reads, so the "needs you" counts agree with it without calling
-/// GitHub for every sandbox list. Replaced per sandbox on every overview read; bounded by the
-/// sandboxes' tasks; empty after a restart until the next overview read.
-#[derive(Debug, Default)]
-pub(crate) struct ObservedPulls(Mutex<HashMap<SandboxId, HashMap<TaskId, ObservedPull>>>);
-
+/// PR facts the Git overview supplied for a single task. A closed, unmerged PR
+/// has a number and no attention signal.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct ObservedPull {
     pub(crate) number: u64,
-    pub(crate) signal: PullSignal,
+    pub(crate) signal: Option<PullSignal>,
+}
+
+impl ObservedPull {
+    fn open(self) -> bool {
+        self.signal
+            .is_some_and(|signal| signal != PullSignal::Merged)
+    }
+}
+
+#[derive(Debug, Default)]
+struct SandboxPulls {
+    revision: u64,
+    // Keep confirmed absence as evidence too: an older request may still be reading an open PR.
+    rows: HashMap<TaskId, RowObservation>,
+}
+
+#[derive(Debug, Default)]
+struct RowObservation {
+    revision: u64,
+    pull: Option<ObservedPull>,
+}
+
+/// Bounded by the tasks in the latest overview. The readers publish evidence
+/// under one lock after their I/O. Missing rows in a partial read say nothing.
+#[derive(Debug, Default)]
+pub(crate) struct ObservedPulls {
+    sequence: std::sync::atomic::AtomicU64,
+    sandboxes: Mutex<HashMap<SandboxId, SandboxPulls>>,
 }
 
 impl ObservedPulls {
-    /// Records one overview read of a sandbox.
-    pub(crate) fn record(&self, sandbox: &SandboxId, pulls: HashMap<TaskId, ObservedPull>) {
-        if let Ok(mut map) = self.0.lock() {
-            map.insert(sandbox.clone(), pulls);
+    pub(crate) fn begin(&self) -> u64 {
+        self.sequence
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            + 1
+    }
+
+    pub(crate) fn record(
+        &self,
+        sandbox: &SandboxId,
+        revision: u64,
+        complete: bool,
+        pulls: HashMap<TaskId, Option<ObservedPull>>,
+    ) {
+        let Ok(mut sandboxes) = self.sandboxes.lock() else {
+            return;
+        };
+        let cached = sandboxes.entry(sandbox.clone()).or_default();
+        let latest = revision >= cached.revision;
+        if latest {
+            cached.rows.retain(|task, _| pulls.contains_key(task));
+            cached.revision = revision;
+        }
+        for (task, read) in pulls {
+            let row = if latest {
+                cached.rows.entry(task).or_default()
+            } else if let Some(row) = cached.rows.get_mut(&task) {
+                row
+            } else {
+                continue;
+            };
+            if revision < row.revision {
+                continue;
+            }
+            if !complete
+                && (read.is_none()
+                    || row.pull.is_some_and(|prior| {
+                        prior.open()
+                            && read.is_some_and(|pr| !pr.open() && pr.number != prior.number)
+                    }))
+            {
+                continue;
+            }
+            *row = RowObservation {
+                revision,
+                pull: read,
+            };
         }
     }
 
-    /// The last observed pull request of a task: `Some(None)` when the overview listed the task
-    /// without one, `None` when its sandbox was not read since the server started.
-    pub(crate) fn get(&self, sandbox: &SandboxId, task: &TaskId) -> Option<Option<ObservedPull>> {
-        let map = self.0.lock().ok()?;
-        map.get(sandbox).map(|pulls| pulls.get(task).copied())
+    /// Outer None means no overview since startup. Inner None means no PR signal.
+    fn get(&self, sandbox: &SandboxId, task: &TaskId) -> Option<Option<PullSignal>> {
+        let sandboxes = self.sandboxes.lock().ok()?;
+        sandboxes.get(sandbox).map(|cached| {
+            cached
+                .rows
+                .get(task)
+                .and_then(|row| row.pull)
+                .and_then(|pr| pr.signal)
+        })
     }
 }
 
@@ -106,25 +129,11 @@ impl App {
         record: &SandboxRecord,
         access: AccessLevel,
     ) -> AppResult<Sandbox> {
-        self.sandbox_view_until(record, access, parked_pr_deadline())
-            .await
-    }
-
-    async fn sandbox_view_until(
-        &self,
-        record: &SandboxRecord,
-        access: AccessLevel,
-        deadline: Instant,
-    ) -> AppResult<Sandbox> {
         let tasks = self.deps.store.tasks(&record.id, false).await?;
         let requested = self.browser_requests(&record.id).await;
         let mut counts = SandboxCounts::default();
-        let facts = fair_rows(&tasks, deadline, PARKED_READS, |task, until| {
-            self.task_attention_facts_until(task, &requested, until)
-        })
-        .await?;
-        for row in facts {
-            match row.group() {
+        for task in &tasks {
+            match self.task_group(task, &requested).await? {
                 TaskGroup::NeedsYou => counts.needs_attention += 1,
                 TaskGroup::Working => counts.running += 1,
                 TaskGroup::Queued => counts.queued += 1,
@@ -191,76 +200,6 @@ impl App {
         task: &TaskRecord,
         requested: &HashSet<String>,
     ) -> AppResult<AttentionFacts> {
-        self.task_attention_facts_until(task, requested, parked_pr_deadline())
-            .await
-    }
-
-    pub(crate) async fn task_attention_facts_until(
-        &self,
-        task: &TaskRecord,
-        requested: &HashSet<String>,
-        deadline: Instant,
-    ) -> AppResult<AttentionFacts> {
-        if task.status == TaskStatus::Parked {
-            return Ok(self.parked_attention(task, requested, deadline).await?.0);
-        }
-        self.local_attention_facts(task, requested).await
-    }
-
-    /// Check the recorded and branch PRs before reporting Done, even before
-    /// anyone opens the sandbox Git overview. A missed deadline leaves work open.
-    pub(crate) async fn parked_attention(
-        &self,
-        task: &TaskRecord,
-        requested: &HashSet<String>,
-        deadline: Instant,
-    ) -> AppResult<(AttentionFacts, Option<ParkedPr>)> {
-        use crate::delivery::{ParkedPullRead, PrVerification};
-        let store = &self.deps.store;
-        let mut facts = self.local_attention_facts(task, requested).await?;
-        let record = store.delivery(&task.id).await?;
-        let mut observed = ParkedPullRead::recorded(record.as_ref());
-        if facts.plan_open
-            || facts.spec_unfinished
-            || facts.goal_unfinished
-            || facts.held_prompt
-            || facts.browser_request
-        {
-            return Ok((facts, observed.pr));
-        }
-        let check = async {
-            let Some(prs) = self
-                .verify_task_prs(
-                    task,
-                    record.as_ref(),
-                    PrVerification::Display,
-                    &mut observed,
-                )
-                .await?
-            else {
-                return Ok(false);
-            };
-            self.parked_evidence_current(task, record.as_ref(), &prs, PrVerification::Display)
-                .await
-        };
-        facts.pull = match tokio::time::timeout_at(deadline, check).await {
-            Ok(Ok(true)) => observed.pr.map(|pr| {
-                if pr.open {
-                    PullSignal::Tested
-                } else {
-                    PullSignal::Merged
-                }
-            }),
-            _ => Some(observed.signal.unwrap_or(PullSignal::Errored)),
-        };
-        Ok((facts, observed.pr))
-    }
-
-    pub(crate) async fn local_attention_facts(
-        &self,
-        task: &TaskRecord,
-        requested: &HashSet<String>,
-    ) -> AppResult<AttentionFacts> {
         let store = &self.deps.store;
         if task.status.is_resting() || task.status == TaskStatus::Stopping {
             let mut facts = AttentionFacts::new(task.status, task.activity);
@@ -286,7 +225,7 @@ impl App {
         // open and no unfinished goal, an idle agent answered (SPEC-429).
         let (pull, plan_open, spec_unfinished) = if finished {
             let pull = match self.observed_pulls.get(&task.sandbox_id, &task.id) {
-                Some(observed) => observed.map(|pr| pr.signal),
+                Some(observed) => observed,
                 // Not read since the server started: a merge recorded earlier is still known.
                 None => store
                     .delivery(&task.id)
@@ -295,12 +234,7 @@ impl App {
                     .map(|_| PullSignal::Merged),
             };
             let plan_open = plan_open(&store.steps(&task.id).await?);
-            let spec_unfinished = if task.status == TaskStatus::Parked {
-                self.read_spec_unfinished(&task.id).await.unwrap_or(true)
-            } else {
-                self.spec_unfinished(&task.id).await
-            };
-            (pull, plan_open, spec_unfinished)
+            (pull, plan_open, self.spec_unfinished(&task.id).await)
         } else {
             (None, false, false)
         };
@@ -356,14 +290,11 @@ impl App {
     /// # Errors
     /// Store failures.
     pub async fn list_sandboxes(&self, ctx: &AuthContext) -> AppResult<Vec<Sandbox>> {
-        let visible = self.visible_sandboxes(&ctx.user).await?;
-        fair_rows(
-            &visible,
-            parked_pr_deadline(),
-            1,
-            |(record, level), until| self.sandbox_view_until(record, *level, until),
-        )
-        .await
+        let mut out = Vec::new();
+        for (record, level) in self.visible_sandboxes(&ctx.user).await? {
+            out.push(self.sandbox_view(&record, level).await?);
+        }
+        Ok(out)
     }
 
     /// One sandbox, if visible.
@@ -424,4 +355,72 @@ impl App {
 pub(crate) fn plan_open(steps: &[crate::model::StepRecord]) -> bool {
     let progress = crate::tasks::progress(steps);
     progress.total > 0 && progress.done < progress.total
+}
+
+#[cfg(test)]
+mod overview_tests {
+    use super::*;
+
+    #[test]
+    fn overlapping_overviews_update_each_tasks_last_authoritative_pr_read() -> AppResult<()> {
+        let cache = ObservedPulls::default();
+        let sandbox = SandboxId::parse("sandbox").map_err(crate::error::AppError::internal)?;
+        let task = TaskId::parse("task").map_err(crate::error::AppError::internal)?;
+        let old = cache.begin();
+        let next = cache.begin();
+        let red = Some(ObservedPull {
+            number: 2,
+            signal: Some(PullSignal::Failing),
+        });
+        let record = |revision, complete, pull| {
+            cache.record(
+                &sandbox,
+                revision,
+                complete,
+                HashMap::from([(task.clone(), pull)]),
+            )
+        };
+        // An incomplete read with no information cannot suppress a slower complete observation.
+        record(next, false, None);
+        record(old, true, red);
+        assert_eq!(cache.get(&sandbox, &task), Some(Some(PullSignal::Failing)));
+        let landed = Some(ObservedPull {
+            number: 1,
+            signal: Some(PullSignal::Merged),
+        });
+        record(cache.begin(), false, landed);
+        assert_eq!(
+            cache.get(&sandbox, &task),
+            Some(Some(PullSignal::Failing)),
+            "an older recorded merge cannot clear the replacement"
+        );
+        // The owner observed this PR's closure even though the whole list was unavailable.
+        record(
+            cache.begin(),
+            false,
+            Some(ObservedPull {
+                number: 2,
+                signal: None,
+            }),
+        );
+        assert_eq!(cache.get(&sandbox, &task), Some(None));
+        record(next, true, red);
+        assert_eq!(
+            cache.get(&sandbox, &task),
+            Some(None),
+            "a late red report cannot reopen the confirmed closure"
+        );
+        record(cache.begin(), false, red);
+        assert_eq!(cache.get(&sandbox, &task), Some(Some(PullSignal::Failing)));
+        record(cache.begin(), true, landed);
+        assert_eq!(cache.get(&sandbox, &task), Some(Some(PullSignal::Merged)));
+        cache.record(&sandbox, cache.begin(), true, HashMap::new());
+        record(next, false, red);
+        assert_eq!(
+            cache.get(&sandbox, &task),
+            Some(None),
+            "a late response cannot reinsert a removed task"
+        );
+        Ok(())
+    }
 }

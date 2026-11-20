@@ -4692,7 +4692,7 @@ impl App {
             .verify_parking_prs(
                 &candidate,
                 delivery.as_ref(),
-                crate::delivery::PrVerification::WatchPending,
+                crate::delivery::PrVerification::Parking,
             )
             .await?
         else {

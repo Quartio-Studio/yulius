@@ -33,6 +33,7 @@ Task #517 displayed Codex's exit instructions. The host drained shutdown output 
 - [x] Keep unfinished plans, specs and goals live
 - [x] Verify PR checks and unpublished repairs before parking
 - [x] Gate parked successors on declared work, owner decisions and current branch PRs
+- [ ] Preserve parked PR observations across overlapping Git overviews
 - [ ] Give parked PRs fair status reads in task lists and Home
 - [ ] Refresh parked page and sidebar status independently of the Git overview
 - [ ] Keep failed integration candidates with their original owner
@@ -59,8 +60,6 @@ Use the fake Codex executable, its rollout, real PTY shutdown and the applicatio
 Capture a separate screen at the park decision because exiting can clear the entire alternate screen. Changing shutdown signals would couple presentation to the harness and could interfere with reaping. A separate snapshot lets an unsuccessful park keep its real terminal. Reuse native Codex resume and the Stop hook's persisted three-block budget. Older runs can only recover content still present in their saved screen. A parked owner terminal fits the saved grid to the viewport so the first row, last row and notice survive a smaller window. If the PR is the only remaining work and the Stop lookup cannot finish, the continuation asks the agent to verify its checks. Parking reads the current head before acquiring the launch lock and supplies that signal to the final eligibility check.
 
 A human request can take precedence over unfinished work in the task list. Both parking triggers therefore check the recorded plan, spec and native goal immediately before committing to shutdown. The task’s steps lock orders that decision with plan, spec and goal updates. An update in progress or a store read failure leaves the session live for a later pass.
-
-Parked task summaries and Home share PR lookup time across batches and bound native Git work that outlives a cancelled read. [Decision 0407](../../docs/decisions/0407-share-parked-pr-read-time-across-task-lists.md)
 
 ## Evidence
 
@@ -115,7 +114,8 @@ Parked task summaries and Home share PR lookup time across batches and bound nat
 - The final browser-order fix reported `mutants: 33 listed, 13 caught, 6 missed, 0 timed out, 14 unviable, 0 not reached (bound 30 min, took 1031 s)`. The historical owner-decision fixture caught all five altered conjunctions in the work and decision check, including its three survivors. The final CI and browser-read fixtures caught all six altered combinations in the last predecessor check, including its three survivors. The browser fixture covers an owner who resumes and parks again after a new turn. With these test additions, the final scoped run passed all 200 tests, and Clippy passed.
 - PR #1524’s E2E job failed on `f84a6eb0b` in run `9f6f533e-7f2d-48a7-a7f1-0b4a6d4fd0cc`. Four of eight local Chromium runs reproduced the empty input. The failure trace showed the test tapping the panel while it still displayed the loading overlay. The two browser restart tests now wait for the first displayed frame before sending input to the replacement session. Both tests passed eight of eight runs with retries off.
 
-- PR #1524 delivered the parked predecessor check into dev at `4b3497496`. The exact PR head `87515a163` passed run `171d5cc9-b354-4d52-afeb-019d742abca3`, including quality, both test shards and the E2E job. Security was skipped.
+- PR #1524 delivered the parked predecessor check into dev at `4b3497496`. The exact PR head `87515a163` passed Yulius CI run `171d5cc9-b354-4d52-afeb-019d742abca3`, including quality, both test shards and E2E. Security was skipped.
+- The independent reviews of the server list prototype isolated a prerequisite for an installation that cannot verify an owner-observed PR. A failed or truncated Git overview could erase a known red PR, including when it completed after another overview established the current state. The observation cache has its own delivery. Fair list deadlines and verified per-task summaries follow it.
 
 ## Delivery slices
 

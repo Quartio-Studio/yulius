@@ -2095,6 +2095,8 @@ resume waits `queued` with its prompt. A queued task's summary carries `queue_re
 limit or an update), and `GET /api/capacity` counts working, idle, parked and queued sessions for
 the Capacity card.
 
+Home and MCP apply Git overview results to each task in read order. A failed or truncated list preserves a known open PR, including one reported through the owner’s token. A direct closure or complete list can clear it. Overlapping requests publish their observations under one lock. [ADR-0407](decisions/0407-keep-current-pr-observations-across-incomplete-overviews.md)
+
 When a successor waits for its predecessor to be Done (`after_task` or `#N done`), Yulius
 checks the parked predecessor’s declared work, goal and outstanding owner requests. It verifies
 the recorded PR and current open PRs on the task branch through the same lookup used
@@ -2102,12 +2104,6 @@ for parking. A waiting successor requires settled checks.
 An externally opened replacement can hold the successor after the recorded delivery merged.
 Yulius rechecks local work, durable CI and the owner’s state after the remote reads.
 An explicit `#N merged` rule follows the recorded merge.
-
-Task summaries, Home counts and MCP lists check parked tasks against the same recorded
-and current branch PRs. A list shares a 750 ms PR lookup budget across successive batches
-of up to eight rows, reserving time for later rows. Up to eight native Git reads from
-these requests can run per application. A worker holds its place until Git returns, including
-after a reader times out. A task with an unreadable result stays under Needs you.
 
 The end-of-day digest (`yulius-app/src/digest.rs`, SPEC-512 part 3,
 [decision 0380](decisions/0380-an-end-of-day-digest-built-from-task-state.md)) runs from the same
