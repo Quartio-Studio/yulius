@@ -6,6 +6,14 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-20
 
+- Merge-first staging target: a task's `cd_deploy` now queues a staging request for the task's
+  merged revision instead of deploying the branch head.
+  - Yulius runs the full gate on exactly that commit, then deploys and verifies revisions in
+    first-parent order, once per task.
+  - A failing candidate leaves staging on its last verified release.
+  - A deploy lost to a restart is retried, and duplicate requests answer with the recorded one
+    ([ADR-0411](decisions/0411-staging-changes-through-a-queue-of-tested-merged-revisions.md),
+    [SPEC-575](../.ai/specs/SPEC-575-make-task-local-testing-and-one-staging.md)).
 - A project with a shared staging target can mark it `merge_first = true` and its long jobs
   `after_merge = true`. Pull requests then wait only for the quick checks, and the full suite
   runs once on the merged revision instead of on every head. Projects without such a target keep

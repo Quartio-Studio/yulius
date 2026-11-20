@@ -429,6 +429,7 @@ If a reservation skips past all available slots, land an empty extension first w
 <!-- ADR 0409 -->
 - [0410](0410-the-full-suite-runs-on-the-merged-revision-beside-a-merge-first-staging-target.md) The full suite runs on the merged revision beside a merge-first staging target.
 <!-- ADR 0410 -->
+- [0411](0411-staging-changes-through-a-queue-of-tested-merged-revisions.md) Staging changes through a queue of tested merged revisions.
 <!-- ADR 0411 -->
 <!-- ADR 0412 -->
 <!-- ADR 0413 -->
