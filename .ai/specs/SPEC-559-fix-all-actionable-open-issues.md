@@ -9,7 +9,7 @@ status: in-progress
 
 Resolve the actionable reports in the November 20 GitHub issue inventory on green Yulius CI. Close reports superseded by a fix or a later product decision. Preserve unresolved reports and their acceptance evidence.
 
-Fixes #1398
+Fixes #1501
 
 ## Context
 
@@ -62,6 +62,8 @@ The inventory at dev 56f08db7f contained 20 issues. #1490 belongs to task #540. 
 
 - **AC-4** Hold the second member’s own run at the decision for a failed two-member candidate, then fail it. The first member merges, the second disarms, and the audit identifies the member failure. A genuine combination failure still takes the bisection path.
 
+- **AC-5** After Resume, the parked-terminal test waits for the second park to reach the attention bar. Sending a reply wakes the task with the submitted prompt. The wait for that transition has a deadline.
+
 ## Test plan
 
 Exercise the actual migration SQL and measure SQLite VM instructions. Run the focused Rust test with its index removed to prove the assertion. Run the intact fixture in 60 concurrent processes. Check the repository contracts, obtain independent review and verify the Yulius CI result on the merged tree. Check each linked issue, PR and existing owner's evidence separately.
@@ -97,3 +99,5 @@ The later reports #1498 and #1502 cover the same parking fixture repaired in PR 
 - After integrating dev at 3cc2b1969, the original quarantined test, the forced race and the deadline control also passed on the reviewed head (3/3).
 - The mutation baseline passed 3,207 tests. The command reported “mutants: 2 listed, 1 caught, 0 missed, 0 timed out, 1 unviable, 0 not reached (bound 30 min, took 655 s)”. Vidoc was disabled.
 - PR #1499 run e45eacb9 failed in the parking fixture. Forcing the live queue to drain immediately before the queued-to-starting assertion reproduced the same failure on 561f47b76. PR #1496 had already fixed the fixture by isolating its cold reads in a SQLite copy. After integrating dev at a561121e7, both parking callers and all three focused merge-train tests passed (5/5). The dev tree passed Yulius CI in run 32a60a22, and GitHub closed #1427. Task #541 closed the parking reports #1498 and #1502 with this evidence, ending the quarantine.
+
+- PR #1499 merged on green Yulius CI at 7c7f742af and closed #1398. The unchanged #1501 scenario passed by itself. The original full-suite trace timed out at the second Reply assertion and subsequently captured the parked attention bar with Reply.

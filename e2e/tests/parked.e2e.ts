@@ -205,8 +205,13 @@ test('a parked task terminal shows its parked banner and Resume action, distinct
   await expect(browser.locator('.term-banner-info')).toHaveCount(0);
   await expect(browser.locator('.term')).toHaveAttribute('data-cursor-blink', 'true');
 
-  // Park again and wake via Reply with a prompt.
-  await touchTask(browser, 'sb_studio', 13, { status: 'parked', activity: 'waiting' });
+  // The next idle park is announced asynchronously. Exercise a park that arrives
+  // after the ordinary five-second button assertion budget (#1501).
+  await browser.evaluate(() => {
+    type Mock = { touchTask(sandbox: string, number: number, changes: Record<string, string>): void };
+    const db = (window as unknown as { __yuliusMock: Mock }).__yuliusMock;
+    setTimeout(() => db.touchTask('sb_studio', 13, { status: 'parked', activity: 'waiting' }), 6_500);
+  });
   await expect(bar.getByRole('button', { name: 'Reply' })).toBeVisible();
   await bar.getByRole('button', { name: 'Reply' }).click();
   await bar.getByRole('textbox', { name: 'Reply to the agent' }).fill('Check CI status');
