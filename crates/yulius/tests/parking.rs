@@ -2004,10 +2004,9 @@ fn parked_task_parks_safely_during_ci_and_auto_wakes_on_actionable_check_results
 }
 
 /// SPEC-553 PRK-103: an unpublished clean committed fast-forward CI repair above a failing open
-/// PR head defers parking (`open_pr_work_pending`), while a pending human `needs_you` decision
-/// or active (`Running`) CI run allows safe parking.
+/// PR head still needs its session when the task requests a person (SPEC-558 PKR-004).
 #[test]
-fn unpublished_open_pr_ci_repair_defers_parking_unless_needs_you_or_ci_running() -> TestResult {
+fn an_unpublished_ci_repair_keeps_its_session_even_with_a_human_request() -> TestResult {
     use std::process::Command;
     use yulius_app::ci::{CiJobRecord, CiRunRecord};
     use yulius_app::delivery::DeliveryRecord;
@@ -2102,8 +2101,7 @@ fn unpublished_open_pr_ci_repair_defers_parking_unless_needs_you_or_ci_running()
             .insert_ci_run(&failed_ci, &[failed_job])
             .await?;
         // Pre-seed `pr-notices.json` at `PR_NOTICES_FILE` (`data/pr-notices.json`) so `pr_news_due`
-        // is false and ONLY `open_pr_work_pending` keeps the session from parking while
-        // `repair_head` is unpublished.
+        // is false while the upstream is red and the repair still needs to be pushed.
         let told_json = json!({
             id.as_str(): {
                 "pr": 99,
@@ -2136,8 +2134,8 @@ fn unpublished_open_pr_ci_repair_defers_parking_unless_needs_you_or_ci_running()
         parked(&app, &id).await?;
         assert_eq!(status_of(&app, &id).await.0, Some(TaskStatus::Parked));
 
-        // Resume, commit a second unpublished repair, and verify an open `needs_you` human
-        // decision still allows safe parking instead of deferring for the repair.
+        // With green upstream checks the newer local commit alone keeps the session live,
+        // including while a human request is pending.
         let owner_ctx = AuthContext {
             user: app.deps.store.user(&caller.user).await?.ok_or("user")?,
             csrf_token: None,
@@ -2162,7 +2160,23 @@ fn unpublished_open_pr_ci_repair_defers_parking_unless_needs_you_or_ci_running()
         std::fs::write(wt.join("repair2.txt"), "second fix\n")?;
         git(&["add", "repair2.txt"])?;
         git(&["commit", "-m", "Second unpublished CI repair"])?;
+        past_the_grace(&app, &id).await?;
+        assert_eq!(
+            app.park_idle_sessions_now().await,
+            0,
+            "the upstream is green but the newer repair is unpublished"
+        );
         ask(&app, &id).await?;
+        past_the_grace(&app, &id).await?;
+        assert_eq!(
+            app.park_idle_sessions_now().await,
+            0,
+            "a human request does not publish the outstanding repair"
+        );
+        git(&["push", "-q", "origin", branch])?;
+        let last = git(&["rev-parse", "HEAD"])?;
+        set_pull_head(&github, 99, &last)?;
+        github.set_checks(&last, yulius_app::ports::github::ChecksState::Success);
         parked(&app, &id).await?;
         assert_eq!(status_of(&app, &id).await.0, Some(TaskStatus::Parked));
         Ok::<_, Error>(())

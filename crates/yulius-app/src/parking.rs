@@ -241,7 +241,7 @@ impl App {
             yulius: self.agent_waits_on_yulius(&task.id)
                 || self.merge_is_armed(&task.id)
                 || self.pr_news_due(task).await
-                || self.open_pr_work_pending(task, requested).await,
+                || self.open_pr_work_pending(task).await,
             held_prompt: self
                 .deps
                 .store
@@ -256,14 +256,9 @@ impl App {
     }
 
     /// Whether `task` holds an unpublished clean committed fast-forward CI repair above its
-    /// failing open pull request head (SPEC-553 REP-002, PRK-103). Returns `false` when an actual
-    /// human `needs_you` decision is pending, and also returns `false` while CI is running so
-    /// idle sessions continue to park safely during CI and wake automatically on actionable
-    /// check results via `pr_watch`.
-    async fn open_pr_work_pending(&self, task: &TaskRecord, requested: &Requests) -> bool {
-        if requested.all.contains(task.id.as_str()) {
-            return false;
-        }
+    /// failing open pull request head (SPEC-553 REP-002, SPEC-558 PKR-004). Requesting a
+    /// person does not publish that repair. An active CI run can still take over verification.
+    async fn open_pr_work_pending(&self, task: &TaskRecord) -> bool {
         let Ok(Some(record)) = self.deps.store.delivery(&task.id).await else {
             return false;
         };

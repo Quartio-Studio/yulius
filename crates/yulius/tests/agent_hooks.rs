@@ -2687,3 +2687,46 @@ async fn a_merged_recorded_pr_cannot_park_a_new_failing_branch_pr() -> TestResul
     assert_eq!(f.h.app.park_idle_sessions_now().await, 1);
     Ok(())
 }
+
+#[tokio::test]
+async fn parking_checks_a_release_pr_against_its_actual_base() -> TestResult {
+    use yulius_app::ports::github::ChecksState;
+    let (f, _) = untracked_parking_fixture().await?;
+    let head =
+        f.h.app
+            .deps
+            .git
+            .resolve_commit(&f.worktree, "HEAD")
+            .await?
+            .ok_or("task head")?;
+    assert_eq!(
+        f.h.app
+            .deps
+            .git
+            .resolve_commit(&f.worktree, "origin/dev")
+            .await?
+            .as_deref(),
+        Some(head.as_str())
+    );
+    {
+        let mut pulls = f.h.github.pulls.lock().map_err(|_| "pull fixture")?;
+        pulls[0].base = "release".into();
+        pulls[0].head_sha = head.clone();
+        pulls[0].mergeable = Some(false);
+    }
+    f.h.github.set_checks(&head, ChecksState::Success);
+    assert_eq!(
+        f.h.app.park_idle_sessions_now().await,
+        0,
+        "GitHub reports a conflict with release even though the local dev head is identical"
+    );
+    f.h.github.pulls.lock().map_err(|_| "pull fixture")?[0].mergeable = None;
+    assert_eq!(
+        f.h.app.park_idle_sessions_now().await,
+        0,
+        "release mergeability has not been reported"
+    );
+    f.h.github.pulls.lock().map_err(|_| "pull fixture")?[0].mergeable = Some(true);
+    assert_eq!(f.h.app.park_idle_sessions_now().await, 1);
+    Ok(())
+}

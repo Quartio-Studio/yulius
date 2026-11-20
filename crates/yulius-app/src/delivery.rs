@@ -4071,7 +4071,8 @@ impl App {
         if !head.unreadable.is_empty() {
             return Ok(false);
         }
-        let checks = tested_checks_word(&delivery_profile(sandbox), head.word);
+        let profile = delivery_profile(sandbox);
+        let checks = tested_checks_word(&profile, head.word);
         let settled = match checks {
             "success" | "none" => true,
             "pending" if watched && self.config.ci.enabled => self
@@ -4084,7 +4085,17 @@ impl App {
                 .is_some_and(|run| run.sha == pull.head_sha && run.state.is_active()),
             _ => false,
         };
-        if !settled || self.pull_conflicts(task, sandbox, &pull).await {
+        if !settled {
+            return Ok(false);
+        }
+        // The local merge-driver check uses the configured integration branch. For a
+        // PR targeting another branch, GitHub computes mergeability against its real base.
+        let mergeable = if pull.base == profile.integration_branch {
+            !self.pull_conflicts(task, sandbox, &pull).await
+        } else {
+            pull.mergeable == Some(true)
+        };
+        if !mergeable {
             return Ok(false);
         }
         // Checks and local conflict detection can take long enough for another push.

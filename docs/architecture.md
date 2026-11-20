@@ -2059,8 +2059,8 @@ session as a close does (graceful shutdown, then the escalation). The run's end,
 its loss, makes the task `parked` with its activity (`settle_parked`) and audits `task.parked`.
 `parked` is neither live nor resting: no slot (`sessions_in_use` counts live runs only), its
 worktree, claims, `needs_you` and delivery stay, and the list groups it as an idle run with no
-live overlay. Idle sessions continue to park safely while CI runs on an open pull request (only an
-unpublished clean fast-forward CI repair awaiting publication defers parking). While the park is
+live overlay. An active CI run can take over checks on its recorded head. A newer committed
+repair awaiting publication keeps the session live, including while the task asks a person. While the park is
 under way nothing is typed into the session. The web terminal treats `parked` as a non-live ended
 status so it shows the calm parked banner (distinct from a crash or operator stop) and a visible
 `Resume` button (plus `Reply` in the waiting bar for the owner), disables cursor blink, and wakes
