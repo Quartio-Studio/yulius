@@ -6,6 +6,9 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-20
 
+- GPT-6.2 Astra now inherits extra high reasoning effort on new Codex launches and resumes.
+  Task details mark inherited effort so an explicit High control is identifiable (SPEC-561, task #554).
+
 - The store migration regression counts SQLite instructions and verifies completed step spans,
   so host contention cannot fail the backfill test (SPEC-559, #1484).
 - Newly parked tasks show their last agent screen, idle duration and resume instructions

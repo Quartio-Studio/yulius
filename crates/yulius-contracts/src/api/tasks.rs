@@ -590,6 +590,9 @@ pub struct TaskDetail {
     /// takes none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effort: Option<String>,
+    /// Whether the task inherits its effort when the next process starts.
+    #[serde(default)]
+    pub effort_default: bool,
     /// The Claude Code version of its latest session that names one (absent while unknown).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cli_version: Option<String>,

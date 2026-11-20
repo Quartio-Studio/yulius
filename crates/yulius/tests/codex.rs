@@ -1287,14 +1287,14 @@ fn a_codex_goal_task_gets_its_request_as_its_first_message() -> TestResult {
         for marker in ["launch-goal-pending", "typed-goal-pending"] {
             assert!(!run_dir.join(marker).exists(), "{marker}");
         }
-        // Without a model or effort of its own it runs GPT-6.2 Astra at high effort, recorded for
+        // Without a model or effort of its own it runs GPT-6.2 Astra at extra high effort, recorded for
         // the run and named for the task, never a Claude model (SPEC-511 CXD-002, CDX-013).
         assert_eq!(attempt.model.as_deref(), Some("gpt-6.2-astra"));
         let ctx = admin_ctx(&app, &user).await?;
         let detail = app.task_detail(&ctx, id.as_str()).await?;
         assert_eq!(detail.model, "gpt-6.2-astra");
         assert!(detail.model_default);
-        assert_eq!(detail.effort.as_deref(), Some("high"));
+        assert_eq!(detail.effort.as_deref(), Some("xhigh"));
         // The pool weighs the task by the model its run was launched with, so a subscription
         // it is at the limit of is left out (SPEC-511 review): one family for both.
         let record = task(&app, &id).await?;

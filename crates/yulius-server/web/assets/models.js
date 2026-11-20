@@ -6,7 +6,7 @@
 // SPEC-023, SPEC-462, SPEC-493), Codex and Antigravity among those with non-exhausted
 // subscriptions (SPEC-520 RHM-001/006). The first model listed is the default, as on the server.
 // Choosing Codex default sends `harness: codex` and no model: the server runs GPT-6.2 Astra, at
-// high effort unless one is chosen (SPEC-511). An explicit Codex model sends its id. Choosing a
+// extra high effort unless one is chosen (SPEC-561). An explicit Codex model sends its id. Choosing a
 // Gemini model sends `harness: antigravity` and the model; Antigravity's default is Gemini 4
 // Neon at high effort (SPEC-519; Gemini 4 Carbon before, SPEC-505).
 
@@ -43,7 +43,7 @@ export const PROVIDERS = [
     efforts: ULTRA,
     models: [
       // No model id: the server runs its Codex default, GPT-6.2 Astra (`harnessOnly`, SPEC-511).
-      { id: 'codex', name: 'Codex default', description: 'GPT-6.2 Astra at high effort by default', harnessOnly: true },
+      { id: 'codex', name: 'Codex default', description: 'GPT-6.2 Astra at extra high effort by default', harnessOnly: true },
       { id: 'gpt-6.2-astra', name: 'GPT-6.2 Astra' },
       { id: 'gpt-6.2-sol', name: 'GPT-6.2 Sol' },
       { id: 'gpt-6.1-sol', name: 'GPT-6.1 Sol' },
@@ -178,10 +178,15 @@ export function modelMenuItems(selected, onPick) {
   ];
 }
 
+/** An inherited effort on a model that supports effort levels (SPEC-561). */
+export function defaultEffort(model) {
+  return model === 'gpt-6.2-astra' || model === 'codex' ? 'xhigh' : 'high';
+}
+
 /** Menu items to pick an effort level; `onPick(id|null)`. */
 export function effortMenuItems(model, selected, onPick) {
   return [
-    { label: 'Default', description: 'High', checked: selected === null, onSelect: () => onPick(null) },
+    { label: 'Default', description: model ? findEffort(defaultEffort(model)).name : 'Depends on the drawn model', checked: selected === null, onSelect: () => onPick(null) },
     ...effortLevels(model).map(findEffort).map((effort) => ({ label: effort.name, description: effort.description, checked: effort.id === selected, onSelect: () => onPick(effort.id) })),
   ];
 }
