@@ -11,7 +11,7 @@ failOnPageErrors();
 // shell must not make fails the test as a page error.
 
 type Invite = { id: string; code: string; revoked?: boolean; guests: { name: string }[] };
-type Mocked = Window & { __yuliusMock: { guestInvites: Invite[]; guestRefusals?: string[]; sent?: Record<string, number> } };
+type Mocked = Window & { __yuliusMock: { guestInvites: Invite[]; guestRefusals?: string[]; sent?: Record<string, number>; unanswered?: number } };
 
 const CODE = 'c0ffee'.repeat(10) + 'c0de';
 
@@ -120,6 +120,8 @@ test('a guest sees their playground and nothing else', async ({ app, browser, sc
   await browser.evaluate(() => { location.hash = '#/s/lab'; });
   await screen.getByRole('button', /^Show tools/).click();
   await expect(browser.locator('.rail')).toBeVisible();
+  // Read once the pages' requests are answered: the mock answers after its latency.
+  await expect.poll(() => browser.evaluate(() => (window as unknown as Mocked).__yuliusMock.unanswered ?? 0)).toBe(0);
   expect(await browser.evaluate(() => (window as unknown as Mocked).__yuliusMock.guestRefusals ?? [])).toEqual([]);
   // The account menu says who and until when, and offers only signing out.
   await screen.getByRole('button', /account menu$/).click();

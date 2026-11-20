@@ -5,7 +5,7 @@ status: done
 
 # SPEC-512: Marcin's five issues: parked sessions, answers from a second person, the digest, Telegram intake, handoffs
 
-Status: done (part 5 delivered by task #539, as part 4 was by task #538: the running server's #1299 judge)
+Status: done (parts 1 to 3 by this task's PRs #1426, #1459, #1480; part 4 by task #538 as PR #1487; part 5 by task #539 as PR #1489, the running server's #1299 judge)
 Date: 2026-11-19
 Owner: Yulius task #494
 Scope authorization: the request of task #494 (by MrFishPL for the owner, Michal Karp,
