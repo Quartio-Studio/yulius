@@ -739,10 +739,7 @@ impl App {
                                 == Some(yulius_domain::task::Activity::NeedsAttention)
                         {
                             let _ = self
-                                .set_task_activity(
-                                    &record,
-                                    yulius_domain::task::Activity::Waiting,
-                                )
+                                .set_task_activity(&record, yulius_domain::task::Activity::Waiting)
                                 .await;
                         }
                     }
