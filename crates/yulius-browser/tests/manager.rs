@@ -377,8 +377,13 @@ async fn startup_failures_are_typed_and_leave_no_process() -> TestResult {
     let hanging = write_fake_chromium(dir.path(), "hanging", FakeChromium::NeverReady)?;
     let mut settings = config(hanging, dir.path());
     settings.startup_timeout = Duration::from_secs(1);
+    // A browser that never answered CDP cannot honor a graceful Browser.close request.
+    settings.stop.graceful = Duration::from_secs(120);
     let manager = BrowserManager::new(settings);
-    match manager.ensure(&sandbox, &profile).await {
+    let failed = tokio::time::timeout(Duration::from_secs(15), manager.ensure(&sandbox, &profile))
+        .await
+        .map_err(|_| "failed startup waited for a graceful browser close")?;
+    match failed {
         Err(BrowserError::StartupTimeout { timeout }) => {
             assert_eq!(timeout, Duration::from_secs(1));
         }
@@ -793,6 +798,10 @@ async fn replacement_cleanup_holds_the_slot_and_saved_tabs_until_the_display_sto
         launcher(replacement.pipe_port())?;
         let recovered = manager.restart(&sandbox, &profile).await?;
         assert_eq!(display.lifecycle(), (3, 2));
+        assert!(
+            recovered.display().is_some(),
+            "the replacement owns a display"
+        );
         assert_eq!(recovered.tabs()[0].url, "https://page.test/saved");
         manager.shutdown(&sandbox).await?;
     }

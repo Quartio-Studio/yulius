@@ -343,6 +343,10 @@ mod shutdown_tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let child = Supervised::spawn(Path::new("/bin/true"), &[], &[])?;
         assert!(child.wait_exit(Duration::from_secs(5)).await.is_some());
+        assert!(
+            format!("{child:?}").contains(&child.pid().to_string()),
+            "cleanup diagnostics identify the supervised process"
+        );
         let timeouts = StopTimeouts::default();
         let first = child.terminate(timeouts).await;
         assert!(first.is_ok());

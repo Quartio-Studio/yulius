@@ -1,6 +1,6 @@
 ---
 yulius-task: a4d245ef-f76a-4ec5-aa11-b3942597e259
-status: in-progress
+status: done
 ---
 
 # SPEC-570 Restart a sandbox browser with locked input
@@ -26,8 +26,8 @@ At dev `f97bf8ccc` the adapter detects this condition, but both lock reasons rea
 - [x] Read the product context and related work, then write and validate the spec
 - [x] Restart the selected browser under its existing sandbox authorization
 - [x] Recover viewer input through the locked browser panel
-- [ ] Independent review in a fresh session, findings fixed test-first
-- [ ] Every gate green, docs and the changes log updated
+- [x] Independent review in a fresh session, findings fixed test-first
+- [x] Every gate green, docs and the changes log updated
 
 ## Acceptance criteria
 
@@ -53,3 +53,8 @@ Use the existing browser grant, per-sandbox process slot, bounded stop and profi
 - Focused nextest ran 47 browser tests and all passed. They include writable versus read-only access, cookie CSRF, inaccessible and missing sandboxes, other sandbox process identity and live input before and after replacement.
 - Round two fault injection on `ccf763c95` showed that failed readiness or target discovery followed by a failed display stop could allow a third launch. A process-level regression also recorded two group signals after two calls to stop an already reaped child. The slot now records the starting display and process immediately on acquisition, and successful process-group cleanup is remembered. All 61 browser unit tests and 13 manager tests passed. The manager regression covers executable spawn, DevTools readiness, discovery, target listing, guard setup and restoration failures. Real Chrome again retained its active URL and cookie.
 - Round three identified an omitted spawn case in the fault table. The test now exercises a missing interpreter. The reviewer also confirmed a pre-existing Xvfb failure in `start_xvfb`, before the manager acquires the display, on dev `d809931d5`. It is tracked in [#1519](https://github.com/Quartio-Studio/yulius/issues/1519).
+- Final independent review approved `3ec08fffb05554483fc57e687e901f9c7fb4dc31`. It reran the unit and manager suites and real Chrome. On the corrected head all 33 HTTP/WebSocket browser integration tests passed. Strict browser-crate Clippy and quick repository checks passed. Vidoc was disabled by Yulius, so it scanned no files.
+- The second full Chromium run passed all five browser panel tests and 1,176 tests overall. One model-backed scenario was skipped and one existing Superagent deep-link scenario timed out. Its trace and earlier passing run are described in [#1520](https://github.com/Quartio-Studio/yulius/issues/1520).
+- Mutation testing on detached copies of `3ec08fffb` passed the unmutated baseline of 3,253 tests. The full change reported `68 listed, 35 caught, 3 missed, 0 timed out, 30 unviable, 0 not reached`. The round-two fixes against `ccf763c95` reported `31 listed, 17 caught, 3 missed, 0 timed out, 11 unviable, 0 not reached`. An earlier run from a changing checkout produced mixed-revision build errors and supplies no coverage evidence.
+- Both campaigns missed the same three mutations. Replaying each cargo-mutants diff with the strengthened tests failed on the expected assertion: the returned display was absent, failed-start cleanup waited for an impossible graceful exit, or cleanup diagnostics omitted the process ID. Restoring the reviewed implementation made all three pass. All 61 unit tests and 13 manager tests passed with the new assertions. Only test assertions and this evidence followed approval.
+- Yulius enforces the required CI status on the exact merge head. After landing, use task #549’s Delivery → Verification evidence for the dev commit and its integration CI run, and the GitHub issue timeline for the closure of #1410.
