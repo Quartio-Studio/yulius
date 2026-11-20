@@ -523,7 +523,9 @@ session limit the resume waits `queued` with its prompt. Archive and close make 
 session"). Each park is audited `task.parked` by `yulius`.
 
 Parked summaries include `parked_needs_you`. The page and project tools use this group even when
-the repository overview has yet to load.
+the repository overview has yet to load. When a parked task has a recorded open or merged PR,
+`parked_pr` identifies its number and whether it is open. Its status refresh runs independently
+of the repository overview. An unavailable status read leaves an open PR awaiting verification.
 
 A `queued` task not held by a supertask carries `queue_reason`, one line: "Waiting for a free
 session: N of M in use", "Waiting for the Yulius update to finish", or "Starting: a session is

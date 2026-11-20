@@ -4653,7 +4653,13 @@ async fn a_historical_parked_goal_keeps_its_owner_and_chain_state_after_restart(
     let f = fixture(&DeliveryProfile::standard()).await?;
     let (_wt, head) = delivered_with_a_successor(&f, &finished_spec("t1")).await?;
     f.h.github.set_checks(&head, ChecksState::Success);
-    edit_pull(&f, 1, |pull| pull.mergeable = Some(true));
+    // This test owns a fixed external PR. The independent head-replacement
+    // fixture exercises live Git discovery and local mergeability.
+    *f.h.github.remote.lock().map_err(|_| "remote fixture")? = None;
+    edit_pull(&f, 1, |pull| {
+        pull.base = "release".into();
+        pull.mergeable = Some(true);
+    });
     let before = TaskId::parse("t1")?;
     let child = TaskId::parse("t2")?;
     let dir = f.root.path().join("old-park");
@@ -4746,6 +4752,11 @@ async fn a_parked_achieved_goal_waits_for_its_failed_ordinary_run() -> TestResul
     use yulius_domain::ci::{CiRef, RunState};
     let f = fixture(&DeliveryProfile::standard()).await?;
     let (_wt, head) = delivered_with_a_successor(&f, &finished_spec("t1")).await?;
+    // Without instance CI the remote reports its own checks. Persisted ordinary
+    // failures still matter while that report is pending.
+    let mut config = f.h.app.config.clone();
+    config.ci.enabled = false;
+    let app = yulius_app::context::App::new(config, f.h.app.deps.clone());
     let before = TaskId::parse("t1")?;
     let child = TaskId::parse("t2")?;
     f.h.store
@@ -4758,7 +4769,13 @@ async fn a_parked_achieved_goal_waits_for_its_failed_ordinary_run() -> TestResul
         )
         .await?;
     let parked = f.h.store.task(&before).await?.ok_or("parked")?;
-    edit_pull(&f, 1, |pull| pull.mergeable = Some(true));
+    // This test owns a fixed external PR. The independent head-replacement
+    // fixture exercises live Git discovery and local mergeability.
+    *f.h.github.remote.lock().map_err(|_| "remote fixture")? = None;
+    edit_pull(&f, 1, |pull| {
+        pull.base = "release".into();
+        pull.mergeable = Some(true);
+    });
     f.h.github.set_checks(&head, ChecksState::Pending);
     insert_ci_attempt(
         &f.h.store,
@@ -4771,14 +4788,30 @@ async fn a_parked_achieved_goal_waits_for_its_failed_ordinary_run() -> TestResul
     )
     .await?;
     assert_eq!(
-        f.h.app.task_summary(&parked).await?.parked_needs_you,
+        app.task_summary(&parked).await?.parked_needs_you,
         Some(true),
         "a pending remote report hid the failed ordinary run"
     );
-    f.h.app.advance_chains(&before).await;
+    app.advance_chains(&before).await;
     assert_eq!(
         f.h.store.task(&child).await?.ok_or("successor")?.status,
         TaskStatus::Chained
+    );
+    // With CI enabled, another pending ref at the same SHA is the newest
+    // commit-level report. It still cannot override this PR's failed run.
+    insert_ci_attempt(
+        &f.h.store,
+        "other-ref",
+        &head,
+        CiRef::Branch("other".into()),
+        RunState::Queued,
+        11,
+        &[],
+    )
+    .await?;
+    assert_eq!(
+        f.h.app.task_summary(&parked).await?.parked_needs_you,
+        Some(true)
     );
     insert_ci_attempt(
         &f.h.store,
@@ -4786,21 +4819,21 @@ async fn a_parked_achieved_goal_waits_for_its_failed_ordinary_run() -> TestResul
         &head,
         CiRef::PullRequest(1),
         RunState::Passed,
-        11,
+        12,
         &[],
     )
     .await?;
     f.h.github.set_checks(&head, ChecksState::Failure);
     assert_eq!(
-        f.h.app.task_summary(&parked).await?.parked_needs_you,
+        app.task_summary(&parked).await?.parked_needs_you,
         Some(true)
     );
     f.h.github.set_checks(&head, ChecksState::Success);
     assert_eq!(
-        f.h.app.task_summary(&parked).await?.parked_needs_you,
+        app.task_summary(&parked).await?.parked_needs_you,
         Some(false)
     );
-    f.h.app.advance_chains(&before).await;
+    app.advance_chains(&before).await;
     assert_ne!(
         f.h.store.task(&child).await?.ok_or("successor")?.status,
         TaskStatus::Chained

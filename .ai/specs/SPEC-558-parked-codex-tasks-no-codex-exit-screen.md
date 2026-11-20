@@ -96,6 +96,9 @@ A human request can take precedence over unfinished work in the task list. Both 
 - The ordinary status regressions reproduced cases where an unreadable or changing head, unknown mergeability, or a plan reopened during a check could release a successor. Browser coverage checks the parked task page and sidebar in both directions after a same-head rerun.
 - Live restart verification of the #331 sequence requires an instance running the candidate fix. Only a disposable task should be used.
 
+- The ordinary status review reproduced a same-head failure while GitHub confirmed the PR. On the prior implementation, the dependent task moved from Chained to Queued. A separate achieved-goal fixture showed Done when a pending GitHub report masked the PR's failed ordinary run. A single-batch deadline mutation made the healthy ninth row show Needs you.
+- Browser review reproduced a parked row retaining Done during an overview outage and after a partial overview omitted its recorded PR. The task status now refreshes independently. Its summary carries the recorded delivery so an unreadable refresh keeps the correct row awaiting verification. All 13 parked browser tests passed, including recovery and precedence for newer owner events.
+
 ## Delivery slices
 
 PRs #1492 and #1493 delivered native Codex resume and the pre-stop screen for new parks. The next delivery keeps sessions with local unfinished work live. Subsequent deliveries verify current PR checks and unpublished work, classify historical parked tasks and gate their successors, continue bounded Codex goals, and recover pre-upgrade screens. The earlier combined-head evidence records prototype verification across these deliveries.

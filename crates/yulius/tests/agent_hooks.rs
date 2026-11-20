@@ -2947,9 +2947,9 @@ async fn parked_list_home_and_mcp_classify_a_green_head_while_the_first_is_slow(
     slow.activity = Some(Activity::Waiting);
     slow.updated_at = Timestamp(now.0 + 1);
     f.h.store.insert_task(&slow).await?;
-    // Lists order by descending task number. The slow PR occupies the final
-    // slot of the first batch, and the healthy PR starts the second batch.
-    for number in 13..20 {
+    // Lists order by descending task number. Six closed rows, the slow PR
+    // and the fixture’s other task fill the first batch. The healthy PR is ninth.
+    for number in 13..19 {
         let mut closed = slow.clone();
         closed.id = TaskId::parse(&format!("closed-{number}"))?;
         closed.number = number;
@@ -2971,6 +2971,9 @@ async fn parked_list_home_and_mcp_classify_a_green_head_while_the_first_is_slow(
         .await?;
     {
         let mut pulls = f.h.github.pulls.lock().map_err(|_| "pulls")?;
+        // The fixture's external PRs have authoritative remote mergeability.
+        // No local merge-driver subprocess participates in the list deadline.
+        pulls[0].base = "release".into();
         let other = yulius_app::ports::github::GhPull {
             number: 1462,
             head_sha: "slow-head".into(),
@@ -2986,7 +2989,7 @@ async fn parked_list_home_and_mcp_classify_a_green_head_while_the_first_is_slow(
             .list_tasks(&owner, f.sandbox.as_str(), false)
             .await?;
     assert_eq!(
-        rows.get(7).map(|row| row.id.as_str()),
+        rows.get(6).map(|row| row.id.as_str()),
         Some(slow_id.as_str())
     );
     assert_eq!(
@@ -3059,6 +3062,7 @@ async fn a_partial_overview_still_resolves_the_parked_tasks_recorded_pr() -> Tes
             f.h.app.now(),
         )
         .await?;
+    f.h.github.pulls.lock().map_err(|_| "pull fixture")?[0].base = "release".into();
     let unavailable =
         f.h.github
             .pulls
@@ -3085,7 +3089,9 @@ async fn a_partial_overview_still_resolves_the_parked_tasks_recorded_pr() -> Tes
     f.h.github
         .set_checks("abc123", yulius_app::ports::github::ChecksState::Success);
     let detail = f.h.app.task_detail(&owner, f.task.as_str()).await?;
-    assert_eq!(serde_json::to_value(detail)?["parked_needs_you"], false);
+    let summary = serde_json::to_value(detail)?;
+    assert_eq!(summary["parked_needs_you"], false);
+    assert_eq!(summary["parked_pr"], json!({"number": 1461, "open": true}));
     Ok(())
 }
 

@@ -35,7 +35,8 @@ test('a parked task reads as it did, marked parked, and resumes from its menu (u
       yourTurn: info(asked),
       noPullOverview: info({ ...parked, parked_needs_you: true }),
       staleGreenOverview: info({ ...parked, parked_needs_you: true }, open('success')),
-      staleRedOverview: info({ ...merged, parked_needs_you: false }, open('failure')),
+      staleRedOverview: info({ ...merged, parked_needs_you: false, parked_pr: { number: 7, open: true } }, open('failure')),
+      discoveredRed: info({ ...merged, parked_needs_you: false }, open('failure')),
       request: info({ ...withRequest, parked_needs_you: false }, open('success')),
       stale: info(stale),
       merged: info(merged, { number: 7, state: 'merged', checks: 'success' }),
@@ -63,6 +64,7 @@ test('a parked task reads as it did, marked parked, and resumes from its menu (u
     noPullOverview: ['Your turn · parked', 'needs'],
     staleGreenOverview: ['Your turn · parked', 'needs'],
     staleRedOverview: ['Done · parked', 'done'],
+    discoveredRed: ['PR #7 · checks failing · parked', 'needs'],
     request: ['Needs you: Choose the colour · parked', 'needs'],
     stale: ['Done · parked', 'done'],
     merged: ['Done · PR #7 merged · parked', 'done'],
@@ -360,7 +362,7 @@ test('the PR watch refreshes the parked group in both directions', async ({ app,
         if (path.includes('/tasks?')) {
           if (unavailable) throw new Error('summary temporarily unavailable');
           if (newerEvent) store.upsertTask({ ...task, parked_needs_you: true });
-          return [{ ...task, parked_needs_you: fails }, { ...task, id: 'answered', parked_needs_you: false }];
+          return [{ ...task, parked_pr: { number: 7, open: true }, parked_needs_you: fails }, { ...task, id: 'answered', parked_needs_you: false }];
         }
         return [];
       },
@@ -415,10 +417,58 @@ test('the PR watch refreshes the parked group in both directions', async ({ app,
   ]);
 });
 
+test('parked status refreshes while the Git overview is held or incomplete', async ({ app, browser }) => {
+  await app.open(mock('/s/studio'));
+  const groups = await browser.evaluate(async () => {
+    const module = '/assets/store.js';
+    const { createStore } = await import(module);
+    const sid = 'cold-overview';
+    const task = { sandbox_id: sid, status: 'parked', activity: 'done' };
+    let needs = false;
+    let unavailable = false;
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    let tick = () => {};
+    const store = createStore({
+      get: async (path: string) => {
+        if (path.endsWith('/git')) { await held; return { tasks: [] }; }
+        if (!path.includes('/tasks?')) return [];
+        if (unavailable) throw new Error('task summary unavailable');
+        return [{ ...task, id: 'pr', parked_pr: { number: 42, open: true }, parked_needs_you: needs },
+          { ...task, id: 'answer', parked_needs_you: false }];
+      },
+    }, { clock: { now: () => 50_000, setInterval: (fn: () => void) => { tick = fn; return 1; }, clearInterval() {}, clearTimeout() {} } });
+    const settled = () => new Promise<void>((resolve) => {
+      const channel = new MessageChannel();
+      channel.port1.onmessage = () => { channel.port1.close(); channel.port2.close(); resolve(); };
+      channel.port2.postMessage(null);
+    });
+    const state = () => ['pr', 'answer'].map(id => store.state.tasks.get(sid).get(id).parked_needs_you);
+    await store.loadTasks(sid);
+    needs = true;
+    const stop = store.watchPulls(sid);
+    await settled();
+    const seen = [state()];
+    release();
+    await settled();
+    needs = false;
+    for (const fails of [false, true, false]) {
+      unavailable = fails;
+      tick();
+      await settled();
+      seen.push(state());
+    }
+    stop();
+    store.stopEvents();
+    return seen;
+  });
+  expect(groups).toEqual([[true, false], [false, false], [true, false], [false, false]]);
+});
+
 for (const [page, route, selector] of [['terminal', 't', '.strip-status'], ['Task Info', 'tasks', '.gt-state']]) {
   test(`the parked ${page} page and sidebar follow the PR rerun together`, async ({ app, browser, screen }) => {
     await app.open(mock(`/s/studio/${route}/13`, '&ambient=0&pullgap=0'));
-    await touchTask(browser, 'sb_studio', 13, { status: 'parked', activity: 'done', parked_needs_you: false });
+    await touchTask(browser, 'sb_studio', 13, { status: 'parked', activity: 'done', parked_needs_you: false, parked_pr: { number: 520, open: true } });
     const status = browser.locator(selector);
     await expect(status).toHaveText(/Done.*parked/);
     for (const fails of [true, false]) {

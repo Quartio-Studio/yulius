@@ -29,6 +29,15 @@ pub struct StepProgress {
     pub first_total: Option<u32>,
 }
 
+/// The delivery whose checks affect a parked task's group.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ParkedPr {
+    /// The recorded pull request number.
+    pub number: u64,
+    /// Open deliveries need another checks read when the overview refreshes.
+    pub open: bool,
+}
+
 /// A task in lists and events.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TaskSummary {
@@ -141,6 +150,9 @@ pub struct TaskSummary {
     /// Other tasks and summaries from earlier servers omit it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parked_needs_you: Option<bool>,
+    /// Recorded delivery, including when the separate Git overview omits this PR.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parked_pr: Option<ParkedPr>,
     /// The task this one runs after (SPEC-001 TSK-012): while `chained` it waits for it; the
     /// link stays after the task started.
     #[serde(default)]

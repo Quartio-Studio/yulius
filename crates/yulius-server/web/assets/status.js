@@ -391,7 +391,7 @@ export function taskInfo(task, actionRequests, pr) {
     const idle = asIdleRun(task);
     let shown = taskInfo(idle, actionRequests, pr);
     if (shown.group === 'done' && task.goal_unfinished) shown = statusInfo(idle);
-    if (task.parked_needs_you === false && shown.pr && !workLeft(task) && !task.goal_unfinished && shown.group !== 'done') {
+    if (task.parked_needs_you === false && shown.pr && task.parked_pr?.number === shown.pr.number && !workLeft(task) && !task.goal_unfinished && shown.group !== 'done') {
       shown = statusInfo({ ...idle, activity: 'done' });
     } else if (shown.group === 'done' && task.parked_needs_you) {
       shown = statusInfo({ ...idle, activity: 'waiting', goal_unfinished: true });

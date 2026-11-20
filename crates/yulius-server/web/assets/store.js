@@ -305,7 +305,7 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
   // A rerun on the same open PR changes its checks without changing the task's
   // delivery stage. Refresh the server's parked groups alongside the watched
   // overview. An SSE update or list replacement during this read takes precedence.
-  async function refreshParkedGroups(sandboxId, pulls) {
+  async function refreshParkedGroups(sandboxId) {
     const tasks = state.tasks.get(sandboxId);
     if (!tasks) return;
     const watched = [...tasks.values()].filter((task) =>
@@ -322,11 +322,12 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
       if (tasks.get(prior.id) !== prior) continue;
       const row = refreshed?.get(prior.id);
       if (refreshed && (!row || row.status !== prior.status)) continue;
-      const knownPull = pulls.get(prior.id) ?? state.pulls.get(sandboxId)?.get(prior.id);
-      if (!row && knownPull?.state !== 'open') continue;
+      const open = prior.parked_pr?.open ?? (state.pulls.get(sandboxId)?.get(prior.id)?.state === 'open');
+      if (!row && !open) continue;
       const needs = row?.parked_needs_you ?? true;
-      if (needs !== prior.parked_needs_you) {
-        const updated = { ...prior, parked_needs_you: needs };
+      const pr = row ? row.parked_pr : prior.parked_pr;
+      if (needs !== prior.parked_needs_you || pr?.number !== prior.parked_pr?.number || pr?.open !== prior.parked_pr?.open) {
+        const updated = { ...prior, parked_needs_you: needs, parked_pr: pr };
         tasks.set(prior.id, updated);
         emit('task', updated);
         changed = true;
@@ -349,12 +350,13 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
     pullReads.set(sandboxId, read);
     const entry = pullWatch.get(sandboxId);
     if (entry) Object.assign(entry, { at: clock.now(), due: false });
+    let pullsUpdated = false;
+    const groups = refreshParkedGroups(sandboxId);
     try {
       const git = await api.get(`/api/sandboxes/${enc(sandboxId)}/git`);
       const rows = Array.isArray(git.tasks) ? git.tasks : [];
       const pulls = rows.filter((t) => t.pr).map((t) => [t.task_id, t.pr]);
       const current = new Map(pulls);
-      await refreshParkedGroups(sandboxId, current);
       state.pulls.set(sandboxId, current);
       seeded.delete(sandboxId);
       const key = pullsKey(sandboxId);
@@ -364,19 +366,19 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
       // tab and Home agree with the sidebar (#147). One debounced request per burst.
       scheduleCountsRefresh();
       state.gitRows.set(sandboxId, new Map(rows.map((t) => [t.task_id, t])));
-      emit('pulls', sandboxId);
+      pullsUpdated = true;
     } catch {
-      // Task summaries can still verify the PR when the broader Git overview fails.
-      await refreshParkedGroups(sandboxId, state.pulls.get(sandboxId) ?? new Map());
       // The chips of an earlier read on this page stay; stored ones of any age do not pass for
       // current when this page could not read (SPEC-104), shown already or not (an empty entry
       // keeps pullsOf from reading them later): the lists work without them.
       if (seeded.delete(sandboxId) || !state.pulls.has(sandboxId)) {
         state.pulls.set(sandboxId, new Map());
-        emit('pulls', sandboxId);
+        pullsUpdated = true;
       }
     } finally {
+      await groups;
       pullReads.delete(sandboxId);
+      if (pullsUpdated) emit('pulls', sandboxId);
       if (read.again) pullsChanged(sandboxId);
     }
   }

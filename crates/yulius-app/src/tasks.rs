@@ -312,6 +312,17 @@ impl App {
             // that run.
             goal_unfinished: idle_run && self.goal_unfinished_of(task).await,
             spec_unfinished: idle_run && self.spec_unfinished(&task.id).await,
+            parked_pr: if task.status == TaskStatus::Parked {
+                store.delivery(&task.id).await?.and_then(|record| {
+                    let open = record.stage == yulius_domain::delivery::DeliveryStage::PrOpen;
+                    record
+                        .pr_number
+                        .filter(|_| open || crate::delivery::past_merge(&record.stage))
+                        .map(|number| yulius_contracts::api::tasks::ParkedPr { number, open })
+                })
+            } else {
+                None
+            },
             parked_needs_you: if task.status == TaskStatus::Parked {
                 Some(!self.shows_done_until(task, deadline).await)
             } else {
