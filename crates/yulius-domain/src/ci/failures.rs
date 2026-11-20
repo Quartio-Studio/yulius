@@ -5,7 +5,8 @@
 //! gone from the end. [`FailureScanner`] reads everything the job prints, line by line, and keeps
 //! the failing tests' blocks, bounded: nextest's (a failure status line such as
 //! `FAIL [   0.5s] (290/1670) crate name` and the indented `stdout ───` / `stderr ───` block after
-//! it) and libtest's (`---- name stdout ----` until `failures:` or `test result:`).
+//! it), libtest's (`---- name stdout ----` until `failures:` or `test result:`), and the browser
+//! runner's failure summary headers.
 
 /// Most bytes kept of one failing test's block (its end, where the panic message is).
 pub const MAX_TEST_BYTES: usize = 8 * 1024;
@@ -159,6 +160,12 @@ impl FailureScanner {
             }
             self.close();
         }
+        // The browser runner lists each failed case in its final summary. The header alone
+        // identifies it, even when the rest of the log falls out of the output ring.
+        if browser_failure(line).is_some() {
+            self.keep(&format!("{}\n\n", line.trim()));
+            return;
+        }
         let libtest = !self.successes && libtest_header(line).is_some();
         if libtest || nextest_status(line).is_some_and(nextest_failed) {
             let kind = if libtest {
@@ -194,10 +201,14 @@ impl FailureScanner {
         }
         entry.push_str(block.body.trim_end());
         entry.push_str("\n\n");
+        self.keep(&entry);
+    }
+
+    fn keep(&mut self, entry: &str) {
         if self.kept.len() + entry.len() > MAX_JOB_BYTES {
             self.omitted += 1;
         } else {
-            self.kept.push_str(&entry);
+            self.kept.push_str(entry);
         }
     }
 }
@@ -215,11 +226,16 @@ pub fn failed_test_names(kept: &str) -> Vec<String> {
         if !header {
             continue;
         }
-        let name = libtest_header(line).or_else(|| kept_nextest_name(line));
-        if let Some(name) = name.map(str::trim).filter(|n| !n.is_empty())
-            && !names.iter().any(|known| known == name)
+        let name = libtest_header(line)
+            .or_else(|| kept_nextest_name(line))
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .map(str::to_owned)
+            .or_else(|| browser_failure(line).map(|(file, title)| format!("{file} › {title}")));
+        if let Some(name) = name
+            && !names.contains(&name)
         {
-            names.push(name.to_owned());
+            names.push(name);
         }
     }
     names
@@ -247,6 +263,19 @@ pub fn omitted_tests(kept: &str) -> usize {
                 .flatten()
         })
         .unwrap_or(0)
+}
+
+/// The e2e runner's uncolored summary (CI sets NO_COLOR). Allow its single leading space,
+/// or the trimmed header kept by the scanner, but never an indented test's own output.
+fn browser_failure(line: &str) -> Option<(&str, &str)> {
+    let summary = line
+        .strip_prefix(' ')
+        .unwrap_or(line)
+        .strip_prefix("FAIL  |")?;
+    let (target, case) = summary.split_once("| ")?;
+    let (file, title) = case.split_once(" > ")?;
+    (!target.is_empty() && file.ends_with(".e2e.ts") && !title.trim().is_empty())
+        .then_some((file, title))
 }
 
 /// The test a kept nextest header names (`FAIL [   0.1s] (1/4) crate name` at the margin).

@@ -1157,6 +1157,11 @@ fn untold(told: Told, next: &Told) -> Told {
     }
 }
 
+/// The watch can observe a passed run before the next merge pass updates its note.
+fn green_queue_note(note: Option<&str>) -> Option<&str> {
+    note.filter(|text| !text.contains(crate::agent_wait::OWN_RUN_WAIT))
+}
+
 /// What a green head that is not merging says (PRN-006): the kind of reason and the words; none
 /// for an armed, free one no merge pass kept yet (the next pass, within 20 s, may merge it).
 fn green_said(
@@ -1166,7 +1171,7 @@ fn green_said(
     note: Option<&str>,
     integration: &str,
 ) -> Option<(&'static str, String)> {
-    match (armed, hold, note) {
+    match (armed, hold, green_queue_note(note)) {
         (false, _, _) => Some(("unarmed", unarmed_text(head))),
         (true, Hold::Held, note) => Some((
             "held",
@@ -1239,7 +1244,7 @@ fn status_text(
             yulius_domain::review::KEEP_APPROVAL
         ),
         RunState::Passed | RunState::Skipped => {
-            let note = note.map_or_else(
+            let note = green_queue_note(note).map_or_else(
                 || "The merge is armed; Yulius decides it on its next pass.".to_owned(),
                 upper_first,
             );

@@ -20,6 +20,9 @@ use crate::delivery::MergeFailure;
 use crate::error::AppResult;
 use crate::model::TaskRecord;
 
+/// Identifies the queue's wait for the PR head's own run in its displayed note.
+pub(crate) const OWN_RUN_WAIT: &str = "waits for its own Yulius CI run at";
+
 /// How often a waiting request reads the state again.
 const WAIT_POLL: Duration = Duration::from_secs(2);
 /// Longest single wait request (the CLI asks again until its own limit).
@@ -888,7 +891,7 @@ impl App {
                 )
             } else {
                 format!(
-                    "Pull request #{} waits for its own Yulius CI run at {} ({checks}). Yulius \
+                    "Pull request #{} {OWN_RUN_WAIT} {} ({checks}). Yulius \
                      never restarts it when `{integration}` moves; once it passes, Yulius merges \
                      the pull request, or first tests it on top of the current `{integration}`.",
                     pr.number,
