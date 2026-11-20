@@ -1820,6 +1820,16 @@ fn a_reviewers_transcript_notes_its_model_and_cut_off_on_its_round() -> TestResu
 /// down still reaches its round: the restart reads it while it catches up.
 #[test]
 fn a_reviewers_transcript_written_while_yulius_was_down_is_noted_at_restart() -> TestResult {
+    review_transcript_at_restart(false)
+}
+
+/// Restarting with two rounds for one reviewer routes each dated observation to its own round.
+#[test]
+fn restart_replays_a_reviewers_cut_off_only_on_the_round_that_ran() -> TestResult {
+    review_transcript_at_restart(true)
+}
+
+fn review_transcript_at_restart(continued: bool) -> TestResult {
     let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
     let (_dir, data) = temp()?;
     let probe = Arc::new(ScriptedUsage::default());
@@ -1828,54 +1838,74 @@ fn a_reviewers_transcript_written_while_yulius_was_down_is_noted_at_restart() ->
         ..FakeAgentOptions::default()
     };
     let first = runtime()?;
-    let (id, transcript) = first.block_on(async {
+    let (id, transcript, at) = first.block_on(async {
         let app = build_with(&data, &fake, probe.clone(), agent.clone())?;
         let (id, _user, transcript) = first_turn(&app, &data, Some("claude-opus-5-5")).await?;
-        app.deps
-            .store
-            .insert_review_round(&yulius_app::model::ReviewRoundRecord {
-                id: "round-1".into(),
-                task_id: id.clone(),
-                round: 1,
-                head: None,
-                agent: "yulius-reviewer".into(),
-                model: "claude-fable-5-2".into(),
-                reason: "round".into(),
-                subagent_id: Some("c3c3c3c3c3".into()),
-                model_answered: None,
-                started_at: app.now(),
-                ended_at: None,
-                verdict: None,
-                cut_off: false,
-                pr_number: None,
-                merged_at: None,
-            })
-            .await?;
-        Ok::<_, Box<dyn std::error::Error>>((id, transcript))
+        let at = Timestamp(app.now().0 - 8_000);
+        let prior = yulius_app::model::ReviewRoundRecord {
+            id: "round-1".into(),
+            task_id: id.clone(),
+            round: 1,
+            head: None,
+            agent: "yulius-reviewer".into(),
+            model: "claude-fable-5-2".into(),
+            reason: "round".into(),
+            subagent_id: Some("c3c3c3c3c3".into()),
+            model_answered: None,
+            started_at: Timestamp(at.0 - 2_000),
+            ended_at: continued.then_some(Timestamp(at.0 + 1_000)),
+            verdict: continued.then(|| "request_changes".to_owned()),
+            cut_off: false,
+            pr_number: None,
+            merged_at: None,
+        };
+        app.deps.store.insert_review_round(&prior).await?;
+        if continued {
+            app.deps
+                .store
+                .insert_review_round(&yulius_app::model::ReviewRoundRecord {
+                    id: "round-2".into(),
+                    round: 2,
+                    reason: "kept".into(),
+                    started_at: Timestamp(at.0 + 2_000),
+                    ended_at: None,
+                    verdict: None,
+                    ..prior
+                })
+                .await?;
+        }
+        Ok::<_, Box<dyn std::error::Error>>((id, transcript, at))
     })?;
     first.shutdown_timeout(Duration::from_secs(5));
 
     let sub = transcript.with_extension("").join("subagents");
     std::fs::create_dir_all(&sub)?;
-    let at = rfc3339(Timestamp(i64::try_from(
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)?
-            .as_millis(),
-    )?));
     let answer = json!({"type": "assistant", "isSidechain": true, "agentId": "c3c3c3c3c3",
-        "timestamp": at, "message": {"id": "msg_down_1", "model": "claude-fable-5-2",
+        "timestamp": rfc3339(at), "message": {"id": "msg_down_1", "model": "claude-fable-5-2",
         "role": "assistant", "content": [{"type": "text", "text": "reading"}],
         "usage": {"input_tokens": 3, "output_tokens": 10}}});
     let refused = json!({"type": "assistant", "isSidechain": true, "agentId": "c3c3c3c3c3",
-        "timestamp": at, "isApiErrorMessage": true, "error": "rate_limit",
+        "timestamp": rfc3339(at), "isApiErrorMessage": true, "error": "rate_limit",
         "apiError": "usage_limit_reached", "apiErrorStatus": 429,
         "apiErrorParams": {"rate_limit_info": {"status": "rejected", "rateLimitType": "five_hour"}},
         "message": {"id": "msg_down_2", "model": "<synthetic>", "role": "assistant",
             "content": [{"type": "text", "text": "You've hit your 5-hour limit"}]}});
-    std::fs::write(
-        sub.join("agent-c3c3c3c3c3.jsonl"),
-        format!("{answer}\n{refused}\n"),
-    )?;
+    let mut transcript = format!("{answer}\n{refused}\n");
+    if continued {
+        // An undated record in a replay has no round identity once this ID has been continued.
+        let mut undated = refused;
+        undated
+            .as_object_mut()
+            .ok_or("limit record")?
+            .remove("timestamp");
+        transcript.push_str(&format!("{undated}\n"));
+        let mut later = answer;
+        later["timestamp"] = json!(rfc3339(Timestamp(at.0 + 4_000)));
+        later["message"]["id"] = json!("msg_round_2");
+        later["message"]["model"] = json!("claude-opus-5-5");
+        transcript.push_str(&format!("{later}\n"));
+    }
+    std::fs::write(sub.join("agent-c3c3c3c3c3.jsonl"), transcript)?;
 
     let second = runtime()?;
     second.block_on(async {
@@ -1890,14 +1920,30 @@ fn a_reviewers_transcript_written_while_yulius_was_down_is_noted_at_restart() ->
                     .review_rounds(&id, true)
                     .await
                     .is_ok_and(|rounds| {
-                        rounds.first().is_some_and(|r| {
-                            r.model_answered.as_deref() == Some("claude-fable-5-2") && r.cut_off
-                        })
+                        if continued {
+                            rounds.get(1).is_some_and(|r| {
+                                r.model_answered.as_deref() == Some("claude-opus-5-5")
+                            })
+                        } else {
+                            rounds.first().is_some_and(|r| {
+                                r.model_answered.as_deref() == Some("claude-fable-5-2") && r.cut_off
+                            })
+                        }
                     })
             },
         )
         .await?;
+        let rounds = app.deps.store.review_rounds(&id, true).await?;
         stop(&app, &id).await?;
+        assert_eq!(
+            rounds[0].model_answered.as_deref(),
+            Some("claude-fable-5-2")
+        );
+        assert!(rounds[0].cut_off);
+        if continued {
+            assert_eq!(rounds[1].model_answered.as_deref(), Some("claude-opus-5-5"));
+            assert!(!rounds[1].cut_off);
+        }
         Ok::<_, Box<dyn std::error::Error>>(())
     })?;
     second.shutdown_timeout(Duration::from_secs(5));

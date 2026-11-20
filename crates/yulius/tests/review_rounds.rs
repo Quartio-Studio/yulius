@@ -543,6 +543,35 @@ async fn a_replayed_continuation_start_cannot_clear_a_later_cut_off() -> TestRes
     Ok(())
 }
 
+/// A delayed usage-limit observation from a completed review belongs to that round.
+#[tokio::test]
+async fn a_delayed_limit_from_a_completed_round_does_not_move_its_continuation() -> TestResult {
+    use std::sync::atomic::Ordering;
+    let h = harness()?;
+    seed(&h).await?;
+    let account = add_account(&h, "acc-1", None).await?;
+    let task = running_task(&h, TaskMode::Prompt, &account).await?;
+    a_round(&h, "rev", Some("Verdict: request changes")).await?;
+    let old = h.app.now();
+    h.clock.0.fetch_add(1, Ordering::SeqCst);
+    hook(
+        &h.internal,
+        "SubagentStart",
+        json!({"agent_id":"rev","agent_type":"yulius-reviewer"}),
+    )
+    .await?;
+    h.app.cut_off_review_for_test(&task, "rev", Some(old)).await;
+    assert_eq!(h.app.review_recovery_for_test(&task), (None, false));
+    h.app
+        .cut_off_review_for_test(&task, "rev", Some(h.app.now()))
+        .await;
+    assert_eq!(
+        h.app.review_recovery_for_test(&task),
+        (Some("rev".to_owned()), true)
+    );
+    Ok(())
+}
+
 /// The detached start handler can still be reading Git when the reviewer reports.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_continued_report_survives_its_start_time_head_lookup() -> TestResult {

@@ -28,6 +28,7 @@ On dev `645eff207`, repeating the completion update moves the end time, and appr
 - [x] Preserve each distinct report and document round accounting
 - [x] Protect cut-off recovery and accept reports during a slow head lookup
 - [x] Order recovery against the continued round’s own cut-off
+- [ ] Attribute replayed transcript observations to the review round that ran
 - [ ] Verify the fix and obtain independent approval for delivery
 
 ## Acceptance criteria
@@ -37,6 +38,8 @@ On dev `645eff207`, repeating the completion update moves the end time, and appr
 - **AC-3** Replays with an earlier client send time cannot settle the next round. A continued round takes its own head at start and subsequent transcript observations affect the latest round.
 
 - **AC-4** An old hook preserves the continued reviewer’s pending recovery after a usage limit. A report arriving during its start-time Git lookup still closes the continued round.
+
+- **AC-5** On restart, replayed model and usage-limit observations for a completed round retain their attribution. A delayed live limit from that round leaves the continued reviewer’s recovery alone.
 
 ## Test plan
 
@@ -59,3 +62,4 @@ Use the start after a report as the round boundary. Comparing verdicts or report
 - Round 2 confirmed both earlier fixes and requested one further own-code change on `7773d7618`. Replaying round 2's original start after a later cut-off cleared recovery. The new nextest regression failed on that head with both the reviewer ID and move lost.
 - First review's mutation run completed. `scripts/dev mutants` reported 30 listed, 5 caught, 0 missed, 0 timed out, 25 unviable and 0 not reached. Its unmutated baseline passed 3,209 tests.
 - Round 2's finding was fixed by retaining the limit's observation time with the pending reviewer. The original start is ignored for recovery, and a genuine later start clears it even when it was sent before the watcher processed the limit. Nextest passed all 32 review-round tests and both usage-credit tests for live and restart transcript observations.
+- Round 3 on `c1e2c6723` found an own-code defect in transcript attribution. The new fixture restarted a real supervisor over two rows sharing a reviewer ID. It lost the first round’s observed model during catch-up. A second regression showed that a dated limit from the completed round scheduled recovery for the continued round. Both failed on the reviewed implementation.
