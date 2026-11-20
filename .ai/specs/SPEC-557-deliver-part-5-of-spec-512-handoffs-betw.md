@@ -41,14 +41,14 @@ head on its own branch, as task #538 did for part 4 (SPEC-556, PR #1487).
 ## Plan
 
 - [x] Branch carries task #494's part 5 head
-- [ ] Touched tests, clippy and repository checks pass
+- [x] Touched tests, clippy and repository checks pass
 - [ ] Evidence recorded and the head handed to an independent review
 
 ## Acceptance criteria
 
-- [ ] `git diff origin/dev..HEAD` holds part 5, its SPEC-512 Evidence and this spec (DLV-001,
+- [x] `git diff origin/dev..HEAD` holds part 5, its SPEC-512 Evidence and this spec (DLV-001,
   DLV-002).
-- [ ] The tests part 5 touches pass on this head (DLV-001, DLV-003).
+- [x] The tests part 5 touches pass on this head (DLV-001, DLV-003).
 - [ ] This head is handed to an independent review (`yulius-reviewer`) that knows task #494's
   rounds.
 
@@ -74,4 +74,18 @@ Part 5's own evidence (each criterion's test, review rounds 1 to 3, approval at 
 what changed after it) is SPEC-512's
 [Evidence, "Part 5 (#1106, handoffs)"](SPEC-512-marcin-s-five-issues-1412-1418-1413-1107.md#part-5-1106-handoffs).
 
-On this branch (2026-11-20): pending.
+On this branch (2026-11-20):
+
+| Check | Result |
+|---|---|
+| `git fetch origin feat/494-…` and `git merge --no-edit a8c6d4a80` from `dev` 225bf38fc | fast-forward, nothing resolved; 41 files against `dev` (part 5 and its SPEC-512 Evidence), then this spec |
+| Migration order | `MIGRATIONS` ends with 0075 (schema version 75) and 0076 (76); pinned test `(76, 0076)`, `MIGRATIONS.len() == 76`; numbers unique (`check_repository.py`) |
+| `cargo test -p yulius --test main -- handoffs:: parking::a_handed_off_tasks_outcome_reaches_its_source telegram::` | 44 passed (8 `handoffs::`, 1 `parking::`, 35 `telegram::`) |
+| `cargo test -p yulius-store --lib` | 100 passed, 1 failed: `tests::a_large_step_history_backfills_quickly` ("the migration took 10.8s", host load average 65); alone it passed in 0.49 s. A known load flake on `dev`, tracked by #1484, outside this change |
+| `cargo test -p yulius-app --lib handoffs::` | 2 passed |
+| `cargo clippy --workspace --all-targets -- -D warnings`, `cargo fmt --all -- --check` | clean |
+| `python3 scripts/check_repository.py` | Repository contracts passed |
+| `cd e2e && npx e2e run tests/handoffs.e2e.ts tests/git.e2e.ts tests/telegram.e2e.ts` | 19 passed (5, 8, 6) |
+| `yulius security-scan` | disabled (Vidoc off for this project): nothing scanned, not a pass |
+
+The whole gate is Yulius CI's, on the pull request's head.
