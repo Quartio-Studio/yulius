@@ -70,15 +70,32 @@ fn seed(data: &Path) -> Result<(), Error> {
     Ok(())
 }
 
+fn fixture_ip() -> Result<Ipv4Addr, Error> {
+    getifaddrs()?
+        .filter_map(|iface| iface.address?.as_sockaddr_in().map(|s| s.ip()))
+        .find(|ip| yulius_domain::vault::egress_destination_allowed((*ip).into()))
+        .ok_or_else(|| "the real server fixture needs a local non-loopback IPv4 address".into())
+}
+
+async fn read_head(stream: &mut BufReader<TcpStream>, first_line: &str) -> Result<(), Error> {
+    let mut line = String::new();
+    stream.read_line(&mut line).await?;
+    assert!(line.starts_with(first_line), "{line}");
+    loop {
+        line.clear();
+        assert_ne!(stream.read_line(&mut line).await?, 0);
+        if line == "\r\n" {
+            return Ok(());
+        }
+    }
+}
+
 #[tokio::test]
 async fn established_direct_connect_carries_queued_and_fresh_bytes_across_server_exit()
 -> Result<(), Error> {
     tokio::time::timeout(Duration::from_secs(30), async {
         // Dial only this fixture's listening address. The production proxy denies loopback.
-        let local = getifaddrs()?
-            .filter_map(|iface| iface.address?.as_sockaddr_in().map(|s| s.ip()))
-            .find(|ip| yulius_domain::vault::egress_destination_allowed((*ip).into()))
-            .ok_or("the real server fixture needs a local non-loopback IPv4 address")?;
+        let local = fixture_ip()?;
         let listener = TcpListener::bind((local, 0)).await?;
         let target = listener.local_addr()?;
         let internal = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?.local_addr()?;
@@ -98,16 +115,7 @@ async fn established_direct_connect_carries_queued_and_fresh_bytes_across_server
         let mut request = head.into_bytes();
         request.extend_from_slice(&early);
         client.get_mut().write_all(&request).await?;
-        let mut line = String::new();
-        client.read_line(&mut line).await?;
-        assert!(line.starts_with("HTTP/1.1 200"), "{line}");
-        loop {
-            line.clear();
-            assert_ne!(client.read_line(&mut line).await?, 0);
-            if line == "\r\n" {
-                break;
-            }
-        }
+        read_head(&mut client,"HTTP/1.1 200").await?;
         let (mut peer, _) = listener.accept().await?;
         drop(listener); // A replacement cannot redial the destination.
         assert_eq!(peer.read_u32().await?.to_be_bytes(), *b"EARL");
@@ -150,6 +158,113 @@ async fn an_invalid_handoff_directory_reports_the_kind_and_still_serves() -> Res
                 && warnings.contains("PermissionDenied")
         );
         Ok(())
+    })
+    .await?
+}
+
+async fn open_tunnel(
+    internal: SocketAddr,
+    target: SocketAddr,
+    listener: &TcpListener,
+) -> Result<(BufReader<TcpStream>, TcpStream), Error> {
+    let auth = base64::engine::general_purpose::STANDARD.encode(format!("fixture:{TOKEN}"));
+    let connect = format!(
+        "CONNECT {target} HTTP/1.1\r\nHost: {target}\r\nProxy-Authorization: Basic {auth}\r\n\r\n"
+    );
+    let mut client = BufReader::new(TcpStream::connect(internal).await?);
+    client.get_mut().write_all(connect.as_bytes()).await?;
+    read_head(&mut client, "HTTP/1.1 200").await?;
+    let (mut peer, _) = listener.accept().await?;
+    client.get_mut().write_all(b"LIVE").await?;
+    assert_eq!(peer.read_u32().await?.to_be_bytes(), *b"LIVE");
+    peer.write_all(b"BACK").await?;
+    assert_eq!(client.read_u32().await?.to_be_bytes(), *b"BACK");
+    Ok((client, peer))
+}
+
+#[tokio::test]
+async fn a_destination_reset_during_restart_keeps_the_other_established_tunnel() -> Result<(), Error>
+{
+    tokio::time::timeout(Duration::from_secs(30), async {
+        let local = fixture_ip()?;
+        let listener = TcpListener::bind((local, 0)).await?;
+        let target = listener.local_addr()?;
+        let internal = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+            .await?
+            .local_addr()?;
+        let dir = tempfile::tempdir()?;
+        let mut first = start(dir.path(), internal).await?;
+        seed(dir.path())?;
+        let (mut ended, resetting) = open_tunnel(internal, target, &listener).await?;
+        let (mut client, mut peer) = open_tunnel(internal, target, &listener).await?;
+        drop(listener);
+        stop(&mut first).await?;
+        nix::sys::socket::setsockopt(
+            &resetting,
+            nix::sys::socket::sockopt::Linger,
+            &nix::libc::linger {
+                l_onoff: 1,
+                l_linger: 0,
+            },
+        )?;
+        drop(resetting);
+        peer.write_all(b"DOWN").await?;
+        let mut next = start(dir.path(), internal).await?;
+        assert_eq!(client.read_u32().await?.to_be_bytes(), *b"DOWN");
+        client.get_mut().write_all(b"NEXT").await?;
+        assert_eq!(peer.read_u32().await?.to_be_bytes(), *b"NEXT");
+        assert_eq!(ended.read(&mut [0]).await?, 0);
+        stop(&mut next).await
+    })
+    .await?
+}
+
+#[tokio::test]
+async fn an_unfinished_http_download_cannot_delay_opaque_handoff_or_shutdown() -> Result<(), Error>
+{
+    tokio::time::timeout(Duration::from_secs(25), async {
+        let local = fixture_ip()?;
+        let dest = TcpListener::bind((local, 0)).await?;
+        let internal = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+            .await?
+            .local_addr()?;
+        let dir = tempfile::tempdir()?;
+        let mut first = start(dir.path(), internal).await?;
+        seed(dir.path())?;
+        let (mut client, mut peer) = open_tunnel(internal, dest.local_addr()?, &dest).await?;
+        let origin = dest.local_addr()?;
+        let http = reqwest::Client::builder()
+            .no_proxy()
+            .proxy(reqwest::Proxy::http(format!("http://{internal}"))?.basic_auth("fixture", TOKEN))
+            .build()?;
+        let request = http.get(format!("http://{origin}/fixture")).send();
+        let respond = async {
+            let (socket, _) = dest.accept().await?;
+            drop(dest);
+            let mut upstream = BufReader::new(socket);
+            read_head(&mut upstream, "GET /fixture ").await?;
+            upstream
+                .get_mut()
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 128\r\n\r\n")
+                .await?;
+            upstream.get_mut().write_all(&[b'x'; 64]).await?;
+            Ok::<_, Error>(upstream)
+        };
+        let (download, origin_socket) = tokio::join!(request, respond);
+        let _held_origin = origin_socket?;
+        let mut download = download?.error_for_status()?;
+        // Read application bytes through the HTTP decoder and keep the unfinished body open.
+        let chunk = download.chunk().await?.ok_or("download ended early")?;
+        assert!(!chunk.is_empty() && chunk.iter().all(|&byte| byte == b'x'));
+        tokio::time::timeout(Duration::from_secs(12), stop(&mut first))
+            .await
+            .map_err(|_| "unfinished HTTP download kept the old service running")??;
+        peer.write_all(b"DOWN").await?;
+        let mut next = start(dir.path(), internal).await?;
+        assert_eq!(client.read_u32().await?.to_be_bytes(), *b"DOWN");
+        client.get_mut().write_all(b"NEXT").await?;
+        assert_eq!(peer.read_u32().await?.to_be_bytes(), *b"NEXT");
+        stop(&mut next).await
     })
     .await?
 }

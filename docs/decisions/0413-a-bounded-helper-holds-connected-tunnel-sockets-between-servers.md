@@ -18,13 +18,17 @@ during an orderly update. The server selects opaque tunnels and their correspond
 The helper receives connected descriptors and bounded private copy state, then makes the batch
 available to one successor through a socket in a service-owned private directory. It uses the
 kernel's peer credentials to check the service UID. The old server receives an acknowledgement
-when the batch and listener are ready. Admission, destination checks, interception and
+when the batch and listener are ready. The service starts capture when shutdown is signalled.
+It allows five seconds for in-flight HTTP responses to finish and fifteen seconds for capture
+and deposit, running both waits concurrently. Admission, destination checks, interception and
 credential handling stay in the serving process.
 
 The batch accommodates 256 opaque tunnels and 256 relay pairs. Each pair has up to 32 KiB of
 private state. One two-minute deadline covers receipt, adoption and delivery. Each timed
 record also carries its original monotonic deadline. Its expiry shuts down its two sockets
 throughout the exchange. The successor drains the expired frame and adopts the live remainder.
+A peer that has disconnected before deposit or adoption ends its own pair. The receiver
+still drains and validates the frame before resuming its surviving siblings.
 Once every pair expires the helper releases its only place. On batch expiry,
 disconnection or invalid input the helper drops its descriptors and state. During delivery it
 retains the original descriptors until the successor acknowledges the entire batch and the

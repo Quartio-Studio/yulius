@@ -3796,7 +3796,9 @@ and private copy state for one successor. Its two-minute deadline includes the t
 receiving and returning the batch. Each timed pair also retains its original monotonic
 deadline. The helper releases expired pairs while a successor receives the remaining live
 records. On Linux without a namespace manager, the server pauses established direct opaque
-agent tunnels at orderly shutdown. The successor restores their original TCP sockets, pending
+agent tunnels on the shutdown signal. Capture and deposit have fifteen seconds, concurrent
+with five seconds to drain in-flight HTTP responses. A reset ends its affected pair, while
+the helper drains its frame and retains other connected pairs. The successor restores their original TCP sockets, pending
 bytes, admission owners, last activity and absolute expiry before serving HTTP. Intercepted
 connections close at restart. Fresh connections use the successor's host-bound injection and
 redaction policy. Continuity through a namespace holder still requires its matching outbound relay.

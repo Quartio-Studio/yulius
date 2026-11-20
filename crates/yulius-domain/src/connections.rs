@@ -164,7 +164,7 @@ impl<K: PartialEq, T, O: PartialEq> Connections<K, T, O> {
         payload: T,
         last: u64,
     ) -> Result<Admitted<K, T, O>, Full> {
-        if self.count(&key) >= self.per_key {
+        if self.per_key < self.max && self.count(&key) >= self.per_key {
             return Err(Full::Key);
         }
         if self.len() >= self.max {
@@ -472,6 +472,25 @@ mod tests {
         let admitted = table.admit_by("s1", "run1", "fresh", 130)?;
         assert_eq!(admitted.evicted.ok_or("idle peer")?.payload, "oldest");
         assert_eq!(third.activity.last(), 110);
+        Ok(())
+    }
+
+    #[test]
+    fn restoration_reports_the_limit_that_normal_admission_would_meet() -> TestResult {
+        for (max, share, keys, expected) in [
+            (1, 1, vec!["a"], Full::Total),
+            (2, 1, vec!["a", "b"], Full::Key),
+        ] {
+            let mut table = Connections::with_owners(max, share, 10);
+            for key in keys {
+                table.restore_by(key, "owner", "original", 0)?;
+            }
+            assert_eq!(
+                table.restore_by("a", "owner", "extra", 99).err(),
+                Some(expected)
+            );
+            assert_eq!(table.len(), max, "the original places are retained");
+        }
         Ok(())
     }
 

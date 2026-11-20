@@ -723,22 +723,32 @@ pub async fn serve(args: ServeArgs) -> Result<(), String> {
         &app.config.internal_url,
     )
     .into_make_service_with_connect_info::<SocketAddr>();
+    let shutdown = futures::FutureExt::shared(shutdown_signal());
     let public_task = axum::serve(public.tap_io(no_delay), public_router)
-        .with_graceful_shutdown(shutdown_signal());
+        .with_graceful_shutdown(shutdown.clone());
     #[cfg(target_os = "linux")]
     let internal = InternalListener(internal).tap_io(|io| no_delay(&mut io.0));
     #[cfg(not(target_os = "linux"))]
     let internal = internal.tap_io(no_delay);
     let internal_task =
-        axum::serve(internal, internal_router).with_graceful_shutdown(shutdown_signal());
-    let (a, b) = tokio::join!(public_task, internal_task);
+        axum::serve(internal, internal_router).with_graceful_shutdown(shutdown.clone());
+    let http = async {
+        let (public, internal) = tokio::join!(public_task, internal_task);
+        public.and(internal)
+    };
     #[cfg(target_os = "linux")]
-    if let Some(directory) = &direct_handoff
-        && let Err(error) =
-            crate::wiring::tunnel_handoff::deposit(&egress, directory, &app.config.yulius_exe).await
-    {
-        tracing::warn!(kind = ?error.kind(), "cannot hand opaque tunnels to the next server");
-    }
+    let result = if let Some(directory) = &direct_handoff {
+        drain_with_handoff(
+            http,
+            shutdown,
+            crate::wiring::tunnel_handoff::deposit(&egress, directory, &app.config.yulius_exe),
+        )
+        .await
+    } else {
+        http.await
+    };
+    #[cfg(not(target_os = "linux"))]
+    let result = http.await;
     // Browsers do not outlive the server; shells and agent sessions keep running detached.
     drop(workspace_reaper);
     app.stop_workspace_services().await;
@@ -747,11 +757,44 @@ pub async fn serve(args: ServeArgs) -> Result<(), String> {
     if let Some(manager) = &isolation {
         manager.unsplit_cpu();
     }
-    a.map_err(|e| e.to_string())?;
-    b.map_err(|e| e.to_string())?;
+    result.map_err(|e| e.to_string())?;
     scheduler.abort();
     tracing::info!("yulius stopped; detached sessions keep running");
     Ok(())
+}
+
+// Handoff starts on the service's shutdown signal even when an HTTP response body is still
+// streaming. Allow HTTP five seconds to finish and the bounded capture/helper exchange fifteen.
+#[cfg(target_os = "linux")]
+async fn drain_with_handoff(
+    http: impl Future<Output = std::io::Result<()>>,
+    shutdown: impl Future<Output = ()>,
+    handoff: impl Future<Output = std::io::Result<()>>,
+) -> std::io::Result<()> {
+    use std::time::Duration;
+    tokio::pin!(http);
+    let finished = tokio::select! {
+        () = shutdown => None,
+        result = &mut http => Some(result),
+    };
+    let drain = async {
+        if let Some(result) = finished {
+            return result;
+        }
+        match tokio::time::timeout(Duration::from_secs(5), http).await {
+            Ok(result) => result,
+            Err(_) => {
+                tracing::warn!("HTTP shutdown grace expired");
+                Ok(())
+            }
+        }
+    };
+    let capture = async { tokio::time::timeout(Duration::from_secs(15), handoff).await? };
+    let (result, captured) = tokio::join!(drain, capture);
+    if let Err(error) = captured {
+        tracing::warn!(kind = ?error.kind(), "cannot hand opaque tunnels to the next server");
+    }
+    result
 }
 
 async fn shutdown_signal() {

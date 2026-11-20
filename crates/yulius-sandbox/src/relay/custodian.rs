@@ -68,7 +68,7 @@ fn stream_socket(fd: &OwnedFd) -> io::Result<()> {
 // Linux can forget the TCP peer after shutdown even while SCM_RIGHTS holds a duplicate.
 // A deadline may pass between the syscall and checking its result. A still-live frame
 // must have two connected peers; an expired one is drained under the same size bounds.
-fn require_live_peers(sockets: &[OwnedFd; 2], expires: Option<u64>) -> io::Result<()> {
+fn peers_available(sockets: &[OwnedFd; 2], expires: Option<u64>) -> io::Result<bool> {
     for fd in sockets {
         let error = match net::getpeername(fd) {
             Ok(Some(_)) => continue,
@@ -76,11 +76,14 @@ fn require_live_peers(sockets: &[OwnedFd; 2], expires: Option<u64>) -> io::Resul
             Err(error) => error.into(),
         };
         if expires.is_none_or(|end| !time_left(end, monotonic_ms()).is_zero()) {
+            if error.kind() == io::ErrorKind::NotConnected {
+                return Ok(false);
+            }
             return Err(error);
         }
         break;
     }
-    Ok(())
+    Ok(true)
 }
 
 async fn header(stream: &UnixStream) -> io::Result<Option<([OwnedFd; 2], bool)>> {
@@ -132,15 +135,19 @@ fn check_capacity(count: usize, state_bytes: usize) -> io::Result<()> {
 
 async fn receive(stream: &mut UnixStream) -> io::Result<PendingDelivery> {
     let mut pending = PendingDelivery(Vec::new());
+    let mut accepted = false;
     while let Some((sockets, timed)) = pending.during(header(stream)).await? {
         let expires = if timed {
             Some(pending.during(stream.read_u64()).await?)
         } else {
             None
         };
-        require_live_peers(&sockets, expires)?;
+        // A destination can reset after the sender validated its original socket. Count and
+        // drain the entire frame even when this one copy can no longer be resumed.
+        let connected = peers_available(&sockets, expires)?;
+        accepted |= connected;
         // Track the original deadline even while the producer is still writing the state.
-        pending.0.push(Some(Pair {
+        pending.0.push(connected.then_some(Pair {
             sockets,
             expires,
             state: Vec::new(),
@@ -152,6 +159,9 @@ async fn receive(stream: &mut UnixStream) -> io::Result<PendingDelivery> {
         if let Some(Some(pair)) = pending.0.last_mut() {
             pair.state = state;
         }
+    }
+    if !accepted && !pending.0.is_empty() {
+        return Err(io::ErrorKind::NotConnected.into());
     }
     Ok(pending)
 }
@@ -434,12 +444,19 @@ pub async fn deposit(executable: &Path, directory: &Path, pairs: Vec<Pair>) -> i
     if pairs.is_empty() {
         return Ok(());
     }
-    for pair in &pairs {
-        check_capacity(pairs.len(), pair.state.len())?;
+    let count = pairs.len();
+    let mut connected = Vec::with_capacity(count.min(MAX_PAIRS));
+    for pair in pairs {
+        check_capacity(count, pair.state.len())?;
         for fd in &pair.sockets {
             stream_socket(fd)?;
         }
-        require_live_peers(&pair.sockets, pair.expires)?;
+        if peers_available(&pair.sockets, pair.expires)? {
+            connected.push(pair);
+        }
+    }
+    if connected.is_empty() {
+        return Err(io::ErrorKind::NotConnected.into());
     }
     private_directory(directory)?;
     let (mut stream, child_socket) = UnixStream::pair()?;
@@ -460,7 +477,7 @@ pub async fn deposit(executable: &Path, directory: &Path, pairs: Vec<Pair>) -> i
         let _ = child.wait().await;
     });
     tokio::time::timeout(LIFETIME, async {
-        let mut pending = PendingDelivery(pairs.into_iter().map(Some).collect());
+        let mut pending = PendingDelivery(connected.into_iter().map(Some).collect());
         pending.send(&mut stream).await?;
         if pending.during(stream.read_u8()).await? != b'E' {
             return Err(invalid("handoff was not acknowledged"));
@@ -770,6 +787,39 @@ mod tests {
                 .is_err_and(|e| e.kind() == io::ErrorKind::NotConnected)
         );
         Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_disconnected_record_still_requires_a_complete_bounded_frame() -> io::Result<()> {
+        tokio::time::timeout(Duration::from_secs(3), async {
+            for (size, expected) in [
+                (5, io::ErrorKind::UnexpectedEof),
+                (
+                    u32::try_from(MAX_STATE + 1).map_err(io::Error::other)?,
+                    io::ErrorKind::InvalidData,
+                ),
+            ] {
+                let (mut sender, mut receiver) = UnixStream::pair()?;
+                let (live, [mut left, mut right]) = pair(b"live".to_vec())?;
+                send_record(&mut sender, &live).await?;
+                let (mut lost, _peers) = pair(Vec::new())?;
+                lost.sockets[0] = net::socket(AddressFamily::INET, SocketType::STREAM, None)?;
+                send_header(&sender, &lost.sockets, b'P').await?;
+                sender.write_u32(size).await?;
+                sender.write_all(b"x").await?;
+                sender.shutdown().await?;
+                assert!(
+                    receive(&mut receiver)
+                        .await
+                        .is_err_and(|e| e.kind() == expected)
+                );
+                // Incomplete delivery shuts down even the fully received predecessor.
+                assert_eq!(left.read(&mut [0]).await?, 0);
+                assert_eq!(right.read(&mut [0]).await?, 0);
+            }
+            Ok(())
+        })
+        .await?
     }
 
     #[tokio::test]

@@ -257,3 +257,72 @@ async fn a_depositor_refuses_a_listener_before_shutting_down_expired_records() -
     })
     .await?
 }
+
+#[tokio::test]
+async fn a_disconnected_peer_before_deposit_keeps_the_other_original_pair() -> io::Result<()> {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        let directory = tempfile::tempdir()?;
+        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700))?;
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await?;
+        let mut disconnected = TcpStream::connect(listener.local_addr()?).await?;
+        let (resetting, _) = listener.accept().await?;
+        nix::sys::socket::setsockopt(
+            &resetting,
+            nix::sys::socket::sockopt::Linger,
+            &nix::libc::linger {
+                l_onoff: 1,
+                l_linger: 0,
+            },
+        )?;
+        drop(resetting);
+        assert!(
+            disconnected
+                .read_u8()
+                .await
+                .is_err_and(|e| e.kind() == io::ErrorKind::ConnectionReset)
+        );
+        assert!(
+            disconnected
+                .peer_addr()
+                .is_err_and(|e| e.kind() == io::ErrorKind::NotConnected)
+        );
+        let (old, mut lost) = UnixStream::pair()?;
+        let (left, mut client) = UnixStream::pair()?;
+        let (right, mut upstream) = UnixStream::pair()?;
+        let batch = vec![
+            Pair {
+                sockets: [disconnected.into_std()?.into(), old.into_std()?.into()],
+                state: b"gone".to_vec(),
+                expires: None,
+            },
+            Pair {
+                sockets: [left.into_std()?.into(), right.into_std()?.into()],
+                state: b"live".to_vec(),
+                expires: None,
+            },
+        ];
+        deposit(
+            Path::new(env!("CARGO_BIN_EXE_yulius")),
+            directory.path(),
+            batch,
+        )
+        .await?;
+        assert_eq!(lost.read(&mut [0]).await?, 0);
+        client.write_all(b"gap!").await?;
+        let batch = adopt(directory.path()).await?;
+        assert_eq!(batch.len(), 1);
+        let live = batch
+            .into_iter()
+            .next()
+            .ok_or_else(|| io::Error::other("missing live pair"))?;
+        assert_eq!(live.state, b"live");
+        let [left, right] = live.sockets;
+        let mut left = UnixStream::from_std(left.into())?;
+        let mut right = UnixStream::from_std(right.into())?;
+        assert_eq!(left.read_u32().await?.to_be_bytes(), *b"gap!");
+        right.write_all(b"next").await?;
+        assert_eq!(upstream.read_u32().await?.to_be_bytes(), *b"next");
+        Ok(())
+    })
+    .await?
+}

@@ -337,3 +337,23 @@ without adoption support or a remote peer that times out can end a tunnel.
   or bypassed flush and write-half shutdown. A synthetic scalar writer exposed the incorrect
   capability and missing flush before correction. The scalar and real TCP fixtures caught
   all four mutations on the corrected adapter.
+- Independent review of the direct proxy at `5aea045e1` reproduced three defects. With two
+  original CONNECT tunnels, a TCP reset during downtime made the healthy client read EOF.
+  A second fixture reset a destination before deposit and got `NotConnected` for the whole
+  batch. A disconnected frame with missing or oversized state also bypassed its framing error.
+  Deposit and receipt now retain connected siblings and validate every frame within the
+  original descriptor and state limits.
+- An established direct tunnel shared a server with a plain HTTP download. Its synthetic
+  origin declared 128 bytes, sent 64 and held its socket open. After the client received
+  body data, the old server still had not exited ten seconds after SIGTERM. Capture now runs
+  concurrently with bounded HTTP shutdown. The real-server regression keeps the unfinished
+  download open through successor readiness and requires the original tunnel to transfer in
+  each direction.
+- Restoring a full one-place proxy reported a sandbox-share refusal. Ordinary admission on
+  the same table reported a total refusal. A domain fixture covers a share equal to the
+  whole table and a separate, smaller sandbox share. Restoration now uses the same limit
+  precedence as admission.
+- Two pre-existing proxy warning-capture tests could interfere when plain libtest ran them
+  in parallel. This reproduced on the older test binary. Each passed in isolation, as run
+  by nextest in CI. The independent test issue is tracked in
+  [#1544](https://github.com/Quartio-Studio/yulius/issues/1544).
