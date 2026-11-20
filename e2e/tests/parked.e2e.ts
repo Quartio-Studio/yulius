@@ -212,11 +212,18 @@ test('a parked task terminal shows its parked banner and Resume action, distinct
     const db = (window as unknown as { __yuliusMock: Mock }).__yuliusMock;
     setTimeout(() => db.touchTask('sb_studio', 13, { status: 'parked', activity: 'waiting' }), 6_500);
   });
+  await expect(bar).toHaveText(/This idle session was parked \(your turn\)/, { timeout: 15_000 });
   await expect(bar.getByRole('button', { name: 'Reply' })).toBeVisible();
   await bar.getByRole('button', { name: 'Reply' }).click();
   await bar.getByRole('textbox', { name: 'Reply to the agent' }).fill('Check CI status');
   await bar.getByRole('button', { name: 'Send' }).click();
   await expect(browser.locator('.strip-status')).not.toHaveText(/Starting|· parked/);
+
+  await expect.poll(() => browser.evaluate(() => {
+    type Session = { lines: unknown[] };
+    const db = (window as unknown as { __yuliusMock: { sessions: Map<string, Session> } }).__yuliusMock;
+    return db.sessions.get('tsk_studio_13')?.lines.some(line => typeof line === 'string' && line.endsWith(' Check CI status'));
+  })).toBe(true);
 
   // Park again and type across BOTH `parked` and `starting` before `running`: all typed characters
   // stay buffered with zero terminal error notices and are delivered once the session runs.

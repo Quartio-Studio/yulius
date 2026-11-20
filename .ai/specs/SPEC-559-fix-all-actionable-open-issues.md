@@ -48,8 +48,8 @@ The inventory at dev 56f08db7f contained 20 issues. #1490 belongs to task #540. 
 - [x] Preserve the known member failure in merge-train decisions
 - [x] Obtain independent approval for the merge-train fix
 - [x] Verify the landed cold-screen fixture against the failed CI shard
-- [ ] Reproduce the parked terminal Reply timeout after Resume
-- [ ] Verify Resume and Reply in Chromium against the reproduced failure
+- [x] Reproduce the parked terminal Reply timeout after Resume
+- [x] Verify Resume and Reply in Chromium against the reproduced failure
 - [ ] Obtain independent approval for the parked terminal change if needed
 - [ ] Verify the independent fixes and reconcile the remaining issues
 
@@ -101,3 +101,5 @@ The later reports #1498 and #1502 cover the same parking fixture repaired in PR 
 - PR #1499 run e45eacb9 failed in the parking fixture. Forcing the live queue to drain immediately before the queued-to-starting assertion reproduced the same failure on 561f47b76. PR #1496 had already fixed the fixture by isolating its cold reads in a SQLite copy. After integrating dev at a561121e7, both parking callers and all three focused merge-train tests passed (5/5). The dev tree passed Yulius CI in run 32a60a22, and GitHub closed #1427. Task #541 closed the parking reports #1498 and #1502 with this evidence, ending the quarantine.
 
 - PR #1499 merged on green Yulius CI at 7c7f742af and closed #1398. The unchanged #1501 scenario passed by itself. The original full-suite trace timed out at the second Reply assertion and subsequently captured the parked attention bar with Reply.
+- A second park arriving after 6.5 seconds reproduced the five-second visibility failure. A 15-second wait for the parked attention bar synchronized the fixture. All nine Chromium scenarios in the parking file passed, including delivery of the reply text to the mock session. The original trace lacks event timestamps to attribute its delay to one component.
+- With the second park held past the deadline in a temporary probe, the test failed at the parked-bar wait before clicking Reply. The fixture was restored after the probe.
