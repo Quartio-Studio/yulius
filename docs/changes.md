@@ -8,6 +8,8 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 - Tasks keep their sessions while work is unfinished or PR checks cannot be verified.
   Only an active Yulius CI run on the current PR head takes over pending checks (SPEC-558, #1490).
+- Intake browser tests wait up to the shared first-load budget for the sandbox task list.
+  Proposal interactions keep their usual timeouts (SPEC-559, #1441).
 
 - Parked sessions (including Codex) now show the parked terminal banner with a visible Resume
   action (and owner Reply bar) instead of an inert terminal with a blinking cursor, wake in the
