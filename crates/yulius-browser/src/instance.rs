@@ -1158,12 +1158,12 @@ pub struct BrowserInstance {
     open_lock: tokio::sync::Mutex<()>,
     input_lock: tokio::sync::Mutex<()>,
     last_used: Mutex<Instant>,
-    process: OnceLock<Supervised>,
+    process: OnceLock<Arc<Supervised>>,
     /// What keeps the browser's way out open (its proxy, ADR-0321); let go when it ended.
     network: Mutex<Option<Box<dyn std::any::Any + Send + Sync>>>,
     event_task: Mutex<Option<JoinHandle<()>>>,
     /// The virtual display the browser runs on (headful), when it has one.
-    display: Option<VirtualDisplay>,
+    display: Option<Arc<VirtualDisplay>>,
     keyboard: Mutex<Keyboard>,
     /// Address of new and blank tabs (the Yulius welcome page, BRW-006).
     new_tab_url: Mutex<Option<String>>,
@@ -1382,13 +1382,13 @@ impl BrowserInstance {
     }
 
     /// Attaches over a connected client to a browser running on `display` (the instance owns
-    /// the display and stops it after the browser, or at once when attaching fails), with what
+    /// the display and stops it after the browser; the launcher owns cleanup on failure), with what
     /// the sandbox's earlier browsers remember about typed secrets.
     pub(crate) async fn attach_on(
         sandbox: SandboxId,
         cdp: CdpClient,
         config: InstanceConfig,
-        display: Option<VirtualDisplay>,
+        display: Option<Arc<VirtualDisplay>>,
         secrets: SecretMemory,
     ) -> Result<Arc<Self>, BrowserError> {
         secrets.restart();
@@ -1396,21 +1396,9 @@ impl BrowserInstance {
             Some(display) => display.config().css_size(display.size()),
             None => config.viewport,
         };
-        let connected = async {
-            let events = cdp.subscribe_events();
-            cdp.call("Target.setDiscoverTargets", json!({"discover": true}))
-                .await?;
-            Ok::<_, BrowserError>((cdp, events))
-        };
-        let (cdp, events) = match connected.await {
-            Ok(connected) => connected,
-            Err(error) => {
-                if let Some(display) = &display {
-                    let _ = display.stop(StopTimeouts::default()).await;
-                }
-                return Err(error);
-            }
-        };
+        let events = cdp.subscribe_events();
+        cdp.call("Target.setDiscoverTargets", json!({"discover": true}))
+            .await?;
         let (control_tx, control_rx) = mpsc::channel(CONTROL_QUEUE);
         let (events_tx, _) = broadcast::channel(EVENT_QUEUE);
         let closed = cdp.close_signal();
@@ -1453,12 +1441,7 @@ impl BrowserInstance {
             policy_lock: tokio::sync::Mutex::new(()),
             chooser_may_be_open: std::sync::atomic::AtomicBool::new(false),
         });
-        if let Err(error) = instance.resync().await {
-            if let Some(display) = &instance.display {
-                let _ = display.stop(StopTimeouts::default()).await;
-            }
-            return Err(error);
-        }
+        instance.resync().await?;
         let task = tokio::spawn(event_loop(
             Arc::downgrade(&instance),
             events,
@@ -1469,7 +1452,7 @@ impl BrowserInstance {
         Ok(instance)
     }
 
-    pub(crate) fn set_process(&self, process: Supervised) {
+    pub(crate) fn set_process(&self, process: Arc<Supervised>) {
         if let Err(process) = self.process.set(process) {
             warn!(
                 pid = process.pid(),
@@ -1499,7 +1482,7 @@ impl BrowserInstance {
     /// Chromium's process id when this instance owns the process.
     #[must_use]
     pub fn pid(&self) -> Option<u32> {
-        self.process.get().map(Supervised::pid)
+        self.process.get().map(|process| process.pid())
     }
 
     /// Whether the DevTools connection is open and the owned process (and display, if any)
@@ -1508,13 +1491,13 @@ impl BrowserInstance {
     pub fn is_alive(&self) -> bool {
         !self.cdp.is_closed()
             && self.process.get().is_none_or(|p| !p.has_exited())
-            && self.display.as_ref().is_none_or(VirtualDisplay::is_alive)
+            && self.display.as_deref().is_none_or(VirtualDisplay::is_alive)
     }
 
     /// The virtual display, when the browser runs on one.
     #[must_use]
     pub fn display(&self) -> Option<&VirtualDisplay> {
-        self.display.as_ref()
+        self.display.as_deref()
     }
 
     /// Resolves when the connection closes or the owned process exits (crash detection).

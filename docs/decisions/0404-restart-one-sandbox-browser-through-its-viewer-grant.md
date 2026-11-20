@@ -10,7 +10,7 @@ An agent's input before the host policy arrived can leave a native chooser on a 
 
 ## Decision
 
-Use the browser's sandbox write grant for a restart. Hold the sandbox's process slot through reaping the old instance and bringing up its replacement on the same profile. Start on a blank page, install the existing address guard, then reopen the visible web addresses and select the previously active tab. Retain those addresses in the slot across a failed launch until recovery or sandbox shutdown.
+Use the browser's sandbox write grant for a restart. Hold the sandbox's process slot through reaping the old instance and bringing up its replacement on the same profile. Start on a blank page, install the existing address guard, then reopen the visible web addresses and select the previously active tab. Retain those addresses in the slot across a failed launch until recovery or sandbox shutdown. The slot owns the new display and Chrome during startup. When cleanup fails, it keeps them until reaping succeeds. Each supervised process remembers successful group cleanup so retrying a display stop cannot signal a reused Chrome process group.
 
 ## Alternatives
 

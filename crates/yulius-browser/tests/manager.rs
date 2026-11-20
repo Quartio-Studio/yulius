@@ -746,7 +746,13 @@ async fn restart_refuses_excess_web_tabs_before_stopping_the_old_browser() -> Te
 
 #[tokio::test]
 async fn replacement_cleanup_holds_the_slot_and_saved_tabs_until_the_display_stops() -> TestResult {
-    for method in ["Fetch.enable", "Page.navigate"] {
+    for method in [
+        "Browser.getVersion",
+        "Target.setDiscoverTargets",
+        "Target.getTargets",
+        "Fetch.enable",
+        "Page.navigate",
+    ] {
         let old_server = FakeCdpServer::start().await?;
         let dir = tempfile::tempdir()?;
         let launcher =
@@ -762,8 +768,12 @@ async fn replacement_cleanup_holds_the_slot_and_saved_tabs_until_the_display_sto
         old.navigate(&old.tabs()[0].id, "https://page.test/saved")
             .await?;
         let replacement = FakeCdpServer::start().await?;
-        replacement.fail_nth(method, 1, -32000, "replacement setup failed");
-        launcher(replacement.pipe_port())?;
+        let executable = launcher(replacement.pipe_port())?;
+        if method == "spawn" {
+            std::fs::write(executable, b"#!/nonexistent/yulius-test-interpreter\n")?;
+        } else {
+            replacement.fail_nth(method, 1, -32000, "replacement setup failed");
+        }
         display.set_stop_limit(1);
         assert!(
             matches!(
@@ -779,6 +789,7 @@ async fn replacement_cleanup_holds_the_slot_and_saved_tabs_until_the_display_sto
         ));
         assert_eq!(display.lifecycle(), (2, 1));
         display.set_stop_limit(u64::MAX);
+        launcher(replacement.pipe_port())?;
         let recovered = manager.restart(&sandbox, &profile).await?;
         assert_eq!(display.lifecycle(), (3, 2));
         assert_eq!(recovered.tabs()[0].url, "https://page.test/saved");
