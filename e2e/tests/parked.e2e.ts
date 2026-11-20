@@ -147,6 +147,109 @@ test('a parked task shows where it was, marked parked; a queued task page says w
   await expect(browser.locator('.strip-status')).toHaveText(/Queued · Waiting for a free session: 8 of 8 in use/);
 });
 
+// SPEC-553 PRK-101, PRK-102: a parked Codex/Claude task renders the calm info-tone parked banner
+// with a visible Resume button (distinct from a crash or operator stop), offers Resume and Reply
+// in the waiting bar for its owner, and wakes via Resume or Reply while keeping stopped tasks inert.
+test('a parked task terminal shows its parked banner and Resume action, distinct from a crash, and wakes on Resume or Reply', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/t/13', '&ambient=0'));
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('#13 Improve the code');
+
+  // Verify termsocket.js treats parked as a non-live session state so the banner renders on load.
+  const ended = await browser.evaluate(async () => {
+    const { isEndedStatus } = await import('/assets/termsocket.js');
+    return {
+      parked: isEndedStatus('parked'),
+      running: isEndedStatus('running'),
+      stopped: isEndedStatus('stopped_cancelled'),
+      crashed: isEndedStatus('stopped_crashed'),
+    };
+  });
+  expect(ended).toEqual({ parked: true, running: false, stopped: true, crashed: true });
+
+  // Connect a Codex account in the mock DB so Resume/Reply work on a Codex task too.
+  await browser.evaluate(() => {
+    (window as unknown as { __yuliusMock: { connectCodex: () => void } }).__yuliusMock.connectCodex();
+  });
+
+  // Park the task in "Your turn · parked" (the quartio-v2 #323 / #324 state).
+  await touchTask(browser, 'sb_studio', 13, { status: 'parked', activity: 'waiting', harness: 'codex' });
+  const infoBanner = browser.locator('.term-banner-info');
+  await expect(infoBanner).toBeVisible();
+  await expect(infoBanner).toHaveText(/parked this idle session/);
+  await expect(infoBanner.getByRole('button', { name: 'Resume' })).toBeVisible();
+  await expect(browser.locator('.term-banner-warn')).toHaveCount(0);
+  await expect(browser.locator('.term')).toHaveAttribute('data-cursor-blink', 'false');
+
+  // Waiting attention bar uses calm `.waiting` info styling (never warning), offers Resume + Reply.
+  const bar = browser.locator('.attention-bar');
+  await expect(bar).toBeVisible();
+  await expect(bar).toHaveAttribute('class', /\bwaiting\b/);
+  await expect(bar).toHaveText(/This idle session was parked \(your turn\)/);
+  await expect(bar.getByRole('button', { name: 'Resume' })).toBeVisible();
+  await expect(bar.getByRole('button', { name: 'Reply' })).toBeVisible();
+
+  // Compare against a crash: crash shows a warning banner with Continue, not the parked info banner,
+  // and typing into a crashed terminal MUST NOT wake it.
+  await touchTask(browser, 'sb_studio', 13, { status: 'stopped_crashed', activity: null });
+  await expect(browser.locator('.term-banner-warn')).toBeVisible();
+  await expect(browser.locator('.term-banner-warn')).toHaveText(/The agent stopped/);
+  await expect(browser.locator('.term-banner-warn').getByRole('button', { name: 'Continue' })).toBeVisible();
+  await browser.locator('.xterm-helper-textarea').focus();
+  await browser.keyboard.type('do not wake crash');
+  await expect(browser.locator('.term-banner-warn')).toBeVisible();
+
+  // Compare against an operator stop: shows stopped banner and typing MUST NOT wake it.
+  await touchTask(browser, 'sb_studio', 13, { status: 'stopped_cancelled', activity: null });
+  await expect(browser.locator('.term-banner-info')).toHaveText(/You stopped this task/);
+  await browser.locator('.xterm-helper-textarea').focus();
+  await browser.keyboard.type('do not wake');
+  await expect(browser.locator('.term-banner-info')).toHaveText(/You stopped this task/);
+
+  // Back to parked: clicking Resume in the banner wakes the task into running through POST /continue.
+  await touchTask(browser, 'sb_studio', 13, { status: 'parked', activity: 'waiting' });
+  await expect(infoBanner.getByRole('button', { name: 'Resume' })).toBeVisible();
+  await infoBanner.getByRole('button', { name: 'Resume' }).click();
+  await expect(browser.locator('.strip-status')).not.toHaveText(/Starting|· parked/);
+  await expect(browser.locator('.term-banner-info')).toHaveCount(0);
+  await expect(browser.locator('.term')).toHaveAttribute('data-cursor-blink', 'true');
+
+  // Park again and wake via Reply with a prompt.
+  await touchTask(browser, 'sb_studio', 13, { status: 'parked', activity: 'waiting' });
+  await expect(bar.getByRole('button', { name: 'Reply' })).toBeVisible();
+  await bar.getByRole('button', { name: 'Reply' }).click();
+  await bar.getByRole('textbox', { name: 'Reply to the agent' }).fill('Check CI status');
+  await bar.getByRole('button', { name: 'Send' }).click();
+  await expect(browser.locator('.strip-status')).not.toHaveText(/Starting|· parked/);
+
+  // Park again and type across BOTH `parked` and `starting` before `running`: all typed characters
+  // stay buffered with zero terminal error notices and are delivered once the session runs.
+  await touchTask(browser, 'sb_studio', 13, { status: 'parked', activity: 'waiting' });
+  await expect(infoBanner).toBeVisible();
+  await browser.locator('.xterm-helper-textarea').focus();
+  await browser.keyboard.type('hel');
+  await expect(browser.locator('.strip-status')).toHaveText(/Starting/);
+  await browser.keyboard.type('lo');
+  await browser.keyboard.press('Enter');
+  await expect(browser.locator('.strip-status')).not.toHaveText(/Starting|· parked/);
+  await expect(browser.locator('.term-notice')).not.toBeVisible();
+  await expect(browser.locator('.xterm-rows')).toHaveText(/hello/);
+
+  // Non-owner ownership boundary: another user's parked task never exposes Resume or Reply.
+  await touchTask(browser, 'sb_studio', 13, { status: 'parked', activity: 'waiting', owner: { login: 'anna-q' } });
+  await expect(bar.getByRole('button', { name: 'Resume' })).toHaveCount(0);
+  await expect(bar.getByRole('button', { name: 'Reply' })).toHaveCount(0);
+
+  // Initial-load parked view: navigating directly to an already-parked task renders the calm
+  // parked banner, visible Resume action, and disabled cursor blink on first paint.
+  await touchTask(browser, 'sb_studio', 13, { status: 'parked', activity: 'waiting', owner: { login: 'mkarp' } });
+  await browser.evaluate(() => { window.location.hash = '#/s/studio'; });
+  await expect(screen.getByRole('link', /Improve the code/)).toBeVisible();
+  await screen.getByRole('link', /Improve the code/).click();
+  await expect(browser.locator('.term-banner-info')).toBeVisible();
+  await expect(browser.locator('.term-banner-info').getByRole('button', { name: 'Resume' })).toBeVisible();
+  await expect(browser.locator('.term')).toHaveAttribute('data-cursor-blink', 'false');
+});
+
 for (const status of ['parked', 'queued', 'starting', 'waiting_capacity']) {
   test(`the owner sees every row of a parked screen while the task is ${status}`, async ({ app, browser }) => {
     await browser.setViewport({ width: 390, height: 844 });

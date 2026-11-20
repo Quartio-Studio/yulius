@@ -383,8 +383,15 @@ fn a_task_starts_on_the_fallback_and_its_next_launch_runs_fable_again() -> TestR
             None,
             "no run, no model it runs on"
         );
-        app.continue_task(&ctx, id.as_str(), &ContinueTask { account_id: None })
-            .await?;
+        app.continue_task(
+            &ctx,
+            id.as_str(),
+            &ContinueTask {
+                account_id: None,
+                prompt: None,
+            },
+        )
+        .await?;
         live_run(&app, &id, 2).await?;
         assert_eq!(
             run_accounts(&app, &id).await[1].as_deref(),

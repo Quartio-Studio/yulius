@@ -440,6 +440,10 @@ pub struct ContinueTask {
     /// Target account (another Claude account); the best one when absent.
     #[serde(default)]
     pub account_id: Option<String>,
+    /// Optional prompt delivered when waking a parked task via `/continue` (SPEC-553 PRK-102);
+    /// bounded to 64 KiB and ignored for non-parked tasks.
+    #[serde(default)]
+    pub prompt: Option<String>,
 }
 
 /// One process run.

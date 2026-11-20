@@ -197,8 +197,10 @@ export async function stopTask(ctx, task) {
 }
 
 /** Resume a closed/stopped task on the same session lineage (TSK-007). */
-export function continueTask(ctx, task) {
-  return taskPost(ctx, task, 'continue', () => ctx.api.post(`/api/tasks/${enc(task.id)}/continue`, {}), `Continuing #${task.number}…`);
+export function continueTask(ctx, task, prompt = null) {
+  const payload = prompt ? { prompt } : {};
+  const label = task.status === 'parked' ? `Resuming #${task.number}…` : `Continuing #${task.number}…`;
+  return taskPost(ctx, task, 'continue', () => ctx.api.post(`/api/tasks/${enc(task.id)}/continue`, payload), label);
 }
 
 /**
