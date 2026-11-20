@@ -46,8 +46,8 @@ new request after the old sockets reach EOF. The issue requires the original con
 - [x] Read the product context and related work, then write and validate the spec
 - [x] Release outbound relay sockets when their serving task is cancelled
 - [x] Obtain independent approval for the relay lifecycle slice
-- [ ] Preserve buffered bytes and half-closes when an established copy pauses
-- [ ] Obtain independent approval for the resumable copy slice
+- [x] Preserve buffered bytes and half-closes when an established copy pauses
+- [x] Obtain independent approval for the resumable copy slice
 - [ ] Hand established opaque connections and matching relay sockets to the restarted server
 - [ ] Verify same-socket continuity, admission limits and intercepted traffic through restart
 - [ ] Independent review in a fresh session, findings fixed test-first
@@ -95,8 +95,8 @@ without adoption support or a remote peer that times out can end a tunnel.
   timed out after cancelling the serving task with an established Unix and TCP peer. With
   the relay owning the copy tasks, both peers observed EOF and the full-relay health alert
   cleared. `cargo test --locked -p yulius-sandbox --lib relay::tests::` passed all 14 tests.
-- This slice covers relay teardown. The tunnel continuity and credential acceptance tests
-  belong to the subsequent slices.
+- The first slice covers relay teardown. The tunnel continuity and credential acceptance tests
+  belong to subsequent slices.
 - A pre-change probe ran two real `yulius serve` processes on the same ports with an isolated
   temporary database and a synthetic run. The build was `95a332d8a` from #552. Its sole
   difference from dev `389789466` was SPEC-576. The original direct CONNECT peers exchanged
@@ -106,3 +106,30 @@ without adoption support or a remote peer that times out can end a tunnel.
   checks passed. The project's Vidoc switch disabled the security scan.
 - Relay mutation check: 1 listed, 1 caught, 0 missed, 0 timed out, 0 unviable, 0 not reached.
   The unmutated baseline passed all 3,243 selected tests (2 skipped).
+- PR #1534 landed at dev squash `169fd9028`. The reviewed PR's CI head was `77018410c`.
+  Dev run `d3807c5c-0373-4619-a24b-e69c2aa40a29` passed by identical tree. Quality, both
+  test shards and e2e passed. CI skipped the disabled security scan.
+  [Dev verification](https://yulius.quartio.ai/api/tasks/35adb14d-65fe-4a9f-b9fa-370d776d4139/delivery/evidence/169fd90282f4f233eb774f729a5c506c9c044053?run_id=d3807c5c-0373-4619-a24b-e69c2aa40a29)
+- On the delivered code, cancelling and restarting Tokio's bidirectional copy under backpressure
+  lost three bytes from each partially written chunk. With a half-closed requester the reply
+  resumed as `done` instead of `ongdone`. Both assertions failed before the change. The new
+  copy keeps the write cursor and completed write-half flag with each direction. Tests pause
+  twice, confirm exact ordering, measure the 8 KiB bound on read-ahead and check that a broken
+  destination terminates the copy while the other peer is open.
+- `cargo test --locked -p yulius-sandbox --lib relay::` passed all 18 relay tests.
+  `cargo test --locked -p yulius-egress` passed 42 unit and integration tests, including
+  opaque forwarding, host-bound injection, response redaction and admission under load.
+  Clippy passed for both crates and all their test targets with warnings denied.
+- Independent review of `5ee4cb804` found two failures. A synthetic interrupted read ended
+  both directions before the marker arrived. A pause during write-half shutdown caused a second
+  read past EOF, which returned a connection reset. Both regression tests failed on the reviewed
+  code. The copy now retries interrupted reads and records EOF before polling shutdown. The
+  new tests verify the marker, fatal error propagation, shutdown completion on resume and the
+  peer's complete reply. All 20 relay tests and 42 egress tests passed with the corrections.
+- A fresh reviewer approved `8f5eccc53`, checked both fixes and independently passed the
+  20 relay and 42 egress tests. Repository quick checks and targeted Clippy passed. Vidoc
+  was disabled. The copy slice's first mutation run caught all 7 listed mutants, with
+  0 missed, 0 timed out, 0 unviable and 0 not reached.
+- The mutation run against the review fixes (`scripts/dev mutants --base 5ee4cb804`) listed
+  6 mutants and caught all 6, with 0 missed, 0 timed out, 0 unviable and 0 not reached.
+  Its unmutated baseline passed 3,256 tests (2 skipped).

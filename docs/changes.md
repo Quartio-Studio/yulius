@@ -6,6 +6,8 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-20
 
+- Opaque proxy and host-side relay copies retain partial writes and half-closes when paused on the same sockets. [SPEC-577](../.ai/specs/SPEC-577-preserve-opaque-egress-tunnels-across-a.md)
+
 - Stopping a sandbox's outbound relay now closes the connections it owns and clears its occupied places. [SPEC-577](../.ai/specs/SPEC-577-preserve-opaque-egress-tunnels-across-a.md)
 
 - A parked task’s detail identifies the ordinary PR blocking Done, including when another PR on the same branch is green. Unfinished local work also keeps it under Needs you (SPEC-558).
