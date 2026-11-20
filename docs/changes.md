@@ -8,6 +8,11 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 - A GPT model now selects Codex for API and MCP task creation. Choosing a GPT or Gemini model
   on a Claude Code task fails before creation or update (SPEC-560, #1427).
+- GPT-6.2 Astra now inherits extra high reasoning effort on new Codex launches and resumes.
+  Task details mark inherited effort so an explicit High control is identifiable (SPEC-561, task #554).
+- Intake browser tests wait up to the shared first-load budget for the sandbox task list.
+  Proposal interactions keep their usual timeouts (SPEC-559, #1441).
+
 - Parked sessions (including Codex) now show the parked terminal banner with a visible Resume
   action (and owner Reply bar) instead of an inert terminal with a blinking cursor, wake in the
   same saved session and worktree on Resume, Reply, or ordinary owner terminal typing (preserving
