@@ -808,6 +808,7 @@ test('the longest needs_you request keeps its to-do and buttons in view on a pho
 // its to-do hides what scrolls under it in a stacked bar too, and only a list that scrolls is a
 // tab stop.
 test('a scrolled needs_you list survives task updates and its to-do stays opaque', async ({ app, browser }) => {
+  await lateResizeObservers(browser);
   await browser.setViewport({ width: 360, height: 780 });
   await app.open(mock('/s/studio/t/12'));
   const long = {

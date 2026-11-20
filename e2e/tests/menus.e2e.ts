@@ -540,8 +540,9 @@ test('the filter narrows the task box; with every match in view there is no fade
 
 test('the automation editor\'s start menu shows its tasks five at a time too (SPEC-102)', async ({ app, browser, screen }) => {
   await browser.setViewport({ width: 1280, height: 800 });
-  await app.open(mock('/s/studio/automations/aut_1'));
+  await app.open(mock('/s/studio/automations/aut_1', '&hold=/api/sandboxes/sb_studio/tasks'));
   await screen.getByRole('button', /^Start: /).click();
+  await browser.evaluate(() => (window as unknown as { __yuliusMock: { release: () => void } }).__yuliusMock.release());
   await expect(screen.getByRole('group', 'After a task is done')).toBeVisible();
   const state = await taskBox(browser);
   expect(state).toMatchObject({ rows: 9, below: true });
