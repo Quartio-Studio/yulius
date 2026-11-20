@@ -563,16 +563,16 @@ fn failed_publication_and_superseded_repair_notices_in_pr_watch() -> TestResult 
             .transition_delivery(&DeliveryStage::None, &open)
             .await?;
         github.set_checks(&pr_head, ChecksState::Failure);
-        let steps = ["done", "in_progress"]
-            .iter()
+        let steps = [("Fix", "done"), ("Verify", "in_progress")]
+            .into_iter()
             .enumerate()
-            .map(|(i, status)| -> Result<_, Box<dyn std::error::Error>> {
+            .map(|(i, (title, status))| -> Result<_, Box<dyn std::error::Error>> {
                 Ok(yulius_app::model::StepRecord {
                     id: yulius_domain::ids::StepId::parse(&format!("s-pw-{i}"))?,
                     task_id: id.clone(),
                     ordinal: u32::try_from(i)?,
-                    title: format!("Step {i}"),
-                    status: (*status).to_owned(),
+                    title: title.to_owned(),
+                    status: status.to_owned(),
                     note: None,
                     updated_by: None,
                     updated_at: None,
@@ -704,7 +704,7 @@ fn failed_publication_and_superseded_repair_notices_in_pr_watch() -> TestResult 
         let notice = typed_within(&app, &bounds, &id).await?.ok_or("merge notice")?;
         assert!(notice.contains("could not read its merged head"), "{notice}");
         assert!(!notice.contains("into `dev`") && !notice.contains(&repair2[..9]), "{notice}");
-        assert!(notice.contains("1 step(s) of your plan are still ahead (next: \"Step 1\")"), "{notice}");
+        assert!(notice.contains("1 step(s) of your plan are still ahead (next: \"Verify\")"), "{notice}");
 
         stop(&app, &id).await?;
         Ok::<_, Box<dyn std::error::Error>>(())
