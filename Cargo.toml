@@ -49,6 +49,7 @@ tokio = { version = "1.53.2", features = ["rt-multi-thread", "macros", "sync", "
 async-trait = "0.1"
 futures = "0.3.34"
 axum = { version = "0.8.9", features = ["ws"] }
+percent-encoding = "2.3.2"
 tower = "0.5"
 tower-http = { version = "0.7.1", features = ["cors"] }
 tracing = "0.1.44"
