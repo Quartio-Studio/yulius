@@ -824,14 +824,44 @@ async fn assert_no_playground_squash(h: &Harness, owner: &Creds) -> TestResult {
 /// the remedy.
 #[tokio::test]
 async fn a_conflicting_branch_is_refused_with_the_files() -> TestResult {
+    use yulius_app::ports::store_ext::CiStore as _;
     let (h, owner) = world().await?;
     let made = from_template(&h, &owner, "shop").await?;
     playground_task(&h, &made.body, "t1", &[("README.md", "# one\n")], &["done"]).await?;
     playground_task(&h, &made.body, "t2", &[("README.md", "# two\n")], &["done"]).await?;
     assert_eq!(merge(&h, &owner, "t1").await?.status, StatusCode::OK);
+    let sid = yulius_domain::ids::SandboxId::parse(made.body["id"].as_str().ok_or("id")?)?;
+    let runs_before = h.store.ci_runs(&sid, 100).await?.len();
+    let base = git(&origin_of(&h, &made.body), &["rev-parse", "dev"])?;
+    let view = call(
+        &h.router,
+        Method::GET,
+        "/api/tasks/t2/delivery",
+        None,
+        &owner,
+    )
+    .await?;
+    assert_eq!(view.status, StatusCode::OK, "{:?}", view.body);
+    assert_eq!(view.body["next_actions"], json!([]));
+    assert_eq!(view.body["blocked"][0]["action"], "merge");
+    let hold = view.body["blocked"][0]["reason"].as_str().ok_or("reason")?;
+    assert!(
+        hold.contains("README.md") && hold.contains("git merge origin/dev"),
+        "{hold}"
+    );
+    assert_eq!(
+        h.store.ci_runs(&sid, 100).await?.len(),
+        runs_before,
+        "reading scheduled CI"
+    );
+    assert_eq!(
+        git(&origin_of(&h, &made.body), &["rev-parse", "dev"])?,
+        base
+    );
     let refused = merge(&h, &owner, "t2").await?;
     assert_eq!(refused.status, StatusCode::CONFLICT, "{:?}", refused.body);
     let message = text(&refused);
+    assert_eq!(message, hold);
     assert!(message.contains("README.md"), "{message}");
     assert!(message.contains("git merge origin/dev"), "{message}");
     Ok(())

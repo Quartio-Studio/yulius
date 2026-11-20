@@ -2149,6 +2149,16 @@ fn a_squash_lands_one_commit_on_the_remote_branch_or_names_the_conflicts() -> Te
     let head = fx.git.rev_parse(&feature, "HEAD")?;
     let base = fx.git.rev_parse(&repo, "origin/dev")?;
 
+    assert_eq!(
+        fx.git.merge_conflicts(&feature, "origin/dev", "HEAD")?,
+        None
+    );
+    assert_eq!(
+        fx.git.rev_parse(&remote, "dev")?,
+        base,
+        "preview pushed nothing"
+    );
+
     let landed = fx.git.squash_land(
         &repo,
         &SquashInput {
@@ -2206,6 +2216,20 @@ fn a_squash_lands_one_commit_on_the_remote_branch_or_names_the_conflicts() -> Te
         .worktree_add(&repo, &other, "feat/y", "origin/main")?;
     fs::write(other.join("x.txt"), "a different x\n")?;
     fx.git.commit_all(&other, "feat: y", &author())?;
+    assert_eq!(
+        fx.git.merge_conflicts(&other, "origin/dev", "HEAD")?,
+        Some(vec!["x.txt".into()])
+    );
+    assert_eq!(
+        fx.raw(&other, &["status", "--porcelain"])?,
+        "",
+        "checkout and index stay clean"
+    );
+    assert_eq!(
+        fx.git.rev_parse(&remote, "dev")?,
+        commit,
+        "preview pushed nothing"
+    );
     let conflict = fx.git.squash_land(
         &repo,
         &SquashInput {
