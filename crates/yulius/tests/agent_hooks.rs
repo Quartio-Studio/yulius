@@ -3069,6 +3069,15 @@ async fn parked_list_home_and_mcp_classify_a_green_head_while_the_first_is_slow(
         asks.updated_at = Timestamp(now.0 + number);
         f.h.store.insert_task(&asks).await?;
     }
+    let empty =
+        f.h.app
+            .tool_tasks_list(&caller, &json!({"scope":"needs_you","limit":0}))
+            .await?;
+    assert_eq!(
+        empty["tasks"],
+        json!([]),
+        "a zero-sized page visits no rows"
+    );
     let args = serde_json::json!({"scope":"needs_you","limit":1});
     let listing = tokio::select! {
         result = f.h.app.tool_tasks_list(&caller, &args) => result?,
@@ -3146,9 +3155,8 @@ async fn a_partial_overview_still_resolves_the_parked_tasks_recorded_pr() -> Tes
     Ok(())
 }
 
-#[tokio::test]
-async fn a_parked_external_pr_seen_by_its_owner_requires_verification_without_an_app() -> TestResult
-{
+async fn owner_observed_external_pr()
+-> Result<(Fixture, yulius_app::auth::AuthContext), Box<dyn std::error::Error>> {
     let f = fixture().await?;
     let owner = idle_for_parking(&f).await?;
     sign_in_with_github(&f, "u1", "alice").await?;
@@ -3182,6 +3190,13 @@ async fn a_parked_external_pr_seen_by_its_owner_requires_verification_without_an
             .and_then(|t| t.pr.as_ref())
             .is_some_and(|pr| pr.checks == "failure")
     );
+    Ok((f, owner))
+}
+
+#[tokio::test]
+async fn a_parked_external_pr_seen_by_its_owner_requires_verification_without_an_app() -> TestResult
+{
+    let (f, owner) = owner_observed_external_pr().await?;
     let caller = crate::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
     let list =
         f.h.app
@@ -3210,6 +3225,91 @@ async fn a_parked_external_pr_seen_by_its_owner_requires_verification_without_an
         true
     );
     install_app(&f).await?;
+    assert_eq!(
+        serde_json::to_value(f.h.app.task_detail(&owner, f.task.as_str()).await?)?["parked_needs_you"],
+        false
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_parked_external_pr_survives_an_incomplete_overview_until_its_absence_is_confirmed()
+-> TestResult {
+    let (f, owner) = owner_observed_external_pr().await?;
+    // A failed overview and a complete transport response truncated for the
+    // overview both omit the owner's PR, but neither establishes its closure.
+    f.h.github.fail_overview_pulls.store(true, Ordering::SeqCst);
+    f.h.app.git_overview(&owner, f.sandbox.as_str()).await?;
+    f.h.github
+        .fail_overview_pulls
+        .store(false, Ordering::SeqCst);
+    assert_eq!(
+        f.h.app.list_sandboxes(&owner).await?[0]
+            .counts
+            .needs_attention,
+        1,
+        "failed list erased a red PR"
+    );
+    {
+        let mut pulls = f.h.github.pulls.lock().map_err(|_| "pulls")?;
+        for number in 1..=u64::try_from(yulius_app::delivery::MAX_PULLS)? {
+            pulls.insert(
+                0,
+                yulius_app::ports::github::GhPull {
+                    number,
+                    head: format!("other-{number}"),
+                    ..compatibility_pull()
+                },
+            );
+        }
+    }
+    let partial = f.h.app.git_overview(&owner, f.sandbox.as_str()).await?;
+    assert!(partial.pulls.iter().all(|p| p.number != 1461));
+    let summary = serde_json::to_value(f.h.app.task_detail(&owner, f.task.as_str()).await?)?;
+    assert_eq!(summary["parked_pr"], json!({"number":1461,"open":true}));
+    assert_eq!(
+        summary["parked_needs_you"], true,
+        "truncation erased a red PR"
+    );
+    f.h.github.pulls.lock().map_err(|_| "pulls")?.clear();
+    f.h.app.git_overview(&owner, f.sandbox.as_str()).await?;
+    let summary = serde_json::to_value(f.h.app.task_detail(&owner, f.task.as_str()).await?)?;
+    assert_eq!(
+        summary["parked_needs_you"], false,
+        "complete list confirmed absence"
+    );
+    assert!(summary["parked_pr"].is_null());
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_parked_external_pr_keeps_its_identity_when_the_app_has_no_installation() -> TestResult {
+    let (f, owner) = owner_observed_external_pr().await?;
+    let caller = crate::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
+    install_app(&f).await?;
+    f.h.app.deps.store.set_installation(None).await?;
+    f.h.github.no_installation.store(true, Ordering::SeqCst);
+    f.h.github
+        .set_checks("abc123", yulius_app::ports::github::ChecksState::Failure);
+    f.h.app.git_overview(&owner, f.sandbox.as_str()).await?;
+    let summary = serde_json::to_value(f.h.app.task_detail(&owner, f.task.as_str()).await?)?;
+    assert_eq!(
+        summary["parked_pr"],
+        json!({"number":1461,"open":true}),
+        "configured app lacks repository installation"
+    );
+    assert_eq!(summary["parked_needs_you"], true);
+    let list =
+        f.h.app
+            .tool_tasks_list(&caller, &json!({"scope":"needs_you"}))
+            .await?;
+    assert_eq!(
+        list["tasks"][0]["wait_reason"],
+        "The agent stopped and its pull request checks are failing."
+    );
+    f.h.github.no_installation.store(false, Ordering::SeqCst);
+    f.h.github
+        .set_checks("abc123", yulius_app::ports::github::ChecksState::Success);
     assert_eq!(
         serde_json::to_value(f.h.app.task_detail(&owner, f.task.as_str()).await?)?["parked_needs_you"],
         false

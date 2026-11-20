@@ -63,6 +63,7 @@ pub struct FakeGitHub {
     pub pulls: Mutex<Vec<GhPull>>,
     /// Simulates a failed repository-wide overview while individual PRs remain readable.
     pub fail_overview_pulls: std::sync::atomic::AtomicBool,
+    pub no_installation: std::sync::atomic::AtomicBool,
     /// The branch of every `branch_pulls` call, in order: one GitHub request each (the hygiene
     /// scan's `MAX_PULL_LOOKUPS` bound).
     pub branch_pull_lookups: Mutex<Vec<String>>,
@@ -257,7 +258,10 @@ impl GitHubPort for FakeGitHub {
         })
     }
     async fn find_installation(&self, _: &GitHubAppConfig, _: &str) -> AppResult<Option<u64>> {
-        Ok(Some(1))
+        Ok((!self
+            .no_installation
+            .load(std::sync::atomic::Ordering::SeqCst))
+        .then_some(1))
     }
     async fn installation_token(&self, _: &GitHubAppConfig, _: u64) -> AppResult<Secret> {
         Ok(Secret("inst".into()))

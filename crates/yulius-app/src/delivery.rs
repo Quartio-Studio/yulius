@@ -2212,12 +2212,15 @@ impl App {
             }
         };
         let mut open_pulls = Vec::new();
+        let mut overview_complete = false;
         let mut checks_by_pr = Vec::new();
         let mut checks_unreadable = Vec::new();
         if let Some(token) = &token {
             match self.deps.github.list_pulls(token, owner, name, None).await {
                 Ok(pulls) => {
-                    open_pulls = pulls.into_iter().filter(is_open).take(MAX_PULLS).collect()
+                    let mut open = pulls.into_iter().filter(is_open);
+                    open_pulls = open.by_ref().take(MAX_PULLS).collect();
+                    overview_complete = open.next().is_none();
                 }
                 Err(err) => notes.push(format!(
                     "Pull requests can't be listed: {}",
@@ -2406,16 +2409,28 @@ impl App {
                     conflicts: false,
                 });
             }
-            if let Some(pr) = &view.pr
-                && let Some(signal) = PullSignal::from_wire(&pr.state, &pr.checks, pr.conflicts)
-            {
-                observed.insert(
-                    task.id.clone(),
+            let fresh = view.pr.as_ref().and_then(|pr| {
+                PullSignal::from_wire(&pr.state, &pr.checks, pr.conflicts).map(|signal| {
                     crate::sandboxes::ObservedPull {
                         number: pr.number,
                         signal,
-                    },
-                );
+                    }
+                })
+            });
+            // On a partial list an older recorded merge cannot clear an external
+            // open PR. A direct closed read of the same number can.
+            let prior_open = (!overview_complete)
+                .then(|| self.observed_pulls.get(&sandbox.id, &task.id).flatten())
+                .flatten()
+                .filter(|old| {
+                    old.signal != PullSignal::Merged
+                        && view
+                            .pr
+                            .as_ref()
+                            .is_none_or(|pr| pr.number != old.number && pr.state != "open")
+                });
+            if let Some(pull) = prior_open.or(fresh) {
+                observed.insert(task.id.clone(), pull);
             }
             tasks.push(view);
         }
@@ -4166,27 +4181,22 @@ impl App {
         let merged = record
             .filter(|r| past_merge(&r.stage))
             .and_then(|r| r.pr_number);
+        // Keep the owner's known PR when installation or branch discovery fails.
+        // A changed branch read below supersedes it, including confirmed absence.
+        let known = self
+            .observed_pulls
+            .get(&task.sandbox_id, &task.id)
+            .flatten()
+            .filter(|pr| pr.signal != PullSignal::Merged && Some(pr.number) != merged);
+        if let Some(pr) = known {
+            observed.pr = Some(yulius_contracts::api::tasks::ParkedPr {
+                number: pr.number,
+                open: true,
+            });
+            observed.signal = (pr.signal == PullSignal::Failing).then_some(pr.signal);
+        }
         if sandbox.is_playground() || !self.github_configured().await? {
-            // An overview read with the owner's token may have seen an external
-            // PR that the installation cannot verify. Its last green also needs
-            // fresh confirmation before this task can count as Done.
-            if let Some(known) = self
-                .observed_pulls
-                .get(&task.sandbox_id, &task.id)
-                .flatten()
-                && known.signal != PullSignal::Merged
-                && Some(known.number) != merged
-            {
-                observed.pr = Some(yulius_contracts::api::tasks::ParkedPr {
-                    number: known.number,
-                    open: true,
-                });
-                if known.signal == PullSignal::Failing {
-                    observed.signal = Some(PullSignal::Failing);
-                }
-                return Ok(None);
-            }
-            return Ok(tracked.is_none().then(ParkingPrs::default));
+            return Ok((tracked.is_none() && known.is_none()).then(ParkingPrs::default));
         }
         let token = self.dlv_installation_token(&sandbox).await?;
         let branch_pulls = || async {
@@ -4216,6 +4226,7 @@ impl App {
         // and new PRs opened externally while an older recorded delivery is being reconciled.
         let watched = tracked.filter(|_| purpose == PrVerification::WatchPending);
         let branch = branch_pulls().await?;
+        *observed = ParkedPullRead::recorded(record);
         if let Some(pull) = branch.last() {
             observed.pr = Some(yulius_contracts::api::tasks::ParkedPr {
                 number: pull.number,
