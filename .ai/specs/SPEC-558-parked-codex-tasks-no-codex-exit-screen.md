@@ -32,7 +32,7 @@ Task #517 displayed Codex's exit instructions. The host drained shutdown output 
 - [x] Verify chain eligibility and refresh stale PR observations
 - [x] Keep unfinished plans, specs and goals live
 - [x] Verify PR checks and unpublished repairs before parking
-- [ ] Gate parked successors on declared work, owner decisions and current branch PRs
+- [x] Gate parked successors on declared work, owner decisions and current branch PRs
 - [ ] Give parked PRs fair status reads in task lists and Home
 - [ ] Refresh parked page and sidebar status independently of the Git overview
 - [ ] Keep failed integration candidates with their original owner
@@ -103,9 +103,18 @@ A human request can take precedence over unfinished work in the task list. Both 
 
 - On the server-only head, replacing the historical goal directory with an unreadable path changed the parked summary to Done. Temporarily hiding the durable owner-decision column released a successor to Queued. A limited MCP request started reading a parked PR after its first page was already full. All three regressions failed before the prototype repairs. The list delivery will retain ordered reads, early exit and the Git worker cap. The dependency delivery reuses the parking supervisor’s verification of both recorded and branch PRs, including replacements published externally.
 
+- Independent review approved step 11 at `72388f86a`. The scoped nextest run passed all 200 parking, PR watcher, chain and task completion tests. App and integration Clippy, formatting and repository contracts passed. Vidoc was disabled. The replacement-PR fixture queued its successor on the earlier combined prototype while the replacement was red. Two more fixtures queued it on `3e806b7d1` when the historical run directory disappeared or the owner resumed during the final checkout read. A separate regression held the final browser lookup while the owner resumed. It reproduced the incorrect release on `04082357c` and kept the successor chained on the approved head.
+- The parked successor checks both the recorded and current ordinary branch PRs, including a replacement opened while the recorded PR was being reconciled. A pending human decision, unreadable historical goal, unpublished checkout or active ordinary CI holds the successor. Once the evidence settles, normal chain evaluation releases it. An explicit `#N merged` rule continues to use its recorded merge.
+
+- The first dependency mutation run reported `mutants: 65 listed, 35 caught, 2 missed, 0 timed out, 28 unviable, 0 not reached (bound 30 min, took 1123 s)`. Both survivors concerned the tracked PR allowed to park during an active run. Inverting the purpose released a successor while CI was running in the updated chain fixture. Inverting the PR identity prevented the tracked author from parking in the supervisor’s real-host fixture. Both unmodified tests passed in the scoped run.
+
+- The checkout and historical-goal review fix reported `mutants: 40 listed, 10 caught, 2 missed, 0 timed out, 28 unviable, 0 not reached (bound 30 min, took 1071 s)`. The publication regression caught a final parking check weakened to accept either the checkout or CI. The historical chain fixture now supplies a readable run directory whose marker exceeds the OS path limit. It caught treating every marker error as file absence and released the successor after a readable attempt was recorded.
+
+- The final browser-order fix reported `mutants: 33 listed, 13 caught, 6 missed, 0 timed out, 14 unviable, 0 not reached (bound 30 min, took 1031 s)`. The historical owner-decision fixture caught all five altered conjunctions in the work and decision check, including its three survivors. The final CI and browser-read fixtures caught all six altered combinations in the last predecessor check, including its three survivors. The browser fixture covers an owner who resumes and parks again after a new turn. With these test additions, the final scoped run passed all 200 tests, and Clippy passed.
+
 ## Delivery slices
 
-PRs #1492 and #1493 delivered native Codex resume and the pre-stop screen for new parks. The next delivery keeps sessions with local unfinished work live. Subsequent deliveries verify current PR checks and unpublished work, classify historical parked tasks and gate their successors, continue bounded Codex goals, and recover pre-upgrade screens. The earlier combined-head evidence records prototype verification across these deliveries.
+PRs #1492 and #1493 delivered native Codex resume and the pre-stop screen for new parks. PR #1505 kept sessions with local unfinished work live. PR #1510 verified current ordinary PR checks and unpublished work before parking. Step 11 verifies parked predecessors for successors waiting for Done. Remaining deliveries cover fair parked task-list reads, page refresh, persisted integration failures, bounded Codex goals and pre-upgrade screens.
 
 The native-resume regression checks the rollout in the native launch and reads the first and second user prompts from its on-disk history. It also exercises absent IDs and an older lineage entry. No paid provider is involved.
 

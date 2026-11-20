@@ -4711,28 +4711,43 @@ async fn a_parked_successor_waits_if_its_owner_resumes_during_the_final_browser_
     deps.browser = browser.clone();
     let app = yulius_app::context::App::new(f.h.app.config.clone(), deps);
     let now = app.now();
-    f.h.store
-        .transition_task(&before, None, TaskStatus::Parked, Some(Activity::Done), now)
-        .await?;
-    let predecessor = before.clone();
-    let checking = app.clone();
-    let advance = tokio::spawn(async move { checking.advance_chains(&predecessor).await });
-    tokio::time::timeout(Duration::from_secs(5), browser.entered.notified()).await?;
-    f.h.store
-        .transition_task(
-            &before,
-            None,
-            TaskStatus::Running,
-            Some(Activity::Working),
-            now,
-        )
-        .await?;
-    browser.release.notify_one();
-    advance.await?;
-    assert_eq!(
-        f.h.store.task(&child).await?.ok_or("successor")?.status,
-        TaskStatus::Chained
-    );
+    // The resumed task may already have finished a new turn and parked again.
+    for parked_again in [false, true] {
+        browser.calls.store(0, std::sync::atomic::Ordering::SeqCst);
+        f.h.store
+            .transition_task(&before, None, TaskStatus::Parked, Some(Activity::Done), now)
+            .await?;
+        let predecessor = before.clone();
+        let checking = app.clone();
+        let advance = tokio::spawn(async move { checking.advance_chains(&predecessor).await });
+        tokio::time::timeout(Duration::from_secs(5), browser.entered.notified()).await?;
+        f.h.store
+            .transition_task(
+                &before,
+                None,
+                TaskStatus::Running,
+                Some(Activity::Working),
+                now,
+            )
+            .await?;
+        if parked_again {
+            f.h.store
+                .transition_task(
+                    &before,
+                    None,
+                    TaskStatus::Parked,
+                    Some(Activity::Waiting),
+                    now,
+                )
+                .await?;
+        }
+        browser.release.notify_one();
+        advance.await?;
+        assert_eq!(
+            f.h.store.task(&child).await?.ok_or("successor")?.status,
+            TaskStatus::Chained
+        );
+    }
     f.h.store
         .transition_task(&before, None, TaskStatus::Parked, Some(Activity::Done), now)
         .await?;
@@ -4783,28 +4798,27 @@ async fn a_historical_parked_goal_keeps_its_owner_and_chain_state_after_restart(
     let marker = dir.join("parked-goal-unfinished");
     std::fs::write(&marker, b"")?;
     let now = f.h.app.now();
-    f.h.store
-        .insert_attempt(&AttemptRecord {
-            id: AttemptId::parse("historic-goal")?,
-            task_id: before.clone(),
-            seq: 1,
-            harness: Harness::ClaudeCode,
-            account_id: None,
-            provider_session_id: None,
-            launch_kind: LaunchKind::New,
-            model: None,
-            state: AttemptState::Killed,
-            run_dir: dir.to_string_lossy().into_owned(),
-            token_hash: "synthetic".into(),
-            host_token: Sealed(vec![0]),
-            ptyhost_pid: None,
-            child_pid: None,
-            started_at: now,
-            ended_at: Some(now),
-            exit_code: Some(0),
-            exit_reason: Some("parked".into()),
-        })
-        .await?;
+    let mut attempt = AttemptRecord {
+        id: AttemptId::parse("historic-goal")?,
+        task_id: before.clone(),
+        seq: 1,
+        harness: Harness::ClaudeCode,
+        account_id: None,
+        provider_session_id: None,
+        launch_kind: LaunchKind::New,
+        model: None,
+        state: AttemptState::Killed,
+        run_dir: dir.to_string_lossy().into_owned(),
+        token_hash: "synthetic".into(),
+        host_token: Sealed(vec![0]),
+        ptyhost_pid: None,
+        child_pid: None,
+        started_at: now,
+        ended_at: Some(now),
+        exit_code: Some(0),
+        exit_reason: Some("parked".into()),
+    };
+    f.h.store.insert_attempt(&attempt).await?;
     f.h.store
         .transition_task(
             &before,
@@ -4862,6 +4876,35 @@ async fn a_historical_parked_goal_keeps_its_owner_and_chain_state_after_restart(
         TaskStatus::Chained
     );
     f.h.store.set_task_needs_you(&before, None, now).await?;
+    // The directory itself is readable. Asking for its marker exceeds the OS
+    // path limit and must not be mistaken for a verified absent marker.
+    let mut long_dir = dir.to_string_lossy().into_owned();
+    let limit = usize::try_from(nix::libc::PATH_MAX)?;
+    long_dir.push_str(&"/.".repeat((limit - long_dir.len() - 1) / 2));
+    assert!(std::fs::metadata(&long_dir)?.is_dir());
+    let unreadable = Path::new(&long_dir).join("parked-goal-unfinished");
+    assert_ne!(
+        std::fs::symlink_metadata(unreadable)
+            .err()
+            .ok_or("expected an unreadable marker")?
+            .kind(),
+        std::io::ErrorKind::NotFound
+    );
+    attempt.seq += 1;
+    attempt.id = AttemptId::parse("unreadable-goal-marker")?;
+    attempt.token_hash = attempt.id.to_string();
+    attempt.run_dir = long_dir;
+    f.h.store.insert_attempt(&attempt).await?;
+    fresh.advance_chains(&before).await;
+    assert_eq!(
+        f.h.store.task(&child).await?.ok_or("successor")?.status,
+        TaskStatus::Chained
+    );
+    attempt.seq += 1;
+    attempt.id = AttemptId::parse("readable-goal-marker")?;
+    attempt.token_hash = attempt.id.to_string();
+    attempt.run_dir = dir.to_string_lossy().into_owned();
+    f.h.store.insert_attempt(&attempt).await?;
     fresh.advance_chains(&before).await;
     assert_ne!(
         f.h.store.task(&child).await?.ok_or("successor")?.status,
