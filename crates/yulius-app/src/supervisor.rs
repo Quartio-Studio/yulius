@@ -1120,7 +1120,11 @@ pub(crate) fn save_screen(hub: &crate::hub::Hub, run_dir: &Path) {
 
 /// Reads a saved final screen: (cols, rows, redraw bytes).
 pub(crate) fn read_final_screen(run_dir: &Path) -> Option<(u16, u16, Vec<u8>)> {
-    let bytes = std::fs::read(run_dir.join(FINAL_SCREEN_FILE)).ok()?;
+    read_saved_screen(&run_dir.join(FINAL_SCREEN_FILE))
+}
+
+pub(crate) fn read_saved_screen(path: &Path) -> Option<(u16, u16, Vec<u8>)> {
+    let bytes = std::fs::read(path).ok()?;
     let newline = bytes.iter().position(|b| *b == b'\n')?;
     let header = std::str::from_utf8(&bytes[..newline]).ok()?;
     let (cols, rows) = header.split_once(' ')?;
@@ -4074,7 +4078,7 @@ impl App {
         if parking {
             // The idle session being parked was lost on its way out: the task lost nothing a
             // park would have kept, so it is parked all the same (SPEC-512 PRK-003).
-            self.settle_parked(task_id, now).await;
+            self.settle_parked(task_id, attempt_id, now).await;
         } else {
             // A finished task lost nothing with its idle session: it is Closed (SPEC-229
             // RBT-001).
@@ -4140,7 +4144,15 @@ impl App {
     /// The task whose parked run ended (SPEC-512 PRK-003): a running or switching one is
     /// `parked` with its activity and audited `task.parked`; one a stop or a capacity pause took
     /// meanwhile rests as that run's end leaves it.
-    async fn settle_parked(&self, task_id: &TaskId, now: Timestamp) {
+    async fn settle_parked(&self, task_id: &TaskId, attempt_id: &AttemptId, now: Timestamp) {
+        let parked_screen = self
+            .deps
+            .store
+            .attempt(attempt_id)
+            .await
+            .ok()
+            .flatten()
+            .and_then(|run| crate::parking::parked_snapshot(&run));
         let decided = self.existing_runtime(task_id).and_then(|runtime| {
             runtime
                 .parked_activity
@@ -4182,6 +4194,10 @@ impl App {
                 Ok(false) => {}
                 Ok(true) => {
                     if to == TaskStatus::Parked {
+                        if let Some((cols, rows, screen)) = parked_screen {
+                            let hub = &self.runtime(task_id).hub;
+                            hub.reset(hub.output_seq().max(1), &screen, cols, rows);
+                        }
                         crate::parking::audit_parked(self, &task).await;
                     }
                     return;
@@ -4363,7 +4379,7 @@ impl App {
                 })
                 .await;
             }
-            Some(EndIntent::Park) => self.settle_parked(task_id, now).await,
+            Some(EndIntent::Park) => self.settle_parked(task_id, attempt_id, now).await,
             Some(EndIntent::Cancel) => {
                 // A stop's run ended: its task is stopped, also while still live when the run ended
                 // before the stop's status change was made (SPEC-250 STW-003).
@@ -4636,13 +4652,19 @@ impl App {
         if self.background_or_wait_now(task_id).await != Some(false) {
             return Ok(false);
         }
+        let Some(candidate) = self.deps.store.task(task_id).await? else {
+            return Ok(false);
+        };
+        if self.task_checks_failing(&candidate).await {
+            return Ok(false);
+        }
         let _guard = self.supervisor.launch.lock().await;
         let Some(task) = self.deps.store.task(task_id).await? else {
             return Ok(false);
         };
-        if !self.parkable_now(&task, rule).await {
+        let Some(quiet_ms) = self.parkable_now(&task, rule).await else {
             return Ok(false);
-        }
+        };
         // A prompt waiting in Claude Code's queue would be lost with the session (SPEC-471).
         if self
             .existing_runtime(task_id)
@@ -4650,15 +4672,20 @@ impl App {
         {
             return Ok(false);
         }
-        let Some(run) = self.live_attempt_id(task_id).await else {
+        let Some(run) = self.deps.store.live_attempt(task_id).await? else {
             return Ok(false);
         };
+        if run.harness == Harness::Codex && run.provider_session_id.is_none() {
+            return Ok(false);
+        }
         let runtime = self.runtime(task_id);
         if let Ok(mut intent) = runtime.intent.lock() {
             // Any other end under way owns the run's end.
             if intent.is_some() {
                 return Ok(false);
             }
+            crate::parking::save_parked_screen(&runtime.hub, Path::new(&run.run_dir), quiet_ms)
+                .map_err(AppError::internal)?;
             *intent = Some(EndIntent::Park);
             // Under the intent's lock: the run's end that takes the intent finds it.
             if let Ok(mut kept) = runtime.parked_activity.lock() {
@@ -4666,7 +4693,7 @@ impl App {
             }
         }
         crate::race::reached(crate::race::Point::ParkDecided, Path::new(task_id.as_str()));
-        self.arm_escalation(task_id, Some(run));
+        self.arm_escalation(task_id, Some(run.id));
         request_shutdown(&runtime).await;
         Ok(true)
     }
@@ -4700,6 +4727,31 @@ impl App {
             .task(task_id)
             .await?
             .ok_or(AppError::NotFound)?;
+        if task.status != TaskStatus::Parked {
+            return Ok(false);
+        }
+        if task.harness == Harness::Codex {
+            // Do not fall back to a fresh session if an old attempt has no lineage.
+            // SessionStart stores the attempt id before it records lineage, so a
+            // restart between those writes can recover from the parked attempt.
+            let sessions = self.deps.store.provider_sessions(task_id).await?;
+            let latest = sessions
+                .last()
+                .filter(|entry| entry.harness == Harness::Codex);
+            let run = self.deps.store.attempts(task_id).await?.pop();
+            match run.and_then(|run| run.provider_session_id) {
+                Some(id) if latest.is_none_or(|entry| entry.session_id != id) => {
+                    self.record_lineage(&task, Harness::Codex, &id, "native")
+                        .await?;
+                }
+                None if latest.is_none() => {
+                    return Err(AppError::Conflict(
+                        "This parked Codex task has no recorded rollout to resume.".into(),
+                    ));
+                }
+                _ => {}
+            }
+        }
         let goal_unfinished = self.goal_unfinished_of(&task).await;
         let rest = task
             .activity

@@ -95,8 +95,7 @@ impl App {
         if !runtime.hub.has_output()
             && self.deps.store.live_attempt(&task.id).await?.is_none()
             && let Some(last) = self.deps.store.attempts(&task.id).await?.pop()
-            && let Some((cols, rows, screen)) =
-                crate::supervisor::read_final_screen(std::path::Path::new(&last.run_dir))
+            && let Some((cols, rows, screen)) = self.ended_screen(&last, &task).await
         {
             runtime.hub.reset(1, &screen, cols, rows);
         }
@@ -126,7 +125,7 @@ impl App {
                     if runtime.hub.size() != before && runtime.has_run().await {
                         runtime.hub.settle(watch, since, REDRAW_WAIT).await;
                     }
-                } else {
+                } else if task.status != yulius_domain::task::TaskStatus::Parked {
                     // No run yet (queued, about to start): the screen takes the size now, so the
                     // first state already says it and the run spawns at it (SPEC-050 TRM-101; a
                     // viewer of a task just created saw 120x40 first on the fast VM).

@@ -2261,3 +2261,173 @@ fn a_key_during_submit_context_lookup_keeps_its_mark() -> TestResult {
             Ok(())
         })
 }
+
+/// Quartio-v2 #325 stopped after five of seven steps with its pull request red.
+#[tokio::test]
+async fn codex_goal_stop_continues_open_work_and_flags_only_at_the_bound() -> TestResult {
+    use yulius_app::ports::github::{ChecksState, GhPull};
+    use yulius_domain::delivery::DeliveryStage;
+    let f = fixture_of(
+        None,
+        |t| t.mode = yulius_app::model::TaskMode::Goal,
+        Agent::Codex,
+    )
+    .await?;
+    let ctx = f.h.app.agent_context(TOKEN).await?;
+    let steps: Vec<_> = (1..=7)
+        .map(|n| {
+            json!({"title":format!("Step {n}"),
+        "status": if n <= 5 {"done"} else if n == 6 {"in_progress"} else {"pending"}})
+        })
+        .collect();
+    f.h.app
+        .tool_steps_set(&ctx, &json!({"steps":steps}))
+        .await?;
+    install_app(&f).await?;
+    f.h.github
+        .pulls
+        .lock()
+        .map_err(|_| "pull fixture")?
+        .push(GhPull {
+            number: 1461,
+            html_url: "https://github.test/acme/fixture/pull/1461".into(),
+            title: "Compatibility".into(),
+            state: "open".into(),
+            merged: false,
+            base: "dev".into(),
+            head: "feat/1-x".into(),
+            head_sha: "abc123".into(),
+            mergeable: Some(true),
+            behind: false,
+            from_fork: false,
+            merge_commit_sha: None,
+        });
+    f.h.app
+        .deps
+        .store
+        .transition_delivery(
+            &DeliveryStage::None,
+            &yulius_app::delivery::DeliveryRecord {
+                task_id: f.task.clone(),
+                stage: DeliveryStage::PrOpen,
+                pr_number: Some(1461),
+                updated_at: f.h.app.now(),
+            },
+        )
+        .await?;
+    for round in 0..=yulius_app::hooks::MAX_GATE_BLOCKS {
+        f.h.github.set_checks(
+            "abc123",
+            if round == 1 {
+                ChecksState::Success
+            } else {
+                ChecksState::Failure
+            },
+        );
+        if round == 2 {
+            for n in [6, 7] {
+                f.h.app
+                    .tool_step_update(&ctx, &json!({"ordinal":n, "status":"done"}))
+                    .await?;
+            }
+        }
+        f.h.clock.0.fetch_add(1, Ordering::SeqCst);
+        let reply = call(
+            &f.h.internal,
+            Method::POST,
+            "/hooks/codex/Stop",
+            Some(json!({"hook_event_name":"Stop","stop_hook_active": round > 0})),
+            &agent(),
+        )
+        .await?;
+        assert_eq!(reply.status, 200, "{}", reply.body);
+        if round < yulius_app::hooks::MAX_GATE_BLOCKS {
+            assert_eq!(reply.body["decision"], "block", "{}", reply.body);
+            let reason = reply.body["reason"].as_str().ok_or("continue prompt")?;
+            assert_eq!(reason.contains("unfinished steps"), round <= 1, "{reason}");
+            assert_eq!(reason.contains("failing checks"), round != 1, "{reason}");
+            assert_ne!(activity(&f).await?, Some(Activity::NeedsAttention));
+        } else {
+            assert!(reply.body["decision"].is_null());
+            assert_eq!(activity(&f).await?, Some(Activity::NeedsAttention));
+        }
+    }
+    // A task parked by an older server: no Git overview has populated the
+    // cache and its last activity reads Done. The failing open head still counts.
+    f.h.app
+        .deps
+        .store
+        .transition_task(
+            &f.task,
+            None,
+            TaskStatus::Parked,
+            Some(Activity::Done),
+            f.h.app.now(),
+        )
+        .await?;
+    let brief =
+        f.h.app
+            .tool_task_get(&ctx.caller(), &json!({"task_id": f.task.as_str()}))
+            .await?;
+    assert_eq!(brief["shows"], "needs_you", "{brief}");
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_codex_goal_needing_a_person_keeps_the_question_at_stop() -> TestResult {
+    let f = fixture_of(
+        None,
+        |t| t.mode = yulius_app::model::TaskMode::Goal,
+        Agent::Codex,
+    )
+    .await?;
+    let ctx = f.h.app.agent_context(TOKEN).await?;
+    f.h.app
+        .tool_steps_set(&ctx, &json!({"steps": ["Finish after the decision"]}))
+        .await?;
+    // Even the ordinary untracked-work nudge must yield to the owner's question.
+    std::fs::write(
+        f.worktree.join("README.md"),
+        "Awaiting the compatibility target",
+    )?;
+    f.h.app
+        .deps
+        .store
+        .set_task_needs_you(
+            &f.task,
+            Some(&yulius_app::needs_you::NeedsYouRecord {
+                action: "Choose the compatibility target".into(),
+                happened: None,
+                problem: None,
+                decision: true,
+                link: None,
+                at: f.h.app.now().0,
+                cause: None,
+                named: Default::default(),
+            }),
+            f.h.app.now(),
+        )
+        .await?;
+    let reply = call(
+        &f.h.internal,
+        Method::POST,
+        "/hooks/codex/Stop",
+        Some(json!({"hook_event_name":"Stop"})),
+        &agent(),
+    )
+    .await?;
+    assert_eq!(reply.status, 200);
+    assert!(reply.body["decision"].is_null(), "{}", reply.body);
+    assert!(f.h.app.deps.store.task_needs_you(&f.task).await?.is_some());
+    assert_eq!(
+        f.h.app
+            .deps
+            .store
+            .task(&f.task)
+            .await?
+            .ok_or("task")?
+            .gate_blocks,
+        0
+    );
+    Ok(())
+}

@@ -1012,10 +1012,9 @@ fn a_loss_recorded_while_the_reader_holds_the_park_still_parks() -> TestResult {
     Ok(())
 }
 
-/// PRK-004 (review round 3, W1): a parked task's summary says what its idle run's did: a spec
-/// that does not say done keeps it "Your turn" on the web as on the server.
+/// A declared unfinished spec keeps the idle session live.
 #[test]
-fn a_parked_tasks_summary_keeps_its_unfinished_work() -> TestResult {
+fn an_unfinished_spec_keeps_its_session() -> TestResult {
     let (_dir, data) = data_dir()?;
     let rt = runtime()?;
     rt.block_on(async {
@@ -1029,10 +1028,12 @@ fn a_parked_tasks_summary_keeps_its_unfinished_work() -> TestResult {
             .await?
             .ok_or("task")?;
         assert!(app.task_summary(&before).await?.spec_unfinished);
-        parked(&app, &id).await?;
+        past_the_grace(&app, &id).await?;
+        assert_eq!(app.park_idle_sessions_now().await, 0);
         let after = TaskStore::task(app.deps.store.as_ref(), &id)
             .await?
             .ok_or("task")?;
+        assert_eq!(after.status, TaskStatus::Running);
         assert!(app.task_summary(&after).await?.spec_unfinished);
         Ok::<_, Error>(())
     })?;
@@ -1040,11 +1041,9 @@ fn a_parked_tasks_summary_keeps_its_unfinished_work() -> TestResult {
     Ok(())
 }
 
-/// PRK-004 (review round 4, G1): a goal task whose goal failed is parked "Your turn", and stays
-/// so for a server started afresh, which has no session that knew the goal: the parked run's
-/// directory keeps it.
+/// A failed native goal has unfinished work even without a plan or pull request.
 #[test]
-fn a_parked_unfinished_goal_stays_your_turn_across_a_restart() -> TestResult {
+fn an_unfinished_goal_keeps_its_session() -> TestResult {
     let (_dir, data) = data_dir()?;
     let rt = runtime()?;
     rt.block_on(async {
@@ -1081,24 +1080,9 @@ fn a_parked_unfinished_goal_stays_your_turn_across_a_restart() -> TestResult {
             },
         )
         .await?;
-        parked(&app, &id).await?;
-        assert!(summary(app.clone(), id.clone()).await?.goal_unfinished);
-        // A server started afresh on the same data: no runtime knows the goal.
-        let (fresh, _) = start_with(
-            &data,
-            &fake,
-            agent,
-            0,
-            Arc::new(ScriptedUsage::default()),
-            |config| config.park_after_ms = 1,
-        )
-        .await?;
-        let shown = summary(fresh.clone(), id.clone()).await?;
-        assert_eq!(shown.status, "parked");
-        assert!(
-            shown.goal_unfinished,
-            "the parked run's directory keeps the goal's state"
-        );
+        past_the_grace(&app, &id).await?;
+        assert_eq!(app.park_idle_sessions_now().await, 0);
+        assert_eq!(summary(app.clone(), id.clone()).await?.status, "running");
         Ok::<_, Error>(())
     })?;
     rt.shutdown_timeout(Duration::from_secs(5));

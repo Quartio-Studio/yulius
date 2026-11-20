@@ -2033,6 +2033,15 @@ off) counted from `state_at`: the list shows it under Needs you or Done, no turn
 background shell, subagent or dynamic workflow, does not wait in `yulius wait`, has no merge
 armed or pull request news due, no held prompt, no request in the sandbox browser, no pause, no
 possible draft or keystroke within the grace period, and is not an onboarding task.
+Parking also requires that no step, spec, goal or failing PR check needs the session.
+At a Codex goal Stop, the discipline gate checks the task's steps and its open PR head.
+It returns the continuation in the hook response and raises attention after three consecutive
+blocks. An explicit request for a person or an autonomous delivery wait keeps control.
+The supervisor saves the redacted screen with the elapsed idle time before requesting shutdown.
+The web terminal and `task_screen` use that snapshot once the task parks. A parked Codex
+run has a recorded rollout ID, which its next message resumes.
+[Decision 0396](decisions/0396-capture-the-parked-terminal-before-shutdown.md).
+
 `park_task_now` asks again under the launch lock, sets the run's end intent `Park` and ends the
 session as a close does (graceful shutdown, then the escalation). The run's end, by its exit or
 its loss, makes the task `parked` with its activity (`settle_parked`) and audits `task.parked`.

@@ -989,16 +989,46 @@ impl App {
         Ok(HookReply::Output(HookOutput::default()))
     }
 
-    /// The discipline gate's reasons at a turn end (the spec gate).
+    /// A person, a held prompt or a pending delivery event owns the next move.
+    async fn codex_goal_waits(&self, task: &TaskRecord) -> AppResult<bool> {
+        if task.harness != Harness::Codex || task.mode != TaskMode::Goal {
+            return Ok(false);
+        }
+        Ok(self.deps.store.task_needs_you(&task.id).await?.is_some()
+            || self
+                .browser_tab_requests(&task.sandbox_id)
+                .await
+                .contains(task.id.as_str())
+            || self.deps.store.pending_hold(&task.id).await?.is_some()
+            || self.is_paused(task).await
+            || self.pr_news_due(task).await
+            || self.background_or_wait_now(&task.id).await == Some(true))
+    }
+
+    /// Why the discipline gate continues this turn on its present or next subscription.
     async fn stop_reasons(&self, task: &TaskRecord) -> AppResult<Vec<String>> {
-        Ok(self.spec_gate(task).await?.into_iter().collect())
+        let mut reasons: Vec<_> = self.spec_gate(task).await?.into_iter().collect();
+        if task.harness == Harness::Codex && task.mode == TaskMode::Goal {
+            if crate::sandboxes::plan_open(&self.deps.store.steps(&task.id).await?) {
+                reasons.push(
+                    "Continue the goal by completing the unfinished steps in your plan.".into(),
+                );
+            }
+            if self.task_checks_failing(task).await {
+                reasons.push(
+                    "Continue the goal by repairing the failing checks on your pull request."
+                        .into(),
+                );
+            }
+        }
+        Ok(reasons)
     }
 
     /// The prompt for a session resumed on another subscription after a held turn: the gate's
     /// reasons when the gate would have kept the agent working, else none (a goal-mode session
     /// gets its goal again when it launches).
     pub(crate) async fn stop_continuation(&self, task: &TaskRecord) -> Option<String> {
-        if task.gate_blocks >= MAX_GATE_BLOCKS {
+        if task.gate_blocks >= MAX_GATE_BLOCKS || self.codex_goal_waits(task).await.ok()? {
             return None;
         }
         let reasons = self.stop_reasons(task).await.ok()?;
@@ -1051,7 +1081,8 @@ impl App {
         if let Err(err) = self.sync_steps_from_spec(task).await {
             tracing::warn!(error = %err, task = %task.id, "step sync from the spec failed");
         }
-        let reasons = if failed {
+        let goal_waits = self.codex_goal_waits(task).await?;
+        let reasons = if failed || goal_waits {
             Vec::new()
         } else {
             self.stop_reasons(task).await?
@@ -1250,7 +1281,7 @@ impl App {
 
         // A clean turn end on the same subscription may carry one gentle step nudge (STP-008).
         // It is not a gate block: it is given once and never escalates to "needs attention".
-        if reasons.is_empty() && stays && !failed && !background {
+        if reasons.is_empty() && stays && !failed && !background && !goal_waits {
             match self.take_turn_end_nudge(task).await {
                 Ok(Some(text)) => return Ok(HookReply::Output(HookOutput::block(text))),
                 Ok(None) => {}

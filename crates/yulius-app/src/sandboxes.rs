@@ -31,7 +31,7 @@ impl ObservedPulls {
 
     /// The last observed pull request of a task: `Some(None)` when the overview listed the task
     /// without one, `None` when its sandbox was not read since the server started.
-    fn get(&self, sandbox: &SandboxId, task: &TaskId) -> Option<Option<PullSignal>> {
+    pub(crate) fn get(&self, sandbox: &SandboxId, task: &TaskId) -> Option<Option<PullSignal>> {
         let map = self.0.lock().ok()?;
         map.get(sandbox).map(|pulls| pulls.get(task).copied())
     }
@@ -151,11 +151,24 @@ impl App {
             let pull = match self.observed_pulls.get(&task.sandbox_id, &task.id) {
                 Some(observed) => observed,
                 // Not read since the server started: a merge recorded earlier is still known.
-                None => store
-                    .delivery(&task.id)
-                    .await?
-                    .filter(|record| crate::delivery::past_merge(&record.stage))
-                    .map(|_| PullSignal::Merged),
+                None => match store.delivery(&task.id).await? {
+                    Some(record) if crate::delivery::past_merge(&record.stage) => {
+                        Some(PullSignal::Merged)
+                    }
+                    Some(record)
+                        if task.status == TaskStatus::Parked
+                            && record.stage == yulius_domain::delivery::DeliveryStage::PrOpen =>
+                    {
+                        match record.pr_number {
+                            Some(number) => self
+                                .recorded_pull_signal(task, number)
+                                .await
+                                .unwrap_or(Some(PullSignal::InReview)),
+                            None => Some(PullSignal::InReview),
+                        }
+                    }
+                    _ => None,
+                },
             };
             let plan_open = plan_open(&store.steps(&task.id).await?);
             (pull, plan_open, self.spec_unfinished(&task.id).await)

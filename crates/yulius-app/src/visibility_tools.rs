@@ -10,7 +10,6 @@
 //! - nothing is changed: the checkout is read as it is (no fetch); the answer says when it was
 //!   last fetched.
 
-use std::path::Path;
 use std::sync::Arc;
 
 use serde_json::{Value, json};
@@ -76,9 +75,8 @@ impl App {
             (String::new(), "starting")
         } else if live.is_some() && runtime.hub.has_output() {
             (runtime.hub.screen_text(), "live")
-        } else if let Some((cols, rows, bytes)) = last
-            .as_ref()
-            .and_then(|run| crate::supervisor::read_final_screen(Path::new(&run.run_dir)))
+        } else if let Some(run) = &last
+            && let Some((cols, rows, bytes)) = self.ended_screen(run, &task).await
         {
             // Redacted again: the saved screen is read outside the terminal's own redactor.
             let scrub = crate::vault::TerminalScrub::default();

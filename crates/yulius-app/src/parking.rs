@@ -13,6 +13,7 @@
 //! - every park is audited `task.parked` by `yulius`, without the task's words.
 
 use std::collections::{HashMap, HashSet};
+use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
@@ -21,7 +22,7 @@ use yulius_domain::ids::SandboxId;
 use yulius_domain::task::{Activity, TaskGroup, TaskStatus};
 
 use crate::context::App;
-use crate::model::{TaskOrigin, TaskRecord};
+use crate::model::{AttemptRecord, TaskOrigin, TaskRecord};
 
 /// The grace period an idle session keeps before it is parked unless the unit says otherwise
 /// (`YULIUS_PARK_AFTER_MINUTES`): 30 minutes.
@@ -61,6 +62,8 @@ pub struct ParkFacts {
     pub activity: Option<Activity>,
     /// The list's group.
     pub group: TaskGroup,
+    /// Its plan, spec, goal or failing pull request still needs work.
+    pub unfinished: bool,
     /// A turn of its session is known to run.
     pub turn: bool,
     /// Background shells or subagents it left, or dynamic workflows not ended: it wakes by
@@ -89,6 +92,7 @@ impl ParkFacts {
             && self.status == TaskStatus::Running
             && self.activity.is_some_and(Activity::is_idle)
             && matches!(self.group, TaskGroup::NeedsYou | TaskGroup::Done)
+            && !self.unfinished
             && !self.turn
             && !self.background
             && !self.yulius
@@ -152,25 +156,24 @@ impl App {
 
     /// [`ParkFacts::parkable`] for `task` as stored now: what [`App::park_task_now`] asks again
     /// under the launch lock.
-    pub(crate) async fn parkable_now(&self, task: &TaskRecord, rule: ParkRule) -> bool {
+    pub(crate) async fn parkable_now(&self, task: &TaskRecord, rule: ParkRule) -> Option<i64> {
         let requested = self.park_requests(&task.sandbox_id).await;
-        match rule {
-            ParkRule::Grace => self
-                .park_facts(task, &requested, self.config.park_after_ms)
-                .await
-                .parkable(),
-            ParkRule::Digest(after_ms) => {
-                let asks = self
-                    .deps
+        let threshold = match rule {
+            ParkRule::Grace => self.config.park_after_ms,
+            ParkRule::Digest(ms) => ms,
+        };
+        let facts = self.park_facts(task, &requested, threshold).await;
+        let park = match rule {
+            ParkRule::Grace => facts.parkable(),
+            ParkRule::Digest(_) => facts.digest_parkable(
+                self.deps
                     .store
                     .task_needs_you(&task.id)
                     .await
-                    .map_or(true, |asked| asked.is_some());
-                self.park_facts(task, &requested, after_ms)
-                    .await
-                    .digest_parkable(asks)
-            }
-        }
+                    .map_or(true, |asked| asked.is_some()),
+            ),
+        };
+        park.then_some(facts.quiet_ms)
     }
 
     async fn park_requests(&self, sandbox: &SandboxId) -> Requests {
@@ -211,16 +214,17 @@ impl App {
                     || !runtime.with_workflows(|workflows| workflows.runs().is_empty())
             }
         };
-        let group = self
-            .task_group(task, &requested.all)
-            .await
-            .unwrap_or(TaskGroup::Working);
+        let facts = self.task_attention_facts(task, &requested.all).await.ok();
+        let group = facts
+            .as_ref()
+            .map_or(TaskGroup::Working, |facts| facts.group());
         ParkFacts {
             park_after_ms,
             quiet_ms,
             status: task.status,
             activity: task.activity,
             group,
+            unfinished: facts.is_none_or(|facts| facts.unfinished_work()),
             turn: runtime
                 .as_ref()
                 .is_some_and(|runtime| runtime.turn_in_progress()),
@@ -239,6 +243,117 @@ impl App {
             keyboard,
             onboarding: task.origin == TaskOrigin::Onboarding,
         }
+    }
+}
+
+const PARKED_SCREEN: &str = "parked-screen";
+
+/// Formats a parking notice below the last occupied terminal row. Old snapshots
+/// may still contain the Codex shutdown block, beginning at a physical row.
+fn with_park_notice(
+    cols: u16,
+    rows: u16,
+    bytes: &[u8],
+    quiet_ms: Option<i64>,
+    legacy_codex: bool,
+) -> (u16, u16, Vec<u8>) {
+    let mut parser = vt100::Parser::new(rows.max(1), cols.max(1), 0);
+    parser.process(bytes);
+    let lines: Vec<_> = parser.screen().rows(0, cols).collect();
+    let footer = legacy_codex
+        .then(|| {
+            let start = lines
+                .iter()
+                .rposition(|line| line.starts_with("Token usage:"))?;
+            let tail = lines[start..].concat();
+            (tail.contains("To continue this session, run:") && tail.contains("codex resume "))
+                .then_some(start)
+        })
+        .flatten();
+    if let Some(row) = footer {
+        parser.process(format!("\x1b[{};1H\x1b[J", row + 1).as_bytes());
+    }
+    let kept = &lines[..footer.unwrap_or(lines.len())];
+    let last = kept.iter().rposition(|line| !line.trim_end().is_empty());
+    let duration = quiet_ms
+        .map(|ms| format!("{} ", yulius_domain::ci::format_duration(ms)))
+        .unwrap_or_default();
+    let notice = format!(
+        "Yulius parked this session after {duration}idle since its turn ended. Write to resume."
+    );
+    let next = last.map_or(1, |row| row + 2);
+    // A full TUI needs another row. Keep the first row as well as the last
+    // when the notice wraps on a narrow terminal.
+    let needed = next - 1 + notice.len().div_ceil(usize::from(cols.max(1)));
+    let height = rows.max(u16::try_from(needed).unwrap_or(u16::MAX));
+    parser.screen_mut().set_size(height, cols.max(1));
+    parser.process(format!("\x1b[{next};1H\x1b[0m{notice}").as_bytes());
+    (cols, height, parser.screen().contents_formatted())
+}
+
+pub(crate) fn save_parked_screen(
+    hub: &crate::hub::Hub,
+    dir: &Path,
+    quiet_ms: i64,
+) -> std::io::Result<()> {
+    let (bytes, (cols, rows)) = hub.formatted_screen();
+    let (cols, rows, screen) = with_park_notice(cols, rows, &bytes, Some(quiet_ms), false);
+    let mut record = format!("{cols} {rows}\n").into_bytes();
+    record.extend(screen);
+    crate::supervisor::write_private_file(&dir.join(PARKED_SCREEN), &record)
+}
+
+pub(crate) fn parked_snapshot(run: &AttemptRecord) -> Option<(u16, u16, Vec<u8>)> {
+    crate::supervisor::read_saved_screen(&Path::new(&run.run_dir).join(PARKED_SCREEN))
+}
+
+impl App {
+    /// The visible final screen. Old parked attempts have only the ordinary final
+    /// screen and the state span that ended when the idle task parked.
+    pub(crate) async fn ended_screen(
+        &self,
+        run: &AttemptRecord,
+        task: &TaskRecord,
+    ) -> Option<(u16, u16, Vec<u8>)> {
+        let dir = Path::new(&run.run_dir);
+        if task.status != TaskStatus::Parked && run.exit_reason.as_deref() != Some("parked") {
+            return crate::supervisor::read_final_screen(dir);
+        }
+        if let Some(screen) = parked_snapshot(run) {
+            return Some(screen);
+        }
+        let quiet_ms = self
+            .deps
+            .store
+            .subject_spans(
+                &task.sandbox_id,
+                yulius_domain::stages::SubjectKind::Task,
+                task.id.as_str(),
+                32,
+            )
+            .await
+            .ok()
+            .and_then(|spans| {
+                spans
+                    .iter()
+                    .rev()
+                    .find(|span| {
+                        span.kind == "state"
+                            && matches!(span.name.as_str(), "done" | "idle")
+                            && span.ended_at == run.ended_at
+                            && span.outcome.as_deref() == Some("parked")
+                    })
+                    .and_then(crate::stages::SpanRecord::duration_ms)
+            });
+        let (cols, rows, bytes) =
+            crate::supervisor::read_final_screen(dir).unwrap_or((80, 24, Vec::new()));
+        Some(with_park_notice(
+            cols,
+            rows,
+            &bytes,
+            quiet_ms,
+            run.harness == yulius_domain::harness::Harness::Codex,
+        ))
     }
 }
 
@@ -348,6 +463,19 @@ mod tests {
         );
     }
 
+    #[test]
+    fn parking_preserves_every_occupied_row_and_adds_one_timed_notice() {
+        let (cols, rows, bytes) =
+            with_park_notice(72, 2, b"first row\r\nlast row", Some(1_800_000), false);
+        let hub = crate::hub::Hub::new(cols, rows);
+        hub.reset(1, &bytes, cols, rows);
+        let shown = hub.screen_text();
+        assert!(shown.starts_with("first row\nlast row\n"), "{shown}");
+        assert_eq!(shown.matches("Yulius parked").count(), 1);
+        assert!(shown.contains("30 min 0 s idle since its turn ended"));
+        assert!(shown.trim_end().ends_with("Write to resume."));
+    }
+
     fn idle() -> ParkFacts {
         ParkFacts {
             park_after_ms: 60_000,
@@ -355,6 +483,7 @@ mod tests {
             status: TaskStatus::Running,
             activity: Some(Activity::Waiting),
             group: TaskGroup::NeedsYou,
+            unfinished: false,
             turn: false,
             background: false,
             yulius: false,

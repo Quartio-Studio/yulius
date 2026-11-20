@@ -31,6 +31,7 @@ test('a parked task reads as it did, marked parked, and resumes from its menu (u
     const acts = taskActions(parked, 'write', null, 'me');
     return {
       done: info(parked),
+      unfinishedDone: info({ ...asked, activity: 'done' }),
       yourTurn: info(asked),
       request: info(withRequest),
       stale: info(stale),
@@ -42,7 +43,7 @@ test('a parked task reads as it did, marked parked, and resumes from its menu (u
       neverWorking: groups.every((group) => group === 'needs' || group === 'done'),
       // Its idle run's facts, as the server sends them for a parked task (review round 3, W1).
       specLeft: info({ ...merged, spec_unfinished: true }, { number: 7, state: 'open', checks: 'success' }),
-      goalLeft: info({ ...merged, goal_unfinished: true }),
+      goalLeft: info({ ...merged, goal_unfinished: true }, open('success')),
       line: activityLine(parked),
       live: isLive('parked'),
       actions: { continue: acts.continue, stop: acts.stop, archive: acts.archive, delete: acts.delete, move: acts.move },
@@ -54,6 +55,7 @@ test('a parked task reads as it did, marked parked, and resumes from its menu (u
   });
   expect(read).toEqual({
     done: ['Done · parked', 'done'],
+    unfinishedDone: ['Your turn · parked', 'needs'],
     yourTurn: ['Your turn · parked', 'needs'],
     request: ['Needs you: Choose the colour · parked', 'needs'],
     stale: ['Done · parked', 'done'],

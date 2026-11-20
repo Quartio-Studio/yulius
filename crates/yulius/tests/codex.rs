@@ -1822,3 +1822,155 @@ fn the_capacity_view_names_providers_and_resumes_with_codex_too() -> TestResult 
     rt.shutdown_timeout(Duration::from_secs(5));
     Ok(())
 }
+
+/// The terminal in #517 was erased by the CLI as it exited. Writing to that parked
+/// task continues the rollout that produced its answer.
+#[test]
+fn parked_codex_keeps_the_answer_and_resumes_the_rollout_with_the_next_prompt() -> TestResult {
+    use crate::first_message::{hooked, start_with};
+    use crate::pool_supervision::{ScriptedUsage, seed};
+    use crate::task_message::superagent;
+    use yulius_domain::task::Activity;
+    let fake = locate_fake_agent().ok_or("fake-agent is not built")?;
+    let (_dir, data) = temp()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let agent = FakeAgentOptions {
+            answers_first_message: true,
+            resume_prompts: true,
+            interrupts: true,
+            ..hooked()
+        };
+        let (app, _) = start_with(
+            &data,
+            &fake,
+            agent.clone(),
+            0,
+            Arc::new(ScriptedUsage::default()),
+            |config| config.park_after_ms = 1,
+        )
+        .await?;
+        let (sandbox, user) = seed(&app, &data, &["claude-only"]).await?;
+        add_codex_account(&app, "a-codex", &codex_auth("2026-11-01T10:00:00Z")).await?;
+        let id = new_codex_task(&app, &sandbox, &user, "First turn").await?;
+        wait_for(
+            "the answered Codex turn",
+            Duration::from_secs(30),
+            || async {
+                screen_contains(&app, &id, "ECHO: First turn").await
+                    && task(&app, &id)
+                        .await
+                        .is_ok_and(|task| task.activity == Some(Activity::Waiting))
+            },
+        )
+        .await?;
+        wait_for("parking", Duration::from_secs(30), || async {
+            app.park_idle_sessions_now().await;
+            task(&app, &id)
+                .await
+                .is_ok_and(|task| task.status == TaskStatus::Parked)
+        })
+        .await?;
+        let parked_screen = app.runtime(&id).hub.screen_text();
+        assert!(
+            parked_screen.contains("ECHO: First turn"),
+            "{parked_screen}"
+        );
+        assert!(!parked_screen.contains("codex resume"), "{parked_screen}");
+        assert_eq!(
+            parked_screen.matches("Yulius parked").count(),
+            1,
+            "{parked_screen}"
+        );
+        let first = app
+            .deps
+            .store
+            .attempts(&id)
+            .await?
+            .pop()
+            .ok_or("first run")?;
+        let session = first.provider_session_id.ok_or("rollout id")?;
+        // A restart between the attempt's ID write and the lineage write.
+        rusqlite::Connection::open(data.join("yulius.db"))?.execute(
+            "DELETE FROM provider_sessions WHERE task_id = ?1",
+            [id.as_str()],
+        )?;
+        // A new server has only the saved screen and the recorded attempt.
+        let (app, _) = start_with(
+            &data,
+            &fake,
+            agent,
+            0,
+            Arc::new(ScriptedUsage::default()),
+            |_| {},
+        )
+        .await?;
+        let ctx = admin_ctx(&app, &user).await?;
+        let terminal = app.terminal_open(&ctx, id.as_str(), Some((60, 16))).await?;
+        assert_eq!(app.runtime(&id).hub.screen_text(), parked_screen);
+        drop(terminal);
+        let remote = yulius_app::remote::RemoteCaller {
+            ctx,
+            token_id: "screen-test".into(),
+            scope: yulius_domain::permission::TokenScope::Read,
+            login: "admin".into(),
+            superagent: None,
+        };
+        let request = serde_json::from_value(serde_json::json!({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {
+                "name": "task_screen",
+                "arguments": {"project": "acme/pool", "task_id": id.as_str()},
+                "_meta": {"yulius/structured": true}
+            }
+        }))?;
+        let result = app
+            .remote_mcp_handle(&remote, request)
+            .await
+            .and_then(|reply| reply.result)
+            .ok_or("task_screen")?;
+        let shown = support::tool_text(&result);
+        assert_eq!(shown["screen"], parked_screen.trim_end());
+        assert_eq!(shown["last_run"]["exit_reason"], "parked");
+        let caller = superagent(&sandbox, &user, "admin");
+        let prompt = "Second turn: answer with an echo";
+        let answer = app
+            .tool_task_message(
+                &caller,
+                &serde_json::json!({"task_id":id.as_str(), "text": prompt}),
+            )
+            .await?;
+        assert_eq!(answer["delivered"], "resumed");
+        wait_for(
+            "the answer in the resumed rollout",
+            Duration::from_secs(30),
+            || screen_contains(&app, &id, "Second turn: answer with an echo"),
+        )
+        .await?;
+        let second = app
+            .deps
+            .store
+            .live_attempt(&id)
+            .await?
+            .ok_or("resumed run")?;
+        assert_eq!(second.launch_kind, LaunchKind::Resume);
+        assert_eq!(
+            second.provider_session_id.as_deref(),
+            Some(session.as_str())
+        );
+        let home = data
+            .join("sandboxes")
+            .join(sandbox.as_str())
+            .join("codex/a-codex/sessions");
+        let rollout = app
+            .deps
+            .harness
+            .find_codex_rollout(&home, &session)?
+            .ok_or("rollout")?;
+        let history = std::fs::read_to_string(rollout)?;
+        assert!(history.contains("First turn") && history.contains(prompt));
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
