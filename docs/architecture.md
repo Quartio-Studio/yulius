@@ -57,8 +57,9 @@ flowchart LR
 ## Codex
 
 A Codex task runs `codex --no-daemon` in its worktree with `CODEX_HOME=<sandbox>/codex/<account>`,
-on its own model and effort or else `-m gpt-6.2-astra -c model_reasoning_effort="high"` (SPEC-511,
-[decision 0366](decisions/0366-a-codex-task-runs-gpt-6-2-astra-at-high-effort-by-default.md)).
+using its chosen model or `-m gpt-6.2-astra`. Each new or resumed process receives the task's
+chosen effort or the model default. Astra 6.2 gets `-c model_reasoning_effort="xhigh"` and other
+Codex models get `high`. [Decision 0398](decisions/0398-astra-6-2-inherits-extra-high-effort.md)
 For a ChatGPT Pro 500 sign-in, the launch planner writes `service_tier = "ultrafast"` as the
 home default ([decision 0375](decisions/0375-codex-selects-ultrafast-for-pro-500.md)).
 The supervisor writes the home's `auth.json` (the account's sealed credential), `config.toml` and

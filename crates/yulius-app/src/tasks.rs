@@ -757,12 +757,10 @@ impl App {
             .map(|(_, newest)| newest);
         let cli_moves_stopped = moves_to.is_some_and(|to| self.claude_moves_stopped_for(to));
         let cli_moves_to = moves_to.map(|newest| newest.to_string());
-        // A Codex task without a model or effort runs GPT-6.2 Astra at high effort (SPEC-511
-        // CXD-002), an Antigravity one Gemini 4 Neon at high effort (SPEC-505 AGY-002, SPEC-519
-        // NEO-002).
+        // The task's settings for its next process start. Observed models live in metrics.
         use yulius_domain::harness::{
-            DEFAULT_ANTIGRAVITY_EFFORT, DEFAULT_ANTIGRAVITY_MODEL, DEFAULT_CODEX_EFFORT,
-            DEFAULT_CODEX_MODEL, Harness,
+            DEFAULT_ANTIGRAVITY_EFFORT, DEFAULT_ANTIGRAVITY_MODEL, DEFAULT_CODEX_MODEL, Harness,
+            codex_effort,
         };
         let model = task.model.clone().unwrap_or_else(|| match task.harness {
             Harness::Codex => DEFAULT_CODEX_MODEL.to_owned(),
@@ -770,10 +768,7 @@ impl App {
             Harness::ClaudeCode => DEFAULT_CLAUDE_MODEL.to_owned(),
         });
         let effort = match task.harness {
-            Harness::Codex => task
-                .effort
-                .clone()
-                .or_else(|| Some(DEFAULT_CODEX_EFFORT.to_owned())),
+            Harness::Codex => Some(codex_effort(&model, task.effort.as_deref()).to_owned()),
             Harness::Antigravity => task
                 .effort
                 .clone()
@@ -831,6 +826,7 @@ impl App {
             model_default: task.model.is_none(),
             fallback_model,
             effort,
+            effort_default: task.effort.is_none(),
             cli_version,
             cli_moves_to,
             cli_moves_stopped,

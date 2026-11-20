@@ -13,6 +13,7 @@ failOnPageErrors();
 type Mocked = {
   __yuliusMock: {
     tasks: { harness: string; model: string; effort: string; number: number }[];
+    lastTaskCreate: { effort?: string };
     accounts: { label: string; provider: string; status: string }[];
     automations: { name: string; harness: string }[];
     release(): void;
@@ -102,35 +103,42 @@ test('a Codex subscription is added by importing an auth.json, pasted or from a 
   await expect(browser.locator('.toast-ok .toast-msg:has-text("Codex laptop is signed in again")')).toBeVisible();
 });
 
-// SPEC-511 CXD-003: the Codex entry names its default, GPT-6.2 Astra at high effort, which a task
+// SPEC-511 CXD-003: the Codex entry names its default, GPT-6.2 Astra at extra high effort, which a task
 // started with it runs.
-test('choosing Codex in the composer starts a Codex task', async ({ app, browser, screen }) => {
-  await app.open(mock('/s/studio'));
-  // A Codex task needs a Codex subscription (SPEC-246 CLA-002, SPEC-503).
-  await browser.evaluate(() => (window as unknown as Mocked).__yuliusMock.accounts.push({ id: 'acc_codex', provider: 'openai', label: 'Codex #1', status: 'ok' } as never));
-  await screen.getByRole('button', /^Model:/).click();
-  await expect(screen.getByRole('menuitemradio', /^Codex/)).toContainText('GPT-6.2 Astra at high effort by default');
-  await screen.getByRole('menuitemradio', /^Codex/).click();
-  await expect(screen.getByRole('button', 'Model: Codex default')).toBeVisible();
-  const prompt = screen.getByRole('textbox', 'Task prompt');
-  await prompt.fill('Add a health check');
-  await prompt.press('ControlOrMeta+Enter');
-  await expect(browser).toHaveURL(/#\/s\/studio\/t\/\d+$/);
-  const task = await browser.evaluate(() => {
-    const tasks = (window as unknown as Mocked).__yuliusMock.tasks;
-    const last = tasks[tasks.length - 1];
-    return { harness: last.harness, model: last.model, effort: last.effort, number: last.number };
+for (const control of [false, true]) {
+  test(control ? 'choosing High on Astra sends an explicit control effort' : 'choosing Codex in the composer starts a Codex task', async ({ app, browser, screen }) => {
+    await app.open(mock('/s/studio'));
+    // A Codex task needs a Codex subscription (SPEC-246 CLA-002, SPEC-503).
+    await browser.evaluate(() => (window as unknown as Mocked).__yuliusMock.accounts.push({ id: 'acc_codex', provider: 'openai', label: 'Codex #1', status: 'ok' } as never));
+    await screen.getByRole('button', /^Model:/).click();
+    await expect(screen.getByRole('menuitemradio', /^Codex/)).toContainText('GPT-6.2 Astra at extra high effort by default');
+    await screen.getByRole('menuitemradio', /^Codex/).click();
+    await expect(screen.getByRole('button', 'Model: Codex default')).toBeVisible();
+    await screen.getByRole('button', /^Effort:/).click();
+    await expect(screen.getByRole('menuitemradio', /^Default/)).toContainText('Extra high');
+    await screen.getByRole('menuitemradio', control ? /^High/ : /^Default/).click();
+    const prompt = screen.getByRole('textbox', 'Task prompt');
+    await prompt.fill('Add a health check');
+    await prompt.press('ControlOrMeta+Enter');
+    await expect(browser).toHaveURL(/#\/s\/studio\/t\/\d+$/);
+    const task = await browser.evaluate(() => {
+      const tasks = (window as unknown as Mocked).__yuliusMock.tasks;
+      const last = tasks[tasks.length - 1];
+      return { harness: last.harness, model: last.model, effort: last.effort, number: last.number };
+    });
+    const submitted = await browser.evaluate(() => (window as unknown as Mocked).__yuliusMock.lastTaskCreate);
+    expect(submitted.effort).toBe(control ? 'high' : undefined);
+    expect(task).toMatchObject({ harness: 'codex', model: 'gpt-6.2-astra', effort: control ? 'high' : 'xhigh' });
+    // Its details name the default as the server does (`model_default`).
+    await app.open(mock(`/s/studio/tasks/${task.number}`));
+    await firstShown(screen.getByRole('heading', { level: 2, name: 'Details' }));
+    const model = () => browser.evaluate(() => {
+      const dt = [...document.querySelectorAll('.ti-kv dt')].find((el) => (el as HTMLElement).innerText === 'Model');
+      return dt ? (dt.nextElementSibling as HTMLElement).innerText : null;
+    });
+    await expect.poll(model).toBe(control ? 'GPT-6.2 Astra (default) · High effort' : 'GPT-6.2 Astra (default) · Extra high effort (default)');
   });
-  expect(task).toMatchObject({ harness: 'codex', model: 'gpt-6.2-astra', effort: 'high' });
-  // Its details name the default as the server does (`model_default`).
-  await app.open(mock(`/s/studio/tasks/${task.number}`));
-  await firstShown(screen.getByRole('heading', { level: 2, name: 'Details' }));
-  const model = () => browser.evaluate(() => {
-    const dt = [...document.querySelectorAll('.ti-kv dt')].find((el) => (el as HTMLElement).innerText === 'Model');
-    return dt ? (dt.nextElementSibling as HTMLElement).innerText : null;
-  });
-  await expect.poll(model).toBe('GPT-6.2 Astra (default) · High effort');
-});
+}
 
 test('an automation chooses the agent of its tasks', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/automations/new', '&hold=/api/sandboxes/sb_studio/workflows'));
@@ -304,7 +312,7 @@ test('a Codex task’s terminal and details name Codex', async ({ app, browser, 
   expect(labels).not.toContain('Claude Code');
 });
 
-type Automating = { __yuliusMock: { automations: { id: string; harness: string; last_run: { task_id: string } | null }[]; tasks: { id: string; harness: string }[] } };
+type Automating = { __yuliusMock: { automations: { id: string; harness: string; last_run: { task_id: string } | null }[]; tasks: { id: string; harness: string; effort: string; effort_default: boolean }[] } };
 
 // SPEC-503 CDX-010 (slice D review): Run now of a Codex automation creates a Codex task, as its
 // scheduled runs do.
@@ -315,12 +323,12 @@ test('Run now of a Codex automation creates a Codex task', async ({ app, browser
   await expect(screen.getByRole('radiogroup', 'Agent').getByRole('radio', 'Codex')).toHaveAttribute('aria-checked', 'true');
   await screen.getByRole('button', 'Run now').click();
   await expect(screen.getByText(/^task created \(#\d+\)/)).toBeVisible();
-  const harness = await browser.evaluate(() => {
+  const task = await browser.evaluate(() => {
     const db = (window as unknown as Automating).__yuliusMock;
     const run = db.automations.find((a) => a.id === 'aut_2')!.last_run!;
-    return db.tasks.find((t) => t.id === run.task_id)!.harness;
+    return db.tasks.find((t) => t.id === run.task_id)!;
   });
-  expect(harness).toBe('codex');
+  expect(task).toMatchObject({ harness: 'codex', effort: 'xhigh', effort_default: true });
 });
 
 // SPEC-503 (slice D review): a split proposal is Claude's to make. With only Codex usable, a
