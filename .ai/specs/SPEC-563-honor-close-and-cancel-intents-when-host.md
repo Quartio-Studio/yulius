@@ -7,7 +7,7 @@ status: in-progress
 
 ## Goal
 
-Honor the person's close or stop of an answered task when its reader has taken the request and the escalation wins the attempt transition. Fixes #1434 for task #541.
+Honor the person's close or stop of an answered task when its reader has taken the request and the escalation wins the attempt transition. Fixes #1434 for task #541. Fixes #1498 in the parked-screen regression fixture.
 
 ## Context
 
@@ -43,3 +43,7 @@ Reuse the supervisor's attempt-scoped handoff and existing task transitions. The
 
 - At regression commit `cf86be837` on dev `ba2c36264`, both reader-held tests failed at the task status assertion. Each recorded one lost attempt and returned `Stopped(Lost)`. Close expected `Closed` and Cancel expected `Stopped(Cancelled)`.
 - The two loss-before-reader controls passed on the same baseline binary. Both produced `Stopped(Lost)` when loss consumed the live intent first.
+
+- Independent review of `b42d72ea9` requested evidence for a superseding Cancel, reader-first attempt reasons and stale attempt ownership. The tests at `8305a8cc8` exercise all three. An isolated fault probe preferred the older Close, wrote `exited` for reader-first requests, and let a stale attempt take the handoff. All four assertions failed with their expected diagnostics.
+- The first review's unmutated baseline passed 3,213 selected tests. The integrated branch incorporates dev `3cc2b1969`. All five host-loss request orderings passed there. The wider run exposed a race in the parked-screen fixture from task #540 when its queue drain consumed a slot the test assumed unavailable.
+- For #1498, forcing the drain after the synthetic Parked-to-Queued transition reproduced `Running` where the fixture required `Queued`. Both parked-screen callers now occupy their only slot with a live fixture task, force the drain, and check the queued screen before advancing through the remaining states.

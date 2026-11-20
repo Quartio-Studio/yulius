@@ -807,7 +807,7 @@ pub(crate) async fn assert_cold_screen(
 
 /// The last attempt's screen stays visible while capacity holds a parked resume in the queue.
 async fn queued_park_screen(
-    app: &App,
+    app: &Arc<App>,
     id: &TaskId,
     data: &Path,
     caller: &ProjectCaller,
@@ -819,6 +819,21 @@ async fn queued_park_screen(
     )
     .await?;
     let captured = screen(app, id);
+    let blocker = new_task(
+        app,
+        &caller.sandbox,
+        &caller.user,
+        "Hold the session slot",
+        TaskMode::Prompt,
+    )
+    .await?;
+    wait_for(
+        "the only session slot to be occupied",
+        Duration::from_secs(30),
+        || async { status_of(app, &blocker).await.0 == Some(TaskStatus::Running) },
+    )
+    .await?;
+
     assert!(
         app.deps
             .store
@@ -831,6 +846,8 @@ async fn queued_park_screen(
             )
             .await?
     );
+    app.drain_queue_now().await;
+    assert_eq!(status_of(app, id).await.0, Some(TaskStatus::Queued));
     // Loss and normal exit can save identical bytes in this fake agent. Make
     // the ordinary final screen distinct to prove which snapshot each reader uses.
     let last = app
@@ -882,7 +899,8 @@ async fn queued_park_screen(
             )
             .await?
     );
-    assert_cold_screen(data, id, caller, &captured).await
+    assert_cold_screen(data, id, caller, &captured).await?;
+    crate::support::stop_tasks(app, &[&blocker]).await
 }
 
 /// PRK-003 (review round 2): a switch that starts after the park decided gives way to it: the
@@ -892,7 +910,7 @@ fn a_switch_overtaken_by_a_park_parks_with_its_activity() -> TestResult {
     let (_dir, data) = data_dir()?;
     let rt = runtime()?;
     rt.block_on(async {
-        let app = app(&data, 8, 1).await?;
+        let app = app(&data, 1, 1).await?;
         let (id, caller) = answered(&app, &data).await?;
         let switched = Arc::new(std::sync::Mutex::new(None));
         {
@@ -1106,6 +1124,7 @@ fn a_loss_recorded_while_the_reader_holds_the_park_still_parks() -> TestResult {
             0,
             Arc::new(ScriptedUsage::default()),
             |config| {
+                config.max_live_sessions = 1;
                 config.park_after_ms = 1;
                 config.stop_escalation_ms = 300;
             },
