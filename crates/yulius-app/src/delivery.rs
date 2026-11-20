@@ -1893,22 +1893,10 @@ impl App {
             if past_merge(stage) {
                 (Vec::new(), Vec::new())
             } else {
-                let hold = match (task.branch.as_deref(), task.worktree_path.as_deref()) {
-                    (Some(branch), Some(worktree)) => match playground::merge_hold(observed) {
-                        Some(reason) => Some(reason),
-                        None => self
-                            .playground_delivery_base(
-                                sandbox,
-                                worktree,
-                                branch,
-                                &profile.integration_branch,
-                            )
-                            .await
-                            .err()
-                            .map(|err| err.public_message()),
-                    },
-                    _ => Some("this task has no branch to deliver yet".to_owned()),
-                };
+                let hold = self
+                    .playground_view_hold(sandbox, task, observed, profile)
+                    .await
+                    .unwrap_or_else(|error| Some(error.public_message()));
                 match hold {
                     Some(reason) => (
                         Vec::new(),

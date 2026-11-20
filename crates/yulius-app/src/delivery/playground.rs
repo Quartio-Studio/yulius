@@ -56,7 +56,7 @@ fn nothing_to_deliver(branch: &str, integration: &str) -> AppError {
 }
 
 /// Local prerequisites shared by the delivery view and the squash.
-pub(super) fn merge_hold(observed: &super::Observed) -> Option<String> {
+fn merge_hold(observed: &super::Observed) -> Option<String> {
     if !observed.spec.valid {
         Some(format!(
             "the spec is not valid ({}); fix it and commit",
@@ -68,8 +68,6 @@ pub(super) fn merge_hold(observed: &super::Observed) -> Option<String> {
         Some(open)
     } else if observed.dirty {
         Some("the worktree has uncommitted changes: commit them".to_owned())
-    } else if observed.worktree_head.is_none() {
-        Some("the task branch has no commit".to_owned())
     } else {
         None
     }
@@ -91,49 +89,55 @@ fn playground_plan_hold(steps: &[crate::model::StepRecord]) -> Option<String> {
 }
 
 impl App {
+    /// The reason a person cannot squash this task now. Reading it never enqueues CI.
+    pub(super) async fn playground_view_hold(
+        &self,
+        sandbox: &SandboxRecord,
+        task: &TaskRecord,
+        observed: &super::Observed,
+        profile: &yulius_domain::delivery::DeliveryProfile,
+    ) -> AppResult<Option<String>> {
+        let (Some(branch), Some(worktree)) =
+            (task.branch.as_deref(), task.worktree_path.as_deref())
+        else {
+            return Ok(Some("this task has no branch to deliver yet".to_owned()));
+        };
+        if let Some(reason) = merge_hold(observed) {
+            return Ok(Some(reason));
+        }
+        let head = observed
+            .worktree_head
+            .as_deref()
+            .ok_or_else(|| AppError::Conflict("the task branch has no commit".to_owned()))?;
+        self.playground_delivery_base(sandbox, worktree, branch, &profile.integration_branch, head)
+            .await?;
+        self.playground_ci_hold(sandbox, task, head).await
+    }
+
     /// Checks whether the task brings a net change since it forked from the integration branch.
-    pub(super) async fn playground_delivery_base(
+    async fn playground_delivery_base(
         &self,
         sandbox: &SandboxRecord,
         worktree: &str,
         branch: &str,
         integration: &str,
+        head: &str,
     ) -> AppResult<String> {
         self.dlv_refresh_clone(sandbox).await?;
         let base = format!("origin/{integration}");
         let git = &self.deps.git;
-        let (ahead, _) = git.ahead_behind(Path::new(worktree), &base, "HEAD").await?;
-        if ahead == 0
-            || git
-                .diff_stat(Path::new(worktree), &base, "HEAD")
-                .await?
-                .files
-                == 0
-        {
+        let (ahead, behind) = git.ahead_behind(Path::new(worktree), &base, head).await?;
+        if ahead == 0 || git.diff_stat(Path::new(worktree), &base, head).await?.files == 0 {
             return Err(nothing_to_deliver(branch, integration));
         }
-        Ok(base)
-    }
-
-    /// A diverged playground head must still merge cleanly into the refreshed base. This
-    /// is a preview for the delivery view; reading it never starts CI or lands the branch.
-    pub(super) async fn playground_conflict_preflight(
-        &self,
-        worktree: &str,
-        branch: &str,
-        integration: &str,
-        base: &str,
-        head: &str,
-    ) -> AppResult<()> {
-        if let Some(files) = self
-            .deps
-            .git
-            .merge_conflicts(Path::new(worktree), base, head)
-            .await?
+        if behind > 0
+            && let Some(files) = git
+                .merge_conflicts(Path::new(worktree), &base, head)
+                .await?
         {
             return Err(conflict_refusal(branch, integration, &files));
         }
-        Ok(())
+        Ok(base)
     }
 
     /// [`App::playground_merge`] for a person, who never arms a merge: while Yulius CI tests it,
@@ -219,7 +223,7 @@ impl App {
             )));
         }
         let base = self
-            .playground_delivery_base(&sandbox, worktree, branch, integration)
+            .playground_delivery_base(&sandbox, worktree, branch, integration, &head)
             .await?;
         let git = &self.deps.git;
         // Merge on green (SPEC-163 PCI-003): the head merged into the integration branch as it
