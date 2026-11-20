@@ -1894,6 +1894,43 @@ async fn agent_merge(h: &Harness, token: &str, head: &str) -> BoxResult<Value> {
     .await
 }
 
+/// The delivery GET reflects the current head's check and leaves CI unchanged.
+async fn assert_delivery_ci(
+    h: &Harness,
+    owner: &Creds,
+    sandbox: &Value,
+    held: Option<&str>,
+) -> TestResult {
+    let before = ci_overview(h, owner, sandbox).await?;
+    let got = call(
+        &h.router,
+        Method::GET,
+        "/api/tasks/t1/delivery",
+        None,
+        owner,
+    )
+    .await?;
+    assert_eq!(got.status, StatusCode::OK, "{}", got.body);
+    if let Some(state) = held {
+        assert_eq!(got.body["next_actions"], json!([]), "{}", got.body);
+        assert_eq!(got.body["blocked"][0]["action"], "merge");
+        let reason = got.body["blocked"][0]["reason"].as_str().ok_or("reason")?;
+        assert!(
+            reason.contains("Yulius CI") && reason.contains(state),
+            "{reason}"
+        );
+    } else {
+        assert_eq!(got.body["next_actions"], json!(["merge"]), "{}", got.body);
+        assert_eq!(got.body["blocked"], json!([]));
+    }
+    assert_eq!(
+        ci_overview(h, owner, sandbox).await?["runs"],
+        before["runs"],
+        "GET changed CI"
+    );
+    Ok(())
+}
+
 /// PCI-003 (#411): a head whose merge into `dev` fails its checks never lands: the armed merge is
 /// dropped with why when the run ends, and the next `delivery_merge` is refused (merge on green
 /// only).
@@ -1923,6 +1960,7 @@ async fn a_failing_head_is_refused_and_its_armed_merge_dropped() -> TestResult {
         "{state}"
     );
 
+    assert_delivery_ci(&h, &owner, &body, Some("failed")).await?;
     let refused = agent_merge(&h, "tok-t1", &head).await?;
     assert_eq!(refused["isError"], true, "{refused}");
     assert!(
@@ -2036,6 +2074,8 @@ async fn an_armed_merge_follows_a_moved_dev() -> TestResult {
 
     let moved = push_to_dev(&h, &body, &[("other.txt", "two\n")])?;
     let sid = yulius_domain::ids::SandboxId::parse(body["id"].as_str().ok_or("id")?)?;
+    // The old queued run tested an earlier base. GET leaves the new candidate for the merge.
+    assert_delivery_ci(&h, &owner, &body, None).await?;
     h.app.merge_armed(&sid).await;
     let overview = ci_overview(&h, &owner, &body).await?;
     let second = task_run(&overview)?;
@@ -2083,6 +2123,7 @@ async fn a_persons_merge_waits_for_green() -> TestResult {
     let dev = git(&origin, &["rev-parse", "dev"])?.trim().to_owned();
     playground_task(&h, &body, "t1", &[("feature.txt", "one\n")], &["done"]).await?;
 
+    assert_delivery_ci(&h, &owner, &body, None).await?;
     let waiting = merge(&h, &owner, "t1").await?;
     assert_eq!(waiting.status, StatusCode::CONFLICT, "{:?}", waiting.body);
     assert!(
@@ -2091,6 +2132,7 @@ async fn a_persons_merge_waits_for_green() -> TestResult {
         waiting.body
     );
     assert_eq!(git(&origin, &["rev-parse", "dev"])?.trim(), dev);
+    assert_delivery_ci(&h, &owner, &body, Some("queued")).await?;
     let again = merge(&h, &owner, "t1").await?;
     assert_eq!(again.status, StatusCode::CONFLICT, "{:?}", again.body);
     let runs = ci_overview(&h, &owner, &body).await?;
@@ -2103,6 +2145,7 @@ async fn a_persons_merge_waits_for_green() -> TestResult {
     );
 
     ci_settle(&h, &owner, &body).await?;
+    assert_delivery_ci(&h, &owner, &body, None).await?;
     let merged = merge(&h, &owner, "t1").await?;
     assert_eq!(merged.status, StatusCode::OK, "{:?}", merged.body);
     assert_eq!(
@@ -2219,6 +2262,7 @@ async fn a_reset_head_never_takes_a_later_heads_verdict() -> TestResult {
     ci_settle(&h, &owner, &body).await?;
     h.app.merge_armed(&sid).await;
     git(&worktree, &["reset", "-q", "--hard", &fixed])?;
+    assert_delivery_ci(&h, &owner, &body, None).await?;
     let retried = answer(&agent_merge(&h, "tok-t1", &fixed).await?);
     assert!(
         retried.contains("armed: true"),
