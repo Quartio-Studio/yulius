@@ -509,17 +509,11 @@ export function mountTaskView(ctx, sandbox, task) {
     h('button', { type: 'button', class: 'btn btn-sm btn-primary', onClick: sendReply }, 'Send'),
     h('button', { type: 'button', class: 'btn btn-sm', onClick: closeReply }, 'Cancel'));
   replyForm.hidden = true;
-  function currentStatusInfo() {
-    const row = ctx.store.state.tasks.get(current.sandbox_id)?.get(current.id);
-    const verified = current.status === 'parked' && row?.status === 'parked' &&
-      row.updated_at === current.updated_at && typeof row.parked_needs_you === 'boolean';
-    return taskInfo(verified ? row : current, ctx.store.state.actionRequests, ctx.store.pullsOf(current.sandbox_id).get(current.id));
-  }
   function renderAttention() {
     if (pressed) { attentionStale = true; return; }
     attentionStale = false;
     const pr = ctx.store.pullsOf(current.sandbox_id).get(current.id);
-    const info = currentStatusInfo();
+    const info = taskInfo(current, ctx.store.state.actionRequests, pr);
     // Failed checks already have their PR action in the strip.
     const waitingForReply = current.status === 'running' && current.activity === 'waiting' && info.group === 'needs' && !info.pr;
     const parkedWaiting = current.status === 'parked' && current.activity === 'waiting' && info.group === 'needs';
@@ -957,7 +951,7 @@ export function mountTaskView(ctx, sandbox, task) {
     renderQueue();
     const steps = current.steps || { done: 0, total: 0, current: null };
     // The session's state as the sidebar says it (pull request, browser request, usage limit).
-    const info = currentStatusInfo();
+    const info = taskInfo(current, ctx.store.state.actionRequests, ctx.store.pullsOf(current.sandbox_id).get(current.id));
     const total = steps.total || 0;
     const done = steps.done || 0;
     let n = total ? Math.min(total, done + (steps.current ? 1 : 0)) : 0;
@@ -1120,8 +1114,7 @@ export function mountTaskView(ctx, sandbox, task) {
       const previousStatus = current.status;
       const previousUpdate = current.updated_at;
       const previousOwner = owner();
-      // A lifecycle event can omit the list verifier’s optional PR facts.
-      current = { ...current, ...next, parked_needs_you: next.parked_needs_you, parked_pr: next.parked_pr };
+      current = { ...current, ...next };
       // Whether the task started is the detail's: a status with a run means it has, and any status
       // change reads the detail again (a start that found no capacity has not). A message someone
       // else queued changes the request: read it again too.

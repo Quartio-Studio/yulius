@@ -39,6 +39,8 @@ Task #517 displayed Codex's exit instructions. The host drained shutdown output 
 - [x] Return the verified plan snapshot with parked HTTP task rows
 - [x] Filter and explain verified parked rows in MCP task reads
 - [x] Refresh parked page and sidebar status independently of the Git overview
+- [ ] Preserve newer task events when parked task lists reload
+- [ ] Deliver the verified parked page and sidebar watch after safe list reloads
 - [ ] Keep failed integration candidates with their original owner
 - [ ] Deliver bounded Codex goal continuation to dev
 - [ ] Recover screens from tasks parked before the upgrade
@@ -66,16 +68,7 @@ A human request can take precedence over unfinished work in the task list. Both 
 
 ## Evidence
 
-- The final read-order review placed a rename event on each side of Git discovering open replacement #8 after verification failed on closed #7. The old browser showed Done after the rename in both orders. A held full list also reversed a newer resume and restored a removed task. The replacement, resume/removal and successful-recovery regressions all passed after correction. Full list reads retain later task changes, and a lifecycle event carries an unavailable verification forward so discovery of an open replacement can still correct the display.
-
-- Review of `9fbcb4348` reproduced two open pages retaining old verified fields after a lifecycle event, a replacement list failing to notify the mounted task, and a late Git fallback invalidating a successful pending verification. Four Chromium regressions failed on that head. A fifth showed a known open PR disappearing on an ordinary event before the overview was available. The store now notifies mounted views once for a changed parked row, keeps known open PRs under Needs you until verification, and distinguishes a conservative display update from a later authoritative event. The terminal and Task Info replace optional PR facts when they receive a new summary.
-
-- The two-source watch fixture originally advanced its fake interval inside a Git notification, before request cleanup. It timed out with 59 of 60 scoped cases passing. The fixture now lets both synchronous fake replies and their cleanup settle before advancing the clock. The same expected groups passed in Chromium.
-
-- Independent review of `6890b885e` reproduced three browser races. The three review regressions failed before correction and passed afterward. A held Task Info response now preserves a newer verified row. An open replacement discovered before or after a failed summary stays under Needs you until the next successful verification. At the production three-second watch gap, announcements at 53.0, 53.1, 53.2 and 53.3 seconds now start one summary at 53 seconds and one at 56 seconds while the overview is held.
-- `scripts/dev quick` passed. `scripts/dev mutants --base 5bdabd1a9` found no changed Rust code. Removing the summary watch call in an isolated copy made both held-source regressions fail. Vidoc was disabled.
-
-- Browser status refresh (ADR-0417). On dev `5bdabd1a9`, three Chromium regressions failed for parked classification and status updates during an unavailable or held overview. Against the same assets the held-overview terminal and Task Info tests both stayed Done after CI failed, and a newly parked row never acquired its verified facts. The corrected `e2e run tests/parked.e2e.ts` passed all 14 cases. They cover both directions of a CI rerun, an unavailable summary, coalesced announcements, a later task event, an open plan and owner decisions.
+- Independent review of the browser watch uncovered a list-reload race. Delivery was split into lifecycle-safe full list reads and the parked-page watch that consumes them. On dev `5bdabd1a9`, a held list restored a resumed task to Parked and reinserted a removed task. A separate overlapping success test let the older parked snapshot overwrite the newer running row. The prototype at `7a9b8793f` discarded the only successful cold load in both failure orders. Chromium regressions cover all three cases. The watch’s red/green fixtures and review corrections are preserved for its own delivery.
 
 - PR #1542 delivered verified MCP filtering and wait explanations to dev at `5bdabd1a9`. The passing train ran the quality, Rust and browser jobs. Vidoc was disabled. [Delivery evidence](https://yulius.quartio.ai/api/tasks/09d643c4-9df9-4abe-9c9c-d0cfe7fdf205/delivery/evidence/5bdabd1a93590ac7b9d7552d2dffc1f8dbf27d2f)
 

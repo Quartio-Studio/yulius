@@ -129,86 +129,64 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
     emit('sandboxes');
   }
 
-  const pendingLists = new Map();
+  // Cold navigation and resync can both load the list. Keep the newest successful
+  // snapshot, including lifecycle events received while that particular read ran.
   let nextListRead = 0;
-  function loadTasks(sandboxId) {
-    const previous = pendingLists.get(sandboxId);
-    const read = { changes: new Map(), serial: ++nextListRead };
-    pendingLists.set(sandboxId, read);
-    const result = readTaskList(sandboxId, read);
-    if (previous) previous.next = result;
-    return result;
-  }
+  const listOrder = new WeakMap();
+  const loadingLists = new Set();
 
-  async function readTaskList(sandboxId, read) {
+  async function loadTasks(sandboxId) {
+    const read = { sandboxId, order: ++nextListRead, changes: new Map() };
+    loadingLists.add(read);
     let list;
     try {
       list = await api.get(`/api/sandboxes/${enc(sandboxId)}/tasks?archived=false`);
     } catch (error) {
-      if (read.next) return read.next;
-      pendingLists.delete(sandboxId);
-      // Lists show this with a retry instead of "Loading…" forever.
+      // An older failure cannot invalidate a list already supplied by a newer read.
+      const current = state.tasks.get(sandboxId);
+      if (listOrder.get(current) > read.order) return current;
       state.taskErrors.set(sandboxId, error);
       emit('tasks', sandboxId);
       throw error;
+    } finally {
+      loadingLists.delete(read);
     }
-    if (read.next) return read.next;
-    pendingLists.delete(sandboxId);
+    const current = state.tasks.get(sandboxId);
+    if (listOrder.get(current) > read.order) return current;
     state.taskErrors.delete(sandboxId);
     const map = new Map();
     for (const task of Array.isArray(list) ? list : []) if (!task.archived) map.set(task.id, task);
-    // Preserve later lifecycle events, removals and newer verified reads.
     for (const [id, task] of read.changes) {
       if (task && !task.archived) map.set(id, task);
       else map.delete(id);
     }
-    const previous = state.tasks.get(sandboxId);
+    listOrder.set(map, read.order);
     state.tasks.set(sandboxId, map);
-    if (previous) {
-      for (const task of map.values()) {
-        const prior = previous.get(task.id);
-        if (task.status !== 'parked' && prior?.status !== 'parked') continue;
-        if (JSON.stringify(task) !== JSON.stringify(prior)) emit('task', task);
-      }
-    }
     emit('tasks', sandboxId);
     return map;
   }
 
   function upsertTask(task) {
     if (!task || !task.id) return;
+    for (const read of loadingLists) {
+      if (read.sandboxId === task.sandbox_id) read.changes.set(task.id, task);
+    }
     // Only a full load creates a sandbox's list: a list built from live events alone would show
     // just the tasks that changed and look complete. Watchers of the task still hear about it.
     const map = state.tasks.get(task.sandbox_id);
     if (!map) {
-      pendingLists.get(task.sandbox_id)?.changes.set(task.id, task);
       emit('task', task);
       return;
     }
-    // Lifecycle events omit the verifier's facts. A previously identified open
-    // PR still needs verification even when Git has not supplied an overview.
-    const prior = map.get(task.id);
-    const overview = state.pulls.get(task.sandbox_id)?.get(task.id);
-    const openPr = prior?.parked_pr?.open ? prior.parked_pr
-      : overview?.state === 'open' ? { number: overview.number, open: true } : null;
-    const recheck = !task.archived && task.status === 'parked' && prior?.status === 'parked' &&
-      typeof task.parked_needs_you !== 'boolean' &&
-      (unverified.has(prior) || (typeof prior.parked_needs_you === 'boolean' && openPr));
-    if (recheck) {
-      if (openPr) task = { ...task, parked_pr: openPr, parked_needs_you: true };
-      unverified.set(task, task); // A later Git discovery belongs to this event's row.
-    }
-    pendingLists.get(task.sandbox_id)?.changes.set(task.id, task);
     if (task.archived) map.delete(task.id);
     else map.set(task.id, task);
     emit('tasks', task.sandbox_id);
     emit('task', task);
-    if (recheck) requestRead(task.sandbox_id, refreshParkedGroups, true, true);
   }
 
   /** Drop a task from its list; `byUser` marks a removal this browser asked for (its own toast says so). */
   function removeTask(taskId, { byUser = false } = {}) {
-    for (const read of pendingLists.values()) read.changes.set(taskId, null);
+    for (const read of loadingLists) read.changes.set(taskId, null);
     for (const [sandboxId, map] of state.tasks) {
       if (map.delete(taskId)) emit('tasks', sandboxId);
     }
@@ -317,12 +295,8 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
   // `pullGapMs` after the last read started (a push announces several times), or as soon as the
   // tab is shown again. Reads of a sandbox never overlap, so an older one cannot answer last, and a
   // change announced during a read brings one more read after it.
-  const pullWatch = new Map(); // sandbox id → view count, poll timer and each source's read schedule
-  const sources = [refreshParkedGroups, loadGitOverview];
-  const inFlight = new Map(sources.map(source => [source, new Map()]));
-  // A failed read may need a conservative display when Git later discovers an open PR.
-  // Remember the source row so this display cannot invalidate its own pending recovery.
-  const unverified = new WeakMap();
+  const pullWatch = new Map(); // sandbox id → { views, at, timer, due, soon }
+  const pullReads = new Map(); // sandbox id → { again } while its read runs, watched or not
   const pollPaused = () => document.hidden || navigator.onLine === false;
   // The overview takes seconds (GitHub and Git for every task), so this browser keeps what the
   // last read said, per user, and a page load shows it at once until its own read replaces it
@@ -351,70 +325,22 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
       for (const key of Object.keys(window.localStorage)) if (key.startsWith(PULLS_PREFIX)) window.localStorage.removeItem(key);
     } catch { /* storage unavailable: nothing kept */ }
   }
-  // A rerun on the same open PR changes its checks without changing the task's
-  // delivery stage. Refresh the server's parked groups alongside the watched
-  // overview. An SSE update or list replacement during this read takes precedence.
-  async function refreshParkedGroups(sandboxId) {
-    const tasks = state.tasks.get(sandboxId);
-    if (!tasks) return;
-    const watched = [...tasks.values()].filter(task => task.status === 'parked');
-    if (!watched.length) return;
-    const serial = ++nextListRead;
-    let refreshed;
-    try {
-      const rows = await api.get(`/api/sandboxes/${enc(sandboxId)}/tasks?archived=false`);
-      refreshed = new Map(rows.map((task) => [task.id, task]));
-    } catch { /* A previously green PR is unverified until a later read succeeds. */ }
-    if (tasks !== state.tasks.get(sandboxId)) return;
-    let changed = false;
-    for (const prior of watched) {
-      const current = tasks.get(prior.id);
-      if (current !== prior && unverified.get(current) !== prior) continue;
-      const row = refreshed?.get(prior.id);
-      if (refreshed && (!row || row.status !== prior.status)) continue;
-      if (row) {
-        const list = pendingLists.get(sandboxId);
-        if (list && serial > list.serial) list.changes.set(prior.id, row);
-        unverified.delete(current);
-        unverified.delete(row);
-        if (typeof row.parked_needs_you !== 'boolean') continue;
-      } else {
-        unverified.set(current, prior);
-        if (!prior.parked_pr?.open && state.pulls.get(sandboxId)?.get(prior.id)?.state !== 'open') continue;
-      }
-      // The group and the work that explains it come from the same verified row.
-      const updated = row ?? { ...prior, parked_needs_you: true };
-      if (JSON.stringify(updated) === JSON.stringify(current)) continue;
-      tasks.set(prior.id, updated);
-      emit('task', updated);
-      changed = true;
+  /** Reads the sandbox's pull requests; `fresh`: a change was announced, so a read in flight (which may predate it) is followed by another. */
+  async function loadPulls(sandboxId, fresh = false) {
+    const running = pullReads.get(sandboxId);
+    if (running) {
+      if (fresh) running.again = true;
+      return;
     }
-    if (changed) {
-      emit('tasks', sandboxId);
-      scheduleCountsRefresh();
-    }
-  }
-
-  async function loadGitOverview(sandboxId) {
+    const read = { again: false };
+    pullReads.set(sandboxId, read);
+    const entry = pullWatch.get(sandboxId);
+    if (entry) Object.assign(entry, { at: clock.now(), due: false });
     try {
       const git = await api.get(`/api/sandboxes/${enc(sandboxId)}/git`);
       const rows = Array.isArray(git.tasks) ? git.tasks : [];
       const pulls = rows.filter((t) => t.pr).map((t) => [t.task_id, t.pr]);
       state.pulls.set(sandboxId, new Map(pulls));
-      // A replacement PR can become known after the independent summary read failed.
-      const tasks = state.tasks.get(sandboxId);
-      let changed = false;
-      for (const [id, pr] of pulls) {
-        const prior = tasks?.get(id);
-        if (pr.state !== 'open' || !unverified.has(prior) || prior.parked_needs_you) continue;
-        const updated = { ...prior, parked_needs_you: true, parked_pr: { number: pr.number, open: true } };
-        unverified.delete(prior);
-        unverified.set(updated, prior);
-        tasks.set(id, updated);
-        emit('task', updated);
-        changed = true;
-      }
-      if (changed) emit('tasks', sandboxId);
       seeded.delete(sandboxId);
       const key = pullsKey(sandboxId);
       if (key) writeJson(key, pulls);
@@ -432,82 +358,62 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
         state.pulls.set(sandboxId, new Map());
         emit('pulls', sandboxId);
       }
+    } finally {
+      pullReads.delete(sandboxId);
+      if (read.again) pullsChanged(sandboxId);
     }
   }
-  // Each source has its own minimum gap and one in-flight request per sandbox.
-  // A fresh hint during a request survives until that source can read again.
-  function requestRead(id, source, fresh = false, paced = false) {
-    const schedule = pullWatch.get(id)?.schedules.get(source);
-    if (!schedule) return;
-    if (pollPaused()) { schedule.due ||= fresh; return; }
-    const delay = schedule.at + pullGapMs - clock.now();
-    if (paced && delay > 0) {
-      if (schedule.soon == null) schedule.soon = clock.setTimeout(() => {
-        schedule.soon = null;
-        requestRead(id, source, true, true);
-      }, delay);
+  /** The server announced a change of the sandbox's pull requests (SPEC-108). */
+  function pullsChanged(sandboxId) {
+    const entry = pullWatch.get(sandboxId);
+    // Not watched: the next view to watch it reads at once anyway.
+    if (!entry) return;
+    if (pollPaused()) {
+      entry.due = true;
       return;
     }
-    const reads = inFlight.get(source);
-    const running = reads.get(id);
-    if (running) { running.again ||= fresh; return; }
-    clock.clearTimeout(schedule.soon);
-    Object.assign(schedule, { at: clock.now(), due: false, soon: null });
-    const read = { again: false };
-    reads.set(id, read);
-    void source(id).finally(() => {
-      reads.delete(id);
-      if (read.again) requestRead(id, source, true, true);
-    });
+    if (entry.soon) return; // a read is planned already and will see this change
+    const wait = entry.at + pullGapMs - clock.now();
+    if (wait <= 0) {
+      loadPulls(sandboxId, true);
+      return;
+    }
+    entry.soon = clock.setTimeout(() => {
+      entry.soon = null;
+      if (pullWatch.get(sandboxId) !== entry) return;
+      if (pollPaused()) entry.due = true;
+      else loadPulls(sandboxId, true);
+    }, wait);
   }
-
-  function pullsChanged(id) {
-    for (const source of sources) requestRead(id, source, true, true);
-  }
-
-  function watchPulls(id) {
-    let entry = pullWatch.get(id);
+  function watchPulls(sandboxId) {
+    let entry = pullWatch.get(sandboxId);
     if (!entry) {
-      const schedules = new Map(sources.map(source => [source, { at: 0, due: false, soon: null }]));
-      const timer = clock.setInterval(() => {
-        for (const source of sources) requestRead(id, source);
-      }, 60_000);
-      entry = { views: 0, schedules, timer };
-      pullWatch.set(id, entry);
-      // A read from the previous watch can predate announcements nobody received.
-      for (const reads of inFlight.values()) {
-        const running = reads.get(id);
-        if (running) running.again = true;
-      }
+      entry = { views: 0, at: 0, due: false, soon: null, timer: clock.setInterval(() => { if (!pollPaused()) loadPulls(sandboxId); }, 60_000) };
+      pullWatch.set(sandboxId, entry);
+      // A read that runs from before this watch may predate a change announced while nobody
+      // watched (and so dropped): read again after it.
+      const running = pullReads.get(sandboxId);
+      if (running) running.again = true;
     }
-    entry.views++;
-    for (const [source, schedule] of entry.schedules) {
-      if (clock.now() - schedule.at > 15_000) requestRead(id, source);
-    }
+    entry.views += 1;
+    if (clock.now() - entry.at > 15_000) loadPulls(sandboxId);
     let done = false;
     return () => {
       if (done) return;
       done = true;
-      if (--entry.views === 0) {
-        clock.clearInterval(entry.timer);
-        for (const schedule of entry.schedules.values()) clock.clearTimeout(schedule.soon);
-        pullWatch.delete(id);
-      }
+      entry.views -= 1;
+      if (entry.views <= 0) { clock.clearInterval(entry.timer); clock.clearTimeout(entry.soon); pullWatch.delete(sandboxId); }
     };
   }
   const refreshPulls = () => {
     if (pollPaused()) return;
-    for (const [id, entry] of pullWatch) {
-      for (const [source, schedule] of entry.schedules) {
-        if (schedule.due || clock.now() - schedule.at > 15_000) requestRead(id, source, schedule.due);
-      }
-    }
+    for (const [id, entry] of pullWatch) if (entry.due || clock.now() - entry.at > 15_000) loadPulls(id, entry.due);
   };
   document.addEventListener('visibilitychange', refreshPulls);
   window.addEventListener('focus', refreshPulls);
   // After lost events or a restart, read the watched pull requests again at once: the server's
   // "needs you" counts start from what such a read sees (#147).
-  on('resync', () => { for (const id of pullWatch.keys()) for (const source of sources) requestRead(id, source, true); });
+  on('resync', () => { for (const id of pullWatch.keys()) loadPulls(id, true); });
 
   function stopEvents() {
     if (events) events.stop();

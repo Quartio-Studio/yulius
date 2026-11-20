@@ -440,8 +440,8 @@ If a reservation skips past all available slots, land an empty extension first w
 <!-- ADR 0415 -->
 - [0416](0416-parked-mcp-rows-use-the-verified-plan-and-pr.md) uses the verified parked plan and PR for MCP filtering and explanations.
 <!-- ADR 0416 -->
-- [0417](0417-refresh-parked-task-status-alongside-the-git-overview.md) refreshes parked browser groups independently of the Git overview.
 <!-- ADR 0417 -->
+- [0418](0418-preserve-lifecycle-events-during-task-list-reads.md) preserves later task lifecycle changes across overlapping browser list reads.
 <!-- ADR 0418 -->
 <!-- ADR 0419 -->
 <!-- ADR 0420 -->
