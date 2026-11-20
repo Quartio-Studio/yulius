@@ -132,8 +132,8 @@ pub struct FakeGitHub {
     /// Hold metadata reads while a same-head CI rerun finishes.
     pub pull_read_hold: Mutex<Option<Arc<tokio::sync::Notify>>>,
     pub pull_read_entered: tokio::sync::Notify,
-    /// A PR closed between its metadata response and the next branch list.
-    pub close_before_branch_list: Mutex<Option<u64>>,
+    /// A PR changes between its metadata response and the next branch list.
+    next_branch_change: Mutex<Option<(u64, GhPull)>>,
     /// The next this many reads show the heads before a push.
     pub stale_reads: Mutex<u32>,
 }
@@ -531,8 +531,8 @@ impl GitHubPort for FakeGitHub {
         }
         self.refresh_heads();
         if head.is_some()
-            && let Some(number) = self
-                .close_before_branch_list
+            && let Some((number, replacement)) = self
+                .next_branch_change
                 .lock()
                 .map_err(AppError::internal)?
                 .take()
@@ -543,7 +543,7 @@ impl GitHubPort for FakeGitHub {
                 .iter_mut()
                 .find(|pull| pull.number == number)
         {
-            pull.state = "closed".into();
+            *pull = replacement;
         }
         Ok(self
             .pulls
@@ -1359,6 +1359,26 @@ impl FakeGitHub {
             *h = Some(Arc::clone(&hold));
         }
         hold
+    }
+    pub fn change_before_branch_list(
+        &self,
+        number: u64,
+        edit: impl FnOnce(&mut GhPull),
+    ) -> TestResult {
+        let mut update = self
+            .pulls
+            .lock()
+            .map_err(|_| "pulls")?
+            .iter()
+            .find(|pr| pr.number == number)
+            .cloned()
+            .ok_or("unknown pull")?;
+        edit(&mut update);
+        *self
+            .next_branch_change
+            .lock()
+            .map_err(|_| "branch change")? = Some((number, update));
+        Ok(())
     }
     /// Holds every permission lookup until [`FakeGitHub::release_access`].
     pub fn hold_access(&self) -> Arc<tokio::sync::Notify> {

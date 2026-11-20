@@ -4865,7 +4865,12 @@ async fn a_parked_achieved_goal_releases_its_chain_without_a_pr() -> TestResult 
 #[tokio::test]
 async fn a_historical_parked_goal_keeps_its_owner_and_chain_state_after_restart() -> TestResult {
     use yulius_app::ports::store_ext::NeedsYouStore as _;
-    let f = fixture(&DeliveryProfile::standard()).await?;
+    let f = fixture_with(
+        &DeliveryProfile::standard(),
+        Box::new(|config| config.parked_pr_read_ms = 10_000),
+        None,
+    )
+    .await?;
     let owner =
         f.h.app
             .authenticate_bearer(f.alice.bearer.as_deref().ok_or("owner token")?)
@@ -5113,7 +5118,12 @@ async fn a_parked_achieved_goal_waits_for_its_failed_ordinary_run() -> TestResul
 #[tokio::test]
 async fn a_parked_successor_waits_for_the_replacement_ordinary_pr() -> TestResult {
     use yulius_domain::delivery::DeliveryStage;
-    let f = fixture(&DeliveryProfile::standard()).await?;
+    let f = fixture_with(
+        &DeliveryProfile::standard(),
+        Box::new(|config| config.parked_pr_read_ms = 10_000),
+        None,
+    )
+    .await?;
     let owner =
         f.h.app
             .authenticate_bearer(f.alice.bearer.as_deref().ok_or("owner token")?)
@@ -5187,10 +5197,8 @@ async fn a_parked_successor_waits_for_the_replacement_ordinary_pr() -> TestResul
     let auth = owner.clone();
     let reading = tokio::spawn(async move { app.task_detail(&auth, parked.id.as_str()).await });
     tokio::time::timeout(Duration::from_secs(5), f.h.github.checks_entered.notified()).await?;
-    *f.h.github
-        .close_before_branch_list
-        .lock()
-        .map_err(|_| "branch fixture")? = Some(2);
+    f.h.github
+        .change_before_branch_list(2, |pr| pr.state = "closed".into())?;
     f.h.github.release_checks(&held);
     let changed = serde_json::to_value(reading.await??)?;
     assert_eq!(
@@ -5208,7 +5216,12 @@ async fn a_parked_successor_waits_for_the_replacement_ordinary_pr() -> TestResul
 
 #[tokio::test]
 async fn parked_detail_checks_a_local_conflict_only_against_its_integration_base() -> TestResult {
-    let f = fixture(&DeliveryProfile::standard()).await?;
+    let f = fixture_with(
+        &DeliveryProfile::standard(),
+        Box::new(|config| config.parked_pr_read_ms = 10_000),
+        None,
+    )
+    .await?;
     let owner =
         f.h.app
             .authenticate_bearer(f.alice.bearer.as_deref().ok_or("token")?)
@@ -5226,9 +5239,13 @@ async fn parked_detail_checks_a_local_conflict_only_against_its_integration_base
         .await?;
     *f.h.github.remote.lock().map_err(|_| "remote fixture")? = None;
     f.h.github.set_checks(&head, ChecksState::Success);
+    // This read needs the production merge-base and merge-driver implementation.
+    let mut deps = f.h.app.deps.clone();
+    deps.git = Arc::new(support::confined_git());
+    let app = yulius_app::context::App::new(f.h.app.config.clone(), deps);
     edit_pull(&f, 1, |pr| pr.mergeable = Some(false));
     assert_eq!(
-        f.h.app.task_detail(&owner, "t1").await?.parked_needs_you,
+        app.task_detail(&owner, "t1").await?.parked_needs_you,
         Some(false),
         "the integration base merges cleanly with the configured Git drivers"
     );
@@ -5236,13 +5253,13 @@ async fn parked_detail_checks_a_local_conflict_only_against_its_integration_base
     git(&wt, &["fetch", "origin", "dev"])?;
     edit_pull(&f, 1, |pr| pr.mergeable = Some(true));
     assert_eq!(
-        f.h.app.task_detail(&owner, "t1").await?.parked_needs_you,
+        app.task_detail(&owner, "t1").await?.parked_needs_you,
         Some(true),
         "the actual integration base now conflicts"
     );
     edit_pull(&f, 1, |pr| pr.base = "release".into());
     assert_eq!(
-        f.h.app.task_detail(&owner, "t1").await?.parked_needs_you,
+        app.task_detail(&owner, "t1").await?.parked_needs_you,
         Some(false),
         "the release base has its own mergeability"
     );

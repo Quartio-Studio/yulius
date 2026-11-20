@@ -20,8 +20,8 @@ use yulius_contracts::api::tasks::ParkedPr;
 pub(crate) const PARKED_READS: usize = 8;
 
 /// Time allowed for remote verification of one parked task.
-pub(crate) fn parked_pr_deadline() -> Instant {
-    Instant::now() + std::time::Duration::from_millis(750)
+pub(crate) fn parked_pr_deadline(budget_ms: u64) -> Instant {
+    Instant::now() + std::time::Duration::from_millis(budget_ms)
 }
 
 /// PR facts the Git overview supplied for a single task. A closed, unmerged PR

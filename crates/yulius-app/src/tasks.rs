@@ -812,7 +812,10 @@ impl App {
         let started = !attempts.is_empty() || !store.provider_sessions(&task.id).await?.is_empty();
         let (parked_needs_you, parked_pr) = if task.status == TaskStatus::Parked {
             let (needs_you, pr) = self
-                .parked_status(&task, crate::sandboxes::parked_pr_deadline())
+                .parked_status(
+                    &task,
+                    crate::sandboxes::parked_pr_deadline(self.config.parked_pr_read_ms),
+                )
                 .await;
             (Some(needs_you), pr)
         } else {

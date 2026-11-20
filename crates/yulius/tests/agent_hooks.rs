@@ -11,7 +11,7 @@ use std::sync::atomic::Ordering;
 
 use axum::http::Method;
 use serde_json::json;
-use support::{Creds, Harness, TestResult, call, harness_with_git};
+use support::{Creds, Harness, TestResult, call};
 use yulius_app::hub::HubFrame;
 use yulius_app::model::{
     AttemptRecord, GitHubTokenRecord, LaunchKind, MessageRecord, SandboxRecord, TaskOrigin,
@@ -74,7 +74,11 @@ async fn fixture_of(
     tweak: impl FnOnce(&mut TaskRecord),
     agent: Agent,
 ) -> Result<Fixture, Box<dyn std::error::Error>> {
-    let h = harness_with_git(Arc::new(crate::support::confined_git()))?;
+    let h = support::harness_with(support::HarnessOptions {
+        git: Some(Arc::new(support::confined_git())),
+        configure: Some(Box::new(|config| config.parked_pr_read_ms = 10_000)),
+        ..Default::default()
+    })?;
     let repo = tempfile::tempdir()?;
     let origin = repo.path().join("origin.git");
     let worktree = repo.path().join("wt");
@@ -3292,6 +3296,78 @@ async fn a_parked_detail_keeps_the_failed_pr_when_another_pr_opens_during_checks
             detail["parked_pr"],
             json!({"number":1461,"open":true}),
             "durable={durable}, recorded_elsewhere={recorded_elsewhere}"
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_parked_detail_keeps_the_confirmed_open_pr_when_its_peer_disappears() -> TestResult {
+    let (f, owner) = owner_observed_external_pr().await?;
+    install_app(&f).await?;
+    f.h.github
+        .set_checks("abc123", yulius_app::ports::github::ChecksState::Success);
+    f.h.github
+        .pulls
+        .lock()
+        .map_err(|_| "pulls")?
+        .push(yulius_app::ports::github::GhPull {
+            number: 1462,
+            base: "release-2".into(),
+            ..compatibility_pull()
+        });
+    let held = f.h.github.hold_checks();
+    let app = f.h.app.clone();
+    let id = f.task.clone();
+    let reading = tokio::spawn(async move { app.task_detail(&owner, id.as_str()).await });
+    tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        f.h.github.checks_entered.notified(),
+    )
+    .await?;
+    f.h.github
+        .change_before_branch_list(1462, |pr| pr.state = "closed".into())?;
+    f.h.github.release_checks(&held);
+    let detail = serde_json::to_value(reading.await??)?;
+    assert_eq!(detail["parked_needs_you"], true);
+    assert_eq!(detail["parked_pr"], json!({"number":1461,"open":true}));
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_parked_detail_checks_each_eligibility_field_in_the_final_branch_listing() -> TestResult {
+    for field in ["title", "number", "head", "base", "behind", "mergeable"] {
+        let (f, owner) = owner_observed_external_pr().await?;
+        install_app(&f).await?;
+        f.h.github
+            .set_checks("abc123", yulius_app::ports::github::ChecksState::Success);
+        let held = f.h.github.hold_checks();
+        let app = f.h.app.clone();
+        let id = f.task.clone();
+        let reading = tokio::spawn(async move { app.task_detail(&owner, id.as_str()).await });
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            f.h.github.checks_entered.notified(),
+        )
+        .await?;
+        f.h.github
+            .change_before_branch_list(1461, |pr| match field {
+                "title" => pr.title = "Owner edited title".into(),
+                "number" => pr.number = 1462,
+                "head" => pr.head_sha = "new-head".into(),
+                "base" => pr.base = "next-release".into(),
+                "behind" => pr.behind = true,
+                "mergeable" => pr.mergeable = Some(false),
+                _ => unreachable!(),
+            })?;
+        f.h.github.release_checks(&held);
+        let detail = serde_json::to_value(reading.await??)?;
+        assert_eq!(detail["parked_needs_you"], field != "title", "{field}");
+        let number = if field == "number" { 1462 } else { 1461 };
+        assert_eq!(
+            detail["parked_pr"],
+            json!({"number":number,"open":true}),
+            "{field}"
         );
     }
     Ok(())
