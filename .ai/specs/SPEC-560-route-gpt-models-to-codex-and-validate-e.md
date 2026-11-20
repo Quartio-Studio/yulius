@@ -28,6 +28,7 @@ Issue #1427 was reported during SPEC-511. On dev at `56f08db7`, both HTTP creati
 - [x] Route GPT models and reject conflicting harnesses
 - [x] Verify the fix and obtain independent review
 - [x] Record the acceptance and review evidence for delivery
+- [x] Keep the parked screen test queued during its cold reads
 
 ## Acceptance criteria
 
@@ -53,3 +54,4 @@ Infer Codex from the GPT prefix, extending the existing Gemini rule. Keep unreco
 - Full Chromium run after the browser fixes (`cd e2e && npx e2e run`) passed 1,169 tests across 96 files. One credential-dependent agent test was skipped. `scripts/dev quick` passed the repository contracts and format check. `scripts/dev security` reported Vidoc disabled for this project. The fixtures exercised task routing without a paid provider session.
 - The mutation run on the reviewed fix completed in 697 s. Of 18 listed mutants, tests caught 8 and 10 were unviable. None were missed, timed out or unreached. Its unmutated baseline passed all 3,207 selected tests.
 - The mutation run limited to the blank-input fix completed in 555 s. All 3,205 baseline tests passed. The four listed replacement implementations failed to compile, leaving no viable mutant. Nothing timed out or went unreached. After merging current dev `9c3b3d92f`, the 31 focused Rust tests passed again.
+- CI run `b623bfb5-d94e-49ab-87e3-b6a0f8daf6c6` failed on the parking fixture's Queued-to-Starting assertion. A forced live queue drain reproduced Running instead of Queued in the loss-reader test. Reused the consistent SQLite backup from task #540's `d877c113e` for the cold reads, retaining the forced drain and the real saved screen. All 58 selected Rust tests passed on the repair, including both callers of the fixture and the model-routing regressions.
