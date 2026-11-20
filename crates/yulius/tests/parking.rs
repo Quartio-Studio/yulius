@@ -561,6 +561,25 @@ fn a_task_chained_after_a_parked_done_task_starts() -> TestResult {
             },
         )
         .await?;
+        ask(&app, &id).await?;
+        let db = rusqlite::Connection::open(data.join("yulius.db"))?;
+        db.execute_batch("ALTER TABLE tasks RENAME COLUMN needs_you TO temporarily_unreadable")?;
+        app.advance_chains(&id).await;
+        assert_eq!(
+            status_of(&app, &waiting.id).await.0,
+            Some(TaskStatus::Chained),
+            "unreadable owner decisions must hold the successor"
+        );
+        db.execute_batch("ALTER TABLE tasks RENAME COLUMN temporarily_unreadable TO needs_you")?;
+        app.advance_chains(&id).await;
+        assert_eq!(
+            status_of(&app, &waiting.id).await.0,
+            Some(TaskStatus::Chained)
+        );
+        app.deps
+            .store
+            .set_task_needs_you(&id, None, app.now())
+            .await?;
         app.advance_all_chains().await;
         wait_for(
             "the chained task to leave its chain",

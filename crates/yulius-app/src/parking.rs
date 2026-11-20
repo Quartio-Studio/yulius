@@ -410,11 +410,16 @@ impl App {
         }
         match self.deps.store.attempts(&task.id).await {
             Ok(runs) => runs.last().is_some_and(|run| {
-                std::path::Path::new(&run.run_dir)
-                    .join(GOAL_UNFINISHED_MARK)
-                    .exists()
+                let dir = std::path::Path::new(&run.run_dir);
+                match std::fs::symlink_metadata(dir.join(GOAL_UNFINISHED_MARK)) {
+                    Ok(_) => true,
+                    Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                        !std::fs::metadata(dir).is_ok_and(|meta| meta.is_dir())
+                    }
+                    Err(_) => true,
+                }
             }),
-            Err(_) => false,
+            Err(_) => true,
         }
     }
 }

@@ -126,8 +126,10 @@ pub struct FakeGitHub {
     /// `yulius/ci` status at success on the head and the base in the head (strict "up to date");
     /// a pull request whose head lacks its base reads `behind`.
     pub strict: std::sync::atomic::AtomicBool,
-    /// The next this many reads of pull requests show the heads as they were: GitHub has not
-    /// caught up with a push yet.
+    /// Hold metadata reads while a same-head CI rerun finishes.
+    pub pull_read_hold: Mutex<Option<Arc<tokio::sync::Notify>>>,
+    pub pull_read_entered: tokio::sync::Notify,
+    /// The next this many reads show the heads before a push.
     pub stale_reads: Mutex<u32>,
 }
 
@@ -446,6 +448,15 @@ impl GitHubPort for FakeGitHub {
         Ok(created)
     }
     async fn get_pull(&self, _: &Secret, _: &str, _: &str, number: u64) -> AppResult<GhPull> {
+        let hold = self
+            .pull_read_hold
+            .lock()
+            .map_err(AppError::internal)?
+            .clone();
+        if let Some(hold) = hold {
+            self.pull_read_entered.notify_one();
+            hold.notified().await;
+        }
         self.refresh_heads();
         let mut pull = self
             .pulls

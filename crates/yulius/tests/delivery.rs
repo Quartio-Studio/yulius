@@ -93,11 +93,20 @@ struct RealGit {
     ahead_behind_error: std::sync::Mutex<Option<String>>,
     /// While set, the remote's branches cannot be read (`ls-remote` fails, SPEC-139).
     remote_unreadable: std::sync::atomic::AtomicBool,
+    /// Hold the second checkout probe while the predecessor changes state.
+    checkout_probe: std::sync::Mutex<Option<Arc<CheckoutProbe>>>,
     /// While set, a refresh of a clone fails (SPEC-493 fix 6).
     fetch_fails: std::sync::atomic::AtomicBool,
     /// Moved right after every refresh of a clone, as an agent racing it would: `(ref, commit)`
     /// (review round 2 of SPEC-493 fix 6).
     forged_after_fetch: std::sync::Mutex<Option<(String, String)>>,
+}
+
+#[derive(Default)]
+struct CheckoutProbe {
+    calls: std::sync::atomic::AtomicUsize,
+    entered: tokio::sync::Notify,
+    release: tokio::sync::Notify,
 }
 
 /// An injected push failure, as GitHub's `! [remote rejected] … (failed)` (#366).
@@ -324,6 +333,20 @@ impl GitPort for RealGit {
     }
 
     async fn worktrees(&self, repo: &Path) -> AppResult<Vec<yulius_app::ports::git::WorktreeInfo>> {
+        let probe = self
+            .checkout_probe
+            .lock()
+            .map_err(AppError::internal)?
+            .clone();
+        if let Some(probe) = probe
+            && probe
+                .calls
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+                == 1
+        {
+            probe.entered.notify_one();
+            probe.release.notified().await;
+        }
         crate::support::confined_git().worktrees(repo).await
     }
 
@@ -818,6 +841,7 @@ async fn fixture_with(
         push_failure: std::sync::Mutex::default(),
         ahead_behind_error: std::sync::Mutex::default(),
         remote_unreadable: std::sync::atomic::AtomicBool::default(),
+        checkout_probe: Default::default(),
         fetch_fails: std::sync::atomic::AtomicBool::default(),
         forged_after_fetch: std::sync::Mutex::default(),
     });
@@ -4551,6 +4575,710 @@ async fn working_and_queued_counts_split_the_sidebar_working_group() -> TestResu
         page.body
     );
     assert_eq!(counts().await?, (1, 5, 2));
+    // A historical parked goal with activity Done still needs a person for
+    // this errored run. Its chain must agree with the parked owner's group.
+    set_steps(&f, "t1", &["done", "done"]).await?;
+    set("t1", TaskStatus::Parked, Some(Activity::Done)).await?;
+    let before_id = TaskId::parse("t1")?;
+    let before = f.h.store.task(&before_id).await?.ok_or("predecessor")?;
+    let mut successor = before.clone();
+    successor.id = TaskId::parse("t-after-error")?;
+    successor.number = 91;
+    successor.status = TaskStatus::Chained;
+    successor.activity = None;
+    successor.branch = None;
+    successor.worktree_path = None;
+    let waiting = f.h.store.insert_task(&successor).await?;
+    yulius_app::ports::store_ext::IntakeStore::insert_chain(
+        &f.h.store,
+        &yulius_app::intake::ChainRecord {
+            task_id: waiting.id.clone(),
+            after_task_id: Some(before_id.clone()),
+            after_number: before.number,
+            blocked_reason: None,
+            created_at: f.h.app.now(),
+            rule: None,
+        },
+    )
+    .await?;
+    f.h.app.advance_chains(&before_id).await;
+    assert_eq!(
+        f.h.store
+            .task(&waiting.id)
+            .await?
+            .ok_or("successor")?
+            .status,
+        TaskStatus::Chained
+    );
+    // Once the same predecessor's PR has merged, the chain can start.
+    yulius_app::ports::github::GitHubPort::merge_pull(
+        f.h.github.as_ref(),
+        &Secret("token-carol".into()),
+        "Quartio-Studio",
+        "shop",
+        1,
+        "squash",
+        &head,
+    )
+    .await?;
+    f.h.app.advance_chains(&before_id).await;
+    assert_ne!(
+        f.h.store
+            .task(&waiting.id)
+            .await?
+            .ok_or("successor")?
+            .status,
+        TaskStatus::Chained
+    );
+    Ok(())
+}
+
+async fn answer_with_a_successor(f: &Fixture) -> BoxResult<(TaskId, TaskId)> {
+    use yulius_app::ports::store_ext::IntakeStore as _;
+    let before = TaskId::parse("t1")?;
+    let child = TaskId::parse("t2")?;
+    f.add_task("t1", "Answer the question", "feat/1-answer", "dev")
+        .await?;
+    f.add_task("t2", "Use the answer", "feat/2-after", "dev")
+        .await?;
+    let now = f.h.app.now();
+    f.h.store
+        .transition_task(&child, None, TaskStatus::Chained, None, now)
+        .await?;
+    f.h.store
+        .insert_chain(&yulius_app::intake::ChainRecord {
+            task_id: child.clone(),
+            after_task_id: Some(before.clone()),
+            after_number: 1,
+            blocked_reason: None,
+            created_at: now,
+            rule: None,
+        })
+        .await?;
+    Ok((before, child))
+}
+
+/// Chromium startup can hold the final lookup for outstanding browser decisions.
+#[derive(Default)]
+struct HeldBrowserLookup {
+    calls: std::sync::atomic::AtomicUsize,
+    entered: tokio::sync::Notify,
+    release: tokio::sync::Notify,
+}
+
+use yulius_app::ports::browser::{BrowserFailure, BrowserPort, BrowserSession};
+
+#[async_trait]
+impl BrowserPort for HeldBrowserLookup {
+    async fn ensure(
+        &self,
+        sandbox: &SandboxId,
+        profile_dir: &Path,
+    ) -> Result<Arc<dyn BrowserSession>, BrowserFailure> {
+        yulius::wiring::browser::UnavailableBrowser
+            .ensure(sandbox, profile_dir)
+            .await
+    }
+
+    async fn restart(
+        &self,
+        sandbox: &SandboxId,
+        profile_dir: &Path,
+    ) -> Result<Arc<dyn BrowserSession>, BrowserFailure> {
+        yulius::wiring::browser::UnavailableBrowser
+            .restart(sandbox, profile_dir)
+            .await
+    }
+
+    async fn running(&self, _: &SandboxId) -> Option<Arc<dyn BrowserSession>> {
+        if self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 1 {
+            self.entered.notify_one();
+            self.release.notified().await;
+        }
+        None
+    }
+
+    async fn reap_idle(&self) -> Vec<SandboxId> {
+        Vec::new()
+    }
+
+    async fn stop(&self, _: &SandboxId) -> bool {
+        false
+    }
+
+    async fn shutdown_all(&self) -> Vec<SandboxId> {
+        Vec::new()
+    }
+}
+
+#[tokio::test]
+async fn a_parked_successor_waits_if_its_owner_resumes_during_the_final_browser_read() -> TestResult
+{
+    let f = fixture(&DeliveryProfile::standard()).await?;
+    let (before, child) = answer_with_a_successor(&f).await?;
+    let browser = Arc::new(HeldBrowserLookup::default());
+    let mut deps = f.h.app.deps.clone();
+    deps.browser = browser.clone();
+    let app = yulius_app::context::App::new(f.h.app.config.clone(), deps);
+    let now = app.now();
+    // The resumed task may already have finished a new turn and parked again.
+    for parked_again in [false, true] {
+        browser.calls.store(0, std::sync::atomic::Ordering::SeqCst);
+        f.h.store
+            .transition_task(&before, None, TaskStatus::Parked, Some(Activity::Done), now)
+            .await?;
+        let predecessor = before.clone();
+        let checking = app.clone();
+        let advance = tokio::spawn(async move { checking.advance_chains(&predecessor).await });
+        tokio::time::timeout(Duration::from_secs(5), browser.entered.notified()).await?;
+        f.h.store
+            .transition_task(
+                &before,
+                None,
+                TaskStatus::Running,
+                Some(Activity::Working),
+                now,
+            )
+            .await?;
+        if parked_again {
+            f.h.store
+                .transition_task(
+                    &before,
+                    None,
+                    TaskStatus::Parked,
+                    Some(Activity::Waiting),
+                    now,
+                )
+                .await?;
+        }
+        browser.release.notify_one();
+        advance.await?;
+        assert_eq!(
+            f.h.store.task(&child).await?.ok_or("successor")?.status,
+            TaskStatus::Chained
+        );
+    }
+    f.h.store
+        .transition_task(&before, None, TaskStatus::Parked, Some(Activity::Done), now)
+        .await?;
+    app.advance_chains(&before).await;
+    assert_ne!(
+        f.h.store.task(&child).await?.ok_or("successor")?.status,
+        TaskStatus::Chained
+    );
+    Ok(())
+}
+
+/// An achieved goal can release its chain even when its work produced no pull request.
+#[tokio::test]
+async fn a_parked_achieved_goal_releases_its_chain_without_a_pr() -> TestResult {
+    let f = fixture(&DeliveryProfile::standard()).await?;
+    let (before, child) = answer_with_a_successor(&f).await?;
+    let now = f.h.app.now();
+    for activity in [Activity::Waiting, Activity::Done] {
+        f.h.store
+            .transition_task(&before, None, TaskStatus::Parked, Some(activity), now)
+            .await?;
+        f.h.app.advance_chains(&before).await;
+        let status = f.h.store.task(&child).await?.ok_or("successor")?.status;
+        assert_eq!(status == TaskStatus::Chained, activity == Activity::Waiting);
+    }
+    Ok(())
+}
+
+/// A cold server reads the old attempt's unfinished-goal marker even with all
+/// steps done and a tested PR. An unresolved owner request also holds the chain.
+#[tokio::test]
+async fn a_historical_parked_goal_keeps_its_owner_and_chain_state_after_restart() -> TestResult {
+    use yulius_app::ports::store_ext::NeedsYouStore as _;
+    let f = fixture(&DeliveryProfile::standard()).await?;
+    let (_wt, head) = delivered_with_a_successor(&f, &finished_spec("t1")).await?;
+    f.h.github.set_checks(&head, ChecksState::Success);
+    // This test owns a fixed external PR. The independent head-replacement
+    // fixture exercises live Git discovery and local mergeability.
+    *f.h.github.remote.lock().map_err(|_| "remote fixture")? = None;
+    edit_pull(&f, 1, |pull| {
+        pull.base = "release".into();
+        pull.mergeable = Some(true);
+    });
+    let before = TaskId::parse("t1")?;
+    let child = TaskId::parse("t2")?;
+    let dir = f.root.path().join("old-park");
+    std::fs::create_dir(&dir)?;
+    let marker = dir.join("parked-goal-unfinished");
+    std::fs::write(&marker, b"")?;
+    let now = f.h.app.now();
+    let mut attempt = AttemptRecord {
+        id: AttemptId::parse("historic-goal")?,
+        task_id: before.clone(),
+        seq: 1,
+        harness: Harness::ClaudeCode,
+        account_id: None,
+        provider_session_id: None,
+        launch_kind: LaunchKind::New,
+        model: None,
+        state: AttemptState::Killed,
+        run_dir: dir.to_string_lossy().into_owned(),
+        token_hash: "synthetic".into(),
+        host_token: Sealed(vec![0]),
+        ptyhost_pid: None,
+        child_pid: None,
+        started_at: now,
+        ended_at: Some(now),
+        exit_code: Some(0),
+        exit_reason: Some("parked".into()),
+    };
+    f.h.store.insert_attempt(&attempt).await?;
+    f.h.store
+        .transition_task(
+            &before,
+            None,
+            TaskStatus::Parked,
+            Some(Activity::Waiting),
+            now,
+        )
+        .await?;
+    let fresh = yulius_app::context::App::new(f.h.app.config.clone(), f.h.app.deps.clone());
+    let parked = f.h.store.task(&before).await?.ok_or("parked")?;
+    let summary = fresh.task_summary(&parked).await?;
+    assert!(summary.goal_unfinished);
+    fresh.advance_chains(&before).await;
+    assert_eq!(
+        f.h.store.task(&child).await?.ok_or("successor")?.status,
+        TaskStatus::Chained
+    );
+    let saved = dir.with_extension("saved");
+    std::fs::rename(&dir, &saved)?;
+    fresh.advance_chains(&before).await;
+    assert_eq!(
+        f.h.store.task(&child).await?.ok_or("successor")?.status,
+        TaskStatus::Chained,
+        "a missing run directory cannot prove the goal finished"
+    );
+    std::fs::write(&dir, b"not a directory")?;
+    fresh.advance_chains(&before).await;
+    assert_eq!(
+        f.h.store.task(&child).await?.ok_or("successor")?.status,
+        TaskStatus::Chained
+    );
+    std::fs::remove_file(&dir)?;
+    std::fs::rename(saved, &dir)?;
+    std::fs::remove_file(marker)?;
+    f.h.store
+        .set_task_needs_you(
+            &before,
+            Some(&yulius_app::needs_you::NeedsYouRecord {
+                action: "Choose the target".into(),
+                happened: None,
+                problem: None,
+                decision: true,
+                link: None,
+                at: now.0,
+                cause: None,
+                named: Default::default(),
+            }),
+            now,
+        )
+        .await?;
+    fresh.advance_chains(&before).await;
+    assert_eq!(
+        f.h.store.task(&child).await?.ok_or("successor")?.status,
+        TaskStatus::Chained
+    );
+    f.h.store.set_task_needs_you(&before, None, now).await?;
+    // The directory itself is readable. Asking for its marker exceeds the OS
+    // path limit and must not be mistaken for a verified absent marker.
+    let mut long_dir = dir.to_string_lossy().into_owned();
+    let limit = usize::try_from(nix::libc::PATH_MAX)?;
+    long_dir.push_str(&"/.".repeat((limit - long_dir.len() - 1) / 2));
+    assert!(std::fs::metadata(&long_dir)?.is_dir());
+    let unreadable = Path::new(&long_dir).join("parked-goal-unfinished");
+    assert_ne!(
+        std::fs::symlink_metadata(unreadable)
+            .err()
+            .ok_or("expected an unreadable marker")?
+            .kind(),
+        std::io::ErrorKind::NotFound
+    );
+    attempt.seq += 1;
+    attempt.id = AttemptId::parse("unreadable-goal-marker")?;
+    attempt.token_hash = attempt.id.to_string();
+    attempt.run_dir = long_dir;
+    f.h.store.insert_attempt(&attempt).await?;
+    fresh.advance_chains(&before).await;
+    assert_eq!(
+        f.h.store.task(&child).await?.ok_or("successor")?.status,
+        TaskStatus::Chained
+    );
+    attempt.seq += 1;
+    attempt.id = AttemptId::parse("readable-goal-marker")?;
+    attempt.token_hash = attempt.id.to_string();
+    attempt.run_dir = dir.to_string_lossy().into_owned();
+    f.h.store.insert_attempt(&attempt).await?;
+    fresh.advance_chains(&before).await;
+    assert_ne!(
+        f.h.store.task(&child).await?.ok_or("successor")?.status,
+        TaskStatus::Chained
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_parked_achieved_goal_waits_for_its_failed_ordinary_run() -> TestResult {
+    use yulius_domain::ci::{CiRef, RunState};
+    let f = fixture(&DeliveryProfile::standard()).await?;
+    let (_wt, head) = delivered_with_a_successor(&f, &finished_spec("t1")).await?;
+    // Without instance CI the remote reports its own checks. Persisted ordinary
+    // failures still matter while that report is pending.
+    let mut config = f.h.app.config.clone();
+    config.ci.enabled = false;
+    let app = yulius_app::context::App::new(config, f.h.app.deps.clone());
+    let before = TaskId::parse("t1")?;
+    let child = TaskId::parse("t2")?;
+    f.h.store
+        .transition_task(
+            &before,
+            None,
+            TaskStatus::Parked,
+            Some(Activity::Done),
+            f.h.app.now(),
+        )
+        .await?;
+    // This test owns a fixed external PR. The independent head-replacement
+    // fixture exercises live Git discovery and local mergeability.
+    *f.h.github.remote.lock().map_err(|_| "remote fixture")? = None;
+    edit_pull(&f, 1, |pull| {
+        pull.base = "release".into();
+        pull.mergeable = Some(true);
+    });
+    f.h.github.set_checks(&head, ChecksState::Pending);
+    insert_ci_attempt(
+        &f.h.store,
+        "ordinary-red",
+        &head,
+        CiRef::PullRequest(1),
+        RunState::Failed,
+        10,
+        &[],
+    )
+    .await?;
+    app.advance_chains(&before).await;
+    assert_eq!(
+        f.h.store.task(&child).await?.ok_or("successor")?.status,
+        TaskStatus::Chained
+    );
+    // With CI enabled, another pending ref at the same SHA is the newest
+    // commit-level report. It still cannot override this PR's failed run.
+    insert_ci_attempt(
+        &f.h.store,
+        "other-ref",
+        &head,
+        CiRef::Branch("other".into()),
+        RunState::Queued,
+        11,
+        &[],
+    )
+    .await?;
+    f.h.app.advance_chains(&before).await;
+    assert_eq!(
+        f.h.store.task(&child).await?.ok_or("successor")?.status,
+        TaskStatus::Chained
+    );
+    insert_ci_attempt(
+        &f.h.store,
+        "ordinary-green",
+        &head,
+        CiRef::PullRequest(1),
+        RunState::Passed,
+        12,
+        &[],
+    )
+    .await?;
+    f.h.github.set_checks(&head, ChecksState::Failure);
+    app.advance_chains(&before).await;
+    assert_eq!(
+        f.h.store.task(&child).await?.ok_or("successor")?.status,
+        TaskStatus::Chained
+    );
+    f.h.github.set_checks(&head, ChecksState::Success);
+    app.advance_chains(&before).await;
+    assert_ne!(
+        f.h.store.task(&child).await?.ok_or("successor")?.status,
+        TaskStatus::Chained
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_parked_successor_waits_for_the_replacement_ordinary_pr() -> TestResult {
+    use yulius_domain::delivery::DeliveryStage;
+    let f = fixture(&DeliveryProfile::standard()).await?;
+    let (_wt, head) = delivered_with_a_successor(&f, &finished_spec("t1")).await?;
+    let before = TaskId::parse("t1")?;
+    let child = TaskId::parse("t2")?;
+    f.h.store
+        .transition_task(
+            &before,
+            None,
+            TaskStatus::Parked,
+            Some(Activity::Waiting),
+            f.h.app.now(),
+        )
+        .await?;
+    {
+        let mut pulls = f.h.github.pulls.lock().map_err(|_| "pull fixture")?;
+        let replacement = yulius_app::ports::github::GhPull {
+            number: 2,
+            mergeable: Some(true),
+            ..pulls[0].clone()
+        };
+        pulls[0].state = "closed".into();
+        pulls[0].merged = true;
+        pulls.push(replacement);
+    }
+    f.h.github.set_checks(&head, ChecksState::Failure);
+    // GitHub recorded the merge before Yulius; the new PR is already red.
+    f.h.app.advance_chains(&before).await;
+    assert_eq!(
+        f.h.store.task(&child).await?.ok_or("successor")?.status,
+        TaskStatus::Chained
+    );
+    let record = f.h.store.delivery(&before).await?.ok_or("delivery")?;
+    assert!(
+        f.h.store
+            .transition_delivery(
+                &record.stage,
+                &yulius_app::delivery::DeliveryRecord {
+                    stage: DeliveryStage::MergedIntegration,
+                    ..record.clone()
+                }
+            )
+            .await?
+    );
+    f.h.app.advance_chains(&before).await;
+    assert_eq!(
+        f.h.store.task(&child).await?.ok_or("successor")?.status,
+        TaskStatus::Chained
+    );
+    f.h.github.set_checks(&head, ChecksState::Success);
+    f.h.app.advance_chains(&before).await;
+    assert_ne!(
+        f.h.store.task(&child).await?.ok_or("successor")?.status,
+        TaskStatus::Chained
+    );
+    Ok(())
+}
+
+/// A parked Waiting predecessor releases its chain only when all its PR checks can be read.
+#[tokio::test]
+async fn a_parked_predecessor_waits_for_the_complete_check_report() -> TestResult {
+    use yulius_app::ports::store_ext::CiStore;
+    let f = fixture(&DeliveryProfile::standard()).await?;
+    let (_wt, head) = delivered_with_a_successor(&f, &finished_spec("t1")).await?;
+    // The fixture changes the remote PR metadata independently of local Git.
+    *f.h.github.remote.lock().map_err(|_| "remote fixture")? = None;
+    let before = TaskId::parse("t1")?;
+    let child = TaskId::parse("t2")?;
+    // A running agent that ended its turn with a red PR still holds this chain.
+    f.h.github.set_checks(&head, ChecksState::Failure);
+    f.h.store
+        .transition_task(
+            &before,
+            None,
+            TaskStatus::Running,
+            Some(Activity::Waiting),
+            f.h.app.now(),
+        )
+        .await?;
+    f.h.app.advance_chains(&before).await;
+    assert_eq!(
+        f.h.store.task(&child).await?.ok_or("successor")?.status,
+        TaskStatus::Chained
+    );
+    f.h.store
+        .transition_task(
+            &before,
+            None,
+            TaskStatus::Parked,
+            Some(Activity::Waiting),
+            f.h.app.now(),
+        )
+        .await?;
+    // A recorded PrOpen stage by itself cannot release a parked idle answer.
+    // GitHub closed this PR without merging before the stored stage caught up.
+    edit_pull(&f, 1, |pull| pull.state = "closed".into());
+    f.h.app.advance_chains(&before).await;
+    assert_eq!(
+        f.h.store.task(&child).await?.ok_or("successor")?.status,
+        TaskStatus::Chained
+    );
+    edit_pull(&f, 1, |pull| pull.state = "open".into());
+    f.h.github.set_checks_report(
+        &head,
+        ChecksReport {
+            state: ChecksState::Success,
+            unreadable: vec![ChecksSource::WorkflowRuns],
+        },
+    );
+    f.h.app.advance_chains(&before).await;
+    assert_eq!(
+        f.h.store.task(&child).await?.ok_or("successor")?.status,
+        TaskStatus::Chained
+    );
+    f.h.github.set_checks(&head, ChecksState::Success);
+    let hold = f.h.github.hold_checks();
+    let app = f.h.app.clone();
+    let predecessor = before.clone();
+    let advancing = tokio::spawn(async move { app.advance_chains(&predecessor).await });
+    tokio::time::timeout(Duration::from_secs(5), f.h.github.checks_entered.notified()).await?;
+    edit_pull(&f, 1, |pull| pull.head_sha = "replacement-head".into());
+    f.h.github
+        .set_checks("replacement-head", ChecksState::Failure);
+    f.h.github.release_checks(&hold);
+    tokio::time::timeout(Duration::from_secs(5), advancing).await??;
+    assert_eq!(
+        f.h.store.task(&child).await?.ok_or("successor")?.status,
+        TaskStatus::Chained,
+        "the verified green head was replaced during its checks read"
+    );
+    edit_pull(&f, 1, |pull| pull.head_sha.clone_from(&head));
+    // The real green head is published. On a release base only GitHub can
+    // answer mergeability, independently of checkout ancestry.
+    edit_pull(&f, 1, |pull| {
+        pull.base = "release".into();
+        pull.mergeable = None;
+    });
+    f.h.app.advance_chains(&before).await;
+    assert_eq!(
+        f.h.store.task(&child).await?.ok_or("successor")?.status,
+        TaskStatus::Chained,
+        "the release base had unknown mergeability"
+    );
+    edit_pull(&f, 1, |pull| pull.mergeable = Some(true));
+    // A step is reopened while the server is checking a positive PR.
+    let read = f.h.github.hold_checks();
+    let app = f.h.app.clone();
+    let predecessor = before.clone();
+    let advance = tokio::spawn(async move { app.advance_chains(&predecessor).await });
+    tokio::time::timeout(Duration::from_secs(5), f.h.github.checks_entered.notified()).await?;
+    set_steps(&f, "t1", &["done", "in_progress"]).await?;
+    f.h.github.release_checks(&read);
+    advance.await?;
+    assert_eq!(
+        f.h.store.task(&child).await?.ok_or("successor")?.status,
+        TaskStatus::Chained,
+        "work reopened during the final PR read"
+    );
+    set_steps(&f, "t1", &["done", "done"]).await?;
+    use yulius_domain::ci::{CiRef, RunState};
+    let gate = Arc::new(tokio::sync::Notify::new());
+    *f.h.github
+        .pull_read_hold
+        .lock()
+        .map_err(|_| "pull fixture")? = Some(gate.clone());
+    let app = f.h.app.clone();
+    let predecessor = before.clone();
+    let advance = tokio::spawn(async move { app.advance_chains(&predecessor).await });
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        f.h.github.pull_read_entered.notified(),
+    )
+    .await?;
+    gate.notify_one();
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        f.h.github.pull_read_entered.notified(),
+    )
+    .await?;
+    insert_ci_attempt(
+        &f.h.store,
+        "rerun-red",
+        &head,
+        CiRef::PullRequest(1),
+        RunState::Failed,
+        10,
+        &[],
+    )
+    .await?;
+    *f.h.github
+        .pull_read_hold
+        .lock()
+        .map_err(|_| "pull fixture")? = None;
+    gate.notify_one();
+    advance.await?;
+    assert_eq!(
+        f.h.store.task(&child).await?.ok_or("successor")?.status,
+        TaskStatus::Chained,
+        "the same head failed during the confirming pull read"
+    );
+    f.h.app.advance_chains(&before).await;
+    assert_eq!(
+        f.h.store.task(&child).await?.ok_or("successor")?.status,
+        TaskStatus::Chained,
+        "the local failure still holds the chain while GitHub reports green"
+    );
+    insert_ci_attempt(
+        &f.h.store,
+        "rerun-active",
+        &head,
+        CiRef::PullRequest(1),
+        RunState::Running,
+        11,
+        &[],
+    )
+    .await?;
+    f.h.app.advance_chains(&before).await;
+    assert_eq!(
+        f.h.store.task(&child).await?.ok_or("successor")?.status,
+        TaskStatus::Chained,
+        "a successor cannot rely on the parked PR watcher to settle a running check"
+    );
+    assert!(
+        f.h.store
+            .transition_ci_run(
+                "rerun-active",
+                &[RunState::Running],
+                RunState::Passed,
+                &Default::default()
+            )
+            .await?
+    );
+    let probe = Arc::new(CheckoutProbe::default());
+    *f.git.checkout_probe.lock().map_err(|_| "checkout probe")? = Some(probe.clone());
+    let app = f.h.app.clone();
+    let predecessor = before.clone();
+    let advance = tokio::spawn(async move { app.advance_chains(&predecessor).await });
+    tokio::time::timeout(Duration::from_secs(5), probe.entered.notified()).await?;
+    f.h.store
+        .transition_task(
+            &before,
+            None,
+            TaskStatus::Running,
+            Some(Activity::Working),
+            f.h.app.now(),
+        )
+        .await?;
+    probe.release.notify_one();
+    advance.await?;
+    assert_eq!(
+        f.h.store.task(&child).await?.ok_or("successor")?.status,
+        TaskStatus::Chained,
+        "the predecessor resumed while the final checkout check waited"
+    );
+    f.h.store
+        .transition_task(
+            &before,
+            None,
+            TaskStatus::Parked,
+            Some(Activity::Waiting),
+            f.h.app.now(),
+        )
+        .await?;
+    f.h.app.advance_chains(&before).await;
+    assert_ne!(
+        f.h.store.task(&child).await?.ok_or("successor")?.status,
+        TaskStatus::Chained
+    );
     Ok(())
 }
 
