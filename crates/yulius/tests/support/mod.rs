@@ -61,9 +61,6 @@ pub struct FakeGitHub {
     pub callback_entered: tokio::sync::Notify,
     /// Pull requests (delivery tests).
     pub pulls: Mutex<Vec<GhPull>>,
-    /// Hold a PR metadata read while an owner decision is committed.
-    pub pull_read_hold: Mutex<Option<Arc<tokio::sync::Notify>>>,
-    pub pull_read_entered: tokio::sync::Notify,
     /// Simulates a failed repository-wide overview while individual PRs remain readable.
     pub fail_overview_pulls: std::sync::atomic::AtomicBool,
     /// The branch of every `branch_pulls` call, in order: one GitHub request each (the hygiene
@@ -121,7 +118,6 @@ pub struct FakeGitHub {
     pub issue_state_calls: std::sync::atomic::AtomicUsize,
     /// When set, reading checks waits for it (a slow GitHub); `checks_entered` says a read began.
     pub checks_hold: Mutex<Option<Arc<tokio::sync::Notify>>>,
-    checks_hold_sha: Mutex<Option<String>>,
     pub checks_entered: tokio::sync::Notify,
     /// When set, permission lookups wait for it (a slow GitHub); `access_entered` says one began.
     pub access_hold: Mutex<Option<Arc<tokio::sync::Notify>>>,
@@ -132,6 +128,9 @@ pub struct FakeGitHub {
     pub strict: std::sync::atomic::AtomicBool,
     /// The next this many reads of pull requests show the heads as they were: GitHub has not
     /// caught up with a push yet.
+    /// Hold metadata reads while a same-head CI rerun finishes.
+    pub pull_read_hold: Mutex<Option<Arc<tokio::sync::Notify>>>,
+    pub pull_read_entered: tokio::sync::Notify,
     pub stale_reads: Mutex<u32>,
 }
 
@@ -526,15 +525,7 @@ impl GitHubPort for FakeGitHub {
     }
     async fn checks(&self, _: &Secret, _: &str, _: &str, sha: &str) -> AppResult<ChecksReport> {
         let hold = self.checks_hold.lock().ok().and_then(|h| h.clone());
-        let selected = self
-            .checks_hold_sha
-            .lock()
-            .map_err(AppError::internal)?
-            .as_deref()
-            .is_none_or(|wanted| wanted == sha);
-        if let Some(hold) = hold
-            && selected
-        {
+        if let Some(hold) = hold {
             self.checks_entered.notify_one();
             hold.notified().await;
         }
@@ -1338,11 +1329,6 @@ impl FakeGitHub {
         }
         hold
     }
-    /// Hold just the selected head while independent checks can complete.
-    pub fn hold_checks_for(&self, sha: &str) -> AppResult<Arc<tokio::sync::Notify>> {
-        *self.checks_hold_sha.lock().map_err(AppError::internal)? = Some(sha.to_owned());
-        Ok(self.hold_checks())
-    }
     /// Holds every permission lookup until [`FakeGitHub::release_access`].
     pub fn hold_access(&self) -> Arc<tokio::sync::Notify> {
         let hold = Arc::new(tokio::sync::Notify::new());
@@ -1361,9 +1347,6 @@ impl FakeGitHub {
     }
     /// Lets the held checks read (and every later one) go on.
     pub fn release_checks(&self, hold: &tokio::sync::Notify) {
-        if let Ok(mut sha) = self.checks_hold_sha.lock() {
-            *sha = None;
-        }
         if let Ok(mut h) = self.checks_hold.lock() {
             *h = None;
         }

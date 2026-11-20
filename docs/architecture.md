@@ -2092,12 +2092,11 @@ resume waits `queued` with its prompt. A queued task's summary carries `queue_re
 limit or an update), and `GET /api/capacity` counts working, idle, parked and queued sessions for
 the Capacity card.
 
-The parked group reads the recorded PR head, plan, spec and goal. Task rows share a bounded
-lookup budget, with up to eight independent reads in parallel. Local Git workers share an
-eight-slot limit across requests and hold their slots until Git returns, even if the page times out.
-The chain applies the same
-eligibility facts and rechecks the owner's plan and decisions after waiting for the PR.
-A missing check report or a head that changed during verification holds the dependent task.
+Before a successor starts, Yulius checks its parked predecessor’s declared work, goal and
+outstanding owner requests. It verifies the recorded PR and current open PRs on the task
+branch through the same lookup used for parking. A waiting successor requires settled checks.
+An externally opened replacement can hold the successor after the recorded delivery merged.
+Yulius rechecks local work and durable CI after the remote reads.
 
 The end-of-day digest (`yulius-app/src/digest.rs`, SPEC-512 part 3,
 [decision 0380](decisions/0380-an-end-of-day-digest-built-from-task-state.md)) runs from the same

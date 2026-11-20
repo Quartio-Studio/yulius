@@ -93,18 +93,11 @@ struct RealGit {
     ahead_behind_error: std::sync::Mutex<Option<String>>,
     /// While set, the remote's branches cannot be read (`ls-remote` fails, SPEC-139).
     remote_unreadable: std::sync::atomic::AtomicBool,
-    /// A Git worker already dispatched by the adapter outlives its caller.
-    parked_git_hold: std::sync::Mutex<Option<Arc<ParkedGitHold>>>,
     /// While set, a refresh of a clone fails (SPEC-493 fix 6).
     fetch_fails: std::sync::atomic::AtomicBool,
     /// Moved right after every refresh of a clone, as an agent racing it would: `(ref, commit)`
     /// (review round 2 of SPEC-493 fix 6).
     forged_after_fetch: std::sync::Mutex<Option<(String, String)>>,
-}
-
-struct ParkedGitHold {
-    started: std::sync::atomic::AtomicUsize,
-    released: tokio::sync::Semaphore,
 }
 
 /// An injected push failure, as GitHub's `! [remote rejected] … (failed)` (#366).
@@ -325,22 +318,6 @@ impl GitPort for RealGit {
     }
 
     async fn resolve_commit(&self, repo: &Path, rev: &str) -> AppResult<Option<String>> {
-        let hold = self
-            .parked_git_hold
-            .lock()
-            .map_err(AppError::internal)?
-            .clone();
-        if rev == "origin/dev"
-            && let Some(hold) = hold
-        {
-            tokio::spawn(async move {
-                hold.started
-                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                let _ = hold.released.acquire().await;
-            })
-            .await
-            .map_err(AppError::internal)?;
-        }
         crate::support::confined_git()
             .resolve_commit(repo, rev)
             .await
@@ -841,7 +818,6 @@ async fn fixture_with(
         push_failure: std::sync::Mutex::default(),
         ahead_behind_error: std::sync::Mutex::default(),
         remote_unreadable: std::sync::atomic::AtomicBool::default(),
-        parked_git_hold: Default::default(),
         fetch_fails: std::sync::atomic::AtomicBool::default(),
         forged_after_fetch: std::sync::Mutex::default(),
     });
@@ -4726,7 +4702,6 @@ async fn a_historical_parked_goal_keeps_its_owner_and_chain_state_after_restart(
     let parked = f.h.store.task(&before).await?.ok_or("parked")?;
     let summary = fresh.task_summary(&parked).await?;
     assert!(summary.goal_unfinished);
-    assert_eq!(summary.parked_needs_you, Some(true));
     fresh.advance_chains(&before).await;
     assert_eq!(
         f.h.store.task(&child).await?.ok_or("successor")?.status,
@@ -4735,11 +4710,6 @@ async fn a_historical_parked_goal_keeps_its_owner_and_chain_state_after_restart(
     let saved = dir.with_extension("saved");
     std::fs::rename(&dir, &saved)?;
     std::fs::write(&dir, b"not a directory")?;
-    assert_eq!(
-        fresh.task_summary(&parked).await?.parked_needs_you,
-        Some(true),
-        "an unreadable historic goal is still unresolved"
-    );
     fresh.advance_chains(&before).await;
     assert_eq!(
         f.h.store.task(&child).await?.ok_or("successor")?.status,
@@ -4764,20 +4734,12 @@ async fn a_historical_parked_goal_keeps_its_owner_and_chain_state_after_restart(
             now,
         )
         .await?;
-    assert_eq!(
-        fresh.task_summary(&parked).await?.parked_needs_you,
-        Some(true)
-    );
     fresh.advance_chains(&before).await;
     assert_eq!(
         f.h.store.task(&child).await?.ok_or("successor")?.status,
         TaskStatus::Chained
     );
     f.h.store.set_task_needs_you(&before, None, now).await?;
-    assert_eq!(
-        fresh.task_summary(&parked).await?.parked_needs_you,
-        Some(false)
-    );
     fresh.advance_chains(&before).await;
     assert_ne!(
         f.h.store.task(&child).await?.ok_or("successor")?.status,
@@ -4807,7 +4769,6 @@ async fn a_parked_achieved_goal_waits_for_its_failed_ordinary_run() -> TestResul
             f.h.app.now(),
         )
         .await?;
-    let parked = f.h.store.task(&before).await?.ok_or("parked")?;
     // This test owns a fixed external PR. The independent head-replacement
     // fixture exercises live Git discovery and local mergeability.
     *f.h.github.remote.lock().map_err(|_| "remote fixture")? = None;
@@ -4826,11 +4787,6 @@ async fn a_parked_achieved_goal_waits_for_its_failed_ordinary_run() -> TestResul
         &[],
     )
     .await?;
-    assert_eq!(
-        app.task_summary(&parked).await?.parked_needs_you,
-        Some(true),
-        "a pending remote report hid the failed ordinary run"
-    );
     app.advance_chains(&before).await;
     assert_eq!(
         f.h.store.task(&child).await?.ok_or("successor")?.status,
@@ -4848,9 +4804,10 @@ async fn a_parked_achieved_goal_waits_for_its_failed_ordinary_run() -> TestResul
         &[],
     )
     .await?;
+    f.h.app.advance_chains(&before).await;
     assert_eq!(
-        f.h.app.task_summary(&parked).await?.parked_needs_you,
-        Some(true)
+        f.h.store.task(&child).await?.ok_or("successor")?.status,
+        TaskStatus::Chained
     );
     insert_ci_attempt(
         &f.h.store,
@@ -4863,15 +4820,12 @@ async fn a_parked_achieved_goal_waits_for_its_failed_ordinary_run() -> TestResul
     )
     .await?;
     f.h.github.set_checks(&head, ChecksState::Failure);
+    app.advance_chains(&before).await;
     assert_eq!(
-        app.task_summary(&parked).await?.parked_needs_you,
-        Some(true)
+        f.h.store.task(&child).await?.ok_or("successor")?.status,
+        TaskStatus::Chained
     );
     f.h.github.set_checks(&head, ChecksState::Success);
-    assert_eq!(
-        app.task_summary(&parked).await?.parked_needs_you,
-        Some(false)
-    );
     app.advance_chains(&before).await;
     assert_ne!(
         f.h.store.task(&child).await?.ok_or("successor")?.status,
@@ -4881,50 +4835,62 @@ async fn a_parked_achieved_goal_waits_for_its_failed_ordinary_run() -> TestResul
 }
 
 #[tokio::test]
-async fn overlapping_parked_status_reads_bound_git_workers_after_timeouts() -> TestResult {
+async fn a_parked_successor_waits_for_the_replacement_ordinary_pr() -> TestResult {
+    use yulius_domain::delivery::DeliveryStage;
     let f = fixture(&DeliveryProfile::standard()).await?;
     let (_wt, head) = delivered_with_a_successor(&f, &finished_spec("t1")).await?;
-    let id = TaskId::parse("t1")?;
+    let before = TaskId::parse("t1")?;
+    let child = TaskId::parse("t2")?;
     f.h.store
         .transition_task(
-            &id,
+            &before,
             None,
             TaskStatus::Parked,
             Some(Activity::Waiting),
             f.h.app.now(),
         )
         .await?;
-    let task = f.h.store.task(&id).await?.ok_or("task")?;
-    let mut config = f.h.app.config.clone();
-    config.ci.enabled = false;
-    let app = yulius_app::context::App::new(config, f.h.app.deps.clone());
-    *f.h.github.remote.lock().map_err(|_| "remote")? = None;
-    f.h.github.set_checks(&head, ChecksState::Success);
-    edit_pull(&f, 1, |pull| pull.mergeable = Some(true));
-    let hold = Arc::new(ParkedGitHold {
-        started: Default::default(),
-        released: tokio::sync::Semaphore::new(0),
-    });
-    *f.git.parked_git_hold.lock().map_err(|_| "git hold")? = Some(hold.clone());
-    let checked = async {
-        for _ in 0..2 {
-            let reads = (0..12).map(|_| app.task_summary(&task));
-            for row in futures::future::try_join_all(reads).await? {
-                assert_eq!(row.parked_needs_you, Some(true));
-            }
-        }
-        Ok::<_, AppError>(())
+    {
+        let mut pulls = f.h.github.pulls.lock().map_err(|_| "pull fixture")?;
+        let replacement = yulius_app::ports::github::GhPull {
+            number: 2,
+            mergeable: Some(true),
+            ..pulls[0].clone()
+        };
+        pulls[0].state = "closed".into();
+        pulls[0].merged = true;
+        pulls.push(replacement);
     }
-    .await;
-    let started = hold.started.load(std::sync::atomic::Ordering::SeqCst);
-    *f.git.parked_git_hold.lock().map_err(|_| "git hold")? = None;
-    hold.released.close();
-    checked?;
-    assert!(
-        (1..=8).contains(&started),
-        "{started} Git workers started before any finished"
+    f.h.github.set_checks(&head, ChecksState::Failure);
+    // GitHub recorded the merge before Yulius; the new PR is already red.
+    f.h.app.advance_chains(&before).await;
+    assert_eq!(
+        f.h.store.task(&child).await?.ok_or("successor")?.status,
+        TaskStatus::Chained
     );
-    assert_eq!(app.task_summary(&task).await?.parked_needs_you, Some(false));
+    let record = f.h.store.delivery(&before).await?.ok_or("delivery")?;
+    assert!(
+        f.h.store
+            .transition_delivery(
+                &record.stage,
+                &yulius_app::delivery::DeliveryRecord {
+                    stage: DeliveryStage::MergedIntegration,
+                    ..record.clone()
+                }
+            )
+            .await?
+    );
+    f.h.app.advance_chains(&before).await;
+    assert_eq!(
+        f.h.store.task(&child).await?.ok_or("successor")?.status,
+        TaskStatus::Chained
+    );
+    f.h.github.set_checks(&head, ChecksState::Success);
+    f.h.app.advance_chains(&before).await;
+    assert_ne!(
+        f.h.store.task(&child).await?.ok_or("successor")?.status,
+        TaskStatus::Chained
+    );
     Ok(())
 }
 
@@ -4933,6 +4899,8 @@ async fn overlapping_parked_status_reads_bound_git_workers_after_timeouts() -> T
 async fn a_parked_predecessor_waits_for_the_complete_check_report() -> TestResult {
     let f = fixture(&DeliveryProfile::standard()).await?;
     let (_wt, head) = delivered_with_a_successor(&f, &finished_spec("t1")).await?;
+    // The fixture changes the remote PR metadata independently of local Git.
+    *f.h.github.remote.lock().map_err(|_| "remote fixture")? = None;
     let before = TaskId::parse("t1")?;
     let child = TaskId::parse("t2")?;
     // A running agent that ended its turn with a red PR still holds this chain.
@@ -4984,21 +4952,10 @@ async fn a_parked_predecessor_waits_for_the_complete_check_report() -> TestResul
     f.h.github.set_checks(&head, ChecksState::Success);
     let hold = f.h.github.hold_checks();
     let app = f.h.app.clone();
-    let parked = f.h.store.task(&before).await?.ok_or("parked predecessor")?;
     let predecessor = before.clone();
     let advancing = tokio::spawn(async move { app.advance_chains(&predecessor).await });
     tokio::time::timeout(Duration::from_secs(5), f.h.github.checks_entered.notified()).await?;
-    // GitHub answers after the owner's bounded list read. The chain can still
-    // use the complete green report from its already pending background read.
-    assert_eq!(
-        f.h.app.task_summary(&parked).await?.parked_needs_you,
-        Some(true)
-    );
-    // The summary started a second held read. Consume its notification so the
-    // later plan-reopening fixture waits for its own read.
-    tokio::time::timeout(Duration::from_secs(5), f.h.github.checks_entered.notified()).await?;
     edit_pull(&f, 1, |pull| pull.head_sha = "replacement-head".into());
-    *f.h.github.stale_reads.lock().map_err(|_| "pull fixture")? = 2;
     f.h.github
         .set_checks("replacement-head", ChecksState::Failure);
     f.h.github.release_checks(&hold);
@@ -5014,7 +4971,6 @@ async fn a_parked_predecessor_waits_for_the_complete_check_report() -> TestResul
         pull.mergeable = None;
         pull.head_sha = "external-green".into();
     });
-    *f.h.github.stale_reads.lock().map_err(|_| "pull fixture")? = 2;
     f.h.github
         .set_checks("external-green", ChecksState::Success);
     f.h.app.advance_chains(&before).await;
@@ -5033,17 +4989,8 @@ async fn a_parked_predecessor_waits_for_the_complete_check_report() -> TestResul
     let predecessor = before.clone();
     let advance = tokio::spawn(async move { app.advance_chains(&predecessor).await });
     tokio::time::timeout(Duration::from_secs(5), f.h.github.checks_entered.notified()).await?;
-    let app = f.h.app.clone();
-    let before_reopen = parked.clone();
-    let summary = tokio::spawn(async move { app.task_summary(&before_reopen).await });
-    tokio::time::timeout(Duration::from_secs(5), f.h.github.checks_entered.notified()).await?;
     set_steps(&f, "t1", &["done", "in_progress"]).await?;
     f.h.github.release_checks(&read);
-    assert_eq!(
-        summary.await??.parked_needs_you,
-        Some(true),
-        "the page also saw the open step before its PR read finished"
-    );
     advance.await?;
     assert_eq!(
         f.h.store.task(&child).await?.ok_or("successor")?.status,

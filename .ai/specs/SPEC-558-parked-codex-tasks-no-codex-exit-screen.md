@@ -32,7 +32,8 @@ Task #517 displayed Codex's exit instructions. The host drained shutdown output 
 - [x] Verify chain eligibility and refresh stale PR observations
 - [x] Keep unfinished plans, specs and goals live
 - [x] Verify PR checks and unpublished repairs before parking
-- [ ] Give parked PRs fair status reads and gate dependent tasks
+- [ ] Gate parked successors on declared work, owner decisions and current branch PRs
+- [ ] Give parked PRs fair status reads in task lists and Home
 - [ ] Refresh parked page and sidebar status independently of the Git overview
 - [ ] Keep failed integration candidates with their original owner
 - [ ] Deliver bounded Codex goal continuation to dev
@@ -93,14 +94,14 @@ A human request can take precedence over unfinished work in the task list. Both 
 - Live verification still needs an instance running this Yulius release. On a disposable task, observe a failed ordinary run between Stop and the scheduled digest, then verify that the same live attempt receives one watcher prompt despite lagging remote status. Repository tests used real Git and synthetic agents. Quartio-v2 #325 remains under its owner's control.
 - A test-only reproduction for step 11 reopened the database with four completed steps, a green ordinary head and a newer failed single-member candidate. The waiting task counted as Done. The live owner received one generic green-head rearm prompt that omitted the candidate's failure. This fixture does not establish which prompt reached the real #331 owner. Its attempt resumed work before the operator message.
 
-- Three review rounds of the combined status prototype identified separate delivery risks for integration candidates. The server delivery covers ordinary parked PR checks, fair reads and dependent tasks. Browser polling has its own delivery. The later candidate delivery covers persisted candidate failures, deduplication with the merge outcome and revalidation before automatic wake or parking.
+- Three review rounds of the combined status prototype identified separate delivery risks for integration candidates. The dependency delivery checks the current branch and recorded PR against declared work and human decisions. The task-list delivery gives parked PRs fair status reads. Browser polling has its own delivery. The later candidate delivery covers persisted candidate failures, deduplication with the merge outcome and revalidation before automatic wake or parking.
 - The ordinary status regressions reproduced cases where an unreadable or changing head, unknown mergeability, or a plan reopened during a check could release a successor. Browser coverage checks the parked task page and sidebar in both directions after a same-head rerun.
 - Live restart verification of the #331 sequence requires an instance running the candidate fix. Only a disposable task should be used.
 
 - The ordinary status review reproduced a same-head failure while GitHub confirmed the PR. On the prior implementation, the dependent task moved from Chained to Queued. A separate achieved-goal fixture showed Done when a pending GitHub report masked the PR's failed ordinary run. A single-batch deadline mutation made the healthy ninth row show Needs you.
 - Three browser review rounds reproduced stale parked groups after a failed overview, a partial overview, and a second CI update while the same overview remained held. The server summary carries the recorded PR identity and its verified group. A separate browser delivery will refresh that summary on each watched change independently of the overview. Its prototype passed 13 parked browser tests before the final held-overview finding.
 
-- On the server-only head, replacing the historical goal directory with an unreadable path changed the parked summary to Done. Temporarily hiding the durable owner-decision column released a successor to Queued. A limited MCP request started reading a parked PR after its first page was already full. All three regressions failed before the repairs. The bounded reads now preserve request order and stop at the requested limit. A Git worker holds its slot until the actual local command returns, including after its caller times out.
+- On the server-only head, replacing the historical goal directory with an unreadable path changed the parked summary to Done. Temporarily hiding the durable owner-decision column released a successor to Queued. A limited MCP request started reading a parked PR after its first page was already full. All three regressions failed before the prototype repairs. The list delivery will retain ordered reads, early exit and the Git worker cap. The dependency delivery reuses the parking supervisor’s verification of both recorded and branch PRs, including replacements published externally.
 
 ## Delivery slices
 

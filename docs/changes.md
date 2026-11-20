@@ -6,7 +6,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-20
 
-- Parked tasks and their dependent tasks use verified PR status. A slow PR leaves time for the other rows, and successors wait for complete checks and a finished plan (SPEC-558).
+- Successors wait for a parked predecessor’s plan, goal, owner decision and current PR checks, including a replacement PR opened after the recorded delivery merged (SPEC-558).
 - Parallel ADR additions keep their numeric order in author updates and protected merge trains (SPEC-568, #1515).
 
 - Sandbox browsers skip Chrome’s default apps. Older profiles can take the extension blocklist
