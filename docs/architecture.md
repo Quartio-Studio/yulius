@@ -3721,6 +3721,8 @@ connection (no byte for at least 5 minutes) for a new one instead of refusing it
 holding connections cannot cut a sandbox's agents off from Yulius, also after a server restart,
 which does not restart the holder
 ([decision 0241](decisions/0241-a-full-relay-closes-its-longest-idle-connection-and-the-superagent-restarts-in-place.md)).
+Stopping a holder's host-side `out.sock` relay cancels its accepted connections, closes both
+socket endpoints and releases their places.
 The proxy also counts each connection's run (agent run, CI job, Superagent shell). When nothing was
 idle for 5 minutes, a full sandbox share takes the oldest connection of its busiest other run, and
 the full proxy that of the busiest sandbox, if it holds at least 2 more than the asker, so one busy
