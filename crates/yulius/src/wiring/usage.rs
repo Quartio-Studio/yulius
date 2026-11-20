@@ -717,6 +717,84 @@ mod tests {
         Ok(())
     }
 
+    /// Calls the public probe against one local Messages response. The socket stays open
+    /// while the caller waits, so an unfinished chunked stream tests an early return.
+    async fn model_answer_over_http(
+        response: &[u8],
+    ) -> Result<Result<ModelAnswer, UsageFailure>, Box<dyn std::error::Error>> {
+        use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let probe = ProviderUsage::at(format!("http://{}", listener.local_addr()?))?;
+        let mut read = tokio::spawn(async move {
+            probe
+                .model_answer(
+                    Provider::Anthropic,
+                    &Secret("synthetic".into()),
+                    PROBE_MODEL,
+                )
+                .await
+        });
+        tokio::time::timeout(TIMEOUT / 2, async {
+            let (mut socket, _) = tokio::select! {
+                answer = &mut read => return Ok(answer?),
+                connection = listener.accept() => connection?,
+            };
+            let mut request = String::new();
+            BufReader::new(&mut socket).read_line(&mut request).await?;
+            assert_eq!(request, "POST /v1/messages HTTP/1.1\r\n");
+            socket.write_all(response).await?;
+            Ok(read.await?)
+        })
+        .await
+        .map_err(|_| "model answer did not finish before the server closed the body")?
+    }
+
+    #[tokio::test]
+    async fn model_answer_reports_body_only_credit_refusals_and_success()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut response = format!(
+            "HTTP/1.1 429 Too Many Requests\r\nContent-Length: {}\r\n\r\n",
+            CREDITS_BODY.len()
+        )
+        .into_bytes();
+        response.extend_from_slice(CREDITS_BODY);
+        let refusal = model_answer_over_http(&response)
+            .await?
+            .map_err(|failure| failure.message)?;
+        assert_eq!(
+            refusal.refused,
+            Some(ReportedLimit {
+                scope: LimitScope::Model(None),
+                window_minutes: None,
+                resets_at: None,
+            })
+        );
+
+        let success =
+            model_answer_over_http(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n")
+                .await?
+                .map_err(|failure| failure.message)?;
+        assert_eq!(success, ModelAnswer::default());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn model_answer_stops_reading_an_oversized_refusal()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut reply = format!("HTTP/1.1 429 Too Many Requests\r\nTransfer-Encoding: chunked\r\nRetry-After: 17\r\n\r\n{:x}\r\n", MAX_BODY + 1).into_bytes();
+        reply.resize(reply.len() + MAX_BODY + 1, b' ');
+        reply.extend_from_slice(b"\r\n");
+        let failure = model_answer_over_http(&reply)
+            .await?
+            .err()
+            .ok_or("oversized refusal reported a usable model limit")?;
+        assert_eq!(
+            failure,
+            UsageFailure::throttled(Some(Duration::from_secs(17)))
+        );
+        Ok(())
+    }
+
     /// SPEC-503 CDX-008: a Codex sign-in the usage endpoint will not answer (403) says so in
     /// Codex's words, never Claude's.
     #[tokio::test]
