@@ -1157,10 +1157,9 @@ fn a_loss_recorded_while_the_reader_holds_the_park_still_parks() -> TestResult {
     Ok(())
 }
 
-/// PRK-004 (review round 3, W1): a parked task's summary says what its idle run's did: a spec
-/// that does not say done keeps it "Your turn" on the web as on the server.
+/// A declared unfinished spec keeps the idle session live.
 #[test]
-fn a_parked_tasks_summary_keeps_its_unfinished_work() -> TestResult {
+fn an_unfinished_spec_keeps_its_session() -> TestResult {
     let (_dir, data) = data_dir()?;
     let rt = runtime()?;
     rt.block_on(async {
@@ -1174,10 +1173,12 @@ fn a_parked_tasks_summary_keeps_its_unfinished_work() -> TestResult {
             .await?
             .ok_or("task")?;
         assert!(app.task_summary(&before).await?.spec_unfinished);
-        parked(&app, &id).await?;
+        past_the_grace(&app, &id).await?;
+        assert_eq!(app.park_idle_sessions_now().await, 0);
         let after = TaskStore::task(app.deps.store.as_ref(), &id)
             .await?
             .ok_or("task")?;
+        assert_eq!(after.status, TaskStatus::Running);
         assert!(app.task_summary(&after).await?.spec_unfinished);
         Ok::<_, Error>(())
     })?;
@@ -1185,11 +1186,9 @@ fn a_parked_tasks_summary_keeps_its_unfinished_work() -> TestResult {
     Ok(())
 }
 
-/// PRK-004 (review round 4, G1): a goal task whose goal failed is parked "Your turn", and stays
-/// so for a server started afresh, which has no session that knew the goal: the parked run's
-/// directory keeps it.
+/// A failed native goal has unfinished work even without a plan or pull request.
 #[test]
-fn a_parked_unfinished_goal_stays_your_turn_across_a_restart() -> TestResult {
+fn an_unfinished_goal_keeps_its_session() -> TestResult {
     let (_dir, data) = data_dir()?;
     let rt = runtime()?;
     rt.block_on(async {
@@ -1226,24 +1225,9 @@ fn a_parked_unfinished_goal_stays_your_turn_across_a_restart() -> TestResult {
             },
         )
         .await?;
-        parked(&app, &id).await?;
-        assert!(summary(app.clone(), id.clone()).await?.goal_unfinished);
-        // A server started afresh on the same data: no runtime knows the goal.
-        let (fresh, _) = start_with(
-            &data,
-            &fake,
-            agent,
-            0,
-            Arc::new(ScriptedUsage::default()),
-            |config| config.park_after_ms = 1,
-        )
-        .await?;
-        let shown = summary(fresh.clone(), id.clone()).await?;
-        assert_eq!(shown.status, "parked");
-        assert!(
-            shown.goal_unfinished,
-            "the parked run's directory keeps the goal's state"
-        );
+        past_the_grace(&app, &id).await?;
+        assert_eq!(app.park_idle_sessions_now().await, 0);
+        assert_eq!(summary(app.clone(), id.clone()).await?.status, "running");
         Ok::<_, Error>(())
     })?;
     rt.shutdown_timeout(Duration::from_secs(5));
@@ -1626,6 +1610,38 @@ fn a_handed_off_tasks_outcome_reaches_its_source() -> TestResult {
             app.deps.store.untold_handoffs().await?.is_empty(),
             "told once"
         );
+        Ok::<_, Error>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+#[test]
+fn an_idle_task_keeps_its_session_while_its_recorded_pr_cannot_be_read() -> TestResult {
+    use yulius_domain::delivery::DeliveryStage;
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let app = app(&data, 1, 1).await?;
+        let (id, _) = answered(&app, &data).await?;
+        app.deps
+            .store
+            .transition_delivery(
+                &DeliveryStage::None,
+                &yulius_app::delivery::DeliveryRecord {
+                    task_id: id.clone(),
+                    stage: DeliveryStage::PrOpen,
+                    pr_number: Some(1461),
+                    updated_at: app.now(),
+                },
+            )
+            .await?;
+        past_the_grace(&app, &id).await?;
+        // The fake project has no installation from which to read this head.
+        let digest = app.send_digests_now(Some(1)).await;
+        assert_eq!(digest.parked, 0);
+        assert_eq!(app.park_idle_sessions_now().await, 0);
+        assert_eq!(status_of(&app, &id).await.0, Some(TaskStatus::Running));
         Ok::<_, Error>(())
     })?;
     rt.shutdown_timeout(Duration::from_secs(5));

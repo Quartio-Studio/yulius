@@ -259,7 +259,8 @@ export function statusInfo(task) {
 
 /** A parked task as the idle running task it was, with no live overlay (SPEC-512 PRK-004). */
 function asIdleRun(task) {
-  return { ...task, status: 'running', background_shells: 0, yulius_wait: false, merge_armed: false, pause: null };
+  const activity = task.activity === 'done' && (workLeft(task) || task.goal_unfinished) ? 'waiting' : task.activity;
+  return { ...task, activity, status: 'running', background_shells: 0, yulius_wait: false, merge_armed: false, pause: null };
 }
 
 /** What a parked task's row says (SPEC-512 PRK-005). */
@@ -387,7 +388,12 @@ export function supertaskLine(task) {
 export function taskInfo(task, actionRequests, pr) {
   // A parked task is shown where it was, as its idle run would be, marked parked (SPEC-512 PRK-004).
   if (task.status === 'parked') {
-    const shown = taskInfo(asIdleRun(task), actionRequests, pr);
+    const idle = asIdleRun(task);
+    let shown = taskInfo(idle, actionRequests, pr);
+    if (shown.group === 'done' && task.goal_unfinished) shown = statusInfo(idle);
+    if (shown.group === 'done' && task.parked_needs_you) {
+      shown = statusInfo({ ...idle, activity: 'waiting', goal_unfinished: true });
+    }
     // Nothing of it goes on by itself: what would keep a running agent busy (its checks, a
     // conflict it is told of, a CI run to run again) is a person's now, never Working (review
     // round 1 of SPEC-512 part 1; the server's `parked_group`).

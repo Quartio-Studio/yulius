@@ -28,8 +28,8 @@ Task #517 displayed Codex's exit instructions. The host drained shutdown output 
 - [x] Keep unfinished tasks live and classify parked work accurately
 - [x] Document and verify the parking contract
 - [x] Deliver native Codex resume to dev
-- [ ] Preserve the parked grid until the resumed host attaches
-- [ ] Verify chain eligibility and refresh stale PR observations
+- [x] Preserve the parked grid until the resumed host attaches
+- [x] Verify chain eligibility and refresh stale PR observations
 - [ ] Deliver goal continuation and parking eligibility to dev
 - [ ] Recover screens from tasks parked before the upgrade
 
@@ -63,6 +63,11 @@ Capture a separate screen at the park decision because exiting can clear the ent
 - Eight Chromium parking tests passed, including all 90 rows of a saved desktop grid on a phone. The full browser suite on the same web assets passed 1,167 tests with one optional skip.
 
 - The first screen delivery candidate passed 76 scoped Rust tests and Clippy on the app, server and integration targets. Its reviewer identified an account removed after selection but before spawn. The real supervisor recorded the discarded attempt. With no replacement subscription, the prior reader then returned an empty string. The lookup now follows that resume past its discarded attempts. The regression exercises the cold tool and page while capacity waits and again while the replacement launch is held at `RunRecorded`.
+
+- [PR #1493](https://github.com/Quartio-Studio/yulius/pull/1493) delivered PKR-001 for new parks into `dev` on green CI at `215463547`. The final head passed 76 scoped Rust tests, including both cold readers across a discarded launch; Clippy on the affected targets passed.
+- The goal and delivery regression fixtures separately cover a current green head after an older failing observation, incomplete check sources, and whether a chained task can start after a historical parked predecessor.
+
+- Chromium reproduced a stale green PR in the overview overriding a parked task’s current Needs you classification from the server. With the server result taking precedence over a Done label, the stale and missing overview cases both passed in the eight parked-page tests.
 
 ## Delivery slices
 

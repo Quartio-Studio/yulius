@@ -310,6 +310,7 @@ impl App {
             // that run.
             goal_unfinished: idle_run && self.goal_unfinished_of(task).await,
             spec_unfinished: idle_run && self.spec_unfinished(&task.id).await,
+            parked_needs_you: task.status == TaskStatus::Parked && !self.shows_done(task).await,
             not_started,
             awaits_start_onboarding,
             pause: self.pause_view(task).await,

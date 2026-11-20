@@ -612,12 +612,24 @@ impl AttentionFacts {
         }
     }
 
+    /// Work that an idle session still owns, including repairing a red pull request.
+    #[must_use]
+    pub fn unfinished_work(&self) -> bool {
+        self.plan_open
+            || self.spec_unfinished
+            || self.goal_unfinished
+            || self.pull == Some(PullSignal::Failing)
+    }
+
     /// The group of a parked task (SPEC-512 PRK-004): the group of the idle run it was, with no
     /// live overlay (shells, `yulius wait`, an armed merge, a pause), and never Working: nothing
     /// of it goes on by itself, so what would keep a running agent busy (its checks running, a
     /// conflict its pull request watch tells it of, a CI run to run again, a first turn) waits
     /// for a person, who resumes it.
     fn parked_group(&self) -> TaskGroup {
+        if self.unfinished_work() {
+            return TaskGroup::NeedsYou;
+        }
         // The idle run it was, with nothing of a session going on (review round 2 of SPEC-512
         // part 1: the web's `asIdleRun` reads it the same way).
         let run = Self {
@@ -1000,7 +1012,11 @@ mod tests {
                         ..facts
                     }
                     .group();
-                    let want = if run == TaskGroup::Working {
+                    let want = if run == TaskGroup::Working
+                        || plan_open
+                        || spec_unfinished
+                        || goal_unfinished
+                    {
                         TaskGroup::NeedsYou
                     } else {
                         run

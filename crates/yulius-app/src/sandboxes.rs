@@ -31,7 +31,7 @@ impl ObservedPulls {
 
     /// The last observed pull request of a task: `Some(None)` when the overview listed the task
     /// without one, `None` when its sandbox was not read since the server started.
-    fn get(&self, sandbox: &SandboxId, task: &TaskId) -> Option<Option<PullSignal>> {
+    pub(crate) fn get(&self, sandbox: &SandboxId, task: &TaskId) -> Option<Option<PullSignal>> {
         let map = self.0.lock().ok()?;
         map.get(sandbox).map(|pulls| pulls.get(task).copied())
     }
@@ -148,14 +148,20 @@ impl App {
         // The pull request, the plan and the goal matter only after a finished turn: with no step
         // open and no unfinished goal, an idle agent answered (SPEC-429).
         let (pull, plan_open, spec_unfinished) = if finished {
-            let pull = match self.observed_pulls.get(&task.sandbox_id, &task.id) {
-                Some(observed) => observed,
-                // Not read since the server started: a merge recorded earlier is still known.
-                None => store
-                    .delivery(&task.id)
-                    .await?
-                    .filter(|record| crate::delivery::past_merge(&record.stage))
-                    .map(|_| PullSignal::Merged),
+            let pull = if task.status == TaskStatus::Parked {
+                // An incomplete overview can omit a task's recorded open PR.
+                self.task_pull_signal(task)
+                    .await
+                    .unwrap_or(Some(PullSignal::Errored))
+            } else {
+                match self.observed_pulls.get(&task.sandbox_id, &task.id) {
+                    Some(observed) => observed,
+                    None => store
+                        .delivery(&task.id)
+                        .await?
+                        .filter(|record| crate::delivery::past_merge(&record.stage))
+                        .map(|_| PullSignal::Merged),
+                }
             };
             let plan_open = plan_open(&store.steps(&task.id).await?);
             (pull, plan_open, self.spec_unfinished(&task.id).await)

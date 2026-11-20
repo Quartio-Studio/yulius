@@ -6,6 +6,9 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-20
 
+- Codex goal tasks continue after a turn with open steps or failing PR checks. Unfinished work
+  keeps its session through the idle grace period and digest parking (SPEC-558, #1490).
+
 - Newly parked tasks show their last agent screen, idle duration and resume instructions
   on the task page and through `task_screen` (SPEC-558, #1490).
 

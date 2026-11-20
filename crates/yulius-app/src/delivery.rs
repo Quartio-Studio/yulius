@@ -3449,6 +3449,57 @@ impl App {
         }
     }
 
+    /// Read the recorded pull's current head without requiring a previous Git overview.
+    pub(crate) async fn recorded_pull_signal(
+        &self,
+        task: &TaskRecord,
+        number: u64,
+    ) -> AppResult<Option<PullSignal>> {
+        let sandbox = self.dlv_sandbox_of(task).await?;
+        let token = self.dlv_installation_token(&sandbox).await?;
+        let pull = self
+            .deps
+            .github
+            .get_pull(&token, &sandbox.repo_owner, &sandbox.repo_name, number)
+            .await?;
+        if !is_open(&pull) {
+            return Ok(pull.merged.then_some(PullSignal::Merged));
+        }
+        let head = self.dlv_checks_at(&sandbox, &token, &pull.head_sha).await?;
+        if head.word != "failure" && (head.word == "unknown" || !head.unreadable.is_empty()) {
+            return Err(AppError::Upstream(
+                "pull request checks could not be read".into(),
+            ));
+        }
+        let checks = tested_checks_word(&delivery_profile(&sandbox), head.word);
+        let conflicts = matches!(checks, "success" | "none")
+            && self.pull_conflicts(task, &sandbox, &pull).await;
+        Ok(PullSignal::from_wire("open", checks, conflicts))
+    }
+
+    /// Preserve an unreadable recorded head as an error: parking needs to know
+    /// that the session is free to give up its work.
+    pub(crate) async fn task_pull_signal(
+        &self,
+        task: &TaskRecord,
+    ) -> AppResult<Option<PullSignal>> {
+        if let Some(record) = self.deps.store.delivery(&task.id).await? {
+            if past_merge(&record.stage) {
+                return Ok(Some(PullSignal::Merged));
+            }
+            if record.stage == DeliveryStage::PrOpen {
+                let number = record.pr_number.ok_or_else(|| {
+                    AppError::Internal("open delivery has no pull request number".into())
+                })?;
+                return self.recorded_pull_signal(task, number).await;
+            }
+        }
+        Ok(self
+            .observed_pulls
+            .get(&task.sandbox_id, &task.id)
+            .flatten())
+    }
+
     /// The part of [`App::task_is_done`] that needs no GitHub call: the turn ended, no background
     /// shell runs, and the goal is achieved or no declared work is left with the change merged. The
     /// session limit counts tasks by it (SES-101), many times a minute.
@@ -3511,8 +3562,11 @@ impl App {
         if running && self.merge_is_armed(&task.id) {
             return false;
         }
+        if parked && self.goal_unfinished_of(task).await {
+            return false;
+        }
         if (running || parked) && task.activity == Some(Activity::Done) {
-            return true;
+            return !parked || self.shows_done(task).await;
         }
         // One reading of its delivery for the whole decision: a merge recorded between two
         // readings would be "no news due" by the first and "merged" by the second.

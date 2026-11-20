@@ -19,7 +19,7 @@ use std::sync::atomic::Ordering;
 
 use serde_json::json;
 use yulius_domain::ids::SandboxId;
-use yulius_domain::task::{Activity, TaskGroup, TaskStatus};
+use yulius_domain::task::{Activity, PullSignal, TaskGroup, TaskStatus};
 
 use crate::context::App;
 use crate::model::{AttemptRecord, TaskOrigin, TaskRecord};
@@ -62,6 +62,8 @@ pub struct ParkFacts {
     pub activity: Option<Activity>,
     /// The list's group.
     pub group: TaskGroup,
+    /// Its plan, spec, goal or failing pull request still needs work.
+    pub unfinished: bool,
     /// A turn of its session is known to run.
     pub turn: bool,
     /// Background shells or subagents it left, or dynamic workflows not ended: it wakes by
@@ -90,6 +92,7 @@ impl ParkFacts {
             && self.status == TaskStatus::Running
             && self.activity.is_some_and(Activity::is_idle)
             && matches!(self.group, TaskGroup::NeedsYou | TaskGroup::Done)
+            && !self.unfinished
             && !self.turn
             && !self.background
             && !self.yulius
@@ -136,7 +139,7 @@ impl App {
             }
             let requested = requests.get(&task.sandbox_id).cloned().unwrap_or_default();
             if !self
-                .park_facts(&task, &requested, self.config.park_after_ms)
+                .park_facts(&task, &requested, self.config.park_after_ms, None)
                 .await
                 .parkable()
             {
@@ -153,13 +156,20 @@ impl App {
 
     /// [`ParkFacts::parkable`] for `task` as stored now: what [`App::park_task_now`] asks again
     /// under the launch lock.
-    pub(crate) async fn parkable_now(&self, task: &TaskRecord, rule: ParkRule) -> Option<i64> {
+    pub(crate) async fn parkable_now(
+        &self,
+        task: &TaskRecord,
+        rule: ParkRule,
+        current_pull: Option<PullSignal>,
+    ) -> Option<i64> {
         let requested = self.park_requests(&task.sandbox_id).await;
         let threshold = match rule {
             ParkRule::Grace => self.config.park_after_ms,
             ParkRule::Digest(ms) => ms,
         };
-        let facts = self.park_facts(task, &requested, threshold).await;
+        let facts = self
+            .park_facts(task, &requested, threshold, current_pull)
+            .await;
         let park = match rule {
             ParkRule::Grace => facts.parkable(),
             ParkRule::Digest(_) => facts.digest_parkable(
@@ -185,6 +195,7 @@ impl App {
         task: &TaskRecord,
         requested: &Requests,
         park_after_ms: u64,
+        current_pull: Option<PullSignal>,
     ) -> ParkFacts {
         let now = self.now().0;
         let quiet_ms = match self.deps.store.task_times(&task.id).await {
@@ -211,16 +222,22 @@ impl App {
                     || !runtime.with_workflows(|workflows| workflows.runs().is_empty())
             }
         };
-        let group = self
-            .task_group(task, &requested.all)
-            .await
-            .unwrap_or(TaskGroup::Working);
+        let mut facts = self.task_attention_facts(task, &requested.all).await.ok();
+        if let Some(facts) = &mut facts {
+            // The first pass checks local eligibility. Only the final pass supplies
+            // the current head, so a stale overview cannot veto a fresh check.
+            facts.pull = current_pull;
+        }
+        let group = facts
+            .as_ref()
+            .map_or(TaskGroup::Working, |facts| facts.group());
         ParkFacts {
             park_after_ms,
             quiet_ms,
             status: task.status,
             activity: task.activity,
             group,
+            unfinished: facts.is_none_or(|facts| facts.unfinished_work()),
             turn: runtime
                 .as_ref()
                 .is_some_and(|runtime| runtime.turn_in_progress()),
@@ -514,6 +531,7 @@ mod tests {
             status: TaskStatus::Running,
             activity: Some(Activity::Waiting),
             group: TaskGroup::NeedsYou,
+            unfinished: false,
             turn: false,
             background: false,
             yulius: false,

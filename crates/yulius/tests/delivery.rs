@@ -4508,6 +4508,61 @@ async fn working_and_queued_counts_split_the_sidebar_working_group() -> TestResu
         page.body
     );
     assert_eq!(counts().await?, (1, 5, 2));
+    // A historical parked goal with activity Done still needs a person for
+    // this errored run. Its chain must agree with the parked owner's group.
+    set_steps(&f, "t1", &["done", "done"]).await?;
+    set("t1", TaskStatus::Parked, Some(Activity::Done)).await?;
+    let before_id = TaskId::parse("t1")?;
+    let before = f.h.store.task(&before_id).await?.ok_or("predecessor")?;
+    let mut successor = before.clone();
+    successor.id = TaskId::parse("t-after-error")?;
+    successor.number = 91;
+    successor.status = TaskStatus::Chained;
+    successor.activity = None;
+    successor.branch = None;
+    successor.worktree_path = None;
+    let waiting = f.h.store.insert_task(&successor).await?;
+    yulius_app::ports::store_ext::IntakeStore::insert_chain(
+        &f.h.store,
+        &yulius_app::intake::ChainRecord {
+            task_id: waiting.id.clone(),
+            after_task_id: Some(before_id.clone()),
+            after_number: before.number,
+            blocked_reason: None,
+            created_at: f.h.app.now(),
+            rule: None,
+        },
+    )
+    .await?;
+    f.h.app.advance_chains(&before_id).await;
+    assert_eq!(
+        f.h.store
+            .task(&waiting.id)
+            .await?
+            .ok_or("successor")?
+            .status,
+        TaskStatus::Chained
+    );
+    // Once the same predecessor's PR has merged, the chain can start.
+    yulius_app::ports::github::GitHubPort::merge_pull(
+        f.h.github.as_ref(),
+        &Secret("token-carol".into()),
+        "Quartio-Studio",
+        "shop",
+        1,
+        "squash",
+        &head,
+    )
+    .await?;
+    f.h.app.advance_chains(&before_id).await;
+    assert_ne!(
+        f.h.store
+            .task(&waiting.id)
+            .await?
+            .ok_or("successor")?
+            .status,
+        TaskStatus::Chained
+    );
     Ok(())
 }
 
