@@ -197,7 +197,8 @@ person's decision is read as holding after an approval).
   verdict line) and whether a usage limit cut it off. Resuming an unfinished reviewer continues its record.
   Once it has reported, its next start on this pull request opens the round after the last
   reported round, including when it gives the same verdict again. A repeated stop preserves
-  the completed record. See [ADR-0400](../../docs/decisions/0400-continuing-a-reviewer-after-its-report-opens-the-next-round.md).
+  the completed record. On restart, dated transcript observations go to the round that ran at
+  their recorded time. An undated replay can identify a single round by reviewer ID. See [ADR-0400](../../docs/decisions/0400-continuing-a-reviewer-after-its-report-opens-the-next-round.md).
 - **REV-005** A merge writes the models into its record: `audit_log` action
   `delivery.review.models` at the merge, with the model of each run that wrote the pull request
   (`attempts.model`) and each round's number, model, verdict and head; the rounds get the pull

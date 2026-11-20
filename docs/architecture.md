@@ -1404,7 +1404,8 @@ pull request's rounds in the same transaction that records its merge
 The transcript watch also reads each subagent of the session's own thread
 (`<session>/subagents/agent-<id>.jsonl`): the model of its answers, once per change
 (`Observation::SubagentAnswered`), and a usage limit that refused it
-(`Observation::SubagentCutOff`); the supervisor notes both on the round that subagent runs
+(`Observation::SubagentCutOff`). The supervisor uses the transcript time to identify the round
+that ran when the observation was written, including during restart replay
 (`model_answered`, `cut_off`). The delivery view (`Delivery.review_rounds`, also in
 `delivery_status`) lists the open pull request's rounds. When a merge is recorded,
 `dlv_transition_at` writes the merge record `delivery.review.models` (actor `yulius`): the

@@ -942,7 +942,7 @@ fn subagent_id(file: &Path) -> Option<String> {
 impl Watch {
     /// What a line of the subagent `id`'s transcript says of it (SPEC-493 REV-004): the model of
     /// an answer when it is not the one last seen, or that a usage limit cut it off.
-    fn subagent_fact(&mut self, id: &str, observed: &Observed) -> Option<Observation> {
+    fn subagent_fact(&mut self, id: &str, observed: &Observed, line: &str) -> Option<Observation> {
         match observed {
             Observed::AssistantMessage {
                 model: Some(model), ..
@@ -951,6 +951,7 @@ impl Watch {
                 (!known).then(|| {
                     self.subagent_models.insert(id.to_owned(), model.clone());
                     Observation::SubagentAnswered {
+                        at: claude::record_time(line),
                         agent_id: id.to_owned(),
                         model: model.clone(),
                     }
@@ -1036,7 +1037,7 @@ impl TranscriptWatch for Watch {
                     for observed in claude::observe_line(&side.line) {
                         self.acc.observe_side(&observed);
                         if let Some(id) = &subagent {
-                            out.extend(self.subagent_fact(id, &observed));
+                            out.extend(self.subagent_fact(id, &observed, &side.line));
                         }
                         if let Some(agent) = &side.agent {
                             if matches!(observed, Observed::LimitReached { .. }) {
@@ -1490,7 +1491,8 @@ mod tests {
             answered,
             [&Observation::SubagentAnswered {
                 agent_id: "a73a9170080d69b92".into(),
-                model: "claude-fable-5-2".into()
+                model: "claude-fable-5-2".into(),
+                at: yulius_domain::time::parse_rfc3339("2026-11-15T10:00:01.000Z")
             }]
         );
         let mut file = std::fs::OpenOptions::new().append(true).open(&agent)?;
@@ -1500,7 +1502,8 @@ mod tests {
         let seen = watch.poll().map_err(|err| err.to_string())?;
         assert!(seen.contains(&Observation::SubagentAnswered {
             agent_id: "a73a9170080d69b92".into(),
-            model: "claude-opus-5-5".into()
+            model: "claude-opus-5-5".into(),
+            at: yulius_domain::time::parse_rfc3339("2026-11-15T10:00:01.000Z")
         }));
         assert!(
             seen.iter().any(

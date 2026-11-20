@@ -306,7 +306,7 @@ async fn continued_review_keeps_history_across_repeated_hook_delivery() -> TestR
         .await?;
     a_round(&h, "rev-1", None).await?;
     h.store
-        .note_review_subagent(&task, "rev-1", Some("first-model"), true)
+        .note_review_subagent(&task, "rev-1", Some("first-model"), true, Some(h.app.now()))
         .await?;
     let start = json!({"agent_id":"rev-1","agent_type":"yulius-reviewer"});
     let stop = json!({"agent_id":"rev-1","agent_type":"yulius-reviewer",
@@ -357,7 +357,13 @@ async fn continued_review_keeps_history_across_repeated_hook_delivery() -> TestR
     assert!(open[1].ended_at.is_none());
     assert!(!open[1].cut_off);
     h.store
-        .note_review_subagent(&task, "rev-1", Some("second-model"), false)
+        .note_review_subagent(
+            &task,
+            "rev-1",
+            Some("second-model"),
+            false,
+            Some(h.app.now()),
+        )
         .await?;
     let approve = json!({"agent_id":"rev-1","agent_type":"yulius-reviewer",
         "last_assistant_message":"Verdict: approve"});
@@ -1072,14 +1078,26 @@ async fn a_rounds_answering_model_and_cut_off_are_noted() -> TestResult {
     a_round(&h, "rev-1", None).await?;
     let store = &h.store;
     store
-        .note_review_subagent(&task, "rev-1", Some("claude-fable-5-2"), false)
+        .note_review_subagent(
+            &task,
+            "rev-1",
+            Some("claude-fable-5-2"),
+            false,
+            Some(h.app.now()),
+        )
         .await?;
     store
-        .note_review_subagent(&task, "rev-1", None, true)
+        .note_review_subagent(&task, "rev-1", None, true, Some(h.app.now()))
         .await?;
     // A subagent that is no round's changes nothing.
     store
-        .note_review_subagent(&task, "other", Some("claude-haiku-4-5"), true)
+        .note_review_subagent(
+            &task,
+            "other",
+            Some("claude-haiku-4-5"),
+            true,
+            Some(h.app.now()),
+        )
         .await?;
     let open = rounds(&h, &task, true).await?;
     assert_eq!(open.len(), 1);

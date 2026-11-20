@@ -792,14 +792,22 @@ pub trait CoordinationStore: Send + Sync {
         from: Option<Timestamp>,
         to: Option<Timestamp>,
     ) -> AppResult<Vec<ReviewRoundRecord>>;
-    /// Notes on the open round run by `subagent` the model that answered it (when given) and
-    /// that a usage limit cut it off (when `cut_off`).
+    /// The model of an unfinished reviewer whose round matches the observation time.
+    async fn unfinished_review_model_at(
+        &self,
+        task: &TaskId,
+        subagent: &str,
+        at: Timestamp,
+    ) -> AppResult<Option<String>>;
+    /// Notes the model or cut-off on the round that ran when the source record was written.
+    /// An undated replay can identify a reviewer with a single round.
     async fn note_review_subagent(
         &self,
         task: &TaskId,
         subagent: &str,
         model: Option<&str>,
         cut_off: bool,
+        at: Option<Timestamp>,
     ) -> AppResult<()>;
     /// Ends the open round run by `subagent` with its report: when, its verdict, and the model
     /// that answered when known. `false` when no open round is that subagent's.

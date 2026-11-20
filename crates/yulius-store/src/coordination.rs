@@ -96,6 +96,27 @@ fn review_round_from_row(row: &Row<'_>) -> rusqlite::Result<ReviewRoundRecord> {
     })
 }
 
+/// With just one round the reviewer ID suffices (including legacy undated records).
+/// After a continuation, the transcript time identifies the run. Merged history is frozen.
+fn round_for_observation(
+    c: &rusqlite::Connection,
+    task: &str,
+    subagent: &str,
+    at: Option<Timestamp>,
+) -> rusqlite::Result<Option<(String, String, Option<i64>)>> {
+    c.query_row(
+        "SELECT id, model, ended_at FROM review_rounds \
+         WHERE task_id = ?1 AND subagent_id = ?2 AND merged_at IS NULL \
+         AND ((started_at <= ?3 AND (ended_at IS NULL OR ended_at >= ?3)) \
+              OR NOT EXISTS (SELECT 1 FROM review_rounds WHERE task_id = ?1 \
+                  AND subagent_id = ?2 AND merged_at IS NULL LIMIT 1 OFFSET 1)) \
+         ORDER BY started_at DESC, rowid DESC LIMIT 1",
+        params![task, subagent, at.map(|t| t.0)],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+    )
+    .optional()
+}
+
 #[async_trait]
 impl CoordinationStore for SqliteStore {
     async fn replace_steps(
@@ -478,27 +499,46 @@ impl CoordinationStore for SqliteStore {
         .await
     }
 
+    async fn unfinished_review_model_at(
+        &self,
+        task: &TaskId,
+        subagent: &str,
+        at: Timestamp,
+    ) -> AppResult<Option<String>> {
+        let (task, subagent) = (task.as_str().to_owned(), subagent.to_owned());
+        self.call(move |c| {
+            let round = round_for_observation(c, &task, &subagent, Some(at)).map_err(db)?;
+            Ok(round.and_then(|(_, model, ended)| ended.is_none().then_some(model)))
+        })
+        .await
+    }
+
     async fn note_review_subagent(
         &self,
         task: &TaskId,
         subagent: &str,
         model: Option<&str>,
         cut_off: bool,
+        at: Option<Timestamp>,
     ) -> AppResult<()> {
-        let (t, s, m) = (
+        let (task, subagent, model) = (
             task.as_str().to_owned(),
             subagent.to_owned(),
             model.map(str::to_owned),
         );
         self.call(move |c| {
-            c.execute(
-                "UPDATE review_rounds SET model_answered = COALESCE(?1, model_answered), \
-                 cut_off = cut_off OR ?2 WHERE rowid = (SELECT MAX(rowid) FROM review_rounds \
-                     WHERE task_id = ?3 AND subagent_id = ?4 AND merged_at IS NULL)",
-                params![m, cut_off, t, s],
-            )
-            .map_err(db)?;
-            Ok(())
+            let tx = c.transaction().map_err(db)?;
+            if let Some((id, _, _)) =
+                round_for_observation(&tx, &task, &subagent, at).map_err(db)?
+            {
+                tx.execute(
+                    "UPDATE review_rounds SET model_answered = COALESCE(?1, model_answered), \
+                     cut_off = cut_off OR ?2 WHERE id = ?3",
+                    params![model, cut_off, id],
+                )
+                .map_err(db)?;
+            }
+            tx.commit().map_err(db)
         })
         .await
     }

@@ -148,6 +148,16 @@ enum ObservationSource {
     Live,
 }
 
+impl ObservationSource {
+    /// A live undated record uses arrival time. A replay cannot use the server restart time.
+    fn review_time(self, at: Option<Timestamp>, now: Timestamp) -> Option<Timestamp> {
+        match self {
+            Self::Replay => at,
+            Self::Live => Some(at.unwrap_or(now)),
+        }
+    }
+}
+
 struct ActiveRun {
     attempt_id: AttemptId,
     writer: Box<dyn RunWriter>,
@@ -6866,13 +6876,29 @@ impl App {
             Observation::WorkflowLaunched { .. } => {}
             // What a review round's reviewer really ran on, and whether a limit cut it off
             // (SPEC-493 REV-004): nothing else depends on it.
-            Observation::SubagentAnswered { agent_id, model } => {
-                self.review_subagent_noted(task_id, &agent_id, Some(&model), false)
-                    .await;
+            Observation::SubagentAnswered {
+                agent_id,
+                model,
+                at,
+            } => {
+                self.review_subagent_noted(
+                    task_id,
+                    &agent_id,
+                    Some(&model),
+                    false,
+                    source.review_time(at, self.now()),
+                )
+                .await;
             }
-            Observation::SubagentCutOff { agent_id, .. } => {
-                self.review_subagent_noted(task_id, &agent_id, None, true)
-                    .await;
+            Observation::SubagentCutOff { agent_id, at, .. } => {
+                self.review_subagent_noted(
+                    task_id,
+                    &agent_id,
+                    None,
+                    true,
+                    source.review_time(at, self.now()),
+                )
+                .await;
             }
             // In the order of the lines: the count is ahead of nothing the watcher applied.
             Observation::Queue(change, at) => runtime.with_queue(|queue| queue.record(change, at)),

@@ -528,15 +528,18 @@ impl App {
         agent_id: &str,
         cut_off_at: Option<Timestamp>,
     ) -> Option<CutOffReviewer> {
-        let rounds = self.deps.store.review_rounds(task, true).await.ok()?;
-        rounds
-            .iter()
-            .find(|r| r.ended_at.is_none() && r.subagent_id.as_deref() == Some(agent_id))
-            .map(|round| CutOffReviewer {
-                agent_id: agent_id.to_owned(),
-                model: round.model.clone(),
-                cut_off_at: cut_off_at.unwrap_or_else(|| self.now()),
-            })
+        let cut_off_at = cut_off_at.unwrap_or_else(|| self.now());
+        let model = self
+            .deps
+            .store
+            .unfinished_review_model_at(task, agent_id, cut_off_at)
+            .await
+            .ok()??;
+        Some(CutOffReviewer {
+            agent_id: agent_id.to_owned(),
+            model,
+            cut_off_at,
+        })
     }
 
     /// Whether `task` has a review round that has not reported (a reviewer runs, or was cut
@@ -688,11 +691,12 @@ impl App {
         subagent: &str,
         model: Option<&str>,
         cut_off: bool,
+        at: Option<Timestamp>,
     ) {
         if let Err(err) = self
             .deps
             .store
-            .note_review_subagent(task, subagent, model, cut_off)
+            .note_review_subagent(task, subagent, model, cut_off, at)
             .await
         {
             tracing::warn!(error = %err, task = %task, "review round not noted");

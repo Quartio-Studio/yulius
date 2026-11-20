@@ -222,6 +222,8 @@ pub enum Observation {
         agent_id: String,
         /// The model of its answer.
         model: String,
+        /// When the answer was written, if the transcript says.
+        at: Option<Timestamp>,
     },
     /// A usage limit refused a subagent of the session's own thread: Claude Code ends it with
     /// no report (and no `SubagentStop`); a message to it resumes it (SPEC-493 REV-004). The
