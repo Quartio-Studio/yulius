@@ -2166,7 +2166,10 @@ impl App {
                     .ok()
                     .and_then(|cut| cut.clone());
                 match cut {
-                    Some(cut) => self.open_round_reviewer(&task.id, &cut.agent_id).await,
+                    Some(cut) => {
+                        self.open_round_reviewer(&task.id, &cut.agent_id, Some(cut.cut_off_at))
+                            .await
+                    }
                     None => None,
                 }
             }
@@ -6913,7 +6916,7 @@ impl App {
         // also when no answer of it was read yet (refused at its first request, or resumed in a
         // new process); one of a subagent whose model cannot be told is no one's (review round
         // 1 of fix 7): it is never taken for the session's.
-        let reviewer = self.open_round_reviewer(task_id, agent_id).await;
+        let reviewer = self.open_round_reviewer(task_id, agent_id, *at).await;
         let scope = match (*scope, &reviewer) {
             (LimitScope::Model(None), Some(reviewer)) => {
                 match ModelFamily::of(Some(&reviewer.model)) {

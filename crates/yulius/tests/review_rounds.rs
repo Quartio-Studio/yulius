@@ -466,7 +466,7 @@ async fn a_cut_off_continuation_keeps_its_recovery_on_older_hooks() -> TestResul
     hook(&h.internal, "SubagentStart", start.clone()).await?;
     let mut after_replay = Vec::new();
     for (event, body) in [("SubagentStart", &start), ("SubagentStop", &stop)] {
-        h.app.cut_off_review_for_test(&task, "rev").await;
+        h.app.cut_off_review_for_test(&task, "rev", None).await;
         let pending = (Some(String::from("rev")), true);
         assert_eq!(h.app.review_recovery_for_test(&task), pending);
         hook_sent_at(&h.internal, "claude", event, body.clone(), Some(old)).await?;
@@ -513,8 +513,11 @@ async fn a_replayed_continuation_start_cannot_clear_a_later_cut_off() -> TestRes
         Some(sent),
     )
     .await?;
-    h.clock.0.fetch_add(1, Ordering::SeqCst);
-    h.app.cut_off_review_for_test(&task, "rev").await;
+    // The watcher reads the limit after the genuine resume was sent. Compare send times.
+    h.clock.0.store(sent + 3, Ordering::SeqCst);
+    h.app
+        .cut_off_review_for_test(&task, "rev", Some(Timestamp(sent + 1)))
+        .await;
     hook_sent_at(
         &h.internal,
         "claude",
@@ -527,8 +530,14 @@ async fn a_replayed_continuation_start_cannot_clear_a_later_cut_off() -> TestRes
         h.app.review_recovery_for_test(&task),
         (Some("rev".to_owned()), true)
     );
-    h.clock.0.fetch_add(1, Ordering::SeqCst);
-    hook(&h.internal, "SubagentStart", start).await?;
+    hook_sent_at(
+        &h.internal,
+        "claude",
+        "SubagentStart",
+        start,
+        Some(sent + 2),
+    )
+    .await?;
     assert_eq!(h.app.review_recovery_for_test(&task), (None, false));
     assert_eq!(rounds(&h, &task, true).await?.len(), 2);
     Ok(())

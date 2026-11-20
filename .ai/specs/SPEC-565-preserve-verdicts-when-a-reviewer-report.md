@@ -27,7 +27,7 @@ On dev `645eff207`, repeating the completion update moves the end time, and appr
 - [x] Prove replay and continued review analytics with failing regressions
 - [x] Preserve each distinct report and document round accounting
 - [x] Protect cut-off recovery and accept reports during a slow head lookup
-- [ ] Order recovery against the continued round’s own cut-off
+- [x] Order recovery against the continued round’s own cut-off
 - [ ] Verify the fix and obtain independent approval for delivery
 
 ## Acceptance criteria
@@ -57,3 +57,5 @@ Use the start after a report as the round boundary. Comparing verdicts or report
 - Round 1 requested changes on `3fae70d80`. Two new deterministic regressions failed on its implementation. Replaying the older start and stop each erased the continued reviewer's pending resume and move. Delivering the stop while Git was held left round 2's verdict empty. Both findings concern this change.
 - Round 1 findings were fixed in the same branch. The store reserves the continued row before Git I/O and the accepted start or stop controls recovery. The held-Git test retained the approval and the correct head. Both stale events preserved recovery while a genuine resume and report cleared it. Nextest ran all 31 `review_rounds::` tests with zero failures (run `0295f944-aa01-4e3b-9649-de325632e6a4`).
 - Round 2 confirmed both earlier fixes and requested one further own-code change on `7773d7618`. Replaying round 2's original start after a later cut-off cleared recovery. The new nextest regression failed on that head with both the reviewer ID and move lost.
+- First review's mutation run completed. `scripts/dev mutants` reported 30 listed, 5 caught, 0 missed, 0 timed out, 25 unviable and 0 not reached. Its unmutated baseline passed 3,209 tests.
+- Round 2's finding was fixed by retaining the limit's observation time with the pending reviewer. The original start is ignored for recovery, and a genuine later start clears it even when it was sent before the watcher processed the limit. Nextest passed all 32 review-round tests and both usage-credit tests for live and restart transcript observations.

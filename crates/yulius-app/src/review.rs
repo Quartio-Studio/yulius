@@ -81,6 +81,8 @@ pub(crate) struct CutOffReviewer {
     pub(crate) agent_id: String,
     /// The model its round runs.
     pub(crate) model: String,
+    /// When the usage limit cut this reviewer off.
+    pub(crate) cut_off_at: Timestamp,
 }
 
 /// What the new process of a session moved past its reviewer's limit is told (RLM-002), after
@@ -524,6 +526,7 @@ impl App {
         &self,
         task: &yulius_domain::ids::TaskId,
         agent_id: &str,
+        cut_off_at: Option<Timestamp>,
     ) -> Option<CutOffReviewer> {
         let rounds = self.deps.store.review_rounds(task, true).await.ok()?;
         rounds
@@ -532,6 +535,7 @@ impl App {
             .map(|round| CutOffReviewer {
                 agent_id: agent_id.to_owned(),
                 model: round.model.clone(),
+                cut_off_at: cut_off_at.unwrap_or_else(|| self.now()),
             })
     }
 
@@ -547,12 +551,14 @@ impl App {
 
     /// The cut-off reviewer `agent_id` of `task` started again or reported: nothing is left to
     /// tell a relaunch, and no move is due for it (RLM-002).
-    fn reviewer_went_on(&self, task: &yulius_domain::ids::TaskId, agent_id: &str) {
+    fn reviewer_went_on(&self, task: &yulius_domain::ids::TaskId, agent_id: &str, sent: Timestamp) {
         let Some(runtime) = self.existing_runtime(task) else {
             return;
         };
         if let Ok(mut cut) = runtime.cut_off_reviewer.lock()
-            && cut.as_ref().is_some_and(|c| c.agent_id == agent_id)
+            && cut
+                .as_ref()
+                .is_some_and(|c| c.agent_id == agent_id && sent >= c.cut_off_at)
         {
             *cut = None;
             runtime
@@ -594,8 +600,9 @@ impl App {
         self: &Arc<Self>,
         task: &yulius_domain::ids::TaskId,
         id: &str,
+        at: Option<Timestamp>,
     ) {
-        if let Some(reviewer) = self.open_round_reviewer(task, id).await {
+        if let Some(reviewer) = self.open_round_reviewer(task, id, at).await {
             self.reviewer_cut_off(task, reviewer, true).await;
         }
     }
@@ -728,7 +735,7 @@ impl App {
         {
             Ok(ReviewStart::Ignored) => return,
             Ok(ReviewStart::Active) => {
-                self.reviewer_went_on(&ctx.task.id, id);
+                self.reviewer_went_on(&ctx.task.id, id, at);
                 return;
             }
             Ok(ReviewStart::Continued) => {
@@ -772,7 +779,7 @@ impl App {
             .end_review_round(&ctx.task.id, id, at, verdict, None)
             .await
         {
-            Ok(true) => self.reviewer_went_on(&ctx.task.id, id),
+            Ok(true) => self.reviewer_went_on(&ctx.task.id, id, at),
             Ok(false) => {}
             Err(err) => tracing::warn!(error = %err, task = %ctx.task.id, "review round not ended"),
         }
@@ -1265,6 +1272,7 @@ mod tests {
     fn a_cut_off_reviewer_is_told_in_whole_sentences() {
         let reviewer = CutOffReviewer {
             agent_id: "arev1".to_owned(),
+            cut_off_at: Timestamp(0),
             model: "claude-fable-5-2".to_owned(),
         };
         let resume = reviewer_resume_prompt(Some("Gate says: fix it."), &reviewer);

@@ -10,7 +10,7 @@ Claude Code emits `SubagentStart` with the same subagent ID when an author uses 
 
 ## Decision
 
-The first stop completes the unfinished round. Starting that reviewer again after its report opens the round after the last reported round of the same pull request. It records the head at the new start, keeps the reviewer's model and tracks its own cut-off and report. An unfinished reviewer continues its existing round. The hook client send time orders delayed deliveries. Older clients use arrival time. A start reserves the continued round in SQLite before reading Git so a concurrent stop can complete it. The head lookup attaches only to that reserved row while its pull request is open. Only accepted events clear a cut-off reviewer’s pending recovery.
+The first stop completes the unfinished round. Starting that reviewer again after its report opens the round after the last reported round of the same pull request. It records the head at the new start, keeps the reviewer's model and tracks its own cut-off and report. An unfinished reviewer continues its existing round. The hook client send time orders delayed deliveries. Older clients use arrival time. Events with the same millisecond timestamp use arrival order. A start reserves the continued round in SQLite before reading Git so a concurrent stop can complete it. The head lookup attaches only to that reserved row while its pull request is open. An accepted event clears pending recovery only when it was sent at or after the cut-off. A limit without a timestamp uses the time Yulius observes it.
 
 ## Alternatives
 
