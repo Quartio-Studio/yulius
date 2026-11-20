@@ -1,6 +1,6 @@
 import { test } from '@e2e-dev/web';
 import { expect } from 'e2e';
-import { axeViolations, failOnPageErrors, mock, touchTask } from './support.ts';
+import { axeViolations, failOnPageErrors, mock, terminalShown, touchTask } from './support.ts';
 
 failOnPageErrors();
 
@@ -139,4 +139,32 @@ test('a parked task shows where it was, marked parked; a queued task page says w
   expect(await axeViolations(browser)).toEqual([]);
   await touchTask(browser, 'sb_studio', 13, { status: 'queued', activity: null, queue_reason: 'Waiting for a free session: 8 of 8 in use' });
   await expect(browser.locator('.strip-status')).toHaveText(/Queued · Waiting for a free session: 8 of 8 in use/);
+});
+
+test('a parked terminal fits every row of the captured screen on the task page', async ({ app, browser }) => {
+  await app.open(mock('/s/studio/t/12', '&still=1'));
+  await terminalShown(browser);
+  await browser.evaluate(() => {
+    type Session = { viewers: Set<{ push(message: string): void }>; task: { status: string }; broadcast(text: string): void };
+    const session = (window as unknown as { __yuliusMock: { sessions: Map<string, Session> } }).__yuliusMock.sessions.get('tsk_studio_12')!;
+    session.task.status = 'parked';
+    // The owner still controls the terminal when the actual process ends.
+    for (const viewer of session.viewers) {
+      viewer.push(JSON.stringify({ type: 'state', status: 'parked', can_write: true, controller: true, rows: 55, cols: 90 }));
+    }
+    session.broadcast('\x1b[2J\x1b[HLast answer begins\x1b[54;1HLast answer ends\x1b[55;1HYulius parked this session. Write to resume.');
+  });
+  const rows = browser.locator('.taskview .xterm-rows > div');
+  await expect(rows).toHaveCount(55);
+  await expect(rows.first()).toHaveText(/Last answer begins/);
+  await expect(rows.nth(53)).toHaveText(/Last answer ends/);
+  await expect(rows.last()).toHaveText(/Write to resume/);
+  // Opening a parked page receives state and snapshot. Staying connected also receives exit.
+  await browser.evaluate(() => {
+    type Session = { viewers: Set<{ push(message: string): void }> };
+    const session = (window as unknown as { __yuliusMock: { sessions: Map<string, Session> } }).__yuliusMock.sessions.get('tsk_studio_12')!;
+    for (const viewer of session.viewers) viewer.push(JSON.stringify({ type: 'exit', status: 'parked', code: 0 }));
+  });
+  await expect(rows).toHaveCount(55);
+  await expect(rows.last()).toHaveText(/Write to resume/);
 });

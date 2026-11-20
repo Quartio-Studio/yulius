@@ -163,8 +163,8 @@ impl App {
                             Some(number) => self
                                 .recorded_pull_signal(task, number)
                                 .await
-                                .unwrap_or(Some(PullSignal::InReview)),
-                            None => Some(PullSignal::InReview),
+                                .unwrap_or(Some(PullSignal::Errored)),
+                            None => Some(PullSignal::Errored),
                         }
                     }
                     _ => None,

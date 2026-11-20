@@ -1470,3 +1470,35 @@ fn a_handed_off_tasks_outcome_reaches_its_source() -> TestResult {
     rt.shutdown_timeout(Duration::from_secs(5));
     Ok(())
 }
+
+#[test]
+fn an_idle_task_keeps_its_session_while_its_recorded_pr_cannot_be_read() -> TestResult {
+    use yulius_domain::delivery::DeliveryStage;
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let app = app(&data, 1, 1).await?;
+        let (id, _) = answered(&app, &data).await?;
+        app.deps
+            .store
+            .transition_delivery(
+                &DeliveryStage::None,
+                &yulius_app::delivery::DeliveryRecord {
+                    task_id: id.clone(),
+                    stage: DeliveryStage::PrOpen,
+                    pr_number: Some(1461),
+                    updated_at: app.now(),
+                },
+            )
+            .await?;
+        past_the_grace(&app, &id).await?;
+        // The fake project has no installation from which to read this head.
+        let digest = app.send_digests_now(Some(1)).await;
+        assert_eq!(digest.parked, 0);
+        assert_eq!(app.park_idle_sessions_now().await, 0);
+        assert_eq!(status_of(&app, &id).await.0, Some(TaskStatus::Running));
+        Ok::<_, Error>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}

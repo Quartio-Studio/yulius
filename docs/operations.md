@@ -166,7 +166,8 @@ Environment=YULIUS_INTERNAL_BIND=127.0.0.1:8081
 # is parked: the process ends, the task resumes in the same session when someone writes to it
 # (default 30; 0 never; SPEC-512).
 # The terminal and task_screen retain the last screen plus the time idle after the turn.
-# Writing resumes the recorded provider session. Open work keeps its session live.
+# Send the task a message or choose Resume on its page to reopen the recorded provider session.
+# Open work or an unreadable recorded PR keeps the session live.
 # Codex goal turns with open steps or red PR checks receive up to three Stop continuations.
 #Environment=YULIUS_PARK_AFTER_MINUTES=30
 # A server older than parking cannot read the status `parked`: before rolling back past it,

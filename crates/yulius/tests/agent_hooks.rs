@@ -2332,14 +2332,23 @@ async fn codex_goal_stop_continues_open_work_and_flags_only_at_the_bound() -> Te
             }
         }
         f.h.clock.0.fetch_add(1, Ordering::SeqCst);
-        let reply = call(
-            &f.h.internal,
-            Method::POST,
-            "/hooks/codex/Stop",
-            Some(json!({"hook_event_name":"Stop","stop_hook_active": round > 0})),
-            &agent(),
+        // A stalled remote lookup cannot cost the local plan its Stop continuation.
+        let checks_hold = (round == 1).then(|| f.h.github.hold_checks());
+        let reply = tokio::time::timeout(
+            yulius_harness::hook_client::HOOK_TIMEOUT,
+            call(
+                &f.h.internal,
+                Method::POST,
+                "/hooks/codex/Stop",
+                Some(json!({"hook_event_name":"Stop","stop_hook_active": round > 0})),
+                &agent(),
+            ),
         )
-        .await?;
+        .await
+        .map_err(|_| "the Codex hook client timed out on open steps")??;
+        if let Some(hold) = checks_hold {
+            f.h.github.release_checks(&hold);
+        }
         assert_eq!(reply.status, 200, "{}", reply.body);
         if round < yulius_app::hooks::MAX_GATE_BLOCKS {
             assert_eq!(reply.body["decision"], "block", "{}", reply.body);

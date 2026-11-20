@@ -17,7 +17,7 @@ use yulius_domain::ids::TaskId;
 use yulius_domain::rotation::{self, Decision, Trigger};
 use yulius_domain::spec_format::{DecisionFiles, NamedFile, decision_titles, project_layout};
 use yulius_domain::spec_format::{DecisionsLocation, SpecPolicy, validate_spec_for};
-use yulius_domain::task::{Activity, TaskStatus};
+use yulius_domain::task::{Activity, PullSignal, TaskStatus};
 
 use crate::capacity::{CONTINUATION_MAX, HOLD_RETRY_SECS};
 use crate::context::App;
@@ -1014,7 +1014,21 @@ impl App {
                     "Continue the goal by completing the unfinished steps in your plan.".into(),
                 );
             }
-            if self.task_checks_failing(task).await {
+            // The CLI's hook request lasts five seconds. A remote check must
+            // leave time for rotation and the response, even on a slow GitHub.
+            let pull = tokio::time::timeout(
+                std::time::Duration::from_millis(750),
+                self.task_pull_signal(task),
+            )
+            .await;
+            let signal = match pull {
+                Ok(Ok(signal)) => signal,
+                _ => self
+                    .observed_pulls
+                    .get(&task.sandbox_id, &task.id)
+                    .flatten(),
+            };
+            if signal == Some(PullSignal::Failing) {
                 reasons.push(
                     "Continue the goal by repairing the failing checks on your pull request."
                         .into(),

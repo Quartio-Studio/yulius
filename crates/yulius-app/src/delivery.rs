@@ -3466,33 +3466,38 @@ impl App {
             return Ok(pull.merged.then_some(PullSignal::Merged));
         }
         let head = self.dlv_checks_at(&sandbox, &token, &pull.head_sha).await?;
+        if head.word != "failure" && (head.word == "unknown" || !head.unreadable.is_empty()) {
+            return Err(AppError::Upstream(
+                "pull request checks could not be read".into(),
+            ));
+        }
         let checks = tested_checks_word(&delivery_profile(&sandbox), head.word);
         let conflicts = matches!(checks, "success" | "none")
             && self.pull_conflicts(task, &sandbox, &pull).await;
         Ok(PullSignal::from_wire("open", checks, conflicts))
     }
 
-    pub(crate) async fn task_checks_failing(&self, task: &TaskRecord) -> bool {
-        let cached = self
-            .observed_pulls
-            .get(&task.sandbox_id, &task.id)
-            .flatten();
-        let mut pull = cached;
-        if let Ok(Some(record)) = self.deps.store.delivery(&task.id).await {
+    /// Preserve an unreadable recorded head as an error: parking needs to know
+    /// that the session is free to give up its work.
+    pub(crate) async fn task_pull_signal(
+        &self,
+        task: &TaskRecord,
+    ) -> AppResult<Option<PullSignal>> {
+        if let Some(record) = self.deps.store.delivery(&task.id).await? {
             if past_merge(&record.stage) {
-                return false;
+                return Ok(Some(PullSignal::Merged));
             }
-            if let Some(number) = record
-                .pr_number
-                .filter(|_| record.stage == DeliveryStage::PrOpen)
-            {
-                pull = self
-                    .recorded_pull_signal(task, number)
-                    .await
-                    .unwrap_or(cached);
+            if record.stage == DeliveryStage::PrOpen {
+                let number = record.pr_number.ok_or_else(|| {
+                    AppError::Internal("open delivery has no pull request number".into())
+                })?;
+                return self.recorded_pull_signal(task, number).await;
             }
         }
-        pull == Some(PullSignal::Failing)
+        Ok(self
+            .observed_pulls
+            .get(&task.sandbox_id, &task.id)
+            .flatten())
     }
 
     /// The part of [`App::task_is_done`] that needs no GitHub call: the turn ended, no background
@@ -3562,7 +3567,11 @@ impl App {
         }
         if (running || parked) && task.activity == Some(Activity::Done) {
             return !parked
-                || (!self.work_left(&task.id).await && !self.task_checks_failing(task).await);
+                || (!self.work_left(&task.id).await
+                    && self
+                        .task_pull_signal(task)
+                        .await
+                        .is_ok_and(|pull| pull != Some(PullSignal::Failing)));
         }
         // One reading of its delivery for the whole decision: a merge recorded between two
         // readings would be "no news due" by the first and "merged" by the second.

@@ -2073,7 +2073,7 @@ impl App {
         // resumed session gets it typed again once its TUI is ready.
         // Codex takes `/goal` only typed, never as its launch prompt, and records goals its own
         // way: a Codex task gets its whole request, the definition of done included, as its first
-        // message, and its turns end it as a prompt-mode task's do (SPEC-503).
+        // message (SPEC-503). The Stop gate continues its unfinished goal work (SPEC-558).
         // Antigravity has its own `/goal`, never given by Yulius: an Antigravity task gets its
         // request as its first message, as a Codex task does (SPEC-505).
         let first_message_only = matches!(harness, Harness::Codex | Harness::Antigravity);
@@ -4196,6 +4196,12 @@ impl App {
                     if to == TaskStatus::Parked {
                         if let Some((cols, rows, screen)) = parked_screen {
                             let hub = &self.runtime(task_id).hub;
+                            // Attached viewers must apply the parked grid before drawing it.
+                            if hub.size() == (cols, rows) {
+                                hub.state_changed();
+                            } else {
+                                hub.resize(cols, rows);
+                            }
                             hub.reset(hub.output_seq().max(1), &screen, cols, rows);
                         }
                         crate::parking::audit_parked(self, &task).await;
@@ -4655,7 +4661,9 @@ impl App {
         let Some(candidate) = self.deps.store.task(task_id).await? else {
             return Ok(false);
         };
-        if self.task_checks_failing(&candidate).await {
+        if self.task_pull_signal(&candidate).await?
+            == Some(yulius_domain::task::PullSignal::Failing)
+        {
             return Ok(false);
         }
         let _guard = self.supervisor.launch.lock().await;

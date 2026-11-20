@@ -679,7 +679,8 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
     }
     // An ended session has no PTY to follow: fit it to this screen (a desktop-sized screen would
     // otherwise overflow a phone).
-    const mirroring = Boolean(state.cols && state.rows && !state.controller && !exited);
+    const parked = state.status === 'parked' || exited?.status === 'parked';
+    const mirroring = Boolean(state.cols && state.rows && (parked || (!state.controller && !exited)));
     host.classList.toggle('term-mirror', mirroring);
     if (!mirroring) {
       if (term.options.fontSize !== termSize()) term.options.fontSize = termSize();

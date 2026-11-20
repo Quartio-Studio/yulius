@@ -279,7 +279,7 @@ fn with_park_notice(
         .map(|ms| format!("{} ", yulius_domain::ci::format_duration(ms)))
         .unwrap_or_default();
     let notice = format!(
-        "Yulius parked this session after {duration}idle since its turn ended. Write to resume."
+        "Yulius parked this session after {duration}idle since its turn ended. Send a message or choose Resume to continue."
     );
     let next = last.map_or(1, |row| row + 2);
     // A full TUI needs another row. Keep the first row as well as the last
@@ -473,7 +473,11 @@ mod tests {
         assert!(shown.starts_with("first row\nlast row\n"), "{shown}");
         assert_eq!(shown.matches("Yulius parked").count(), 1);
         assert!(shown.contains("30 min 0 s idle since its turn ended"));
-        assert!(shown.trim_end().ends_with("Write to resume."));
+        assert!(
+            shown
+                .trim_end()
+                .ends_with("Send a message or choose Resume to continue.")
+        );
     }
 
     fn idle() -> ParkFacts {

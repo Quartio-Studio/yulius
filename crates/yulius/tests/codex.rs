@@ -1864,6 +1864,7 @@ fn parked_codex_keeps_the_answer_and_resumes_the_rollout_with_the_next_prompt() 
             },
         )
         .await?;
+        let mut viewer = app.runtime(&id).hub.watch();
         wait_for("parking", Duration::from_secs(30), || async {
             app.park_idle_sessions_now().await;
             task(&app, &id)
@@ -1871,6 +1872,24 @@ fn parked_codex_keeps_the_answer_and_resumes_the_rollout_with_the_next_prompt() 
                 .is_ok_and(|task| task.status == TaskStatus::Parked)
         })
         .await?;
+        // A browser attached across the park learns the grid before redrawing it.
+        let mut saw_state = false;
+        loop {
+            let frame = tokio::time::timeout(Duration::from_secs(5), viewer.recv()).await??;
+            match frame {
+                yulius_app::hub::HubFrame::State => saw_state = true,
+                yulius_app::hub::HubFrame::Snapshot { bytes, .. }
+                    if String::from_utf8_lossy(&bytes).contains("Yulius parked") =>
+                {
+                    assert!(
+                        saw_state,
+                        "parked snapshot arrived before the terminal state"
+                    );
+                    break;
+                }
+                _ => {}
+            }
+        }
         let parked_screen = app.runtime(&id).hub.screen_text();
         assert!(
             parked_screen.contains("ECHO: First turn"),

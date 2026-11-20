@@ -2035,7 +2035,9 @@ armed or pull request news due, no held prompt, no request in the sandbox browse
 possible draft or keystroke within the grace period, and is not an onboarding task.
 Parking also requires that no step, spec, goal or failing PR check needs the session.
 At a Codex goal Stop, the discipline gate checks the task's steps and its open PR head.
-It returns the continuation in the hook response and raises attention after three consecutive
+The remote lookup has a 750 ms budget so the local step check can answer within the hook deadline.
+An unreadable recorded PR keeps its session through both grace-period and digest parking.
+The hook returns the continuation and raises attention after three consecutive
 blocks. An explicit request for a person or an autonomous delivery wait keeps control.
 The supervisor saves the redacted screen with the elapsed idle time before requesting shutdown.
 The web terminal and `task_screen` use that snapshot once the task parks. A parked Codex
