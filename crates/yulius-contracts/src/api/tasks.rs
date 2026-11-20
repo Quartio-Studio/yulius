@@ -29,16 +29,6 @@ pub struct StepProgress {
     pub first_total: Option<u32>,
 }
 
-/// What an idle author's current integration candidate means for its PR.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum IntegrationCandidate {
-    /// The candidate tested this head on the current integration branch and failed.
-    Failed(u64),
-    /// A failed candidate exists but its current applicability could not be verified.
-    Unverified(u64),
-}
-
 /// A task in lists and events.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TaskSummary {
@@ -147,9 +137,6 @@ pub struct TaskSummary {
     /// reads: the task is not Done, whatever its pull request says (SPEC-491 DON-004).
     #[serde(default)]
     pub spec_unfinished: bool,
-    /// Current PR whose ordinary head passed but whose integrated tree failed CI.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub integration_candidate: Option<IntegrationCandidate>,
     /// The server's group for a parked task (true for Needs you, false for Done).
     /// Other tasks and summaries from earlier servers omit it.
     #[serde(default, skip_serializing_if = "Option::is_none")]

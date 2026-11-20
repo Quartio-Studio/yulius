@@ -4864,6 +4864,63 @@ async fn a_parked_predecessor_waits_for_the_complete_check_report() -> TestResul
         "work reopened during the final PR read"
     );
     set_steps(&f, "t1", &["done", "done"]).await?;
+    use yulius_domain::ci::{CiRef, RunState};
+    let gate = Arc::new(tokio::sync::Notify::new());
+    *f.h.github
+        .pull_read_hold
+        .lock()
+        .map_err(|_| "pull fixture")? = Some(gate.clone());
+    let app = f.h.app.clone();
+    let predecessor = before.clone();
+    let advance = tokio::spawn(async move { app.advance_chains(&predecessor).await });
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        f.h.github.pull_read_entered.notified(),
+    )
+    .await?;
+    gate.notify_one();
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        f.h.github.pull_read_entered.notified(),
+    )
+    .await?;
+    insert_ci_attempt(
+        &f.h.store,
+        "rerun-red",
+        &head,
+        CiRef::PullRequest(1),
+        RunState::Failed,
+        10,
+        &[],
+    )
+    .await?;
+    *f.h.github
+        .pull_read_hold
+        .lock()
+        .map_err(|_| "pull fixture")? = None;
+    gate.notify_one();
+    advance.await?;
+    assert_eq!(
+        f.h.store.task(&child).await?.ok_or("successor")?.status,
+        TaskStatus::Chained,
+        "the same head failed during the confirming pull read"
+    );
+    f.h.app.advance_chains(&before).await;
+    assert_eq!(
+        f.h.store.task(&child).await?.ok_or("successor")?.status,
+        TaskStatus::Chained,
+        "the local failure still holds the chain while GitHub reports green"
+    );
+    insert_ci_attempt(
+        &f.h.store,
+        "rerun-green",
+        &head,
+        CiRef::PullRequest(1),
+        RunState::Passed,
+        11,
+        &[],
+    )
+    .await?;
     f.h.app.advance_chains(&TaskId::parse("t1")?).await;
     assert_ne!(
         f.h.store.task(&child).await?.ok_or("successor")?.status,

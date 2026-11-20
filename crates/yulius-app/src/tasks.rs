@@ -312,11 +312,6 @@ impl App {
             // that run.
             goal_unfinished: idle_run && self.goal_unfinished_of(task).await,
             spec_unfinished: idle_run && self.spec_unfinished(&task.id).await,
-            integration_candidate: if task.status == TaskStatus::Running && idle_run {
-                self.task_candidate(task, deadline).await?
-            } else {
-                None
-            },
             parked_needs_you: if task.status == TaskStatus::Parked {
                 Some(!self.shows_done_until(task, deadline).await)
             } else {

@@ -492,13 +492,6 @@ pub trait CiStore: Send + Sync {
         sandbox: &SandboxId,
         limit: u32,
     ) -> AppResult<Vec<crate::ci::CiRunRecord>>;
-    /// The newest ordinary run and newest train containing this PR, in reverse
-    /// insertion order. Queue position is mutable and unrelated runs do not displace them.
-    async fn ci_runs_for_pr(
-        &self,
-        sandbox: &SandboxId,
-        pr: u64,
-    ) -> AppResult<Vec<crate::ci::CiRunRecord>>;
     /// Runs of a sandbox for one commit, newest first.
     async fn ci_runs_for_sha(
         &self,

@@ -187,11 +187,7 @@ impl App {
         let facts = self
             .attention_with_pull(task, requested, deadline, PullRead::Read)
             .await?;
-        if facts.group() != TaskGroup::Done
-            || !(task.status == TaskStatus::Parked
-                || task.status == TaskStatus::Running
-                    && task.activity == Some(yulius_domain::task::Activity::Done))
-        {
+        if facts.group() != TaskGroup::Done || task.status != TaskStatus::Parked {
             return Ok(facts);
         }
         // Checking the PR may have waited on GitHub while its owner answered,
@@ -263,16 +259,6 @@ impl App {
                 self.task_pull_signal(task, deadline)
                     .await
                     .unwrap_or(Some(PullSignal::Errored))
-            } else if live
-                && let Some(candidate) = self
-                    .task_candidate(task, deadline.unwrap_or_else(parked_pr_deadline))
-                    .await?
-            {
-                use yulius_contracts::api::tasks::IntegrationCandidate;
-                Some(match candidate {
-                    IntegrationCandidate::Failed(_) => PullSignal::Failing,
-                    IntegrationCandidate::Unverified(_) => PullSignal::Errored,
-                })
             } else {
                 match self.observed_pulls.get(&task.sandbox_id, &task.id) {
                     Some(observed) => observed,

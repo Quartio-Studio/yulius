@@ -174,8 +174,6 @@ Environment=YULIUS_INTERNAL_BIND=127.0.0.1:8081
 # The PR watcher delivers actionable failures once and waits for a pending human decision.
 # A parked row with unfinished work shows Needs you. Other parked PRs still get their status
 # checked when one PR is slow. A dependent task waits for its predecessor's verified outcome.
-# After a restart, the owner can receive the failed integration run and its job in the existing
-# PR notice. Refreshing the board alone never writes to the agent.
 #Environment=YULIUS_PARK_AFTER_MINUTES=30
 # A server older than parking cannot read the status `parked`: before rolling back past it,
 # resume or archive the tasks marked "parked" in the task lists, with this set to 0 so no task

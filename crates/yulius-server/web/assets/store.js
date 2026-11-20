@@ -305,12 +305,11 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
   // A rerun on the same open PR changes its checks without changing the task's
   // delivery stage. Refresh the server's parked groups alongside the watched
   // overview. An SSE update or list replacement during this read takes precedence.
-  async function refreshPrGroups(sandboxId, pulls) {
+  async function refreshParkedGroups(sandboxId, pulls) {
     const tasks = state.tasks.get(sandboxId);
     if (!tasks) return;
     const watched = [...tasks.values()].filter((task) =>
-      (task.status === 'parked' && typeof task.parked_needs_you === 'boolean') ||
-      (task.status === 'running' && task.integration_candidate));
+      task.status === 'parked' && typeof task.parked_needs_you === 'boolean');
     if (!watched.length) return;
     let refreshed;
     try {
@@ -323,15 +322,6 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
       if (tasks.get(prior.id) !== prior) continue;
       const row = refreshed?.get(prior.id);
       if (refreshed && (!row || row.status !== prior.status)) continue;
-      if (prior.status === 'running') {
-        if (row && (row.integration_candidate?.failed !== prior.integration_candidate?.failed || row.integration_candidate?.unverified !== prior.integration_candidate?.unverified)) {
-          const updated = { ...prior, integration_candidate: row.integration_candidate };
-          tasks.set(prior.id, updated);
-          emit('task', updated);
-          changed = true;
-        }
-        continue;
-      }
       const knownPull = pulls.get(prior.id) ?? state.pulls.get(sandboxId)?.get(prior.id);
       if (!row && knownPull?.state !== 'open') continue;
       const needs = row?.parked_needs_you ?? true;
@@ -361,7 +351,7 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
       const rows = Array.isArray(git.tasks) ? git.tasks : [];
       const pulls = rows.filter((t) => t.pr).map((t) => [t.task_id, t.pr]);
       const current = new Map(pulls);
-      await refreshPrGroups(sandboxId, current);
+      await refreshParkedGroups(sandboxId, current);
       state.pulls.set(sandboxId, current);
       seeded.delete(sandboxId);
       const key = pullsKey(sandboxId);

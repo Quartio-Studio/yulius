@@ -2094,11 +2094,8 @@ the Capacity card.
 
 The parked group reads the recorded PR head, plan, spec and goal. Task rows share a bounded
 lookup budget, with up to eight independent reads in parallel. The chain applies the same
-eligibility facts. An ended turn can have green ordinary CI and a failed integration candidate.
-Yulius compares the singleton candidate's tested tree with the merge of the currently fetched
-integration branch and the current PR head. The PR watcher records the failed run ID in its existing notice file.
-The status read selects the newest ordinary run and candidate for this PR by insertion order.
-Moving a train forward in the queue and later runs on other PRs preserve that evidence. Reading the task's status has no delivery side effect.
+eligibility facts and rechecks the owner's plan and decisions after waiting for the PR.
+A missing check report or a head that changed during verification holds the dependent task.
 
 The end-of-day digest (`yulius-app/src/digest.rs`, SPEC-512 part 3,
 [decision 0380](decisions/0380-an-end-of-day-digest-built-from-task-state.md)) runs from the same

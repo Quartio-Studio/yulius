@@ -2370,18 +2370,6 @@ impl App {
             {
                 observed.insert(task.id.clone(), signal);
             }
-            // A replacement candidate can clear while this overview stays cached.
-            // Keep ordinary CI above, overlay integration evidence on the wire row only.
-            if let (Some(pr), Some(pull)) = (&mut view.pr, task_pull) {
-                match self
-                    .pull_has_failed_candidate(&sandbox, pull, &pr.checks)
-                    .await
-                {
-                    Ok(true) => pr.checks = "failure".into(),
-                    Err(_) => pr.checks = "error".into(),
-                    Ok(false) => {}
-                }
-            }
             tasks.push(view);
         }
         // The "needs you" counts read what this overview said (sandboxes.rs, #147).
@@ -4190,12 +4178,6 @@ impl App {
         if !settled {
             return Ok(None);
         }
-        if self
-            .pull_has_failed_candidate(sandbox, &pull, checks)
-            .await?
-        {
-            return Ok(None);
-        }
         // The local merge-driver check uses the configured integration branch. For a
         // PR targeting another branch, GitHub computes mergeability against its real base.
         let mergeable = if pull.base == profile.integration_branch {
@@ -4218,26 +4200,6 @@ impl App {
         Ok((current.merged || same_open_head).then_some(current))
     }
 
-    async fn pull_has_failed_candidate(
-        &self,
-        sandbox: &SandboxRecord,
-        pull: &GhPull,
-        checks: &str,
-    ) -> AppResult<bool> {
-        if checks != "success" || pull.base != delivery_profile(sandbox).integration_branch {
-            return Ok(false);
-        }
-        let runs = self
-            .deps
-            .store
-            .ci_runs_for_pr(&sandbox.id, pull.number)
-            .await?;
-        Ok(self
-            .failed_integration_run(sandbox, pull.number, &pull.head_sha, &runs)
-            .await?
-            .is_some())
-    }
-
     /// Read a parked task's recorded delivery even when the Git overview was never opened.
     async fn recorded_pull_signal(
         &self,
@@ -4258,17 +4220,23 @@ impl App {
                 PullSignal::Errored
             }));
         }
+        let ordinary_run = || async {
+            Ok::<_, AppError>(
+                self.deps
+                    .store
+                    .ci_runs_for_sha(&sandbox.id, &pull.head_sha)
+                    .await?
+                    .into_iter()
+                    .find(|r| r.reference == yulius_domain::ci::CiRef::PullRequest(number))
+                    .map(|r| (r.id, r.state)),
+            )
+        };
+        let before = ordinary_run().await?;
         let checks = self.dlv_checks_at(&sandbox, &token, &pull.head_sha).await?;
         if !checks.unreadable.is_empty() || checks.word == "unknown" {
             return Ok(Some(PullSignal::Errored));
         }
         let word = tested_checks_word(&delivery_profile(&sandbox), checks.word);
-        if self
-            .pull_has_failed_candidate(&sandbox, &pull, word)
-            .await?
-        {
-            return Ok(Some(PullSignal::Failing));
-        }
         let mergeable = if pull.base == delivery_profile(&sandbox).integration_branch {
             self.local_conflict(task, &sandbox, &pull.head_sha)
                 .await
@@ -4285,9 +4253,16 @@ impl App {
         if current.merged {
             return Ok(Some(PullSignal::Merged));
         }
-        if current != pull || current.behind {
+        // A same-head rerun can finish while the metadata request is in flight.
+        if current != pull || current.behind || ordinary_run().await? != before {
             return Ok(Some(PullSignal::Errored));
         }
+        let word = match before.map(|(_, state)| state) {
+            Some(state) if matches!(word, "success" | "none") => {
+                ci_checks_word(yulius_domain::ci::GateResult::Run(Some(state))).unwrap_or(word)
+            }
+            _ => word,
+        };
         if mergeable.is_none() && matches!(word, "success" | "none") {
             return Ok(Some(PullSignal::Errored));
         }
@@ -4392,7 +4367,10 @@ impl App {
         if running && self.merge_is_armed(&task.id) {
             return false;
         }
-        if parked || (running && task.activity == Some(Activity::Done)) {
+        if running && task.activity == Some(Activity::Done) {
+            return true;
+        }
+        if parked {
             let requested = self.browser_requests(&task.sandbox_id).await;
             let Ok(facts) = self.task_attention_facts(task, &requested, None).await else {
                 return false;
@@ -4463,13 +4441,6 @@ impl App {
                     } else {
                         observed.checks.as_str()
                     };
-                    if self
-                        .pull_has_failed_candidate(&sandbox, pull, word)
-                        .await
-                        .unwrap_or(true)
-                    {
-                        return false;
-                    }
                     // Tested, by the reading the sidebar and the counts have (DON-001).
                     PullSignal::from_wire(
                         "open",

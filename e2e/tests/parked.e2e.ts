@@ -411,35 +411,3 @@ for (const [page, route, selector] of [['terminal', 't', '.strip-status'], ['Tas
     }
   });
 }
-
-test('the waiting owner sees a failed integration candidate until the verified result changes', async ({ app, browser }) => {
-  await app.open(mock('/s/studio'));
-  const groups = await browser.evaluate(async () => {
-    const storeModule = '/assets/store.js';
-    const statusModule = '/assets/status.js';
-    const { createStore } = await import(storeModule);
-    const { taskInfo } = await import(statusModule);
-    const sid = 'fixture';
-    const id = 'author331';
-    let failed = true;
-    const task = { id, sandbox_id: sid, activity: 'waiting', status: 'running', steps: { total: 4, done: 4 } };
-    const store = createStore({ get: async (path: string) => {
-      if (path.endsWith('/git')) return { tasks: [{ task_id: id, pr: { state: 'open', number: 1481, checks: failed ? 'failure' : 'success' } }] };
-      if (path.includes('/tasks?')) return [{ ...task, integration_candidate: failed ? { failed: 1481 } : undefined }];
-      return [];
-    } });
-    const group = () => taskInfo(store.state.tasks.get(sid).get(id), null, store.pullsOf(sid).get(id)).group;
-    await store.loadTasks(sid);
-    const before = group();
-    failed = false;
-    const refreshed = new Promise<void>((resolve) => { const off = store.on('pulls', () => { off(); resolve(); }); });
-    const stop = store.watchPulls(sid);
-    await refreshed;
-    stop();
-    const after = group();
-    store.stopEvents();
-    const unresolved = taskInfo({ ...task, integration_candidate: { unverified: 1481 } }, null, { number: 1481, state: 'open', checks: 'success' });
-    return [before, unresolved.group, unresolved.label, after];
-  });
-  expect(groups).toEqual(['needs', 'working', 'Verifying integration candidate · PR #1481', 'done']);
-});
