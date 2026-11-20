@@ -2294,7 +2294,7 @@ fn conflict_paths_preserve_distinct_non_utf8_names() -> TestResult {
     let names: [&[u8]; 5] = [
         br#""x\220""#,
         b"plain\t",
-        b"x\"\\\t\x90",
+        b"x\"\\\x07\x08\t\n\x0b\x0c\r\x90",
         b"x\x90",
         b"x\x91",
     ];
@@ -2313,7 +2313,7 @@ fn conflict_paths_preserve_distinct_non_utf8_names() -> TestResult {
         [
             r#""\"x\\220\"""#,
             "plain\t",
-            r#""x\"\\\t\220""#,
+            r#""x\"\\\a\b\t\n\v\f\r\220""#,
             r#""x\220""#,
             r#""x\221""#
         ],
