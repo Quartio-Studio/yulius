@@ -403,3 +403,4 @@ number differs from the file name, an unlisted record, and entries out of number
 - [0398](0398-astra-6-2-inherits-extra-high-effort.md) GPT-6.2 Astra inherits extra high effort on fresh and resumed Codex launches. Task details distinguish an inherited effort from an explicit choice (SPEC-561).
 - [0399](0399-task-evidence-belongs-to-the-landed-commit.md) Task verification evidence binds the landed commit to its actual CI and environment attempts (SPEC-562).
 - [0400](0400-continuing-a-reviewer-after-its-report-opens-the-next-round.md) records a new round when an author continues a reviewer after its report.
+- [0401](0401-red-ci-notices-include-partial-sibling-failures.md) Red CI notices and run details include partial failures observed in siblings stopped by fail-fast.
