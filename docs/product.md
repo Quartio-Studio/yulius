@@ -605,6 +605,7 @@ watching, steering and unblocking.
 - **Browser panel**: the sandbox's real Chrome streamed as video so people can pass captchas
   and sign-ins for the agent. Their clicks and keys need the host's browser policy, which
   `yulius host setup` writes: without it the browser shows but takes none (ADR-0318).
+  If the policy arrives after an agent used the browser, the panel offers **Restart browser** to recover input while keeping that sandbox’s profile.
   New browser launches keep Chrome’s default extension prompts off the sandbox display,
   including for existing profiles (SPEC-567).
 - **Automations**: tasks on a schedule. Three ship with Yulius and head the Automations page as

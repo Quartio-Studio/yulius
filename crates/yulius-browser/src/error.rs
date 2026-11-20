@@ -124,6 +124,9 @@ pub enum BrowserError {
     /// taking input; it was not delivered. Moves never do (they are coalesced).
     #[error("the sandbox browser is not taking input right now; that input was not delivered")]
     InputBacklog,
+    /// A restart was requested while the manager was already working on this sandbox's slot.
+    #[error("the sandbox browser is busy starting or stopping; try again once it is ready")]
+    BrowserBusy,
     /// A viewer's click or key on a virtual display while Chrome's own windows are not locked
     /// by the host's managed policy (ADR-0318): not delivered.
     #[error(
@@ -134,7 +137,7 @@ pub enum BrowserError {
     /// host's policy was not in force: a native file chooser it opened may still be there
     /// (SPEC-493 DEF-002). Not delivered until the browser restarts.
     #[error(
-        "clicks and keys are still off in this browser: it ran without the host's browser policy, and a file dialog an agent's click opened then may still be on its display, where it reaches the host's files. They come back once the browser restarts: after 30 minutes in which no page shows it and no agent uses it, or with the server"
+        "clicks and keys are still off in this browser: it ran without the host's browser policy, and a file dialog an agent's click opened then may still be on its display, where it reaches the host's files. They come back once the browser restarts"
     )]
     InputLockedUntilRestart,
     /// The tab's page, read with the input lock held, is not one the secret may be typed into
@@ -190,8 +193,11 @@ impl BrowserError {
         match self {
             Self::UrlRefused(_) => ViewerErrorCode::UrlRefused,
             Self::TabNotFound(_) => ViewerErrorCode::NotFound,
-            Self::TooManyTabs(_) | Self::InputBacklog => ViewerErrorCode::Capacity,
-            Self::InputLocked | Self::InputLockedUntilRestart => ViewerErrorCode::InputLocked,
+            Self::TooManyTabs(_) | Self::InputBacklog | Self::BrowserBusy => {
+                ViewerErrorCode::Capacity
+            }
+            Self::InputLocked => ViewerErrorCode::InputLocked,
+            Self::InputLockedUntilRestart => ViewerErrorCode::InputLockedUntilRestart,
             Self::InvalidInput(_)
             | Self::ToolParams(_)
             | Self::InvalidSelector(_)

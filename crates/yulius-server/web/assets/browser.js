@@ -114,7 +114,7 @@ export function createBrowserPanel(ctx, sandbox) {
   const attention = h('div', { class: 'banner banner-warn bp-attn small', hidden: true });
   const notice = h('div', { class: 'bp-notice', role: 'status', hidden: true });
   const stage = h('div', { class: 'bp-stages' }, stream.el, notice);
-  setChildren(el, tabStrip, bar, attention, stage);
+  setChildren(el, tabStrip, bar, attention, stream.restartNotice, stage);
 
   function current() {
     return tabs.find((tab) => tab.id === selected) || null;

@@ -22,7 +22,8 @@ use tokio::net::TcpStream;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 use yulius::wiring::browser::ChromiumBrowsers;
-use yulius_app::ports::store::TaskStore;
+use yulius_app::model::WebSessionRecord;
+use yulius_app::ports::store::{SessionStore as _, TaskStore};
 use yulius_browser::fake::{
     FAKE_ARGV_FILE, FAKE_AVCC, FAKE_PID_FILE, FakeCdpServer, FakeChromium, FakeDisplay,
     write_fake_chromium,
@@ -386,6 +387,93 @@ async fn viewers_need_write_access_and_drive_a_per_sandbox_browser() -> TestResu
         for pid in pids {
             assert!(wait_dead(pid).await, "browser {pid} reaped");
         }
+        Ok(())
+    })
+    .await
+}
+
+#[tokio::test]
+async fn restarting_one_browser_requires_its_write_grant_and_keeps_its_profile() -> TestResult {
+    with_fixture(|f| async move {
+        let sandbox = SandboxId::parse("s1")?;
+        let other = SandboxId::parse("s2")?;
+        f.h.app.browser_session(&sandbox).await?;
+        f.h.app.browser_session(&other).await?;
+        let profile = f.h.app.browser_profile_dir(&sandbox);
+        let other_profile = f.h.app.browser_profile_dir(&other);
+        let pid = |path: &Path| -> Result<i32, Box<dyn std::error::Error>> {
+            Ok(std::fs::read_to_string(path.join(FAKE_PID_FILE))?
+                .trim()
+                .parse()?)
+        };
+        let original = pid(&profile)?;
+        let neighbor = pid(&other_profile)?;
+        std::fs::write(profile.join("profile-sentinel"), b"saved session")?;
+        let path = "/api/sandboxes/s1/browser/restart";
+        let outsider = seed_github_user(&f.h, "u-eve", "eve").await?;
+        let cookie = "browser-restart-session";
+        f.h.store
+            .insert_web_session(&WebSessionRecord {
+                id_hash: f.h.app.deps.crypto.sha256_hex(cookie.as_bytes()),
+                user_id: yulius_domain::ids::UserId::parse("u-alice")?,
+                csrf_token: "csrf".into(),
+                created_at: f.h.app.now(),
+                expires_at: f.h.app.now().plus_millis(3_600_000),
+                revoked_at: None,
+            })
+            .await?;
+        let no_csrf = support::Creds {
+            cookie: Some(cookie.into()),
+            ..Default::default()
+        };
+        let writer = support::Creds {
+            csrf: Some("csrf".into()),
+            ..no_csrf.clone()
+        };
+        for (creds, status) in [
+            (&outsider, StatusCode::NOT_FOUND),
+            (&no_csrf, StatusCode::FORBIDDEN),
+            (&f.reader, StatusCode::FORBIDDEN),
+            (&support::Creds::default(), StatusCode::UNAUTHORIZED),
+        ] {
+            assert_eq!(
+                call(&f.h.router, Method::POST, path, None, creds)
+                    .await?
+                    .status,
+                status
+            );
+        }
+        assert_eq!(
+            call(
+                &f.h.router,
+                Method::POST,
+                "/api/sandboxes/missing/browser/restart",
+                None,
+                &f.writer
+            )
+            .await?
+            .status,
+            StatusCode::NOT_FOUND
+        );
+        assert!(pid_alive(original));
+        assert_eq!(pid(&profile)?, original);
+        assert_eq!(
+            call(&f.h.router, Method::POST, path, None, &writer)
+                .await?
+                .status,
+            StatusCode::NO_CONTENT
+        );
+        let replacement = pid(&profile)?;
+        assert_ne!(replacement, original);
+        assert!(pid_alive(replacement));
+        assert!(!pid_alive(original));
+        assert_eq!(
+            std::fs::read(profile.join("profile-sentinel"))?,
+            b"saved session"
+        );
+
+        assert_eq!(pid(&other_profile)?, neighbor);
+        assert!(pid_alive(neighbor));
         Ok(())
     })
     .await
@@ -1346,6 +1434,21 @@ async fn a_missing_chromium_is_a_clear_error_for_viewers_and_agents() -> TestRes
         "{result}"
     );
 
+    let restart = call(
+        &h.router,
+        Method::POST,
+        "/api/sandboxes/s1/browser/restart",
+        None,
+        &writer,
+    )
+    .await?;
+    assert_eq!(restart.status, StatusCode::BAD_GATEWAY);
+    assert!(
+        restart.body["error"]["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("Chromium executable not found"))
+    );
+
     let served = serve(h.router.clone()).await?;
     let mut socket = ws_connect(served.addr, "/api/sandboxes/s1/browser", &writer, ORIGIN).await?;
     let error = next_json(&mut socket).await?;
@@ -1764,7 +1867,7 @@ async fn chooser_before_the_policy(tool: &'static str, args: fn(&str) -> Value) 
             assert!(tokio::time::Instant::now() < deadline, "the policy was not asked again");
             tokio::time::sleep(Duration::from_millis(500)).await;
         };
-        assert_eq!(refused["code"], "input_locked", "{refused}");
+        assert_eq!(refused["code"], "input_locked_until_restart", "{refused}");
         assert!(
             refused["message"]
                 .as_str()
@@ -1780,9 +1883,10 @@ async fn chooser_before_the_policy(tool: &'static str, args: fn(&str) -> Value) 
             display.inputs()
         );
 
-        // The browser restarts: the new one takes input.
+        // Restart from the panel while the old viewer is still connected.
+        let response = call(&f.h.router, Method::POST, "/api/sandboxes/s1/browser/restart", None, &f.writer).await?;
+        assert_eq!(response.status, StatusCode::NO_CONTENT);
         drop(socket);
-        assert!(f.h.app.deps.browser.stop(&SandboxId::parse("s1")?).await);
         let mut socket =
             ws_connect(served.addr, "/api/sandboxes/s1/browser", &f.writer, ORIGIN).await?;
         let tabs = next_json(&mut socket).await?;

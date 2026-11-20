@@ -136,16 +136,35 @@ impl App {
         &self,
         sandbox: &SandboxId,
     ) -> Result<Arc<dyn BrowserSession>, BrowserFailure> {
+        self.start_browser_session(sandbox, false).await
+    }
+
+    /// Restarts a viewer's sandbox Chrome using its existing write grant and profile.
+    ///
+    /// # Errors
+    /// Access, removal, process shutdown and startup failures.
+    pub async fn restart_browser(&self, ctx: &AuthContext, sid: &str) -> AppResult<()> {
+        let grant = self.browser_grant(ctx, sid).await?;
+        self.start_browser_session(&grant.sandbox_id, true).await?;
+        Ok(())
+    }
+
+    async fn start_browser_session(
+        &self,
+        sandbox: &SandboxId,
+        restart: bool,
+    ) -> Result<Arc<dyn BrowserSession>, BrowserFailure> {
         let removed =
             || BrowserFailure::new(BrowserFailureKind::NotFound, "the sandbox was removed");
         if self.sandbox_removed(sandbox).await {
             return Err(removed());
         }
-        let session = self
-            .deps
-            .browser
-            .ensure(sandbox, &self.browser_profile_dir(sandbox))
-            .await?;
+        let profile = self.browser_profile_dir(sandbox);
+        let session = if restart {
+            self.deps.browser.restart(sandbox, &profile).await?
+        } else {
+            self.deps.browser.ensure(sandbox, &profile).await?
+        };
         if self.sandbox_removed(sandbox).await {
             self.deps.browser.stop(sandbox).await;
             return Err(removed());

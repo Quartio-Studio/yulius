@@ -416,6 +416,7 @@ If a reservation skips past all available slots, land an empty extension first w
 <!-- ADR 0402 -->
 - [0403](0403-reserve-edit-locations-in-the-decision-index.md) gives each upcoming decision its own Git insertion point.
 <!-- ADR 0403 -->
+- [0404](0404-restart-one-sandbox-browser-through-its-viewer-grant.md) lets a sandbox writer restart its browser and reopen permitted tabs after the address guard is installed.
 <!-- ADR 0404 -->
 <!-- ADR 0405 -->
 <!-- ADR 0406 -->
