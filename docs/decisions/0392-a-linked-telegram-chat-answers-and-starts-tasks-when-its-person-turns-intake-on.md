@@ -27,11 +27,16 @@ and [ADR-0379](0379-a-needs-you-names-who-may-answer-it.md) (who steers or answe
 - **A reply is the person's `task_message`.** The channel's `send` returns the message's id; the
   server remembers which of the bot's messages were about which task (the last 500 per chat,
   forgotten when the chat changes hands). A reply to one is a `task_message` from the person,
-  with every guard their own agent's has: the owner rule, a named person's answer, the owner's
-  personal reach, a parked task resumed.
+  with every guard their own agent's has: the owner rule, a named person's answer (to the
+  request the notice told of, never a later one), the owner's personal reach, a parked task
+  resumed; it is labelled as from Telegram. The bot's answers about a task count too; a reply
+  to a message about no task starts nothing. Intake runs off the poll, so the next poll
+  confirms the update and a restart does not hand a message over twice.
 - **A message is a task as the person.** Any other message (text, caption, photo, document,
   voice, audio, video; an album is one) starts a task in the default project through
-  `create_task_as` (access, bound, onboarding gate), origin `telegram` ("From Telegram"). Its
+  `create_task_as` (access, onboarding gate) under the tools' hourly bound, origin `telegram`
+  ("From Telegram"). Like any task the person starts, it holds their personal secrets and MCP
+  servers: that is why intake is the person's own choice and off by default. Its
   files, each at most 20 MB and at most 10, are fetched by the channel (`fetch_file`) into the
   person's drafts folder and named in the prompt.
 - **Commands.** `/status` (what waits for them, as the digest's first section), `/task <project>

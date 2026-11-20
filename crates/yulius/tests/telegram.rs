@@ -87,6 +87,22 @@ impl FakeTelegram {
         self.arrived.notify_waiters();
     }
 
+    /// Messages `bodies` from `chat`, all in the queue before the poll wakes: one batch.
+    fn raw_batch(&self, chat: i64, bodies: &[Value]) {
+        if let Ok(mut updates) = self.updates.lock() {
+            for body in bodies {
+                let id = self.next_update.fetch_add(1, Ordering::SeqCst) + 1;
+                let mut message =
+                    json!({"chat": {"id": chat, "type": "private"}, "from": {"id": chat}});
+                if let (Some(m), Some(extra)) = (message.as_object_mut(), body.as_object()) {
+                    m.extend(extra.clone());
+                }
+                updates.push_back(json!({"update_id": id, "message": message}));
+            }
+        }
+        self.arrived.notify_waiters();
+    }
+
     /// The id of the last message sent to `chat` that starts with `lead`.
     fn sent_id(&self, chat: i64, lead: &str) -> Option<usize> {
         let chat = chat.to_string();
@@ -1919,6 +1935,22 @@ async fn telegram_intake_is_off_by_default_and_set_with_a_project() -> TestResul
         "alice cannot work in s2: {}",
         elsewhere.body
     );
+    // No API token turns intake on: only a browser session (review round 1).
+    let user = w.h.store.user_by_login("alice").await?.ok_or("alice")?;
+    let token =
+        w.h.app
+            .issue_api_token(&user, "cli", yulius_domain::permission::TokenScope::Operate)
+            .await?;
+    let bearer = Creds {
+        bearer: Some(token.expose().to_owned()),
+        ..Creds::default()
+    };
+    let by_token = intake_on(&w, &bearer, "s1").await?;
+    assert_eq!(by_token.status, StatusCode::FORBIDDEN, "{}", by_token.body);
+    let alice_id = user_id(&w, "alice").await?;
+    assert!(audits(&w, &alice_id, "telegram.intake").await?.is_empty());
+    let me = api(&w, Method::GET, "/api/me/telegram", None, &w.alice).await?;
+    assert_eq!(me.body["intake"]["enabled"], false, "nothing stored");
     let on = intake_on(&w, &w.alice, "s1").await?;
     assert_eq!(on.status, StatusCode::OK, "{}", on.body);
     assert_eq!(
@@ -2014,12 +2046,18 @@ async fn a_reply_reaches_its_task_under_the_owner_rule() -> TestResult {
     let alice = user_id(&w, "alice").await?;
     seed_task(&w.h, "t1", "s1", &alice, TaskStatus::Running, None).await?;
     ask(&w, "t1", &format!("Checkout fails with {SECRET}")).await?;
+    // The request's action carries the secret too, which `/status` shows (review round 1).
+    let id = TaskId::parse("t1")?;
+    let mut asked = w.h.store.task_needs_you(&id).await?.ok_or("asked")?;
+    asked.action = format!("Rotate {SECRET} first");
+    w.h.store
+        .set_task_needs_you(&id, Some(&asked), w.h.app.now())
+        .await?;
     w.fake.wait_sent(300, 2).await?;
     let to_alice = w.fake.sent_id(100, "Needs you").ok_or("alice's notice")?;
     let to_carol = w.fake.sent_id(300, "Needs you").ok_or("carol's notice")?;
 
     // Once the request ended, carol's reply is no answer: the owner rule refuses it.
-    let id = TaskId::parse("t1")?;
     let asked = w.h.store.task_needs_you(&id).await?;
     w.h.store
         .set_task_needs_you(&id, None, w.h.app.now())
@@ -2047,13 +2085,154 @@ async fn a_reply_reaches_its_task_under_the_owner_rule() -> TestResult {
     );
     let reply = next_reply(&w, 100, before).await?;
     assert_eq!(reply, "Not sent to #1: task #1 has no live session");
-    assert!(tasks_of(&w, "s1").await?.len() == 1, "a reply starts no task");
+    assert!(
+        tasks_of(&w, "s1").await?.len() == 1,
+        "a reply starts no task"
+    );
 
     // /status lists the task that waits, redacted.
     let before = w.fake.sent_to(100).len();
     w.fake.message(100, true, "/status");
     let status = next_reply(&w, 100, before).await?;
     assert!(status.starts_with("Waiting for you (1):"), "{status}");
+    assert!(
+        status.contains("Rotate [secret:PAYMENT_KEY] first"),
+        "{status}"
+    );
+    assert!(!status.contains(SECRET), "redacted: {status}");
     assert!(status.contains("https://yulius.test/s/app/t/"), "{status}");
+    Ok(())
+}
+
+/// SPEC-512 TGI-002 (review round 1): a reply is delivered: to a task that has not started it
+/// joins the request as the person's message, labelled from Telegram and audited; a reply to
+/// the bot's own answer about a task reaches that task too; a reply to a message about no task
+/// starts nothing.
+#[tokio::test]
+async fn a_reply_is_delivered_and_a_reply_never_starts_a_task() -> TestResult {
+    use yulius_app::ports::notify::SentAbout;
+    let w = world().await?;
+    set_bot(&w, TOKEN_A).await?;
+    link(&w, &w.alice, 100).await?;
+    intake_on(&w, &w.alice, "s1").await?;
+    let alice = user_id(&w, "alice").await?;
+    let task = seed_task(&w.h, "t-q", "s1", &alice, TaskStatus::Queued, None).await?;
+    w.h.store
+        .record_sent(
+            "100",
+            "9001",
+            &SentAbout {
+                task: task.id.clone(),
+                asked_at: None,
+            },
+            w.h.app.now(),
+        )
+        .await?;
+    let before = w.fake.sent_to(100).len();
+    w.fake.raw(
+        100,
+        json!({"text": "Use the DO budget", "reply_to_message": {"message_id": 9001}}),
+    );
+    let reply = next_reply(&w, 100, before).await?;
+    assert_eq!(reply, format!("Sent to #{}.", task.number));
+    let request = w.h.store.task(&task.id).await?.ok_or("task")?.prompt;
+    assert!(request.ends_with("Use the DO budget"), "{request}");
+    let messaged = audits(&w, "t-q", "task.messaged").await?;
+    assert!(
+        messaged.iter().any(|d| d.contains("telegram")),
+        "audited as from Telegram: {messaged:?}"
+    );
+
+    // A reply to the bot's own answer reaches the same task.
+    let answer_id = w.fake.sent_id(100, "Sent to #").ok_or("the answer")?;
+    let before = w.fake.sent_to(100).len();
+    w.fake.raw(
+        100,
+        json!({"text": "And the staging budget", "reply_to_message": {"message_id": answer_id}}),
+    );
+    let reply = next_reply(&w, 100, before).await?;
+    assert_eq!(reply, format!("Sent to #{}.", task.number));
+    let request = w.h.store.task(&task.id).await?.ok_or("task")?.prompt;
+    assert!(request.ends_with("And the staging budget"), "{request}");
+
+    // A reply to a message about no task starts nothing.
+    let before = w.fake.sent_to(100).len();
+    w.fake.raw(
+        100,
+        json!({"text": "also fix the footer", "reply_to_message": {"message_id": 1}}),
+    );
+    let reply = next_reply(&w, 100, before).await?;
+    assert!(
+        reply.starts_with("That message is about no task"),
+        "{reply}"
+    );
+    assert_eq!(tasks_of(&w, "s1").await?.len(), 1, "no task started");
+    Ok(())
+}
+
+/// SPEC-512 TGI-003 (review round 1): the hourly bound of tools applies: the 21st task in an
+/// hour is refused and creates nothing; at most 10 files, each at most 20 MB, are taken; a
+/// project the person may not work in is no project to them.
+#[tokio::test]
+async fn telegram_tasks_keep_the_hourly_bound_and_the_file_bounds() -> TestResult {
+    let w = world().await?;
+    set_bot(&w, TOKEN_A).await?;
+    signed_in_subscription(&w).await?;
+    std::fs::create_dir_all(w.h.app.config.data_dir.join("sandboxes/s1"))?;
+    link(&w, &w.alice, 100).await?;
+    intake_on(&w, &w.alice, "s1").await?;
+    let ask = |text: String| {
+        let w = &w;
+        async move {
+            let before = w.fake.sent_to(100).len();
+            w.fake.message(100, true, &text);
+            next_reply(w, 100, before).await
+        }
+    };
+    let before = w.fake.sent_to(100).len();
+    let many: Vec<Value> = (0..11)
+        .map(|n| json!({"file_id": format!("d{n}"), "file_unique_id": format!("u{n}"), "file_name": format!("f{n}.txt")}))
+        .collect();
+    let album: Vec<Value> = many
+        .iter()
+        .enumerate()
+        .map(|(n, doc)| {
+            let mut body = json!({"document": doc, "media_group_id": "g11"});
+            if n == 0 {
+                body["caption"] = json!("Read these");
+            }
+            body
+        })
+        .collect();
+    w.fake.raw_batch(100, &album);
+    let reply = next_reply(&w, 100, before).await?;
+    assert!(
+        reply.starts_with("At most 10 files start a task"),
+        "an album of 11 is one message, refused: {reply}"
+    );
+    let before = w.fake.sent_to(100).len();
+    w.fake.raw(
+        100,
+        json!({"caption": "Big", "document": {"file_id": "big", "file_unique_id": "ub", "file_name": "big.bin", "file_size": 30_000_000}}),
+    );
+    let reply = next_reply(&w, 100, before).await?;
+    assert!(reply.contains("over Telegram's 20 MB"), "{reply}");
+    for n in 0..20 {
+        let reply = ask(format!("Task {n}")).await?;
+        assert!(reply.starts_with("Started #"), "{n}: {reply}");
+    }
+    let reply = ask("Task 21".into()).await?;
+    assert!(
+        reply.starts_with("Not started: tools may create at most 20 tasks an hour"),
+        "{reply}"
+    );
+    assert_eq!(tasks_of(&w, "s1").await?.len(), 20);
+
+    let reply = ask("/task other Do it".into()).await?;
+    assert!(
+        reply.starts_with("No project you may work in is called other"),
+        "alice may not work in acme/other: {reply}"
+    );
+    assert_eq!(tasks_of(&w, "s1").await?.len(), 20, "nothing more started");
     Ok(())
 }

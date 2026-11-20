@@ -383,7 +383,7 @@ TaskSummary = {
   "id": "…", "sandbox_id": "…", "number": 12, "title": "Checkout API",
   "harness": "claude", "harness_choice": "chosen|random", "status": "running|…(see domain wire names)",
   "activity": "working|waiting|needs_attention|done|null",
-  "branch": "feat/checkout-api", "origin": "ui|automation|import|onboarding|agent",
+  "branch": "feat/checkout-api", "origin": "ui|automation|import|onboarding|agent|telegram",
   "created_by": {"login": "…"}, "owner": {"login": "…"},
   "control_request": {"by": {"login": "…"}, "at": "…"}|null,
   "control_from": {"login": "…"}|null, "owner_asks_first": false,

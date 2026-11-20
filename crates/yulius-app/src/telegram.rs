@@ -92,7 +92,7 @@ struct PollState {
 pub(crate) struct Outgoing {
     pub(crate) chat: String,
     pub(crate) text: String,
-    pub(crate) task: Option<yulius_domain::ids::TaskId>,
+    pub(crate) about: Option<crate::ports::notify::SentAbout>,
 }
 
 /// The channel services an instance runs with.
@@ -269,12 +269,12 @@ impl App {
         &self,
         chat: String,
         text: String,
-        task: Option<yulius_domain::ids::TaskId>,
+        about: Option<crate::ports::notify::SentAbout>,
     ) {
         let Some(outbox) = self.channel.get().and_then(|s| s.outbox.get()) else {
             return;
         };
-        if outbox.try_send(Outgoing { chat, text, task }).is_err() {
+        if outbox.try_send(Outgoing { chat, text, about }).is_err() {
             tracing::warn!("a Telegram notification was dropped: the send queue is full");
         }
     }
@@ -292,11 +292,11 @@ impl App {
             .unwrap_or(Err(ChannelError::Unavailable));
             match sent {
                 Ok(Some(id)) => {
-                    if let Some(task) = &message.task
+                    if let Some(about) = &message.about
                         && let Err(err) = self
                             .deps
                             .store
-                            .record_sent(&message.chat, &id, task, self.now())
+                            .record_sent(&message.chat, &id, about, self.now())
                             .await
                     {
                         tracing::warn!(error = %err, "a sent Telegram message was not remembered");
@@ -388,8 +388,29 @@ impl App {
                     .await?;
                 "Unlinked: this chat gets no more Yulius notifications.".to_owned()
             }
-            // With intake on, the message is the person's work (SPEC-512 TGI-002..TGI-004).
-            ChatCommand::Other if link.intake => self.telegram_intake(&link, message).await?,
+            // With intake on, the message is the person's work (SPEC-512 TGI-002..TGI-004), on
+            // its own task: fetching files must not hold the poll (and with it every chat's
+            // `/stop` and link codes), and the next poll confirms the update at once, so a
+            // restart does not hand the same message over twice (review round 1).
+            ChatCommand::Other if link.intake => {
+                let app = Arc::clone(self);
+                let message = message.clone();
+                tokio::spawn(async move {
+                    match app.telegram_intake(&link, &message).await {
+                        Ok(answer) => {
+                            app.enqueue_about(message.chat.clone(), answer.text, answer.about)
+                        }
+                        Err(err) => {
+                            tracing::warn!(error = %err, "a Telegram message could not be handled");
+                            app.enqueue(
+                                message.chat.clone(),
+                                "Yulius could not handle that message; try again.".into(),
+                            );
+                        }
+                    }
+                });
+                return Ok(());
+            }
             // Anything else gets its answer at most every 10 minutes, so no chat fills the
             // shared send queue (review round 1).
             ChatCommand::Start(_) | ChatCommand::Other => {

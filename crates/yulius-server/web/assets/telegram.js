@@ -201,7 +201,8 @@ export function telegramLink(ctx) {
     const current = intake.sandbox_id || (writable[0] && writable[0].id) || '';
     const select = h('select', { class: 'input', id: 'telegram-intake-project', disabled: writable.length === 0 },
       writable.map((sb) => h('option', { value: sb.id, selected: sb.id === current }, sb.name)));
-    const on = h('input', { type: 'checkbox', id: 'telegram-intake', checked: Boolean(intake.enabled), disabled: writable.length === 0 });
+    // Turning it off always works, even with no project left to write in (review round 1).
+    const on = h('input', { type: 'checkbox', id: 'telegram-intake', checked: Boolean(intake.enabled), disabled: writable.length === 0 && !intake.enabled });
     on.addEventListener('change', () => saveIntake(on.checked, select.value, () => { on.checked = !on.checked; }));
     select.addEventListener('change', () => { if (on.checked) saveIntake(true, select.value, () => { select.value = intake.sandbox_id || ''; }); });
     return h('fieldset', { class: 'telegram-choices' }, h('legend', { class: 'muted xs' }, 'Work from this chat'),

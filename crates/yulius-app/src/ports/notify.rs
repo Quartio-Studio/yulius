@@ -143,6 +143,16 @@ pub struct ChatLink {
     pub intake_sandbox: Option<String>,
 }
 
+/// What one of the bot's messages was about (SPEC-512 TGI-002): its task and, for a notice of
+/// a request, that request's time, so a reply answers that request and no later one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SentAbout {
+    /// The task.
+    pub task: yulius_domain::ids::TaskId,
+    /// The request the message told of (`needs_you` `at`, ms).
+    pub asked_at: Option<i64>,
+}
+
 /// The bot, link codes and linked chats (SPEC-498; migration 0063).
 #[async_trait]
 pub trait ChatLinkStore: Send + Sync {
@@ -195,15 +205,11 @@ pub trait ChatLinkStore: Send + Sync {
         &self,
         chat: &str,
         message: &str,
-        task: &yulius_domain::ids::TaskId,
+        about: &SentAbout,
         at: Timestamp,
     ) -> AppResult<()>;
-    /// The task the bot's `message` in `chat` was about.
-    async fn sent_about(
-        &self,
-        chat: &str,
-        message: &str,
-    ) -> AppResult<Option<yulius_domain::ids::TaskId>>;
+    /// What the bot's `message` in `chat` was about.
+    async fn sent_about(&self, chat: &str, message: &str) -> AppResult<Option<SentAbout>>;
     /// Removes every link and code; how many links went.
     async fn clear_chat_links(&self) -> AppResult<u64>;
 }

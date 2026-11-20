@@ -275,6 +275,19 @@ fn message_files(message: &Value) -> Vec<InboundFile> {
     files
 }
 
+/// Whether Telegram's `file_path` is a plain relative path under the bot's file root: no
+/// parent step, no escape, no absolute path (SPEC-512 TGI-003).
+fn file_path_ok(path: &str) -> bool {
+    !path.is_empty()
+        && !path.starts_with('/')
+        && !path.contains("..")
+        && !path.contains('%')
+        && !path.contains('\\')
+        && path
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'/' | b'_' | b'-' | b'.'))
+}
+
 /// The messages of a `getUpdates` result and the next offset.
 fn parse_updates(result: &Value) -> Result<Received, ChannelError> {
     let updates = result.as_array().ok_or(ChannelError::Invalid)?;
@@ -371,7 +384,7 @@ impl NotificationChannel for TelegramBot {
         let path = file
             .get("file_path")
             .and_then(Value::as_str)
-            .filter(|p| !p.is_empty() && !p.contains(".."))
+            .filter(|p| file_path_ok(p))
             .ok_or(ChannelError::Invalid)?;
         let url = format!("{}/file/bot{}/{path}", self.base, self.token);
         let mut response = self
@@ -714,6 +727,25 @@ mod tests {
         );
         assert_eq!(bot.fetch_file("p7", 63).await, Err(ChannelError::TooLarge));
         Ok(())
+    }
+
+    /// TGI-003: only a plain relative `file_path` is fetched.
+    #[test]
+    fn only_a_plain_file_path_is_fetched() {
+        assert!(file_path_ok("photos/file_7.jpg"));
+        assert!(file_path_ok("documents/report-1_v2.pdf"));
+        for bad in [
+            "",
+            "/etc/passwd",
+            "../x",
+            "a/../../b",
+            "%2e%2e/x",
+            "a\\b",
+            "a b",
+            "a?x=1",
+        ] {
+            assert!(!file_path_ok(bad), "{bad}");
+        }
     }
 
     #[test]

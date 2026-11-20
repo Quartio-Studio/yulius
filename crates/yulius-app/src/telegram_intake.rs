@@ -19,7 +19,7 @@ use crate::context::App;
 use crate::coordination::{Channel, ProjectCaller};
 use crate::error::{AppError, AppResult};
 use crate::model::{TaskOrigin, UserRecord};
-use crate::ports::notify::{ChatLink, Inbound, InboundFile};
+use crate::ports::notify::{ChatLink, Inbound, InboundFile, SentAbout};
 use crate::telegram::ChannelServices;
 
 /// Telegram's bot download bound: a file over it is refused (TGI-003).
@@ -36,13 +36,46 @@ pub const INTAKE_HELP: &str = "This chat gets your Yulius notifications and take
      • /status lists what waits for you;\n\
      • /stop unlinks this chat.";
 
+/// What the bot answers a message, and the task the answer is about (a reply to the answer
+/// reaches that task too).
+pub(crate) struct IntakeAnswer {
+    pub(crate) text: String,
+    pub(crate) about: Option<SentAbout>,
+}
+
+impl From<String> for IntakeAnswer {
+    fn from(text: String) -> Self {
+        Self { text, about: None }
+    }
+}
+
+impl From<&str> for IntakeAnswer {
+    fn from(text: &str) -> Self {
+        Self::from(text.to_owned())
+    }
+}
+
+fn about(task: &TaskId) -> Option<SentAbout> {
+    Some(SentAbout {
+        task: task.clone(),
+        asked_at: None,
+    })
+}
+
+/// The project a `/task` names.
+enum Named {
+    None,
+    One(SandboxId),
+    Several,
+}
+
 impl App {
     /// A linked chat's message with intake on (TGI-002..TGI-004): what the bot answers.
     pub(crate) async fn telegram_intake(
         self: &Arc<Self>,
         link: &ChatLink,
         message: &Inbound,
-    ) -> AppResult<String> {
+    ) -> AppResult<IntakeAnswer> {
         let Some(person) = self
             .deps
             .store
@@ -52,23 +85,41 @@ impl App {
         else {
             return Ok("This Yulius account is disabled.".into());
         };
-        if let Some(reply_to) = &message.reply_to
-            && let Some(task) = self.deps.store.sent_about(&message.chat, reply_to).await?
-        {
-            return self.telegram_reply(&person, &task, message).await;
+        // A reply is never a new task: to a message about a task it reaches that task; to any
+        // other it is refused, so an answer meant for a task never starts one (review round 1).
+        if let Some(reply_to) = &message.reply_to {
+            return match self.deps.store.sent_about(&message.chat, reply_to).await? {
+                Some(sent) => self.telegram_reply(&person, &sent, message).await,
+                None => Ok(
+                    "That message is about no task Yulius remembers. To start a task, \
+                            send a new message, not a reply."
+                        .into(),
+                ),
+            };
         }
         match yulius_domain::notify::intake_command(&message.text) {
-            IntakeCommand::Status => self.telegram_status(&person).await,
+            IntakeCommand::Status => Ok(self.telegram_status(&person).await?.into()),
             IntakeCommand::Help => Ok(INTAKE_HELP.into()),
             IntakeCommand::TaskWithoutProject => {
                 Ok("Write /task <project> <text>, with the project's name.".into())
             }
             IntakeCommand::Task { project, text } => {
-                let Some(sandbox) = self.project_named(&person, project).await? else {
-                    return Ok(format!(
-                        "No project you may work in is called {project}. Write /task <project> \
-                         <text>."
-                    ));
+                let sandbox = match self.project_named(&person, project).await? {
+                    Named::One(sandbox) => sandbox,
+                    Named::None => {
+                        return Ok(format!(
+                            "No project you may work in is called {project}. Write /task \
+                             <project> <text>."
+                        )
+                        .into());
+                    }
+                    Named::Several => {
+                        return Ok(format!(
+                            "Several projects you may work in are called {project}: write its \
+                             full name, owner/repository."
+                        )
+                        .into());
+                    }
                 };
                 self.telegram_task(&person, &sandbox, text, &message.files)
                     .await
@@ -94,29 +145,37 @@ impl App {
     async fn telegram_reply(
         self: &Arc<Self>,
         person: &UserRecord,
-        task: &TaskId,
+        sent: &SentAbout,
         message: &Inbound,
-    ) -> AppResult<String> {
-        let Some(record) = self.deps.store.task(task).await? else {
+    ) -> AppResult<IntakeAnswer> {
+        let Some(record) = self.deps.store.task(&sent.task).await? else {
             return Ok("That task is gone.".into());
         };
         let text = message.text.trim();
         if text.is_empty() {
-            return Ok(format!(
-                "A reply to #{} reaches it as text: write what to tell it.",
-                record.number
-            ));
+            return Ok(IntakeAnswer {
+                text: format!(
+                    "A reply to #{} reaches it as text: write what to tell it.",
+                    record.number
+                ),
+                about: about(&record.id),
+            });
         }
         let caller = ProjectCaller {
             sandbox: record.sandbox_id.clone(),
             user: person.id.clone(),
             task: None,
-            channel: Channel::Remote,
+            channel: Channel::Telegram,
             actor: format!("telegram:{}", person.label()),
             detail: json!({ "via": "telegram" }),
         };
+        // A reply to a notice of a request answers that request and no later one (ANS-004).
         let mut answer = match self
-            .tool_task_message(&caller, &json!({ "task_id": task.as_str(), "text": text }))
+            .task_message_as(
+                &caller,
+                &json!({ "task_id": record.id.as_str(), "text": text }),
+                sent.asked_at,
+            )
             .await
         {
             Ok(_) => format!("Sent to #{}.", record.number),
@@ -125,7 +184,10 @@ impl App {
         if !message.files.is_empty() {
             answer.push_str(" Files in a reply are not sent: attach them on the task's page.");
         }
-        Ok(self.redact_for_sandbox(&record.sandbox_id, &answer).await)
+        Ok(IntakeAnswer {
+            text: self.redact_for_sandbox(&record.sandbox_id, &answer).await,
+            about: about(&record.id),
+        })
     }
 
     /// TGI-004: the person's tasks that wait for them, as the digest's first section.
@@ -135,7 +197,13 @@ impl App {
         let mut lines = Vec::new();
         let mut more = 0_usize;
         for task in store
-            .tasks_with_status(&[TaskStatus::Running, TaskStatus::Parked])
+            .tasks_with_status(&[
+                TaskStatus::Running,
+                TaskStatus::Parked,
+                TaskStatus::Starting,
+                TaskStatus::Switching,
+                TaskStatus::WaitingCapacity,
+            ])
             .await?
         {
             if task.archived_at.is_some() {
@@ -187,42 +255,50 @@ impl App {
         Ok(yulius_domain::notify::truncate(&out))
     }
 
-    /// The project `name` (its repository name or slug) the person may work in.
-    async fn project_named(&self, person: &UserRecord, name: &str) -> AppResult<Option<SandboxId>> {
+    /// The project `name` names among those the person may work in: its slug or full
+    /// repository name, else its repository's short name when only one has it.
+    async fn project_named(&self, person: &UserRecord, name: &str) -> AppResult<Named> {
         let name = name.to_lowercase();
+        let mut short_matches = Vec::new();
         for sandbox in self.deps.store.sandboxes().await? {
             if sandbox.removed_at.is_some() {
                 continue;
             }
-            let short = sandbox
-                .repo_name
-                .rsplit('/')
-                .next()
-                .unwrap_or(&sandbox.repo_name)
-                .to_lowercase();
-            if (sandbox.slug.to_lowercase() == name
-                || sandbox.repo_name.to_lowercase() == name
-                || short == name)
-                && self
-                    .require(person, &sandbox.id, Action::Work)
-                    .await
-                    .is_ok()
-            {
-                return Ok(Some(sandbox.id));
+            let full = sandbox.repo_name.to_lowercase();
+            let short = full.rsplit('/').next().unwrap_or(&full).to_owned();
+            let exact = sandbox.slug.to_lowercase() == name || full == name;
+            if !(exact || short == name) {
+                continue;
             }
+            if self
+                .require(person, &sandbox.id, Action::Work)
+                .await
+                .is_err()
+            {
+                continue;
+            }
+            if exact {
+                return Ok(Named::One(sandbox.id));
+            }
+            short_matches.push(sandbox.id);
         }
-        Ok(None)
+        Ok(match short_matches.len() {
+            0 => Named::None,
+            1 => Named::One(short_matches.remove(0)),
+            _ => Named::Several,
+        })
     }
 
     /// TGI-003: a task in `sandbox` as the person, its files as attachments named in its prompt,
-    /// with `task_create`'s bound, onboarding gate and access checks; labelled `telegram`.
+    /// with `task_create`'s hourly bound (a slot taken before any file is fetched), onboarding
+    /// gate and access checks; labelled `telegram`.
     async fn telegram_task(
         self: &Arc<Self>,
         person: &UserRecord,
         sandbox: &SandboxId,
         text: &str,
         files: &[InboundFile],
-    ) -> AppResult<String> {
+    ) -> AppResult<IntakeAnswer> {
         if text.is_empty() && files.is_empty() {
             return Ok("Send text or a file to start a task.".into());
         }
@@ -230,11 +306,35 @@ impl App {
             return Ok(format!(
                 "At most {MAX_FILES} files start a task; this message has {}.",
                 files.len()
-            ));
+            )
+            .into());
         }
         if let Err(err) = self.require(person, sandbox, Action::Work).await {
-            return Ok(format!("Not started: {}", err.public_message()));
+            return Ok(format!("Not started: {}", err.public_message()).into());
         }
+        let slot = match self.reserve_tool_task(sandbox) {
+            Ok(slot) => slot,
+            Err(err) => return Ok(format!("Not started: {}", err.public_message()).into()),
+        };
+        let started = self.telegram_task_in(person, sandbox, text, files).await;
+        if !matches!(started, Ok(Some(_))) {
+            self.release_tool_task(sandbox, slot);
+        }
+        match started {
+            Ok(Some(answer)) => Ok(answer),
+            Ok(None) => Ok("Not started.".into()),
+            Err(reason) => Ok(format!("Not started: {reason}").into()),
+        }
+    }
+
+    /// The files fetched and the task created, once the slot is taken; why not, as words.
+    async fn telegram_task_in(
+        self: &Arc<Self>,
+        person: &UserRecord,
+        sandbox: &SandboxId,
+        text: &str,
+        files: &[InboundFile],
+    ) -> Result<Option<IntakeAnswer>, String> {
         let ctx = AuthContext {
             user: person.clone(),
             csrf_token: None,
@@ -243,10 +343,11 @@ impl App {
         };
         let mut paths = Vec::new();
         for file in files {
-            match self.telegram_attachment(&ctx, sandbox, file).await {
-                Ok(path) => paths.push(path),
-                Err(reason) => return Ok(format!("Not started: {} {reason}", file.name)),
-            }
+            let path = self
+                .telegram_attachment(&ctx, sandbox, file)
+                .await
+                .map_err(|reason| format!("{} {reason}", file.name))?;
+            paths.push(path);
         }
         let mut prompt = text.to_owned();
         if !paths.is_empty() {
@@ -272,26 +373,27 @@ impl App {
             prepared: false,
             start_at: None,
         };
-        match self
+        let task = self
             .create_task_as(person, sandbox, &req, TaskOrigin::Telegram)
             .await
-        {
-            Ok(task) => {
-                let slug = self
-                    .deps
-                    .store
-                    .sandbox(sandbox)
-                    .await?
-                    .map_or_else(String::new, |s| s.slug);
-                Ok(format!(
-                    "Started #{} from Telegram: {}/s/{slug}/t/{}",
-                    task.number,
-                    self.config.public_url.trim_end_matches('/'),
-                    task.number
-                ))
-            }
-            Err(err) => Ok(format!("Not started: {}", err.public_message())),
-        }
+            .map_err(|err| err.public_message())?;
+        let slug = self
+            .deps
+            .store
+            .sandbox(sandbox)
+            .await
+            .ok()
+            .flatten()
+            .map_or_else(String::new, |s| s.slug);
+        Ok(Some(IntakeAnswer {
+            text: format!(
+                "Started #{} from Telegram: {}/s/{slug}/t/{}",
+                task.number,
+                self.config.public_url.trim_end_matches('/'),
+                task.number
+            ),
+            about: about(&task.id),
+        }))
     }
 
     /// Fetches one received file (at most [`MAX_FILE_BYTES`]) into the person's drafts folder;

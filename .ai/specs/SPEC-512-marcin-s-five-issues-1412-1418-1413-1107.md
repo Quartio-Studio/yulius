@@ -401,6 +401,17 @@ Written when it starts (see Context): HOF (#1106), from its issue's acceptance c
   browser switch (the instance setting is the switch, as the issue's acceptance says), and
   Telegram digests can be turned off among the chat's choices.
 
+- **A Telegram reply goes through `task_message`, labelled `Telegram`.** The person typed it,
+  not their agent; the label says so (`Channel::Telegram`), and every guard is the one their own
+  agent meets. A reply to a notice of a request carries that request's `at`, so it never answers
+  a later one (ANS-004).
+- **Intake runs off the poll.** Files take up to two minutes each; the poll goes on, so other
+  chats' `/stop` and link codes are not held, and the next poll confirms the update at once.
+- **Known limits.** An album split by Telegram across two answers of `getUpdates` (more than 20
+  updates waiting) becomes two tasks. Files are fetched before `create_task_as` decides, so a
+  task it refuses (the onboarding gate) leaves its files in the person's drafts folder, removed
+  with the other drafts after a week.
+
 ## Evidence
 
 ### Part 4 (#1107, intake)

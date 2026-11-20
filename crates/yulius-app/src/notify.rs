@@ -72,7 +72,7 @@ struct Notice {
     kind: NoticeKind,
     headline: String,
     text: String,
-    task: Option<TaskId>,
+    about: Option<crate::ports::notify::SentAbout>,
 }
 
 impl NotifierState {
@@ -257,7 +257,10 @@ impl App {
             kind: NoticeKind::NeedsYou,
             headline: self.redact_for_sandbox(&task.sandbox_id, &headline).await,
             text: self.redact_for_sandbox(&task.sandbox_id, &text).await,
-            task: Some(task.id.clone()),
+            about: Some(crate::ports::notify::SentAbout {
+                task: task.id.clone(),
+                asked_at: None,
+            }),
         }))
     }
 
@@ -298,7 +301,10 @@ impl App {
                 kind: NoticeKind::NeedsYou,
                 headline: self.redact_for_sandbox(&task.sandbox_id, &headline).await,
                 text: self.redact_for_sandbox(&task.sandbox_id, &text).await,
-                task: Some(task.id.clone()),
+                about: Some(crate::ports::notify::SentAbout {
+                    task: task.id.clone(),
+                    asked_at: None,
+                }),
             },
         )))
     }
@@ -502,7 +508,10 @@ impl App {
             text: self
                 .redact_for_sandbox(&task.sandbox_id, &notice.text())
                 .await,
-            task: Some(task.id.clone()),
+            about: Some(crate::ports::notify::SentAbout {
+                task: task.id.clone(),
+                asked_at: asked.as_ref().map(|a| a.at),
+            }),
         }))
     }
 
@@ -534,7 +543,7 @@ impl App {
             kind: NoticeKind::Account,
             headline: redact(headline),
             text: redact(text),
-            task: None,
+            about: None,
         })
     }
 
@@ -573,7 +582,7 @@ impl App {
                 throttle.offer(now, notice.headline.clone())
             });
             if send {
-                self.enqueue_about(link.chat.clone(), notice.text.clone(), notice.task.clone());
+                self.enqueue_about(link.chat.clone(), notice.text.clone(), notice.about.clone());
             }
         }
         Ok(())
