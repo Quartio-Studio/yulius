@@ -373,6 +373,10 @@ pub fn public() -> Router<AppState> {
         .route("/api/delivery/presets", get(delivery::presets))
         .route("/api/sandboxes/{sid}/git", get(git::overview))
         .route("/api/tasks/{tid}/delivery", get(delivery::task_delivery))
+        .route(
+            "/api/tasks/{tid}/delivery/evidence/{sha}",
+            get(delivery::merge_evidence),
+        )
         .route("/api/tasks/{tid}/changes", get(delivery::task_changes))
         .route("/api/tasks/{tid}/commits", get(delivery::task_commits))
         .route("/api/tasks/{tid}/delivery/pr", post(delivery::open_pr))

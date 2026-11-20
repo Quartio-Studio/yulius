@@ -208,6 +208,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("migrations/0073_telegram_intake.sql"),
     // Schema version 76 (SPEC-512 HOF-001); 0076 is the reserved file number.
     include_str!("migrations/0076_task_handoffs.sql"),
+    include_str!("migrations/0077_task_merge_evidence.sql"),
 ];
 
 type Job = Box<dyn FnOnce(&mut Connection) + Send + 'static>;
@@ -354,7 +355,7 @@ impl SqliteStore {
 ///
 /// # Errors
 /// Fails when the file cannot be written or `version` is past the latest.
-#[cfg(feature = "test-support")]
+#[cfg(any(test, feature = "test-support"))]
 pub fn create_at_version(path: &Path, version: usize) -> Result<(), OpenError> {
     let mut conn = Connection::open(path)?;
     let tx = conn.transaction()?;
@@ -513,6 +514,7 @@ mod tests {
             ),
             (75, include_str!("migrations/0073_telegram_intake.sql")),
             (76, include_str!("migrations/0076_task_handoffs.sql")),
+            (77, include_str!("migrations/0077_task_merge_evidence.sql")),
         ];
         for (version, sql) in pinned {
             assert_eq!(
@@ -521,7 +523,7 @@ mod tests {
                 "schema version {version}"
             );
         }
-        assert_eq!(MIGRATIONS.len(), 76, "a new migration is pinned here too");
+        assert_eq!(MIGRATIONS.len(), 77, "a new migration is pinned here too");
     }
 
     #[test]

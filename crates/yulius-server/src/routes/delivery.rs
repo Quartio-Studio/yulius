@@ -44,6 +44,30 @@ pub async fn task_delivery(
     Ok(Json(app.task_delivery(&ctx, &tid).await?))
 }
 
+#[derive(serde::Deserialize)]
+pub struct EvidenceQuery {
+    run_id: Option<String>,
+    before: Option<String>,
+}
+
+pub async fn merge_evidence(
+    State(app): State<AppState>,
+    Auth(ctx): Auth,
+    Path((tid, sha)): Path<(String, String)>,
+    axum::extract::Query(query): axum::extract::Query<EvidenceQuery>,
+) -> ApiResult<Json<yulius_contracts::api::git::MergeEvidence>> {
+    Ok(Json(
+        app.task_merge_evidence(
+            &ctx,
+            &tid,
+            &sha,
+            query.run_id.as_deref(),
+            query.before.as_deref(),
+        )
+        .await?,
+    ))
+}
+
 pub async fn task_changes(
     State(app): State<AppState>,
     Auth(ctx): Auth,

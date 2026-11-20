@@ -158,6 +158,70 @@ pub struct Delivery {
     /// REV-005).
     #[serde(default)]
     pub review_rounds: Vec<ReviewRoundView>,
+    /// Evidence of the current landing (SPEC-562). Absent until its identity is known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evidence: Option<MergeEvidence>,
+}
+
+/// The historical check results for one task's landed commit.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MergeEvidence {
+    /// Permalink within the instance.
+    pub url: String,
+    /// The task that delivered the change.
+    pub task_id: String,
+    /// The merged pull request, absent in playgrounds.
+    pub pr_number: Option<u64>,
+    /// Its accepted head.
+    pub head_sha: String,
+    /// Integration branch at the time of the merge.
+    pub branch: String,
+    /// Actual commit landed on that branch.
+    pub merged_sha: String,
+    /// Newest attempts first. An empty list means no matching run is known.
+    pub runs: Vec<EvidenceRun>,
+    /// Older attempts exist beyond this response. A run ID selects its own result.
+    pub truncated: bool,
+    /// Read the next page with `?before=<id>`. Anchored to the last attempt on this page.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_before: Option<String>,
+}
+
+/// One CI or CD attempt at its recorded SHA, without scripts or logs.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EvidenceRun {
+    /// Original run ID, also selects this attempt at the permalink.
+    pub run_id: String,
+    /// CI or CD.
+    pub kind: String,
+    /// CI reference or CD environment name.
+    pub reference: String,
+    /// Exact commit of this run.
+    pub sha: String,
+    /// Run verdict.
+    pub state: String,
+    /// Includes CI's recorded train or tree-reuse provenance.
+    pub reason: Option<String>,
+    /// Individual job or command outcomes.
+    pub checks: Vec<EvidenceCheck>,
+    /// Protected branch for a CD run.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
+    /// Environment stage for a CD run.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stage: Option<String>,
+}
+
+/// A recorded check outcome, including skipped and unavailable results.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EvidenceCheck {
+    /// Job or CD phase name.
+    pub name: String,
+    /// Actual verdict or missing proof.
+    pub state: String,
+    /// The job's own reason, when CI recorded one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
 }
 
 /// One round of a task's independent review (SPEC-493 REV-004).
