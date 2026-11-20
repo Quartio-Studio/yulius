@@ -1158,9 +1158,20 @@ fn a_loss_recorded_while_the_reader_holds_the_park_still_parks() -> TestResult {
     Ok(())
 }
 
+#[derive(Clone, Copy)]
+enum EndRequests {
+    Close,
+    Cancel,
+    CloseThenCancel,
+}
+
 /// SPEC-563: escalation records the loss with the reader held just before or just after it
 /// takes the request. EndDecided releases the reader once the loss has consumed the intent.
-fn host_loss_with_request(close: bool, hold_reader_at: Point, expected: TaskStatus) -> TestResult {
+fn host_loss_with_request(
+    requests: EndRequests,
+    hold_reader_at: Point,
+    expected: TaskStatus,
+) -> TestResult {
     use yulius_app::race::on;
     use yulius_domain::task::AttemptState;
 
@@ -1179,12 +1190,13 @@ fn host_loss_with_request(close: bool, hold_reader_at: Point, expected: TaskStat
         let (id, _) = answered(&app, &data).await?;
         let key = Path::new(id.as_str());
         let bound = Duration::from_secs(30);
-        let (reader_ready, wait_reader) = std::sync::mpsc::channel();
+        let (reader_ready, wait_reader) = tokio::sync::oneshot::channel();
+        let (escalate, wait_escalate) = std::sync::mpsc::channel();
         let (lost, wait_lost) = std::sync::mpsc::channel();
         let (ordered, observed) = tokio::sync::oneshot::channel();
         on(Point::EndEscalating, key, move || {
             assert!(
-                tokio::task::block_in_place(|| wait_reader.recv_timeout(bound)).is_ok(),
+                tokio::task::block_in_place(|| wait_escalate.recv_timeout(bound)).is_ok(),
                 "reader reached the selected race point"
             );
         });
@@ -1196,11 +1208,16 @@ fn host_loss_with_request(close: bool, hold_reader_at: Point, expected: TaskStat
         on(Point::EndDecided, key, move || {
             let _ = lost.send(());
         });
-        if close {
-            app.close_task_now(&id).await?;
-        } else {
+        match requests {
+            EndRequests::Close | EndRequests::CloseThenCancel => app.close_task_now(&id).await?,
+            EndRequests::Cancel => app.stop_task_now(&id).await?,
+        }
+        tokio::time::timeout(bound, wait_reader).await??;
+        if matches!(requests, EndRequests::CloseThenCancel) {
+            // Close is held by the reader. The newer Cancel is in the live intent slot.
             app.stop_task_now(&id).await?;
         }
+        escalate.send(())?;
         assert!(
             tokio::time::timeout(bound, observed).await??,
             "reader held until loss"
@@ -1225,13 +1242,13 @@ fn host_loss_with_request(close: bool, hold_reader_at: Point, expected: TaskStat
 
 #[test]
 fn host_loss_while_the_reader_holds_close_closes_an_answered_task() -> TestResult {
-    host_loss_with_request(true, Point::RunEndTaken, TaskStatus::Closed)
+    host_loss_with_request(EndRequests::Close, Point::RunEndTaken, TaskStatus::Closed)
 }
 
 #[test]
 fn host_loss_while_the_reader_holds_cancel_stops_an_answered_task() -> TestResult {
     host_loss_with_request(
-        false,
+        EndRequests::Cancel,
         Point::RunEndTaken,
         TaskStatus::Stopped(StopReason::Cancelled),
     )
@@ -1240,7 +1257,7 @@ fn host_loss_while_the_reader_holds_cancel_stops_an_answered_task() -> TestResul
 #[test]
 fn host_loss_before_the_reader_takes_close_keeps_the_loss_outcome() -> TestResult {
     host_loss_with_request(
-        true,
+        EndRequests::Close,
         Point::RunEndTaking,
         TaskStatus::Stopped(StopReason::Lost),
     )
@@ -1249,8 +1266,17 @@ fn host_loss_before_the_reader_takes_close_keeps_the_loss_outcome() -> TestResul
 #[test]
 fn host_loss_before_the_reader_takes_cancel_keeps_the_loss_outcome() -> TestResult {
     host_loss_with_request(
-        false,
+        EndRequests::Cancel,
         Point::RunEndTaking,
+        TaskStatus::Stopped(StopReason::Lost),
+    )
+}
+
+#[test]
+fn host_loss_with_a_newer_cancel_uses_the_live_intent_slot() -> TestResult {
+    host_loss_with_request(
+        EndRequests::CloseThenCancel,
+        Point::RunEndTaken,
         TaskStatus::Stopped(StopReason::Lost),
     )
 }

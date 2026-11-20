@@ -8193,6 +8193,23 @@ mod tests {
 
     use super::branch_for;
 
+    #[test]
+    fn a_taken_request_belongs_to_one_attempt_and_is_consumed_once()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let runtime = super::TaskRuntime::new();
+        let owner = super::AttemptId::parse("a-owner")?;
+        let stale = super::AttemptId::parse("a-stale")?;
+        *runtime.taken_request.lock().map_err(|_| "request lock")? =
+            Some((owner.clone(), super::TakenRequest::Close));
+        assert!(runtime.take_reader_request(&stale).is_none());
+        assert!(matches!(
+            runtime.take_reader_request(&owner),
+            Some(super::TakenRequest::Close)
+        ));
+        assert!(runtime.take_reader_request(&owner).is_none());
+        Ok(())
+    }
+
     /// SPEC-268 PID-005, review round 1: an attempt reads only its own start counters, and a late
     /// end of an older attempt (or an observer that lost the transition) leaves the newer one's.
     #[test]
