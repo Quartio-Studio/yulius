@@ -6,6 +6,9 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-20
 
+- Sandbox browsers skip Chrome’s default apps. Older profiles can take the extension blocklist
+  on a virtual display without showing a Docs Offline administrator dialog (SPEC-567, #1411).
+
 - Continuing a reviewer after its report preserves both verdicts and counts the re-review
   in the Review card. Duplicate stops preserve the original end time (SPEC-565, #1401).
 

@@ -546,6 +546,9 @@ itself that the host's managed policy, which switches those windows off, is in f
 (`BrowserInstance::viewer_input_allowed`: a hidden tab is sent to the address the policy
 blocks; `yulius_browser::policy`, written by `yulius host setup`;
 [ADR-0318](decisions/0318-viewers-input-reaches-a-sandbox-browser-only-under-the-hosts-managed-policy.md)).
+Sandbox browsers skip default app installation. On a virtual display they also leave profile
+extensions unloaded, so a later policy reload can take effect without a native administrator
+dialog. [ADR-0402](decisions/0402-sandbox-browsers-skip-chromes-default-apps.md)
 The probe's tab and Chrome's own `chrome:` pages are never listed as tabs. Chrome is on the
 host's network, not its sandbox's, so each browser is started behind a proxy of its own
 (`BrowserNetwork`; `--proxy-server` for every address, the loopback included), a listener the

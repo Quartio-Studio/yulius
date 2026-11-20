@@ -136,6 +136,7 @@ impl BrowserConfig {
             [
                 "--no-first-run",
                 "--no-default-browser-check",
+                "--disable-default-apps",
                 "--disable-background-timer-throttling",
                 "--disable-renderer-backgrounding",
             ]
