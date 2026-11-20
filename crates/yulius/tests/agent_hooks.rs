@@ -2971,6 +2971,7 @@ async fn incomplete_git_overviews_preserve_the_current_parked_pr_observation() -
                     head: "feat/2-x".into(),
                     head_sha: "external".into(),
                     base: "release".into(),
+                    mergeable: Some(false),
                     ..pulls[0].clone()
                 };
                 pulls.push(external);
@@ -2978,7 +2979,16 @@ async fn incomplete_git_overviews_preserve_the_current_parked_pr_observation() -
                 pulls.retain(|pr| pr.number != 1462);
             }
         }
-        f.h.app.git_overview(&owner, f.sandbox.as_str()).await?;
+        let fresh = f.h.app.git_overview(&owner, f.sandbox.as_str()).await?;
+        if open {
+            let pr = fresh
+                .tasks
+                .iter()
+                .find(|t| t.task_id == id.as_str())
+                .and_then(|t| t.pr.as_ref())
+                .ok_or("external PR")?;
+            assert!(pr.conflicts, "use the mergeability of the task's own PR");
+        }
         gate.notify_one();
         pending.await?;
         let list =
