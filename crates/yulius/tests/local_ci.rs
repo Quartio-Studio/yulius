@@ -1755,6 +1755,113 @@ async fn the_integration_branch_runs_a_paths_job_a_merged_tree_skipped() -> Test
     Ok(())
 }
 
+/// A project with a quick check and an `after_merge` full suite; `staging` adds the merge-first
+/// environment (SPEC-575).
+fn merge_first_toml(staging: bool) -> String {
+    let mut text = "[[ci.jobs]]\nname = \"quick\"\ncommand = \"true\"\n\n\
+                    [[ci.jobs]]\nname = \"full\"\ncommand = 'echo full suite ran'\n\
+                    after_merge = true\n"
+        .to_owned();
+    if staging {
+        text.push_str(
+            "\n[cd.dev]\n[cd.prod]\n\n[cd.staging]\nstage = \"dev\"\nmerge_first = true\n\
+             deploy = \"scripts/cd/deploy.sh staging\"\nverify = \"scripts/cd/verify.sh staging\"\n\
+             rollback = \"scripts/cd/rollback.sh staging\"\nmigrations = \"none: stateless\"\n",
+        );
+    }
+    text
+}
+
+/// Squash-merges `feat/one` into origin's `dev`; the merged commit.
+fn squash_feat_one(f: &Fixture) -> BoxResult<String> {
+    git(&f.work, &["checkout", "-q", "-b", "dev", "origin/dev"])?;
+    git(&f.work, &["merge", "-q", "--squash", "feat/one"])?;
+    git(&f.work, &["commit", "-q", "-m", "feature (#1)"])?;
+    git(&f.work, &["push", "-q", "origin", "dev"])?;
+    Ok(git(&f.work, &["rev-parse", "HEAD"])?)
+}
+
+/// SPEC-575 MFS-002 (AC: quick checks on the pull request, full suite once on dev): with a
+/// merge-first environment the full suite is skipped on the pull request head, with its reason,
+/// the head still passes, and the integration branch's run at the squash commit runs it instead
+/// of reusing the pull request's tree: the full suite ran once, on the merged revision.
+#[tokio::test]
+async fn merge_first_runs_the_full_suite_once_on_the_merged_revision() -> TestResult {
+    let f = fixture_with(false, |_| merge_first_toml(true)).await?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    let head = git(&f.origin, &["rev-parse", "feat/one"])?;
+    let (run, detail) = run_of(&f, &head).await?;
+    assert_eq!(run["state"], "passed", "{run}");
+    let full = job_named(&detail, "full")?;
+    assert_eq!(full["state"], "skipped", "{detail}");
+    let said = full["output"].as_str().unwrap_or_default();
+    assert!(
+        said.contains(yulius_domain::ci::AFTER_MERGE_SKIP_REASON) && !said.contains("suite ran"),
+        "{full}"
+    );
+    assert_eq!(job_named(&detail, "quick")?["state"], "passed", "{detail}");
+    let (state, description, _) = f.last_status(&head).ok_or("status")?;
+    assert_eq!(state, "success", "{description}");
+
+    let merged = squash_feat_one(&f)?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    let (run, detail) = run_of(&f, &merged).await?;
+    assert_eq!(run["state"], "passed", "{run}");
+    let full = job_named(&detail, "full")?;
+    assert_eq!(full["state"], "passed", "{detail}");
+    assert!(
+        full["output"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("full suite ran"),
+        "the merged revision ran it, no tree reuse: {full}"
+    );
+    // One full-suite execution for this change: every run of the pull request's head skipped
+    // it, and only the merged revision's ran it.
+    let overview = f.get("/api/sandboxes/s1/ci").await?;
+    let mut ran = Vec::new();
+    for run in overview["runs"].as_array().ok_or("runs")? {
+        if run["sha"] != head.as_str() && run["sha"] != merged.as_str() {
+            continue;
+        }
+        let detail = f
+            .get(&format!(
+                "/api/sandboxes/s1/ci/runs/{}",
+                run["id"].as_str().ok_or("id")?
+            ))
+            .await?;
+        if job_named(&detail, "full")?["state"] == "passed" {
+            ran.push(run["sha"].as_str().unwrap_or_default().to_owned());
+        }
+    }
+    assert_eq!(ran, [merged], "{overview}");
+    Ok(())
+}
+
+/// SPEC-575 MFS-002: without a merge-first environment (no shared staging target), the same
+/// `after_merge` job runs on the pull request head: the project keeps its full suite there.
+#[tokio::test]
+async fn without_a_staging_target_the_full_suite_stays_on_the_pull_request() -> TestResult {
+    let f = fixture_with(false, |_| merge_first_toml(false)).await?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    let head = git(&f.origin, &["rev-parse", "feat/one"])?;
+    let (run, detail) = run_of(&f, &head).await?;
+    assert_eq!(run["state"], "passed", "{run}");
+    let full = job_named(&detail, "full")?;
+    assert_eq!(full["state"], "passed", "{detail}");
+    assert!(
+        full["output"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("full suite ran"),
+        "{full}"
+    );
+    Ok(())
+}
+
 /// SPEC-504 review round 2: when Git cannot walk the integration branch's history for its last
 /// valid gate (here a commit of it is missing from the clone), a pull request's verdict is
 /// pending, never "no CI" (which would let a merge through on no checks).

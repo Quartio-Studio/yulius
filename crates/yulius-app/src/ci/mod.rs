@@ -841,7 +841,14 @@ impl App {
             return Err("yulius.toml is larger than 64 KiB".into());
         }
         let config = parse_yulius_toml(&text).map_err(|err| err.to_string())?;
-        dom::project_jobs(config.commands.gate.as_deref(), &config.ci).map_err(|e| e.to_string())
+        let jobs = dom::project_jobs(config.commands.gate.as_deref(), &config.ci)
+            .map_err(|e| e.to_string())?;
+        // The full suite leaves the pull request only beside a shared staging target that
+        // deploys (SPEC-575 MFS-002); an unreadable CD table keeps it there.
+        let merge_first = yulius_domain::spec_format::parse_yulius_toml_cd(&text)
+            .ok()
+            .is_some_and(|cd| cd.merge_first().is_some_and(|t| t.deploy.is_some()));
+        Ok(dom::after_merge_in_force(jobs, merge_first))
     }
 
     /// The sandbox's CI as configured now (cached for a minute per integration head), with the
@@ -1132,7 +1139,8 @@ impl App {
             .iter()
             .enumerate()
             .map(|(index, job)| {
-                let skip = yulius_domain::ci::paths_skip(&job.paths, changed.as_deref());
+                let skip = yulius_domain::ci::after_merge_skip(job, &run.reference)
+                    .or_else(|| yulius_domain::ci::paths_skip(&job.paths, changed.as_deref()));
                 CiJobRecord {
                     id: self.deps.crypto.new_id(),
                     run_id: run.id.clone(),
@@ -1576,8 +1584,12 @@ impl App {
                 continue;
             }
             let jobs = self.deps.store.ci_jobs(&run.id, false).await?;
+            // Likewise a source that skipped the full suite off the merged revision (SPEC-575
+            // MFS-002) never ran a job the integration branch's run must run.
             let skipped_a_paths_job = gate.jobs.iter().any(|job| {
-                !job.paths.is_empty()
+                (!job.paths.is_empty()
+                    || job.after_merge
+                        && yulius_domain::ci::after_merge_skip(job, &target.reference).is_none())
                     && jobs.iter().any(|t| {
                         t.key == job.key && t.matrix == job.matrix && t.state == RunState::Skipped
                     })
@@ -2341,6 +2353,7 @@ mod ran_as_tests {
             timeout_minutes: Some(30),
             exclusive: true,
             paths: vec!["crates/**".into()],
+            after_merge: false,
         };
         let record = |job: &Job| CiJobRecord {
             id: "j".into(),

@@ -140,6 +140,9 @@ pub struct JobDef {
     /// The files it tests (`paths`, SPEC-493 CJP-001): scope-claim globs, normalized. Empty:
     /// every change.
     pub paths: Vec<String>,
+    /// Part of the full suite (`after_merge`, SPEC-575 MFS-002): with a merge-first environment
+    /// it runs on the merged revision, not on pull request heads.
+    pub after_merge: bool,
 }
 
 /// One job of a run, after matrix expansion.
@@ -163,6 +166,9 @@ pub struct Job {
     pub exclusive: bool,
     /// Its definition's `paths` (SPEC-493 CJP-001).
     pub paths: Vec<String>,
+    /// Its definition's `after_merge`, in force only while the integration head has a
+    /// merge-first environment that deploys ([`after_merge_in_force`], SPEC-575 MFS-002).
+    pub after_merge: bool,
 }
 
 /// An invalid CI job configuration.
@@ -289,6 +295,36 @@ pub fn parse_paths(job: &str, items: &[String]) -> Result<Vec<String>, CiConfigE
     Ok(out)
 }
 
+/// What a skipped job of the full suite says (SPEC-575 MFS-002).
+pub const AFTER_MERGE_SKIP_REASON: &str =
+    "part of the full suite: it runs on the merged revision before staging changes";
+
+/// The jobs with `after_merge` kept only when the integration head has a merge-first
+/// environment that deploys (`merge_first`); without one each job runs on every commit, so a
+/// project without a shared staging target keeps its full suite on the pull request (SPEC-575
+/// MFS-002).
+#[must_use]
+pub fn after_merge_in_force(mut jobs: Vec<Job>, merge_first: bool) -> Vec<Job> {
+    if !merge_first {
+        for job in &mut jobs {
+            job.after_merge = false;
+        }
+    }
+    jobs
+}
+
+/// Why a job of the full suite is skipped for a run of `reference`, or `None` when it runs: a
+/// pull request head, a merge train and a playground task skip it; the integration and
+/// production branches' runs (the merged revision) run it (SPEC-575 MFS-002).
+#[must_use]
+pub fn after_merge_skip(job: &Job, reference: &CiRef) -> Option<String> {
+    let off_the_merge = matches!(
+        reference,
+        CiRef::PullRequest(_) | CiRef::Train(_) | CiRef::Task(_)
+    );
+    (job.after_merge && off_the_merge).then(|| AFTER_MERGE_SKIP_REASON.to_owned())
+}
+
 /// Why a job with `paths` is skipped for a change of `changed` files (SPEC-493 CJP-002,
 /// CJP-003), or `None` when it runs: a job without `paths`, an unknown change (`None`), a change
 /// to [`JOBS_FILE`] and a change touching one of its paths all run it.
@@ -360,6 +396,7 @@ pub fn expand_jobs(defs: &[JobDef]) -> Result<Vec<Job>, CiConfigError> {
                 timeout_minutes: def.timeout_minutes,
                 exclusive: def.exclusive,
                 paths: def.paths.clone(),
+                after_merge: def.after_merge,
             });
         } else {
             for value in &def.matrix {
@@ -373,6 +410,7 @@ pub fn expand_jobs(defs: &[JobDef]) -> Result<Vec<Job>, CiConfigError> {
                     timeout_minutes: def.timeout_minutes,
                     exclusive: def.exclusive,
                     paths: def.paths.clone(),
+                    after_merge: def.after_merge,
                 });
             }
         }
@@ -413,6 +451,7 @@ fn single_job(command: &str) -> Result<Job, GateError> {
         timeout_minutes: None,
         exclusive: false,
         paths: Vec::new(),
+        after_merge: false,
     })
 }
 
@@ -467,6 +506,7 @@ fn built_in_security_job() -> Job {
         timeout_minutes: None,
         exclusive: false,
         paths: Vec::new(),
+        after_merge: false,
     }
 }
 
@@ -526,7 +566,16 @@ pub fn with_changed_jobs(mut gate: Gate, own: Vec<Job>, at_base: Option<&[Job]>)
     }
     // Equal in everything that decides how it runs (command, matrix, budget, time limit,
     // `exclusive`, secrets, `paths`): a change to any of it is the change's (review round 3).
-    let same = |a: &Job, b: &Job| a == b;
+    // Moving a job into the full suite (`after_merge`, SPEC-575) is not how it runs.
+    let same = |a: &Job, b: &Job| {
+        a == b
+            || (a.after_merge != b.after_merge
+                && *a
+                    == Job {
+                        after_merge: a.after_merge,
+                        ..b.clone()
+                    })
+    };
     let scanning: Vec<String> = gate
         .jobs
         .iter()
@@ -1210,6 +1259,63 @@ pub fn classify_worktree(owner: WorktreeOwner, prunable: bool) -> Option<StaleRe
 mod tests {
     use super::*;
 
+    fn plain(key: &str, after_merge: bool) -> Job {
+        Job {
+            name: key.to_owned(),
+            key: key.to_owned(),
+            command: format!("run {key}"),
+            matrix: None,
+            need: Need::default(),
+            secrets: Vec::new(),
+            timeout_minutes: None,
+            exclusive: false,
+            paths: Vec::new(),
+            after_merge,
+        }
+    }
+
+    /// SPEC-575 MFS-002: `after_merge` is in force only with a merge-first environment that
+    /// deploys; a project without a shared target keeps its full suite everywhere.
+    #[test]
+    fn after_merge_is_in_force_only_with_a_merge_first_target() {
+        let jobs = vec![plain("quick", false), plain("e2e", true)];
+        let off = after_merge_in_force(jobs.clone(), false);
+        assert!(off.iter().all(|job| !job.after_merge), "{off:?}");
+        assert_eq!(after_merge_in_force(jobs.clone(), true), jobs);
+    }
+
+    /// SPEC-575 MFS-002: a job of the full suite is skipped, with the reason, on a pull request
+    /// head, a merge train and a playground task; the branches' runs and a merged candidate run
+    /// it, and a job of the quick checks runs everywhere.
+    #[test]
+    fn the_full_suite_is_skipped_off_the_merged_revision() {
+        let full = plain("e2e", true);
+        let quick = plain("quick", false);
+        for reference in [
+            CiRef::PullRequest(7),
+            CiRef::Train(vec![7, 8]),
+            CiRef::Task(3),
+        ] {
+            let why = after_merge_skip(&full, &reference).unwrap_or_default();
+            assert!(why.starts_with(AFTER_MERGE_SKIP_REASON), "{why}");
+            assert_eq!(after_merge_skip(&quick, &reference), None);
+        }
+        assert_eq!(after_merge_skip(&full, &CiRef::Branch("dev".into())), None);
+        assert_eq!(after_merge_skip(&full, &CiRef::Branch("main".into())), None);
+    }
+
+    /// SPEC-575 MFS-002: a change that only moves a job into the full suite changes nothing about
+    /// how the job runs, so no twin of it runs beside the gate's.
+    #[test]
+    fn moving_a_job_after_merge_adds_no_twin() {
+        let gate = Gate {
+            jobs: vec![plain("e2e", false)],
+            source: GateSource::ProjectConfig,
+        };
+        let moved = with_changed_jobs(gate.clone(), vec![plain("e2e", true)], None);
+        assert_eq!(moved, gate);
+    }
+
     /// SPEC-504 CFG-001: a change's own jobs run beside the gate's, never instead: changed and
     /// added ones, named apart and keeping their key; equal ones once; within [`MAX_JOBS`].
     #[test]
@@ -1224,6 +1330,7 @@ mod tests {
             timeout_minutes: None,
             exclusive: false,
             paths: Vec::new(),
+            after_merge: false,
         };
         let gate = Gate {
             jobs: vec![job("check", "make check"), job("lint", "make lint")],
@@ -1373,6 +1480,7 @@ mod tests {
             timeout_minutes: None,
             exclusive: false,
             paths: Vec::new(),
+            after_merge: false,
         };
         let gate = |defs: &[JobDef]| -> Result<Gate, CiConfigError> {
             Ok(Gate {
@@ -1412,6 +1520,7 @@ mod tests {
             timeout_minutes: None,
             exclusive: false,
             paths: Vec::new(),
+            after_merge: false,
         };
         let gate = |source: GateSource, defs: &[JobDef]| -> Result<Gate, CiConfigError> {
             Ok(Gate {
@@ -1507,6 +1616,7 @@ mod tests {
             timeout_minutes: None,
             exclusive: false,
             paths: Vec::new(),
+            after_merge: false,
         };
         let jobs = expand_jobs(&[
             def("lint", "cargo clippy", ""),
@@ -1547,6 +1657,7 @@ mod tests {
             timeout_minutes: None,
             exclusive: false,
             paths: Vec::new(),
+            after_merge: false,
         };
         let mut defs = vec![
             wide.clone(),
