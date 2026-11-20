@@ -3139,10 +3139,11 @@ async fn a_partial_overview_still_resolves_the_parked_tasks_recorded_pr() -> Tes
     let during = serde_json::to_value(reading.await??)?;
     assert_eq!(during["parked_needs_you"], true);
     assert_eq!(during["parked_pr"], json!({"number": 1461, "open": false}));
-    let summary = serde_json::to_value(f.h.app.task_detail(&owner, f.task.as_str()).await?)?;
-    assert_eq!(summary["parked_needs_you"], true);
-    assert_eq!(summary["parked_pr"], json!({"number": 1461, "open": false}));
-    // The recorded PR merges and a replacement opens while its green checks are in flight.
+    // The delivery panel reconciled the closed, unmerged record during that
+    // detail read. Reopening it starts a new branch observation.
+    // The reopened PR merges and a replacement opens while failing checks are in flight.
+    f.h.github
+        .set_checks("abc123", yulius_app::ports::github::ChecksState::Failure);
     f.h.github.pulls.lock().map_err(|_| "pulls")?[0].state = "open".into();
     let held = f.h.github.hold_checks();
     let app = f.h.app.clone();
@@ -3287,6 +3288,103 @@ async fn a_parked_task_names_the_ordinary_ci_failure_on_the_older_open_pr() -> T
         brief["wait_reason"],
         "The agent stopped and its pull request checks are failing."
     );
+    // With CI enabled, the newest, failed run belongs to the *other* PR.
+    super::delivery::insert_ci_attempt(
+        &f.h.store,
+        "older-now-green",
+        "abc123",
+        CiRef::PullRequest(1461),
+        RunState::Passed,
+        12,
+        &[],
+    )
+    .await?;
+    super::delivery::insert_ci_attempt(
+        &f.h.store,
+        "newer-now-red",
+        "abc123",
+        CiRef::PullRequest(1462),
+        RunState::Failed,
+        13,
+        &[],
+    )
+    .await?;
+    let mut config = app.config.clone();
+    config.ci.enabled = true;
+    let enabled = yulius_app::context::App::new(config, app.deps.clone());
+    let summary = serde_json::to_value(enabled.task_detail(&owner, f.task.as_str()).await?)?;
+    assert_eq!(summary["parked_needs_you"], true);
+    assert_eq!(summary["parked_pr"], json!({"number":1462,"open":true}));
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_parked_task_explains_incomplete_ordinary_checks_on_its_head() -> TestResult {
+    use yulius_domain::ci::{CiRef, RunState};
+    let (f, owner) = owner_observed_external_pr().await?;
+    install_app(&f).await?;
+    f.h.github
+        .set_checks("abc123", yulius_app::ports::github::ChecksState::Success);
+    let mut config = f.h.app.config.clone();
+    config.ci.enabled = false;
+    let app = yulius_app::context::App::new(config, f.h.app.deps.clone());
+    let caller = crate::task_message::superagent(&f.sandbox, &owner.user.id, "admin");
+    for (at, state, reason) in [
+        (
+            21,
+            RunState::Queued,
+            "The parked task is waiting for its pull request checks.",
+        ),
+        (
+            22,
+            RunState::Error,
+            "The parked task's pull request could not be verified.",
+        ),
+        (
+            23,
+            RunState::Cancelled,
+            "The parked task's pull request could not be verified.",
+        ),
+    ] {
+        super::delivery::insert_ci_attempt(
+            &f.h.store,
+            &format!("local-{at}"),
+            "abc123",
+            CiRef::PullRequest(1461),
+            state,
+            at,
+            &[],
+        )
+        .await?;
+        let brief = app
+            .tool_task_get(&caller, &json!({"task_id":f.task.as_str()}))
+            .await?;
+        assert_eq!(brief["shows"], "needs_you");
+        assert_eq!(brief["wait_reason"], reason);
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_parked_task_ignores_its_owner_observation_once_the_same_pr_is_merged() -> TestResult {
+    use yulius_domain::delivery::DeliveryStage;
+    let (f, owner) = owner_observed_external_pr().await?;
+    f.h.app
+        .deps
+        .store
+        .transition_delivery(
+            &DeliveryStage::None,
+            &yulius_app::delivery::DeliveryRecord {
+                task_id: f.task.clone(),
+                stage: DeliveryStage::MergedIntegration,
+                pr_number: Some(1461),
+                updated_at: f.h.app.now(),
+            },
+        )
+        .await?;
+    let detail = serde_json::to_value(f.h.app.task_detail(&owner, f.task.as_str()).await?)?;
+    assert_eq!(detail["parked_needs_you"], false);
+    assert_eq!(detail["parked_pr"], json!({"number":1461,"open":false}));
     Ok(())
 }
 

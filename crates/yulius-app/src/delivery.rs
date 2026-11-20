@@ -4244,6 +4244,7 @@ impl App {
         }
         let checkout = self.verification_checkout(task, purpose).await?;
         let mut pulls = Vec::new();
+        let mut verified = true;
         for number in numbers {
             let checks = if purpose == PrVerification::WatchPending && watched != Some(number) {
                 PrVerification::Settled
@@ -4254,7 +4255,8 @@ impl App {
                 .pull_allows_parking(task, &sandbox, &token, number, checks, observed)
                 .await?
             else {
-                return Ok(None);
+                verified = false;
+                break;
             };
             // A successor needs the current open deliveries. Old checks on a PR
             // already merged cannot block the verified replacement.
@@ -4271,18 +4273,29 @@ impl App {
                     move |app| async move { app.deps.git.is_ancestor(&repo, &local, &remote).await }
                 }).await?
             {
-                return Ok(None);
+                verified = false;
+                break;
             }
             pulls.push((number, pull.head_sha));
         }
-        let current = branch_pulls().await?;
-        if current.is_empty() && current != branch && observed.pr.is_some_and(|pr| pr.open) {
-            // The branch no longer has the external PR. A directly confirmed
-            // closure, if we saw one, still names the PR that closed.
-            *observed = ParkedPullRead::recorded(record);
+        if !verified && purpose != PrVerification::Display {
+            return Ok(None);
         }
-        observed.note_open_branch(&current);
-        Ok((current == branch).then_some(ParkingPrs {
+        let current = branch_pulls().await?;
+        if current != branch {
+            observed.signal = None;
+            if current.is_empty() && observed.pr.is_some_and(|pr| pr.open) {
+                // An external PR disappeared between reads. A closure obtained
+                // directly from get_pull is still valid evidence of what closed.
+                *observed = ParkedPullRead::recorded(record);
+            }
+            observed.note_open_branch(&current);
+            return Ok(None);
+        }
+        if verified {
+            observed.note_open_branch(&current);
+        }
+        Ok(verified.then_some(ParkingPrs {
             checkout,
             pulls,
             watched,
@@ -4334,7 +4347,11 @@ impl App {
             let sandbox = sandbox.clone();
             let sha = pull.head_sha.clone();
             self.verification_git(purpose, move |app| async move {
-                Ok(app.ci_gate_result(&sandbox, &sha).await)
+                let reference =
+                    (purpose == PrVerification::Display).then_some(CiRef::PullRequest(number));
+                Ok(app
+                    .ci_gate_result_for_ref(&sandbox, &sha, reference.as_ref())
+                    .await)
             })
             .await?
         } else {
@@ -4361,6 +4378,16 @@ impl App {
             _ => false,
         };
         if !settled {
+            if purpose == PrVerification::Display {
+                let current = read().await?;
+                observed.note_closed(&current);
+                if !is_open(&current)
+                    || current.head_sha != pull.head_sha
+                    || current.base != pull.base
+                {
+                    return Ok(current.merged.then_some(current));
+                }
+            }
             observed.signal = PullSignal::from_wire("open", checks, false);
             return Ok(None);
         }
