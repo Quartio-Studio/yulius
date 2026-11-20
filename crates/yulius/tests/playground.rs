@@ -794,12 +794,21 @@ async fn a_playground_task_level_with_dev_offers_no_squash() -> TestResult {
     let worktree = playground_task(&h, &made.body, "t1", &[], &["done"]).await?;
     // Both branches have the valid spec and point at the same commit.
     git(&worktree, &["push", "origin", "HEAD:dev"])?;
+    assert_no_playground_squash(&h, &owner).await?;
+    std::fs::write(worktree.join("temporary.txt"), "temporary change")?;
+    git(&worktree, &["add", "temporary.txt"])?;
+    git(&worktree, &["commit", "-qm", "temporary change"])?;
+    git(&worktree, &["revert", "--no-edit", "HEAD"])?;
+    assert_no_playground_squash(&h, &owner).await
+}
+
+async fn assert_no_playground_squash(h: &Harness, owner: &Creds) -> TestResult {
     let view = call(
         &h.router,
         Method::GET,
         "/api/tasks/t1/delivery",
         None,
-        &owner,
+        owner,
     )
     .await?;
     assert_eq!(view.status, StatusCode::OK);
@@ -807,7 +816,7 @@ async fn a_playground_task_level_with_dev_offers_no_squash() -> TestResult {
     assert_eq!(view.body["blocked"][0]["action"], "merge");
     let reason = view.body["blocked"][0]["reason"].as_str().ok_or("reason")?;
     assert!(reason.contains("nothing to deliver"), "{reason}");
-    assert!(text(&merge(&h, &owner, "t1").await?).contains(reason));
+    assert!(text(&merge(h, owner, "t1").await?).contains(reason));
     Ok(())
 }
 
