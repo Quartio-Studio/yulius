@@ -56,6 +56,9 @@ pub struct MigrationRun {
     pub public_url: Option<String>,
     /// The data disks the person named.
     pub data_disks: Vec<String>,
+    /// Optional longest estimated freeze, in whole minutes.
+    #[serde(default)]
+    pub max_downtime: Option<u64>,
     /// `running`, `ended`, `refused`, or `lost` (a running helper that stopped reporting).
     pub state: String,
     /// The command's exit code once it ended: 0 nothing failed, 1 a step failed, 2 refused
@@ -143,6 +146,9 @@ pub struct AskMigration {
     /// Blank disks of the new host for the data directory.
     #[serde(default)]
     pub data_disks: Vec<String>,
+    /// Optional longest estimated freeze, in whole minutes.
+    #[serde(default)]
+    pub max_downtime: Option<u64>,
     /// For a move: the new host's name, typed by the person.
     #[serde(default)]
     pub confirm: Option<String>,

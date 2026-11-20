@@ -7,7 +7,8 @@
 //! when the flag is raised. The reason also says whether the session's own work answers the flag
 //! (STA-003), so a restart of Yulius still knows it. A flag keeps its first reason, unless the
 //! flag changes owner: a secret request's flag that another matter takes over says that
-//! matter's reason, and one that waits for a second request points at the request still open.
+//! matter's reason. A later terminal question takes over an answerable flag and sets its own
+//! answer time. A secret flag waiting for a second request points at the request still open.
 
 use std::sync::atomic::Ordering;
 
@@ -64,23 +65,14 @@ pub struct AttentionRecord {
     /// of Yulius still knows (ATN-010); no part of the API view.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub work_answers: bool,
+    /// When the latest notice took over this standing flag. Older records use the flag time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub noticed_ms: Option<i64>,
     /// The flag is a secret request's: the request's answer ends it (SPEC-213), until another
     /// matter takes the flag over. Kept with the flag, as the one record of whose it is that a
     /// restart of Yulius still has (ATN-011); no part of the API view.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub answer_ends: bool,
-}
-
-/// What flagging a task did.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Flagged {
-    /// The task reads the flag from now on, with the reason given.
-    Raised,
-    /// The task read a secret request's flag: it is this matter's from now on, with its reason
-    /// (ATN-011).
-    TakenOver,
-    /// The task was flagged already (or is not running): its flag and its reason stand.
-    Stands,
 }
 
 impl AttentionRecord {
@@ -93,6 +85,7 @@ impl AttentionRecord {
             action: None,
             link: None,
             work_answers: false,
+            noticed_ms: None,
             answer_ends: false,
         }
     }
@@ -106,6 +99,7 @@ impl AttentionRecord {
             action: one_line(action),
             link: None,
             work_answers: false,
+            noticed_ms: None,
             answer_ends: false,
         }
     }
@@ -197,7 +191,7 @@ pub(crate) fn shown_line(text: &str, max: usize) -> Option<String> {
 
 impl App {
     /// Flags a running task as needing a person, for `reason`: whoever opens the task reads it
-    /// while the task reads this flag. A task already flagged keeps its flag and its reason.
+    /// while the task reads this flag. A later question can take over an answerable flag.
     ///
     /// # Errors
     /// The store's.
@@ -205,7 +199,7 @@ impl App {
         &self,
         task: &TaskId,
         reason: AttentionRecord,
-    ) -> AppResult<Flagged> {
+    ) -> AppResult<()> {
         self.flag_needs_attention(task, Some(&reason)).await
     }
 
@@ -230,15 +224,22 @@ impl App {
     /// reading Needs your action over a working session until its turn ends.
     pub(crate) async fn watch_answerable_flag(&self, task_id: &TaskId) {
         let runtime = self.runtime(task_id);
+        // A worker can replace an answerable question with a flag whose marker is zero.
+        // Hold the same lock as that replacement from reading the reason to installing it.
+        let _held = runtime.attention_lock.lock().await;
         if runtime.notice_attention_ms.load(Ordering::SeqCst) != 0 {
             return;
         }
         match self.deps.store.task_attention(task_id).await {
             Ok(Some((reason, flagged))) if reason.work_answers => {
+                crate::race::reached(
+                    crate::race::Point::AttentionRecoveryRead,
+                    std::path::Path::new(task_id.as_str()),
+                );
                 // Only over nothing: a flag raised meanwhile stored its own time.
                 let _ = runtime.notice_attention_ms.compare_exchange(
                     0,
-                    flagged.0.max(1),
+                    reason.noticed_ms.unwrap_or(flagged.0).max(1),
                     Ordering::SeqCst,
                     Ordering::SeqCst,
                 );

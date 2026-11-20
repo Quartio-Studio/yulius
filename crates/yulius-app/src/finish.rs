@@ -802,6 +802,10 @@ impl App {
             pause.kind,
             crate::model::PauseKind::Turn | crate::model::PauseKind::Prompt
         ) && pause.account_id.is_some();
+        // An interrupt of the preceding turn alone cannot release a prompt held at Enter.
+        if pause.during_turn && activity == Activity::Waiting {
+            return;
+        }
         if (held || pause.kind == crate::model::PauseKind::Limit) && at > pause.started_at {
             self.hold_ended(task_id, "overtaken", activity).await;
         }
@@ -884,6 +888,8 @@ impl App {
         if notice_ms == 0 && runtime.turn_in_progress() {
             return;
         }
+        // A newly arrived question and a delayed work line settle in order.
+        let _attention = runtime.attention_lock.lock().await;
         let Ok(Some(task)) = self.deps.store.task(task_id).await else {
             return;
         };

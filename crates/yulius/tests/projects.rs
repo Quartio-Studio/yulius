@@ -1178,6 +1178,67 @@ async fn remove_stops_tasks_and_keeps_the_repository() -> TestResult {
     Ok(())
 }
 
+/// A proxy or its accepted connections can outlive the browser that opened them.
+#[tokio::test]
+async fn an_outstanding_browser_port_lease_holds_the_removed_range() -> TestResult {
+    let w = World::new("org").await?;
+    let (_, alice) = w.user("alice", true).await?;
+    for repo in ["shop", "cart", "basket"] {
+        w.remote(OWNER, repo, &[("README.md", "# Shop\n")], &[])?;
+        w.grant("alice", repo, "admin");
+    }
+    let shop = import(&w, &alice, "Quartio-Studio/shop").await?.body;
+    let sid = SandboxId::parse(text(&shop["id"]))?;
+    let (lease, _) =
+        w.h.app
+            .lease_sandbox_ports(&sid)
+            .await?
+            .ok_or("browser ports")?;
+    let second =
+        w.h.app
+            .lease_sandbox_ports(&sid)
+            .await?
+            .ok_or("second lease")?
+            .0;
+    assert!(
+        std::sync::Arc::ptr_eq(&lease, &second),
+        "both requests hold the same identity"
+    );
+    drop(second);
+    let removed = call(
+        &w.h.router,
+        Method::DELETE,
+        &format!("/api/sandboxes/{sid}"),
+        None,
+        &alice,
+    )
+    .await?;
+    assert_eq!(removed.status, StatusCode::NO_CONTENT);
+    let cart = import(&w, &alice, "Quartio-Studio/cart").await?.body;
+    assert_eq!(
+        cart["port_base"], 20020,
+        "the proxy still holds the first range"
+    );
+    drop(lease);
+    let basket = import(&w, &alice, "Quartio-Studio/basket").await?.body;
+    assert_eq!(
+        basket["port_base"], 20000,
+        "the final proxy lease was dropped"
+    );
+    let basket_id = SandboxId::parse(text(&basket["id"]))?;
+    let _basket =
+        w.h.app
+            .lease_sandbox_ports(&basket_id)
+            .await?
+            .ok_or("basket lease")?;
+    assert_eq!(
+        w.h.app.browser_port_lease_entries(),
+        1,
+        "the expired shop identity was pruned"
+    );
+    Ok(())
+}
+
 /// Records the sandboxes retired through the isolation port.
 #[derive(Default)]
 struct Retiring(std::sync::Mutex<Vec<String>>);
@@ -1191,6 +1252,11 @@ impl yulius_app::ports::isolation::SandboxIsolation for Retiring {
         Ok(None)
     }
     fn release(&self, _: &SandboxId) {}
+    async fn holder_live(&self, name: &str) -> bool {
+        self.0
+            .lock()
+            .is_ok_and(|names| names.iter().any(|n| n == name))
+    }
     fn retire(&self, sandbox: &SandboxId) {
         if let Ok(mut retired) = self.0.lock() {
             retired.push(sandbox.as_str().to_owned());
@@ -1216,7 +1282,27 @@ async fn remove_retires_the_sandbox_holder() -> TestResult {
     let path = format!("/api/sandboxes/{sid}");
     let removed = call(&w.h.router, Method::DELETE, &path, None, &alice).await?;
     assert_eq!(removed.status, StatusCode::NO_CONTENT);
-    assert_eq!(*isolation.0.lock().map_err(|_| "lock")?, [sid]);
+    assert_eq!(
+        isolation.0.lock().map_err(|_| "lock")?.as_slice(),
+        std::slice::from_ref(&sid)
+    );
+    assert!(
+        w.h.app
+            .sandbox_ports(&SandboxId::parse(&sid)?)
+            .await?
+            .is_none(),
+        "the removed browser owns no range"
+    );
+    let replacement = import(&w, &alice, "Quartio-Studio/shop").await?;
+    assert_eq!(
+        replacement.body["port_base"], 20020,
+        "retiring holder still runs"
+    );
+    isolation.0.lock().map_err(|_| "lock")?.clear();
+    w.remote(OWNER, "third", &[("README.md", "# Third\n")], &[])?;
+    w.grant("alice", "third", "admin");
+    let third = import(&w, &alice, "Quartio-Studio/third").await?;
+    assert_eq!(third.body["port_base"], 20000, "retired holder ended");
     Ok(())
 }
 
@@ -1395,6 +1481,10 @@ async fn adding_a_removed_repository_again_gets_its_name_back() -> TestResult {
             .sandbox(&SandboxId::parse(&first_id)?)
             .await?
             .ok_or("removed sandbox")?;
+    assert_eq!(
+        again.body["port_base"], first.body["port_base"],
+        "the freed range is assigned again"
+    );
     assert!(old.removed_at.is_some());
     assert!(old.slug.starts_with("product-removed-"), "{}", old.slug);
     Ok(())

@@ -63,14 +63,14 @@ The request and the root helper
 
 - MVB-001 **Request file.** The server writes `<data>/migrate/request.json` (0600, in a 0700
   directory, atomically): `version` 1, `id` (8 to 64 of `[A-Za-z0-9-]`), `action` (`plan`,
-  `move`, `abort`), `target`, `ssh_port`, `public_url`, `data_disks`, `requested_at` (ms). There
+  `move`, `abort`), `target`, `ssh_port`, `public_url`, `data_disks`, optional `max_downtime` in whole minutes (SPEC-555), `requested_at` (ms). There
   is no other field, so nothing secret can be in it.
 - MVB-002 **Field rules**, the same for the server (before it writes) and the helper (before it
   acts). For `plan` and `move`: `target` as `remote::destination_ok` takes it, at most 255
   bytes, and `root` when it names a user; `ssh_port` 1 to 65535; `public_url` absent or
   `https://host` with nothing after it, at most 255 bytes; `data_disks` none, one or two
   different ones, each `/dev/` followed by `[A-Za-z0-9._/-]`, without `..`, at most 128 bytes.
-  For `abort`: none of the four.
+  A longest freeze (`max_downtime`) is at least one minute. An abort names none of these values.
 - MVB-003 **The helper trusts nothing.** `yulius migrate-helper` (root, a oneshot started by the
   path unit) takes the request only as a regular file (not a link) owned by the data directory's
   owner, which is not root, of at most 16 KiB, with the exact schema (an unknown field is
@@ -172,7 +172,7 @@ Application and API
 Settings → Instance
 
 - MVB-030 **The card "Move to another host"** (superadmin only, after Address): the form (new
-  host, SSH port, new public URL, data disks) and "Show the plan". Without the helper: what it
+  host, SSH port, new public URL, data disks and optional longest freeze) and "Show the plan". Without the helper: what it
   is, where the operations guide has its units, and the command to run on the host instead.
 - MVB-031 **The plan.** The checklist as the command wrote it, a line per step with its outcome;
   the lines a person has to act on (`manual`) and the failed ones are repeated first. While the

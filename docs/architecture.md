@@ -550,7 +550,7 @@ egress proxy serves as that sandbox's browser (`EgressProxy::handle_browser`, wi
 `BrowserProxies`): it connects where the sandbox's processes could, plus the sandbox's own
 dev-server ports on the loopback and the welcome page, and never intercepts, injects or
 redacts; without its proxy a browser is not started
-([ADR-0321](decisions/0321-a-sandboxes-browser-goes-out-through-a-proxy-of-its-own.md)).
+([ADR-0321](decisions/0321-a-sandboxes-browser-goes-out-through-a-proxy-of-its-own.md)). Ranges of removed sandboxes can be reassigned once their work, holders and listeners have ended ([ADR-0393](decisions/0393-sandbox-port-ranges-are-reused-after-retirement.md)).
 The two Superagents drive it with the same tools: the
 sandbox Superagent its own sandbox's browser, the Global Superagent the browser of the project it
 names (`GLOBAL_ONLY_TOOLS`, `Action::Work` per call), both as a `SecretUser`, which says the
@@ -694,6 +694,9 @@ that run alone; after a restart, a limit that such a turn followed is not acted 
 switch of a task left at its limit by a refused automatic switch also resumes past the limit
 ([SPEC-072](../.ai/specs/SPEC-072-fix-276-277-278-usage-limit-resume-respe.md),
 [decision 0058](decisions/0058-the-clis-own-continuation-ends-a-limit-pause.md)).
+
+A capacity pause records whether a Claude prompt was held during a preceding turn. The
+preceding Stop can settle while the prompt waits for capacity. [Decision 0394](decisions/0394-a-held-prompt-remembers-the-turn-running-at-its-enter.md)
 
 ### A limit met while a dynamic workflow runs
 
@@ -919,8 +922,11 @@ hold until its reset even after a person bought credits. The Subscriptions page'
 one request of one output token for each limit stored and in effect, with the model that limit
 binds (`UsageProbe::model_answer`): a model of each family whose own weekly window is used up, and
 the default model for a limit of the whole subscription (`AccountUsage::families_at_a_limit`). A
-window the reading of that call itself carried is not asked about: the reading is Claude's word
-on it. The answer says whether a usage reading came of it (`usage_read`).
+window the reading of that call itself carried needs no probe. If a waiting task
+remembers two refusals of a model on this subscription, Refresh asks that model even after a
+reading cleared its stored limit. A successful answer clears this subscription and model from
+the waiting tasks' exclusions and wakes the capacity loop. The answer also says whether a usage
+reading came of it (`usage_read`).
 
 The response's status is the answer, as Claude Code reads its own responses. A response that ran
 ends the limit, whatever its headers say (one that ran on bought credits still carries
@@ -4347,7 +4353,7 @@ old name is remembered (`moved` in `remote-credentials.json`) and the call is re
 A superadmin asks for the same move from Settings → Instance (SPEC-470, ADR-0305). The server is
 the unprivileged service user and is frozen during the copy, so root runs the command for it, as it
 installs updates: the server writes `<data>/migrate/request.json` (plan, move or abort, with the
-host, SSH port, public URL and data disks; `yulius-contracts::migrate`), the root-owned path unit
+host, SSH port, public URL, data disks and optional freeze limit in minutes; `yulius-contracts::migrate`), the root-owned path unit
 `yulius-migrate.path` starts `yulius migrate-helper` (`crates/yulius/src/migrate_helper.rs`), and
 the helper runs `yulius instance migrate --no-sign-in` as a child process with each value as one
 argument: such a run never signs in as root does (the command's operator sign-in is not tried, no

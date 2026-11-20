@@ -133,7 +133,7 @@ What Chrome does with a proxy was measured on Chrome 157: `--proxy-server` alone
   20000 upward and are never given again, so after some hundreds of sandboxes they reach the
   ports the system hands out, and a proxy can sit on a port of another sandbox's range, which
   is then not relayed while that browser runs (issue #1249; the allocation is older than this
-  change). A page cannot use such a listener as a proxy of its own: what reaches it through
+  change). [ADR-0393](0393-sandbox-port-ranges-are-reused-after-retirement.md) resolves #1249. A page cannot use such a listener as a proxy of its own: what reaches it through
   another browser's proxy is a path-only request or a tunnel's bytes.
 - Not covered: what a viewer or page does to the public internet from the host's address
   (as before), and Chrome's own windows (ADR-0318's policy).

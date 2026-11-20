@@ -60,8 +60,15 @@ impl Git {
         path: &str,
     ) -> Result<Option<String>, GitError> {
         let relative = validate_relative_path(path)?;
-        let sha = self.rev_parse(repo, rev)?;
-        let spec = format!("{sha}:{}", relative.to_string_lossy());
+        // A read-only merge preview can name the resulting tree directly. Keep the usual
+        // revision lookup and its failure for refs or ids that do not name commits or trees.
+        let object = match self.rev_parse(repo, rev) {
+            Err(err @ GitError::RevisionNotFound(_)) if crate::repo::is_object_id(rev) => {
+                self.tree_of(repo, rev)?.ok_or(err)?
+            }
+            result => result?,
+        };
+        let spec = format!("{object}:{}", relative.to_string_lossy());
         let exists = self.run(
             Invocation::new(self, "cat-file", Some(repo))
                 .args(["cat-file", "-e", "--end-of-options"])

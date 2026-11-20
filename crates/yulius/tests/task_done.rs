@@ -5866,6 +5866,43 @@ fn a_notice_is_answered_by_the_agents_next_work() -> TestResult {
     Ok(())
 }
 
+#[test]
+fn work_before_the_second_ask_leaves_it_standing() -> TestResult {
+    repeated_ask(b"/tool\r/notify permission_prompt\r")
+}
+
+#[test]
+fn a_worker_asking_after_the_session_keeps_its_flag() -> TestResult {
+    repeated_ask(b"/notify worker_permission_prompt\r/tool\r")
+}
+
+fn repeated_ask(sequence: &[u8]) -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built")?;
+    let (_dir, data) = data_dir()?;
+    runtime()?.block_on(async {
+        let agent = FakeAgentOptions {
+            transcript: true,
+            hooks: true,
+            ..FakeAgentOptions::default()
+        };
+        let (app, _) = start(&data, &fake, agent, 0).await?;
+        let id = task_flagged_by_a_notice(&app, &data).await?;
+        app.send_input(&id, sequence).await?;
+        wait_for(
+            "both notices and the work",
+            Duration::from_secs(30),
+            || async {
+                let screen = app.runtime(&id).hub.screen_text();
+                screen.matches("NOTIFIED").count() >= 2 && screen.contains("TOOL")
+            },
+        )
+        .await?;
+        transcript_read(&app, &id).await?;
+        assert_eq!(activity(&app, &id).await, Some(Activity::NeedsAttention));
+        stop(&app, &id).await
+    })
+}
+
 /// SPEC-469 (review round 2), the notice's side of the rule the goal pause shares: the notice's
 /// flag is replaced without a word (a status change) and another matter flags the task later.
 /// The agent's next work does not lift that flag: the notice's time is stale.
@@ -6093,9 +6130,98 @@ fn a_notice_is_answered_by_the_agents_work_after_a_restart() -> TestResult {
 /// while Yulius watches (STA-003).
 #[test]
 fn a_workers_notice_is_not_answered_by_the_agents_work_after_a_restart() -> TestResult {
+    worker_notice_after_restart(false)
+}
+
+#[test]
+fn a_workers_second_ask_stays_unanswered_after_a_restart() -> TestResult {
+    worker_notice_after_restart(true)
+}
+
+/// Recovery read the main question before a worker asked. Only the worker's question
+/// should stand after the session works again, whichever operation obtained the lock first.
+#[test]
+fn a_worker_asking_during_reattachment_keeps_its_flag() -> TestResult {
+    use yulius_app::race::{Point, on};
+    let (read, mut reading) = tokio::sync::watch::channel(false);
+    let (release, released) = std::sync::mpsc::channel();
+    let waiting = release.clone();
     a_restart_after(
         noticing_agent(),
-        async |app, data| task_flagged_by_a_notice_of(app, data, "worker_permission_prompt").await,
+        async move |app, data| {
+            let id = task_flagged_by_a_notice(app, data).await?;
+            on(
+                Point::AttentionRecoveryRead,
+                Path::new(id.as_str()),
+                move || {
+                    read.send_replace(true);
+                    assert!(
+                        tokio::task::block_in_place(
+                            || released.recv_timeout(Duration::from_secs(20))
+                        )
+                        .is_ok(),
+                        "the worker notice arrived during recovery"
+                    );
+                },
+            );
+            // When the worker queues for the lock, let recovery finish first. Without
+            // that lock the worker completes while recovery still holds the stale reason.
+            on(
+                Point::AttentionReplacementWaiting,
+                Path::new(id.as_str()),
+                move || {
+                    let _ = waiting.send(());
+                },
+            );
+            Ok(id)
+        },
+        async |_| Ok(()),
+        async move |app, id| {
+            tokio::time::timeout(Duration::from_secs(20), reading.wait_for(|read| *read)).await??;
+            app.send_input(id, b"/notify worker_permission_prompt\r")
+                .await?;
+            wait_for("the worker's notice", Duration::from_secs(15), || async {
+                matches!(app.deps.store.task_attention(id).await, Ok(Some((reason, _))) if !reason.work_answers)
+            }).await?;
+            let _ = release.send(());
+            still_flagged_after_the_replay(app, id).await?;
+            app.send_input(id, b"/tool\r").await?;
+            wait_for("the session's work", Duration::from_secs(15), || {
+                screen_contains(app, id, "TOOL")
+            })
+            .await?;
+            transcript_read(app, id).await?;
+            assert_eq!(activity(app, id).await, Some(Activity::NeedsAttention));
+            Ok(())
+        },
+    )
+}
+
+fn worker_notice_after_restart(second: bool) -> TestResult {
+    a_restart_after(
+        noticing_agent(),
+        async |app, data| {
+            if !second {
+                return task_flagged_by_a_notice_of(app, data, "worker_permission_prompt").await;
+            }
+            let id = task_flagged_by_a_notice(app, data).await?;
+            app.send_input(&id, b"/notify worker_permission_prompt\r")
+                .await?;
+            wait_for(
+                "the second hook's answer",
+                Duration::from_secs(30),
+                || async {
+                    app.runtime(&id)
+                        .hub
+                        .screen_text()
+                        .matches("NOTIFIED")
+                        .count()
+                        >= 2
+                },
+            )
+            .await?;
+            Ok(id)
+        },
         async |_| Ok(()),
         async |app, id| {
             still_flagged_after_the_replay(app, id).await?;

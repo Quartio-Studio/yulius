@@ -664,7 +664,9 @@ context.
 **Edge cases.**
 
 - *A prompt while the agent is mid-turn.* Claude Code runs the hook whenever it submits the prompt,
-  queued or not, and the same rules apply then. A late submission (more than 60 s after the last
+  queued or not, and the same rules apply then. A capacity hold for a prompt entered while a
+  previous turn runs survives that turn's Stop. A later transcript prompt, the hook's abandonment
+  or a capacity release ends the hold. A late submission (more than 60 s after the last
   keystroke) passes, by rule 3.
 - *Several people at once.* Each prompt is judged alone. The hold records who typed last into that
   terminal. A newer held prompt supersedes an unanswered one (one card per task). The first decision

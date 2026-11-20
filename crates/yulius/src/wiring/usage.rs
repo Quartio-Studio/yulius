@@ -118,15 +118,24 @@ impl ProviderUsage {
         ) {
             return Err(failure);
         }
-        let bytes = response.bytes().await.map_err(|e| {
-            tracing::debug!(error = %e.without_url(), "reading the usage answer failed");
-            UsageFailure::new(TRY_AGAIN)
-        })?;
-        if bytes.len() > MAX_BODY {
-            return Err(UsageFailure::new(TRY_AGAIN));
-        }
+        let bytes = bounded_body(response).await?;
         serde_json::from_slice(&bytes).map_err(|_| UsageFailure::new(TRY_AGAIN))
     }
+}
+
+/// Keep at most the usage probe's byte budget, including for chunked responses.
+async fn bounded_body(mut response: reqwest::Response) -> Result<Vec<u8>, UsageFailure> {
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response.chunk().await.map_err(|e| {
+        tracing::debug!(error = %e.without_url(), "reading the usage answer failed");
+        UsageFailure::new(TRY_AGAIN)
+    })? {
+        if chunk.len() > MAX_BODY - bytes.len() {
+            return Err(UsageFailure::new(TRY_AGAIN));
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    Ok(bytes)
 }
 
 /// The failure an HTTP status means (`None` for success): 403 is a sign-in without the
@@ -560,16 +569,11 @@ impl UsageProbe for ProviderUsage {
                 let headers = response.headers().clone();
                 // Only a refusal's body is read: it says whether the model needs usage credits.
                 let body = if status == 429 {
-                    response.bytes().await.unwrap_or_default()
+                    bounded_body(response).await.unwrap_or_default()
                 } else {
-                    Default::default()
+                    Vec::new()
                 };
-                let body = if body.len() > MAX_BODY {
-                    &[][..]
-                } else {
-                    &body[..]
-                };
-                parse_model_answer(status, &headers, body).inspect_err(|failure| {
+                parse_model_answer(status, &headers, &body).inspect_err(|failure| {
                     tracing::debug!(
                         status,
                         kind = ?failure.kind,
@@ -661,6 +665,133 @@ mod tests {
         );
         assert!(parse_codex(&json!({"rate_limit": {}}), Timestamp(0)).is_err());
         assert!(parse_codex(&json!({}), Timestamp(0)).is_err());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn oversized_usage_is_refused_before_the_server_finishes_its_response()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let base = format!("http://{}", listener.local_addr()?);
+        let probe = ProviderUsage::at(&base)?;
+        let request = probe.http.get(&base);
+        let read = tokio::spawn(async move { probe.get_json(request).await });
+        let (mut socket, _) = listener.accept().await?;
+        socket.read_u8().await?;
+        socket
+            .write_all(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n")
+            .await?;
+        socket
+            .write_all(format!("{:x}\r\n", MAX_BODY + 1).as_bytes())
+            .await?;
+        socket.write_all(&vec![b' '; MAX_BODY + 1]).await?;
+        socket.write_all(b"\r\n").await?;
+        // The server has sent one oversized chunk. It deliberately keeps the stream open.
+        let failure = tokio::time::timeout(TIMEOUT / 2, read)
+            .await
+            .map_err(|_| "the probe kept reading after the size bound")??
+            .err()
+            .ok_or("oversized JSON accepted")?;
+        assert_eq!(failure.kind, UsageFailureKind::Unavailable);
+        assert_eq!(failure.message, TRY_AGAIN);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn usage_json_at_the_byte_bound_is_complete() -> Result<(), Box<dyn std::error::Error>> {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let base = format!("http://{}", listener.local_addr()?);
+        let probe = ProviderUsage::at(&base)?;
+        let request = probe.http.get(&base);
+        let read = tokio::spawn(async move { probe.get_json(request).await });
+        let (mut socket, _) = listener.accept().await?;
+        socket.read_u8().await?;
+        socket
+            .write_all(format!("HTTP/1.1 200 OK\r\nContent-Length: {MAX_BODY}\r\n\r\n").as_bytes())
+            .await?;
+        socket.write_all(&vec![b' '; MAX_BODY - 2]).await?;
+        socket.write_all(b"{}").await?;
+        assert_eq!(read.await?.map_err(|failure| failure.message)?, json!({}));
+        Ok(())
+    }
+
+    /// Calls the public probe against one local Messages response. The socket stays open
+    /// while the caller waits, so an unfinished chunked stream tests an early return.
+    async fn model_answer_over_http(
+        response: &[u8],
+    ) -> Result<Result<ModelAnswer, UsageFailure>, Box<dyn std::error::Error>> {
+        use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let probe = ProviderUsage::at(format!("http://{}", listener.local_addr()?))?;
+        let mut read = tokio::spawn(async move {
+            probe
+                .model_answer(
+                    Provider::Anthropic,
+                    &Secret("synthetic".into()),
+                    PROBE_MODEL,
+                )
+                .await
+        });
+        tokio::time::timeout(TIMEOUT / 2, async {
+            let (mut socket, _) = tokio::select! {
+                answer = &mut read => return Ok(answer?),
+                connection = listener.accept() => connection?,
+            };
+            let mut request = String::new();
+            BufReader::new(&mut socket).read_line(&mut request).await?;
+            assert_eq!(request, "POST /v1/messages HTTP/1.1\r\n");
+            socket.write_all(response).await?;
+            Ok(read.await?)
+        })
+        .await
+        .map_err(|_| "model answer did not finish before the server closed the body")?
+    }
+
+    #[tokio::test]
+    async fn model_answer_reports_body_only_credit_refusals_and_success()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut response = format!(
+            "HTTP/1.1 429 Too Many Requests\r\nContent-Length: {}\r\n\r\n",
+            CREDITS_BODY.len()
+        )
+        .into_bytes();
+        response.extend_from_slice(CREDITS_BODY);
+        let refusal = model_answer_over_http(&response)
+            .await?
+            .map_err(|failure| failure.message)?;
+        assert_eq!(
+            refusal.refused,
+            Some(ReportedLimit {
+                scope: LimitScope::Model(None),
+                window_minutes: None,
+                resets_at: None,
+            })
+        );
+
+        let success =
+            model_answer_over_http(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n")
+                .await?
+                .map_err(|failure| failure.message)?;
+        assert_eq!(success, ModelAnswer::default());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn model_answer_stops_reading_an_oversized_refusal()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut reply = format!("HTTP/1.1 429 Too Many Requests\r\nTransfer-Encoding: chunked\r\nRetry-After: 17\r\n\r\n{:x}\r\n", MAX_BODY + 1).into_bytes();
+        reply.resize(reply.len() + MAX_BODY + 1, b' ');
+        reply.extend_from_slice(b"\r\n");
+        let failure = model_answer_over_http(&reply)
+            .await?
+            .err()
+            .ok_or("oversized refusal reported a usable model limit")?;
+        assert_eq!(
+            failure,
+            UsageFailure::throttled(Some(Duration::from_secs(17)))
+        );
         Ok(())
     }
 
