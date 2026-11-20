@@ -1913,7 +1913,9 @@ fn parked_codex_resumes_the_recorded_rollout_with_the_next_prompt() -> TestResul
             [first.id.as_str()],
         )?;
         let args = serde_json::json!({"task_id":id.as_str(), "text": prompt});
-        let error = app.tool_task_message(&caller, &args).await.unwrap_err();
+        let Err(error) = app.tool_task_message(&caller, &args).await else {
+            return Err("resumed without a recorded rollout".into());
+        };
         assert!(error.to_string().contains("no recorded rollout"), "{error}");
         assert_eq!(task(&app, &id).await?.status, TaskStatus::Parked);
         assert!(app.deps.store.live_attempt(&id).await?.is_none());
@@ -1923,7 +1925,9 @@ fn parked_codex_resumes_the_recorded_rollout_with_the_next_prompt() -> TestResul
              VALUES ('old-entry', ?1, ?2, 'codex', 'old-session', 'native', 0, 0)",
             [sandbox.as_str(), id.as_str()],
         )?;
-        let error = app.tool_task_message(&caller, &args).await.unwrap_err();
+        let Err(error) = app.tool_task_message(&caller, &args).await else {
+            return Err("resumed the stale rollout".into());
+        };
         assert!(error.to_string().contains("no recorded rollout"), "{error}");
         assert_eq!(task(&app, &id).await?.status, TaskStatus::Parked);
         db.execute(
