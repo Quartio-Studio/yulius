@@ -197,6 +197,8 @@ const MIGRATIONS: &[&str] = &[
     include_str!("migrations/0072_pause_legacy_automations.sql"),
     // Schema version 71 (SPEC-512 DIG-001); 0070 is the reserved file number.
     include_str!("migrations/0070_end_of_day_digest.sql"),
+    // Schema version 72 (SPEC-512 TGI-001); 0073 is the reserved file number.
+    include_str!("migrations/0073_telegram_intake.sql"),
 ];
 
 type Job = Box<dyn FnOnce(&mut Connection) + Send + 'static>;
@@ -477,6 +479,7 @@ mod tests {
                 include_str!("migrations/0072_pause_legacy_automations.sql"),
             ),
             (71, include_str!("migrations/0070_end_of_day_digest.sql")),
+            (72, include_str!("migrations/0073_telegram_intake.sql")),
         ];
         for (version, sql) in pinned {
             assert_eq!(
@@ -485,7 +488,7 @@ mod tests {
                 "schema version {version}"
             );
         }
-        assert_eq!(MIGRATIONS.len(), 71, "a new migration is pinned here too");
+        assert_eq!(MIGRATIONS.len(), 72, "a new migration is pinned here too");
     }
 
     /// SPEC-514 PIN-003: a version-67 database's automations saved as `auto` (drawn for each

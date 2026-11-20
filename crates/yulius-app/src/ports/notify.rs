@@ -28,8 +28,25 @@ pub struct Inbound {
     pub chat: String,
     /// A one-to-one chat with a person (never a group or channel).
     pub private: bool,
-    /// Its text (empty for a message without text).
+    /// Its text, or a file's caption (empty for a message without either).
     pub text: String,
+    /// The bot's message it replies to (Telegram: its `message_id`), if any (SPEC-512 TGI-002).
+    pub reply_to: Option<String>,
+    /// The files it carries (TGI-003).
+    pub files: Vec<InboundFile>,
+    /// The album it belongs to (Telegram: `media_group_id`): an album's messages are one.
+    pub group: Option<String>,
+}
+
+/// A file a chat sent (SPEC-512 TGI-003).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InboundFile {
+    /// The service's id to fetch it by.
+    pub id: String,
+    /// Its name (the sender's, or one made from its kind).
+    pub name: String,
+    /// Its size in bytes, when the service says.
+    pub size: Option<u64>,
 }
 
 /// What one receive returned.
@@ -54,6 +71,8 @@ pub enum ChannelError {
     Conflict,
     /// The answer was not in the expected form.
     Invalid,
+    /// A file is over the bound asked for (SPEC-512 TGI-003).
+    TooLarge,
 }
 
 impl ChannelError {
@@ -66,6 +85,7 @@ impl ChannelError {
             Self::Unavailable => "unreachable",
             Self::Conflict => "conflict",
             Self::Invalid => "invalid",
+            Self::TooLarge => "too_large",
         }
     }
 }
@@ -75,8 +95,11 @@ impl ChannelError {
 pub trait NotificationChannel: Send + Sync {
     /// Who the bot is; a refused token is [`ChannelError::Refused`].
     async fn check(&self) -> Result<ChannelIdentity, ChannelError>;
-    /// Sends plain `text` to `chat`.
-    async fn send(&self, chat: &str, text: &str) -> Result<(), ChannelError>;
+    /// Sends plain `text` to `chat`; the sent message's id, when the service gives one (a reply
+    /// to it names it, SPEC-512 TGI-002).
+    async fn send(&self, chat: &str, text: &str) -> Result<Option<String>, ChannelError>;
+    /// Fetches a received file, at most `max` bytes ([`ChannelError::TooLarge`] beyond).
+    async fn fetch_file(&self, id: &str, max: u64) -> Result<Vec<u8>, ChannelError>;
     /// Waits for messages after `cursor`, at most the channel's own long-poll bound.
     async fn receive(&self, cursor: Option<&str>) -> Result<Received, ChannelError>;
 }
@@ -114,6 +137,10 @@ pub struct ChatLink {
     pub linked_at: Timestamp,
     /// What they want to receive.
     pub choices: NotifyChoices,
+    /// Whether the chat may answer and start tasks (SPEC-512 TGI-001; off by default).
+    pub intake: bool,
+    /// The project a new message starts its task in.
+    pub intake_sandbox: Option<String>,
 }
 
 /// The bot, link codes and linked chats (SPEC-498; migration 0063).
@@ -155,6 +182,28 @@ pub trait ChatLinkStore: Send + Sync {
     async fn chat_links(&self) -> AppResult<Vec<ChatLink>>;
     /// Sets `user`'s choices; `false` when they have no link.
     async fn set_chat_choices(&self, user: &UserId, choices: &NotifyChoices) -> AppResult<bool>;
+    /// Sets the person's intake and its project (SPEC-512 TGI-001); `false` without a link.
+    async fn set_chat_intake(
+        &self,
+        user: &UserId,
+        enabled: bool,
+        sandbox: Option<&str>,
+    ) -> AppResult<bool>;
+    /// Remembers that the bot's `message` in `chat` was about `task` (TGI-002); the chat's last
+    /// 500 are kept.
+    async fn record_sent(
+        &self,
+        chat: &str,
+        message: &str,
+        task: &yulius_domain::ids::TaskId,
+        at: Timestamp,
+    ) -> AppResult<()>;
+    /// The task the bot's `message` in `chat` was about.
+    async fn sent_about(
+        &self,
+        chat: &str,
+        message: &str,
+    ) -> AppResult<Option<yulius_domain::ids::TaskId>>;
     /// Removes every link and code; how many links went.
     async fn clear_chat_links(&self) -> AppResult<u64>;
 }

@@ -200,10 +200,44 @@ browser); the Telegram notifier (ADR-0351) sends each linked person's chosen kin
 - **DIG-006 Redaction.** Every text taken from a task (title, request, last message) passes the
   same redaction as that sandbox's transcripts before it is stored or sent.
 
-### Parts 4 and 5
+### Part 4: the personal Telegram channel's intake (#1107)
 
-Written when each part starts (see Context): TGI (#1107), HOF (#1106), each from its issue's
-acceptance criteria.
+Today (read on `dev` at 9427240e9): part 1 of #1107 is merged (pull request #1362, ADR-0351,
+SPEC-498): an instance administrator sets the bot (sealed, checked with `getMe`, removable), a
+person links their chat with a single-use 10-minute code from a browser session and unlinks in
+Settings or with `/stop` (audited), notifications reach the chat redacted under a rate bound, and
+the server long-polls with backoff. A linked chat's other messages get one help reply ("Replies
+and new tasks are not supported yet"). What #1107's acceptance still asks is the intake (its
+recommended option 1, part 4): replies and new tasks, off by default, on per person.
+
+- **TGI-001 The switch.** Each person's linked chat has `intake` (off by default) and a default
+  project, set in Settings → Notifications from a browser session only (as linking is) with
+  `PUT /api/me/telegram/intake` `{"enabled","sandbox_id"}`; the project must be one they may work
+  in; turning it on without one is refused. Audited `telegram.intake` (on or off, the project).
+  Unlinking ends it. Off, a linked chat's messages create and send nothing; the help reply says
+  how to turn it on.
+- **TGI-002 A reply reaches its task.** The bot remembers which of its messages were about which
+  task (the last 500 per chat). With intake on, a reply to one is the person's `task_message` to
+  that task, under the owner rule and its guards as from their own agent (ADR-0331, ADR-0379: a
+  person a request names may answer it; a task holding the owner's personal reach accepts only
+  its owner; a parked task resumes). The bot answers "Sent to #n" or the refusal's reason.
+- **TGI-003 A new message is a task.** With intake on, any other message (text, a caption, a
+  photo, a document, a voice note, an audio or video file; an album is one message) becomes a
+  task in the default project as that person, with the task bound, the onboarding gate and access
+  checks of `task_create`. Its files, each at most 20 MB (Telegram's bot download bound) and at
+  most 10, become the task's attachments in the person's drafts folder, named in its prompt. The
+  task is labelled "from Telegram" (origin `telegram`) and audited. The bot answers with its
+  number and link.
+- **TGI-004 Commands.** `/status` lists the person's tasks that wait for them (as the digest's
+  first section: an open request, a question in the terminal, a request naming them), at most 20,
+  with links; `/task <project> <text>` starts the task in another project they may work in
+  (named by its repository name or slug); `/help` says what the chat does.
+- **TGI-005 Redaction.** The bot's answers that carry a task's text (`/status`, a refusal naming a
+  task) pass the same redaction as transcripts.
+
+### Part 5
+
+Written when it starts (see Context): HOF (#1106), from its issue's acceptance criteria.
 
 ## Plan
 
@@ -270,6 +304,19 @@ acceptance criteria.
 - [x] Idle tasks past the threshold are parked, listed with links and what their last message
   left, and resume when someone writes to them (DIG-003, DIG-004).
 - [x] A digest with nothing to report is not sent (DIG-004).
+
+### #1107 (part 2: intake)
+
+- [ ] Off by default per person; turned on in Settings with a default project, from a browser
+  session only, audited (TGI-001).
+- [ ] With intake on, a reply to a notification reaches that task as a `task_message`, under the
+  owner rule; a refusal says why (TGI-002).
+- [ ] A new message, or one with a photo or document, becomes a task with attachments in the
+  default project; `/task` targets another project (TGI-003, TGI-004).
+- [ ] With intake off, neither happens (TGI-001).
+- [ ] What the second person still cannot do through a reply: start, stop, merge, terminal input
+  (TGI-002).
+- [ ] Docs: `product.md`, `api.md`, `changes.md` and an ADR (TGI-001..005).
 
 ## Test plan
 
