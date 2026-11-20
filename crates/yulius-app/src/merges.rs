@@ -42,7 +42,7 @@ impl App {
             state["deciding"] = json!(true);
         }
         if let Some(note) = self.merge_queue_note(task) {
-            state["where"] = json!(note);
+            state["where"] = json!(note.text);
         }
         if let Some(outcome) = self.merge_outcome(&task.id) {
             let mut last = json!({"head": outcome.head, "text": outcome.text});

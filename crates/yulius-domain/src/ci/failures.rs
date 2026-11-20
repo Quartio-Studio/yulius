@@ -5,7 +5,8 @@
 //! gone from the end. [`FailureScanner`] reads everything the job prints, line by line, and keeps
 //! the failing tests' blocks, bounded: nextest's (a failure status line such as
 //! `FAIL [   0.5s] (290/1670) crate name` and the indented `stdout ───` / `stderr ───` block after
-//! it) and libtest's (`---- name stdout ----` until `failures:` or `test result:`).
+//! it), libtest's (`---- name stdout ----` until `failures:` or `test result:`), and the browser
+//! runner's failure summary headers.
 
 /// Most bytes kept of one failing test's block (its end, where the panic message is).
 pub const MAX_TEST_BYTES: usize = 8 * 1024;
@@ -136,6 +137,7 @@ impl FailureScanner {
         match line {
             "successes:" => self.successes = true,
             "failures:" => self.successes = false,
+            summary if summary.starts_with("test result:") => self.successes = false,
             _ => {}
         }
         if let Some(block) = &mut self.block {
@@ -158,6 +160,16 @@ impl FailureScanner {
                 return;
             }
             self.close();
+        }
+        // The browser runner lists each failed case in its final summary. The header alone
+        // identifies it, even when the rest of the log falls out of the output ring.
+        if !self.successes
+            && let Some((file, title)) = browser_failure(line)
+        {
+            // Use the existing stored stdout header format. A raw browser FAIL line inside
+            // a Rust test's output stays ordinary output when the watch reads the blocks.
+            self.keep(&format!("---- {file} › {title} stdout ----\n\n"));
+            return;
         }
         let libtest = !self.successes && libtest_header(line).is_some();
         if libtest || nextest_status(line).is_some_and(nextest_failed) {
@@ -194,10 +206,14 @@ impl FailureScanner {
         }
         entry.push_str(block.body.trim_end());
         entry.push_str("\n\n");
+        self.keep(&entry);
+    }
+
+    fn keep(&mut self, entry: &str) {
         if self.kept.len() + entry.len() > MAX_JOB_BYTES {
             self.omitted += 1;
         } else {
-            self.kept.push_str(&entry);
+            self.kept.push_str(entry);
         }
     }
 }
@@ -247,6 +263,19 @@ pub fn omitted_tests(kept: &str) -> usize {
                 .flatten()
         })
         .unwrap_or(0)
+}
+
+/// The e2e runner's uncolored summary (CI sets NO_COLOR). Allow its single leading space,
+/// or the header at the margin, but never an indented test's own output.
+fn browser_failure(line: &str) -> Option<(&str, &str)> {
+    let summary = line
+        .strip_prefix(' ')
+        .unwrap_or(line)
+        .strip_prefix("FAIL  |")?;
+    let (target, case) = summary.split_once("| ")?;
+    let (file, title) = case.split_once(" > ")?;
+    (!target.is_empty() && file.ends_with(".e2e.ts") && !title.trim().is_empty())
+        .then_some((file, title))
 }
 
 /// The test a kept nextest header names (`FAIL [   0.1s] (1/4) crate name` at the margin).
@@ -352,6 +381,56 @@ mod tests {
             scanner.push(chunk.as_bytes());
         }
         scanner.finish()
+    }
+
+    #[test]
+    fn browser_failure_headers_survive_the_scanner_and_name_the_tests() {
+        let kept = scan(&[
+            " PASS  |chromium| tests/editor.e2e.ts > opens a file\n",
+            " FAIL  || tests/editor.e2e.ts > missing target\n",
+            " FAIL  |chromium| tests/editor.rs > wrong file type\n",
+            " FAIL  |chromium| tests/editor.e2e.ts >    \n",
+            " FAIL  |chromium| tests/editor.e2e.ts > opens a folder\n",
+            " FAIL  |chromium| tests/tasks.e2e.ts > closes a task\n",
+            " FAIL  |chromium| tests/editor.e2e.ts > opens a folder\n",
+        ])
+        .unwrap_or_default();
+        assert_eq!(
+            failed_test_names(&kept),
+            [
+                "tests/editor.e2e.ts › opens a folder",
+                "tests/tasks.e2e.ts › closes a task",
+            ]
+        );
+    }
+
+    #[test]
+    fn rust_test_output_cannot_contribute_browser_failure_names() {
+        let browser = " FAIL  |chromium| tests/example.e2e.ts > example";
+        let success =
+            format!("successes:\n\n---- passing stdout ----\n\n{browser}\n\ntest result: ok.\n");
+        assert_eq!(scan(&[&success]), None);
+        let after_success = scan(&[
+            &success,
+            " FAIL  |chromium| tests/real.e2e.ts > fails after Rust tests\n",
+        ])
+        .unwrap_or_default();
+        assert_eq!(
+            failed_test_names(&after_success),
+            ["tests/real.e2e.ts › fails after Rust tests"]
+        );
+        let failed = format!(
+            "failures:\n\n---- failing stdout ----\nfirst line\n\n{browser}\n\nfailures:\n"
+        );
+        assert_eq!(
+            failed_test_names(&scan(&[&failed]).unwrap_or_default()),
+            ["failing"]
+        );
+        let mixed = scan(&[&failed, browser, "\n"]).unwrap_or_default();
+        assert_eq!(
+            failed_test_names(&mixed),
+            ["failing", "tests/example.e2e.ts › example"]
+        );
     }
 
     /// cargo-nextest 0.9.146 with `--profile ci`, captured from a run with two failing tests.

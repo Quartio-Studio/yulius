@@ -125,7 +125,7 @@ the server (a person or their AI agent over SSH).
 On the server, as root. **a. Build the binary:**
 
 ```sh
-apt-get update && apt-get install -y git build-essential curl
+apt-get update && apt-get install --no-install-recommends -y git gcc g++ make dpkg-dev libc6-dev curl
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y && . "$HOME/.cargo/env"
 git clone https://github.com/Quartio-Studio/yulius.git && cd yulius
 cargo build --release -p yulius

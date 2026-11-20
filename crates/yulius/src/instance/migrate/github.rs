@@ -133,16 +133,17 @@ fn breaks(c: char) -> bool {
     c.is_control() || matches!(c, '\u{2028}' | '\u{2029}')
 }
 
+/// Formats untrusted text as a single visible checklist line.
+pub(super) fn plain(text: &str) -> String {
+    text.chars()
+        .filter(|c| !hidden(*c))
+        .map(|c| if breaks(c) { ' ' } else { c })
+        .collect()
+}
+
 /// The checklist's "GitHub App" line for a move to `new`, from what the instance said.
 #[must_use]
 pub fn line(asked: Asked, new: &str) -> (HostOutcome, String) {
-    // The answer came from another process, and may quote GitHub: nothing a terminal obeys.
-    let plain = |text: String| -> String {
-        text.chars()
-            .filter(|c| !hidden(*c))
-            .map(|c| if breaks(c) { ' ' } else { c })
-            .collect()
-    };
     let new = new.trim_end_matches('/');
     match asked {
         Ok(None) => (
@@ -152,7 +153,7 @@ pub fn line(asked: Asked, new: &str) -> (HostOutcome, String) {
         // "ok" is said only of the URL the move goes to.
         Ok(Some(app)) if app.homepage_url.trim_end_matches('/') != new => (
             HostOutcome::Manual,
-            plain(format!(
+            plain(&format!(
                 "the instance answers for {}, not for {new}: change YULIUS_PUBLIC_URL where it \
                  still names the old URL (an environment file?) and restart the service. {}",
                 app.homepage_url.trim_end_matches('/'),
@@ -161,7 +162,7 @@ pub fn line(asked: Asked, new: &str) -> (HostOutcome, String) {
         ),
         Ok(Some(app)) if app.state == "registered" => (
             HostOutcome::Ok,
-            plain(format!("GitHub accepts {} for sign-in", app.callback_url)),
+            plain(&format!("GitHub accepts {} for sign-in", app.callback_url)),
         ),
         Ok(Some(app)) => {
             let what = format!(
@@ -178,11 +179,11 @@ pub fn line(asked: Asked, new: &str) -> (HostOutcome, String) {
                     app.reason.as_deref().unwrap_or("no answer")
                 )
             };
-            (HostOutcome::Manual, plain(detail))
+            (HostOutcome::Manual, plain(&detail))
         }
         Err(why) => (
             HostOutcome::Manual,
-            plain(format!(
+            plain(&format!(
                 "{} (the instance could not be asked for the App's own link: {why})",
                 super::github_note(new)
             )),

@@ -269,15 +269,18 @@ export function mountCdSection(ctx, sandbox, route, section, actions) {
       const where = part.name ? `${title(env)} ${part.name}` : title(env);
       const releases = part.releases || [];
       // One action per release (SPEC-419): the previous one's is the one-click default.
+      const currentIndex = releases.findIndex((release) => release.current);
       const action = (r) => {
         if (r.current) return badge('Deployed now', 'ok');
         if (r.blocked) return null;
-        const previous = r.release === part.previous;
+        const direction = releases.indexOf(r) < currentIndex ? 'forward' : 'back';
+        const previous = direction === 'back' && r.release === part.previous;
+        const label = `Roll ${direction} to this`;
         // The accessible name starts with the visible text (WCAG 2.5.3) and adds the whole id.
         return h('button', { type: 'button', class: ['btn', 'btn-sm', previous && prod && 'btn-danger'], disabled: Boolean(why),
-          'aria-label': previous ? `Roll back to previous (${r.release}) of ${where.toLowerCase()}` : `Roll back to this: ${where.toLowerCase()} ${r.release}`,
-          onClick: () => rollBack(env, part, r, overview) },
-        previous ? [icon('back', { size: 14 }), 'Roll back to previous'] : 'Roll back to this');
+          'aria-label': previous ? `Roll back to previous (${r.release}) of ${where.toLowerCase()}` : `${label}: ${where.toLowerCase()} ${r.release}`,
+          onClick: () => rollBack(env, part, r, overview, direction) },
+        previous ? [icon('back', { size: 14 }), 'Roll back to previous'] : label);
       };
       const item = (r) => h('li', { dataset: { release: r.release } },
         h('div', { class: 'cd-release-id' },
@@ -302,17 +305,17 @@ export function mountCdSection(ctx, sandbox, route, section, actions) {
   }
 
   /** Rolls a part back (or forward) to a kept release after a confirmation (SPEC-415). */
-  async function rollBack(env, part, release, overview) {
+  async function rollBack(env, part, release, overview, direction) {
     const prod = isProd(env);
     const where = part.name ? `${word(env.name)} ${part.name}` : word(env.name);
     const rb = env.rollback || {};
     const opened = performance.now();
     const ok = await confirmDialog({
-      title: `Roll back ${where}?`,
+      title: `Roll ${direction} ${where}?`,
       // The message names the whole id, wrapped anywhere (SPEC-419).
       message: h('p', { class: 'cd-wrap' }, `Redeploys ${release.release} (from ${shortSha(release.commit)}, deployed ${relLong(release.deployed_at)} by ${release.requested_by}) with the rollback command of ${env.branch}, then runs the verify command. Nothing is rebuilt.`),
       details: h('dl', { class: 'cd-rollback-facts' }, h('dt', null, 'Data'), h('dd', null, rb.migrations || 'not described'), h('dt', null, 'Rollback'), h('dd', null, h('code', null, rb.command || ''))),
-      confirmLabel: `Roll back to ${shortRelease(release.release)}`,
+      confirmLabel: `Roll ${direction} to ${shortRelease(release.release)}`,
       danger: prod,
       typeToConfirm: prod ? overview.slug : undefined,
     });
@@ -322,7 +325,7 @@ export function mountCdSection(ctx, sandbox, route, section, actions) {
     if (prod) { body.confirm = overview.slug; body.confirm_ms = Math.max(0, Math.round(performance.now() - opened)); }
     // The server checks the branch, the release and the secrets first: seconds (as a deploy's).
     const to = shortRelease(release.release);
-    toast(`Starting the rollback of ${where} to ${to}${to.endsWith('…') ? '' : '…'}`);
+    toast(`Starting the ${direction === 'back' ? 'rollback' : 'roll forward'} of ${where} to ${to}${to.endsWith('…') ? '' : '…'}`);
     try {
       const run = await ctx.api.post(`${base}/cd/${enc(env.name)}/rollback`, body);
       if (destroyed) {
@@ -330,9 +333,9 @@ export function mountCdSection(ctx, sandbox, route, section, actions) {
         return;
       }
       reload({ quiet: true });
-      toast(`Rolling ${where} back to ${shortRelease(release.release)}.`, { kind: 'ok', action: { label: 'Open', run: () => openLater(run.run_id) } });
+      toast(`Rolling ${where} ${direction} to ${shortRelease(release.release)}.`, { kind: 'ok', action: { label: 'Open', run: () => openLater(run.run_id) } });
     } catch (error) {
-      errorToast(error, `Couldn’t roll ${where} back`);
+      errorToast(error, `Couldn’t roll ${where} ${direction}`);
       if (!destroyed) reload({ quiet: true });
     }
   }

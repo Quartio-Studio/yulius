@@ -3510,6 +3510,7 @@ dependencies = [
  "futures",
  "hyper",
  "hyper-util",
+ "percent-encoding",
  "serde",
  "serde_json",
  "subtle",

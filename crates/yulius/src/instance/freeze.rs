@@ -69,7 +69,12 @@ fn own_cgroup(host: &dyn Host) -> Option<String> {
 }
 
 fn runs(state: &Unit) -> bool {
-    matches!(state.active.as_str(), "active" | "activating" | "reloading")
+    running_state(&state.active)
+}
+
+/// The service is active or has an active start or reload job.
+pub(super) fn running_state(state: &str) -> bool {
+    matches!(state.trim(), "active" | "activating" | "reloading")
 }
 
 /// What the kernel says of a unit's cgroup and everything below it (its `cgroup.events`).
@@ -398,7 +403,7 @@ impl Freeze {
     /// The helper is active, or `systemctl` did not run.
     pub fn helper_idle(&mut self) -> Result<(), String> {
         let (_, state) = self.host.systemctl(&["is-active", &self.update_unit])?;
-        if matches!(state.trim(), "active" | "activating" | "reloading") {
+        if running_state(&state) {
             return Err(format!(
                 "an update is running ({}); export once it has finished",
                 self.update_unit

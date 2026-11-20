@@ -24,6 +24,7 @@ use crate::attention::Flagged;
 use crate::capacity::{CONTINUATION_MAX, HOLD_RETRY_SECS};
 use crate::context::App;
 use crate::coordination::AgentContext;
+use crate::delivery::{RepoReadError, read_spec};
 use crate::error::{AppError, AppResult};
 use crate::model::{PauseKind, TaskMode, TaskRecord};
 use crate::ports::store::TaskFieldUpdate;
@@ -1330,25 +1331,15 @@ impl App {
                 )));
             }
         };
-        let spec_path = &spec_path;
-        if repo_path(&worktree, spec_path).is_none() {
-            return Ok(Some(format!(
-                "The task spec path `{spec_path}` is not a repository path."
-            )));
-        }
-        let expected = task.id.clone();
-        let spec_path = spec_path.clone();
-        tokio::task::spawn_blocking(move || match read_repo_doc(&worktree, &spec_path) {
-            None => Some(format!(
-                "This task needs a spec (a feature or a fix, or a change beyond documentation) but `{spec_path}` does not exist. Create it in the Yulius format (frontmatter with `yulius-task: {expected}`, the required sections and a Plan checklist of similar-effort steps) before finishing."
+        Ok(match read_spec(&worktree, &spec_path).await {
+            Err(err) => Some(format!(
+                "This task needs a readable spec. {err}. Check `{spec_path}` and run spec_check before finishing."
             )),
-            Some(text) => {
-                let report = validate_spec_for(&text, &expected);
+            Ok(text) => {
+                let report = validate_spec_for(&text, &task.id);
                 (!report.is_valid()).then(|| report.agent_message(&spec_path))
             }
         })
-        .await
-        .map_err(AppError::internal)
     }
 }
 
@@ -1475,25 +1466,14 @@ impl App {
         }
         let place = match self.task_spec_path(task, &worktree).await {
             Ok(spec_path) => {
-                let (root, expected) = (worktree.clone(), task.id.clone());
-                let path = spec_path.clone();
-                // A spec that exists but cannot be judged (a link, not UTF-8, larger than the part
-                // read) passes; one gone since it was found is missing.
-                let planned = tokio::task::spawn_blocking(move || {
-                    match std::fs::symlink_metadata(root.join(&path)) {
-                        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return false,
-                        Ok(meta) if meta.len() >= MAX_DOC_BYTES => return true,
-                        _ => {}
-                    }
-                    read_repo_doc(&root, &path).is_none_or(|text| {
-                        validate_spec_for(&text, &expected)
-                            .plan
-                            .iter()
-                            .any(|item| item.depth == 0 && !item.text.trim().is_empty())
-                    })
-                })
-                .await
-                .map_err(AppError::internal)?;
+                let planned = match read_spec(&worktree, &spec_path).await {
+                    Ok(text) => validate_spec_for(&text, &task.id)
+                        .plan
+                        .iter()
+                        .any(|item| item.depth == 0 && !item.text.trim().is_empty()),
+                    Err(RepoReadError::Missing(_)) => false,
+                    Err(_) => true,
+                };
                 if planned {
                     return Ok(None);
                 }
@@ -1558,14 +1538,12 @@ impl App {
         } else {
             return Ok(false);
         };
-        let expected = task.id.clone();
-        let report = tokio::task::spawn_blocking(move || {
-            read_repo_doc(&root, &rel).map(|text| validate_spec_for(&text, &expected))
-        })
-        .await
-        .map_err(AppError::internal)?;
-        let Some(report) = report else {
-            return Ok(false);
+        let report = match read_spec(&root, &rel).await {
+            Ok(text) => validate_spec_for(&text, &task.id),
+            Err(err @ RepoReadError::TooLarge { .. }) => {
+                return Err(AppError::Invalid(err.to_string()));
+            }
+            Err(_) => return Ok(false),
         };
         // What the spec says of the task's work decides Done with the steps (SPEC-491 DON-004).
         self.note_spec_status(&task.id, report.status).await;
