@@ -45,6 +45,7 @@ pub mod github_admin;
 pub mod github_callback;
 pub mod global_superagent;
 pub mod goal_retry;
+pub mod handoffs;
 pub mod hooks;
 pub mod host_move;
 pub mod hub;

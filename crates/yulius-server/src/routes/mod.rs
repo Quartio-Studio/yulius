@@ -14,6 +14,7 @@ mod events;
 mod files;
 mod git;
 mod guests;
+mod handoffs;
 mod imports;
 mod internal;
 mod leftovers;
@@ -294,6 +295,17 @@ pub fn public() -> Router<AppState> {
             get(digest::setting).put(digest::set_setting),
         )
         .route("/api/me/digest", get(digest::mine))
+        // Tasks hand work to another sandbox (SPEC-512 HOF-001..HOF-005).
+        .route(
+            "/api/admin/handoffs",
+            get(handoffs::setting).put(handoffs::set_setting),
+        )
+        .route(
+            "/api/sandboxes/{sid}/handoffs",
+            get(handoffs::sandbox).put(handoffs::set_sandbox),
+        )
+        .route("/api/tasks/{tid}/handoffs", get(handoffs::task))
+        .route("/api/tasks/{tid}/handoffs/{hid}", post(handoffs::answer))
         // The personal Telegram channel's bot (SPEC-498 TGC-001).
         .route(
             "/api/admin/telegram",

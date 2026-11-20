@@ -235,9 +235,40 @@ recommended option 1, part 4): replies and new tasks, off by default, on per per
 - **TGI-005 Redaction.** The bot's answers that carry a task's text (`/status`, a refusal naming a
   task) pass the same redaction as transcripts.
 
-### Part 5
+### Part 5: tasks hand work to another sandbox (#1106)
 
-Written when it starts (see Context): HOF (#1106), from its issue's acceptance criteria.
+Today (read on `dev` at f7cde240e): only the sandbox Superagent is served `sandboxes_list` and
+`sandbox_task_create` (`COCKPIT_TOOLS`, test `only_the_superagent_is_served_the_other_sandboxes`),
+and each such task waits in the call for its person's click (ADR-0227, ADR-0333). A task agent can
+only ask a person with `needs_you`. Nothing records where a task came from.
+
+- **HOF-001 The setting.** `GET`/`PUT /api/admin/handoffs` (instance administrators):
+  `mode` `off` (default), `ask` or `automatic`; `max_depth` (1 to 5, default 3) and `per_day`
+  (1 to 100 per owner, default 20). Stored in `instance.handoffs`, audited
+  `instance.handoffs.set`, shown in Settings. Off, nothing below exists for task agents.
+- **HOF-002 A sandbox opts out.** Its writers turn "Accept handoffs from other sandboxes" off
+  (`PUT /api/sandboxes/{sid}/handoffs` `{"accept"}`, on by default; stored in the sandbox's
+  profile; audited `sandbox.handoffs`), shown on its Settings page.
+- **HOF-003 The tool.** `sandbox_handoff` `{sandbox, title, prompt}` with `task_create`'s
+  `harness`, `model`, `effort` and `mode`, served to task agents only while the mode is not off
+  (in `tools/list` and in the call). Refused with a reason the agent reads: an automation's task
+  (it holds nobody); text with characters a person cannot see; a target that is the task's own
+  sandbox, one its owner cannot work in (reported as not found), one that opted out; a chain
+  deeper than `max_depth` (a handed-off task's own handoff is one deeper); a sandbox already in
+  the chain (a cycle); more than `per_day` handoffs of the owner in 24 hours; the hourly bound
+  of tools. Every refusal is audited.
+- **HOF-004 Ask.** The handoff is stored as a request and the call returns at once; the task
+  goes on or ends with `needs_you`. The source task's page shows the request (target, title,
+  prompt, options) to its owner with Approve and Decline, in a browser session only (no API
+  token); approval re-checks the target and creates the task with exactly those arguments;
+  decline ends it. **Automatic:** the task is created at once.
+- **HOF-005 Provenance and the result.** A created task belongs to the source task's owner,
+  origin `handoff` ("Handed off"), and shows "Handed off from <sandbox> #N" with a link. When it
+  ends (Done, closed, stopped, failed, or merged), the source task gets one message from Yulius
+  with its outcome and pull request (queued for it when it has no live session).
+- **HOF-006 Audit.** `task.handoff` on both sandboxes with `requested`, `approved`,
+  `declined`, `created`, `refused` or `outcome`, never the prompt. Delivery is unchanged: the
+  target's work reaches `dev` only through its own pull request and green CI.
 
 ## Plan
 
@@ -317,6 +348,20 @@ Written when it starts (see Context): HOF (#1106), from its issue's acceptance c
 - [x] What the second person still cannot do through a reply: start, stop, merge, terminal input
   (TGI-002).
 - [x] Docs: `product.md`, `api.md`, `changes.md` and an ADR (TGI-001..005).
+
+### #1106
+
+- [ ] Off by default: task agents are not served `sandbox_handoff`; the existing test that
+  tasks lack cross-sandbox tools still passes (HOF-001, HOF-003).
+- [ ] Ask: a stored request the owner approves or declines in a browser session only; approval
+  creates the task with exactly the arguments shown (HOF-004).
+- [ ] Automatic: the task is created as the owner; a fourth level, a cycle and the daily bound are
+  refused with a reason (HOF-003, HOF-004).
+- [ ] An opted-out sandbox, one the owner cannot work in (not found) and an automation's task are
+  refused (HOF-002, HOF-003).
+- [ ] The target shows its source; the source gets the outcome; `task.handoff` on both
+  (HOF-005, HOF-006).
+- [ ] Docs: `product.md`, `api.md`, `changes.md` and an ADR amending ADR-0227.
 
 ## Test plan
 

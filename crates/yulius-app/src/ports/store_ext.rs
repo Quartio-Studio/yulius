@@ -696,6 +696,72 @@ pub trait CdStore: Send + Sync {
     ) -> AppResult<Vec<yulius_domain::rollback::ReleaseRecord>>;
 }
 
+/// One handoff as stored (SPEC-512 HOF-003..HOF-006).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HandoffRecord {
+    /// Its id.
+    pub id: String,
+    /// The task that asked.
+    pub source_task: TaskId,
+    /// Its sandbox.
+    pub source_sandbox: SandboxId,
+    /// The sandbox it hands to.
+    pub target_sandbox: SandboxId,
+    /// The source task's owner, who the new task belongs to.
+    pub owner: UserId,
+    /// The arguments, as JSON (`title`, `prompt`, options): exactly what is created.
+    pub args: String,
+    /// The sandboxes of its chain, the source's first.
+    pub chain: Vec<String>,
+    /// Its depth: 1 for a task no handoff made.
+    pub depth: u32,
+    /// `requested`, `created`, `declined` or `refused`.
+    pub state: String,
+    /// Why it was refused or declined.
+    pub reason: Option<String>,
+    /// The task it made.
+    pub target_task: Option<TaskId>,
+    /// When it was asked.
+    pub created_at: Timestamp,
+}
+
+/// Tasks hand work to another sandbox (SPEC-512 part 5, migration 0076).
+#[async_trait]
+pub trait HandoffStore: Send + Sync {
+    /// The instance's setting as stored (JSON; `None`: never set).
+    async fn handoff_setting(&self) -> AppResult<Option<String>>;
+    /// Saves the setting.
+    ///
+    /// # Errors
+    /// `Conflict` while the instance is not set up.
+    async fn set_handoff_setting(&self, doc: &str) -> AppResult<()>;
+    /// Stores a new handoff.
+    async fn insert_handoff(&self, handoff: &HandoffRecord) -> AppResult<()>;
+    /// One handoff.
+    async fn handoff(&self, id: &str) -> AppResult<Option<HandoffRecord>>;
+    /// A task's own handoffs, newest first.
+    async fn handoffs_of_source(&self, task: &TaskId) -> AppResult<Vec<HandoffRecord>>;
+    /// The handoff that made `task`, if one did.
+    async fn handoff_of_target(&self, task: &TaskId) -> AppResult<Option<HandoffRecord>>;
+    /// Moves a handoff from `from` to `to` (with its reason and the task it made) only while it
+    /// is still `from`; `false` when it was not.
+    async fn decide_handoff(
+        &self,
+        id: &str,
+        from: &str,
+        to: &str,
+        reason: Option<&str>,
+        target_task: Option<&TaskId>,
+        at: Timestamp,
+    ) -> AppResult<bool>;
+    /// How many handoffs `owner` asked for since `since` that were not refused.
+    async fn handoffs_since(&self, owner: &UserId, since: Timestamp) -> AppResult<u32>;
+    /// The created handoffs whose outcome was not told yet.
+    async fn untold_handoffs(&self) -> AppResult<Vec<HandoffRecord>>;
+    /// Records the outcome as told; `false` when it already was.
+    async fn mark_handoff_told(&self, id: &str) -> AppResult<bool>;
+}
+
 /// One person's stored digest (SPEC-512 DIG-005).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StoredDigest {
@@ -869,6 +935,7 @@ pub trait ExtensionStores:
     + CdStore
     + NeedsYouStore
     + DigestStore
+    + HandoffStore
     + crate::ports::session_docs::SessionDocStore
     + NoteStore
     + SpanStore
@@ -895,6 +962,7 @@ impl<T> ExtensionStores for T where
         + CdStore
         + NeedsYouStore
         + DigestStore
+        + HandoffStore
         + crate::ports::session_docs::SessionDocStore
         + NoteStore
         + SpanStore

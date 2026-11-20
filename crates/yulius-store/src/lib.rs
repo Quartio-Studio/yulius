@@ -17,6 +17,7 @@ pub mod crypto;
 mod delivery;
 mod digest;
 mod guests;
+mod handoffs;
 mod imports;
 mod instance;
 mod intake;
@@ -201,6 +202,8 @@ const MIGRATIONS: &[&str] = &[
     include_str!("migrations/0071_reindex_session_passages.sql"),
     // Schema version 73 (SPEC-512 TGI-001); 0073 is the reserved file number.
     include_str!("migrations/0073_telegram_intake.sql"),
+    // Schema version 74 (SPEC-512 HOF-001); 0076 is the reserved file number.
+    include_str!("migrations/0076_task_handoffs.sql"),
 ];
 
 type Job = Box<dyn FnOnce(&mut Connection) + Send + 'static>;
@@ -486,6 +489,7 @@ mod tests {
                 include_str!("migrations/0071_reindex_session_passages.sql"),
             ),
             (73, include_str!("migrations/0073_telegram_intake.sql")),
+            (74, include_str!("migrations/0076_task_handoffs.sql")),
         ];
         for (version, sql) in pinned {
             assert_eq!(
@@ -494,7 +498,7 @@ mod tests {
                 "schema version {version}"
             );
         }
-        assert_eq!(MIGRATIONS.len(), 73, "a new migration is pinned here too");
+        assert_eq!(MIGRATIONS.len(), 74, "a new migration is pinned here too");
     }
 
     /// SPEC-514 PIN-003: a version-67 database's automations saved as `auto` (drawn for each

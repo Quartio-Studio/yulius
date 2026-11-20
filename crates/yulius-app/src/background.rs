@@ -117,6 +117,8 @@ impl App {
                     // The day's digest, once its time passed (SPEC-512 DIG-002), on its own
                     // task: reading transcripts must not hold the queue (review round 1); the
                     // run's claim keeps a later tick from starting a second one.
+                    // A handed-off task's outcome reaches its source (SPEC-512 HOF-005).
+                    app.tell_handoff_outcomes().await;
                     let digest = Arc::clone(&app);
                     tokio::spawn(async move {
                         digest.digest_tick().await;

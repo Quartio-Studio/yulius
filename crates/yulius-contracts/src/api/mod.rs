@@ -13,6 +13,7 @@ pub mod digest;
 pub mod files;
 pub mod git;
 pub mod guests;
+pub mod handoffs;
 pub mod intake;
 pub mod leftovers;
 pub mod mcp;
