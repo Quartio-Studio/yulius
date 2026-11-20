@@ -45,6 +45,7 @@ pub(crate) mod playground;
 mod prove;
 mod rollback;
 mod slots;
+pub(crate) mod staging;
 mod tools;
 
 use std::collections::{HashMap, HashSet};
@@ -579,7 +580,7 @@ fn preferred_lanes(reference: &CiRef, last: &[(u32, CiRef)]) -> Vec<u32> {
                 matches!(r, CiRef::Train(others) if others.iter().any(|o| members.contains(o)))
             }));
         }
-        CiRef::Branch(_) | CiRef::Task(_) => {}
+        CiRef::Branch(_) | CiRef::Task(_) | CiRef::Candidate(_) => {}
     }
     let mut seen = Vec::new();
     lanes.retain(|lane| {
@@ -646,7 +647,7 @@ pub fn run_view(run: &CiRunRecord, jobs: &[CiJobRecord], with_output: bool) -> C
         label: run.reference.label(),
         pr_number: match run.reference {
             CiRef::PullRequest(n) => Some(n),
-            CiRef::Branch(_) | CiRef::Train(_) | CiRef::Task(_) => None,
+            CiRef::Branch(_) | CiRef::Train(_) | CiRef::Task(_) | CiRef::Candidate(_) => None,
         },
         sha: run.sha.clone(),
         state: run.state.as_str().to_owned(),
@@ -1364,7 +1365,7 @@ impl App {
         reference: &CiRef,
         sha: &str,
     ) -> Option<Vec<String>> {
-        if matches!(reference, CiRef::Branch(_)) {
+        if matches!(reference, CiRef::Branch(_) | CiRef::Candidate(_)) {
             return None;
         }
         let integration = format!("origin/{}", delivery_profile(sandbox).integration_branch);
@@ -1475,6 +1476,8 @@ impl App {
         let dev_valid = view.problem.is_none();
         let facts: Vec<RunFacts> = runs
             .iter()
+            // A candidate run (SPEC-575) stays in the facts: it tests its commit once for the
+            // branch too, and `plan` never supersedes it.
             .filter(|run| !matches!(run.reference, CiRef::Train(_) | CiRef::Task(_)))
             .filter(|run| {
                 !(dev_valid
@@ -1599,7 +1602,10 @@ impl App {
         // A branch's own run runs every job (SPEC-493 CJP-003): a source that skipped a job for
         // its `paths` never ran it, so it is no source there, and an earlier one may be. A merge
         // candidate's neither: the same tree on another base may change what `paths` decides.
-        let branch = matches!(target.reference, CiRef::Branch(_) | CiRef::Train(_));
+        let branch = matches!(
+            target.reference,
+            CiRef::Branch(_) | CiRef::Train(_) | CiRef::Candidate(_)
+        );
         let mut found = None;
         for run in runs.iter().filter(|r| reuse_source(r, target)) {
             if self.deps.git.tree_of(&repo, &run.sha).await?.as_deref() != Some(tree.as_str()) {
@@ -1615,7 +1621,7 @@ impl App {
             // Likewise a source that skipped a job as part of the full suite (SPEC-575 MFS-002)
             // never ran it, whatever the gate says of the job now (a change may have just turned
             // the move off, review round 1): no source for a run of the merged revision.
-            let merged = matches!(target.reference, CiRef::Branch(_));
+            let merged = matches!(target.reference, CiRef::Branch(_) | CiRef::Candidate(_));
             let skipped_the_full_suite = jobs
                 .iter()
                 .any(|t| dom::skipped_after_merge(t.state, t.reason.as_deref()));
@@ -2298,7 +2304,7 @@ impl App {
         // branch's, a commit on its way there may have its own (`ci_gate_for_head`).
         // A branch's run takes the branch's gate; a commit on its way (a pull request's head,
         // a playground task's merge; a train's run never gets here) the scheduler's rule.
-        let on_its_way = !matches!(run.reference, CiRef::Branch(_));
+        let on_its_way = !matches!(run.reference, CiRef::Branch(_) | CiRef::Candidate(_));
         let gate = if on_its_way {
             self.ci_gate_for_head(sandbox, &view, &run.sha).await
         } else {

@@ -183,6 +183,60 @@ fn clip(text: &str) -> String {
     text.chars().take(40).collect()
 }
 
+/// What starts the line a failed deploy's run ends with for each rollback barrier it announced
+/// (SPEC-575 MFS-007): a failed deploy records no release, so the barrier lives in its output.
+pub const FAILED_BARRIER_LINE: &str = "[yulius] this failed deploy announced a rollback barrier";
+
+/// The rollback barriers a deploy's output `lines` announce, per part (`""`: every part of the
+/// environment), for an environment of `parts`.
+#[must_use]
+pub fn announced_barriers<'a>(
+    lines: impl IntoIterator<Item = &'a str>,
+    parts: &[String],
+) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    for line in lines {
+        let Some(rest) = line
+            .trim()
+            .strip_prefix("::yulius-rollback-barrier")
+            .filter(|rest| rest.is_empty() || rest.starts_with(char::is_whitespace))
+        else {
+            continue;
+        };
+        let rest = rest.trim();
+        let (part, reason) = match rest.split_once(':') {
+            Some((part, reason)) if parts.iter().any(|p| p == part.trim()) => {
+                (part.trim().to_owned(), reason.trim())
+            }
+            _ => (String::new(), rest),
+        };
+        if !reason.is_empty() {
+            out.push((part, reason.chars().take(MAX_BARRIER_CHARS).collect()));
+        }
+    }
+    out
+}
+
+/// The line a failed deploy's output ends with for one announced barrier.
+#[must_use]
+pub fn failed_barrier_line(part: &str, reason: &str) -> String {
+    format!("{FAILED_BARRIER_LINE} (part '{part}'): {reason}")
+}
+
+/// The barriers a failed deploy's stored output says it announced, per part (`""`: every part).
+#[must_use]
+pub fn failed_barriers(output: &str) -> Vec<(String, String)> {
+    output
+        .lines()
+        .filter_map(|line| line.strip_prefix(FAILED_BARRIER_LINE))
+        .filter_map(|rest| {
+            let rest = rest.strip_prefix(" (part '")?;
+            let (part, reason) = rest.split_once("'): ")?;
+            Some((part.to_owned(), reason.to_owned()))
+        })
+        .collect()
+}
+
 /// How a release record came to be.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReleaseKind {
@@ -602,6 +656,37 @@ mod tests {
 
     /// RBK-012/013: the current release, the kept releases and the previous one, which walks back
     /// over repeated rollbacks.
+    /// SPEC-575 MFS-007 (review round 2 of slice 2): a failed deploy's announced barriers are
+    /// read per part, written as its output's last lines, and read back from there.
+    #[test]
+    fn a_failed_deploys_barriers_survive_in_its_output() {
+        let parts = vec!["engine".to_owned(), "infra".to_owned()];
+        let lines = [
+            "migrating",
+            "::yulius-rollback-barrier infra: users.email is NOT NULL",
+            "::yulius-rollback-barrier dropped column x",
+            "::yulius-rollback-barrier",
+            "::yulius-rollback-barrierish not one",
+        ];
+        let announced = announced_barriers(lines, &parts);
+        assert_eq!(
+            announced,
+            [
+                ("infra".to_owned(), "users.email is NOT NULL".to_owned()),
+                (String::new(), "dropped column x".to_owned()),
+            ]
+        );
+        let output: String = announced
+            .iter()
+            .map(|(part, reason)| format!("{}\n", failed_barrier_line(part, reason)))
+            .collect();
+        assert_eq!(
+            failed_barriers(&format!("deploy failed\n{output}")),
+            announced
+        );
+        assert!(failed_barriers("[yulius] done\n").is_empty());
+    }
+
     #[test]
     fn previous_walks_back_over_rollbacks() {
         let records = [deploy("v3"), deploy("v2"), deploy("v2"), deploy("v1")];
