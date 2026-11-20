@@ -202,6 +202,15 @@ export function mountTaskView(ctx, sandbox, task) {
     let resumingParked = false;
     const PARKED_HELD_MAX = 65536;
     const heldText = () => parkedHeld.join('');
+    const bufferParkedInput = (data) => {
+      // Ignore bare interrupts/escape/navigation sequences; bracketed paste (\x1b[200~) counts as typing.
+      const unbracketed = data.replace(/\x1b\[200~/g, '').replace(/\x1b\[201~/g, '');
+      if (!unbracketed || /^[\x03\x04\x1b]+$/.test(unbracketed) || unbracketed.startsWith('\x1b')) return false;
+      const keys = data.replace(/[\x03\x04]/g, '');
+      if (keys) parkedHeld.push(keys);
+      while (parkedHeld.length > 1 && heldText().length > PARKED_HELD_MAX) parkedHeld.shift();
+      return true;
+    };
     let view = null;
     view = createTerminalView({
       transport: ctx.transport,
@@ -220,12 +229,7 @@ export function mountTaskView(ctx, sandbox, task) {
       onExitedInput: (data, exit) => {
         if (current.status !== 'parked' || (exit.status && exit.status !== 'parked')) return false;
         if (!allows((ctx.store.sandboxById(sandbox.id) || sandbox).access, 'write') || owner() || current.archived) return false;
-        // Ignore bare interrupts/escape/navigation sequences; bracketed paste (\x1b[200~) counts as typing.
-        const unbracketed = data.replace(/\x1b\[200~/g, '').replace(/\x1b\[201~/g, '');
-        if (!unbracketed || /^[\x03\x04\x1b]+$/.test(unbracketed) || unbracketed.startsWith('\x1b')) return false;
-        const keys = data.replace(/[\x03\x04]/g, '');
-        if (keys) parkedHeld.push(keys);
-        while (parkedHeld.length > 1 && heldText().length > PARKED_HELD_MAX) parkedHeld.shift();
+        if (!bufferParkedInput(data)) return false;
         if (!resumingParked) {
           resumingParked = true;
           continueTask(ctx, current).then((updated) => {
@@ -234,15 +238,27 @@ export function mountTaskView(ctx, sandbox, task) {
         }
         return true;
       },
+      onPendingInput: (data) => {
+        // Keep buffering while `continueTask` transitions `parked -> starting/queued -> running`
+        // so subsequent characters never hit a 409 conflict before the PTY is attached.
+        if (!resumingParked || current.status === 'running') return false;
+        if (!['parked', 'starting', 'queued'].includes(current.status)) {
+          resumingParked = false;
+          parkedHeld = [];
+          return false;
+        }
+        bufferParkedInput(data);
+        return true;
+      },
       onState: (next) => {
-        if (next.status === 'running' && parkedHeld.length) {
+        if (next.status === 'running' && (resumingParked || parkedHeld.length)) {
           resumingParked = false;
           const queued = heldText();
           parkedHeld = [];
-          setTimeout(() => { if (alive && view && view.sendKeys) view.sendKeys(queued); }, 250);
-        } else if (next.status && !['parked', 'starting', 'queued'].includes(next.status)) {
+          if (queued) queueMicrotask(() => { if (alive && view && view.sendKeys) view.sendKeys(queued); });
+        } else if (next.status && !['parked', 'starting', 'queued', 'running'].includes(next.status)) {
           resumingParked = false;
-          if (next.status !== 'running') parkedHeld = [];
+          parkedHeld = [];
         }
       },
       exitActions: (exit) => {
@@ -498,6 +514,7 @@ export function mountTaskView(ctx, sandbox, task) {
     const info = taskInfo(current, ctx.store.state.actionRequests, pr);
     // Failed checks already have their PR action in the strip.
     const waitingForReply = current.status === 'running' && current.activity === 'waiting' && info.group === 'needs' && !info.pr;
+    const parkedWaiting = current.status === 'parked' && current.activity === 'waiting' && info.group === 'needs';
     let content = null;
     let asksPerson = false; // the bar shows a `needs_you` request
     let textAnswer = false; // the bar asks for an answer written in its reply field
@@ -621,7 +638,7 @@ export function mountTaskView(ctx, sandbox, task) {
         owner() ? null : replying ? null : replyButton];
       replyButton.title = '';
       textAnswer = !owner();
-    } else if (current.status === 'parked' && current.activity === 'waiting' && info.group === 'needs') {
+    } else if (parkedWaiting) {
       // Idle parked session waiting for input (SPEC-553 PRK-101, PRK-102): distinguished from a
       // crash and offers Resume / Reply to the owner only.
       content = [icon('st-paused', { size: 16 }), h('span', { class: 'attention-text' }, owner()
@@ -635,7 +652,7 @@ export function mountTaskView(ctx, sandbox, task) {
     attention.hidden = !content && !control;
     // A request's buttons go under it when the bar is too narrow for both (SPEC-327 review).
     attention.classList.toggle('needs-you', asksPerson);
-    attention.classList.toggle('waiting', !control && !info.request && waitingForReply);
+    attention.classList.toggle('waiting', !control && !info.request && (waitingForReply || parkedWaiting));
     attention.classList.toggle('stacked', Boolean(control && content));
     // A waiting task's start chip and buttons go below its words (SPEC-126).
     const waits = (current.status === 'chained' || current.status === 'prepared') && can.startNow;

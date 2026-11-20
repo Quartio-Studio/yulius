@@ -3426,9 +3426,21 @@ impl App {
             && branch != profile.production_branch
     }
 
-    /// Whether the worktree's `refs/heads/<branch>` resolves to `head` (fail-closed so Yulius
-    /// never pushes an unrelated branch or detached HEAD).
+    /// Whether `worktree` currently has `branch` checked out (not detached, not another branch)
+    /// and `refs/heads/<branch>` resolves to `head` (fail-closed so Yulius never pushes an
+    /// unrelated branch or detached HEAD).
     async fn worktree_on_branch(&self, worktree: &Path, branch: &str, head: &str) -> bool {
+        let Ok(list) = self.deps.git.worktrees(worktree).await else {
+            return false;
+        };
+        let want = std::fs::canonicalize(worktree).unwrap_or_else(|_| worktree.to_path_buf());
+        let checked_out = list.iter().any(|wt| {
+            let path = std::fs::canonicalize(&wt.path).unwrap_or_else(|_| wt.path.clone());
+            path == want && wt.branch.as_deref() == Some(branch)
+        });
+        if !checked_out {
+            return false;
+        }
         match self
             .deps
             .git

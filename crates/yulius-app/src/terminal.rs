@@ -222,6 +222,8 @@ impl App {
         // forwarded wheel turn is not typing: it must not move control, and with it the size, to
         // that viewer (#78). Nor are the focus and mouse reports and query answers xterm sends
         // by itself (SPEC-068).
+        let prev_typed = attach.runtime.typed_at_ms.load(Ordering::SeqCst);
+        let mut recorded_typing = false;
         if !scroll && is_typing(data) {
             let change = attach.runtime.hub.claim(attach.viewer_id);
             // The keystroke matters more than the size: a failed resize never drops it.
@@ -231,6 +233,7 @@ impl App {
             // A prompt submitted soon after is this person's (TSK-013).
             let mut mark = attach.runtime.draft_mark.lock().await;
             self.record_typing(&attach.task_id, &ctx.user.id);
+            recorded_typing = true;
             // What they type may stay in the prompt box, unsent: the run's folder keeps that
             // for a restarted server (SPEC-480 DRF-009). Before the key is passed on, so the
             // prompt it may submit removes the mark after it was written.
@@ -242,9 +245,15 @@ impl App {
         match self.send_input(&attach.task_id, data).await {
             Ok(()) => Ok(()),
             Err(err) => {
-                // If the live run exited between the check above and `send_input`, do not leave a
-                // ghost draft mark behind when falling through to parked-session wake.
-                attach.runtime.typed_at_ms.store(0, Ordering::SeqCst);
+                // If the live run exited between the check above and `send_input`, restore the
+                // prior `typed_at_ms` so we neither leave a ghost draft mark nor wipe an existing
+                // human draft on a transient write/scroll error.
+                if recorded_typing && !attach.runtime.has_live_run().await {
+                    attach
+                        .runtime
+                        .typed_at_ms
+                        .store(prev_typed, Ordering::SeqCst);
+                }
                 self.terminal_input_when_not_running(attach, data, scroll, err)
                     .await
             }

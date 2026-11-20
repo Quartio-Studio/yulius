@@ -702,33 +702,43 @@ impl App {
                 let next = match text {
                     None => next,
                     Some(text) => {
-                        let text = crate::task_message::clean_message(&text);
-                        match self.resume_parked(&task.id, Some(text.clone())).await {
-                            Ok(true) => {
-                                tracing::info!(
-                                    task = %task.id,
-                                    pr = facts.pr,
-                                    "resumed parked task for its pull request"
-                                );
-                                typed.push((task.id.clone(), text));
-                                next
-                            }
-                            Ok(false) => {
-                                tracing::debug!(
-                                    task = %task.id,
-                                    pr = facts.pr,
-                                    "parked task changed before pull request wake"
-                                );
-                                untold(told, &next)
-                            }
-                            Err(err) => {
-                                tracing::warn!(
-                                    task = %task.id,
-                                    pr = facts.pr,
-                                    error = %err,
-                                    "could not resume parked task for its pull request"
-                                );
-                                untold(told, &next)
+                        if let Err(err) = self.ensure_agent_account(task.harness.provider()).await {
+                            tracing::debug!(
+                                task = %task.id,
+                                pr = facts.pr,
+                                error = %err,
+                                "keeping parked task parked while no usable account is available"
+                            );
+                            untold(told, &next)
+                        } else {
+                            let text = crate::task_message::clean_message(&text);
+                            match self.resume_parked(&task.id, Some(text.clone())).await {
+                                Ok(true) => {
+                                    tracing::info!(
+                                        task = %task.id,
+                                        pr = facts.pr,
+                                        "resumed parked task for its pull request"
+                                    );
+                                    typed.push((task.id.clone(), text));
+                                    next
+                                }
+                                Ok(false) => {
+                                    tracing::debug!(
+                                        task = %task.id,
+                                        pr = facts.pr,
+                                        "parked task changed before pull request wake"
+                                    );
+                                    untold(told, &next)
+                                }
+                                Err(err) => {
+                                    tracing::warn!(
+                                        task = %task.id,
+                                        pr = facts.pr,
+                                        error = %err,
+                                        "could not resume parked task for its pull request"
+                                    );
+                                    untold(told, &next)
+                                }
                             }
                         }
                     }
@@ -1003,7 +1013,10 @@ impl App {
             own = refreshed
                 .iter()
                 .find(|run| run.reference == CiRef::PullRequest(pr))
-                .cloned();
+                .cloned()
+                .filter(|run| {
+                    !(run.state == RunState::Failed && run.sha.eq_ignore_ascii_case(&failed_sha))
+                });
         }
         let sandbox_runs = runs.get(sandbox.id.as_str()).map_or(&[][..], Vec::as_slice);
         let own = own.as_ref();
@@ -1296,7 +1309,10 @@ impl App {
             own = refreshed
                 .iter()
                 .find(|run| run.reference == CiRef::PullRequest(pr))
-                .cloned();
+                .cloned()
+                .filter(|run| {
+                    !(run.state == RunState::Failed && run.sha.eq_ignore_ascii_case(&failed_sha))
+                });
         }
         let own = own.as_ref();
         let mut events = Vec::new();

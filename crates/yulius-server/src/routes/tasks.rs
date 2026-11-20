@@ -239,28 +239,14 @@ pub async fn unpause(
     Ok(Json(app.resume_task_for_person(&ctx, &tid).await?))
 }
 
-#[derive(Debug, Default, Deserialize)]
-pub struct ContinueBody {
-    #[serde(default)]
-    account_id: Option<String>,
-    #[serde(default)]
-    prompt: Option<String>,
-}
-
 pub async fn resume(
     State(app): State<AppState>,
     Auth(ctx): Auth,
     Path(tid): Path<String>,
-    body: Option<Json<ContinueBody>>,
+    body: Option<Json<yulius_contracts::api::tasks::ContinueTask>>,
 ) -> ApiResult<Json<TaskSummary>> {
-    let body = body.map(|Json(b)| b).unwrap_or_default();
-    let req = yulius_contracts::api::tasks::ContinueTask {
-        account_id: body.account_id,
-    };
-    Ok(Json(
-        app.continue_task_with_prompt(&ctx, &tid, &req, body.prompt.as_deref())
-            .await?,
-    ))
+    let req = body.map(|Json(b)| b).unwrap_or_default();
+    Ok(Json(app.continue_task(&ctx, &tid, &req).await?))
 }
 
 pub async fn switch(

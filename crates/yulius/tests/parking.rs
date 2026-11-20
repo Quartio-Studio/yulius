@@ -1363,17 +1363,40 @@ fn ordinary_owner_terminal_input_and_continue_prompt_wake_parked_session_with_co
             worktree
         );
 
-        // Park again and wake via `continue_task_with_prompt` (the web Reply action).
+        // Park again and verify oversized ContinueTask.prompt (> 64 KiB) is rejected with Invalid
+        // while keeping the task Parked, then wake cleanly via `continue_task` with a bounded prompt.
         wait_for("idle again", Duration::from_secs(30), || async {
             status_of(&app, &id).await.1 == Some(Activity::Waiting)
         })
         .await?;
         parked(&app, &id).await?;
-        app.continue_task_with_prompt(
+        let oversized = "x".repeat(yulius_app::task_message::MAX_MESSAGE_BYTES + 1);
+        let too_big = app
+            .continue_task(
+                &owner_ctx,
+                id.as_str(),
+                &yulius_contracts::api::tasks::ContinueTask {
+                    account_id: None,
+                    prompt: Some(oversized),
+                },
+            )
+            .await;
+        assert!(
+            matches!(too_big, Err(yulius_app::error::AppError::Invalid(_))),
+            "oversized prompt must return Invalid: {too_big:?}"
+        );
+        assert_eq!(
+            status_of(&app, &id).await.0,
+            Some(TaskStatus::Parked),
+            "rejected prompt must keep task parked"
+        );
+        app.continue_task(
             &owner_ctx,
             id.as_str(),
-            &yulius_contracts::api::tasks::ContinueTask { account_id: None },
-            Some("Wake from reply: answer with an echo"),
+            &yulius_contracts::api::tasks::ContinueTask {
+                account_id: None,
+                prompt: Some("Wake from reply: answer with an echo".into()),
+            },
         )
         .await?;
         wait_for("reply wake echo", Duration::from_secs(30), || async {
@@ -1612,18 +1635,191 @@ fn parked_task_parks_safely_during_ci_and_auto_wakes_on_actionable_check_results
         );
         assert_eq!(status_of(&app, &id).await.0, Some(TaskStatus::Parked));
 
-        // Once the human decision is cleared, `watch_prs` wakes the parked task on the failed run.
+        // Once the human decision is cleared, first simulate no usable account (Relogin):
+        // `watch_prs` MUST keep the task safely `Parked` (never destructively `Failed`), and once
+        // the account is healthy again, wake it cleanly once — and across a restart reading
+        // persisted `pr-notices.json`, never double-wake it.
         app.deps
             .store
             .set_task_needs_you(&id, None, app.now())
             .await?;
+        let acc = yulius_domain::ids::AccountId::parse("a-only")?;
+        yulius_app::ports::store::AccountStore::set_account_state(
+            app.deps.store.as_ref(),
+            &acc,
+            yulius_app::model::AccountStatus::Relogin,
+            None,
+            Some("needs sign-in"),
+            app.now(),
+        )
+        .await?;
+        let no_acc = app.watch_prs(&bounds).await;
+        assert!(
+            !no_acc.iter().any(|(task, _)| task == &id),
+            "no usable account must not wake parked task: {no_acc:?}"
+        );
+        assert_eq!(
+            status_of(&app, &id).await.0,
+            Some(TaskStatus::Parked),
+            "no usable account must keep task Parked, never Failed"
+        );
+        yulius_app::ports::store::AccountStore::set_account_state(
+            app.deps.store.as_ref(),
+            &acc,
+            yulius_app::model::AccountStatus::Ok,
+            None,
+            None,
+            app.now(),
+        )
+        .await?;
         let woke_red = app.watch_prs(&bounds).await;
         assert!(
             woke_red
                 .iter()
                 .any(|(task, text)| task == &id && text.contains("failed")),
-            "expected failed CI wake: {woke_red:?}"
+            "expected failed CI wake once account is usable: {woke_red:?}"
         );
+        wait_for("idle after red wake", Duration::from_secs(30), || async {
+            status_of(&app, &id).await.1 == Some(Activity::Waiting)
+        })
+        .await?;
+        parked(&app, &id).await?;
+        // Simulate a server restart on the same data directory (re-reading `pr-notices.json`):
+        // the already-delivered `run-failed` must NOT double-wake the parked task.
+        let restarted = super::parking::app(&data, 8, 1).await?;
+        let after_restart = restarted.watch_prs(&bounds).await;
+        assert!(
+            !after_restart.iter().any(|(task, _)| task == &id),
+            "restart must not double-wake already-delivered CI failure: {after_restart:?}"
+        );
+        assert_eq!(status_of(&restarted, &id).await.0, Some(TaskStatus::Parked));
+        Ok::<_, Error>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// SPEC-553 PRK-103: an unpublished clean committed fast-forward CI repair above a failing open
+/// PR head defers parking (`open_pr_work_pending`), while a pending human `needs_you` decision
+/// or active (`Running`) CI run allows safe parking.
+#[test]
+fn unpublished_open_pr_ci_repair_defers_parking_unless_needs_you_or_ci_running() -> TestResult {
+    use std::process::Command;
+    use yulius_app::ci::{CiJobRecord, CiRunRecord};
+    use yulius_app::delivery::DeliveryRecord;
+    use yulius_domain::ci::{CiRef, GateSource, RunState};
+    use yulius_domain::delivery::DeliveryStage;
+    use yulius_domain::resources::Need;
+    use yulius_domain::time::Timestamp;
+
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let app = app(&data, 8, 1).await?;
+        let (id, caller) = answered(&app, &data).await?;
+        let task = TaskStore::task(app.deps.store.as_ref(), &id)
+            .await?
+            .ok_or("task")?;
+        let wt = Path::new(task.worktree_path.as_deref().ok_or("worktree")?);
+        let git = |args: &[&str]| -> Result<String, Error> {
+            let out = Command::new("git")
+                .args(args)
+                .current_dir(wt)
+                .env("GIT_AUTHOR_NAME", "t")
+                .env("GIT_AUTHOR_EMAIL", "t@example.com")
+                .env("GIT_COMMITTER_NAME", "t")
+                .env("GIT_COMMITTER_EMAIL", "t@example.com")
+                .output()?;
+            if !out.status.success() {
+                return Err(String::from_utf8_lossy(&out.stderr).into_owned().into());
+            }
+            Ok(String::from_utf8_lossy(&out.stdout).trim().to_owned())
+        };
+        let failed_head = git(&["rev-parse", "HEAD"])?;
+        std::fs::write(wt.join("repair.txt"), "clean fix\n")?;
+        git(&["add", "repair.txt"])?;
+        git(&["commit", "-m", "Clean CI repair"])?;
+        let repair_head = git(&["rev-parse", "HEAD"])?;
+        assert_ne!(repair_head, failed_head);
+
+        let open = DeliveryRecord {
+            task_id: id.clone(),
+            stage: DeliveryStage::PrOpen,
+            pr_number: Some(99),
+            updated_at: app.now(),
+        };
+        app.deps
+            .store
+            .transition_delivery(&DeliveryStage::None, &open)
+            .await?;
+        let failed_ci = CiRunRecord {
+            id: "run-park-fail".into(),
+            sandbox_id: caller.sandbox.clone(),
+            reference: CiRef::PullRequest(99),
+            sha: failed_head.clone(),
+            source: GateSource::ProjectConfig,
+            state: RunState::Failed,
+            reason: None,
+            requested_by: "yulius".into(),
+            status_for: None,
+            status_note: None,
+            status_attempts: 0,
+            queued_at: Timestamp(10),
+            started_at: Some(Timestamp(11)),
+            ended_at: Some(Timestamp(12)),
+        };
+        let failed_job = CiJobRecord {
+            id: "job-park-fail".into(),
+            run_id: "run-park-fail".into(),
+            ordinal: 0,
+            name: "checks".into(),
+            key: "checks".into(),
+            command: "true".into(),
+            matrix: None,
+            state: RunState::Failed,
+            reason: None,
+            exit_code: Some(1),
+            output: String::new(),
+            failures: None,
+            started_at: Some(Timestamp(11)),
+            ended_at: Some(Timestamp(12)),
+            need: Need::default(),
+            timeout_minutes: None,
+            exclusive: false,
+            waited_ms: None,
+        };
+        app.deps
+            .store
+            .insert_ci_run(&failed_ci, &[failed_job])
+            .await?;
+        // Pre-seed `pr-notices.json` so `pr_news_due` is false and ONLY `open_pr_work_pending`
+        // keeps the session from parking while `repair_head` is unpublished.
+        let notices_dir = data.join("state");
+        std::fs::create_dir_all(&notices_dir)?;
+        let told_json = json!({
+            id.as_str(): {
+                "pr": 99,
+                "head": failed_head,
+                "keys": { "run": "run-park-fail" }
+            }
+        });
+        std::fs::write(
+            notices_dir.join("pr-notices.json"),
+            serde_json::to_vec(&told_json)?,
+        )?;
+
+        past_the_grace(&app, &id).await?;
+        assert_eq!(
+            app.park_idle_sessions_now().await,
+            0,
+            "unpublished clean fast-forward CI repair must defer parking"
+        );
+        assert_eq!(status_of(&app, &id).await.0, Some(TaskStatus::Running));
+
+        // Once a human decision (`needs_you`) is open, parking is no longer deferred by the repair.
+        ask(&app, &id).await?;
+        parked(&app, &id).await?;
+        assert_eq!(status_of(&app, &id).await.0, Some(TaskStatus::Parked));
         Ok::<_, Error>(())
     })?;
     rt.shutdown_timeout(Duration::from_secs(5));

@@ -6403,7 +6403,7 @@ class TermSession {
       return;
     }
     const bottom = this.regionBottom();
-    this.broadcast(`${E}?25l${E}${bottom};1H\r\n${line}${E}${bottom + 2};${3 + this.input.length}H${E}?25h`);
+    this.broadcast(`${E}?25l${E}1;${bottom}r${E}${bottom};1H\r\n${E}2K${line}${E}${bottom + 2};${3 + this.input.length}H${E}?25h`);
   }
 
   redrawPrompt() {

@@ -769,6 +769,7 @@ fn a_refused_move_at_a_usage_credits_limit_still_asks_a_person() -> TestResult {
             id.as_str(),
             &ContinueTask {
                 account_id: Some("b-second".into()),
+                ..Default::default()
             },
         )
         .await?;
@@ -989,6 +990,7 @@ fn a_limit_nothing_says_the_end_of_is_retried_once_then_asks_a_person() -> TestR
         let other = AccountId::parse("b-second")?;
         let to_second = ContinueTask {
             account_id: Some("b-second".into()),
+            ..Default::default()
         };
         // Sealed with another instance's key: it cannot be opened here.
         let stranger = MasterKeyCrypto::from_key(&[9u8; 32])?;
@@ -1888,8 +1890,15 @@ fn a_switched_limit_is_not_said_at_a_later_start() -> TestResult {
         .await?;
         let mut watch = app.runtime(&id).hub.watch();
         let ctx = person(&app, &user).await?;
-        app.continue_task(&ctx, id.as_str(), &ContinueTask { account_id: None })
-            .await?;
+        app.continue_task(
+            &ctx,
+            id.as_str(),
+            &ContinueTask {
+                account_id: None,
+                prompt: None,
+            },
+        )
+        .await?;
         live_run(&app, &id, 2).await?;
         let said = notices(&mut watch);
         assert!(

@@ -115,7 +115,7 @@ const ANSWER_HERE = 'The terminal has the keyboard: answer there.';
  *                              files in the terminal's folder become links (termlinks.js)
  * Call start() after the element is in the document; destroy() when done.
  */
-export function createTerminalView({ transport, path, onLink, readOnlyLabel, onState, onExit, onNotice, exitActions, exitMessage, emptyMessage, onReady, onConnection, onFatal, topOffer = null, fontSize, fileLinks = null, followServerSize = false, onExitedInput = null }) {
+export function createTerminalView({ transport, path, onLink, readOnlyLabel, onState, onExit, onNotice, exitActions, exitMessage, emptyMessage, onReady, onConnection, onFatal, topOffer = null, fontSize, fileLinks = null, followServerSize = false, onExitedInput = null, onPendingInput = null }) {
   const banner = h('div', { class: 'term-banner', hidden: true, role: 'status' });
   const noticeEl = h('div', { class: 'term-notice', hidden: true, role: 'status', 'aria-live': 'polite' });
   // Connection trouble floats over the terminal: it never changes the terminal's size.
@@ -205,6 +205,13 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
   // The working directory a shell reports (OSC 7), absolute.
   let cwd = '';
 
+  const syncCursorBlink = () => {
+    const blink = !exited && !reducedMotion;
+    term.options.cursorBlink = blink;
+    el.dataset.cursorBlink = String(blink);
+  };
+  syncCursorBlink();
+
   const socket = new TerminalSocket({
     transport,
     path,
@@ -242,7 +249,7 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
         else if (message.status && isEndedStatus(message.status) && (!exited || exited.status !== message.status)) {
           exited = { status: message.status, code: null };
         }
-        term.options.cursorBlink = !exited && !reducedMotion;
+        syncCursorBlink();
         term.options.disableStdin = !state.can_write;
         if (mouse.appMouse() !== state.can_write) term.write(mouse.setAppMouse(state.can_write));
         applySize();
@@ -252,7 +259,7 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
         if (onState) onState(state);
       },
       onNotice: (text) => { showNotice(text); if (onNotice) onNotice(text); },
-      onExit: (message) => { exited = message; term.options.cursorBlink = false; applySize(); render(); reveal(); if (onExit) onExit(message); },
+      onExit: (message) => { exited = message; syncCursorBlink(); applySize(); render(); reveal(); if (onExit) onExit(message); },
       onError: (message) => {
         if (['unauthenticated', 'not_found'].includes(message.code)) { fatal = message; reveal(); if (onFatal) onFatal(message); }
         else showNotice(message.message || message.code || 'Terminal error');
@@ -765,6 +772,10 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
       if (onExitedInput && isTyping(data) && onExitedInput(data, exited)) return true;
       return false;
     }
+    // While a parked resume is transitioning through `starting`/`queued` before a live run is
+    // attached, let the caller buffer typed keys instead of sending them to hit a 409 conflict
+    // (SPEC-553 PRK-102).
+    if (onPendingInput && isTyping(data) && onPendingInput(data)) return true;
     if (!state.can_write) {
       showNotice(readOnlyText());
       return false;
@@ -992,7 +1003,7 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
       if (status) {
         if (!isEndedStatus(status)) exited = null;
         else if (!exited || exited.status !== status) exited = { status, code: null };
-        term.options.cursorBlink = !exited && !reducedMotion;
+        syncCursorBlink();
       }
       if (opened && !destroyed) keepFocus(banner, render);
     },
