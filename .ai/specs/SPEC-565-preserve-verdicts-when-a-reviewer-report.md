@@ -26,6 +26,7 @@ On dev `645eff207`, repeating the completion update moves the end time, and appr
 - [x] Reproduce lost verdicts on current dev and specify report identity
 - [x] Prove replay and continued review analytics with failing regressions
 - [x] Preserve each distinct report and document round accounting
+- [ ] Protect cut-off recovery and accept reports during a slow head lookup
 - [ ] Verify the fix and obtain independent approval for delivery
 
 ## Acceptance criteria
@@ -33,6 +34,8 @@ On dev `645eff207`, repeating the completion update moves the end time, and appr
 - **AC-1** A duplicate stop leaves the first report intact. A start after that report and a second stop produce two numbered verdicts. A duplicate start during a round creates no extra row.
 - **AC-2** Request changes, approve and approve again with one reviewer. The merged analytics endpoint returns three rounds, one re-review after changes and one round after approval. A late hook for the merged reviewer leaves the next pull request alone.
 - **AC-3** Replays with an earlier client send time cannot settle the next round. A continued round takes its own head at start and subsequent transcript observations affect the latest round.
+
+- **AC-4** An old hook preserves the continued reviewer’s pending recovery after a usage limit. A report arriving during its start-time Git lookup still closes the continued round.
 
 ## Test plan
 
@@ -50,3 +53,4 @@ Use the start after a report as the round boundary. Comparing verdicts or report
 - `scripts/dev quick` passed the repository contracts and Rust formatting checks.
 - The change security scan reported Vidoc disabled for the project or instance. It scanned no files.
 - All 29 tests in `cargo test --locked -p yulius --test main review_rounds::` passed, including eight subprocess cases for cut-off reviewers, moves and resumption.
+- Round 1 requested changes on `3fae70d80`. Two new deterministic regressions failed on its implementation. Replaying the older start and stop each erased the continued reviewer's pending resume and move. Delivering the stop while Git was held left round 2's verdict empty. Both findings concern this change.

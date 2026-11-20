@@ -447,6 +447,108 @@ async fn continued_review_counts_each_report_in_merged_analytics() -> TestResult
     Ok(())
 }
 
+/// A stale hook must preserve the resume instruction and the pending subscription move
+/// of a continued reviewer. Its own resume and report must clear them.
+#[tokio::test]
+async fn a_cut_off_continuation_keeps_its_recovery_on_older_hooks() -> TestResult {
+    use crate::subscription_pool::hook_sent_at;
+    use std::sync::atomic::Ordering;
+    let h = harness()?;
+    seed(&h).await?;
+    let account = add_account(&h, "acc-1", None).await?;
+    let task = running_task(&h, TaskMode::Prompt, &account).await?;
+    let old = h.clock.0.load(Ordering::SeqCst);
+    a_round(&h, "rev", Some("Verdict: approve")).await?;
+    let start = json!({"agent_id":"rev","agent_type":"yulius-reviewer"});
+    let stop = json!({"agent_id":"rev","agent_type":"yulius-reviewer",
+        "last_assistant_message":"Verdict: approve"});
+    h.clock.0.fetch_add(1, Ordering::SeqCst);
+    hook(&h.internal, "SubagentStart", start.clone()).await?;
+    let mut after_replay = Vec::new();
+    for (event, body) in [("SubagentStart", &start), ("SubagentStop", &stop)] {
+        h.app.cut_off_review_for_test(&task, "rev").await;
+        let pending = (Some(String::from("rev")), true);
+        assert_eq!(h.app.review_recovery_for_test(&task), pending);
+        hook_sent_at(&h.internal, "claude", event, body.clone(), Some(old)).await?;
+        after_replay.push(h.app.review_recovery_for_test(&task));
+        hook(&h.internal, event, body.clone()).await?;
+        assert_eq!(
+            h.app.review_recovery_for_test(&task),
+            (None, false),
+            "{event}"
+        );
+    }
+    assert_eq!(
+        after_replay,
+        [
+            (Some("rev".to_owned()), true),
+            (Some("rev".to_owned()), true)
+        ]
+    );
+    assert_eq!(
+        rounds(&h, &task, true).await?[1].verdict.as_deref(),
+        Some("approve")
+    );
+    Ok(())
+}
+
+/// The detached start handler can still be reading Git when the reviewer reports.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_continued_report_survives_its_start_time_head_lookup() -> TestResult {
+    use crate::support::{confined_git, harness_with_git, repos::git};
+    use std::sync::{Arc, atomic::Ordering, mpsc};
+    use std::time::Duration;
+    use yulius_app::ports::store::TaskFieldUpdate;
+    let h = harness_with_git(Arc::new(confined_git()))?;
+    seed(&h).await?;
+    let account = add_account(&h, "acc-1", None).await?;
+    let task = running_task(&h, TaskMode::Prompt, &account).await?;
+    a_round(&h, "rev", Some("Verdict: request changes")).await?;
+    let repo = h._dir.path().join("sandboxes/s1/worktrees/slow-review");
+    std::fs::create_dir_all(&repo)?;
+    git(&repo, &["init"])?;
+    git(&repo, &["commit", "--allow-empty", "-m", "fixes"])?;
+    let head = git(&repo, &["rev-parse", "HEAD"])?;
+    h.store
+        .update_task(
+            &task,
+            &TaskFieldUpdate {
+                worktree_path: Some(repo.to_string_lossy().into_owned()),
+                ..Default::default()
+            },
+            h.app.now(),
+        )
+        .await?;
+    let (entered, at_git) = tokio::sync::oneshot::channel();
+    let (release, held) = mpsc::channel();
+    yulius_app::race::on(yulius_app::race::Point::ReviewHead, &repo, move || {
+        let _ = entered.send(());
+        let _ = held.recv_timeout(Duration::from_secs(20));
+    });
+    h.clock.0.fetch_add(1, Ordering::SeqCst);
+    let router = h.internal.clone();
+    let start = tokio::spawn(async move {
+        hook(
+            &router,
+            "SubagentStart",
+            json!({"agent_id":"rev","agent_type":"yulius-reviewer"}),
+        )
+        .await
+        .map(|r| r.0)
+        .map_err(|e| e.to_string())
+    });
+    tokio::time::timeout(Duration::from_secs(10), at_git).await??;
+    hook(&h.internal, "SubagentStop", json!({"agent_id":"rev","agent_type":"yulius-reviewer","last_assistant_message":"Verdict: approve"})).await?;
+    release.send(())?;
+    assert_eq!(start.await??, 200);
+    let rows = rounds(&h, &task, true).await?;
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0].verdict.as_deref(), Some("request_changes"));
+    assert_eq!(rows[1].verdict.as_deref(), Some("approve"));
+    assert_eq!(rows[1].head.as_deref(), Some(head.trim()));
+    Ok(())
+}
+
 /// SPEC-493 REV-007 (its part without a move): a first round on a subscription that cannot run
 /// Fable 5.2 (its allowance used up) runs the Opus reviewer, records why, and the agent is told.
 #[tokio::test]

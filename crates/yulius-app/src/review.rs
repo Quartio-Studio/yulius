@@ -587,6 +587,38 @@ impl App {
             .store(true, std::sync::atomic::Ordering::SeqCst);
     }
 
+    /// Injects the transcript watcher's usage-limit observation for an active reviewer in tests.
+    #[cfg(feature = "test-support")]
+    pub async fn cut_off_review_for_test(
+        self: &Arc<Self>,
+        task: &yulius_domain::ids::TaskId,
+        id: &str,
+    ) {
+        if let Some(reviewer) = self.open_round_reviewer(task, id).await {
+            self.reviewer_cut_off(task, reviewer, true).await;
+        }
+    }
+
+    /// Reads the resume instruction's recipient and the scheduled subscription move in tests.
+    #[cfg(feature = "test-support")]
+    pub fn review_recovery_for_test(
+        &self,
+        task: &yulius_domain::ids::TaskId,
+    ) -> (Option<String>, bool) {
+        let runtime = self.runtime(task);
+        let reviewer = runtime
+            .cut_off_reviewer
+            .lock()
+            .ok()
+            .and_then(|r| r.as_ref().map(|r| r.agent_id.clone()));
+        (
+            reviewer,
+            runtime
+                .reviewer_move
+                .load(std::sync::atomic::Ordering::SeqCst),
+        )
+    }
+
     /// Where `task`'s session moves for its cut-off reviewer (RLM-002): a subscription that can
     /// run the reviewer's model beside the session's, or none. With none the reviewer is
     /// forgotten and the session told the round runs on Opus 5.5 (REV-007). `Later` while a
@@ -661,6 +693,9 @@ impl App {
 
     /// The worktree head observed at the start of this review.
     async fn review_head_at_start(&self, ctx: &AgentContext) -> Option<String> {
+        if let Some(path) = ctx.task.worktree_path.as_deref() {
+            crate::race::reached(crate::race::Point::ReviewHead, Path::new(path));
+        }
         match ctx.task.worktree_path.as_deref() {
             Some(worktree) => self
                 .deps
