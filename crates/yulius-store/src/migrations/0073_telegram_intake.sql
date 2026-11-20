@@ -1,4 +1,4 @@
--- Yulius migration 0073, schema version 72 (SPEC-512 TGI-001, TGI-002, ADR-0392): the personal Telegram channel's
+-- Yulius migration 0073, schema version 73 (SPEC-512 TGI-001, TGI-002, ADR-0392): the personal Telegram channel's
 -- intake. Whether a person's linked chat may answer and start tasks (off by default) and the
 -- project a new message goes to; and the messages the bot sent about a task, so a reply to one
 -- reaches that task (the last 500 per chat are kept).

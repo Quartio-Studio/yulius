@@ -1772,6 +1772,11 @@ watcher's tail opens it the same way at its name); the sandbox adapter reads the
 most 1 MiB of a regular file, and hands people's identity files the text; `record_number` lists
 a numbered directory from the sandbox directory down; the quota's disk usage is measured from
 folder handles; and the task review reads an untracked file from the worktree's folder.
+Session search restores the parser’s dotenv context by replaying the indexed prefix when it resumes
+from the byte and line offsets committed with its passages.
+[Decision 0382](decisions/0382-session-index-resumption-replays-redaction-context.md) describes the
+read budget and the one-time rebuild of historical passages.
+
 Where Git, not the server, would write (it resolves the path it is given and follows links), the
 work moves out of the sandbox instead: an import's snapshot is checked out, filled and committed
 in `<data>/import-worktrees/<sandbox>/import-<job>[-<n>]` (0700, the name taken with a create-new

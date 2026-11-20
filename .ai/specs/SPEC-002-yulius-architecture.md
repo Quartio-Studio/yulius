@@ -1863,8 +1863,10 @@ their transcript is the harness file under the sandbox home for the task worktre
 lineage entry's stored copy until the task resumed it natively). Imported sessions get theirs when
 an import is applied. Indexing is incremental and lazy: each list or search reads complete lines
 from `indexed_bytes` of documents whose transcript grew (compare-and-set on the position, so
-concurrent refreshes never duplicate passages), at most 32 MiB per refresh and 64 MiB per session
-(`index_full` after that); a shrunk transcript is re-indexed. Passages, pages and agent reads are
+concurrent refreshes never duplicate passages), with a 32 MiB budget for new lines per refresh and a 64 MiB per-session cutoff
+(`index_full` after that); a shrunk transcript is re-indexed. A resumed batch also replays its
+indexed prefix for dotenv context. Its replay counts against the remaining refresh budget.
+A batch already underway finishes even if its prefix exhausts that budget (ADR-0382). Passages, pages and agent reads are
 normalized from Claude Code JSONL by `yulius_app::transcripts` and redacted with
 `yulius_domain::redact` (dotenv content when a tool call's path or command names a dotenv file).
 Search: every word becomes a quoted prefix term (FTS5 syntax never reaches the index), all terms
@@ -2473,7 +2475,7 @@ reach the default), a `wf-quick-task` row is listed as a custom instance workflo
 | Import total / chunk | 2 GiB / 8 MiB | reject |
 | Imported session transcript / sessions per import | 128 MiB (after redaction, images left out) / 2 000 | left out with a warning / the newest 2 000 go, run again |
 | Imported sessions per sandbox | 10 000 sessions, 8 GiB | `capacity` with the advice to delete old ones |
-| Session index | 64 MiB of transcript per session, 32 MiB read per refresh, 8 KiB per passage | the rest is readable, not searchable / indexed on the next refresh |
+| Session index | 64 MiB of transcript per session, 32 MiB refresh budget plus the finishing batch’s prefix replay (§6.10), 8 KiB per passage | the rest is readable, not searchable / indexed on the next refresh |
 | Session page / agent read | 500 entries, ~2 MiB; text 32 KiB, results 16 KiB, diffs 16 KiB × 20 / 200 entries, 100 000 characters | `next` / `next_from` |
 | Session search | 200 characters, 12 terms; 20 sessions × 3 passages | cut |
 | GitHub retries | 3 attempts, ≤ 30 s total, honoring `Retry-After` | surface error |

@@ -1407,6 +1407,41 @@ fn may_change_env_tracking(line: &[u8]) -> bool {
     })
 }
 
+/// Restore the context at the saved offsets, then return to the new record just read.
+fn replay_index_prefix(
+    reader: &mut BufReader<File>,
+    byte: u64,
+    lines: u64,
+    env_calls: &mut EnvCalls,
+) -> io::Result<()> {
+    let resume = reader.stream_position()?;
+    reader.rewind()?;
+    let mut prefix = reader.by_ref().take(byte);
+    let mut buf = Vec::new();
+    let invalid = || {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "inconsistent session index offsets",
+        )
+    };
+    for line in 0..lines {
+        match read_line(&mut prefix, &mut buf, MAX_LINE_BYTES)? {
+            LineRead::Eof => return Err(invalid()),
+            LineRead::TooLong(_) => {}
+            LineRead::Line(_) => {
+                if let Ok(record) = serde_json::from_slice(&buf) {
+                    let _ = entry_of(line, &record, env_calls);
+                }
+            }
+        }
+    }
+    if prefix.limit() != 0 {
+        return Err(invalid());
+    }
+    reader.seek(SeekFrom::Start(resume))?;
+    Ok(())
+}
+
 /// Passages read for the index from a byte offset.
 #[derive(Debug, Default)]
 pub struct IndexBatch {
@@ -1416,6 +1451,8 @@ pub struct IndexBatch {
     pub end_byte: u64,
     /// Line number after the last complete line read.
     pub end_line: u64,
+    /// Bytes re-read to reconstruct redaction context, charged to the refresh budget.
+    pub replayed_bytes: u64,
     /// Characters of passage text.
     pub chars: usize,
     /// Whether the end of the transcript was reached.
@@ -1423,7 +1460,8 @@ pub struct IndexBatch {
 }
 
 /// Reads complete lines from byte `from_byte` (line number `from_line`) until `max_bytes` were
-/// read or `max_chars` of passage text were produced.
+/// read or `max_chars` of passage text were produced. A resumed batch reconstructs its
+/// redaction context from the indexed prefix before emitting passages.
 ///
 /// # Errors
 /// I/O failures.
@@ -1444,8 +1482,15 @@ pub fn read_for_index(
         ..IndexBatch::default()
     };
     let mut read_bytes = 0_u64;
+    let mut needs_replay = from_byte != 0 || from_line != 0;
     while read_bytes < max_bytes && batch.chars < max_chars {
-        let used = match read_line(&mut reader, &mut buf, MAX_LINE_BYTES)? {
+        let next = read_line(&mut reader, &mut buf, MAX_LINE_BYTES)?;
+        if needs_replay && next != LineRead::Eof {
+            replay_index_prefix(&mut reader, from_byte, from_line, &mut env_calls)?;
+            batch.replayed_bytes = from_byte;
+            needs_replay = false;
+        }
+        let used = match next {
             LineRead::Eof => {
                 batch.eof = true;
                 return Ok(batch);
@@ -1927,6 +1972,85 @@ mod tests {
             rest.chunks
                 .iter()
                 .all(|c| !c.text.contains("sk_live_abc123"))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn resumed_index_redacts_dotenv_results_across_a_restart() -> TestResult {
+        use std::io::Write as _;
+        let dir = tempfile::tempdir()?;
+        let call = json!({"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "id": "r1", "name": "Read", "input": {"file_path": ".env"}}
+        ]}});
+        let path = write_lines(dir.path(), &[call])?;
+        let first = read_for_index(File::open(&path)?, 0, 0, u64::MAX, usize::MAX)?;
+        assert_eq!(first.end_line, 1);
+        let result = json!({"type": "user", "message": {"content": [
+            {"type": "tool_result", "tool_use_id": "r1", "content": ENV_TWO},
+            {"type": "tool_result", "tool_use_id": "other", "content": "MODE=ordinary"}
+        ]}});
+        let mut growing = std::fs::OpenOptions::new().append(true).open(&path)?;
+        write!(growing, "{result}")?;
+        let resume = || {
+            read_for_index(
+                File::open(&path)?,
+                first.end_byte,
+                first.end_line,
+                u64::MAX,
+                usize::MAX,
+            )
+        };
+        let partial = resume()?;
+        assert_eq!((partial.end_byte, partial.end_line), (first.end_byte, 1));
+        assert!(partial.chunks.is_empty());
+        assert_eq!(partial.replayed_bytes, 0);
+        writeln!(growing)?;
+        let second = resume()?;
+        assert_eq!(second.replayed_bytes, first.end_byte);
+        assert_eq!(second.chunks.len(), 1);
+        let passage = &second.chunks[0];
+        assert_eq!(passage.line, 1);
+        assert!(passage.text.contains("SHOP_REGION=[REDACTED:"));
+        assert!(passage.text.contains("MAIL_DOMAIN=[REDACTED:"));
+        assert!(!passage.text.contains("eu-north-7b") && !passage.text.contains("mg.shop.example"));
+        assert!(passage.text.contains("MODE=ordinary"));
+        Ok(())
+    }
+
+    #[test]
+    fn a_resumed_index_refuses_offsets_that_disagree_with_the_transcript() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let path = write_transcript(dir.path())?;
+        let first = read_for_index(File::open(&path)?, 0, 0, 1, usize::MAX)?;
+        for (byte, line) in [
+            (0, first.end_line),
+            (first.end_byte - 1, first.end_line),
+            (first.end_byte, first.end_line - 1),
+            (first.end_byte, first.end_line + 1),
+        ] {
+            let result = read_for_index(File::open(&path)?, byte, line, u64::MAX, usize::MAX);
+            assert_eq!(
+                result.err().map(|err| err.kind()),
+                Some(io::ErrorKind::InvalidData)
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn an_oversized_complete_suffix_validates_the_saved_index_offsets() -> TestResult {
+        use std::io::Write as _;
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("rewritten.jsonl");
+        let mut file = File::create(&path)?;
+        file.seek(SeekFrom::Start(u64::try_from(MAX_LINE_BYTES)? + 2))?;
+        writeln!(file)?;
+        // The old line ended at byte 1. The rewritten file has no newline in that prefix.
+        let result = read_for_index(File::open(path)?, 1, 1, u64::MAX, usize::MAX);
+        assert_eq!(
+            result.err().map(|err| err.kind()),
+            Some(io::ErrorKind::InvalidData)
         );
         Ok(())
     }
@@ -2474,6 +2598,17 @@ mod tests {
                 read_page(File::open(&path)?, last, 100, MAX_PAGE_CHARS)?,
             ),
         ];
+        // Restart at every record boundary using only the offsets the index persists.
+        let whole = read_for_index(File::open(&path)?, 0, 0, u64::MAX, usize::MAX)?;
+        let mut chunks = Vec::new();
+        let (mut byte, mut line) = (0, 0);
+        while line <= last {
+            let next = read_for_index(File::open(&path)?, byte, line, 1, usize::MAX)?;
+            assert_eq!(next.end_line, line + 1);
+            (byte, line) = (next.end_byte, next.end_line);
+            chunks.extend(next.chunks);
+        }
+        assert_eq!(chunks, whole.chunks, "{name}: resumed index");
         for (how, page) in reads {
             assert!(!page.entries.is_empty(), "{name} ({how}): no entries");
             let text = serde_json::to_string(&page.entries)?;

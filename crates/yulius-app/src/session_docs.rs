@@ -401,8 +401,8 @@ impl App {
         Ok(())
     }
 
-    /// Brings the sandbox's index up to date within [`INDEX_BYTES_PER_REFRESH`]: new task
-    /// sessions get documents; grown transcripts are indexed from where indexing stopped.
+    /// Indexes new task sessions and grown transcripts with a shared [`INDEX_BYTES_PER_REFRESH`]
+    /// budget. A started batch finishes its prefix replay and current line even if they exhaust it.
     ///
     /// # Errors
     /// Store failures (unreadable transcripts are skipped).
@@ -439,7 +439,9 @@ impl App {
                 continue;
             }
             if size < doc.indexed_bytes {
-                store.reset_session_index(&doc.id).await?;
+                store
+                    .reset_session_index_at(&doc.id, Some(doc.indexed_bytes))
+                    .await?;
                 continue;
             }
             if budget == 0 {
@@ -470,22 +472,38 @@ impl App {
             let anchor = self.sandbox_dir(&doc.sandbox_id);
             let (from_byte, from_line) = (doc.indexed_bytes, doc.indexed_lines);
             let batch = match blocking(move || {
-                transcripts::open(&anchor, &path)
-                    .and_then(|file| {
-                        transcripts::read_for_index(file, from_byte, from_line, allowed, usize::MAX)
-                    })
-                    .map_err(AppError::internal)
+                let file = transcripts::open(&anchor, &path).map_err(AppError::internal)?;
+                Ok(transcripts::read_for_index(
+                    file,
+                    from_byte,
+                    from_line,
+                    allowed,
+                    usize::MAX,
+                ))
             })
             .await
             {
-                Ok(batch) => batch,
+                Ok(Ok(batch)) => batch,
+                Ok(Err(err)) => {
+                    // The reader may already have consumed the entire prefix and suffix allowance.
+                    budget = budget.saturating_sub(from_byte).saturating_sub(allowed);
+                    if err.kind() == std::io::ErrorKind::InvalidData {
+                        store
+                            .reset_session_index_at(&doc.id, Some(from_byte))
+                            .await?;
+                    }
+                    tracing::debug!(doc = %doc.id, error = %err, "transcript index read failed");
+                    continue;
+                }
                 Err(err) => {
                     tracing::debug!(doc = %doc.id, error = %err, "transcript not indexed");
                     continue;
                 }
             };
             let read = batch.end_byte.saturating_sub(from_byte);
-            budget = budget.saturating_sub(read.max(1));
+            budget = budget
+                .saturating_sub(read.max(1))
+                .saturating_sub(batch.replayed_bytes);
             if read == 0 && batch.chunks.is_empty() {
                 continue;
             }
