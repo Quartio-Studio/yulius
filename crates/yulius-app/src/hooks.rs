@@ -603,6 +603,13 @@ impl App {
         reason: Option<&crate::attention::AttentionRecord>,
     ) -> AppResult<()> {
         let runtime = self.runtime(task_id);
+        #[cfg(feature = "test-support")]
+        if runtime.attention_lock.try_lock().is_err() {
+            crate::race::reached(
+                crate::race::Point::AttentionReplacementWaiting,
+                std::path::Path::new(task_id.as_str()),
+            );
+        }
         let _held = runtime.attention_lock.lock().await;
         let store = &self.deps.store;
         let now = self.now();

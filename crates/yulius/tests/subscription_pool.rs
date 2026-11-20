@@ -1227,6 +1227,37 @@ async fn queued_prompt_stop(mode: TaskMode, stop_status: u16) -> TestResult {
     assert_eq!(still_held.id, held.id);
     assert_eq!(still_held.continuation.as_deref(), Some("second"));
     assert_eq!(status(&h, &task).await?, TaskStatus::WaitingCapacity);
+    if mode == TaskMode::Goal {
+        // A real submit poll keeps its pause. After that the submit client gives up.
+        advance(&h, 30_000);
+        assert_eq!(
+            hook(&h.internal, "UserPromptSubmit", json!({"prompt": "second"}))
+                .await?
+                .0,
+            202
+        );
+        for _ in 0..4 {
+            advance(&h, 10_000);
+            assert_eq!(hook(&h.internal, "Stop", json!({})).await?.0, 202);
+            let _ = h.app.resume_round().await;
+            assert_eq!(status(&h, &task).await?, TaskStatus::WaitingCapacity);
+        }
+        // Only the predecessor's Stop has polled for the last 46 seconds.
+        advance(&h, 6_000);
+        assert_eq!(hook(&h.internal, "Stop", json!({})).await?.0, 202);
+        let _ = h.app.resume_round().await;
+        let pauses = h.store.pauses_since(t0).await?;
+        assert_eq!(pauses[0].outcome.as_deref(), Some("abandoned"));
+        // The next Stop can hold its own turn again without carrying the dropped prompt.
+        assert_eq!(hook(&h.internal, "Stop", json!({})).await?.0, 202);
+        let turn = h
+            .store
+            .open_pause(&task)
+            .await?
+            .ok_or("no goal turn hold")?;
+        assert_eq!(turn.kind, PauseKind::Turn);
+        assert!(turn.continuation.is_none());
+    }
     Ok(())
 }
 

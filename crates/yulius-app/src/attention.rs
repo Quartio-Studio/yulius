@@ -229,6 +229,10 @@ impl App {
         }
         match self.deps.store.task_attention(task_id).await {
             Ok(Some((reason, flagged))) if reason.work_answers => {
+                crate::race::reached(
+                    crate::race::Point::AttentionRecoveryRead,
+                    std::path::Path::new(task_id.as_str()),
+                );
                 // Only over nothing: a flag raised meanwhile stored its own time.
                 let _ = runtime.notice_attention_ms.compare_exchange(
                     0,

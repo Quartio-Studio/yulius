@@ -178,6 +178,11 @@ pub enum Point {
     /// reading, a limit Claude reported): the stored usage was read under the lock such changes
     /// take; nothing is written yet. The path is the account id.
     UsageRead,
+    /// Reattachment read the answerable attention reason but has not installed its time.
+    /// The path is the task id.
+    AttentionRecoveryRead,
+    /// A replacement notice reached a busy attention lock. The path is the task id.
+    AttentionReplacementWaiting,
     /// A usage limit Claude reported (SPEC-464) is about to be recorded on its subscription: its
     /// stored usage is not read yet. The path is the account id.
     LimitRecord,
