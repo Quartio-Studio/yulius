@@ -8,7 +8,8 @@ Yulius develops itself with Yulius.
 It also runs native Codex CLI sessions on Codex (OpenAI) subscriptions, chosen per task or
 automation, on GPT-6.2 Astra at high effort unless a task names another model or effort (task
 #493, [SPEC-511](../.ai/specs/SPEC-511-default-model-for-codex-should-be-astra.md)); a task keeps
-its agent for life, and a Codex task moves only between Codex subscriptions. On ChatGPT Pro 500,
+its agent for life, and a Codex task moves only between Codex subscriptions. A task
+created with a `gpt-*` model and no explicit agent selects Codex. On ChatGPT Pro 500,
 Codex defaults to Ultrafast for models that support it. A Codex
 subscription signs in by device code, by an imported `auth.json` of a `codex login` made elsewhere,
 or with an OpenAI API key, and Yulius provides the pinned Codex CLI

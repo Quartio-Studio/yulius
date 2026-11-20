@@ -23,7 +23,7 @@ Issue #1427 was reported during SPEC-511. On dev at `56f08db7`, both HTTP creati
 
 - [x] Reproduce model routing and document the task contract
 - [x] Exercise creation and model edits through API and MCP
-- [ ] Route GPT models and reject conflicting harnesses
+- [x] Route GPT models and reject conflicting harnesses
 - [ ] Verify the fix and obtain independent review
 - [ ] Record the acceptance and review evidence for delivery
 
@@ -40,3 +40,9 @@ Use the integration router, MCP tools and isolated store. Exercise absent and au
 ## Decisions
 
 Infer Codex from the GPT prefix, extending the existing Gemini rule. Keep unrecognized IDs usable where the harness already accepts them. [ADR-0397](../../docs/decisions/0397-gpt-models-imply-codex.md) records the compatibility choice.
+
+## Evidence
+
+- Against dev `56f08db7`, the four Rust regressions in commit `85d941a20` failed. API POST and MCP task_create returned Claude for GPT. Explicit Claude/GPT creation returned 201. The Superagent task_model edit stored GPT and low effort on a Claude task. The browser mock likewise returned Claude and accepted the conflict.
+- With the fix, the nextest selection covering harness_draw, the Superagent model edit, the Codex model edit, and task_delete passed all 18 tests. This includes the Random draw, caller inheritance, explicit auto, aliases and readback after a refused edit.
+- The Codex Chromium file passed all 14 tests, including the new mock regression. These tests exercise task creation and stored settings with isolated fixtures.

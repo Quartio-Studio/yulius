@@ -230,10 +230,12 @@ async fn the_api_chooses_codex_for_gpt_and_preserves_unqualified_aliases() -> Te
 #[tokio::test]
 async fn an_explicit_harness_refuses_a_foreign_model_before_creation() -> TestResult {
     let (h, alice) = world().await?;
-    for (harness, model, required_harness) in [
+    for (harness, model, guidance) in [
         ("claude", "gpt-6.2-astra", "Codex"),
         ("claude", " Gemini-4-neon ", "Antigravity"),
         ("codex", "gemini-4-neon", "Antigravity"),
+        ("codex", "claude-opus-5-5", "OpenAI model"),
+        ("antigravity", "o3", "takes a Gemini model"),
     ] {
         let response = call(
             &h.router, Method::POST, CREATE,
@@ -247,7 +249,7 @@ async fn an_explicit_harness_refuses_a_foreign_model_before_creation() -> TestRe
             response.body
         );
         assert!(
-            response.body.to_string().contains(required_harness),
+            response.body.to_string().contains(guidance),
             "{:?}",
             response.body
         );
