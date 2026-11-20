@@ -3987,6 +3987,7 @@ function saveNote(db, scope, body) {
 }
 
 function loadNote(db, scope) {
+  db.observeNoteLoad?.(scope);
   db.noteLoads = (db.noteLoads || 0) + 1;
   // Each notepad's own loads (`sandbox:<id>`, `team`, `me:<id>`): a resync loads all three.
   db.noteLoadsBy = db.noteLoadsBy || {};

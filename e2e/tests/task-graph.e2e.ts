@@ -193,6 +193,18 @@ test('an open task search keeps its query, selection and focus when its tasks ar
   await expect(selected).toContainText('Show every task matching');
   await expect(query).toBeFocused();
   await expect(query).toHaveValue('Cart');
+
+  // Pick the task, then put another matching task before it in the live results.
+  await browser.keyboard.press('ArrowUp');
+  await expect(selected).toContainText('Cart totals');
+  await browser.evaluate(() => (window as unknown as WithMock).__yuliusMock.touchTask('sb_studio', 12, {
+    title: 'Cart checkout', updated_at: new Date().toISOString(),
+  }));
+  const matches = browser.locator('.spot-item:not(.spot-more)');
+  await expect(matches).toHaveCount(2);
+  await expect(matches.first()).toContainText('Cart checkout');
+  await expect(selected).toContainText('Cart totals');
+  await expect(query).toBeFocused();
 });
 
 test('the task search shows its results, also in Safari (SPEC-500 DLG-003)', async ({ app, browser, screen }) => {

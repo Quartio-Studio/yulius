@@ -24,6 +24,8 @@ type MockNotes = {
     loseNoteResponse: boolean;
     keepaliveRequests: string[];
     noteLoads: number;
+    observeNoteLoad?: (scope: string) => void;
+    sandboxReloadTimes?: number[];
   };
 };
 
@@ -343,24 +345,28 @@ test('a conflict kept over a reload is still a choice after another reload', asy
   }
 });
 
-// #1246, review round 1 of SPEC-493 fix 2: the test counted every notepad's loads, and the Team
-// notepad's opening load, answered late (it is held here until the count starts), failed and
-// retried inside the window: "expected 4 to be less than or equal to 3". It counts the sandbox
-// notepad's loads now.
+// The Team pad's opening read can fail late and retry beside the sandbox's reads (#1246).
+// Observe the gaps between this sandbox's own failed requests.
 test("a failed reload after a teammate's edit backs off", async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio', '&hold=/api/notes'));
   await openNotes(screen);
   await expect(screen.getByRole('status', 'Save state')).toHaveText('Saved');
   await setMock(browser, 'failNoteLoads', true);
-  const before = await sandboxLoads(browser);
-  // The Team notepad's opening load is answered (and fails) only now.
+  await browser.evaluate(() => {
+    const db = (window as unknown as MockNotes).__yuliusMock;
+    const times: number[] = [];
+    db.sandboxReloadTimes = times;
+    db.observeNoteLoad = (scope) => {
+      if (scope === 'sandbox:sb_studio' && times.length < 3) times.push(performance.now());
+    };
+  });
   await browser.evaluate(() => (window as unknown as { __yuliusMock: { release: () => void } }).__yuliusMock.release());
   await editAs(browser, 'sandbox:sb_studio', 'from alice');
-  await browser.evaluate(() => new Promise((resolve) => setTimeout(resolve, 2500)));
-  const tries = await sandboxLoads(browser);
-  expect(tries - before).toBeLessThanOrEqual(3);
-  // It does try again by itself: the load the edit's event asked for, then its first retry 1 s later.
-  await expect.poll(() => sandboxLoads(browser)).toBeGreaterThanOrEqual(before + 2);
+  const reads = () => browser.evaluate(() => (window as unknown as MockNotes).__yuliusMock.sandboxReloadTimes!);
+  await expect.poll(async () => (await reads()).length, { timeout: 10_000 }).toBe(3);
+  const [first, second, third] = await reads();
+  expect(second - first).toBeGreaterThanOrEqual(999);
+  expect(third - second).toBeGreaterThanOrEqual(1999);
   await setMock(browser, 'failNoteLoads', false);
   await loadAgain(screen);
   await expect(screen.getByRole('textbox', 'Sandbox notes')).toHaveValue('from alice');

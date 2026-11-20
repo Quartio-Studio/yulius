@@ -829,12 +829,13 @@ test('a scrolled needs_you list survives task updates and its to-do stays opaque
   expect(colours.own).toBe(colours.bar);
 
   const list = '.attention-bar .needs-you-parts';
+  await expect(browser.locator(list)).toHaveAttribute('tabindex', '0', { timeout: LATE_OBSERVER_MS + 5_000 });
   expect(await browser.evaluate((sel) => {
     const el = document.querySelector(sel) as HTMLElement;
     el.focus();
     el.scrollTop = 40;
-    return [el.getAttribute('tabindex'), el.scrollTop];
-  }, list)).toEqual(['0', 40]);
+    return el.scrollTop;
+  }, list)).toBe(40);
   await browser.evaluate(() => (window as unknown as Touching).__yuliusMock.touchTask('sb_studio', 12, { title: 'Checkout API, renamed' }));
   await expect(browser.locator('.taskview')).toContainText('Checkout API, renamed');
   expect(await browser.evaluate((sel) => {
@@ -847,7 +848,7 @@ test('a scrolled needs_you list survives task updates and its to-do stays opaque
     needs_you: { action: 'Deploy production on the CD page', decision: false, at: new Date().toISOString() }, controlRequest: null,
   }));
   await expect(browser.locator('.attention-bar .needs-you-todo')).toHaveText(/Deploy production/);
-  expect(await browser.evaluate((sel) => document.querySelector(sel)!.hasAttribute('tabindex'), list)).toBe(false);
+  await expect(browser.locator(list)).not.toHaveAttribute('tabindex', '0', { timeout: LATE_OBSERVER_MS + 5_000 });
   expect(await axeViolations(browser)).toEqual([]);
 });
 

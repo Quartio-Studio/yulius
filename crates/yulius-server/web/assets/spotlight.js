@@ -9,10 +9,10 @@ import { IS_MAC } from './shortcuts.js';
 let open = null; // the dialog that is showing, so "/" twice does not stack two
 
 /**
- * Open the search. `search(q)` returns results: { title, sub?, meta?, mark?, onPick, onAlt? }.
+ * Open the search. `search(q)` returns results: { key, title, sub?, meta?, mark?, onPick, onAlt? }.
  * `more(q)` may return one last row (e.g. "Filter the list by …") shown after the results.
  */
-export function openSpotlight({ label, placeholder, search, more, initial = '' }) {
+export function openSpotlight({ label, placeholder, search, more, onClose, initial = '' }) {
   if (open) { open.querySelector('input').select(); return; }
   const returnTo = document.activeElement;
   let results = [];
@@ -34,12 +34,13 @@ export function openSpotlight({ label, placeholder, search, more, initial = '' }
     h('div', { class: 'spot-field' }, icon('search', { size: 20 }), input),
     list, foot, status);
 
-  function render() {
+  function render(selectedKey) {
     const q = input.value.trim();
     results = search(q);
     const last = more ? more(q) : null;
     if (last) results = [...results, { ...last, more: true }];
-    active = Math.min(active, Math.max(0, results.length - 1));
+    const kept = selectedKey === undefined ? -1 : results.findIndex((result) => result.key === selectedKey);
+    active = kept >= 0 ? kept : Math.min(active, Math.max(0, results.length - 1));
     setChildren(list, results.length ? results.map((r, i) => h('li', {
       id: `${id}-${i}`, role: 'option', 'aria-selected': String(i === active), class: ['spot-item', r.more && 'spot-more'],
       onPointermove: () => { if (active !== i) { active = i; mark(); } },
@@ -87,6 +88,7 @@ export function openSpotlight({ label, placeholder, search, more, initial = '' }
   dialog.addEventListener('close', () => {
     dialog.remove();
     open = null;
+    onClose?.();
     if (returnTo && returnTo.isConnected && document.contains(returnTo)) returnTo.focus({ preventScroll: true });
   });
 
@@ -96,5 +98,5 @@ export function openSpotlight({ label, placeholder, search, more, initial = '' }
   dialog.showModal();
   input.focus();
   input.select();
-  return { close };
+  return { close, refresh: () => { if (dialog.open) render(results[active]?.key); } };
 }
