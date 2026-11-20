@@ -833,6 +833,9 @@ test("a held removal refresh completes when the other subscription's invalid ema
   await browser.locator('main .card:has-text("studio@example.com") button:has-text("Remove")').click();
   await screen.getByRole('dialog', 'Remove Claude #5?').getByRole('button', 'Remove').click();
   await expect.poll(() => listReads(browser)).toBe(2);
+  // The newer background read supersedes the removal's read while both are still in flight.
+  await renamedElsewhere(browser, 'Claude #2', 'renamed elsewhere');
+  await expect.poll(() => listReads(browser)).toBe(3);
   await screen.getByRole('button', 'Change the email of Claude spare').click();
   const email = screen.getByRole('textbox', 'Email of Claude spare');
   await expect(email).toBeFocused();
@@ -841,6 +844,7 @@ test("a held removal refresh completes when the other subscription's invalid ema
   await expect(refreshWaits(browser)).toHaveCount(1);
   await browser.locator('main h1').click();
   await expect.poll(async () => (await cards(browser)).map(c => c.name)).not.toContain('Claude #5');
+  expect((await cards(browser)).map(c => c.name)).toContain('renamed elsewhere');
   await expect(email).toBeHidden();
   expect(await sentFor(browser, 'acc_x3')).toBe(0);
 });
