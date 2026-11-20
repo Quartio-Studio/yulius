@@ -14,6 +14,8 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   task-owned failing open PR now publish to the same feature branch and trigger exact-head CI even
   while a verification step remains open ([SPEC-553](../.ai/specs/SPEC-553-publish-committed-ci-repairs-to-open-tas.md),
   [ADR-0391](decisions/0391-publish-committed-ci-repairs-to-open-task-prs.md)).
+- The store migration regression counts SQLite instructions and verifies completed step spans,
+  so host contention cannot fail the backfill test (SPEC-559, #1484).
 - Newly parked tasks show their last agent screen, idle duration and resume instructions
   on the task page and through `task_screen` (SPEC-558, #1490).
 
