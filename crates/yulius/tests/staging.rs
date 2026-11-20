@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 use yulius_app::ci::{CiJobRecord, CiRunRecord};
-use yulius_app::ports::store::{SandboxStore as _, UserStore as _};
+use yulius_app::ports::store::{AuditStore as _, SandboxStore as _, UserStore as _};
 use yulius_app::ports::store_ext::{
     CdStore as _, CiStore as _, StagingChange, StagingRequestRecord, StagingStore as _,
 };
@@ -1480,6 +1480,24 @@ async fn automatic_promotion_never_takes_an_unverified_head() -> TestResult {
         !git_contains(&f, "main", &r1)? && !git_contains(&f, "main", &r2)?,
         "staging verified r1, the head is r2: nothing is promoted"
     );
+    // That is waiting for staging, not a failed promotion (review round 2 of slice 4).
+    let audit = |action: &'static str| {
+        let store = f.h.store.clone();
+        async move {
+            store
+                .audit_of_sandbox("app", &[], &[action], None, None, 10)
+                .await
+        }
+    };
+    let waits = audit("delivery.promote.waiting").await?;
+    assert!(
+        waits.iter().any(|(_, e)| e
+            .detail
+            .as_deref()
+            .is_some_and(|d| d.contains(&format!("staging verified {}", &r1[..12])))),
+        "{waits:?}"
+    );
+    assert!(audit("delivery.promote.failed").await?.is_empty());
     gate(&f, &r2, RunState::Passed).await?;
     ask(&f, "t2").await?;
     settle(&f).await?;

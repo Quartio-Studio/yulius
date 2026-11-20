@@ -5589,17 +5589,27 @@ impl App {
         // Waiting for staging is the expected state of a merge-first project's merge, not a
         // failed promotion (review round 1 of slice 4).
         let head = match self.staging_promotion_head(sandbox).await {
-            Ok(head) => head,
-            Err(err) => {
+            Ok(Ok(head)) => head,
+            Ok(Err(waits)) => {
                 self.dlv_audit(
                     &Self::dlv_policy_actor(Initiator::Policy, actor),
                     "delivery.promote.waiting",
+                    &sandbox.slug,
+                    &waits,
+                )
+                .await;
+                return Some(format!("Automatic promotion waits for staging: {waits}"));
+            }
+            Err(err) => {
+                self.dlv_audit(
+                    &Self::dlv_policy_actor(Initiator::Policy, actor),
+                    "delivery.promote.failed",
                     &sandbox.slug,
                     &err.public_message(),
                 )
                 .await;
                 return Some(format!(
-                    "Automatic promotion waits for staging: {}",
+                    "Automatic promotion did not happen: {}",
                     err.public_message()
                 ));
             }
@@ -5679,7 +5689,10 @@ impl App {
             )
             .await?;
         // With a merge-first target, only the revision staging verified (SPEC-575 MFS-009).
-        let head = self.staging_promotion_head(&sandbox).await?;
+        let head = self
+            .staging_promotion_head(&sandbox)
+            .await?
+            .map_err(AppError::Conflict)?;
         self.dlv_promote_exactly(
             &sandbox,
             &profile,

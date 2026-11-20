@@ -66,10 +66,10 @@ impl App {
         &self,
         sandbox: &SandboxRecord,
         claimed_at: yulius_domain::time::Timestamp,
-    ) -> Option<yulius_domain::ids::TaskId> {
+    ) -> crate::error::AppResult<Option<yulius_domain::ids::TaskId>> {
         // Live and archived tasks alike (an archived one was made all the same).
-        let mut tasks = self.deps.store.tasks(&sandbox.id, false).await.ok()?;
-        tasks.extend(self.deps.store.tasks(&sandbox.id, true).await.ok()?);
+        let mut tasks = self.deps.store.tasks(&sandbox.id, false).await?;
+        tasks.extend(self.deps.store.tasks(&sandbox.id, true).await?);
         tasks.retain(|t| {
             t.origin == TaskOrigin::Automation
                 && t.title == UPGRADE_TITLE
@@ -77,7 +77,7 @@ impl App {
                 && t.created_at >= claimed_at
         });
         tasks.sort_by_key(|t| t.created_at);
-        tasks.into_iter().next().map(|t| t.id)
+        Ok(tasks.into_iter().next().map(|t| t.id))
     }
 
     /// Creates the upgrade task of every onboarded sandbox still below [`BOOTSTRAP_REVISION`]
@@ -150,13 +150,25 @@ impl App {
         };
         // A task made for the claim before a stop (or before a store error that followed its
         // record), not linked yet, is adopted: never made twice.
-        if let Some(made) = self.bootstrap_task_since(sandbox, claim.claimed_at).await {
+        // A failed read ends this start's pass for the sandbox: never read as "nothing made".
+        let Ok(made) = self.bootstrap_task_since(sandbox, claim.claimed_at).await else {
+            return false;
+        };
+        if let Some(made) = made {
             match store
                 .link_bootstrap_task(&sandbox.id, BOOTSTRAP_REVISION, &made)
                 .await
             {
                 Ok(true) => {
-                    tracing::info!(sandbox = %sandbox.slug, task = %made.as_str(), "bootstrap upgrade task adopted")
+                    self.dlv_audit(
+                        "yulius",
+                        "bootstrap.upgrade",
+                        &format!("{} task {}", sandbox.slug, made.as_str()),
+                        &format!(
+                            "Infra bootstrap revision {BOOTSTRAP_REVISION} (adopted after a stop)"
+                        ),
+                    )
+                    .await;
                 }
                 Ok(false) => {}
                 Err(err) => {
