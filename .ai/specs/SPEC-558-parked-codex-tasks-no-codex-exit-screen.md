@@ -37,7 +37,7 @@ Task #517 displayed Codex's exit instructions. The host drained shutdown output 
 - [x] Report the blocking ordinary PR in parked HTTP task details
 - [x] Give parked PRs fair status reads in task lists and Home
 - [x] Return the verified plan snapshot with parked HTTP task rows
-- [ ] Filter and explain verified parked rows in MCP task reads
+- [x] Filter and explain verified parked rows in MCP task reads
 - [ ] Refresh parked page and sidebar status independently of the Git overview
 - [ ] Keep failed integration candidates with their original owner
 - [ ] Deliver bounded Codex goal continuation to dev
@@ -65,6 +65,20 @@ Capture a separate screen at the park decision because exiting can clear the ent
 A human request can take precedence over unfinished work in the task list. Both parking triggers therefore check the recorded plan, spec and native goal immediately before committing to shutdown. The task’s steps lock orders that decision with plan, spec and goal updates. An update in progress or a store read failure leaves the session live for a later pass.
 
 ## Evidence
+
+- The unchanged PR #1542 head `f9c6066cd` failed browser startup in CI runs `9fc67118-5115-4fdc-bac1-17a82b5ed009` and `77f4c481-947a-4168-ae52-2262b1399804`. The first run lost six tests and the second lost four different tests, including the parked-capacity check. All ten retained traces show Chromium losing startup scripts to `net::ERR_NETWORK_CHANGED` on the first open and its immediate recovery reload. Both Rust test shards passed on each run. A Chromium regression for two interrupted entry-script requests timed out at 30 seconds on that head. A preliminary two-recovery patch passed the focused cases, then exhausted three loads in under one second on real host changes. New regressions cover a three-interruption burst, persistent interruption and ordinary failure alongside a network change. The patched harness passed all 12 focused checks. The full browser suite with seven workers passed 1,186 tests with one optional model-backed test skipped.
+
+- The full MCP branch campaign reported `mutants: 185 listed, 68 caught, 12 missed, 0 timed out, 105 unviable, 0 not reached (bound 30 min, took 1648 s)`. Regression assertions subsequently failed on all twelve surviving changes. Three changed the reported reason for confirmed external failure, pending checks, or an unreadable source. In one case the mutated response showed Done despite the unreadable source. The intact external-check fixture passed all three cases. The expanded suite passed 120 scoped tests. Live verification on historical Quartio tasks requires the platform release.
+
+- Independent review approved `ea8f54f43681109f7044f0f0679f468a9c814bea` against dev at `646ce4f1e`. The reviewer independently ran ten MCP tests. All 118 scoped tests passed on the approved revision, as did repository contracts, formatting and Clippy. Vidoc was disabled. Mutation testing of the review fix reported `mutants: 22 listed, 7 caught, 0 missed, 0 timed out, 15 unviable, 0 not reached (bound 30 min, took 709 s)`.
+- The branch mutation tests ran on immutable checkouts. Replaying generated mutations against stronger assertions reproduced a missing plan reason after a browser timeout, Done after a verified hold was dismissed, a missing archived task, an oversized unfiltered page and a check past the final slot of the second filtered window. A separate fixture places four healthy parked rows ahead of two stalled rows. It caught four mutations that changed how much read time remained for the final pair, including both early timeout and exceeding the request budget.
+
+- Independent review of `7a280bd1c` found two regressions. A one-row Needs You search read session capacity for an earlier queued nonmatch. Dismissing a held prompt at `ParkedStatusRead` left the parked row with no reason for its Needs You classification. Both tests failed on that head. The filter now skips rendering ordinary nonmatches, and the historical hold explanation contains no prompt text. The same queued row still gets its capacity explanation when returned in an unfiltered list.
+
+- The MCP snapshot fixture initially returned before parked verification. It now pauses at the actual verified row, opens a step while a newer parked PR holds the page, and covers `task_get`, `all` and `needs_you` with and without a new owner decision. In the first response the plan is the verified empty plan. A displayed decision still changes its group. The subsequent response includes the reopened step. Two more tests initially failed because the structured and text MCP responses omitted PR #1461 beside its ordinary CI failure. After exposing the verified PR on both paths, the scoped application and product test run passed 116 tests. Repository contracts and formatting passed. Clippy passed for the application and product test targets.
+
+- PR #1539 passed Yulius CI run `3ab18c68-a747-45f4-b145-5336d1120f49` at `2f99dc674` and landed on dev at `646ce4f1e`. Quality, both test shards and e2e passed. Security was disabled. [Delivery evidence](https://yulius.quartio.ai/api/tasks/09d643c4-9df9-4abe-9c9c-d0cfe7fdf205/delivery/evidence/646ce4f1ee79b61b08b2bb657b9c3589caa9e32d)
+- On the synced task branch at `68bbc7d29`, eight of nine MCP regressions failed. They covered active rows returned by the archived scope, wait reasons derived from an outdated overview, an ordinary failure on one of two PRs, and direct reads that skipped verification during a title or plan edit.
 
 - Independent review approved the HTTP/Home slice at `238f1c282bcfee9810f8a514d7d3826cfb836380` and reran eight regressions. The supplemental run against the changes since `713178a04` reported `mutants: 165 listed, 40 caught, 0 missed, 0 timed out, 125 unviable, 0 not reached (bound 30 min, took 1276 s)`. Its baseline passed 3,354 selected tests. The reviewer’s test-helper comment was corrected.
 
@@ -166,7 +180,7 @@ A human request can take precedence over unfinished work in the task list. Both 
 
 ## Delivery slices
 
-PRs #1492 and #1493 delivered native Codex resume and the pre-stop screen for new parks. PR #1505 kept sessions with local unfinished work live. PR #1510 verified current ordinary PR checks and unpublished work before parking. PR #1524 delivered the parked predecessor gate. PR #1527 preserved known PR observations across overlapping Git overviews. PR #1533 verified the blocking ordinary PR on individual HTTP detail reads. This slice shares that verification across parked list rows and Home. Remaining deliveries cover MCP filtering and explanations, page refresh, persisted integration failures, bounded Codex goals and pre-upgrade screens.
+PRs #1492 and #1493 delivered native Codex resume and the pre-stop screen for new parks. PR #1505 kept sessions with local unfinished work live. PR #1510 verified current ordinary PR checks and unpublished work before parking. PR #1524 delivered the parked predecessor gate. PR #1527 preserved known PR observations across overlapping Git overviews. PR #1533 verified the blocking ordinary PR on individual HTTP detail reads. PR #1539 shared that verification across parked HTTP task-list rows and Home. This slice filters and explains parked MCP rows. Remaining deliveries cover page refresh, persisted integration failures, bounded Codex goals and pre-upgrade screens.
 
 The native-resume regression checks the rollout in the native launch and reads the first and second user prompts from its on-disk history. It also exercises absent IDs and an older lineage entry. No paid provider is involved.
 

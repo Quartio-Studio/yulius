@@ -12,6 +12,8 @@ use std::path::Path;
 pub enum Point {
     /// A parked read classified the task, before the response renders its plan. Keyed by task ID.
     ParkedStatusRead,
+    /// A queued row reads session capacity to explain its wait. Keyed by task ID.
+    QueuedRowCapacity,
     /// An idle running row reads its pending PR news. Keyed by task ID.
     LiveRowPrNews,
     /// A review starts reading its Git head. Keyed by worktree path.

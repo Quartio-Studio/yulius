@@ -702,7 +702,7 @@ impl App {
         let mut summary = self.task_summary_among(task, project, &steps).await?;
         if let Some(read) = status {
             summary.parked_needs_you = Some(
-                read.needs_you
+                read.facts.needs_you()
                     || summary.spec_unfinished
                     || summary.goal_unfinished
                     || summary.needs_you.is_some()
