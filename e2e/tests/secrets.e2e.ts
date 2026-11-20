@@ -1210,3 +1210,37 @@ test('a member sees an agent’s copy request without Allow copy or Dismiss', as
   await expect(screen.getByRole('button', 'Copy PROD_API_TOKEN for agents as PROD_API_TOKEN_AGENT')).toBeHidden();
   await expect(screen.getByRole('button', 'Dismiss the copy of PROD_API_TOKEN asked for')).toBeHidden();
 });
+
+test('a manager sees why an old interpreter name needs renaming', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/secrets?section=agents'));
+  await expect(screen.getByRole('button', 'Edit STRIPE_KEY')).toBeVisible();
+  await browser.evaluate(() => {
+    const db = (window as any).__yuliusMock;
+    db.vault.agent.find((s: MockSecret) => s.id === 'as_stripe').name = 'PYTHONPATH';
+    db.announceSecrets('sb_studio');
+  });
+  const card = browser.locator('.item-card').filter({ has: screen.getByText('PYTHONPATH', { exact: true }) });
+  await expect(card.getByText(/interpreter setting/)).toBeVisible();
+  await expect(card.getByText(/APP_PYTHONPATH/)).toBeVisible();
+  await screen.getByRole('button', 'Edit PYTHONPATH').click();
+  const edit = screen.getByRole('dialog', 'Edit PYTHONPATH');
+  await screen.getByLabel('Name').fill('APP_PYTHONPATH');
+  await edit.getByRole('button', 'Save').click();
+  await expect(edit).toBeHidden();
+  await expect(screen.getByRole('button', 'Edit APP_PYTHONPATH')).toBeVisible();
+  await expect(screen.getByText(/interpreter setting/)).toBeHidden();
+});
+
+test('the Add agent secret form suggests an available interpreter-safe name', async ({ app, screen }) => {
+  await app.open(mock('/s/studio/secrets?section=agents'));
+  await screen.getByRole('button', 'Add agent secret').first().click();
+  const add = screen.getByRole('dialog', 'Add agent secret');
+  await screen.getByLabel('Name').fill('RUBYOPT');
+  await screen.getByLabel('Value').fill('synthetic-test-value');
+  await add.getByRole('button', 'Add').click();
+  await expect(screen.getByText(/reserved.*APP_RUBYOPT/)).toBeVisible();
+  await screen.getByLabel('Name').fill('APP_RUBYOPT');
+  await add.getByRole('button', 'Add').click();
+  await expect(add).toBeHidden();
+  await expect(screen.getByRole('button', 'Edit APP_RUBYOPT')).toBeVisible();
+});

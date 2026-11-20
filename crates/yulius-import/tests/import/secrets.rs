@@ -1137,3 +1137,21 @@ impl SecretsIo for RacingTerminal<'_> {
         self.inner.ask_hidden(prompt)
     }
 }
+
+#[test]
+fn interpreter_secret_is_refused_in_the_import_plan() -> TestResult {
+    let server = FakeServer::start()?;
+    with_sandbox(&server)?;
+    let mut terminal = Terminal::answering(&["yes"]);
+    let summary = run(
+        &server,
+        "RUBYOPT=synthetic-value-123\nGH_TOKEN=synthetic-token-456\n",
+        &agent("quartio-studio/YULIUS", false),
+        &mut terminal,
+    )??;
+    assert_eq!(summary.invalid, ["RUBYOPT"]);
+    assert_eq!(summary.imported, ["GH_TOKEN"]);
+    assert!(terminal.said.contains("APP_RUBYOPT"));
+    assert_eq!(server.with(|s| s.agent_created.len())?, 1);
+    Ok(())
+}

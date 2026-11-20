@@ -917,6 +917,12 @@ mod tests {
         assert_eq!(out, "token=mine args=auth status");
         let (_, out, _) = run_shim(&exe.to_string_lossy(), true, &[("GITHUB_TOKEN", "theirs")])?;
         assert_eq!(out, "token=none args=auth status");
+        let (_, out, _) = run_shim(
+            &exe.to_string_lossy(),
+            true,
+            &[("GH_TOKEN", "mine"), ("GITHUB_TOKEN", "theirs")],
+        )?;
+        assert_eq!(out, "token=mine args=auth status");
         Ok(())
     }
 
