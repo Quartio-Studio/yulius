@@ -3729,6 +3729,9 @@ which does not restart the holder
 ([decision 0241](decisions/0241-a-full-relay-closes-its-longest-idle-connection-and-the-superagent-restarts-in-place.md)).
 Stopping a holder's host-side `out.sock` relay cancels its accepted connections, closes both
 socket endpoints and releases their places.
+The host-side relay and the opaque CONNECT proxy each keep up to 8 KiB per direction in
+their copy state. Pausing the copy preserves the first unwritten byte and records which
+write halves have closed. [SPEC-577](../.ai/specs/SPEC-577-preserve-opaque-egress-tunnels-across-a.md)
 The proxy also counts each connection's run (agent run, CI job, Superagent shell). When nothing was
 idle for 5 minutes, a full sandbox share takes the oldest connection of its busiest other run, and
 the full proxy that of the busiest sandbox, if it holds at least 2 more than the asker, so one busy
