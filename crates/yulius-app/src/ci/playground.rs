@@ -37,6 +37,40 @@ pub(crate) enum TaskChecks {
 }
 
 impl App {
+    /// The CI reason a playground cannot merge its current head. Only an existing run for
+    /// this head and integration base can hold it. If none exists, the merge action can
+    /// start the first run, while reading delivery never queues or supersedes a run.
+    pub(crate) async fn playground_ci_hold(
+        &self,
+        sandbox: &SandboxRecord,
+        task: &TaskRecord,
+        head: &str,
+    ) -> AppResult<Option<String>> {
+        let profile = delivery_profile(sandbox);
+        if !self.config.ci.enabled || !profile.require_checks {
+            return Ok(None);
+        }
+        let runs = self.deps.store.ci_runs(&sandbox.id, PLAN_RUNS).await?;
+        let Some(run) = self.task_run_of_head(task, &runs, head).await else {
+            return Ok(None);
+        };
+        let verdict = match run.state {
+            RunState::Passed => return Ok(None),
+            RunState::Error => run.reason.as_deref().unwrap_or("could not run the checks"),
+            RunState::Failed | RunState::Cancelled => "merge on green only",
+            RunState::Queued | RunState::Running | RunState::Skipped => {
+                "waiting for checks to pass"
+            }
+        };
+        Ok(Some(format!(
+            "Yulius CI {} for {} merged into `{}` (run {}): {verdict}",
+            run.state.as_str(),
+            short(head),
+            profile.integration_branch,
+            run.id
+        )))
+    }
+
     /// The checks of `task`'s `head` merged into its playground's integration branch as Yulius's
     /// clone has it now: the newest run of the task that tested exactly them, else a new merge
     /// built and queued (older active runs of the task cancelled as superseded). Callers hold the
