@@ -721,6 +721,21 @@ async fn an_unfinished_task_is_not_merged() -> TestResult {
         &["done", "in_progress"],
     )
     .await?;
+    let waiting = call(
+        &h.router,
+        Method::GET,
+        "/api/tasks/t1/delivery",
+        None,
+        &owner,
+    )
+    .await?;
+    assert_eq!(waiting.body["next_actions"], json!([]));
+    assert_eq!(waiting.body["blocked"][0]["action"], "merge");
+    assert!(
+        waiting.body["blocked"][0]["reason"]
+            .as_str()
+            .is_some_and(|reason| reason.contains("Step 1"))
+    );
     let open = merge(&h, &owner, "t1").await?;
     assert_eq!(open.status, StatusCode::CONFLICT, "{:?}", open.body);
     assert!(text(&open).contains("step"), "{:?}", open.body);

@@ -1750,9 +1750,10 @@ async fn cross_sandbox_messages_follow_the_open_questions_recipients() -> TestRe
     Ok(())
 }
 
-/// An approved message still requires control after the request outlives a server restart.
+/// After a handover the message requires the new owner's control, including when their
+/// personal secret reaches the task. A restart preserves the request and rechecks ownership.
 #[tokio::test]
-async fn a_restored_request_checks_the_tasks_current_owner_on_approval() -> TestResult {
+async fn a_message_to_a_task_holding_its_owners_personal_secrets_is_refused() -> TestResult {
     let w = world(100).await?;
     let (id, number) = task_in(
         &w,
@@ -1777,6 +1778,12 @@ async fn a_restored_request_checks_the_tasks_current_owner_on_approval() -> Test
     )
     .await?;
     assert_eq!(taken.status, StatusCode::OK, "{:?}", taken.body);
+    let added = call(
+        &w.h.router, Method::POST, "/api/sandboxes/s2/agent-secrets",
+        Some(json!({"scope":"personal", "name":"BOB_TOKEN", "value":"synthetic-fixture", "hosts":["api.bob.test"], "injection":"bearer"})),
+        &w.bob,
+    ).await?;
+    assert_eq!(added.status, StatusCode::CREATED, "{:?}", added.body);
     let next = App::new(w.h.app.config.clone(), w.h.app.deps.clone());
     next.restore_cross_requests().await;
     let ctx = AuthContext {

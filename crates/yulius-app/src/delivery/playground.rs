@@ -49,6 +49,26 @@ fn conflict_refusal(branch: &str, integration: &str, files: &[String]) -> AppErr
     ))
 }
 
+/// Local prerequisites shared by the delivery view and the squash.
+pub(super) fn merge_hold(observed: &super::Observed) -> Option<String> {
+    if !observed.spec.valid {
+        Some(format!(
+            "the spec is not valid ({}); fix it and commit",
+            observed.spec.problems.join(" ")
+        ))
+    } else if observed.steps.is_empty() && observed.spec.required {
+        Some("the task has no plan: record its steps with `steps_set`".to_owned())
+    } else if let Some(open) = playground_plan_hold(&observed.steps) {
+        Some(open)
+    } else if observed.dirty {
+        Some("the worktree has uncommitted changes: commit them".to_owned())
+    } else if observed.worktree_head.is_none() {
+        Some("the task branch has no commit".to_owned())
+    } else {
+        None
+    }
+}
+
 /// Why a playground task's plan holds its squash, if it does: a playground squashes a task once,
 /// with its whole plan. It has no later delivery of the same task (a merged task's work is not
 /// delivered again here, unlike a pull request's follow-up, SPEC-425), so the finished part of a
@@ -128,19 +148,8 @@ impl App {
         let observed = self.dlv_observe(&sandbox, task, &profile, None).await?;
         let refusal = if past_merge(&observed.record.stage) {
             Some(format!("this task is already merged into `{integration}`"))
-        } else if !observed.spec.valid {
-            Some(format!(
-                "the spec is not valid ({}); fix it and commit",
-                observed.spec.problems.join(" ")
-            ))
-        } else if observed.steps.is_empty() && observed.spec.required {
-            Some("the task has no plan: record its steps with `steps_set`".to_owned())
-        } else if let Some(open) = playground_plan_hold(&observed.steps) {
-            Some(open)
-        } else if observed.dirty {
-            Some("the worktree has uncommitted changes: commit them".to_owned())
         } else {
-            None
+            merge_hold(&observed)
         };
         if let Some(reason) = refusal {
             return Err(AppError::Conflict(format!("not merged: {reason}")));

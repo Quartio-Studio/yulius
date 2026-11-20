@@ -499,43 +499,9 @@ impl App {
                 task.number
             )));
         }
-        // A request that names people is theirs and its owner's (ANS-002).
-        if !crate::tasks::owns(&task, &ctx.user.id) && asked.named.narrows() {
-            let login = self.login_of(&ctx.user.id).await.to_lowercase();
-            if asked.named.withdrawn.contains(&login) {
-                return Err(AppError::Forbidden(format!(
-                    "@{owner} withdrew you from task #{}'s question: only they{} answer it now",
-                    task.number,
-                    names(&asked.named.who, " and ")
-                )));
-            }
-            if !asked.named.who.contains(&login) {
-                return Err(AppError::Forbidden(format!(
-                    "task #{} asks @{owner}{}, not you: its question is theirs to answer",
-                    task.number,
-                    names(&asked.named.who, " and ")
-                )));
-            }
-        }
-        // A permission menu or a question in the terminal is answered with keys the paste would
-        // press unseen (NYA-004).
-        if task.activity == Some(Activity::NeedsAttention) {
-            return Err(AppError::Conflict(format!(
-                "task #{}'s agent asks in its terminal now: @{owner} answers there, or take \
-                 control of the task",
-                task.number
-            )));
-        }
         let mine = crate::tasks::owns(&task, &ctx.user.id);
-        // The owner's personal secrets and MCP servers act as them outside GitHub: another
-        // person's words never drive them (as for `task_message`, SPEC-245, SPEC-332).
-        if !mine && self.reaches_owners_personal(&task).await? {
-            return Err(AppError::Conflict(format!(
-                "task #{} holds @{owner}'s personal secrets or MCP servers, so only @{owner} \
-                 answers it; or take control of the task",
-                task.number
-            )));
-        }
+        self.check_answer_authority(ctx, &task, &asked.named, &owner, mine)
+            .await?;
         let login = self.login_of(&ctx.user.id).await;
         if parked {
             // Resumed in its own session with the answer as its first prompt, as a message to a
@@ -587,6 +553,54 @@ impl App {
             .await?
             .ok_or(AppError::NotFound)?;
         self.task_summary(&task).await
+    }
+
+    /// Checks whether this person may answer the question the task is asking now.
+    pub(crate) async fn check_answer_authority(
+        &self,
+        ctx: &AuthContext,
+        task: &TaskRecord,
+        named: &crate::needs_you::Named,
+        owner: &str,
+        mine: bool,
+    ) -> AppResult<()> {
+        // A request that names people is theirs and its owner's (ANS-002).
+        if !mine && named.narrows() {
+            let login = self.login_of(&ctx.user.id).await.to_lowercase();
+            if named.withdrawn.contains(&login) {
+                return Err(AppError::Forbidden(format!(
+                    "@{owner} withdrew you from task #{}'s question: only they{} answer it now",
+                    task.number,
+                    names(&named.who, " and ")
+                )));
+            }
+            if !named.who.contains(&login) {
+                return Err(AppError::Forbidden(format!(
+                    "task #{} asks @{owner}{}, not you: its question is theirs to answer",
+                    task.number,
+                    names(&named.who, " and ")
+                )));
+            }
+        }
+        // A permission menu or a question in the terminal is answered with keys the paste would
+        // press unseen (NYA-004).
+        if task.activity == Some(Activity::NeedsAttention) {
+            return Err(AppError::Conflict(format!(
+                "task #{}'s agent asks in its terminal now: @{owner} answers there, or take \
+                 control of the task",
+                task.number
+            )));
+        }
+        // The owner's personal secrets and MCP servers act as them outside GitHub: another
+        // person's words never drive them (as for `task_message`, SPEC-245, SPEC-332).
+        if !mine && self.reaches_owners_personal(task).await? {
+            return Err(AppError::Conflict(format!(
+                "task #{} holds @{owner}'s personal secrets or MCP servers, so only @{owner} \
+                 answers it; or take control of the task",
+                task.number
+            )));
+        }
+        Ok(())
     }
 
     /// Whether the owner's personal agent secrets (switched on for the task's project) or

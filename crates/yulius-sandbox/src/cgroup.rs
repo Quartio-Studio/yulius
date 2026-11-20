@@ -698,7 +698,7 @@ impl Delegation {
 
     /// What `sandbox`'s CI jobs and Docker engine use now ([`CiUse`]): its `ci` and `engine`
     /// groups' figures added up (hierarchical, so the engine's containers count). `None` without
-    /// the `cpu` controller (the leaves are not split then) or when neither group can be read.
+    /// the `cpu` controller (the leaves are not split then) or when a complete sample cannot be read.
     #[must_use]
     pub fn ci_use(&self, sandbox: &str) -> Option<CiUse> {
         if !self.controllers.iter().any(|c| c == "cpu") {
@@ -707,8 +707,15 @@ impl Delegation {
         let groups = self.sandbox_paths(sandbox);
         let mut used = None;
         for group in [&groups.ci, &groups.engine] {
-            let Ok(cpu) = std::fs::read_to_string(group.join("cpu.stat")) else {
-                continue;
+            let cpu = match std::fs::read_to_string(group.join("cpu.stat")) {
+                Ok(cpu) => cpu,
+                Err(err)
+                    if err.kind() == io::ErrorKind::NotFound
+                        && group.try_exists().ok() == Some(false) =>
+                {
+                    continue;
+                }
+                Err(_) => return None,
             };
             let anon = std::fs::read_to_string(group.join("memory.stat"))
                 .map_or(0, |text| keyed(&text, "anon"));

@@ -785,6 +785,27 @@ impl App {
         } else {
             let there = pinned(caller, &target);
             let task = self.agent_task_ref(&there, &task_args).await?;
+            let named = Named::of(&task);
+            if matches!(action, CrossAction::Update | CrossAction::Message)
+                && !crate::tasks::owns(&task, &user.id)
+            {
+                let ctx = self.manage_context(&there).await?;
+                let authority = if action == CrossAction::Message
+                    && matches!(task.status, TaskStatus::Running | TaskStatus::Parked)
+                    && let Some(asked) = self.deps.store.task_needs_you(&task.id).await?
+                {
+                    let owner = self.login_of(&task.owner).await;
+                    self.check_answer_authority(&ctx, &task, &asked.named, &owner, false)
+                        .await
+                } else {
+                    self.require_control(&ctx, &task).await
+                };
+                if let Err(error) = authority {
+                    self.audit_cross(caller, &target, action, Some(&named), "failed")
+                        .await;
+                    return Err(error);
+                }
+            }
             // The approval acts on the task the card names, by its id.
             if let Some(map) = task_args.as_object_mut() {
                 map.remove("number");
@@ -793,7 +814,7 @@ impl App {
             if action == CrossAction::Update {
                 starts_now = self.checked_update(&there, &task, &mut task_args).await?;
             }
-            Some(Named::of(&task))
+            Some(named)
         };
         let id = self.deps.crypto.new_id();
         let wait = Duration::from_millis(self.config.cross_request_wait_ms);

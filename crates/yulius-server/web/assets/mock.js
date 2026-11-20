@@ -648,7 +648,13 @@ function delivery(db, task) {
   const next = [];
   const blocked = [];
   const pos = position(profile, state.stage, state.environment);
-  if (pos.kind === 'no_pr') {
+  if (sandbox.playground) {
+    if (state.stage === 'none') {
+      const reason = !task.branch ? 'the task has no branch yet' : problems.length ? problems[0] : stepsOpen ? `${stepsOpen} plan steps are still open` : null;
+      if (reason) blocked.push({ action: 'merge', reason });
+      else next.push('merge');
+    }
+  } else if (pos.kind === 'no_pr') {
     if (task.branch === null) blocked.push({ action: 'open_pr', reason: 'the task has no branch yet' });
     else if (problems.length) blocked.push({ action: 'open_pr', reason: `the task spec is not valid: ${problems[0]}` });
     else next.push('open_pr');
