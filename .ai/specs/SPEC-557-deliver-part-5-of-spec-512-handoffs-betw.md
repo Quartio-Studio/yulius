@@ -79,7 +79,7 @@ On this branch (2026-11-20):
 | Check | Result |
 |---|---|
 | `git fetch origin feat/494-…` and `git merge --no-edit a8c6d4a80` from `dev` 225bf38fc | fast-forward, nothing resolved; 41 files against `dev` (part 5 and its SPEC-512 Evidence), then this spec |
-| Migration order | `MIGRATIONS` ends with 0075 (schema version 75) and 0076 (76); pinned test `(76, 0076)`, `MIGRATIONS.len() == 76`; numbers unique (`check_repository.py`) |
+| Migration order | `MIGRATIONS` ends with 0075 (schema version 74), 0073 (75) and 0076 (76); pinned test `(76, 0076)`, `MIGRATIONS.len() == 76`; numbers unique (`check_repository.py`) |
 | `cargo test -p yulius --test main -- handoffs:: parking::a_handed_off_tasks_outcome_reaches_its_source telegram::` | 44 passed (8 `handoffs::`, 1 `parking::`, 35 `telegram::`) |
 | `cargo test -p yulius-store --lib` | 100 passed, 1 failed: `tests::a_large_step_history_backfills_quickly` ("the migration took 10.8s", host load average 65); alone it passed in 0.49 s. A known load flake on `dev`, tracked by #1484, outside this change |
 | `cargo test -p yulius-app --lib handoffs::` | 2 passed |
