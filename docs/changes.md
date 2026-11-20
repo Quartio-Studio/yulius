@@ -6,6 +6,8 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-20
 
+- The Linux tunnel custodian enforces each socket pair’s original lifetime during receipt, waiting and delivery. Expired TCP pairs release their peers while the successor receives the live remainder. [SPEC-577](../.ai/specs/SPEC-577-preserve-opaque-egress-tunnels-across-a.md)
+
 - Merge-first staging target: a task's `cd_deploy` now queues a staging request for the task's
   merged revision instead of deploying the branch head.
   - Yulius runs the full gate on exactly that commit, then deploys and verifies revisions in
