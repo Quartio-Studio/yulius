@@ -20,8 +20,22 @@ use crate::delivery::MergeFailure;
 use crate::error::AppResult;
 use crate::model::TaskRecord;
 
-/// Identifies the queue's wait for the PR head's own run in its displayed note.
-pub(crate) const OWN_RUN_WAIT: &str = "waits for its own Yulius CI run at";
+/// A merge queue decision as it applies to this member. A successful head supersedes a
+/// decision that was waiting for its own run, including a request to retry an errored run.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct QueueNote {
+    pub(crate) text: String,
+    pub(crate) awaits_own_run: bool,
+}
+
+impl QueueNote {
+    pub(crate) fn current(text: String) -> Self {
+        Self {
+            text,
+            awaits_own_run: false,
+        }
+    }
+}
 
 /// How often a waiting request reads the state again.
 const WAIT_POLL: Duration = Duration::from_secs(2);
@@ -106,9 +120,9 @@ pub(crate) struct ArmedSlot {
     generation: u64,
     /// Where the armed merge stands, in one sentence, as its last decision left it (SPEC-441
     /// MQ-007).
-    note: Option<String>,
+    note: Option<QueueNote>,
     /// The sentence the decision in progress wrote, kept by [`Self::finish`] for its generation.
-    pending_note: Option<String>,
+    pending_note: Option<QueueNote>,
 }
 
 /// A decision in progress: the merge taken out of the slot, and the generation it was armed in.
@@ -184,7 +198,7 @@ impl ArmedSlot {
 
     /// Whether a merge is armed (counting one being decided), how the last one ended, and where
     /// an armed one stands.
-    fn view(&self) -> (bool, Option<MergeOutcome>, Option<String>) {
+    fn view(&self) -> (bool, Option<MergeOutcome>, Option<QueueNote>) {
         let armed = self.merge.is_some() || self.deciding > 0;
         (
             armed,
@@ -462,7 +476,7 @@ impl App {
 
     /// Where `task`'s armed merge stands (SPEC-441 MQ-007): its merge train's note, else the
     /// sentence its last decision left; `None` when nothing is armed.
-    pub(crate) fn merge_queue_note(&self, task: &TaskRecord) -> Option<String> {
+    pub(crate) fn merge_queue_note(&self, task: &TaskRecord) -> Option<QueueNote> {
         let (armed, _, note) = lock_slot(&self.runtime(&task.id)).view();
         armed.then(|| self.train_note(task).or(note)).flatten()
     }
@@ -470,7 +484,7 @@ impl App {
     /// Records where `task`'s armed merge stands, for the decision in progress (SPEC-441
     /// MQ-007): kept when that decision keeps the merge armed.
     fn note_armed(&self, task: &TaskId, text: String) {
-        lock_slot(&self.runtime(task)).pending_note = Some(text);
+        lock_slot(&self.runtime(task)).pending_note = Some(QueueNote::current(text));
     }
 
     /// The fast pass (SPEC-441 MQ-008): a merge pass over each sandbox with an armed merge that
@@ -891,14 +905,17 @@ impl App {
                 )
             } else {
                 format!(
-                    "Pull request #{} {OWN_RUN_WAIT} {} ({checks}). Yulius \
+                    "Pull request #{} waits for its own Yulius CI run at {} ({checks}). Yulius \
                      never restarts it when `{integration}` moves; once it passes, Yulius merges \
                      the pull request, or first tests it on top of the current `{integration}`.",
                     pr.number,
                     short(&armed.head)
                 )
             };
-            self.note_armed(&task.id, note);
+            lock_slot(&self.runtime(&task.id)).pending_note = Some(QueueNote {
+                text: note,
+                awaits_own_run: true,
+            });
             return Verdict::Keep(armed);
         }
         // Green but behind its base: the next merge candidate tests it on top of the base
@@ -1353,7 +1370,7 @@ impl App {
             merge_outcome: outcome.map(|o| o.text),
             push_problem,
             merge_train: if merge_armed {
-                self.train_note(task).or(note)
+                self.train_note(task).or(note).map(|note| note.text)
             } else {
                 None
             },
@@ -1616,22 +1633,25 @@ mod tests {
         let mut slot = ArmedSlot::default();
         slot.arm(merge("aaa"));
         let deciding = slot.take().ok_or("armed")?;
-        slot.pending_note = Some("waits for its own run".to_owned());
+        slot.pending_note = Some(QueueNote::current("waits for its own run".to_owned()));
         slot.finish(&deciding, Verdict::Keep(merge("aaa")));
-        assert_eq!(slot.view().2.as_deref(), Some("waits for its own run"));
+        assert_eq!(
+            slot.view().2.map(|note| note.text).as_deref(),
+            Some("waits for its own run")
+        );
         // The next decision writes nothing: the old sentence is not kept.
         let deciding = slot.take().ok_or("armed")?;
         slot.finish(&deciding, Verdict::Keep(merge("aaa")));
         assert_eq!(slot.view().2, None);
 
         let deciding = slot.take().ok_or("armed")?;
-        slot.pending_note = Some("in a candidate".to_owned());
+        slot.pending_note = Some(QueueNote::current("in a candidate".to_owned()));
         slot.finish(&deciding, Verdict::Decided("merged".to_owned()));
         assert_eq!(slot.view().2, None, "decided");
 
         slot.arm(merge("bbb"));
         let deciding = slot.take().ok_or("armed")?;
-        slot.pending_note = Some("stale".to_owned());
+        slot.pending_note = Some(QueueNote::current("stale".to_owned()));
         slot.arm(merge("ccc"));
         slot.finish(&deciding, Verdict::Keep(merge("bbb")));
         assert_eq!(slot.view().2, None, "superseded");

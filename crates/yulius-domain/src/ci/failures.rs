@@ -137,6 +137,7 @@ impl FailureScanner {
         match line {
             "successes:" => self.successes = true,
             "failures:" => self.successes = false,
+            summary if summary.starts_with("test result:") => self.successes = false,
             _ => {}
         }
         if let Some(block) = &mut self.block {
@@ -162,8 +163,12 @@ impl FailureScanner {
         }
         // The browser runner lists each failed case in its final summary. The header alone
         // identifies it, even when the rest of the log falls out of the output ring.
-        if browser_failure(line).is_some() {
-            self.keep(&format!("{}\n\n", line.trim()));
+        if !self.successes
+            && let Some((file, title)) = browser_failure(line)
+        {
+            // Use the existing stored stdout header format. A raw browser FAIL line inside
+            // a Rust test's output stays ordinary output when the watch reads the blocks.
+            self.keep(&format!("---- {file} › {title} stdout ----\n\n"));
             return;
         }
         let libtest = !self.successes && libtest_header(line).is_some();
@@ -226,16 +231,11 @@ pub fn failed_test_names(kept: &str) -> Vec<String> {
         if !header {
             continue;
         }
-        let name = libtest_header(line)
-            .or_else(|| kept_nextest_name(line))
-            .map(str::trim)
-            .filter(|name| !name.is_empty())
-            .map(str::to_owned)
-            .or_else(|| browser_failure(line).map(|(file, title)| format!("{file} › {title}")));
-        if let Some(name) = name
-            && !names.contains(&name)
+        let name = libtest_header(line).or_else(|| kept_nextest_name(line));
+        if let Some(name) = name.map(str::trim).filter(|n| !n.is_empty())
+            && !names.iter().any(|known| known == name)
         {
-            names.push(name);
+            names.push(name.to_owned());
         }
     }
     names
@@ -266,7 +266,7 @@ pub fn omitted_tests(kept: &str) -> usize {
 }
 
 /// The e2e runner's uncolored summary (CI sets NO_COLOR). Allow its single leading space,
-/// or the trimmed header kept by the scanner, but never an indented test's own output.
+/// or the header at the margin, but never an indented test's own output.
 fn browser_failure(line: &str) -> Option<(&str, &str)> {
     let summary = line
         .strip_prefix(' ')

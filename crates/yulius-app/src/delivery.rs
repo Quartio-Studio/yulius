@@ -1987,7 +1987,7 @@ impl App {
             .await?;
         // Where an armed merge stands, and what a merge counts as (SPEC-441 MQ-007, MQ-009).
         if let Some(note) = self.merge_queue_note(task) {
-            notes.push(note);
+            notes.push(note.text);
         }
         if let Some(pull) = observed.pr.as_ref().filter(|pull| pull.merged) {
             notes.push(crate::agent_wait::merged_text(
