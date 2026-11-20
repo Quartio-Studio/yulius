@@ -233,3 +233,10 @@ without adoption support or a remote peer that times out can end a tunnel.
   a per-pair monotonic deadline. The collector, sender, helper and receiver all enforce it.
   An expired pair closes both peers, surviving records retain admission order, and the last
   expiry releases the waiting helper's listener and directory lock.
+- At `c0d3b617f` the direct two-server case passed with a 20 KiB CONNECT header and 96 KiB
+  of synthetic early payload. Its peer read only the first marker before the old server exited,
+  then checked the entire payload and half-close after replacement. All 903 domain, egress and
+  sandbox unit/integration tests passed (two environment tests ignored), as did targeted
+  Clippy. The first mutation run exposed missing checks for cold-start diagnostics and reuse of
+  an existing private handoff directory. The process fixtures now exercise both conditions and
+  a bad handoff directory at startup.

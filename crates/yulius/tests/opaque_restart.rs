@@ -1,5 +1,6 @@
 //! SPEC-577. Keep the original peers while two real server processes use the same private data.
 use std::net::{Ipv4Addr, SocketAddr};
+use std::os::unix::fs::DirBuilderExt as _;
 use std::path::Path;
 use std::process::Stdio;
 use std::time::Duration;
@@ -26,7 +27,8 @@ async fn start(data: &Path, internal: SocketAddr) -> Result<Child, Error> {
         .env("HOME", data)
         .env("PATH", "/usr/bin:/bin")
         .stdin(Stdio::null())
-        .stdout(Stdio::null())
+        .env("RUST_LOG", "warn")
+        .stdout(std::fs::File::create(data.join("fixture-serve.log"))?)
         .kill_on_drop(true)
         .spawn()?;
     let health = format!("http://{internal}/internal/healthz");
@@ -83,6 +85,10 @@ async fn established_direct_connect_carries_queued_and_fresh_bytes_across_server
         let dir = tempfile::tempdir()?;
         let mut first = start(dir.path(), internal).await?;
         let first_pid = first.id();
+        assert!(!std::fs::read_to_string(dir.path().join("fixture-serve.log"))?
+            .contains("cannot adopt opaque tunnels"), "an ordinary cold start is quiet");
+        // A previous successful handoff leaves its private service directory in place.
+        std::fs::DirBuilder::new().mode(0o700).create(dir.path().join("tunnel-handoff"))?;
         seed(dir.path())?;
         let mut client = BufReader::new(TcpStream::connect(internal).await?);
         let auth = base64::engine::general_purpose::STANDARD.encode(format!("fixture:{TOKEN}"));
@@ -126,4 +132,24 @@ async fn established_direct_connect_carries_queued_and_fresh_bytes_across_server
         assert_eq!(client.read(&mut [0]).await?, 0);
         stop(&mut next).await
     }).await?
+}
+
+#[tokio::test]
+async fn an_invalid_handoff_directory_reports_the_kind_and_still_serves() -> Result<(), Error> {
+    tokio::time::timeout(Duration::from_secs(15), async {
+        let dir = tempfile::tempdir()?;
+        std::fs::write(dir.path().join("tunnel-handoff"), b"synthetic fixture")?;
+        let addr = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+            .await?
+            .local_addr()?;
+        let mut server = start(dir.path(), addr).await?;
+        stop(&mut server).await?;
+        let warnings = std::fs::read_to_string(dir.path().join("fixture-serve.log"))?;
+        assert!(
+            warnings.contains("cannot adopt opaque tunnels")
+                && warnings.contains("PermissionDenied")
+        );
+        Ok(())
+    })
+    .await?
 }
