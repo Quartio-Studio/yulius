@@ -100,8 +100,51 @@ const DIRTY_WORKTREE: &str = "the task worktree has uncommitted changes; commit 
 /// A parked PR watcher can finish pending checks. A chained task needs the result.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PrVerification {
-    Parking,
-    ParkedPredecessor,
+    WatchPending,
+    Settled,
+    Display,
+}
+
+impl PrVerification {
+    /// Only parking can hand an active ordinary CI run to the parked PR watcher.
+    fn watches_pending(self, ci_enabled: bool) -> bool {
+        self == Self::WatchPending && ci_enabled
+    }
+}
+
+/// Identity to show even when the checks are unfinished or unreadable.
+#[derive(Default)]
+pub(crate) struct ParkedPullRead {
+    pub(crate) pr: Option<yulius_contracts::api::tasks::ParkedPr>,
+}
+
+impl ParkedPullRead {
+    fn note_open_branch(&mut self, branch: &[GhPull]) {
+        if let Some(pull) = branch.last() {
+            self.pr = Some(yulius_contracts::api::tasks::ParkedPr {
+                number: pull.number,
+                open: true,
+            });
+        }
+    }
+
+    fn note_closed(&mut self, pull: &GhPull) {
+        if !is_open(pull)
+            && let Some(pr) = self.pr.as_mut().filter(|pr| pr.number == pull.number)
+        {
+            pr.open = false;
+        }
+    }
+
+    pub(crate) fn recorded(record: Option<&DeliveryRecord>) -> Self {
+        let pr = record.and_then(|r| {
+            let open = r.stage == DeliveryStage::PrOpen;
+            r.pr_number
+                .filter(|_| open || past_merge(&r.stage))
+                .map(|number| yulius_contracts::api::tasks::ParkedPr { number, open })
+        });
+        Self { pr }
+    }
 }
 
 #[derive(Default)]
@@ -633,6 +676,16 @@ impl App {
         sha: &str,
     ) -> AppResult<HeadChecks> {
         let gate = self.ci_gate_result(sandbox, sha).await;
+        self.checks_with_gate(sandbox, token, sha, gate).await
+    }
+
+    async fn checks_with_gate(
+        &self,
+        sandbox: &SandboxRecord,
+        token: &Secret,
+        sha: &str,
+        gate: yulius_domain::ci::GateResult,
+    ) -> AppResult<HeadChecks> {
         if let Some(word) = ci_checks_word(gate) {
             return Ok(HeadChecks {
                 state: yulius_domain::ci::gate_checks(ChecksState::None, gate),
@@ -3860,29 +3913,6 @@ impl App {
         }
     }
 
-    /// The checked-out task commit. A different checkout has no task branch commit to publish.
-    async fn parking_checkout(&self, task: &TaskRecord) -> AppResult<Option<String>> {
-        let (Some(path), Some(branch)) = (&task.worktree_path, &task.branch) else {
-            return Ok(None);
-        };
-        let path = std::fs::canonicalize(path).map_err(AppError::internal)?;
-        let trees = self.deps.git.worktrees(&path).await?;
-        let tree = trees
-            .iter()
-            .find(|tree| tree.path == path)
-            .ok_or_else(|| AppError::internal("task checkout missing from registered worktrees"))?;
-        if tree.branch.as_ref() != Some(branch) {
-            return Ok(None);
-        }
-        let head = self
-            .deps
-            .git
-            .resolve_commit(&path, "HEAD")
-            .await?
-            .ok_or_else(|| AppError::internal("unreadable task checkout HEAD"))?;
-        Ok(Some(head))
-    }
-
     /// Validate the Git facts again after remote lookups and the host probe.
     pub(crate) async fn parking_prs_still_current(
         &self,
@@ -3890,7 +3920,7 @@ impl App {
         facts: &ParkingPrs,
     ) -> AppResult<bool> {
         Ok(self.parking_checkout_matches(task, facts).await?
-            && self.parking_ci_still_current(task, facts).await?)
+            && self.parking_ci_blocker(task, facts).await?.is_none())
     }
 
     async fn parking_checkout_matches(
@@ -3898,52 +3928,69 @@ impl App {
         task: &TaskRecord,
         facts: &ParkingPrs,
     ) -> AppResult<bool> {
-        Ok(facts.pulls.is_empty() || self.parking_checkout(task).await? == facts.checkout)
+        Ok(facts.pulls.is_empty()
+            || self
+                .verification_checkout(task, PrVerification::WatchPending)
+                .await?
+                == facts.checkout)
     }
 
-    async fn parking_ci_still_current(
+    async fn parking_ci_blocker(
         &self,
         task: &TaskRecord,
         facts: &ParkingPrs,
-    ) -> AppResult<bool> {
-        use yulius_domain::ci::RunState;
+    ) -> AppResult<Option<u64>> {
         for (number, head) in &facts.pulls {
-            let runs = self
-                .deps
-                .store
-                .ci_runs_for_sha(&task.sandbox_id, head)
-                .await?;
-            let Some(own) = runs
-                .iter()
-                .find(|run| run.reference == yulius_domain::ci::CiRef::PullRequest(*number))
-            else {
-                continue;
-            };
-            if matches!(
-                own.state,
-                RunState::Failed | RunState::Error | RunState::Cancelled
-            ) {
-                return Ok(false);
-            }
-            if own.state.is_active() {
-                if facts.watched != Some(*number) || !self.config.ci.enabled {
-                    return Ok(false);
-                }
-                let recent = self
-                    .deps
-                    .store
-                    .ci_runs(&task.sandbox_id, crate::pr_watch::RUNS_READ)
-                    .await?;
-                if recent
-                    .iter()
-                    .find(|r| r.reference == own.reference)
-                    .is_none_or(|r| r.id != own.id || !r.state.is_active())
-                {
-                    return Ok(false);
-                }
+            if self
+                .parking_ci_blocks(task, *number, head, facts.watched)
+                .await?
+            {
+                return Ok(Some(*number));
             }
         }
-        Ok(true)
+        Ok(None)
+    }
+
+    async fn parking_ci_blocks(
+        &self,
+        task: &TaskRecord,
+        number: u64,
+        head: &str,
+        watched: Option<u64>,
+    ) -> AppResult<bool> {
+        use yulius_domain::ci::{CiRef, RunState};
+        let runs = self
+            .deps
+            .store
+            .ci_runs_for_sha(&task.sandbox_id, head)
+            .await?;
+        let Some(own) = runs
+            .iter()
+            .find(|run| run.reference == CiRef::PullRequest(number))
+        else {
+            return Ok(false);
+        };
+        match own.state {
+            RunState::Failed | RunState::Error | RunState::Cancelled => Ok(true),
+            RunState::Queued | RunState::Running => {
+                if watched == Some(number) && self.config.ci.enabled {
+                    let recent = self
+                        .deps
+                        .store
+                        .ci_runs(&task.sandbox_id, crate::pr_watch::RUNS_READ)
+                        .await?;
+                    if recent
+                        .iter()
+                        .find(|run| run.reference == own.reference)
+                        .is_some_and(|run| run.id == own.id && run.state.is_active())
+                    {
+                        return Ok(false);
+                    }
+                }
+                Ok(true)
+            }
+            RunState::Passed | RunState::Skipped => Ok(false),
+        }
     }
 
     /// Whether the task's worktree head carries work its merged pull request (`record`) did not
@@ -4091,6 +4138,68 @@ impl App {
         record: Option<&DeliveryRecord>,
         purpose: PrVerification,
     ) -> AppResult<Option<ParkingPrs>> {
+        let mut observed = ParkedPullRead::recorded(record);
+        self.verify_task_prs(task, record, purpose, &mut observed)
+            .await
+    }
+
+    pub(crate) fn known_parked_pull(
+        &self,
+        task: &TaskRecord,
+        record: Option<&DeliveryRecord>,
+    ) -> ParkedPullRead {
+        let mut observed = ParkedPullRead::recorded(record);
+        let merged = observed.pr.filter(|pr| !pr.open).map(|pr| pr.number);
+        // Keep the owner's known PR when installation or branch discovery fails.
+        let known = self
+            .observed_pulls
+            .known_pull(&task.sandbox_id, &task.id)
+            .flatten()
+            .filter(|pr| pr.open() && Some(pr.number) != merged);
+        if let Some(pr) = known {
+            observed.pr = Some(yulius_contracts::api::tasks::ParkedPr {
+                number: pr.number,
+                open: true,
+            });
+        }
+        observed
+    }
+
+    /// List reads can be cancelled while Git is still running. Release their
+    /// permit only when the dispatched Git work has returned.
+    async fn verification_git<
+        T: Send + 'static,
+        F: std::future::Future<Output = AppResult<T>> + Send + 'static,
+    >(
+        &self,
+        purpose: PrVerification,
+        read: impl FnOnce(Arc<App>) -> F + Send + 'static,
+    ) -> AppResult<T> {
+        let app = self.parked_git_app.upgrade().ok_or(AppError::NotFound)?;
+        if purpose != PrVerification::Display {
+            return read(app).await;
+        }
+        let permit = self
+            .parked_git
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(AppError::internal)?;
+        tokio::spawn(async move {
+            let _permit = permit;
+            read(app).await
+        })
+        .await
+        .map_err(AppError::internal)?
+    }
+
+    pub(crate) async fn verify_task_prs(
+        &self,
+        task: &TaskRecord,
+        record: Option<&DeliveryRecord>,
+        purpose: PrVerification,
+        observed: &mut ParkedPullRead,
+    ) -> AppResult<Option<ParkingPrs>> {
         let tracked = record
             .filter(|r| r.stage == DeliveryStage::PrOpen)
             .map(|r| {
@@ -4102,8 +4211,11 @@ impl App {
         let sandbox = self.dlv_sandbox_of(task).await?;
         // A playground or an instance with no GitHub App can still park an answered task.
         // A known open PR requires verification, even when its installation is unavailable.
+        let merged = record
+            .filter(|r| past_merge(&r.stage))
+            .and_then(|r| r.pr_number);
         if sandbox.is_playground() || !self.github_configured().await? {
-            return Ok(tracked.is_none().then(ParkingPrs::default));
+            return Ok((observed.pr.is_none_or(|pr| !pr.open)).then(ParkingPrs::default));
         }
         let token = self.dlv_installation_token(&sandbox).await?;
         let branch_pulls = || async {
@@ -4120,14 +4232,21 @@ impl App {
                     Some(branch),
                 )
                 .await?;
-            pulls.retain(|pull| !pull.from_fork && pull.head == branch && is_open(pull));
+            pulls.retain(|pull| {
+                !pull.from_fork
+                    && pull.head == branch
+                    && is_open(pull)
+                    && Some(pull.number) != merged
+            });
             pulls.sort_unstable_by_key(|pull| pull.number);
             Ok::<_, AppError>(pulls)
         };
         // Branch-scoped discovery also finds PRs omitted by a partial sandbox overview
         // and new PRs opened externally while an older recorded delivery is being reconciled.
-        let watched = tracked.filter(|_| purpose == PrVerification::Parking);
+        let watched = tracked.filter(|_| purpose.watches_pending(self.config.ci.enabled));
         let branch = branch_pulls().await?;
+        *observed = ParkedPullRead::recorded(record);
+        observed.note_open_branch(&branch);
         if branch.len() > MAX_PULLS {
             return Ok(None);
         }
@@ -4136,46 +4255,159 @@ impl App {
         if numbers.is_empty() {
             return Ok(Some(ParkingPrs::default()));
         }
-        let checkout = self.parking_checkout(task).await?;
+        let checkout = self.verification_checkout(task, purpose).await?;
         let mut pulls = Vec::new();
+        let mut verified = true;
+        let mut closed = std::collections::BTreeSet::new();
         for number in numbers {
-            if record.is_some_and(|r| past_merge(&r.stage) && r.pr_number == Some(number)) {
-                continue;
+            let checks = if purpose == PrVerification::WatchPending && watched != Some(number) {
+                PrVerification::Settled
+            } else {
+                purpose
+            };
+            let pull = self
+                .pull_allows_parking(task, &sandbox, &token, number, checks, observed)
+                .await?;
+            if observed
+                .pr
+                .is_some_and(|pr| !pr.open && pr.number == number)
+            {
+                closed.insert(number);
             }
-            let Some(pull) = self
-                .pull_allows_parking(task, &sandbox, &token, number, watched == Some(number))
-                .await?
-            else {
-                return Ok(None);
+            let Some(pull) = pull else {
+                verified = false;
+                break;
             };
             // A successor needs the current open deliveries. Old checks on a PR
             // already merged cannot block the verified replacement.
-            if pull.merged && purpose == PrVerification::ParkedPredecessor {
+            if pull.merged && purpose != PrVerification::WatchPending {
                 continue;
             }
             if let Some(head) = &checkout
                 && !pull.from_fork
                 && task.branch.as_ref() == Some(&pull.head)
                 && head != &pull.head_sha
-                && !self
-                    .deps
-                    .git
-                    .is_ancestor(
-                        Path::new(task.worktree_path.as_deref().ok_or(AppError::NotFound)?),
-                        head,
-                        &pull.head_sha,
-                    )
-                    .await?
+                && !self.verification_git(purpose, {
+                    let repo = std::path::PathBuf::from(task.worktree_path.as_deref().ok_or(AppError::NotFound)?);
+                    let (local, remote) = (head.clone(), pull.head_sha.clone());
+                    move |app| async move { app.deps.git.is_ancestor(&repo, &local, &remote).await }
+                }).await?
             {
-                return Ok(None);
+                verified = false;
+                break;
             }
             pulls.push((number, pull.head_sha));
         }
-        Ok((branch_pulls().await? == branch).then_some(ParkingPrs {
+        if !verified && purpose != PrVerification::Display {
+            return Ok(None);
+        }
+        let mut facts = ParkingPrs {
             checkout,
             pulls,
             watched,
-        }))
+        };
+        let current = branch_pulls().await?;
+        if purpose != PrVerification::Display {
+            return Ok((current == branch).then_some(facts));
+        }
+        // A title edit carries no eligibility evidence. Changes in membership,
+        // head, base or mergeability do. Prefer a directly confirmed blocker
+        // that still has the same facts over a newly listed, unchecked PR.
+        let unchanged = |candidate: &GhPull| {
+            branch.iter().any(|prior| {
+                prior.number == candidate.number
+                    && prior.head_sha == candidate.head_sha
+                    && prior.base == candidate.base
+                    && prior.behind == candidate.behind
+                    && prior.mergeable == candidate.mergeable
+            })
+        };
+        let changed = current.iter().rev().find(|candidate| !unchanged(candidate));
+        if changed.is_some() || current.len() != branch.len() {
+            // A recorded PR can be published on a different branch. In that
+            // case its direct reads are independent of both branch listings.
+            let survives = |number, head: Option<&str>| {
+                if let Some(pr) = current.iter().find(|pr| pr.number == number) {
+                    unchanged(pr) && head.is_none_or(|sha| sha == pr.head_sha)
+                } else {
+                    tracked == Some(number) && branch.iter().all(|pr| pr.number != number)
+                }
+            };
+            let blocker_survived = !verified
+                && observed
+                    .pr
+                    .is_some_and(|pr| pr.open && survives(pr.number, None));
+            if !blocker_survived {
+                // A newly listed PR has no check result yet. A durable ordinary
+                // failure on a still-current, directly verified head takes priority.
+                facts
+                    .pulls
+                    .retain(|(number, sha)| survives(*number, Some(sha)));
+                if let Some(number) = self.parking_ci_blocker(task, &facts).await? {
+                    observed.pr =
+                        Some(yulius_contracts::api::tasks::ParkedPr { number, open: true });
+                    return Ok(None);
+                }
+                let known_open = changed
+                    .filter(|pr| !closed.contains(&pr.number))
+                    .or_else(|| current.iter().rev().find(|pr| !closed.contains(&pr.number)));
+                if let Some(open) = known_open {
+                    observed.pr = Some(yulius_contracts::api::tasks::ParkedPr {
+                        number: open.number,
+                        open: true,
+                    });
+                } else if observed.pr.is_some_and(|pr| pr.open) {
+                    *observed = ParkedPullRead::recorded(record);
+                    if let Some(pr) = observed
+                        .pr
+                        .as_mut()
+                        .filter(|pr| closed.contains(&pr.number))
+                    {
+                        pr.open = false;
+                    }
+                }
+            }
+            return Ok(None);
+        }
+        // A branch list can lag a direct get_pull confirmation of a merge.
+        // Among successful reads only a PR confirmed open can replace it.
+        if verified && let Some((number, _)) = facts.pulls.last() {
+            observed.pr = Some(yulius_contracts::api::tasks::ParkedPr {
+                number: *number,
+                open: true,
+            });
+        }
+        Ok(verified.then_some(facts))
+    }
+
+    /// Read the commit only when the registered checkout still owns the task branch.
+    async fn verification_checkout(
+        &self,
+        task: &TaskRecord,
+        purpose: PrVerification,
+    ) -> AppResult<Option<String>> {
+        let (Some(path), Some(branch)) = (&task.worktree_path, &task.branch) else {
+            return Ok(None);
+        };
+        let (path, branch) = (path.clone(), branch.clone());
+        self.verification_git(purpose, move |app| async move {
+            let path = std::fs::canonicalize(path).map_err(AppError::internal)?;
+            let trees = app.deps.git.worktrees(&path).await?;
+            let tree = trees.iter().find(|tree| tree.path == path).ok_or_else(|| {
+                AppError::internal("task checkout missing from registered worktrees")
+            })?;
+            if tree.branch.as_ref() != Some(&branch) {
+                return Ok(None);
+            }
+            let head = app
+                .deps
+                .git
+                .resolve_commit(&path, "HEAD")
+                .await?
+                .ok_or_else(|| AppError::internal("unreadable task checkout HEAD"))?;
+            Ok(Some(head))
+        })
+        .await
     }
 
     /// Check one PR and reconfirm its head and mergeability after the slower checks.
@@ -4185,7 +4417,8 @@ impl App {
         sandbox: &SandboxRecord,
         token: &Secret,
         number: u64,
-        watched: bool,
+        purpose: PrVerification,
+        observed: &mut ParkedPullRead,
     ) -> AppResult<Option<GhPull>> {
         use yulius_domain::ci::CiRef;
         let read = || {
@@ -4193,22 +4426,54 @@ impl App {
                 .github
                 .get_pull(token, &sandbox.repo_owner, &sandbox.repo_name, number)
         };
+        // Each unfinished or unreadable check belongs to the PR being verified.
+        observed.pr = Some(yulius_contracts::api::tasks::ParkedPr { number, open: true });
         let pull = read().await?;
         if !is_open(&pull) {
+            observed.note_closed(&pull);
             return Ok(pull.merged.then_some(pull));
         }
         if pull.behind {
+            if purpose == PrVerification::Display {
+                let current = read().await?;
+                observed.note_closed(&current);
+                return Ok(current.merged.then_some(current));
+            }
             return Ok(None);
         }
-        let head = self.dlv_checks_at(sandbox, token, &pull.head_sha).await?;
-        if !head.unreadable.is_empty() {
-            return Ok(None);
-        }
+        let gate = if self.config.ci.enabled {
+            let sandbox = sandbox.clone();
+            let sha = pull.head_sha.clone();
+            self.verification_git(purpose, move |app| async move {
+                let reference =
+                    (purpose == PrVerification::Display).then_some(CiRef::PullRequest(number));
+                Ok(app
+                    .ci_gate_result_for_ref(&sandbox, &sha, reference.as_ref())
+                    .await)
+            })
+            .await?
+        } else {
+            yulius_domain::ci::GateResult::NotConfigured
+        };
+        let head = match self
+            .checks_with_gate(sandbox, token, &pull.head_sha, gate)
+            .await
+        {
+            Ok(report) => Some(report),
+            Err(_) if purpose == PrVerification::Display => None,
+            Err(err) => return Err(err),
+        };
         let profile = delivery_profile(sandbox);
-        let checks = tested_checks_word(&profile, head.word);
+        let checks = tested_checks_word(
+            &profile,
+            head.as_ref().map_or("unknown", |report| report.word),
+        );
+        let unreadable = head
+            .as_ref()
+            .is_none_or(|report| !report.unreadable.is_empty());
         let settled = match checks {
             "success" | "none" => true,
-            "pending" if watched && self.config.ci.enabled => self
+            "pending" if purpose.watches_pending(self.config.ci.enabled) => self
                 .deps
                 .store
                 .ci_runs(&sandbox.id, crate::pr_watch::RUNS_READ)
@@ -4218,28 +4483,43 @@ impl App {
                 .is_some_and(|run| run.sha == pull.head_sha && run.state.is_active()),
             _ => false,
         };
-        if !settled {
-            return Ok(None);
+        if !settled || unreadable {
+            if purpose != PrVerification::Display {
+                return Ok(None);
+            }
+            let current = read().await?;
+            observed.note_closed(&current);
+            return Ok(current.merged.then_some(current));
         }
         // The local merge-driver check uses the configured integration branch. For a
         // PR targeting another branch, GitHub computes mergeability against its real base.
-        let mergeable = if pull.base == profile.integration_branch {
-            self.local_conflict(task, sandbox, &pull.head_sha)
-                .await
-                .map_or(pull.mergeable == Some(true), |conflict| !conflict)
+        let mergeable = if pull.base == profile.integration_branch && task.worktree_path.is_some() {
+            let task = task.clone();
+            let sandbox = sandbox.clone();
+            let sha = pull.head_sha.clone();
+            self.verification_git(purpose, move |app| async move {
+                Ok(app.local_conflict(&task, &sandbox, &sha).await)
+            })
+            .await?
+            .map(|conflict| !conflict)
+            .or(pull.mergeable)
         } else {
-            pull.mergeable == Some(true)
+            pull.mergeable
         };
-        if !mergeable {
+        if mergeable != Some(true) && purpose != PrVerification::Display {
             return Ok(None);
         }
         // Checks and local conflict detection can take long enough for another push.
         let current = read().await?;
+        observed.note_closed(&current);
         let same_open_head = is_open(&current)
             && !current.behind
             && current.head_sha == pull.head_sha
             && current.base == pull.base
             && current.mergeable == pull.mergeable;
+        if same_open_head && mergeable != Some(true) {
+            return Ok(None);
+        }
         Ok((current.merged || same_open_head).then_some(current))
     }
 
@@ -4269,16 +4549,43 @@ impl App {
             return Ok(false);
         }
         let Some(prs) = self
-            .verify_parking_prs(task, record.as_ref(), PrVerification::ParkedPredecessor)
+            .verify_parking_prs(task, record.as_ref(), PrVerification::Settled)
             .await?
         else {
             return Ok(false);
         };
-        if !self.parking_checkout_matches(task, &prs).await?
+        self.parked_evidence_current(
+            task,
+            record.as_ref(),
+            &prs,
+            PrVerification::Settled,
+            &mut ParkedPullRead::default(),
+        )
+        .await
+    }
+
+    /// Reconfirm the checkout and owner decisions before the final durable CI
+    /// and task reads. A resume can happen during a Git or browser lookup.
+    pub(crate) async fn parked_evidence_current(
+        &self,
+        task: &TaskRecord,
+        record: Option<&DeliveryRecord>,
+        prs: &ParkingPrs,
+        purpose: PrVerification,
+        observed: &mut ParkedPullRead,
+    ) -> AppResult<bool> {
+        let store = &self.deps.store;
+        if (!prs.pulls.is_empty()
+            && self.verification_checkout(task, purpose).await? != prs.checkout)
             || !self.parked_chain_clear(task).await?
-            || !self.parking_ci_still_current(task, &prs).await?
-            || store.delivery(&task.id).await? != record
         {
+            return Ok(false);
+        }
+        if let Some(number) = self.parking_ci_blocker(task, prs).await? {
+            observed.pr = Some(yulius_contracts::api::tasks::ParkedPr { number, open: true });
+            return Ok(false);
+        }
+        if store.delivery(&task.id).await?.as_ref() != record {
             return Ok(false);
         }
         // Browser startup and checkout verification can outlast an owner resume.
@@ -6138,6 +6445,18 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn only_live_ci_can_wake_a_parked_task_after_pending_checks() {
+        for enabled in [true, false] {
+            assert_eq!(
+                PrVerification::WatchPending.watches_pending(enabled),
+                enabled
+            );
+            assert!(!PrVerification::Settled.watches_pending(enabled));
+            assert!(!PrVerification::Display.watches_pending(enabled));
+        }
+    }
 
     fn subjects(list: &[&str]) -> Vec<String> {
         list.iter().map(|s| (*s).to_owned()).collect()

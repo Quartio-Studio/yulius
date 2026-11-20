@@ -93,6 +93,8 @@ struct RealGit {
     ahead_behind_error: std::sync::Mutex<Option<String>>,
     /// While set, the remote's branches cannot be read (`ls-remote` fails, SPEC-139).
     remote_unreadable: std::sync::atomic::AtomicBool,
+    /// A dispatched native Git read can outlive its caller.
+    parked_git_hold: std::sync::Mutex<Option<Arc<ParkedGitHold>>>,
     /// Hold the second checkout probe while the predecessor changes state.
     checkout_probe: std::sync::Mutex<Option<Arc<CheckoutProbe>>>,
     overview_log_entered: tokio::sync::Notify,
@@ -102,6 +104,11 @@ struct RealGit {
     /// Moved right after every refresh of a clone, as an agent racing it would: `(ref, commit)`
     /// (review round 2 of SPEC-493 fix 6).
     forged_after_fetch: std::sync::Mutex<Option<(String, String)>>,
+}
+
+struct ParkedGitHold {
+    started: std::sync::atomic::AtomicUsize,
+    released: tokio::sync::Semaphore,
 }
 
 #[derive(Default)]
@@ -329,6 +336,22 @@ impl GitPort for RealGit {
     }
 
     async fn resolve_commit(&self, repo: &Path, rev: &str) -> AppResult<Option<String>> {
+        let hold = self
+            .parked_git_hold
+            .lock()
+            .map_err(AppError::internal)?
+            .clone();
+        if rev == "origin/dev"
+            && let Some(hold) = hold
+        {
+            tokio::spawn(async move {
+                hold.started
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let _ = hold.released.acquire().await;
+            })
+            .await
+            .map_err(AppError::internal)?;
+        }
         crate::support::confined_git()
             .resolve_commit(repo, rev)
             .await
@@ -852,6 +875,7 @@ async fn fixture_with(
         push_failure: std::sync::Mutex::default(),
         ahead_behind_error: std::sync::Mutex::default(),
         remote_unreadable: std::sync::atomic::AtomicBool::default(),
+        parked_git_hold: Default::default(),
         checkout_probe: Default::default(),
         overview_log_entered: Default::default(),
         overview_log_hold: Default::default(),
@@ -1449,7 +1473,7 @@ async fn yulius_ci_run(
     insert_ci_attempt(store, id, sha, CiRef::Branch("dev".into()), state, at, &[]).await
 }
 
-async fn insert_ci_attempt(
+pub(super) async fn insert_ci_attempt(
     store: &impl yulius_app::ports::store_ext::CiStore,
     id: &str,
     sha: &str,
@@ -4725,6 +4749,43 @@ impl BrowserPort for HeldBrowserLookup {
 }
 
 #[tokio::test]
+async fn a_parked_detail_bounds_its_initial_browser_lookup_and_keeps_the_recorded_pr() -> TestResult
+{
+    let f = fixture(&DeliveryProfile::standard()).await?;
+    let (_wt, _) = delivered_with_a_successor(&f, &finished_spec("t1")).await?;
+    let id = TaskId::parse("t1")?;
+    f.h.store
+        .transition_task(
+            &id,
+            None,
+            TaskStatus::Parked,
+            Some(Activity::Done),
+            f.h.app.now(),
+        )
+        .await?;
+    let owner =
+        f.h.app
+            .authenticate_bearer(f.alice.bearer.as_deref().ok_or("owner token")?)
+            .await?
+            .ok_or("owner")?;
+    let browser = Arc::new(HeldBrowserLookup::default());
+    browser.calls.store(1, std::sync::atomic::Ordering::SeqCst);
+    let mut deps = f.h.app.deps.clone();
+    deps.browser = browser.clone();
+    let app = yulius_app::context::App::new(f.h.app.config.clone(), deps);
+    let reading = tokio::spawn(async move { app.task_detail(&owner, id.as_str()).await });
+    tokio::time::timeout(Duration::from_secs(5), browser.entered.notified()).await?;
+    let detail = tokio::time::timeout(Duration::from_secs(3), reading).await;
+    browser.release.notify_one();
+    let detail = serde_json::to_value(
+        detail.map_err(|_| "browser startup consumed the parked task read budget")???,
+    )?;
+    assert_eq!(detail["parked_needs_you"], true);
+    assert_eq!(detail["parked_pr"], json!({"number":1,"open":true}));
+    Ok(())
+}
+
+#[tokio::test]
 async fn a_parked_successor_waits_if_its_owner_resumes_during_the_final_browser_read() -> TestResult
 {
     let f = fixture(&DeliveryProfile::standard()).await?;
@@ -4804,7 +4865,17 @@ async fn a_parked_achieved_goal_releases_its_chain_without_a_pr() -> TestResult 
 #[tokio::test]
 async fn a_historical_parked_goal_keeps_its_owner_and_chain_state_after_restart() -> TestResult {
     use yulius_app::ports::store_ext::NeedsYouStore as _;
-    let f = fixture(&DeliveryProfile::standard()).await?;
+    let f = fixture_with(
+        &DeliveryProfile::standard(),
+        Box::new(|config| config.parked_pr_read_ms = 10_000),
+        None,
+    )
+    .await?;
+    let owner =
+        f.h.app
+            .authenticate_bearer(f.alice.bearer.as_deref().ok_or("owner token")?)
+            .await?
+            .ok_or("owner")?;
     let (_wt, head) = delivered_with_a_successor(&f, &finished_spec("t1")).await?;
     f.h.github.set_checks(&head, ChecksState::Success);
     // This test owns a fixed external PR. The independent head-replacement
@@ -4853,8 +4924,9 @@ async fn a_historical_parked_goal_keeps_its_owner_and_chain_state_after_restart(
         .await?;
     let fresh = yulius_app::context::App::new(f.h.app.config.clone(), f.h.app.deps.clone());
     let parked = f.h.store.task(&before).await?.ok_or("parked")?;
-    let summary = fresh.task_summary(&parked).await?;
-    assert!(summary.goal_unfinished);
+    let summary = fresh.task_detail(&owner, parked.id.as_str()).await?;
+    assert!(summary.summary.goal_unfinished);
+    assert_eq!(summary.parked_needs_you, Some(true));
     fresh.advance_chains(&before).await;
     assert_eq!(
         f.h.store.task(&child).await?.ok_or("successor")?.status,
@@ -4862,6 +4934,13 @@ async fn a_historical_parked_goal_keeps_its_owner_and_chain_state_after_restart(
     );
     let saved = dir.with_extension("saved");
     std::fs::rename(&dir, &saved)?;
+    assert_eq!(
+        fresh
+            .task_detail(&owner, parked.id.as_str())
+            .await?
+            .parked_needs_you,
+        Some(true)
+    );
     fresh.advance_chains(&before).await;
     assert_eq!(
         f.h.store.task(&child).await?.ok_or("successor")?.status,
@@ -4898,6 +4977,13 @@ async fn a_historical_parked_goal_keeps_its_owner_and_chain_state_after_restart(
         f.h.store.task(&child).await?.ok_or("successor")?.status,
         TaskStatus::Chained
     );
+    assert_eq!(
+        fresh
+            .task_detail(&owner, parked.id.as_str())
+            .await?
+            .parked_needs_you,
+        Some(true)
+    );
     f.h.store.set_task_needs_you(&before, None, now).await?;
     // The directory itself is readable. Asking for its marker exceeds the OS
     // path limit and must not be mistaken for a verified absent marker.
@@ -4928,6 +5014,13 @@ async fn a_historical_parked_goal_keeps_its_owner_and_chain_state_after_restart(
     attempt.token_hash = attempt.id.to_string();
     attempt.run_dir = dir.to_string_lossy().into_owned();
     f.h.store.insert_attempt(&attempt).await?;
+    assert_eq!(
+        fresh
+            .task_detail(&owner, parked.id.as_str())
+            .await?
+            .parked_needs_you,
+        Some(false)
+    );
     fresh.advance_chains(&before).await;
     assert_ne!(
         f.h.store.task(&child).await?.ok_or("successor")?.status,
@@ -5025,7 +5118,17 @@ async fn a_parked_achieved_goal_waits_for_its_failed_ordinary_run() -> TestResul
 #[tokio::test]
 async fn a_parked_successor_waits_for_the_replacement_ordinary_pr() -> TestResult {
     use yulius_domain::delivery::DeliveryStage;
-    let f = fixture(&DeliveryProfile::standard()).await?;
+    let f = fixture_with(
+        &DeliveryProfile::standard(),
+        Box::new(|config| config.parked_pr_read_ms = 10_000),
+        None,
+    )
+    .await?;
+    let owner =
+        f.h.app
+            .authenticate_bearer(f.alice.bearer.as_deref().ok_or("owner token")?)
+            .await?
+            .ok_or("owner")?;
     let (_wt, head) = delivered_with_a_successor(&f, &finished_spec("t1")).await?;
     let before = TaskId::parse("t1")?;
     let child = TaskId::parse("t2")?;
@@ -5051,6 +5154,13 @@ async fn a_parked_successor_waits_for_the_replacement_ordinary_pr() -> TestResul
     }
     f.h.github.set_checks(&head, ChecksState::Failure);
     // GitHub recorded the merge before Yulius; the new PR is already red.
+    let parked = f.h.store.task(&before).await?.ok_or("parked predecessor")?;
+    let summary = serde_json::to_value(f.h.app.task_detail(&owner, parked.id.as_str()).await?)?;
+    assert_eq!(
+        summary["parked_needs_you"], true,
+        "replacement is already red"
+    );
+    assert_eq!(summary["parked_pr"], json!({"number": 2, "open": true}));
     f.h.app.advance_chains(&before).await;
     assert_eq!(
         f.h.store.task(&child).await?.ok_or("successor")?.status,
@@ -5073,11 +5183,143 @@ async fn a_parked_successor_waits_for_the_replacement_ordinary_pr() -> TestResul
         f.h.store.task(&child).await?.ok_or("successor")?.status,
         TaskStatus::Chained
     );
+    let summary = serde_json::to_value(f.h.app.task_detail(&owner, parked.id.as_str()).await?)?;
+    assert_eq!(
+        summary["parked_needs_you"], true,
+        "old merge cannot mask replacement"
+    );
+    assert_eq!(summary["parked_pr"], json!({"number": 2, "open": true}));
     f.h.github.set_checks(&head, ChecksState::Success);
+    let summary = serde_json::to_value(f.h.app.task_detail(&owner, parked.id.as_str()).await?)?;
+    assert_eq!(summary["parked_needs_you"], false, "replacement settled");
+    let held = f.h.github.hold_checks();
+    let app = f.h.app.clone();
+    let auth = owner.clone();
+    let reading = tokio::spawn(async move { app.task_detail(&auth, parked.id.as_str()).await });
+    tokio::time::timeout(Duration::from_secs(5), f.h.github.checks_entered.notified()).await?;
+    f.h.github
+        .change_before_branch_list(2, |pr| pr.state = "closed".into())?;
+    f.h.github.release_checks(&held);
+    let changed = serde_json::to_value(reading.await??)?;
+    assert_eq!(
+        changed["parked_needs_you"], true,
+        "branch changed during verification"
+    );
+    assert_eq!(changed["parked_pr"], json!({"number":1, "open":false}));
     f.h.app.advance_chains(&before).await;
     assert_ne!(
         f.h.store.task(&child).await?.ok_or("successor")?.status,
         TaskStatus::Chained
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn parked_detail_checks_a_local_conflict_only_against_its_integration_base() -> TestResult {
+    let f = fixture_with(
+        &DeliveryProfile::standard(),
+        Box::new(|config| config.parked_pr_read_ms = 10_000),
+        None,
+    )
+    .await?;
+    let owner =
+        f.h.app
+            .authenticate_bearer(f.alice.bearer.as_deref().ok_or("token")?)
+            .await?
+            .ok_or("owner")?;
+    let (wt, head) = delivered_with_a_successor(&f, &finished_spec("t1")).await?;
+    f.h.store
+        .transition_task(
+            &TaskId::parse("t1")?,
+            None,
+            TaskStatus::Parked,
+            Some(Activity::Done),
+            f.h.app.now(),
+        )
+        .await?;
+    *f.h.github.remote.lock().map_err(|_| "remote fixture")? = None;
+    f.h.github.set_checks(&head, ChecksState::Success);
+    // This read needs the production merge-base and merge-driver implementation.
+    let mut deps = f.h.app.deps.clone();
+    deps.git = Arc::new(support::confined_git());
+    let app = yulius_app::context::App::new(f.h.app.config.clone(), deps);
+    edit_pull(&f, 1, |pr| pr.mergeable = Some(false));
+    assert_eq!(
+        app.task_detail(&owner, "t1").await?.parked_needs_you,
+        Some(false),
+        "the integration base merges cleanly with the configured Git drivers"
+    );
+    advance_base(&f, "dev", "feature.txt", "conflicting addition\n")?;
+    git(&wt, &["fetch", "origin", "dev"])?;
+    edit_pull(&f, 1, |pr| pr.mergeable = Some(true));
+    assert_eq!(
+        app.task_detail(&owner, "t1").await?.parked_needs_you,
+        Some(true),
+        "the actual integration base now conflicts"
+    );
+    edit_pull(&f, 1, |pr| pr.base = "release".into());
+    assert_eq!(
+        app.task_detail(&owner, "t1").await?.parked_needs_you,
+        Some(false),
+        "the release base has its own mergeability"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn overlapping_parked_status_reads_bound_git_workers_after_timeouts() -> TestResult {
+    let f = fixture(&DeliveryProfile::standard()).await?;
+    let owner =
+        f.h.app
+            .authenticate_bearer(f.alice.bearer.as_deref().ok_or("owner token")?)
+            .await?
+            .ok_or("owner")?;
+    let (_wt, head) = delivered_with_a_successor(&f, &finished_spec("t1")).await?;
+    let id = TaskId::parse("t1")?;
+    f.h.store
+        .transition_task(
+            &id,
+            None,
+            TaskStatus::Parked,
+            Some(Activity::Waiting),
+            f.h.app.now(),
+        )
+        .await?;
+    let task = f.h.store.task(&id).await?.ok_or("task")?;
+    let mut config = f.h.app.config.clone();
+    config.ci.enabled = false;
+    let app = yulius_app::context::App::new(config, f.h.app.deps.clone());
+    *f.h.github.remote.lock().map_err(|_| "remote")? = None;
+    f.h.github.set_checks(&head, ChecksState::Success);
+    edit_pull(&f, 1, |pull| pull.mergeable = Some(true));
+    let hold = Arc::new(ParkedGitHold {
+        started: Default::default(),
+        released: tokio::sync::Semaphore::new(0),
+    });
+    *f.git.parked_git_hold.lock().map_err(|_| "git hold")? = Some(hold.clone());
+    let checked = async {
+        for _ in 0..2 {
+            let reads = (0..12).map(|_| app.task_detail(&owner, task.id.as_str()));
+            for row in futures::future::try_join_all(reads).await? {
+                assert_eq!(row.parked_needs_you, Some(true));
+            }
+        }
+        Ok::<_, AppError>(())
+    }
+    .await;
+    let started = hold.started.load(std::sync::atomic::Ordering::SeqCst);
+    *f.git.parked_git_hold.lock().map_err(|_| "git hold")? = None;
+    hold.released.close();
+    checked?;
+    assert!(
+        (1..=8).contains(&started),
+        "{started} Git workers started before any finished"
+    );
+    assert_eq!(
+        app.task_detail(&owner, task.id.as_str())
+            .await?
+            .parked_needs_you,
+        Some(false)
     );
     Ok(())
 }
@@ -8355,11 +8597,16 @@ async fn cancelling_an_overview_at_the_final_git_log_admits_a_replacement() -> T
 #[tokio::test]
 async fn a_merged_pull_request_github_still_lists_as_open_reads_merged() -> TestResult {
     let f = fixture(&DeliveryProfile::standard()).await?;
+    let owner =
+        f.h.app
+            .authenticate_bearer(f.alice.bearer.as_deref().ok_or("owner token")?)
+            .await?
+            .ok_or("owner")?;
     let wt = f
         .add_task("t1", "Checkout API", "feat/1-checkout-api", "dev")
         .await?;
     commit_file(&wt, "feature.txt", "hello", "Add feature")?;
-    commit_file(&wt, SPEC_PATH, &valid_spec("t1"), "Spec")?;
+    commit_file(&wt, SPEC_PATH, &finished_spec("t1"), "Spec")?;
     let opened = f
         .req(Method::POST, "/api/tasks/t1/delivery/pr", None, &f.bob)
         .await?;
@@ -8401,6 +8648,20 @@ async fn a_merged_pull_request_github_still_lists_as_open_reads_merged() -> Test
         "not among the open pull requests: {}",
         page.body
     );
+    let id = TaskId::parse("t1")?;
+    f.h.store
+        .transition_task(
+            &id,
+            None,
+            TaskStatus::Parked,
+            Some(Activity::Done),
+            f.h.app.now(),
+        )
+        .await?;
+    let task = f.h.store.task(&id).await?.ok_or("parked task")?;
+    let summary = serde_json::to_value(f.h.app.task_detail(&owner, task.id.as_str()).await?)?;
+    assert_eq!(summary["parked_needs_you"], false);
+    assert_eq!(summary["parked_pr"], json!({"number":1,"open":false}));
     Ok(())
 }
 

@@ -12,6 +12,10 @@
 //! `out.sock`) closes its longest-idle connection past [`IDLE_FLOOR`] for a new one instead of
 //! refusing it (SPEC-355 SLR-001, ADR-0241).
 
+mod copy;
+
+pub use copy::CopyState;
+
 use std::collections::{BTreeMap, HashMap};
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
@@ -25,7 +29,7 @@ use tokio::io::{AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _, Re
 use tokio::net::{TcpListener, TcpStream, UnixListener, UnixStream};
 use tokio::sync::Semaphore;
 use tokio::sync::oneshot;
-use tokio::task::JoinHandle;
+use tokio::task::{JoinHandle, JoinSet};
 use yulius_contracts::sandbox::{
     INBOUND_CONNECT, INBOUND_PORTS, ListeningPorts, RELAY_FORBIDDEN, RELAY_OK, RELAY_REFUSED,
 };
@@ -648,8 +652,15 @@ async fn outbound_reporting(
     let places = Places::reporting(max, floor, Some(report));
     let mut warned = None;
     let mut gave_way = None;
+    // Dropping the listener task cancels the copies admitted by this holder's relay.
+    let mut copies = JoinSet::new();
     loop {
-        let Ok((stream, _)) = listener.accept().await else {
+        let accepted = tokio::select! {
+            biased;
+            _ = copies.join_next(), if !copies.is_empty() => continue,
+            accepted = listener.accept() => accepted,
+        };
+        let Ok((stream, _)) = accepted else {
             tokio::time::sleep(Duration::from_millis(100)).await;
             continue;
         };
@@ -662,7 +673,7 @@ async fn outbound_reporting(
             warn_gave_way(&mut gave_way, "outbound", None, Some(&sandbox), idle);
         }
         let targets = Arc::clone(&targets);
-        tokio::spawn(async move {
+        copies.spawn(async move {
             let stream = Tracked {
                 inner: stream,
                 place,
@@ -687,10 +698,11 @@ where
         return stream.write_u8(RELAY_FORBIDDEN).await;
     };
     match with_timeout(CONNECT_TIMEOUT, "connect", TcpStream::connect(*target)).await {
-        Ok(upstream) => {
+        Ok(mut upstream) => {
             stream.write_u8(RELAY_OK).await?;
-            splice(stream, upstream).await;
-            Ok(())
+            CopyState::default()
+                .transfer(&mut stream, &mut upstream)
+                .await
         }
         Err(_) => stream.write_u8(RELAY_REFUSED).await,
     }
@@ -932,6 +944,47 @@ mod tests {
         raw.write_u16(port).await?;
         assert_eq!(raw.read_u8().await?, RELAY_REFUSED);
         server.abort();
+        Ok(())
+    }
+
+    /// Removing a holder's outbound relay also closes connections it already accepted.
+    #[tokio::test]
+    async fn cancelling_outbound_closes_established_peers_and_releases_their_places() -> TestResult
+    {
+        with_timeout(Duration::from_secs(5), "outbound cancellation", async {
+            let dir = tempfile::tempdir()?;
+            let path = dir.path().join("out.sock");
+            let target = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+            let targets = Arc::new(BTreeMap::from([(9, target.local_addr()?)]));
+            let health = Arc::new(ConnectionHealth::default());
+            let relay = tokio::spawn(outbound_reporting(
+                UnixListener::bind(&path)?,
+                targets,
+                "s1".to_owned(),
+                1,
+                IDLE_FLOOR,
+                Arc::clone(&health),
+            ));
+            let mut client = UnixStream::connect(&path).await?;
+            client.write_u16(9).await?;
+            assert_eq!(client.read_u8().await?, RELAY_OK);
+            let (mut upstream, _) = target.accept().await?;
+            client.write_all(b"marker").await?;
+            let mut marker = [0; 6];
+            upstream.read_exact(&mut marker).await?;
+            assert_eq!(&marker, b"marker");
+            let mut refused = UnixStream::connect(&path).await?;
+            assert_eq!(refused.read(&mut marker).await?, 0);
+            assert!(health.open(Limit::Relay, Some("s1")));
+
+            relay.abort();
+            assert!(relay.await.is_err_and(|error| error.is_cancelled()));
+            assert_eq!(client.read(&mut marker).await?, 0);
+            assert_eq!(upstream.read(&mut marker).await?, 0);
+            assert!(!health.open(Limit::Relay, Some("s1")));
+            Ok(())
+        })
+        .await?;
         Ok(())
     }
 

@@ -63,6 +63,7 @@ pub struct FakeGitHub {
     pub pulls: Mutex<Vec<GhPull>>,
     /// Simulates a failed repository-wide overview while individual PRs remain readable.
     pub fail_overview_pulls: std::sync::atomic::AtomicBool,
+    pub no_installation: std::sync::atomic::AtomicBool,
     /// The branch of every `branch_pulls` call, in order: one GitHub request each (the hygiene
     /// scan's `MAX_PULL_LOOKUPS` bound).
     pub branch_pull_lookups: Mutex<Vec<String>>,
@@ -75,6 +76,8 @@ pub struct FakeGitHub {
     pub retarget_on_merge: Mutex<Option<String>>,
     /// GitHub accepted the merge, but reading the closed PR fails until it recovers.
     pub fail_merged_reads: std::sync::atomic::AtomicBool,
+    /// Metadata confirms a merge while the branch listing still has the open PR.
+    pub merged_on_direct_read: Mutex<Option<u64>>,
     /// Simulate a stale closed-PR response naming a different PR.
     pub misnumber_merged_reads: std::sync::atomic::AtomicBool,
     /// Checks per commit SHA (default: `None`, every source read).
@@ -129,6 +132,8 @@ pub struct FakeGitHub {
     /// Hold metadata reads while a same-head CI rerun finishes.
     pub pull_read_hold: Mutex<Option<Arc<tokio::sync::Notify>>>,
     pub pull_read_entered: tokio::sync::Notify,
+    /// A PR changes between its metadata response and the next branch list.
+    next_branch_change: Mutex<Option<(u64, GhPull)>>,
     /// The next this many reads show the heads before a push.
     pub stale_reads: Mutex<u32>,
 }
@@ -256,7 +261,10 @@ impl GitHubPort for FakeGitHub {
         })
     }
     async fn find_installation(&self, _: &GitHubAppConfig, _: &str) -> AppResult<Option<u64>> {
-        Ok(Some(1))
+        Ok((!self
+            .no_installation
+            .load(std::sync::atomic::Ordering::SeqCst))
+        .then_some(1))
     }
     async fn installation_token(&self, _: &GitHubAppConfig, _: u64) -> AppResult<Secret> {
         Ok(Secret("inst".into()))
@@ -466,6 +474,15 @@ impl GitHubPort for FakeGitHub {
             .find(|p| p.number == number)
             .cloned()
             .ok_or(AppError::NotFound)?;
+        if *self
+            .merged_on_direct_read
+            .lock()
+            .map_err(AppError::internal)?
+            == Some(number)
+        {
+            pull.merged = true;
+            pull.state = "closed".into();
+        }
         if pull.merged && self.fail_merged_reads.load(Ordering::SeqCst) {
             return Err(AppError::Upstream("closed pull request unavailable".into()));
         }
@@ -513,6 +530,21 @@ impl GitHubPort for FakeGitHub {
             return Err(AppError::Upstream("partial overview".into()));
         }
         self.refresh_heads();
+        if head.is_some()
+            && let Some((number, replacement)) = self
+                .next_branch_change
+                .lock()
+                .map_err(AppError::internal)?
+                .take()
+            && let Some(pull) = self
+                .pulls
+                .lock()
+                .map_err(AppError::internal)?
+                .iter_mut()
+                .find(|pull| pull.number == number)
+        {
+            *pull = replacement;
+        }
         Ok(self
             .pulls
             .lock()
@@ -1327,6 +1359,26 @@ impl FakeGitHub {
             *h = Some(Arc::clone(&hold));
         }
         hold
+    }
+    pub fn change_before_branch_list(
+        &self,
+        number: u64,
+        edit: impl FnOnce(&mut GhPull),
+    ) -> TestResult {
+        let mut update = self
+            .pulls
+            .lock()
+            .map_err(|_| "pulls")?
+            .iter()
+            .find(|pr| pr.number == number)
+            .cloned()
+            .ok_or("unknown pull")?;
+        edit(&mut update);
+        *self
+            .next_branch_change
+            .lock()
+            .map_err(|_| "branch change")? = Some((number, update));
+        Ok(())
     }
     /// Holds every permission lookup until [`FakeGitHub::release_access`].
     pub fn hold_access(&self) -> Arc<tokio::sync::Notify> {

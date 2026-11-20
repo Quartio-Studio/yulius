@@ -2108,6 +2108,12 @@ An externally opened replacement can hold the successor after the recorded deliv
 Yulius rechecks local work, durable CI and the owner’s state after the remote reads.
 An explicit `#N merged` rule follows the recorded merge.
 
+The individual HTTP task detail verifies both recorded and branch PRs.
+A durable ordinary CI failure identifies its own PR and head even when a newer PR is
+green. Remote verification has a 750 ms deadline. Up to eight native Git operations
+run for these reads per application. Each keeps its permit until Git returns.
+[ADR-0409](decisions/0409-report-the-pr-that-blocks-a-parked-task.md)
+
 The end-of-day digest (`yulius-app/src/digest.rs`, SPEC-512 part 3,
 [decision 0380](decisions/0380-an-end-of-day-digest-built-from-task-state.md)) runs from the same
 tick: `digest_tick` reads `instance.digest`, and once today's time (UTC) passed takes the run with
@@ -3776,6 +3782,12 @@ connection (no byte for at least 5 minutes) for a new one instead of refusing it
 holding connections cannot cut a sandbox's agents off from Yulius, also after a server restart,
 which does not restart the holder
 ([decision 0241](decisions/0241-a-full-relay-closes-its-longest-idle-connection-and-the-superagent-restarts-in-place.md)).
+Stopping a holder's host-side `out.sock` relay cancels its accepted connections, closes both
+socket endpoints and releases their places.
+The host-side relay and the opaque CONNECT proxy each keep up to 8 KiB per direction in
+their copy state. Pausing preserves the first unwritten byte in each direction. After EOF
+the copy resumes any pending write-half shutdown before marking that half closed.
+[SPEC-577](../.ai/specs/SPEC-577-preserve-opaque-egress-tunnels-across-a.md)
 The proxy also counts each connection's run (agent run, CI job, Superagent shell). When nothing was
 idle for 5 minutes, a full sandbox share takes the oldest connection of its busiest other run, and
 the full proxy that of the busiest sandbox, if it holds at least 2 more than the asker, so one busy

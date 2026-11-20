@@ -17,6 +17,11 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   - Production promotes only the revision staging verified
     ([ADR-0411](decisions/0411-staging-changes-through-a-queue-of-tested-merged-revisions.md),
     [SPEC-575](../.ai/specs/SPEC-575-make-task-local-testing-and-one-staging.md)).
+- Opaque proxy and host-side relay copies retain partial writes and half-closes when paused on the same sockets. [SPEC-577](../.ai/specs/SPEC-577-preserve-opaque-egress-tunnels-across-a.md)
+
+- Stopping a sandbox's outbound relay now closes the connections it owns and clears its occupied places. [SPEC-577](../.ai/specs/SPEC-577-preserve-opaque-egress-tunnels-across-a.md)
+
+- A parked task’s detail identifies the ordinary PR blocking Done, including when another PR on the same branch is green. Unfinished local work also keeps it under Needs you (SPEC-558).
 - A project with a shared staging target can mark it `merge_first = true` and its long jobs
   `after_merge = true`. Pull requests then wait only for the quick checks, and the full suite
   runs once on the merged revision instead of on every head. Projects without such a target keep

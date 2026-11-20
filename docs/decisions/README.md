@@ -426,6 +426,7 @@ If a reservation skips past all available slots, land an empty extension first w
 <!-- ADR 0407 -->
 - [0408](0408-interpreter-settings-are-reserved-for-new-agent-secret-names.md) reserves interpreter settings for newly assigned agent-secret names, reports legacy names to their managers and preserves host-bound GitHub tokens (SPEC-574).
 <!-- ADR 0408 -->
+- [0409](0409-report-the-pr-that-blocks-a-parked-task.md): Report the PR that blocks a parked task
 <!-- ADR 0409 -->
 - [0410](0410-the-full-suite-runs-on-the-merged-revision-beside-a-merge-first-staging-target.md) The full suite runs on the merged revision beside a merge-first staging target.
 <!-- ADR 0410 -->

@@ -1064,11 +1064,23 @@ impl App {
     /// is one, else pending when Yulius CI will test it, else not configured (also when CI is
     /// off on this instance).
     pub async fn ci_gate_result(&self, sandbox: &SandboxRecord, sha: &str) -> GateResult {
+        self.ci_gate_result_for_ref(sandbox, sha, None).await
+    }
+
+    /// An ordinary PR display uses its own run when several refs share a SHA.
+    pub(crate) async fn ci_gate_result_for_ref(
+        &self,
+        sandbox: &SandboxRecord,
+        sha: &str,
+        reference: Option<&CiRef>,
+    ) -> GateResult {
         if !self.config.ci.enabled {
             return GateResult::NotConfigured;
         }
         if let Ok(runs) = self.deps.store.ci_runs_for_sha(&sandbox.id, sha).await
-            && let Some(latest) = runs.first()
+            && let Some(latest) = runs
+                .iter()
+                .find(|run| reference.is_none_or(|r| *r == run.reference))
         {
             return GateResult::Run(Some(latest.state));
         }

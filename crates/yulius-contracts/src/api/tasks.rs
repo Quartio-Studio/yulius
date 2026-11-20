@@ -29,6 +29,15 @@ pub struct StepProgress {
     pub first_total: Option<u32>,
 }
 
+/// The delivery whose checks affect a parked task's group.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ParkedPr {
+    /// The pull request number observed on the branch or recorded by delivery.
+    pub number: u64,
+    /// Open deliveries need another checks read when the overview refreshes.
+    pub open: bool,
+}
+
 /// A task in lists and events.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TaskSummary {
@@ -554,6 +563,13 @@ pub struct SwitchView {
 /// `GET /api/tasks/{tid}`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TaskDetail {
+    /// The server's group for a parked task (true for Needs you, false for Done).
+    /// Other tasks and summaries from earlier servers omit it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parked_needs_you: Option<bool>,
+    /// The current branch or recorded delivery, including PRs missing from the Git overview.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parked_pr: Option<ParkedPr>,
     /// Summary fields.
     #[serde(flatten)]
     pub summary: TaskSummary,
