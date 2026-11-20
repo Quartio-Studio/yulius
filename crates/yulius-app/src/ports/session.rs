@@ -185,6 +185,13 @@ pub struct RunWelcome {
     pub snapshot: Option<Vec<u8>>,
 }
 
+impl RunWelcome {
+    /// An authenticated snapshot can confirm the prompt only at its captured size.
+    pub(crate) fn rendered_at(&self, size: (u16, u16)) -> bool {
+        self.rendered && size == (self.cols, self.rows)
+    }
+}
+
 /// State of a recorded run directory (restart reconciliation).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RunInspection {
@@ -328,4 +335,26 @@ pub struct StrayProcess {
     /// `(pid, started)` of the adopted process first, then of the processes below it; `started`
     /// is the start time in clock ticks after boot, which tells a reused pid apart.
     pub processes: Vec<(u32, u64)>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::RunWelcome;
+
+    #[test]
+    fn a_snapshot_requires_host_confirmation_at_the_restored_size() {
+        let mut welcome = RunWelcome {
+            child_pid: 19,
+            seq: 1,
+            cols: 40,
+            rows: 12,
+            rendered: false,
+            snapshot: Some(Vec::new()),
+        };
+        assert!(!welcome.rendered_at((40, 12)), "legacy or cropped host");
+        welcome.rendered = true;
+        assert!(welcome.rendered_at((40, 12)));
+        assert!(!welcome.rendered_at((20, 12)), "viewer cropped the hint");
+        assert!(!welcome.rendered_at((40, 6)), "viewer cropped rows");
+    }
 }

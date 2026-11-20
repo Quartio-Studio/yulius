@@ -3840,7 +3840,7 @@ impl App {
             cols,
             rows,
             crate::hub::ScreenUpdate::Host {
-                rendered: welcome.rendered && (cols, rows) == (welcome.cols, welcome.rows),
+                rendered: welcome.rendered_at((cols, rows)),
             },
         );
         // The hub shows this run from now on (SPEC-301 LRS-001).
