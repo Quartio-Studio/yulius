@@ -3284,6 +3284,7 @@ async fn a_parked_detail_keeps_the_failed_pr_when_another_pr_opens_during_checks
         OnBranch,
         RecordedElsewhere,
         Superseded,
+        WithdrawnTracked,
     }
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     enum Checks {
@@ -3292,7 +3293,7 @@ async fn a_parked_detail_keeps_the_failed_pr_when_another_pr_opens_during_checks
         Green,
     }
     use Checks::{GitHubRed, Green, OrdinaryRed};
-    use Publication::{OnBranch, RecordedElsewhere, Superseded};
+    use Publication::{OnBranch, RecordedElsewhere, Superseded, WithdrawnTracked};
     for (checks, publication, expected) in [
         (GitHubRed, OnBranch, 1461),
         (OrdinaryRed, OnBranch, 1461),
@@ -3300,12 +3301,16 @@ async fn a_parked_detail_keeps_the_failed_pr_when_another_pr_opens_during_checks
         (OrdinaryRed, RecordedElsewhere, 1461),
         (GitHubRed, Superseded, 1462),
         (OrdinaryRed, Superseded, 1462),
+        (GitHubRed, WithdrawnTracked, 1462),
+        (OrdinaryRed, WithdrawnTracked, 1462),
         (Green, OnBranch, 1462),
     ] {
         let (f, owner) = owner_observed_external_pr().await?;
         install_app(&f).await?;
         if publication == RecordedElsewhere {
             f.h.github.pulls.lock().map_err(|_| "pulls")?[0].head = "published-elsewhere".into();
+        }
+        if matches!(publication, RecordedElsewhere | WithdrawnTracked) {
             assert!(
                 f.h.app
                     .deps
@@ -3364,6 +3369,9 @@ async fn a_parked_detail_keeps_the_failed_pr_when_another_pr_opens_during_checks
         if publication == Superseded {
             f.h.github
                 .change_before_branch_list(1461, |pr| pr.head_sha = "repaired".into())?;
+        } else if publication == WithdrawnTracked {
+            f.h.github
+                .change_before_branch_list(1461, |pr| pr.state = "closed".into())?;
         }
         f.h.github.release_checks(&held);
         let detail = serde_json::to_value(reading.await??)?;
