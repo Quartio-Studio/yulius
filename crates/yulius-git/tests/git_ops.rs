@@ -2251,7 +2251,7 @@ fn a_squash_lands_one_commit_on_the_remote_branch_or_names_the_conflicts() -> Te
     Ok(())
 }
 
-/// Git stores path bytes. Rendering two different non-UTF-8 names must preserve both conflicts.
+/// Preview, squash and the checked train distinguish raw bytes from literal quoting in real filenames.
 #[cfg(unix)]
 #[test]
 fn conflict_paths_preserve_distinct_non_utf8_names() -> TestResult {
@@ -2262,7 +2262,13 @@ fn conflict_paths_preserve_distinct_non_utf8_names() -> TestResult {
     let (_, repo) = fx.repo_with_remote()?;
     let branch = fx.path("branch");
     fx.git.worktree_add(&repo, &branch, "feat/names", "main")?;
-    let names = [b"x\"\\\t\x90", b"x\"\\\t\x91"];
+    let names: [&[u8]; 5] = [
+        br#""x\220""#,
+        b"plain\t",
+        b"x\"\\\t\x90",
+        b"x\x90",
+        b"x\x91",
+    ];
     for (tree, content) in [(&repo, "base"), (&branch, "task")] {
         for name in names {
             fs::write(tree.join(OsStr::from_bytes(name)), content)?;
@@ -2273,7 +2279,28 @@ fn conflict_paths_preserve_distinct_non_utf8_names() -> TestResult {
         .git
         .merge_conflicts(&branch, "main", "HEAD")?
         .ok_or("expected conflicts")?;
-    assert_eq!(preview, [r#""x\"\\\t\220""#, r#""x\"\\\t\221""#]);
+    assert_eq!(
+        preview,
+        [
+            r#""\"x\\220\"""#,
+            "plain\t",
+            r#""x\"\\\t\220""#,
+            r#""x\220""#,
+            r#""x\221""#
+        ],
+    );
+    let squash = fx.git.squash_land(
+        &repo,
+        &SquashInput {
+            base: "main",
+            head: "feat/names",
+            message: "conflict",
+            author: &author(),
+            remote: "origin",
+            branch: "main",
+        },
+    )?;
+    assert_eq!(squash, SquashLanding::Conflict(preview.clone()));
     let owned = fx.path("ci");
     fs::create_dir(&owned)?;
     let train = fx.git.build_train(
