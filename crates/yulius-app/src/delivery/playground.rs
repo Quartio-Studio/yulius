@@ -91,7 +91,7 @@ fn playground_plan_hold(steps: &[crate::model::StepRecord]) -> Option<String> {
 }
 
 impl App {
-    /// Checks whether there are task commits ahead of the current local integration branch.
+    /// Checks whether the task brings a net change since it forked from the integration branch.
     pub(super) async fn playground_delivery_base(
         &self,
         sandbox: &SandboxRecord,
@@ -101,12 +101,15 @@ impl App {
     ) -> AppResult<String> {
         self.dlv_refresh_clone(sandbox).await?;
         let base = format!("origin/{integration}");
-        let (ahead, _) = self
-            .deps
-            .git
-            .ahead_behind(Path::new(worktree), &base, "HEAD")
-            .await?;
-        if ahead == 0 {
+        let git = &self.deps.git;
+        let (ahead, _) = git.ahead_behind(Path::new(worktree), &base, "HEAD").await?;
+        if ahead == 0
+            || git
+                .diff_stat(Path::new(worktree), &base, "HEAD")
+                .await?
+                .files
+                == 0
+        {
             return Err(nothing_to_deliver(branch, integration));
         }
         Ok(base)
@@ -293,19 +296,9 @@ impl App {
             })?;
         let commit = match landed {
             SquashLanding::Landed(commit) => commit,
-            // The branch changes something, and the integration branch already has it all (a
-            // squash that landed before its stage was recorded): it is merged. A branch whose
-            // commits cancel out delivers nothing.
-            SquashLanding::Unchanged => {
-                let since = git
-                    .merge_base(&repo, &base, &head)
-                    .await?
-                    .ok_or_else(|| nothing_to_deliver(branch, integration))?;
-                if git.diff_stat(&repo, &since, &head).await?.files == 0 {
-                    return Err(nothing_to_deliver(branch, integration));
-                }
-                format!("{base} (already there)")
-            }
+            // The task has a net change, checked above. An unchanged squash means it already
+            // landed before its stage was recorded, so recover that stage.
+            SquashLanding::Unchanged => format!("{base} (already there)"),
             SquashLanding::Conflict(files) => {
                 return Err(conflict_refusal(branch, integration, &files));
             }
