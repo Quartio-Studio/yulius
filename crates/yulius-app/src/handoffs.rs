@@ -236,14 +236,15 @@ impl App {
             if sandbox.removed_at.is_some() {
                 continue;
             }
-            let full = sandbox.repo_name.to_lowercase();
+            // The repository is `owner/name`; its owner and name are stored apart.
+            let full = format!("{}/{}", sandbox.repo_owner, sandbox.repo_name).to_lowercase();
             if sandbox.id.as_str() == name.trim()
                 || sandbox.slug.to_lowercase() == wanted
                 || full == wanted
             {
                 return Ok(Some(sandbox));
             }
-            if full.rsplit('/').next() == Some(wanted.as_str()) {
+            if sandbox.repo_name.to_lowercase() == wanted {
                 short.push(sandbox);
             }
         }

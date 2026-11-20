@@ -1380,3 +1380,67 @@ fn the_digest_parks_a_quiet_task_that_asks_nobody_and_lists_its_last_message() -
     rt.shutdown_timeout(Duration::from_secs(5));
     Ok(())
 }
+
+/// SPEC-512 HOF-005, with real processes: once a handed-off task ended, its source task's live
+/// session is told the outcome by Yulius, once.
+#[test]
+fn a_handed_off_tasks_outcome_reaches_its_source() -> TestResult {
+    use yulius_app::ports::store_ext::HandoffRecord;
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let app = app(&data, 8, 0).await?;
+        let (id, _) = answered(&app, &data).await?;
+        let source = TaskStore::task(app.deps.store.as_ref(), &id)
+            .await?
+            .ok_or("source")?;
+        let mut other = app
+            .deps
+            .store
+            .sandbox(&source.sandbox_id)
+            .await?
+            .ok_or("sandbox")?;
+        other.id = yulius_domain::ids::SandboxId::parse("sb-api")?;
+        other.slug = "api".into();
+        other.repo_name = "api".into();
+        other.port_base += 100;
+        app.deps.store.insert_sandbox(&other).await?;
+        let mut target = source.clone();
+        target.id = TaskId::parse("t-api")?;
+        target.sandbox_id = other.id.clone();
+        target.number = 1;
+        target.title = "Add the endpoint".into();
+        target.status = TaskStatus::Closed;
+        target.activity = None;
+        TaskStore::insert_task(app.deps.store.as_ref(), &target).await?;
+        app.deps
+            .store
+            .insert_handoff(&HandoffRecord {
+                id: "ho_1".into(),
+                source_task: source.id.clone(),
+                source_sandbox: source.sandbox_id.clone(),
+                target_sandbox: other.id.clone(),
+                owner: source.owner.clone(),
+                args: r#"{"sandbox":"api","title":"Add the endpoint","prompt":"P"}"#.into(),
+                chain: vec![source.sandbox_id.as_str().to_owned()],
+                depth: 1,
+                state: "created".into(),
+                reason: None,
+                target_task: Some(target.id.clone()),
+                created_at: app.now(),
+            })
+            .await?;
+        wait_for("the outcome told", Duration::from_secs(30), || async {
+            app.tell_handoff_outcomes().await;
+            screen(&app, &id).contains("Yulius: the task you handed off, api #1")
+        })
+        .await?;
+        assert!(
+            app.deps.store.untold_handoffs().await?.is_empty(),
+            "told once"
+        );
+        Ok::<_, Error>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
