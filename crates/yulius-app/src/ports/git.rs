@@ -509,6 +509,12 @@ pub trait GitPort: Send + Sync {
         let _ = (repo, url);
         unsupported("repointing origin")
     }
+    /// The tree or conflict paths produced by merging `theirs` into `ours` with the checkout's
+    /// attributes. Does not change its checkout, index or refs.
+    async fn preview_merge(&self, repo: &Path, ours: &str, theirs: &str) -> AppResult<TrainStep> {
+        let _ = (repo, ours, theirs);
+        unsupported("checking a merge for conflicts")
+    }
     /// Lands the request's head on its branch of `origin` as one commit: the tree Git's merge of
     /// `base` and `head` gives, with `base` as its only parent, pushed without forcing (SPEC-099:
     /// a playground's merge).

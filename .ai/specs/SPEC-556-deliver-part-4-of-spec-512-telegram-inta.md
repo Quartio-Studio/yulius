@@ -35,7 +35,7 @@ head on its own branch.
   [SPEC-512 "Part 4"](SPEC-512-marcin-s-five-issues-1412-1418-1413-1107.md#part-4-the-personal-telegram-channels-intake-1107).
 - **DLV-002** SPEC-512 is not edited here: task #494 owns it and continues with part 5.
 - **DLV-003** Migrations keep `dev`'s order (file 0072 at schema version 70, 0070 at 71, 0071
-  at 72) with 0073 last, at 73.
+  at 72, 0074 at 73, 0075 at 74) with 0073 last, at 75.
 - **DLV-004** (review round 1) A chat's intake messages are handled one at a time in the order
   sent; a whole poll answer (20) waits its turn; a message past that is not dropped silently: it
   is logged and the chat is told, once per quiet window. `/start` with intake on gets the intake
@@ -92,7 +92,7 @@ On this branch (2026-11-20):
 | Check | Result |
 |---|---|
 | `git fetch origin feat/494-…` and `git merge --no-edit f7cde240e` from `dev` c20e9807d | fast-forward, nothing resolved; 33 files against `dev` (part 4, its SPEC-512 Evidence, this spec) |
-| Migration order | `MIGRATIONS` ends with files 0072 (schema version 70), 0070 (71), 0071 (72), 0073 (73); pinned test `(73, 0073)`; numbers unique (`check_repository.py`) |
+| Migration order | at 9890d38d3, `MIGRATIONS` ended with files 0072 (schema version 70), 0070 (71), 0071 (72), 0073 (73); after the merge of `dev` eef33c931 below, 0074 (73), 0075 (74), 0073 (75); pinned test `(75, 0073)`, `MIGRATIONS.len() == 75`; numbers unique (`check_repository.py`) |
 | `cargo test -p yulius --test main telegram::` | 30 passed |
 | `cargo test -p yulius --test main task_message::` | 33 passed |
 | `cargo test -p yulius-store --lib` | 98 passed |
@@ -122,3 +122,10 @@ After the fix: `telegram::` 33 passed; the three new tests 15 runs in a row with
 `cargo test -p yulius-app --lib` 645 passed; clippy `-D warnings` and `fmt --check` clean;
 `check_repository.py` passed. `telegram.e2e.ts` was not rerun: no web asset changed in this
 round.
+
+### Merge of `dev` eef33c931 (after round 1)
+
+`dev` appended migrations 0074 and 0075 (schema versions 73 and 74, #1488) where part 4 appends
+0073. Resolved keeping both: `dev`'s first, 0073 last at schema version 75; the pinned test and
+`MIGRATIONS.len()` follow, and 0073's header comment and ADR-0392 say version 75. No other file
+conflicted.

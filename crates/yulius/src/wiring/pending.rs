@@ -20,6 +20,11 @@ pub struct UnavailableSessionHost;
 
 #[async_trait]
 impl SessionHost for UnavailableSessionHost {
+    fn loopback_ports_idle(&self, _: std::ops::RangeInclusive<u16>) -> bool {
+        // This adapter starts no process and owns no listeners.
+        true
+    }
+
     async fn spawn(
         &self,
         _: &Path,

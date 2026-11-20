@@ -162,7 +162,9 @@ after a restart of Yulius. Reply shows that the terminal took the keyboard.
   Yulius too. The reason kept with the flag says that work answers it, the store says when the
   flag was raised, and a run that is watched again takes that time back. Every other flag stays
   through the agent's work, as before: one that work does not answer, one of Yulius's own, and
-  one another matter raised after the notice's flag was replaced.
+  one another matter raised after the notice's flag was replaced. If another terminal
+  question arrives on an answerable flag, the new question supplies the reason, the time
+  work must follow, and whether session work can answer it.
 - ATN-011: a reason follows the owner of its flag (review round 1). A secret request's flag
   ends with the request's answer; once another matter flags the task, that flag is the other
   matter's (the answer no longer ends it, SPEC-213 SRA-003), and it says the other matter's

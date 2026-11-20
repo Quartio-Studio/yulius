@@ -303,7 +303,7 @@ impl Git {
             .stdout
             .split(|b| *b == 0)
             .filter(|name| !name.is_empty())
-            .map(|name| String::from_utf8_lossy(name).into_owned())
+            .map(crate::merges::conflict_path)
             .collect();
         let _ = self.run(Invocation::new(self, "merge", Some(worktree)).args(["merge", "--abort"]));
         if files.is_empty() {

@@ -178,6 +178,11 @@ pub enum Point {
     /// reading, a limit Claude reported): the stored usage was read under the lock such changes
     /// take; nothing is written yet. The path is the account id.
     UsageRead,
+    /// Reattachment read the answerable attention reason but has not installed its time.
+    /// The path is the task id.
+    AttentionRecoveryRead,
+    /// A replacement notice reached a busy attention lock. The path is the task id.
+    AttentionReplacementWaiting,
     /// A usage limit Claude reported (SPEC-464) is about to be recorded on its subscription: its
     /// stored usage is not read yet. The path is the account id.
     LimitRecord,
@@ -187,6 +192,9 @@ pub enum Point {
     /// A subscription Claude refused for good is about to be marked as needing a new sign-in
     /// (#1211): nothing is read or written yet. The path is the account id.
     AccessLostRecord,
+    /// An idle Cockpit finished looking for stray processes, including a probe with no usable
+    /// answer. The path is its transcript.
+    CockpitStraysProbed,
     /// A turn's end (SPEC-461) looked at the background work of a session on an older Claude
     /// Code, whatever it found; who typed and what pauses it are not read again yet. The path is
     /// the task id.

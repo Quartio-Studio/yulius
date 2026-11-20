@@ -279,6 +279,17 @@ struct ShellFile {
 }
 
 impl ShellRuntime {
+    /// The first sighting the Cockpit kept for this process identity (SPEC-355).
+    #[cfg(feature = "test-support")]
+    #[must_use]
+    pub fn stray_seen_at(&self, pid: u32, started: u64) -> Option<i64> {
+        self.strays_seen
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&(pid, started))
+            .copied()
+    }
+
     /// Shell id.
     #[must_use]
     pub fn id(&self) -> &str {

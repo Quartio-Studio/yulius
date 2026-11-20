@@ -744,6 +744,25 @@ mod tests {
         Budget { cpus, memory_mb: 1 }
     }
 
+    #[test]
+    fn a_skipped_cpu_reading_keeps_the_last_complete_base() {
+        let admission = CiAdmission::new(Capacity::new(8, 1024));
+        let first = Instant::now();
+        let measure = |seconds, cpu: Option<u64>| {
+            admission.measure(
+                || first + Duration::from_secs(seconds),
+                || vec![sandbox("a")],
+                |_| cpu.map(|usec| (usec, 0)),
+            )
+        };
+        assert_eq!(measure(0, Some(900_000_000)), Measured::NOTHING);
+        assert_eq!(measure(5, None).used, None);
+        assert_eq!(
+            measure(10, Some(910_000_000)).used.map(|used| used.cpus),
+            Some(1)
+        );
+    }
+
     /// SPEC-497 HBA-002 (review round 1): no rate before a window passed; two sandboxes' rates
     /// add up, rounded up after a tenth; memory in MiB; a counter that goes back starts over; a
     /// sandbox no longer running is forgotten; a base older than the stale window is not

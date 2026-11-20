@@ -712,6 +712,8 @@ pub struct PauseRecord {
     /// Text for the resumed session when it resumes on another account: the held prompt
     /// (`prompt`); `None` otherwise.
     pub continuation: Option<String>,
+    /// A prompt entered while a previous turn still ran: that turn's Stop cannot end the hold.
+    pub during_turn: bool,
     /// When the pause began.
     pub started_at: Timestamp,
     /// When it ended; `None` while open.

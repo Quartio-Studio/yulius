@@ -141,7 +141,7 @@ watching, steering and unblocking.
   passes into a staged copy, resumable after a broken link), freezes it only to send what changed
   since, proves the copy (entries, bytes and a fingerprint per folder, equal on both hosts),
   starts the new instance, redirects the old URL and removes its own key. The estimated freeze is
-  shown before it begins and `--max-downtime <minutes>` bounds it. People are asked only in the
+  shown before it begins and the optional longest freeze in Settings or `--max-downtime <minutes>` bounds it. People are asked only in the
   plan, before anything changes (the SSH sign-in, a DNS record, the GitHub App's callback). Any
   failure before the new instance runs thaws the old one; `--abort` goes back. Tasks that were
   live come back by themselves on the new host. A superadmin can also move from **Settings →

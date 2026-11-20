@@ -1879,7 +1879,9 @@ impl App {
         Ok(observed)
     }
 
-    fn dlv_delivery_of(
+    async fn dlv_delivery_of(
+        &self,
+        playground: Option<(&SandboxRecord, &TaskRecord)>,
         profile: &DeliveryProfile,
         observed: &Observed,
         mut notes: Vec<String>,
@@ -1887,17 +1889,39 @@ impl App {
     ) -> Delivery {
         let facts = observed.facts();
         let stage = &observed.record.stage;
-        let next_actions = dlv::next_actions(stage, profile, &facts)
-            .iter()
-            .map(NextAction::wire)
-            .collect();
-        let blocked = dlv::blocked_actions(stage, profile, &facts)
-            .into_iter()
-            .map(|(action, err)| BlockedAction {
-                action: action.wire(),
-                reason: err.to_string(),
-            })
-            .collect();
+        let (next_actions, blocked) = if let Some((sandbox, task)) = playground {
+            if past_merge(stage) {
+                (Vec::new(), Vec::new())
+            } else {
+                let hold = self
+                    .playground_view_hold(sandbox, task, observed, profile)
+                    .await
+                    .unwrap_or_else(|error| Some(error.public_message()));
+                match hold {
+                    Some(reason) => (
+                        Vec::new(),
+                        vec![BlockedAction {
+                            action: NextAction::Merge.wire(),
+                            reason,
+                        }],
+                    ),
+                    None => (vec![NextAction::Merge.wire()], Vec::new()),
+                }
+            }
+        } else {
+            let next_actions = dlv::next_actions(stage, profile, &facts)
+                .iter()
+                .map(NextAction::wire)
+                .collect();
+            let blocked = dlv::blocked_actions(stage, profile, &facts)
+                .into_iter()
+                .map(|(action, err)| BlockedAction {
+                    action: action.wire(),
+                    reason: err.to_string(),
+                })
+                .collect();
+            (next_actions, blocked)
+        };
         if observed.dirty && *stage == DeliveryStage::None {
             notes.push(format!("Git: {DIRTY_WORKTREE}."));
         }
@@ -2005,7 +2029,15 @@ impl App {
         let access = self
             .dlv_checks_access(&sandbox, &observed.checks_unreadable, user)
             .await;
-        let mut view = Self::dlv_delivery_of(&profile, &observed, notes, access);
+        let mut view = self
+            .dlv_delivery_of(
+                sandbox.is_playground().then_some((&sandbox, task)),
+                &profile,
+                &observed,
+                notes,
+                access,
+            )
+            .await;
         view.review_rounds = self.review_round_views(&task.id).await;
         Ok(view)
     }

@@ -698,7 +698,7 @@ impl Delegation {
 
     /// What `sandbox`'s CI jobs and Docker engine use now ([`CiUse`]): its `ci` and `engine`
     /// groups' figures added up (hierarchical, so the engine's containers count). `None` without
-    /// the `cpu` controller (the leaves are not split then) or when neither group can be read.
+    /// the `cpu` controller (the leaves are not split then) or when a complete sample cannot be read.
     #[must_use]
     pub fn ci_use(&self, sandbox: &str) -> Option<CiUse> {
         if !self.controllers.iter().any(|c| c == "cpu") {
@@ -707,8 +707,15 @@ impl Delegation {
         let groups = self.sandbox_paths(sandbox);
         let mut used = None;
         for group in [&groups.ci, &groups.engine] {
-            let Ok(cpu) = std::fs::read_to_string(group.join("cpu.stat")) else {
-                continue;
+            let cpu = match std::fs::read_to_string(group.join("cpu.stat")) {
+                Ok(cpu) => cpu,
+                Err(err)
+                    if err.kind() == io::ErrorKind::NotFound
+                        && group.try_exists().ok() == Some(false) =>
+                {
+                    continue;
+                }
+                Err(_) => return None,
             };
             let anon = std::fs::read_to_string(group.join("memory.stat"))
                 .map_or(0, |text| keyed(&text, "anon"));
@@ -2024,6 +2031,23 @@ mod tests {
         let (_root, single, _dir) = fake_sandbox("memory pids\n")?;
         single.sandbox_group("s1", &Limits::default())?;
         assert_eq!(single.ci_use("s1"), None);
+        Ok(())
+    }
+
+    #[test]
+    fn ci_use_requires_cpu_time_from_each_existing_group() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let (_root, delegation, _dir) = fake_sandbox("cpu memory pids\n")?;
+        let groups = delegation.sandbox_group("s1", &Limits::default())?;
+        std::fs::write(groups.ci.join("cpu.stat"), "usage_usec 1500\n")?;
+        // A directory in place of the stat file fails to read even when tests run as root.
+        std::fs::create_dir(groups.engine.join("cpu.stat"))?;
+        assert_eq!(delegation.ci_use("s1"), None);
+        std::fs::remove_dir_all(&groups.engine)?;
+        assert_eq!(
+            delegation.ci_use("s1").map(|used| used.cpu_usec),
+            Some(1500)
+        );
         Ok(())
     }
 

@@ -11,6 +11,10 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   notification then answers its task as their message (the owner rule holds), any other message,
   photos and files included, starts a task as them marked "From Telegram", and `/status` and
   `/task <project> <text>` work.
+- Task notifications and queued prompts retain the state of the request they belong to. A successful model refresh releases waiting tasks, workflow limit classification respects all agent records in a poll, and provider usage reads have a byte limit (SPEC-555).
+- Settings accepts a freeze limit for host moves. Removed sandboxes release their port ranges after their processes and listeners retire. Playground delivery reports its local squash, and cross-project task requests check current permissions before displaying a card (SPEC-555).
+- Task search updates as results arrive. CI skips incomplete CPU samples, browser assertions follow layout and retry events, and the decision and browser test indexes reflect the repository (SPEC-555).
+
 - GitHub sign-in redirects malformed queries to the sign-in page. Pull request notices name failed browser tests and wait for the merge queue to catch up after a run passes. The scan and attachment restore tools describe their actual defaults (SPEC-554).
 - The release list labels roll-forward actions, playground guests see only their available tools, and the Git task review and subscription list reflect changes while open. The browser mock and touch tests cover the corresponding refusal paths (SPEC-554).
 - Instance moves report which units need thawing, explain insufficient space after an interrupted copy and detect an update already in progress. Import guidance uses the account's primary group, and the remote CLI explains sign-in recovery after a move (SPEC-554).

@@ -2143,11 +2143,22 @@ fn a_squash_lands_one_commit_on_the_remote_branch_or_names_the_conflicts() -> Te
     fs::write(feature.join("x.txt"), "x\n")?;
     fx.git
         .commit_all(&feature, "feat: x, part one", &author())?;
-    fs::write(feature.join("y.txt"), "y\n")?;
+    let unusual = "y with a tab\t.txt";
+    fs::write(feature.join(unusual), "y\n")?;
     fx.git
         .commit_all(&feature, "feat: x, part two", &author())?;
     let head = fx.git.rev_parse(&feature, "HEAD")?;
     let base = fx.git.rev_parse(&repo, "origin/dev")?;
+
+    assert_eq!(
+        fx.git.merge_conflicts(&feature, "origin/dev", "HEAD")?,
+        None
+    );
+    assert_eq!(
+        fx.git.rev_parse(&remote, "dev")?,
+        base,
+        "preview pushed nothing"
+    );
 
     let landed = fx.git.squash_land(
         &repo,
@@ -2205,7 +2216,22 @@ fn a_squash_lands_one_commit_on_the_remote_branch_or_names_the_conflicts() -> Te
     fx.git
         .worktree_add(&repo, &other, "feat/y", "origin/main")?;
     fs::write(other.join("x.txt"), "a different x\n")?;
+    fs::write(other.join(unusual), "a different y\n")?;
     fx.git.commit_all(&other, "feat: y", &author())?;
+    assert_eq!(
+        fx.git.merge_conflicts(&other, "origin/dev", "HEAD")?,
+        Some(vec!["x.txt".into(), unusual.into()])
+    );
+    assert_eq!(
+        fx.raw(&other, &["status", "--porcelain"])?,
+        "",
+        "checkout and index stay clean"
+    );
+    assert_eq!(
+        fx.git.rev_parse(&remote, "dev")?,
+        commit,
+        "preview pushed nothing"
+    );
     let conflict = fx.git.squash_land(
         &repo,
         &SquashInput {
@@ -2217,8 +2243,131 @@ fn a_squash_lands_one_commit_on_the_remote_branch_or_names_the_conflicts() -> Te
             branch: "dev",
         },
     )?;
-    assert_eq!(conflict, SquashLanding::Conflict(vec!["x.txt".to_owned()]));
+    assert_eq!(
+        conflict,
+        SquashLanding::Conflict(vec!["x.txt".to_owned(), unusual.to_owned()])
+    );
     assert_eq!(fx.git.rev_parse(&remote, "dev")?, commit, "nothing pushed");
+    Ok(())
+}
+
+/// Exit zero from merge-tree requires a valid tree object id. An invalid answer remains
+/// a parse error even though both input revisions resolve through the real Git executable.
+#[cfg(unix)]
+#[test]
+fn a_successful_merge_tree_with_an_invalid_tree_id_is_a_parse_error() -> TestResult {
+    let fx = Fixture::new()?;
+    let (_, repo) = fx.repo_with_remote()?;
+    let wrapper = fx.path("malformed-tree-git");
+    write_hook(
+        &wrapper,
+        r#"#!/bin/sh
+for arg do
+    if [ "$arg" = merge-tree ]; then
+        printf 'not-a-tree-id\000'
+        exit 0
+    fi
+done
+exec git "$@"
+"#,
+    )?;
+    let git = isolated(Git::new(&wrapper), &fx.home);
+    let result = git.merge_tree(&repo, "main", "HEAD");
+    assert!(
+        matches!(result, Err(GitError::Parse { command: "merge-tree", ref detail }) if detail.contains("not-a-tree-id")),
+        "{result:?}"
+    );
+    Ok(())
+}
+
+/// Preview, squash and the checked train distinguish raw bytes from literal quoting in real filenames.
+#[cfg(unix)]
+#[test]
+fn conflict_paths_preserve_distinct_non_utf8_names() -> TestResult {
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt as _;
+
+    let fx = Fixture::new()?;
+    let (_, repo) = fx.repo_with_remote()?;
+    let branch = fx.path("branch");
+    fx.git.worktree_add(&repo, &branch, "feat/names", "main")?;
+    let names: [&[u8]; 5] = [
+        br#""x\220""#,
+        b"plain\t",
+        b"x\"\\\x07\x08\t\n\x0b\x0c\r\x90",
+        b"x\x90",
+        b"x\x91",
+    ];
+    for (tree, content) in [(&repo, "base"), (&branch, "task")] {
+        for name in names {
+            fs::write(tree.join(OsStr::from_bytes(name)), content)?;
+        }
+        fx.git.commit_all(tree, content, &author())?;
+    }
+    let preview = fx
+        .git
+        .merge_conflicts(&branch, "main", "HEAD")?
+        .ok_or("expected conflicts")?;
+    assert_eq!(
+        preview,
+        [
+            r#""\"x\\220\"""#,
+            "plain\t",
+            r#""x\"\\\a\b\t\n\v\f\r\220""#,
+            r#""x\220""#,
+            r#""x\221""#
+        ],
+    );
+    let squash = fx.git.squash_land(
+        &repo,
+        &SquashInput {
+            base: "main",
+            head: "feat/names",
+            message: "conflict",
+            author: &author(),
+            remote: "origin",
+            branch: "main",
+        },
+    )?;
+    assert_eq!(squash, SquashLanding::Conflict(preview.clone()));
+    let owned = fx.path("ci");
+    fs::create_dir(&owned)?;
+    let train = fx.git.build_train(
+        &repo,
+        &owned.join("train"),
+        &owned,
+        &TrainInput {
+            base: "main",
+            heads: &[fx.git.rev_parse(&branch, "HEAD")?],
+            landing: TrainLanding::MergeCommit,
+            author: &author(),
+        },
+    )?;
+    assert_eq!(train.steps, [TrainStep::Conflict(preview)]);
+    Ok(())
+}
+
+#[test]
+fn show_file_reads_a_preview_tree_by_id_and_requires_refs_to_resolve_to_commits() -> TestResult {
+    let fx = Fixture::new()?;
+    let (_, repo) = fx.repo_with_remote()?;
+    let tree = fx.raw(&repo, &["rev-parse", "main^{tree}"])?;
+    fx.raw(&repo, &["update-ref", "refs/tags/tree-alias", &tree])?;
+    let blob = fx.raw(&repo, &["rev-parse", "main:README.md"])?;
+
+    for rev in ["main", tree.as_str()] {
+        assert_eq!(
+            fx.git.show_file(&repo, rev, "README.md")?.as_deref(),
+            Some("hello\n")
+        );
+    }
+    for rev in ["tree-alias", blob.as_str()] {
+        let result = fx.git.show_file(&repo, rev, "README.md");
+        assert!(
+            matches!(&result, Err(GitError::RevisionNotFound(name)) if name == rev),
+            "expected commit resolution to reject {rev}, got {result:?}"
+        );
+    }
     Ok(())
 }
 

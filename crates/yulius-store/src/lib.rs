@@ -55,6 +55,8 @@ pub fn schema_version() -> u32 {
     u32::try_from(MIGRATIONS.len()).unwrap_or(u32::MAX)
 }
 
+const REUSABLE_SANDBOX_PORTS: &str = include_str!("migrations/0074_reusable_sandbox_ports.sql");
+
 /// Ordered migrations; index + 1 is the schema version stored in `PRAGMA user_version`.
 const MIGRATIONS: &[&str] = &[
     include_str!("migrations/0001_initial.sql"),
@@ -199,7 +201,9 @@ const MIGRATIONS: &[&str] = &[
     include_str!("migrations/0070_end_of_day_digest.sql"),
     // Schema version 72 (SPEC-535); 0071 is the reserved file number.
     include_str!("migrations/0071_reindex_session_passages.sql"),
-    // Schema version 73 (SPEC-512 TGI-001); 0073 is the reserved file number.
+    REUSABLE_SANDBOX_PORTS,
+    include_str!("migrations/0075_prompt_held_during_turn.sql"),
+    // Schema version 75 (SPEC-512 TGI-001); 0073 is the reserved file number.
     include_str!("migrations/0073_telegram_intake.sql"),
 ];
 
@@ -391,14 +395,28 @@ fn prepare(conn: &mut Connection) -> Result<(), OpenError> {
         .enumerate()
         .skip(usize::try_from(version).unwrap_or(0))
     {
+        // Replacing a parent table with foreign keys enabled would cascade deletion
+        // into its children. SQLite checks the resulting graph before the rebuild commits.
+        let rebuild = *sql == REUSABLE_SANDBOX_PORTS;
+        if rebuild {
+            conn.pragma_update(None, "foreign_keys", "OFF")?;
+        }
         let tx = conn.transaction()?;
         tx.execute_batch(sql)?;
+        if rebuild && tx.prepare("PRAGMA foreign_key_check")?.exists([])? {
+            return Err(OpenError::Corrupt(
+                "invalid references after rebuilding sandbox ports".into(),
+            ));
+        }
         tx.pragma_update(
             None,
             "user_version",
             i64::try_from(index + 1).unwrap_or(i64::MAX),
         )?;
         tx.commit()?;
+        if rebuild {
+            conn.pragma_update(None, "foreign_keys", "ON")?;
+        }
     }
     Ok(())
 }
@@ -485,7 +503,12 @@ mod tests {
                 72,
                 include_str!("migrations/0071_reindex_session_passages.sql"),
             ),
-            (73, include_str!("migrations/0073_telegram_intake.sql")),
+            (73, REUSABLE_SANDBOX_PORTS),
+            (
+                74,
+                include_str!("migrations/0075_prompt_held_during_turn.sql"),
+            ),
+            (75, include_str!("migrations/0073_telegram_intake.sql")),
         ];
         for (version, sql) in pinned {
             assert_eq!(
@@ -494,7 +517,41 @@ mod tests {
                 "schema version {version}"
             );
         }
-        assert_eq!(MIGRATIONS.len(), 73, "a new migration is pinned here too");
+        assert_eq!(MIGRATIONS.len(), 75, "a new migration is pinned here too");
+    }
+
+    #[test]
+    fn port_reuse_upgrade_keeps_existing_leases_and_sandbox_children()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut conn = Connection::open_in_memory()?;
+        for sql in &MIGRATIONS[..72] {
+            conn.execute_batch(sql)?;
+        }
+        conn.pragma_update(None, "user_version", 72)?;
+        conn.execute_batch(
+            "INSERT INTO users (id, display_name, is_superadmin, is_instance_admin, created_at)
+             VALUES ('u', 'User', 0, 0, 1);
+             INSERT INTO sandboxes (id, slug, repo_owner, repo_name, default_branch, profile,
+                 port_base, port_count, created_by, onboarding_state, created_at, removed_at)
+             VALUES ('s', 'shop', 'org', 'shop', 'dev', '{}', 20000, 20, 'u', 'ready', 1, 2);
+             INSERT INTO permission_cache VALUES ('u', 's', 'admin', 1);",
+        )?;
+        prepare(&mut conn)?;
+        let held: (u16, bool) = conn.query_row(
+            "SELECT port_base, ports_released FROM sandboxes WHERE id='s'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?;
+        assert_eq!(held, (20000, false));
+        let owner: String = conn.query_row(
+            "SELECT user_id FROM permission_cache WHERE sandbox_id='s'",
+            [],
+            |r| r.get(0),
+        )?;
+        assert_eq!(owner, "u");
+        let keys: bool = conn.query_row("PRAGMA foreign_keys", [], |r| r.get(0))?;
+        assert!(keys);
+        Ok(())
     }
 
     /// SPEC-514 PIN-003: a version-67 database's automations saved as `auto` (drawn for each

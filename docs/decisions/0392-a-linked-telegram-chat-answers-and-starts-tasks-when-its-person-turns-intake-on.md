@@ -59,5 +59,5 @@ and [ADR-0379](0379-a-needs-you-names-who-may-answer-it.md) (who steers or answe
 
 - A person answers and starts work from their phone, as themselves, and the task says it came
   from Telegram.
-- A schema change (migration 0073, schema version 73): two `telegram_links` columns and the
+- A schema change (migration 0073, schema version 75): two `telegram_links` columns and the
   `telegram_sent` table. The port gains message ids, replies, files and `fetch_file`.

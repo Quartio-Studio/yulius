@@ -135,9 +135,34 @@ impl SandboxStore for SqliteStore {
         .await
     }
 
+    async fn retiring_port_owners(&self) -> AppResult<Vec<SandboxRecord>> {
+        self.call(|c| {
+            let mut stmt = c.prepare(&format!(
+                "SELECT {COLS} FROM sandboxes WHERE removed_at IS NOT NULL AND ports_released=0 ORDER BY port_base"
+            )).map_err(db)?;
+            let rows = stmt.query_map([], from_row).map_err(db)?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(db)
+        }).await
+    }
+
+    async fn release_removed_ports(&self, id: &SandboxId) -> AppResult<()> {
+        let id = id.as_str().to_owned();
+        self.call(move |c| {
+            c.execute(
+                "UPDATE sandboxes SET ports_released = 1 WHERE id = ?1 AND removed_at IS NOT NULL",
+                [id],
+            )
+            .map_err(db)?;
+            Ok(())
+        })
+        .await
+    }
+
     async fn next_port_base(&self, start: u16, count: u16) -> AppResult<u16> {
         self.call(move |c| {
-            let mut stmt = c.prepare("SELECT port_base FROM sandboxes").map_err(db)?;
+            let mut stmt = c
+                .prepare("SELECT port_base FROM sandboxes WHERE ports_released=0")
+                .map_err(db)?;
             let used: Vec<i64> = stmt
                 .query_map([], |r| r.get(0))
                 .map_err(db)?

@@ -252,6 +252,20 @@ test('the sidebar and Tasks lists load as task rows of the real rows’ height',
   await release(browser);
   await expect(browser.locator('.task-list .task-row').first()).toBeVisible();
   await expect(browser.locator('#main .tl-row').first()).toBeVisible();
+  // A newly inserted content-visibility:auto row can have skipped contents until the
+  // next rendering update. A fresh offscreen copy exercises that state on demand.
+  const skippedHeight = await browser.evaluate(async () => {
+    const row = document.querySelector<HTMLElement>('#main .tl-row')!;
+    const copy = row.cloneNode(true) as HTMLElement;
+    copy.style.position = 'absolute';
+    copy.style.top = '100000px';
+    row.parentElement!.prepend(copy);
+    await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+    const height = copy.getBoundingClientRect().height;
+    copy.remove();
+    return height;
+  });
+  expect(skippedHeight).toBe(pageRow!.height);
   await expect(browser.locator('.skeleton')).toHaveCount(0);
   // The first group band and its rows sit where the outlines were; rows are as tall as real ones.
   expectSameBox(sideHead, await box(browser, '.task-list .task-group-head'));
