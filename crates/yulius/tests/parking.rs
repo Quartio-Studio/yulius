@@ -2116,6 +2116,35 @@ fn parked_task_parks_safely_during_ci_and_auto_wakes_on_actionable_check_results
             .set_task_needs_you(&id, None, app.now())
             .await?;
         set_pull_head(&github, 42, &running_ci.sha)?;
+        // The watcher switches to a different active head while the original head is being
+        // prepared for parking. It can only deliver the result of the run it still follows.
+        let competing = CiRunRecord {
+            id: "newer-pr-head".into(),
+            sha: "another-head".into(),
+            queued_at: Timestamp(12),
+            ..running_ci.clone()
+        };
+        let writing = Arc::clone(&app);
+        let handle = tokio::runtime::Handle::current();
+        yulius_app::race::on(Point::ParkPrepared, Path::new(id.as_str()), move || {
+            assert!(
+                tokio::task::block_in_place(|| {
+                    handle.block_on(writing.deps.store.insert_ci_run(&competing, &[]))
+                })
+                .is_ok()
+            );
+        });
+        assert_eq!(
+            app.park_idle_sessions_now().await,
+            0,
+            "the watcher changed heads"
+        );
+        let restored = CiRunRecord {
+            id: "current-pr-head".into(),
+            queued_at: Timestamp(14),
+            ..running_ci.clone()
+        };
+        app.deps.store.insert_ci_run(&restored, &[]).await?;
         parked(&app, &id).await?;
         let bounds = WatchBounds::default();
         // Still running: `watch_prs` must NOT wake the parked task.

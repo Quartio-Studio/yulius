@@ -2831,6 +2831,31 @@ async fn parking_keeps_an_external_green_pr_that_must_update_its_base() -> TestR
     Ok(())
 }
 
+#[tokio::test]
+async fn parking_rechecks_a_recorded_pr_when_its_base_advances_during_checks() -> TestResult {
+    let f = fixture().await?;
+    install_compatibility_pull(&f).await?;
+    idle_for_parking(&f).await?;
+    // This recorded delivery is visible by number even though branch discovery omits it.
+    f.h.github.pulls.lock().map_err(|_| "pull fixture")?[0].head = "published-elsewhere".into();
+    f.h.github
+        .set_checks("abc123", yulius_app::ports::github::ChecksState::Success);
+    let held = f.h.github.hold_checks();
+    let app = f.h.app.clone();
+    let checking = tokio::spawn(async move { app.park_idle_sessions_now().await });
+    tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        f.h.github.checks_entered.notified(),
+    )
+    .await?;
+    f.h.github.pulls.lock().map_err(|_| "pull fixture")?[0].behind = true;
+    f.h.github.release_checks(&held);
+    assert_eq!(checking.await?, 0, "the second read requires a base update");
+    f.h.github.pulls.lock().map_err(|_| "pull fixture")?[0].behind = false;
+    assert_eq!(f.h.app.park_idle_sessions_now().await, 1);
+    Ok(())
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn parking_keeps_an_external_pr_when_its_checked_head_starts_an_unwatched_rerun() -> TestResult
 {
