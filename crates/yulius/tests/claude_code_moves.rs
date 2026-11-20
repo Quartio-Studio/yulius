@@ -409,8 +409,15 @@ fn a_resumed_run_starts_with_an_empty_queue() -> TestResult {
         // Its person stops the task: the process ends with the prompt waiting.
         stop(&app, &id).await?;
         let ctx = ctx(&app, &user).await?;
-        app.continue_task(&ctx, id.as_str(), &ContinueTask { account_id: None })
-            .await?;
+        app.continue_task(
+            &ctx,
+            id.as_str(),
+            &ContinueTask {
+                account_id: None,
+                prompt: None,
+            },
+        )
+        .await?;
         // The resumed run's first line names its version: the watcher reads the run's lines.
         wait_for("the resumed run", Duration::from_secs(60), || async {
             app.deps.store.attempts(&id).await.is_ok_and(|runs| {
@@ -930,6 +937,7 @@ mod moves {
                     s.id.as_str(),
                     &yulius_contracts::api::tasks::ContinueTask {
                         account_id: Some("b-second".into()),
+                        ..Default::default()
                     },
                 )
                 .await?;
@@ -2547,6 +2555,7 @@ mod moves {
                             s.id.as_str(),
                             &yulius_contracts::api::tasks::ContinueTask {
                                 account_id: Some("b-second".into()),
+                                ..Default::default()
                             },
                         )
                         .await?;

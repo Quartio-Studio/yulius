@@ -966,7 +966,10 @@ async fn continued_goal_task_with(
     app.continue_task(
         &ctx,
         id.as_str(),
-        &yulius_contracts::api::tasks::ContinueTask { account_id: None },
+        &yulius_contracts::api::tasks::ContinueTask {
+            account_id: None,
+            prompt: None,
+        },
     )
     .await?;
     wait_for("the resumed session", Duration::from_secs(60), || async {
@@ -2737,7 +2740,10 @@ fn a_stop_that_ended_no_run_does_not_end_the_next_one() -> TestResult {
         app.continue_task(
             &ctx,
             id.as_str(),
-            &yulius_contracts::api::tasks::ContinueTask { account_id: None },
+            &yulius_contracts::api::tasks::ContinueTask {
+                account_id: None,
+                prompt: None,
+            },
         )
         .await?;
         // The resumed run gets its goal typed; ending first is the failure.
@@ -3925,7 +3931,10 @@ async fn continue_on_held_attach(data: &Path, fake: &Path) -> Result<HeldContinu
             app.continue_task(
                 &ctx,
                 id.as_str(),
-                &yulius_contracts::api::tasks::ContinueTask { account_id: None },
+                &yulius_contracts::api::tasks::ContinueTask {
+                    account_id: None,
+                    prompt: None,
+                },
             )
             .await
             .map(drop)

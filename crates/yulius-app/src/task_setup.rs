@@ -150,8 +150,15 @@ impl App {
                 }
             }
         };
-        self.switch_task(ctx, id, &ContinueTask { account_id })
-            .await
+        self.switch_task(
+            ctx,
+            id,
+            &ContinueTask {
+                account_id,
+                prompt: None,
+            },
+        )
+        .await
     }
 
     /// Sets task `id`'s model, effort or both for its owner (SUB-004): `default` (or blank)
