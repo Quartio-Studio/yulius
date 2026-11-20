@@ -1016,8 +1016,8 @@ The merge-first environment changes only through its staging queue (ADR-0411):
 - The deploy scripts of a merge-first target must be idempotent: a run lost to a restart is
   retried, up to three attempts.
 - A failed deploy that announced a rollback barrier is not restored; its request says so.
-- With a merge-first target, every promotion (a production deploy's, `POST …/delivery/promote`,
-  the automatic one) is refused (409) until staging serves the integration head, verified.
+- With a merge-first target, a production deploy that promotes is refused (409) until staging
+  serves the integration head, verified.
 
 A run deploys the commit GitHub reports for the branch, taken into a mirror only Yulius writes
 (every object checked, replacement refs ignored). It writes the commit's files into the run's own

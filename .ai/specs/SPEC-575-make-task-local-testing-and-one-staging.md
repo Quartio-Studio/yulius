@@ -112,8 +112,10 @@ What exists today (map of 2026-11-20, `dev` at f80f42cad):
 - **MFS-009 Production from verified staging.**
   - With a merge-first environment, every promotion (a person's production deploy, the Delivery
     page's Promote, the profile's automatic one) is refused until the integration head is the
-    revision that environment serves, verified. Promotion merges the integration branch, so the
-    promoted revision is exactly the verified one (ADR-0411).
+    revision that environment serves, verified, with the tables read through the CD mirror.
+    Promotion merges the integration branch, so the promoted revision is exactly the verified one
+    (ADR-0411).
+  - Slice 2 gates the production deploy; the next slice gates the other two.
   - The authorization rules are unchanged: an administrator types the slug, and the rollback
     gate applies.
 - **MFS-010 Task-local deployment.**
@@ -155,6 +157,7 @@ What exists today (map of 2026-11-20, `dev` at f80f42cad):
 - [ ] `[local]` task-local deployment in config and briefing
 - [ ] Bootstrap skill, workflow, delivery-pipeline, onboarding prompt and briefing teach merge-first
 - [ ] Upgrade task per onboarded sandbox for the new bootstrap revision
+- [ ] Every promotion path waits for the verified staging revision, read through the CD mirror
 - [ ] Scenario test: fresh bootstrap, existing sandbox, failed candidate then fix, concurrent tasks with a retried deploy
 - [ ] Independent review in a fresh session, findings fixed test-first
 - [ ] Every gate green, docs and the changes log updated

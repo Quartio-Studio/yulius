@@ -567,7 +567,7 @@ impl App {
                             "the deploy or verify failed: run {run_id}; it announced a rollback barrier ({reason}), so staging stays where it left it, and a person decides"
                         ),
                         None => format!(
-                            "the deploy or verify failed: run {run_id}; staging goes back to its last verified release"
+                            "the deploy or verify failed: run {run_id}; Yulius restores staging's last verified release when it keeps one"
                         ),
                     }
                 }

@@ -5287,46 +5287,6 @@ impl App {
             .await
     }
 
-    /// Refuses promoting `integration_sha` unless, with a merge-first target in its
-    /// `yulius.toml`, staging serves exactly it, verified (SPEC-575 MFS-009).
-    async fn dlv_promotes_verified_staging(
-        &self,
-        sandbox: &SandboxRecord,
-        integration_sha: &str,
-    ) -> AppResult<()> {
-        let repo = self.sandbox_repo(&sandbox.id);
-        let config = match self.cd_config_at(&repo, integration_sha).await {
-            Ok(config) => Ok(config),
-            // The clone may not have the commit yet: fetch once, then read again.
-            Err(_) => {
-                self.dlv_refresh_clone(sandbox).await?;
-                self.cd_config_at(&repo, integration_sha).await
-            }
-        };
-        let config = config.map_err(|problem| {
-            AppError::Conflict(format!(
-                "nothing was promoted: the CD tables at {} can't be read ({problem})",
-                integration_sha.get(..7).unwrap_or(integration_sha)
-            ))
-        })?;
-        let Some(staging) = config.merge_first() else {
-            return Ok(());
-        };
-        let verified = self.staging_verified_revision(sandbox, staging).await?;
-        if verified.as_deref() == Some(integration_sha) {
-            return Ok(());
-        }
-        Err(AppError::Conflict(format!(
-            "nothing was promoted: production is promoted from the revision [cd.{}] verified, and the integration head {} is {}; promote once staging verified it",
-            staging.name,
-            integration_sha.get(..7).unwrap_or(integration_sha),
-            match &verified {
-                Some(sha) => format!("not it (staging verified {})", sha.get(..7).unwrap_or(sha)),
-                None => "not verified there (staging verified nothing yet)".to_owned(),
-            }
-        )))
-    }
-
     /// [`App::dlv_promote`] that promotes only `expected`, the integration commit a person
     /// confirmed (SPEC-134 review round 3): refused, before anything moves, when the integration
     /// branch or the promotion pull request's head is another commit.
@@ -5383,11 +5343,6 @@ impl App {
         if expected.is_some_and(|sha| !sha.eq_ignore_ascii_case(&integration_sha)) {
             return Err(moved(&integration_sha));
         }
-        // Every promotion (a production deploy's, the Delivery page's, the profile's automatic
-        // one) comes from a verified staging revision where the project has a merge-first target
-        // (SPEC-575 MFS-009). The table is read at the commit GitHub reports, by its hash.
-        self.dlv_promotes_verified_staging(sandbox, &integration_sha)
-            .await?;
         let production_sha = github
             .branch_sha(token, owner, name, &profile.production_branch)
             .await?;

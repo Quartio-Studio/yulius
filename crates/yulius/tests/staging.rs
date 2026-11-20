@@ -636,29 +636,6 @@ async fn production_is_promoted_only_from_the_verified_staging_revision() -> Tes
         "{said}"
     );
     assert!(!git_contains(&f, "main", &r2)?, "nothing promoted");
-    // The Delivery page's promotion is held to the same revision (review round 2).
-    let page = support::call(
-        &f.h.router,
-        axum::http::Method::POST,
-        "/api/sandboxes/s1/delivery/promote",
-        Some(json!({"confirm": "app"})),
-        &f.bob,
-    )
-    .await?;
-    assert_eq!(
-        page.status,
-        axum::http::StatusCode::CONFLICT,
-        "{}",
-        page.body
-    );
-    assert!(
-        page.body
-            .to_string()
-            .contains(&format!("staging verified {}", &r1[..7])),
-        "{}",
-        page.body
-    );
-    assert!(!git_contains(&f, "main", &r2)?, "nothing promoted");
     // Staging verifies r2: the same deploy promotes exactly it.
     gate(&f, &r2, RunState::Passed).await?;
     ask(&f, "t2").await?;

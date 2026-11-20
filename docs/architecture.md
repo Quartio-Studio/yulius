@@ -3180,8 +3180,8 @@ through its queue (`crates/yulius-app/src/ci/staging.rs`, decisions in
   - `tell_staging_outcomes` types each task's outcome into its session once.
   - `cd_status` and the CD page (`CdEnvironment.staging`) list the queue with revisions and run
     ids.
-  - Every promotion (`dlv_promote_exactly`) waits until staging serves the integration head,
-    verified.
+  - A person's production deploy that promotes waits until staging serves the integration
+    head, verified (read through the CD mirror in `cd_prepare`).
   - A failed deploy that announced a rollback barrier is not restored.
 - **Idempotence.** Each move is a compare-and-set from the state it was read in. One live
   request per requester and revision, and one success per task and environment. The background
