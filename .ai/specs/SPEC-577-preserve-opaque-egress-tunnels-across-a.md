@@ -52,7 +52,7 @@ new request after the old sockets reach EOF. The issue requires the original con
 - [x] Obtain independent approval for the socket custodian slice
 - [x] Resume established direct opaque CONNECT sockets in the replacement server
 - [x] Keep each original deadline during custody and preserve the live remainder of a mixed batch
-- [ ] Obtain independent approval for the custody deadline slice
+- [x] Obtain independent approval for the custody deadline slice
 - [ ] Obtain independent approval for the proxy restart slice
 - [ ] Hand established opaque connections and matching relay sockets to the restarted server
 - [ ] Verify same-socket continuity, admission limits and intercepted traffic through restart
@@ -287,7 +287,20 @@ without adoption support or a remote peer that times out can end a tunnel.
   the first server exited. After the replacement passed its health check with the same holder,
   the original client read EOF in place of the downtime marker. The fixture used a private
   network, synthetic database and subordinate-ID files inside the disposable container.
+  A second run half-closed the client and confirmed that the destination observed its FIN
+  before stopping the first server. The destination sent the downtime marker on its open
+  half, and the original client again received EOF after the replacement became healthy.
+  With a separate synthetic client, Linux reported the child stopped by SIGSTOP before
+  shutdown and again at successor readiness. After SIGCONT the child received EOF on its
+  established connection and the original destination received no post-thaw marker.
   Nested namespace creation and a real systemd unit are unavailable in this task sandbox.
+- The same holder forward carried HTTPS to two names on a local synthetic TLS origin. The
+  fixture created a sandbox-scoped bearer through the server API and enrolled the public
+  proxy CA. Before and after restart, the bound origin received the value and the client
+  received `[secret:RESTART_FIXTURE]` in the reflected header and body. The unbound origin
+  received only the placeholder. The old intercepted connection ended. The replacement refused
+  an invalid token with HTTP 407 and accepted a fresh synthetic live attempt. Recovery had
+  marked the first synthetic attempt lost because its fixture contained no agent process.
 - Returning the quotient of the absolute deadline and current time could keep the helper
   checking a far-off deadline too frequently while eventual peer EOF still passed. A
   deterministic custody test expected the next wake after 450 ms and received 1 ms on
@@ -299,3 +312,15 @@ without adoption support or a remote peer that times out can end a tunnel.
   socket to a local listener and got `BrokenPipe` on its first write. Cleanup now shuts down
   endpoints which still have a peer and drops disconnected handles. The connected half of the
   expired frame sees EOF and the original owner can still connect and send its synthetic marker.
+- Independent review approved `a4a184d25`. The reviewer passed 41 relay library tests and
+  all five separate-process helper tests, and checked the diff against dev `5addbfbb8`.
+  Targeted Clippy and repository quick checks passed locally. The instance disabled Vidoc.
+- Mutation testing on the initial custody change listed 37 mutations. The tests caught 29,
+  six did not compile, and two survived. The survivors changed the deadline comparison at
+  equality and divided the deadline by the current time. Both operations were replaced by
+  the shared time-remaining calculation. The wakeup fixture covers a positive remainder,
+  the final millisecond and exact expiry. All four mutations in the descriptor-role fix
+  were caught. The test-only correction added no product lines for mutation testing.
+- The final mutation run on the clock and connected-endpoint cleanup fixes passed all
+  3,292 selected baseline tests. Its summary was 11 listed, 9 caught, 0 missed,
+  0 timed out, 2 unviable and 0 not reached.
