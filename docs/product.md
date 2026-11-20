@@ -200,6 +200,7 @@ watching, steering and unblocking.
   they typed and did not send may still be in its prompt box (however old, SPEC-480: such a
   message is not typed behind a person's draft, and for a message of Yulius's own the task
   says so after ten minutes), or the task still asks a person whether to trust its folder (SPEC-230).
+  After that minute a confirmed empty Claude Code conversation input releases a waiting message.
   A draft visible in Claude Code’s input also holds the message, including one restored from
   a stash. The sender is told at once. An automatic message flags the session for its person
   ([SPEC-537](../.ai/specs/SPEC-537-preserve-restored-drafts-when-typing-int.md)). When a usage limit cuts its

@@ -418,6 +418,7 @@ If a reservation skips past all available slots, land an empty extension first w
 <!-- ADR 0403 -->
 - [0404](0404-restart-one-sandbox-browser-through-its-viewer-grant.md) lets a sandbox writer restart its browser and reopen permitted tabs after the address guard is installed.
 <!-- ADR 0404 -->
+- [0405](0405-a-confirmed-empty-claude-prompt-releases-a-held-message.md) releases an old keystroke hold when Claude Code shows its conversation input empty.
 <!-- ADR 0405 -->
 <!-- ADR 0406 -->
 <!-- ADR 0407 -->

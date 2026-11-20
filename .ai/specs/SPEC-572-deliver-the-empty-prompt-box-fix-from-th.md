@@ -24,7 +24,7 @@ Issue #1260 reported a permanent hold and a misleading Needs your action flag af
 ## Plan
 
 - [x] Reproduce the empty-box hold on current dev with the reviewed PTY fixture
-- [ ] Recognize Claude Code’s empty box while preserving draft and attention guards
+- [x] Recognize Claude Code’s empty box while preserving draft and attention guards
 - [ ] Verify watch recovery, restart marks and restored drafts
 - [ ] Obtain independent approval for delivery to dev
 
@@ -44,4 +44,8 @@ Port the reviewed positive evidence of emptiness separately from the broader vis
 
 ## Evidence
 
-Six regression cases failed against dev a7ab520f9 before the typing changes. The PTY showed the empty input. Two minutes after Backspace the sender received a draft conflict. At eleven minutes the reconnect pass raised the held-message flag. Ctrl+U left both watches blocked, including without a prompt hook, and an empty reattached screen still held the message.
+Six regression cases failed against dev a7ab520f9 before the typing changes. The PTY showed the empty input. Regression commit 3d5baec04 carries the fixture and failing assertions. Two minutes after Backspace the sender received a draft conflict. At eleven minutes the reconnect pass raised the held-message flag. Ctrl+U left both watches blocked, including without a prompt hook, and an empty reattached screen still held the message.
+
+The ported VT reader and PR #1266 agreed on all 639 locally available capture points from Claude Code 2.1.323. Both matched all 588 entries of the saved verdict list. The 51 additional captures provide a comparison with the reviewed implementation. This was offline replay, and the end-to-end session tests use the fake CLI.
+
+All 41 task-message integration tests passed on the initial port, including both restored stash paths, owner consent, same-millisecond mark cleanup, hookless and restarted sessions, MCP and PR news, a new key and a replacement stash hint during the empty-box lookup.

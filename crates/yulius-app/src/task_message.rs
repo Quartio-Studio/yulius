@@ -14,19 +14,21 @@
 //!   from the run's marker after a restart, or the goal typist's fallback for a CLI without it),
 //!   while it asks a person whether to trust the folder, while a person's draft may sit in the
 //!   prompt box (they typed since it was last empty, however long ago: their draft is theirs,
-//!   SPEC-480) or they typed in the last minute, while Yulius types the first message, or while
+//!   SPEC-480, unless the conversation input is confirmed empty, SPEC-572) or they typed in the last minute, while Yulius types the first message, or while
 //!   another message is typed; other states are refused with their name (TMS-004). A sender is
 //!   told why; for a message of Yulius's own that waits for a draft, its person is told after
 //!   ten minutes (SPEC-480 DRF-006);
 //! - the person needs write access; every message is audited `task.messaged` without its text
 //!   (TMS-005); a typed message ends the task's open `needs_you` (TMS-006).
 
+use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use serde_json::{Value, json};
 use yulius_contracts::api::tasks::{QueueMessage, TaskSummary};
+use yulius_domain::harness::Harness;
 use yulius_domain::ids::TaskId;
 use yulius_domain::intake::BoxHeld;
 use yulius_domain::task::{Activity, TaskStatus};
@@ -40,7 +42,7 @@ use crate::error::{AppError, AppResult};
 use crate::lifecycle::MAX_PROMPT_BYTES;
 use crate::manage::tool_detail;
 use crate::model::TaskRecord;
-use crate::supervisor::trust_prompt_shown;
+use crate::supervisor::{TaskRuntime, trust_prompt_shown};
 use crate::vault::reach::Holder;
 
 /// Longest message, in bytes after cleaning.
@@ -201,6 +203,19 @@ const DRAFT_HOLDS_ACTION: &str = "Send what you typed in the terminal, or clear 
 const DRAFT_HOLDS_NOTICE: &str = "Yulius holds a message for this session: text typed here was \
     not sent and may still be in the prompt box. Send it, or clear it and send any prompt, and \
     Yulius types its message.";
+
+/// Only these exact stored reasons belong to the shared typing guard.
+fn draft_flag(reason: &AttentionRecord) -> bool {
+    [DRAFT_HOLDS_PROBLEM, VISIBLE_DRAFT_PROBLEM]
+        .iter()
+        .any(|problem| *reason == AttentionRecord::yulius(problem, DRAFT_HOLDS_ACTION))
+}
+
+fn shows_empty(harness: Harness, runtime: &TaskRuntime) -> bool {
+    harness == Harness::ClaudeCode
+        && !runtime.screen_withheld()
+        && runtime.hub.prompt_box_shown_empty()
+}
 
 /// How long a line of Yulius's own waits for another typist to finish ([`Typing::wait`]).
 pub(crate) const TYPING_TURN_WAIT: Duration = Duration::from_secs(5);
@@ -691,6 +706,31 @@ impl App {
                 task.number
             )));
         }
+        // A keystroke that may have left a draft can be released by the exact empty-box
+        // picture. Resolve the recovery mark before judging the screen and key together.
+        let attempt = if from != Sender::OwnerPastDraft
+            && self
+                .box_held(&task.id)
+                .is_some_and(BoxHeld::ends_at_an_empty_box)
+            && shows_empty(task.harness, &runtime)
+        {
+            let attempt = self.deps.store.live_attempt(&task.id).await?;
+            crate::race::reached(
+                crate::race::Point::BoxSeenEmpty,
+                Path::new(task.id.as_str()),
+            );
+            attempt
+        } else {
+            None
+        };
+        // For a screen-based release, serialize the final decision, paste, Enter and mark
+        // cleanup with viewer keys and submit hooks (SPEC-537). A key arriving during
+        // the lookup above participates in this decision.
+        let mut mark = if attempt.is_some() {
+            Some(runtime.draft_mark.lock().await)
+        } else {
+            None
+        };
         // A screen that is withheld, or misses output dropped while it was (agent secrets could
         // not be read, ADR-0317), is not what the program drew: a dialog may show there that
         // nobody saw, and a paste and an Enter would answer it.
@@ -728,13 +768,14 @@ impl App {
                 )));
             }
         }
-        // The person's draft is theirs, however old (SPEC-480 DRF-001): pasted behind it, the
-        // message and their unfinished text would be submitted as one prompt. A keystroke
-        // since the box was last empty counts until the next prompt
-        // is submitted from it; the one who can act is told instead (DRF-004, DRF-006).
         let typed = runtime.typed_at_ms.load(Ordering::SeqCst);
         let emptied = runtime.empty_time_for_typing();
-        match yulius_domain::intake::box_held(self.now().0, typed, emptied) {
+        let held = yulius_domain::intake::box_held(self.now().0, typed, emptied);
+        let released = attempt.filter(|_| {
+            held.is_some_and(BoxHeld::ends_at_an_empty_box) && shows_empty(task.harness, &runtime)
+        });
+        match held {
+            Some(BoxHeld::Draft { .. }) if released.is_some() => {}
             // Its owner sends past their own text, once they are no longer typing it: it
             // goes out with the message.
             Some(BoxHeld::Draft { typed_ms_ago })
@@ -748,6 +789,7 @@ impl App {
                 )));
             }
             Some(held @ BoxHeld::Draft { .. }) => {
+                drop(mark);
                 if from.tells_person(held) {
                     self.tell_of_held_message(task, typed, DRAFT_HOLDS_PROBLEM, DRAFT_HOLDS_NOTICE)
                         .await;
@@ -776,10 +818,11 @@ impl App {
                 task.number
             )));
         };
-        if task.harness == yulius_domain::harness::Harness::ClaudeCode
+        if task.harness == Harness::ClaudeCode
             && from != Sender::OwnerPastDraft
             && runtime.hub.shows_draft()
         {
+            drop(mark);
             if matches!(from, Sender::Yulius | Sender::YuliusLastTry) {
                 self.tell_of_held_message(
                     task,
@@ -829,6 +872,18 @@ impl App {
                 err.public_message()
             ))
         })?;
+        if let (Some(attempt), Some(mark)) = (&released, &mut mark) {
+            runtime.box_emptied_ms.fetch_max(typed, Ordering::SeqCst);
+            runtime
+                .emptied_seq
+                .fetch_max(runtime.typed_seq.load(Ordering::SeqCst), Ordering::SeqCst);
+            mark.written = false;
+            crate::supervisor::clear_person_typed(Path::new(&attempt.run_dir));
+        }
+        drop(mark);
+        if released.is_some() {
+            self.settle_draft_flag(&task.id).await;
+        }
         Ok(())
     }
 
@@ -854,6 +909,16 @@ impl App {
         }
     }
 
+    /// PR news may retry the exact flag of a waiting message once the person has
+    /// left an empty conversation box. Delivery itself judges the key and screen again.
+    pub(crate) async fn held_message_flag_outlived(&self, task: &TaskRecord) -> bool {
+        self.typed_recently(&task.id).is_none()
+            && self
+                .existing_runtime(&task.id)
+                .is_some_and(|runtime| shows_empty(task.harness, &runtime))
+            && matches!(self.deps.store.task_attention(&task.id).await, Ok(Some((reason, _))) if draft_flag(&reason))
+    }
+
     /// Ends the flag that says a message of Yulius's own waits for a person's draft
     /// ([`Self::tell_of_held_message`]) once no draft holds the prompt box (SPEC-480 DRF-007).
     /// A prompt that starts a turn sets the task Working, which ends every flag; one that starts
@@ -865,15 +930,7 @@ impl App {
         let held = runtime.attention_lock.lock().await;
         let store = &self.deps.store;
         let flagged = match store.task_attention(task_id).await {
-            Ok(Some((reason, flagged)))
-                if [DRAFT_HOLDS_PROBLEM, VISIBLE_DRAFT_PROBLEM]
-                    .iter()
-                    .any(|problem| {
-                        reason == AttentionRecord::yulius(problem, DRAFT_HOLDS_ACTION)
-                    }) =>
-            {
-                flagged
-            }
+            Ok(Some((reason, flagged))) if draft_flag(&reason) => flagged,
             Ok(_) => return,
             Err(err) => {
                 tracing::warn!(task = %task_id, error = %err, "reading a flag's reason failed");
@@ -919,6 +976,33 @@ fn not_now_advice(status: TaskStatus) -> &'static str {
 mod tests {
     use super::{answer_paste, clean_message, message_paste};
     use crate::coordination::Channel;
+
+    #[test]
+    fn only_claude_sessions_use_the_empty_conversation_frame() {
+        let rt = super::TaskRuntime::new();
+        let rule = "─".repeat(20);
+        let frame = format!("\x1b[?1049h\x1b[2;1H{rule}\x1b[3;1H❯ \x1b[4;1H{rule}\x1b[3;3H");
+        rt.hub.reset(1, frame.as_bytes(), 20, 6);
+        assert!(super::shows_empty(super::Harness::ClaudeCode, &rt));
+        assert!(!super::shows_empty(super::Harness::Codex, &rt));
+        assert!(!super::shows_empty(super::Harness::Antigravity, &rt));
+    }
+
+    #[test]
+    fn only_the_two_stored_draft_reasons_allow_a_pr_notice_to_retry() {
+        for problem in [super::DRAFT_HOLDS_PROBLEM, super::VISIBLE_DRAFT_PROBLEM] {
+            let held = super::AttentionRecord::yulius(problem, super::DRAFT_HOLDS_ACTION);
+            assert!(super::draft_flag(&held));
+            assert!(!super::draft_flag(&super::AttentionRecord::yulius(
+                problem,
+                "Read the terminal."
+            )));
+        }
+        assert!(!super::draft_flag(&super::AttentionRecord::yulius(
+            "Answer the question.",
+            super::DRAFT_HOLDS_ACTION
+        )));
+    }
 
     #[test]
     fn escape_sequences_and_control_characters_never_reach_the_session() {

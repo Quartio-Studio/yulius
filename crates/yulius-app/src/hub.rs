@@ -233,6 +233,13 @@ impl Hub {
         self.screen.lock().map(|s| s.seq > 0).unwrap_or(false)
     }
 
+    /// Positive evidence from the live host screen, including a reattached snapshot.
+    pub(crate) fn prompt_box_shown_empty(&self) -> bool {
+        self.screen
+            .lock()
+            .is_ok_and(|s| !s.parked && crate::prompt_box::shown_empty(s.parser.screen()))
+    }
+
     /// Whether the live VT screen shows text in Claude Code's conversation input.
     pub(crate) fn shows_draft(&self) -> bool {
         self.screen
@@ -492,6 +499,46 @@ mod tests {
         assert!(hub.leave(b).moved);
         assert!(!hub.leave(b).moved, "leaving twice is harmless");
         assert_eq!(hub.controller(), 0);
+    }
+
+    /// SPEC-572 AC3: a hub rebuilt from a snapshot (a reattached run, as after a restart of the
+    /// server) still reads the prompt box: empty, a dim suggestion, and a draft.
+    #[test]
+    fn a_snapshot_keeps_the_prompt_box_readable() {
+        let rule = "─".repeat(20);
+        let framed = |row: &str| {
+            format!(
+                "\x1b[?1049h\x1b[H\x1b[2J\x1b[2;1H{rule}\x1b[3;1H{row}\x1b[0m\x1b[4;1H{rule}\x1b[5;1H  status\x1b[3;3H"
+            )
+        };
+        for (row, empty) in [
+            ("❯ ", true),
+            ("❯ \x1b[7mr\x1b[0m\x1b[2mun the tests", true),
+            ("❯ \x1b[2mrun the tests", true),
+            ("❯ \x1b[7mh\x1b[0malf a thought", false),
+            ("❯ half", false),
+        ] {
+            let hub = Hub::new(20, 6);
+            hub.output(1, framed(row).as_bytes());
+            assert_eq!(hub.prompt_box_shown_empty(), empty, "{row:?}");
+            let snapshot = hub
+                .screen
+                .lock()
+                .map(|s| viewer_snapshot(s.parser.screen()))
+                .unwrap_or_default();
+            let again = Hub::new(20, 6);
+            again.restore(1, &snapshot, 20, 6, super::ScreenUpdate::Park);
+            assert!(
+                !again.prompt_box_shown_empty(),
+                "a parked snapshot cannot release typing"
+            );
+            again.reset(2, &snapshot, 20, 6);
+            assert_eq!(
+                again.prompt_box_shown_empty(),
+                empty,
+                "after a snapshot: {row:?}"
+            );
+        }
     }
 
     /// #78: a viewer who opens or reloads the task while a full-screen app runs gets the
