@@ -3236,6 +3236,24 @@ async fn a_parked_external_pr_seen_by_its_owner_requires_verification_without_an
 async fn a_parked_external_pr_survives_an_incomplete_overview_until_its_absence_is_confirmed()
 -> TestResult {
     let (f, owner) = owner_observed_external_pr().await?;
+    // The previous delivery landed. Its stored merge must not replace the
+    // later red PR merely because the overview cannot list it this time.
+    use yulius_domain::delivery::DeliveryStage;
+    assert!(
+        f.h.app
+            .deps
+            .store
+            .transition_delivery(
+                &DeliveryStage::None,
+                &yulius_app::delivery::DeliveryRecord {
+                    task_id: f.task.clone(),
+                    stage: DeliveryStage::MergedIntegration,
+                    pr_number: Some(42),
+                    updated_at: f.h.app.now(),
+                }
+            )
+            .await?
+    );
     // A failed overview and a complete transport response truncated for the
     // overview both omit the owner's PR, but neither establishes its closure.
     f.h.github.fail_overview_pulls.store(true, Ordering::SeqCst);
@@ -3278,7 +3296,7 @@ async fn a_parked_external_pr_survives_an_incomplete_overview_until_its_absence_
         summary["parked_needs_you"], false,
         "complete list confirmed absence"
     );
-    assert!(summary["parked_pr"].is_null());
+    assert_eq!(summary["parked_pr"], json!({"number":42,"open":false}));
     Ok(())
 }
 
