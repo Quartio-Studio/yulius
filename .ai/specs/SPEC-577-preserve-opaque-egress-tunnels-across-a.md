@@ -45,7 +45,7 @@ new request after the old sockets reach EOF. The issue requires the original con
 
 - [x] Read the product context and related work, then write and validate the spec
 - [x] Release outbound relay sockets when their serving task is cancelled
-- [ ] Obtain independent approval for the relay lifecycle slice
+- [x] Obtain independent approval for the relay lifecycle slice
 - [ ] Preserve buffered bytes and half-closes when an established copy pauses
 - [ ] Obtain independent approval for the resumable copy slice
 - [ ] Hand established opaque connections and matching relay sockets to the restarted server
@@ -97,3 +97,12 @@ without adoption support or a remote peer that times out can end a tunnel.
   cleared. `cargo test --locked -p yulius-sandbox --lib relay::tests::` passed all 14 tests.
 - This slice covers relay teardown. The tunnel continuity and credential acceptance tests
   belong to the subsequent slices.
+- A pre-change probe ran two real `yulius serve` processes on the same ports with an isolated
+  temporary database and a synthetic run. The build was `95a332d8a` from #552. Its sole
+  difference from dev `389789466` was SPEC-576. The original direct CONNECT peers exchanged
+  markers in both directions. After SIGTERM and process exit, the destination wrote a distinct
+  marker. The replacement answered `/internal/healthz`, but the retained client read EOF.
+- The independent relay review approved `f610bc301` and reran all 14 relay tests. Quick
+  checks passed. The project's Vidoc switch disabled the security scan.
+- Relay mutation check: 1 listed, 1 caught, 0 missed, 0 timed out, 0 unviable, 0 not reached.
+  The unmutated baseline passed all 3,243 selected tests (2 skipped).
