@@ -66,6 +66,8 @@ A human request can take precedence over unfinished work in the task list. Both 
 
 ## Evidence
 
+- The two-source watch fixture originally advanced its fake interval inside a Git notification, before request cleanup. It timed out with 59 of 60 scoped cases passing. The fixture now lets both synchronous fake replies and their cleanup settle before advancing the clock. The same expected groups passed in Chromium.
+
 - Independent review of `6890b885e` reproduced three browser races. The three review regressions failed before correction and passed afterward. A held Task Info response now preserves a newer verified row. An open replacement discovered before or after a failed summary stays under Needs you until the next successful verification. At the production three-second watch gap, announcements at 53.0, 53.1, 53.2 and 53.3 seconds now start one summary at 53 seconds and one at 56 seconds while the overview is held.
 - `scripts/dev quick` passed. `scripts/dev mutants --base 5bdabd1a9` found no changed Rust code. Removing the summary watch call in an isolated copy made both held-source regressions fail. Vidoc was disabled.
 

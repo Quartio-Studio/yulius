@@ -367,14 +367,17 @@ test('the PR watch refreshes the parked group in both directions', async ({ app,
         return [];
       },
     }, { clock: { now: () => 50_000, setInterval: (fn: () => void) => { tick = fn; return 1; }, clearInterval() {}, clearTimeout() {} } });
-    const read = () => new Promise<void>((resolve) => {
-      const off = store.on('pulls', () => { off(); resolve(); });
+    // The two sources notify independently. Sample after both synchronous fake
+    // replies have drained, including the release of each in-flight request.
+    const settled = () => new Promise<void>(resolve => {
+      const channel = new MessageChannel();
+      channel.port1.onmessage = () => { channel.port1.close(); channel.port2.close(); resolve(); };
+      channel.port2.postMessage(null);
     });
     const group = (taskId = id) => taskInfo(store.state.tasks.get(sid).get(taskId), null, store.pullsOf(sid).get(taskId)).group;
     await store.loadTasks(sid);
-    const initial = read();
     const stop = store.watchPulls(sid);
-    await initial;
+    await settled();
     const seen = [[group(), group('answered')]];
     for (const [red, failure, event] of [
       [true, false, false], [false, false, false],
@@ -383,9 +386,8 @@ test('the PR watch refreshes the parked group in both directions', async ({ app,
       fails = red;
       unavailable = failure;
       newerEvent = event;
-      const updated = read();
       tick();
-      await updated;
+      await settled();
       seen.push([group(), group('answered')]);
     }
     // The overview may fail independently of the task summaries. Wait for the
@@ -395,15 +397,7 @@ test('the PR watch refreshes the parked group in both directions', async ({ app,
     for (const red of [false, true]) {
       fails = red;
       tick();
-      await new Promise<void>((resolve) => {
-        const channel = new MessageChannel();
-        channel.port1.onmessage = () => {
-          channel.port1.close();
-          channel.port2.close();
-          resolve();
-        };
-        channel.port2.postMessage(null);
-      });
+      await settled();
       seen.push([group(), group('answered')]);
     }
     stop();
