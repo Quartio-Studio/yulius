@@ -86,6 +86,12 @@ pub enum UiEvent {
         /// New account view (boxed: it is by far the largest payload; the JSON is the same).
         account: Box<AccountView>,
     },
+    /// A task's handoffs changed (SPEC-512 HOF-004): its page reads them again.
+    #[serde(rename = "handoffs.updated")]
+    HandoffsUpdated {
+        /// The source task.
+        task_id: String,
+    },
     /// The person's end-of-day digest is ready (SPEC-512 DIG-005), to them only.
     #[serde(rename = "digest.ready")]
     DigestReady {

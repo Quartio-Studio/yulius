@@ -235,9 +235,44 @@ recommended option 1, part 4): replies and new tasks, off by default, on per per
 - **TGI-005 Redaction.** The bot's answers that carry a task's text (`/status`, a refusal naming a
   task) pass the same redaction as transcripts.
 
-### Part 5
+### Part 5: tasks hand work to another sandbox (#1106)
 
-Written when it starts (see Context): HOF (#1106), from its issue's acceptance criteria.
+Today (read on `dev` at f7cde240e): only the sandbox Superagent is served `sandboxes_list` and
+`sandbox_task_create` (`COCKPIT_TOOLS`, test `only_the_superagent_is_served_the_other_sandboxes`),
+and each such task waits in the call for its person's click (ADR-0227, ADR-0333). A task agent can
+only ask a person with `needs_you`. Nothing records where a task came from.
+
+- **HOF-001 The setting.** `GET`/`PUT /api/admin/handoffs` (instance administrators):
+  `mode` `off` (default), `ask` or `automatic`; `max_depth` (1 to 5, default 3) and `per_day`
+  (1 to 100 per owner, default 20). Stored in `instance.handoffs`, audited
+  `instance.handoffs.set`, shown in Settings. Off, nothing below exists for task agents.
+- **HOF-002 A sandbox opts out.** Its writers turn "Accept handoffs from other sandboxes" off
+  (`PUT /api/sandboxes/{sid}/handoffs` `{"accept"}`, on by default; stored in the sandbox's
+  profile, kept by a save of its delivery profile; audited `sandbox.handoffs`), shown on its Git
+  page.
+- **HOF-003 The tool.** `sandbox_handoff` `{sandbox, title, prompt}` with `task_create`'s
+  `harness`, `model`, `effort` and `mode`, served to task agents only while the mode is not off
+  (in `tools/list` and in the call). Refused with a reason the agent reads: an automation's task
+  (it holds nobody); text with characters a person cannot see; a prompt over 64 KiB; an agent
+  secret of the source sandbox (named; nothing stored keeps its value); a disabled owner; a target that is the task's own
+  sandbox, one its owner cannot work in (reported as not found), one that opted out; a chain
+  deeper than `max_depth` (a handed-off task's own handoff is one deeper); a sandbox already in
+  the chain (a cycle); more than `per_day` handoffs of the owner in 24 hours; the hourly bound
+  of tools. Every refusal is audited.
+- **HOF-004 Ask.** The handoff is stored as a request and the call returns at once; the task
+  goes on or ends with `needs_you`. The source task's page shows the request (target, title,
+  prompt, options) to its owner with Approve and Decline, in a browser session only (no API
+  token); approval re-checks the target and creates the task with exactly those arguments;
+  decline ends it. **Automatic:** the task is created at once.
+- **HOF-005 Provenance and the result.** A created task belongs to the source task's owner,
+  origin `handoff` ("Handed off"), and its info page shows "Handed off from <sandbox> #N" with a
+  link (the source's info page lists its handoffs; only a request to answer floats on the task's
+  page). When it
+  ends (Done, closed, stopped, failed, or merged), the source task gets one message from Yulius
+  with its outcome and pull request (queued for it when it has no live session).
+- **HOF-006 Audit.** `task.handoff` on both sandboxes with `requested`, `approved`,
+  `declined`, `created`, `refused` or `outcome`, never the prompt. Delivery is unchanged: the
+  target's work reaches `dev` only through its own pull request and green CI.
 
 ## Plan
 
@@ -265,12 +300,12 @@ Written when it starts (see Context): HOF (#1106), from its issue's acceptance c
 - [x] Telegram commands /status and /task; ADR and docs for intake
 - [x] Pull request #1130 answered and closed as superseded
 - [ ] Review of the #1107 pull request answered test-first
-- [ ] Handoff setting off, ask or automatic and a per-project opt-out
-- [ ] The sandbox_handoff tool with its checks and bounds
-- [ ] Ask mode: a stored request the owner approves in a browser session
-- [ ] Provenance on the target, the outcome sent back, task.handoff audited on both
-- [ ] ADR amending ADR-0227 and docs for handoffs
-- [ ] Review of the #1106 pull request answered test-first
+- [x] Handoff setting off, ask or automatic and a per-project opt-out
+- [x] The sandbox_handoff tool with its checks and bounds
+- [x] Ask mode: a stored request the owner approves in a browser session
+- [x] Provenance on the target, the outcome sent back, task.handoff audited on both
+- [x] ADR amending ADR-0227 and docs for handoffs
+- [x] Review of the #1106 pull request answered test-first
 
 ## Acceptance criteria
 
@@ -317,6 +352,20 @@ Written when it starts (see Context): HOF (#1106), from its issue's acceptance c
 - [x] What the second person still cannot do through a reply: start, stop, merge, terminal input
   (TGI-002).
 - [x] Docs: `product.md`, `api.md`, `changes.md` and an ADR (TGI-001..005).
+
+### #1106
+
+- [x] Off by default: task agents are not served `sandbox_handoff`; the existing test that
+  tasks lack cross-sandbox tools still passes (HOF-001, HOF-003).
+- [x] Ask: a stored request the owner approves or declines in a browser session only; approval
+  creates the task with exactly the arguments shown (HOF-004).
+- [x] Automatic: the task is created as the owner; a fourth level, a cycle and the daily bound are
+  refused with a reason (HOF-003, HOF-004).
+- [x] An opted-out sandbox, one the owner cannot work in (not found) and an automation's task are
+  refused (HOF-002, HOF-003).
+- [x] The target shows its source; the source gets the outcome; `task.handoff` on both
+  (HOF-005, HOF-006).
+- [x] Docs: `product.md`, `api.md`, `changes.md` and an ADR amending ADR-0227.
 
 ## Test plan
 
@@ -412,7 +461,65 @@ Written when it starts (see Context): HOF (#1106), from its issue's acceptance c
   task it refuses (the onboarding gate) leaves its files in the person's drafts folder, removed
   with the other drafts after a week.
 
+- **Handoffs: a request waits on the source task's page, not in the Needs you list.** The issue
+  names both; the page is where the owner reads the full prompt and options before approving, and
+  a Needs-you entry would offer the task to anyone who answers requests (ADR-0370). The task's
+  agent says in its own words, or with `needs_you`, that it waits.
+- **A handed-off task's outcome wakes a parked source.** Part 1 decided that Yulius's news does not
+  wake a parked task; the outcome is the answer the source asked for, so it resumes it, as a
+  person's message would. An open `needs_you` does not hold the outcome either (the tool tells an
+  agent to end with one while it waits); a prompt on screen, a pause or an update's hold do.
+- **Known limit: depth counts handoffs only.** A handed-off task that starts a task in its own
+  sandbox (`task_create`) starts a fresh chain, since a task records no parent; the daily bound
+  limits such a ping-pong.
+
 ## Evidence
+
+### Part 5 (#1106, handoffs)
+
+| Acceptance criterion | Test |
+|---|---|
+| Off by default: task agents are not served `sandbox_handoff`; tasks still lack the Superagent's cross-sandbox tools | `handoffs::handoffs_are_off_by_default_and_set_by_an_instance_administrator` (`tools/list` over `/mcp` with a task token, a call is an unknown tool, only instance administrators set it, 422 for bad values); `mcp::tests::only_the_superagent_is_served_the_other_sandboxes` unchanged and passing |
+| Ask: a stored request the owner answers in a browser session only; approval creates exactly what was shown | `handoffs::ask_stores_a_request_the_owner_answers_in_a_browser` (an operate token and another person get 403; the created task's title, prompt and owner equal the request; answered once; decline creates nothing); e2e `handoffs.e2e.ts` "the task's owner approves a handoff" |
+| Automatic: created as the owner; a deeper level, a cycle and the daily bound refused with a reason | `handoffs::automatic_creates_the_task_as_the_owner_within_the_checks`, `handoffs::depth_cycles_and_the_daily_bound_are_refused`; `handoffs::tests::a_chain_has_a_depth_and_no_cycle` |
+| An opted-out sandbox, one the owner cannot work in (not found) and an automation's task refused | `handoffs::automatic_creates_the_task_as_the_owner_within_the_checks`; e2e "a sandbox's writers close it to handoffs" |
+| The target shows its source; the source gets the outcome; `task.handoff` on both | `handoffs::automatic_…` (`from`, audits on s1 and s2 without the prompt), `parking::a_handed_off_tasks_outcome_reaches_its_source` (real processes: the source's session reads the outcome, told once), `handoffs::an_outcome_waits_for_the_targets_end`; e2e "a handed-off task shows where it came from"; store `a_handoff_is_decided_once_and_told_once` |
+| Docs and ADR | ADR-0395 (amends ADR-0227), `docs/product.md`, `docs/api.md`, `docs/architecture.md`, `docs/changes.md` |
+
+Review round 1 (head 9ea4cd1b3, CHANGES REQUESTED), answered test-first:
+
+| Finding | Change | Test |
+|---|---|---|
+| A delivery profile save dropped the opt-out | `update_sandbox_profile` keeps `accept_handoffs` | `handoffs::automatic_…` (opt out, save the profile, still refused; failed before) |
+| Approval was check-then-act | the request is claimed (`requested` → `creating`) before creating; a failure puts it back; a decline needs `requested` | `handoffs::two_approvals_at_once_create_one_task` (fails without the claim: mutation) |
+| The outcome was typed over a prompt on screen | not typed while the source needs its person, is paused or an update holds starts (an open `needs_you` does not hold it: Decisions) | `parking::a_handed_off_tasks_outcome_reaches_its_source` (real session: nothing typed while it needs attention; fails without the guard: mutation), `handoffs::an_outcome_waits_while_the_source_needs_its_person` |
+| Invisible text and a disabled owner were not audited; a full hour left a live request | every refusal goes through `refuse_handoff`; in automatic mode the hourly slot is taken before storing | `handoffs::every_refusal_is_audited_and_a_full_hour_leaves_no_request` |
+| The request card had no styles and could push Approve off screen | it floats over the terminal, bounded, its prompt scrolls; every request is listed first | e2e "a long handoff floats over the terminal and its answer stays in view" (fails when static: mutation) |
+| The pull request link lacked the owner | `owner/name`, none for a playground | `parking::a_handed_off_tasks_outcome_reaches_its_source` (merged, `https://github.com/<owner>/api/pull/7`) |
+| Minors | `past_merge` for merged; a gone task is not asked again; answers audited as their person, `approved` after creation; prompts bounded; an agent secret of the source sandbox refused; `owner/name` labels; the told title is the one asked for; `tools/call` over `/mcp` tested; docs (Git page, ADR-0227's Status, Decisions) | `handoffs::every_refusal_…` (secret), `handoffs::the_tool_is_called_over_mcp` |
+
+Review round 2 (head 84113ff1a, CHANGES REQUESTED), answered test-first:
+
+| Finding | Change | Test |
+|---|---|---|
+| The head lacked dev's tip (part 4 as #1487) | merged `225bf38fc`, taking dev's part 4 and keeping only the `/task owner/name` fix | `telegram::` (35 tests) |
+| A refusal for an agent secret stored and served it | a refusal stores its text redacted with the source sandbox's secrets, bounded (the sandbox name too); the page's view redacts again; the reason names the secret | `handoffs::every_refusal_is_audited_and_a_full_hour_leaves_no_request` (the value in neither the GET nor the audit; failed before) |
+| `creating` had no way out | the claimed part runs on its own task (approval and automatic); at start a leftover `creating` is `created` with its task, else `refused` ("ask again") | store `a_handoff_is_decided_once_and_told_once` (settled) |
+| A store error after creation read as "not created" | logged; the task is never reported unmade | by reading |
+| A weak outcome test | removed; the live-session test holds the guard (`parking::a_handed_off_tasks_outcome_reaches_its_source`) | — |
+| Non-request rows floated for good | only a request floats; provenance and history are on the info page | e2e "a handed-off task shows where it came from on its info page", "the task's owner approves…" (answered, it floats no more) |
+| Docs and nits | `creating` and the new refusals in the API, spec and contracts; a playground's label; `ACCEPT_KEY`; `creating` worded on the page | by reading |
+
+Review round 3 (head 0868ae83c): APPROVED, nothing blocking. After it: a stray changes line
+removed and a refusal redacts before it cuts (14 product lines). Nits left: a claim in flight while
+the server starts could be settled as refused; a settled claim in ask mode is refused rather than
+asked again; the options (`harness`, `model`, `effort`, `mode`) of a refusal are kept as given;
+`sandbox_named` duplicates `sandbox_by_reference`; the pause and update-hold halves of the outcome
+guard have no test.
+
+Also in this pull request (a part 4 defect found while building part 5): `/task acme/app` (a
+project's full repository name) named no project, because owner and name are stored apart;
+`telegram::with_intake_a_message_starts_a_task_and_a_photo_is_its_attachment` now covers it.
 
 ### Part 4 (#1107, intake)
 

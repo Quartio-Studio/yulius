@@ -13,10 +13,11 @@ import { openDeliveryDialog, stageLabel } from '../actions.js';
 import { initials } from '../layout.js';
 import { modelLabel, findEffort } from '../models.js';
 import { loadWaterfall } from '../stages.js';
+import { handoffsInfo } from '../handoffs.js';
 import { pipelineHref } from './pipeline.js';
 import { worktreeMissing } from './git.js';
 
-const ORIGINS = { ui: 'Started here', automation: 'Automation', import: 'Imported', onboarding: 'Onboarding', agent: 'Another task', telegram: 'From Telegram' };
+const ORIGINS = { ui: 'Started here', automation: 'Automation', import: 'Imported', onboarding: 'Onboarding', agent: 'Another task', telegram: 'From Telegram', handoff: 'Handed off' };
 const STEP_MARK = { done: '✓', in_progress: '▸', pending: '·', skipped: '–', blocked: '✕' };
 const STEP_LABEL = { done: 'Done', in_progress: 'In progress', pending: 'To do', blocked: 'Blocked', skipped: 'Skipped' };
 const ATTEMPT_STATE = { live: 'Running', exited: 'Ended', failed: 'Failed', lost: 'Lost' };
@@ -157,6 +158,8 @@ export function mountTaskInfoView(ctx, sandbox, task) {
       // Who the task acts on GitHub as, and the only person who changes it (SPEC-070).
       ['Owner', ownerLogin ? h('span', { class: 'ti-person' }, h('span', { class: 'avatar ti-avatar', 'aria-hidden': 'true' }, initials(ownerLogin)), ownerLogin) : '—'],
       ['Origin', ORIGINS[current.origin] || current.origin || '—'],
+      // Where it was handed off from and what it handed off (SPEC-512 HOF-005).
+      ['Handoffs', handoffsInfo(ctx, current)],
       ['Mode', current.mode === 'prompt' ? 'Prompt' : 'Goal (works until it is met)'],
       ['Subscription', accountRef(current.account_label, current.account_email, { unknown: ctx.isInstanceAdmin() }) || '—'],
       // What the task asks Claude Code for, what answered (its transcripts' word) and which

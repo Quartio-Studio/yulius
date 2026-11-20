@@ -722,6 +722,13 @@ watching, steering and unblocking.
   for them. A chat's messages are handled one at a time in the order sent; with more than 20
   waiting, the chat is told the latest were not handled and to send them again. Turning intake
   off or `/stop` also stops messages still waiting.
+- **Tasks hand work to another sandbox** (SPEC-512 part 5, ADR-0395, #1106), off by default:
+  an instance administrator chooses Ask or Automatic in Settings → Administration (with a chain's
+  depth and a daily bound per owner), and a sandbox's writers can close it to handoffs on its Git
+  page. A task's agent then hands the part of its work that belongs elsewhere to another sandbox
+  its owner can work in: in Ask mode the owner approves it on the task's page, in Automatic it
+  starts at once as the owner. The new task shows where it came from, the source task is told
+  when it is done or merged, and both sandboxes' audit logs say so.
 - **An end-of-day digest** (SPEC-512 part 3, ADR-0380, #1413), off by default: an instance
   administrator turns it on in Settings → Administration with a time (UTC) and, if they want, an
   idle threshold. Once a day each person with something to report gets what waits for them first,

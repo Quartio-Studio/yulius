@@ -2071,6 +2071,14 @@ async fn with_intake_a_message_starts_a_task_and_a_photo_is_its_attachment() -> 
     let reply = next_reply(&w, 100, before).await?;
     assert!(reply.starts_with("Started #"), "{reply}");
     assert_eq!(tasks_of(&w, "s1").await?.len(), 3);
+    // The full repository name, owner/name, names it too (part 5: owner and name are stored
+    // apart).
+    let before = w.fake.sent_to(100).len();
+    w.fake
+        .message(100, true, "/task acme/app Tidy the CHANGELOG");
+    let reply = next_reply(&w, 100, before).await?;
+    assert!(reply.starts_with("Started #"), "{reply}");
+    assert_eq!(tasks_of(&w, "s1").await?.len(), 4);
     Ok(())
 }
 

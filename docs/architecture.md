@@ -2844,6 +2844,20 @@ flowchart LR
   X -->|"vault.agent.use, actor ci:run"| AUD["secrets audit"]
 ```
 
+## Handoffs between sandboxes
+
+A task's agent may hand work to another sandbox of the instance
+([SPEC-512](../.ai/specs/SPEC-512-marcin-s-five-issues-1412-1418-1413-1107.md) part 5,
+[decision 0395](decisions/0395-tasks-hand-work-to-another-sandbox-behind-an-instance-switch.md),
+`crates/yulius-app/src/handoffs.rs`). `instance.handoffs` holds the switch; a sandbox's
+`profile` holds its opt-out (`accept_handoffs`). `tools/list` adds `sandbox_handoff` to a task
+agent's tools only while the switch is not off, and `tool_sandbox_handoff` refuses (audited) or
+stores a `task_handoffs` row (migration 0076) with its chain and depth: in ask mode it waits
+there for `answer_handoff`, in automatic mode `create_handoff_task` makes the task at once
+through `create_task_as` (origin `handoff`) under the tools' hourly bound. The background tick's
+`tell_handoff_outcomes` types the target's outcome into the source's session (or resumes a
+parked one with it) once the target ended, is Done or merged.
+
 ## The personal Telegram channel
 
 Each person can get their notifications in their own Telegram chat

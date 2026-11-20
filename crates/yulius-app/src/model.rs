@@ -254,6 +254,8 @@ pub enum TaskOrigin {
     Agent,
     /// Created by a person's message to their Telegram chat (SPEC-512 TGI-003).
     Telegram,
+    /// Handed off by a task of another sandbox (SPEC-512 HOF-005).
+    Handoff,
 }
 
 impl TaskOrigin {
@@ -267,6 +269,7 @@ impl TaskOrigin {
             Self::Onboarding => "onboarding",
             Self::Agent => "agent",
             Self::Telegram => "telegram",
+            Self::Handoff => "handoff",
         }
     }
 
@@ -279,6 +282,7 @@ impl TaskOrigin {
             "onboarding" => Self::Onboarding,
             "agent" => Self::Agent,
             "telegram" => Self::Telegram,
+            "handoff" => Self::Handoff,
             _ => Self::Ui,
         }
     }

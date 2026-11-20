@@ -15,6 +15,7 @@ import { BRAND } from '../brand.js';
 import { agentTokensBody } from './apitokens.js';
 import { telegramBotCard, telegramLink } from '../telegram.js';
 import { digestSettingCard } from '../digest.js';
+import { handoffSettingCard } from '../handoffs.js';
 
 function section(iconName, title, description, ...content) {
   return h('section', { class: 'settings-section' },
@@ -167,7 +168,9 @@ export function mountSettingsPage(ctx) {
       // The instance's Telegram bot (SPEC-498 TGC-001).
       telegramBotCard(ctx),
       // The end-of-day digest (SPEC-512 DIG-001).
-      digestSettingCard(ctx));
+      digestSettingCard(ctx),
+      // Tasks hand work to another sandbox (SPEC-512 HOF-001).
+      handoffSettingCard(ctx));
   }
 
   return { el: frame.el };
