@@ -4,6 +4,17 @@ Notable changes, newest first. Per-change detail lives in the merged pull reques
 evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-architecture.md)
 (sections 14 and 15).
 
+## 2026-11-20
+
+- Parked sessions (including Codex) now show the parked terminal banner with a visible Resume
+  action (and owner Reply bar) instead of an inert terminal with a blinking cursor, wake in the
+  same saved session and worktree on Resume, Reply, or ordinary owner terminal typing (preserving
+  operator-stop and ownership boundaries), stay safely parked while PR CI runs, and wake
+  automatically on actionable PR/CI check results. Clean committed fast-forward CI repairs on a
+  task-owned failing open PR now publish to the same feature branch and trigger exact-head CI even
+  while a verification step remains open ([SPEC-553](../.ai/specs/SPEC-553-publish-committed-ci-repairs-to-open-tas.md),
+  [ADR-0391](decisions/0391-publish-committed-ci-repairs-to-open-task-prs.md)).
+
 ## 2026-11-19
 
 - Claude Code's scheduled wake-ups preserve unsent drafts, achieved goals and open requests for a person, including when the hook carries plain text (SPEC-541, #1225).

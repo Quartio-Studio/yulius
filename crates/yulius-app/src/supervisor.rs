@@ -277,6 +277,10 @@ pub struct TaskRuntime {
     /// Why Yulius could not push or deliver the agent's head, for `yulius wait`: the agent learns
     /// it instead of waiting for a run that never comes (SPEC-050 DLV-201, DLV-204).
     pub(crate) push_problem: Mutex<Option<crate::delivery::PushNote>>,
+    /// The last local head already checked for open-PR CI repair publication by `yulius wait` or
+    /// `pr_watch`, so periodic passes and long-poll reconnects do not repeat GitHub calls for the
+    /// same head while the server stays up (SPEC-553 REP-004).
+    pub(crate) repair_checked_head: Mutex<Option<String>>,
     /// When the last clean Stop ended a turn (ms), so a prompt of that turn read late from the
     /// transcript does not reopen it.
     pub(crate) last_stop_ms: AtomicI64,
@@ -638,6 +642,7 @@ impl TaskRuntime {
             spawned_ms: AtomicI64::new(0),
             armed: Mutex::new(crate::agent_wait::ArmedSlot::default()),
             push_problem: Mutex::new(None),
+            repair_checked_head: Mutex::new(None),
             last_stop_ms: AtomicI64::new(0),
             stop_answered_ms: AtomicI64::new(0),
             turn_began_ms: AtomicI64::new(0),
@@ -718,6 +723,11 @@ impl TaskRuntime {
     /// Whether a turn is known to be in progress (one started and none ended since).
     pub(crate) fn turn_in_progress(&self) -> bool {
         self.turn_started_ms.load(Ordering::SeqCst) > 0
+    }
+
+    /// Whether a live PTY writer is currently attached to this runtime.
+    pub(crate) async fn has_live_run(&self) -> bool {
+        self.run.lock().await.is_some()
     }
 
     /// A turn started now unless one is already in progress.

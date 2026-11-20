@@ -206,6 +206,18 @@ impl App {
             }
             return Ok(());
         }
+        // When no live run is attached (e.g. a parked or stopped task), do not record a prompt-box
+        // draft mark; either wake an eligible parked session (SPEC-553 PRK-102) or refuse.
+        if !attach.runtime.has_live_run().await {
+            return self
+                .terminal_input_when_not_running(
+                    attach,
+                    data,
+                    scroll,
+                    AppError::Conflict("the task is not running".into()),
+                )
+                .await;
+        }
         // The viewer who types controls the terminal and its size, at once (TSK-006). A
         // forwarded wheel turn is not typing: it must not move control, and with it the size, to
         // that viewer (#78). Nor are the focus and mouse reports and query answers xterm sends
@@ -227,7 +239,56 @@ impl App {
                 mark.written = self.mark_draft(&attach.task_id, typed).await;
             }
         }
-        self.send_input(&attach.task_id, data).await
+        match self.send_input(&attach.task_id, data).await {
+            Ok(()) => Ok(()),
+            Err(err) => {
+                // If the live run exited between the check above and `send_input`, do not leave a
+                // ghost draft mark behind when falling through to parked-session wake.
+                attach.runtime.typed_at_ms.store(0, Ordering::SeqCst);
+                self.terminal_input_when_not_running(attach, data, scroll, err)
+                    .await
+            }
+        }
+    }
+
+    /// Handles terminal input when no live run is attached: wakes an eligible parked session
+    /// through the supervisor (SPEC-553 PRK-102) while leaving stopped, crashed, closed, and
+    /// archived tasks refused.
+    async fn terminal_input_when_not_running(
+        self: &Arc<Self>,
+        attach: &TerminalAttach,
+        data: &[u8],
+        scroll: bool,
+        err: AppError,
+    ) -> AppResult<()> {
+        let Some(task) = self.deps.store.task(&attach.task_id).await? else {
+            return Err(err);
+        };
+        if task.status != yulius_domain::task::TaskStatus::Parked
+            || task.archived_at.is_some()
+            || self.parking(&task.id)
+        {
+            return Err(err);
+        }
+        let Some(prompt) = parked_input_wake(data, scroll) else {
+            return Ok(());
+        };
+        self.ensure_agent_account(task.harness.provider()).await?;
+        let cleaned = prompt
+            .map(|text| crate::task_message::clean_message(&text))
+            .map(|text| text.trim().to_owned())
+            .filter(|text| !text.is_empty());
+        if self.resume_parked(&task.id, cleaned.clone()).await? {
+            if cleaned.is_some() {
+                self.end_needs_you(&task.id).await;
+            }
+            attach
+                .runtime
+                .hub
+                .notice("Resuming parked session…".to_owned());
+            return Ok(());
+        }
+        Err(err)
     }
 
     /// Writes the mark of a person's possible draft into the folder of the task's live run
@@ -459,9 +520,47 @@ pub(crate) fn is_typing(data: &[u8]) -> bool {
     false
 }
 
+/// Decides whether terminal input `data` sent to a parked task should wake the parked session
+/// through the supervisor (SPEC-553 PRK-102).
+///
+/// - `None`: ignore (scroll, terminal query/focus/mouse reports, or bare interrupt/escape keys
+///   `\x03`, `\x04`, `\x1b`).
+/// - `Some(Some(prompt))`: wake the parked session and deliver `prompt` (a submitted line ending
+///   with `\r` or `\n` that contains non-empty printable text).
+/// - `Some(None)`: wake the parked session interactively (ordinary typing or bare Enter).
+#[must_use]
+fn parked_input_wake(data: &[u8], scroll: bool) -> Option<Option<String>> {
+    if scroll || !is_typing(data) {
+        return None;
+    }
+    let text = std::str::from_utf8(data).ok()?;
+    let stripped = text.replace("\x1b[200~", "").replace("\x1b[201~", "");
+    if stripped.is_empty() || stripped.bytes().all(|b| matches!(b, 0x03 | 0x04 | 0x1b)) {
+        return None;
+    }
+    // Navigation escape sequences (arrows, Home/End, PageUp/Down) are not a wake intent.
+    if stripped.starts_with('\x1b') {
+        return None;
+    }
+    let has_submit = stripped.ends_with('\r') || stripped.ends_with('\n');
+    let printable = stripped
+        .trim_end_matches(['\r', '\n'])
+        .chars()
+        .filter(|c| !c.is_control() || *c == '\t')
+        .collect::<String>();
+    let trimmed = printable.trim();
+    if has_submit && !trimmed.is_empty() {
+        Some(Some(trimmed.to_owned()))
+    } else if has_submit || !trimmed.is_empty() {
+        Some(None)
+    } else {
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::is_typing;
+    use super::{is_typing, parked_input_wake};
 
     #[test]
     fn only_keystrokes_are_typing() {
@@ -506,6 +605,38 @@ mod tests {
                 is_typing(data),
                 "{:?} is typing",
                 String::from_utf8_lossy(data)
+            );
+        }
+    }
+
+    /// SPEC-553 PRK-102: ordinary owner typing and submitted lines wake a parked session, while
+    /// scroll, focus/mouse reports, arrows, and bare interrupts never wake it.
+    #[test]
+    fn parked_input_wake_distinguishes_typing_from_control_and_noise() {
+        assert_eq!(
+            parked_input_wake(b"continue\r", false),
+            Some(Some("continue".into()))
+        );
+        assert_eq!(
+            parked_input_wake(b"\x1b[200~check CI\x1b[201~\r", false),
+            Some(Some("check CI".into()))
+        );
+        assert_eq!(parked_input_wake(b"c", false), Some(None));
+        assert_eq!(parked_input_wake(b"\r", false), Some(None));
+        assert_eq!(parked_input_wake(b"a", true), None, "scroll never wakes");
+        for ignored in [
+            b"\x03".as_slice(),
+            b"\x04",
+            b"\x1b",
+            b"\x1b[A",
+            b"\x1b[I",
+            b"\x1b[<64;1;1M",
+        ] {
+            assert_eq!(
+                parked_input_wake(ignored, false),
+                None,
+                "{:?} must not wake",
+                String::from_utf8_lossy(ignored)
             );
         }
     }

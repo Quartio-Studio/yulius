@@ -8156,3 +8156,262 @@ async fn a_production_environment_run_starts_in_production_containment() -> Test
     assert_eq!(plan.cwd, work.join("src"));
     Ok(())
 }
+
+/// SPEC-553 REP-001, REP-002, REP-004: reproduces and verifies the fix for the circular wait
+/// (`quartio-v2` #322/#323/#324) where an open task-owned PR on a failing previous head waited for
+/// CI on an unpublished clean committed repair while the final verification step remained open.
+#[tokio::test]
+async fn a_clean_committed_ci_repair_publishes_to_failing_open_pr_with_verification_open()
+-> TestResult {
+    let f = fixture(&DeliveryProfile::standard()).await?;
+    let wt = f
+        .add_task("t1", "Fix failing CI", "feat/322-ci-repair", "dev")
+        .await?;
+    commit_file(&wt, SPEC_PATH, &valid_spec("t1"), "Spec")?;
+    commit_file(&wt, "app.txt", "v1\n", "Initial change")?;
+    set_steps(&f, "t1", &["done", "done"]).await?;
+    let t1 = TaskId::parse("t1")?;
+    let agent = live_agent(&f, "t1", "tok-agent").await?;
+
+    // Open PR #1 on initial head `failing1` and fail CI there.
+    f.h.app.auto_open_pr(&t1).await;
+    assert_eq!(pulls_opened(&f), 1);
+    let failing1 = git(&wt, &["rev-parse", "HEAD"])?;
+    assert_eq!(f.origin_sha("feat/322-ci-repair")?, failing1);
+    f.h.github.set_checks(&failing1, ChecksState::Failure);
+
+    // Final verification step is open (`in_progress`) while waiting for CI on the committed repair.
+    set_steps(&f, "t1", &["done", "in_progress"]).await?;
+    commit_file(&wt, "app.txt", "v2 repair\n", "Commit tested repair")?;
+    let repair1 = git(&wt, &["rev-parse", "HEAD"])?;
+
+    // Turn-end auto delivery publishes the clean committed repair to the SAME open PR without
+    // requiring the verification step to be falsely marked done, and never arms or merges.
+    f.h.app.auto_open_pr(&t1).await;
+    assert_eq!(pulls_opened(&f), 1, "same open PR updated, no new PR");
+    assert_eq!(
+        f.origin_sha("feat/322-ci-repair")?,
+        repair1,
+        "repair pushed to feature branch"
+    );
+    let view = f.delivery("t1").await?;
+    assert_eq!(view["stage"], "pr_open", "{view}");
+    assert_eq!(view["pr"]["number"], 1, "{view}");
+    assert_eq!(view["pr"]["head"], "feat/322-ci-repair", "{view}");
+    assert_eq!(
+        view["pr"]["checks"], "none",
+        "new published repair head has no failing checks yet: {view}"
+    );
+    let wait = wait_state(&f, &agent, &repair1).await?;
+    assert_eq!(
+        wait["merge_armed"], false,
+        "publication never arms merge: {wait}"
+    );
+    assert_eq!(wait["push_problem"], Value::Null, "{wait}");
+
+    // Second failing head + pending final verification step: `yulius wait` (and post-restart
+    // reconnect) also publishes the eligible repair once with no duplicate push.
+    f.h.github.set_checks(&repair1, ChecksState::Failure);
+    set_steps(&f, "t1", &["done", "pending"]).await?;
+    commit_file(&wt, "app.txt", "v3 repair\n", "Second CI repair")?;
+    let repair2 = git(&wt, &["rev-parse", "HEAD"])?;
+    let pushes_before = f.git.pushes.lock().map(|p| p.len()).unwrap_or(0);
+    let wait2 = wait_state(&f, &agent, &repair2).await?;
+    assert_eq!(wait2["push_problem"], Value::Null, "{wait2}");
+    assert_eq!(
+        f.origin_sha("feat/322-ci-repair")?,
+        repair2,
+        "yulius wait published eligible repair"
+    );
+    let pushes_after = f.git.pushes.lock().map(|p| p.len()).unwrap_or(0);
+    assert_eq!(pushes_after, pushes_before + 1, "pushed once");
+
+    // Repeated turn-end and wait calls for the same head do not push again.
+    f.h.app.auto_open_pr(&t1).await;
+    let _ = wait_state(&f, &agent, &repair2).await?;
+    let pushes_repeat = f.git.pushes.lock().map(|p| p.len()).unwrap_or(0);
+    assert_eq!(pushes_repeat, pushes_after, "no duplicate push");
+    Ok(())
+}
+
+/// SPEC-553 REP-001, REP-003, REP-004: preserves safeguards for new PRs, non-failing/armed open
+/// PRs, dirty worktrees, divergent branches, detached HEAD, human decisions (`needs_you` and
+/// `Blocked` steps), fork/mismatched PRs, and surfaces failed publication in `yulius wait` and
+/// `delivery_status`.
+#[tokio::test]
+async fn open_pr_ci_repair_preserves_safeguards_and_surfaces_actionable_failures() -> TestResult {
+    use yulius_app::ports::store_ext::NeedsYouStore;
+    let f = fixture(&DeliveryProfile::standard()).await?;
+    let wt = f
+        .add_task("t1", "Guarded repair", "feat/323-guards", "dev")
+        .await?;
+    commit_file(&wt, SPEC_PATH, &valid_spec("t1"), "Spec")?;
+    commit_file(&wt, "app.txt", "v1\n", "Initial")?;
+    let t1 = TaskId::parse("t1")?;
+    let agent = live_agent(&f, "t1", "tok-agent").await?;
+
+    // 1. New PR with open step: still blocked at TurnEnd (no PR opened).
+    set_steps(&f, "t1", &["done", "in_progress"]).await?;
+    f.h.app.auto_open_pr(&t1).await;
+    assert_eq!(pulls_opened(&f), 0, "new PR still waits for full plan");
+
+    // Open PR #1 cleanly.
+    set_steps(&f, "t1", &["done", "done"]).await?;
+    f.h.app.auto_open_pr(&t1).await;
+    assert_eq!(pulls_opened(&f), 1);
+    let pr_head = git(&wt, &["rev-parse", "HEAD"])?;
+
+    // 2. Non-failing (Pending) open PR with open step: NOT pushed.
+    f.h.github.set_checks(&pr_head, ChecksState::Pending);
+    set_steps(&f, "t1", &["done", "in_progress"]).await?;
+    commit_file(&wt, "app.txt", "v2\n", "Next slice")?;
+    let v2 = git(&wt, &["rev-parse", "HEAD"])?;
+    f.h.app.auto_open_pr(&t1).await;
+    assert_eq!(
+        f.origin_sha("feat/323-guards")?,
+        pr_head,
+        "pending PR does not bypass plan_hold"
+    );
+
+    // 3. Failing open PR + dirty worktree: refused with actionable note in wait & delivery_status.
+    f.h.github.set_checks(&pr_head, ChecksState::Failure);
+    std::fs::write(wt.join("dirty.tmp"), "uncommitted\n")?;
+    f.h.app.auto_open_pr(&t1).await;
+    assert_eq!(
+        f.origin_sha("feat/323-guards")?,
+        pr_head,
+        "dirty worktree must not push"
+    );
+    let dirty_wait = wait_state(&f, &agent, &v2).await?;
+    assert!(
+        dirty_wait["push_problem"]
+            .as_str()
+            .is_some_and(|s| s.contains("uncommitted changes")),
+        "{dirty_wait}"
+    );
+    let dirty_view = f.delivery("t1").await?;
+    assert!(
+        dirty_view["notes"]
+            .as_array()
+            .is_some_and(|notes| notes.iter().any(|n| n
+                .as_str()
+                .is_some_and(|s| s.contains("uncommitted changes")))),
+        "{dirty_view}"
+    );
+    std::fs::remove_file(wt.join("dirty.tmp"))?;
+
+    // 4. Failing open PR + pending human decision (`needs_you`): NOT pushed.
+    let asked = yulius_app::needs_you::NeedsYouRecord {
+        action: "Approve migration".into(),
+        happened: None,
+        problem: None,
+        decision: true,
+        link: None,
+        at: 10,
+        cause: None,
+        named: Default::default(),
+    };
+    f.h.store
+        .set_task_needs_you(&t1, Some(&asked), Timestamp(10))
+        .await?;
+    f.h.app.auto_open_pr(&t1).await;
+    assert_eq!(
+        f.origin_sha("feat/323-guards")?,
+        pr_head,
+        "needs_you blocks auto repair publication"
+    );
+    f.h.store
+        .set_task_needs_you(&t1, None, Timestamp(11))
+        .await?;
+
+    // 5. Failing open PR + Blocked step: NOT pushed.
+    set_steps(&f, "t1", &["done", "blocked"]).await?;
+    f.h.app.auto_open_pr(&t1).await;
+    assert_eq!(
+        f.origin_sha("feat/323-guards")?,
+        pr_head,
+        "blocked step prevents auto repair publication"
+    );
+    set_steps(&f, "t1", &["done", "in_progress"]).await?;
+
+    // 6. Failing open PR + detached HEAD (wrong branch): NOT pushed, actionable note set.
+    git(&wt, &["checkout", "--quiet", "--detach", &v2])?;
+    commit_file(&wt, "app.txt", "detached\n", "Detached commit")?;
+    let detached = git(&wt, &["rev-parse", "HEAD"])?;
+    f.h.app.auto_open_pr(&t1).await;
+    assert_eq!(
+        f.origin_sha("feat/323-guards")?,
+        pr_head,
+        "detached HEAD must not push"
+    );
+    let detached_wait = wait_state(&f, &agent, &detached).await?;
+    assert!(
+        detached_wait["push_problem"]
+            .as_str()
+            .is_some_and(|s| s.contains("not on `feat/323-guards`")),
+        "{detached_wait}"
+    );
+    git(&wt, &["checkout", "--quiet", "feat/323-guards"])?;
+
+    // 7. Failing open PR + diverged/amended branch: NOT force-pushed, actionable remedy recorded.
+    git(&wt, &["reset", "--quiet", "--hard", &pr_head])?;
+    std::fs::write(wt.join("app.txt"), "amended\n")?;
+    git(&wt, &["commit", "--quiet", "--amend", "-am", "Amended"])?;
+    let amended = git(&wt, &["rev-parse", "HEAD"])?;
+    assert_ne!(amended, pr_head);
+    f.h.app.auto_open_pr(&t1).await;
+    assert_eq!(
+        f.origin_sha("feat/323-guards")?,
+        pr_head,
+        "diverged branch must never force-push"
+    );
+    let div_wait = wait_state(&f, &agent, &amended).await?;
+    assert!(
+        div_wait["push_problem"].as_str().is_some_and(
+            |s| s.contains("Do not force-push") && s.contains("origin/feat/323-guards")
+        ),
+        "{div_wait}"
+    );
+    let div_view = f.delivery("t1").await?;
+    assert!(
+        div_view["notes"].as_array().is_some_and(|notes| notes
+            .iter()
+            .any(|n| n.as_str().is_some_and(|s| s.contains("Do not force-push")))),
+        "{div_view}"
+    );
+
+    // 8. Push failure on an otherwise eligible clean fast-forward repair is actionable in both
+    // `yulius wait` and `delivery_status`, then succeeds once the remote accepts pushes again.
+    git(&wt, &["reset", "--quiet", "--hard", &pr_head])?;
+    commit_file(&wt, "app.txt", "clean repair\n", "Clean repair")?;
+    let clean = git(&wt, &["rev-parse", "HEAD"])?;
+    f.git.fail_pushes(Some(PushFailure::Refused));
+    f.h.app.auto_open_pr(&t1).await;
+    assert_eq!(f.origin_sha("feat/323-guards")?, pr_head);
+    let fail_wait = wait_state(&f, &agent, &clean).await?;
+    assert!(
+        fail_wait["push_problem"]
+            .as_str()
+            .is_some_and(|s| s.starts_with("Yulius could not push")),
+        "{fail_wait}"
+    );
+    let fail_view = f.delivery("t1").await?;
+    assert!(
+        fail_view["notes"]
+            .as_array()
+            .is_some_and(|notes| notes.iter().any(|n| n
+                .as_str()
+                .is_some_and(|s| s.starts_with("Yulius could not push")))),
+        "{fail_view}"
+    );
+
+    // Clear push fault: publishes cleanly and clears the note.
+    f.git.fail_pushes(None);
+    f.h.app.auto_open_pr(&t1).await;
+    assert_eq!(f.origin_sha("feat/323-guards")?, clean);
+    assert_eq!(
+        wait_state(&f, &agent, &clean).await?["push_problem"],
+        Value::Null
+    );
+    Ok(())
+}

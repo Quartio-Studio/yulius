@@ -630,9 +630,25 @@ impl App {
         id: &str,
         req: &ContinueTask,
     ) -> AppResult<TaskSummary> {
+        self.continue_task_with_prompt(ctx, id, req, None).await
+    }
+
+    /// [`App::continue_task`] with an optional prompt delivered on wake for a parked task
+    /// (SPEC-553 PRK-102). A prompt for a non-parked task is ignored (normal continue).
+    ///
+    /// # Errors
+    /// As [`App::continue_task`].
+    pub async fn continue_task_with_prompt(
+        self: &Arc<Self>,
+        ctx: &AuthContext,
+        id: &str,
+        req: &ContinueTask,
+        prompt: Option<&str>,
+    ) -> AppResult<TaskSummary> {
         let task = self.load_task(ctx, id, Action::Work).await?;
         // A parked task resumes in its session (SPEC-512 PRK-005): with nothing typed, its
-        // request stays until the person writes.
+        // request stays until the person writes; with a prompt, it wakes with that prompt and
+        // ends any open `needs_you` request (SPEC-553 PRK-102).
         if task.status == TaskStatus::Parked {
             self.ensure_agent_account(task.harness.provider()).await?;
             if parse_account(req)?.is_some() {
@@ -640,10 +656,17 @@ impl App {
                     "a parked task resumes where it ran; move it after it resumed".into(),
                 ));
             }
-            if !self.resume_parked(&task.id, None).await? {
+            let cleaned = prompt
+                .map(crate::task_message::clean_message)
+                .map(|s| s.trim().to_owned())
+                .filter(|s| !s.is_empty());
+            if !self.resume_parked(&task.id, cleaned.clone()).await? {
                 return Err(AppError::Conflict(
                     "the task changed while it was resumed; try again".into(),
                 ));
+            }
+            if cleaned.is_some() {
+                self.end_needs_you(&task.id).await;
             }
             let task = self
                 .deps

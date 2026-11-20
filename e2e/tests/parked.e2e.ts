@@ -138,3 +138,82 @@ test('a parked task shows where it was, marked parked; a queued task page says w
   await touchTask(browser, 'sb_studio', 13, { status: 'queued', activity: null, queue_reason: 'Waiting for a free session: 8 of 8 in use' });
   await expect(browser.locator('.strip-status')).toHaveText(/Queued · Waiting for a free session: 8 of 8 in use/);
 });
+
+// SPEC-553 PRK-101, PRK-102: a parked Codex/Claude task renders the calm info-tone parked banner
+// with a visible Resume button (distinct from a crash or operator stop), offers Resume and Reply
+// in the waiting bar for its owner, and wakes via Resume or Reply while keeping stopped tasks inert.
+test('a parked task terminal shows its parked banner and Resume action, distinct from a crash, and wakes on Resume or Reply', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/t/13', '&ambient=0'));
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('#13 Improve the code');
+
+  // Verify termsocket.js treats parked as a non-live session state so the banner renders on load.
+  const ended = await browser.evaluate(async () => {
+    const { isEndedStatus } = await import('/assets/termsocket.js');
+    return {
+      parked: isEndedStatus('parked'),
+      running: isEndedStatus('running'),
+      stopped: isEndedStatus('stopped_cancelled'),
+      crashed: isEndedStatus('stopped_crashed'),
+    };
+  });
+  expect(ended).toEqual({ parked: true, running: false, stopped: true, crashed: true });
+
+  // Connect a Codex account in the mock DB so Resume/Reply work on a Codex task too.
+  await browser.evaluate(() => {
+    (window as unknown as { __yuliusMock: { connectCodex: () => void } }).__yuliusMock.connectCodex();
+  });
+
+  // Park the task in "Your turn · parked" (the quartio-v2 #323 / #324 state).
+  await touchTask(browser, 'sb_studio', 13, { status: 'parked', activity: 'waiting', harness: 'codex' });
+  const infoBanner = browser.locator('.term-banner-info');
+  await expect(infoBanner).toBeVisible();
+  await expect(infoBanner).toHaveText(/parked this idle session/);
+  await expect(infoBanner.getByRole('button', { name: 'Resume' })).toBeVisible();
+  await expect(browser.locator('.term-banner-warn')).toHaveCount(0);
+
+  // Waiting attention bar also offers Resume and Reply to the owner, below the banner (no overlap).
+  const bar = browser.locator('.attention-bar');
+  await expect(bar).toBeVisible();
+  await expect(bar).toHaveText(/This idle session was parked \(your turn\)/);
+  await expect(bar.getByRole('button', { name: 'Resume' })).toBeVisible();
+  await expect(bar.getByRole('button', { name: 'Reply' })).toBeVisible();
+
+  // Compare against a crash: crash shows a warning banner, not the parked info banner.
+  await touchTask(browser, 'sb_studio', 13, { status: 'stopped_crashed', activity: null });
+  await expect(browser.locator('.term-banner-warn')).toBeVisible();
+  await expect(browser.locator('.term-banner-warn')).toHaveText(/stopped unexpectedly/);
+
+  // Compare against an operator stop: shows stopped banner and typing MUST NOT wake it.
+  await touchTask(browser, 'sb_studio', 13, { status: 'stopped_cancelled', activity: null });
+  await expect(browser.locator('.term-banner-info')).toHaveText(/You stopped this task/);
+  await browser.locator('.xterm-helper-textarea').focus();
+  await browser.keyboard.type('do not wake');
+  await expect(browser.locator('.term-banner-info')).toHaveText(/You stopped this task/);
+
+  // Back to parked: clicking Resume in the banner wakes the task into running through POST /continue.
+  await touchTask(browser, 'sb_studio', 13, { status: 'parked', activity: 'waiting' });
+  await expect(infoBanner.getByRole('button', { name: 'Resume' })).toBeVisible();
+  await infoBanner.getByRole('button', { name: 'Resume' }).click();
+  await expect(browser.locator('.strip-status')).not.toHaveText(/Starting|· parked/);
+  await expect(browser.locator('.term-banner-info')).toHaveCount(0);
+
+  // Park again and wake via Reply with a prompt.
+  await touchTask(browser, 'sb_studio', 13, { status: 'parked', activity: 'waiting' });
+  await expect(bar.getByRole('button', { name: 'Reply' })).toBeVisible();
+  await bar.getByRole('button', { name: 'Reply' }).click();
+  await bar.getByRole('textbox', { name: 'Reply to the agent' }).fill('Check CI status');
+  await bar.getByRole('button', { name: 'Send' }).click();
+  await expect(browser.locator('.strip-status')).not.toHaveText(/Starting|· parked/);
+
+  // Park again and wake via ordinary owner typing directly in the parked terminal.
+  await touchTask(browser, 'sb_studio', 13, { status: 'parked', activity: 'waiting' });
+  await expect(infoBanner).toBeVisible();
+  await browser.locator('.xterm-helper-textarea').focus();
+  await browser.keyboard.type('hello');
+  await expect(browser.locator('.strip-status')).not.toHaveText(/Starting|· parked/);
+
+  // Non-owner ownership boundary: another user's parked task never exposes Resume or Reply.
+  await touchTask(browser, 'sb_studio', 13, { status: 'parked', activity: 'waiting', owner: { login: 'anna-q' } });
+  await expect(bar.getByRole('button', { name: 'Resume' })).toHaveCount(0);
+  await expect(bar.getByRole('button', { name: 'Reply' })).toHaveCount(0);
+});

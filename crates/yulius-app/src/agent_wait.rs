@@ -1380,7 +1380,10 @@ impl App {
             .filter(|h| h.len() >= 7 && h.chars().all(|c| c.is_ascii_hexdigit()))
         {
             let ctx = self.agent_context(token).await?;
-            self.forget_push_problem_if_pushed(&ctx.task, &head.to_ascii_lowercase())
+            let normalized = head.to_ascii_lowercase();
+            self.forget_push_problem_if_pushed(&ctx.task, &normalized)
+                .await;
+            self.maybe_publish_repair_for_wait(&ctx.task, &normalized, since.is_none())
                 .await;
         }
         loop {
@@ -1391,6 +1394,50 @@ impl App {
             }
             tokio::time::sleep(WAIT_POLL).await;
         }
+    }
+
+    /// Publishes an eligible clean committed CI repair on an existing task-owned open PR when
+    /// `yulius wait` starts or reconnects after a restart with no CI run at `head` yet
+    /// (SPEC-553 REP-004). Never runs when a `push_problem` is already recorded for `head`, when
+    /// a CI run already exists at `head`, or twice for the same head during a long-poll loop.
+    async fn maybe_publish_repair_for_wait(&self, task: &TaskRecord, head: &str, initial: bool) {
+        if self.has_push_problem_for(&task.id, head) {
+            return;
+        }
+        let open_pr = matches!(
+            self.deps.store.delivery(&task.id).await,
+            Ok(Some(record))
+                if record.stage == yulius_domain::delivery::DeliveryStage::PrOpen
+                    && record.pr_number.is_some()
+        );
+        if !open_pr {
+            return;
+        }
+        let has_run = self
+            .deps
+            .store
+            .ci_runs(&task.sandbox_id, 50)
+            .await
+            .ok()
+            .is_some_and(|runs| runs.iter().any(|run| run.sha.starts_with(head)));
+        if has_run {
+            return;
+        }
+        let runtime = self.runtime(&task.id);
+        {
+            let mut checked = runtime
+                .repair_checked_head
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let already = checked
+                .as_deref()
+                .is_some_and(|h| h.eq_ignore_ascii_case(head));
+            if !initial && already {
+                return;
+            }
+            *checked = Some(head.to_owned());
+        }
+        self.try_publish_open_pr_repair(&task.id, Some(head)).await;
     }
 }
 

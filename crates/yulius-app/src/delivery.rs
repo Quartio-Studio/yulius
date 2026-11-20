@@ -1191,6 +1191,8 @@ struct Observed {
     checks_errored: bool,
     worktree_head: Option<String>,
     dirty: bool,
+    /// Whether `has_changes` answered cleanly (fail-closed for automatic pushes when `false`).
+    dirty_known: bool,
     notes: Vec<String>,
     /// The profile's integration branch: where the task's pull request must go.
     integration: String,
@@ -1228,7 +1230,7 @@ impl Observed {
 }
 
 /// Why a task's head is not pushed or not delivered, for `yulius wait` (SPEC-050 DLV-201,
-/// DLV-204).
+/// DLV-204) and `pr_watch` failed-publication notices (SPEC-553 REP-005).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct PushNote {
     /// The head it is about.
@@ -1238,6 +1240,10 @@ pub(crate) struct PushNote {
     /// A push of that head failed (not a "not delivered" note): GitHub's branch reaching the
     /// head makes it stale (SPEC-139 PSH-002).
     pub(crate) failed_push: bool,
+    /// Whether `pr_watch` should deliver this note once to an idle session when `yulius wait` is
+    /// not running (true for push failures and blocked open-PR CI repairs; false for routine
+    /// multi-slice step holds).
+    pub(crate) actionable_in_watch: bool,
 }
 
 /// Why one automatic delivery failed ([`App::try_auto_open_pr`]): the error, and the note this
@@ -1682,6 +1688,7 @@ impl App {
         let pre_merge = matches!(record.stage, DeliveryStage::None | DeliveryStage::PrOpen);
         let mut worktree_head = None;
         let mut dirty = false;
+        let mut dirty_known = true;
         if let Some(worktree) = task.worktree_path.as_deref().map(Path::new)
             && pre_merge
         {
@@ -1692,8 +1699,12 @@ impl App {
                     err.public_message()
                 )),
             }
-            if record.stage == DeliveryStage::None {
-                dirty = self.deps.git.has_changes(worktree).await.unwrap_or(false);
+            match self.deps.git.has_changes(worktree).await {
+                Ok(changed) => dirty = changed,
+                Err(_) => {
+                    dirty = false;
+                    dirty_known = false;
+                }
             }
         }
         let mut pr = None;
@@ -1759,6 +1770,7 @@ impl App {
             checks_errored,
             worktree_head,
             dirty,
+            dirty_known,
             notes,
             integration: profile.integration_branch.clone(),
         };
@@ -1928,6 +1940,17 @@ impl App {
             .await?;
         // Where an armed merge stands, and what a merge counts as (SPEC-441 MQ-007, MQ-009).
         if let Some(note) = self.merge_queue_note(task) {
+            notes.push(note);
+        }
+        // Surface an actionable push/publication failure for the current unpublished head
+        // (SPEC-553 REP-005).
+        if let Some(head) = observed.worktree_head.as_deref()
+            && !observed
+                .pr
+                .as_ref()
+                .is_some_and(|pull| is_open(pull) && pull.head_sha.eq_ignore_ascii_case(head))
+            && let Some(note) = self.actionable_push_problem_of(&task.id, head)
+        {
             notes.push(note);
         }
         if let Some(pull) = observed.pr.as_ref().filter(|pull| pull.merged) {
@@ -2743,11 +2766,13 @@ impl App {
         match self.try_auto_open_pr(task_id, DeliveryAsk::TurnEnd).await {
             Ok(AutoDelivery::Delivered(done)) => self.runtime(task_id).hub.notice(done),
             Ok(AutoDelivery::Unchanged | AutoDelivery::Blocked(_)) => {}
-            Err(AutoDeliveryError { error: err, .. }) => {
-                tracing::warn!(task = %task_id, error = %err, "automatic pull request failed");
-                self.runtime(task_id).hub.notice(format!(
-                    "Yulius could not open the pull request by itself: {err} Use Deliver… on the task."
-                ));
+            Err(AutoDeliveryError { error: err, note }) => {
+                tracing::warn!(task = %task_id, error = %err, "automatic delivery failed");
+                self.runtime(task_id).hub.notice(note.unwrap_or_else(|| {
+                    format!(
+                        "Yulius could not deliver this head by itself: {err} Use Deliver… on the task."
+                    )
+                }));
             }
         }
     }
@@ -2757,6 +2782,17 @@ impl App {
     /// instead of waiting for a pull request that never comes (#34 waited 42 minutes). Only for
     /// a branch with commits to deliver.
     async fn note_undelivered(&self, task: &TaskRecord, worktree: &str, reason: &str) {
+        self.note_undelivered_with(task, worktree, reason, false)
+            .await;
+    }
+
+    async fn note_undelivered_with(
+        &self,
+        task: &TaskRecord,
+        worktree: &str,
+        reason: &str,
+        actionable_in_watch: bool,
+    ) {
         let path = Path::new(worktree);
         let Some(head) = self
             .deps
@@ -2803,8 +2839,88 @@ impl App {
                 head,
                 text,
                 failed_push: false,
+                actionable_in_watch,
             });
         }
+    }
+
+    /// Records an actionable push/publication failure note on `task_id` for `head` (SPEC-553
+    /// REP-005).
+    fn set_actionable_note(
+        &self,
+        task_id: &TaskId,
+        head: &str,
+        text: String,
+        failed_push: bool,
+    ) -> String {
+        if let Ok(mut problem) = self.runtime(task_id).push_problem.lock() {
+            *problem = Some(PushNote {
+                head: head.to_owned(),
+                text: text.clone(),
+                failed_push,
+                actionable_in_watch: true,
+            });
+        }
+        text
+    }
+
+    /// Records the non-fast-forward remedy when a local repair branch diverged from or rewound
+    /// behind its open pull request head (SPEC-553 REP-003, REP-005).
+    fn set_diverged_problem(
+        &self,
+        task_id: &TaskId,
+        head: &str,
+        branch: &str,
+        pull: u64,
+    ) -> String {
+        let short = head.get(..9).unwrap_or(head);
+        let text = format!(
+            "Yulius could not push {short} to pull request #{pull}: the branch on GitHub is not \
+             an ancestor of your HEAD (your branch was rebased, amended, or rewound after it was \
+             pushed). Do not force-push. Merge the pushed head back in: `git fetch origin && git \
+             merge --no-edit origin/{branch}` (the same changes merge cleanly), rerun the tests \
+             if anything changed, and end your turn: Yulius pushes again. Bring the integration \
+             branch in by merging it, never by rebasing."
+        );
+        self.set_actionable_note(task_id, head, text, true)
+    }
+
+    /// The actionable push/publication note for `head`, if one is recorded for `task_id`
+    /// (SPEC-553 REP-005).
+    pub(crate) fn actionable_push_problem_of(
+        &self,
+        task_id: &TaskId,
+        head: &str,
+    ) -> Option<String> {
+        let runtime = self.existing_runtime(task_id)?;
+        let note = runtime.push_problem.lock().ok()?.clone()?;
+        (note.actionable_in_watch
+            && !head.is_empty()
+            && (note.head.starts_with(head) || head.starts_with(note.head.as_str())))
+        .then_some(note.text)
+    }
+
+    /// The current actionable push/publication note `(head, text)` on `task_id`, regardless of
+    /// head match (for `pr_watch` and `pr_news_due`, SPEC-553 REP-005).
+    pub(crate) fn actionable_push_problem(&self, task_id: &TaskId) -> Option<(String, String)> {
+        let runtime = self.existing_runtime(task_id)?;
+        let note = runtime.push_problem.lock().ok()?.clone()?;
+        note.actionable_in_watch.then_some((note.head, note.text))
+    }
+
+    /// Whether `task_id` already has a `push_problem` recorded for `head`.
+    pub(crate) fn has_push_problem_for(&self, task_id: &TaskId, head: &str) -> bool {
+        self.existing_runtime(task_id).is_some_and(|runtime| {
+            runtime
+                .push_problem
+                .lock()
+                .ok()
+                .and_then(|p| p.clone())
+                .is_some_and(|note| {
+                    !head.is_empty()
+                        && (note.head.starts_with(head) || head.starts_with(note.head.as_str()))
+                })
+        })
     }
 
     /// Records why the agent's head could not be pushed, for `yulius wait` (DLV-201), and
@@ -2844,6 +2960,7 @@ impl App {
                 head: head.to_owned(),
                 text: text.clone(),
                 failed_push: true,
+                actionable_in_watch: true,
             });
         }
         text
@@ -2926,6 +3043,7 @@ impl App {
                 head: head.to_owned(),
                 text: text.clone(),
                 failed_push: false,
+                actionable_in_watch: false,
             });
         }
         text
@@ -2977,6 +3095,7 @@ impl App {
                 note.head.get(..9).unwrap_or(&note.head)
             ),
             failed_push: false,
+            actionable_in_watch: false,
         });
         if let Ok(mut problem) = self.runtime(&task.id).push_problem.lock()
             && problem.as_ref() == Some(&note)
@@ -3118,8 +3237,73 @@ impl App {
             self.clear_push_problem(task_id);
             return Ok(AutoDelivery::Unchanged);
         }
+        let dirty = observed.dirty || !observed.dirty_known;
+        // SPEC-553 (ADR-0391): for an existing task-owned open pull request whose previous head
+        // failed CI, an eligible clean committed fast-forward repair on the same feature branch
+        // publishes even while verification steps remain open, breaking the circular wait.
+        let mut repair_publish = false;
+        if ask == DeliveryAsk::TurnEnd
+            && let (Some(head), Some(pull)) = (
+                observed.worktree_head.as_deref(),
+                observed.pr.as_ref().filter(|p| is_open(p)),
+            )
+        {
+            match self
+                .open_pr_repair_decision(
+                    &task,
+                    &branch,
+                    Path::new(&worktree),
+                    &profile,
+                    &observed,
+                    head,
+                )
+                .await
+            {
+                dlv::OpenPrRepairDecision::Publish => repair_publish = true,
+                dlv::OpenPrRepairDecision::NotApplicable => {}
+                dlv::OpenPrRepairDecision::WrongBranch => {
+                    let short = head.get(..9).unwrap_or(head);
+                    let text = format!(
+                        "Yulius could not push {short} to pull request #{}: your worktree HEAD is \
+                         not on `{branch}`. Check out `{branch}` with your committed repair and \
+                         end your turn so Yulius pushes it.",
+                        pull.number
+                    );
+                    self.set_actionable_note(task_id, head, text.clone(), false);
+                    return Ok(AutoDelivery::Blocked(text));
+                }
+                dlv::OpenPrRepairDecision::DirtyWorktree => {
+                    let reason = if observed.dirty_known {
+                        "the worktree has uncommitted changes: commit them"
+                    } else {
+                        "Yulius could not confirm the worktree is clean: check `git status` and \
+                         commit or discard any uncommitted changes"
+                    };
+                    self.note_undelivered_with(&task, &worktree, reason, true)
+                        .await;
+                    return Ok(AutoDelivery::Blocked(reason.to_owned()));
+                }
+                dlv::OpenPrRepairDecision::SpecOrPlanInvalid => {
+                    let reason =
+                        not_ready(&observed.spec, &observed.steps, DeliveryAsk::Review, false)
+                            .unwrap_or_else(|| "the task spec or plan is not valid".to_owned());
+                    self.note_undelivered_with(&task, &worktree, &reason, true)
+                        .await;
+                    return Ok(AutoDelivery::Blocked(reason));
+                }
+                dlv::OpenPrRepairDecision::Diverged => {
+                    let note = self.set_diverged_problem(task_id, head, &branch, pull.number);
+                    return Err(AutoDeliveryError {
+                        error: AppError::Conflict(note.clone()),
+                        note: Some(note),
+                    });
+                }
+            }
+        }
         // A task that needs a spec needs its plan too; research, docs and chores may have none.
-        if let Some(reason) = not_ready(&observed.spec, &observed.steps, ask, observed.dirty) {
+        if !repair_publish
+            && let Some(reason) = not_ready(&observed.spec, &observed.steps, ask, dirty)
+        {
             self.note_undelivered(&task, &worktree, &reason).await;
             return Ok(AutoDelivery::Blocked(reason));
         }
@@ -3132,6 +3316,13 @@ impl App {
             let Some(pull) = observed.pr.as_ref().filter(|p| is_open(p)) else {
                 return Ok(AutoDelivery::Unchanged);
             };
+            if !self.is_task_owned_open_pull(pull, &observed.record, &branch, &profile)
+                || !self
+                    .worktree_on_branch(Path::new(&worktree), &branch, &head)
+                    .await
+            {
+                return Ok(AutoDelivery::Unchanged);
+            }
             if pull.head_sha == head || !self.claim_auto_head(task_id, &head)? {
                 return Ok(AutoDelivery::Unchanged);
             }
@@ -3147,6 +3338,7 @@ impl App {
                     note: Some(note),
                 });
             }
+            self.trigger_ci_after_push(&sandbox, task_id).await;
             return Ok(AutoDelivery::Delivered(format!(
                 "Yulius pushed your new commits to pull request #{}.",
                 pull.number
@@ -3190,6 +3382,7 @@ impl App {
         match opened {
             Ok(number) => {
                 self.clear_push_problem(task_id);
+                self.trigger_ci_after_push(&sandbox, task_id).await;
                 Ok(AutoDelivery::Delivered(format!(
                     "Yulius opened pull request #{number} into {}: the task is ready for review.",
                     profile.integration_branch
@@ -3212,6 +3405,313 @@ impl App {
                 Err(AutoDeliveryError { error, note })
             }
         }
+    }
+
+    /// Whether `pull` is an open task-owned pull request on this task's own non-protected feature
+    /// branch targeting the integration branch (SPEC-553 REP-001, REP-003).
+    fn is_task_owned_open_pull(
+        &self,
+        pull: &GhPull,
+        record: &DeliveryRecord,
+        branch: &str,
+        profile: &DeliveryProfile,
+    ) -> bool {
+        is_open(pull)
+            && record.stage == DeliveryStage::PrOpen
+            && record.pr_number == Some(pull.number)
+            && !pull.from_fork
+            && pull.head == branch
+            && pull.base == profile.integration_branch
+            && branch != profile.integration_branch
+            && branch != profile.production_branch
+    }
+
+    /// Whether the worktree's `refs/heads/<branch>` resolves to `head` (fail-closed so Yulius
+    /// never pushes an unrelated branch or detached HEAD).
+    async fn worktree_on_branch(&self, worktree: &Path, branch: &str, head: &str) -> bool {
+        match self
+            .deps
+            .git
+            .resolve_commit(worktree, &format!("refs/heads/{branch}"))
+            .await
+        {
+            Ok(Some(sha)) => sha.eq_ignore_ascii_case(head),
+            Ok(None) | Err(_) => false,
+        }
+    }
+
+    /// Whether an actual human decision or explicit hold is pending for `task` (SPEC-553
+    /// REP-001, REP-003): fail-closed on store errors.
+    async fn human_decision_pending(&self, task: &TaskRecord, steps: &[StepRecord]) -> bool {
+        if task.activity == Some(yulius_domain::task::Activity::NeedsAttention)
+            || steps
+                .iter()
+                .any(|s| StepStatus::parse(&s.status) == Some(StepStatus::Blocked))
+        {
+            return true;
+        }
+        let store = &self.deps.store;
+        if !matches!(store.task_needs_you(&task.id).await, Ok(None))
+            || !matches!(store.pending_hold(&task.id).await, Ok(None))
+            || !matches!(store.open_pause(&task.id).await, Ok(None))
+        {
+            return true;
+        }
+        self.browser_tab_requests(&task.sandbox_id)
+            .await
+            .contains(task.id.as_str())
+    }
+
+    /// Evaluates [`dlv::evaluate_open_pr_repair`] for `task` against `observed` and `head`.
+    async fn open_pr_repair_decision(
+        &self,
+        task: &TaskRecord,
+        branch: &str,
+        worktree: &Path,
+        profile: &DeliveryProfile,
+        observed: &Observed,
+        head: &str,
+    ) -> dlv::OpenPrRepairDecision {
+        let pull = observed
+            .pr
+            .as_ref()
+            .filter(|pull| self.is_task_owned_open_pull(pull, &observed.record, branch, profile));
+        let task_owned_open_pr = pull.is_some();
+        let pr_checks_failing = observed.checks == ChecksState::Failure && !observed.checks_errored;
+        let new_commit = pull.is_some_and(|p| !p.head_sha.eq_ignore_ascii_case(head));
+        let merge_armed = self.merge_is_armed(&task.id);
+        if !task_owned_open_pr || !pr_checks_failing || !new_commit || merge_armed {
+            return dlv::OpenPrRepairDecision::NotApplicable;
+        }
+        let human_decision_pending = self.human_decision_pending(task, &observed.steps).await;
+        if human_decision_pending {
+            return dlv::OpenPrRepairDecision::NotApplicable;
+        }
+        let on_task_branch = self.worktree_on_branch(worktree, branch, head).await;
+        let clean_worktree = observed.dirty_known && !observed.dirty;
+        let spec_and_plan_ready =
+            observed.spec.valid && !(observed.steps.is_empty() && observed.spec.required);
+        let fast_forward = match pull {
+            Some(p) => matches!(
+                self.deps.git.is_ancestor(worktree, &p.head_sha, head).await,
+                Ok(true)
+            ),
+            None => false,
+        };
+        dlv::evaluate_open_pr_repair(&dlv::OpenPrRepairFacts {
+            task_owned_open_pr,
+            on_task_branch,
+            clean_worktree,
+            spec_and_plan_ready,
+            pr_checks_failing,
+            new_commit,
+            fast_forward,
+            merge_armed,
+            human_decision_pending,
+        })
+    }
+
+    /// Queues exact-head CI right after an automatic push when Yulius CI is enabled (SPEC-553
+    /// REP-002); failures are logged without undoing the already-completed push.
+    async fn trigger_ci_after_push(&self, sandbox: &SandboxRecord, task_id: &TaskId) {
+        if self.config.ci.enabled
+            && let Err(err) = self.ci_sync_sandbox(sandbox).await
+        {
+            tracing::warn!(
+                error = %err,
+                task = %task_id,
+                "exact-head CI sync after automatic push failed"
+            );
+        }
+    }
+
+    /// Publishes an eligible clean committed CI repair to `task_id`'s existing task-owned open
+    /// pull request and triggers exact-head CI (SPEC-553 REP-004). Used by `yulius wait` and
+    /// `pr_watch` restart recovery; never opens a new pull request and never writes routine
+    /// step-hold notes for non-failing pull requests. Returns `true` when it pushed a repair.
+    pub(crate) async fn try_publish_open_pr_repair(
+        &self,
+        task_id: &TaskId,
+        expected_head: Option<&str>,
+    ) -> bool {
+        let store = &self.deps.store;
+        let Ok(Some(task)) = store.task(task_id).await else {
+            return false;
+        };
+        let (Some(branch), Some(worktree)) = (task.branch.clone(), task.worktree_path.clone())
+        else {
+            return false;
+        };
+        let Ok(sandbox) = self.dlv_sandbox_of(&task).await else {
+            return false;
+        };
+        if sandbox.is_playground() {
+            return false;
+        }
+        let profile = delivery_profile(&sandbox);
+        if branch == profile.integration_branch || branch == profile.production_branch {
+            return false;
+        }
+        let Ok(Some(record)) = store.delivery(&task.id).await else {
+            return false;
+        };
+        if record.stage != DeliveryStage::PrOpen || record.pr_number.is_none() {
+            return false;
+        }
+        if self.merge_is_armed(task_id) {
+            return false;
+        }
+        let Ok(token) = self.task_github_token(&task, &sandbox).await else {
+            return false;
+        };
+        let Ok(observed) = self
+            .dlv_observe(&sandbox, &task, &profile, Some(&token))
+            .await
+        else {
+            return false;
+        };
+        let (Some(head), Some(pull)) = (
+            observed.worktree_head.clone(),
+            observed.pr.as_ref().filter(|p| is_open(p)),
+        ) else {
+            return false;
+        };
+        if let Some(expected) = expected_head
+            && !expected.is_empty()
+            && !head
+                .to_ascii_lowercase()
+                .starts_with(&expected.to_ascii_lowercase())
+            && !expected
+                .to_ascii_lowercase()
+                .starts_with(&head.to_ascii_lowercase())
+        {
+            return false;
+        }
+        if pull.head_sha.eq_ignore_ascii_case(&head) {
+            self.clear_push_problem(task_id);
+            return false;
+        }
+        match self
+            .open_pr_repair_decision(
+                &task,
+                &branch,
+                Path::new(&worktree),
+                &profile,
+                &observed,
+                &head,
+            )
+            .await
+        {
+            dlv::OpenPrRepairDecision::NotApplicable => false,
+            dlv::OpenPrRepairDecision::WrongBranch => {
+                let short = head.get(..9).unwrap_or(&head);
+                let text = format!(
+                    "Yulius could not push {short} to pull request #{}: your worktree HEAD is \
+                     not on `{branch}`. Check out `{branch}` with your committed repair and end \
+                     your turn so Yulius pushes it.",
+                    pull.number
+                );
+                self.set_actionable_note(task_id, &head, text, false);
+                false
+            }
+            dlv::OpenPrRepairDecision::DirtyWorktree => {
+                let reason = if observed.dirty_known {
+                    "the worktree has uncommitted changes: commit them"
+                } else {
+                    "Yulius could not confirm the worktree is clean: check `git status` and \
+                     commit or discard any uncommitted changes"
+                };
+                self.note_undelivered_with(&task, &worktree, reason, true)
+                    .await;
+                false
+            }
+            dlv::OpenPrRepairDecision::SpecOrPlanInvalid => {
+                let reason = not_ready(&observed.spec, &observed.steps, DeliveryAsk::Review, false)
+                    .unwrap_or_else(|| "the task spec or plan is not valid".to_owned());
+                self.note_undelivered_with(&task, &worktree, &reason, true)
+                    .await;
+                false
+            }
+            dlv::OpenPrRepairDecision::Diverged => {
+                let note = self.set_diverged_problem(task_id, &head, &branch, pull.number);
+                self.runtime(task_id).hub.notice(note);
+                false
+            }
+            dlv::OpenPrRepairDecision::Publish => {
+                let Ok(true) = self.claim_auto_head(task_id, &head) else {
+                    return false;
+                };
+                match self
+                    .dlv_push_head(task_id, Path::new(&worktree), &branch, &head, &token)
+                    .await
+                {
+                    Ok(()) => {
+                        self.trigger_ci_after_push(&sandbox, task_id).await;
+                        self.runtime(task_id).hub.notice(format!(
+                            "Yulius pushed your new commits to pull request #{}.",
+                            pull.number
+                        ));
+                        true
+                    }
+                    Err(error) => {
+                        self.release_auto_head(task_id);
+                        let note = self.set_push_problem(
+                            task_id,
+                            &head,
+                            &branch,
+                            Some(pull.number),
+                            &error,
+                        );
+                        self.runtime(task_id).hub.notice(note);
+                        false
+                    }
+                }
+            }
+        }
+    }
+
+    /// Local, zero-GitHub-call check for `parking.rs` (SPEC-553 REP-006): whether `task` has a
+    /// clean committed fast-forward repair on `task.branch` above `failing_pr_head` with no
+    /// recorded `push_problem`.
+    pub(crate) async fn open_pr_repair_pending_locally(
+        &self,
+        task: &TaskRecord,
+        failing_pr_head: &str,
+    ) -> bool {
+        let (Some(branch), Some(worktree)) =
+            (task.branch.as_deref(), task.worktree_path.as_deref())
+        else {
+            return false;
+        };
+        let path = Path::new(worktree);
+        let Some(head) = self
+            .deps
+            .git
+            .log(path, "HEAD", 1)
+            .await
+            .ok()
+            .and_then(|log| log.into_iter().next())
+            .map(|c| c.sha)
+        else {
+            return false;
+        };
+        if head.eq_ignore_ascii_case(failing_pr_head) || self.has_push_problem_for(&task.id, &head)
+        {
+            return false;
+        }
+        if !self.worktree_on_branch(path, branch, &head).await {
+            return false;
+        }
+        if !matches!(self.deps.git.has_changes(path).await, Ok(false)) {
+            return false;
+        }
+        matches!(
+            self.deps
+                .git
+                .is_ancestor(path, failing_pr_head, &head)
+                .await,
+            Ok(true)
+        )
     }
 
     /// Whether the task's worktree head carries work its merged pull request (`record`) did not

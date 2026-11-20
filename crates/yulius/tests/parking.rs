@@ -1264,3 +1264,368 @@ fn a_named_persons_message_resumes_a_parked_task() -> TestResult {
     rt.shutdown_timeout(Duration::from_secs(5));
     Ok(())
 }
+
+/// SPEC-553 PRK-102: ordinary owner terminal input and `continue_task_with_prompt` wake a parked
+/// task through the supervisor preserving its exact `provider_session_id` and `worktree_path`,
+/// while bare interrupts/scroll, non-owners, and operator-stopped tasks are never woken.
+#[test]
+fn ordinary_owner_terminal_input_and_continue_prompt_wake_parked_session_with_continuity()
+-> TestResult {
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let app = app(&data, 8, 1).await?;
+        let (id, caller) = answered(&app, &data).await?;
+        let first_runs = app.deps.store.attempts(&id).await?;
+        let session_id = first_runs[0].provider_session_id.clone();
+        assert!(session_id.is_some(), "provider_session_id recorded");
+        let worktree = TaskStore::task(app.deps.store.as_ref(), &id)
+            .await?
+            .ok_or("task")?
+            .worktree_path;
+        assert!(worktree.is_some(), "worktree recorded");
+        let owner_ctx = AuthContext {
+            user: app.deps.store.user(&caller.user).await?.ok_or("user")?,
+            csrf_token: None,
+            session_hash: None,
+            token: None,
+        };
+
+        parked(&app, &id).await?;
+        let attach = app.terminal_open(&owner_ctx, id.as_str(), None).await?;
+        assert!(attach.can_write);
+
+        // Scroll and bare Ctrl-C must NOT wake the parked session.
+        app.terminal_input(&owner_ctx, &attach, b"a", true).await?;
+        app.terminal_input(&owner_ctx, &attach, b"\x03", false)
+            .await?;
+        assert_eq!(status_of(&app, &id).await.0, Some(TaskStatus::Parked));
+
+        // Ownership boundary: a non-owner with sandbox write access MUST NOT wake via terminal.
+        let bob = yulius_app::model::UserRecord {
+            id: yulius_domain::ids::UserId::parse("u-bob-term")?,
+            github_login: Some("bob-term".into()),
+            github_id: None,
+            display_name: "Bob".into(),
+            avatar_url: None,
+            is_superadmin: false,
+            is_instance_admin: false,
+            password_hash: None,
+            created_at: yulius_domain::time::Timestamp(1),
+            disabled_at: None,
+        };
+        yulius_app::ports::store::UserStore::insert_user(app.deps.store.as_ref(), &bob).await?;
+        yulius_app::ports::store::PermissionStore::put_access(
+            app.deps.store.as_ref(),
+            &bob.id,
+            &caller.sandbox,
+            yulius_domain::permission::AccessLevel::Write,
+            app.now(),
+        )
+        .await?;
+        let bob_ctx = AuthContext {
+            user: bob,
+            csrf_token: None,
+            session_hash: None,
+            token: None,
+        };
+        let bob_attach = app.terminal_open(&bob_ctx, id.as_str(), None).await?;
+        assert!(!bob_attach.can_write);
+        assert!(
+            app.terminal_input(&bob_ctx, &bob_attach, b"bob wake\r", false)
+                .await
+                .is_err(),
+            "non-owner terminal input must be refused"
+        );
+        assert_eq!(status_of(&app, &id).await.0, Some(TaskStatus::Parked));
+
+        // Ordinary submitted owner typing wakes the parked session with the exact rollout/worktree.
+        app.terminal_input(
+            &owner_ctx,
+            &attach,
+            b"Wake from terminal: answer with an echo\r",
+            false,
+        )
+        .await?;
+        wait_for("terminal wake echo", Duration::from_secs(30), || async {
+            screen(&app, &id).contains("ECHO: Wake from terminal: answer with an echo")
+        })
+        .await?;
+        let runs_after_term = app.deps.store.attempts(&id).await?;
+        assert_eq!(runs_after_term.len(), 2);
+        assert_eq!(runs_after_term[1].launch_kind, LaunchKind::Resume);
+        assert_eq!(runs_after_term[1].provider_session_id, session_id);
+        assert_eq!(
+            TaskStore::task(app.deps.store.as_ref(), &id)
+                .await?
+                .ok_or("task")?
+                .worktree_path,
+            worktree
+        );
+
+        // Park again and wake via `continue_task_with_prompt` (the web Reply action).
+        wait_for("idle again", Duration::from_secs(30), || async {
+            status_of(&app, &id).await.1 == Some(Activity::Waiting)
+        })
+        .await?;
+        parked(&app, &id).await?;
+        app.continue_task_with_prompt(
+            &owner_ctx,
+            id.as_str(),
+            &yulius_contracts::api::tasks::ContinueTask { account_id: None },
+            Some("Wake from reply: answer with an echo"),
+        )
+        .await?;
+        wait_for("reply wake echo", Duration::from_secs(30), || async {
+            screen(&app, &id).contains("ECHO: Wake from reply: answer with an echo")
+        })
+        .await?;
+        let runs_after_reply = app.deps.store.attempts(&id).await?;
+        assert_eq!(runs_after_reply.len(), 3);
+        assert_eq!(runs_after_reply[2].launch_kind, LaunchKind::Resume);
+        assert_eq!(runs_after_reply[2].provider_session_id, session_id);
+
+        // Operator stop boundary: an explicitly stopped task MUST NOT wake on terminal input.
+        app.stop_task_now(&id).await?;
+        wait_for("stopped", Duration::from_secs(30), || async {
+            matches!(status_of(&app, &id).await.0, Some(TaskStatus::Stopped(_)))
+        })
+        .await?;
+        let stopped_err = app
+            .terminal_input(&owner_ctx, &attach, b"should not wake\r", false)
+            .await;
+        assert!(
+            stopped_err.is_err(),
+            "operator-stopped task must refuse terminal input instead of waking"
+        );
+        assert!(matches!(
+            status_of(&app, &id).await.0,
+            Some(TaskStatus::Stopped(_))
+        ));
+        Ok::<_, Error>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// SPEC-553 PRK-103: an idle task continues to park safely while CI runs on its open PR, does not
+/// wake while CI is still running or while a human `needs_you` decision is open, and resumes
+/// automatically once in its saved session/worktree when an actionable check result arrives.
+#[test]
+fn parked_task_parks_safely_during_ci_and_auto_wakes_on_actionable_check_results() -> TestResult {
+    use yulius_app::ci::{CiJobRecord, CiRunRecord};
+    use yulius_app::delivery::DeliveryRecord;
+    use yulius_app::pr_watch::WatchBounds;
+    use yulius_domain::ci::{CiRef, GateSource, RunState};
+    use yulius_domain::delivery::DeliveryStage;
+    use yulius_domain::resources::Need;
+    use yulius_domain::time::Timestamp;
+
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let app = app(&data, 8, 1).await?;
+        let (id, caller) = answered(&app, &data).await?;
+        let session_id = app.deps.store.attempts(&id).await?[0]
+            .provider_session_id
+            .clone();
+        let open = DeliveryRecord {
+            task_id: id.clone(),
+            stage: DeliveryStage::PrOpen,
+            pr_number: Some(42),
+            updated_at: app.now(),
+        };
+        app.deps
+            .store
+            .transition_delivery(&DeliveryStage::None, &open)
+            .await?;
+
+        // Active CI run on PR #42: safe parking while CI runs is preserved.
+        let running_ci = CiRunRecord {
+            id: "run-running".into(),
+            sandbox_id: caller.sandbox.clone(),
+            reference: CiRef::PullRequest(42),
+            sha: "1111111111111111111111111111111111111111".into(),
+            source: GateSource::ProjectConfig,
+            state: RunState::Running,
+            reason: None,
+            requested_by: "yulius".into(),
+            status_for: None,
+            status_note: None,
+            status_attempts: 0,
+            queued_at: Timestamp(10),
+            started_at: Some(Timestamp(11)),
+            ended_at: None,
+        };
+        let running_job = CiJobRecord {
+            id: "job-running".into(),
+            run_id: "run-running".into(),
+            ordinal: 0,
+            name: "checks".into(),
+            key: "checks".into(),
+            command: "scripts/dev ci".into(),
+            matrix: None,
+            state: RunState::Running,
+            reason: None,
+            exit_code: None,
+            output: String::new(),
+            failures: None,
+            started_at: Some(Timestamp(11)),
+            ended_at: None,
+            need: Need::default(),
+            timeout_minutes: None,
+            exclusive: false,
+            waited_ms: None,
+        };
+        app.deps
+            .store
+            .insert_ci_run(&running_ci, &[running_job])
+            .await?;
+
+        parked(&app, &id).await?;
+        let bounds = WatchBounds::default();
+        // Still running: `watch_prs` must NOT wake the parked task.
+        let woke = app.watch_prs(&bounds).await;
+        assert!(
+            woke.is_empty(),
+            "active CI must not wake parked task: {woke:?}"
+        );
+        assert_eq!(status_of(&app, &id).await.0, Some(TaskStatus::Parked));
+
+        // CI finishes passed (unarmed green): `watch_prs` resumes the parked session once with
+        // the exact saved `provider_session_id`.
+        let passed_ci = CiRunRecord {
+            id: "run-passed".into(),
+            state: RunState::Passed,
+            queued_at: Timestamp(20),
+            started_at: Some(Timestamp(21)),
+            ended_at: Some(Timestamp(22)),
+            ..running_ci.clone()
+        };
+        let passed_job = CiJobRecord {
+            id: "job-passed".into(),
+            run_id: "run-passed".into(),
+            ordinal: 0,
+            name: "checks".into(),
+            key: "checks".into(),
+            command: "scripts/dev ci".into(),
+            matrix: None,
+            state: RunState::Passed,
+            reason: None,
+            exit_code: Some(0),
+            output: String::new(),
+            failures: None,
+            started_at: Some(Timestamp(21)),
+            ended_at: Some(Timestamp(22)),
+            need: Need::default(),
+            timeout_minutes: None,
+            exclusive: false,
+            waited_ms: None,
+        };
+        app.deps
+            .store
+            .insert_ci_run(&passed_ci, &[passed_job])
+            .await?;
+
+        let woke = app.watch_prs(&bounds).await;
+        assert!(
+            woke.iter()
+                .any(|(task, text)| task == &id && text.contains("passed its own Yulius CI run")),
+            "expected green wake: {woke:?}"
+        );
+        wait_for(
+            "resumed after green CI",
+            Duration::from_secs(30),
+            || async { status_of(&app, &id).await.0 == Some(TaskStatus::Running) },
+        )
+        .await?;
+        let runs = app.deps.store.attempts(&id).await?;
+        assert_eq!(runs.len(), 2);
+        assert_eq!(runs[1].launch_kind, LaunchKind::Resume);
+        assert_eq!(runs[1].provider_session_id, session_id);
+
+        // Second watch pass does not duplicate the notice.
+        let repeat = app.watch_prs(&bounds).await;
+        assert!(
+            !repeat.iter().any(|(task, _)| task == &id),
+            "no duplicate wake/notice: {repeat:?}"
+        );
+
+        // Park again with an open `needs_you` human decision + a new failed CI run:
+        // human decision boundary MUST prevent auto-wake.
+        wait_for("idle after wake", Duration::from_secs(30), || async {
+            status_of(&app, &id).await.1 == Some(Activity::Waiting)
+        })
+        .await?;
+        let asked = NeedsYouRecord {
+            action: "Approve deploy".into(),
+            happened: None,
+            problem: None,
+            decision: true,
+            link: None,
+            at: 30,
+            cause: None,
+            named: Default::default(),
+        };
+        app.deps
+            .store
+            .set_task_needs_you(&id, Some(&asked), app.now())
+            .await?;
+        parked(&app, &id).await?;
+        let failed_ci = CiRunRecord {
+            id: "run-failed".into(),
+            sha: "2222222222222222222222222222222222222222".into(),
+            state: RunState::Failed,
+            queued_at: Timestamp(30),
+            started_at: Some(Timestamp(31)),
+            ended_at: Some(Timestamp(32)),
+            ..running_ci
+        };
+        let failed_job = CiJobRecord {
+            id: "job-failed".into(),
+            run_id: "run-failed".into(),
+            ordinal: 0,
+            name: "checks".into(),
+            key: "checks".into(),
+            command: "scripts/dev ci".into(),
+            matrix: None,
+            state: RunState::Failed,
+            reason: None,
+            exit_code: Some(1),
+            output: String::new(),
+            failures: None,
+            started_at: Some(Timestamp(31)),
+            ended_at: Some(Timestamp(32)),
+            need: Need::default(),
+            timeout_minutes: None,
+            exclusive: false,
+            waited_ms: None,
+        };
+        app.deps
+            .store
+            .insert_ci_run(&failed_ci, &[failed_job])
+            .await?;
+        let held = app.watch_prs(&bounds).await;
+        assert!(
+            !held.iter().any(|(task, _)| task == &id),
+            "needs_you prevents auto-wake: {held:?}"
+        );
+        assert_eq!(status_of(&app, &id).await.0, Some(TaskStatus::Parked));
+
+        // Once the human decision is cleared, `watch_prs` wakes the parked task on the failed run.
+        app.deps
+            .store
+            .set_task_needs_you(&id, None, app.now())
+            .await?;
+        let woke_red = app.watch_prs(&bounds).await;
+        assert!(
+            woke_red
+                .iter()
+                .any(|(task, text)| task == &id && text.contains("failed")),
+            "expected failed CI wake: {woke_red:?}"
+        );
+        Ok::<_, Error>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}

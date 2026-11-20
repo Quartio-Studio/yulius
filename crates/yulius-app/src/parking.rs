@@ -17,6 +17,8 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use serde_json::json;
+use yulius_domain::ci::{CiRef, RunState};
+use yulius_domain::delivery::DeliveryStage;
 use yulius_domain::ids::SandboxId;
 use yulius_domain::task::{Activity, TaskGroup, TaskStatus};
 
@@ -186,7 +188,8 @@ impl App {
             background,
             yulius: self.agent_waits_on_yulius(&task.id)
                 || self.merge_is_armed(&task.id)
-                || self.pr_news_due(task).await,
+                || self.pr_news_due(task).await
+                || self.open_pr_work_pending(task, requested).await,
             held_prompt: self
                 .deps
                 .store
@@ -197,6 +200,35 @@ impl App {
             paused: self.is_paused(task).await,
             keyboard,
             onboarding: task.origin == TaskOrigin::Onboarding,
+        }
+    }
+
+    /// Whether `task` holds an unpublished clean committed fast-forward CI repair above its
+    /// failing open pull request head (SPEC-553 REP-002, PRK-103). Returns `false` when an actual
+    /// human `needs_you` decision is pending, and also returns `false` while CI is running so
+    /// idle sessions continue to park safely during CI and wake automatically on actionable
+    /// check results via `pr_watch`.
+    async fn open_pr_work_pending(&self, task: &TaskRecord, requested: &Requests) -> bool {
+        if requested.all.contains(task.id.as_str()) {
+            return false;
+        }
+        let Ok(Some(record)) = self.deps.store.delivery(&task.id).await else {
+            return false;
+        };
+        let (DeliveryStage::PrOpen, Some(pr)) = (record.stage, record.pr_number) else {
+            return false;
+        };
+        let Ok(runs) = self.deps.store.ci_runs(&task.sandbox_id, 50).await else {
+            return false;
+        };
+        let own = runs
+            .iter()
+            .find(|run| run.reference == CiRef::PullRequest(pr));
+        match own {
+            Some(run) if run.state == RunState::Failed => {
+                self.open_pr_repair_pending_locally(task, &run.sha).await
+            }
+            _ => false,
         }
     }
 }

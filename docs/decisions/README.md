@@ -389,3 +389,4 @@ number differs from the file name, and a record this index does not list.
 - [0381](0381-automation-creators-authorize-edits-and-starts.md): automation creators authorize edits and starts (SPEC-534).
 - [0384](0384-visible-prompt-text-holds-session-messages.md) extends the session message guard to text Claude Code restores into its visible prompt box (SPEC-537, #1264).
 - [0385](0385-recover-an-interrupted-initial-mock-load-once.md) records when a Chromium network change permits one recovery of a browser test's initial mock load.
+- [0391](0391-publish-committed-ci-repairs-to-open-task-prs.md): parked task terminals show the info-tone parked banner and Resume action, wake into the same session/worktree on ordinary owner input or Resume, safely park while CI runs and auto-wake via `pr_watch` on actionable check results, and publish eligible clean committed CI repairs on existing failing open PRs with immediate exact-head CI (amends 0325 and 0367; SPEC-553)
