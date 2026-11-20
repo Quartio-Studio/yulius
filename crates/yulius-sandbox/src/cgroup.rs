@@ -2027,6 +2027,23 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn ci_use_requires_cpu_time_from_each_existing_group() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let (_root, delegation, _dir) = fake_sandbox("cpu memory pids\n")?;
+        let groups = delegation.sandbox_group("s1", &Limits::default())?;
+        std::fs::write(groups.ci.join("cpu.stat"), "usage_usec 1500\n")?;
+        // A directory in place of the stat file fails to read even when tests run as root.
+        std::fs::create_dir(groups.engine.join("cpu.stat"))?;
+        assert_eq!(delegation.ci_use("s1"), None);
+        std::fs::remove_dir_all(&groups.engine)?;
+        assert_eq!(
+            delegation.ci_use("s1").map(|used| used.cpu_usec),
+            Some(1500)
+        );
+        Ok(())
+    }
+
     /// SPEC-497 HBA-002 (review of the CI admission fix): `some avg10` in thousandths; none
     /// without a `some` line or with a value that is no percentage; above 100 % counts as 100 %.
     #[test]

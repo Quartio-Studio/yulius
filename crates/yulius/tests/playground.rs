@@ -563,6 +563,7 @@ async fn a_playgrounds_task_merges_into_its_local_dev() -> TestResult {
         "{:?}",
         merged.body
     );
+    assert_eq!(merged.body["next_actions"], json!([]));
     let dev = git(&origin, &["rev-parse", "dev"])?.trim().to_owned();
     assert_eq!(
         git(&origin, &["rev-parse", "dev^"])?.trim(),
@@ -813,6 +814,7 @@ async fn a_playground_never_calls_github() -> TestResult {
     )
     .await?;
     assert_eq!(delivery.status, StatusCode::OK, "{:?}", delivery.body);
+    assert_eq!(delivery.body["next_actions"], json!(["merge"]));
     let notes = delivery.body["notes"].to_string();
     assert!(notes.contains(note), "{notes}");
     assert!(!notes.contains("GitHub is not available"), "{notes}");

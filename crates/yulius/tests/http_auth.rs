@@ -1302,7 +1302,10 @@ async fn event_streams_follow_revoked_access_and_close_for_disabled_users() -> T
     use yulius_app::ports::store::UserStore;
     use yulius_contracts::events::UiEvent;
     let h = harness_with(HarnessOptions {
-        configure: Some(Box::new(|c| c.viewer_recheck_ms = 200)),
+        configure: Some(Box::new(|c| {
+            c.viewer_recheck_ms = 200;
+            c.events_heartbeat_ms = 500;
+        })),
         ..HarnessOptions::default()
     })?;
     let alice = seed_github_user(&h, "u-alice", "alice").await?;

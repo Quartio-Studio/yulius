@@ -176,6 +176,14 @@ class RepositoryContracts(unittest.TestCase):
             self.assertEqual(len(decision_errors(decisions)), 1)
         self.assertEqual(decision_errors(ROOT / "docs/decisions"), [])
 
+    def test_decision_index_reports_a_reversed_pair(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            decisions = Path(tmp)
+            for number in ("0006", "0007"):
+                (decisions / f"{number}-choice.md").write_text(f"# {number}. Choice\n")
+            (decisions / "README.md").write_text("- [0007](0007-choice.md)\n- [0006](0006-choice.md)\n")
+            self.assertTrue(any("0007 before 0006" in error for error in decision_errors(decisions)))
+
     def test_every_decision_record_is_indexed(self):
         with tempfile.TemporaryDirectory() as tmp:
             decisions = Path(tmp)

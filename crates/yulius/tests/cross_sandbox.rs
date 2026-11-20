@@ -1690,52 +1690,79 @@ async fn a_task_named_twice_is_the_one_its_card_names() -> TestResult {
     Ok(())
 }
 
-/// SPEC-442 XST-003 (review round 1): a message to another person's task that holds their
-/// personal secrets is refused on approval, as `task_message` refuses it, and audited `failed`
-/// in both sandboxes.
+/// Steering another owner's prepared task is refused before a card, including an update.
 #[tokio::test]
-async fn a_message_to_a_task_holding_its_owners_personal_secrets_is_refused() -> TestResult {
-    let w = world(60_000).await?;
+async fn another_owners_message_and_update_are_refused_before_asking() -> TestResult {
+    let w = world(100).await?;
+    let (_, number) = task_in(&w, "s2", "bob", json!({"prompt": "Bob", "prepared": true})).await?;
+    for (action, extra) in [
+        (CrossAction::Message, json!({"text": "Hello"})),
+        (CrossAction::Update, json!({})),
+    ] {
+        let mut args = extra;
+        args["sandbox"] = json!("website");
+        args["number"] = json!(number);
+        let result = ask_to(&w, action, args)?.await?;
+        let err = result
+            .err()
+            .ok_or("a request for another owner's task was accepted")?;
+        assert!(err.public_message().contains("@bob"), "{err}");
+    }
+    assert!(requests(&w, &w.alice, "s1").await?.is_empty());
+    for sandbox in ["s1", "s2"] {
+        let audit = audited(&w, sandbox).await?;
+        assert_eq!(audit.len(), 2);
+        assert!(audit.iter().all(|row| row["outcome"] == "failed"));
+    }
+    Ok(())
+}
+
+/// An approved message still requires control after the request outlives a server restart.
+#[tokio::test]
+async fn a_restored_request_checks_the_tasks_current_owner_on_approval() -> TestResult {
+    let w = world(100).await?;
     let (id, number) = task_in(
         &w,
         "s2",
-        "bob",
-        json!({"prompt": "Bob's work", "prepared": true}),
+        "alice",
+        json!({"prompt":"Original", "prepared":true}),
     )
     .await?;
-    let added = call(
+    let outcome = ask_to(
+        &w,
+        CrossAction::Message,
+        json!({"sandbox":"website", "number":number, "text":"Message"}),
+    )?
+    .await??;
+    let request = outcome["request"].as_str().ok_or("request")?;
+    let taken = call(
         &w.h.router,
         Method::POST,
-        "/api/sandboxes/s2/agent-secrets",
-        Some(json!({"scope": "personal", "name": "BOB_TOKEN", "value": "bob-personal-token-5ec7", "hosts": ["api.bob.test"], "injection": "bearer"})),
+        &format!("/api/tasks/{id}/control/take"),
+        None,
         &w.bob,
     )
     .await?;
-    assert_eq!(added.status, StatusCode::CREATED, "{:?}", added.body);
-    let before = w.h.store.task(&id).await?.ok_or("task")?.prompt;
-    let call_ = ask_to(
-        &w,
-        CrossAction::Message,
-        json!({"sandbox": "website", "number": number, "text": "Use BOB_TOKEN"}),
-    )?;
-    let request = waiting(&w, 1).await?.remove(0);
-    let refused = answer(
-        &w,
-        &w.alice,
-        "s1",
-        request["id"].as_str().ok_or("id")?,
-        true,
-    )
-    .await?;
-    assert_eq!(refused.status, StatusCode::FORBIDDEN, "{:?}", refused.body);
-    assert!(call_.await?.is_err());
-    assert_eq!(w.h.store.task(&id).await?.ok_or("task")?.prompt, before);
-    for sandbox in ["s2", "s1"] {
-        let rows = audited(&w, sandbox).await?;
-        assert_eq!(rows.len(), 1, "{sandbox}: {rows:?}");
-        assert_eq!(rows[0]["outcome"], "failed");
-        assert_eq!(rows[0]["action"], "message");
-    }
+    assert_eq!(taken.status, StatusCode::OK, "{:?}", taken.body);
+    let next = App::new(w.h.app.config.clone(), w.h.app.deps.clone());
+    next.restore_cross_requests().await;
+    let ctx = AuthContext {
+        user: w.h.store.user(&w.alice_id).await?.ok_or("alice")?,
+        csrf_token: Some("csrf".into()),
+        session_hash: None,
+        token: None,
+    };
+    let refused = next
+        .superagent_request_answer(
+            &ctx,
+            "s1",
+            request,
+            &yulius_app::cross_sandbox::RequestAnswer::approve(),
+        )
+        .await;
+    let err = refused.err().ok_or("approved after control changed")?;
+    assert!(err.public_message().contains("@bob"), "{err}");
+    assert_eq!(w.h.store.task(&id).await?.ok_or("task")?.prompt, "Original");
     Ok(())
 }
 
