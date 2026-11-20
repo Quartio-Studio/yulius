@@ -97,6 +97,13 @@ const GOAL_EXCERPT_CHARS: usize = 2_000;
 
 const DIRTY_WORKTREE: &str = "the task worktree has uncommitted changes; commit (or discard) them first so the pull request contains exactly what was validated";
 
+/// A parked PR watcher can finish pending checks. A chained task needs the result.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PrVerification {
+    Parking,
+    ParkedPredecessor,
+}
+
 #[derive(Default)]
 pub(crate) struct ParkingPrs {
     checkout: Option<String>,
@@ -3864,13 +3871,24 @@ impl App {
         task: &TaskRecord,
         facts: &ParkingPrs,
     ) -> AppResult<bool> {
+        Ok(self.parking_checkout_matches(task, facts).await?
+            && self.parking_ci_still_current(task, facts).await?)
+    }
+
+    async fn parking_checkout_matches(
+        &self,
+        task: &TaskRecord,
+        facts: &ParkingPrs,
+    ) -> AppResult<bool> {
+        Ok(facts.pulls.is_empty() || self.parking_checkout(task).await? == facts.checkout)
+    }
+
+    async fn parking_ci_still_current(
+        &self,
+        task: &TaskRecord,
+        facts: &ParkingPrs,
+    ) -> AppResult<bool> {
         use yulius_domain::ci::RunState;
-        if facts.pulls.is_empty() {
-            return Ok(true);
-        }
-        if self.parking_checkout(task).await? != facts.checkout {
-            return Ok(false);
-        }
         for (number, head) in &facts.pulls {
             let runs = self
                 .deps
@@ -4053,6 +4071,7 @@ impl App {
         &self,
         task: &TaskRecord,
         record: Option<&DeliveryRecord>,
+        purpose: PrVerification,
     ) -> AppResult<Option<ParkingPrs>> {
         let tracked = record
             .filter(|r| r.stage == DeliveryStage::PrOpen)
@@ -4089,6 +4108,7 @@ impl App {
         };
         // Branch-scoped discovery also finds PRs omitted by a partial sandbox overview
         // and new PRs opened externally while an older recorded delivery is being reconciled.
+        let watched = tracked.filter(|_| purpose == PrVerification::Parking);
         let branch = branch_pulls().await?;
         if branch.len() > MAX_PULLS {
             return Ok(None);
@@ -4105,11 +4125,16 @@ impl App {
                 continue;
             }
             let Some(pull) = self
-                .pull_allows_parking(task, &sandbox, &token, number, tracked == Some(number))
+                .pull_allows_parking(task, &sandbox, &token, number, watched == Some(number))
                 .await?
             else {
                 return Ok(None);
             };
+            // A successor needs the current open deliveries. Old checks on a PR
+            // already merged cannot block the verified replacement.
+            if pull.merged && purpose == PrVerification::ParkedPredecessor {
+                continue;
+            }
             if let Some(head) = &checkout
                 && !pull.from_fork
                 && task.branch.as_ref() == Some(&pull.head)
@@ -4131,7 +4156,7 @@ impl App {
         Ok((branch_pulls().await? == branch).then_some(ParkingPrs {
             checkout,
             pulls,
-            watched: tracked,
+            watched,
         }))
     }
 
@@ -4200,6 +4225,53 @@ impl App {
         Ok((current.merged || same_open_head).then_some(current))
     }
 
+    /// Local work and decisions must still be settled after GitHub replies.
+    async fn parked_chain_clear(&self, task: &TaskRecord) -> AppResult<bool> {
+        let store = &self.deps.store;
+        Ok(!self
+            .browser_tab_requests(&task.sandbox_id)
+            .await
+            .contains(task.id.as_str())
+            && !crate::sandboxes::plan_open(&store.steps(&task.id).await?)
+            && !self.read_spec_unfinished(&task.id).await?
+            && !self.goal_unfinished_of(task).await
+            && store.pending_hold(&task.id).await?.is_none()
+            && store.task_needs_you(&task.id).await?.is_none())
+    }
+
+    async fn parked_predecessor_done(&self, task: &TaskRecord) -> AppResult<bool> {
+        let store = &self.deps.store;
+        let record = store.delivery(&task.id).await?;
+        let delivered = record
+            .as_ref()
+            .is_some_and(|r| r.stage == DeliveryStage::PrOpen || past_merge(&r.stage));
+        if (task.activity != Some(yulius_domain::task::Activity::Done) && !delivered)
+            || !self.parked_chain_clear(task).await?
+        {
+            return Ok(false);
+        }
+        let Some(prs) = self
+            .verify_parking_prs(task, record.as_ref(), PrVerification::ParkedPredecessor)
+            .await?
+        else {
+            return Ok(false);
+        };
+        if !self.parking_checkout_matches(task, &prs).await?
+            || !self.parked_chain_clear(task).await?
+            || !self.parking_ci_still_current(task, &prs).await?
+            || store.delivery(&task.id).await? != record
+        {
+            return Ok(false);
+        }
+        // Browser startup and checkout verification can outlast an owner resume.
+        Ok(store.task(&task.id).await?.is_some_and(|current| {
+            current.status == task.status
+                && current.activity == task.activity
+                && current.branch == task.branch
+                && current.worktree_path == task.worktree_path
+        }))
+    }
+
     /// The part of [`App::task_is_done`] that needs no GitHub call: the turn ended, no background
     /// shell runs, and the goal is achieved or no declared work is left with the change merged. The
     /// session limit counts tasks by it (SES-101), many times a minute.
@@ -4262,7 +4334,10 @@ impl App {
         if running && self.merge_is_armed(&task.id) {
             return false;
         }
-        if (running || parked) && task.activity == Some(Activity::Done) {
+        if parked {
+            return self.parked_predecessor_done(task).await.unwrap_or(false);
+        }
+        if running && task.activity == Some(Activity::Done) {
             return true;
         }
         // One reading of its delivery for the whole decision: a merge recorded between two
@@ -4272,7 +4347,7 @@ impl App {
         };
         // Yulius still has news of its pull request for its agent (an armed merge, a merge not
         // said yet): it goes on by itself, so it is not Done (SPEC-487 CHN-001, CHN-002).
-        if !parked && self.pr_news_due_of(task, record.as_ref(), false).await {
+        if self.pr_news_due_of(task, record.as_ref(), false).await {
             return false;
         }
         // A pull request makes a task Done only when no work it declared is left: its plan is

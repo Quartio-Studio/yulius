@@ -132,6 +132,7 @@ test('a locked browser offers restart when policy arrives and accepts input afte
   await browser.evaluate(() => { (window as unknown as WithLock).__yuliusMock.browserRestartFails = false; });
   await restart.click();
   await expect(restart).toBeHidden();
+  await expect(browser.locator('.bp-overlay')).toBeHidden();
   await browser.locator('.bp-surface').click({ position: { x: 120, y: 270 } });
   await browser.keyboard.type('recovered');
   await expect.poll(() => browser.evaluate(() =>
@@ -144,6 +145,7 @@ test('the panel reconnects when Chrome restarts but its HTTP reply times out', a
   await screen.getByRole('button', /^Show tools/).click();
   await screen.getByRole('navigation', 'Tools').getByRole('button', /^Browser/).click();
   await expect(screen.getByRole('tab', /^Checkout/)).toHaveAttribute('aria-selected', 'true');
+  await expect(browser.locator('.bp-overlay')).toBeHidden();
   await browser.evaluate(() => {
     (window as unknown as WithLock).__yuliusMock.browserLockMessage = 'A file dialog may still be open.';
   });
@@ -166,6 +168,8 @@ test('the panel reconnects when Chrome restarts but its HTTP reply times out', a
     db.finishRestartReply();
   });
   await expect(screen.getByRole('button', 'Retry')).toBeHidden();
+  // Retry disappears when reconnection starts. The overlay covers the page until its first frame.
+  await expect(browser.locator('.bp-overlay')).toBeHidden();
   await browser.locator('.bp-surface').click({ position: { x: 120, y: 270 } });
   await browser.keyboard.type('resumed');
   await expect.poll(() => browser.evaluate(() =>
