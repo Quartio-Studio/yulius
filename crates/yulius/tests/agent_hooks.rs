@@ -3479,6 +3479,74 @@ async fn a_parked_detail_keeps_a_direct_merge_when_the_branch_still_lists_it_ope
 }
 
 #[tokio::test]
+async fn parking_reports_the_checks_transport_error_and_keeps_the_session() -> TestResult {
+    let (f, _) = untracked_parking_fixture().await?;
+    let log = tempfile::NamedTempFile::new()?;
+    let subscriber = tracing_subscriber::fmt()
+        .with_ansi(false)
+        .with_writer(std::sync::Mutex::new(log.reopen()?))
+        .finish();
+    let _guard = tracing::subscriber::set_default(subscriber);
+    *f.h.github.checks_error.lock().map_err(|_| "checks")? = Some(
+        yulius_app::error::AppError::Upstream("checks fixture unreachable".into()),
+    );
+    assert_eq!(f.h.app.park_idle_sessions_now().await, 0);
+    let written = std::fs::read_to_string(log.path())?;
+    assert!(
+        written.contains("a park failed") && written.contains("checks fixture unreachable"),
+        "{written}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_parked_detail_rechecks_a_blocked_pr_that_merges_during_verification() -> TestResult {
+    for behind in [true, false] {
+        let (f, owner) = owner_observed_external_pr().await?;
+        install_app(&f).await?;
+        f.h.github.pulls.lock().map_err(|_| "pulls")?[0].behind = behind;
+        let hold = if behind {
+            let hold = Arc::new(tokio::sync::Notify::new());
+            *f.h.github.pull_read_hold.lock().map_err(|_| "pull hold")? = Some(hold.clone());
+            hold
+        } else {
+            *f.h.github.checks_error.lock().map_err(|_| "checks")? =
+                Some(yulius_app::error::AppError::Upstream("unavailable".into()));
+            f.h.github.hold_checks()
+        };
+        let app = f.h.app.clone();
+        let id = f.task.clone();
+        let reading = tokio::spawn(async move { app.task_detail(&owner, id.as_str()).await });
+        let limit = std::time::Duration::from_secs(5);
+        if behind {
+            tokio::time::timeout(limit, f.h.github.pull_read_entered.notified()).await?;
+            hold.notify_one();
+            tokio::time::timeout(limit, f.h.github.pull_read_entered.notified()).await?;
+            *f.h.github.pull_read_hold.lock().map_err(|_| "pull hold")? = None;
+        } else {
+            tokio::time::timeout(limit, f.h.github.checks_entered.notified()).await?;
+        }
+        *f.h.github
+            .merged_on_direct_read
+            .lock()
+            .map_err(|_| "merged")? = Some(1461);
+        if behind {
+            hold.notify_one();
+        } else {
+            f.h.github.release_checks(&hold);
+        }
+        let detail = serde_json::to_value(reading.await??)?;
+        assert_eq!(detail["parked_needs_you"], false, "behind={behind}");
+        assert_eq!(
+            detail["parked_pr"],
+            json!({"number":1461,"open":false}),
+            "behind={behind}"
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn a_parked_task_names_the_blocking_pr_when_its_branch_has_two_open_prs() -> TestResult {
     let (f, owner) = owner_observed_external_pr().await?;
     install_app(&f).await?;
