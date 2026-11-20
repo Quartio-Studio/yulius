@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Validate the repository's narrow, documented engineering contracts."""
+from collections import Counter
 import json
 from pathlib import Path
 import re
@@ -8,6 +9,8 @@ import subprocess
 import sys
 import tomllib
 from urllib.parse import quote, unquote, urlsplit
+
+from decision_slots import slot_errors
 
 ROOT = Path(__file__).resolve().parent.parent
 SKILL_BODY_LINES = 200
@@ -171,7 +174,9 @@ def decision_errors(directory):
     if not readme.is_file():
         return [f"{directory}: missing README.md index of the decision records"]
     index = readme.read_text()
+    errors.extend(f"{readme}: {error}" for error in slot_errors(index))
     numbers = re.findall(r"^- \[(\d{4})\]\(", index, re.MULTILINE)
+    links = Counter(re.findall(r"^- \[(\d{4})\]\(([^)]+)\)", index, re.MULTILINE))
     for previous, current in zip(numbers, numbers[1:]):
         if previous > current:
             errors.append(f"{readme}: decisions must appear in number order (found {previous} before {current})")
@@ -189,7 +194,10 @@ def decision_errors(directory):
             taken[number] = path
         if not path.read_text().startswith(f"# {number}. "):
             errors.append(f"{path}: title must start with \"# {number}. \"")
-        if f"- [{number}]({path.name})" not in index:
+        count = links[number, path.name]
+        if count > 1:
+            errors.append(f"{readme}: {path.name} is indexed more than once")
+        elif not count:
             errors.append(f"{path}: list it in {directory.name}/README.md as \"- [{number}]({path.name}): <title>\"")
     return errors
 
