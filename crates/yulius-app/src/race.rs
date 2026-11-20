@@ -62,6 +62,8 @@ pub enum Point {
     /// `close_task_now` (SPEC-250): the task was read `Running`; the close's end intent is not set
     /// yet. The path is the task id.
     CloseDecided,
+    /// A park passed the idle checks and is about to claim the run. Keyed by task id.
+    ParkPrepared,
     /// A park (SPEC-512 PRK-003): its end intent is set under the launch lock; the session has
     /// not been asked to end yet. The path is the task id.
     ParkDecided,
@@ -111,6 +113,9 @@ pub enum Point {
     /// A passed merge candidate (SPEC-497 MQW-002) comes to a member to merge: members before it
     /// merged; its own run is not read again yet. The path is the member's task id.
     TrainMemberMerging,
+    /// A failed candidate has checked its members for failures and is deciding how to
+    /// account for their runs. The path is the candidate run id.
+    FailedTrainDeciding,
     /// Start onboarding (SPEC-256) read the sandbox `pending`; the start has not read it again
     /// yet. The path is the sandbox id.
     OnboardingApproved,

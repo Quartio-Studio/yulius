@@ -363,7 +363,8 @@ pub struct TaskRuntime {
     pub(crate) attention_lock: tokio::sync::Mutex<()>,
     /// Held by each writer of the task's steps (the spec sync, `steps_set`, `step_update`, a
     /// person skipping steps) from its read to its write, so none writes back a status another
-    /// just changed (SPEC-341 LSS-002). Public for the integration tests that hold it.
+    /// just changed (SPEC-341 LSS-002). Spec and native goal updates share this lock with
+    /// the final parking check. Public for the integration tests that hold it.
     pub steps_lock: tokio::sync::Mutex<()>,
     /// When (ms) the record that closes a turn was last seen: the background agents it counts
     /// are known from then on (STA-001), which the chain and Done decisions wait for.
@@ -787,6 +788,12 @@ impl TaskRuntime {
     /// Whether a live PTY writer is currently attached to this runtime.
     pub(crate) async fn has_live_run(&self) -> bool {
         self.run.lock().await.is_some()
+    }
+
+    /// Records the native goal under the final parking check's lock, returning the previous value.
+    pub(crate) async fn replace_goal_unfinished(&self, unfinished: bool) -> bool {
+        let _work = self.steps_lock.lock().await;
+        self.goal_unfinished.swap(unfinished, Ordering::SeqCst)
     }
 
     /// A turn started now unless one is already in progress.
@@ -4707,8 +4714,24 @@ impl App {
         if run.harness == Harness::Codex && run.provider_session_id.is_none() {
             return Ok(false);
         }
+        crate::race::reached(
+            crate::race::Point::ParkPrepared,
+            Path::new(task_id.as_str()),
+        );
         let runtime = self.runtime(task_id);
-        if let Ok(mut intent) = runtime.intent.lock() {
+        // Step edits, spec reads and native goal updates share this lock. A writer already
+        // at work keeps the session for this pass. Hold it through the park intent.
+        let Ok(work) = runtime.steps_lock.try_lock() else {
+            return Ok(false);
+        };
+        if crate::sandboxes::plan_open(&self.deps.store.steps(task_id).await?)
+            || self.read_spec_unfinished(task_id).await?
+            || runtime.goal_unfinished.load(Ordering::SeqCst)
+        {
+            return Ok(false);
+        }
+        {
+            let mut intent = runtime.intent.lock().map_err(AppError::internal)?;
             // Any other end under way owns the run's end.
             if intent.is_some() {
                 return Ok(false);
@@ -4721,6 +4744,7 @@ impl App {
                 *kept = task.activity;
             }
         }
+        drop(work);
         crate::race::reached(crate::race::Point::ParkDecided, Path::new(task_id.as_str()));
         self.arm_escalation(task_id, Some(run.id));
         request_shutdown(&runtime).await;
@@ -6295,10 +6319,9 @@ impl App {
             goal.is_some_and(crate::finish::goal_stays_open),
             Ordering::SeqCst,
         );
-        runtime.goal_unfinished.store(
-            goal.map_or(unfinished, crate::finish::goal_unfinished),
-            Ordering::SeqCst,
-        );
+        runtime
+            .replace_goal_unfinished(goal.map_or(unfinished, crate::finish::goal_unfinished))
+            .await;
         runtime.goal_achieved.store(false, Ordering::SeqCst);
         runtime.goal_submitted.store(false, Ordering::SeqCst);
         runtime.verdict_stop_ms.clear();

@@ -9,6 +9,9 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 - Continuing a reviewer after its report preserves both verdicts and counts the re-review
   in the Review card. Duplicate stops preserve the original end time (SPEC-565, #1401).
 
+- Idle sessions with an open step, unfinished spec or unfinished goal stay live through grace-period and digest parking, including when their owner has been asked (SPEC-558, #1490).
+- The merge queue attributes a failed candidate to a member whose own run failed during
+  the split decision (SPEC-559, #1398).
 - Screen readers now identify Claude, Codex and Antigravity in watched and saved transcripts.
   Sessions search uses the same assistant names (SPEC-564, #1455).
 - Closing or stopping an answered task now honors the request when its reader has taken it and escalation records host loss. The attempt retains its lost exit reason. [SPEC-563](../.ai/specs/SPEC-563-honor-close-and-cancel-intents-when-host.md)
