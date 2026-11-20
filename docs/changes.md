@@ -7,8 +7,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 ## 2026-11-20
 
 - Parked terminals keep the last agent screen and explain how to resume. A message continues
-  the same Codex rollout. Codex goal turns with open steps or failing PR checks continue
-  within the Stop retry bound, and unfinished tasks keep their session (SPEC-558, #1490).
+  the same Codex rollout (SPEC-558, #1490).
 
 - Tasks hand work to another sandbox, off by default (SPEC-512 part 5, task #494, delivered by
   SPEC-557, #1106, ADR-0395): an instance administrator turns handoffs to Ask or Automatic; a

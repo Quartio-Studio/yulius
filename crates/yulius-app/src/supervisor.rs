@@ -2073,7 +2073,7 @@ impl App {
         // resumed session gets it typed again once its TUI is ready.
         // Codex takes `/goal` only typed, never as its launch prompt, and records goals its own
         // way: a Codex task gets its whole request, the definition of done included, as its first
-        // message (SPEC-503). The Stop gate continues its unfinished goal work (SPEC-558).
+        // message, and its turns end it as a prompt-mode task's do (SPEC-503).
         // Antigravity has its own `/goal`, never given by Yulius: an Antigravity task gets its
         // request as its first message, as a Codex task does (SPEC-505).
         let first_message_only = matches!(harness, Harness::Codex | Harness::Antigravity);
@@ -4658,15 +4658,11 @@ impl App {
         if self.background_or_wait_now(task_id).await != Some(false) {
             return Ok(false);
         }
-        let Some(candidate) = self.deps.store.task(task_id).await? else {
-            return Ok(false);
-        };
-        let current_pull = self.task_pull_signal(&candidate).await?;
         let _guard = self.supervisor.launch.lock().await;
         let Some(task) = self.deps.store.task(task_id).await? else {
             return Ok(false);
         };
-        let Some(quiet_ms) = self.parkable_now(&task, rule, current_pull).await else {
+        let Some(quiet_ms) = self.parkable_now(&task, rule).await else {
             return Ok(false);
         };
         // A prompt waiting in Claude Code's queue would be lost with the session (SPEC-471).

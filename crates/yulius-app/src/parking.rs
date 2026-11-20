@@ -19,7 +19,7 @@ use std::sync::atomic::Ordering;
 
 use serde_json::json;
 use yulius_domain::ids::SandboxId;
-use yulius_domain::task::{Activity, PullSignal, TaskGroup, TaskStatus};
+use yulius_domain::task::{Activity, TaskGroup, TaskStatus};
 
 use crate::context::App;
 use crate::model::{AttemptRecord, TaskOrigin, TaskRecord};
@@ -62,8 +62,6 @@ pub struct ParkFacts {
     pub activity: Option<Activity>,
     /// The list's group.
     pub group: TaskGroup,
-    /// Its plan, spec, goal or failing pull request still needs work.
-    pub unfinished: bool,
     /// A turn of its session is known to run.
     pub turn: bool,
     /// Background shells or subagents it left, or dynamic workflows not ended: it wakes by
@@ -92,7 +90,6 @@ impl ParkFacts {
             && self.status == TaskStatus::Running
             && self.activity.is_some_and(Activity::is_idle)
             && matches!(self.group, TaskGroup::NeedsYou | TaskGroup::Done)
-            && !self.unfinished
             && !self.turn
             && !self.background
             && !self.yulius
@@ -139,7 +136,7 @@ impl App {
             }
             let requested = requests.get(&task.sandbox_id).cloned().unwrap_or_default();
             if !self
-                .park_facts(&task, &requested, self.config.park_after_ms, None)
+                .park_facts(&task, &requested, self.config.park_after_ms)
                 .await
                 .parkable()
             {
@@ -156,20 +153,13 @@ impl App {
 
     /// [`ParkFacts::parkable`] for `task` as stored now: what [`App::park_task_now`] asks again
     /// under the launch lock.
-    pub(crate) async fn parkable_now(
-        &self,
-        task: &TaskRecord,
-        rule: ParkRule,
-        current_pull: Option<PullSignal>,
-    ) -> Option<i64> {
+    pub(crate) async fn parkable_now(&self, task: &TaskRecord, rule: ParkRule) -> Option<i64> {
         let requested = self.park_requests(&task.sandbox_id).await;
         let threshold = match rule {
             ParkRule::Grace => self.config.park_after_ms,
             ParkRule::Digest(ms) => ms,
         };
-        let facts = self
-            .park_facts(task, &requested, threshold, current_pull)
-            .await;
+        let facts = self.park_facts(task, &requested, threshold).await;
         let park = match rule {
             ParkRule::Grace => facts.parkable(),
             ParkRule::Digest(_) => facts.digest_parkable(
@@ -195,7 +185,6 @@ impl App {
         task: &TaskRecord,
         requested: &Requests,
         park_after_ms: u64,
-        current_pull: Option<PullSignal>,
     ) -> ParkFacts {
         let now = self.now().0;
         let quiet_ms = match self.deps.store.task_times(&task.id).await {
@@ -222,20 +211,16 @@ impl App {
                     || !runtime.with_workflows(|workflows| workflows.runs().is_empty())
             }
         };
-        let mut facts = self.task_attention_facts(task, &requested.all).await.ok();
-        if let (Some(facts), Some(pull)) = (&mut facts, current_pull) {
-            facts.pull = Some(pull);
-        }
-        let group = facts
-            .as_ref()
-            .map_or(TaskGroup::Working, |facts| facts.group());
+        let group = self
+            .task_group(task, &requested.all)
+            .await
+            .unwrap_or(TaskGroup::Working);
         ParkFacts {
             park_after_ms,
             quiet_ms,
             status: task.status,
             activity: task.activity,
             group,
-            unfinished: facts.is_none_or(|facts| facts.unfinished_work()),
             turn: runtime
                 .as_ref()
                 .is_some_and(|runtime| runtime.turn_in_progress()),
@@ -284,7 +269,13 @@ fn legacy_footer_start(screen: &vt100::Screen, lines: &[String]) -> Option<usize
         {
             start -= 1;
         }
-    } else if !last.starts_with("codex resume ") {
+    } else if !last.starts_with("codex resume ")
+        || (start > 0 && logical[start - 1].1.trim() != "To continue this session, run:")
+        || (start == 0
+            && !last
+                .strip_prefix("codex resume ")
+                .is_some_and(|id| yulius_domain::harness::valid_session_id(id.trim())))
+    {
         return None;
     }
     if start > 0 && logical[start - 1].1.trim() == "To continue this session, run:" {
@@ -539,6 +530,15 @@ mod tests {
         assert!(!shown.contains("codex resume"), "{shown}");
     }
 
+    #[test]
+    fn a_codex_resume_command_in_a_parked_answer_remains_visible() {
+        let answer = "To reopen yesterday's worktree, use\r\ncodex resume --last";
+        let (cols, rows, bytes) = with_park_notice(80, 8, answer.as_bytes(), None, true);
+        let hub = crate::hub::Hub::new(cols, rows);
+        hub.reset(1, &bytes, cols, rows);
+        assert!(hub.screen_text().contains("codex resume --last"));
+    }
+
     fn idle() -> ParkFacts {
         ParkFacts {
             park_after_ms: 60_000,
@@ -546,7 +546,6 @@ mod tests {
             status: TaskStatus::Running,
             activity: Some(Activity::Waiting),
             group: TaskGroup::NeedsYou,
-            unfinished: false,
             turn: false,
             background: false,
             yulius: false,

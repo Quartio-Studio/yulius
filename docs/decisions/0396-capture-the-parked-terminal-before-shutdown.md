@@ -10,7 +10,7 @@ A CLI can erase its terminal while handling shutdown. Codex leaves token usage a
 
 ## Decision
 
-Capture the redacted terminal in the attempt directory at the parking decision, with the observed idle duration and the instruction to write to resume. Publish that screen when the task parks. Use the regular final screen for other outcomes. Refuse a park when the snapshot cannot be saved. Use Codex's blocking Stop hook and the persisted discipline budget to continue incomplete goal work.
+Capture the redacted terminal in the attempt directory at the parking decision, with the observed idle duration and the instruction to write to resume. Publish that screen when the task parks. Use the regular final screen for other outcomes. Refuse a park when the snapshot cannot be saved.
 
 ## Alternatives
 
@@ -18,4 +18,4 @@ Filtering shutdown text cannot recover a cleared TUI. Changing the process termi
 
 ## Consequences
 
-A parked run keeps an additional bounded terminal snapshot. Older parked attempts can show only the content retained by their final snapshot. Unfinished tasks continue to occupy their session while waiting for repair or a person.
+A parked run keeps an additional bounded terminal snapshot. Older parked attempts can show only the content retained by their final snapshot.

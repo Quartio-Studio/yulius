@@ -27,7 +27,9 @@ Task #517 displayed Codex's exit instructions. The host drained shutdown output 
 - [x] Continue unfinished Codex goals within the Stop retry bound
 - [x] Keep unfinished tasks live and classify parked work accurately
 - [x] Document and verify the parking contract
-- [ ] Obtain independent approval for delivery to dev
+- [ ] Deliver the parked screen and native resume to dev
+- [ ] Verify chain eligibility and refresh stale PR observations
+- [ ] Deliver goal continuation and parking eligibility to dev
 
 ## Acceptance criteria
 
@@ -53,3 +55,8 @@ Capture a separate screen at the park decision because exiting can clear the ent
 - `scripts/dev security` reported that Vidoc was disabled for the project. It scanned no files.
 - Review of `19b7770a0` found three edge cases. With every step done and the remote response held, the old hook ended the turn. It now asks Codex to verify the recorded PR within the retry budget. A pending recorded head with an empty overview cache previously parked under the digest. The current head now feeds the same final grouping decision for both parking triggers. A three-row historical screen previously retained the Codex resume suffix when token usage scrolled off. The reader now identifies those trailing instructions across wrapped rows. All three regression tests failed on the previous head. The browser suite passed 1,164 tests with one optional test skipped.
 - The initial mutation baseline passed. The author interrupted its workers when compilation logs showed that they had copied files from different revisions during review fixes. Mutation runs started subsequently use detached, immutable checkouts.
+
+## Delivery slices
+
+The third review requested separate corrections to historical screen recognition and PR eligibility. Deliver the terminal snapshot and native resume first (PKR-001 and PKR-002). Deliver the Stop gate, parking eligibility and Done classification next (PKR-003 and PKR-004). The earlier combined-head evidence describes development verification for both slices. Each delivered head needs independent approval and its own green CI.
+- First delivery slice addresses the third review's terminal finding. The regression demonstrated that a legitimate final answer containing `codex resume --last` lost the command. Legacy cleanup now requires the adjacent instruction heading when a command follows earlier content. A clipped command at the top must name a valid provider session ID. The three PR eligibility findings belong to the second delivery slice and remain open until that slice's tests pass.

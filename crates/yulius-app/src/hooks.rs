@@ -17,7 +17,7 @@ use yulius_domain::ids::TaskId;
 use yulius_domain::rotation::{self, Decision, Trigger};
 use yulius_domain::spec_format::{DecisionFiles, NamedFile, decision_titles, project_layout};
 use yulius_domain::spec_format::{DecisionsLocation, SpecPolicy, validate_spec_for};
-use yulius_domain::task::{Activity, PullSignal, TaskStatus};
+use yulius_domain::task::{Activity, TaskStatus};
 
 use crate::capacity::{CONTINUATION_MAX, HOLD_RETRY_SECS};
 use crate::context::App;
@@ -989,78 +989,16 @@ impl App {
         Ok(HookReply::Output(HookOutput::default()))
     }
 
-    /// A person, a held prompt or a pending delivery event owns the next move.
-    async fn codex_goal_waits(&self, task: &TaskRecord) -> AppResult<bool> {
-        if task.harness != Harness::Codex || task.mode != TaskMode::Goal {
-            return Ok(false);
-        }
-        Ok(self.deps.store.task_needs_you(&task.id).await?.is_some()
-            || self
-                .browser_tab_requests(&task.sandbox_id)
-                .await
-                .contains(task.id.as_str())
-            || self.deps.store.pending_hold(&task.id).await?.is_some()
-            || self.is_paused(task).await
-            || self.pr_news_due(task).await
-            || self.background_or_wait_now(&task.id).await == Some(true))
-    }
-
-    /// Why the discipline gate continues this turn on its present or next subscription.
+    /// The discipline gate's reasons at a turn end (the spec gate).
     async fn stop_reasons(&self, task: &TaskRecord) -> AppResult<Vec<String>> {
-        let mut reasons: Vec<_> = self.spec_gate(task).await?.into_iter().collect();
-        if task.harness == Harness::Codex && task.mode == TaskMode::Goal {
-            if crate::sandboxes::plan_open(&self.deps.store.steps(&task.id).await?) {
-                reasons.push(
-                    "Continue the goal by completing the unfinished steps in your plan.".into(),
-                );
-            }
-            // The CLI's hook request lasts five seconds. A remote check must
-            // leave time for rotation and the response, even on a slow GitHub.
-            let pull = tokio::time::timeout(
-                std::time::Duration::from_millis(750),
-                self.task_pull_signal(task),
-            )
-            .await;
-            let failing = match pull {
-                Ok(Ok(signal)) => signal == Some(PullSignal::Failing),
-                _ => {
-                    let cached = self
-                        .observed_pulls
-                        .get(&task.sandbox_id, &task.id)
-                        .flatten();
-                    // A known open delivery remains the agent's to verify even
-                    // when this hook cannot read its head before the deadline.
-                    if cached != Some(PullSignal::Failing)
-                        && reasons.is_empty()
-                        && self
-                            .deps
-                            .store
-                            .delivery(&task.id)
-                            .await?
-                            .is_some_and(|record| {
-                                record.stage == yulius_domain::delivery::DeliveryStage::PrOpen
-                            })
-                    {
-                        reasons.push("Continue the goal: verify the current pull request checks and repair any failures.".into());
-                    }
-                    cached == Some(PullSignal::Failing)
-                }
-            };
-            if failing {
-                reasons.push(
-                    "Continue the goal by repairing the failing checks on your pull request."
-                        .into(),
-                );
-            }
-        }
-        Ok(reasons)
+        Ok(self.spec_gate(task).await?.into_iter().collect())
     }
 
     /// The prompt for a session resumed on another subscription after a held turn: the gate's
     /// reasons when the gate would have kept the agent working, else none (a goal-mode session
     /// gets its goal again when it launches).
     pub(crate) async fn stop_continuation(&self, task: &TaskRecord) -> Option<String> {
-        if task.gate_blocks >= MAX_GATE_BLOCKS || self.codex_goal_waits(task).await.ok()? {
+        if task.gate_blocks >= MAX_GATE_BLOCKS {
             return None;
         }
         let reasons = self.stop_reasons(task).await.ok()?;
@@ -1113,8 +1051,7 @@ impl App {
         if let Err(err) = self.sync_steps_from_spec(task).await {
             tracing::warn!(error = %err, task = %task.id, "step sync from the spec failed");
         }
-        let goal_waits = self.codex_goal_waits(task).await?;
-        let reasons = if failed || goal_waits {
+        let reasons = if failed {
             Vec::new()
         } else {
             self.stop_reasons(task).await?
@@ -1313,7 +1250,7 @@ impl App {
 
         // A clean turn end on the same subscription may carry one gentle step nudge (STP-008).
         // It is not a gate block: it is given once and never escalates to "needs attention".
-        if reasons.is_empty() && stays && !failed && !background && !goal_waits {
+        if reasons.is_empty() && stays && !failed && !background {
             match self.take_turn_end_nudge(task).await {
                 Ok(Some(text)) => return Ok(HookReply::Output(HookOutput::block(text))),
                 Ok(None) => {}
