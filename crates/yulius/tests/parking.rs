@@ -768,12 +768,16 @@ async fn assert_cold_screen(
             id.as_str(),
             matches!(
                 status_of(&restart, id).await.0,
-                Some(TaskStatus::Queued | TaskStatus::WaitingCapacity)
+                Some(TaskStatus::Queued | TaskStatus::WaitingCapacity | TaskStatus::Starting)
             )
             .then_some((22, 5)),
         )
         .await?;
     assert_eq!(screen(&restart, id), expected);
+    assert_eq!(
+        restart.terminal_state(id).await?.parked_screen,
+        expected.contains("Yulius parked")
+    );
     drop(terminal);
     let remote = yulius_app::remote::RemoteCaller {
         ctx,
@@ -849,13 +853,27 @@ async fn queued_park_screen(
         assert!(published.is_ok(), "{published:?}");
     });
     assert_cold_screen(data, id, caller, &captured).await?;
-    // The resumed launch has no subscription available, so it waits without a new attempt.
+    // Starting is recorded before the provider acquires its account.
     assert!(
         app.deps
             .store
             .transition_task(
                 id,
                 Some(TaskStatus::Queued),
+                TaskStatus::Starting,
+                None,
+                app.now()
+            )
+            .await?
+    );
+    assert_cold_screen(data, id, caller, &captured).await?;
+    // The resumed launch has no subscription available, so it waits without a new attempt.
+    assert!(
+        app.deps
+            .store
+            .transition_task(
+                id,
+                Some(TaskStatus::Starting),
                 TaskStatus::WaitingCapacity,
                 None,
                 app.now()

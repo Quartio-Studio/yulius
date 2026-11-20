@@ -293,23 +293,37 @@ pub(crate) fn publish_parked_screen(dir: &Path) -> Option<(u16, u16, Vec<u8>)> {
     crate::supervisor::read_saved_screen(&committed)
 }
 
+pub(crate) struct EndedScreen {
+    pub(crate) grid: (u16, u16, Vec<u8>),
+    pub(crate) parked: bool,
+}
+
 impl App {
     /// Restore the capture for a committed park, or the ordinary final screen.
     pub(crate) async fn ended_screen(
         &self,
         run: &AttemptRecord,
         task: &TaskRecord,
-    ) -> Option<(u16, u16, Vec<u8>)> {
+    ) -> Option<EndedScreen> {
         let dir = Path::new(&run.run_dir);
+        let ordinary = || {
+            crate::supervisor::read_final_screen(dir).map(|grid| EndedScreen {
+                grid,
+                parked: false,
+            })
+        };
         // Read the pending name first: a concurrent rename then leaves either these
         // bytes or the committed name visible to this reader.
         let pending = crate::supervisor::read_saved_screen(&dir.join(PARKING_SCREEN));
         crate::race::reached(crate::race::Point::ParkScreenRead, dir);
         if let Some(saved) = crate::supervisor::read_saved_screen(&dir.join(PARKED_SCREEN)) {
-            return Some(saved);
+            return Some(EndedScreen {
+                grid: saved,
+                parked: true,
+            });
         }
         let Some(pending) = pending else {
-            return crate::supervisor::read_final_screen(dir);
+            return ordinary();
         };
         // A restart between the state commit and the rename. A stop that won the
         // transition keeps its ordinary screen, including after a queued resume.
@@ -332,9 +346,12 @@ impl App {
                     })
                 })
         {
-            return Some(pending);
+            return Some(EndedScreen {
+                grid: pending,
+                parked: true,
+            });
         }
-        crate::supervisor::read_final_screen(dir)
+        ordinary()
     }
 }
 

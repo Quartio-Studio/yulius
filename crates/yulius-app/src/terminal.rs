@@ -8,7 +8,6 @@ use std::time::Duration;
 
 use yulius_domain::ids::TaskId;
 use yulius_domain::permission::Action;
-use yulius_domain::task::TaskStatus;
 use yulius_domain::task_access::{self, TaskAction};
 
 use crate::auth::AuthContext;
@@ -64,6 +63,8 @@ pub struct TerminalState {
     pub harness: Option<String>,
     /// PTY size.
     pub size: (u16, u16),
+    /// The visible grid belongs to a completed park.
+    pub parked_screen: bool,
     /// Task status wire name.
     pub status: String,
 }
@@ -93,13 +94,21 @@ impl App {
             .require_for(ctx, &task.sandbox_id, Action::View)
             .await?;
         let runtime = self.runtime(&task.id);
-        let no_attempt = self.deps.store.live_attempt(&task.id).await?.is_none();
         if !runtime.hub.has_output()
-            && no_attempt
+            && self.deps.store.live_attempt(&task.id).await?.is_none()
             && let Some(last) = self.deps.store.attempts(&task.id).await?.pop()
-            && let Some((cols, rows, screen)) = self.ended_screen(&last, &task).await
+            && let Some(saved) = self.ended_screen(&last, &task).await
         {
-            runtime.hub.reset(1, &screen, cols, rows);
+            let (cols, rows, screen) = saved.grid;
+            runtime.hub.restore(
+                1,
+                &screen,
+                cols,
+                rows,
+                crate::hub::ScreenUpdate::Cold {
+                    parked: saved.parked,
+                },
+            );
         }
         if runtime.hub.viewer_count() >= MAX_VIEWERS {
             return Err(AppError::Capacity("too many viewers on this task".into()));
@@ -112,12 +121,6 @@ impl App {
                 crate::tasks::owns(&task, &ctx.user.id),
             )
             .is_ok();
-        let saved_grid = task.status == TaskStatus::Parked
-            || (matches!(
-                task.status,
-                TaskStatus::Queued | TaskStatus::WaitingCapacity
-            ) && no_attempt
-                && runtime.hub.has_output());
         let viewer_id = runtime.hub.new_viewer_id();
         if can_write {
             let before = runtime.hub.size();
@@ -133,7 +136,7 @@ impl App {
                     if runtime.hub.size() != before && runtime.has_run().await {
                         runtime.hub.settle(watch, since, REDRAW_WAIT).await;
                     }
-                } else if !saved_grid {
+                } else {
                     // No run yet (queued, about to start): the screen takes the size now, so the
                     // first state already says it and the run spawns at it (SPEC-050 TRM-101; a
                     // viewer of a task just created saw 120x40 first on the fast VM).
@@ -169,6 +172,7 @@ impl App {
             .await?
             .ok_or(AppError::NotFound)?;
         let attempt = self.deps.store.live_attempt(task_id).await?;
+        let (size, parked_screen) = self.runtime(task_id).hub.grid_state();
         Ok(TerminalState {
             attempt_seq: attempt.as_ref().map(|a| a.seq),
             harness: Some(
@@ -177,7 +181,8 @@ impl App {
                     .as_str()
                     .to_owned(),
             ),
-            size: self.runtime(task_id).hub.size(),
+            size,
+            parked_screen,
             status: task.status.as_str().to_owned(),
         })
     }

@@ -76,8 +76,9 @@ impl App {
         } else if live.is_some() && runtime.hub.has_output() {
             (runtime.hub.screen_text(), "live")
         } else if let Some(run) = &last
-            && let Some((cols, rows, bytes)) = self.ended_screen(run, &task).await
+            && let Some(saved) = self.ended_screen(run, &task).await
         {
+            let (cols, rows, bytes) = saved.grid;
             // Redacted again: the saved screen is read outside the terminal's own redactor.
             let scrub = crate::vault::TerminalScrub::default();
             let shown = self.terminal_snapshot(&scrub, &sandbox.id, &bytes).await;

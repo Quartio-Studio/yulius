@@ -231,7 +231,7 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
       onState: (message) => {
         const handedOver = gotState && !state.controller && message.controller;
         gotState = true;
-        state = { ...state, ...message };
+        state = { ...state, parked_screen: false, ...message };
         // Control just came to this viewer (another one went idle or left): the server applied the
         // size this viewer reported; say it again in case that report was lost.
         if (handedOver) lastSent = null;
@@ -679,8 +679,7 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
     }
     // An ended session has no PTY to follow: fit it to this screen (a desktop-sized screen would
     // otherwise overflow a phone).
-    const waitingToLaunch = state.attempt_seq == null && (state.status === 'queued' || state.status === 'waiting_capacity');
-    const savedGrid = waitingToLaunch || state.status === 'parked' || exited?.status === 'parked';
+    const savedGrid = state.parked_screen === true || state.status === 'parked' || exited?.status === 'parked';
     const mirroring = Boolean(state.cols && state.rows && (savedGrid || (!state.controller && !exited)));
     const screen = host.querySelector('.xterm-screen');
     if (screen) screen.style.zoom = '';

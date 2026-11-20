@@ -4192,13 +4192,13 @@ impl App {
                                 crate::parking::publish_parked_screen(Path::new(&run.run_dir))
                         {
                             let hub = &self.runtime(task_id).hub;
-                            // Attached viewers must apply the parked grid before drawing it.
-                            if hub.size() == (cols, rows) {
-                                hub.state_changed();
-                            } else {
-                                hub.resize(cols, rows);
-                            }
-                            hub.reset(hub.output_seq().max(1), &screen, cols, rows);
+                            hub.restore(
+                                hub.output_seq().max(1),
+                                &screen,
+                                cols,
+                                rows,
+                                crate::hub::ScreenUpdate::Park,
+                            );
                         }
                         crate::parking::audit_parked(self, &task).await;
                     }
