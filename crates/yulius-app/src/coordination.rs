@@ -217,15 +217,19 @@ impl App {
         if scope != "needs_you" || limit == 0 {
             tasks.truncate(limit);
         }
-        use futures::{StreamExt, stream};
+        use futures::{StreamExt, stream::FuturesOrdered};
         let requested = &requested;
-        'batches: for (batch, until) in crate::sandboxes::fair_batches(&tasks, deadline, 8) {
-            let mut reads = stream::iter(batch.iter().map(|task| async move {
-                self.task_attention_facts(task, requested, Some(until))
-                    .await
-                    .map(|facts| (task, facts))
-            }))
-            .buffered(batch.len());
+        'batches: for (batch, until) in
+            crate::sandboxes::fair_batches(&tasks, deadline, crate::sandboxes::PARKED_READS)
+        {
+            let mut reads = FuturesOrdered::new();
+            for task in batch {
+                reads.push_back(async move {
+                    self.task_attention_facts(task, requested, Some(until))
+                        .await
+                        .map(|facts| (task, facts))
+                });
+            }
             while let Some(result) = reads.next().await {
                 let (task, facts) = result?;
                 if scope == "needs_you" && facts.group() != TaskGroup::NeedsYou {

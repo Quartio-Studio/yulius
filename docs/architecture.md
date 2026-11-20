@@ -2093,7 +2093,9 @@ limit or an update), and `GET /api/capacity` counts working, idle, parked and qu
 the Capacity card.
 
 The parked group reads the recorded PR head, plan, spec and goal. Task rows share a bounded
-lookup budget, with up to eight independent reads in parallel. The chain applies the same
+lookup budget, with up to eight independent reads in parallel. Local Git workers share an
+eight-slot limit across requests and hold their slots until Git returns, even if the page times out.
+The chain applies the same
 eligibility facts and rechecks the owner's plan and decisions after waiting for the PR.
 A missing check report or a head that changed during verification holds the dependent task.
 

@@ -626,6 +626,16 @@ impl App {
         sha: &str,
     ) -> AppResult<HeadChecks> {
         let gate = self.ci_gate_result(sandbox, sha).await;
+        self.checks_with_gate(sandbox, token, sha, gate).await
+    }
+
+    async fn checks_with_gate(
+        &self,
+        sandbox: &SandboxRecord,
+        token: &Secret,
+        sha: &str,
+        gate: yulius_domain::ci::GateResult,
+    ) -> AppResult<HeadChecks> {
         if let Some(word) = ci_checks_word(gate) {
             return Ok(HeadChecks {
                 state: yulius_domain::ci::gate_checks(ChecksState::None, gate),
@@ -4200,6 +4210,46 @@ impl App {
         Ok((current.merged || same_open_head).then_some(current))
     }
 
+    /// Git may already be blocking in the adapter when a list read times out.
+    /// Hand its permit to the worker, which releases it after Git has returned.
+    async fn parked_git_evidence(
+        &self,
+        task: &TaskRecord,
+        sandbox: &SandboxRecord,
+        pull: &GhPull,
+    ) -> AppResult<(yulius_domain::ci::GateResult, Option<bool>)> {
+        let local_base = pull.base == delivery_profile(sandbox).integration_branch;
+        if !self.config.ci.enabled && (!local_base || task.worktree_path.is_none()) {
+            return Ok((yulius_domain::ci::GateResult::NotConfigured, pull.mergeable));
+        }
+        let app = self.parked_git_app.upgrade().ok_or(AppError::NotFound)?;
+        let permit = app
+            .parked_git
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(AppError::internal)?;
+        let task = task.clone();
+        let sandbox = sandbox.clone();
+        let head = pull.head_sha.clone();
+        let remote_mergeable = pull.mergeable;
+        tokio::spawn(async move {
+            let _permit = permit;
+            let gate = app.ci_gate_result(&sandbox, &head).await;
+            let mergeable = if local_base {
+                app.local_conflict(&task, &sandbox, &head)
+                    .await
+                    .map(|conflict| !conflict)
+                    .or(remote_mergeable)
+            } else {
+                remote_mergeable
+            };
+            (gate, mergeable)
+        })
+        .await
+        .map_err(AppError::internal)
+    }
+
     /// Read a parked task's recorded delivery even when the Git overview was never opened.
     async fn recorded_pull_signal(
         &self,
@@ -4232,19 +4282,14 @@ impl App {
             )
         };
         let before = ordinary_run().await?;
-        let checks = self.dlv_checks_at(&sandbox, &token, &pull.head_sha).await?;
+        let (gate, mergeable) = self.parked_git_evidence(task, &sandbox, &pull).await?;
+        let checks = self
+            .checks_with_gate(&sandbox, &token, &pull.head_sha, gate)
+            .await?;
         if !checks.unreadable.is_empty() || checks.word == "unknown" {
             return Ok(Some(PullSignal::Errored));
         }
         let word = tested_checks_word(&delivery_profile(&sandbox), checks.word);
-        let mergeable = if pull.base == delivery_profile(&sandbox).integration_branch {
-            self.local_conflict(task, &sandbox, &pull.head_sha)
-                .await
-                .map(|conflict| !conflict)
-                .or(pull.mergeable)
-        } else {
-            pull.mergeable
-        };
         let current = self
             .deps
             .github

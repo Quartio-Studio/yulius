@@ -15,6 +15,9 @@ use crate::context::App;
 use crate::error::AppResult;
 use crate::model::{SandboxRecord, TaskRecord};
 
+/// Concurrent parked PR reads per list and active local Git workers per application.
+pub(crate) const PARKED_READS: usize = 8;
+
 /// A chain reuses its just-verified pull while it rechecks local owner facts.
 enum PullRead {
     Read,
@@ -115,7 +118,7 @@ impl App {
         let tasks = self.deps.store.tasks(&record.id, false).await?;
         let requested = self.browser_requests(&record.id).await;
         let mut counts = SandboxCounts::default();
-        let facts = fair_rows(&tasks, deadline, 8, |task, until| {
+        let facts = fair_rows(&tasks, deadline, PARKED_READS, |task, until| {
             self.task_attention_facts(task, &requested, Some(until))
         })
         .await?;

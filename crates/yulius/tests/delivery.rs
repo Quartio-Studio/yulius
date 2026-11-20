@@ -93,11 +93,18 @@ struct RealGit {
     ahead_behind_error: std::sync::Mutex<Option<String>>,
     /// While set, the remote's branches cannot be read (`ls-remote` fails, SPEC-139).
     remote_unreadable: std::sync::atomic::AtomicBool,
+    /// A Git worker already dispatched by the adapter outlives its caller.
+    parked_git_hold: std::sync::Mutex<Option<Arc<ParkedGitHold>>>,
     /// While set, a refresh of a clone fails (SPEC-493 fix 6).
     fetch_fails: std::sync::atomic::AtomicBool,
     /// Moved right after every refresh of a clone, as an agent racing it would: `(ref, commit)`
     /// (review round 2 of SPEC-493 fix 6).
     forged_after_fetch: std::sync::Mutex<Option<(String, String)>>,
+}
+
+struct ParkedGitHold {
+    started: std::sync::atomic::AtomicUsize,
+    released: tokio::sync::Semaphore,
 }
 
 /// An injected push failure, as GitHub's `! [remote rejected] … (failed)` (#366).
@@ -318,6 +325,22 @@ impl GitPort for RealGit {
     }
 
     async fn resolve_commit(&self, repo: &Path, rev: &str) -> AppResult<Option<String>> {
+        let hold = self
+            .parked_git_hold
+            .lock()
+            .map_err(AppError::internal)?
+            .clone();
+        if rev == "origin/dev"
+            && let Some(hold) = hold
+        {
+            tokio::spawn(async move {
+                hold.started
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let _ = hold.released.acquire().await;
+            })
+            .await
+            .map_err(AppError::internal)?;
+        }
         crate::support::confined_git()
             .resolve_commit(repo, rev)
             .await
@@ -818,6 +841,7 @@ async fn fixture_with(
         push_failure: std::sync::Mutex::default(),
         ahead_behind_error: std::sync::Mutex::default(),
         remote_unreadable: std::sync::atomic::AtomicBool::default(),
+        parked_git_hold: Default::default(),
         fetch_fails: std::sync::atomic::AtomicBool::default(),
         forged_after_fetch: std::sync::Mutex::default(),
     });
@@ -4853,6 +4877,54 @@ async fn a_parked_achieved_goal_waits_for_its_failed_ordinary_run() -> TestResul
         f.h.store.task(&child).await?.ok_or("successor")?.status,
         TaskStatus::Chained
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn overlapping_parked_status_reads_bound_git_workers_after_timeouts() -> TestResult {
+    let f = fixture(&DeliveryProfile::standard()).await?;
+    let (_wt, head) = delivered_with_a_successor(&f, &finished_spec("t1")).await?;
+    let id = TaskId::parse("t1")?;
+    f.h.store
+        .transition_task(
+            &id,
+            None,
+            TaskStatus::Parked,
+            Some(Activity::Waiting),
+            f.h.app.now(),
+        )
+        .await?;
+    let task = f.h.store.task(&id).await?.ok_or("task")?;
+    let mut config = f.h.app.config.clone();
+    config.ci.enabled = false;
+    let app = yulius_app::context::App::new(config, f.h.app.deps.clone());
+    *f.h.github.remote.lock().map_err(|_| "remote")? = None;
+    f.h.github.set_checks(&head, ChecksState::Success);
+    edit_pull(&f, 1, |pull| pull.mergeable = Some(true));
+    let hold = Arc::new(ParkedGitHold {
+        started: Default::default(),
+        released: tokio::sync::Semaphore::new(0),
+    });
+    *f.git.parked_git_hold.lock().map_err(|_| "git hold")? = Some(hold.clone());
+    let checked = async {
+        for _ in 0..2 {
+            let reads = (0..12).map(|_| app.task_summary(&task));
+            for row in futures::future::try_join_all(reads).await? {
+                assert_eq!(row.parked_needs_you, Some(true));
+            }
+        }
+        Ok::<_, AppError>(())
+    }
+    .await;
+    let started = hold.started.load(std::sync::atomic::Ordering::SeqCst);
+    *f.git.parked_git_hold.lock().map_err(|_| "git hold")? = None;
+    hold.released.close();
+    checked?;
+    assert!(
+        (1..=8).contains(&started),
+        "{started} Git workers started before any finished"
+    );
+    assert_eq!(app.task_summary(&task).await?.parked_needs_you, Some(false));
     Ok(())
 }
 
