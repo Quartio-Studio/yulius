@@ -3041,6 +3041,8 @@ with the command.
   `{id}+{login}@users.noreply.github.com` from their next run. Someone whose GitHub sign-in can no
   longer be refreshed signs in with GitHub again; until then their tasks act as the App, and the
   task's terminal says why.
+- Upgrading session search for #1453 clears old passages and full-text matches. Lists and searches rebuild
+  the index from the original transcripts. Results can be incomplete during the rebuild.
 - Upgrading to sessions as documents (#137, 2026-10-10): migration 0011 adds `session_docs`,
   `session_chunks` and the FTS5 index `session_fts` (SQLite's bundled FTS5). Existing data is kept:
   tasks imported earlier as archived tasks stay tasks (their sessions appear on the Sessions page as
