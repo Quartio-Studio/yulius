@@ -3,7 +3,7 @@
 
 use serde_json::{Value, json};
 use yulius_domain::ids::{SandboxId, StepId, TaskId, UserId};
-use yulius_domain::task::{AttentionFacts, TaskGroup};
+use yulius_domain::task::{AttentionFacts, TaskStatus};
 
 use crate::auth::rfc3339;
 use crate::context::App;
@@ -112,49 +112,101 @@ impl App {
     }
 
     pub(crate) async fn task_brief(&self, task: &TaskRecord) -> AppResult<Value> {
-        let requested = self.browser_requests(&task.sandbox_id).await;
-        self.task_brief_among(task, &requested, false).await
+        self.verified_brief(task, false, false).await
     }
 
-    /// [`Self::task_brief`] among the sandbox's pending requests `requested`
-    /// ([`App::browser_requests`]), read once for a list; for `person`'s own callers (their
-    /// Superagent, their own agent) with the words of a held prompt.
-    pub(crate) async fn task_brief_among(
+    async fn verified_brief(
         &self,
         task: &TaskRecord,
-        requested: &std::collections::HashSet<String>,
         person: bool,
+        detail: bool,
     ) -> AppResult<Value> {
-        let facts = self.task_attention_facts(task, requested).await?;
-        self.task_brief_shown(task, facts, person).await
+        let requests = tokio::sync::OnceCell::new();
+        let parked = if task.status == TaskStatus::Parked {
+            Some(
+                self.parked_status(task, &requests, self.status_deadline())
+                    .await,
+            )
+        } else {
+            None
+        };
+        self.brief_from_status(task, person, detail, parked, &requests)
+            .await
     }
 
-    /// [`Self::task_brief_among`] for a task whose group is read already.
-    async fn task_brief_shown(
+    async fn brief_from_status(
         &self,
         task: &TaskRecord,
-        facts: AttentionFacts,
         person: bool,
+        detail: bool,
+        parked: Option<crate::sandboxes::ParkedStatus>,
+        requests: &tokio::sync::OnceCell<std::collections::HashSet<String>>,
     ) -> AppResult<Value> {
-        let mut brief = self.task_brief_plain(task).await?;
+        let (mut facts, snapshot, pr) = match parked {
+            Some(status) => (status.facts, status.steps, status.pr),
+            None => {
+                let requested = requests
+                    .get_or_init(|| self.browser_requests(&task.sandbox_id))
+                    .await;
+                (
+                    self.task_attention_facts(task, requested).await?,
+                    None,
+                    None,
+                )
+            }
+        };
+        let steps = match snapshot {
+            Some(steps) => steps,
+            None => self.deps.store.steps(&task.id).await?,
+        };
+        if task.status == TaskStatus::Parked {
+            facts.plan_open = crate::sandboxes::plan_open(&steps);
+        }
+        let mut brief = self
+            .task_brief_with_steps(task, facts, person, &steps)
+            .await?;
+        if let Some(pr) = pr {
+            brief["parked_pr"] = json!(pr);
+        }
+        if detail {
+            brief["prompt"] = json!(task.prompt.chars().take(4000).collect::<String>());
+            brief["steps_list"] = json!(steps.iter().map(|s| json!({"id": s.id.as_str(), "title": s.title, "status": s.status, "note": s.note})).collect::<Vec<_>>());
+        }
+        Ok(brief)
+    }
+
+    async fn task_brief_with_steps(
+        &self,
+        task: &TaskRecord,
+        mut facts: AttentionFacts,
+        person: bool,
+        steps: &[StepRecord],
+    ) -> AppResult<Value> {
+        let mut brief = self.task_brief_plain(task, steps).await?;
         // Where the task list shows it, and why it waits for a person or is held (SPEC-487
         // QST-001): what its page says, so nobody has to paste it.
-        let group = facts.group();
-        brief["shows"] = json!(crate::task_questions::group_name(group));
         // What it runs on (SPEC-487 SUB-002): its live run's subscription, and the model and
         // effort it was given (none: the instance's defaults).
         brief["subscription"] = json!(self.run_subscription(task).await);
         brief["model"] = json!(task.model);
         brief["effort"] = json!(task.effort);
         if let Some(fields) = brief.as_object_mut() {
-            fields.extend(self.waits_why(task, person, &facts).await);
+            let question = self.waits_why(task, person, &facts).await;
+            if task.status == TaskStatus::Parked {
+                facts.browser_request |= question.contains_key("needs_you");
+                facts.held_prompt |= question.contains_key("held_prompt");
+            }
+            fields.insert(
+                "shows".into(),
+                json!(crate::task_questions::group_name(facts.group())),
+            );
+            fields.extend(question);
         }
         Ok(brief)
     }
 
-    async fn task_brief_plain(&self, task: &TaskRecord) -> AppResult<Value> {
-        let steps = self.deps.store.steps(&task.id).await?;
-        let p = self.step_progress(&task.id, &steps).await?;
+    async fn task_brief_plain(&self, task: &TaskRecord, steps: &[StepRecord]) -> AppResult<Value> {
+        let p = self.step_progress(&task.id, steps).await?;
         let chain = self.deps.store.chain(&task.id).await?;
         let waits = task.status == yulius_domain::task::TaskStatus::Chained;
         Ok(json!({
@@ -189,8 +241,12 @@ impl App {
             .and_then(Value::as_u64)
             .unwrap_or(30)
             .min(200);
-        let mut tasks = self.deps.store.tasks(&caller.sandbox, false).await?;
-        if scope == "all" || scope == "archived" {
+        let mut tasks = self
+            .deps
+            .store
+            .tasks(&caller.sandbox, scope == "archived")
+            .await?;
+        if scope == "all" {
             tasks.extend(self.deps.store.tasks(&caller.sandbox, true).await?);
         }
         if let Some(own) = &caller.task {
@@ -204,31 +260,87 @@ impl App {
             _ => true,
         });
         tasks.sort_by_key(|t| std::cmp::Reverse(t.updated_at));
-        let requested = self.browser_requests(&caller.sandbox).await;
         let limit = usize::try_from(limit).unwrap_or(30);
-        let mut out = Vec::new();
-        for t in &tasks {
-            if out.len() >= limit {
-                break;
-            }
-            // The tasks the list shows under "Needs you" (SPEC-487 QST-002), by its own rule.
-            let facts = self.task_attention_facts(t, &requested).await?;
-            if scope == "needs_you" && facts.group() != TaskGroup::NeedsYou {
-                continue;
-            }
-            out.push(
-                self.task_brief_shown(t, facts, caller.task.is_none())
-                    .await?,
-            );
+        let filtered = scope == "needs_you";
+        if !filtered || limit == 0 {
+            tasks.truncate(limit);
         }
-        // A Cockpit has no task of its own (MGT-007).
+        let rows = self
+            .list_briefs(&tasks, limit, filtered, caller.task.is_none())
+            .await?;
         match &caller.task {
-            Some(own) => Ok(json!({
-                "you": self.task_brief_among(own, &requested, false).await?,
-                "tasks": out,
-            })),
-            None => Ok(json!({"tasks": out})),
+            Some(own) => Ok(json!({"you": self.task_brief(own).await?, "tasks": rows})),
+            None => Ok(json!({"tasks": rows})),
         }
+    }
+
+    /// Apply the owner's limit after the Needs you filter. Only time spent on
+    /// parked verification uses its budget. A slow live row cannot spend it.
+    async fn list_briefs(
+        &self,
+        tasks: &[TaskRecord],
+        limit: usize,
+        filtered: bool,
+        person: bool,
+    ) -> AppResult<Vec<Value>> {
+        let requests = tokio::sync::OnceCell::new();
+        let mut rows = Vec::new();
+        if !filtered {
+            let mut verified = self
+                .parked_list_statuses(tasks.iter().map(|task| (task, &requests)).collect())
+                .await;
+            for task in tasks {
+                rows.push(
+                    self.brief_from_status(
+                        task,
+                        person,
+                        false,
+                        verified.remove(&task.id),
+                        &requests,
+                    )
+                    .await?,
+                );
+            }
+            return Ok(rows);
+        }
+        let mut remaining = std::time::Duration::from_millis(self.config.parked_pr_read_ms);
+        let mut parks_left = tasks
+            .iter()
+            .filter(|task| task.status == TaskStatus::Parked)
+            .count();
+        let mut pending = tasks;
+        while !pending.is_empty() && rows.len() < limit {
+            let count = pending
+                .len()
+                .min(crate::sandboxes::PARKED_READS)
+                .min(limit - rows.len());
+            let (batch, rest) = pending.split_at(count);
+            pending = rest;
+            let parked: Vec<_> = batch
+                .iter()
+                .filter(|t| t.status == TaskStatus::Parked)
+                .map(|task| (task, &requests))
+                .collect();
+            let mut verified = std::collections::HashMap::new();
+            if !parked.is_empty() {
+                let start = tokio::time::Instant::now();
+                let share = remaining / u32::try_from(parks_left).unwrap_or(u32::MAX)
+                    * u32::try_from(parked.len()).unwrap_or(u32::MAX);
+                parks_left -= parked.len();
+                let deadline = start + share;
+                verified.extend(self.read_parked_batch(&parked, deadline).await);
+                remaining = remaining.saturating_sub(start.elapsed());
+            }
+            for task in batch {
+                let row = self
+                    .brief_from_status(task, person, false, verified.remove(&task.id), &requests)
+                    .await?;
+                if row["shows"] == "needs_you" {
+                    rows.push(row);
+                }
+            }
+        }
+        Ok(rows)
     }
 
     /// `task_get`: one task's details including steps and recent messages it sent.
@@ -237,14 +349,8 @@ impl App {
     /// `NotFound` outside the agent's sandbox.
     pub async fn tool_task_get(&self, caller: &ProjectCaller, args: &Value) -> AppResult<Value> {
         let task = self.agent_task_ref(caller, args).await?;
-        let steps = self.deps.store.steps(&task.id).await?;
-        let requested = self.browser_requests(&task.sandbox_id).await;
-        let mut brief = self
-            .task_brief_among(&task, &requested, caller.task.is_none())
-            .await?;
-        brief["prompt"] = json!(task.prompt.chars().take(4000).collect::<String>());
-        brief["steps_list"] = json!(steps.iter().map(|s| json!({"id": s.id.as_str(), "title": s.title, "status": s.status, "note": s.note})).collect::<Vec<_>>());
-        Ok(brief)
+        self.verified_brief(&task, caller.task.is_none(), true)
+            .await
     }
 
     pub(crate) async fn agent_task_ref(

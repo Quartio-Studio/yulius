@@ -6,6 +6,8 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-20
 
+- MCP task reads explain which checks or local work keep a parked task under Needs you. Filtered pages use the plan they display and stop at the requested limit (SPEC-558).
+
 - Task lists and Home check parked PRs in bounded batches. A stalled check leaves its task under Needs you and gives later tasks time to verify their own checks (SPEC-558).
 - Added the Linux tunnel handoff helper. It retains connected sockets and private copy state for one successor for up to two minutes. [ADR-0413](decisions/0413-a-bounded-helper-holds-connected-tunnel-sockets-between-servers.md)
 

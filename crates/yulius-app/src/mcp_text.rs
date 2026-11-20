@@ -907,6 +907,9 @@ fn task_line(task: &Value) -> Option<String> {
     if let Some(branch) = text(task, "branch") {
         parts.push(format!("branch {branch}"));
     }
+    if let Some(number) = task.pointer("/parked_pr/number").and_then(Value::as_u64) {
+        parts.push(format!("PR #{number}"));
+    }
     if let Some(steps) = task.get("steps") {
         let total = steps.get("total").and_then(Value::as_u64).unwrap_or(0);
         if total > 0 {
@@ -1150,6 +1153,19 @@ mod tests {
 
     /// SPEC-493 REV-005: `delivery_status` lists the review's rounds of the open pull request:
     /// the model that answered (else the one asked for) and how each stands.
+    #[test]
+    fn parked_task_text_names_the_verified_pull_beside_its_reason() {
+        let task = json!({"number":325,"title":"Finish compatibility","status":"parked",
+            "shows":"needs_you","parked_pr":{"number":1461,"open":true},"wait_reason":"Checks failed."});
+        for output in [
+            render("task_get", &json!({}), &task),
+            render("tasks_list", &json!({}), &json!({"tasks":[task]})),
+        ] {
+            assert!(output.contains("PR #1461"), "{output}");
+            assert!(output.contains("Checks failed."), "{output}");
+        }
+    }
+
     #[test]
     fn delivery_status_lists_the_review_rounds() {
         let value = json!({"stage": "pr_open", "review_rounds": [

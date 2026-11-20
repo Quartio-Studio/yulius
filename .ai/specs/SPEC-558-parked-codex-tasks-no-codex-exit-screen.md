@@ -66,6 +66,11 @@ A human request can take precedence over unfinished work in the task list. Both 
 
 ## Evidence
 
+- The MCP snapshot fixture initially returned before parked verification. It now pauses at the actual verified row, opens a step while a newer parked PR holds the page, and covers `task_get`, `all` and `needs_you` with and without a new owner decision. In the first response the plan is the verified empty plan. A displayed decision still changes its group. The subsequent response includes the reopened step. Two more tests initially failed because the structured and text MCP responses omitted PR #1461 beside its ordinary CI failure. After exposing the verified PR on both paths, the scoped application and product test run passed 116 tests. Repository contracts and formatting passed. Clippy passed for the application and product test targets.
+
+- PR #1539 passed Yulius CI run `3ab18c68-a747-45f4-b145-5336d1120f49` at `2f99dc674` and landed on dev at `646ce4f1e`. Quality, both test shards and e2e passed. Security was disabled. [Delivery evidence](https://yulius.quartio.ai/api/tasks/09d643c4-9df9-4abe-9c9c-d0cfe7fdf205/delivery/evidence/646ce4f1ee79b61b08b2bb657b9c3589caa9e32d)
+- On the synced task branch at `68bbc7d29`, eight of nine MCP regressions failed. They covered active rows returned by the archived scope, wait reasons derived from an outdated overview, an ordinary failure on one of two PRs, and direct reads that skipped verification during a title or plan edit.
+
 - Independent review approved the HTTP/Home slice at `238f1c282bcfee9810f8a514d7d3826cfb836380` and reran eight regressions. The supplemental run against the changes since `713178a04` reported `mutants: 165 listed, 40 caught, 0 missed, 0 timed out, 125 unviable, 0 not reached (bound 30 min, took 1276 s)`. Its baseline passed 3,354 selected tests. The reviewer’s test-helper comment was corrected.
 
 - The combined-prototype mutation campaign at `713178a04` reported `mutants: 156 listed, 28 caught, 4 missed, 0 timed out, 124 unviable, 0 not reached (bound 30 min, took 993 s)`. One survivor inverted which task lists reuse their project snapshot. Three changed the existing attempt-or-provider-session test for whether a task ever started. The added tests exercise the project snapshot when a supertask arrives during parked verification, and the attempt-only, session-only and never-started cases. Applying the generated snapshot inversion and conjunction mutation reproduced both failures.
@@ -166,7 +171,7 @@ A human request can take precedence over unfinished work in the task list. Both 
 
 ## Delivery slices
 
-PRs #1492 and #1493 delivered native Codex resume and the pre-stop screen for new parks. PR #1505 kept sessions with local unfinished work live. PR #1510 verified current ordinary PR checks and unpublished work before parking. PR #1524 delivered the parked predecessor gate. PR #1527 preserved known PR observations across overlapping Git overviews. PR #1533 verified the blocking ordinary PR on individual HTTP detail reads. This slice shares that verification across parked list rows and Home. Remaining deliveries cover MCP filtering and explanations, page refresh, persisted integration failures, bounded Codex goals and pre-upgrade screens.
+PRs #1492 and #1493 delivered native Codex resume and the pre-stop screen for new parks. PR #1505 kept sessions with local unfinished work live. PR #1510 verified current ordinary PR checks and unpublished work before parking. PR #1524 delivered the parked predecessor gate. PR #1527 preserved known PR observations across overlapping Git overviews. PR #1533 verified the blocking ordinary PR on individual HTTP detail reads. PR #1539 shared that verification across parked HTTP task-list rows and Home. This slice filters and explains parked MCP rows. Remaining deliveries cover page refresh, persisted integration failures, bounded Codex goals and pre-upgrade screens.
 
 The native-resume regression checks the rollout in the native launch and reads the first and second user prompts from its on-disk history. It also exercises absent IDs and an older lineage entry. No paid provider is involved.
 
