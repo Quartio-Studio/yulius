@@ -7726,6 +7726,22 @@ async fn the_superagent_reads_subscriptions_and_sets_a_tasks_model() -> TestResu
             .is_some_and(|note| note.contains("when it starts")),
         "{changed}"
     );
+    // A foreign model is refused before either setting is written (SPEC-560).
+    for (model, agent) in [("gpt-6.2-astra", "Codex"), ("gemini-4-neon", "Antigravity")] {
+        let (refused, is_error) = cockpit_tool(
+            &f,
+            &token,
+            "task_model",
+            json!({"number": prepared.number, "model": model, "effort": "low"}),
+        )
+        .await?;
+        assert!(is_error && said(&refused).contains(agent), "{refused}");
+        let stored = f.h.store.task(&prepared.id).await?.ok_or("task")?;
+        assert_eq!(
+            (stored.model.as_deref(), stored.effort.as_deref()),
+            (Some("claude-sonnet-5-5"), Some("medium"))
+        );
+    }
     let (changed, is_error) = cockpit_tool(
         &f,
         &token,

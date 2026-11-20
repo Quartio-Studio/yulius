@@ -819,38 +819,31 @@ async fn queued_park_screen(
     )
     .await?;
     let captured = screen(app, id);
-    let blocker = new_task(
-        app,
-        &caller.sandbox,
-        &caller.user,
-        "Hold the session slot",
-        TaskMode::Prompt,
-    )
-    .await?;
-    wait_for(
-        "the only session slot to be occupied",
-        Duration::from_secs(30),
-        || async { status_of(app, &blocker).await.0 == Some(TaskStatus::Running) },
-    )
-    .await?;
-
+    // A real park wakes the queue asynchronously. Reconstruct the cold states
+    // on a consistent copy so that drain cannot launch the synthetic queued run.
+    let (_cold_dir, cold_data) = data_dir()?;
+    yulius_store::SqliteStore::open(&data.join("yulius.db"))?
+        .backup_to(&cold_data.join("yulius.db"))
+        .await?;
+    let cold = self::app(&cold_data, 8, 1).await?;
     assert!(
-        app.deps
+        cold.deps
             .store
             .transition_task(
                 id,
                 Some(TaskStatus::Parked),
                 TaskStatus::Queued,
                 None,
-                app.now()
+                cold.now()
             )
             .await?
     );
+    // Force the live queue pass that previously resumed the synthetic queued task.
     app.drain_queue_now().await;
-    assert_eq!(status_of(app, id).await.0, Some(TaskStatus::Queued));
+    assert_eq!(status_of(&cold, id).await.0, Some(TaskStatus::Queued));
     // Loss and normal exit can save identical bytes in this fake agent. Make
     // the ordinary final screen distinct to prove which snapshot each reader uses.
-    let last = app
+    let last = cold
         .deps
         .store
         .attempts(id)
@@ -859,10 +852,10 @@ async fn queued_park_screen(
         .ok_or("parked attempt")?;
     let dir = Path::new(&last.run_dir);
     std::fs::write(dir.join("final-screen"), b"80 24\nShutdown screen")?;
-    assert_cold_screen(data, id, caller, &captured).await?;
+    assert_cold_screen(&cold_data, id, caller, &captured).await?;
     // A restart in the gap between the state commit and the filename change.
     std::fs::rename(dir.join("parked-screen"), dir.join("parked-screen.pending"))?;
-    assert_cold_screen(data, id, caller, &captured).await?;
+    assert_cold_screen(&cold_data, id, caller, &captured).await?;
     let renamed = dir.to_owned();
     yulius_app::race::on(yulius_app::race::Point::ParkScreenRead, dir, move || {
         let published = std::fs::rename(
@@ -871,36 +864,35 @@ async fn queued_park_screen(
         );
         assert!(published.is_ok(), "{published:?}");
     });
-    assert_cold_screen(data, id, caller, &captured).await?;
+    assert_cold_screen(&cold_data, id, caller, &captured).await?;
     // Starting is recorded before the provider acquires its account.
     assert!(
-        app.deps
+        cold.deps
             .store
             .transition_task(
                 id,
                 Some(TaskStatus::Queued),
                 TaskStatus::Starting,
                 None,
-                app.now()
+                cold.now()
             )
             .await?
     );
-    assert_cold_screen(data, id, caller, &captured).await?;
+    assert_cold_screen(&cold_data, id, caller, &captured).await?;
     // The resumed launch has no subscription available, so it waits without a new attempt.
     assert!(
-        app.deps
+        cold.deps
             .store
             .transition_task(
                 id,
                 Some(TaskStatus::Starting),
                 TaskStatus::WaitingCapacity,
                 None,
-                app.now()
+                cold.now()
             )
             .await?
     );
-    assert_cold_screen(data, id, caller, &captured).await?;
-    crate::support::stop_tasks(app, &[&blocker]).await
+    assert_cold_screen(&cold_data, id, caller, &captured).await
 }
 
 /// PRK-003 (review round 2): a switch that starts after the park decided gives way to it: the
@@ -910,7 +902,7 @@ fn a_switch_overtaken_by_a_park_parks_with_its_activity() -> TestResult {
     let (_dir, data) = data_dir()?;
     let rt = runtime()?;
     rt.block_on(async {
-        let app = app(&data, 1, 1).await?;
+        let app = app(&data, 8, 1).await?;
         let (id, caller) = answered(&app, &data).await?;
         let switched = Arc::new(std::sync::Mutex::new(None));
         {
@@ -1124,7 +1116,6 @@ fn a_loss_recorded_while_the_reader_holds_the_park_still_parks() -> TestResult {
             0,
             Arc::new(ScriptedUsage::default()),
             |config| {
-                config.max_live_sessions = 1;
                 config.park_after_ms = 1;
                 config.stop_escalation_ms = 300;
             },
