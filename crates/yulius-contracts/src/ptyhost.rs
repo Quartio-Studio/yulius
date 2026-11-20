@@ -1501,17 +1501,20 @@ mod tests {
 
     #[test]
     fn maximum_frame_length_is_accepted() -> TestResult {
-        let frame = HostFrame::Snapshot(Snapshot {
-            rendered: false,
-            seq: 9,
-            bytes: vec![b'x'; MAX_SNAPSHOT_BYTES],
-        });
-        frame.validate()?;
-        let bytes = encode_host(&frame);
-        assert_eq!(bytes.len(), MAX_FRAME_BYTES + 4);
-        let mut decoder = FrameDecoder::new();
-        decoder.push(&bytes);
-        assert_eq!(decoder.next_host()?, Some(frame));
+        for rendered in [false, true] {
+            let frame = HostFrame::Snapshot(Snapshot {
+                rendered,
+                seq: 9,
+                bytes: vec![b'x'; MAX_SNAPSHOT_BYTES],
+            });
+            frame.validate()?;
+            let bytes = encode_host(&frame);
+            assert_eq!(bytes.len(), MAX_FRAME_BYTES + 4);
+            assert_eq!(bytes.capacity(), bytes.len(), "reserve one maximum frame");
+            let mut decoder = FrameDecoder::new();
+            decoder.push(&bytes);
+            assert_eq!(decoder.next_host()?, Some(frame));
+        }
         Ok(())
     }
 
