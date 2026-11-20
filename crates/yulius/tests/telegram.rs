@@ -58,6 +58,8 @@ struct FakeTelegram {
     /// File downloads asked for, and a wake-up for each.
     files_asked: AtomicUsize,
     file_asked: tokio::sync::Notify,
+    /// Woken by every poll, once it has dropped the updates it confirms.
+    polled: tokio::sync::Notify,
 }
 
 impl FakeTelegram {
@@ -112,6 +114,20 @@ impl FakeTelegram {
     fn release_files(&self) {
         self.hold_files.store(false, Ordering::SeqCst);
         self.files_released.notify_waiters();
+    }
+
+    /// Waits until a poll confirmed every update sent so far (10 s at most).
+    async fn wait_updates_taken(&self) -> Result<(), String> {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            let polled = self.polled.notified();
+            if self.updates.lock().map(|u| u.is_empty()).unwrap_or(false) {
+                return Ok(());
+            }
+            if tokio::time::timeout_at(deadline, polled).await.is_err() {
+                return Err("the updates were not taken".into());
+            }
+        }
     }
 
     /// Waits until a file download was asked for (10 s at most).
@@ -223,6 +239,7 @@ async fn bot_api(
             };
             let arrived = fake.arrived.notified();
             let mut ready = pending(&fake);
+            fake.polled.notify_waiters();
             if ready.is_empty() {
                 let _ = tokio::time::timeout(wait, arrived).await;
                 ready = pending(&fake);
@@ -2317,8 +2334,9 @@ async fn prompts_by_number(
 }
 
 /// SPEC-512 TGI-002, TGI-003 (review of task #538): a whole poll answer from one chat (20
-/// messages, as after a restart) is handled, each message in its turn: every one starts its
-/// task, in the order it was sent.
+/// messages, as after a restart) is handled, each message in its turn: while the first (a
+/// photo) is still being fetched, the 19 behind it wait, and every one starts its task in the
+/// order it was sent.
 #[tokio::test]
 async fn a_chats_whole_poll_answer_is_handled_in_order() -> TestResult {
     let w = world().await?;
@@ -2328,10 +2346,15 @@ async fn a_chats_whole_poll_answer_is_handled_in_order() -> TestResult {
     link(&w, &w.alice, 100).await?;
     intake_on(&w, &w.alice, "s1").await?;
     let before = w.fake.sent_to(100).len();
-    let bodies: Vec<Value> = (0..20)
-        .map(|n| json!({"text": format!("Task {n}")}))
-        .collect();
+    w.fake.hold_files.store(true, Ordering::SeqCst);
+    let mut bodies = vec![json!({"caption": "First", "photo": [
+        {"file_id": "ph1", "file_unique_id": "u1", "file_size": 3}
+    ]})];
+    bodies.extend((0..19).map(|n| json!({"text": format!("Task {n}")})));
     w.fake.raw_batch(100, &bodies);
+    w.fake.wait_file_asked().await?;
+    w.fake.wait_updates_taken().await?;
+    w.fake.release_files();
     let sent = w.fake.wait_sent(100, before + 20).await?;
     for reply in &sent[before..] {
         assert!(reply.starts_with("Started #"), "{reply}");
@@ -2341,8 +2364,14 @@ async fn a_chats_whole_poll_answer_is_handled_in_order() -> TestResult {
         .into_iter()
         .map(|(_, p)| p)
         .collect();
-    let expected: Vec<String> = (0..20).map(|n| format!("Task {n}")).collect();
-    assert_eq!(prompts, expected, "one task per message, in the order sent");
+    assert_eq!(prompts.len(), 20, "{prompts:?}");
+    assert!(prompts[0].starts_with("First"), "{prompts:?}");
+    let expected: Vec<String> = (0..19).map(|n| format!("Task {n}")).collect();
+    assert_eq!(
+        prompts[1..],
+        expected[..],
+        "one task per message, in the order sent"
+    );
     Ok(())
 }
 
