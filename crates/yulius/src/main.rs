@@ -1031,6 +1031,7 @@ mod tests {
             ssh_port: Some(2222),
             public_url: Some("https://new.example".into()),
             data_disks: vec!["/dev/vdc".into(), "/dev/vdd".into()],
+            max_downtime: None,
             requested_at: 0,
         };
         let parsed = |request: &MoveRequest| {

@@ -93,6 +93,9 @@ pub struct MoveRequest {
     /// Blank disks of the new host for the data directory: none, one, or two for a mirror.
     #[serde(default)]
     pub data_disks: Vec<String>,
+    /// Optional longest estimated freeze, in whole minutes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_downtime: Option<u64>,
     /// When it was written (ms since the epoch).
     pub requested_at: i64,
 }
@@ -106,6 +109,7 @@ impl MoveRequest {
             ssh_port: self.ssh_port,
             public_url: self.public_url.clone(),
             data_disks: self.data_disks.clone(),
+            max_downtime: self.max_downtime,
         }
     }
 }
@@ -125,6 +129,9 @@ pub struct Values {
     /// The data disks.
     #[serde(default)]
     pub data_disks: Vec<String>,
+    /// Optional longest estimated freeze, in whole minutes.
+    #[serde(default)]
+    pub max_downtime: Option<u64>,
 }
 
 /// Where a helper run stands.
@@ -240,6 +247,7 @@ mod tests {
             ssh_port: Some(22),
             public_url: None,
             data_disks: vec!["/dev/vdc".into(), "/dev/vdd".into()],
+            max_downtime: None,
             requested_at: 5,
         };
         let status = MoveHelperStatus {

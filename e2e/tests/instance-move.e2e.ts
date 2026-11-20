@@ -11,7 +11,7 @@ failOnPageErrors();
 // until the page asked twice in vain; then the new instance answers, this address redirects
 // (`move=redirect`) or the old instance answers again (`move=rollback`).
 
-type Asked = { action: string; target: string | null; ssh_port: number | null; public_url: string | null; data_disks: string[]; max_downtime?: number; confirm: string | null };
+type Asked = { action: string; target: string | null; ssh_port: number | null; public_url: string | null; data_disks: string[]; max_downtime: number | null; confirm: string | null };
 type MoveMock = {
   __yuliusMock: {
     migration: { stepMs: number; ackMs: number; asked?: Asked[]; holdReads: boolean; holds: unknown[]; releaseReads(): void; holdAt: string | null; frozen: boolean; missed: number };
@@ -136,8 +136,8 @@ test('the plan asks for the key first, then says what is yours, and a move needs
   // Two plans were asked for, with what was typed, and no move.
   expect(await sent(browser)).toBe(2);
   expect(await asked(browser)).toEqual([
-    { action: 'plan', target: TARGET, ssh_port: 22, public_url: URL, data_disks: ['/dev/vdc', '/dev/vdd'], confirm: null },
-    { action: 'plan', target: TARGET, ssh_port: 22, public_url: URL, data_disks: ['/dev/vdc', '/dev/vdd'], confirm: null },
+    { action: 'plan', target: TARGET, ssh_port: 22, public_url: URL, data_disks: ['/dev/vdc', '/dev/vdd'], max_downtime: null, confirm: null },
+    { action: 'plan', target: TARGET, ssh_port: 22, public_url: URL, data_disks: ['/dev/vdc', '/dev/vdd'], max_downtime: null, confirm: null },
   ]);
 });
 
@@ -153,7 +153,7 @@ test('a move shows its checklist, says when the instance is frozen, and ends on 
   await holdAt(browser, 'Prepare');
   await runMigration(screen);
   // Asked with the plan's values and the host that was typed.
-  await expect.poll(async () => (await asked(browser))[1] ?? null).toEqual({ action: 'move', target: TARGET, ssh_port: 22, public_url: URL, data_disks: ['/dev/vdc', '/dev/vdd'], confirm: HOST });
+  await expect.poll(async () => (await asked(browser))[1] ?? null).toEqual({ action: 'move', target: TARGET, ssh_port: 22, public_url: URL, data_disks: ['/dev/vdc', '/dev/vdd'], max_downtime: null, confirm: HOST });
 
   // The phases, with the one in progress, and the lines as the command writes them. The answer
   // is at the top of the card, which the page shows: the button pressed was a long way below.
@@ -341,7 +341,7 @@ test('a move that does not complete is continued or aborted, and the abort says 
   await expect(c.getByRole('button', 'Continue the move…')).toBeHidden();
   await expect(c.getByRole('button', 'Show the plan')).toBeEnabled();
   const last = (await asked(browser)).pop();
-  expect(last).toEqual({ action: 'abort', target: null, ssh_port: null, public_url: null, data_disks: [], confirm: null });
+  expect(last).toEqual({ action: 'abort', target: null, ssh_port: null, public_url: null, data_disks: [], max_downtime: null, confirm: null });
 
   // A request the helper then refuses leaves that checklist where it is. It is the last move's,
   // which is over: nothing is said to be recorded.
@@ -505,7 +505,7 @@ test('a field outside the rules is said in place, and a helper that is silent, r
   await expect(c.getByText('The move helper did not take the request.')).toBeVisible();
   await expect(c.getByText('sudo systemctl enable --now yulius-migrate.path')).toBeVisible();
   await expect(c.getByRole('button', 'Show the plan')).toBeEnabled();
-  expect(await asked(browser)).toEqual([{ action: 'plan', target: TARGET, ssh_port: 22, public_url: null, data_disks: [], confirm: null }]);
+  expect(await asked(browser)).toEqual([{ action: 'plan', target: TARGET, ssh_port: 22, public_url: null, data_disks: [], max_downtime: null, confirm: null }]);
   expect(await axeViolations(browser)).toEqual([]);
 
   // The helper refuses (an update runs): its reason, and nothing changed.

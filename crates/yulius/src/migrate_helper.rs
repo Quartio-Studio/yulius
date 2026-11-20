@@ -185,6 +185,9 @@ pub fn command_args(args: &MoveHelperArgs, request: &MoveRequest) -> Vec<String>
     if let Some(url) = &request.public_url {
         argv.push(format!("--public-url={url}"));
     }
+    if let Some(minutes) = request.max_downtime {
+        argv.push(format!("--max-downtime={minutes}"));
+    }
     for disk in &request.data_disks {
         argv.push(format!("--data-disk={disk}"));
     }

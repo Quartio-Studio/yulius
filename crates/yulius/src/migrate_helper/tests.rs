@@ -33,6 +33,7 @@ fn plan(id: &str) -> MoveRequest {
         ssh_port: Some(2222),
         public_url: Some("https://new.example".into()),
         data_disks: vec!["/dev/vdc".into(), "/dev/vdd".into()],
+        max_downtime: None,
         requested_at: now_ms(),
     }
 }
@@ -297,7 +298,7 @@ fn a_request_is_parsed_strictly() -> TestResult {
     );
     assert_eq!(
         refused(&|v| v["action"] = "abort".into(), NOW),
-        "an abort names no host, port, URL or disk"
+        "an abort names no host, port, URL, disk or freeze limit"
     );
     Ok(())
 }

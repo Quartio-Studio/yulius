@@ -4347,7 +4347,7 @@ old name is remembered (`moved` in `remote-credentials.json`) and the call is re
 A superadmin asks for the same move from Settings → Instance (SPEC-470, ADR-0305). The server is
 the unprivileged service user and is frozen during the copy, so root runs the command for it, as it
 installs updates: the server writes `<data>/migrate/request.json` (plan, move or abort, with the
-host, SSH port, public URL and data disks; `yulius-contracts::migrate`), the root-owned path unit
+host, SSH port, public URL, data disks and optional freeze limit in minutes; `yulius-contracts::migrate`), the root-owned path unit
 `yulius-migrate.path` starts `yulius migrate-helper` (`crates/yulius/src/migrate_helper.rs`), and
 the helper runs `yulius instance migrate --no-sign-in` as a child process with each value as one
 argument: such a run never signs in as root does (the command's operator sign-in is not tried, no

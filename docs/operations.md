@@ -2144,7 +2144,7 @@ on the old host; without it the card says so and names the command above.
 
 1. **Show the plan.** The form takes the new host (`root@new-host`, a name or an address that leads
    there by itself: root's ssh configuration is not read), its SSH port, a new public URL (empty:
-   as the command decides) and one or two blank disks. The plan changes nothing but the move's own
+   as the command decides), one or two blank disks, and an optional longest freeze in whole minutes (at least one). The plan changes nothing but the move's own
    files and freezes nothing. A move asked from the page never signs in as root does (root's own
    keys, its agent, its ssh configuration, a password), so the first plan ends with **the key line
    to add**: copy it into root's `~/.ssh/authorized_keys` on the new host and show the plan again.
@@ -2154,12 +2154,12 @@ on the old host; without it the card says so and names the command above.
    failed ones are repeated above the checklist; a plan with a failed line offers no move.
 2. **Run migration…** names the host that root will give the instance's data to (every repository,
    secret and key) and the freeze the plan estimated, and is confirmed by typing the host's name.
-   It is the plan that was shown: the same host, port, URL and disks, shown at most an hour ago
+   It is the plan that was shown: the same host, port, URL, disks and freeze limit, shown at most an hour ago
    (else show it again). The card then shows the phases and the checklist as it grows: the new
    host is prepared and the data copied while the instance keeps working (the phases Prepare and
-   Copy), and only then it freezes. The page asks for no bound on the freeze: the move decides
-   as the command does without `--max-downtime` (it copies again while that shortens the
-   freeze). Use the command to set one.
+   Copy). With a freeze limit, the copy measures the estimate again before it freezes. If five
+   delta passes still exceed the bound, the instance keeps running and the staged copy stays
+   on the new host. Continue later or show a new plan with a higher limit.
 3. **While the instance is frozen** for the last changes, the proof of the copy and the start on
    the new host, nothing answers, the page included: the card says so with the plan's estimate (the
    copy measures it again a moment before the freeze; that line is in the checklist once something
