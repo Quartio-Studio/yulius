@@ -202,6 +202,65 @@ async fn a_task_without_an_agent_draws_across_all_harnesses_and_keeps_explicit_c
     Ok(())
 }
 
+/// SPEC-560: a supplied GPT model chooses Codex independently of the subscription draw.
+#[tokio::test]
+async fn the_api_chooses_codex_for_gpt_and_preserves_unqualified_aliases() -> TestResult {
+    let (h, alice) = world().await?;
+    for (selection, expected) in [
+        (json!({"model": "gpt-6.2-astra"}), "codex"),
+        (
+            json!({"harness": "auto", "model": "GPT-synthetic"}),
+            "codex",
+        ),
+        (json!({"model": "opus"}), "claude"),
+        (json!({"harness": "codex", "model": "o3"}), "codex"),
+    ] {
+        let mut body = selection.clone();
+        body["prompt"] = json!("Check model routing");
+        body["prepared"] = json!(true);
+        assert_eq!(
+            created(&h, &alice, body).await?,
+            pair(expected, "chosen"),
+            "{selection}"
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn an_explicit_harness_refuses_a_foreign_model_before_creation() -> TestResult {
+    let (h, alice) = world().await?;
+    for (harness, model, required_harness) in [
+        ("claude", "gpt-6.2-astra", "Codex"),
+        ("claude", " Gemini-4-neon ", "Antigravity"),
+        ("codex", "gemini-4-neon", "Antigravity"),
+    ] {
+        let response = call(
+            &h.router, Method::POST, CREATE,
+            Some(json!({"prompt": "Conflicting choice", "prepared": true, "harness": harness, "model": model})),
+            &alice,
+        ).await?;
+        assert_eq!(
+            response.status,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "{:?}",
+            response.body
+        );
+        assert!(
+            response.body.to_string().contains(required_harness),
+            "{:?}",
+            response.body
+        );
+    }
+    assert!(
+        h.store
+            .tasks(&SandboxId::parse("s1")?, false)
+            .await?
+            .is_empty()
+    );
+    Ok(())
+}
+
 /// RHM-002 (AC-2): harnesses with 0 subscriptions, only unsigned/relogin/error subscriptions, or
 /// only finished subscriptions (`Limited` or `>= 98%` in a window binding the default model) are
 /// never drawn while another harness has capacity; once one subscription of a harness has room,
@@ -410,6 +469,11 @@ async fn agent_follow_ups_keep_their_caller_while_auto_and_superagent_draw() -> 
         (
             json!({"prompt": "Follow-up", "title": "Gemini asks Sonnet", "model": "claude-sonnet-5-5"}),
             Some("claude"),
+            "chosen",
+        ),
+        (
+            json!({"prompt": "Follow-up", "title": "Gemini asks for GPT", "model": "gpt-6.2-astra"}),
+            Some("codex"),
             "chosen",
         ),
         (
