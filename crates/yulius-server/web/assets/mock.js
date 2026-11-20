@@ -7713,7 +7713,12 @@ export function createMockTransport(params) {
     movePollMs: params.has('movepoll') ? Number(params.get('movepoll')) : undefined,
     pullClock,
     // Like window.fetch, an aborted signal (a timeout, a view that went away) rejects the request.
-    fetch: (url, init = {}) => {
+    fetch: async (url, init = {}) => {
+      // Exercise overlapping list reads in dispatch order, before the mock's simulated latency.
+      if (window.__yuliusTaskListReply && String(url).includes('/tasks?archived=false')) {
+        const reply = await window.__yuliusTaskListReply(url);
+        if (reply) return reply;
+      }
       if (init.keepalive) db.keepaliveRequests.push(url);
       const work = handleFetch(db, url, init);
       const { signal } = init;

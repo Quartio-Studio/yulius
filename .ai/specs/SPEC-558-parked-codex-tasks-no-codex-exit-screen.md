@@ -68,6 +68,9 @@ A human request can take precedence over unfinished work in the task list. Both 
 
 ## Evidence
 
+- Focused review reproduced two cold-load failure effects. One successful list still left the shared error set, hiding onboarding state. In the direct task route, a failed navigation request left the error page visible even after the sidebar received the successful list. Chromium tests failed on both effects and passed after correction. They also exercise archived task updates, a superseded failed request and an isolated refresh error.
+- With the split implementation, 55 scoped Chromium tests passed before the review extensions. The quick repository checks passed. The Rust mutation command reported no changed Rust code. Removing event preservation and request ordering in an isolated browser build made both corresponding regressions fail. Vidoc was disabled.
+
 - Independent review of the browser watch uncovered a list-reload race. Delivery was split into lifecycle-safe full list reads and the parked-page watch that consumes them. On dev `5bdabd1a9`, a held list restored a resumed task to Parked and reinserted a removed task. A separate overlapping success test let the older parked snapshot overwrite the newer running row. The prototype at `7a9b8793f` discarded the only successful cold load in both failure orders. Chromium regressions cover all three cases. The watch’s red/green fixtures and review corrections are preserved for its own delivery.
 
 - PR #1542 delivered verified MCP filtering and wait explanations to dev at `5bdabd1a9`. The passing train ran the quality, Rust and browser jobs. Vidoc was disabled. [Delivery evidence](https://yulius.quartio.ai/api/tasks/09d643c4-9df9-4abe-9c9c-d0cfe7fdf205/delivery/evidence/5bdabd1a93590ac7b9d7552d2dffc1f8dbf27d2f)

@@ -336,24 +336,26 @@ test('a full list read cannot reverse a newer resume or removal', async ({ app, 
     const sid = 'late-list';
     const row = { id: 'p', sandbox_id: sid, status: 'parked', parked_needs_you: false };
     const removed = { ...row, id: 'removed' };
+    const archived = { ...row, id: 'archived' };
     let release!: () => void;
     const held = new Promise<void>(resolve => { release = resolve; });
     let hold = false;
-    const store = createStore({ get: async () => { if (hold) await held; return [row, removed]; } });
+    const store = createStore({ get: async () => { if (hold) await held; return [row, removed, archived]; } });
     await store.loadTasks(sid);
     hold = true;
     const read = store.loadTasks(sid);
     const events: string[] = [];
-    const off = store.on('task', (t: { status: string }) => events.push(t.status));
+    const off = store.on('task', (t: { id: string; status: string }) => { if (t.id === row.id) events.push(t.status); });
     store.upsertTask({ ...row, status: 'running' });
     store.removeTask(removed.id);
+    store.upsertTask({ ...archived, archived: true });
     release();
     await read;
     off();
     store.stopEvents();
-    return [events, store.findTask(row.id).status, Boolean(store.findTask(removed.id))];
+    return [events, store.findTask(row.id).status, Boolean(store.findTask(removed.id)), Boolean(store.findTask(archived.id))];
   });
-  expect(result).toEqual([['running'], 'running', false]);
+  expect(result).toEqual([['running'], 'running', false, false]);
 });
 
 test('a failed overlapping cold read does not discard the successful task list', async ({ app, browser }) => {
@@ -376,13 +378,13 @@ test('a failed overlapping cold read does not discard the successful task list',
       const second = store.loadTasks(sid);
       const finished = Promise.allSettled([first, second]);
       if (lateSuccess) { fail(new Error('unavailable')); await second.catch(() => {}); release(); }
-      else { release(); await Promise.resolve(); fail(new Error('unavailable')); }
-      seen.push((await finished).map(r => r.status), store.findTask('p')?.status ?? null);
+      else { release(); await first; fail(new Error('unavailable')); }
+      seen.push((await finished).map(r => r.status), store.findTask('p')?.status ?? null, Boolean(store.tasksError(sid)));
       store.stopEvents();
     }
     return seen;
   });
-  expect(results).toEqual([['fulfilled', 'rejected'], 'parked', ['fulfilled', 'rejected'], 'parked']);
+  expect(results).toEqual([['fulfilled', 'rejected'], 'parked', false, ['fulfilled', 'rejected'], 'parked', false]);
 });
 
 test('the latest successful full list wins when the older parked snapshot arrives last', async ({ app, browser }) => {
@@ -406,4 +408,50 @@ test('the latest successful full list wins when the older parked snapshot arrive
     return [rows.get('p').status, store.findTask('p').status];
   });
   expect(result).toEqual(['running', 'running']);
+});
+
+test('a superseded list failure keeps the newer result while an isolated refresh reports its error', async ({ app, browser }) => {
+  await app.open(mock('/s/studio'));
+  const seen = await browser.evaluate(async () => {
+    const url = '/assets/store.js';
+    const { createStore } = await import(url);
+    let reject!: (error: Error) => void;
+    const held = new Promise<void>((_, no) => { reject = no; });
+    let calls = 0;
+    const store = createStore({ get: async () => {
+      if (++calls === 1) await held;
+      if (calls > 2) throw new Error('refresh unavailable');
+      return [{ id: 'p', sandbox_id: 's', status: 'parked' }];
+    } });
+    const older = store.loadTasks('s');
+    await store.loadTasks('s');
+    reject(new Error('older read failed'));
+    const rows = await older;
+    const superseded = [rows.get('p')?.status, Boolean(store.tasksError('s'))];
+    let failed = false;
+    try { await store.loadTasks('s'); } catch { failed = true; }
+    const isolated = [failed, store.tasksError('s')?.message, store.findTask('p').status];
+    store.stopEvents();
+    return [superseded, isolated];
+  });
+  expect(seen).toEqual([['parked', false], [true, 'refresh unavailable', 'parked']]);
+});
+
+test('a cold task page recovers when its other list request succeeds', async ({ app, browser, screen }) => {
+  await browser.addInitScript(() => {
+    const w = window as unknown as { __yuliusTaskListReply: (url: string) => Promise<Response | undefined>; releaseList: () => void };
+    let reads = 0;
+    w.__yuliusTaskListReply = async (url) => {
+      if (!String(url).includes('/sb_studio/tasks?archived=false')) return;
+      const request = ++reads;
+      if (request === 1) await new Promise<void>(resolve => { w.releaseList = resolve; });
+      if (request === 2) return new Response(JSON.stringify({ error: { code: 'unavailable', message: 'fixture list unavailable' } }), { status: 503 });
+    };
+  });
+  await app.open(mock('/s/studio/t/13', '&ambient=0'));
+  await expect(screen.getByText(/Couldn’t load the tasks of studio/i).first()).toBeVisible();
+  await browser.evaluate(() => (window as unknown as { releaseList: () => void }).releaseList());
+  await expect(browser.locator('.task-row').first()).toBeVisible();
+  await expect(browser.locator('.taskview .strip-status')).toBeVisible();
+  await expect(screen.getByText(/Couldn’t load the tasks of studio/i)).toHaveCount(0);
 });

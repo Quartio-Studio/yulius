@@ -136,6 +136,7 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
   const loadingLists = new Set();
 
   async function loadTasks(sandboxId) {
+    const atStart = state.tasks.get(sandboxId);
     const read = { sandboxId, order: ++nextListRead, changes: new Map() };
     loadingLists.add(read);
     let list;
@@ -145,8 +146,10 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
       // An older failure cannot invalidate a list already supplied by a newer read.
       const current = state.tasks.get(sandboxId);
       if (listOrder.get(current) > read.order) return current;
-      state.taskErrors.set(sandboxId, error);
-      emit('tasks', sandboxId);
+      if (current === atStart) {
+        state.taskErrors.set(sandboxId, error);
+        emit('tasks', sandboxId);
+      }
       throw error;
     } finally {
       loadingLists.delete(read);
