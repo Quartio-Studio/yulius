@@ -23,7 +23,7 @@ use crate::context::App;
 use crate::error::{AppError, AppResult};
 use crate::model::Secret;
 use crate::ports::notify::{
-    ChannelConnector, ChannelError, ChannelIdentity, Inbound, NotificationChannel,
+    ChannelConnector, ChannelError, ChannelIdentity, ChatLink, Inbound, NotificationChannel,
 };
 
 /// The one reply of a chat that is not linked (TGC-014).
@@ -43,8 +43,13 @@ pub const AUDIT_TARGET: &str = "telegram";
 const QUIET_MS: i64 = 10 * 60 * 1000;
 /// Chats remembered for that (TGC-014).
 const QUIET_CHATS: usize = 1024;
-/// A chat's intake messages waiting their turn at most (SPEC-512 TGI-002).
-const INTAKE_WAITING: usize = 5;
+/// A chat's intake messages waiting behind the one being handled, at most: a whole poll answer
+/// (SPEC-512 TGI-002).
+const INTAKE_WAITING: usize = 20;
+/// The answer to a chat whose messages did not all fit its lane (at most every [`QUIET_MS`]).
+pub const INTAKE_FULL_REPLY: &str = "Too many messages at once: Yulius is still working through \
+     your earlier ones, so some of the latest were not handled. Send them again once it has \
+     answered.";
 /// Messages waiting to be sent (TGC-024).
 const OUTBOX: usize = 256;
 /// Bound of one `getMe` or `sendMessage` (the client's own deadline is shorter).
@@ -97,6 +102,19 @@ pub(crate) struct Outgoing {
     pub(crate) about: Option<crate::ports::notify::SentAbout>,
 }
 
+/// A linked chat's message for intake, and the link it came through.
+type Intake = (ChatLink, Inbound);
+
+/// What became of a message handed to its chat's lane.
+enum Lane {
+    /// It waits behind the chat's running worker.
+    Queued,
+    /// No worker ran: start one with this queue.
+    Start(mpsc::Receiver<Intake>),
+    /// The lane is full.
+    Full,
+}
+
 /// The channel services an instance runs with.
 pub struct ChannelServices {
     connector: Arc<dyn ChannelConnector>,
@@ -105,8 +123,9 @@ pub struct ChannelServices {
     poller: Mutex<Option<JoinHandle<()>>>,
     poll: Mutex<PollState>,
     quiet: Mutex<HashMap<String, i64>>,
-    /// One lane per chat: its intake messages run in order, a few waiting at most (TGI-002).
-    lanes: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    /// One lane per chat with messages in hand: its worker handles them one at a time, in
+    /// order, [`INTAKE_WAITING`] waiting at most (TGI-002). The worker removes it when empty.
+    lanes: Mutex<HashMap<String, mpsc::Sender<Intake>>>,
     outbox: OnceLock<mpsc::Sender<Outgoing>>,
     /// Serializes set and remove, so the stored and the active bot agree.
     switching: tokio::sync::Mutex<()>,
@@ -150,6 +169,39 @@ impl ChannelServices {
             poll.polling = polling;
             poll.last_error = last_error;
         }
+    }
+
+    fn lanes(&self) -> std::sync::MutexGuard<'_, HashMap<String, mpsc::Sender<Intake>>> {
+        self.lanes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Hands `item` to its chat's lane.
+    fn to_lane(&self, item: &Intake) -> Lane {
+        let mut lanes = self.lanes();
+        if let Some(lane) = lanes.get(&item.1.chat) {
+            match lane.try_send(item.clone()) {
+                Ok(()) => return Lane::Queued,
+                Err(mpsc::error::TrySendError::Full(_)) => return Lane::Full,
+                // Its worker is gone (it panicked): a new one takes over.
+                Err(mpsc::error::TrySendError::Closed(_)) => {}
+            }
+        }
+        let (tx, rx) = mpsc::channel(INTAKE_WAITING);
+        lanes.insert(item.1.chat.clone(), tx);
+        Lane::Start(rx)
+    }
+
+    /// The next message waiting in `chat`'s lane; with none, the lane is removed in the same
+    /// step, so a message handed over meanwhile starts a new worker instead of being lost.
+    fn next_in_lane(&self, chat: &str, rx: &mut mpsc::Receiver<Intake>) -> Option<Intake> {
+        let mut lanes = self.lanes();
+        let next = rx.try_recv().ok();
+        if next.is_none() {
+            lanes.remove(chat);
+        }
+        next
     }
 
     /// Whether `chat` gets the unlinked reply now (at most every [`QUIET_MS`]).
@@ -398,32 +450,23 @@ impl App {
             // `/stop` and link codes), and the next poll confirms the update at once, so a
             // restart does not hand the same message over twice (review round 1).
             ChatCommand::Other if link.intake => {
-                let app = Arc::clone(self);
-                let message = message.clone();
                 let services = self.channel_services()?;
-                let lane = services.lanes.lock().map_or_else(
-                    |_| Arc::default(),
-                    |mut lanes| Arc::clone(lanes.entry(message.chat.clone()).or_default()),
-                );
-                // More than a few waiting: the chat floods, the rest is dropped (review round 2).
-                if Arc::strong_count(&lane) > INTAKE_WAITING + 1 {
-                    return Ok(());
-                }
-                tokio::spawn(async move {
-                    let _turn = lane.lock().await;
-                    match app.telegram_intake(&link, &message).await {
-                        Ok(answer) => {
-                            app.enqueue_about(message.chat.clone(), answer.text, answer.about)
-                        }
-                        Err(err) => {
-                            tracing::warn!(error = %err, "a Telegram message could not be handled");
-                            app.enqueue(
-                                message.chat.clone(),
-                                "Yulius could not handle that message; try again.".into(),
-                            );
+                let item = (link, message.clone());
+                match services.to_lane(&item) {
+                    Lane::Queued => {}
+                    Lane::Start(rx) => {
+                        tokio::spawn(Arc::clone(self).intake_lane(item, rx));
+                    }
+                    Lane::Full => {
+                        tracing::warn!(
+                            waiting = INTAKE_WAITING,
+                            "a Telegram message was not handled: its chat's lane is full"
+                        );
+                        if services.quiet_reply_due(&message.chat, now.0) {
+                            self.enqueue(message.chat.clone(), INTAKE_FULL_REPLY.into());
                         }
                     }
-                });
+                }
                 return Ok(());
             }
             // Anything else gets its answer at most every 10 minutes, so no chat fills the
@@ -437,6 +480,8 @@ impl App {
                 }
                 if matches!(command, ChatCommand::Start(Some(_))) {
                     BAD_CODE_REPLY.to_owned()
+                } else if link.intake {
+                    crate::telegram_intake::INTAKE_HELP.to_owned()
                 } else {
                     LINKED_HELP.to_owned()
                 }
@@ -444,6 +489,31 @@ impl App {
         };
         self.enqueue(message.chat.clone(), reply);
         Ok(())
+    }
+
+    /// A chat's lane worker: handles `first`, then each message waiting, in order (TGI-002).
+    async fn intake_lane(self: Arc<Self>, first: Intake, mut rx: mpsc::Receiver<Intake>) {
+        let mut item = first;
+        loop {
+            let (link, message) = &item;
+            match self.telegram_intake(link, message).await {
+                Ok(answer) => self.enqueue_about(message.chat.clone(), answer.text, answer.about),
+                Err(err) => {
+                    tracing::warn!(error = %err, "a Telegram message could not be handled");
+                    self.enqueue(
+                        message.chat.clone(),
+                        "Yulius could not handle that message; try again.".into(),
+                    );
+                }
+            }
+            let Ok(services) = self.channel_services() else {
+                return;
+            };
+            match services.next_in_lane(&message.chat, &mut rx) {
+                Some(next) => item = next,
+                None => return,
+            }
+        }
     }
 
     async fn link_chat(&self, user: &UserId, chat: &str) -> AppResult<()> {

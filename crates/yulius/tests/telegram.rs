@@ -52,6 +52,12 @@ struct FakeTelegram {
     /// While set, no poll is answered (released with `release`).
     hold_polls: std::sync::atomic::AtomicBool,
     released: tokio::sync::Notify,
+    /// While set, no file download is answered (released with `release_files`).
+    hold_files: std::sync::atomic::AtomicBool,
+    files_released: tokio::sync::Notify,
+    /// File downloads asked for, and a wake-up for each.
+    files_asked: AtomicUsize,
+    file_asked: tokio::sync::Notify,
 }
 
 impl FakeTelegram {
@@ -101,6 +107,25 @@ impl FakeTelegram {
             }
         }
         self.arrived.notify_waiters();
+    }
+
+    fn release_files(&self) {
+        self.hold_files.store(false, Ordering::SeqCst);
+        self.files_released.notify_waiters();
+    }
+
+    /// Waits until a file download was asked for (10 s at most).
+    async fn wait_file_asked(&self) -> Result<(), String> {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            let asked = self.file_asked.notified();
+            if self.files_asked.load(Ordering::SeqCst) > 0 {
+                return Ok(());
+            }
+            if tokio::time::timeout_at(deadline, asked).await.is_err() {
+                return Err("no file download was asked for".into());
+            }
+        }
     }
 
     /// The id of the last message sent to `chat` that starts with `lead`.
@@ -212,6 +237,20 @@ async fn bot_api(
     (StatusCode::OK, Json(json!({"ok": true, "result": result})))
 }
 
+/// A file's bytes, held while `hold_files` is set.
+async fn file_api(State(fake): State<Arc<FakeTelegram>>) -> (StatusCode, Vec<u8>) {
+    fake.files_asked.fetch_add(1, Ordering::SeqCst);
+    fake.file_asked.notify_waiters();
+    loop {
+        let released = fake.files_released.notified();
+        if !fake.hold_files.load(Ordering::SeqCst) {
+            break;
+        }
+        released.await;
+    }
+    (StatusCode::OK, b"png".to_vec())
+}
+
 struct World {
     h: Harness,
     /// Holds the notifier's seeds while written ([`ChannelServices::seed_hold`]).
@@ -249,10 +288,7 @@ async fn world_unstarted() -> Result<World, Box<dyn std::error::Error>> {
     let served = support::serve(
         Router::new()
             .route("/{bot}/{method}", post(bot_api))
-            .route(
-                "/file/{bot}/{*path}",
-                axum::routing::get(|| async { (StatusCode::OK, b"png".to_vec()) }),
-            )
+            .route("/file/{bot}/{*path}", axum::routing::get(file_api))
             .with_state(fake.clone()),
     )
     .await?;
@@ -2257,5 +2293,126 @@ async fn telegram_tasks_keep_the_hourly_bound_and_the_file_bounds() -> TestResul
         "alice may not work in acme/other: {reply}"
     );
     assert_eq!(tasks_of(&w, "s1").await?.len(), 20, "nothing more started");
+    Ok(())
+}
+
+/// The task numbers and prompts of project `sandbox`, by number.
+async fn prompts_by_number(
+    w: &World,
+    sandbox: &str,
+) -> Result<Vec<(u64, String)>, Box<dyn std::error::Error>> {
+    let mut out = Vec::new();
+    for task in tasks_of(w, sandbox).await? {
+        let id = TaskId::parse(task["id"].as_str().unwrap_or_default())?;
+        let prompt =
+            w.h.store
+                .task(&id)
+                .await?
+                .map(|t| t.prompt)
+                .unwrap_or_default();
+        out.push((task["number"].as_u64().unwrap_or_default(), prompt));
+    }
+    out.sort();
+    Ok(out)
+}
+
+/// SPEC-512 TGI-002, TGI-003 (review of task #538): a whole poll answer from one chat (20
+/// messages, as after a restart) is handled, each message in its turn: every one starts its
+/// task, in the order it was sent.
+#[tokio::test]
+async fn a_chats_whole_poll_answer_is_handled_in_order() -> TestResult {
+    let w = world().await?;
+    set_bot(&w, TOKEN_A).await?;
+    signed_in_subscription(&w).await?;
+    std::fs::create_dir_all(w.h.app.config.data_dir.join("sandboxes/s1"))?;
+    link(&w, &w.alice, 100).await?;
+    intake_on(&w, &w.alice, "s1").await?;
+    let before = w.fake.sent_to(100).len();
+    let bodies: Vec<Value> = (0..20)
+        .map(|n| json!({"text": format!("Task {n}")}))
+        .collect();
+    w.fake.raw_batch(100, &bodies);
+    let sent = w.fake.wait_sent(100, before + 20).await?;
+    for reply in &sent[before..] {
+        assert!(reply.starts_with("Started #"), "{reply}");
+    }
+    let prompts: Vec<String> = prompts_by_number(&w, "s1")
+        .await?
+        .into_iter()
+        .map(|(_, p)| p)
+        .collect();
+    let expected: Vec<String> = (0..20).map(|n| format!("Task {n}")).collect();
+    assert_eq!(prompts, expected, "one task per message, in the order sent");
+    Ok(())
+}
+
+/// SPEC-512 TGI-002, TGI-003 (review of task #538): while a chat's message is being handled, 20
+/// more wait their turn; one past that is not dropped silently: the chat is told some were not
+/// handled, and the waiting ones still run.
+#[tokio::test]
+async fn a_message_past_the_chats_waiting_bound_is_answered() -> TestResult {
+    let w = world().await?;
+    set_bot(&w, TOKEN_A).await?;
+    signed_in_subscription(&w).await?;
+    std::fs::create_dir_all(w.h.app.config.data_dir.join("sandboxes/s1"))?;
+    link(&w, &w.alice, 100).await?;
+    intake_on(&w, &w.alice, "s1").await?;
+    let before = w.fake.sent_to(100).len();
+    w.fake.hold_files.store(true, Ordering::SeqCst);
+    w.fake.raw(
+        100,
+        json!({"caption": "First", "photo": [
+            {"file_id": "ph1", "file_unique_id": "u1", "file_size": 3}
+        ]}),
+    );
+    w.fake.wait_file_asked().await?;
+    // Two poll answers (20, then 2): 20 wait behind the photo, the last two do not fit.
+    let bodies: Vec<Value> = (0..22)
+        .map(|n| json!({"text": format!("Task {n}")}))
+        .collect();
+    w.fake.raw_batch(100, &bodies);
+    let told = next_reply(&w, 100, before).await?;
+    assert!(
+        told.starts_with("Too many messages at once"),
+        "told while the photo is still held: {told}"
+    );
+    w.fake.release_files();
+    // The photo's task and 19 more fill the hourly bound of 20; the 20th waiting is refused by it.
+    let sent = w.fake.wait_sent(100, before + 22).await?;
+    let started = sent[before..]
+        .iter()
+        .filter(|r| r.starts_with("Started #"))
+        .count();
+    assert_eq!(started, 20, "{:?}", &sent[before..]);
+    assert!(
+        sent[before..]
+            .iter()
+            .any(|r| r.starts_with("Not started: tools may create at most 20 tasks an hour")),
+        "{:?}",
+        &sent[before..]
+    );
+    let prompts: Vec<String> = prompts_by_number(&w, "s1")
+        .await?
+        .into_iter()
+        .map(|(_, p)| p)
+        .collect();
+    assert!(prompts[0].starts_with("First"), "{prompts:?}");
+    let expected: Vec<String> = (0..19).map(|n| format!("Task {n}")).collect();
+    assert_eq!(prompts[1..], expected[..], "the waiting ones ran in order");
+    Ok(())
+}
+
+/// SPEC-512 TGI-004 (review of task #538): `/start` without a code in a chat whose intake is on
+/// gets the intake help, not "turn on Telegram intake".
+#[tokio::test]
+async fn a_start_with_intake_on_gets_the_intake_help() -> TestResult {
+    let w = world().await?;
+    set_bot(&w, TOKEN_A).await?;
+    link(&w, &w.alice, 100).await?;
+    intake_on(&w, &w.alice, "s1").await?;
+    let before = w.fake.sent_to(100).len();
+    w.fake.message(100, true, "/start");
+    let reply = next_reply(&w, 100, before).await?;
+    assert_eq!(reply, yulius_app::telegram_intake::INTAKE_HELP);
     Ok(())
 }
