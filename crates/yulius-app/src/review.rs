@@ -26,6 +26,7 @@ use crate::context::App;
 use crate::coordination::AgentContext;
 use crate::error::AppResult;
 use crate::model::ReviewRoundRecord;
+use crate::ports::store::ReviewStart;
 use yulius_domain::time::Timestamp;
 
 /// Yulius's reviewer agents.
@@ -80,6 +81,8 @@ pub(crate) struct CutOffReviewer {
     pub(crate) agent_id: String,
     /// The model its round runs.
     pub(crate) model: String,
+    /// When the usage limit cut this reviewer off.
+    pub(crate) cut_off_at: Timestamp,
 }
 
 /// What the new process of a session moved past its reviewer's limit is told (RLM-002), after
@@ -218,7 +221,7 @@ impl App {
         };
         // A reviewer asked for again supersedes one a limit cut off: nothing tells the session
         // to resume that one any more (review round 1 of fix 7).
-        self.forget_cut_off_reviewer(&ctx.task.id);
+        self.forget_cut_off_reviewer(&ctx.task.id).await;
         let store = &self.deps.store;
         let rounds = store.review_rounds(&ctx.task.id, true).await?;
         // The round after the last one that reported: a round reported by two of its
@@ -263,17 +266,7 @@ impl App {
                 return Ok(HookOutput::deny_tool(why));
             }
         }
-        let head = match ctx.task.worktree_path.as_deref() {
-            Some(worktree) => self
-                .deps
-                .git
-                .log(Path::new(worktree), "HEAD", 1)
-                .await
-                .ok()
-                .and_then(|commits| commits.into_iter().next())
-                .map(|commit| commit.sha),
-            None => None,
-        };
+        let head = self.review_head_at_start(ctx).await;
         store
             .insert_review_round(&ReviewRoundRecord {
                 id: self.deps.crypto.new_id(),
@@ -515,13 +508,12 @@ impl App {
 
     /// Forgets `task`'s cut-off reviewer and any move due for it: a new reviewer was asked
     /// for, the session starts afresh, or its round is over (review round 1 of fix 7).
-    pub(crate) fn forget_cut_off_reviewer(&self, task: &yulius_domain::ids::TaskId) {
+    pub(crate) async fn forget_cut_off_reviewer(&self, task: &yulius_domain::ids::TaskId) {
         let Some(runtime) = self.existing_runtime(task) else {
             return;
         };
-        if let Ok(mut cut) = runtime.cut_off_reviewer.lock() {
-            *cut = None;
-        }
+        let mut cut = runtime.cut_off_reviewer.lock().await;
+        *cut = None;
         runtime
             .reviewer_move
             .store(false, std::sync::atomic::Ordering::SeqCst);
@@ -533,15 +525,20 @@ impl App {
         &self,
         task: &yulius_domain::ids::TaskId,
         agent_id: &str,
+        cut_off_at: Option<Timestamp>,
     ) -> Option<CutOffReviewer> {
-        let rounds = self.deps.store.review_rounds(task, true).await.ok()?;
-        rounds
-            .iter()
-            .find(|r| r.ended_at.is_none() && r.subagent_id.as_deref() == Some(agent_id))
-            .map(|round| CutOffReviewer {
-                agent_id: agent_id.to_owned(),
-                model: round.model.clone(),
-            })
+        let cut_off_at = cut_off_at.unwrap_or_else(|| self.now());
+        let model = self
+            .deps
+            .store
+            .unfinished_review_model_at(task, agent_id, cut_off_at)
+            .await
+            .ok()??;
+        Some(CutOffReviewer {
+            agent_id: agent_id.to_owned(),
+            model,
+            cut_off_at,
+        })
     }
 
     /// Whether `task` has a review round that has not reported (a reviewer runs, or was cut
@@ -556,12 +553,19 @@ impl App {
 
     /// The cut-off reviewer `agent_id` of `task` started again or reported: nothing is left to
     /// tell a relaunch, and no move is due for it (RLM-002).
-    fn reviewer_went_on(&self, task: &yulius_domain::ids::TaskId, agent_id: &str) {
+    async fn reviewer_went_on(
+        &self,
+        task: &yulius_domain::ids::TaskId,
+        agent_id: &str,
+        sent: Timestamp,
+    ) {
         let Some(runtime) = self.existing_runtime(task) else {
             return;
         };
-        if let Ok(mut cut) = runtime.cut_off_reviewer.lock()
-            && cut.as_ref().is_some_and(|c| c.agent_id == agent_id)
+        let mut cut = runtime.cut_off_reviewer.lock().await;
+        if cut
+            .as_ref()
+            .is_some_and(|c| c.agent_id == agent_id && sent >= c.cut_off_at)
         {
             *cut = None;
             runtime
@@ -570,31 +574,47 @@ impl App {
         }
     }
 
-    /// A usage limit cut off subagent `agent_id` of `task` (RLM-002). When it is an unfinished
-    /// review round's reviewer, a relaunch tells the session to resume it; and when the limit
-    /// binds the reviewer's model and not the session's (`moves`), the session moves to a
-    /// subscription that can run both: at once when its thread is idle, else at its turn's
-    /// end. A limit that binds the session's own model moves it as any limit does.
-    pub(crate) async fn reviewer_cut_off(
+    /// Injects the transcript watcher's usage-limit observation for an active reviewer in tests.
+    #[cfg(feature = "test-support")]
+    pub async fn cut_off_review_for_test(
         self: &Arc<Self>,
         task: &yulius_domain::ids::TaskId,
-        reviewer: CutOffReviewer,
-        moves: bool,
+        id: &str,
+        at: Option<Timestamp>,
     ) {
+        if let Ok(Some(attempt)) = self.deps.store.live_attempt(task).await {
+            self.subagent_limit(
+                task,
+                &attempt,
+                ModelFamily::Opus,
+                &crate::ports::harness::Observation::SubagentCutOff {
+                    agent_id: id.to_owned(),
+                    at,
+                    scope: yulius_domain::usage::LimitScope::Model(Some(ModelFamily::Fable)),
+                    resets_at: Some(Timestamp(self.now().0 + 86_400_000)),
+                    window_minutes: Some(10_080),
+                    message: "reviewer reached its weekly limit".to_owned(),
+                },
+            )
+            .await;
+        }
+    }
+
+    /// Reads the resume instruction's recipient and the scheduled subscription move in tests.
+    #[cfg(feature = "test-support")]
+    pub async fn review_recovery_for_test(
+        &self,
+        task: &yulius_domain::ids::TaskId,
+    ) -> (Option<String>, bool) {
         let runtime = self.runtime(task);
-        if let Ok(mut cut) = runtime.cut_off_reviewer.lock() {
-            *cut = Some(reviewer);
-        }
-        if !moves {
-            return;
-        }
-        // Due now; the turn's end makes it. A round exists only with hooks (its start and its
-        // subagent are hook events), and Claude Code wakes the session's thread with the
-        // reviewer's failed task notification: that turn's Stop hook decides the move, with the
-        // gate's answer (review rounds 1 and 2 of fix 7).
-        runtime
-            .reviewer_move
-            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let cut = runtime.cut_off_reviewer.lock().await;
+        let reviewer = cut.as_ref().map(|r| r.agent_id.clone());
+        (
+            reviewer,
+            runtime
+                .reviewer_move
+                .load(std::sync::atomic::Ordering::SeqCst),
+        )
     }
 
     /// Where `task`'s session moves for its cut-off reviewer (RLM-002): a subscription that can
@@ -607,7 +627,7 @@ impl App {
         current: Option<yulius_domain::ids::AccountId>,
     ) -> ReviewerMove {
         let runtime = self.runtime(&task.id);
-        let Some(reviewer) = runtime.cut_off_reviewer.lock().ok().and_then(|c| c.clone()) else {
+        let Some(reviewer) = runtime.cut_off_reviewer.lock().await.clone() else {
             return ReviewerMove::Nothing;
         };
         if self.switch_cooling(&task.id) {
@@ -620,9 +640,7 @@ impl App {
         if let Some(account) = yulius_domain::rotation::move_to_also_run(&input, family) {
             return ReviewerMove::To(account);
         }
-        if let Ok(mut cut) = runtime.cut_off_reviewer.lock() {
-            *cut = None;
-        }
+        *runtime.cut_off_reviewer.lock().await = None;
         let paste = format!("\x1b[200~{}\x1b[201~", reviewer_nowhere(&reviewer));
         let app = Arc::clone(self);
         let task = task.clone();
@@ -658,44 +676,80 @@ impl App {
         subagent: &str,
         model: Option<&str>,
         cut_off: bool,
+        at: Option<Timestamp>,
     ) {
         if let Err(err) = self
             .deps
             .store
-            .note_review_subagent(task, subagent, model, cut_off)
+            .note_review_subagent(task, subagent, model, cut_off, at)
             .await
         {
             tracing::warn!(error = %err, task = %task, "review round not noted");
         }
     }
 
-    /// `SubagentStart`: links a reviewer's subagent to the round that started it. A resumed
-    /// subagent (the same id) changes nothing, but that it was resumed (RLM-002).
-    pub(crate) async fn review_subagent_started(&self, ctx: &AgentContext, input: &HookInput) {
+    /// The worktree head observed at the start of this review.
+    async fn review_head_at_start(&self, ctx: &AgentContext) -> Option<String> {
+        let worktree = Path::new(ctx.task.worktree_path.as_deref()?);
+        crate::race::reached(crate::race::Point::ReviewHead, worktree);
+        self.deps
+            .git
+            .log(worktree, "HEAD", 1)
+            .await
+            .ok()?
+            .into_iter()
+            .next()
+            .map(|c| c.sha)
+    }
+
+    /// Links a newly launched reviewer, or opens its next round when it continues after a report.
+    pub(crate) async fn review_subagent_started(
+        &self,
+        ctx: &AgentContext,
+        input: &HookInput,
+        at: Timestamp,
+    ) {
         let (Some(agent), Some(id)) = (input.agent_type.as_deref(), input.agent_id.as_deref())
         else {
             return;
         };
-        self.reviewer_went_on(&ctx.task.id, id);
         if !REVIEWERS.contains(&agent) {
             return;
         }
-        if let Err(err) = self
-            .deps
-            .store
-            .link_review_subagent(&ctx.task.id, &[agent], id)
+        let store = &self.deps.store;
+        let continuation_id = self.deps.crypto.new_id();
+        let result = match store
+            .start_review_subagent(&ctx.task.id, agent, id, &continuation_id, at)
             .await
         {
-            tracing::warn!(error = %err, task = %ctx.task.id, "review subagent not linked");
+            Ok(ReviewStart::Ignored) => return,
+            Ok(ReviewStart::Active) => {
+                self.reviewer_went_on(&ctx.task.id, id, at).await;
+                return;
+            }
+            Ok(ReviewStart::Continued) => {
+                let Some(head) = self.review_head_at_start(ctx).await else {
+                    return;
+                };
+                store.set_review_round_head(&continuation_id, &head).await
+            }
+            Err(err) => Err(err),
+        };
+        if let Err(err) = result {
+            tracing::warn!(error = %err, task = %ctx.task.id, "review subagent start not recorded");
         }
     }
 
     /// `SubagentStop`: a reviewer's report ends its round, with the verdict its last line says.
-    pub(crate) async fn review_subagent_stopped(&self, ctx: &AgentContext, input: &HookInput) {
+    pub(crate) async fn review_subagent_stopped(
+        &self,
+        ctx: &AgentContext,
+        input: &HookInput,
+        at: Timestamp,
+    ) {
         let Some(id) = input.agent_id.as_deref() else {
             return;
         };
-        self.reviewer_went_on(&ctx.task.id, id);
         if !input
             .agent_type
             .as_deref()
@@ -708,13 +762,15 @@ impl App {
             .as_deref()
             .and_then(verdict_of)
             .map(|verdict| verdict.as_str());
-        if let Err(err) = self
+        match self
             .deps
             .store
-            .end_review_round(&ctx.task.id, id, self.now(), verdict, None)
+            .end_review_round(&ctx.task.id, id, at, verdict, None)
             .await
         {
-            tracing::warn!(error = %err, task = %ctx.task.id, "review round not ended");
+            Ok(true) => self.reviewer_went_on(&ctx.task.id, id, at).await,
+            Ok(false) => {}
+            Err(err) => tracing::warn!(error = %err, task = %ctx.task.id, "review round not ended"),
         }
     }
 
@@ -1208,6 +1264,7 @@ mod tests {
     fn a_cut_off_reviewer_is_told_in_whole_sentences() {
         let reviewer = CutOffReviewer {
             agent_id: "arev1".to_owned(),
+            cut_off_at: Timestamp(0),
             model: "claude-fable-5-2".to_owned(),
         };
         let resume = reviewer_resume_prompt(Some("Gate says: fix it."), &reviewer);
