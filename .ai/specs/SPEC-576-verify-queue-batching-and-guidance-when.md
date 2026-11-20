@@ -1,6 +1,6 @@
 ---
 yulius-task: 29105450-6c66-4146-97e3-5061f2033fc2
-status: in-progress
+status: done
 ---
 
 # SPEC-576 Merge queue batching and agent guidance
@@ -29,7 +29,8 @@ The requester reports that quartio-v2 task #331, PR #1481, named checked head `b
 - [x] Report the landed commit and verify agent guidance
 - [x] Preserve immediate receipts and reject mismatched PR observations
 - [x] Preserve the next plan step when a merge observation is stale
-- [ ] Obtain independent approval for delivery to dev
+- [x] Obtain independent approval for delivery to dev
+- [x] Align the watcher fixture with its synchronized plan
 
 ## Acceptance criteria
 
@@ -56,3 +57,8 @@ Use the existing protected merge operation, candidate CI verdict and dependency 
 - Round one reviewed `54662c4ca` and requested three changes. With GitHub returning #2 for #1, the task's status displayed #2's landing and the Git overview could advance the stored delivery. With a failed closed-PR read, an immediate green merge returned no receipt. Both acceptance tests failed on the reviewed code. Temporarily reversing peer display made the four-head test fail with `#3, #5, #4` in place of `#4, #5, #3`. The probe was removed.
 - After those fixes, all 91 queue, wait, watcher and post-merge evidence tests passed again, including the extended four-head landing through PR #2's peer list. The separate immediate-merge test `delivery::a_task_of_several_slices_merges_each_with_the_rest_ahead` also passed.
 - Round two reviewed `a79fad9f0`. A stale open PR read after a locally recorded partial merge withheld the unconfirmed branch and SHA but dropped the known next step from the live watcher notification. The regression at `f1da89749` failed on the missing step. After restoring it, all 92 focused tests passed in nextest run `a4fdd6f6-24f9-4f14-a23c-c7e1e0ff806c`.
+- The independent third-round review approved `7c5b1916c9360862b8d9fca4087aaf78c0b4af33` and reran ten focused integration tests. `scripts/dev quick` passed. `scripts/dev security` reported that Vidoc was disabled in Yulius for the project or instance. It scanned no files.
+- The unmutated third-round baseline exposed two competing titles in the watcher fixture. The fixture stored `Step 1` as its unfinished step, while its spec named it `Verify`. When the regular plan sync ran, the watcher reported `Verify` and the assertion expecting `Step 1` failed. Commit `95a332d8a` aligned the stored titles and assertion with the spec, and the live watcher test passed.
+- Mutation checks for the first review fixes against `54662c4ca` reported 17 listed, 4 caught, 0 missed, 0 timed out, 13 unviable and 0 not reached.
+- The full initial mutation check at `54662c4ca` reported 27 listed, 11 caught, 0 missed, 0 timed out, 16 unviable and 0 not reached. After the fixture correction, nextest run `e196c224-07dc-4967-80c5-da1f0f268923` passed all 92 focused tests.
+- The watcher fix and synchronized fixture at `95a332d8a` passed the unmutated baseline. The mutation check against the second-round head `a79fad9f0` reported 2 listed, 2 caught, 0 missed, 0 timed out, 0 unviable and 0 not reached.
