@@ -205,15 +205,27 @@ impl Harness {
         }
     }
 
-    /// The agent a model given without one implies: Antigravity for a Gemini model, else Claude
-    /// Code (SPEC-505 RND-001).
+    /// The harness identified by a provider-specific model prefix. Unqualified aliases can be
+    /// interpreted by the explicitly selected harness.
+    #[must_use]
+    pub fn for_model_prefix(model: &str) -> Option<Self> {
+        let model = model.trim().to_ascii_lowercase();
+        if model.starts_with("gpt-") {
+            Some(Self::Codex)
+        } else if model.starts_with("gemini-") {
+            Some(Self::Antigravity)
+        } else if model.starts_with("claude") {
+            Some(Self::ClaudeCode)
+        } else {
+            None
+        }
+    }
+
+    /// The agent a model given without a harness implies. Unqualified aliases default to Claude
+    /// Code (SPEC-505, SPEC-560).
     #[must_use]
     pub fn implied_by(model: &str) -> Self {
-        if model.trim().to_ascii_lowercase().starts_with("gemini-") {
-            Self::Antigravity
-        } else {
-            Self::ClaudeCode
-        }
+        Self::for_model_prefix(model).unwrap_or(Self::ClaudeCode)
     }
 
     /// The provider whose accounts this harness uses.

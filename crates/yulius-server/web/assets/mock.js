@@ -1513,10 +1513,9 @@ route('POST', `/api/sandboxes/${ID}/tasks`, async ({ db, p, body }) => {
   if (body.harness && !['auto', 'claude', 'codex', 'antigravity'].includes(body.harness)) fail(422, 'invalid', 'harness must be claude, codex or antigravity');
   // No agent (or `auto`): the one the model implies, else drawn uniformly across harnesses with
   // non-exhausted subscriptions (SPEC-520 RHM-001..003).
-  const drawn = (!body.harness || body.harness === 'auto') && !body.model;
-  const harness = drawn ? drawHarness(db) : body.harness && body.harness !== 'auto' ? body.harness : impliedHarness(body.model);
-  // Antigravity runs Google's Gemini models only, as on the server (SPEC-505, SPEC-519).
-  if (harness === 'antigravity' && body.model && !body.model.startsWith('gemini-')) fail(422, 'invalid', 'an Antigravity task takes a Gemini model (such as gemini-4-neon)');
+  const model = body.model?.trim();
+  const drawn = (!body.harness || body.harness === 'auto') && !model;
+  const harness = drawn ? drawHarness(db) : chosenHarness(body.harness, model);
   if (body.mode && !['goal', 'prompt', 'auto'].includes(body.mode)) fail(422, 'invalid', 'mode must be goal, prompt or auto');
   const visible = db.workflows.filter((w) => w.scope === 'instance' || w.sandbox === sandbox.id);
   if (body.workflow_id && body.workflow_id !== 'auto' && !visible.some((w) => w.id === body.workflow_id)) fail(422, 'invalid', `unknown workflow \`${body.workflow_id}\``);
@@ -1561,7 +1560,7 @@ route('POST', `/api/sandboxes/${ID}/tasks`, async ({ db, p, body }) => {
     origin: 'ui', created_by: { login: db.me.user.login, id: db.me.user.id }, created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
     archived: false, account_label: null,
     stepsList: wf ? wf.steps.map((title2, i) => ({ id: `${id}-s${i + 1}`, ordinal: i + 1, title: title2, status: 'pending', note: '', updated_by: 'workflow', updated_at: new Date().toISOString() })) : [],
-    ...taskModelSettings(harness, body), prompt: body.prompt,
+    ...taskModelSettings(harness, { model, effort: body.effort }), prompt: body.prompt,
     delivery: null, mode: choice ? choice.mode : body.mode || 'goal', auto: choice ? choice.auto : null,
     supertask: body.supertask === true,
   };
@@ -1867,7 +1866,20 @@ function drawHarness(db) {
   const roll = db.harnessRolls && db.harnessRolls.length ? db.harnessRolls.shift() : Math.floor(Math.random() * candidates.length);
   return candidates[roll % candidates.length];
 }
-const impliedHarness = (model) => (String(model || '').trim().toLowerCase().startsWith('gemini-') ? 'antigravity' : 'claude');
+function harnessForModelPrefix(model) {
+  const id = String(model || '').trim().toLowerCase();
+  if (id.startsWith('gpt-')) return 'codex';
+  if (id.startsWith('gemini-')) return 'antigravity';
+  if (id.startsWith('claude')) return 'claude';
+  return null;
+}
+function chosenHarness(named, model) {
+  const owner = harnessForModelPrefix(model);
+  const harness = named && named !== 'auto' ? named : owner || 'claude';
+  if (harness === 'antigravity' && model && owner !== harness) fail(422, 'invalid', 'an Antigravity task takes a Gemini model (such as gemini-4-neon)');
+  if (owner && owner !== harness) fail(422, 'invalid', `Choose ${agentOfHarness(owner).cli} for this model. This task uses ${agentOfHarness(harness).cli}.`);
+  return harness;
+}
 // An automation without a named agent (`auto`) draws one for each run (SPEC-520 RHM-005).
 const automationHarness = (db, a) => (!a.harness || a.harness === 'auto' ? { harness: drawHarness(db), harness_choice: 'random' } : { harness: a.harness, harness_choice: 'chosen' });
 // A task runs on subscriptions of its harness's provider only (SPEC-503 CDX-013, SPEC-505).
@@ -3921,15 +3933,16 @@ route('POST', `/api/sandboxes/${ID}/superagent/requests/${ID}`, async ({ db, p, 
   const id = `tsk_${target.id.slice(3)}_${number}`;
   const opts = request.view.options || {};
   const prepared = opts.prepared === true;
-  const drawn = (!opts.harness || opts.harness === 'auto') && !opts.model;
-  const harness = drawn ? drawHarness(db) : opts.harness && opts.harness !== 'auto' ? opts.harness : impliedHarness(opts.model);
+  const model = opts.model?.trim();
+  const drawn = (!opts.harness || opts.harness === 'auto') && !model;
+  const harness = drawn ? drawHarness(db) : chosenHarness(opts.harness, model);
   const task = {
     id, sandbox_id: target.id, number, title, harness, harness_choice: drawn ? 'random' : 'chosen',
     status: prepared ? 'prepared' : 'queued', activity: null,
     branch: `feat/${number}-${title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40)}`,
     origin: 'agent', created_by: { login: db.me.user.login, id: db.me.user.id }, created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
     archived: false, account_label: null, stepsList: [],
-    ...taskModelSettings(harness, opts), prompt: request.view.prompt,
+    ...taskModelSettings(harness, { model, effort: opts.effort }), prompt: request.view.prompt,
     delivery: null, mode: request.view.options.mode || 'goal', auto: null, supertask: false,
   };
   db.tasks.push(task);
