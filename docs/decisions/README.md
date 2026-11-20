@@ -422,6 +422,7 @@ If a reservation skips past all available slots, land an empty extension first w
 <!-- ADR 0405 -->
 - [0406](0406-a-planned-install-gives-ci-on-its-last-job-a-short-grace-period.md) A planned install gives CI on its last job a short grace period.
 <!-- ADR 0406 -->
+- [0407](0407-keep-current-pr-observations-across-incomplete-overviews.md): Keep current PR observations across incomplete Git overviews
 <!-- ADR 0407 -->
 <!-- ADR 0408 -->
 <!-- ADR 0409 -->

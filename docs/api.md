@@ -651,7 +651,7 @@ the agents' delivery workflow and other clients; no page of the web UI calls the
 
 | Method | Path | Level | Body → Response |
 | --- | --- | --- | --- |
-| GET | `/api/sandboxes/{sid}/git` | read | → `GitOverview` |
+| GET | `/api/sandboxes/{sid}/git` | read | → `GitOverview`. HTTP 429 when 30 overlapping reads already hold publication slots in this sandbox. Home and MCP task lists continue to read available PR observations. |
 | GET | `/api/tasks/{tid}/delivery` | read | → `Delivery`. In a playground the available action is the local squash (`merge`). Its local prerequisites appear in `blocked`, and a merged task has no further actions. |
 | GET | `/api/tasks/{tid}/delivery/evidence/{merged_sha}` | read | → `MergeEvidence`. Task, PR, branch, accepted head, landed SHA and up to 50 newest CI, CD and profile-command attempts with individual check states. When truncated, pass `?before=<next_before>` for the next page, including archived attempts. Add `?run_id=<id>` to pin one attempt. A missing task landing or requested attempt returns 404. Task agents use `delivery_status` with optional `merged_sha`, `before` or `run_id` to read the same evidence with their task credential. |
 | GET | `/api/tasks/{tid}/changes` | read | → `TaskChanges`: the task worktree (committed, uncommitted and untracked work; symlinks listed, never followed) against the merge base with `origin/<integration>`; 409 when the task has not started (no worktree yet) or its worktree is gone (the Git overview's `worktree`) |

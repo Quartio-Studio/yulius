@@ -2095,6 +2095,8 @@ resume waits `queued` with its prompt. A queued task's summary carries `queue_re
 limit or an update), and `GET /api/capacity` counts working, idle, parked and queued sessions for
 the Capacity card.
 
+Home and MCP apply Git overview results to each task in read order. A failed or truncated list preserves a known open PR, including one reported through the owner’s token. A direct closure or complete list can clear it. Overlapping requests publish their observations under one lock. [ADR-0407](decisions/0407-keep-current-pr-observations-across-incomplete-overviews.md)
+
 When a successor waits for its predecessor to be Done (`after_task` or `#N done`), Yulius
 checks the parked predecessor’s declared work, goal and outstanding owner requests. It verifies
 the recorded PR and current open PRs on the task branch through the same lookup used
