@@ -50,7 +50,7 @@ The inventory at dev 56f08db7f contained 20 issues. #1490 belongs to task #540. 
 - [x] Verify the landed cold-screen fixture against the failed CI shard
 - [x] Reproduce the parked terminal Reply timeout after Resume
 - [x] Verify Resume and Reply in Chromium against the reproduced failure
-- [ ] Obtain independent approval for the parked terminal change if needed
+- [x] Obtain independent approval for the parked terminal change if needed
 - [ ] Verify the independent fixes and reconcile the remaining issues
 
 ## Acceptance criteria
@@ -104,3 +104,4 @@ The later reports #1498 and #1502 cover the same parking fixture repaired in PR 
 - A second park arriving after 6.5 seconds reproduced the five-second visibility failure. A 15-second wait for the parked attention bar synchronized the fixture. All nine Chromium scenarios in the parking file passed, including delivery of the reply text to the mock session. The original trace lacks event timestamps to attribute its delay to one component.
 - With the second park held past the deadline in a temporary probe, the test failed at the parked-bar wait before clicking Reply. The fixture was restored after the probe.
 - The reviewer found that a suffix comparison also accepted a reply with an extra prefix. With ANSI styling removed, a comparison of the complete prompt line rejected the deliberately altered message. The product mock was restored after this probe.
+- Round two approved 91146b0ac. All nine Chromium parking scenarios passed with the whole-line comparison. Quick checks passed. The mutation command found no changed Rust code. Vidoc was disabled.
