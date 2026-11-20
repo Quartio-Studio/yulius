@@ -2556,6 +2556,14 @@ async fn four_heads_that_pass_during_a_candidate_join_the_next_one_in_arm_order(
         .find(|r| r.id != first.id)
         .ok_or("next candidate")?;
     assert_eq!(next.reference, CiRef::Train(vec![4, 2, 5, 3]));
+    assert_eq!(run_candidate(&f, app, &next.id).await?, RunState::Passed);
+    f.decide_until(app, || async { f.merged(app, 3).await })
+        .await?;
+    let state = f.wait(2, &worktrees[1]).await?;
+    let text = state["merge_outcome"]
+        .as_str()
+        .ok_or("multi-member verdict")?;
+    assert!(text.contains("in a merge train with #4, #5, #3."), "{text}");
     Ok(())
 }
 
