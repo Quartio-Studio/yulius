@@ -26,6 +26,7 @@ use crate::context::App;
 use crate::coordination::AgentContext;
 use crate::error::AppResult;
 use crate::model::ReviewRoundRecord;
+use crate::ports::store::ReviewStart;
 use yulius_domain::time::Timestamp;
 
 /// Yulius's reviewer agents.
@@ -693,20 +694,16 @@ impl App {
 
     /// The worktree head observed at the start of this review.
     async fn review_head_at_start(&self, ctx: &AgentContext) -> Option<String> {
-        if let Some(path) = ctx.task.worktree_path.as_deref() {
-            crate::race::reached(crate::race::Point::ReviewHead, Path::new(path));
-        }
-        match ctx.task.worktree_path.as_deref() {
-            Some(worktree) => self
-                .deps
-                .git
-                .log(Path::new(worktree), "HEAD", 1)
-                .await
-                .ok()
-                .and_then(|commits| commits.into_iter().next())
-                .map(|commit| commit.sha),
-            None => None,
-        }
+        let worktree = Path::new(ctx.task.worktree_path.as_deref()?);
+        crate::race::reached(crate::race::Point::ReviewHead, worktree);
+        self.deps
+            .git
+            .log(worktree, "HEAD", 1)
+            .await
+            .ok()?
+            .into_iter()
+            .next()
+            .map(|c| c.sha)
     }
 
     /// Links a newly launched reviewer, or opens its next round when it continues after a report.
@@ -720,25 +717,25 @@ impl App {
         else {
             return;
         };
-        self.reviewer_went_on(&ctx.task.id, id);
         if !REVIEWERS.contains(&agent) {
             return;
         }
         let store = &self.deps.store;
-        let result = match store.link_review_subagent(&ctx.task.id, &[agent], id).await {
-            Ok(true) => return,
-            Ok(false) => {
-                let head = self.review_head_at_start(ctx).await;
-                store
-                    .continue_review_round(
-                        &ctx.task.id,
-                        agent,
-                        id,
-                        self.deps.crypto.new_id(),
-                        head,
-                        at,
-                    )
-                    .await
+        let continuation_id = self.deps.crypto.new_id();
+        let result = match store
+            .start_review_subagent(&ctx.task.id, agent, id, &continuation_id, at)
+            .await
+        {
+            Ok(ReviewStart::Ignored) => return,
+            Ok(ReviewStart::Active) => {
+                self.reviewer_went_on(&ctx.task.id, id);
+                return;
+            }
+            Ok(ReviewStart::Continued) => {
+                let Some(head) = self.review_head_at_start(ctx).await else {
+                    return;
+                };
+                store.set_review_round_head(&continuation_id, &head).await
             }
             Err(err) => Err(err),
         };
@@ -757,7 +754,6 @@ impl App {
         let Some(id) = input.agent_id.as_deref() else {
             return;
         };
-        self.reviewer_went_on(&ctx.task.id, id);
         if !input
             .agent_type
             .as_deref()
@@ -770,13 +766,15 @@ impl App {
             .as_deref()
             .and_then(verdict_of)
             .map(|verdict| verdict.as_str());
-        if let Err(err) = self
+        match self
             .deps
             .store
             .end_review_round(&ctx.task.id, id, at, verdict, None)
             .await
         {
-            tracing::warn!(error = %err, task = %ctx.task.id, "review round not ended");
+            Ok(true) => self.reviewer_went_on(&ctx.task.id, id),
+            Ok(false) => {}
+            Err(err) => tracing::warn!(error = %err, task = %ctx.task.id, "review round not ended"),
         }
     }
 

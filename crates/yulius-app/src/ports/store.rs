@@ -709,6 +709,17 @@ pub trait AccountStore: Send + Sync {
     -> AppResult<Vec<crate::model::AccountTokens>>;
 }
 
+/// The round a reviewer start matched in the task's current pull request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReviewStart {
+    /// Unknown, already merged, or sent before the current round.
+    Ignored,
+    /// The subagent linked to its launch or resumed an unfinished round.
+    Active,
+    /// A new round was reserved for a previously reported reviewer.
+    Continued,
+}
+
 /// Steps, messages, scope claims and record numbers.
 #[async_trait]
 pub trait CoordinationStore: Send + Sync {
@@ -760,25 +771,19 @@ pub trait CoordinationStore: Send + Sync {
         task: &TaskId,
         open_only: bool,
     ) -> AppResult<Vec<ReviewRoundRecord>>;
-    /// Gives the newest open round of `task` that has no subagent yet, and runs as one of
-    /// `agents`, its subagent id; `false` when there is none or the id is known already.
-    async fn link_review_subagent(
-        &self,
-        task: &TaskId,
-        agents: &[&str],
-        subagent: &str,
-    ) -> AppResult<bool>;
-    /// Opens the next round of the same pull request when the latest round run by this
-    /// reviewer had already reported at its new start. Repeats while unfinished change nothing.
-    async fn continue_review_round(
+    /// Links a new reviewer, resumes an unfinished round, or reserves `continuation_id`
+    /// for a reviewer that previously reported. Delayed events cannot change a later round.
+    async fn start_review_subagent(
         &self,
         task: &TaskId,
         agent: &str,
         subagent: &str,
-        id: String,
-        head: Option<String>,
+        continuation_id: &str,
         at: Timestamp,
-    ) -> AppResult<()>;
+    ) -> AppResult<ReviewStart>;
+    /// Attaches the head read at a continued reviewer's start to the round it reserved,
+    /// while its pull request is still open.
+    async fn set_review_round_head(&self, id: &str, head: &str) -> AppResult<()>;
     /// The review rounds of the pull requests of `sandboxes` merged in `[from, to)` (either end
     /// open when `None`), the newest merges first, at most a bound's worth (SPEC-493 REV-006).
     async fn merged_review_rounds(

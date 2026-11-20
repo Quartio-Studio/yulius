@@ -26,7 +26,7 @@ On dev `645eff207`, repeating the completion update moves the end time, and appr
 - [x] Reproduce lost verdicts on current dev and specify report identity
 - [x] Prove replay and continued review analytics with failing regressions
 - [x] Preserve each distinct report and document round accounting
-- [ ] Protect cut-off recovery and accept reports during a slow head lookup
+- [x] Protect cut-off recovery and accept reports during a slow head lookup
 - [ ] Verify the fix and obtain independent approval for delivery
 
 ## Acceptance criteria
@@ -54,3 +54,4 @@ Use the start after a report as the round boundary. Comparing verdicts or report
 - The change security scan reported Vidoc disabled for the project or instance. It scanned no files.
 - All 29 tests in `cargo test --locked -p yulius --test main review_rounds::` passed, including eight subprocess cases for cut-off reviewers, moves and resumption.
 - Round 1 requested changes on `3fae70d80`. Two new deterministic regressions failed on its implementation. Replaying the older start and stop each erased the continued reviewer's pending resume and move. Delivering the stop while Git was held left round 2's verdict empty. Both findings concern this change.
+- Round 1 findings were fixed in the same branch. The store reserves the continued row before Git I/O and the accepted start or stop controls recovery. The held-Git test retained the approval and the correct head. Both stale events preserved recovery while a genuine resume and report cleared it. Nextest ran all 31 `review_rounds::` tests with zero failures (run `0295f944-aa01-4e3b-9649-de325632e6a4`).

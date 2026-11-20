@@ -7,6 +7,7 @@ use yulius_app::model::{
     MessageRecord, RecordReservation, ReviewRoundRecord, ScopeClaimRecord, StepRecord, StepTiming,
 };
 use yulius_app::ports::store::CoordinationStore;
+use yulius_app::ports::store::ReviewStart;
 use yulius_domain::ids::{MessageId, SandboxId, StepId, TaskId, UserId};
 use yulius_domain::time::Timestamp;
 
@@ -361,72 +362,82 @@ impl CoordinationStore for SqliteStore {
         .await
     }
 
-    async fn link_review_subagent(
-        &self,
-        task: &TaskId,
-        agents: &[&str],
-        subagent: &str,
-    ) -> AppResult<bool> {
-        let t = task.as_str().to_owned();
-        let agents: Vec<String> = agents.iter().map(|a| (*a).to_owned()).collect();
-        let s = subagent.to_owned();
-        self.call(move |c| {
-            let known: bool = c
-                .query_row(
-                    "SELECT EXISTS(SELECT 1 FROM review_rounds WHERE task_id = ?1 AND subagent_id = ?2)",
-                    params![t, s],
-                    |r| r.get(0),
-                )
-                .map_err(db)?;
-            if known {
-                return Ok(false);
-            }
-            let open: Option<(String, String)> = c
-                .query_row(
-                    "SELECT id, agent FROM review_rounds WHERE task_id = ?1 AND merged_at IS NULL \
-                     AND subagent_id IS NULL ORDER BY started_at DESC, rowid DESC LIMIT 1",
-                    params![t],
-                    |r| Ok((r.get(0)?, r.get(1)?)),
-                )
-                .optional()
-                .map_err(db)?;
-            let Some((id, _agent)) = open.filter(|(_, agent)| agents.contains(agent)) else {
-                return Ok(false);
-            };
-            c.execute(
-                "UPDATE review_rounds SET subagent_id = ?1 WHERE id = ?2",
-                params![s, id],
-            )
-            .map_err(db)?;
-            Ok(true)
-        })
-        .await
-    }
-
-    async fn continue_review_round(
+    async fn start_review_subagent(
         &self,
         task: &TaskId,
         agent: &str,
         subagent: &str,
-        id: String,
-        head: Option<String>,
+        continuation_id: &str,
         at: Timestamp,
-    ) -> AppResult<()> {
-        let task = task.as_str().to_owned();
-        let (agent, subagent) = (agent.to_owned(), subagent.to_owned());
+    ) -> AppResult<ReviewStart> {
+        let (task, agent, subagent, id) = (
+            task.as_str().to_owned(),
+            agent.to_owned(),
+            subagent.to_owned(),
+            continuation_id.to_owned(),
+        );
         self.call(move |c| {
-            // Test the last run and allocate the PR's next round in the same write. Two
-            // deliveries of the start can open only one round, and a merge closes eligibility.
+            let tx = c.transaction().map_err(db)?;
+            let previous: Option<(i64, Option<i64>, bool)> = tx
+                .query_row(
+                    "SELECT rowid, ended_at, agent = ?3 AND merged_at IS NULL \
+                     AND COALESCE(ended_at, started_at) <= ?4 FROM review_rounds \
+                     WHERE task_id = ?1 AND subagent_id = ?2 ORDER BY rowid DESC LIMIT 1",
+                    params![task, subagent, agent, at.0],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                )
+                .optional()
+                .map_err(db)?;
+            let start = match previous {
+                Some((_, _, false)) => ReviewStart::Ignored,
+                Some((_, None, true)) => ReviewStart::Active,
+                Some((row, Some(_), true)) => {
+                    // Reserve before reading Git. A stop can settle this row even when
+                    // the hook client timed out waiting for its head.
+                    tx.execute(
+                        "INSERT INTO review_rounds (id, task_id, round, agent, model, \
+                         reason, subagent_id, model_answered, started_at) \
+                         SELECT ?1, task_id, (SELECT MAX(round) + 1 FROM review_rounds \
+                             WHERE task_id = ?2 AND merged_at IS NULL \
+                             AND ended_at IS NOT NULL), agent, model, 'kept', \
+                             subagent_id, model_answered, ?3 \
+                         FROM review_rounds WHERE rowid = ?4",
+                        params![id, task, at.0, row],
+                    )
+                    .map_err(db)?;
+                    ReviewStart::Continued
+                }
+                None => {
+                    let linked = tx
+                        .execute(
+                            "UPDATE review_rounds SET subagent_id = ?1 WHERE rowid = (\
+                             SELECT rowid FROM review_rounds WHERE task_id = ?2 \
+                             AND merged_at IS NULL AND subagent_id IS NULL \
+                             ORDER BY started_at DESC, rowid DESC LIMIT 1) \
+                             AND agent = ?3 AND started_at <= ?4",
+                            params![subagent, task, agent, at.0],
+                        )
+                        .map_err(db)?;
+                    if linked == 1 {
+                        ReviewStart::Active
+                    } else {
+                        ReviewStart::Ignored
+                    }
+                }
+            };
+            tx.commit().map_err(db)?;
+            Ok(start)
+        })
+        .await
+    }
+
+    async fn set_review_round_head(&self, id: &str, head: &str) -> AppResult<()> {
+        let (id, head) = (id.to_owned(), head.to_owned());
+        self.call(move |c| {
             c.execute(
-                "INSERT INTO review_rounds (id, task_id, round, head, agent, model, reason, \
-                 subagent_id, model_answered, started_at) \
-                 SELECT ?1, task_id, (SELECT MAX(round) + 1 FROM review_rounds \
-                     WHERE task_id = ?2 AND merged_at IS NULL AND ended_at IS NOT NULL), \
-                     ?3, agent, model, 'kept', subagent_id, model_answered, ?4 FROM review_rounds \
-                 WHERE rowid = (SELECT MAX(rowid) FROM review_rounds \
-                     WHERE task_id = ?2 AND subagent_id = ?5 AND merged_at IS NULL) \
-                 AND agent = ?6 AND ended_at <= ?4",
-                params![id, task, head, at.0, subagent, agent],
+                "UPDATE review_rounds SET head = ?1 WHERE id = ?2 \
+                 AND merged_at IS NULL AND head IS NULL",
+                params![head, id],
             )
             .map_err(db)?;
             Ok(())
