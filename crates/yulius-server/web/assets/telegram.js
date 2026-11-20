@@ -5,6 +5,7 @@
 
 import { h, icon, field, setChildren, toast, errorToast, confirmDialog } from './dom.js';
 import { relLong } from './format.js';
+import { allows } from './status.js';
 
 /** How often a shown code asks whether the chat was linked meanwhile. */
 const LINK_CHECK_MS = 3000;
@@ -181,6 +182,34 @@ export function telegramLink(ctx) {
     }
   }
 
+  // SPEC-512 TGI-001: replies and new tasks from the chat, off by default, with the project a
+  // new message starts its task in (one the person may work in).
+  async function saveIntake(enabled, sandboxId, revert) {
+    try {
+      state = await ctx.api.put('/api/me/telegram/intake', { enabled, sandbox_id: sandboxId || null });
+      toast(enabled ? 'Your Telegram chat now answers tasks and starts new ones.' : 'Your Telegram chat only gets notifications now.', { kind: 'ok' });
+      render();
+    } catch (error) {
+      revert();
+      errorToast(error, 'Couldn’t save Telegram intake');
+    }
+  }
+
+  function intakeFieldset() {
+    const writable = (ctx.store.state.sandboxes || []).filter((sb) => allows(sb.access, 'write'));
+    const intake = state.intake || { enabled: false, sandbox_id: null };
+    const current = intake.sandbox_id || (writable[0] && writable[0].id) || '';
+    const select = h('select', { class: 'input', id: 'telegram-intake-project', disabled: writable.length === 0 },
+      writable.map((sb) => h('option', { value: sb.id, selected: sb.id === current }, sb.name)));
+    const on = h('input', { type: 'checkbox', id: 'telegram-intake', checked: Boolean(intake.enabled), disabled: writable.length === 0 });
+    on.addEventListener('change', () => saveIntake(on.checked, select.value, () => { on.checked = !on.checked; }));
+    select.addEventListener('change', () => { if (on.checked) saveIntake(true, select.value, () => { select.value = intake.sandbox_id || ''; }); });
+    return h('fieldset', { class: 'telegram-choices' }, h('legend', { class: 'muted xs' }, 'Work from this chat'),
+      h('label', { class: 'telegram-choice' }, on, h('span', null, 'Answer tasks and start new ones', h('span', { class: 'muted xs' }, ' · reply to a notification to answer it; send a message, photo or file to start a task; /status, /task'))),
+      h('div', { class: 'field' }, h('label', { class: 'field-label', for: 'telegram-intake-project' }, 'New messages start tasks in'), select),
+      h('p', { class: 'muted xs' }, writable.length ? 'Off by default. Tasks start as you, with your access; a reply follows the owner rule.' : 'You need write access to a project to start tasks from Telegram.'));
+  }
+
   async function choose(key, checked, input) {
     const choices = { ...state.choices, [key]: checked };
     try {
@@ -206,6 +235,7 @@ export function telegramLink(ctx) {
           h('span', { class: 'jev-status jev-on' }, icon('check', { size: 14 }), h('span', null, `Linked to @${state.bot_username}${state.linked_at ? ` ${relLong(state.linked_at)}` : ''}`)),
           h('button', { type: 'button', class: 'btn btn-sm', onClick: unlink }, 'Unlink')),
         h('fieldset', { class: 'telegram-choices' }, h('legend', { class: 'muted xs' }, 'Send me'), choices),
+        intakeFieldset(),
         h('p', { class: 'muted xs' }, `Only tasks of sandboxes you can see. At most 5 messages a minute; the rest come as one summary. ${PRIVACY}`));
       return;
     }

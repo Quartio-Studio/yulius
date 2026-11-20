@@ -5599,8 +5599,15 @@ function telegramBotView(db) {
 function myTelegramView(db) {
   const t = db.telegram;
   const linked = Boolean(t.bot && t.linkedAt);
-  return { available: Boolean(t.bot), bot_username: t.bot, linked, linked_at: linked ? t.linkedAt : null, choices: linked ? { ...t.choices } : { needs_you: true, done: false, failed: false, account: false }, account_choice: isAdmin(db) };
+  return { available: Boolean(t.bot), bot_username: t.bot, linked, linked_at: linked ? t.linkedAt : null, choices: linked ? { ...t.choices } : { needs_you: true, done: false, failed: false, account: false, digest: true }, account_choice: isAdmin(db), intake: linked ? { ...(t.intake || { enabled: false, sandbox_id: null }) } : { enabled: false, sandbox_id: null } };
 }
+// The chat's intake (SPEC-512 TGI-001): refused without a link or, turned on, without a project.
+route('PUT', '/api/me/telegram/intake', ({ db, body }) => {
+  if (!db.telegram.linkedAt) fail(409, 'conflict', 'link a Telegram chat first');
+  if (body.enabled && !body.sandbox_id) fail(422, 'invalid', 'choose the project a new message starts its task in');
+  db.telegram.intake = { enabled: Boolean(body.enabled), sandbox_id: body.sandbox_id || null };
+  return myTelegramView(db);
+});
 const instanceAdminOnly = (db) => { if (!isAdmin(db)) fail(403, 'forbidden', 'instance administrators only'); };
 // A saved bot reads `starting` until the next read, as if Telegram's first poll answered then.
 // A test can keep a read's answer back (`telegram.holdRead = promise`): it is read when asked and

@@ -119,3 +119,16 @@ test('an instance administrator may also choose subscription problems', async ({
   await firstShown(screen.getByRole('checkbox', /Subscription problems/));
   await expect(screen.getByText(/Linked to @yulius_mock_bot/)).toBeVisible();
 });
+
+test('a person turns their chat\'s intake on with a project, off by default (SPEC-512 TGI-001)', async ({ app, browser, screen }) => {
+  await app.open(mock('/settings', '&telegram=linked'));
+  const intake = browser.locator('#telegram-intake');
+  await firstShown(screen.getByText('Work from this chat'));
+  expect(await intake.isChecked()).toBe(false);
+  await intake.check();
+  await expect(screen.getByText('Your Telegram chat now answers tasks and starts new ones.')).toBeVisible();
+  const saved = await browser.evaluate(() => JSON.parse(JSON.stringify((window as unknown as { __yuliusMock: { telegram: { intake?: unknown } } }).__yuliusMock.telegram.intake)));
+  expect(saved).toMatchObject({ enabled: true });
+  expect((saved as { sandbox_id: string | null }).sandbox_id).toBeTruthy();
+  expect(await axeViolations(browser)).toEqual([]);
+});
