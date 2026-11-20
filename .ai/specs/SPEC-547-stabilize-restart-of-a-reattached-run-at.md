@@ -1,6 +1,6 @@
 ---
 yulius-task: 1c2c18ef-b209-4c4e-924b-19790ff0e5d6
-status: in-progress
+status: done
 ---
 
 # SPEC-547 Stabilize restart of a reattached run at its limit
@@ -34,7 +34,7 @@ Issue #1286 reports a timeout waiting for attempt two on plain dev under load. S
 - [x] Ready the independently reviewed fix for the green CI merge
 - [x] Resume the restored workflow when its first capacity pass is deferred
 - [x] Verify reattached refusals against the current sign-in after merging dev
-- [ ] Verify subscription reset labels across midnight in the browser fixture
+- [x] Verify subscription reset labels across midnight in the browser fixture
 
 ## Acceptance criteria
 
@@ -79,3 +79,6 @@ Reconciliation takes the task’s move lock before attaching the host. It releas
 - PR #1481 CI run cb4cdbc8 timed out after 63.3 s waiting for a restored workflow. Holding the replayed limit pause across the fixture’s only capacity pass reproduced the timeout in 62.6 s. That pass returned the one-second recheck which the fixture discarded. The test now verifies the deferral and starts the server’s capacity loop to drive subsequent passes. The forced ordering passed 12/12 iterations in 38.8 s, and all 95 related integration tests passed on the updated dev base.
 - After the CI fixture fix and clean merge of dev at 514b07925, the original test again passed 40/40 in 219.170 s with all 48 busy loops still running.
 - Merging dev at e03e050c7 combined attempt-scoped access refusals with the run directory's credential check from #1365. All 110 related tests passed, including replay on a revoked subscription, a refusal after a new sign-in, and a run from before credential tracking.
+- The independently approved conflict resolution at beef37ccf also passed 40/40 original stress iterations in 253.461 s with the same 48 busy loops alive throughout.
+- CI run 817a7c59 at beef37ccf failed the subscription-card browser assertion when a reset ten minutes away fell on the next day. The existing assertion required a same-day time. Pinning the fixture to 23:55 reproduced the mismatch; the corrected tests check the full weekday and time across midnight and the full time for a same-day reset. Both passed, including the original post-reset behavior.
+- The complete browser suite passed 1,143 tests in 374.64 s, including all 49 subscription-card tests. One optional model-backed test was skipped.
