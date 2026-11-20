@@ -4702,7 +4702,11 @@ impl App {
         // Neither a slow PR read nor the fresh process probe should hold up another launch.
         // Probe last so background work started during the PR read keeps its session.
         let Some(prs) = self
-            .verify_parking_prs(&candidate, delivery.as_ref())
+            .verify_parking_prs(
+                &candidate,
+                delivery.as_ref(),
+                crate::delivery::PrVerification::Parking,
+            )
             .await?
         else {
             return Ok(false);
