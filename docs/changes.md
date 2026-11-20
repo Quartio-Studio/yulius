@@ -7,6 +7,8 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 ## 2026-11-20
 
 - Task delivery links the landed commit to its CI and deployment checks, including individual reruns and skipped jobs. Projects can cite these results in a verification step without opening a bookkeeping PR (SPEC-562, task #555).
+- Intake browser tests wait up to the shared first-load budget for the sandbox task list.
+  Proposal interactions keep their usual timeouts (SPEC-559, #1441).
 
 - Parked sessions (including Codex) now show the parked terminal banner with a visible Resume
   action (and owner Reply bar) instead of an inert terminal with a blinking cursor, wake in the

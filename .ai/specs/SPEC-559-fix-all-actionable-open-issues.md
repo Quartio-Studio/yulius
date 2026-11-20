@@ -9,7 +9,7 @@ status: in-progress
 
 Resolve the actionable reports in the November 20 GitHub issue inventory on green Yulius CI. Close reports superseded by a fix or a later product decision. Preserve unresolved reports and their acceptance evidence.
 
-Fixes #1484
+Fixes #1441
 
 ## Context
 
@@ -31,12 +31,17 @@ The inventory at dev 56f08db7f contained 20 issues. #1490 belongs to task #540. 
 - **ISS-001** Give each starting issue a verified disposition, including concrete prerequisites for unresolved work. Keep the work of the running tasks with their owners.
 - **ISS-002** Run the step backfill on a version-27 fixture and check its output and SQLite execution work independently of machine load. Removing the lookup index must fail the test.
 
+- **ISS-003** The intake test waits for the first sandbox task list within the shared first-load budget. Later proposal and chaining interactions keep their ordinary assertion timeouts.
+
 ## Plan
 
 - [x] Account for the open GitHub issues and close obsolete reports
 - [x] Prove migration 28 backfills step history within a deterministic work bound
 - [x] Obtain independent approval for the store regression
-- [ ] Verify the green dev merge for the store regression
+- [x] Verify the green dev merge for the store regression
+- [x] Reproduce the intake rail timeout with a held task list
+- [x] Verify the intake scenarios against the first-load budget
+- [x] Obtain independent approval for the intake regression
 - [ ] Verify the independent fixes and reconcile the remaining issues
 
 ## Acceptance criteria
@@ -44,9 +49,13 @@ The inventory at dev 56f08db7f contained 20 issues. #1490 belongs to task #540. 
 - **AC-1** Verify merged fixes at dev or identify why an issue still applies. Independent changes each follow their own issue and delivery history.
 - **AC-2** Sixty concurrent executions pass. An unindexed backfill fails the deterministic work bound. The fixture produces the expected completed spans.
 
+- **AC-3** A delayed task list can still produce a supertask proposal. A task list that never arrives fails at the existing first-load timeout.
+
 ## Test plan
 
 Exercise the actual migration SQL and measure SQLite VM instructions. Run the focused Rust test with its index removed to prove the assertion. Run the intact fixture in 60 concurrent processes. Check the repository contracts, obtain independent review and verify the Yulius CI result on the merged tree. Check each linked issue, PR and existing owner's evidence separately.
+
+Hold the mock task list past the default assertion budget and run the affected intake scenario before and after the fix. Check the permanently held case and run the intake file with Chromium.
 
 ## Decisions
 
@@ -59,3 +68,7 @@ Use one pull request per independent concern. Retain outstanding reports that re
 - Independent review approved 8ae505256. The reviewer verified the replacement in 60 concurrent processes on one CPU and ran the adjacent version-27 upgrade through the production store entry point. The repository quick checks passed. Vidoc was disabled.
 - All 101 store library tests passed. The focused test also passed after integrating PR #1493.
 - The project mutation command reported “No mutant in the Rust lines changed against origin/dev.” The index-removal experiment above exercises the SQL regression directly.
+- Task #541 took #1441 from the queue after its first delivery. Task #544 will verify the issue after delivery.
+- PR #1494 merged and GitHub closed #1484. Yulius CI run 21f32f87 passed quality, both Rust shards and e2e on PR head c1c940306. Run 9f9b51c0 recorded the same passing tree on dev at 9c3b3d92f. Security was skipped with Vidoc disabled.
+- #1441 reproduced in Chromium with the task-list response held for 6.5 seconds. The five-second visibility check failed on the seeded Checkout API link before the proposal. With the shared first-load budget, all 18 scenarios in the intake file passed. In a separate probe with the response held indefinitely, the browser trace recorded a 30.0-second visibility check followed by failure on that same link. The probe was removed.
+- Independent review approved the intake fix at 015dd8f7c. The reviewer reran the delayed proposal and checked all eleven first-load assertions and the permanently held trace. The repository quick checks passed. The mutation command found no changed Rust code in this slice. Vidoc was disabled.
