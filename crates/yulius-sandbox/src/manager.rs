@@ -4639,6 +4639,30 @@ while True:
         Ok(())
     }
 
+    /// An absent production holder needs no marker. A non-directory at its state path
+    /// is an error marking retirement, so even an idle development holder keeps the range.
+    #[tokio::test]
+    async fn a_retirement_marker_error_keeps_the_removed_range_reserved()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let data = tempfile::tempdir()?;
+        let manager = manager(data.path(), 1 << 40);
+        let dev = manager.state_dir("s1");
+        std::fs::create_dir_all(&dev)?;
+        let production = manager.state_dir("s1.prod");
+        std::fs::write(&production, b"not a state directory")?;
+        assert!(
+            !manager.holder_live("s1").await,
+            "the development holder has ended"
+        );
+        assert!(
+            !manager.retired_ports_idle("s1").await,
+            "production retirement could not be marked"
+        );
+        std::fs::remove_file(&production)?;
+        assert!(manager.retired_ports_idle("s1").await);
+        Ok(())
+    }
+
     /// Dates the retirement of `s1` `ago` back.
     fn retired_ago(manager: &Manager, ago: Duration) -> Result<(), Box<dyn std::error::Error>> {
         let marker = std::fs::File::options()
