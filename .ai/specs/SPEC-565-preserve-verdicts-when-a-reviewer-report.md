@@ -25,7 +25,7 @@ On dev `645eff207`, repeating the completion update moves the end time, and appr
 
 - [x] Reproduce lost verdicts on current dev and specify report identity
 - [x] Prove replay and continued review analytics with failing regressions
-- [ ] Preserve each distinct report and document round accounting
+- [x] Preserve each distinct report and document round accounting
 - [ ] Verify the fix and obtain independent approval for delivery
 
 ## Acceptance criteria
@@ -48,3 +48,5 @@ Use the start after a report as the round boundary. Comparing verdicts or report
 - The existing `a_resumed_reviewer_and_other_subagents_change_no_round` test passed on the same base. It only resumes an unfinished reviewer.
 - With the fix, both hook regressions passed. The API returned median rounds 3, first rounds requesting changes 1, re-reviews after changes 1 and rounds after approval 1. The store retained the first report's head, timestamp and model while the continued reviewer reported against a second real Git commit.
 - `scripts/dev quick` passed the repository contracts and Rust formatting checks.
+- The change security scan reported Vidoc disabled for the project or instance. It scanned no files.
+- All 29 tests in `cargo test --locked -p yulius --test main review_rounds::` passed, including eight subprocess cases for cut-off reviewers, moves and resumption.

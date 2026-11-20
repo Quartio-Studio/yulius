@@ -326,7 +326,10 @@ async fn continued_review_keeps_history_across_repeated_hook_delivery() -> TestR
         Some(start_at),
     )
     .await?;
-    assert_eq!(rounds(&h, &task, true).await?, [first.clone()]);
+    assert_eq!(
+        rounds(&h, &task, true).await?.as_slice(),
+        std::slice::from_ref(&first)
+    );
 
     git(&repo, &["commit", "--allow-empty", "-m", "review fixes"])?;
     let fixed_head = git(&repo, &["rev-parse", "HEAD"])?;
