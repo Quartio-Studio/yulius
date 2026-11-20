@@ -2396,6 +2396,25 @@ async fn an_idle_task_with_a_pending_pr_keeps_its_run_on_a_cold_cache() -> TestR
             .transition_delivery(&replacement.stage, &original)
             .await?
     );
+    let held = f.h.github.hold_checks();
+    let app = f.h.app.clone();
+    let checking = tokio::spawn(async move { app.park_idle_sessions_now().await });
+    tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        f.h.github.checks_entered.notified(),
+    )
+    .await?;
+    f.h.github.pulls.lock().map_err(|_| "pull fixture")?[0].head_sha = "new-head".into();
+    f.h.github
+        .set_checks("new-head", yulius_app::ports::github::ChecksState::Failure);
+    f.h.github.release_checks(&held);
+    assert_eq!(
+        checking.await?,
+        0,
+        "the verified head was replaced on the same PR"
+    );
+    f.h.github
+        .set_checks("new-head", yulius_app::ports::github::ChecksState::Success);
     assert_eq!(f.h.app.park_idle_sessions_now().await, 1);
     Ok(())
 }
@@ -2422,6 +2441,113 @@ async fn parking_a_recorded_pr_waits_for_delivery_if_github_closed_it_unmerged()
     f.h.github.pulls.lock().map_err(|_| "pull fixture")?[0].state = "closed".into();
     assert_eq!(f.h.app.park_idle_sessions_now().await, 0);
     f.h.github.pulls.lock().map_err(|_| "pull fixture")?[0].merged = true;
+    assert_eq!(f.h.app.park_idle_sessions_now().await, 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn parking_rechecks_a_green_overview_for_an_externally_opened_pr() -> TestResult {
+    use yulius_app::ports::github::ChecksState;
+    use yulius_domain::delivery::DeliveryStage;
+    let f = fixture().await?;
+    install_compatibility_pull(&f).await?;
+    let record =
+        f.h.app
+            .deps
+            .store
+            .delivery(&f.task)
+            .await?
+            .ok_or("delivery")?;
+    assert!(
+        f.h.app
+            .deps
+            .store
+            .transition_delivery(
+                &DeliveryStage::PrOpen,
+                &yulius_app::delivery::DeliveryRecord {
+                    stage: DeliveryStage::None,
+                    pr_number: None,
+                    ..record
+                }
+            )
+            .await?
+    );
+    let ctx = f.h.app.agent_context(TOKEN).await?;
+    std::fs::create_dir_all(&ctx.attempt.run_dir)?;
+    let owner = yulius_app::auth::AuthContext {
+        user: f
+            .h
+            .app
+            .deps
+            .store
+            .user(&ctx.task.created_by)
+            .await?
+            .ok_or("owner")?,
+        csrf_token: None,
+        session_hash: None,
+        token: None,
+    };
+    f.h.app.runtime(&f.task);
+    f.h.app
+        .deps
+        .store
+        .transition_task(
+            &f.task,
+            None,
+            yulius_domain::task::TaskStatus::Running,
+            Some(Activity::Waiting),
+            f.h.app.now(),
+        )
+        .await?;
+    f.h.clock.0.fetch_add(3_600_000, Ordering::SeqCst);
+    f.h.github.set_checks("abc123", ChecksState::Success);
+    let overview = f.h.app.git_overview(&owner, f.sandbox.as_str()).await?;
+    assert_eq!(
+        overview
+            .tasks
+            .iter()
+            .find(|t| t.task_id == f.task.as_str())
+            .and_then(|t| t.pr.as_ref())
+            .map(|p| p.checks.as_str()),
+        Some("success")
+    );
+    f.h.github.pulls.lock().map_err(|_| "pull fixture")?[0].head_sha = "external-push".into();
+    f.h.github.set_checks("external-push", ChecksState::Failure);
+    assert_eq!(f.h.app.park_idle_sessions_now().await, 0);
+    f.h.github.set_checks("external-push", ChecksState::Success);
+    assert_eq!(f.h.app.park_idle_sessions_now().await, 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn one_open_step_keeps_an_idle_session_through_digest_and_grace_parking() -> TestResult {
+    let f = fixture().await?;
+    let ctx = f.h.app.agent_context(TOKEN).await?;
+    std::fs::create_dir_all(&ctx.attempt.run_dir)?;
+    f.h.app.runtime(&f.task);
+    f.h.app
+        .deps
+        .store
+        .transition_task(
+            &f.task,
+            None,
+            yulius_domain::task::TaskStatus::Running,
+            Some(Activity::Waiting),
+            f.h.app.now(),
+        )
+        .await?;
+    f.h.clock.0.fetch_add(3_600_000, Ordering::SeqCst);
+    f.h.app
+        .tool_steps_set(
+            &ctx,
+            &json!({"steps":[{"title":"Merge compatibility","status":"in_progress"}]}),
+        )
+        .await?;
+    assert_eq!(f.h.app.send_digests_now(Some(1)).await.parked, 0);
+    assert_eq!(f.h.app.park_idle_sessions_now().await, 0);
+    f.h.app
+        .tool_step_update(&ctx, &json!({"ordinal":1,"status":"done"}))
+        .await?;
     assert_eq!(f.h.app.park_idle_sessions_now().await, 1);
     Ok(())
 }

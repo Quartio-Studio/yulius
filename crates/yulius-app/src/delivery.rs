@@ -2314,12 +2314,16 @@ impl App {
                     conflicts: false,
                 });
             }
-            if let Some(signal) = view
-                .pr
-                .as_ref()
-                .and_then(|pr| PullSignal::from_wire(&pr.state, &pr.checks, pr.conflicts))
+            if let Some(pr) = &view.pr
+                && let Some(signal) = PullSignal::from_wire(&pr.state, &pr.checks, pr.conflicts)
             {
-                observed.insert(task.id.clone(), signal);
+                observed.insert(
+                    task.id.clone(),
+                    crate::sandboxes::ObservedPull {
+                        number: pr.number,
+                        signal,
+                    },
+                );
             }
             tasks.push(view);
         }
@@ -3991,29 +3995,35 @@ impl App {
         record: Option<&DeliveryRecord>,
     ) -> AppResult<bool> {
         use yulius_domain::ci::CiRef;
-        if record.is_some_and(|r| past_merge(&r.stage)) {
-            return Ok(true);
-        }
-        let Some(record) = record.filter(|r| r.stage == DeliveryStage::PrOpen) else {
-            let observed = self
+        let tracked = record.filter(|r| r.stage == DeliveryStage::PrOpen);
+        let number = if let Some(record) = tracked {
+            record.pr_number.ok_or_else(|| {
+                AppError::Internal("open delivery has no pull request number".into())
+            })?
+        } else {
+            // A branch-matched PR may have been opened outside Yulius. Use its identity
+            // from the overview and verify its head independently of the cached checks.
+            let Some(observed) = self
                 .observed_pulls
                 .get(&task.sandbox_id, &task.id)
-                .flatten();
-            return Ok(matches!(
-                observed,
-                None | Some(PullSignal::Tested | PullSignal::Merged)
-            ));
+                .flatten()
+            else {
+                return Ok(true);
+            };
+            if record.is_some_and(|r| past_merge(&r.stage) && r.pr_number == Some(observed.number))
+            {
+                return Ok(true);
+            }
+            observed.number
         };
-        let number = record
-            .pr_number
-            .ok_or_else(|| AppError::Internal("open delivery has no pull request number".into()))?;
         let sandbox = self.dlv_sandbox_of(task).await?;
         let token = self.dlv_installation_token(&sandbox).await?;
-        let pull = self
-            .deps
-            .github
-            .get_pull(&token, &sandbox.repo_owner, &sandbox.repo_name, number)
-            .await?;
+        let read = || {
+            self.deps
+                .github
+                .get_pull(&token, &sandbox.repo_owner, &sandbox.repo_name, number)
+        };
+        let pull = read().await?;
         if !is_open(&pull) {
             return Ok(pull.merged);
         }
@@ -4024,7 +4034,7 @@ impl App {
         let checks = tested_checks_word(&delivery_profile(&sandbox), head.word);
         let settled = match checks {
             "success" | "none" => true,
-            "pending" if self.config.ci.enabled => self
+            "pending" if tracked.is_some() && self.config.ci.enabled => self
                 .deps
                 .store
                 .ci_runs(&sandbox.id, crate::pr_watch::RUNS_READ)
@@ -4034,7 +4044,16 @@ impl App {
                 .is_some_and(|run| run.sha == pull.head_sha && run.state.is_active()),
             _ => false,
         };
-        Ok(settled && !self.pull_conflicts(task, &sandbox, &pull).await)
+        if !settled || self.pull_conflicts(task, &sandbox, &pull).await {
+            return Ok(false);
+        }
+        // Checks and local conflict detection can take long enough for another push.
+        let current = read().await?;
+        Ok(current.merged
+            || (is_open(&current)
+                && current.head_sha == pull.head_sha
+                && current.base == pull.base
+                && current.mergeable == pull.mergeable))
     }
 
     /// The part of [`App::task_is_done`] that needs no GitHub call: the turn ended, no background

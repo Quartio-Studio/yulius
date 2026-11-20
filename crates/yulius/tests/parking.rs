@@ -2400,3 +2400,35 @@ fn an_idle_task_keeps_its_session_while_its_recorded_pr_cannot_be_read() -> Test
     rt.shutdown_timeout(Duration::from_secs(5));
     Ok(())
 }
+
+#[test]
+fn a_cold_parked_summary_reads_historical_spec_and_goal_evidence() -> TestResult {
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let live = app(&data, 8, 1).await?;
+        let (id, _) = answered(&live, &data).await?;
+        parked(&live, &id).await?;
+        live.deps
+            .store
+            .set_spec_status(&id, Some("in-progress"))
+            .await?;
+        let run = live
+            .deps
+            .store
+            .attempts(&id)
+            .await?
+            .pop()
+            .ok_or("parked run")?;
+        std::fs::write(Path::new(&run.run_dir).join("parked-goal-unfinished"), [])?;
+        let cold = app(&data, 8, 1).await?;
+        let task = cold.deps.store.task(&id).await?.ok_or("parked task")?;
+        assert_eq!(task.status, TaskStatus::Parked);
+        let summary = cold.task_summary(&task).await?;
+        assert!(summary.spec_unfinished);
+        assert!(summary.goal_unfinished);
+        Ok::<_, Error>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
