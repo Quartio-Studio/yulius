@@ -89,3 +89,12 @@ On this branch (2026-11-20):
 | `yulius security-scan` | disabled (Vidoc off for this project): nothing scanned, not a pass |
 
 The whole gate is Yulius CI's, on the pull request's head.
+
+### Yulius CI run 2d377ea3 at 5ba12d0d2: e2e failed, fixed test-first
+
+`playground-guests.e2e.ts` "a guest sees their playground and nothing else" failed: the Git
+page's new "Handoffs from other sandboxes" card asked `GET /api/sandboxes/sb_lab/handoffs`, a
+route the guest fence (SPEC-410 GST-004) refuses. A guest never sets a sandbox's opt-out, so the
+Git page draws the card only for a person who is not a guest. Reproduced locally before the fix
+(1 failed, 8 passed); after it `npx e2e run tests/playground-guests.e2e.ts tests/git.e2e.ts
+tests/handoffs.e2e.ts` 22 passed.

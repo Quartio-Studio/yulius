@@ -131,7 +131,9 @@ export function mountGitPage(ctx, sandbox) {
   // The Production protection card is drawn apart from the overview, so it is there also when the
   // overview cannot be read (SPEC-423 PPR-005).
   const protection = h('div', { class: 'dl' });
-  frame.body.append(intro, body, protection, sandboxHandoffsCard(ctx, sandbox, allows(sandbox.access, 'write')));
+  frame.body.append(intro, body, protection);
+  // A playground's guest is fenced from the opt-out (SPEC-410 GST-004) and never sets it.
+  if (!(ctx.guest && ctx.guest())) frame.body.append(sandboxHandoffsCard(ctx, sandbox, allows(sandbox.access, 'write')));
   let model = null;
   let showAllActivity = false;
   let showAllNeeds = false;
