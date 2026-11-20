@@ -3794,7 +3794,35 @@ fn a_run_lost_while_the_server_runs_saves_its_live_screen() -> TestResult {
     let (_dir, data) = data_dir()?;
     let rt = runtime()?;
     rt.block_on(async {
-        let (app, _host, id) = gated_goal_task(&data, &fake).await?;
+        // The saved screen needs a settled turn, including turns with no goal verdict.
+        let agent = FakeAgentOptions {
+            transcript: true,
+            hooks: true,
+            answers_first_message: true,
+            ..FakeAgentOptions::default()
+        };
+        let (app, _) = start(&data, &fake, agent, 0).await?;
+        let (sandbox, user) = seed(&app, &data).await?;
+        let id = app
+            .create_task_internal(NewTask {
+                sandbox,
+                created_by: user,
+                prompt: "one more".into(),
+                harness: Harness::ClaudeCode,
+                title: None,
+                workflow_id: None,
+                steps: Vec::new(),
+                model: None,
+                effort: None,
+                origin: TaskOrigin::Ui,
+                automation_run: None,
+                start: true,
+                mode: TaskMode::Prompt,
+                supertask: false,
+            })
+            .await?
+            .id;
+
         wait_for("Done", Duration::from_secs(90), || async {
             activity(&app, &id).await == Some(Activity::Done)
         })
@@ -6724,7 +6752,12 @@ fn a_done_onboarding_task_is_archived_and_the_sandbox_is_ready() -> TestResult {
             hooks: true,
             ..FakeAgentOptions::default()
         };
-        let (app, _) = start(&data, &fake, agent, 0).await?;
+        // A shell probe that exceeded its budget supplies no process count.
+        let host = Arc::new(support::gated::GatedHost::new(PathBuf::from(env!(
+            "CARGO_BIN_EXE_yulius"
+        ))));
+        host.silence_work_probe(true);
+        let (app, _) = start_on(&data, &fake, agent, 0, Some(host), None, false, None).await?;
         let (sandbox, user) = seed(&app, &data).await?;
         // The project validates in the sandbox's clone.
         let repo = data.join("sandboxes").join(sandbox.as_str()).join("repo");
