@@ -6,6 +6,11 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-19
 
+- An end-of-day digest, off by default (SPEC-512 part 3, task #494, #1413, ADR-0380): an
+  instance administrator turns it on in Settings with a time (UTC) and an optional idle
+  threshold. Once a day each person gets what waits for them, what was parked with the end of its
+  last message, and how many tasks still work, under the bell (`/digest`) and in their Telegram
+  chat; with a threshold it first parks quiet tasks that ask nobody (never Done or waiting ones).
 - Codex tasks stay under Working while waiting for Yulius. Failed PR checks no longer display a terminal reply prompt (SPEC-552, #1482).
 
 - Claude Code's scheduled wake-ups preserve unsent drafts, achieved goals and open requests for a person, including when the hook carries plain text (SPEC-541, #1225).

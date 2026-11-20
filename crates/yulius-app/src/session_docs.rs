@@ -286,7 +286,11 @@ impl App {
     /// Where a task's session transcript lives: the harness's file under the sandbox home for
     /// the task worktree, or the stored copy of an imported lineage entry until the task has
     /// resumed it natively.
-    fn task_transcript_path(&self, task: &TaskRecord, entry: &ProviderSessionRecord) -> PathBuf {
+    pub(crate) fn task_transcript_path(
+        &self,
+        task: &TaskRecord,
+        entry: &ProviderSessionRecord,
+    ) -> PathBuf {
         let native = self.native_transcript(task, entry.harness, &entry.session_id);
         match &entry.transcript_ref {
             Some(stored) if !is_regular_file(&native) => PathBuf::from(stored),

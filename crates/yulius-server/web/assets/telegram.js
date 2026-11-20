@@ -13,6 +13,7 @@ const CHOICES = [
   ['done', 'Done', 'A task finished'],
   ['failed', 'Failed or stopped', 'A task failed to start or stopped abnormally'],
   ['account', 'Subscription problems', 'A subscription must sign in again or hit its limit'],
+  ['digest', 'End-of-day digest', 'What waits for you, once a day, when this instance sends one'],
 ];
 const PRIVACY = 'Telegram bot chats are not end-to-end encrypted: notification text passes Telegram’s servers. Agent secrets are removed first.';
 

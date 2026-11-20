@@ -43,6 +43,8 @@ pub struct NotifyChoices {
     pub failed: bool,
     /// Subscription problems (instance administrators only see these events).
     pub account: bool,
+    /// The end-of-day digest, when the instance sends one (SPEC-512 DIG-005).
+    pub digest: bool,
 }
 
 impl Default for NotifyChoices {
@@ -52,6 +54,7 @@ impl Default for NotifyChoices {
             done: false,
             failed: false,
             account: false,
+            digest: true,
         }
     }
 }

@@ -9,6 +9,7 @@ pub mod automations;
 pub mod cd;
 pub mod ci;
 pub mod common;
+pub mod digest;
 pub mod files;
 pub mod git;
 pub mod guests;

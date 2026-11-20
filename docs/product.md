@@ -710,6 +710,14 @@ watching, steering and unblocking.
   or taking it back, reaches them under Needs you), with a link to the task, agent secrets
   removed, at most five messages a minute with the rest in one summary. The server asks Telegram
   for messages, so no inbound port is needed. Replies and new tasks from Telegram are part 2.
+- **An end-of-day digest** (SPEC-512 part 3, ADR-0380, #1413), off by default: an instance
+  administrator turns it on in Settings → Administration with a time (UTC) and, if they want, an
+  idle threshold. Once a day each person with something to report gets what waits for them first,
+  what was parked since the last digest with the end of its last message, and how many tasks
+  still work, under the bell (it opens `/digest`, also for a digest made while no page was open)
+  and in their Telegram chat unless they turned it off there. With a threshold it first parks the
+  quiet tasks that wait for their person's turn and ask nothing; Done tasks and tasks that wait
+  for a decision are never parked by it.
 
 ## Principles
 
