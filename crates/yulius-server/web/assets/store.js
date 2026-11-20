@@ -302,43 +302,6 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
       for (const key of Object.keys(window.localStorage)) if (key.startsWith(PULLS_PREFIX)) window.localStorage.removeItem(key);
     } catch { /* storage unavailable: nothing kept */ }
   }
-  // A rerun on the same open PR changes its checks without changing the task's
-  // delivery stage. Refresh the server's parked groups alongside the watched
-  // overview. An SSE update or list replacement during this read takes precedence.
-  async function refreshParkedGroups(sandboxId) {
-    const tasks = state.tasks.get(sandboxId);
-    if (!tasks) return;
-    const watched = [...tasks.values()].filter((task) =>
-      task.status === 'parked' && typeof task.parked_needs_you === 'boolean');
-    if (!watched.length) return;
-    let refreshed;
-    try {
-      const rows = await api.get(`/api/sandboxes/${enc(sandboxId)}/tasks?archived=false`);
-      refreshed = new Map(rows.map((task) => [task.id, task]));
-    } catch { /* A previously green PR is unverified until a later read succeeds. */ }
-    if (tasks !== state.tasks.get(sandboxId)) return;
-    let changed = false;
-    for (const prior of watched) {
-      if (tasks.get(prior.id) !== prior) continue;
-      const row = refreshed?.get(prior.id);
-      if (refreshed && (!row || row.status !== prior.status)) continue;
-      const open = prior.parked_pr?.open ?? (state.pulls.get(sandboxId)?.get(prior.id)?.state === 'open');
-      if (!row && !open) continue;
-      const needs = row?.parked_needs_you ?? true;
-      const pr = row ? row.parked_pr : prior.parked_pr;
-      if (needs !== prior.parked_needs_you || pr?.number !== prior.parked_pr?.number || pr?.open !== prior.parked_pr?.open) {
-        const updated = { ...prior, parked_needs_you: needs, parked_pr: pr };
-        tasks.set(prior.id, updated);
-        emit('task', updated);
-        changed = true;
-      }
-    }
-    if (changed) {
-      emit('tasks', sandboxId);
-      scheduleCountsRefresh();
-    }
-  }
-
   /** Reads the sandbox's pull requests; `fresh`: a change was announced, so a read in flight (which may predate it) is followed by another. */
   async function loadPulls(sandboxId, fresh = false) {
     const running = pullReads.get(sandboxId);
@@ -350,14 +313,11 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
     pullReads.set(sandboxId, read);
     const entry = pullWatch.get(sandboxId);
     if (entry) Object.assign(entry, { at: clock.now(), due: false });
-    let pullsUpdated = false;
-    const groups = refreshParkedGroups(sandboxId);
     try {
       const git = await api.get(`/api/sandboxes/${enc(sandboxId)}/git`);
       const rows = Array.isArray(git.tasks) ? git.tasks : [];
       const pulls = rows.filter((t) => t.pr).map((t) => [t.task_id, t.pr]);
-      const current = new Map(pulls);
-      state.pulls.set(sandboxId, current);
+      state.pulls.set(sandboxId, new Map(pulls));
       seeded.delete(sandboxId);
       const key = pullsKey(sandboxId);
       if (key) writeJson(key, pulls);
@@ -366,19 +326,17 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
       // tab and Home agree with the sidebar (#147). One debounced request per burst.
       scheduleCountsRefresh();
       state.gitRows.set(sandboxId, new Map(rows.map((t) => [t.task_id, t])));
-      pullsUpdated = true;
+      emit('pulls', sandboxId);
     } catch {
       // The chips of an earlier read on this page stay; stored ones of any age do not pass for
       // current when this page could not read (SPEC-104), shown already or not (an empty entry
       // keeps pullsOf from reading them later): the lists work without them.
       if (seeded.delete(sandboxId) || !state.pulls.has(sandboxId)) {
         state.pulls.set(sandboxId, new Map());
-        pullsUpdated = true;
+        emit('pulls', sandboxId);
       }
     } finally {
-      await groups;
       pullReads.delete(sandboxId);
-      if (pullsUpdated) emit('pulls', sandboxId);
       if (read.again) pullsChanged(sandboxId);
     }
   }
