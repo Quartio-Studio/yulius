@@ -66,6 +66,8 @@ A human request can take precedence over unfinished work in the task list. Both 
 
 ## Evidence
 
+- Review of `9fbcb4348` reproduced two open pages retaining old verified fields after a lifecycle event, a replacement list failing to notify the mounted task, and a late Git fallback invalidating a successful pending verification. Four Chromium regressions failed on that head. A fifth showed a known open PR disappearing on an ordinary event before the overview was available. The store now notifies mounted views once for a changed parked row, keeps known open PRs under Needs you until verification, and distinguishes a conservative display update from a later authoritative event. The terminal and Task Info replace optional PR facts when they receive a new summary.
+
 - The two-source watch fixture originally advanced its fake interval inside a Git notification, before request cleanup. It timed out with 59 of 60 scoped cases passing. The fixture now lets both synchronous fake replies and their cleanup settle before advancing the clock. The same expected groups passed in Chromium.
 
 - Independent review of `6890b885e` reproduced three browser races. The three review regressions failed before correction and passed afterward. A held Task Info response now preserves a newer verified row. An open replacement discovered before or after a failed summary stays under Needs you until the next successful verification. At the production three-second watch gap, announcements at 53.0, 53.1, 53.2 and 53.3 seconds now start one summary at 53 seconds and one at 56 seconds while the overview is held.

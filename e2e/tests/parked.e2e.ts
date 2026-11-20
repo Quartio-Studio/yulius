@@ -661,3 +661,110 @@ test('parked reads keep their three-second gap while Git is held', async ({ app,
   });
   expect(starts).toEqual([50_000, 53_000, 56_000]);
 });
+
+for (const [route, selector] of [['tasks', '.gt-state'], ['t', '.strip-status']]) {
+  test(`a later unverified parked event clears old facts on the ${route} page`, async ({ app, browser, screen }) => {
+    await app.open(mock(`/s/studio/${route}/13`, '&ambient=0&pullgap=0'));
+    await browser.evaluate(() => {
+      const db = (window as unknown as { __yuliusMock: { changePull(sid: string, n: number, changes: object): void } }).__yuliusMock;
+      db.changePull('sb_studio', 520, { checks: 'failure' });
+    });
+    await expect(browser.locator(selector)).toHaveText(/checks failing/);
+    await touchTask(browser, 'sb_studio', 13, { status: 'parked', activity: 'done', parked_needs_you: false, parked_pr: { number: 520, open: false } });
+    await expect(browser.locator(selector)).toHaveText(/Done.*parked/);
+    await browser.evaluate(() => {
+      const db = (window as unknown as { __yuliusMock: { touchTask(sid: string, n: number, changes: object): void } }).__yuliusMock;
+      db.touchTask('sb_studio', 13, { parked_needs_you: undefined, parked_pr: undefined, title: 'Latest parked title' });
+    });
+    await expect(screen.getByRole('region', 'Needs you').getByRole('link', /Latest parked title/)).toBeVisible();
+    await expect(browser.locator(selector)).toHaveText(/checks failing.*parked/);
+  });
+}
+
+test('a replacement list tells parked task views about changed rows once', async ({ app, browser }) => {
+  await app.open(mock('/s/studio'));
+  const notifications = await browser.evaluate(async () => {
+    const url = '/assets/store.js';
+    const { createStore } = await import(url);
+    let needs = false;
+    const row = { id: 'p', sandbox_id: 's', status: 'parked' };
+    const store = createStore({ get: async () => [{ ...row, parked_needs_you: needs }] });
+    await store.loadTasks('s');
+    const seen: boolean[] = [];
+    const off = store.on('task', (t: { parked_needs_you: boolean }) => seen.push(t.parked_needs_you));
+    needs = true;
+    await store.loadTasks('s');
+    await store.loadTasks('s');
+    off();
+    store.stopEvents();
+    return seen;
+  });
+  expect(notifications).toEqual([true]);
+});
+
+test('verified recovery supersedes an interim fallback from a held Git read', async ({ app, browser }) => {
+  await app.open(mock('/s/studio'));
+  const result = await browser.evaluate(async () => {
+    const url = '/assets/store.js';
+    const { createStore } = await import(url);
+    const sid = 'race';
+    const row = { id: 'p', sandbox_id: sid, status: 'parked', activity: 'done', parked_needs_you: false };
+    let gitReady!: () => void, summaryReady!: () => void;
+    const git = new Promise<void>(resolve => { gitReady = resolve; });
+    const summary = new Promise<void>(resolve => { summaryReady = resolve; });
+    const settled = () => new Promise<void>(resolve => {
+      const channel = new MessageChannel();
+      channel.port1.onmessage = () => { channel.port1.close(); channel.port2.close(); resolve(); };
+      channel.port2.postMessage(null);
+    });
+    let reads = 0;
+    const store = createStore({ get: async (path: string) => {
+      if (path.endsWith('/git')) {
+        await git;
+        return { tasks: [{ task_id: row.id, pr: { number: 8, state: 'open', checks: 'success' } }] };
+      }
+      if (!path.includes('/tasks?')) return [];
+      reads++;
+      if (reads === 1) return [{ ...row, parked_pr: { number: 7, open: false } }];
+      if (reads === 2) throw new Error('verification unavailable');
+      await summary;
+      return [{ ...row, parked_pr: { number: 8, open: true } }];
+    } }, { pullGapMs: 0 });
+    await store.loadTasks(sid);
+    const stop = store.watchPulls(sid);
+    await settled();
+    store.handleEvent({ type: 'pulls.updated', sandbox_id: sid });
+    await settled();
+    gitReady();
+    await settled();
+    const fallback = store.findTask(row.id).parked_needs_you;
+    summaryReady();
+    await settled();
+    const verified = store.findTask(row.id);
+    stop();
+    store.stopEvents();
+    return [fallback, verified.parked_needs_you, verified.parked_pr.number];
+  });
+  expect(result).toEqual([true, false, 8]);
+});
+
+test('a parked lifecycle event preserves a known open PR until its status is verified again', async ({ app, browser }) => {
+  await app.open(mock('/s/studio'));
+  const seen = await browser.evaluate(async () => {
+    const url = '/assets/store.js';
+    const { createStore } = await import(url);
+    const sid = 'unverified-event';
+    const task = { id: 'p', sandbox_id: sid, status: 'parked', activity: 'done' };
+    const verified = { ...task, parked_needs_you: true, parked_pr: { number: 8, open: true } };
+    const store = createStore({ get: async (path: string) => path.includes('/tasks?') ? [verified] : { tasks: [] } });
+    await store.loadTasks(sid);
+    store.upsertTask({ ...task, title: 'Renamed' });
+    const interim = store.findTask(task.id);
+    verified.parked_needs_you = false;
+    await store.loadTasks(sid);
+    const current = store.findTask(task.id);
+    store.stopEvents();
+    return [interim.parked_needs_you ?? null, interim.parked_pr?.number ?? null, current.parked_needs_you];
+  });
+  expect(seen).toEqual([true, 8, false]);
+});

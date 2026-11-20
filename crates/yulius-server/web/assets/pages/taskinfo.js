@@ -232,8 +232,8 @@ export function mountTaskInfoView(ctx, sandbox, task) {
       // A session that starts again may run another model on the same subscription (the
       // fallback, SPEC-482), and is a new entry of the sessions: the detail is read again.
       const restarted = t.status !== current.status;
-      current = { ...current, ...t };
-      if (typeof t.parked_needs_you === 'boolean') current.parked_pr = t.parked_pr;
+      // A lifecycle event can omit the list verifier’s optional PR facts.
+      current = { ...current, ...t, parked_needs_you: t.parked_needs_you, parked_pr: t.parked_pr };
       if (moved) delete current.account_email;
       if (moved || restarted) load();
       render();

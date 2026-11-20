@@ -142,7 +142,15 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
     state.taskErrors.delete(sandboxId);
     const map = new Map();
     for (const task of Array.isArray(list) ? list : []) if (!task.archived) map.set(task.id, task);
+    const previous = state.tasks.get(sandboxId);
     state.tasks.set(sandboxId, map);
+    if (previous) {
+      for (const task of map.values()) {
+        const prior = previous.get(task.id);
+        if (task.status !== 'parked' && prior?.status !== 'parked') continue;
+        if (JSON.stringify(task) !== JSON.stringify(prior)) emit('task', task);
+      }
+    }
     emit('tasks', sandboxId);
     return map;
   }
@@ -156,10 +164,17 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
       emit('task', task);
       return;
     }
+    // Lifecycle events omit the verifier's facts. A previously identified open
+    // PR still needs verification even when Git has not supplied an overview.
+    const prior = map.get(task.id);
+    const recheck = !task.archived && task.status === 'parked' && prior?.status === 'parked' &&
+      typeof task.parked_needs_you !== 'boolean' && prior.parked_pr?.open;
+    if (recheck) task = { ...task, parked_pr: prior.parked_pr, parked_needs_you: true };
     if (task.archived) map.delete(task.id);
     else map.set(task.id, task);
     emit('tasks', task.sandbox_id);
     emit('task', task);
+    if (recheck) requestRead(task.sandbox_id, refreshParkedGroups, true, true);
   }
 
   /** Drop a task from its list; `byUser` marks a removal this browser asked for (its own toast says so). */
@@ -275,7 +290,9 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
   const pullWatch = new Map(); // sandbox id → view count, poll timer and each source's read schedule
   const sources = [refreshParkedGroups, loadGitOverview];
   const inFlight = new Map(sources.map(source => [source, new Map()]));
-  const unverified = new WeakSet(); // Exact rows whose task-list read failed before Git answered.
+  // A failed read may need a conservative display when Git later discovers an open PR.
+  // Remember the source row so this display cannot invalidate its own pending recovery.
+  const unverified = new WeakMap();
   const pollPaused = () => document.hidden || navigator.onLine === false;
   // The overview takes seconds (GitHub and Git for every task), so this browser keeps what the
   // last read said, per user, and a page load shows it at once until its own read replaces it
@@ -320,20 +337,21 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
     if (tasks !== state.tasks.get(sandboxId)) return;
     let changed = false;
     for (const prior of watched) {
-      if (tasks.get(prior.id) !== prior) continue;
+      const current = tasks.get(prior.id);
+      if (current !== prior && unverified.get(current) !== prior) continue;
       const row = refreshed?.get(prior.id);
       if (refreshed && (!row || row.status !== prior.status)) continue;
       if (row) {
-        unverified.delete(prior);
+        unverified.delete(current);
         unverified.delete(row);
         if (typeof row.parked_needs_you !== 'boolean') continue;
       } else {
-        unverified.add(prior);
+        unverified.set(current, prior);
         if (!prior.parked_pr?.open && state.pulls.get(sandboxId)?.get(prior.id)?.state !== 'open') continue;
       }
       // The group and the work that explains it come from the same verified row.
       const updated = row ?? { ...prior, parked_needs_you: true };
-      if (JSON.stringify(updated) === JSON.stringify(prior)) continue;
+      if (JSON.stringify(updated) === JSON.stringify(current)) continue;
       tasks.set(prior.id, updated);
       emit('task', updated);
       changed = true;
@@ -357,6 +375,8 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
         const prior = tasks?.get(id);
         if (pr.state !== 'open' || !unverified.has(prior) || prior.parked_needs_you) continue;
         const updated = { ...prior, parked_needs_you: true };
+        unverified.delete(prior);
+        unverified.set(updated, prior);
         tasks.set(id, updated);
         emit('task', updated);
         changed = true;
