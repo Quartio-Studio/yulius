@@ -702,14 +702,6 @@ pub async fn serve(args: ServeArgs) -> Result<(), String> {
     // shells are adopted: a Superagent they start again gets the proxy (SPEC-186 SAV-001).
     let egress =
         crate::wiring::egress::egress_proxy(&app, yulius_egress::EgressConfig::default()).await?;
-    #[cfg(target_os = "linux")]
-    let direct_handoff = isolation
-        .is_none()
-        .then(|| args.data_dir.join("tunnel-handoff"));
-    #[cfg(target_os = "linux")]
-    if let Some(directory) = &direct_handoff {
-        crate::wiring::tunnel_handoff::restore(&egress, directory).await;
-    }
     browser_network.bind(&app, &egress);
     // Shells left running by the previous server process are adopted before serving.
     let workspace_reaper = app.start_workspace_services().await;
@@ -719,36 +711,15 @@ pub async fn serve(args: ServeArgs) -> Result<(), String> {
         .into_make_service_with_connect_info::<SocketAddr>();
     let internal_router = crate::wiring::egress::with_egress(
         yulius_server::internal_router(app.clone()),
-        Arc::clone(&egress),
+        egress,
         &app.config.internal_url,
     )
     .into_make_service_with_connect_info::<SocketAddr>();
-    let shutdown = futures::FutureExt::shared(shutdown_signal());
     let public_task = axum::serve(public.tap_io(no_delay), public_router)
-        .with_graceful_shutdown(shutdown.clone());
-    #[cfg(target_os = "linux")]
-    let internal = InternalListener(internal).tap_io(|io| no_delay(&mut io.0));
-    #[cfg(not(target_os = "linux"))]
-    let internal = internal.tap_io(no_delay);
-    let internal_task =
-        axum::serve(internal, internal_router).with_graceful_shutdown(shutdown.clone());
-    let http = async {
-        let (public, internal) = tokio::join!(public_task, internal_task);
-        public.and(internal)
-    };
-    #[cfg(target_os = "linux")]
-    let result = if let Some(directory) = &direct_handoff {
-        drain_with_handoff(
-            http,
-            shutdown,
-            crate::wiring::tunnel_handoff::deposit(&egress, directory, &app.config.yulius_exe),
-        )
-        .await
-    } else {
-        http.await
-    };
-    #[cfg(not(target_os = "linux"))]
-    let result = http.await;
+        .with_graceful_shutdown(shutdown_signal());
+    let internal_task = axum::serve(internal.tap_io(no_delay), internal_router)
+        .with_graceful_shutdown(shutdown_signal());
+    let (a, b) = tokio::join!(public_task, internal_task);
     // Browsers do not outlive the server; shells and agent sessions keep running detached.
     drop(workspace_reaper);
     app.stop_workspace_services().await;
@@ -757,44 +728,11 @@ pub async fn serve(args: ServeArgs) -> Result<(), String> {
     if let Some(manager) = &isolation {
         manager.unsplit_cpu();
     }
-    result.map_err(|e| e.to_string())?;
+    a.map_err(|e| e.to_string())?;
+    b.map_err(|e| e.to_string())?;
     scheduler.abort();
     tracing::info!("yulius stopped; detached sessions keep running");
     Ok(())
-}
-
-// Handoff starts on the service's shutdown signal even when an HTTP response body is still
-// streaming. Allow HTTP five seconds to finish and the bounded capture/helper exchange fifteen.
-#[cfg(target_os = "linux")]
-async fn drain_with_handoff(
-    http: impl Future<Output = std::io::Result<()>>,
-    shutdown: impl Future<Output = ()>,
-    handoff: impl Future<Output = std::io::Result<()>>,
-) -> std::io::Result<()> {
-    use std::time::Duration;
-    tokio::pin!(http);
-    let finished = tokio::select! {
-        () = shutdown => None,
-        result = &mut http => Some(result),
-    };
-    let drain = async {
-        if let Some(result) = finished {
-            return result;
-        }
-        match tokio::time::timeout(Duration::from_secs(5), http).await {
-            Ok(result) => result,
-            Err(_) => {
-                tracing::warn!("HTTP shutdown grace expired");
-                Ok(())
-            }
-        }
-    };
-    let capture = async { tokio::time::timeout(Duration::from_secs(15), handoff).await? };
-    let (result, captured) = tokio::join!(drain, capture);
-    if let Err(error) = captured {
-        tracing::warn!(kind = ?error.kind(), "cannot hand opaque tunnels to the next server");
-    }
-    result
 }
 
 async fn shutdown_signal() {
@@ -821,24 +759,6 @@ pub async fn backup(data_dir: PathBuf, dest: PathBuf) -> Result<(), String> {
     store.backup_to(&dest).await.map_err(|e| e.to_string())?;
     println!("database copied to {}", dest.display());
     Ok(())
-}
-
-#[cfg(target_os = "linux")]
-struct InternalListener(tokio::net::TcpListener);
-
-#[cfg(target_os = "linux")]
-impl axum::serve::Listener for InternalListener {
-    type Io = yulius_egress::HttpInput;
-    type Addr = SocketAddr;
-
-    async fn accept(&mut self) -> (Self::Io, Self::Addr) {
-        let (tcp, address) = axum::serve::Listener::accept(&mut self.0).await;
-        (yulius_egress::HttpInput(tcp), address)
-    }
-
-    fn local_addr(&self) -> std::io::Result<Self::Addr> {
-        self.0.local_addr()
-    }
 }
 
 /// Sends small writes at once (#29). A keystroke's echo is one small WebSocket frame; with
@@ -1015,21 +935,6 @@ mod tests {
             ])
         );
         assert!(parsed(&["--ci-max-jobs", "65"]).is_err());
-        Ok(())
-    }
-
-    #[cfg(target_os = "linux")]
-    #[tokio::test]
-    async fn internal_listener_reports_bound_and_connected_addresses() -> std::io::Result<()> {
-        use axum::serve::Listener as _;
-        let listener = TcpListener::bind("127.0.0.1:0").await?;
-        let bound = listener.local_addr()?;
-        let mut internal = InternalListener(listener);
-        assert_eq!(internal.local_addr()?, bound);
-        let client = TcpStream::connect(bound).await?;
-        let (accepted, peer) = internal.accept().await;
-        assert_eq!(peer, client.local_addr()?);
-        assert_eq!(accepted.0.local_addr()?, bound);
         Ok(())
     }
 

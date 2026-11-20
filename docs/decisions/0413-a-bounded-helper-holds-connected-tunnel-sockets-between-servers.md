@@ -18,21 +18,19 @@ during an orderly update. The server selects opaque tunnels and their correspond
 The helper receives connected descriptors and bounded private copy state, then makes the batch
 available to one successor through a socket in a service-owned private directory. It uses the
 kernel's peer credentials to check the service UID. The old server receives an acknowledgement
-when the batch and listener are ready. The service starts capture when shutdown is signalled.
-It allows five seconds for in-flight HTTP responses to finish and fifteen seconds for capture
-and deposit, running both waits concurrently. Admission, destination checks, interception and
+when the batch and listener are ready. Admission, destination checks, interception and
 credential handling stay in the serving process.
 
 The batch accommodates 256 opaque tunnels and 256 relay pairs. Each pair has up to 32 KiB of
 private state. One two-minute deadline covers receipt, adoption and delivery. Each timed
 record also carries its original monotonic deadline. Its expiry shuts down its two sockets
 throughout the exchange. The successor drains the expired frame and adopts the live remainder.
-Linux can discard a TCP peer name after both FINs while the original receive queue still
-contains the last application bytes. The server records both kernel socket cookies while the
-connection is established. A timed handoff checks those identities and can resume the terminal
-receive queue, including EOF after bytes already saved in the copy cursor.
-A peer that has reset before deposit or adoption ends its own pair. The receiver
-still drains and validates the frame before resuming its surviving siblings.
+When both FINs complete, Linux can forget the TCP peer name while the original socket still
+has its final bytes or EOF to deliver. A timed copy can record its two kernel socket cookies
+while both endpoints have peers. The sender completes an identity prefix without transferring
+descriptors. The receiver checks the roles and cookies before enrolling the original sockets
+for delivery and cleanup. A validated terminal queue can drain its last bytes and a saved copy
+cursor. If a stream resets or times out, the remaining pairs can still transfer.
 Once every pair expires the helper releases its only place. On batch expiry,
 disconnection or invalid input the helper drops its descriptors and state. During delivery it
 retains the original descriptors until the successor acknowledges the entire batch and the
@@ -40,12 +38,6 @@ helper confirms adoption. If that exchange fails, the helper shuts down both hal
 stream. This also closes the connection when a duplicate descriptor is still queued in the
 successor's control socket. The socket name
 is removed on adoption or orderly exit. Payload bytes live in memory.
-
-Under a delegated Linux service, the helper joins the sessions unit's service-owned legacy
-leaf. If that unit is unavailable and the server unit delegates controllers to its children,
-retaining the helper there requires a systemd version that can restart that layout. Failed
-placement ends the handoff before acknowledgement so the server can restart.
-[ADR-0298](0298-sessions-live-in-their-own-unit.md)
 
 ## Alternatives
 
@@ -57,8 +49,6 @@ TLS session.
 
 ## Consequences
 
-An established direct opaque agent tunnel in Linux legacy mode carries its original socket pair,
-pending bytes, write-half state, admission owner, byte activity and absolute expiry. Namespace
-mode also requires the matching host-side relay and its live holder. An incompatible successor,
-an elapsed deadline or a crash before deposit can end a
+The handoff protocol must carry pending bytes, half-closes and accounting when the server paths
+are wired. An incompatible successor, an elapsed deadline or a crash before deposit can end a
 tunnel. Intercepted traffic reconnects through the successor's host-bound credential checks.

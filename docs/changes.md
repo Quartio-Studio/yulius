@@ -6,7 +6,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-20
 
-- Established direct opaque agent CONNECT tunnels in Linux legacy mode retain their original TCP peers and pending bytes across an orderly server restart. Intercepted connections reconnect through the host-bound secret policy. [SPEC-577](../.ai/specs/SPEC-577-preserve-opaque-egress-tunnels-across-a.md)
+- The Linux tunnel custodian preserves final TCP receive queues and drops a lost connection independently. Original sockets transfer after the receiver has their complete identity metadata. [SPEC-577](../.ai/specs/SPEC-577-preserve-opaque-egress-tunnels-across-a.md)
 
 - The Linux tunnel custodian enforces each socket pair’s original lifetime during receipt, waiting and delivery. Expired TCP pairs release their peers while the successor receives the live remainder. [SPEC-577](../.ai/specs/SPEC-577-preserve-opaque-egress-tunnels-across-a.md)
 

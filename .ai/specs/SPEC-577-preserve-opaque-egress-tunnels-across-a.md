@@ -53,6 +53,8 @@ new request after the old sockets reach EOF. The issue requires the original con
 - [x] Resume established direct opaque CONNECT sockets in the replacement server
 - [x] Keep each original deadline during custody and preserve the live remainder of a mixed batch
 - [x] Obtain independent approval for the custody deadline slice
+- [x] Preserve original terminal receive queues and isolate connection loss during custody
+- [ ] Obtain independent approval for terminal socket custody
 - [ ] Obtain independent approval for the proxy restart slice
 - [ ] Hand established opaque connections and matching relay sockets to the restarted server
 - [ ] Verify same-socket continuity, admission limits and intercepted traffic through restart
@@ -376,3 +378,23 @@ without adoption support or a remote peer that times out can end a tunnel.
   receive queue. It now flushes exactly five pending application bytes to its original
   destination. A mismatched socket identity is rejected and its original Unix peer can
   still transfer bytes. Targeted Clippy and the repository quick checks passed.
+- The third direct-slice review at `fbfa58eea` requested two custody corrections. The
+  legitimate sender's first identity message already carried both descriptors before the
+  receiver could verify the cookies. A partial metadata read could therefore grant cleanup
+  authority too soon. A wire regression failed because the metadata carried descriptors.
+  With the new framing, the deadline and both cookies precede the descriptor transfer.
+  Receipt interrupted before the second cookie, including at the original deadline, leaves
+  the sender able to exchange its synthetic marker.
+- On an isolated TCP connection the reviewer observed `NotConnected` from the peer-name
+  query and `TimedOut` from a terminal queue check. A deterministic fixture injected that
+  read outcome and the preceding implementation aborted the batch with errno 110. The
+  corrected terminal queue check discards that pair. The fixture transfers the surviving
+  original sockets and exchanges bytes in both directions. Role, cookie and framing errors
+  still invalidate the delivery.
+- The terminal socket custody changes are a separate delivery. The saved direct proxy
+  implementation passed 120 targeted nextest cases on `fbfa58eea`. Its service wiring and
+  the production holder integration remain open for their own reviews and CI.
+- On the separated custody change, 47 relay library tests and all seven helper-process
+  tests passed. They cover the original final receive queue before deposit, single adoption,
+  independent expiry, reset isolation, identity mismatches, interrupted metadata and final
+  confirmation. Repository contract and formatting checks passed.
