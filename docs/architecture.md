@@ -3151,6 +3151,62 @@ flowchart LR
   AG["agent"] -.->|"refused"| P
 ```
 
+### Merge-first staging
+
+A project's shared staging target is the dev-stage `[cd.<name>]` with `merge_first = true` at
+the verified integration head ([decision 0410](decisions/0410-the-full-suite-runs-on-the-merged-revision-beside-a-merge-first-staging-target.md),
+[decision 0411](decisions/0411-staging-changes-through-a-queue-of-tested-merged-revisions.md),
+[SPEC-575](../.ai/specs/SPEC-575-make-task-local-testing-and-one-staging.md)). It changes only
+through its queue (`crates/yulius-app/src/ci/staging.rs`, decisions in
+`yulius_domain::staging`, rows in `staging_requests`, migration 0078).
+
+- **Request.** A task's agent's `cd_deploy` of that environment records a request for the
+  task's newest landing (`task_merges`), under the owner's write access. A plain deploy of it is
+  refused in `cd_prepare`.
+- **Candidate gate.** The integration branch's run of that exact commit, or a
+  `candidate/<sha>` run queued for it, judges it. A run that skipped the full suite judges
+  nothing. `dom::plan` counts a candidate run as testing its commit and never supersedes it.
+- **Pick.**
+  - Revisions are ordered by their first-parent position on the verified head
+    (`Git::first_parent_position`, in the CD mirror).
+  - What staging serves is the current release of its kept history (rollbacks count).
+  - The newest ready one above what staging serves deploys, and none passes an older request
+    still testing.
+  - Requests staging already contains are `included`.
+- **Deploy.**
+  - `CdRequest::DeployRevision` deploys exactly that commit, as the task's owner.
+  - One deploy per environment (unique index). It waits, costing no attempt, while another
+    run of it goes on or an update holds deploys.
+  - A lost or errored run is retried up to 3 attempts, and a person's cancel stands.
+- **Failure.** A failed deploy is restored: each part's current kept release is redeployed and
+  verified once (`CdRequest::Restore`, a rollback run).
+- **Told and shown.**
+  - `tell_staging_outcomes` types each task's outcome into its session once.
+  - `cd_status` and the CD page (`CdEnvironment.staging`) list the queue with revisions and run
+    ids.
+  - A person's production deploy that promotes waits until staging serves the integration
+    head, verified (read through the CD mirror in `cd_prepare`).
+  - A failed deploy that announced a rollback barrier is not restored.
+- **Idempotence.** Each move is a compare-and-set from the state it was read in. One live
+  request per requester and revision, and one success per task and environment. The background
+  tick and a request's kick advance each queue under its sandbox's lock.
+
+```mermaid
+stateDiagram-v2
+    [*] --> testing: cd_deploy (task's newest landing)
+    [*] --> included: staging already contains it
+    testing --> ready: full gate passed at the revision
+    testing --> gate_failed: full gate failed (staging unchanged)
+    ready --> deploying: newest ready revision above the verified one
+    ready --> included: a verified deploy contains it
+    deploying --> verified: deploy and verify passed
+    deploying --> deploy_failed: the scripts failed
+    deploying --> ready: run lost or errored (attempts below 3)
+    deploy_failed --> ready: asked again
+    testing --> superseded: a newer revision of the task
+    ready --> superseded: a newer revision of the task
+```
+
 ### Rollback
 
 Rollback is part of every project's CD

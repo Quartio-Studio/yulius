@@ -1598,6 +1598,12 @@ impl App {
             .ok_or_else(|| AppError::Conflict(DEPLOY_REFUSED.into()))
     }
 
+    /// Closes (`true`) or opens the deploy gate as an update does (tests of what waits for it).
+    #[doc(hidden)]
+    pub fn hold_deploys_for_tests(&self, closed: bool) {
+        self.updates.deploys.set_closed(closed);
+    }
+
     /// How many deploys hold a permit and are not recorded yet (tests, diagnostics).
     #[must_use]
     pub fn deploys_starting(&self) -> u32 {

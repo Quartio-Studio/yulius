@@ -1018,3 +1018,40 @@ test('an environment that deploys nothing needs no rollback; one that deploys sa
   await expect(dev.getByText('Not needed')).toBeHidden();
   await expect(prod.getByText('Rollback not configured')).toBeVisible();
 });
+
+// SPEC-575 (ADR-0411): a merge-first staging target shows its queue (the revision it serves and
+// each request's task, revision, state and runs), and its Deploy button says that tasks ask for
+// it instead of deploying its head.
+test('a merge-first staging target shows its queue with run and revision ids', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/ci?section=cd'));
+  await expect(screen.getByRole('region', 'Dev environment')).toBeVisible();
+  await browser.evaluate(() => {
+    type Env = Record<string, unknown> & { name: string };
+    const w = window as unknown as { __yuliusMock: { cd: Record<string, { environments: Env[] }> } };
+    const dev = w.__yuliusMock.cd.sb_studio.environments[0];
+    w.__yuliusMock.cd.sb_studio.environments.splice(1, 0, {
+      ...JSON.parse(JSON.stringify(dev)),
+      name: 'staging', label: 'staging', about: 'the shared staging VM', deploy: 'scripts/cd/deploy.sh staging', verify: 'scripts/cd/verify.sh staging', secrets: [],
+      staging: {
+        verified: '5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f',
+        requests: [
+          { id: 'sr_2', task_number: 14, revision: '9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f1a0b', state: 'gate_failed', ci_run_id: 'ci_77', cd_run_id: null, note: 'the full gate failed on revision 9a8b7c6d5e4f: run ci_77 (e2e); staging did not change', updated_at: new Date().toISOString() },
+          { id: 'sr_1', task_number: 12, revision: '5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f', state: 'verified', ci_run_id: 'ci_76', cd_run_id: 'cd_41', note: null, updated_at: new Date().toISOString() },
+        ],
+      },
+    });
+  });
+  await screen.getByRole('radio', 'CI (tests)').click();
+  await expect(screen.getByRole('heading', 'Repository hygiene')).toBeVisible();
+  await screen.getByRole('radio', 'CD (deployment)').click();
+  const staging = screen.getByRole('region', 'Staging environment');
+  const queue = staging.getByRole('group', 'Staging queue');
+  await expect(queue.getByText(/^Serves 5e6f7a8, its last verified revision/)).toBeVisible();
+  await expect(queue.getByText('full gate failed')).toBeVisible();
+  await expect(queue.getByText('CI ci_77')).toBeVisible();
+  await expect(queue.getByText('CD cd_41')).toBeVisible();
+  await expect(queue.getByText(/staging did not change/)).toBeVisible();
+  await expect(staging.getByRole('button', 'Deploy staging')).toBeDisabled();
+  await expect(staging.getByRole('button', 'Deploy staging')).toHaveAttribute('title', /the task asks with cd_deploy/);
+  expect(await axeViolations(browser)).toEqual([]);
+});

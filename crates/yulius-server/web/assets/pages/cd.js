@@ -40,6 +40,17 @@ const SECRET_STATE = {
   // Nobody can allow it: the Secrets page offers no Allow for a secret agents use (SPEC-237).
   agents_use: { label: 'agents use it: production never gets it', tone: 'danger' },
 };
+// A merge-first staging request's state (SPEC-575, ADR-0411).
+const STAGING_STATE = {
+  testing: { label: 'full gate running', tone: 'warn' },
+  ready: { label: 'waiting its turn', tone: '' },
+  deploying: { label: 'deploying', tone: 'warn' },
+  verified: { label: 'verified on staging', tone: 'ok' },
+  included: { label: 'in a verified deploy', tone: 'ok' },
+  gate_failed: { label: 'full gate failed', tone: 'danger' },
+  deploy_failed: { label: 'deploy failed', tone: 'danger' },
+  superseded: { label: 'superseded', tone: '' },
+};
 const POLL_ACTIVE_MS = 3000;
 const POLL_IDLE_MS = 30000;
 /** How many kept releases a part shows before the older ones fold (SPEC-419). */
@@ -197,6 +208,7 @@ export function mountCdSection(ctx, sandbox, route, section, actions) {
           ? h('p', { class: 'small muted' }, `Production never gets a secret agents use (copies into .env files or hosts the proxy sends it to), so nobody can allow it. Give production a separate secret: add it on the Secrets page and name it in [cd.${env.name}] secrets of yulius.toml; or remove its .env copies and hosts first, then allow it for production deploys.`)
           : null));
     }
+    if (env.staging) rows.push(stagingSection(env));
     rows.push(rollbackSection(env, overview));
     if (env.last_run) {
       const run = env.last_run;
@@ -208,7 +220,8 @@ export function mountCdSection(ctx, sandbox, route, section, actions) {
     const running = (overview.runs || []).some((r) => r.environment === env.name && r.state === 'running');
     const waiting = prod && env.rollback ? env.rollback.waiting : null;
     const why = !allowed ? (prod ? 'Only an administrator deploys production' : 'Requires write access')
-      : !ready ? 'Nothing to deploy yet' : running ? 'A deploy is running' : waiting || null;
+      : !ready ? 'Nothing to deploy yet' : running ? 'A deploy is running'
+        : env.staging ? 'Staging deploys a task’s merged revision once its full gate passed: the task asks with cd_deploy' : waiting || null;
     // Dev's deploy is the card's main action only when it can run; production's colour is a warning.
     const deploy = h('button', { type: 'button', class: ['btn', prod ? 'btn-danger' : !why && 'btn-primary'], disabled: Boolean(why), title: why, onClick: () => (prod ? deployProd(env, overview) : deployDev(env)) },
       icon('upload', { size: 16 }), prod ? `Deploy ${word(env.name)}…` : `Deploy ${word(env.name)}`);
@@ -219,6 +232,29 @@ export function mountCdSection(ctx, sandbox, route, section, actions) {
       h('div', { class: 'cd-env-head' }, h('div', { class: 'row-wrap cd-env-name' }, h('h2', { class: 'card-title' }, title(env)), stage, badge(st.label, st.tone)), deploy),
       rows,
       prod ? h('p', { class: 'small muted' }, `${env.name === 'prod' ? 'Production' : `${title(env)}, a production environment,`} is always deployed by a person. Agents never promote or deploy it; they ask with “Needs you”.`) : null);
+  }
+
+  /**
+   * A merge-first staging target's queue (SPEC-575, ADR-0411): the revision it serves, then each
+   * request with its task, revision, state and the CI and CD runs that decided it.
+   */
+  function stagingSection(env) {
+    const staging = env.staging;
+    const requests = staging.requests || [];
+    return h('div', { class: 'stack-sm', role: 'group', 'aria-label': 'Staging queue' },
+      h('div', { class: 'small muted' }, 'Staging queue'),
+      h('p', { class: 'small' }, staging.verified
+        ? ['Serves ', h('code', null, shortSha(staging.verified)), ', its last verified revision. A failing candidate leaves it there.']
+        : 'Nothing verified yet. A task’s merged revision deploys once its full gate passed.'),
+      requests.length === 0 ? null : h('ul', { class: 'cd-secrets' }, requests.map((r) => {
+        const st = STAGING_STATE[r.state] || { label: r.state, tone: '' };
+        return h('li', null,
+          h('span', null, r.task_number == null ? 'A deleted task' : `Task #${r.task_number}`), ' ',
+          h('code', null, shortSha(r.revision)), ' ', badge(st.label, st.tone),
+          r.ci_run_id ? h('span', { class: 'muted small' }, ` CI ${r.ci_run_id}`) : null,
+          r.cd_run_id ? h('span', { class: 'muted small' }, ` CD ${r.cd_run_id}`) : null,
+          r.note ? h('div', { class: 'small muted cd-wrap' }, r.note) : null);
+      })));
   }
 
   /**
