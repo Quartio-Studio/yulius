@@ -42,6 +42,13 @@ pub struct TelegramChoices {
     pub failed: bool,
     /// Subscription problems (instance administrators only).
     pub account: bool,
+    /// The end-of-day digest, when the instance sends one (SPEC-512 DIG-005; on by default).
+    #[serde(default = "digest_by_default")]
+    pub digest: bool,
+}
+
+fn digest_by_default() -> bool {
+    true
 }
 
 /// `GET /api/me/telegram`: the person's own link.

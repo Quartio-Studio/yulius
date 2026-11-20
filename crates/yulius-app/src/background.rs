@@ -114,6 +114,13 @@ impl App {
                 // tasks that went idle while Yulius was down have been woken (MSB-007).
                 if started.elapsed() >= PARK_AFTER_START {
                     app.park_idle_sessions_now().await;
+                    // The day's digest, once its time passed (SPEC-512 DIG-002), on its own
+                    // task: reading transcripts must not hold the queue (review round 1); the
+                    // run's claim keeps a later tick from starting a second one.
+                    let digest = Arc::clone(&app);
+                    tokio::spawn(async move {
+                        digest.digest_tick().await;
+                    });
                 }
                 // Expired and consumed CLI device grants (#169).
                 if let Err(err) = app.purge_device_grants().await {

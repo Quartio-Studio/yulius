@@ -3,7 +3,7 @@
 //! adapter; `ExtensionStores` bundles them into [`super::store::Store`].
 
 use async_trait::async_trait;
-use yulius_domain::ids::{SandboxId, TaskId};
+use yulius_domain::ids::{SandboxId, TaskId, UserId};
 use yulius_domain::time::Timestamp;
 
 use crate::automations::{AuditEntry, AutomationRecord, AutomationRunRecord, RunState};
@@ -696,6 +696,47 @@ pub trait CdStore: Send + Sync {
     ) -> AppResult<Vec<yulius_domain::rollback::ReleaseRecord>>;
 }
 
+/// One person's stored digest (SPEC-512 DIG-005).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredDigest {
+    /// Its id.
+    pub id: String,
+    /// When it was made.
+    pub created_at: Timestamp,
+    /// Its `DigestView` as JSON.
+    pub body: String,
+}
+
+/// The end-of-day digest (SPEC-512 part 3): the instance's setting, its last run and each
+/// person's digests.
+#[async_trait]
+pub trait DigestStore: Send + Sync {
+    /// The setting as stored (JSON; `None`: never set) and when the digest last ran.
+    async fn digest_setting(&self) -> AppResult<(Option<String>, Option<Timestamp>)>;
+    /// Saves the setting and `ran_at` as the last run, so a digest turned on is first sent at
+    /// its next time.
+    ///
+    /// # Errors
+    /// `Conflict` while the instance is not set up.
+    async fn set_digest_setting(&self, doc: &str, ran_at: Timestamp) -> AppResult<()>;
+    /// Takes the day's run: records `now` as the last run, and as when a run was last claimed,
+    /// only while the last run is still `seen`; `false` when another took it (DIG-002).
+    async fn take_digest_run(&self, seen: Option<Timestamp>, now: Timestamp) -> AppResult<bool>;
+    /// When a run was last claimed (DIG-002); a save of the setting leaves it.
+    async fn digest_sent_at(&self) -> AppResult<Option<Timestamp>>;
+    /// Where the last digest's listing ended (DIG-004): it listed what was parked before it.
+    async fn digest_listed_at(&self) -> AppResult<Option<Timestamp>>;
+    /// Records where a digest's listing ended.
+    ///
+    /// # Errors
+    /// `Conflict` while the instance is not set up.
+    async fn set_digest_listed_at(&self, at: Timestamp) -> AppResult<()>;
+    /// Keeps `digest` for `user`, and only their last seven.
+    async fn put_digest(&self, user: &UserId, digest: &StoredDigest) -> AppResult<()>;
+    /// The person's latest digest.
+    async fn latest_digest(&self, user: &UserId) -> AppResult<Option<StoredDigest>>;
+}
+
 /// What a task's agent asked a person to do (SPEC-134 CDT-004, column `tasks.needs_you`).
 #[async_trait]
 pub trait NeedsYouStore: Send + Sync {
@@ -827,6 +868,7 @@ pub trait ExtensionStores:
     + CiStore
     + CdStore
     + NeedsYouStore
+    + DigestStore
     + crate::ports::session_docs::SessionDocStore
     + NoteStore
     + SpanStore
@@ -852,6 +894,7 @@ impl<T> ExtensionStores for T where
         + CiStore
         + CdStore
         + NeedsYouStore
+        + DigestStore
         + crate::ports::session_docs::SessionDocStore
         + NoteStore
         + SpanStore
