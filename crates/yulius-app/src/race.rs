@@ -111,6 +111,9 @@ pub enum Point {
     /// A passed merge candidate (SPEC-497 MQW-002) comes to a member to merge: members before it
     /// merged; its own run is not read again yet. The path is the member's task id.
     TrainMemberMerging,
+    /// A failed candidate has checked its members for failures and is deciding how to
+    /// account for their runs. The path is the candidate run id.
+    FailedTrainDeciding,
     /// Start onboarding (SPEC-256) read the sandbox `pending`; the start has not read it again
     /// yet. The path is the sandbox id.
     OnboardingApproved,

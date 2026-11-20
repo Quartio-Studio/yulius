@@ -577,6 +577,10 @@ impl App {
                 self.drive_train(sandbox, state, train).await
             }
             RunState::Failed => {
+                crate::race::reached(
+                    crate::race::Point::FailedTrainDeciding,
+                    Path::new(&train.run),
+                );
                 // A member's own run that still goes may say why: it is waited for (within the
                 // test limit), and a member whose own run fails then leaves instead of the
                 // candidate being halved (SPEC-493 MQC-002).
@@ -594,7 +598,13 @@ impl App {
                         return Some(train);
                     }
                 }
-                self.bisect(sandbox, state, &train).await;
+                // A member may have failed since the check at the start of this pass:
+                // its run then no longer counts as going. Read its verdict before splitting.
+                if let Some(reason) = self.member_left(sandbox, &train).await {
+                    self.dissolve(sandbox, &train, &reason).await;
+                } else {
+                    self.bisect(sandbox, state, &train).await;
+                }
                 None
             }
             other => {

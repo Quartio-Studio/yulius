@@ -5963,8 +5963,8 @@ function sessionDocs(db) {
   const add = (doc) => docs.push({ bytes: 4096, redactions: 0, git_branch: 'main', continued_in: null, ...doc });
   const t12 = task('tsk_studio_12', 12);
   const t4 = task('tsk_studio_4', 4);
-  if (t12) add({ id: 'ses_task_12', sandbox_id: 'sb_studio', kind: 'task', task_id: t12.id, session_id: 'b1f0-12', title: t12.title, author: t12.created_by, git_branch: t12.branch, started_at: iso(2 * HOUR), ended_at: iso(MIN), imported_at: null, transcript: checkout.slice(0, 4) });
-  if (t4) add({ id: 'ses_task_4', sandbox_id: 'sb_studio', kind: 'task', task_id: t4.id, session_id: 'b1f0-04', title: t4.title, author: t4.created_by, git_branch: t4.branch, started_at: iso(10 * HOUR), ended_at: iso(9 * HOUR), imported_at: null, transcript: webhook });
+  if (t12) add({ id: 'ses_task_12', sandbox_id: 'sb_studio', kind: 'task', task_id: t12.id, harness: t12.harness, session_id: 'b1f0-12', title: t12.title, author: t12.created_by, git_branch: t12.branch, started_at: iso(2 * HOUR), ended_at: iso(MIN), imported_at: null, transcript: checkout.slice(0, 4) });
+  if (t4) add({ id: 'ses_task_4', sandbox_id: 'sb_studio', kind: 'task', task_id: t4.id, harness: t4.harness, session_id: 'b1f0-04', title: t4.title, author: t4.created_by, git_branch: t4.branch, started_at: iso(10 * HOUR), ended_at: iso(9 * HOUR), imported_at: null, transcript: webhook });
   add({ id: 'ses_imp_checkout', sandbox_id: 'sb_studio', kind: 'imported', task_id: null, session_id: '5d2c-checkout', title: 'Add Stripe checkout to the cart page', author: { login: 'mkarp' }, started_at: iso(3 * DAY), ended_at: iso(3 * DAY - 20 * MIN), imported_at: iso(2 * DAY), redactions: 3, bytes: 182000, transcript: checkout });
   add({ id: 'ses_imp_flaky', sandbox_id: 'sb_studio', kind: 'imported', task_id: null, session_id: '7a1e-flaky', title: 'Why is the e2e login test flaky on CI?', author: { login: 'anna-q' }, git_branch: 'fix/e2e', started_at: iso(5 * DAY), ended_at: iso(5 * DAY - 30 * MIN), imported_at: iso(4 * DAY), bytes: 64000, transcript: flaky });
   db.sessionDocs = docs;
@@ -5982,7 +5982,7 @@ function sessionView(db, doc) {
   const imported = doc.kind === 'imported';
   return {
     id: doc.id, sandbox_id: doc.sandbox_id, kind: doc.kind, title: doc.kind === 'task' && taskRef(doc.task_id) ? taskRef(doc.task_id).title : doc.title,
-    harness: 'claude', session_id: doc.session_id, author: doc.author, task: taskRef(doc.task_id), continued_in: taskRef(doc.continued_in),
+    harness: doc.harness || 'claude', session_id: doc.session_id, author: doc.author, task: taskRef(doc.task_id), continued_in: taskRef(doc.continued_in),
     git_branch: doc.git_branch, started_at: doc.started_at, ended_at: doc.ended_at, imported_at: doc.imported_at, bytes: doc.bytes, redactions: doc.redactions,
     can_continue: imported && write, can_delete: imported && (admin || (write && doc.author && doc.author.login === db.me.user.login)), hits: [],
   };
@@ -7417,7 +7417,7 @@ export function createMockTransport(params) {
     const docs = sessionDocs(db);
     let doc = docs.find((d) => d.kind === 'task' && d.task_id === task.id);
     if (!doc) {
-      doc = { id: `ses_task_${number}`, sandbox_id: sandboxId, kind: 'task', task_id: task.id, session_id: `live-${number}`, title: task.title, author: task.created_by, git_branch: task.branch, started_at: new Date().toISOString(), ended_at: null, imported_at: null, bytes: 0, redactions: 0, continued_in: null, transcript: [] };
+      doc = { id: `ses_task_${number}`, sandbox_id: sandboxId, kind: 'task', task_id: task.id, harness: task.harness, session_id: `live-${number}`, title: task.title, author: task.created_by, git_branch: task.branch, started_at: new Date().toISOString(), ended_at: null, imported_at: null, bytes: 0, redactions: 0, continued_in: null, transcript: [] };
       docs.push(doc);
     }
     let line = doc.transcript.length ? doc.transcript[doc.transcript.length - 1].line + 1 : 0;
