@@ -1171,6 +1171,40 @@ async fn a_prompt_typed_into_a_held_turn_takes_the_task_out_of_the_pause() -> Te
     Ok(())
 }
 
+/// A newly launched task already reads Working before any prompt starts its first turn.
+/// If the first submit is held and its client gives up, the corresponding Stop releases it.
+#[tokio::test]
+async fn a_first_prompt_held_at_launch_is_released_by_its_own_stop() -> TestResult {
+    let h = harness()?;
+    seed(&h).await?;
+    let t0 = now(&h);
+    let only = add_account(
+        &h,
+        "acc-only",
+        Some(usage(
+            98.0,
+            t0.plus_millis(HOUR),
+            40.0,
+            t0.plus_millis(90 * HOUR),
+        )),
+    )
+    .await?;
+    let task = running_task(&h, TaskMode::Prompt, &only).await?;
+    h.store
+        .set_activity(&task, Some(yulius_domain::task::Activity::Working), t0)
+        .await?;
+    assert_eq!(
+        hook(&h.internal, "UserPromptSubmit", json!({"prompt": "first"}))
+            .await?
+            .0,
+        202
+    );
+    assert_eq!(hook(&h.internal, "Stop", json!({})).await?.0, 200);
+    assert!(h.store.open_pause(&task).await?.is_none());
+    assert_eq!(status(&h, &task).await?, TaskStatus::Running);
+    Ok(())
+}
+
 #[tokio::test]
 async fn the_preceding_turns_stop_preserves_a_queued_prompts_pause() -> TestResult {
     queued_prompt_stop(TaskMode::Prompt, 200).await
