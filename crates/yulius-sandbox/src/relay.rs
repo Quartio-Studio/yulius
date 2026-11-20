@@ -13,6 +13,8 @@
 //! refusing it (SPEC-355 SLR-001, ADR-0241).
 
 mod copy;
+#[cfg(target_os = "linux")]
+pub mod custodian;
 
 pub use copy::CopyState;
 
