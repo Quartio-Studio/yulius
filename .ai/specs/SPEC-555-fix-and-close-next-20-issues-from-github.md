@@ -62,40 +62,40 @@ upgrade prerequisite for older live wrappers has not been established. Open PR #
 ## Plan
 
 - [x] Identify the next twenty actionable open issues
-- [ ] Correct playground delivery and cross-sandbox request actions
+- [x] Correct playground delivery and cross-sandbox request actions
 - [x] Repair repository test and decision indexes
 - [ ] Measure complete CPU samples and synchronize access and cockpit tests
 - [ ] Preserve attention and held prompts across overlapping hooks
 - [ ] Resume eligible subscriptions and classify workflow limits consistently
 - [ ] Bound provider usage reads before buffering the response
-- [ ] Carry the freeze budget through the instance move form and helper
+- [x] Carry the freeze budget through the instance move form and helper
 - [ ] Reuse a removed sandbox port range after its listeners are retired
-- [ ] Synchronize browser checks with the state each assertion measures
-- [ ] Refresh open task search when the sandbox tasks arrive
+- [x] Synchronize browser checks with the state each assertion measures
+- [x] Refresh open task search when the sandbox tasks arrive
 - [ ] Verify the integrated changes, obtain independent review and close on green delivery
 
 ## Acceptance criteria
 
-- **AC-1200** A test that flags a task with an answerable notice, lets the agent write one work line and ask again at once, and finds the task in Needs you two transcript rounds later (it fails on `dev`: Working). A test that an ask work does not answer, arriving on an answerable notice's flag, is not lifted by the main session's next work. A single answerable notice is still answered by the agent's next work (`task_done::a_notice_is_answered_by_the_agents_next_work`). `scripts/dev ci` passes.
-- **AC-1202** `MoveRequest` and the API (`AskMigration`, `MigrationRun`) carry an optional `max_downtime`; the rules refuse 0 and anything that is not a number, in the server and in the helper; an abort names none. The helper runs the command with `--max-downtime=N` for a plan and a move (argument test against the command's own parser), and a plan for other values still does not allow the move. The card: the field with its hint, the bound in the confirmation, and the outcome of a move that stopped above the bound; mock and e2e. Operations guide §7 ("Move from Settings → Instance") and the API reference.
-- **AC-1206** A test sends the hooks in the real order (a prompt's hook while the turn before it runs, held for capacity; then that turn's Stop) and shows the pause stays open and the task reads as waiting for capacity; it fails on today's code. The case the code was written for (the CLI gave a held prompt up and its turn ran) still ends the pause, with its test. The comment in `hook_stop` and SPEC-002's paragraph agree with what Claude Code does.
-- **AC-1210** `e2e/README.md` has a row for `instance-limits.e2e.ts` and one for `production-protection.e2e.ts`, written from what the tests assert. Every `*.e2e.ts` under `e2e/tests` is named in the table (a one-line check in the pull request's description is enough).
-- **AC-1217** The failure is reproduced on demand (for example with a delay on the mock's task read) and the test, or the menu, is fixed so that it passes with that delay. If the menu itself is changed (rebuilt when the tasks arrive), a test covers a menu opened before the tasks were read.
-- **AC-1218** The taller first row is reproduced on demand (for example with a delay at the step that changes its height) and explained. The test waits for that condition, or the layout is fixed, and the test passes with the delay in place.
-- **AC-1223** The test passes 20 runs in a row with `lateResizeObservers(browser)` before `app.open`. A list that scrolls is a tab stop by the time the test reads it, however late the observers run; a short list is still no tab stop. The whole e2e suite passes.
-- **AC-1237** A task that waits with subscription A left out for a model runs on A again after a Refresh of A in which Claude answers with that model, before any other subscription's reset. A Refresh that Claude refuses, or does not answer, leaves the task waiting as before (SPEC-464 UCL-010 still holds: no restart at every reading). A regression test beside `usage_credits::a_task_refused_again_waits_for_a_known_reset_off_that_subscription` fails without the fix.
-- **AC-1246** The cause of the fourth load in the window is found (reproduced with a probe delay, not by repeating the test). The test asserts the back-off on a condition (gaps between retries or a controlled clock), not on a count after a fixed wait. The test passes 20 times in a row under a CPU share of 0.2.
-- **AC-1249** A new sandbox gets the lowest range no live sandbox holds (a test creates, removes and creates again and gets the same range) A range is not given again while its former sandbox's relay or holder can still be listening on it `docs/operations.md` says which ports Yulius gives to sandboxes
-- **AC-1256** A unit test reads an answered default-type agent and a first-request refusal of another agent of the same run in one poll, in both file orders, and gets the same scope. `run_family_of` is not called for a poll without a `WorkflowLimitReached`. SPEC-486 WFL-006 says a workflow paused at another model's limit gets no note. Items 4 to 7 are each fixed with a test or kept with a sentence in SPEC-486. `scripts/dev ci` passes.
-- **AC-1258** A playground task that is not merged lists `merge` and not `open_pr` in `next_actions` (API and `delivery_status`). A merged playground task lists no `promote`. A test in `crates/yulius/tests/playground.rs` fails without the change. The Git page and the Deliver dialog show no action for a playground that the server would refuse.
-- **AC-1380** `get_json` stops reading at `MAX_BODY` + 1 bytes and answers the temporary failure A unit test with a local stand-in that streams more than `MAX_BODY` bytes (without `Content-Length`) proves the read stops early and the failure is temporary Normal answers (Claude usage, Codex `wham/usage`) still parse
-- **AC-1302** `sandbox_task_message` for a task the person does not own is refused before a card is shown, with the owner named, and audited as the other early refusals are `sandbox_task_update` for a task the person does not own is refused the same way The check at approval stays (a task handed over or taken back while the request waits is decided by who owns it then), with a test for a change of owner between asking and approving A waiting request restored after a restart for a task that is no longer the person's still ends in the refusal on approval The doc comment of `a_message_to_a_task_holding_its_owners_personal_secrets_is_refused` gives today's reason `docs/api.md` says when these two tools refuse without asking
-- **AC-1303** 0331 is listed before 0332 in `docs/decisions/README.md` `scripts/check_repository.py` fails on an index whose entries are out of number order (with a test), or the issue records why the order is not checked
-- **AC-1334** The test sets the page's clock to a fixed time of day (or asserts both forms), so it passes when run at 23:55. A run of the test with the page's clock at 23:55 passes.
-- **AC-1351** The negative look in `event_streams_follow_revoked_access_and_close_for_disabled_users` ignores `heartbeat` messages, and any other negative look in `http_auth.rs` that reads the raw stream does the same. A probe that delays the test past one heartbeat interval, or a shortened heartbeat in the fixture, reproduces the failure before the fix and passes after it. The test still fails when the revoked sandbox's event is delivered (a mutation that keeps the access).
-- **AC-1361** With the throwaway delay above, the three stray tests pass, or fail only with a message naming the dropped probe rather than timing out. No sleeps, retries or longer waits are added to the tests. `cockpit::` passes 20 consecutive runs under load.
-- **AC-1363** With the tasks read held, an open search with a query shows the matching tasks once the read is released, with no further input. An e2e test covers it with the mock's hold, and it fails before the fix. The search keeps its selection and focus when it re-renders.
-- **AC-1369** `ci_use` returns `None` when either the `ci` or the `engine` group's `cpu.stat` exists but cannot be read, and still returns a sum when a group does not exist at all. A unit test in `cgroup.rs` covers an unreadable `engine/cpu.stat` beside a readable `ci/cpu.stat`. A unit test in `yulius-app` `resources.rs` shows that a skipped reading followed by a full one does not produce a rate above what was used.
+- **AC-1200** A second answerable notification remains open when earlier work arrives. A worker's unanswered request survives main-session work. Later work still answers a single main-session notice.
+- **AC-1202** The Settings form, stored plan, confirmation, API and helper agree on the optional positive whole-minute freeze limit. The helper rejects an invalid value or an abort bearing a limit. A move must match its plan and explain when the estimate prevents freezing.
+- **AC-1206** A Stop from an earlier turn preserves the queued prompt's capacity hold. A Stop from the held prompt's own turn ends an abandoned hold. The architecture contract describes the order of these events.
+- **AC-1210** Every browser test file has an accurate row in the test suite index.
+- **AC-1217** The automation task menu test finds its task choices when the sandbox task read is delayed.
+- **AC-1218** The first real task row and its skeleton measure the same height when Chromium skips layout for content outside the viewport.
+- **AC-1223** A scrollable request list becomes a keyboard tab stop even with delayed observers. Short lists stay outside the tab order. Run the delayed case twenty times.
+- **AC-1237** A successful model refresh allows a waiting task to use the recovered subscription before another subscription resets. Refused or inconclusive refreshes retain the excluded pair.
+- **AC-1246** Identify the extra note load and verify increasing intervals between retries for the affected note. Run the regression twenty times at approximately one fifth of one CPU.
+- **AC-1249** Allocation reuses the lowest available block after its previous sandbox retires. Existing holders and listeners retain their ranges. Upgrades preserve existing reservations and child rows. The operations guide specifies the range.
+- **AC-1256** A workflow limit is classified consistently in either order of its agent files. Polls without a workflow limit avoid reading the run's model family. SPEC-486 records the prompt-hook behavior and a decision for each remaining review point.
+- **AC-1258** The delivery API, agent tool, Git view and delivery dialog offer the local squash in a ready playground. Local prerequisites explain blocked squashes. A merged playground task has no further action.
+- **AC-1302** Unowned steering requests are refused and audited before a card appears. Eligible answers to open questions keep their existing permissions. Approval rechecks the current owner, including after restoration.
+- **AC-1303** The decision index is in numeric order and the repository check reports a reversed pair.
+- **AC-1334** A subscription window starting at 23:55 displays its next-day reset and clears its limit on time.
+- **AC-1351** Event stream assertions ignore heartbeats under the original deadline and still detect a real sandbox event.
+- **AC-1361** Clock advances and reap assertions follow a confirmed stray sighting. A deliberately dropped probe identifies the missing sighting. Run the cockpit suite twenty times under load.
+- **AC-1363** An open task search updates when tasks load and keeps keyboard focus and the selected task across subsequent updates.
+- **AC-1369** An unreadable CPU statistic in an existing group invalidates the sample. An absent group contributes nothing. Admission uses the prior complete sample when the next reading succeeds.
+- **AC-1380** A chunked usage response exceeding 256 KiB yields a temporary failure before the stream ends. Normal provider responses still parse.
 
 ## Test plan
 
@@ -111,4 +111,9 @@ process ownership rules while applying the individual fixes.
 
 ## Evidence
 
-Pending behavioral verification.
+- #1210 and #1303. Verified all browser files have table rows. A reversed decision pair failed the new check before the fix. All 14 repository contract unit cases passed afterward.
+- #1217, #1218, #1223, #1246 and #1363. Chromium reproduced the late task read, skipped row layout, delayed tab stop and stale search. The skipped real row used 72 px where its contents needed 52 px. A delayed Team note read accounted for the fourth load. All 166 adjacent browser checks passed. The notes retry and late observer tests each passed twenty consecutive runs. The constrained notes series measured 0.192 CPU share. Search retained focus and selection during a live reorder.
+- #1334. PR #1481 already covered a clock starting at 23:55. The regression passed at the batch's starting head and the issue closed on GitHub.
+- #1258, #1302, #1351 and #1369. Before the fixes, the delivery API offered open_pr and promote, a cross-project request reached the panel, a heartbeat failed the revoked-access assertion and the sandbox sampler returned 1,500 microseconds for an incomplete reading. Afterward the scoped nextest run passed 127 cases. The Chromium playground delivery dialog failed before the fix and passed afterward.
+- #1351. A temporary fixture retaining read permission failed on the real task.removed event for t-hidden. The fixture change was removed.
+- #1202 and #1249. Baseline failures included the missing Settings field and an unavailable historical port. After the changes, all 223 focused Rust cases and all 12 instance-move Chromium cases passed. The host transition was exercised using the migration fixtures.
