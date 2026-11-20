@@ -2108,6 +2108,12 @@ An externally opened replacement can hold the successor after the recorded deliv
 Yulius rechecks local work, durable CI and the owner’s state after the remote reads.
 An explicit `#N merged` rule follows the recorded merge.
 
+The individual HTTP task detail verifies both recorded and branch PRs.
+A durable ordinary CI failure identifies its own PR and head even when a newer PR is
+green. Remote verification has a 750 ms deadline. Up to eight native Git operations
+run for these reads per application. Each keeps its permit until Git returns.
+[ADR-0409](decisions/0409-report-the-pr-that-blocks-a-parked-task.md)
+
 The end-of-day digest (`yulius-app/src/digest.rs`, SPEC-512 part 3,
 [decision 0380](decisions/0380-an-end-of-day-digest-built-from-task-state.md)) runs from the same
 tick: `digest_tick` reads `instance.digest`, and once today's time (UTC) passed takes the run with

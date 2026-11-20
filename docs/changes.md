@@ -6,6 +6,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-20
 
+- A parked task’s detail identifies the ordinary PR blocking Done, including when another PR on the same branch is green. Unfinished local work also keeps it under Needs you (SPEC-558).
 - A project with a shared staging target can mark it `merge_first = true` and its long jobs
   `after_merge = true`. Pull requests then wait only for the quick checks, and the full suite
   runs once on the merged revision instead of on every head. Projects without such a target keep
