@@ -572,6 +572,11 @@ impl App {
             let target = target.unwrap_or_else(|| CdTarget::new(&name, stage));
             let deploying = source.promotes_from.as_deref().or(source.head.as_deref());
             let rollback = self.cd_rollback_view(sandbox, &target, deploying).await?;
+            let staging = if target.merge_first && stage == CdStage::Dev {
+                Some(self.cd_staging_view(sandbox, &target).await?)
+            } else {
+                None
+            };
             environments.push(CdEnvironment {
                 label: env_label(&name).to_owned(),
                 name,
@@ -590,11 +595,7 @@ impl App {
                 deployed,
                 last_run,
                 rollback,
-                staging: if target.merge_first && stage == CdStage::Dev {
-                    Some(self.cd_staging_view(sandbox, &target.name).await?)
-                } else {
-                    None
-                },
+                staging,
             });
         }
         super::rollback::mark_rollback_not_needed(&mut environments, &profile.integration_branch);
@@ -657,6 +658,36 @@ impl App {
             )
             .await?;
         Ok(self.cd_run_view(&run, false).await)
+    }
+
+    /// The staging queue's pinned deploy of `revision` (`CdRequest::DeployRevision`) as `user`,
+    /// for tests of its refusals (SPEC-575 MFS-003).
+    ///
+    /// # Errors
+    /// Every refusal of a deploy, and a revision off the integration head's first-parent history
+    /// or of a production-stage environment.
+    #[doc(hidden)]
+    pub async fn cd_deploy_revision_for_tests(
+        self: &Arc<Self>,
+        sandbox: &SandboxRecord,
+        env: &str,
+        user: &UserRecord,
+        revision: &str,
+    ) -> AppResult<CdRunRecord> {
+        self.cd_start(
+            sandbox,
+            env,
+            Requester::Person {
+                administrator: true,
+                confirmation: Some(&sandbox.slug),
+            },
+            &CdActor::Person(user),
+            CdRequest::DeployRevision {
+                revision,
+                note: "a test of pinned deploys",
+            },
+        )
+        .await
     }
 
     /// A deploy of `env` for a task's agent (`cd_deploy`) under its owner's write access.
@@ -1204,10 +1235,13 @@ impl App {
             (CdStage::Dev, Some(revision)) => {
                 let full = revision.len() == 40 && revision.bytes().all(|b| b.is_ascii_hexdigit());
                 let on = if full {
+                    // A commit the mirror does not have is no commit of the branch's history.
                     self.deps
                         .git
                         .first_parent_position(&self.cd_mirror(&sandbox.id), &integration, revision)
-                        .await?
+                        .await
+                        .ok()
+                        .flatten()
                 } else {
                     None
                 };
@@ -2459,7 +2493,7 @@ impl App {
         {
             let request = self.staging_request(&sandbox, &env, ctx, &head).await?;
             let text = format!(
-                "Staging request {} for revision {} of {}: {}. {} Yulius tells this session its outcome; meanwhile cd_status shows the queue with its run ids, and cd_deploy again answers with this request.",
+                "Staging request {} for revision {} of {}: {}. {}. Yulius tells this session its outcome; meanwhile cd_status shows the queue with its run ids, and cd_deploy again answers with this request.",
                 request.id,
                 short_sha(&request.revision),
                 env_label(&env),

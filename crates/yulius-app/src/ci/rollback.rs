@@ -476,6 +476,19 @@ impl App {
             run_id: run.id.clone(),
         };
         let mut records = Vec::new();
+        // A failed deploy records no release, so the barriers it announced are kept as the last
+        // lines of its output, where the staging queue's restore reads them (SPEC-575 MFS-007).
+        if run.kind == CdRunKind::Deploy && state != RunState::Passed {
+            for (part, reason) in yulius_domain::rollback::announced_barriers(
+                markers.iter().map(String::as_str),
+                &target.parts,
+            ) {
+                ring.push_str(&format!(
+                    "{}\n",
+                    yulius_domain::rollback::failed_barrier_line(&part, &reason)
+                ));
+            }
+        }
         // What is recorded so far: earlier barriers, and where a part stands (review round 3: a
         // failed read is said, never silently taken as no history).
         let known = match self

@@ -249,7 +249,7 @@ export function mountCdSection(ctx, sandbox, route, section, actions) {
       requests.length === 0 ? null : h('ul', { class: 'cd-secrets' }, requests.map((r) => {
         const st = STAGING_STATE[r.state] || { label: r.state, tone: '' };
         return h('li', null,
-          h('span', null, r.task_number == null ? 'A person' : `Task #${r.task_number}`), ' ',
+          h('span', null, r.task_number == null ? 'A deleted task' : `Task #${r.task_number}`), ' ',
           h('code', null, shortSha(r.revision)), ' ', badge(st.label, st.tone),
           r.ci_run_id ? h('span', { class: 'muted small' }, ` CI ${r.ci_run_id}`) : null,
           r.cd_run_id ? h('span', { class: 'muted small' }, ` CD ${r.cd_run_id}`) : null,

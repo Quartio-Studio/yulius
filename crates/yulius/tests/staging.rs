@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 use yulius_app::ci::{CiJobRecord, CiRunRecord};
-use yulius_app::ports::store::SandboxStore as _;
+use yulius_app::ports::store::{SandboxStore as _, UserStore as _};
 use yulius_app::ports::store_ext::{
     CdStore as _, CiStore as _, StagingChange, StagingRequestRecord, StagingStore as _,
 };
@@ -636,6 +636,29 @@ async fn production_is_promoted_only_from_the_verified_staging_revision() -> Tes
         "{said}"
     );
     assert!(!git_contains(&f, "main", &r2)?, "nothing promoted");
+    // The Delivery page's promotion is held to the same revision (review round 2).
+    let page = support::call(
+        &f.h.router,
+        axum::http::Method::POST,
+        "/api/sandboxes/s1/delivery/promote",
+        Some(json!({"confirm": "app"})),
+        &f.bob,
+    )
+    .await?;
+    assert_eq!(
+        page.status,
+        axum::http::StatusCode::CONFLICT,
+        "{}",
+        page.body
+    );
+    assert!(
+        page.body
+            .to_string()
+            .contains(&format!("staging verified {}", &r1[..7])),
+        "{}",
+        page.body
+    );
+    assert!(!git_contains(&f, "main", &r2)?, "nothing promoted");
     // Staging verifies r2: the same deploy promotes exactly it.
     gate(&f, &r2, RunState::Passed).await?;
     ask(&f, "t2").await?;
@@ -980,4 +1003,203 @@ async fn a_request_whose_revision_or_target_went_away_is_superseded() -> TestRes
 
 fn git_origin(f: &Fixture, args: &[&str]) -> BoxResult<String> {
     crate::cd::git(&f.origin, args)
+}
+
+/// A deploy script that runs an irreversible migration, says so, and fails.
+const DEPLOY_PAST_A_BARRIER: &str = "#!/bin/sh\necho migrated > \"$MARKS/schema\"\necho \"::yulius-rollback-barrier dropped column x\"\nexit 3\n";
+
+/// `staging_toml` whose rollback redeploys the kept release and whose verify checks it.
+fn restoring_toml() -> String {
+    staging_toml()
+        .replace(
+            "rollback = \"true\"",
+            "rollback = \"MARKS={marks} sh scripts/cd/rollback.sh\"",
+        )
+        .replace(
+            "verify = \"MARKS={marks} sh scripts/cd/verify.sh\"\n\
+     rollback",
+            "verify = \"MARKS={marks} sh scripts/cd/staging-verify.sh\"\n\
+     rollback",
+        )
+}
+
+/// t1's first revision with the restoring scripts, deployed and verified on staging.
+async fn first_verified(f: &Fixture) -> BoxResult<String> {
+    let r1 = f.push(
+        "dev",
+        &[
+            ("scripts/cd/rollback.sh", Some(ROLLBACK)),
+            ("scripts/cd/staging-verify.sh", Some(STAGING_VERIFY)),
+        ],
+    )?;
+    f.h.store
+        .execute_for_tests(&format!(
+            "INSERT INTO task_merges(task_id, sandbox_id, merged_sha, branch, pr_number, head_sha) \
+             VALUES ('t1', 's1', '{r1}', 'dev', NULL, '{r1}')"
+        ))
+        .await?;
+    gate(f, &r1, RunState::Passed).await?;
+    ask(f, "t1").await?;
+    settle(f).await?;
+    assert_eq!(serving(f)?, r1);
+    Ok(r1)
+}
+
+/// SPEC-575 MFS-007 with RBK-022 (review round 2 of slice 2): a failed deploy that announced a
+/// rollback barrier is not restored past it. Its request says why, and nothing rolls staging
+/// back.
+#[tokio::test]
+async fn a_failed_deploy_past_a_rollback_barrier_is_not_restored() -> TestResult {
+    let f = fixture(&restoring_toml()).await?;
+    agent(&f, "t1").await?;
+    agent(&f, "t2").await?;
+    first_verified(&f).await?;
+    let r2 = f.push(
+        "dev",
+        &[("scripts/cd/deploy.sh", Some(DEPLOY_PAST_A_BARRIER))],
+    )?;
+    f.h.store
+        .execute_for_tests(&format!(
+            "INSERT INTO task_merges(task_id, sandbox_id, merged_sha, branch, pr_number, head_sha) \
+             VALUES ('t2', 's1', '{r2}', 'dev', NULL, '{r2}')"
+        ))
+        .await?;
+    gate(&f, &r2, RunState::Passed).await?;
+    let second = ask(&f, "t2").await?;
+    settle(&f).await?;
+    settle(&f).await?;
+    let failed = request(&f, second["id"].as_str().ok_or("id")?).await?;
+    assert_eq!(failed.state, StagingState::DeployFailed, "{failed:?}");
+    let note = failed.note.clone().unwrap_or_default();
+    assert!(
+        note.contains("rollback barrier (dropped column x)") && note.contains("a person decides"),
+        "{note}"
+    );
+    let runs = f.h.store.cd_runs(&SandboxId::parse("s1")?, 50).await?;
+    assert!(
+        !runs
+            .iter()
+            .any(|run| run.kind == yulius_domain::rollback::CdRunKind::Rollback),
+        "nothing rolled staging back past the barrier: {runs:?}"
+    );
+    assert!(!f.marks.join("restores").exists());
+    Ok(())
+}
+
+/// SPEC-575 (review round 2 of slice 2): after a person's rollback of staging, the queue shows
+/// what staging serves, not the newest verified request, and production would promote that.
+#[tokio::test]
+async fn the_queue_shows_what_staging_serves_after_a_rollback() -> TestResult {
+    let f = fixture(&restoring_toml()).await?;
+    agent(&f, "t1").await?;
+    agent(&f, "t2").await?;
+    let r1 = first_verified(&f).await?;
+    let r2 = land(&f, "t2", "two.txt").await?;
+    gate(&f, &r2, RunState::Passed).await?;
+    ask(&f, "t2").await?;
+    settle(&f).await?;
+    // Each passed deploy's drill moves staging back and forth: wait for it to end on r2.
+    settle(&f).await?;
+    assert_eq!(serving(&f)?, r2);
+    let back = support::call(
+        &f.h.router,
+        axum::http::Method::POST,
+        "/api/sandboxes/s1/cd/staging/rollback",
+        Some(json!({})),
+        &f.alice,
+    )
+    .await?;
+    assert!(back.status.is_success(), "{}", back.body);
+    f.ended(back.body["run_id"].as_str().ok_or("run")?).await?;
+    assert_eq!(serving(&f)?, r1);
+    let overview = f.get("/api/sandboxes/s1/cd").await?;
+    let staging = overview["environments"]
+        .as_array()
+        .ok_or("environments")?
+        .iter()
+        .find(|env| env["name"] == "staging")
+        .ok_or("staging")?["staging"]
+        .clone();
+    assert_eq!(staging["verified"], r1.as_str(), "{staging}");
+    Ok(())
+}
+
+/// SPEC-575 MFS-008 (review round 2 of slice 2): while an update holds new deploys, a ready
+/// request waits, costing no attempt, and deploys once the gate opens.
+#[tokio::test]
+async fn a_ready_request_waits_while_an_update_holds_deploys() -> TestResult {
+    let f = fixture(&staging_toml()).await?;
+    agent(&f, "t1").await?;
+    let r1 = land(&f, "t1", "one.txt").await?;
+    gate(&f, &r1, RunState::Passed).await?;
+    f.h.app.hold_deploys_for_tests(true);
+    let asked = ask(&f, "t1").await?;
+    let id = asked["id"].as_str().ok_or("id")?.to_owned();
+    for _ in 0..4 {
+        f.h.app
+            .staging_advance(&sandbox(&f).await?, "staging")
+            .await?;
+    }
+    let waiting = request(&f, &id).await?;
+    assert_eq!(
+        (waiting.state, waiting.attempts),
+        (StagingState::Ready, 0),
+        "{waiting:?}"
+    );
+    f.h.app.hold_deploys_for_tests(false);
+    settle(&f).await?;
+    let one = request(&f, &id).await?;
+    assert_eq!(
+        (one.state, one.attempts),
+        (StagingState::Verified, 1),
+        "{one:?}"
+    );
+    Ok(())
+}
+
+/// SPEC-575 MFS-003 (review rounds 1 and 2 of slice 2): a pinned deploy runs only a full
+/// commit of the integration head's own first-parent history, and only for a dev-stage
+/// environment.
+#[tokio::test]
+async fn a_pinned_deploy_runs_only_a_commit_of_the_branchs_own_history() -> TestResult {
+    let f = fixture(&staging_toml()).await?;
+    let s = sandbox(&f).await?;
+    let alice =
+        f.h.store
+            .user(&yulius_domain::ids::UserId::parse("u-alice")?)
+            .await?
+            .ok_or("alice")?;
+    let r1 = f.push("dev", &[("one.txt", Some("one"))])?;
+    // A commit of another branch, never merged into dev.
+    let side = f.push("side", &[("side.txt", Some("side"))])?;
+    git_origin(&f, &["update-ref", "refs/heads/dev", &r1])?;
+    let deploy = |revision: String| {
+        let (f, s, alice) = (&f, &s, &alice);
+        async move {
+            f.h.app
+                .cd_deploy_revision_for_tests(s, "staging", alice, &revision)
+                .await
+        }
+    };
+    for (revision, says) in [
+        (side.clone(), "is not a commit of dev's own history"),
+        (r1[..12].to_owned(), "is not a commit of dev's own history"),
+        ("z".repeat(40), "is not a commit of dev's own history"),
+    ] {
+        let refused = deploy(revision.clone()).await.err().ok_or("refused")?;
+        assert!(refused.to_string().contains(says), "{revision}: {refused}");
+    }
+    let prod =
+        f.h.app
+            .cd_deploy_revision_for_tests(&s, "prod", &alice, &r1)
+            .await
+            .err()
+            .ok_or("refused")?;
+    assert!(
+        prod.to_string().contains("only a dev-stage environment"),
+        "{prod}"
+    );
+    let run = deploy(r1.clone()).await?;
+    assert_eq!(f.ended(&run.id).await?["commit"], r1.as_str());
+    Ok(())
 }

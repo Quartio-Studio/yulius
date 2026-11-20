@@ -3240,30 +3240,12 @@ async fn staging_requests_are_idempotent_and_move_once() -> R {
             .await?,
         "the same task and revision: one row"
     );
-    // A person's request for the same revision is its own.
-    assert!(
-        store
-            .insert_staging_request(&staging_request("p", &sid, None, "r1", Testing))
-            .await?
-    );
-    assert!(
-        !store
-            .insert_staging_request(&staging_request("p2", &sid, None, "r1", Testing))
-            .await?
-    );
     let of_t1 = store
         .staging_requests_of(&sid, "staging", Some(&t1.id), "")
         .await?;
     assert_eq!(
         of_t1.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(),
         ["a"]
-    );
-    let of_person = store
-        .staging_requests_of(&sid, "staging", None, "r1")
-        .await?;
-    assert_eq!(
-        of_person.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(),
-        ["p"]
     );
     // Compare-and-set: the move applies once, from the state it was decided on.
     let change = StagingChange {
@@ -3317,7 +3299,7 @@ async fn staging_requests_are_idempotent_and_move_once() -> R {
     let pending = store.pending_staging_requests(&sid, "staging").await?;
     assert_eq!(
         pending.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(),
-        ["a", "p", "b"]
+        ["a", "b"]
     );
     assert_eq!(
         store.staging_queues(Timestamp(0)).await?,
@@ -3365,12 +3347,48 @@ async fn staging_requests_are_idempotent_and_move_once() -> R {
     let untold = store.untold_staging_requests().await?;
     assert_eq!(
         untold.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(),
-        ["a"]
+        ["a", "a3"],
+        "a superseded request is told too"
     );
     assert!(store.mark_staging_told("a").await?);
     assert!(!store.mark_staging_told("a").await?);
+    assert!(store.mark_staging_told("a3").await?);
     assert!(store.untold_staging_requests().await?.is_empty());
     let recent = store.recent_staging_requests(&sid, "staging", 2).await?;
     assert_eq!(recent.len(), 2);
+    Ok(())
+}
+
+/// SPEC-575 (review rounds 1 and 2 of slice 2): deleting tasks keeps their staging requests
+/// without their task (what staging verified stays known), also two that landed one revision.
+#[tokio::test]
+async fn deleted_tasks_keep_their_staging_requests() -> R {
+    use yulius_app::ports::store_ext::StagingStore;
+    use yulius_domain::staging::StagingState::{Included, Verified};
+    let store = SqliteStore::open_in_memory()?;
+    let (sid, uid) = seed(&store).await?;
+    let t1 = task("t1", &sid, &uid)?;
+    let t2 = task("t2", &sid, &uid)?;
+    store.insert_task(&t1).await?;
+    store.insert_task(&t2).await?;
+    assert!(
+        store
+            .insert_staging_request(&staging_request("a", &sid, Some(&t1.id), "r1", Verified))
+            .await?
+    );
+    assert!(
+        store
+            .insert_staging_request(&staging_request("b", &sid, Some(&t2.id), "r1", Included))
+            .await?
+    );
+    assert!(store.delete_task(&t1.id).await?);
+    assert!(store.delete_task(&t2.id).await?);
+    let kept = store.recent_staging_requests(&sid, "staging", 10).await?;
+    assert_eq!(
+        kept.iter()
+            .map(|r| (r.id.as_str(), r.task_id.is_none(), r.state))
+            .collect::<Vec<_>>(),
+        [("b", true, Included), ("a", true, Verified)]
+    );
     Ok(())
 }

@@ -4,7 +4,8 @@ CREATE TABLE staging_requests (
     id TEXT PRIMARY KEY,
     sandbox_id TEXT NOT NULL REFERENCES sandboxes(id) ON DELETE CASCADE,
     environment TEXT NOT NULL,
-    task_id TEXT REFERENCES tasks(id) ON DELETE CASCADE,
+    -- A deleted task keeps its requests (what staging verified stays known), without the task.
+    task_id TEXT REFERENCES tasks(id) ON DELETE SET NULL,
     revision TEXT NOT NULL,
     state TEXT NOT NULL CHECK (state IN ('testing', 'ready', 'deploying', 'verified', 'included',
         'gate_failed', 'deploy_failed', 'superseded')),
@@ -22,7 +23,7 @@ CREATE TABLE staging_requests (
 );
 -- A repeated request is the same row: one per requester and revision while not superseded.
 CREATE UNIQUE INDEX staging_request_once ON staging_requests(
-    sandbox_id, environment, COALESCE(task_id, ''), revision
+    sandbox_id, environment, COALESCE(task_id, id), revision
 ) WHERE state != 'superseded';
 -- One successful staging deployment per task and environment.
 CREATE UNIQUE INDEX staging_task_success ON staging_requests(sandbox_id, environment, task_id)

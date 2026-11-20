@@ -233,7 +233,8 @@ impl StagingStore for SqliteStore {
                 .prepare(&format!(
                     "SELECT {COLUMNS} FROM staging_requests \
                      WHERE told = 0 AND task_id IS NOT NULL \
-                       AND state IN ('verified', 'included', 'gate_failed', 'deploy_failed') \
+                       AND state IN ('verified', 'included', 'gate_failed', 'deploy_failed', \
+                           'superseded') \
                      ORDER BY updated_at, rowid"
                 ))
                 .map_err(db)?;

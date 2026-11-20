@@ -890,8 +890,8 @@ pub trait StagingStore: Send + Sync {
         change: &StagingChange,
         at: Timestamp,
     ) -> AppResult<bool>;
-    /// The requests of tasks whose outcome (verified, included, gate failed, deploy failed) was
-    /// not told yet, oldest first.
+    /// The requests of tasks whose outcome (verified, included, gate failed, deploy failed,
+    /// superseded) was not told yet, oldest first.
     async fn untold_staging_requests(&self) -> AppResult<Vec<StagingRequestRecord>>;
     /// Records the outcome as told; `false` when it already was.
     async fn mark_staging_told(&self, id: &str) -> AppResult<bool>;
