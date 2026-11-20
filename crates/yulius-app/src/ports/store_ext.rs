@@ -148,7 +148,30 @@ pub trait DeliveryStore: Send + Sync {
         &self,
         expected: &yulius_domain::delivery::DeliveryStage,
         next: &crate::delivery::DeliveryRecord,
+    ) -> crate::error::AppResult<bool> {
+        self.transition_with_landing(expected, next, None).await
+    }
+    /// Same compare-and-set, recording the immutable merge identity in the transaction.
+    async fn transition_with_landing(
+        &self,
+        expected: &yulius_domain::delivery::DeliveryStage,
+        next: &crate::delivery::DeliveryRecord,
+        landing: Option<&crate::delivery::evidence::Landing>,
     ) -> crate::error::AppResult<bool>;
+    /// SHA for this task's recorded PR. A confirmed GitHub landing can recover a legacy row.
+    async fn landed_sha(
+        &self,
+        task: &yulius_domain::ids::TaskId,
+        pr: Option<u64>,
+        known: Option<&crate::delivery::evidence::Landing>,
+    ) -> crate::error::AppResult<Option<String>>;
+    /// Historical compact outcomes at one task landing, optionally for a single attempt.
+    async fn merge_evidence(
+        &self,
+        task: &yulius_domain::ids::TaskId,
+        sha: &str,
+        run_id: Option<&str>,
+    ) -> crate::error::AppResult<Option<crate::delivery::evidence::MergeEvidence>>;
     /// Inserts a run. `Conflict` while another run of the same sandbox is `running`.
     async fn insert_environment_run(
         &self,

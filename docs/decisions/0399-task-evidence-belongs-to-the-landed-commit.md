@@ -1,0 +1,21 @@
+# 0399. Task verification evidence belongs to the landed commit
+
+## Status
+
+Accepted for SPEC-562.
+
+## Context
+
+Task delivery keeps the current PR number. CI and CD have individual run IDs, job verdicts and environment commits. A branch can advance or revert a change before a task checks its deployment. CI and CD prune run details, and release records lack check outcomes.
+
+## Decision
+
+Record the task, branch, PR, PR head and landed SHA with the delivery transition. Join CI by sandbox, exact reference and commit. Join deployment attempts by sandbox and exact landed SHA. Keep each attempt's identity and the stored explanation of a reused gate. Copy only the compact projection when retention deletes a linked run. Provide a task-authorized permalink for the landing and a filter by attempt ID.
+
+## Alternatives
+
+The mutable branch tip and commit ancestry can include later behavior. A successful release alone misses failed reruns and unconfigured verification. Keeping complete runs forever would retain logs and commands beyond their normal lifetime. A repository PR that copies the results adds a review and another CI run.
+
+## Consequences
+
+A person or agent can cite a particular attempt after its detailed log expires. A merge without an authoritative landed SHA or an exact environment run leaves that proof unavailable. Source-document requirements, task completion and delivery permissions remain project decisions.

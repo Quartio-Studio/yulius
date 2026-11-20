@@ -2,6 +2,7 @@
 
 use async_trait::async_trait;
 use rusqlite::{OptionalExtension, Row, params};
+use yulius_app::delivery::evidence::{Landing, MergeEvidence};
 use yulius_app::delivery::{
     DeliveryRecord, EnvironmentRunKind, EnvironmentRunRecord, EnvironmentRunState,
 };
@@ -48,6 +49,24 @@ fn run_from_row(row: &Row<'_>) -> rusqlite::Result<EnvironmentRunRecord> {
     })
 }
 
+/// The current delivery binds the task and PR even during legacy recovery. An insert from a
+/// stale read (another PR opened meanwhile) matches nothing.
+fn record_landing(
+    c: &rusqlite::Connection,
+    task: &str,
+    pr: Option<i64>,
+    landed: &Landing,
+) -> AppResult<()> {
+    c.execute(
+        "INSERT INTO task_merges(task_id, sandbox_id, pr_number, branch, head_sha, merged_sha)
+         SELECT t.id, t.sandbox_id, d.pr_number, ?3, ?4, ?5 FROM tasks t JOIN delivery d ON d.task_id = t.id
+         WHERE t.id = ?1 AND d.pr_number IS ?2 AND d.stage NOT IN ('none', 'pr_open')
+         ON CONFLICT(task_id, merged_sha) DO NOTHING",
+        params![task, pr, landed.branch, landed.head, landed.sha],
+    ).map_err(db)?;
+    Ok(())
+}
+
 #[async_trait]
 impl DeliveryStore for SqliteStore {
     async fn delivery(&self, task: &TaskId) -> AppResult<Option<DeliveryRecord>> {
@@ -83,24 +102,28 @@ impl DeliveryStore for SqliteStore {
         .await
     }
 
-    async fn transition_delivery(
+    async fn transition_with_landing(
         &self,
         expected: &DeliveryStage,
         next: &DeliveryRecord,
+        landing: Option<&Landing>,
     ) -> AppResult<bool> {
+        let landing = landing.cloned();
         let expected = expected.encode();
         let next = next.clone();
         self.call(move |c| {
             let tx = c.transaction().map_err(db)?;
-            let current: Option<String> = tx
+            let current: Option<(String, Option<i64>)> = tx
                 .query_row(
-                    "SELECT stage FROM delivery WHERE task_id = ?1",
+                    "SELECT stage, pr_number FROM delivery WHERE task_id = ?1",
                     [next.task_id.as_str()],
-                    |r| r.get(0),
+                    |r| Ok((r.get(0)?, r.get(1)?)),
                 )
                 .optional()
                 .map_err(db)?;
-            if current.as_deref().unwrap_or("none") != expected {
+            let (stage, pr) = current.as_ref().map_or(("none", None), |(s, n)| (s.as_str(), *n));
+            if stage != expected || (stage == "pr_open" && next.stage == DeliveryStage::MergedIntegration
+                && pr.is_some() && pr != next.pr_number.map(to_i64)) {
                 return Ok(false);
             }
             tx.execute(
@@ -118,6 +141,9 @@ impl DeliveryStore for SqliteStore {
             // A merged pull request takes its review rounds along: the task's next one starts
             // at round 1 (SPEC-493 REV-002). Here, so every way a merge is recorded does it.
             if next.stage == DeliveryStage::MergedIntegration {
+                if let Some(landing) = &landing {
+                    record_landing(&tx, next.task_id.as_str(), next.pr_number.map(to_i64), landing)?;
+                }
                 tx.execute(
                     "UPDATE review_rounds SET pr_number = ?1, merged_at = ?2 \
                      WHERE task_id = ?3 AND merged_at IS NULL",
@@ -131,6 +157,97 @@ impl DeliveryStore for SqliteStore {
             }
             tx.commit().map_err(db)?;
             Ok(true)
+        })
+        .await
+    }
+
+    async fn landed_sha(
+        &self,
+        task: &TaskId,
+        pr: Option<u64>,
+        known: Option<&Landing>,
+    ) -> AppResult<Option<String>> {
+        let (task, pr, known) = (task.to_string(), pr.map(to_i64), known.cloned());
+        self.call(move |c| {
+            let lookup = |c: &rusqlite::Connection| {
+                c.query_row(
+                    "SELECT merged_sha FROM task_merges WHERE task_id = ?1 AND pr_number IS ?2
+                     ORDER BY rowid DESC LIMIT 1",
+                    params![task, pr],
+                    |r| r.get(0),
+                )
+                .optional()
+                .map_err(db)
+            };
+            let existing = lookup(c)?;
+            if existing.is_none()
+                && let Some(landed) = known
+            {
+                record_landing(c, &task, pr, &landed)?;
+                return lookup(c);
+            }
+            Ok(existing)
+        })
+        .await
+    }
+
+    async fn merge_evidence(
+        &self,
+        task: &TaskId,
+        sha: &str,
+        run_id: Option<&str>,
+    ) -> AppResult<Option<MergeEvidence>> {
+        const LIMIT: u16 = 50;
+        let (task, sha, run_id) = (task.to_string(), sha.to_owned(), run_id.map(str::to_owned));
+        self.call(move |c| {
+            let landing = c
+                .query_row(
+                    "SELECT pr_number, branch, head_sha FROM task_merges
+                 WHERE task_id = ?1 AND merged_sha = ?2",
+                    params![task, sha],
+                    |r| {
+                        Ok((
+                            r.get::<_, Option<i64>>(0)?.map(to_u64),
+                            r.get(1)?,
+                            r.get(2)?,
+                        ))
+                    },
+                )
+                .optional()
+                .map_err(db)?;
+            let Some((pr_number, branch, head_sha)) = landing else {
+                return Ok(None);
+            };
+            let mut stmt = c
+                .prepare(
+                    "SELECT result FROM task_merge_runs
+                 WHERE task_id = ?1 AND merged_sha = ?2 AND (?3 IS NULL OR run_id = ?3)
+                 ORDER BY at DESC, seq DESC, run_id LIMIT ?4",
+                )
+                .map_err(db)?;
+            let rows = stmt
+                .query_map(params![task, sha, run_id, LIMIT + 1], |row| {
+                    let result: String = row.get(0)?;
+                    serde_json::from_str(&result)
+                        .map_err(|_| bad_column("merge evidence", "invalid result"))
+                })
+                .map_err(db)?;
+            let mut runs = rows.collect::<Result<Vec<_>, _>>().map_err(db)?;
+            if run_id.is_some() && runs.is_empty() {
+                return Ok(None);
+            }
+            let truncated = runs.len() > usize::from(LIMIT);
+            runs.truncate(usize::from(LIMIT));
+            Ok(Some(MergeEvidence {
+                url: format!("/api/tasks/{task}/delivery/evidence/{sha}"),
+                task_id: task,
+                merged_sha: sha,
+                pr_number,
+                branch,
+                head_sha,
+                runs,
+                truncated,
+            }))
         })
         .await
     }
@@ -358,6 +475,65 @@ mod tests {
         assert_eq!(
             store.deliveries(&SandboxId::parse("s1")?).await?,
             vec![done]
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn legacy_evidence_binds_only_its_observed_merge_and_survives_a_follow_up() -> TestResult
+    {
+        let store = SqliteStore::open_in_memory()?;
+        let task = seed(&store).await?;
+        let old = DeliveryRecord {
+            task_id: task.clone(),
+            stage: DeliveryStage::MergedIntegration,
+            pr_number: Some(7),
+            updated_at: Timestamp(5),
+        };
+        let landing = Landing {
+            branch: "dev".into(),
+            head: "a".repeat(40),
+            sha: "b".repeat(40),
+        };
+        assert!(
+            store
+                .transition_delivery(&DeliveryStage::None, &old)
+                .await?
+        );
+        assert_eq!(store.landed_sha(&task, Some(7), None).await?, None);
+        assert_eq!(
+            store.landed_sha(&task, Some(8), Some(&landing)).await?,
+            None
+        );
+        assert_eq!(
+            store.landed_sha(&task, Some(7), Some(&landing)).await?,
+            Some(landing.sha.clone())
+        );
+
+        let new = DeliveryRecord {
+            stage: DeliveryStage::PrOpen,
+            pr_number: Some(8),
+            ..old.clone()
+        };
+        assert!(store.transition_delivery(&old.stage, &new).await?);
+        assert!(
+            !store
+                .transition_with_landing(&new.stage, &old, Some(&landing))
+                .await?,
+            "an old PR's delayed merge cannot bind the new open PR"
+        );
+        assert_eq!(
+            store.landed_sha(&task, Some(8), Some(&landing)).await?,
+            None
+        );
+        assert_eq!(store.delivery(&task).await?, Some(new));
+        assert_eq!(
+            store
+                .merge_evidence(&task, &landing.sha, None)
+                .await?
+                .ok_or("old landing")?
+                .pr_number,
+            Some(7)
         );
         Ok(())
     }

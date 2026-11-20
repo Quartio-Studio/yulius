@@ -148,6 +148,14 @@ pull request's synthetic merge SHA. A missing, pending, cancelled or failed stat
 success; a failed one is read before anything is run again (`ci_rerun` only for a failure the
 code did not cause).
 
+### Post-merge machine evidence
+
+Open **Delivery → Verification evidence** on the task or call `delivery_status`. The link is scoped to the task and the full landed SHA. Use the newest applicable attempt for each required check. Read its reference, commit, environment and individual verdicts. `?run_id=<id>` pins the result you cite even if someone reruns it. A green PR or merge-train verdict can explain the merge. Integration CI requires the branch run at the landed SHA. A verified deployment requires a passed CD deploy of that SHA to the named environment with passed deploy and verify commands. A rollback drill, a promotion, a missing command, or a command run that awaited manual confirmation supplies different evidence.
+
+When a project accepts task evidence, finish its verification-only step with `step_update`, citing the link and run IDs in the note and closing summary. For example, “Integration tests passed in run A. Security scan skipped. Staging deploy and smoke check passed in run B.” Only close a step whose required checks actually passed. Keep pending checks open, report failed or skipped checks as recorded, and obtain required manual or hardware evidence separately.
+
+Commit required specs, changelogs and source evidence through the project's usual review flow. The repo handoff is to say which machine checks may live in the task record and which artifacts must be committed. A source spec that still declares work keeps the task open. Where the project requires a committed result, or the checks uncover a code or test change, deliver that work through a reviewed PR.
+
 Existing user authorization carries through this delivery workflow. It does not authorize
 production, unrelated deployments, account changes, paid work or messages.
 

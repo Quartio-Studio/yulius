@@ -785,6 +785,11 @@ fn git_rules(input: &BriefingInput<'_>) -> String {
          head, call `delivery_merge`: on green it merges, else it arms and the queue merges in \
          turn: never hold a green one back. Fix failures on this branch, test-first. \
          {checks}\n\
+         - After a merge, read the verification evidence link in `delivery_status`. When your \
+         project accepts task evidence, cite the link and run IDs in the verification-only \
+         step's `step_update` note and closing summary. Check the exact environment, commit and \
+         individual results. Keep missing, manual or hardware checks open. Follow explicit \
+         source-document requirements and deliver code, tests and changelog work through review.\n\
          - Yulius types your PR's events with the next step (obey \"Hands off\"). To wait, \
          start `yulius wait` with run_in_background and end your turn; never poll (`sleep`, \
          `pgrep -f`) or hide an exit code behind `| tail`.\n\

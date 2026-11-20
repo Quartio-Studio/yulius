@@ -31,6 +31,8 @@ flowchart LR
   APP --- SUP
   APP --- CI
   APP --- CD
+  CI -->|"run and job outcomes"| DB
+  CD -->|"environment, commit and check outcomes"| DB
   CD -->|"dev: deploy + verify, allowed secrets"| SB
   CD -->|"production: deploy + verify (or rollback), allowed secrets"| PSB
   APP -->|"prune caches, quota"| SB
@@ -1397,6 +1399,8 @@ with the verdict of its report's last line (`review::verdict_of`). A usage limit
 subagent off sends no `SubagentStop`, so such a round stays without a report. The store closes a
 pull request's rounds in the same transaction that records its merge
 (`transition_delivery`), so the task's next pull request starts at round 1.
+
+The delivery transaction also binds the task, PR, accepted head, integration branch and landed commit in `task_merges`. Delivery reads the existing CI jobs, CD runs and phase spans, and delivery-profile command runs by sandbox and exact commit. A historical link keeps its identity when a branch moves or the task opens another PR. Retention archives the compact results before deleting a linked run or its CD phase spans. Existing deliveries recover a missing binding from the recorded PR's confirmed merge result. An unavailable historical result supplies no proof. [Decision 0399](decisions/0399-task-evidence-belongs-to-the-landed-commit.md)
 
 The transcript watch also reads each subagent of the session's own thread
 (`<session>/subagents/agent-<id>.jsonl`): the model of its answers, once per change

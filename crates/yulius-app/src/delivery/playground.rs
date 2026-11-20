@@ -356,6 +356,7 @@ impl App {
         let merged = crate::review::MergedHead {
             head: head.clone(),
             base: Some(base.clone()),
+            landing: super::evidence::Landing::new(integration, &head, &commit),
         };
         if !self
             .dlv_transition_at(

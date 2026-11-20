@@ -680,6 +680,42 @@ fn delivery_status(value: &Value) -> Option<String> {
         }
         None => push_line(&mut out, "No pull request yet."),
     }
+    if let Some(evidence) = value.get("evidence").filter(|e| !e.is_null()) {
+        use serde::Deserialize;
+        let evidence = crate::delivery::evidence::MergeEvidence::deserialize(evidence).ok()?;
+        push_line(
+            &mut out,
+            &format!(
+                "Verification evidence for {} at {}: {}",
+                evidence.branch, evidence.merged_sha, evidence.url
+            ),
+        );
+        if evidence.runs.is_empty() {
+            push_line(&mut out, "No matching CI or environment run recorded.");
+        }
+        for run in evidence.runs {
+            push_line(
+                &mut out,
+                &format!(
+                    "  {} {} at {}: {} (run {})",
+                    run.kind, run.reference, run.sha, run.state, run.run_id
+                ),
+            );
+            if let Some(reason) = &run.reason {
+                push_line(&mut out, reason);
+            }
+            for check in run.checks {
+                let mut line = format!("    {}: {}", check.name, check.state);
+                if let Some(reason) = check.reason.filter(|r| Some(r) != run.reason.as_ref()) {
+                    line.push_str(&format!(" ({reason})"));
+                }
+                push_line(&mut out, &line);
+            }
+        }
+        if evidence.truncated {
+            push_line(&mut out, "Older attempts can be read with ?run_id=<id>.");
+        }
+    }
     let problems: Vec<&str> = value
         .get("spec_problems")
         .and_then(Value::as_array)
@@ -1582,6 +1618,7 @@ mod tests {
             notes: vec![],
             checks_access: None,
             review_rounds: Vec::new(),
+            evidence: None,
         };
         let value = json!({
             "stage": delivery.stage,

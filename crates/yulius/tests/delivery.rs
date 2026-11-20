@@ -1404,14 +1404,53 @@ async fn yulius_ci_run(
     state: yulius_domain::ci::RunState,
     at: i64,
 ) -> TestResult {
+    use yulius_domain::ci::CiRef;
+    insert_ci_attempt(store, id, sha, CiRef::Branch("dev".into()), state, at, &[]).await
+}
+
+async fn insert_ci_attempt(
+    store: &impl yulius_app::ports::store_ext::CiStore,
+    id: &str,
+    sha: &str,
+    reference: yulius_domain::ci::CiRef,
+    state: yulius_domain::ci::RunState,
+    at: i64,
+    checks: &[(&str, yulius_domain::ci::RunState)],
+) -> TestResult {
+    let jobs: Vec<_> = checks
+        .iter()
+        .enumerate()
+        .map(|(index, (name, verdict))| {
+            Ok(yulius_app::ci::CiJobRecord {
+                id: format!("{id}-{index}"),
+                run_id: id.into(),
+                ordinal: u32::try_from(index)?,
+                name: (*name).into(),
+                key: (*name).into(),
+                command: "test".into(),
+                matrix: None,
+                state: *verdict,
+                reason: None,
+                exit_code: None,
+                output: String::new(),
+                failures: None,
+                started_at: Some(Timestamp(at)),
+                ended_at: Some(Timestamp(at + 1)),
+                need: Default::default(),
+                timeout_minutes: None,
+                exclusive: false,
+                waited_ms: None,
+            })
+        })
+        .collect::<BoxResult<_>>()?;
     use yulius_app::ci::CiRunRecord;
-    use yulius_domain::ci::{CiRef, GateSource};
+    use yulius_domain::ci::GateSource;
     store
         .insert_ci_run(
             &CiRunRecord {
                 id: id.to_owned(),
                 sandbox_id: SandboxId::parse("s1")?,
-                reference: CiRef::Branch("dev".to_owned()),
+                reference,
                 sha: sha.to_owned(),
                 source: GateSource::Profile,
                 state,
@@ -1424,7 +1463,7 @@ async fn yulius_ci_run(
                 started_at: Some(Timestamp(at)),
                 ended_at: Some(Timestamp(at + 1)),
             },
-            &[],
+            &jobs,
         )
         .await?;
     Ok(())
@@ -8154,5 +8193,322 @@ async fn a_production_environment_run_starts_in_production_containment() -> Test
     );
     assert_eq!(home, &work.join("home"));
     assert_eq!(plan.cwd, work.join("src"));
+    Ok(())
+}
+
+/// A landed change has its own verification record even if dev moves or CI runs again.
+#[tokio::test]
+async fn post_merge_evidence_follows_the_landing_through_reruns_and_retention() -> TestResult {
+    use yulius_app::ports::store_ext::CiStore;
+    use yulius_domain::ci::RunState;
+
+    // This repository accepts a task note for machine results. Its source work and changelog
+    // ship in the first PR, with the post-merge check already in the plan.
+    let f = fixture(&DeliveryProfile::standard()).await?;
+    let wt = f
+        .add_task("t1", "Publish the setup guide", "docs/1-setup", "dev")
+        .await?;
+    commit_file(
+        &wt,
+        "docs/setup.md",
+        "# Setup guide",
+        "docs: document setup",
+    )?;
+    commit_file(
+        &wt,
+        "docs/changes.md",
+        "Added the setup guide.",
+        "docs: record setup change",
+    )?;
+    let head = git(&wt, &["rev-parse", "HEAD"])?;
+    let agent = live_agent(&f, "t1", "tok-evidence").await?;
+    answer(
+        &agent_tool(
+            &f,
+            &agent,
+            "steps_set",
+            json!({"steps":[
+                {"title":"Publish setup and changelog","status":"done"},
+                {"title":"Verify the published guide on dev","status":"pending"}
+            ]}),
+        )
+        .await?,
+    )?;
+    f.h.github.set_checks(&head, ChecksState::Success);
+    arm_merge(&f, &agent, &head).await?;
+    f.h.app.merge_armed(&SandboxId::parse("s1")?).await;
+    assert_eq!(f.delivery("t1").await?["steps_open"], 1);
+    let landed = f.origin_sha("dev")?;
+    let path = format!("/api/tasks/t1/delivery/evidence/{landed}");
+    let view = f.delivery("t1").await?;
+    assert_eq!(view["evidence"]["url"], path);
+    let read = || f.req(Method::GET, &path, None, &f.rita);
+    let missing = read().await?;
+    assert_eq!(missing.status, StatusCode::OK);
+    assert_eq!(missing.body["task_id"], "t1");
+    assert_eq!(missing.body["pr_number"], 1);
+    assert_eq!(missing.body["merged_sha"], landed);
+    assert_eq!(missing.body["head_sha"], head);
+    assert_eq!(missing.body["runs"], json!([]));
+
+    let ancestor = git(&f.origin, &["rev-parse", "dev^"])?;
+    yulius_ci_run(&f.h.store, "before", &ancestor, RunState::Passed, 1).await?;
+    advance_base(&f, "dev", "docs/setup.md", "Changed after publication")?;
+    let later = f.origin_sha("dev")?;
+    assert_ne!(later, landed);
+    yulius_ci_run(&f.h.store, "after", &later, RunState::Passed, 4).await?;
+    assert_eq!(read().await?.body["runs"], json!([]));
+    yulius_ci_run(&f.h.store, "first", &landed, RunState::Failed, 2).await?;
+    use yulius_domain::ci::CiRef;
+    insert_ci_attempt(
+        &f.h.store,
+        "pr-head",
+        &head,
+        CiRef::PullRequest(1),
+        RunState::Passed,
+        0,
+        &[("security", RunState::Skipped)],
+    )
+    .await?;
+    insert_ci_attempt(
+        &f.h.store,
+        "candidate",
+        &landed,
+        CiRef::Train(vec![1]),
+        RunState::Passed,
+        8,
+        &[],
+    )
+    .await?;
+    insert_ci_attempt(
+        &f.h.store,
+        "other-pr",
+        &head,
+        CiRef::PullRequest(2),
+        RunState::Passed,
+        7,
+        &[],
+    )
+    .await?;
+    insert_ci_attempt(
+        &f.h.store,
+        "rerun",
+        &landed,
+        CiRef::Branch("dev".into()),
+        RunState::Passed,
+        3,
+        &[
+            ("published guide", RunState::Passed),
+            ("security", RunState::Skipped),
+        ],
+    )
+    .await?;
+    let evidence = read().await?.body;
+    assert_eq!(evidence["runs"][0]["run_id"], "rerun");
+    assert_eq!(evidence["runs"][0]["state"], "passed");
+    assert_eq!(
+        evidence["runs"][0]["checks"],
+        json!([
+            {"name":"published guide","state":"passed"},{"name":"security","state":"skipped"}
+        ])
+    );
+    assert_eq!(evidence["runs"][1]["state"], "failed");
+    assert_eq!(evidence["runs"].as_array().ok_or("runs")?.len(), 3);
+    assert_eq!(evidence["runs"][2]["reference"], "pr/1");
+    assert_eq!(evidence["runs"][2]["sha"], head);
+    f.h.store.prune_ci_runs(0, Timestamp(i64::MAX)).await?;
+    assert!(f.h.store.ci_run("rerun").await?.is_none());
+    assert_eq!(read().await?.body, evidence);
+    let pinned = f
+        .req(Method::GET, &format!("{path}?run_id=first"), None, &f.rita)
+        .await?;
+    assert_eq!(pinned.body["runs"], json!([evidence["runs"][1]]));
+    for unknown in [
+        format!("{path}?run_id=after"),
+        format!("/api/tasks/t1/delivery/evidence/{later}"),
+    ] {
+        assert_eq!(
+            f.req(Method::GET, &unknown, None, &f.rita).await?.status,
+            StatusCode::NOT_FOUND
+        );
+    }
+    assert_ne!(
+        f.req(Method::GET, &path, None, &Creds::default())
+            .await?
+            .status,
+        StatusCode::OK
+    );
+
+    let status = agent_tool(&f, &agent, "delivery_status", json!({})).await?;
+    let text = status["content"][0]["text"].as_str().ok_or("status")?;
+    assert!(text.contains(&path) && text.contains("rerun"), "{text}");
+    let closed = agent_tool(
+        &f,
+        &agent,
+        "step_update",
+        json!({
+            "ordinal": 2, "status": "done", "note": format!("Published guide passed. Security scan skipped. {path}?run_id=rerun")
+        }),
+    )
+    .await?;
+    assert_eq!(answer(&closed)?["progress"]["done"], 2);
+    let steps = f.h.store.steps(&TaskId::parse("t1")?).await?;
+    assert_eq!(steps[1].status, "done");
+    assert!(steps[1].note.as_deref().is_some_and(|n| n.contains(&path)));
+    f.h.app.auto_open_pr(&TaskId::parse("t1")?).await;
+    assert_eq!(pulls_opened(&f), 1);
+    assert_eq!(git(&wt, &["rev-parse", "HEAD"])?, head);
+    assert!(git(&wt, &["status", "--porcelain"])?.is_empty());
+    // A later failing scan is visible under its own ID. The note still cites the attempt
+    // whose scan was skipped, so neither attempt becomes a passing security scan.
+    insert_ci_attempt(
+        &f.h.store,
+        "scan-rerun",
+        &landed,
+        CiRef::Branch("dev".into()),
+        RunState::Failed,
+        9,
+        &[("security", RunState::Failed)],
+    )
+    .await?;
+    assert_eq!(
+        read().await?.body["runs"][0]["checks"][0]["state"],
+        "failed"
+    );
+    let cited = f
+        .req(Method::GET, &format!("{path}?run_id=rerun"), None, &f.rita)
+        .await?;
+    assert_eq!(cited.body["runs"][0]["checks"][1]["state"], "skipped");
+    Ok(())
+}
+
+#[tokio::test]
+async fn post_merge_evidence_requires_the_verified_cd_commit_and_both_commands() -> TestResult {
+    use yulius_app::ci::cd::CdRunRecord;
+    use yulius_app::ports::store_ext::{CdStore, SpanStore};
+    use yulius_domain::ci::RunState;
+    use yulius_domain::rollback::CdRunKind;
+
+    let (f, _, head) = merged_task().await?;
+    let landed = f.origin_sha("dev")?;
+    let path = format!("/api/tasks/t1/delivery/evidence/{landed}");
+    let attempt = |id: &str, sha: &str, state, at| -> BoxResult<CdRunRecord> {
+        Ok(CdRunRecord {
+            id: id.into(),
+            sandbox_id: SandboxId::parse("s1")?,
+            environment: "staging".into(),
+            stage: yulius_domain::cd::CdStage::Dev,
+            branch: "dev".into(),
+            sha: sha.into(),
+            state,
+            reason: None,
+            requested_by: "person".into(),
+            task_id: None,
+            deploy: Some("deploy".into()),
+            verify: Some("smoke".into()),
+            note: None,
+            output: String::new(),
+            exit_code: Some(if state == RunState::Passed { 0 } else { 1 }),
+            started_at: Timestamp(at),
+            ended_at: Some(Timestamp(at + 1)),
+            kind: CdRunKind::Deploy,
+            source: None,
+            steps: Vec::new(),
+        })
+    };
+    let store = &f.h.store;
+    let insert = |run| async move { store.insert_cd_run(&run).await };
+    insert(attempt("previous", &head, RunState::Passed, 1)?).await?;
+    insert(CdRunRecord {
+        kind: CdRunKind::Drill,
+        ..attempt("drill", &landed, RunState::Passed, 2)?
+    })
+    .await?;
+    insert(CdRunRecord {
+        verify: None,
+        ..attempt("deploy-only", &landed, RunState::Passed, 3)?
+    })
+    .await?;
+    insert(attempt("broken", &landed, RunState::Failed, 4)?).await?;
+    for (phase, outcome) in [("deploy", "passed"), ("verify", "failed")] {
+        assert!(
+            store
+                .insert_span(&yulius_app::stages::NewSpan {
+                    sandbox_id: SandboxId::parse("s1")?,
+                    subject_kind: yulius_domain::stages::SubjectKind::CdRun,
+                    subject_id: "broken".into(),
+                    key: format!("run/{phase}"),
+                    parent_key: Some("run".into()),
+                    kind: phase.into(),
+                    name: phase.into(),
+                    environment: Some("staging".into()),
+                    job: None,
+                    started_at: Timestamp(4),
+                    ended_at: Some(Timestamp(5)),
+                    outcome: Some(outcome.into()),
+                    detail: None,
+                })
+                .await?
+        );
+    }
+    insert(attempt("smoke", &landed, RunState::Passed, 5)?).await?;
+    advance_base(&f, "dev", "feature.txt", "Replacement behavior")?;
+    insert(attempt(
+        "different",
+        &f.origin_sha("dev")?,
+        RunState::Passed,
+        6,
+    )?)
+    .await?;
+    use yulius_app::delivery::{EnvironmentRunKind, EnvironmentRunRecord, EnvironmentRunState};
+    let profile_run = EnvironmentRunRecord {
+        id: "profile-command".into(),
+        sandbox_id: SandboxId::parse("s1")?,
+        environment: "dev-vm".into(),
+        kind: EnvironmentRunKind::Command,
+        requested_by: UserId::parse("u-bob")?,
+        command: Some("smoke".into()),
+        commit: Some(landed.clone()),
+        state: EnvironmentRunState::Succeeded,
+        output: String::new(),
+        exit_code: Some(0),
+        started_at: Timestamp(0),
+        ended_at: Some(Timestamp(1)),
+    };
+    store.insert_environment_run(&profile_run).await?;
+    store
+        .insert_environment_run(&EnvironmentRunRecord {
+            id: "person-confirmed".into(),
+            kind: EnvironmentRunKind::Manual,
+            command: None,
+            commit: None,
+            ..profile_run
+        })
+        .await?;
+    let read = || f.req(Method::GET, &path, None, &f.rita);
+    let body = read().await?.body;
+    let runs = body["runs"].as_array().ok_or("CD attempts")?;
+    assert_eq!(runs.len(), 4, "{body}");
+    assert_eq!(runs[3]["kind"], "environment command");
+    assert_eq!(runs[3]["reference"], "dev-vm");
+    assert_eq!(
+        runs[3]["checks"],
+        json!([{"name":"command","state":"succeeded"}])
+    );
+    assert_eq!(runs[0]["reference"], "staging");
+    assert_eq!(runs[0]["sha"], landed);
+    assert_eq!(
+        runs[0]["checks"],
+        json!([{"name":"deploy","state":"passed"},{"name":"verify","state":"passed"}])
+    );
+    assert_eq!(runs[1]["state"], "failed");
+    assert_eq!(runs[1]["checks"][0]["state"], "passed");
+    assert_eq!(runs[1]["checks"][1]["state"], "failed");
+    assert_eq!(runs[2]["checks"][1]["state"], "not configured");
+    store.prune_spans(Timestamp(i64::MAX)).await?;
+    assert_eq!(read().await?.body, body);
+    f.h.store.prune_cd_runs(0, Timestamp(i64::MAX)).await?;
+    assert!(f.h.store.cd_run("smoke", false).await?.is_none());
+    assert_eq!(read().await?.body, body);
     Ok(())
 }

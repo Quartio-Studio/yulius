@@ -60,6 +60,8 @@ a CI job or CD script names its stages with `::yulius-stage <name>` lines, as `s
 
 ## Git delivery
 
+Use a task's `delivery_status` evidence link for machine checks after a merge, subject to the
+project's source-document requirements ([post-merge evidence](docs/engineering/git.md#post-merge-machine-evidence)).
 Read [Git workflow](docs/engineering/git.md) before changing branches, publishing or
 merging. Every local branch, including `dev` and `main`, must have its own worktree.
 Create a typed branch and worktree together from `origin/dev` with `git worktree add -b`;

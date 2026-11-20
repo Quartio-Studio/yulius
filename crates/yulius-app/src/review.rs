@@ -1149,15 +1149,18 @@ pub struct MergedHead {
     /// `<merge>^1` for a GitHub merge: the branch before a squash or merge commit, the previous
     /// (rewritten) copy for a rebase merge. A playground's base after its own squash.
     pub base: Option<String>,
+    /// Actual landed commit, when known. The review base may differ from it.
+    pub landing: Option<crate::delivery::evidence::Landing>,
 }
 
 impl MergedHead {
     /// What a merged pull request merged: its head, and the parent its merge commit landed on
     /// when GitHub names that commit (a merge found after it was made, SPEC-493 fix 1d).
     #[must_use]
-    pub fn of_pull(pull: &crate::ports::github::GhPull) -> Self {
+    pub fn of_pull(pull: &crate::ports::github::GhPull, integration: &str) -> Self {
         Self {
             head: pull.head_sha.clone(),
+            landing: crate::delivery::evidence::Landing::of_pull(pull, integration),
             base: pull.merge_commit_sha.as_ref().map(|sha| format!("{sha}^1")),
         }
     }

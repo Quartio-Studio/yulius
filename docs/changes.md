@@ -6,6 +6,8 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-20
 
+- Task delivery links the landed commit to its CI and deployment checks, including individual reruns and skipped jobs. Projects can cite these results in a verification step without opening a bookkeeping PR (SPEC-562, task #555).
+
 - The store migration regression counts SQLite instructions and verifies completed step spans,
   so host contention cannot fail the backfill test (SPEC-559, #1484).
 - Newly parked tasks show their last agent screen, idle duration and resume instructions
