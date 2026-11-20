@@ -1499,6 +1499,12 @@ route('GET', `/api/sandboxes/${ID}/tasks`, ({ db, p, query }) => {
   const archived = query.get('archived') === 'true';
   return db.tasks.filter((t) => t.sandbox_id === p[0] && t.archived === archived).map(summary);
 });
+/** The effective model and effort, retaining each omitted task setting (SPEC-561). */
+function taskModelSettings(harness, options = {}) {
+  const model = options.model || (harness === 'codex' ? 'gpt-6.2-astra' : harness === 'antigravity' ? 'gemini-4-neon' : 'claude-opus-4');
+  const effort = options.effort || (harness === 'codex' ? defaultEffort(model) : harness === 'antigravity' ? 'high' : 'default');
+  return { model, model_default: !options.model, effort, effort_default: !options.effort };
+}
 route('POST', `/api/sandboxes/${ID}/tasks`, async ({ db, p, body }) => {
   db.lastTaskCreate = body; // Request received before the mock resolves model and effort defaults.
   const sandbox = sandboxOf(db, p[0]);
@@ -1549,17 +1555,13 @@ route('POST', `/api/sandboxes/${ID}/tasks`, async ({ db, p, body }) => {
   const title = body.title || (parsePrompt(body.prompt).text.split('\n')[0] || 'Untitled task').trim().slice(0, 60);
   const wf = choice ? choice.workflow : db.workflows.find((w) => w.id === body.workflow_id);
   const id = `tsk_${sandbox.id.slice(3)}_${number}`;
-  const model = body.model || (harness === 'codex' ? 'gpt-6.2-astra' : harness === 'antigravity' ? 'gemini-4-neon' : 'claude-opus-4');
   const task = {
     id, sandbox_id: sandbox.id, number, title, harness, harness_choice: drawn ? 'random' : 'chosen', status: waitsFor ? 'chained' : 'queued', activity: null,
     branch: `feat/${title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40) || `task-${number}`}`,
     origin: 'ui', created_by: { login: db.me.user.login, id: db.me.user.id }, created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
     archived: false, account_label: null,
     stepsList: wf ? wf.steps.map((title2, i) => ({ id: `${id}-s${i + 1}`, ordinal: i + 1, title: title2, status: 'pending', note: '', updated_by: 'workflow', updated_at: new Date().toISOString() })) : [],
-    model, effort: body.effort || (harness === 'codex' ? defaultEffort(model) : harness === 'antigravity' ? 'high' : 'default'),
-    effort_default: !body.effort, prompt: body.prompt,
-    // A task without a model asks for its agent's default, as on the server (`model_default`).
-    model_default: !body.model,
+    ...taskModelSettings(harness, body), prompt: body.prompt,
     delivery: null, mode: choice ? choice.mode : body.mode || 'goal', auto: choice ? choice.auto : null,
     supertask: body.supertask === true,
   };
@@ -3239,12 +3241,11 @@ function automationTask(db, a, start) {
     : start.after_task_id ? db.tasks.find((t) => t.id === start.after_task_id) : null;
   const now = new Date().toISOString();
   const chosen = automationHarness(db, a);
-  const model = chosen.harness === 'codex' ? 'gpt-6.2-astra' : chosen.harness === 'antigravity' ? 'gemini-4-neon' : 'claude-opus-4';
   const task = {
     id, sandbox_id: a.sandbox, number, title: a.name, ...chosen, status: before ? 'chained' : start.prepared ? 'prepared' : 'queued', activity: null,
     branch: `feat/${number}-automation`, origin: 'automation', created_by: { login: db.me.user.login }, created_at: now, updated_at: now,
-    archived: false, account_label: null, stepsList: [], model, model_default: true,
-    effort: chosen.harness === 'claude' ? 'default' : defaultEffort(model), effort_default: true, prompt: a.prompt,
+    archived: false, account_label: null, stepsList: [],
+    ...taskModelSettings(chosen.harness), prompt: a.prompt,
     delivery: null, mode: 'goal', auto: null, supertask: start.supertask,
   };
   db.tasks.push(task);
@@ -3920,7 +3921,8 @@ route('POST', `/api/sandboxes/${ID}/superagent/requests/${ID}`, async ({ db, p, 
     status: prepared ? 'prepared' : 'queued', activity: null,
     branch: `feat/${number}-${title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40)}`,
     origin: 'agent', created_by: { login: db.me.user.login, id: db.me.user.id }, created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
-    archived: false, account_label: null, stepsList: [], model: 'claude-opus-4', effort: 'default', prompt: request.view.prompt,
+    archived: false, account_label: null, stepsList: [],
+    ...taskModelSettings(harness, opts), prompt: request.view.prompt,
     delivery: null, mode: request.view.options.mode || 'goal', auto: null, supertask: false,
   };
   db.tasks.push(task);

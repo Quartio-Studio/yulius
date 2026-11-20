@@ -1,6 +1,7 @@
 //! A harness port that plans launches with the real adapter (env, files, secrets, hooks, MCP)
 //! and swaps the agent executable for the deterministic fake agent.
 
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use yulius::wiring::harness::HarnessAdapter;
@@ -270,17 +271,24 @@ impl HarnessPort for FakeAgentHarness {
             ));
         }
         let mut plan = self.inner.plan(launch)?;
-        // Tests read what each launch asked for from its run directory.
-        let _ = std::fs::write(
-            launch.run_dir.join("fake-launch.txt"),
-            format!(
-                "mode={:?}\nmodel={:?}\neffort={:?}\nprogram={:?}\n",
-                launch.mode,
-                launch.model,
-                launch.effort,
-                plan.plan.argv.first()
-            ),
+        // Record the request and the actual Codex settings before replacing the CLI with the fake.
+        let mut settings = format!(
+            "mode={:?}\nmodel={:?}\neffort={:?}\nprogram={:?}\n",
+            launch.mode,
+            launch.model,
+            launch.effort,
+            plan.plan.argv.first()
         );
+        if launch.harness == Harness::Codex {
+            for args in plan.plan.argv.windows(2).take_while(|args| args[0] != "--") {
+                if args[0] == "-m"
+                    || (args[0] == "-c" && args[1].starts_with("model_reasoning_effort="))
+                {
+                    let _ = writeln!(settings, "{} {}", args[0], args[1]);
+                }
+            }
+        }
+        let _ = std::fs::write(launch.run_dir.join("fake-launch.txt"), settings);
         // A resume continues the same session (and transcript), like `claude --resume <id>`.
         let resumed = match &launch.mode {
             yulius_app::ports::harness::SessionMode::Resume { session_id, .. } => {

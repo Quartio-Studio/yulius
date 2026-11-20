@@ -636,6 +636,10 @@ fn a_codex_task_at_its_limit_moves_to_another_codex_account() -> TestResult {
             screen_contains(&app, &id, "FAKE-AGENT READY")
         })
         .await?;
+        // A running turn keeps its launch. The next process takes the owner's High override.
+        let ctx = admin_ctx(&app, &user).await?;
+        app.set_task_model(&ctx, id.as_str(), None, Some("high"))
+            .await?;
         app.send_input(&id, b"hello\r").await?;
         wait_for(
             "the switch to another account",
@@ -660,6 +664,19 @@ fn a_codex_task_at_its_limit_moves_to_another_codex_account() -> TestResult {
             "same session"
         );
         let launch = std::fs::read_to_string(Path::new(&second.run_dir).join("fake-launch.txt"))?;
+        let initial = std::fs::read_to_string(Path::new(&first.run_dir).join("fake-launch.txt"))?;
+        assert!(
+            initial
+                .lines()
+                .any(|line| line == r#"-c model_reasoning_effort="xhigh""#),
+            "{initial}"
+        );
+        assert!(
+            launch
+                .lines()
+                .any(|line| line == r#"-c model_reasoning_effort="high""#),
+            "{launch}"
+        );
         assert!(
             launch.contains("Resume {") && launch.contains("continue_interrupted: true"),
             "{launch}"
@@ -1281,6 +1298,16 @@ fn a_codex_goal_task_gets_its_request_as_its_first_message() -> TestResult {
         let launch = std::fs::read_to_string(run_dir.join("fake-launch.txt"))?;
         assert!(
             launch.contains("Codex goal: answer with an echo"),
+            "{launch}"
+        );
+        assert!(
+            launch.lines().any(|line| line == "-m gpt-6.2-astra"),
+            "{launch}"
+        );
+        assert!(
+            launch
+                .lines()
+                .any(|line| line == r#"-c model_reasoning_effort="xhigh""#),
             "{launch}"
         );
         assert!(!launch.contains("/goal"), "{launch}");

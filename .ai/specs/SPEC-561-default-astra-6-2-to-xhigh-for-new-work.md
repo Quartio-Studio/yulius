@@ -35,7 +35,7 @@ as the default. The subscription and service tier are selected independently of 
 ## Plan
 
 - [x] Specify the Astra default and the release comparison
-- [ ] Resolve inherited effort for fresh and resumed Codex launches
+- [x] Resolve inherited effort for fresh and resumed Codex launches
 - [ ] Distinguish inherited effort in task details and creation controls
 - [ ] Verify the change and obtain independent review
 - [ ] Deliver the reviewed change to dev on green CI
@@ -76,3 +76,8 @@ comparison. No migration or new measurement infrastructure is required.
   The updated Chromium Codex suite passed all 14 tests, including the explicit High control.
 - The running task for this implementation predates the release and was created with explicit
   XHigh. It cannot supply post-release evidence of an inherited launch.
+- HTTP creation/detail failed against the old application with `high` instead of `xhigh`.
+  All 27 launch-plan tests passed after the change, including subscription-specific Ultrafast.
+- The independent review of `b93d80c00` requested two changes. The fake-process assertion
+  needed the production plan's arguments. The Superagent mock created a Codex task with
+  `claude-opus-4` and `default` effort. The approval regression reproduced that mock result.
