@@ -242,6 +242,36 @@ async fn the_api_chooses_codex_for_gpt_and_preserves_unqualified_aliases() -> Te
 }
 
 #[tokio::test]
+async fn a_blank_model_uses_the_named_harness_default() -> TestResult {
+    let (h, alice) = world().await?;
+    let response = call(
+        &h.router,
+        Method::POST,
+        CREATE,
+        Some(json!({"prompt": "Default Gemini model", "prepared": true, "harness": "antigravity", "model": "  "})),
+        &alice,
+    ).await?;
+    assert_eq!(response.status, StatusCode::CREATED, "{:?}", response.body);
+    let id = response.body["id"].as_str().ok_or("id")?;
+    let detail = call(
+        &h.router,
+        Method::GET,
+        &format!("/api/tasks/{id}"),
+        None,
+        &alice,
+    )
+    .await?;
+    assert_eq!(detail.status, StatusCode::OK);
+    assert_eq!(detail.body["harness"], "antigravity");
+    assert_eq!(
+        detail.body["model"],
+        yulius_domain::harness::DEFAULT_ANTIGRAVITY_MODEL
+    );
+    assert_eq!(detail.body["model_default"], true);
+    Ok(())
+}
+
+#[tokio::test]
 async fn an_explicit_harness_refuses_a_foreign_model_before_creation() -> TestResult {
     let (h, alice) = world().await?;
     for (harness, model, guidance) in [

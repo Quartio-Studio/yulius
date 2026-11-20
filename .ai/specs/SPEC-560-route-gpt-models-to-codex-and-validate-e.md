@@ -26,7 +26,7 @@ Issue #1427 was reported during SPEC-511. On dev at `56f08db7`, both HTTP creati
 - [x] Reproduce model routing and document the task contract
 - [x] Exercise creation and model edits through API and MCP
 - [x] Route GPT models and reject conflicting harnesses
-- [ ] Verify the fix and obtain independent review
+- [x] Verify the fix and obtain independent review
 - [ ] Record the acceptance and review evidence for delivery
 
 ## Acceptance criteria
@@ -49,3 +49,4 @@ Infer Codex from the GPT prefix, extending the existing Gemini rule. Keep unreco
 - With the fix, the nextest selection covering harness_draw, the Superagent model edit, the Codex model edit, and task_delete passed all 18 tests. This includes the Random draw, caller inheritance, explicit auto, aliases and readback after a refused edit.
 - The Codex Chromium file passed all 14 tests, including the new mock regression. These tests exercise task creation and stored settings with isolated fixtures.
 - Review of `dda794454` requested two fixes in this change. The HTTP GET regression read back `" GPT-synthetic "` with its spaces. Task creation now stores the trimmed model used for routing. The browser approval regression displayed `GPT-6.2 Sol (default) · High effort` for an explicit model. Both mock creation paths now use the same model settings. The Codex and Superagent approval browser files passed all 34 tests after the fixes.
+- The second independent review approved `cf88b2993` and found that an all-space model on explicitly selected Antigravity returned 422 from HTTP. The regression failed with 422, then passed with 201 and Gemini's default model after validation was given the same normalized input as persistence. All 31 selected Rust integration tests passed, including the HTTP readbacks and browser API contract checks.

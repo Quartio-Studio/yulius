@@ -475,7 +475,7 @@ impl App {
             text => Some(parse_harness(text)?),
         };
         if let Some(harness) = explicit_harness {
-            model_of_its_harness(harness, req.model.as_deref())?;
+            model_of_its_harness(harness, model)?;
         }
         // New tasks run in goal mode unless the user picks prompt mode (TSK-010); `auto` lets Jev
         // choose (TSK-015).
