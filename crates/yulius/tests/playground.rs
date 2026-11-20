@@ -705,6 +705,43 @@ async fn a_playground_merge_records_whether_the_merged_head_was_approved() -> Te
     Ok(())
 }
 
+/// A commit directly ahead of dev needs no merge preview. After dev advances independently,
+/// the same delivery view asks Git to preview the two histories.
+#[tokio::test]
+async fn the_delivery_view_previews_only_diverged_histories() -> TestResult {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let trace = tempfile::tempdir()?;
+    let wrapper = trace.path().join("git");
+    let previews = trace.path().join("git.previews");
+    std::fs::write(
+        &wrapper,
+        r#"#!/bin/sh
+for arg do
+    if [ "$arg" = merge-tree ]; then
+        echo merge-tree >> "$0.previews"
+        break
+    fi
+done
+exec git "$@"
+"#,
+    )?;
+    std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755))?;
+    let git = yulius::wiring::git::GitAdapter::new(wrapper);
+    let h = support::harness_with_git(Arc::new(git))?;
+    let owner = support::setup_superadmin_creds(&h).await?;
+    let made = from_template(&h, &owner, "shop").await?;
+    playground_task(&h, &made.body, "t1", &[("task.txt", "one\n")], &["done"]).await?;
+
+    std::fs::write(&previews, "")?;
+    assert_delivery_ci(&h, &owner, &made.body, None).await?;
+    assert_eq!(std::fs::read_to_string(&previews)?, "");
+    push_to_dev(&h, &made.body, &[("dev.txt", "two\n")])?;
+    assert_delivery_ci(&h, &owner, &made.body, None).await?;
+    assert_eq!(std::fs::read_to_string(&previews)?, "merge-tree\n");
+    Ok(())
+}
+
 /// PLY-007: an unfinished task is refused with what to do, and nothing lands.
 #[tokio::test]
 async fn an_unfinished_task_is_not_merged() -> TestResult {
