@@ -9,7 +9,9 @@ status: in-progress
 
 Resolve the actionable reports in the November 20 GitHub issue inventory on green Yulius CI. Close reports superseded by a fix or a later product decision. Preserve unresolved reports and their acceptance evidence.
 
-Fixes #1398
+Fixes #1501
+
+Fixes #1512
 
 ## Context
 
@@ -48,9 +50,10 @@ The inventory at dev 56f08db7f contained 20 issues. #1490 belongs to task #540. 
 - [x] Preserve the known member failure in merge-train decisions
 - [x] Obtain independent approval for the merge-train fix
 - [x] Verify the landed cold-screen fixture against the failed CI shard
-- [ ] Reproduce the parked terminal Reply timeout after Resume
-- [ ] Verify Resume and Reply in Chromium against the reproduced failure
-- [ ] Obtain independent approval for the parked terminal change if needed
+- [x] Reproduce the parked terminal Reply timeout after Resume
+- [x] Verify Resume and Reply in Chromium against the reproduced failure
+- [x] Obtain independent approval for the parked terminal change if needed
+- [x] Verify lowered CI capacity when both active jobs share a name
 - [ ] Verify the independent fixes and reconcile the remaining issues
 
 ## Acceptance criteria
@@ -61,6 +64,8 @@ The inventory at dev 56f08db7f contained 20 issues. #1490 belongs to task #540. 
 - **AC-3** A delayed task list can still produce a supertask proposal. A task list that never arrives fails at the existing first-load timeout.
 
 - **AC-4** Hold the second member’s own run at the decision for a failed two-member candidate, then fail it. The first member merges, the second disarms, and the audit identifies the member failure. A genuine combination failure still takes the bisection path.
+
+- **AC-5** After Resume, the parked-terminal test waits for the second park to reach the attention bar. Sending a reply wakes the task with the submitted prompt. The wait for that transition has a deadline.
 
 ## Test plan
 
@@ -97,3 +102,12 @@ The later reports #1498 and #1502 cover the same parking fixture repaired in PR 
 - After integrating dev at 3cc2b1969, the original quarantined test, the forced race and the deadline control also passed on the reviewed head (3/3).
 - The mutation baseline passed 3,207 tests. The command reported “mutants: 2 listed, 1 caught, 0 missed, 0 timed out, 1 unviable, 0 not reached (bound 30 min, took 655 s)”. Vidoc was disabled.
 - PR #1499 run e45eacb9 failed in the parking fixture. Forcing the live queue to drain immediately before the queued-to-starting assertion reproduced the same failure on 561f47b76. PR #1496 had already fixed the fixture by isolating its cold reads in a SQLite copy. After integrating dev at a561121e7, both parking callers and all three focused merge-train tests passed (5/5). The dev tree passed Yulius CI in run 32a60a22, and GitHub closed #1427. Task #541 closed the parking reports #1498 and #1502 with this evidence, ending the quarantine.
+
+- PR #1499 merged on green Yulius CI at 7c7f742af and closed #1398. The unchanged #1501 scenario passed by itself. The original full-suite trace timed out at the second Reply assertion and subsequently captured the parked attention bar with Reply.
+- A second park arriving after 6.5 seconds reproduced the five-second visibility failure. A 15-second wait for the parked attention bar synchronized the fixture. All nine Chromium scenarios in the parking file passed, including delivery of the reply text to the mock session. The original trace lacks event timestamps to attribute its delay to one component.
+- With the second park held past the deadline in a temporary probe, the test failed at the parked-bar wait before clicking Reply. The fixture was restored after the probe.
+- The reviewer found that a suffix comparison also accepted a reply with an extra prefix. With ANSI styling removed, a comparison of the complete prompt line rejected the deliberately altered message. The product mock was restored after this probe.
+- Round two approved 91146b0ac. All nine Chromium parking scenarios passed with the whole-line comparison. Quick checks passed. The mutation command found no changed Rust code. Vidoc was disabled.
+- PR #1509 run 728bbdfe failed the lowered CI slot test with four starts and only two ends. Probe the two running jobs being the two runs of job b before the test releases job a.
+- Holding both runs of job a at admission reproduced the shard’s exact s s s e s e log at 3973e86e6. Both b jobs timed out because the old fixture opened the shared a gate. The repaired fixture opens the gate for one running job by run ID and job name, then releases the rest. Its test requires the exact eight start/end markers of two simultaneous jobs followed by two sequential ones.
+- The forced lowered-limit regression, raised-limit control and admission-without-a-slot control passed together. Repository quick checks passed. Vidoc was disabled.
