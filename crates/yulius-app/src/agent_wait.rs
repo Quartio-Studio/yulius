@@ -1281,7 +1281,7 @@ impl App {
             return format!(
                 "Pull request #{number} is merged. Yulius could not read its \
                  merged head from GitHub, so whether its own Yulius CI run passed there is not \
-                 known yet: `delivery_status` says it once GitHub answers."
+                 known yet: `delivery_status` says it once GitHub answers.{ahead}"
             );
         };
         merged_text(

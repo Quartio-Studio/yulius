@@ -28,6 +28,7 @@ The requester reports that quartio-v2 task #331, PR #1481, named checked head `b
 - [x] Cover the next four heads and reproduce the singleton verdict
 - [x] Report the landed commit and verify agent guidance
 - [x] Preserve immediate receipts and reject mismatched PR observations
+- [x] Preserve the next plan step when a merge observation is stale
 - [ ] Obtain independent approval for delivery to dev
 
 ## Acceptance criteria
@@ -54,3 +55,4 @@ Use the existing protected merge operation, candidate CI verdict and dependency 
 - After the fix, `cargo nextest run --no-fail-fast -p yulius -p yulius-app -E 'test(/^(merge_train|agent_wait|pr_watch)::/) | test(/^delivery::post_merge_evidence/)'` passed all 91 selected tests. The singleton compared the bare origin's dev SHA, checked head, trees and ancestry against the last verdict and status note. Multi-member verdicts named the correct intermediate landings, peers and candidate. The tests also covered incomplete and stale PR reads, protected merge refusals, red candidates and continuation of partially delivered plans.
 - Round one reviewed `54662c4ca` and requested three changes. With GitHub returning #2 for #1, the task's status displayed #2's landing and the Git overview could advance the stored delivery. With a failed closed-PR read, an immediate green merge returned no receipt. Both acceptance tests failed on the reviewed code. Temporarily reversing peer display made the four-head test fail with `#3, #5, #4` in place of `#4, #5, #3`. The probe was removed.
 - After those fixes, all 91 queue, wait, watcher and post-merge evidence tests passed again, including the extended four-head landing through PR #2's peer list. The separate immediate-merge test `delivery::a_task_of_several_slices_merges_each_with_the_rest_ahead` also passed.
+- Round two reviewed `a79fad9f0`. A stale open PR read after a locally recorded partial merge withheld the unconfirmed branch and SHA but dropped the known next step from the live watcher notification. The regression at `f1da89749` failed on the missing step. After restoring it, all 92 focused tests passed in nextest run `a4fdd6f6-24f9-4f14-a23c-c7e1e0ff806c`.
