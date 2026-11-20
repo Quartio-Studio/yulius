@@ -240,3 +240,11 @@ without adoption support or a remote peer that times out can end a tunnel.
   Clippy. The first mutation run exposed missing checks for cold-start diagnostics and reuse of
   an existing private handoff directory. The process fixtures now exercise both conditions and
   a bad handoff directory at startup.
+- Round two at `b3f7af710` independently passed 12 focused tests and confirmed the four
+  first-round corrections. The reviewer kept an adopting process open after it received the
+  batch and withheld its acknowledgement. Both original peers observed EOF at expiry, but a
+  second deposit still found the helper's only place occupied. The corresponding regression
+  timed out after three seconds on that implementation. The last original deadline now covers
+  the entire sealed batch through final confirmation. With the successor and its duplicates
+  still open, the helper exits and the directory lock becomes available. All 16 custodian
+  unit tests passed with that correction.

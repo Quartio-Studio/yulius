@@ -975,6 +975,21 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn internal_listener_reports_bound_and_connected_addresses() -> std::io::Result<()> {
+        use axum::serve::Listener as _;
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let bound = listener.local_addr()?;
+        let mut internal = InternalListener(listener);
+        assert_eq!(internal.local_addr()?, bound);
+        let client = TcpStream::connect(bound).await?;
+        let (accepted, peer) = internal.accept().await;
+        assert_eq!(peer, client.local_addr()?);
+        assert_eq!(accepted.0.local_addr()?, bound);
+        Ok(())
+    }
+
     #[tokio::test]
     async fn accepted_connections_send_small_writes_at_once()
     -> Result<(), Box<dyn std::error::Error>> {

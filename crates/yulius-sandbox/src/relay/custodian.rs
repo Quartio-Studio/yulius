@@ -310,7 +310,7 @@ impl Drop for PendingDelivery {
 async fn hold(control: &mut UnixStream, directory: &Path) -> io::Result<()> {
     let owner = private_directory(directory)?;
     service_peer(control, owner)?;
-    let lock = lock_directory(directory)?;
+    let _lock = lock_directory(directory)?;
     let mut pending = receive(control).await?;
     let path = directory.join("tunnels.sock");
     remove_stale_socket(&path)?;
@@ -319,40 +319,33 @@ async fn hold(control: &mut UnixStream, directory: &Path) -> io::Result<()> {
         inode: fs::symlink_metadata(&path)?.ino(),
         path,
     };
-    pending.during(control.write_all(b"E")).await?;
-    // Once every original expires there is no batch left for a successor. An untimed
-    // record keeps the listener available until the helper's overall deadline.
-    let mut last = Some(0);
-    for pair in pending.0.iter().flatten() {
-        last = last
-            .zip(pair.expires)
-            .map(|(end, expires)| end.max(expires));
-    }
-    let accepted = if let Some(last) = last {
-        let wait = Duration::from_millis(last.saturating_sub(monotonic_ms()));
-        let Ok(accepted) = tokio::time::timeout(wait, pending.during(listener.accept())).await
-        else {
-            return Ok(());
-        };
-        accepted?
-    } else {
-        pending.during(listener.accept()).await?
+    // From the moment the batch is sealed, the last original deadline covers the
+    // acknowledgement, accept, all frames and final confirmation. Untimed records
+    // remain bounded by the helper's overall lifetime.
+    let last = pending.0.iter().flatten().try_fold(0, |end: u64, pair| {
+        pair.expires.map(|expires| end.max(expires))
+    });
+    let delivery = async {
+        pending.during(control.write_all(b"E")).await?;
+        let (mut successor, _) = pending.during(listener.accept()).await?;
+        drop(listener);
+        drop(guard);
+        service_peer(&successor, owner)?;
+        net::sockopt::set_socket_send_buffer_size(&successor, MAX_STATE)?;
+        pending.send(&mut successor).await?;
+        if pending.during(successor.read_u8()).await? != b'A' {
+            return Err(invalid("batch receipt was not acknowledged"));
+        }
+        pending.during(successor.write_all(b"C")).await?;
+        pending.0.clear(); // Confirmed. Drop originals without shutting down the sockets.
+        Ok(())
     };
-    let (mut successor, _) = accepted;
-    drop(listener);
-    drop(guard);
-    service_peer(&successor, owner)?;
-    // Keep the helper's one place through a stalled transfer. Bound its kernel send queue
-    // as well as the batch it holds in memory.
-    net::sockopt::set_socket_send_buffer_size(&successor, MAX_STATE)?;
-    pending.send(&mut successor).await?;
-    if pending.during(successor.read_u8()).await? != b'A' {
-        return Err(invalid("batch receipt was not acknowledged"));
+    if let Some(last) = last {
+        let wait = Duration::from_millis(last.saturating_sub(monotonic_ms())).min(LIFETIME);
+        tokio::time::timeout(wait, delivery).await.unwrap_or(Ok(()))
+    } else {
+        delivery.await
     }
-    pending.during(successor.write_all(b"C")).await?;
-    pending.0.clear(); // Confirmed. Release our originals without shutting down the sockets.
-    drop(lock);
-    Ok(())
 }
 
 async fn hold_until(
@@ -594,6 +587,35 @@ mod tests {
         assert!(!dir.path().join("tunnels.sock").exists());
         lock_directory(dir.path())?;
         Ok(())
+    }
+
+    #[tokio::test]
+    async fn last_expiry_releases_the_helper_place_with_a_successor_stalled_at_receipt()
+    -> io::Result<()> {
+        tokio::time::timeout(Duration::from_secs(3), async {
+            let dir = tempfile::tempdir()?;
+            fs::set_permissions(dir.path(), Permissions::from_mode(0o700))?;
+            let (mut old, mut control) = UnixStream::pair()?;
+            let (mut saved, mut peers) = pair(b"awaiting acknowledgement".to_vec())?;
+            saved.expires = Some(monotonic_ms() + 500);
+            let path = dir.path().to_owned();
+            let helper = tokio::spawn(async move { hold(&mut control, &path).await });
+            send(&mut old, &[saved]).await?;
+            assert_eq!(old.read_u8().await?, b'E');
+            let mut stalled = UnixStream::connect(dir.path().join("tunnels.sock")).await?;
+            let received = receive(&mut stalled).await?.release();
+            assert_eq!(received.len(), 1);
+            for peer in &mut peers {
+                assert_eq!(peer.read(&mut [0]).await?, 0);
+            }
+            // The successor keeps its original receipt and both duplicates open.
+            helper.await??;
+            assert_eq!(stalled.read(&mut [0]).await?, 0);
+            lock_directory(dir.path())?;
+            drop(received);
+            Ok(())
+        })
+        .await?
     }
 
     #[tokio::test]

@@ -30,10 +30,10 @@ pub(crate) async fn deposit(
     if pairs.is_empty() {
         return Ok(());
     }
-    match std::fs::DirBuilder::new().mode(0o700).create(directory) {
-        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
-        result => result?,
-    }
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(directory)?;
     custodian::deposit(executable, directory, pairs).await
 }
 
@@ -77,10 +77,10 @@ fn helper_leaf(
     ))
 }
 
-pub(crate) fn place_helper() -> io::Result<()> {
-    let membership = std::fs::read_to_string("/proc/self/cgroup")?;
+pub(crate) fn place_helper(root: &Path, membership: &Path) -> io::Result<()> {
+    let membership = std::fs::read_to_string(membership)?;
     if let Some(own) = cgroup::own_path(&membership)
-        && let Some(leaf) = helper_leaf(Path::new(cgroup::CGROUP_ROOT), &own, || {
+        && let Some(leaf) = helper_leaf(root, &own, || {
             crate::doctor::output_of(Path::new("/usr/bin/systemctl"), &["--version"])
                 .and_then(|text| crate::restart_safety::systemd_version(&text))
         })?
@@ -119,6 +119,17 @@ mod tests {
             helper_leaf(dir.path(), own, || None)?,
             Some(sessions.join("legacy"))
         );
+        // The production cgroup writer accepts only its actual filesystem root. Reaching
+        // that check proves placement tried the selected leaf and propagates a failed move.
+        let membership = dir.path().join("member");
+        std::fs::write(&membership, format!("0::{own}\n"))?;
+        assert_eq!(
+            place_helper(dir.path(), &membership)
+                .err()
+                .map(|e| e.kind()),
+            Some(io::ErrorKind::InvalidInput)
+        );
+        assert!(sessions.join(cgroup::LEGACY_LEAF).is_dir());
         assert_eq!(helper_leaf(dir.path(), "/", || None)?, None);
         assert!(helper_leaf(dir.path(), "/../outside.service/server", || None).is_err());
         Ok(())

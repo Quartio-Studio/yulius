@@ -255,6 +255,16 @@ mod tests {
         assert!(n <= 8192, "HTTP upgrade prefetched {n} bytes");
         input.read_exact(&mut buf[n..]).await?;
         assert_eq!(buf, marker);
+        // Bounding the read still exposes the TCP write operations Hyper uses.
+        use tokio::io::AsyncWrite as _;
+        assert!(input.is_write_vectored());
+        let parts = [io::IoSlice::new(b"vec"), io::IoSlice::new(b"tor")];
+        assert_eq!(input.write_vectored(&parts).await?, 6);
+        input.flush().await?;
+        input.shutdown().await?;
+        let mut received = Vec::new();
+        tokio::time::timeout(Duration::from_secs(3), peer.read_to_end(&mut received)).await??;
+        assert_eq!(received, b"vector");
         Ok(())
     }
 
