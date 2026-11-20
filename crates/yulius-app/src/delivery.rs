@@ -4524,12 +4524,15 @@ impl App {
             .get_pull(token, &sandbox.repo_owner, &sandbox.repo_name, pull.number)
             .await
             .ok()
-            .filter(|merged| {
-                merged.number == pull.number
-                    && merged.head_sha == pull.head_sha
-                    && merged.merge_commit_sha.as_deref() == Some(&merge_sha)
-            })
-            .and_then(|merged| evidence::Landing::of_pull(&merged, &profile.integration_branch));
+            .and_then(|merged| {
+                evidence::Landing::confirmed_merge(
+                    &merged,
+                    &profile.integration_branch,
+                    pull.number,
+                    &pull.head_sha,
+                    &merge_sha,
+                )
+            });
         let next = DeliveryRecord {
             task_id: task.id.clone(),
             stage: DeliveryStage::MergedIntegration,
@@ -5749,7 +5752,7 @@ impl App {
     ///
     /// # Errors
     /// Store failures.
-    pub async fn tool_delivery_status(&self, ctx: &AgentContext) -> AppResult<Value> {
+    pub async fn tool_delivery_status(&self, ctx: &AgentContext, args: &Value) -> AppResult<Value> {
         let task = self
             .deps
             .store
@@ -5759,6 +5762,29 @@ impl App {
         let sandbox = self.dlv_sandbox_of(&task).await?;
         let profile = delivery_profile(&sandbox);
         let view = self.delivery_view(&task, None).await?;
+        let before = args["before"].as_str();
+        let run_id = args["run_id"].as_str();
+        let selected_sha = args["merged_sha"].as_str();
+        let evidence = if selected_sha.is_some() || before.is_some() || run_id.is_some() {
+            let sha = selected_sha
+                .or_else(|| view.evidence.as_ref().map(|e| e.merged_sha.as_str()))
+                .ok_or(AppError::NotFound)?;
+            let mut selected = self
+                .deps
+                .store
+                .merge_evidence(&task.id, sha, run_id, before)
+                .await?
+                .ok_or(AppError::NotFound)?;
+            if let Some(id) = run_id {
+                selected.url.push_str(&format!(
+                    "?run_id={}",
+                    crate::browser::percent_encode(id, false)
+                ));
+            }
+            Some(selected)
+        } else {
+            view.evidence
+        };
         Ok(json!({
             "stage": view.stage,
             "environment": view.environment,
@@ -5772,7 +5798,7 @@ impl App {
             "notes": view.notes,
             "checks_access": view.checks_access.as_ref().map(|a| &a.message),
             "review_rounds": view.review_rounds,
-            "evidence": view.evidence.map(|mut evidence| {
+            "evidence": evidence.map(|mut evidence| {
                 evidence.url = format!("{}{}", self.config.public_url.trim_end_matches('/'), evidence.url);
                 evidence
             }),

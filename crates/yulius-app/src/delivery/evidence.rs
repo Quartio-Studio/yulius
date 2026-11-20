@@ -39,6 +39,19 @@ impl Landing {
             pull.merge_commit_sha.as_deref()?,
         )
     }
+
+    /// The merge API guards a head and returns a SHA. A fresh view of the closed PR
+    /// confirms the base on which that result landed.
+    pub(crate) fn confirmed_merge(
+        pull: &GhPull,
+        integration: &str,
+        number: u64,
+        head: &str,
+        sha: &str,
+    ) -> Option<Self> {
+        let landed = Self::of_pull(pull, integration)?;
+        (pull.number == number && landed.head == head && landed.sha == sha).then_some(landed)
+    }
 }
 
 impl App {
@@ -60,5 +73,71 @@ impl App {
             .merge_evidence(&task.id, sha, run_id, before)
             .await?
             .ok_or(AppError::NotFound)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_merge_response_binds_only_the_confirmed_pull_base_head_and_result() {
+        let confirmed = GhPull {
+            number: 7,
+            html_url: String::new(),
+            title: "Setup guide".into(),
+            state: "closed".into(),
+            merged: true,
+            base: "dev".into(),
+            head: "docs/setup".into(),
+            head_sha: "a".repeat(40),
+            mergeable: None,
+            behind: false,
+            from_fork: false,
+            merge_commit_sha: Some("b".repeat(40)),
+        };
+        let seen = confirmed.head_sha.clone();
+        let landed = "b".repeat(40);
+        let evidence = |pr: &GhPull| Landing::confirmed_merge(pr, "dev", 7, &seen, &landed);
+        assert_eq!(
+            evidence(&confirmed),
+            Some(Landing {
+                branch: "dev".into(),
+                head: seen.clone(),
+                sha: landed.clone()
+            })
+        );
+        for pr in [
+            GhPull {
+                number: 8,
+                ..confirmed.clone()
+            },
+            GhPull {
+                head_sha: "c".repeat(40),
+                ..confirmed.clone()
+            },
+            GhPull {
+                merge_commit_sha: Some("d".repeat(40)),
+                ..confirmed.clone()
+            },
+            GhPull {
+                merge_commit_sha: None,
+                ..confirmed.clone()
+            },
+            GhPull {
+                from_fork: true,
+                ..confirmed.clone()
+            },
+            GhPull {
+                merged: false,
+                ..confirmed.clone()
+            },
+            GhPull {
+                base: "other".into(),
+                ..confirmed
+            },
+        ] {
+            assert!(evidence(&pr).is_none());
+        }
     }
 }

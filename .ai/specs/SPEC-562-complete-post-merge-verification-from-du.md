@@ -26,7 +26,7 @@ An idle task's completion uses its declared steps and spec status. Spec synchron
 - [x] Trace the stored verification and completion contracts
 - [x] Expose task-bound merge and CI evidence
 - [x] Associate exact deployment attempts and check outcomes
-- [ ] Prove the verification-only handoff and document its limits
+- [x] Prove the verification-only handoff and document its limits
 - [ ] Review and deliver the verified change
 
 ## Acceptance criteria
@@ -42,3 +42,11 @@ Exercise the delivery HTTP and MCP paths with a local Git/SQLite fixture. Retarg
 ## Decisions
 
 Associate by exact commit and recorded source identity. A deploy of a descendant can change or revert the task's behavior. Treat an environment result as historical evidence at its own SHA. Keep the project responsible for deciding which particular checks its step requires.
+
+## Evidence
+
+- The original CI and CD delivery regressions both failed on the pre-feature revision. All four delivery evidence regressions failed on the first reviewed revision. With the fixes, `cargo nextest run -p yulius -E 'test(/delivery::post_merge_evidence/)'` passed all four.
+- The representative fixture merged the setup guide and its changelog, cited the exact integration run in the remaining step through MCP, and recorded the security job as skipped. The task finished both steps with one PR and an unchanged, clean worktree. A later failed scan kept its own run ID and verdict.
+- The race fixtures advanced the integration branch, retargeted a PR at merge, emitted misleading CD phase markers and inserted a newer CI attempt between archive pages. The access fixture denied a signed-in nonreader and excluded another sandbox's run at the identical SHA.
+- `cargo test -p yulius-domain --lib briefing::` passed 31 tests. `scripts/dev quick` passed the repository contracts and formatting check. Chromium E2E passed 1,167 tests, including the task delivery evidence link. The model-dependent test was skipped. `scripts/dev security` reported Vidoc disabled.
+- The environment checks used synthetic run records and local Git. No live Quartio-v2 environment or hardware was tested. Quartio-v2's handoff is to designate the checks its task record may satisfy and retain its explicitly required source artifacts in the reviewed change.

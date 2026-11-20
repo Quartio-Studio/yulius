@@ -9071,9 +9071,46 @@ async fn post_merge_evidence_pages_over_archived_attempts_while_another_run_land
     use yulius_domain::ci::RunState;
     let (f, _, _) = merged_task().await?;
     let sha = f.origin_sha("dev")?;
+    let agent = live_agent(&f, "t1", "tok-page-evidence").await?;
     let path = format!("/api/tasks/t1/delivery/evidence/{sha}");
     let store = &f.h.store;
-    for at in 0..51 {
+    use yulius_app::ci::cd::CdRunRecord;
+    use yulius_app::ports::store_ext::CdStore;
+    let deployment = CdRunRecord {
+        id: "staging-smoke".into(),
+        sandbox_id: SandboxId::parse("s1")?,
+        environment: "staging".into(),
+        stage: yulius_domain::cd::CdStage::Dev,
+        branch: "dev".into(),
+        sha: sha.clone(),
+        state: RunState::Passed,
+        reason: None,
+        requested_by: "person".into(),
+        task_id: None,
+        deploy: Some("deploy".into()),
+        verify: Some("smoke".into()),
+        note: None,
+        output: String::new(),
+        exit_code: Some(0),
+        started_at: Timestamp(0),
+        ended_at: Some(Timestamp(1)),
+        kind: yulius_domain::rollback::CdRunKind::Deploy,
+        source: None,
+        steps: vec![],
+    };
+    store.insert_cd_run(&deployment).await?;
+    store
+        .insert_cd_run(&CdRunRecord {
+            id: "other-release".into(),
+            sha: f.origin_sha("main")?,
+            started_at: Timestamp(53),
+            ended_at: Some(Timestamp(54)),
+            ..deployment
+        })
+        .await?;
+    store.prune_cd_runs(0, Timestamp(i64::MAX)).await?;
+    assert!(store.cd_run("staging-smoke", false).await?.is_none());
+    for at in 1..51 {
         yulius_ci_run(store, &format!("attempt-{at}"), &sha, RunState::Passed, at).await?;
     }
     yulius_ci_run(
@@ -9085,7 +9122,7 @@ async fn post_merge_evidence_pages_over_archived_attempts_while_another_run_land
     )
     .await?;
     store.prune_ci_runs(0, Timestamp(i64::MAX)).await?;
-    assert!(store.ci_run("attempt-0").await?.is_none());
+    assert!(store.ci_run("attempt-1").await?.is_none());
     let first = f.req(Method::GET, &path, None, &f.rita).await?.body;
     assert_eq!(first["runs"].as_array().ok_or("page")?.len(), 50);
     assert_eq!(first["runs"][0]["run_id"], "attempt-50");
@@ -9101,7 +9138,43 @@ async fn post_merge_evidence_pages_over_archived_attempts_while_another_run_land
         .await?
         .body;
     assert_eq!(last["runs"].as_array().ok_or("last page")?.len(), 1);
-    assert_eq!(last["runs"][0]["run_id"], "attempt-0");
+    assert_eq!(last["runs"][0]["run_id"], "staging-smoke");
+    let tool_page = agent_tool(
+        &f,
+        &agent,
+        "delivery_status",
+        json!({"merged_sha": sha, "before": cursor}),
+    )
+    .await?;
+    assert_eq!(answer(&tool_page)?["evidence"]["runs"], last["runs"]);
+    let pin = agent_tool(
+        &f,
+        &agent,
+        "delivery_status",
+        json!({"run_id":"staging-smoke"}),
+    )
+    .await?;
+    let selected = answer(&pin)?["evidence"].clone();
+    assert_eq!(selected["runs"], last["runs"]);
+    assert_eq!(selected["runs"][0]["checks"][1]["state"], "passed");
+    assert!(
+        pin["content"][0]["text"]
+            .as_str()
+            .is_some_and(|s| s.contains("?run_id=staging-smoke"))
+    );
+    f.add_task("t2", "Another task", "docs/2-other", "dev")
+        .await?;
+    let other = live_agent(&f, "t2", "tok-other-evidence").await?;
+    assert_eq!(
+        agent_tool(
+            &f,
+            &other,
+            "delivery_status",
+            json!({"merged_sha":sha, "run_id":"staging-smoke"})
+        )
+        .await?["isError"],
+        true
+    );
     assert!(last["next_before"].is_null());
     Ok(())
 }

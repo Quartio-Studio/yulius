@@ -596,8 +596,8 @@ pub fn tool_descriptors() -> Vec<ToolDescriptor> {
         },
         ToolDescriptor {
             name: "delivery_status".into(),
-            description: "Delivery state of this task: pull request, checks, spec validity, open steps, the project's delivery profile and the next actions. Deliver with delivery_merge; deploys are CD runs (cd_status, cd_deploy).".into(),
-            input_schema: schema(json!({}), &[]),
+            description: "Delivery state of this task: pull request, checks, spec validity, open steps, the project's delivery profile and the next actions. The evidence link identifies the landed commit. Pass before to read older attempts or run_id to cite one attempt. merged_sha selects an earlier landing of this task. Deliver with delivery_merge; deploys are CD runs (cd_status, cd_deploy).".into(),
+            input_schema: schema(json!({"merged_sha":{"type":"string"}, "before":{"type":"string"}, "run_id":{"type":"string"}}), &[]),
         },
         ToolDescriptor {
             name: "ci_status".into(),
@@ -1213,7 +1213,7 @@ impl App {
             "steps_set" => self.tool_steps_set(ctx, &args).await,
             "step_update" => self.tool_step_update(ctx, &args).await,
             "steps_get" => self.tool_steps_get(ctx).await,
-            "delivery_status" => self.tool_delivery_status(ctx).await,
+            "delivery_status" => self.tool_delivery_status(ctx, &args).await,
             "ci_status" => self.tool_ci_status(ctx, &args).await,
             "ci_rerun" => self.tool_ci_rerun(ctx, &args).await,
             "ci_setup" => self.tool_ci_setup(ctx).await,

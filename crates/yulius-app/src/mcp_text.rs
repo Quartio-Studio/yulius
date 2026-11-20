@@ -719,7 +719,10 @@ fn delivery_status(value: &Value) -> Option<String> {
         if let Some(cursor) = evidence.next_before {
             push_line(
                 &mut out,
-                &format!("Older attempts: {}?before={cursor}", evidence.url),
+                &format!(
+                    "Read older attempts with delivery_status {}.",
+                    serde_json::json!({"merged_sha": evidence.merged_sha, "before": cursor})
+                ),
             );
         }
     }
