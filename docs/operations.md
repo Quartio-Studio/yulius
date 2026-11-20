@@ -1866,9 +1866,11 @@ and nothing is frozen). Everything a person has to do is asked for here:
   always runs the command so (a move asked from Settings → Instance is nobody's sign-in).
 - The new host: release, architecture, systemd, CPUs and memory; refused when it runs or holds an
   instance or another program holds the ports of the proxy and of Yulius.
-- Disk space where the data directory goes. When it is too small the blank disks of the new host
-  are listed: name one with `--data-disk`, or two for a mirror. Only disks without a partition
-  table, filesystem, holder or mount are taken.
+- Disk space where the data directory goes. The plan recognizes a staged copy it will resume.
+  If space is short and an unfinished copy will be discarded, the line identifies its directory
+  on the new host and gives a removal command for a dedicated, expendable copy. Blank disks
+  on the new host are listed when space is short. Name one with `--data-disk`, or two for a
+  mirror. Only disks without a partition table, filesystem, holder or mount are taken.
 - The link's rate, how long the copy will take at it, and a first estimate of the freeze. The
   instance runs during the copy; it is frozen only for the last changes, the proof and the start.
   For the estimate the plan reads a sample of the data directory twice (two seconds at most the
@@ -2006,7 +2008,7 @@ and whether GitHub accepts the new address (the note about the move is read from
 `<data>/moved.json`; remove the file to drop it). A later run that finds the key already deleted
 on the old host (the finish was done and only its record was lost) records the finish and says
 so, whether or not the new host answers; it asks the new host nothing more, so the GitHub App is
-named with its link and values as in the plan.
+named with directions to its settings and the homepage and callback values to register.
 
 **Abort.** `sudo yulius instance migrate --abort` on the old host stops and disables the new
 instance (through the key while the move is not finished; afterwards the key is gone: stop it

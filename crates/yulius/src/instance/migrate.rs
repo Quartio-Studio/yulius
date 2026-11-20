@@ -176,19 +176,28 @@ impl State {
         serde_json::from_str(&text).ok()
     }
 
-    /// The move to `target` recorded in `dir`, or a new one kept there.
+    /// The move to `target` recorded in the configured state directory, or a new one kept there.
     ///
     /// # Errors
     /// A move to another host is recorded, or the directory cannot be written.
-    pub fn begin(dir: &Path, target: &str, port: u16) -> Result<Self, String> {
-        if Self::load(dir).is_none() && dir.join("state.json").exists() {
+    pub fn begin(
+        opts: &Options,
+        target: &str,
+        host: &mut dyn freeze::Host,
+    ) -> Result<Self, String> {
+        let dir = &opts.state_dir;
+        let port = opts.port;
+        let recorded = Self::load(dir);
+        if recorded.is_none() && dir.join("state.json").exists() {
+            let thaw = thaw_command(host, &opts.service)
+                .map(|command| format!(" If the instance is frozen, run `{command}` first."))
+                .unwrap_or_default();
             return Err(format!(
-                "{} cannot be read as a move's state. Look at it; if the unit is frozen, \
-                 `systemctl thaw` it; then remove the file to start over",
+                "{} cannot be read as a move's state. Inspect the file.{thaw} Remove it to start over",
                 dir.join("state.json").display()
             ));
         }
-        match Self::load(dir) {
+        match recorded {
             Some(state) if state.target != target || state.port != port => Err(format!(
                 "a move to {} is recorded here: finish it with the same command, or `yulius \
                  instance migrate --abort`",
@@ -316,8 +325,8 @@ struct Old {
     /// The server's unit has stopped (`inactive` or `failed`): it is neither active nor on its
     /// way up or down (SPEC-467 LFT-002).
     stopped: bool,
-    /// Its sessions unit runs and is not frozen.
-    sessions_run: bool,
+    /// The running sessions unit's freezer state. None when it is absent or stopped.
+    sessions_frozen: Option<bool>,
     /// Something of it is frozen: it is held, by this move, an earlier run or an export.
     any_frozen: bool,
     /// Nothing of it runs unfrozen: what the new instance's start waits for.
@@ -329,7 +338,7 @@ impl Old {
     /// its sessions unit, where it runs, is frozen. A unit that has stopped may still have left
     /// processes that run: [`freeze::left_running`] says (SPEC-478 RSL-001).
     fn down(self) -> bool {
-        self.stopped && !self.sessions_run
+        self.stopped && self.sessions_frozen != Some(false)
     }
 }
 
@@ -394,10 +403,14 @@ fn now_secs() -> u64 {
 
 /// A line of the new host as the person's terminal may show it: no control characters.
 fn shown(mut line: HostLine) -> HostLine {
-    let plain = |text: &str| text.replace(|c: char| c.is_control(), " ");
-    line.name = plain(&line.name);
-    line.detail = plain(&line.detail);
+    line.name = github::plain(&line.name);
+    line.detail = github::plain(&line.detail);
     line
+}
+
+fn thaw_command(host: &mut dyn freeze::Host, unit: &str) -> Option<String> {
+    let units = freeze::thaw_units(host, unit);
+    (!units.is_empty()).then(|| format!("systemctl thaw {}", units.join(" ")))
 }
 
 fn failed(lines: &[HostLine]) -> bool {
@@ -424,6 +437,8 @@ pub struct Move<'a> {
     remote: &'a mut dyn Remote,
     world: &'a mut dyn World,
     state: State,
+    /// The units this run's freeze covered, in thaw order. Used when systemd cannot report state.
+    covered: Option<Vec<String>>,
     /// What the new host holds of the staged copy (SPEC-465).
     stage: Stage,
     /// The build the old instance reported when the plan looked.
@@ -452,6 +467,7 @@ impl<'a> Move<'a> {
             remote,
             world,
             state,
+            covered: None,
             stage: Stage::open(&opts.state_dir.join("copy")),
             ran: None,
             phase: "Plan",
@@ -731,11 +747,10 @@ impl<'a> Move<'a> {
                 ),
             ));
         }
-        if said(
+        if freeze::running_state(&said(
             self.local,
             &["systemctl", "is-active", &opts.update_service],
-        ) == "active"
-        {
+        )) {
             return Err(refuse(
                 self,
                 format!(
@@ -1122,6 +1137,14 @@ impl<'a> Move<'a> {
             bytes(p.used_bytes),
             p.used_inodes
         );
+        if facts.instance == target::Instance::Incomplete {
+            let directory = crate::cli::shell_quoted(&self.opts.data_dir);
+            why.push_str(&format!(
+                ". The new host holds an unfinished copy in {directory}. If that directory \
+                 contains only the disposable copy, remove it on the new host with \
+                 `rm -rf --one-file-system -- {directory}` and plan again"
+            ));
+        }
         if !facts.blank.is_empty() {
             why.push_str(&format!(
                 ". Blank disks there: {}: name one, or two for a mirror, with --data-disk",
@@ -1521,7 +1544,7 @@ impl<'a> Move<'a> {
             active: active == "active",
             frozen,
             stopped: matches!(active.as_str(), "inactive" | "failed"),
-            sessions_run: sessions == Some(false),
+            sessions_frozen: sessions,
             any_frozen: frozen || sessions == Some(true),
             all_frozen: frozen && sessions != Some(false),
         })
@@ -1531,9 +1554,7 @@ impl<'a> Move<'a> {
     /// the server's unit; `None` when nothing of it can be thawed (a stopped server without a
     /// sessions unit).
     fn thaw_command(&mut self) -> Option<String> {
-        let unit = self.opts.service.clone();
-        let units = freeze::thaw_units(&mut *self.world.freezer(), &unit);
-        (!units.is_empty()).then(|| format!("systemctl thaw {}", units.join(" ")))
+        thaw_command(&mut *self.world.freezer(), &self.opts.service)
     }
 
     /// The units of the old instance, for a command a person runs by hand: the server's and,
@@ -1583,27 +1604,43 @@ impl<'a> Move<'a> {
     /// does not run as before: what is frozen of the instance is thawed, and the line says that
     /// the unit is down and how to start it.
     fn thaw(&mut self) {
-        let unit = self.opts.service.clone();
         let state = self.old_unit();
+        self.thaw_after_read(state, false);
+    }
+
+    /// Use one observation for the action and its report. A failed cutover already explains a
+    /// stopped server. When systemd cannot answer, prefer the units this run actually froze.
+    fn thaw_after_read(&mut self, state: Option<Old>, already_reported_down: bool) {
+        let unit = self.opts.service.clone();
         if state.is_some_and(|old| old.active && !old.any_frozen) {
             return self.ok("old instance", format!("{unit} runs; nothing to thaw"));
         }
-        // Frozen, or systemd did not say: thawing a unit that runs changes nothing. Its
-        // sessions unit thaws with it (SPEC-458): agents left frozen beside a server that runs
-        // again would be worse than no thaw.
-        let thawed = freeze::thaw_instance(&mut *self.world.freezer(), &unit);
-        match (thawed, state) {
-            (Err(_), _) => {
-                let command = self
-                    .thaw_command()
-                    .unwrap_or_else(|| format!("systemctl thaw {unit}"));
-                self.fail(
-                    "old instance",
-                    format!("`{command}` failed: run it by hand"),
-                );
+        let units = match state {
+            Some(old) => {
+                let mut units = Vec::new();
+                if old.sessions_frozen == Some(true)
+                    && let Some(sessions) = yulius_sandbox::units::sessions_unit(&unit)
+                {
+                    units.push(sessions);
+                }
+                if old.active && old.frozen {
+                    units.push(unit.clone());
+                }
+                units
             }
+            None => self
+                .covered
+                .clone()
+                .unwrap_or_else(|| freeze::thaw_units(&mut *self.world.freezer(), &unit)),
+        };
+        let thawed = freeze::thaw_each(&mut *self.world.freezer(), &units);
+        match (thawed, state) {
+            (Err(why), _) => {
+                self.fail("old instance", why);
+            }
+            (Ok(()), Some(old)) if !old.active && already_reported_down => {}
             (Ok(()), Some(old)) if !old.active => {
-                let sessions = if old.any_frozen {
+                let sessions = if old.sessions_frozen == Some(true) {
                     " (its sessions were thawed)"
                 } else {
                     ""
@@ -1613,7 +1650,20 @@ impl<'a> Move<'a> {
                     format!("{unit} is not running: start it (`systemctl start {unit}`){sessions}"),
                 );
             }
-            (Ok(()), _) => self.changed("old instance", "thawed: it runs as before"),
+            (Ok(()), None) if units.is_empty() => {
+                self.manual(
+                    "old instance",
+                    "no unit was available to thaw. The server’s state is unknown",
+                );
+            }
+            (Ok(()), None) => self.changed(
+                "old instance",
+                format!(
+                    "thawed {}. The server’s state is still unknown",
+                    units.join(" and ")
+                ),
+            ),
+            (Ok(()), Some(_)) => self.changed("old instance", "thawed: it runs as before"),
         }
     }
 
@@ -1646,6 +1696,7 @@ impl<'a> Move<'a> {
                 std::thread::park();
             }
         }
+        self.covered = Some(held.covered().iter().rev().cloned().collect());
         held.leave_frozen();
     }
 
@@ -1687,33 +1738,10 @@ impl<'a> Move<'a> {
         if !state.is_some_and(|old| old.all_frozen) {
             // Found before the frozen pass, not after it. The move takes the freeze's end
             // first, so what is said and thawed here is the only answer to it.
-            let covered: Vec<String> = held.covered().iter().rev().cloned().collect();
             self.claim(held);
             let why = not_frozen_after_freeze(&unit, state);
             self.fail("old instance", why);
-            match state {
-                // A unit of it runs unfrozen, as systemd says: thawed by what systemd says.
-                Some(old) if old.active => self.thaw(),
-                // The server's unit does not run, as the line says, or systemd does not say
-                // what runs. What the freeze covered is thawed as the freeze knew it, in the
-                // order a thaw takes it and without another question. A server's unit that
-                // does not run is left out: systemd thaws none (stopped, or with a job
-                // pending), nothing of it is frozen, and only a failed thaw is said then.
-                _ => {
-                    let down = state.is_some();
-                    let units: Vec<String> = covered
-                        .into_iter()
-                        .filter(|name| !(down && *name == unit))
-                        .collect();
-                    match freeze::thaw_each(&mut *self.world.freezer(), &units) {
-                        Ok(()) if down || units.is_empty() => {}
-                        Ok(()) => self.changed("old instance", "thawed: it runs as before"),
-                        Err(why) => {
-                            self.fail("old instance", why);
-                        }
-                    }
-                }
-            }
+            self.thaw_after_read(state, true);
             return Err(Stop::Failed);
         }
         self.changed(
@@ -1952,7 +1980,7 @@ impl<'a> Move<'a> {
         if !old.frozen {
             units.push(unit.clone());
         }
-        if old.sessions_run
+        if old.sessions_frozen == Some(false)
             && let Some(sessions) = yulius_sandbox::units::sessions_unit(unit)
         {
             units.push(sessions);
@@ -2194,7 +2222,7 @@ impl<'a> Move<'a> {
                 if *name == unit {
                     old.active
                 } else {
-                    old.sessions_run
+                    old.sessions_frozen == Some(false)
                 }
             })
         };
@@ -2224,7 +2252,7 @@ impl<'a> Move<'a> {
                 "old instance",
                 format!(
                     "{} may have run here beside the new instance (systemd did not say that \
-                     {} frozen, or it was on its way up or down): {} frozen now",
+                     {} frozen): {} frozen now",
                     unknown.join(" and "),
                     if unknown.len() == 1 {
                         "it was"
@@ -2433,7 +2461,7 @@ impl<'a> Move<'a> {
         self.phase("Finish");
         let new = self.state.new_url.clone().unwrap_or_default();
         let moved_url = p.public_url.as_deref().is_some_and(|old| old != new);
-        // Asked before any step: over a key that does not sign in nothing is tried.
+        // A callback check needs a working sign-in. Finish is still attempted unless its key is gone.
         let key = self.remote.reachable().err();
         // Deleted here, which only a finish does, once the new host's finish answered: that
         // run's record did not survive. Nothing is sent over a key that is gone, and nothing
@@ -3107,7 +3135,7 @@ pub fn main(opts: &Options, action: Action) -> ExitCode {
             Some(state) => state,
             None => return refused("no move is recorded here; nothing to abort"),
         },
-        (_, Some(target)) => match State::begin(&opts.state_dir, target, opts.port) {
+        (_, Some(target)) => match State::begin(opts, target, &mut freeze::System) {
             Ok(state) => state,
             Err(why) => return refused(&why),
         },

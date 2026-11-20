@@ -934,7 +934,15 @@ fn setup() -> Result<Setup, Box<dyn std::error::Error>> {
 
 impl Setup {
     fn state(&self) -> Result<State, String> {
-        State::begin(&self.opts.state_dir, "root@185.189.47.160", 22)
+        self.begin("root@185.189.47.160")
+    }
+
+    fn begin(&self, target: &str) -> Result<State, String> {
+        let mut host = FakeSystemd(
+            Arc::clone(&self.world.systemd),
+            Arc::clone(&self.world.events),
+        );
+        State::begin(&self.opts, target, &mut host)
     }
 
     /// Runs the move; its exit code.
@@ -1581,7 +1589,7 @@ fn the_cutover_says_why_the_instance_is_not_frozen_after_its_freeze() {
         active,
         frozen: active,
         stopped,
-        sessions_run: false,
+        sessions_frozen: None,
         any_frozen: active,
         all_frozen: false,
     };
@@ -2517,14 +2525,25 @@ fn what_cannot_be_moved_from_here_is_refused() -> TestResult {
     // Another move is recorded.
     let s = setup()?;
     s.state()?;
-    let other = State::begin(&s.opts.state_dir, "root@elsewhere", 22);
+    let other = s.begin("root@elsewhere");
     assert!(other.is_err_and(|why| why.contains("a move to root@185.189.47.160 is recorded")));
     // A state that cannot be read is not "no move".
     fs::write(s.opts.state_dir.join("state.json"), "{ not json")?;
-    let broken = State::begin(&s.opts.state_dir, "root@185.189.47.160", 22);
-    let why = broken.expect_err("the move record is corrupt");
+    let broken = s.state();
+    let why = broken
+        .err()
+        .ok_or("expected refusal of a corrupt move record")?;
     assert!(why.contains("cannot be read as a move's state"), "{why}");
     assert!(why.contains("systemctl thaw yulius.service"), "{why}");
+    sessions(&s, true)?;
+    let why = s
+        .state()
+        .err()
+        .ok_or("expected refusal of a corrupt move record")?;
+    assert!(
+        why.contains("systemctl thaw yulius-sandboxes.service yulius.service"),
+        "{why}"
+    );
     Ok(())
 }
 

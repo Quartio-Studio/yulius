@@ -87,6 +87,15 @@ pub enum Relocated {
     OtherSignIn,
 }
 
+/// The sign-in that had followed a move away from a URL where someone logs in again.
+#[derive(Debug, PartialEq, Eq)]
+pub enum FollowedSignIn {
+    /// The same sign-in returned. Its former destination now leads here.
+    Returned(String),
+    /// Another token was used. The sign-in at the destination stays there.
+    Kept(String),
+}
+
 /// Stores CLI bearer tokens keyed by normalized server URL.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TokenStore {
@@ -170,33 +179,40 @@ impl TokenStore {
     /// # Errors
     /// I/O failure or a corrupt existing file.
     pub fn save(&self, server: &Url, token: &Secret) -> Result<(), TokenStoreError> {
+        self.save_with_move(server, token).map(|_| ())
+    }
+
+    /// Saves the token and returns what the write did with a sign-in that had followed a move.
+    ///
+    /// # Errors
+    /// I/O failure or a corrupt existing file.
+    pub fn save_with_move(
+        &self,
+        server: &Url,
+        token: &Secret,
+    ) -> Result<Option<FollowedSignIn>, TokenStoreError> {
         let mut file = self.read()?;
         let key = Self::server_key(server);
-        // The URL is a server again, whatever the token; what had followed its move comes back
-        // only with the token that followed.
-        let followed = file.moved.remove(&key).filter(|followed| {
-            file.servers
-                .get(followed)
-                .is_some_and(|there| there.token == *token)
-        });
-        if let Some(followed) = followed {
-            file.servers.remove(&followed);
-            for target in file
-                .moved
-                .values_mut()
-                .filter(|target| **target == followed)
-            {
-                target.clone_from(&key);
+        let previous = file.moved.remove(&key).and_then(|destination| {
+            let there = file.servers.get(&destination)?;
+            if there.token != *token {
+                return Some(FollowedSignIn::Kept(destination));
             }
-            file.moved.insert(followed, key.clone());
-        }
+            file.servers.remove(&destination);
+            for name in file.moved.values_mut().filter(|name| **name == destination) {
+                name.clone_from(&key);
+            }
+            file.moved.insert(destination.clone(), key.clone());
+            Some(FollowedSignIn::Returned(destination))
+        });
         file.servers.insert(
             key,
             StoredCredential {
                 token: token.clone(),
             },
         );
-        self.write(&file)
+        self.write(&file)?;
+        Ok(previous)
     }
 
     /// Moves the sign-in saved for `from` to `to`, where its instance moved (SPEC-466 MVC-030),
@@ -293,8 +309,10 @@ impl TokenStore {
     /// I/O failure or a corrupt file.
     pub fn remove(&self, server: &Url) -> Result<bool, TokenStoreError> {
         let mut file = self.read()?;
-        let existed = file.servers.remove(&Self::server_key(server)).is_some();
+        let removed = Self::server_key(server);
+        let existed = file.servers.remove(&removed).is_some();
         if existed {
+            file.moved.retain(|_, target| *target != removed);
             self.write(&file)?;
         }
         Ok(existed)

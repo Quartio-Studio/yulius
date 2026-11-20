@@ -4289,8 +4289,8 @@ the new one only through `ssh` with a one-time key and a handful of constant rem
 (`remote.rs`): every value travels as JSON or as a stream on standard input, never in a command
 line. The new host's steps (`target.rs`) are Rust code over `host_setup::Host`, run there by the
 same build, which the flow copies first (`yulius instance migrate-target`). The old host's profile
-(`profile.rs`: the unit and its drop-ins, key files, apt sources and the manual package list,
-software outside apt, the update helper, the move helper, Caddy, ufw) is read live and fitted to
+(`profile.rs`: the server’s unit and its drop-ins, the sessions unit’s drop-ins, key files, apt sources,
+the manual package list, software outside apt, the update helper, the move helper, Caddy, ufw) is read live and fitted to
 the new host by pure rewrites (release codename, public URL, host name). The copy is the export's
 own stream, sent in passes into a staged copy (`warm.rs`; SPEC-465, ADR-0303): passes while the old instance
 runs, then one exact pass while it is frozen. The old host keeps a receipt for every path the new
@@ -4413,18 +4413,18 @@ sequenceDiagram
     T->>M: marker: entries installed and synced
     M->>O: downtime: the estimated freeze (copy again while above --max-downtime)
   end
-  M->>D: systemctl freeze yulius.service
+  M->>D: systemctl freeze yulius.service, then yulius-sandboxes.service where present
   M->>T: the frozen pass: what changed, and every path the old host holds
   T->>T: install, remove what is not among those paths
   T->>M: inventory of the copy
   alt inventories differ or a step fails
-    M->>D: systemctl thaw (the old instance runs on)
+    M->>D: systemctl thaw yulius-sandboxes.service where present, then yulius.service (the old instance runs on)
   else equal
     M->>T: mark the copy, finish host setup, start
     T->>S: systemctl enable, start, wait for the build to answer
     alt not healthy
-      M->>T: stop and disable
-      M->>D: systemctl thaw
+      M->>T: disable and stop the server, kill and stop its sessions unit
+      M->>D: systemctl thaw yulius-sandboxes.service where present, then yulius.service
     else healthy
       M->>D: systemctl disable (stays frozen)
       S->>S: first start: queue the tasks that were live

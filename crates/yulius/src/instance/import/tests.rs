@@ -350,7 +350,8 @@ fn a_root_owned_target_names_the_service_users_primary_group() -> TestResult {
     if crate::instance::is_root() {
         let target = tempfile::tempdir()?;
         let why = super::existing_target(target.path(), "nobody")
-            .expect_err("the directory belongs to root");
+            .err()
+            .ok_or("expected refusal of a root-owned directory")?;
         assert!(
             why.contains(r#"chown -- 'nobody':"$(id -g -- 'nobody')" "#),
             "{why}"

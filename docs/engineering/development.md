@@ -298,7 +298,9 @@ steps are skipped). [Git delivery](git.md) defines promotion checks and post-mer
 - Build cache lock: another Cargo command may be installing/building; poll the live
   process rather than starting duplicate installers.
 - Missing linker on macOS: install Xcode Command Line Tools; on Ubuntu install
-  `build-essential`, `pkg-config` and `libssl-dev` if a tooling dependency needs them.
+  `gcc`, `g++`, `make`, `dpkg-dev` and `libc6-dev`. Use `apt-get install --no-install-recommends`
+  on Ubuntu 26.04 because `dpkg-dev` recommends `build-essential`, which selects uutils.
+  Install `pkg-config` and `libssl-dev` if a tooling dependency needs them.
 - Deliberately skipped work: record the exact failed command and its prerequisite.
 
 ## Mutation testing

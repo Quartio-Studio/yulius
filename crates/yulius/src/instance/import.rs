@@ -159,10 +159,12 @@ fn existing_target(target: &Path, user: &str) -> Result<(), String> {
     let owner = super::user_by_uid(&passwd, meta.uid())
         .map_or_else(|| meta.uid().to_string(), |(name, _)| name);
     if meta.uid() == 0 {
+        let service_user = crate::cli::shell_quoted(Path::new(user));
+        let directory = crate::cli::shell_quoted(target);
         return Err(format!(
             "{shown} belongs to root (a new disk?); give it to the service user first: `sudo \
-             useradd --system --home-dir {shown} --shell /usr/sbin/nologin {user}; sudo chown \
-             {user}: {shown}; sudo chmod 0700 {shown}`"
+             useradd --system --home-dir {directory} --shell /usr/sbin/nologin -- {service_user}; sudo chown \
+             -- {service_user}:\"$(id -g -- {service_user})\" {directory}; sudo chmod 0700 -- {directory}`"
         ));
     }
     if owner != user {
