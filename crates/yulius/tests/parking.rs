@@ -415,7 +415,7 @@ fn a_stop_during_the_parks_end_stops_the_task() -> TestResult {
     let rt = runtime()?;
     rt.block_on(async {
         let app = app(&data, 8, 1).await?;
-        let (id, _) = answered(&app, &data).await?;
+        let (id, caller) = answered(&app, &data).await?;
         let stopped = Arc::new(std::sync::Mutex::new(None));
         {
             let (app, id, stopped) = (app.clone(), id.clone(), stopped.clone());
@@ -441,6 +441,31 @@ fn a_stop_during_the_parks_end_stops_the_task() -> TestResult {
         let answer = stopped.lock().map_err(|_| "poisoned")?.clone();
         assert!(matches!(answer, Some(Ok(()))), "{answer:?}");
         assert!(app.deps.store.live_attempt(&id).await?.is_none());
+        let original = screen(&app, &id);
+        assert!(!original.contains("Yulius parked"), "{original}");
+        let restart = self::app(&data, 8, 1).await?;
+        let ctx = AuthContext {
+            user: restart.deps.store.user(&caller.user).await?.ok_or("owner")?,
+            csrf_token: None,
+            session_hash: None,
+            token: None,
+        };
+        let terminal = restart.terminal_open(&ctx, id.as_str(), None).await?;
+        assert_eq!(screen(&restart, &id), original);
+        drop(terminal);
+        let remote = yulius_app::remote::RemoteCaller {
+            ctx, token_id: "stopped-screen".into(),
+            scope: yulius_domain::permission::TokenScope::Read,
+            login: "admin".into(), superagent: None,
+        };
+        let request = serde_json::from_value(json!({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {"name": "task_screen", "arguments": {"project":"acme/pool","task_id":id.as_str()},
+                "_meta": {"yulius/structured":true}}
+        }))?;
+        let result = restart.remote_mcp_handle(&remote, request).await
+            .and_then(|reply| reply.result).ok_or("task_screen")?;
+        assert_eq!(crate::support::tool_text(&result)["screen"], original.trim_end());
         Ok::<_, Error>(())
     })?;
     rt.shutdown_timeout(Duration::from_secs(5));

@@ -681,6 +681,8 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
     // otherwise overflow a phone).
     const parked = state.status === 'parked' || exited?.status === 'parked';
     const mirroring = Boolean(state.cols && state.rows && (parked || (!state.controller && !exited)));
+    const screen = host.querySelector('.xterm-screen');
+    if (screen) screen.style.zoom = '';
     host.classList.toggle('term-mirror', mirroring);
     if (!mirroring) {
       if (term.options.fontSize !== termSize()) term.options.fontSize = termSize();
@@ -690,6 +692,12 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
     }
     if (term.cols !== state.cols || term.rows !== state.rows) term.resize(Math.max(2, state.cols), Math.max(1, state.rows));
     fitMirror(state.cols, state.rows);
+    // The smallest legible live font can still clip a saved desktop grid on a phone.
+    // Scale the finished screen as a whole once xterm has laid out its cells.
+    if (parked && screen && shown() && screen.offsetWidth && screen.offsetHeight) {
+      const scale = Math.min(fitBox.clientWidth / screen.offsetWidth, fitBox.clientHeight / screen.offsetHeight);
+      if (scale < 1) screen.style.zoom = String(scale);
+    }
   }
 
   // Another viewer sets the size: its grid fills this box — the font grows or shrinks until the

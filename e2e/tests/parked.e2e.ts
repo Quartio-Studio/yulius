@@ -140,6 +140,7 @@ test('a parked task shows where it was, marked parked; a queued task page says w
 });
 
 test('a parked terminal fits every row of the captured screen on the task page', async ({ app, browser }) => {
+  await browser.setViewport({ width: 390, height: 844 });
   await app.open(mock('/s/studio/t/12', '&still=1'));
   await terminalShown(browser);
   await browser.evaluate(() => {
@@ -148,14 +149,14 @@ test('a parked terminal fits every row of the captured screen on the task page',
     session.task.status = 'parked';
     // The owner still controls the terminal when the actual process ends.
     for (const viewer of session.viewers) {
-      viewer.push(JSON.stringify({ type: 'state', status: 'parked', can_write: true, controller: true, rows: 55, cols: 90 }));
+      viewer.push(JSON.stringify({ type: 'state', status: 'parked', can_write: true, controller: true, rows: 90, cols: 220 }));
     }
-    session.broadcast('\x1b[2J\x1b[HLast answer begins\x1b[54;1HLast answer ends\x1b[55;1HYulius parked this session. Write to resume.');
+    session.broadcast('\x1b[2J\x1b[HLast answer begins\x1b[89;1HLast answer ends\x1b[90;1HYulius parked this session. Write to resume.');
   });
   const rows = browser.locator('.taskview .xterm-rows > div');
-  await expect(rows).toHaveCount(55);
+  await expect(rows).toHaveCount(90);
   await expect(rows.first()).toHaveText(/Last answer begins/);
-  await expect(rows.nth(53)).toHaveText(/Last answer ends/);
+  await expect(rows.nth(88)).toHaveText(/Last answer ends/);
   await expect(rows.last()).toHaveText(/Write to resume/);
   // Opening a parked page receives state and snapshot. Staying connected also receives exit.
   await browser.evaluate(() => {
@@ -163,6 +164,13 @@ test('a parked terminal fits every row of the captured screen on the task page',
     const session = (window as unknown as { __yuliusMock: { sessions: Map<string, Session> } }).__yuliusMock.sessions.get('tsk_studio_12')!;
     for (const viewer of session.viewers) viewer.push(JSON.stringify({ type: 'exit', status: 'parked', code: 0 }));
   });
-  await expect(rows).toHaveCount(55);
+  await expect(rows).toHaveCount(90);
   await expect(rows.last()).toHaveText(/Write to resume/);
+  const fits = await browser.evaluate(() => {
+    const host = document.querySelector('.taskview .term-host')!.getBoundingClientRect();
+    const grid = document.querySelector('.taskview .xterm-rows')!.getBoundingClientRect();
+    const notice = document.querySelector('.taskview .xterm-rows > div:last-child')!.getBoundingClientRect();
+    return grid.left >= host.left - 1 && grid.right <= host.right + 1 && grid.top >= host.top - 1 && notice.bottom <= host.bottom + 1;
+  });
+  expect(fits).toBe(true);
 });

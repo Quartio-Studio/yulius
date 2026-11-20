@@ -259,32 +259,28 @@ fn legacy_footer_start(screen: &vt100::Screen, lines: &[String]) -> Option<usize
     let mut start = logical
         .iter()
         .rposition(|(_, line)| !line.trim().is_empty())?;
-    let last = logical[start].1.trim_start();
-    if last.starts_with("Or run codex resume and select") {
-        if start > 0
-            && logical[start - 1]
-                .1
-                .trim_start()
-                .starts_with("codex resume ")
-        {
-            start -= 1;
-        }
-    } else if !last.starts_with("codex resume ")
-        || (start > 0 && logical[start - 1].1.trim() != "To continue this session, run:")
-        || (start == 0
-            && !last
-                .strip_prefix("codex resume ")
-                .is_some_and(|id| yulius_domain::harness::valid_session_id(id.trim())))
+    if logical[start]
+        .1
+        .trim_start()
+        .starts_with("Or run codex resume and select ")
     {
-        return None;
+        if start == 0 {
+            return Some(logical[start].0);
+        }
+        start -= 1;
     }
-    if start > 0 && logical[start - 1].1.trim() == "To continue this session, run:" {
+    let id = logical[start].1.trim().strip_prefix("codex resume ")?;
+    if start == 0 {
+        return yulius_domain::harness::valid_session_id(id).then_some(logical[start].0);
+    }
+    if logical[start - 1].1.trim() == "To continue this session, run:" {
         start -= 1;
         if start > 0 && logical[start - 1].1.starts_with("Token usage:") {
             start -= 1;
         }
+        return Some(logical[start].0);
     }
-    Some(logical[start].0)
+    None
 }
 
 /// Formats a parking notice below the last occupied terminal row. Old snapshots
@@ -357,7 +353,9 @@ impl App {
         if task.status != TaskStatus::Parked && run.exit_reason.as_deref() != Some("parked") {
             return crate::supervisor::read_final_screen(dir);
         }
-        if let Some(screen) = parked_snapshot(run) {
+        if task.status == TaskStatus::Parked
+            && let Some(screen) = parked_snapshot(run)
+        {
             return Some(screen);
         }
         let quiet_ms = self
@@ -383,6 +381,16 @@ impl App {
                     })
                     .and_then(crate::stages::SpanRecord::duration_ms)
             });
+        // A stop can overtake parking after the end intent was consumed. For a task
+        // that has since moved on, only the committed state transition proves it parked.
+        if task.status != TaskStatus::Parked {
+            if quiet_ms.is_none() {
+                return crate::supervisor::read_final_screen(dir);
+            }
+            if let Some(screen) = parked_snapshot(run) {
+                return Some(screen);
+            }
+        }
         let (cols, rows, bytes) =
             crate::supervisor::read_final_screen(dir).unwrap_or((80, 24, Vec::new()));
         Some(with_park_notice(
@@ -532,11 +540,16 @@ mod tests {
 
     #[test]
     fn a_codex_resume_command_in_a_parked_answer_remains_visible() {
-        let answer = "To reopen yesterday's worktree, use\r\ncodex resume --last";
-        let (cols, rows, bytes) = with_park_notice(80, 8, answer.as_bytes(), None, true);
-        let hub = crate::hub::Hub::new(cols, rows);
-        hub.reset(1, &bytes, cols, rows);
-        assert!(hub.screen_text().contains("codex resume --last"));
+        for command in [
+            "codex resume --last",
+            "Or run codex resume and select yesterday's task.",
+        ] {
+            let answer = format!("To reopen yesterday's worktree, use\r\n{command}");
+            let (cols, rows, bytes) = with_park_notice(80, 8, answer.as_bytes(), None, true);
+            let hub = crate::hub::Hub::new(cols, rows);
+            hub.reset(1, &bytes, cols, rows);
+            assert!(hub.screen_text().contains(command), "{command}");
+        }
     }
 
     fn idle() -> ParkFacts {
