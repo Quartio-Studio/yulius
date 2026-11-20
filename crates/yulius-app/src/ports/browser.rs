@@ -45,6 +45,8 @@ pub enum BrowserFailureKind {
     /// A viewer's clicks and keys are off: the host's browser policy is not in force
     /// (ADR-0318).
     InputLocked,
+    /// The host policy is in force, but the display must be replaced before input is safe.
+    InputLockedUntilRestart,
     /// The tab's page is not one the secret may be typed into: nothing was typed.
     SecretPageRefused,
     /// The tab went to another page while a secret was typed: part of it may be there.
@@ -88,6 +90,7 @@ impl BrowserFailure {
             BrowserFailureKind::NotFound => ViewerErrorCode::NotFound,
             BrowserFailureKind::Capacity => ViewerErrorCode::Capacity,
             BrowserFailureKind::InputLocked => ViewerErrorCode::InputLocked,
+            BrowserFailureKind::InputLockedUntilRestart => ViewerErrorCode::InputLockedUntilRestart,
             BrowserFailureKind::Invalid
             | BrowserFailureKind::SecretPageRefused
             | BrowserFailureKind::SecretAstray => ViewerErrorCode::Invalid,
@@ -109,6 +112,7 @@ impl From<BrowserFailure> for AppError {
             BrowserFailureKind::Capacity => Self::Capacity(failure.message),
             // Only a viewer's input meets it; were a tool to, it is the host's to fix.
             BrowserFailureKind::InputLocked
+            | BrowserFailureKind::InputLockedUntilRestart
             | BrowserFailureKind::SecretPageRefused
             | BrowserFailureKind::SecretAstray => Self::Forbidden(failure.message),
             BrowserFailureKind::NotInstalled
@@ -348,6 +352,12 @@ pub trait BrowserPort: Send + Sync {
     /// The sandbox's running browser, started (or restarted after a crash) with
     /// `profile_dir` as its profile.
     async fn ensure(
+        &self,
+        sandbox: &SandboxId,
+        profile_dir: &Path,
+    ) -> Result<Arc<dyn BrowserSession>, BrowserFailure>;
+    /// Replaces this sandbox's browser and display with a fresh instance using the same profile.
+    async fn restart(
         &self,
         sandbox: &SandboxId,
         profile_dir: &Path,

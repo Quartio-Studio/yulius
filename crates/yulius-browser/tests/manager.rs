@@ -636,3 +636,53 @@ async fn a_browser_runs_behind_its_own_proxy_or_not_at_all() -> TestResult {
     drop((a, b, restarted));
     Ok(())
 }
+
+#[tokio::test]
+async fn restart_reopens_tabs_after_the_address_guard_even_after_a_failed_launch() -> TestResult {
+    let first = FakeCdpServer::start().await?;
+    let dir = tempfile::tempdir()?;
+    let make_launcher =
+        |port| write_fake_chromium(dir.path(), "browser", FakeChromium::Ready { port });
+    let exe = make_launcher(first.pipe_port())?;
+    let mut cfg = config(exe.clone(), dir.path());
+    cfg.deny = yulius_browser::UrlDenyList::yulius("https://yulius.test", &[], vec![]);
+    let manager = BrowserManager::new(cfg);
+    let sandbox = SandboxId::parse("sandbox")?;
+    let profile = manager.default_profile_dir(&sandbox);
+    let browser = manager.ensure(&sandbox, &profile).await?;
+    let first_tab = browser.tabs()[0].id.clone();
+    browser
+        .navigate(&first_tab, "https://page.test/one")
+        .await?;
+    browser.open("https://page.test/two").await?;
+    browser.activate(&first_tab).await?;
+
+    let parked_exe = dir.path().join("old-launcher");
+    std::fs::rename(&exe, &parked_exe)?;
+    assert!(manager.restart(&sandbox, &profile).await.is_err());
+    assert!(manager.get(&sandbox).await.is_none());
+    let next = FakeCdpServer::start().await?;
+    make_launcher(next.pipe_port())?;
+    let replacement = manager.ensure(&sandbox, &profile).await?;
+    let tabs = replacement.tabs();
+    assert_eq!(
+        tabs.iter()
+            .map(|tab| (tab.url.as_str(), tab.active))
+            .collect::<Vec<_>>(),
+        [
+            ("https://page.test/one", true),
+            ("https://page.test/two", false)
+        ]
+    );
+    let calls = next.calls();
+    let index = |method| {
+        calls
+            .iter()
+            .position(|c| c.method == method)
+            .ok_or("missing CDP call")
+    };
+    assert!(index("Fetch.enable")? < index("Page.navigate")?);
+    assert!(index("Fetch.enable")? < index("Target.createTarget")?);
+    manager.shutdown(&sandbox).await?;
+    Ok(())
+}

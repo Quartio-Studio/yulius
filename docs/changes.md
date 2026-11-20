@@ -6,6 +6,8 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-20
 
+- A sandbox writer can choose **Restart browser** when Chrome's input stays locked after host setup. The panel reconnects with the same sandbox profile and reopened web tabs. [SPEC-570](../.ai/specs/SPEC-570-restart-the-locked-browser-of-one-sandbo.md)
+
 - Sandbox browsers skip Chrome’s default apps. Older profiles can take the extension blocklist
   on a virtual display without showing a Docs Offline administrator dialog (SPEC-567, #1411).
 

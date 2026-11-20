@@ -405,3 +405,4 @@ number differs from the file name, an unlisted record, and entries out of number
 - [0400](0400-continuing-a-reviewer-after-its-report-opens-the-next-round.md) records a new round when an author continues a reviewer after its report.
 - [0401](0401-red-ci-notices-include-partial-sibling-failures.md) Red CI notices and run details include partial failures observed in siblings stopped by fail-fast.
 - [0402](0402-sandbox-browsers-skip-chromes-default-apps.md) records how sandbox launches handle default apps and existing extensions on virtual displays.
+- [0404](0404-restart-one-sandbox-browser-through-its-viewer-grant.md) lets a sandbox writer restart its browser and reopen permitted tabs after the address guard is installed.

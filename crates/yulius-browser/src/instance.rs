@@ -2218,6 +2218,36 @@ impl BrowserInstance {
         });
     }
 
+    /// Restore visible web addresses only after the new browser's request guard is installed.
+    pub(crate) async fn reopen_tabs(&self, previous: &[TabInfo]) -> Result<(), BrowserError> {
+        let mut blank = self.tabs().into_iter().find(|tab| tab.url == "about:blank");
+        let mut active = None;
+        for tab in previous {
+            let Ok(url) = normalize_url(&tab.url) else {
+                continue;
+            };
+            if self.check_allowed(&url).is_err() {
+                continue;
+            }
+            let id = if let Some(blank) = blank.take() {
+                // An offline page can reopen on Chrome's error page.
+                match self.navigate(&blank.id, &url).await {
+                    Ok(()) | Err(BrowserError::NavigationFailed(_)) => blank.id,
+                    Err(error) => return Err(error),
+                }
+            } else {
+                self.open(&url).await?
+            };
+            if tab.active {
+                active = Some(id);
+            }
+        }
+        if let Some(tab) = active {
+            self.activate(&tab).await?;
+        }
+        Ok(())
+    }
+
     /// Shows the welcome page in tabs that are still `about:blank` (a fresh browser).
     pub async fn show_welcome_in_blank_tabs(&self) {
         let Some(welcome) = lock(&self.new_tab_url).clone() else {

@@ -163,7 +163,14 @@ impl BrowserConfig {
     }
 }
 
-type Slot = Arc<tokio::sync::Mutex<Option<Arc<BrowserInstance>>>>;
+#[derive(Debug, Default)]
+struct BrowserSlot {
+    instance: Option<Arc<BrowserInstance>>,
+    // Kept across a failed replacement launch, until it succeeds or the sandbox is stopped.
+    reopen: Vec<yulius_contracts::browser::TabInfo>,
+}
+
+type Slot = Arc<tokio::sync::Mutex<BrowserSlot>>;
 
 /// Owns at most one Chromium per sandbox; starts it on first use, restarts it after a crash on
 /// the next use, stops it when idle or on request.
@@ -253,17 +260,46 @@ impl BrowserManager {
     ) -> Result<Arc<BrowserInstance>, BrowserError> {
         let slot = self.slot(sandbox);
         let mut guard = slot.lock().await;
-        if let Some(existing) = guard.as_ref()
+        if let Some(existing) = &guard.instance
             && existing.is_alive()
         {
             existing.touch();
             return Ok(Arc::clone(existing));
         }
-        if let Some(dead) = guard.take() {
-            warn!(sandbox = %sandbox, "browser exited or disconnected; restarting");
-            if let Err(error) = dead.terminate(self.config.stop).await {
-                warn!(sandbox = %sandbox, %error, "could not reap the previous browser");
-            }
+        self.replace(&mut guard, sandbox, profile_dir).await
+    }
+
+    /// Reaps the sandbox's current browser and reopens its visible pages on a fresh display
+    /// using the same profile. Other users of this slot await the replacement.
+    ///
+    /// # Errors
+    /// Stop and startup failures, including failures installing the address guard.
+    pub async fn restart(
+        &self,
+        sandbox: &SandboxId,
+        profile_dir: &Path,
+    ) -> Result<Arc<BrowserInstance>, BrowserError> {
+        let slot = self.slot(sandbox);
+        let mut guard = slot.try_lock().map_err(|_| BrowserError::BrowserBusy)?;
+        if let Some(existing) = &guard.instance {
+            guard.reopen = existing
+                .tabs()
+                .into_iter()
+                .take(self.config.max_tabs)
+                .collect();
+        }
+        self.replace(&mut guard, sandbox, profile_dir).await
+    }
+
+    async fn replace(
+        &self,
+        slot: &mut BrowserSlot,
+        sandbox: &SandboxId,
+        profile_dir: &Path,
+    ) -> Result<Arc<BrowserInstance>, BrowserError> {
+        if let Some(previous) = &slot.instance {
+            previous.terminate(self.config.stop).await?;
+            slot.instance = None;
         }
         let instance = self.launch(sandbox, profile_dir).await?;
         // Recursion guard first (BRW-008): fail closed rather than run without it.
@@ -278,8 +314,13 @@ impl BrowserManager {
                 .as_ref()
                 .map(|template| template.replace("{sandbox}", sandbox.as_str())),
         );
+        if let Err(error) = instance.reopen_tabs(&slot.reopen).await {
+            let _ = instance.terminate(self.config.stop).await;
+            return Err(error);
+        }
+        slot.reopen.clear();
         instance.show_welcome_in_blank_tabs().await;
-        *guard = Some(Arc::clone(&instance));
+        slot.instance = Some(Arc::clone(&instance));
         Ok(instance)
     }
 
@@ -287,7 +328,7 @@ impl BrowserManager {
     pub async fn get(&self, sandbox: &SandboxId) -> Option<Arc<BrowserInstance>> {
         let slot = lock(&self.slots).get(sandbox).cloned()?;
         let guard = slot.lock().await;
-        guard.as_ref().filter(|i| i.is_alive()).cloned()
+        guard.instance.as_ref().filter(|i| i.is_alive()).cloned()
     }
 
     async fn launch(
@@ -379,10 +420,12 @@ impl BrowserManager {
             return Ok(false);
         };
         let mut guard = slot.lock().await;
-        let Some(instance) = guard.take() else {
+        guard.reopen.clear();
+        let Some(instance) = guard.instance.as_ref() else {
             return Ok(false);
         };
         instance.terminate(self.config.stop).await?;
+        guard.instance = None;
         info!(sandbox = %sandbox, "browser stopped");
         Ok(true)
     }
@@ -413,7 +456,7 @@ impl BrowserManager {
             let Ok(mut guard) = slot.try_lock() else {
                 continue;
             };
-            let Some(instance) = guard.as_ref() else {
+            let Some(instance) = &guard.instance else {
                 continue;
             };
             let idle = instance.frame_subscribers() == 0
@@ -421,13 +464,13 @@ impl BrowserManager {
             if !idle && instance.is_alive() {
                 continue;
             }
-            if let Some(instance) = guard.take() {
-                if let Err(error) = instance.terminate(self.config.stop).await {
-                    warn!(sandbox = %sandbox, %error, "idle browser could not be reaped");
-                }
-                info!(sandbox = %sandbox, "idle or dead browser stopped");
-                stopped.push(sandbox);
+            if let Err(error) = instance.terminate(self.config.stop).await {
+                warn!(sandbox = %sandbox, %error, "idle browser could not be reaped");
+                continue;
             }
+            guard.instance = None;
+            info!(sandbox = %sandbox, "idle or dead browser stopped");
+            stopped.push(sandbox);
         }
         stopped
     }
@@ -467,6 +510,22 @@ impl Drop for IdleReaper {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn a_second_restart_is_refused_while_the_browser_slot_is_busy()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use futures::FutureExt as _;
+        use yulius_contracts::browser::ViewerErrorCode;
+        let manager = BrowserManager::new(BrowserConfig::new("unused".into(), "/unused".into()));
+        let sandbox = SandboxId::parse("busy-browser")?;
+        let slot = manager.slot(&sandbox);
+        let _busy = slot.lock().await;
+        let result = manager
+            .restart(&sandbox, Path::new("/unused"))
+            .now_or_never();
+        assert!(matches!(result, Some(Err(e)) if e.viewer_code() == ViewerErrorCode::Capacity));
+        Ok(())
+    }
 
     #[test]
     fn chromium_args_use_the_devtools_pipe_and_are_sandboxed_by_default() {

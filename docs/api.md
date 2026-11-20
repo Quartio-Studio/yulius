@@ -1282,6 +1282,9 @@ resolves to nothing, the run gets the server without that variable or token.
 
 ## Browser, editor, shell
 
+- `POST /api/sandboxes/{sid}/browser/restart` uses the browser viewer's write grant and the usual CSRF check for cookie sessions. It returns 204 when the sandbox's replacement browser is ready. The profile stays in place. The caller reconnects its viewer WebSocket to receive the new tab IDs. A read-only user receives 403 and an invisible sandbox returns 404. A sandbox browser already starting or stopping returns 429 so a second restart cannot queue behind the first.
+- A refused viewer click or key carries `input_locked` while the host policy is missing. It carries `input_locked_until_restart` when the policy is in force and the old display may still hold a chooser.
+
 - `WS /api/sandboxes/{sid}/browser` (write): the sandbox's Chrome — the browser agents drive —
   streamed (SPEC-002 ADR-15). One browser per sandbox, started on first use; with a virtual
   display it runs headful on its own Xvfb and the connection receives its video and sends real
@@ -1322,7 +1325,7 @@ resolves to nothing, the run gets the server without that variable or token.
     `{"type":"agent_activity","tab_id","x","y","action":"click|type|open|navigate","label"}` (an
     agent acted; `x`/`y` in viewport CSS pixels or null), `{"type":"action_requested","tab_id",
     "reason","task_id"}`, `{"type":"error","code":"invalid|url_refused|not_found|capacity|
-    input_locked|upstream|internal","message"}`.
+    input_locked|input_locked_until_restart|upstream|internal","message"}`.
   - Bounds: an acknowledging viewer has at most its base round trip plus 120 ms of video
     unacknowledged; video that waited on the server 250 ms (or beyond 300 frames, 8 MiB) is
     dropped and the viewer resumes at a fresh keyframe, which the server asks the encoder for
