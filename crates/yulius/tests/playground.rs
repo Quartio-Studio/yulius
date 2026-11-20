@@ -742,6 +742,51 @@ exec git "$@"
     Ok(())
 }
 
+/// A task with only a branch name or only its checkout cannot be delivered.
+#[tokio::test]
+async fn a_playground_delivery_requires_both_branch_and_worktree() -> TestResult {
+    use yulius_app::model::TaskRecord;
+    use yulius_app::ports::store::TaskStore as _;
+    use yulius_domain::ids::TaskId;
+
+    let (h, owner) = world().await?;
+    let made = from_template(&h, &owner, "shop").await?;
+    playground_task(&h, &made.body, "t1", &[("a.txt", "change")], &["done"]).await?;
+    let ready = h.store.task(&TaskId::parse("t1")?).await?.ok_or("task")?;
+    for (id, branch, worktree_path) in [
+        ("t2", ready.branch.clone(), None),
+        ("t3", None, ready.worktree_path.clone()),
+    ] {
+        h.store
+            .insert_task(&TaskRecord {
+                id: TaskId::parse(id)?,
+                branch,
+                worktree_path,
+                ..ready.clone()
+            })
+            .await?;
+        let view = call(
+            &h.router,
+            Method::GET,
+            &format!("/api/tasks/{id}/delivery"),
+            None,
+            &owner,
+        )
+        .await?;
+        assert_eq!(view.status, StatusCode::OK, "{}", view.body);
+        assert_eq!(view.body["next_actions"], json!([]));
+        let reason = "this task has no branch to deliver yet";
+        assert_eq!(
+            view.body["blocked"],
+            json!([{"action": "merge", "reason": reason}])
+        );
+        let refused = merge(&h, &owner, id).await?;
+        assert_eq!(refused.status, StatusCode::CONFLICT);
+        assert!(text(&refused).contains(reason), "{}", refused.body);
+    }
+    Ok(())
+}
+
 /// PLY-007: an unfinished task is refused with what to do, and nothing lands.
 #[tokio::test]
 async fn an_unfinished_task_is_not_merged() -> TestResult {
@@ -2072,6 +2117,9 @@ async fn assert_delivery_ci(
             reason.contains("Yulius CI") && reason.contains(state),
             "{reason}"
         );
+        if state == "failed" {
+            assert!(reason.contains("merge on green only"), "{reason}");
+        }
     } else {
         assert_eq!(got.body["next_actions"], json!(["merge"]), "{}", got.body);
         assert_eq!(got.body["blocked"], json!([]));
@@ -2309,6 +2357,36 @@ async fn a_persons_merge_waits_for_green() -> TestResult {
     assert_eq!(git(&origin, &["rev-parse", "dev^"])?.trim(), dev);
     nothing_on_github(&h)?;
     Ok(())
+}
+
+/// The delivery view gives the recorded infrastructure error for the exact merge candidate.
+#[tokio::test]
+async fn a_playground_delivery_explains_an_errored_check() -> TestResult {
+    use yulius_app::ci::CiRunUpdate;
+    use yulius_app::ports::store_ext::CiStore as _;
+    use yulius_domain::ci::RunState;
+
+    let (h, owner) = ci_world().await?;
+    let body = ci_playground(&h, &owner).await?;
+    playground_task(&h, &body, "t1", &[("feature.txt", "change")], &["done"]).await?;
+    assert_eq!(merge(&h, &owner, "t1").await?.status, StatusCode::CONFLICT);
+    let run = task_run(&ci_overview(&h, &owner, &body).await?)?;
+    let reason = "the check worker could not start";
+    assert!(
+        h.store
+            .transition_ci_run(
+                run["id"].as_str().ok_or("run id")?,
+                &[RunState::Queued],
+                RunState::Error,
+                &CiRunUpdate {
+                    reason: Some(reason.to_owned()),
+                    ended_at: Some(h.app.now()),
+                    ..CiRunUpdate::default()
+                },
+            )
+            .await?
+    );
+    assert_delivery_ci(&h, &owner, &body, Some(reason)).await
 }
 
 /// Review round 1, major 1 (PCI-002): where both sides changed a `merge=union` file, the squash
